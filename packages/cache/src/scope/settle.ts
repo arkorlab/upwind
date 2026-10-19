@@ -2,6 +2,11 @@ import { kvDataKey, kvGenerationKey, kvScopeKey } from '@stayingupwind/core/cach
 
 import { detailOf, type Logger } from '../logger.ts';
 import {
+  artifactVerification,
+  type ArtifactVerification,
+  forgetVerifiedArtifactFailures,
+} from './artifacts.ts';
+import {
   anyRecordBehind,
   type BacklogCursor,
   backlogRecords,
@@ -14,7 +19,12 @@ import { findGeneration } from './generations.ts';
 import type { ScopeHistory } from './history.ts';
 import { type BlobStore, type CarriedValue, type KvSink, writeKey } from './io.ts';
 import { PROJECTION_MEMORY_BYTES, withProjectionMemory } from './projection-memory.ts';
-import { dataRecordJson, generationRecordBytes, projectionMemoryOf } from './records.ts';
+import {
+  dataRecordJson,
+  generationRecordBytes,
+  projectionMemoryOf,
+  type RecordDeps,
+} from './records.ts';
 import type { EntryRow, GenerationRow } from './rows.ts';
 import { forgetSeedFailure, rememberSeedFailure } from './seed-repair.ts';
 import {
@@ -160,6 +170,23 @@ interface Writing {
 interface ProjectingEntry {
   readonly entry: EntryRow;
   readonly current: GenerationRow | undefined;
+  verifiedArtifacts?: ArtifactVerification[] | undefined;
+}
+
+/** Proof arrays and completion closures exist only when an actual body names a failure marker. */
+function verifyingRecords(deps: SettleDeps, entry: ProjectingEntry): RecordDeps {
+  return {
+    scopeId: deps.scopeId,
+    blobs: deps.blobs,
+    verifying(artifact) {
+      const proof = artifactVerification(deps.sql, artifact);
+      if (proof === undefined) return;
+      return () => {
+        const verified = (entry.verifiedArtifacts ??= []);
+        verified.push(proof);
+      };
+    },
+  };
 }
 
 /** A chunk of a page, and the bytes its records are reckoned to hold as they are built. */
@@ -214,9 +241,10 @@ function projectionChunk(
  */
 async function projectEntry(
   deps: SettleDeps,
-  { entry, current }: ProjectingEntry,
+  projecting: ProjectingEntry,
   writing: Writing,
 ): Promise<Uint8Array | undefined> {
+  const { entry, current } = projecting;
   const { retired, wanted } = writing;
   const data = entry.kind.startsWith(DATA_KIND_PREFIX);
   const key = data
@@ -226,12 +254,13 @@ async function projectEntry(
     await writeKey(() => deps.kv.delete(key));
     return undefined;
   }
+  const records = verifyingRecords(deps, projecting);
   if (data) {
-    const json = await dataRecordJson(deps, entry, current, writing.carried);
+    const json = await dataRecordJson(records, entry, current, writing.carried);
     await writeKey(() => deps.kv.put(key, json));
     return undefined;
   }
-  const bytes = await generationRecordBytes(deps, entry, current);
+  const bytes = await generationRecordBytes(records, entry, current);
   await writeKey(() => deps.kv.put(key, bytes));
   return wanted?.wants(entry.entry_id, bytes.byteLength) === true ? bytes : undefined;
 }
@@ -239,6 +268,7 @@ async function projectEntry(
 interface ProjectedEntry {
   readonly entryId: string;
   readonly kvRevision: number;
+  readonly verifiedArtifacts?: readonly ArtifactVerification[] | undefined;
 }
 
 /**
@@ -263,7 +293,11 @@ async function projectChunk(
       continue;
     }
     if (outcome.status === 'fulfilled') {
-      out.projected.push({ entryId: entry.entry_id, kvRevision: entry.record_revision });
+      out.projected.push({
+        entryId: entry.entry_id,
+        kvRevision: entry.record_revision,
+        verifiedArtifacts: chunk[index]?.verifiedArtifacts,
+      });
       if (outcome.value !== undefined) {
         out.records.set(entry.entry_id, { bytes: outcome.value, revision: entry.record_revision });
       }
@@ -381,8 +415,9 @@ function acknowledge(deps: SettleDeps, projected: readonly ProjectedEntry[]): Se
     for (const entry of projected) {
       if (markRecordWritten(deps.sql, entry.entryId, entry.kvRevision)) {
         forgetSeedFailure(deps.sql, entry.entryId);
+        forgetVerifiedArtifactFailures(deps.sql, entry.verifiedArtifacts);
         marked.add(entry.entryId);
-        acknowledged.push(entry);
+        acknowledged.push({ entryId: entry.entryId, kvRevision: entry.kvRevision });
       }
     }
     if (acknowledged.length === 0) {
