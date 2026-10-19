@@ -54,6 +54,7 @@ import { declaredGates } from './gates.ts';
 import { instrumentationOf, writeClientInstrumentation } from './instrumentation.ts';
 import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
+import { checkPageBodyRange, type UnshippedPrerenderBodies } from './page-bodies.ts';
 import { readProjectConfig } from './project-config.ts';
 import { projectDirOf } from './project-dir.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
@@ -201,6 +202,8 @@ async function onBuildComplete(
     basePath: ctx.config.basePath,
     rsc: ctx.routing.rsc,
     unshipped: options.unshippedOutputs ?? 'none',
+    unshippedBodies: options.unshippedPrerenderBodies,
+    entrypoints,
     // The host serves no segment of an edge-runtime page and the Function cannot render one, so
     // those stay shipped whatever the option says (`PrerenderCollection.edgeRuntimeRoutes`).
     edgeRuntimeRoutes: new Set(
@@ -559,6 +562,19 @@ export interface AdapterOptions {
    */
   readonly unshippedOutputs?: 'none' | 'prefetch-segments' | undefined;
   /**
+   * Opt in to leave completed Node App-page HTML and whole RSC bodies in the host's bundle
+   * storage when their individual byte lengths fall in this inclusive range. Every body reference
+   * and uploaded blob stays unchanged; small bodies, reusable shells, postponed state, error
+   * documents, Pages Router outputs and edge-runtime outputs remain in the Function.
+   *
+   * The default is unset: every page body is shipped. A host choosing this must provide
+   * `createBundleBlobReader` and set maxBytes to a size its reader can return. A Function falling
+   * back to an omitted body waits for that reader and fails if the exact body is unavailable.
+   * Edge delivery and shipped bodies do not make that read. This trades fallback latency for
+   * a smaller Function, and does not promise an improvement in request-time memory or TTFB.
+   */
+  readonly unshippedPrerenderBodies?: UnshippedPrerenderBodies | undefined;
+  /**
    * Names the host reads a project's configuration under besides this adapter's own, for a host
    * that once called that file something else. Looked for after `upwind.*` and before
    * `vercel.json` (`configFileOrder`); a build that simply stopped looking would read an empty
@@ -748,6 +764,7 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
  */
 export function createAdapter(options: AdapterOptions = {}): NextAdapter {
   checkSplitOptions(options.functions?.split);
+  checkPageBodyRange(options.unshippedPrerenderBodies);
   const edgeHosts = checkedEdgeInstrumentationModules(options.edgeInstrumentationModules);
   return {
     name: 'upwind',
