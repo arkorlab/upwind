@@ -269,9 +269,10 @@ function addSecondTag(f: Fixture): void {
 function queryDetails(spy: Mock<SqlStorage['exec']>) {
   return spy.mock.calls.map((call, index) => {
     const result = spy.mock.results[index];
+    const args: readonly unknown[] = call.slice(1);
     return {
       query: call[0],
-      args: call.slice(1),
+      args,
       columns: result?.type === 'return' ? result.value.columnNames : [],
     };
   });
@@ -315,7 +316,7 @@ describe('paged equal-version resource reconciliation', () => {
         f.tagId,
       );
       f.sql.exec(
-        `UPDATE generations SET condemned = '{"revision":3,"staleAt":0,"hardExpireAt":null}'
+        `UPDATE generations SET condemned = '{"revision":3,"staleAt":0,"hardExpireAt":0}'
         WHERE entry_id = ?`,
         f.entryIds[0] ?? 'missing',
       );
@@ -333,7 +334,7 @@ describe('paged equal-version resource reconciliation', () => {
   it('still queues already-condemned late seeds without a history event or revision advance', async () => {
     const result = await withEntries(2, async (f) => {
       f.sql.exec(
-        `UPDATE generations SET condemned = '{"revision":3,"staleAt":0,"hardExpireAt":null}'`,
+        `UPDATE generations SET condemned = '{"revision":3,"staleAt":0,"hardExpireAt":0}'`,
       );
       const before = snapshot(f).revision;
       const events: EventInput[] = [];
