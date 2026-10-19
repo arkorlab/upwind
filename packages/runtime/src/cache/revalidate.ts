@@ -157,17 +157,24 @@ function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefin
  * A page a shared shell stands for may also hold an entry of its own, rendered for its parameters
  * where a host asked for one (`CACHE_UPGRADE_HEADER`), which publishing the shared shell does not
  * replace. Once it is published, that entry is invalidated by the page's own tags, as for a page in
- * another Function — never by the shared identity, whose new generation is in place.
+ * another Function — never by the shared identity, whose new generation is in place. At each of its
+ * `spellings`: the one asked, which an entry of its own was made under — an escaped one, of a value
+ * that reads as the shell's placeholder, among them — and the name the build gives it.
  */
 async function invalidateOwnEntry(
   runtime: CacheRuntime,
   store: Store,
-  pathname: string,
+  spellings: readonly string[],
   shell: string,
 ): Promise<void> {
-  const own = pathTags(store, pathname).filter((tag) => tag.length <= MAX_TAG_LENGTH);
-  if (pathname !== shell && own.length > 0) {
-    await invalidateNow(runtime, own);
+  const own = new Set(
+    spellings
+      .filter((spelling) => spelling !== shell)
+      .flatMap((spelling) => pathTags(store, spelling))
+      .filter((tag) => tag.length <= MAX_TAG_LENGTH),
+  );
+  if (own.size > 0) {
+    await invalidateNow(runtime, [...own]);
   }
 }
 
@@ -251,6 +258,7 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     throw new Error(`revalidate: ${pathname} was not regenerated (${published.kind})`);
   }
   if (shared) {
-    await invalidateOwnEntry(context.runtime, store, pathname, descriptor.pathname);
+    const spellings = [normalizeRoutePathname(asked), pathname];
+    await invalidateOwnEntry(context.runtime, store, spellings, descriptor.pathname);
   }
 }

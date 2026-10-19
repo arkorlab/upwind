@@ -451,6 +451,17 @@ describe('manual revalidation of a shared terminal shell', () => {
     expect(regenerate).not.toHaveBeenCalled();
   });
 
+  it('invalidates the escaped spelling of a page that reads as the shell placeholder', async () => {
+    await revalidate(terminalDeployment(), '/prefix/b/%5Btwo%5D');
+
+    expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor.pathname).toBe(
+      '/prefix/b/[two]',
+    );
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/%5Btwo%5D`,
+    ]);
+  });
+
   it.each([
     ['an oversized tag of its own', `/prefix/${'b'.repeat(500)}/foo`, ['b'.repeat(500), 'c']],
     ['the shared shell named itself', '/prefix/b/[two]', ['b', 'c']],
