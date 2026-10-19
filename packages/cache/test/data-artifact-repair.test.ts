@@ -217,7 +217,7 @@ async function archiveBrokenSeed(given: Fixture) {
   return runInDurableObject(given.stub, (_instance, state) => {
     const { sql } = state.storage;
     const entry = findEntry(sql, entryId);
-    if (entry === undefined || entry.current_generation_id === null) {
+    if (entry?.current_generation_id === undefined || entry.current_generation_id === null) {
       throw new Error('the fixture needs a current seed generation');
     }
     sql.exec(
@@ -281,7 +281,9 @@ describe('a data upload replacing a known broken canonical artifact', () => {
       });
       expect(repaired.artifact.storage_ref).not.toBe(before.artifact.storage_ref);
       await expect(valueOf(given, 'fresh')).resolves.toStrictEqual(given.bytes);
+
       const nextValue = toBase64(new Uint8Array([1]));
+
       await expect(
         given.client.setData({
           ...requestFor(given, 'too-much', NOW),

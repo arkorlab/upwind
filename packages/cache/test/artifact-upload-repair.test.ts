@@ -6,6 +6,8 @@ import {
   kvGenerationKey,
   type OutputSnapshot,
   policyFromBuild,
+  r2BlobKey,
+  r2CachePrefix,
   tagIdFor,
 } from '@stayingupwind/core/cache';
 import { createId, decodeUtf8, encodeUtf8 } from '@stayingupwind/core/util';
@@ -305,18 +307,34 @@ async function reservedRepair(format: ReservationMarker) {
   await runInDurableObject(scope.stub, (_instance, state) => {
     const { sql } = state.storage;
     const { byteLength, storageRef, sha256 } = plan.artifact;
-    if (format === 'legacy') {
-      writeMeta(sql, `artifact_failure:${sha256}`, `${byteLength}:${storageRef}`);
-    } else if (format === 'invalid') {
-      writeMeta(sql, `artifact_failure:${sha256}`, '[not JSON');
-    } else if (format === 'elsewhere') {
-      writeMeta(
-        sql,
-        `artifact_failure:${sha256}`,
-        JSON.stringify([byteLength, '/elsewhere', 'fence']),
-      );
-    } else if (format === 'invalid-fence') {
-      writeMeta(sql, `artifact_failure:${sha256}`, JSON.stringify([byteLength, storageRef, null]));
+    switch (format) {
+      case 'legacy': {
+        writeMeta(sql, `artifact_failure:${sha256}`, `${byteLength}:${storageRef}`);
+        break;
+      }
+      case 'invalid': {
+        writeMeta(sql, `artifact_failure:${sha256}`, '[not JSON');
+        break;
+      }
+      case 'elsewhere': {
+        writeMeta(
+          sql,
+          `artifact_failure:${sha256}`,
+          JSON.stringify([byteLength, '/elsewhere', 'fence']),
+        );
+        break;
+      }
+      case 'invalid-fence': {
+        writeMeta(
+          sql,
+          `artifact_failure:${sha256}`,
+          JSON.stringify([byteLength, storageRef, null]),
+        );
+        break;
+      }
+      case 'current': {
+        break;
+      }
     }
   });
   await runInDurableObject(scope.stub, (_instance, state) => {
@@ -910,14 +928,23 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     await seedBatch(scope, plan);
     const restored = await stateFor(scope, plan);
     const started = await lease(scope, plan);
+    const head = vi.spyOn(env.ARTIFACTS, 'head');
     const put = vi.spyOn(env.ARTIFACTS, 'put');
     await upload(scope, plan, started, 'single');
     const committed = await scope.stub.commit(started.attemptId, requestFor(plan, started), NOW);
+    const ordinaryUpload = r2BlobKey(scope.scopeId, plan.artifact.sha256);
+    const prefix = r2CachePrefix(scope.scopeId);
 
     expect(before.marker).toBe(`${plan.bytes.byteLength}:${plan.artifact.storageRef}`);
     expect(restored).toMatchObject({ marker: undefined, bodyBytes: 0, artifact: { owned: 0 } });
     expect(committed).toMatchObject({ kind: 'published' });
-    expect(put).not.toHaveBeenCalled();
+    // A healthy borrowed location stays canonical; an absent ordinary upload copy is still stored.
+    expect(
+      head.mock.calls.map(([key]) => key).filter((key) => key.startsWith(prefix)),
+    ).toStrictEqual([ordinaryUpload]);
+    expect(put.mock.calls.filter(([key]) => key.startsWith(prefix))).toStrictEqual([
+      [ordinaryUpload, plan.bytes, { httpMetadata: { contentType: TYPE } }],
+    ]);
 
     await expect(bodyFor(scope, plan)).resolves.toBe(BODY);
 
@@ -986,7 +1013,10 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     });
 
     expect(remaining).toStrictEqual([{ key: `artifact_failure:${segment.sha256}` }]);
-    expect(get.mock.calls.map(([key]) => key)).toStrictEqual([plan.artifact.storageRef]);
+    // Other scopes can finish background projection while this scope's read is being observed.
+    expect(
+      get.mock.calls.map(([key]) => key).filter((key) => key.startsWith(`build/${scope.scopeId}/`)),
+    ).toStrictEqual([plan.artifact.storageRef]);
 
     await expect(bodyFor(scope, plan)).resolves.toBe(BODY);
   });
@@ -995,13 +1025,23 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     const { scope, plan } = await brokenSeed();
     const markers = await runInDurableObject(scope.stub, (_instance, state) => {
       const { sql } = state.storage;
+      const before = sql
+        .exec<{ value: string }>(
+          `SELECT value FROM meta WHERE key = ?`,
+          `artifact_failure:${plan.artifact.sha256}`,
+        )
+        .one().value;
       deleteArtifactRow(sql, plan.artifact.sha256);
       const kept = sql
-        .exec(`SELECT value FROM meta WHERE key = ?`, `artifact_failure:${plan.artifact.sha256}`)
+        .exec<{ value: string }>(
+          `SELECT value FROM meta WHERE key = ?`,
+          `artifact_failure:${plan.artifact.sha256}`,
+        )
         .toArray();
       sql.exec(`UPDATE artifacts SET refs = 0 WHERE sha256 = ?`, plan.artifact.sha256);
       deleteArtifactRow(sql, plan.artifact.sha256);
       return {
+        before,
         kept,
         remaining: sql
           .exec(`SELECT value FROM meta WHERE key = ?`, `artifact_failure:${plan.artifact.sha256}`)
@@ -1012,9 +1052,10 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       };
     });
 
-    expect(markers.kept).toStrictEqual([
-      { value: `${plan.bytes.byteLength}:${plan.artifact.storageRef}` },
-    ]);
+    expect(failureLocation(markers.before)).toBe(
+      `${plan.bytes.byteLength}:${plan.artifact.storageRef}`,
+    );
+    expect(markers.kept).toStrictEqual([{ value: markers.before }]);
     expect(markers.remaining).toStrictEqual([]);
     expect(markers.rows).toStrictEqual([]);
   });
