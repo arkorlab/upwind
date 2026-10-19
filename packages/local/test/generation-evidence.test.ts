@@ -68,9 +68,8 @@ function observed(
 }
 
 function heldPacket(entry: string, seq: number): { readonly pack: DecodedGenerationPack } {
-  const decoded = decodeGenerationPack(
-    new Uint8Array(packet(entry, seq, { 'x-render': String(seq) }, false)),
-  );
+  const bytes = packet(entry, seq, { 'x-render': String(seq) }, false);
+  const decoded = decodeGenerationPack(new Uint8Array(bytes));
   if (decoded.kind !== 'ok') throw new TypeError('the test record must decode');
   return { pack: decoded.pack };
 }
