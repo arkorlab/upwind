@@ -9,7 +9,7 @@ import {
   type ProjectManifest,
   type RouteEntry,
 } from '@stayingupwind/core/manifest';
-import { TtlCache } from '@stayingupwind/core/util';
+import { TtlCache, withDeadline } from '@stayingupwind/core/util';
 import { runtimeCacheOf } from '@stayingupwind/host/delivery';
 
 import { type EdgeMemory, memberEntryKey } from '../memory/caches.ts';
@@ -27,27 +27,12 @@ import {
 const MAX_RECENT = 1024;
 const MAX_KEY_CHARS = 2048;
 const READ_MS = 1000;
-const MISSING_READ_MS = 2500;
-const FIRST_FOLLOW_MS = 250;
-const MISSING_DELAYS_MS = [0, FIRST_FOLLOW_MS, READ_MS] as const;
 const MAX_RECORD_MIB = 4;
 const KIB = 1024;
 const MAX_RECORD_BYTES = MAX_RECORD_MIB * KIB * KIB;
 
-interface RecentRead {
-  readonly startedAt: number;
-  readonly following: boolean;
-}
-
-interface ActiveRead {
-  readonly task: Promise<void>;
-  readonly promote: () => void;
-}
-
 interface Reads {
-  readonly recent: TtlCache<string, RecentRead>;
-  /** Only reads which own one of the shared background slots can be present. */
-  readonly active: Map<string, ActiveRead>;
+  readonly recent: TtlCache<string, number>;
 }
 
 /** The isolate keeps the cadence when a request's runtime wrapper is let go. */
@@ -59,7 +44,7 @@ export interface PartialFallbackRead {
   readonly pathname: string;
   readonly key: GenerationKey | undefined;
   readonly load: GenerationLoad;
-  readonly refresh: (followMissing?: boolean) => void;
+  readonly refresh: () => void;
 }
 
 interface Target {
@@ -68,21 +53,13 @@ interface Target {
   readonly pathname: string;
   readonly memoKey: string;
   active: boolean;
-  following: boolean;
 }
 
-/** Read again across async boundaries, where the deadline may have changed the target. */
-function isActive(target: Target): boolean {
-  return target.active;
-}
-
-/** An unavailable cold record can be retried; every nonempty result ends the watch. */
-async function readCurrent(edge: EdgeContext, target: Target): Promise<boolean> {
+async function readCurrent(edge: EdgeContext, target: Target): Promise<void> {
   // No derivation or authority work runs on the synchronous shell delivery path.
   await new Promise<void>((resolve) => {
     queueMicrotask(resolve);
   });
-  if (!isActive(target)) return false;
   let entryId = edge.runtime.memory.memberEntries.get(target.memoKey);
   if (entryId === undefined) {
     entryId = (
@@ -92,7 +69,7 @@ async function readCurrent(edge: EdgeContext, target: Target): Promise<boolean> 
         pathname: target.pathname,
       })
     ).entryId;
-    if (!isActive(target)) return false;
+    if (!target.active) return;
     edge.runtime.memory.memberEntries.set(target.memoKey, entryId);
   }
   const key = { scopeId: target.scopeId, entryId };
@@ -106,9 +83,8 @@ async function readCurrent(edge: EdgeContext, target: Target): Promise<boolean> 
     key.entryId,
     heldAtStart?.pack.header.revision ?? 0,
   );
-  if (!isActive(target)) return false;
-  if (bytes === undefined) return true;
-  if (bytes.byteLength > MAX_RECORD_BYTES) return false;
+  if (bytes === undefined || !target.active) return;
+  if (bytes.byteLength > MAX_RECORD_BYTES) return;
   const decoded = decodeGenerationPack(new Uint8Array(bytes));
   if (
     decoded.kind !== 'ok' ||
@@ -116,7 +92,7 @@ async function readCurrent(edge: EdgeContext, target: Target): Promise<boolean> 
     decoded.pack.header.route !== target.route ||
     decoded.pack.header.pathname !== target.pathname
   )
-    return false;
+    return;
   const read: Read = {
     key,
     recordKey,
@@ -132,139 +108,39 @@ async function readCurrent(edge: EdgeContext, target: Target): Promise<boolean> 
     byteLength: bytes.byteLength,
     wanted: () => target.active,
   });
-  return false;
 }
 
-function completionIsHeld(edge: EdgeContext, target: Target): boolean {
-  const entryId = edge.runtime.memory.memberEntries.get(target.memoKey);
-  return (
-    entryId !== undefined &&
-    edge.runtime.memory.generations.get(kvGenerationKey(target.scopeId, entryId)) !== undefined
-  );
-}
-
-async function waitForRetry(delayMs: number, stopped: Promise<void>): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      stopped,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, delayMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
-
-/** Keep the claim while sleeping or awaiting an RPC, including one whose caller timed out. */
-function activeRead(
-  edge: EdgeContext,
-  target: Target,
-  release: () => void,
-  onPromote: () => void,
-): ActiveRead {
-  const stopped = Promise.withResolvers<never>();
-  const expire = () => {
-    target.active = false;
-    stopped.reject(new Error('partial fallback record read deadline'));
-  };
-  let deadline: ReturnType<typeof setTimeout> | undefined;
-  let reading: ReturnType<typeof setTimeout> | undefined;
-  const promote = () => {
-    if (target.following || !isActive(target)) return;
-    target.following = true;
-    // Promotion starts the watch once, without extending an in-flight read's own deadline.
-    deadline = setTimeout(expire, MISSING_READ_MS);
-    onPromote();
-  };
-  const operation = (async () => {
-    try {
-      for (const delayMs of MISSING_DELAYS_MS) {
-        if (delayMs !== 0) {
-          if (!target.following) return;
-          await waitForRetry(delayMs, stopped.promise);
-          if (!target.active || completionIsHeld(edge, target)) return;
-        }
-        reading = setTimeout(expire, READ_MS);
-        try {
-          if (!(await readCurrent(edge, target))) return;
-        } finally {
-          clearTimeout(reading);
-          reading = undefined;
-        }
-      }
-    } finally {
-      target.active = false;
-      release();
-    }
-  })();
-  const task = (async () => {
-    try {
-      await Promise.race([operation, stopped.promise]);
-    } finally {
-      target.active = false;
-      if (deadline !== undefined) clearTimeout(deadline);
-      if (reading !== undefined) clearTimeout(reading);
-    }
-  })();
-  return { task, promote };
-}
-
-function refresh(
-  edge: EdgeContext,
-  named: Omit<Target, 'active' | 'following'>,
-  cadenceMs: number,
-  followMissing: boolean,
-): void {
+function refresh(edge: EdgeContext, named: Omit<Target, 'active'>, cadenceMs: number): void {
   let state = reads.get(edge.runtime.memory);
   if (state === undefined) {
-    state = {
-      recent: new TtlCache(cadenceMs, MAX_RECENT, edge.runtime.now),
-      active: new Map(),
-    };
+    state = { recent: new TtlCache(cadenceMs, MAX_RECENT, edge.runtime.now) };
     reads.set(edge.runtime.memory, state);
   }
-  const pending = state.active.get(named.memoKey);
-  if (pending !== undefined) {
-    if (followMissing) pending.promote();
-    return;
-  }
   const now = edge.runtime.now();
-  const recent = state.recent.get(named.memoKey);
-  if (
-    recent !== undefined &&
-    now - recent.startedAt < cadenceMs &&
-    (!followMissing || recent.following)
-  )
-    return;
+  const started = state.recent.get(named.memoKey);
+  if (started !== undefined && now - started < cadenceMs) return;
   const release = claimBackgroundRecord(edge.runtime, named.memoKey);
   if (release === undefined) return;
-  state.recent.set(named.memoKey, { startedAt: now, following: false }, cadenceMs);
-  const target: Target = { ...named, active: true, following: false };
-  const active = state.active;
-  const remembered = state.recent;
-  const current = activeRead(
-    edge,
-    target,
-    () => {
-      active.delete(named.memoKey);
+  state.recent.set(named.memoKey, now, cadenceMs);
+  const target: Target = { ...named, active: true };
+  const operation = (async () => {
+    try {
+      await readCurrent(edge, target);
+    } finally {
       release();
-    },
-    () => {
-      remembered.set(named.memoKey, { startedAt: edge.runtime.now(), following: true }, cadenceMs);
-    },
-  );
-  active.set(named.memoKey, current);
-  if (followMissing) current.promote();
+    }
+  })();
   edge.ctx.waitUntil(
     (async () => {
       try {
-        await current.task;
+        await withDeadline(operation, READ_MS, 'partial fallback record read');
       } catch (error) {
         logWarn('partial fallback record refresh failed', {
           detail: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        // A timed-out RPC retains its bounded slot until it settles, but cannot adopt late bytes.
+        target.active = false;
       }
     })(),
   );
@@ -316,7 +192,7 @@ export function partialFallbackInHand(
       held === undefined
         ? { kind: 'none', lookupMs: 0 }
         : { kind: 'generation', pack: held.pack, source: 'memory', lookupMs: 0 },
-    refresh: (followMissing = false) => {
+    refresh: () => {
       const pack = held?.pack;
       const fresh =
         pack !== undefined &&
@@ -331,7 +207,6 @@ export function partialFallbackInHand(
         edge,
         { scopeId, route: upgrade.route, pathname: completed, memoKey },
         fresh ? settings.holdMs : Math.min(settings.holdMs, READ_MS),
-        followMissing && held === undefined,
       );
     },
   };
