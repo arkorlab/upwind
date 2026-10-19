@@ -49,9 +49,34 @@ interface Held {
  * the policy it sets permitting the edge's recovery script, where it sets one that would not.
  */
 function forDocuments(rule: HeaderRule, recovery: string): HeaderRule {
-  const widened = allowRecoveryScript(rule.headers, recovery);
-  const changed = Object.entries(rule.headers).some(([name, value]) => widened[name] !== value);
-  return changed ? { ...rule, documentHeaders: widened } : rule;
+  let widened = allowRecoveryScript(rule.headers, recovery);
+  let recoverySources: Record<string, string> | undefined;
+  let changed = false;
+  for (const [name, value] of Object.entries(rule.headers)) {
+    const captured =
+      hasCapture(name) || (name.toLowerCase() === 'content-security-policy' && hasCapture(value));
+    if (captured) {
+      recoverySources ??= {};
+      recoverySources[name] = recovery;
+      if (widened[name] !== value) {
+        widened = { ...widened, [name]: value };
+      }
+    } else {
+      changed ||= widened[name] !== value;
+    }
+  }
+  return changed || recoverySources !== undefined
+    ? {
+        ...rule,
+        ...(changed && { documentHeaders: widened }),
+        ...(recoverySources !== undefined && { documentRecoverySources: recoverySources }),
+      }
+    : rule;
+}
+
+/** Compiled references, or the named references older bundles still carry. */
+function hasCapture(value: string): boolean {
+  return value.includes('$') || /:[A-Za-z_]\w*/u.test(value);
 }
 
 /** `value` as JSON whose objects name their keys in one order, whatever order they were built in. */

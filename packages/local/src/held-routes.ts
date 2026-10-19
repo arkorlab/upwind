@@ -1,17 +1,24 @@
 import {
   type BlobRef,
   cacheablePrerenders,
+  type DeploymentBundle,
   edgeServablePrerenders,
   functionOfPrerender,
   headerRulesOf,
   placedRoutes,
   type Prerender,
+  prerenderResponseHeaders,
   PRIMARY_FUNCTION,
   resumablePrerenders,
   routePathnameOf,
   shellHeaders,
 } from '@stayingupwind/core/bundle';
-import type { RouteCache, RouteEntry, RouteSegment } from '@stayingupwind/core/manifest';
+import type {
+  HeaderRule,
+  RouteCache,
+  RouteEntry,
+  RouteSegment,
+} from '@stayingupwind/core/manifest';
 import { allowRecoveryScript, sandboxBlocksRecovery } from '@stayingupwind/core/request';
 import { compareCodeUnits } from '@stayingupwind/core/util';
 import { bundleGeneratedAtMs, seedRouteFor } from '@stayingupwind/host/bundle';
@@ -217,25 +224,69 @@ function middlewareCoversRoute(stack: CheckedStack, pathname: string): boolean {
 const POLICY_HEADERS: ReadonlySet<string> = new Set(['content-security-policy', 'referrer-policy']);
 
 /**
- * The headers of each rule the edge judges on each request — one with a condition — that sets a
+ * Each rule that can affect the policies of some request the route answers, as a deploy judges it:
+ * all possibly policy-setting rules for a class, and matching conditional rules for a concrete
+ * page, whose unconditional rules have already been folded. A rule that sets a
  * policy a hint answers to and may hold for a request of the route, as a deploy judges it: one whose
  * pattern names the route, and any at all for a class, whose members are any pathname. Named as a
  * route's own headers are, in lowercase.
  */
-function policyRulesOver(stack: CheckedStack, pathname: string): Record<string, string>[] {
-  return headerRulesOf(stack.bundle).flatMap((rule) => {
-    const lowercase = Object.fromEntries(
-      Object.entries(rule.headers).map(([name, value]) => [name.toLowerCase(), value]),
+function policyRulesOver(stack: CheckedStack, pathname: string): HeaderRule[] {
+  return headerRulesOf(stack.bundle).filter((rule) => {
+    const policy = Object.keys(rule.headers).some(
+      (name) => POLICY_HEADERS.has(name.toLowerCase()) || hasCapture(name),
     );
-    const conditional = rule.has !== undefined || rule.missing !== undefined;
-    const covers =
-      pathname.includes('[') ||
-      // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(rule.sourceRegex, 'i').test(pathname);
-    return conditional && covers && Object.keys(lowercase).some((name) => POLICY_HEADERS.has(name))
-      ? [lowercase]
-      : [];
+    if (!policy) {
+      return false;
+    }
+    // A pathname-only rule can cover some member of a class, although not its template.
+    if (pathname.includes('[')) {
+      return true;
+    }
+    if (rule.has === undefined && rule.missing === undefined) {
+      return false;
+    }
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+    return new RegExp(rule.sourceRegex, 'i').test(pathname);
   });
+}
+
+/** A path reference whose eventual policy or header name cannot be known from a class template. */
+function hasCapture(value: string): boolean {
+  return value.includes('$') || /:[A-Za-z_]\w*/u.test(value);
+}
+
+/** A rule's policy on a concrete page, or unprovable for every member of a class. */
+function possiblePolicyHeaders(
+  bundle: DeploymentBundle,
+  rule: HeaderRule,
+  prerender: Prerender,
+): Record<string, string> | undefined {
+  if (prerender.pathname.includes('[')) {
+    const unresolved = Object.entries(rule.headers).some(
+      ([name, value]) =>
+        hasCapture(name) || (POLICY_HEADERS.has(name.toLowerCase()) && hasCapture(value)),
+    );
+    return unresolved
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(rule.headers).map(([name, value]) => [name.toLowerCase(), value]),
+        );
+  }
+  return Object.fromEntries(
+    prerenderResponseHeaders(
+      {
+        ...bundle,
+        routing: {
+          ...bundle.routing,
+          beforeMiddleware: [{ sourceRegex: rule.sourceRegex, headers: rule.headers }],
+          afterFiles: [],
+          onMatch: [],
+        },
+      },
+      { ...prerender, initialHeaders: {} },
+    ),
+  );
 }
 
 /**
@@ -247,7 +298,11 @@ function policyRulesOver(stack: CheckedStack, pathname: string): Record<string, 
 function preloadsOf(
   stack: CheckedStack,
   shell: BlobRef,
-  route: { readonly pathname: string; readonly headers: Readonly<Record<string, string>> },
+  route: {
+    readonly pathname: string;
+    readonly headers: Readonly<Record<string, string>>;
+    readonly prerender: Prerender;
+  },
 ): string[] {
   const bytes = blobBytesOf(stack, shell.sha256);
   const named =
@@ -256,7 +311,11 @@ function preloadsOf(
       : scanPreloadLinks(bytes);
   let kept = withoutForbidden(withoutAdvertised(named, route.headers['link']), route.headers);
   for (const rule of policyRulesOver(stack, route.pathname)) {
-    kept = withoutForbidden(kept, { ...route.headers, ...rule });
+    const possible = possiblePolicyHeaders(stack.bundle, rule, route.prerender);
+    if (possible === undefined) {
+      return [];
+    }
+    kept = withoutForbidden(kept, { ...route.headers, ...possible });
   }
   return kept;
 }
@@ -280,7 +339,7 @@ function deployedAs(
     id: prerender.id,
     headers,
     bypassFor: prerender.bypassFor,
-    preloads: preloadsOf(stack, prerender.body, { pathname: named.pathname, headers }),
+    preloads: preloadsOf(stack, prerender.body, { pathname: named.pathname, headers, prerender }),
     cache,
   };
 }

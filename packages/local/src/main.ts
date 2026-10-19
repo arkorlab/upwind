@@ -166,6 +166,7 @@ async function main(): Promise<number> {
     return 2;
   }
   if (
+    positionals.length !== 1 ||
     port === null ||
     hostname === null ||
     values.dir === undefined ||

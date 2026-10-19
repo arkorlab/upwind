@@ -11,6 +11,7 @@ import {
   unprovedHolding,
 } from './cookie-jar.ts';
 import type { Reading } from './reading.ts';
+import { stateTreeUnproved } from './router-state.ts';
 
 /**
  * What a browser's fetch does with the redirects an answer makes (`redirectsFrom`): follows each to
@@ -259,10 +260,15 @@ type Onward =
  * fails (`left`) — or it failed past as many redirects as it follows.
  */
 function onwardFrom(
-  at: { readonly answered: Answered; readonly url: URL; readonly replay: string | undefined },
+  at: {
+    readonly answered: Answered;
+    readonly url: URL;
+    readonly replay: string | undefined;
+    readonly fetchedRsc: string | null;
+  },
   counted: Readonly<Counted>,
 ): Onward {
-  const { answered, url, replay } = at;
+  const { answered, url, replay, fetchedRsc } = at;
   const { location } = answered;
   if (location !== undefined) {
     const next = URL.canParse(location, url) ? new URL(location, url) : undefined;
@@ -277,7 +283,7 @@ function onwardFrom(
     replay !== undefined &&
     counted.hops > 0 &&
     counted.replays < MAX_REPLAYS &&
-    url.searchParams.get(RSC_CACHE_BUSTING_QUERY) !== replay;
+    url.searchParams.get(RSC_CACHE_BUSTING_QUERY) !== fetchedRsc;
   return replays ? { kind: 'replay', url: withBusting(url, replay) } : { kind: 'end' };
 }
 
@@ -364,6 +370,7 @@ export async function redirectsFrom(
     readonly url: URL;
     readonly headers: Readonly<Record<string, string>>;
     readonly jar: CookieJar;
+    /** The freshly computed hash to append, distinct from the URL's first `_rsc` value. */
     readonly replay?: string | undefined;
     /** Whether another site began the navigation the redirects are of (`cookieFor`). */
     readonly crossSite?: boolean | undefined;
@@ -379,17 +386,22 @@ export async function redirectsFrom(
 ): Promise<Followed> {
   const steps: Step[] = [];
   let { answered, url, headers } = from;
+  // Compare each browser fetch with its response; the computed hash to append stays separate.
+  let fetchedRsc = from.replay === undefined ? null : url.searchParams.get(RSC_CACHE_BUSTING_QUERY);
   let jar = storedAfter(from.jar, answered.changes, url);
   const counted: Counted = { hops: 0, replays: 0 };
   // The referrer policy each redirect leaves the next request under: the page's, where none set one.
   let policy = answered.referrerPolicy;
   for (;;) {
-    const onward = onwardFrom({ answered, url, replay: from.replay }, counted);
+    const onward = onwardFrom({ answered, url, replay: from.replay, fetchedRsc }, counted);
     if (onward.kind !== 'hop' && onward.kind !== 'replay') {
       const at = { steps, landed: { url, headers }, last: answered, page: answered.page };
       return followedTo(onward, at);
     }
     countOn(counted, onward.kind);
+    if (onward.kind === 'replay') {
+      fetchedRsc = onward.url.searchParams.get(RSC_CACHE_BUSTING_QUERY);
+    }
     // A fetch of the router's own goes under its page's policy again.
     policy = onward.kind === 'replay' ? undefined : policy;
     const next = onward.url;
@@ -402,6 +414,10 @@ export async function redirectsFrom(
       policy === undefined ? from.headers : referredUnder(from.headers, policy, next);
     const cookie = cookieFor(jar, next, { crossSite: from.crossSite === true });
     headers = cookieOn(uncookied(referred), cookie);
+    const unproved = stateTreeUnproved(stack, next, headers);
+    if (unproved !== undefined) {
+      return { steps, failure: `redirected to ${next.pathname}, ${unproved}` };
+    }
     const asked = { url: next, headers, method: from.method, whole: from.whole };
     const reply = await hopAnswered(stack, asked, known);
     if (typeof reply === 'string') {

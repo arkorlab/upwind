@@ -285,7 +285,7 @@ export interface SiteNames {
 /**
  * The names the site goes by (`SiteNames`), each origin as a URL writes it — `https://localhost:443`
  * as `https://localhost`: those of the edge's socket, and each hostname a check names it by
- * (`StackOptions.hostnames`), as a request for the site names it over HTTPS (`siteOf` in
+ * (`StackOptions.hostnames`), as requests for the site name it over HTTP and HTTPS (`siteOf` in
  * `check.ts`) — `example.com:443` as `example.com`.
  */
 export function siteNamesOf(socket: Loopback, hostnames: readonly string[]): SiteNames {
@@ -300,6 +300,7 @@ export function siteNamesOf(socket: Loopback, hostnames: readonly string[]): Sit
       ['http', 'https'].map((scheme) => new URL(`${scheme}://${name}:${port}/`).origin),
     ),
     ...aliases.map((alias) => alias.origin),
+    ...hostnames.map((hostname) => new URL(`http://${hostname}/`).origin),
   ];
   return {
     hostnames: [...served, ...aliases.map((alias) => alias.hostname)].join(','),

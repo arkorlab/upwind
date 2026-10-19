@@ -29,7 +29,7 @@ import { REFERER } from './part-flows.ts';
 import type { Part, PrefetchKind } from './part-marks.ts';
 import { ACCEPT_ENCODING } from './part-verdicts.ts';
 import { type Step, withBusting } from './redirects.ts';
-import { stateTreeOf, stateTreeUnproved } from './router-state.ts';
+import { stateTreeOf } from './router-state.ts';
 
 /**
  * A route's parts, asked for apart from its document as the client router asks for each (`checkRoutes`):
@@ -444,14 +444,11 @@ export async function partsOf(
       [NEXT_ROUTER_STATE_TREE_HEADER]: stateTree,
       [NEXT_URL_HEADER]: origin.path,
     };
-    // Proved by none where what tells requests apart sees the state they are asked from.
-    const unproved = stateTreeUnproved(stack, page, navigated);
     const whole = {
       built: payload,
       builtOn: builtOnRoute(built, (on) => built.payloads.get(on)),
       route: asked.route,
       exact: asked.exact,
-      ...(unproved !== undefined && { unproved }),
     };
     parts.push(
       // As a navigation to the page asks for it, from the router state of the page it is on.

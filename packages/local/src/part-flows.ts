@@ -34,6 +34,7 @@ import {
   type Step,
   stepsApplied,
 } from './redirects.ts';
+import { stateTreeUnproved } from './router-state.ts';
 
 /**
  * A page's parts asked for as a browser's router asks for them, one after another (`partsFailure`):
@@ -180,8 +181,10 @@ async function judgedAnswer(
   part: Part,
   answered: AnsweredAsks,
 ): Promise<Answered | string> {
-  if (part.unproved !== undefined) {
-    return `${part.what}, ${part.unproved}`;
+  // Every flow and redirect supplies its own cookies and URL before a known answer is reused.
+  const unproved = part.unproved ?? stateTreeUnproved(stack, part.url, part.headers);
+  if (unproved !== undefined) {
+    return `${part.what}, ${unproved}`;
   }
   const key = askKey(part.url, part.headers);
   const known = answered.judged.get(key);
@@ -336,8 +339,11 @@ async function followedFailure(
   // A router's request asked again where Next.js's router asks it again (`createFetch`) — not a
   // page's props, which the Pages Router fetches as it is.
   const followedAs = { ...part.headers, [ACCEPT_ENCODING]: part.browserCodings ?? BROWSER_CODINGS };
+  // Next appends the computed hash last, retaining earlier bare or encoded `_rsc` keys.
   const replay =
-    part.kind === 'data' ? undefined : (part.url.searchParams.get(RSC_CACHE_BUSTING_QUERY) ?? '');
+    part.kind === 'data'
+      ? undefined
+      : (part.url.searchParams.getAll(RSC_CACHE_BUSTING_QUERY).at(-1) ?? '');
   // Each answer on the way read whole, that the one the fetch lands on is held to what the check
   // reads asking it again.
   const followed = await redirectsFrom(

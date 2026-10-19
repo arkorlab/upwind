@@ -51,6 +51,11 @@ import { recoveryScriptCspSource } from '@stayingupwind/host/splice';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { type CheckResult, checkStack } from '../src/check.ts';
+import { NO_COOKIE_CHANGES } from '../src/cookie-jar.ts';
+import { flowFailure } from '../src/part-flows.ts';
+import type { Part } from '../src/part-marks.ts';
+import { originAt, partsOf } from '../src/parts.ts';
+import { redirectsFrom } from '../src/redirects.ts';
 import type { CspNonceSetting, LocalStack } from '../src/stack.ts';
 import type { Regeneration } from '../src/workers/protocol.ts';
 
@@ -102,6 +107,8 @@ const PART_VARY =
 const NOT_FOUND = '<!doctype html><html><body>Not here</body></html>';
 
 interface Answer {
+  /** A router answer whose redirects depend on the query exactly as sent. */
+  readonly forSearch?: (search: string) => Answer;
   readonly status?: number;
   readonly headers: OutgoingHttpHeaders;
   readonly body: string;
@@ -177,6 +184,35 @@ interface Answer {
   readonly layeredRendering?: string;
   /** Whether a document asked for in brotli goes in two layers of it to any agent, not Chrome's alone. */
   readonly layeredForAll?: boolean;
+}
+
+/** The real router's one tree request, rather than a handwritten hash or part. */
+function treePart(parts: readonly Part[]): Part {
+  const tree = parts.find((part) => part.kind === 'segment');
+  if (tree === undefined) {
+    throw new Error('the build wrote no tree segment');
+  }
+  return tree;
+}
+
+/** A target whose correct router hash is required for a valid part response. */
+function requiringHash(seen: string[], hash: string | undefined): (search: string) => Answer {
+  return (search) => {
+    seen.push(search);
+    const answer = segmentAnswer('login tree');
+    return new URLSearchParams(search).get('_rsc') === hash
+      ? answer
+      : { ...answer, headers: { ...answer.headers, 'content-type': TEXT } };
+  };
+}
+
+/** A target that canonically drops the appended duplicate while keeping the original bare key. */
+function keepingBare(seen: string[], redirect: Answer): (search: string) => Answer {
+  return (search) => {
+    seen.push(search);
+    const duplicated = new URLSearchParams(search).getAll('_rsc').length > 1;
+    return duplicated ? redirect : segmentAnswer('login tree');
+  };
 }
 
 /** What the edge answers each pathname with, written by each test. */
@@ -978,6 +1014,9 @@ function partAskedFor(
     (typeof from === 'string' ? partAnswers.get(`${key}|from=${from}`) : undefined) ??
     partAnswers.get(`${key}|${coding}`) ??
     partAnswers.get(key);
+  if (answer?.forSearch !== undefined) {
+    return answer.forSearch(search);
+  }
   if (answer?.unbusted !== undefined && !new URLSearchParams(search).has('_rsc')) {
     return answer.unbusted;
   }
@@ -5954,6 +5993,18 @@ describe('what the check makes of the middleware', () => {
       expect(unmarked).toStrictEqual({ checked: 1, failures: [], skipped: [] });
     });
 
+    it.each(SHARED_CACHE_CONTROL_HEADERS)(
+      'drops middleware %s from expected composed document headers',
+      async (name) => {
+        const routes = [await routeOf('/', FRONT)];
+        decisions.set('/', { 'x-middleware-next': '1', [name]: 'public, max-age=60' });
+        answers.set('/', documentAnswer(FRONT, 'mw=hit;route=/'));
+        const result = await checkStack(stackOf(routes, {}));
+
+        expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      },
+    );
+
     it('fails where it does not carry a header its route was recorded with', async () => {
       const routes = [
         await routeOf('/', FRONT, { headers: { 'content-security-policy': "default-src 'self'" } }),
@@ -10886,6 +10937,108 @@ describe('what the check makes of the middleware', () => {
             'its prefetch segment /_tree, redirected to /login, answered as text/plain, not text/x-component',
         },
       ]);
+    });
+
+    it.each(['_rsc', '%5Frsc=old'])(
+      'replays the computed router hash past an earlier %s key without normalizing its query',
+      async (query) => {
+        const front = await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } });
+        const login = await routeOf('/login', finished, {
+          complete: true,
+          segments: { '/_tree': 'login tree' },
+        });
+        const local = stackOf([front, login], {});
+        const stack = { ...local, site: local.url };
+        const page = new URL(`/?${query}&name=space%20here`, stack.site);
+        const parts = await partsOf(
+          stack,
+          {
+            key: '/',
+            route: front,
+            requested: page.pathname + page.search,
+            headers: {},
+            exact: true,
+          },
+          { browser: {}, origin: originAt(stack, page, '') },
+        );
+        const tree = treePart(parts);
+        const hash = tree.url.searchParams.getAll('_rsc').at(-1);
+        const seen: string[] = [];
+        partAnswers.set('/|/_tree', {
+          status: 307,
+          headers: {
+            location: '/login?name=space%20here',
+            'x-arkor-edge': 'passthrough;reason=middleware;mw=hit',
+          },
+          body: '',
+        });
+        partAnswers.set('/login|/_tree', {
+          ...segmentAnswer('login tree'),
+          forSearch: requiringHash(seen, hash),
+        });
+        const failure = await flowFailure(
+          stack,
+          [tree],
+          { jar: [], referred: 'none', as: '' },
+          { judged: new Map(), followed: new Map() },
+        );
+
+        expect(tree.kind).toBe('segment');
+        expect(hash).toMatch(/^[\w-]+$/u);
+        expect(tree.url.search).toContain(`?${query}&name=space%20here&_rsc=`);
+        expect(failure).toBeUndefined();
+        expect(seen).toContain(`?name=space%20here&_rsc=${hash}`);
+        expect(seen).not.toContain('?name=space%20here&_rsc');
+        expect(seen).not.toContain('?name=space%20here&_rsc=old');
+      },
+    );
+
+    it('stops replay after a redirected fetch keeps its first bare _rsc value', async () => {
+      const front = await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } });
+      const login = await routeOf('/login', finished, {
+        complete: true,
+        segments: { '/_tree': 'login tree' },
+      });
+      const local = stackOf([front, login], {});
+      const stack = { ...local, site: local.url };
+      const page = new URL('/', stack.site);
+      const parts = await partsOf(
+        stack,
+        { key: '/', route: front, requested: '/', headers: {}, exact: true },
+        { browser: {}, origin: originAt(stack, page, '') },
+      );
+      const tree = treePart(parts);
+      const seen: string[] = [];
+      const location = '/login?_rsc&name=space%20here';
+      const redirect = {
+        status: 307,
+        headers: { location, 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' },
+        body: '',
+      };
+      partAnswers.set('/|/_tree', redirect);
+      partAnswers.set('/login|/_tree', {
+        ...segmentAnswer('login tree'),
+        forSearch: keepingBare(seen, redirect),
+      });
+      const followed = await redirectsFrom(
+        stack,
+        {
+          answered: { changes: NO_COOKIE_CHANGES, account: '', page: false, location },
+          url: tree.url,
+          headers: tree.headers,
+          jar: [],
+          replay: tree.url.searchParams.get('_rsc') ?? '',
+          whole: true,
+        },
+        new Map(),
+      );
+
+      expect(tree.kind).toBe('segment');
+      expect(followed.failure).toBeUndefined();
+      expect(followed.steps).toHaveLength(3);
+      expect(followed.landed?.url.search).toBe('?_rsc&name=space%20here');
+      expect(seen).toHaveLength(2);
+      expect(seen[1]).toMatch(/^\?_rsc&name=space%20here&_rsc=[\w-]+$/u);
     });
 
     it("fails where a part's redirects go on past as many as a browser's fetch follows", async () => {

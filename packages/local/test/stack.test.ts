@@ -221,6 +221,8 @@ describe("the names a stack's site goes by", () => {
         'https://[::1]:8787',
         'https://example.com',
         'https://alias.example:8443',
+        'http://example.com:443',
+        'http://alias.example:8443',
       ].join(','),
     });
   });
@@ -261,6 +263,7 @@ describe('a local stack', () => {
         ARKOR_RESOURCE_CHANGES: 'the application’s as well',
       },
       storage: { kv: ['APP_KV'] },
+      hostnames: ['alias.invalid'],
     });
   }, START_MS);
 
@@ -351,6 +354,19 @@ describe('a local stack', () => {
     await expect(response.json()).resolves.toMatchObject({
       status: 200,
       echoed: { url: `https://${stack.url.host}/echo?from=self`, protocol: 'https' },
+    });
+  });
+
+  it('keeps a Function HTTP self-fetch under a configured alias on its own edge', async () => {
+    const stack = started();
+    const response = await fetch(new URL('/self', stack.url), {
+      headers: { host: 'alias.invalid' },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: 200,
+      echoed: { url: 'http://alias.invalid/echo?from=self', protocol: 'http' },
     });
   });
 

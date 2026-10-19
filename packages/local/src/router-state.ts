@@ -32,8 +32,8 @@ export function stateTreeOf(path: string): string {
 /**
  * Whether a condition asks of the router state a request says, by a pattern of its value: of its
  * header, or of `_rsc`, the digest the client router names the request by, of that header among
- * others (`computeRscCacheBustingParam`) — not of either being there at all, which every request of
- * the router's is, the check's as a browser's.
+ * others (`computeRscCacheBustingParam`) — not of mere presence, which the actual request's
+ * headers and URL settle, including a redirect before the router replays its missing digest.
  */
 function asksOfRouterState(condition: RouteHas): boolean {
   if (condition.value === undefined) {
@@ -104,7 +104,8 @@ const UNPROVED_STATE =
 
 /**
  * Why no request proves a payload asked with `headers` at `url` from the router state the check
- * builds (`stateTreeOf`), in a verdict's words — where anything that tells requests apart sees it: a
+ * builds (`stateTreeOf`), in a verdict's words, for the actual flow headers and URL, after cookies
+ * and redirect headers are applied — where anything that tells requests apart sees it: a
  * browser sends the tree of the page it goes to, marked where its router holds no data for a segment
  * (`createDynamicRequestTree`), which turns on what it has cached and no build records; so no tree
  * the check builds stands for a browser's where a rule of `next.config`, or a matcher of the
@@ -118,12 +119,11 @@ export function stateTreeUnproved(
   url: URL,
   headers: Readonly<Record<string, string>>,
 ): string | undefined {
-  const { manifest } = stack;
-  const asked = new URL(url);
-  // parts.ts asks this before bustedFor adds the digest. A navigation carrying stateTree always
-  // gets one; only its presence is known here, and every pattern of its value is left open below.
-  asked.searchParams.set(RSC_CACHE_BUSTING_QUERY, 'present');
   const handed = edgeReads(headers);
+  if (!handed.has(NEXT_ROUTER_STATE_TREE_HEADER)) {
+    return undefined;
+  }
+  const { manifest } = stack;
   const rules = [
     ...(manifest.reservedRoutes ?? []),
     ...(manifest.headerRules ?? []),
@@ -135,12 +135,12 @@ export function stateTreeUnproved(
     const asks =
       (rule.has ?? []).some((condition) => asksOfRouterState(condition)) ||
       (rule.missing ?? []).some((condition) => asksOfRouterState(condition));
-    return asks && ruleCouldApply(rule, asked, handed);
+    return asks && ruleCouldApply(rule, url, handed);
   });
   if (ruled) {
     return `a rule of next.config asks of the router state it is asked from, ${UNPROVED_STATE}`;
   }
-  if (middlewareSeesState(stack, asked, handed)) {
+  if (middlewareSeesState(stack, url, handed)) {
     return `the application's middleware sees the router state it is asked from (skipProxyUrlNormalize), ${UNPROVED_STATE}`;
   }
   return undefined;

@@ -12,7 +12,10 @@ import {
   filterShellResponseHeaders,
   routeDebugValue,
 } from '@stayingupwind/core/request';
-import { mergeScopedMiddlewareHeaders } from '@stayingupwind/edge/handlers/responses';
+import {
+  mergeScopedMiddlewareHeaders,
+  removeSharedCacheOverrides,
+} from '@stayingupwind/edge/handlers/responses';
 import { runtimeCacheOf } from '@stayingupwind/host/delivery';
 
 import {
@@ -159,6 +162,9 @@ export function applicationOf(
       }
       if (decided?.kind === 'continue') {
         mergeScopedMiddlewareHeaders(headers, decided.responseHeaders, scope);
+      }
+      if (served !== 'handed-on') {
+        removeSharedCacheOverrides(headers);
       }
       return headers;
     },

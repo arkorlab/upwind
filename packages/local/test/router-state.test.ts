@@ -20,7 +20,7 @@ const HEADERS = {
   'x-variant': 'selected',
   cookie: 'locale=wrong; locale=en',
 };
-const PAGE = new URL('https://site.example/about?variant=selected');
+const PAGE = new URL('https://site.example/about?variant=selected&_rsc=navigation-digest');
 
 function withRule(kind: Kind, rule: MiddlewareMatcher): StateStack {
   const base = { bundle: { config: {} }, app: {} };
@@ -65,11 +65,13 @@ function withMiddleware(options: {
 describe('router-state rules that can affect the requested payload', () => {
   it.each(KINDS)('ignores an unrelated %s source', (kind) => {
     const stack = withRule(kind, { sourceRegex: '^/api/private$', has: [TREE] });
+
     expect(stateTreeUnproved(stack, PAGE, HEADERS)).toBeUndefined();
   });
 
   it.each(KINDS)('keeps an applicable %s tree predicate unproved', (kind) => {
     const stack = withRule(kind, { sourceRegex: '^/about$', has: [TREE] });
+
     expect(stateTreeUnproved(stack, PAGE, HEADERS)).toContain('a rule of next.config asks');
   });
 
@@ -78,6 +80,7 @@ describe('router-state rules that can affect the requested payload', () => {
       sourceRegex: '^/about$',
       has: [TREE, { type: 'header', key: 'x-variant', value: '^private$' }],
     });
+
     expect(stateTreeUnproved(stack, PAGE, HEADERS)).toBeUndefined();
   });
 
@@ -95,6 +98,7 @@ describe('router-state rules that can affect the requested payload', () => {
     ({ condition, holds }) => {
       const has = reasonFor({ sourceRegex: '^/about$', has: [TREE, condition] });
       const missing = reasonFor({ sourceRegex: '^/about$', has: [TREE], missing: [condition] });
+
       expect(has !== undefined).toBe(holds);
       expect(missing === undefined).toBe(holds);
     },
@@ -102,6 +106,7 @@ describe('router-state rules that can affect the requested payload', () => {
 
   it.each([TREE, DIGEST])('leaves an unknown missing predicate open: %s', (condition) => {
     const reason = reasonFor({ sourceRegex: '^/about$', missing: [condition] });
+
     expect(reason).toContain('a rule of next.config asks');
   });
 
@@ -109,14 +114,31 @@ describe('router-state rules that can affect the requested payload', () => {
     { condition: { type: 'header', key: NEXT_ROUTER_STATE_TREE_HEADER } },
     { condition: { type: 'query', key: '_rsc' } },
   ] satisfies readonly { readonly condition: RouteHas }[])(
-    'knows router fields are present before the navigation digest is built: $condition',
+    'knows the router fields present on the actual navigation: $condition',
     ({ condition }) => {
       const has = reasonFor({ sourceRegex: '^/about$', has: [TREE, condition] });
       const missing = reasonFor({ sourceRegex: '^/about$', has: [TREE], missing: [condition] });
+
       expect(has).toContain('a rule of next.config asks');
       expect(missing).toBeUndefined();
     },
   );
+
+  it('uses the actual digest presence when a redirect has not replayed it yet', () => {
+    const url = new URL('/about', PAGE);
+    const present: RouteHas = { type: 'query', key: '_rsc' };
+    const has = reasonFor({ sourceRegex: '^/about$', has: [TREE, present] }, url);
+    const missing = reasonFor({ sourceRegex: '^/about$', has: [TREE], missing: [present] }, url);
+
+    expect(has).toBeUndefined();
+    expect(missing).toContain('a rule of next.config asks');
+  });
+
+  it('does not treat a request without the state header as a synthetic navigation', () => {
+    const stack = withRule('headers', { sourceRegex: '^/about$', has: [TREE] });
+
+    expect(stateTreeUnproved(stack, PAGE, {})).toBeUndefined();
+  });
 
   it('allows presence-only router conditions whose values no rule reads', () => {
     const reason = reasonFor({
@@ -126,6 +148,7 @@ describe('router-state rules that can affect the requested payload', () => {
         { type: 'query', key: '_rsc' },
       ],
     });
+
     expect(reason).toBeUndefined();
   });
 
@@ -134,6 +157,7 @@ describe('router-state rules that can affect the requested payload', () => {
     { sourceRegex: '^/docs/a b$', path: '/docs/a%20b' },
   ])('keeps Next matcher spellings conservative: $path', ({ sourceRegex, path }) => {
     const reason = reasonFor({ sourceRegex, has: [TREE] }, new URL(path, PAGE));
+
     expect(reason).toContain('a rule of next.config asks');
   });
 
@@ -150,6 +174,7 @@ describe('router-state rules that can affect the requested payload', () => {
         middleware: { matchers: [{ sourceRegex: '^/about$', has: [condition] }] },
       },
     };
+
     expect(stateTreeUnproved(stack, PAGE, HEADERS)).toContain(
       "the application's middleware sees the router state",
     );
@@ -162,6 +187,7 @@ describe('router-state rules that can affect the requested payload', () => {
     { normalize: true, path: '^/about$', running: false, unproved: false },
   ])('preserves middleware normalization handling: %s', ({ unproved, ...options }) => {
     const reason = stateTreeUnproved(withMiddleware(options), PAGE, HEADERS);
+
     expect(reason !== undefined).toBe(unproved);
   });
 });
