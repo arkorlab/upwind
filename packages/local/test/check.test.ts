@@ -55,6 +55,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { type CheckResult, checkStack } from '../src/check.ts';
 import { NO_COOKIE_CHANGES } from '../src/cookie-jar.ts';
+import { documentAnswerAt } from '../src/document-adoption.ts';
 import { expectationOf, fileFailure, fileHeadFailure } from '../src/file-expectations.ts';
 import { flowFailure } from '../src/part-flows.ts';
 import type { Part } from '../src/part-marks.ts';
@@ -1735,8 +1736,18 @@ function stackOf(
   const manifest = Object.fromEntries(
     Object.entries({ ...derived, ...options.held }).filter(([, value]) => value !== undefined),
   ) as ProjectManifest;
+  const registered = new URL(state.origin);
+  registered.protocol = 'https:';
   return {
     url: state.origin,
+    siteOrigins: [
+      registered.origin,
+      'https://preview.example',
+      'https://site.example',
+      'https://cdn.elsewhere.example',
+      'https://github.io',
+      'https://www.example.com',
+    ],
     // The test's server stands in for the Functions too, asked on the backstage.
     functions: options.functions ?? [],
     backstage: new URL(BACKSTAGE, state.origin),
@@ -10323,6 +10334,39 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
+    it('checks a router failure specific to the second other page', async () => {
+      const routes = [
+        await routeOf('/', FRONT),
+        await routeOf('/a', FRONT),
+        await routeOf('/b', FRONT),
+        await routeOf('/target', finished, {
+          complete: true,
+          segments: { '/_tree': 'tree bytes' },
+        }),
+      ];
+      for (const pathname of ['/', '/a', '/b']) {
+        answers.set(pathname, documentAnswer(FRONT, `mw=miss;route=${pathname}`));
+      }
+      answers.set('/target', finishedAnswer(finished, '/target'));
+      partAnswers.set('/target|/_tree', segmentAnswer('tree bytes'));
+      partAnswers.set('/target|/_tree|from=/b', segmentAnswer('other bytes'));
+      const result = await checkStack(stackOf(routes, {}));
+
+      expect(result.failures).toStrictEqual([
+        {
+          path: '/target',
+          reason:
+            'its prefetch segment /_tree, from /b, answered 11 bytes other than the 10 the build wrote',
+        },
+      ]);
+      expect(partsAskedEach.get('/target|/_tree')).toStrictEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ 'next-url': '/a' }),
+          expect.objectContaining({ 'next-url': '/b' }),
+        ]),
+      );
+    });
+
     it("has the parts of the page a browser's navigation redirected to asked with the cookies on the way", async () => {
       const routes = [
         await routeOf('/about', ABOUT, { complete: true }),
@@ -10396,6 +10440,70 @@ describe('what the check makes of the middleware', () => {
       expect(result.failures[0]?.path).toBe('/about');
       expect(result.failures[0]?.reason).toMatch(/^redirected to \/login, .*text\/plain/u);
     });
+
+    it('judges the first redirected document even when a later request would succeed', async () => {
+      const routes = [
+        await routeOf('/about', ABOUT, { complete: true }),
+        await routeOf('/login', finished, { complete: true }),
+      ];
+      answers.set('/about', {
+        status: 307,
+        headers: {
+          location: '/login',
+          'set-cookie': 'from=about; Path=/',
+          'x-arkor-edge': 'passthrough;reason=middleware;mw=hit',
+        },
+        body: '',
+      });
+      const seen = { redirected: 0 };
+      answers.set('/login', {
+        ...finishedAnswer(finished, '/login'),
+        when: {
+          test: (headers, method) => {
+            const cookie = headers.cookie;
+            if (method !== 'GET' || typeof cookie !== 'string' || !cookie.includes('from=about')) {
+              return false;
+            }
+            seen.redirected += 1;
+            return seen.redirected === 1;
+          },
+          status: 500,
+        },
+      });
+      const result = await checkStack(stackOf(routes, {}));
+
+      expect(result.failures[0]?.path).toBe('/about');
+      expect(result.failures[0]?.reason).toMatch(/^redirected.* to \/login, answered 500$/u);
+    });
+
+    it.each([200, 500])(
+      'retains the original document verdict after its trace is released: %s',
+      async (status) => {
+        const routes = [await routeOf('/login', finished, { complete: true })];
+        const stack = { ...stackOf(routes, {}), site: new URL('https://site.example') };
+        answers.set('/login', { ...finishedAnswer(finished, '/login'), status });
+        const answer = await documentAnswerAt(stack, Buffer.byteLength(finished), {
+          url: new URL('/login', stack.site),
+          headers: { 'accept-encoding': BROWSER_CODINGS },
+        });
+        if (typeof answer === 'string') {
+          throw new TypeError(answer);
+        }
+        // A later GET would answer the opposite; the deferred verdict must use neither that GET nor
+        // a trace already disposed of by capturedDocument.
+        answers.set('/login', {
+          ...finishedAnswer(finished, '/login'),
+          status: status === 200 ? 500 : 200,
+        });
+
+        expect(traceIds.letGo.size).toBe(1);
+        await expect(answer.documentFailure?.()).resolves.toBe(
+          status === 200 ? undefined : 'answered 500',
+        );
+        expect(askedHeadersEach.get('/login')).toHaveLength(1);
+        expect(traceIds.read.size).toBe(1);
+      },
+    );
 
     it("has the document a browser's navigation redirected to judged where the edge's account of it says no route", async () => {
       const routes = [

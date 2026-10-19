@@ -6,6 +6,7 @@ import { CONTEXT_HEADERS, sentBlockingMetadata, visitedNavigations } from './bro
 import { type Accepted, acceptedInWords, browserCodingsOf } from './codings.ts';
 import { type CookieChanges, type CookieJar, jarKeyOf, jarOf, strictly } from './cookie-jar.ts';
 import { type Scoped, scopesOf } from './cookie-scopes.ts';
+import { documentAnswerAt } from './document-adoption.ts';
 import { type Asked, routeVerdict } from './documents.ts';
 import { documentRouteAt, exactRouteAt, landedRouteOf, servedOtherThan } from './landings.ts';
 import { withheldSets, withheldWords } from './origin-visits.ts';
@@ -286,6 +287,7 @@ interface Landing {
   readonly scoped: Scoped;
   /** Whether what it landed on is a page a client router runs on (`Answered.page`). */
   readonly page: boolean;
+  readonly documentFailure?: (() => Promise<string | undefined>) | undefined;
 }
 
 /**
@@ -294,11 +296,7 @@ interface Landing {
  * browser's router on it asks for them, with the cookies each answer on the way set
  * (`partsFailure`) — in a verdict's words, of the route asked for.
  */
-async function landedFailure(
-  stack: CheckedStack,
-  headBytes: number,
-  landing: Landing,
-): Promise<string | undefined> {
+async function landedFailure(stack: CheckedStack, landing: Landing): Promise<string | undefined> {
   const { navigation, steps, landed, key } = landing;
   const { url } = landed;
   const route = Object.hasOwn(stack.manifest.routes, key) ? stack.manifest.routes[key] : undefined;
@@ -309,14 +307,12 @@ async function landedFailure(
   const exact = exactRouteAt(stack.manifest, url.pathname, key);
   const by = navigation.as === undefined ? '' : ` ${navigation.as}`;
   const asked = { key, route, requested, exact };
-  const { coding } = navigation;
-  const verdict = await routeVerdict(stack, headBytes, {
-    ...asked,
-    headers: landed.headers,
-    coding,
-  });
-  if (verdict.kind === 'failed') {
-    return `redirected${by} to ${url.pathname}${landing.scoped.as}, ${verdict.reason}`;
+  const documentFailure =
+    landing.documentFailure === undefined
+      ? 'the original redirected document response was not retained'
+      : await landing.documentFailure();
+  if (documentFailure !== undefined) {
+    return `redirected${by} to ${url.pathname}${landing.scoped.as}, ${documentFailure}`;
   }
   // No router asks for the parts of a page it does not run on.
   if (!landing.page) {
@@ -366,6 +362,7 @@ function sentJar(
  */
 async function landingsOf(
   stack: CheckedStack,
+  headBytes: number,
   from: { readonly page: URL; readonly navigation: OwnNavigation },
   seen: Set<string>,
 ): Promise<Landing[] | string> {
@@ -383,7 +380,13 @@ async function landingsOf(
   const landings: Landing[] = [];
   for (const scoped of ways) {
     const jar = sentJar(sent, { page, scoped, held });
-    const followed = { answer, url: page, headers, jar };
+    const followed = {
+      answer,
+      url: page,
+      headers,
+      jar,
+      documentAnswer: (request: Sent) => documentAnswerAt(stack, headBytes, request),
+    };
     const redirected = await documentRedirects(stack, followed, known);
     const { steps, landed, failure } = redirected;
     if (failure !== undefined) {
@@ -414,6 +417,7 @@ async function landingsOf(
         from: page,
         scoped,
         page: landedPage,
+        documentFailure: redirected.last?.documentFailure,
       });
     }
   }
@@ -429,6 +433,7 @@ async function landingsOf(
  */
 async function navigatedOf(
   stack: CheckedStack,
+  headBytes: number,
   asked: Asked,
   navigations: ReadonlyMap<string, OwnNavigation>,
 ): Promise<
@@ -448,7 +453,7 @@ async function navigatedOf(
     const listed = navigatedBy.get(agent) ?? [];
     navigatedBy.set(agent, listed);
     if (redirects(answer)) {
-      const landed = await landingsOf(stack, { page, navigation }, seen);
+      const landed = await landingsOf(stack, headBytes, { page, navigation }, seen);
       if (typeof landed === 'string') {
         return landed;
       }
@@ -506,7 +511,7 @@ export async function routeFollowUpFailure(
       return failure;
     }
   }
-  const navigated = await navigatedOf(stack, asked, navigations);
+  const navigated = await navigatedOf(stack, headBytes, asked, navigations);
   if (typeof navigated === 'string') {
     return navigated;
   }
@@ -516,7 +521,7 @@ export async function routeFollowUpFailure(
     return failure;
   }
   for (const landing of landings) {
-    const landed = await landedFailure(stack, headBytes, landing);
+    const landed = await landedFailure(stack, landing);
     if (landed !== undefined) {
       return landed;
     }

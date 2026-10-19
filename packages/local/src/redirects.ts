@@ -40,6 +40,8 @@ export interface Answered {
   readonly whole?: { readonly status: number; readonly length: number; readonly sha256: string };
   /** Validate this response when it is the final part a browser fetch adopts, after any replay. */
   readonly partFailure?: (() => Promise<string | undefined>) | undefined;
+  /** Judge the document response a navigation adopts, using its original body and trace evidence. */
+  readonly documentFailure?: (() => Promise<string | undefined>) | undefined;
 }
 
 /** What a page is found with, and what Next.js answers a path it has no page for with. */
@@ -490,15 +492,10 @@ export async function documentRedirects(
     readonly url: URL;
     readonly headers: Readonly<Record<string, string>>;
     readonly jar: CookieJar;
+    readonly documentAnswer?: ((sent: Sent) => Promise<Answered | string>) | undefined;
   },
   known = new Map<string, Answered>(),
-): Promise<{
-  readonly steps: readonly Step[];
-  readonly landed?: Sent | undefined;
-  /** Whether the answer the browser ends on is a page a client router runs on (`Answered.page`). */
-  readonly page?: boolean | undefined;
-  readonly failure?: string | undefined;
-}> {
+): Promise<Followed> {
   const answered = answeredOf(from.answer);
   const own = { url: from.url, changes: answered.changes, account: answered.account };
   if (answered.location === undefined) {
@@ -509,7 +506,14 @@ export async function documentRedirects(
     ([name]) => name.toLowerCase() === FETCH_SITE,
   )?.[1];
   const crossSite = site === CROSS_SITE;
-  const followed = { answered, url: from.url, headers: from.headers, jar: from.jar, crossSite };
-  const { steps, landed, page, failure } = await redirectsFrom(stack, followed, known);
-  return { steps: [own, ...steps], landed, page, failure };
+  const followed = {
+    answered,
+    url: from.url,
+    headers: from.headers,
+    jar: from.jar,
+    crossSite,
+    partAnswer: from.documentAnswer,
+  };
+  const { steps, landed, last, page, failure } = await redirectsFrom(stack, followed, known);
+  return { steps: [own, ...steps], landed, last, page, failure };
 }

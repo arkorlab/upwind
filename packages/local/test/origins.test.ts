@@ -34,7 +34,7 @@ describe("the pages a router asks for a page's parts from", () => {
       '/docs/shop',
     );
 
-    // The front page where Next.js serves it, the page itself, and the first other route — not the
+    // The front page where Next.js serves it, the page itself, and each other route — not the
     // page itself, nor the front page, under their deployed pathnames.
     expect(pickedFor(stack, '/docs/about')).toStrictEqual([
       ['/', '/docs', false, ''],
@@ -49,6 +49,34 @@ describe("the pages a router asks for a page's parts from", () => {
     expect(pickedFor(stack, '/docs/about/')).toStrictEqual([
       ['/', '/docs/', false, ''],
       ['/about', '/docs/about/', true, ', from the page itself'],
+    ]);
+  });
+
+  it('keeps every other concrete page in deterministic order', () => {
+    const stack = stackUnder(
+      { basePath: '', trailingSlash: false },
+      '/target',
+      '/b',
+      '/[slug]',
+      '/a',
+      '/',
+    );
+
+    expect(pickedFor(stack, '/target')).toStrictEqual([
+      ['/', '/', false, ''],
+      ['/target', '/target', true, ', from the page itself'],
+      ['/a', '/a', false, ', from /a'],
+      ['/b', '/b', false, ', from /b'],
+    ]);
+  });
+
+  it('keeps every other page when the target is the front page', () => {
+    const stack = stackUnder({ basePath: '/docs', trailingSlash: false }, '/docs/b', '/docs/a');
+
+    expect(pickedFor(stack, '/docs')).toStrictEqual([
+      ['/', '/docs', true, ''],
+      ['/a', '/docs/a', false, ', from /docs/a'],
+      ['/b', '/docs/b', false, ', from /docs/b'],
     ]);
   });
 });

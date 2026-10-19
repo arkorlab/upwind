@@ -163,6 +163,11 @@ export interface LocalStack {
   /** Where the site is served: `http://localhost:<port>/`. */
   readonly url: URL;
   /**
+   * Origins registered with the edge and outbound router. A custom stack without this account
+   * proves only its socket's checked origin, not additional check hostnames.
+   */
+  readonly siteOrigins?: readonly string[] | undefined;
+  /**
    * The app Functions, by the names the build gives them (`app`, `app-2`, …): each asked on the
    * backstage as a deployment's validation asks each through its edge.
    */
@@ -514,6 +519,7 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
     const { app } = functions;
     return {
       url: siteUrlOf(served),
+      siteOrigins: names.origins.split(','),
       functions: [PRIMARY_FUNCTION, ...Object.keys(app.functions ?? {})],
       backstage: await running.url(WORKERS.edge, BACKSTAGE_ENTRYPOINT),
       bundleDir,

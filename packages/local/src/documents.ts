@@ -1,6 +1,5 @@
 import { type RouteEntry, staticFileKey } from '@stayingupwind/core/manifest';
 import type { MiddlewareResult } from '@stayingupwind/core/paas';
-import { RECOVERY_MARKER } from '@stayingupwind/core/request';
 import { isHtmlContentType } from '@stayingupwind/core/util';
 
 import {
@@ -23,12 +22,12 @@ import {
   stampedOf,
   traced,
   unrunFailure,
-  undoneUnlessStored,
   type Verdict,
 } from './answers.ts';
 import { sharedCacheFailure } from './cache-control.ts';
 import { type Accepted, codingFailure, codedOf } from './codings.ts';
 import { finishedFailure, incompleteness } from './completeness.ts';
+import { readDocument } from './document-reading.ts';
 import { rewrittenOnto } from './files.ts';
 import {
   bypassedVerdict,
@@ -43,7 +42,7 @@ import {
   shellBypassFailure,
   whereLanded,
 } from './landings.ts';
-import { noncedOf, restampAt, unstampedFailure } from './nonces.ts';
+import { noncedOf, unstampedFailure } from './nonces.ts';
 import { DOCUMENT_HANDOFFS, documentHandedOnVerdict } from './part-handoffs.ts';
 import type { Reading } from './reading.ts';
 import {
@@ -77,7 +76,6 @@ import { shellOf } from './shells.ts';
 const REGENERATED = /^passthrough;reason=regenerate(?:;|$)/u;
 /** What the edge says of a page Next.js renders for the request itself (`bypassFor`). */
 const BYPASSED = /^passthrough;reason=bypass-for(?:;|$)/u;
-const RECOVERY = Buffer.from(RECOVERY_MARKER);
 
 export interface Asked {
   /** The manifest's key for the route: its pathname, or its class's template. */
@@ -565,18 +563,7 @@ export async function routeVerdict(
   const url = new URL(asked.requested, stack.site);
   await using tracing = await traced(stack, asked.headers);
   const { headers, trace } = tracing;
-  // A copy of it stamped again as it streams, where the edge says it minted a nonce for it.
-  const answer = await answerTo(url, {
-    via: stack.url,
-    headers,
-    headBytes,
-    marker: RECOVERY,
-    copyTo: (sent) => restampAt(stack, sent, asked.coding !== undefined),
-    // Asked for in a coding, read as the browser reads it: undone of it.
-    // But one that turns out to be a file of the build, which a rewrite of the middleware may land a
-    // coded request on, as stored: a precompressed file's bytes are its coded ones (`rewrittenOnto`).
-    decode: undoneUnlessStored(asked.coding !== undefined),
-  });
+  const answer = await readDocument(stack, headBytes, asked, headers);
   if (typeof answer === 'string') {
     return failed(answer);
   }
@@ -585,6 +572,17 @@ export async function routeVerdict(
   // where not, let go of unread once the route is judged (`Traced`).
   const record: { read?: Promise<Kept> } = {};
   const kept = (): Promise<Kept> => (record.read ??= keptOf(stack, trace, url, asked.headers));
+  return await documentVerdict(stack, asked, { answer, kept });
+}
+
+/** A document judged against its own response and captured evidence, without repeating its GET. */
+export async function documentVerdict(
+  stack: CheckedStack,
+  asked: Asked,
+  read: { readonly answer: Reading; readonly kept: () => Promise<Kept> },
+): Promise<Verdict> {
+  const { answer, kept } = read;
+  const url = new URL(asked.requested, stack.site);
   const middleware = middlewareAnswered(answer);
   if (middleware !== undefined) {
     return skipped(middleware);
@@ -616,9 +614,9 @@ export async function routeVerdict(
   }
   // What the middleware decided, as the edge ran it: whether it rewrote the request, and what it set
   // on the answer — read whether or not the edge says it ran, which is what is checked.
-  const read = await kept();
-  const { decided } = read;
-  const captured = withGenerationEvidence(stack, read);
+  const evidence = await kept();
+  const { decided } = evidence;
+  const captured = withGenerationEvidence(stack, evidence);
   const unkept =
     keptFailure(answer, decided, middlewareCovers(stack, url, asked.headers)) ??
     shellBypassFailure(stack, sent, decided);

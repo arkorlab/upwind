@@ -118,7 +118,8 @@ export interface CheckOptions {
    * The hostname a host's validation asks a candidate under — its preview hostname, say — which every
    * request of the check's names (`Host`, `X-Forwarded-Host`) and every rule is judged on, in place
    * of the stack's own: so that a rule or a middleware that judges the host is judged as there. The
-   * stack is still reached at its own socket.
+   * stack is still reached at its own socket. Register this hostname in `StackOptions.hostnames`
+   * when starting the stack; a custom stack must include its origin in `LocalStack.siteOrigins`.
    */
   readonly hostname?: string | undefined;
 }
@@ -129,7 +130,16 @@ export interface CheckOptions {
  * stack's own host or `hostname`.
  */
 function siteOf(stack: LocalStack, hostname: string | undefined): URL {
-  return new URL(`https://${hostname ?? stack.url.host}/`);
+  const site = new URL(`https://${hostname ?? stack.url.host}/`);
+  if (hostname !== undefined) {
+    const registered = stack.siteOrigins ?? [new URL(`https://${stack.url.host}/`).origin];
+    if (!registered.includes(site.origin)) {
+      throw new TypeError(
+        `the check's hostname ${hostname} was not registered with this stack; add it to StackOptions.hostnames`,
+      );
+    }
+  }
+  return site;
 }
 
 /** A route the check asks for, under its key in the manifest, at the pathname validation asks it at. */
@@ -590,7 +600,8 @@ export async function checkStack(
   options: CheckOptions = {},
 ): Promise<CheckResult> {
   const prover = options.proverAgent ?? DEFAULT_PROVER_AGENT;
-  const checked: CheckedStack = { ...stack, site: siteOf(stack, options.hostname) };
+  const site = siteOf(stack, options.hostname);
+  const checked: CheckedStack = { ...stack, site };
   const tally = new Tally();
   await misheldRules(checked, tally);
   await checkRoutes(checked, tally, prover);

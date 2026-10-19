@@ -524,6 +524,93 @@ describe('a local stack', () => {
     });
   });
 
+  it(
+    'keeps an absolute middleware rewrite on the portless visitor origin inside the stack',
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'upwind-local-portless-rewrite-'));
+      let stack: LocalStack | undefined;
+      try {
+        await writeBundle(
+          dir,
+          `export default {
+            fetch(request) {
+              return new Response(null, {
+                headers: {
+                  'x-middleware-rewrite': new URL('/echo?from=middleware-rewrite', request.url).href,
+                },
+              });
+            },
+          };`,
+        );
+        stack = await startStack({
+          bundleDir: path.join(dir, OUT_DIR_NAME),
+          hostnames: ['alias.invalid'],
+        });
+        const trace = new URL('trace/portless-rewrite', stack.backstage);
+        const registered = await fetch(trace, { method: 'PUT' });
+        const response = await fetch(new URL('/guard', stack.url), {
+          headers: {
+            host: 'alias.invalid',
+            'x-forwarded-proto': 'https',
+            via: 'the visitor',
+            'x-upwind-trace': 'portless-rewrite',
+          },
+        });
+        const kept = await fetch(trace);
+
+        expect(registered.status).toBe(204);
+        expect(response.status).toBe(200);
+        expect(accountOf(response)).not.toContain('reason=external-rewrite');
+        await expect(response.json()).resolves.toMatchObject({
+          url: 'https://alias.invalid/echo?from=middleware-rewrite',
+          host: 'alias.invalid',
+          protocol: 'https',
+          deployment: stack.deploymentId,
+        });
+        await expect(kept.json()).resolves.toMatchObject({
+          decision: {
+            status: 200,
+            headers: expect.arrayContaining([
+              ['x-middleware-rewrite', 'https://alias.invalid/echo?from=middleware-rewrite'],
+            ]),
+          },
+        });
+      } finally {
+        await stack?.dispose();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    START_MS,
+  );
+
+  it.each(['http', 'https'])(
+    'clears the socket port for a portless alias over %s, including its Function self-fetch',
+    async (scheme) => {
+      const stack = started();
+      const headers = { host: 'alias.invalid', 'x-forwarded-proto': scheme };
+      const response = await fetch(new URL('/echo?q=1', stack.url), { headers });
+      const self = await fetch(new URL('/self', stack.url), { headers });
+
+      expect(stack.url.port).not.toBe('');
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        url: `${scheme}://alias.invalid/echo?q=1`,
+        host: 'alias.invalid',
+        forwarded: 'alias.invalid',
+        protocol: scheme,
+      });
+      expect(self.status).toBe(200);
+      await expect(self.json()).resolves.toMatchObject({
+        status: 200,
+        echoed: {
+          url: `${scheme}://alias.invalid/echo?from=self`,
+          host: 'alias.invalid',
+          protocol: scheme,
+        },
+      });
+    },
+  );
+
   it("sends a page a Function fetches of the site's own to the edge, under the origin it was asked at", async () => {
     const stack = started();
 
@@ -820,5 +907,40 @@ describe('a local stack', () => {
     expect(stack.functions).toStrictEqual(['app', 'app-2']);
     expect(stack.manifest.deployment.dplId).toBe(stack.deploymentId);
     expect(checked).toStrictEqual({ checked: 4, failures: [], skipped: [] });
+  });
+
+  it('rejects an unregistered check hostname before consulting the backstage', async () => {
+    const stack = started();
+    const custom = {
+      ...stack,
+      get backstage(): URL {
+        throw new Error('the check consulted the backstage before rejecting its hostname');
+      },
+    };
+
+    await expect(checkStack(custom, { hostname: 'unregistered.invalid' })).rejects.toThrow(
+      'was not registered with this stack',
+    );
+    expect(stack.siteOrigins).toContain('https://alias.invalid');
+    expect(stack.siteOrigins).not.toContain('https://unregistered.invalid');
+  });
+
+  it('checks a registered alias through the local edge under that hostname', async () => {
+    const checked = await checkStack(started(), { hostname: 'ALIAS.invalid:443' });
+
+    expect(checked.checked).toBe(4);
+    expect(checked.failures).toMatchObject([{ reason: expect.stringContaining('500') }]);
+    expect(checked.skipped).toStrictEqual([]);
+  });
+
+  it('accepts only the checked socket origin for a custom stack without an origin account', async () => {
+    const stack = started();
+    const custom = { ...stack, siteOrigins: undefined };
+    const checked = await checkStack(custom, { hostname: stack.url.host });
+
+    expect(checked).toStrictEqual({ checked: 4, failures: [], skipped: [] });
+    await expect(checkStack(custom, { hostname: 'alias.invalid' })).rejects.toThrow(
+      'was not registered with this stack',
+    );
   });
 });

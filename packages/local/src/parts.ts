@@ -157,8 +157,8 @@ export function originAt(stack: CheckedStack, url: URL, as: string): Origin {
 /**
  * The pages the client router asks for a page's parts from: the front page, as a visitor who came
  * by it asks; the page itself, as a visitor on it asks for it again — a link to it, a refresh —
- * where it is another; and another page of the build's, the first of its own pathname by name, as a
- * visitor who came by any other asks: each a path a rule or a middleware that tells router requests
+ * where it is another; and every other reachable page of the build, by pathname, as a
+ * visitor who came by it asks: each a path a rule or a middleware that tells router requests
  * apart by the page they come from (`next-url`, `Referer`) is judged on — each at the URL it is
  * deployed at, under the base path, and named by the router without it (`originAt`).
  */
@@ -175,7 +175,7 @@ export function originsOf(stack: CheckedStack, page: URL): Origin[] {
       : [front, { path, url: page, itself: true, as: ', from the page itself' }];
   // A route of the manifest's by the pathname it is deployed at, under the base path, which the
   // router names it by without (`originAt`).
-  const other = Object.keys(stack.manifest.routes)
+  const others = Object.keys(stack.manifest.routes)
     .toSorted(compareCodeUnits)
     .filter((key) => !key.includes('['))
     .flatMap((key) => {
@@ -185,8 +185,15 @@ export function originsOf(stack: CheckedStack, page: URL): Origin[] {
         ? []
         : [originAt(stack, new URL(asked, stack.site), `, from ${key}`)];
     })
-    .find((at) => at.path !== FRONT_PAGE && at.path !== path);
-  return other === undefined ? own : [...own, other];
+    .filter((at) => at.path !== FRONT_PAGE && at.path !== path);
+  const seen = new Set(own.map((at) => at.url.href));
+  for (const other of others) {
+    if (!seen.has(other.url.href)) {
+      seen.add(other.url.href);
+      own.push(other);
+    }
+  }
+  return own;
 }
 
 /** `a` and `b` in the order of their code units, as a name sorts the same everywhere. */

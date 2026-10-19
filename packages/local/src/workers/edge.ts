@@ -132,6 +132,7 @@ function underOrigin(request: IncomingRequest, origin: URL): IncomingRequest {
   }
   url.protocol = origin.protocol;
   url.host = origin.host;
+  url.port = origin.port;
   return new Request<unknown, IncomingRequestCfProperties>(url, request);
 }
 

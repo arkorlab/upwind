@@ -53,6 +53,32 @@ const PARAMETER_WITNESSES = new Map([
   [String.raw`\d+`, '1'],
   [String.raw`\d`, '1'],
 ]);
+/** A local candidate limit, not a restriction on a deployment's accepted matcher. */
+const MAX_PARAMETER_WITNESS_LENGTH = 64;
+const FINITE_REPETITION = /^(\d{1,3})(?:,(\d{1,3}))?$/u;
+
+/** Repeat one known character for an exact count or the minimum of a finite range. */
+function quantifiedWitness(pattern: string): string | undefined {
+  const opening = pattern.lastIndexOf('{');
+  if (opening === -1 || !pattern.endsWith('}')) {
+    return undefined;
+  }
+  const repetition = FINITE_REPETITION.exec(pattern.slice(opening + 1, -1));
+  if (repetition === null) {
+    return undefined;
+  }
+  const minimum = Number(repetition[1]);
+  const maximum = Number(repetition[2] ?? repetition[1]);
+  if (minimum > maximum || minimum > MAX_PARAMETER_WITNESS_LENGTH) {
+    return undefined;
+  }
+  const atom = pattern.slice(0, opening);
+  const character =
+    PARAMETER_WITNESSES.get(atom) ??
+    PARAMETER_WITNESSES.get(`${atom}+`) ??
+    (atom.length === 1 ? firstLiteral(atom) : undefined);
+  return character?.repeat(minimum);
+}
 
 /** A simple ASCII literal or its alternatives, not an arbitrary regular-expression solver. */
 function firstLiteral(pattern: string): string | undefined {
@@ -74,7 +100,12 @@ function spelledParameter(parameter: string): string {
   const opening = parameter.indexOf('(');
   const closing = parameter.lastIndexOf(')');
   const pattern = parameter.slice(opening + 1, closing);
-  return PARAMETER_WITNESSES.get(pattern) ?? firstLiteral(pattern) ?? SPELLED_SEGMENT;
+  return (
+    PARAMETER_WITNESSES.get(pattern) ??
+    quantifiedWitness(pattern) ??
+    firstLiteral(pattern) ??
+    SPELLED_SEGMENT
+  );
 }
 
 /**
