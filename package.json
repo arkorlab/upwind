@@ -22,6 +22,8 @@
     "format": "oxfmt --check",
     "format:write": "oxfmt",
     "knip": "knip",
+    "local:check": "node packages/local/src/main.ts check",
+    "local:serve": "node packages/local/src/main.ts serve",
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --max-warnings 0 --fix",
     "test": "vitest run",

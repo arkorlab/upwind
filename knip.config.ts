@@ -24,6 +24,12 @@ const config: KnipConfig = {
     // `cloudflare:workers` and `cloudflare:test` are the Workers runtime's own, not npm packages.
     'packages/cache': { ignoreDependencies: ['cloudflare'] },
     'packages/edge': { ignoreDependencies: ['cloudflare'] },
+    // A local stack's Workers are bundled by path (`bundleWorker`), so nothing imports them; `cloudflare:*`
+    // is the Workers runtime's own.
+    'packages/local': {
+      entry: ['src/workers/{agent,edge,outbound}.ts'],
+      ignoreDependencies: ['cloudflare'],
+    },
     // `templates/` is what this package copies, not what it runs: files nothing imports, on purpose.
     'packages/create-upwind': { ignore: ['templates/**'] },
     // `arkor:*` are the modules the adapter generates beside the runtime and resolves for it;

@@ -35,6 +35,9 @@ const NODE_ONLY_FILES = [
   'packages/auth/scripts/**/*.ts',
   'packages/sdk/scripts/**/*.ts',
   'tools/**/*.ts',
+  // What runs a local stack: Node, around the Workers it bundles.
+  'packages/local/src/*.ts',
+  'packages/local/test/**/*.ts',
   '*.config.ts',
   '**/*.config.ts',
 ];
@@ -58,6 +61,8 @@ const RUNTIME_NEUTRAL_FILES = [
   // A Worker's: the edge in front of a deployment. Where it compresses a document as it goes out, it
   // reads the one built-in the Workers runtime gives it for that, and says so.
   'packages/edge/**/*.ts',
+  // A local stack's own Workers. The rest of `packages/local` runs them from Node, listed below.
+  'packages/local/src/workers/**/*.ts',
   'packages/sdk/src/**/*.ts',
 ];
 /** The suites, and what they share, wherever a package or a tool keeps them. */
@@ -500,6 +505,16 @@ export default defineConfig([
     },
   },
 
+  // A local stack serves the build it is told to, from wherever it was told it is, on a Node version
+  // without Temporal; its suites build the stacks they ask in directories of their own.
+  {
+    files: ['packages/local/src/*.ts', 'packages/local/test/**/*.ts'],
+    rules: {
+      'security/detect-non-literal-fs-filename': 'off',
+      'unicorn/prefer-temporal': 'off',
+    },
+  },
+
   // A build script is the same kind of program: it says what it produced, and the only paths it
   // touches are the ones it is about to write, under its own package.
   {
@@ -540,7 +555,7 @@ export default defineConfig([
   // The packages that serve a deployment are refused a Node.js built-in by its resolved name as well
   // as by the specifiers above, as they are wherever they are developed beside a host.
   {
-    files: ['packages/{cache,deploy,edge,host}/**/*.ts'],
+    files: ['packages/{cache,deploy,edge,host}/**/*.ts', 'packages/local/src/workers/**/*.ts'],
     rules: { 'import-x/no-nodejs-modules': 'error' },
   },
 
@@ -550,6 +565,7 @@ export default defineConfig([
       'packages/cache/src/prefetch/worker.ts',
       'packages/cache/src/standalone/{read-worker,worker}.ts',
       'packages/edge/src/{blob,standalone}/worker.ts',
+      'packages/local/src/workers/{agent,edge,outbound}.ts',
     ],
     rules: { 'import-x/no-default-export': 'off' },
   },

@@ -39,6 +39,8 @@ upwind/
 │   │              #   its scope, the gateways in front of it, and the client a Function reaches it with
 │   ├── edge/      # @stayingupwind/edge — the edge in front of a deployment: shell-first documents,
 │   │              #   the build's files and images, prefetch segments, middleware, the cache's reads
+│   ├── local/     # @stayingupwind/local — a build served on one machine as it is served deployed:
+│   │              #   the edge, the runtime cache and the build's Functions under Miniflare
 │   ├── upwind/    # upwind — the CLI; `upwind dev` runs a Next.js dev server behind its own door
 │   └── create-upwind/
 │                   # create-upwind — `pnpm create upwind`, and the application it writes
