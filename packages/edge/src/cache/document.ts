@@ -3,6 +3,7 @@ import type { ResolvedPolicy, RuntimeCacheSettings } from '@stayingupwind/host/d
 
 import { type DocumentInput, handleDocument } from '../handlers/document.ts';
 import type { MiddlewareOutcome } from '../handlers/middleware.ts';
+import { abandonShellRead, withShellAccounting } from '../handlers/observer.ts';
 import type { PassthroughWait } from '../handlers/passthrough.ts';
 import { keptReadsOut } from '../preview/storage.ts';
 import type { EdgeContext } from '../strategies/context.ts';
@@ -91,7 +92,7 @@ export function startRecordRead(
 /** A record answers: the build's shell read beside it is left to finish, into memory. */
 function abandonShell(edge: EdgeContext, read: RecordRead): void {
   if (read.shell !== undefined) {
-    edge.ctx.waitUntil(read.shell);
+    abandonShellRead(edge, read.shell);
   }
 }
 
@@ -315,16 +316,17 @@ function regenerateInFront(
   return foregroundDocument(input.edge, dispatch, waited);
 }
 
-export async function serveCachedDocument(input: CachedDocumentInput): Promise<Response> {
-  const { edge, key, settings } = input;
+export async function serveCachedDocument(incoming: CachedDocumentInput): Promise<Response> {
   const read =
-    input.generationRead ??
+    incoming.generationRead ??
     startRecordRead(
-      edge,
-      key,
-      settings,
-      input.member === undefined && input.request.method !== 'HEAD' ? input : undefined,
+      incoming.edge,
+      incoming.key,
+      incoming.settings,
+      incoming.member === undefined && incoming.request.method !== 'HEAD' ? incoming : undefined,
     );
+  const input = read.shell === undefined ? incoming : withShellAccounting(incoming);
+  const { edge, key } = input;
   const load = await read.load;
   const memberLoad = await memberInHand(edge, input.member, load);
   // The two reads ran side by side, and a member's read in hand was waited for after the class

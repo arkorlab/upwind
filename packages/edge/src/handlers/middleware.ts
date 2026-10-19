@@ -30,7 +30,7 @@ import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { layConfiguredUnder } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { observeMetric, observeMetricAfterRequests } from './observer.ts';
+import { observeRequestMetric } from './observer.ts';
 import {
   badGatewayResponse,
   forwardedResponse,
@@ -553,12 +553,7 @@ function recordMiddlewareAnswer(
     // The middleware's dispatches, and the fetch of the origin it rewrote to where it named one.
     subrequests: answered.dispatches + (answered.fetched === undefined ? 0 : 1),
   };
-  if (answered.abandoned === undefined) {
-    observeMetric(edge.host, metric);
-  } else {
-    // Storage may answer after the redirect has gone; counting it must not delay that answer.
-    edge.ctx.waitUntil(observeMetricAfterRequests(edge.host, metric, answered.abandoned));
-  }
+  observeRequestMetric(edge, metric, answered.abandoned);
 }
 
 /**

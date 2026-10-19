@@ -342,9 +342,9 @@ describe('middleware calls in request totals', () => {
     { kind: 'complete', middleware: true, app: 0, storage: 1, document: true },
     { kind: 'redispatched', middleware: true, app: 2, storage: 1, document: true },
     { kind: 'resume-failed', middleware: true, app: 1, storage: 1, document: true },
-    { kind: 'rewritten', middleware: true, app: 1, storage: 0, document: false },
-    { kind: 'rewrite-redispatched', middleware: true, app: 2, storage: 0, document: false },
-    { kind: 'middleware-failed', middleware: true, app: 1, storage: 0, document: false },
+    { kind: 'rewritten', middleware: true, app: 1, storage: 1, document: false },
+    { kind: 'rewrite-redispatched', middleware: true, app: 2, storage: 1, document: false },
+    { kind: 'middleware-failed', middleware: true, app: 1, storage: 1, document: false },
     { kind: 'unreachable', middleware: false, app: 0, storage: 0, document: false },
   ])('counts each actual Function call when $kind', async (example) => {
     const partial = pprDocument();

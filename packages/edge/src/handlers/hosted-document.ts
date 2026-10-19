@@ -53,6 +53,7 @@ import {
   middlewareResponse,
   runMiddleware,
 } from './middleware.ts';
+import { abandonShellRead, withShellAccounting } from './observer.ts';
 import { PATTERN_BUDGET, type PassthroughWait, passthroughReason } from './passthrough.ts';
 
 export interface HostedDocumentInput {
@@ -179,12 +180,12 @@ function hostedEntry(
 function abandon(edge: EdgeContext, preload: Preload | undefined): void {
   if (preload === undefined) return;
   if (preload.kind === 'shell') {
-    edge.ctx.waitUntil(preload.read);
+    abandonShellRead(edge, preload.read);
     return;
   }
   edge.ctx.waitUntil(preload.read.load);
   if (preload.read.shell !== undefined) {
-    edge.ctx.waitUntil(preload.read.shell);
+    abandonShellRead(edge, preload.read.shell);
   }
   if (preload.member !== undefined) {
     edge.ctx.waitUntil(preload.member.pending);
@@ -386,6 +387,10 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
   // (`preloadTarget`).
   const target = preloadTarget(input, seen);
   const preload = target === undefined ? undefined : preloadFor(input, target);
+  const accounted =
+    preload === undefined || (preload.kind === 'generation' && preload.read.shell === undefined)
+      ? input
+      : withShellAccounting(input);
   const middlewareStarted = edge.runtime.now();
   const decided = await runMiddleware(edge, request);
   const middlewareMs = edge.runtime.now() - middlewareStarted;
@@ -400,29 +405,29 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
   };
   if (middleware.kind === 'responded') {
     if (preload !== undefined) {
-      abandon(edge, preload);
+      abandon(accounted.edge, preload);
     }
-    return middlewareResponse(edge, request, middleware.response, answered);
+    return middlewareResponse(accounted.edge, request, middleware.response, answered);
   }
   if (middleware.kind === 'failed' || middleware.kind === 'external-rewrite') {
     if (preload !== undefined) {
-      abandon(edge, preload);
+      abandon(accounted.edge, preload);
     }
     // A failed middleware's time goes with the request it was given up for, as a file's does.
     return middleware.kind === 'failed'
-      ? input.passthrough(middlewareFailedReason(middleware.cause), middleware)
-      : followExternalRewrite(edge, request, middleware, answered);
+      ? accounted.passthrough(middlewareFailedReason(middleware.cause), middleware)
+      : followExternalRewrite(accounted.edge, request, middleware, answered);
   }
   // What the document reports it waited on includes the middleware from here on.
   const timed = {
-    ...edge,
+    ...accounted.edge,
     timings: {
       ...edge.timings,
       middlewareMs,
       middlewareDispatchMs: middleware.middlewareMs,
     },
   };
-  return serveAfterItsMiddleware({ ...input, edge: timed, headerRules }, middleware, preload);
+  return serveAfterItsMiddleware({ ...accounted, edge: timed, headerRules }, middleware, preload);
 }
 
 /**
