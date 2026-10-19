@@ -2,7 +2,13 @@ import type { Entrypoint, Prerender } from './schema.ts';
 import { standsForClass } from './spelling.ts';
 
 const HTTP_OK = 200;
-const ERROR_PAGES: ReadonlySet<string> = new Set(['/_error', '/_global-error', '/_not-found']);
+const ERROR_PAGES: ReadonlySet<string> = new Set([
+  '/404',
+  '/500',
+  '/_error',
+  '/_global-error',
+  '/_not-found',
+]);
 
 /**
  * A completed Node App page's document or whole Flight payload. These are the only page bodies
@@ -29,7 +35,8 @@ export function completeAppPageBody(input: {
     document.parentOutputId !== prerender.parentOutputId ||
     prerender.segmentPath !== undefined ||
     !(document.route === basePath || document.route.startsWith(`${basePath}/`)) ||
-    ERROR_PAGES.has(document.route.slice(basePath.length))
+    ERROR_PAGES.has(document.route.slice(basePath.length)) ||
+    ERROR_PAGES.has(document.pathname.slice(basePath.length))
   ) {
     return false;
   }

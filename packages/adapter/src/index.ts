@@ -273,6 +273,7 @@ async function onBuildComplete(
     outDir,
     blobs,
     cacheHostModule: options.cacheHostModule,
+    requireBundleBlobReader: options.unshippedPrerenderBodies !== undefined,
     sourceMaps: options.sourceMaps,
     keptMaps,
     manifests,
@@ -569,8 +570,11 @@ export interface AdapterOptions {
    *
    * The default is unset: every page body is shipped. A host choosing this must name a nonempty
    * `cacheHostModule` exporting `createBundleBlobReader`, and set maxBytes to a size its reader can
-   * return. A missing or blank host module is rejected when the adapter is created. A Function
-   * falling back to an omitted body waits for that reader and fails if the exact body is unavailable.
+   * return. A missing or blank host module is rejected when the adapter is created. The build
+   * requires a named runtime ESM export, including reexports; a CommonJS host can provide an
+   * ESM facade. This checks the export without executing the host or proving backend availability.
+   * A Function falling back to an omitted body waits for that reader and fails if the exact body is
+   * unavailable.
    * Edge delivery and shipped bodies do not make that read. This trades fallback latency for
    * a smaller Function, and does not promise an improvement in request-time memory or TTFB.
    */

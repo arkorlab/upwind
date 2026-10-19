@@ -364,7 +364,10 @@ an output that needs it stays in that output's Function.
 
 This option requires a nonempty `cacheHostModule` path whose module exports
 `createBundleBlobReader`. A missing or blank module path is rejected when the adapter is created,
-before a build writes output. Its reader receives the exact blob hash and an optional expected byte
+before a build writes output. The build requires a named runtime ESM export, including named or
+star reexports; a CommonJS host can provide an explicit ESM facade. This links the export without
+executing the host, and does not prove the factory's return value or backend availability.
+Its reader receives the exact blob hash and an optional expected byte
 length; older hash-only readers remain compatible. Set `maxBytes` to what that reader can return
 within its own size and time bounds.
 Shipped responses remain synchronous and edge delivery is unchanged. A Function missing an
