@@ -1,9 +1,13 @@
-import { encodeUtf8, sha256Hex } from '@stayingupwind/core/util';
+import { sha256Hex } from '@stayingupwind/core/artifact';
+import { encodeUtf8 } from '@stayingupwind/core/util';
 import type { ArtifactUpload, FetchLike } from '@stayingupwind/runtime/cache-host';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Gateway } from '../src/function/gateway.ts';
 
+type Cancellation = Awaited<ReturnType<ReadableStream<Uint8Array>['cancel']>>;
+
+const UNUSED_RESPONSE = 'the artifact upload response is not used';
 const BYTES = encodeUtf8('the uploaded artifact');
 const UPLOAD: ArtifactUpload = {
   attemptId: 'attempt',
@@ -35,11 +39,11 @@ describe('a single artifact upload releases its unused success response', () => 
     const expected = { sha256: await sha256Hex(BYTES), byteLength: BYTES.byteLength };
 
     await expect(subject.uploadArtifact(UPLOAD)).resolves.toStrictEqual(expected);
-    expect(cancel).toHaveBeenCalledExactlyOnceWith('the artifact upload response is not used');
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(UNUSED_RESPONSE);
   });
 
   it('does not wait for the cancellation acknowledgement', async () => {
-    const cancelled = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<Cancellation>();
     const cancel = vi.fn(() => cancelled.promise);
     const subject = gateway(responseWith(cancel));
     let completed = false;
@@ -52,8 +56,9 @@ describe('a single artifact upload releases its unused success response', () => 
       await vi.waitFor(() => {
         expect(completed).toBe(true);
       });
+
       await expect(result).resolves.toMatchObject({ byteLength: BYTES.byteLength });
-      expect(cancel).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(UNUSED_RESPONSE);
     } finally {
       cancelled.resolve();
       await result;
@@ -67,7 +72,7 @@ describe('a single artifact upload releases its unused success response', () => 
     await expect(subject.uploadArtifact(UPLOAD)).resolves.toMatchObject({
       byteLength: BYTES.byteLength,
     });
-    expect(cancel).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(UNUSED_RESPONSE);
   });
 
   it('keeps the existing failure envelope handling', async () => {

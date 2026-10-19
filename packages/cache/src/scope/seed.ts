@@ -352,6 +352,21 @@ function existingGenerationIds(sql: SqlStorage, plans: readonly SeedPlan[]): Set
   return new Set(rows.map((row) => row.generation_id));
 }
 
+/** Shared batch reservations, after the unchanged tag and delivery-record admission checks. */
+function reserveSeedPlan(
+  plan: SeedPlan,
+  generationId: string,
+  generationIds: ReadonlySet<string>,
+  artifactLengths: Map<string, number>,
+): string | undefined {
+  if (generationIds.has(generationId)) {
+    return 'the build generation id is already in use';
+  }
+  return reserveSeedArtifactLengths(artifactLengths, plan.outputs)
+    ? undefined
+    : 'the build gives different byte lengths for the same artifact SHA';
+}
+
 function applySeedEntries(
   input: TxInput,
   plans: readonly SeedPlan[],
@@ -395,11 +410,8 @@ function applySeedEntries(
       plan.tagsRefused ??
       unwritableRecord(recordFields(input.scopeId, plan), limits.maxRecordBytes);
     const generationId = plan.entry.generation.generationId;
-    if (reason === undefined && generationIds.has(generationId)) {
-      reason = 'the build generation id is already in use';
-    }
-    if (reason === undefined && !reserveSeedArtifactLengths(artifactLengths, plan.outputs)) {
-      reason = 'the build gives different byte lengths for the same artifact SHA';
+    if (reason === undefined) {
+      reason = reserveSeedPlan(plan, generationId, generationIds, artifactLengths);
     }
     if (reason === undefined) {
       seedable.push(plan);
