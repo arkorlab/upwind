@@ -6,7 +6,12 @@ import { createExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { BODY_ROOM_BYTES, UNCOUNTED_BODY_BYTES, withBodyRoom } from '../src/gateway/body-room.ts';
+import {
+  BODY_ROOM_BYTES,
+  tryBodyRoom,
+  UNCOUNTED_BODY_BYTES,
+  withBodyRoom,
+} from '../src/gateway/body-room.ts';
 import {
   dropRecordAnswer,
   dropRecordWhenRead,
@@ -27,12 +32,13 @@ function legacy() {
   const cancelled = vi.fn();
   const stream = new ReadableStream<Uint8Array>(
     {
+      type: 'bytes',
       start(controller) {
-        controller.enqueue(PREFIX);
+        controller.enqueue(PREFIX.slice());
       },
       pull(controller) {
         tailRead();
-        controller.enqueue(TAIL);
+        controller.enqueue(TAIL.slice());
         controller.close();
       },
       cancel: cancelled,
@@ -69,7 +75,11 @@ async function holdingWrite() {
   return { done, writing };
 }
 
-async function currentBytes(scopeId = 'scope'): Promise<Uint8Array> {
+async function currentBytes(
+  scopeId = 'scope',
+  body = TAIL,
+  headers: Readonly<Record<string, string>> = {},
+): Promise<Uint8Array> {
   return encodeGenerationPack(
     {
       schemaVersion: 1,
@@ -86,15 +96,15 @@ async function currentBytes(scopeId = 'scope'): Promise<Uint8Array> {
       producedAt: 100,
       policy: policyFromBuild({ initialRevalidate: 60, initialExpiration: 600 }),
       status: 200,
-      headers: { 'content-type': 'text/html' },
+      headers: { 'content-type': 'text/html', ...headers },
       tags: [],
-      htmlSha256: await sha256Hex(TAIL),
-      htmlLength: TAIL.byteLength,
+      htmlSha256: await sha256Hex(body),
+      htmlLength: body.byteLength,
       postponedSha256: null,
       postponedLength: 0,
       artifacts: [],
     },
-    TAIL,
+    body,
     undefined,
   );
 }
@@ -104,6 +114,17 @@ function responseOf(answer: RecordAnswer | undefined): Response {
   return recordResponse(answer);
 }
 
+async function remainingBytes(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) return concatBytes(chunks);
+    chunks.push(next.value);
+  }
+}
+
 async function nativeBytes(kind: string, scopeId: string): Promise<Uint8Array> {
   switch (kind) {
     case 'current': {
@@ -111,6 +132,9 @@ async function nativeBytes(kind: string, scopeId: string): Promise<Uint8Array> {
     }
     case 'empty': {
       return new Uint8Array();
+    }
+    case 'fragment': {
+      return encodeUtf8('PPR');
     }
     case 'legacy': {
       return new Uint8Array(1024 * 1024).fill(97);
@@ -198,7 +222,7 @@ describe('room for unrecognized delivery record bytes', () => {
     }
   });
 
-  it.each(['legacy', 'older', 'malformed', 'empty', 'current'])(
+  it.each(['legacy', 'older', 'malformed', 'empty', 'fragment', 'current'])(
     'keeps actual KV %s bytes, length and gateway metering exact',
     async (kind) => {
       const scopeId = `legacy_${kind}`;
@@ -243,6 +267,167 @@ describe('room for unrecognized delivery record bytes', () => {
     } finally {
       write.done.resolve(undefined);
       await write.writing;
+    }
+  });
+
+  it('bounds the first response chunk when one producer chunk contains a large current record', async () => {
+    const bytes = await currentBytes('scope', new Uint8Array(1024 * 1024).fill(97));
+    const stream = new ReadableStream<Uint8Array>({
+      type: 'bytes',
+      start(controller) {
+        controller.enqueue(bytes.slice());
+        controller.close();
+      },
+    });
+    records(new Map([['current', stream]]));
+    const answer = await readRecordAnswer(env.CACHE_STATE, 'current', 'scope', 'entry');
+    const response = responseOf(answer);
+    if (response.body === null) throw new TypeError('the record response has no body');
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    let rest: Uint8Array;
+    try {
+      rest = await remainingBytes(reader);
+    } finally {
+      reader.releaseLock();
+    }
+
+    expect(first.value?.byteLength).toBeLessThanOrEqual(4 * 1024);
+    expect(response.headers.get('content-length')).toBe(String(bytes.byteLength));
+    expect(concatBytes([first.value ?? new Uint8Array(), rest])).toStrictEqual(bytes);
+  });
+
+  it('answers a header larger than the first buffer before its gated body arrives', async () => {
+    const bytes = await currentBytes('scope', TAIL, { 'x-padding': 'a'.repeat(8 * 1024) });
+    const headerEnd = 9 + new DataView(bytes.buffer, bytes.byteOffset, 9).getUint32(5, true);
+    const body = Promise.withResolvers<true>();
+    const tailRead = vi.fn();
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        type: 'bytes',
+        start(controller) {
+          controller.enqueue(bytes.slice(0, headerEnd));
+        },
+        async pull(controller) {
+          tailRead();
+          await body.promise;
+          controller.enqueue(bytes.slice(headerEnd));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    records(new Map([['current', stream]]));
+    let answer: RecordAnswer | undefined;
+    try {
+      answer = await readRecordAnswer(env.CACHE_STATE, 'current', 'scope', 'entry');
+
+      expect(answer?.byteLength).toBe(bytes.byteLength);
+      expect(tailRead).not.toHaveBeenCalled();
+    } finally {
+      body.resolve(true);
+      const actual = await responseOf(answer).arrayBuffer();
+
+      expect(new Uint8Array(actual)).toStrictEqual(bytes);
+    }
+  });
+
+  it('rejects a non-byte stream under pressure without pulling or waiting, then reads its retry', async () => {
+    const bytes = await currentBytes();
+    const pulled = vi.fn();
+    const cancelled = vi.fn();
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulled();
+          controller.enqueue(bytes);
+          controller.close();
+        },
+        cancel: cancelled,
+      },
+      { highWaterMark: 0 },
+    );
+    const values = new Map([['current', stream]]);
+    records(values);
+    vi.useFakeTimers();
+    const write = await holdingWrite();
+    try {
+      await expect(readRecordAnswer(env.CACHE_STATE, 'current', 'scope', 'entry')).rejects.toThrow(
+        'no room for the delivery record read',
+      );
+      expect(pulled).not.toHaveBeenCalled();
+      expect(cancelled).toHaveBeenCalledTimes(1);
+    } finally {
+      write.done.resolve(undefined);
+      await write.writing;
+    }
+    values.set(
+      'current',
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+    );
+    const answer = await readRecordAnswer(env.CACHE_STATE, 'current', 'scope', 'entry');
+
+    expect(new Uint8Array(await responseOf(answer).arrayBuffer())).toStrictEqual(bytes);
+  });
+
+  it('holds non-byte current room through sending and returns it on discard', async () => {
+    const bytes = await currentBytes();
+    const cancelled = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+      },
+      cancel: cancelled,
+    });
+    records(new Map([['current', stream]]));
+    vi.useFakeTimers();
+    const answer = await readRecordAnswer(env.CACHE_STATE, 'current', 'scope', 'entry');
+    const competing = tryBodyRoom(BODY_ROOM_BYTES);
+    try {
+      expect(competing).toBeUndefined();
+    } finally {
+      competing?.();
+      dropRecordAnswer(answer);
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    const giveBack = tryBodyRoom(BODY_ROOM_BYTES);
+    try {
+      expect(giveBack).toBeTypeOf('function');
+      expect(cancelled).toHaveBeenCalledTimes(1);
+    } finally {
+      giveBack?.();
+    }
+  });
+
+  it('returns non-byte current room after its streamed body errors', async () => {
+    const bytes = await currentBytes();
+    const headerEnd = 9 + new DataView(bytes.buffer, bytes.byteOffset, 9).getUint32(5, true);
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          controller.enqueue(bytes.subarray(0, headerEnd));
+        },
+        pull() {
+          throw new Error('current body failed');
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    records(new Map([['current', stream]]));
+    const answer = await readRecordAnswer(env.CACHE_STATE, 'current', 'scope', 'entry');
+
+    await expect(responseOf(answer).arrayBuffer()).rejects.toThrow('current body failed');
+
+    const giveBack = tryBodyRoom(BODY_ROOM_BYTES);
+    try {
+      expect(giveBack).toBeTypeOf('function');
+    } finally {
+      giveBack?.();
     }
   });
 
