@@ -80,6 +80,16 @@ describe('traced declaration proof', () => {
     await expect(checkedDeclarationSources(input.app, input)).rejects.toThrow('traced source hash');
   });
 
+  it('rejects a code module disguised as a traced declaration', async () => {
+    const input = await fixture();
+    roots.push(input.app);
+    input.modules[0] = { ...input.modules[0]!, type: 'esm' };
+
+    await expect(checkedDeclarationSources(input.app, input)).rejects.toThrow(
+      'emitted as data modules',
+    );
+  });
+
   it('fails when the actual route trace cannot be read', async () => {
     const input = await fixture();
     roots.push(input.app);

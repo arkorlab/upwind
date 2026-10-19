@@ -58,6 +58,9 @@ export async function checkedDeclarationSources(
   }
   assert.ok(sources.size > 0, 'The pinned fixture must explicitly trace declarations');
   const modules = spec.modules.filter((module) => DECLARATION.test(module.name));
+  for (const module of modules) {
+    assert.equal(module.type, 'data', 'Traced declarations must be emitted as data modules');
+  }
   const emitted = new Map(modules.map((module) => [module.name, module.blob]));
   assert.equal(emitted.size, modules.length, 'Duplicate emitted declaration name');
   assert.deepEqual(

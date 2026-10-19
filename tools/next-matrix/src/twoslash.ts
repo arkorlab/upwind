@@ -357,6 +357,12 @@ function recordedSize(dependencies: unknown): { bytes: number; gzipBytes: number
   return { bytes, gzipBytes };
 }
 
+function failureName(proof: Proof): string {
+  return (
+    proof.failure?.name ?? proof.probeFailure?.name ?? proof.linkedProbeFailure?.name ?? 'unknown'
+  );
+}
+
 /** One semantic check and isolated diagnostic imports, entirely inside CI's local native runtime. */
 export async function twoslashHolds(
   bundle: DeploymentBundle,
@@ -452,7 +458,5 @@ export async function twoslashHolds(
   }
   return proof.status === 'passed'
     ? []
-    : [
-        `Twoslash compatibility failed: ${proof.failure?.name ?? proof.probeFailure?.name ?? 'unknown'}; see the Twoslash proof artifact`,
-      ];
+    : [`Twoslash compatibility failed: ${failureName(proof)}; see the Twoslash proof artifact`];
 }
