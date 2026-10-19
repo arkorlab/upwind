@@ -361,6 +361,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 24.19.2
+      miniflare:
+        specifier: 'catalog:'
+        version: 5.20261012.1-beta(@types/node@24.19.2)
       next:
         specifier: 'catalog:'
         version: 16.4.2(@types/node@24.19.2)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
