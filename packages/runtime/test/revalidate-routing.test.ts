@@ -308,7 +308,9 @@ describe('manual revalidation of a shared terminal shell', () => {
     await revalidate(store, '/prefix/b/foo', false, { invalidated });
 
     expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor).toStrictEqual(descriptor);
-    expect(invalidateNow).not.toHaveBeenCalled();
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+    ]);
     expect(invalidated.tags.size).toBe(0);
   });
 
@@ -359,7 +361,9 @@ describe('manual revalidation of a shared terminal shell', () => {
 
     expect([...invalidated.tags]).toStrictEqual(['another-change']);
     expect(invalidated.revision).toBe(17);
-    expect(invalidateNow).not.toHaveBeenCalled();
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+    ]);
   });
 
   it.each([
@@ -398,7 +402,24 @@ describe('manual revalidation of a shared terminal shell', () => {
       publishing.resolve({ kind: 'published', generationId: 'new' });
       await manual;
     }
+
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+    ]);
   });
+
+  it.each([
+    ['an oversized tag of its own', `/prefix/${'b'.repeat(500)}/foo`, ['b'.repeat(500), 'c']],
+    ['the shared shell named itself', '/prefix/b/[two]', ['b', 'c']],
+  ] as const)(
+    'invalidates nothing more after publishing a shared shell for %s',
+    async (_label, urlPath, classes) => {
+      await revalidate(terminalDeployment({}, true, classes), urlPath);
+
+      expect(regenerate).toHaveBeenCalledTimes(1);
+      expect(invalidateNow).not.toHaveBeenCalled();
+    },
+  );
 
   it('invalidates a long shared class through its bounded identity without an oversized pathname tag', async () => {
     const prefix = 'b'.repeat(500);
