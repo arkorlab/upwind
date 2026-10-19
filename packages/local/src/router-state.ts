@@ -150,7 +150,7 @@ export function stateTreeUnproved(
   if (ruled) {
     return `a rule of next.config asks of the router state it is asked from, ${UNPROVED_STATE}`;
   }
-  if (stack.bundle.config.skipProxyUrlNormalize === true && middleware) {
+  if (middleware && stack.bundle.config.skipProxyUrlNormalize === true) {
     return `the application's middleware sees the router state it is asked from (skipProxyUrlNormalize), ${UNPROVED_STATE}`;
   }
   return undefined;

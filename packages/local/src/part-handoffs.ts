@@ -23,6 +23,7 @@ import { runtimeCacheOf } from '@stayingupwind/host/delivery';
 
 import {
   type CheckedStack,
+  type KeptMiddlewareResult,
   EDGE_HEADER,
   failed,
   skipped,
@@ -210,7 +211,7 @@ interface HandedOn {
   /** What the edge's account says (`x-arkor-edge`). */
   readonly answered: string;
   /** What the middleware decided for the request, where the stack kept it. */
-  readonly decided: MiddlewareResult | undefined;
+  readonly decided: KeptMiddlewareResult | undefined;
   /** Whether a matcher of the build covers the request, which the edge runs the middleware for. */
   readonly covered: boolean;
   /** The headers it was asked with. */
@@ -423,6 +424,9 @@ export function handedOnVerdict(stack: CheckedStack, part: Part, read: HandedOn)
     );
   }
   const reason = handoffReasonOf(answered);
+  if (reason === 'rewrite-status') {
+    return rewriteStatusVerdict(decided, read.covered);
+  }
   if (!HANDOFFS[part.kind].has(reason)) {
     return failed(
       `handed on for a reason the edge gives no request of the router's (${EDGE_HEADER}: ${answered})`,
@@ -436,4 +440,18 @@ export function handedOnVerdict(stack: CheckedStack, part: Part, read: HandedOn)
     ? unrunFailure(decided, read.covered, 'handed it on')
     : undefined;
   return unrun === undefined ? skipped(APPLICATIONS) : failed(unrun);
+}
+
+/** A document or part handed on under the non-200 status of a captured middleware rewrite. */
+export function rewriteStatusVerdict(
+  decided: KeptMiddlewareResult | undefined,
+  covered: boolean,
+): Verdict {
+  if (!covered) {
+    return failed('handed on for a rewrite status, though no middleware matcher covers it');
+  }
+  if (decided?.kind !== 'continue' || decided.rewriteStatus === undefined) {
+    return failed('handed on for a rewrite status, though no such middleware rewrite was kept');
+  }
+  return skipped("the application's middleware gave its rewrite a status");
 }

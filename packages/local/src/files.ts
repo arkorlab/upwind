@@ -1,11 +1,13 @@
 import { headerRulesFor, type StaticFileEntry } from '@stayingupwind/core/manifest';
 import type { MiddlewareResult } from '@stayingupwind/core/paas';
+import { layStoredConfiguredOver } from '@stayingupwind/edge/internal/handlers/configured-headers';
 
 import {
   answeredBy,
   answerTo,
   type CheckedStack,
   CLAIMED,
+  cookieScopeOf,
   EDGE_HEADER,
   failed,
   FROM_STORAGE,
@@ -98,10 +100,12 @@ function typesOf(stack: CheckedStack, url: URL, file: StaticFileEntry): string[]
   const setting = headerRules.flatMap((rule) => {
     const ruled = { sourceRegex: rule.sourceRegex, headers: rule.headers };
     const manifest = { ...stack.manifest, headerRules: [ruled] };
-    const { headers } = headerRulesFor(manifest, url, edgeReads({}));
-    const set = Object.entries(headers).find(([name]) => name.toLowerCase() === CONTENT_TYPE);
+    const configured = headerRulesFor(manifest, url, edgeReads({}));
+    const headers = new Headers();
+    layStoredConfiguredOver(headers, configured, cookieScopeOf(stack), new Set<string>());
+    const type = headers.get(CONTENT_TYPE);
     const always = (rule.has?.length ?? 0) === 0 && (rule.missing?.length ?? 0) === 0;
-    return set === undefined ? [] : [{ type: set[1], always }];
+    return type === null ? [] : [{ type, always }];
   });
   const last = setting.findLastIndex((each) => each.always);
   const types = [
@@ -208,6 +212,11 @@ async function servedVerdict(
   const failure = fileFailure(file, answer, expected);
   if (failure !== undefined) {
     return failed(failure);
+  }
+  // No representation bytes were sent to compare a later range against. Its status, absent
+  // body/framing and retained metadata were checked above; ordinary file follow-ups are unchanged.
+  if (expected.bodylessRewrite) {
+    return failed(undefined);
   }
   return failed(
     await followUpFailure(stack, url, {

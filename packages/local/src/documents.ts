@@ -44,6 +44,7 @@ import {
   whereLanded,
 } from './landings.ts';
 import { noncedOf, restampAt, unstampedFailure } from './nonces.ts';
+import { rewriteStatusVerdict } from './part-handoffs.ts';
 import type { Reading } from './reading.ts';
 import {
   type Application,
@@ -615,6 +616,12 @@ export async function routeVerdict(
     if (bypassed !== undefined) {
       return bypassed;
     }
+  }
+  if (/^passthrough;reason=rewrite-status(?:;|$)/u.test(answered)) {
+    const { decided } = await kept();
+    const covered = middlewareCovers(stack, url, asked.headers);
+    const unkept = keptFailure(answer, decided, covered);
+    return unkept === undefined ? rewriteStatusVerdict(decided, covered) : failed(unkept);
   }
   // A file of the build the middleware rewrote the request onto is the one other answer it may be.
   const ontoFile = answered.startsWith(FROM_STORAGE) && middlewareRan(answer);

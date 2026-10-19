@@ -1,20 +1,21 @@
 import { headerRulesFor, type StaticFileEntry } from '@stayingupwind/core/manifest';
-import type { MiddlewareResult } from '@stayingupwind/core/paas';
 import {
   EDGE_VALIDATED_HEADER,
   IMMUTABLE_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
+  NULL_BODY_STATUSES,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
 import { mergeScopedMiddlewareHeaders } from '@stayingupwind/edge/handlers/responses';
+import { layStoredConfiguredOver } from '@stayingupwind/edge/internal/handlers/configured-headers';
 
 import {
   type CheckedStack,
-  configuredValue,
   cookieFailure,
   cookieScopeOf,
   EDGE_HEADER,
   HTTP_OK,
+  type KeptMiddlewareResult,
   edgeReads,
 } from './answers.ts';
 import { sharedCacheFailure } from './cache-control.ts';
@@ -70,11 +71,15 @@ const JUDGED_APART: ReadonlySet<string> = new Set([
 /** Where the edge did not run the application's middleware on a request, which it answered alone. */
 export const DID_NOT_RUN = 'did-not-run';
 /** What the middleware decided, as the edge ran it, and `DID_NOT_RUN` where it did not run. */
-export type Decided = MiddlewareResult | typeof DID_NOT_RUN;
+export type Decided = KeptMiddlewareResult | typeof DID_NOT_RUN;
 
 /** What a file is expected to be served with, where `next.config` and the middleware have a say. */
 export interface FileExpectation {
   readonly status: number;
+  /** Range support belongs to the stored representation, before a rewrite changes its status. */
+  readonly ranges: 'bytes' | 'none';
+  /** Only a captured rewrite of a base-200 file can remove the representation's body. */
+  readonly bodylessRewrite: boolean;
   /** The type it is served as: what a rule sets on it, or the type it was written as. */
   readonly type: string;
   /**
@@ -146,33 +151,35 @@ export function expectationOf(
   },
 ): FileExpectation {
   const configured = headerRulesFor(stack.manifest, url, edgeReads(read.headers));
-  const set = (header: string): string | undefined =>
-    Object.entries(configured.headers).find(([name]) => name.toLowerCase() === header)?.[1];
-  const rules = {
-    conditioned: configured.conditioned,
-    cacheControl: set(CACHE_CONTROL),
-  };
-  const middleware = read.middleware === DID_NOT_RUN ? undefined : read.middleware;
-  const own = middleware?.kind === 'continue' ? middleware.responseHeaders.get('etag') : null;
   const scope = cookieScopeOf(stack);
   const laid = new Headers();
-  for (const [name, value] of Object.entries(configured.headers)) {
-    if (!ENTITY_HEADERS.has(name.toLowerCase())) {
-      try {
-        laid.set(name, configuredValue(name, value, scope));
-      } catch {
-        // Not a header, which the edge leaves off too (`setConfigured`).
-      }
-    }
-  }
+  layStoredConfiguredOver(laid, configured, scope, ENTITY_HEADERS);
+  const rules = {
+    conditioned: configured.conditioned,
+    cacheControl: laid.get(CACHE_CONTROL) ?? undefined,
+  };
+  const type = laid.get(CONTENT_TYPE) ?? file.contentType;
+  const encoding = laid.get(CONTENT_ENCODING) ?? undefined;
+  const middleware = read.middleware === DID_NOT_RUN ? undefined : read.middleware;
+  const own = middleware?.kind === 'continue' ? middleware.responseHeaders.get('etag') : null;
+  const status = file.status ?? HTTP_OK;
   if (middleware?.kind === 'continue') {
     mergeScopedMiddlewareHeaders(laid, middleware.responseHeaders, scope);
   }
   return {
-    status: file.status ?? HTTP_OK,
-    type: set(CONTENT_TYPE) ?? file.contentType,
+    status:
+      status === HTTP_OK && middleware?.kind === 'continue'
+        ? (middleware.rewriteStatus ?? status)
+        : status,
+    ranges: status === HTTP_OK ? 'bytes' : 'none',
+    bodylessRewrite:
+      status === HTTP_OK &&
+      middleware?.kind === 'continue' &&
+      middleware.rewriteStatus !== undefined &&
+      NULL_BODY_STATUSES.has(middleware.rewriteStatus),
+    type,
     etag: own ?? `"${file.sha256}"`,
-    encoding: set(CONTENT_ENCODING),
+    encoding,
     holding: holdingOf(file, rules, read.answer, read.middleware),
     set: laid,
   };
@@ -235,6 +242,9 @@ export function fileFailure(
   if (answer.status !== expected.status) {
     return `answered ${answer.status}, not ${expected.status}`;
   }
+  if (expected.bodylessRewrite) {
+    return nullBodyFailure(answer) ?? describedFailure(answer, expected, false);
+  }
   if (answer.sha256 !== file.sha256) {
     return `answered ${answer.length} bytes other than its own ${file.byteLength}`;
   }
@@ -244,6 +254,16 @@ export function fileFailure(
     return `answered with Content-Length ${length ?? 'none'}, not the file's ${file.byteLength}`;
   }
   return describedFailure(answer, expected, false);
+}
+
+/** A rewrite status that carries no body also removes the stored body's framing length. */
+function nullBodyFailure(answer: Reading): string | undefined {
+  if (answer.length > 0) {
+    return 'answered with a body under a status that carries none';
+  }
+  return answer.headers['content-length'] === undefined
+    ? undefined
+    : 'answered with Content-Length under a status that carries no body';
 }
 
 /**
@@ -262,6 +282,9 @@ export function fileHeadFailure(
   }
   if (answer.length > 0) {
     return 'answered HEAD with a body';
+  }
+  if (expected.bodylessRewrite) {
+    return nullBodyFailure(answer) ?? describedFailure(answer, expected, false);
   }
   const length = answer.headers['content-length'];
   if (length !== String(file.byteLength)) {
@@ -288,7 +311,7 @@ export function describedFailure(
   }
   // Whether a range of it is asked for, as the edge says of a file it answers as itself.
   const ranges = answer.headers['accept-ranges'];
-  const wanted = expected.status === HTTP_OK ? 'bytes' : 'none';
+  const wanted = expected.ranges;
   if (ranges !== wanted && !(unmodified && ranges === undefined)) {
     return `answered with Accept-Ranges ${ranges ?? 'unsaid'}, not ${wanted}`;
   }

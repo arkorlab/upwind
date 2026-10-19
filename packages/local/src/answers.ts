@@ -1,9 +1,6 @@
-import {
-  middlewareApplies,
-  type MiddlewareResult,
-  readMiddlewareResponse,
-} from '@stayingupwind/core/paas';
+import { middlewareApplies, type MiddlewareResult } from '@stayingupwind/core/paas';
 import { type CookieHostContext, rewriteSetCookieForPreview } from '@stayingupwind/core/request';
+import { readMiddlewareAnswer } from '@stayingupwind/edge/handlers/responses';
 
 import { read, type ReadOptions, type Reading } from './reading.ts';
 import type { CspNonceSetting, LocalStack } from './stack.ts';
@@ -48,6 +45,7 @@ export const FROM_STORAGE = 'static;';
 export const SHELL_ANSWER = 'shell';
 export const CLAIMED = 'claimed by a redirect or rewrite of next.config';
 export const HTTP_OK = 200;
+const REWRITE_HEADER = 'x-middleware-rewrite';
 const SERVER_ERROR_MIN = 500;
 /**
  * How long one answer may take, to its last byte. A document that never ends is a failure of its
@@ -407,13 +405,18 @@ async function jsonOf(response: Response, what: string): Promise<unknown> {
   }
 }
 
+/** A captured middleware answer, including the status the edge keeps for an internal rewrite. */
+export type KeptMiddlewareResult = MiddlewareResult & {
+  readonly rewriteStatus?: number | undefined;
+};
+
 /** What the stack kept of a traced request, as the check reads it. */
 export interface Kept {
   /**
    * What the application's middleware decided, as the edge ran it and read it
-   * (`readMiddlewareResponse`): none where it did not run, or the stack kept nothing of it.
+   * (`readMiddlewareAnswer`): none where it did not run, or the stack kept nothing of it.
    */
-  readonly decided: MiddlewareResult | undefined;
+  readonly decided: KeptMiddlewareResult | undefined;
   /** The record the edge had a Function regenerate in front of the request, where it did. */
   readonly regenerated: Regeneration | undefined;
 }
@@ -459,7 +462,17 @@ export async function keptOf(
     answeredWith.append(name, value);
   }
   const answered = new Response(null, { status: decision.status, headers: answeredWith });
-  return { ...kept, decided: readMiddlewareResponse(answered, url, edgeReads(headers)) };
+  const client = edgeReads(headers);
+  const decided = readMiddlewareAnswer(answered, url, client, client);
+  return {
+    ...kept,
+    decided:
+      decided.kind === 'continue' &&
+      answered.status !== HTTP_OK &&
+      answered.headers.has(REWRITE_HEADER)
+        ? { ...decided, rewriteStatus: answered.status }
+        : decided,
+  };
 }
 
 /** A generation of a route's record: the scope and the entry it is kept under, and its sequence. */

@@ -7,6 +7,7 @@ import {
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
 import { mergeScopedMiddlewareHeaders } from '@stayingupwind/edge/handlers/responses';
+import { layStoredConfiguredOver } from '@stayingupwind/edge/internal/handlers/configured-headers';
 
 import {
   type CheckedStack,
@@ -93,9 +94,7 @@ function laidOn(
       set(name, value);
     }
   }
-  for (const [name, value] of Object.entries(judged.configured.headers)) {
-    set(name, value);
-  }
+  layStoredConfiguredOver(laid, judged.configured, judged.scope, leftBehind);
   if (judged.decided?.kind === 'continue') {
     mergeScopedMiddlewareHeaders(laid, judged.decided.responseHeaders, judged.scope);
   }

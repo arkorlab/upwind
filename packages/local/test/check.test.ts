@@ -245,6 +245,8 @@ const partsAskedEach = new Map<string, IncomingMessage['headers'][]>();
  * it has nothing for it let through as it came.
  */
 const decisions = new Map<string, OutgoingHttpHeaders>();
+/** The captured HTTP status of a middleware rewrite, otherwise 200. */
+const decisionStatuses = new Map<string, number>();
 /**
  * What the middleware decided for each pathname asked for a range of it, where not what it decided
  * for the whole: the traced requests that asked for one, by their ids.
@@ -715,7 +717,7 @@ function answerTrace(trace: string, method: string | undefined, response: Server
       decision:
         !ran || unkept.has(tracedPath) || (headTraces.has(trace) && unkeptOnHead.has(tracedPath))
           ? null
-          : { status: 200, headers },
+          : { status: decisionStatuses.get(tracedPath) ?? 200, headers },
       regenerated: regenerations.get(tracedPath) ?? null,
     }),
   );
@@ -1953,6 +1955,7 @@ describe('what the check makes of the middleware', () => {
     partsAskedEach.clear();
     codingsAsked.clear();
     decisions.clear();
+    decisionStatuses.clear();
     decidedInPart.clear();
     rangeTraces.clear();
     decidedOnCondition.clear();
@@ -12227,5 +12230,270 @@ describe('what the check makes of the middleware', () => {
         reason: `held by the manifest the edge serves by with its prefetch segment /_tree as none, not the ${tree} the build wrote`,
       });
     });
+  });
+
+  describe('captured response and configured-header parity with the edge', () => {
+    it('drops a Connection-nominated middleware tag and still rejects incorrect file bytes metadata', async () => {
+      const files = { '/a.txt': fileOf('kept bytes', TEXT) };
+      decisions.set('/a.txt', {
+        'x-middleware-next': '1',
+        connection: 'ETag',
+        etag: '"discarded"',
+      });
+      const headers = {
+        'content-type': TEXT,
+        'cache-control': GATED,
+        'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+      };
+      answers.set('/a.txt', { headers, body: 'kept bytes' });
+      const kept = await checkStack(
+        withMiddleware(stackOf([], files), [{ sourceRegex: '^/a[.]txt$' }]),
+      );
+      answers.set('/a.txt', { headers: { ...headers, etag: '"discarded"' }, body: 'kept bytes' });
+      const wrong = await checkStack(
+        withMiddleware(stackOf([], files), [{ sourceRegex: '^/a[.]txt$' }]),
+      );
+
+      expect(kept).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(wrong.failures).toStrictEqual([
+        {
+          path: '/a.txt',
+          reason: `answered under the entity tag "discarded", not "${sha256Of('kept bytes')}"`,
+        },
+      ]);
+    });
+
+    it('filters rule-layer hop, platform and nominated fields before deriving a file expectation', async () => {
+      const files = { '/a.txt': fileOf('kept bytes', TEXT) };
+      const rule: HeaderRule = {
+        sourceRegex: '^/a[.]txt$',
+        headers: {
+          connection: 'Content-Type, Content-Encoding, Cache-Control, Set-Cookie, X-Internal',
+          'content-type': 'image/png',
+          'content-encoding': 'gzip',
+          'cache-control': 'public, max-age=999',
+          'set-cookie': 'discarded=1; Path=/',
+          'x-internal': 'discarded',
+          'x-arkor-extra': 'discarded',
+          'keep-alive': 'timeout=5',
+          'x-visible': 'kept',
+        },
+      };
+      const headers = {
+        'content-type': TEXT,
+        'cache-control': REVALIDATE,
+        'x-arkor-edge': FILE_EDGE,
+        'x-visible': 'kept',
+      };
+      answers.set('/a.txt', { headers, body: 'kept bytes' });
+      const kept = await checkStack(stackOf([], files, { headerRules: [rule] }));
+      answers.set('/a.txt', { headers: { ...headers, 'x-visible': 'other' }, body: 'kept bytes' });
+      const wrong = await checkStack(stackOf([], files, { headerRules: [rule] }));
+
+      expect(kept).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(wrong.failures).toStrictEqual([
+        {
+          path: '/a.txt',
+          reason: 'answered with x-visible other, not the kept the application set',
+        },
+      ]);
+    });
+
+    it('filters only configured fields on stored parts and retains an independent recorded field', async () => {
+      const routes = [
+        await routeOf('/', FRONT, {
+          segments: { '/_tree': 'tree bytes' },
+          headers: { 'x-recorded': 'kept' },
+        }),
+      ];
+      const rule: HeaderRule = {
+        sourceRegex: '^/$',
+        has: [{ type: 'header', key: 'rsc', value: '1' }],
+        headers: {
+          connection: 'X-Internal, Set-Cookie',
+          'x-internal': 'discarded',
+          'set-cookie': 'discarded=1; Path=/',
+          'x-arkor-extra': 'discarded',
+          'keep-alive': 'timeout=5',
+          'x-visible': 'kept',
+        },
+      };
+      const document = documentAnswer(FRONT, 'mw=miss;route=/');
+      answers.set('/', {
+        ...document,
+        headers: { ...document.headers, 'x-recorded': 'kept', 'x-visible': 'kept' },
+      });
+      const segment = segmentAnswer('tree bytes');
+      partAnswers.set('/|/_tree', {
+        ...segment,
+        headers: {
+          ...segment.headers,
+          'cache-control': GATED,
+          'x-recorded': 'kept',
+          'x-visible': 'kept',
+        },
+      });
+      const kept = await checkStack(stackOf(routes, {}, { headerRules: [rule] }));
+      partAnswers.set('/|/_tree', {
+        ...segment,
+        headers: { ...segment.headers, 'cache-control': GATED, 'x-visible': 'kept' },
+      });
+      const wrong = await checkStack(stackOf(routes, {}, { headerRules: [rule] }));
+
+      expect(kept).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(wrong.failures).toStrictEqual([
+        {
+          path: '/',
+          reason:
+            'its prefetch segment /_tree, answered with x-recorded none, not the kept the application set',
+        },
+      ]);
+    });
+
+    it.each([404, 418])(
+      'accepts a captured %s same-URL rewrite handed to the Function for documents and parts',
+      async (status) => {
+        const routes = [
+          await routeOf('/', FRONT + REST, {
+            complete: true,
+            segments: { '/_tree': 'tree bytes' },
+            payload: 'payload bytes',
+          }),
+        ];
+        decisions.set('/', { 'x-middleware-rewrite': '/', connection: 'x-middleware-rewrite' });
+        decisionStatuses.set('/', status);
+        const account = 'passthrough;reason=rewrite-status;mw=hit';
+        answers.set('/', handedOnAs(account));
+        partAnswers.set('/|/_tree', handedOnAs(account, RSC));
+        partAnswers.set('/|rsc', handedOnAs(account, RSC));
+        partAnswers.set('/|rsc-prefetch', handedOnAs(account, RSC));
+        partAnswers.set('/|rsc-prefetch-2', handedOnAs(account, RSC));
+        partAnswers.set('/|rsc-prefetch-3', handedOnAs(account, RSC));
+        const result = await checkStack(
+          withMiddleware(stackOf(routes, {}), [{ sourceRegex: '^/$' }]),
+        );
+
+        expect(result).toStrictEqual({
+          checked: 0,
+          failures: [],
+          skipped: [
+            {
+              path: '/',
+              reason: "the application's middleware gave its rewrite a status",
+            },
+          ],
+        });
+        expect(partsAsked.has('/|/_tree')).toBe(true);
+        expect(partsAsked.has('/|rsc')).toBe(true);
+      },
+    );
+
+    it('rejects a claimed rewrite-status handoff without a captured rewrite', async () => {
+      const routes = [await routeOf('/', FRONT)];
+      answers.set('/', handedOnAs('passthrough;reason=rewrite-status;mw=hit'));
+      const result = await checkStack(
+        withMiddleware(stackOf(routes, {}), [{ sourceRegex: '^/$' }]),
+      );
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toContain('rewrite status');
+    });
+
+    it('keeps an error file status when the middleware gives its rewrite another status', async () => {
+      const routes = [await routeOf('/', FRONT)];
+      const files = { '/404.html': { ...fileOf('not here', HTML), status: 404 } };
+      decisions.set('/', { 'x-middleware-rewrite': '/404.html' });
+      decisionStatuses.set('/', 418);
+      const headers = {
+        'content-type': HTML,
+        'cache-control': GATED,
+        'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+      };
+      answers.set('/', { status: 404, headers, body: 'not here' });
+      answers.set('/404.html', {
+        status: 404,
+        headers: { 'content-type': HTML, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'not here',
+      });
+      const result = await checkStack(
+        withMiddleware(stackOf(routes, files), [{ sourceRegex: '^/$' }]),
+      );
+
+      expect(result).toStrictEqual({
+        checked: 1,
+        failures: [],
+        skipped: [
+          {
+            path: '/',
+            reason: "the application's middleware rewrote it onto /404.html",
+          },
+        ],
+      });
+    });
+
+    it('validates a same-file null-body rewrite without using absent bytes as a range oracle', async () => {
+      const files = { '/a.txt': fileOf('kept bytes', TEXT) };
+      decisions.set('/a.txt', { 'x-middleware-rewrite': '/a.txt' });
+      decisionStatuses.set('/a.txt', 204);
+      answers.set('/a.txt', {
+        status: 204,
+        lengthless: true,
+        headers: {
+          'content-type': TEXT,
+          'cache-control': GATED,
+          etag: `"${sha256Of('kept bytes')}"`,
+          'accept-ranges': 'bytes',
+          'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+        },
+        body: '',
+      });
+      const result = await checkStack(
+        withMiddleware(stackOf([], files), [{ sourceRegex: '^/a[.]txt$' }]),
+      );
+
+      expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(rangeTraces.size).toBe(0);
+    });
+
+    it.each([404, 204, 205, 304])(
+      'judges a file under captured rewrite status %s with base representation metadata',
+      async (status) => {
+        const routes = [await routeOf('/', FRONT)];
+        const files = { '/a.txt': fileOf('kept bytes', TEXT) };
+        const absent = status === 204 || status === 205 || status === 304;
+        decisions.set('/', { 'x-middleware-rewrite': '/a.txt' });
+        decisionStatuses.set('/', status);
+        answers.set('/', {
+          status,
+          lengthless: absent,
+          headers: {
+            'content-type': TEXT,
+            'cache-control': GATED,
+            etag: `"${sha256Of('kept bytes')}"`,
+            'accept-ranges': 'bytes',
+            'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+          },
+          body: absent ? '' : 'kept bytes',
+        });
+        answers.set('/a.txt', {
+          headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+          body: 'kept bytes',
+        });
+        const result = await checkStack(
+          withMiddleware(stackOf(routes, files), [{ sourceRegex: '^/$' }]),
+        );
+
+        expect(result).toStrictEqual({
+          checked: 1,
+          failures: [],
+          skipped: [
+            {
+              path: '/',
+              reason: "the application's middleware rewrote it onto /a.txt",
+            },
+          ],
+        });
+      },
+    );
   });
 });
