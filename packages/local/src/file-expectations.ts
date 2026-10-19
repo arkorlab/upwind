@@ -139,6 +139,18 @@ function holdingOf(
   return { kind: file.immutable ? 'immutable' : 'revalidate' };
 }
 
+/** The router Vary fields of the request that reaches the file after middleware. */
+function appendRouterVary(
+  laid: Headers,
+  routed: Headers,
+  middleware: KeptMiddlewareResult | undefined,
+): void {
+  const requestHeaders = middleware?.kind === 'continue' ? middleware.requestHeaders : routed;
+  if (requestHeaders.get(RSC_HEADER) === '1') {
+    laid.append('vary', RSC_VARY);
+  }
+}
+
 /**
  * What the rules of `next.config` set on a file, as the edge applies them to the request it was
  * asked with (`headerRulesFor`).
@@ -170,10 +182,7 @@ export function expectationOf(
   if (middleware?.kind === 'continue') {
     mergeScopedMiddlewareHeaders(laid, middleware.responseHeaders, scope);
   }
-  const requestHeaders = middleware?.kind === 'continue' ? middleware.requestHeaders : routed;
-  if (requestHeaders.get(RSC_HEADER) === '1') {
-    laid.append('vary', RSC_VARY);
-  }
+  appendRouterVary(laid, routed, middleware);
   return {
     status:
       status === HTTP_OK && middleware?.kind === 'continue'
