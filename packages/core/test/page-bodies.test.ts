@@ -88,6 +88,31 @@ describe('host-readable completed App page bodies', () => {
     }
   });
 
+  it.each(
+    ['', '/docs'].flatMap((basePath) => {
+      return ['/404', '/500'].flatMap((name) => {
+        const variants = [false, true];
+        return variants.map((dynamic) => ({ basePath, name, dynamic }));
+      });
+    }),
+  )(
+    'keeps error output $name under $basePath with dynamic route $dynamic embedded',
+    ({ basePath, name, dynamic }) => {
+      const pathname = `${basePath}${name}`;
+      const route = dynamic ? `${basePath}/[slug]` : pathname;
+      const document = { ...DOCUMENT, pathname, route };
+      const entry = { ...ENTRY, pathname: route };
+      const twin = { ...TWIN, pathname: `${pathname}.rsc`, route };
+
+      expect(
+        completeAppPageBody({ document, prerender: document, entry, basePath, rscSuffix: '.rsc' }),
+      ).toBe(false);
+      expect(
+        completeAppPageBody({ document, prerender: twin, entry, basePath, rscSuffix: '.rsc' }),
+      ).toBe(false);
+    },
+  );
+
   it('keeps a base-path root alias that the current runtime cannot select local', () => {
     const root = { ...DOCUMENT, pathname: '/docs' };
 

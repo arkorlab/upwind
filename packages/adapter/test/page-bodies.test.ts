@@ -277,6 +277,31 @@ describe('completed page bodies collected without Function copies', () => {
     expect(both.prerenders.find(({ id }) => id === 'segment')?.segmentPath).toBe('/_tree');
   });
 
+  it.each(['/404', '/500'])(
+    'keeps a reserved concrete $0 document and Flight twin in the Function',
+    async (name) => {
+      const inputs = await pair();
+      const pathname = `${BASE_PATH}${name}`;
+      const reserved = inputs.map((entry) => {
+        const suffix = entry.id === 'document' ? '' : '.rsc';
+        return { ...entry, pathname: `${pathname}${suffix}` };
+      });
+      const selected = await collect(reserved, { unshippedBodies: RANGE });
+
+      expect(selected.shipped).toHaveLength(2);
+      expect(
+        selected.prerenders
+          .map(({ body }) => body?.sha256 ?? '')
+          .toSorted((left, right) => left.localeCompare(right)),
+      ).toStrictEqual(
+        selected.shipped
+          .map(({ sha256 }) => sha256)
+          .toSorted((left, right) => left.localeCompare(right)),
+      );
+      expect(selected.uploaded).toHaveLength(2);
+    },
+  );
+
   it('retains a shared SHA only for routes still requiring Function bytes', async () => {
     const inputs = [
       document(await output('complete', '/docs/items/one', 'shared12')),
