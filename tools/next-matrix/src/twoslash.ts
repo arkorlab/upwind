@@ -21,6 +21,7 @@ const TOTAL_MS = 120_000;
 const HTTP_OK = 200;
 const MAX_BODY_BYTES = 1_048_576;
 const PROBE_MODULE = 'twoslash-import-probe.mjs';
+const DECLARATION_MODULE = /\.d\.[cm]?ts$/u;
 const TWOSLASH_MODULE = /^twoslash-[0-9a-f]{16}(?:\/.*)?$/u;
 const TYPES = {
   esm: 'ESModule',
@@ -85,6 +86,10 @@ interface Proof {
   declarationNamedModules: number;
   tracedDeclarations: number | null;
   modulesVerified: number;
+  moduleBytes: number;
+  declarationBytes: number;
+  nonDeclarationBytes: number;
+  functionSize: { bytes: number; gzipBytes: number } | null;
   linkedModules: LinkedModuleEvidence[];
   egressAttempts: number;
   normalStage:
@@ -141,6 +146,8 @@ async function modulesOf(spec: FunctionSpec, out: string, proof: Proof) {
         'Function module SHA-256',
       );
       proof.modulesVerified += 1;
+      proof.moduleBytes += bytes.byteLength;
+      if (DECLARATION_MODULE.test(module.name)) proof.declarationBytes += bytes.byteLength;
       let kind: LinkedModuleEvidence['kind'] | undefined;
       if (TWOSLASH_MODULE.test(module.name)) kind = 'twoslash-entry';
       else if (module.name.startsWith('__linked/')) kind = 'shared-linked';
@@ -166,6 +173,7 @@ async function modulesOf(spec: FunctionSpec, out: string, proof: Proof) {
       };
     }),
   );
+  proof.nonDeclarationBytes = proof.moduleBytes - proof.declarationBytes;
   const main = path.join('/bundle', spec.mainModule);
   assert.ok(modules.some((module) => module.path === main && module.type === 'ESModule'));
   modules.sort((left, right) => Number(right.path === main) - Number(left.path === main));
@@ -359,10 +367,23 @@ async function tracedDeclarations(app: string): Promise<number | null> {
   }
 }
 
+/** Reuse the adapter's existing upload-size record without recompressing or benchmarking. */
+function recordedSize(dependencies: unknown): { bytes: number; gzipBytes: number } {
+  assert.ok(typeof dependencies === 'object' && dependencies !== null && 'app' in dependencies);
+  const app = dependencies.app;
+  assert.ok(typeof app === 'object' && app !== null && 'size' in app);
+  const size = app.size;
+  assert.ok(typeof size === 'object' && size !== null && 'bytes' in size && 'gzipBytes' in size);
+  const { bytes, gzipBytes } = size;
+  assert.ok(typeof bytes === 'number' && Number.isSafeInteger(bytes) && bytes >= 0);
+  assert.ok(typeof gzipBytes === 'number' && Number.isSafeInteger(gzipBytes) && gzipBytes >= 0);
+  return { bytes, gzipBytes };
+}
+
 /** One semantic check and isolated diagnostic imports, entirely inside CI's local native runtime. */
 export async function twoslashHolds(
   bundle: DeploymentBundle,
-  _dependencies: unknown,
+  dependencies: unknown,
   out: string,
 ): Promise<string[]> {
   const directory = process.env['UPWIND_MATRIX_PROOF_DIR'] ?? out;
@@ -380,6 +401,10 @@ export async function twoslashHolds(
     ).length,
     tracedDeclarations: await tracedDeclarations(path.dirname(out)),
     modulesVerified: 0,
+    moduleBytes: 0,
+    declarationBytes: 0,
+    nonDeclarationBytes: 0,
+    functionSize: null,
     linkedModules: [],
     egressAttempts: 0,
     normalStage: 'preparation',
@@ -402,7 +427,13 @@ export async function twoslashHolds(
       bundle.functions.app.modules.some((module) => module.name === 'app.cjs'),
       'the probe must name the emitted application',
     );
+    proof.functionSize = recordedSize(dependencies);
     const modules = await modulesOf(bundle.functions.app, out, proof);
+    assert.equal(
+      proof.moduleBytes,
+      proof.functionSize.bytes,
+      'recorded Function upload byte length',
+    );
     proof.normalStage = 'runtime-start';
     const runtime = runtimeOf(bundle, modules, proof);
     try {
