@@ -655,6 +655,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       });
 
       await expect(stateFor(scope, plan)).resolves.toStrictEqual(before);
+
       put.mockRestore();
       await upload(scope, plan, started, 'single');
 
@@ -687,6 +688,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
     ).resolves.toMatchObject({ code: 'artifact_missing' });
     await expect(stateFor(scope, plan)).resolves.toStrictEqual(before);
+
     await upload(scope, plan, started, 'single');
 
     await expect(
