@@ -22,9 +22,12 @@ export async function documentAnswerAt(
     requested,
     headers,
     coding,
-    headersOnly: (status, responseHeaders) =>
-      redirectHeaders(status, responseHeaders) ||
-      keyOf(String(responseHeaders[EDGE_HEADER] ?? '')) === undefined,
+    headersOnly: (status, responseHeaders) => {
+      return (
+        redirectHeaders(status, responseHeaders) ||
+        keyOf(String(responseHeaders[EDGE_HEADER] ?? '')) === undefined
+      );
+    },
   });
   if (typeof read === 'string') {
     return read;

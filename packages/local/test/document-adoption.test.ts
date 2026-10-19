@@ -105,7 +105,7 @@ const server = createServer((request, response) => {
     response.flushHeaders();
     return;
   }
-  if (fixture.unknownOpen && pathname === '/unrecorded') {
+  if (pathname === '/unrecorded' && fixture.unknownOpen) {
     response.writeHead(200, {
       'content-type': HTML,
       'content-encoding': 'gzip',
@@ -221,7 +221,7 @@ function metadataStack(): CheckedStack {
   const original = stack();
   const route = original.manifest.routes['/landing'];
   assert(route?.cache !== undefined, 'the landing has a cache delivery policy');
-  const landing = { ...route, cache: { ...route.cache, delivery: 'resume' as const } };
+  const landingRoute = { ...route, cache: { ...route.cache, delivery: 'resume' as const } };
   return {
     ...original,
     manifest: {
@@ -229,8 +229,8 @@ function metadataStack(): CheckedStack {
       htmlLimitedBots: '.*',
       routes: {
         ...original.manifest.routes,
-        '/landing': landing,
-        '/start': { ...landing, pathname: '/start' },
+        '/landing': landingRoute,
+        '/start': { ...landingRoute, pathname: '/start' },
       },
     },
   };
@@ -404,7 +404,7 @@ describe('redirected documents retain their original request and response', () =
 
     expect(failure).toBeUndefined();
     expect(visits.some(({ path: pathname }) => pathname === '/landing')).toBe(true);
-    expect(traces.includes('GET')).toBe(true);
+    expect(traces).toContain('GET');
   });
 
   it('closes an unrecorded streaming landing at its headers through actual follow-ups', async () => {
@@ -424,7 +424,7 @@ describe('redirected documents retain their original request and response', () =
 
     expect(failure).toBeUndefined();
     expect(visits.some(({ path: pathname }) => pathname === '/unrecorded')).toBe(true);
-    expect(traces.includes('GET')).toBe(false);
+    expect(traces).not.toContain('GET');
   });
 
   it.each([
