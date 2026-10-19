@@ -81,16 +81,19 @@ const OUTPUT_LIMIT = 67_108_864;
  * workspace. The `npm` name each of them used was duplicated before this was.
  */
 async function npmCli(): Promise<string> {
+  const npmEntry = 'npm-cli.js';
   const directories = [
     path.dirname(process.execPath),
     ...(process.env['PATH'] ?? '')
       .split(path.delimiter)
       .filter((directory) => directory.length > 0),
   ];
-  const candidates = directories.flatMap((directory) => [
-    path.join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-    path.join(directory, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-  ]);
+  const candidates = directories.flatMap((directory) => {
+    return [
+      path.join(directory, 'node_modules', 'npm', 'bin', npmEntry),
+      path.join(directory, '..', 'lib', 'node_modules', 'npm', 'bin', npmEntry),
+    ];
+  });
   for (const candidate of candidates) {
     try {
       await stat(candidate);
@@ -103,7 +106,7 @@ async function npmCli(): Promise<string> {
   for (const directory of directories) {
     try {
       const candidate = await realpath(path.join(directory, 'npm'));
-      if (path.basename(candidate) === 'npm-cli.js') return candidate;
+      if (path.basename(candidate) === npmEntry) return candidate;
     } catch {
       continue;
     }
