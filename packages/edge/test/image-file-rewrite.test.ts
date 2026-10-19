@@ -39,7 +39,7 @@ interface Options {
   readonly build: Build;
   readonly method?: string;
   readonly target?: string;
-  readonly reserved?: 'always' | 'missing-nominated' | 'over-budget';
+  readonly reserved?: 'always' | 'missing-connection' | 'over-budget';
 }
 
 function fileFor(
@@ -84,8 +84,8 @@ async function rewrittenFile(options: Options) {
             {
               sourceRegex: String.raw`^/_next/static/media/fallback\.hash\.png$`,
               beforeFiles: true,
-              ...(options.reserved === 'missing-nominated' && {
-                missing: [{ type: 'header', key: 'x-private-hop', value: 'present' }],
+              ...(options.reserved === 'missing-connection' && {
+                missing: [{ type: 'header', key: 'connection', value: 'x-private-hop' }],
               }),
               ...(options.reserved === 'over-budget' && {
                 has: [{ type: 'header', key: 'x-budget', value: 'a+a+b' }],
@@ -191,7 +191,7 @@ describe('an optimizer request rewritten to a shipped file', () => {
     { build: 'dpl-only' },
     { build: 'current', target: '/not-a-shipped-file' },
     { build: 'current', reserved: 'always' },
-    { build: 'current', reserved: 'missing-nominated' },
+    { build: 'current', reserved: 'missing-connection' },
     { build: 'current', reserved: 'over-budget' },
   ] as const)('hands an ineligible or reserved target to the Function: %j', async (options) => {
     const result = await rewrittenFile(options);

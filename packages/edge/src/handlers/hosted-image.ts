@@ -169,14 +169,14 @@ function routeWithinBudget(input: HostedImageInput): Promise<Response> {
             true,
           )
         ) {
-          return undefined;
+          return;
         }
       } catch (error) {
         if (!(error instanceof PatternBudgetExceededError)) {
           throw error;
         }
         // The rewritten target is no longer an optimizer request; its Function can route it.
-        return undefined;
+        return;
       }
       return serveHostedFile({ ...input, configured }, middleware.url, middleware, dispatches);
     },
