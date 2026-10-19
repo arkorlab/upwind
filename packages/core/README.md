@@ -41,6 +41,15 @@ adapter), which is also why `sideEffects: false` is true of it: nothing here ini
 | `./util`       | Bytes, streams, deadlines, ids, small LRUs, CRC32, HTML scanning                                                                                                                                                                                                                                          |
 | `./schema`     | The validator the schemas above are written with: zod 4's API, as much of it as they use, and zod's answers                                                                                                                                                                                               |
 
+## Serving route bodies
+
+`classifyRequest` identifies a request's class; it does not authorize a response or run application
+code. Before serving `route-body`, a host must enforce the route gate and routing/header rules,
+run any matching middleware, and honour its response, redirect, rewrite or failure. Reclassify the
+URL and headers after middleware before selecting a body. Serve only the current trusted record
+in the manifest's deployment and cache scope, with its freshness and privacy vetoes checked. A
+classified route or a public response header alone grants no permission to share its bytes.
+
 ## The seam with a host
 
 `./paas` is the only part that describes two parties talking. The protocol is headers, all prefixed
