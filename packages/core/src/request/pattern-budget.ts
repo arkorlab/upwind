@@ -1,4 +1,5 @@
 import { BUDGET, literalGate, patternCost, type PatternCost, stepsAt } from './pattern-cost.ts';
+import { createShortPatternCheck } from './required-literal-length.ts';
 
 /**
  * Where a test of a routing pattern is held to what it may cost (`patternCost`): run where the value
@@ -42,7 +43,19 @@ export function createPatternBudget(): PatternBudget {
   return { remaining: BUDGET };
 }
 
-const budget: { on: boolean; current?: () => PatternBudget | undefined } = { on: false };
+const budget: {
+  on: boolean;
+  current?: () => PatternBudget | undefined;
+  tooShort?: (pattern: RegExp, value: string) => boolean;
+} = { on: false };
+
+/** Each pattern's cost, read once for each kind of value; `null` where it cannot be bounded. */
+interface Costs {
+  lineFree?: PatternCost | null;
+  any?: PatternCost | null;
+}
+
+const costs = new WeakMap<RegExp, Costs>();
 
 /**
  * Bound every test of a routing pattern from here on (`testWithin`, `execWithin`): what the edge
@@ -66,15 +79,8 @@ export function budgetPatterns(current?: () => PatternBudget | undefined): void 
   if (current !== undefined) {
     budget.current = current;
   }
+  budget.tooShort ??= createShortPatternCheck(budget, costs);
 }
-
-/** Each pattern's cost, read once for each kind of value; `null` where it cannot be bounded. */
-interface Costs {
-  lineFree?: PatternCost | null;
-  any?: PatternCost | null;
-}
-
-const costs = new WeakMap<RegExp, Costs>();
 
 function costFor(pattern: RegExp, lineFree: boolean): PatternCost | null {
   let known = costs.get(pattern);
@@ -194,12 +200,14 @@ export function assertAffordable(pattern: RegExp, value: string): void {
 
 /** `pattern.test(value)`, where its cost is within what a test is allowed (`assertAffordable`). */
 export function testWithin(pattern: RegExp, value: string): boolean {
+  if (budget.tooShort?.(pattern, value) === true) return false;
   assertAffordable(pattern, value);
   return pattern.test(value);
 }
 
 /** `pattern.exec(value)`, where its cost is within what a test is allowed (`assertAffordable`). */
 export function execWithin(pattern: RegExp, value: string): RegExpExecArray | null {
+  if (budget.tooShort?.(pattern, value) === true) return null;
   assertAffordable(pattern, value);
   return pattern.exec(value);
 }
