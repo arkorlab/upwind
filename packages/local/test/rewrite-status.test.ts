@@ -15,8 +15,20 @@ function dataRequest(): { readonly stack: CheckedStack; readonly part: Part } {
     pathname: '/about',
     status: 200,
     headers: {},
-    shell: { sha256: EMPTY_SHA, byteLength: 0, contentType: 'text/html' },
-    pagesData: { sha256: EMPTY_SHA, byteLength: 0, contentType: 'application/json' },
+    shell: {
+      sha256: EMPTY_SHA,
+      byteLength: 0,
+      contentType: 'text/html',
+      encoding: 'identity',
+    },
+    pagesData: {
+      identity: {
+        sha256: EMPTY_SHA,
+        byteLength: 0,
+        contentType: 'application/json',
+        encoding: 'identity',
+      },
+    },
   };
   const manifest = buildProjectManifest({
     projectId: 'site',
@@ -93,9 +105,9 @@ function dataRequest(): { readonly stack: CheckedStack; readonly part: Part } {
       what: 'props',
       url: new URL('/_next/data/build/about.json', site),
       headers: {},
-      built: route.pagesData,
+      built: route.pagesData?.identity,
       route,
-      builtOn: (entry) => entry.pagesData,
+      builtOn: (entry) => entry.pagesData?.identity,
       exact: true,
     },
   };

@@ -3,6 +3,7 @@ import {
   EDGE_VALIDATED_HEADER,
   IMMUTABLE_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
+  NULL_BODY_STATUS,
   NULL_BODY_STATUSES,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
@@ -256,12 +257,13 @@ export function fileFailure(
   return describedFailure(answer, expected, false);
 }
 
-/** A rewrite status that carries no body also removes the stored body's framing length. */
+/** No stored body's framing survives a bodyless rewrite; a 205 may still declare its empty size. */
 function nullBodyFailure(answer: Reading): string | undefined {
   if (answer.length > 0) {
     return 'answered with a body under a status that carries none';
   }
-  return answer.headers['content-length'] === undefined
+  const length = answer.headers['content-length'];
+  return length === undefined || (length === '0' && answer.status === NULL_BODY_STATUS.resetContent)
     ? undefined
     : 'answered with Content-Length under a status that carries no body';
 }

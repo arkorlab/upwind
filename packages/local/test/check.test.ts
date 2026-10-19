@@ -53,9 +53,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { type CheckResult, checkStack } from '../src/check.ts';
 import { NO_COOKIE_CHANGES } from '../src/cookie-jar.ts';
+import { fileHeadFailure } from '../src/file-expectations.ts';
 import { flowFailure } from '../src/part-flows.ts';
 import type { Part } from '../src/part-marks.ts';
 import { originAt, partsOf } from '../src/parts.ts';
+import { read } from '../src/reading.ts';
 import { redirectsFrom } from '../src/redirects.ts';
 import type { CspNonceSetting, LocalStack } from '../src/stack.ts';
 import type { Regeneration } from '../src/workers/protocol.ts';
@@ -12432,28 +12434,69 @@ describe('what the check makes of the middleware', () => {
       });
     });
 
-    it('validates a same-file null-body rewrite without using absent bytes as a range oracle', async () => {
-      const files = { '/a.txt': fileOf('kept bytes', TEXT) };
-      decisions.set('/a.txt', { 'x-middleware-rewrite': '/a.txt' });
-      decisionStatuses.set('/a.txt', 204);
-      answers.set('/a.txt', {
-        status: 204,
-        lengthless: true,
-        headers: {
-          'content-type': TEXT,
-          'cache-control': GATED,
-          etag: `"${sha256Of('kept bytes')}"`,
-          'accept-ranges': 'bytes',
-          'x-arkor-edge': `${FILE_EDGE};mw=hit`,
-        },
-        body: '',
-      });
-      const result = await checkStack(
-        withMiddleware(stackOf([], files), [{ sourceRegex: '^/a[.]txt$' }]),
-      );
+    it.each([
+      { status: 204, length: undefined },
+      { status: 205, length: '0' },
+    ])(
+      'validates a same-file $status rewrite without using absent bytes as a range oracle',
+      async ({ status, length }) => {
+        const files = { '/a.txt': fileOf('kept bytes', TEXT) };
+        decisions.set('/a.txt', { 'x-middleware-rewrite': '/a.txt' });
+        decisionStatuses.set('/a.txt', status);
+        answers.set('/a.txt', {
+          status,
+          lengthless: true,
+          headers: {
+            'content-type': TEXT,
+            ...(length !== undefined && { 'content-length': length }),
+            'cache-control': GATED,
+            etag: `"${sha256Of('kept bytes')}"`,
+            'accept-ranges': 'bytes',
+            'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+          },
+          body: '',
+        });
+        const result = await checkStack(
+          withMiddleware(stackOf([], files), [{ sourceRegex: '^/a[.]txt$' }]),
+        );
 
-      expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
-      expect(rangeTraces.size).toBe(0);
+        expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+        expect(rangeTraces.size).toBe(0);
+      },
+    );
+
+    it('rejects a nonzero length on a bodyless 205 HEAD received over HTTP', async () => {
+      const file = fileOf('kept bytes', TEXT);
+      const stack = stackOf([], { '/a.txt': file });
+      const headers = {
+        'content-type': TEXT,
+        'content-length': '1',
+        'cache-control': GATED,
+        etag: `"${file.sha256}"`,
+        'accept-ranges': 'bytes',
+        'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+      };
+      answers.set('/a.txt', { status: 205, headers, onHead: headers, body: '' });
+      const answer = await read(new URL('/a.txt', stack.url), {
+        method: 'HEAD',
+        headers: {},
+        deadlineMs: 1000,
+      });
+
+      expect(answer.length).toBe(0);
+      expect(answer.headers['content-length']).toBe('1');
+      expect(
+        fileHeadFailure(file, answer, {
+          status: 205,
+          ranges: 'bytes',
+          bodylessRewrite: true,
+          type: TEXT,
+          etag: `"${file.sha256}"`,
+          encoding: undefined,
+          holding: { kind: 'private' },
+          set: new Headers(),
+        }),
+      ).toBe('answered with Content-Length under a status that carries no body');
     });
 
     it.each([404, 204, 205, 304])(
