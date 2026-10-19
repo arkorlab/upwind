@@ -143,7 +143,10 @@ export function stateTreeUnproved(
   // request fields it can replace: browser-side path and companion conditions cannot exclude it.
   const ruled =
     before.some((rule) => readsState(rule) && ruleCouldApply(rule, url, handed)) ||
-    after.some((rule) => readsState(rule) && (middleware || ruleCouldApply(rule, url, handed)));
+    after.some((rule) => {
+      if (!readsState(rule)) return false;
+      return middleware || ruleCouldApply(rule, url, handed);
+    });
   if (ruled) {
     return `a rule of next.config asks of the router state it is asked from, ${UNPROVED_STATE}`;
   }
