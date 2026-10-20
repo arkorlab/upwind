@@ -21,6 +21,7 @@ export interface RuntimeBundleInput {
   readonly edge: boolean;
   readonly wasm: boolean;
   readonly cacheHostModule: string | undefined;
+  readonly requireBundleBlobReader?: boolean | undefined;
 }
 
 /**
@@ -50,6 +51,7 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
         edge: input.edge,
         wasm: input.wasm,
         cacheHostModule: input.cacheHostModule,
+        requireBundleBlobReader: input.requireBundleBlobReader,
       }),
     ],
     transform: {
