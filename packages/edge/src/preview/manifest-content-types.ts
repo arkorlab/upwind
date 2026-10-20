@@ -8,18 +8,31 @@ import { retainSafePreloads } from './manifest-preloads.ts';
 const MIN_RESPONSE_STATUS = 200;
 const MAX_RESPONSE_STATUS = 599;
 const INVALID_RESPONSE_VALUE = /[\0\r\n]/u;
-const HTTP_EDGE_WHITESPACE = /^[\t\r\n ]+|[\t\r\n ]+$/gu;
+
+function httpWhitespace(character: string | undefined): boolean {
+  return character === '\t' || character === '\r' || character === '\n' || character === ' ';
+}
+
+/** Match Workers' edge trim with bounded scans, without copying or backtracking. */
+function invalidAfterHttpWhitespace(value: string): boolean {
+  let start = 0;
+  let end = value.length;
+  while (start < end && httpWhitespace(value[start])) start += 1;
+  while (end > start && httpWhitespace(value[end - 1])) end -= 1;
+  for (let at = start; at < end; at += 1) {
+    const character = value[at];
+    if (character === '\0' || character === '\r' || character === '\n') return true;
+  }
+  return false;
+}
 
 /** Workers permits Unicode; repeated stored values need only one cold transport check. */
 function responseValueCheck(): (value: string | undefined) => void {
   const checked = new Set<string>();
   return (value) => {
     if (value === undefined || checked.has(value)) return;
-    if (INVALID_RESPONSE_VALUE.test(value)) {
-      const normalized = value.replace(HTTP_EDGE_WHITESPACE, '');
-      if (INVALID_RESPONSE_VALUE.test(normalized)) {
-        throw new TypeError('the stored response header value cannot be sent');
-      }
+    if (INVALID_RESPONSE_VALUE.test(value) && invalidAfterHttpWhitespace(value)) {
+      throw new TypeError('the stored response header value cannot be sent');
     }
     checked.add(value);
   };

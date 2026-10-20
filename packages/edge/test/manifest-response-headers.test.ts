@@ -137,8 +137,8 @@ describe.each(['schema', 'digest'] as const)(
         cache: 'MISS',
       });
 
-      expect(route.headers).toEqual({ 'Content-Security-Policy': value });
-      expect(other.headers).toEqual(route.headers);
+      expect(route.headers).toStrictEqual({ 'Content-Security-Policy': value });
+      expect(other.headers).toStrictEqual(route.headers);
       expect(images.contentSecurityPolicy).toBe(value);
       expect(documentHeaders.get(CSP)).toBe(sent);
       expect(imageHeaders.get(CSP)).toBe(sent);
@@ -157,7 +157,7 @@ describe.each(['schema', 'digest'] as const)(
       assert(route !== undefined);
       const headers = replayedDocumentHeaders(route.headers, { headers: {}, conditioned: false });
 
-      expect(route.headers).toEqual({ 'x-not-replayed': ignored });
+      expect(route.headers).toStrictEqual({ 'x-not-replayed': ignored });
       expect(headers.has('x-not-replayed')).toBe(false);
       expect(subject.result.value.images).toBeUndefined();
     });
