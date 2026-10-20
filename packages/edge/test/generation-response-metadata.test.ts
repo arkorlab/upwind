@@ -7,21 +7,26 @@ import {
   policyFromBuild,
 } from '@stayingupwind/core/cache';
 import type { HeaderRule } from '@stayingupwind/core/manifest';
+import { REGENERATE_HEADER } from '@stayingupwind/core/paas';
 import { NEXT_RESUME_HEADER } from '@stayingupwind/core/request';
 import { encodeUtf8 } from '@stayingupwind/core/util';
 import {
   DEFAULT_DELIVERY_POLICY,
   DEFAULT_RUNTIME_CACHE_SETTINGS,
+  resolvePolicy,
 } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { allowAnotherAsk, regenerationHeaders, shouldAsk } from '../src/cache/regenerate.ts';
+import { type DocumentInput, handleDocument } from '../src/handlers/document.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { EdgeMetric } from '../src/observability/metrics.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
+import { edgeStrategyRegistry } from '../src/strategies/registry.ts';
 import { htmlResponse, navigation, pprDocument, seedSite } from './helpers/site.ts';
 
 const NOW = 100;
@@ -118,9 +123,10 @@ async function fixture(copies = false, headerRules?: HeaderRule[]) {
       htmlResponse(body, { headers: { 'cache-control': 'private, no-store' } }),
     );
   });
+  const clock = { now: NOW };
   const runtime = standaloneRuntime(env, {
-    now: () => NOW,
-    memory: createEdgeMemory(() => NOW),
+    now: () => clock.now,
+    memory: createEdgeMemory(() => clock.now),
     dispatchApp: dispatch,
   });
   runtime.memory.shells.set(
@@ -166,7 +172,7 @@ async function fixture(copies = false, headerRules?: HeaderRule[]) {
   const get = vi.spyOn(env.CACHE_STATE, 'get');
   const artifactGet = vi.spyOn(env.ARTIFACTS, 'get');
   await env.ARTIFACTS.put(PART_KEY, PART);
-  return { edge, site, manifest, dispatch, match, get, artifactGet, points };
+  return { edge, site, manifest, dispatch, match, get, artifactGet, points, clock, settings };
 }
 
 async function seed(saved: Awaited<ReturnType<typeof record>>) {
@@ -196,6 +202,24 @@ function serve(test: Awaited<ReturnType<typeof fixture>>, part = false, method =
       policyLookup: Promise.resolve({ kind: 'found', source: 'exact', policy: test.edge.policy }),
     },
   );
+}
+
+function documentInput(test: Awaited<ReturnType<typeof fixture>>) {
+  const passthrough = vi.fn<DocumentInput['passthrough']>(() => {
+    return Promise.resolve(htmlResponse(FALLBACK));
+  });
+  const input: DocumentInput = {
+    request: navigation('/'),
+    entry: test.manifest.routes['/']!,
+    manifest: test.manifest,
+    resolved: resolvePolicy(edgeStrategyRegistry, test.edge.policy),
+    edge: test.edge,
+    middleware: undefined,
+    shellRead: undefined,
+    generation: undefined,
+    passthrough,
+  };
+  return { input, passthrough };
 }
 
 describe('replaying generation response metadata at its use boundary', () => {
@@ -239,6 +263,101 @@ describe('replaying generation response metadata at its use boundary', () => {
     expect(await response.text()).toBe(FALLBACK);
     expect(test.dispatch).toHaveBeenCalledTimes(1);
     expect(test.dispatch.mock.calls[0]?.[1].headers.has(NEXT_RESUME_HEADER)).toBe(false);
+    await waitOnExecutionContext(test.edge.ctx);
+  });
+
+  it('returns a stale partial record regeneration ask when metadata prevents its resume', async () => {
+    const test = await fixture();
+    await seed(await record({ partial: true, headers: { [CSP]: 'default-src a\0b' } }));
+    test.clock.now += 60_001;
+
+    const response = await serve(test);
+
+    expect(await response.text()).toBe(FALLBACK);
+    expect(test.dispatch).toHaveBeenCalledTimes(1);
+    expect(test.dispatch.mock.calls[0]?.[1].headers.has(NEXT_RESUME_HEADER)).toBe(false);
+    expect(shouldAsk(test.edge, KEY.entryId, test.settings)).toBe(true);
+    await waitOnExecutionContext(test.edge.ctx);
+    expect(test.points.map((point) => point.subrequests)).toStrictEqual([1]);
+  });
+
+  it('keeps the cooldown after a healthy stale partial resume owns its regeneration ask', async () => {
+    const test = await fixture();
+    const saved = await record({ partial: true });
+    await seed(saved);
+    test.clock.now += 60_001;
+
+    const response = await serve(test);
+
+    expect(await response.text()).toContain(saved.document.suffixText);
+    expect(test.dispatch).toHaveBeenCalledTimes(1);
+    expect(test.dispatch.mock.calls[0]?.[1].headers.get(NEXT_RESUME_HEADER)).toBe('1');
+    expect(test.dispatch.mock.calls[0]?.[1].headers.get(REGENERATE_HEADER)).toBe('background');
+    expect(shouldAsk(test.edge, KEY.entryId, test.settings)).toBe(false);
+    await waitOnExecutionContext(test.edge.ctx);
+  });
+
+  it('returns the generation reservation exactly once ahead of an unused build callback', async () => {
+    const test = await fixture();
+    const saved = await record({ partial: true, headers: { [CSP]: 'a\0b' } });
+    const { input, passthrough } = documentInput(test);
+    expect(shouldAsk(test.edge, KEY.entryId, test.settings)).toBe(true);
+    const abandoned = vi.fn(allowAnotherAsk(test.edge, KEY.entryId));
+    const buildAbandoned = vi.fn();
+
+    const response = await handleDocument({
+      ...input,
+      generation: {
+        pack: saved.pack,
+        validity: 'stale',
+        source: 'memory',
+        readBytes: undefined,
+        lookupMs: 0,
+        member: false,
+        regeneration: regenerationHeaders(test.edge, 'background', {
+          pack: saved.pack,
+          entryId: KEY.entryId,
+        }),
+        onAbandoned: abandoned,
+        onServed: undefined,
+      },
+      onBuildAbandoned: buildAbandoned,
+    });
+
+    expect(await response.text()).toBe(FALLBACK);
+    expect(abandoned).toHaveBeenCalledTimes(1);
+    expect(buildAbandoned).not.toHaveBeenCalled();
+    expect(passthrough).toHaveBeenCalledExactlyOnceWith('shell-corrupt', undefined, '/');
+    expect(shouldAsk(test.edge, KEY.entryId, test.settings)).toBe(true);
+    expect(test.dispatch).not.toHaveBeenCalled();
+    await waitOnExecutionContext(test.edge.ctx);
+  });
+
+  it('returns an undispatched build reservation and preserves the real shell accounting', async () => {
+    const test = await fixture();
+    const { input, passthrough } = documentInput(test);
+    expect(shouldAsk(test.edge, 'build-completion', test.settings)).toBe(true);
+    const abandoned = vi.fn(allowAnotherAsk(test.edge, 'build-completion'));
+    const shell = Promise.resolve({
+      kind: 'ok' as const,
+      read: { bytes: HTML, source: 'kv', latencyMs: 0 },
+    });
+
+    const response = await handleDocument({
+      ...input,
+      entry: { ...input.entry, headers: { [CSP]: 'a\0b' } },
+      shellRead: shell,
+      onBuildAbandoned: abandoned,
+    });
+
+    expect(await response.text()).toBe(FALLBACK);
+    expect(abandoned).toHaveBeenCalledTimes(1);
+    expect(shouldAsk(test.edge, 'build-completion', test.settings)).toBe(true);
+    expect(test.dispatch).not.toHaveBeenCalled();
+    expect(passthrough).toHaveBeenCalledTimes(1);
+    const accounting = passthrough.mock.calls[0]?.[3]?.abandonedShells;
+    expect(accounting).toBeDefined();
+    await expect(accounting?.requests).resolves.toBe(1);
     await waitOnExecutionContext(test.edge.ctx);
   });
 

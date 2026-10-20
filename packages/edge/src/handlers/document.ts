@@ -25,7 +25,11 @@ import { resumeContinuation } from '../strategies/continuation-resume.ts';
 import { loadShell, type ShellLoadResult, storageReadsOf } from '../strategies/shell-loader.ts';
 import { mintCspNonce, rewriteDocumentNonces } from './csp-nonce.ts';
 import { deliveryFor, type Layering, type ServedGeneration } from './document-delivery.ts';
-import { delegateSandboxedDocument, headToApplication } from './document-handoffs.ts';
+import {
+  delegateCorruptDocument,
+  delegateSandboxedDocument,
+  headToApplication,
+} from './document-handoffs.ts';
 import {
   ACCEPT_ENCODING_HEADER,
   documentCacheControl,
@@ -57,7 +61,7 @@ import {
   type MiddlewareTiming,
   routedHeaders,
 } from './middleware.ts';
-import { abandonShellRead, observeServed, withShellAccounting } from './observer.ts';
+import { observeServed } from './observer.ts';
 import type { PassthroughWait } from './passthrough.ts';
 import { dispatchedSoFar, dispatchesMade } from './upstream.ts';
 
@@ -625,15 +629,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
   try {
     headers = replayedDocumentHeaders(recorded, rules);
   } catch {
-    // A retained record may predate transport validation. Keep its policy intact by asking for
-    // a whole application response, before a continuation that could only finish its body starts.
-    if (generation !== undefined) {
-      input.edge.ctx.waitUntil(shellLookup);
-      return input.passthrough('shell-corrupt', input.middleware, entry.pathname);
-    }
-    const accounted = withShellAccounting(input);
-    abandonShellRead(accounted.edge, shellLookup);
-    return accounted.passthrough('shell-corrupt', input.middleware, entry.pathname);
+    return delegateCorruptDocument(input, shellLookup);
   }
   const delegated = delegateSandboxedDocument(input, complete, headers, shellLookup);
   if (delegated !== undefined) {
