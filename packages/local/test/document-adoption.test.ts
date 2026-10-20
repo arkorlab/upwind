@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import {
+  createServer,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+  type ServerResponse,
+} from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
@@ -16,7 +21,8 @@ import type { CheckedStack } from '../src/answers.ts';
 import { BROWSER_CODINGS } from '../src/codings.ts';
 import { documentAnswerAt } from '../src/document-adoption.ts';
 import { readDocument } from '../src/document-reading.ts';
-import { read } from '../src/reading.ts';
+import { routeVerdict } from '../src/documents.ts';
+import { read, type Reading } from '../src/reading.ts';
 import { documentRedirects } from '../src/redirects.ts';
 import { routeFollowUpFailure } from '../src/route-follow-ups.ts';
 
@@ -42,6 +48,12 @@ const fixture = {
 };
 const visits: { readonly path: string; readonly headers: IncomingMessage['headers'] }[] = [];
 const traces: string[] = [];
+const direct = {
+  headers: undefined as OutgoingHttpHeaders | undefined,
+  prefix: '',
+  opened: Promise.withResolvers<ServerResponse>(),
+  closed: Promise.withResolvers<true>(),
+};
 
 function codingOf(request: IncomingMessage): 'br' | 'gzip' | undefined {
   if (fixture.override !== undefined) return fixture.override;
@@ -80,6 +92,19 @@ function backstage(request: IncomingMessage, response: ServerResponse): void {
   response.writeHead(204).end();
 }
 
+/** A direct response whose headers arrive now and whose body only the test may finish. */
+function directResponse(request: IncomingMessage, response: ServerResponse): boolean {
+  if (request.url !== '/landing' || direct.headers === undefined) return false;
+  response.writeHead(200, direct.headers);
+  response.once('close', () => {
+    direct.closed.resolve(true);
+  });
+  response.flushHeaders();
+  if (direct.prefix !== '') response.write(direct.prefix);
+  direct.opened.resolve(response);
+  return true;
+}
+
 const server = createServer((request, response) => {
   const pathname = request.url ?? '';
   if (pathname.startsWith('/_backstage/')) {
@@ -87,6 +112,7 @@ const server = createServer((request, response) => {
     return;
   }
   visits.push({ path: pathname, headers: request.headers });
+  if (directResponse(request, response)) return;
   if (pathname === '/start') {
     response.writeHead(307, { location: '/middle' }).end();
     return;
@@ -257,6 +283,10 @@ describe('redirected documents retain their original request and response', () =
     fixture.unknownOpen = false;
     fixture.middleClosed = Promise.withResolvers<true>();
     fixture.terminalClosed = Promise.withResolvers<true>();
+    direct.headers = undefined;
+    direct.prefix = '';
+    direct.opened = Promise.withResolvers<ServerResponse>();
+    direct.closed = Promise.withResolvers<true>();
     visits.length = 0;
     traces.length = 0;
   });
@@ -266,6 +296,115 @@ describe('redirected documents retain their original request and response', () =
     server.close();
     await once(server, 'close');
     rmSync(fixture.bundleDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    { reason: 'external-rewrite', coding: undefined, prefix: '' },
+    { reason: 'middleware', coding: 'gzip', prefix: 'not a gzip stream' },
+    { reason: 'rewritten', coding: undefined, prefix: '' },
+    { reason: 'rewrite-not-proved', coding: 'gzip', prefix: 'not a gzip stream' },
+  ] as const)(
+    'releases a direct application-owned $reason stream at its headers',
+    async ({ reason, coding, prefix }) => {
+      const account = `passthrough;reason=${reason};mw=hit`;
+      direct.headers = {
+        'content-type': 'text/event-stream',
+        'x-arkor-edge': account,
+        ...(coding !== undefined && { 'content-encoding': coding }),
+      };
+      direct.prefix = prefix;
+      const own = stack();
+      const route = own.manifest.routes['/landing'];
+      assert(route !== undefined, 'the directly requested route is recorded');
+      const readings: Reading[] = [];
+      let response: ServerResponse | undefined;
+      try {
+        const pending = routeVerdict(own, Buffer.byteLength(DOCUMENT), {
+          key: '/landing',
+          route,
+          requested: '/landing',
+          headers: { 'accept-encoding': coding ?? 'identity' },
+          coding,
+          answered: (answer) => {
+            readings.push(answer);
+          },
+        });
+        response = await direct.opened.promise;
+        const verdict = await pending;
+        await direct.closed.promise;
+
+        expect(verdict).toStrictEqual({
+          kind: 'skipped',
+          reason: `answered by the application's middleware (${account})`,
+        });
+        expect(readings).toHaveLength(1);
+        expect(readings[0]).toMatchObject({ truncated: true, length: 0 });
+        expect(visits.map(({ path: pathname }) => pathname)).toStrictEqual(['/landing']);
+        expect(traces).toStrictEqual(['PUT', 'DELETE']);
+      } finally {
+        response?.destroy();
+      }
+    },
+  );
+
+  it.each([
+    { label: 'valid', body: DOCUMENT, type: HTML, verdict: { kind: 'ok' } },
+    {
+      label: 'changed shell bytes',
+      body: DOCUMENT.replaceAll('landing', 'changed'),
+      type: HTML,
+      verdict: { kind: 'failed', reason: 'does not begin with the shell the build wrote for it' },
+    },
+    {
+      label: 'wrong media type',
+      body: DOCUMENT,
+      type: 'text/plain',
+      verdict: {
+        kind: 'failed',
+        reason: `answered as text/plain, not ${HTML}`,
+      },
+    },
+  ])('still reads and judges an ordinary direct document with $label', async (row) => {
+    direct.headers = {
+      'content-type': row.type,
+      'content-encoding': 'gzip',
+      'cache-control': NO_STORE_CACHE_CONTROL,
+      vary: 'accept-encoding',
+      location: '/not-a-redirect',
+      'x-arkor-edge': 'shell;cont=none;policy=default;enc=gzip-live;route=/landing',
+    };
+    const own = stack();
+    const route = own.manifest.routes['/landing'];
+    assert(route !== undefined, 'the directly requested route is recorded');
+    const readings: Reading[] = [];
+    let response: ServerResponse | undefined;
+    try {
+      const pending = routeVerdict(own, Buffer.byteLength(DOCUMENT), {
+        key: '/landing',
+        route,
+        requested: '/landing',
+        headers: HEADERS,
+        coding: 'gzip',
+        answered: (answer) => {
+          readings.push(answer);
+        },
+      });
+      response = await direct.opened.promise;
+      response.end(gzipSync(row.body));
+      const verdict = await pending;
+      await direct.closed.promise;
+
+      expect(verdict).toStrictEqual(row.verdict);
+      expect(readings).toHaveLength(1);
+      expect(readings[0]).toMatchObject({
+        truncated: false,
+        length: Buffer.byteLength(row.body),
+        sha256: createHash('sha256').update(row.body).digest('hex'),
+      });
+      expect(traces).toStrictEqual(['PUT', 'GET', 'DELETE']);
+    } finally {
+      response?.destroy();
+    }
   });
 
   it.each(['gzip', 'br', BROWSER_CODINGS] as const)(

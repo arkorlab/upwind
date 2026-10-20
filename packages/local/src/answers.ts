@@ -253,7 +253,7 @@ export function middlewareCovers(
 }
 
 /** What the edge said of how it answered. */
-export function answeredBy(answer: Reading): string {
+export function answeredBy(answer: Pick<Reading, 'headers'>): string {
   return String(answer.headers[EDGE_HEADER] ?? '');
 }
 
@@ -271,11 +271,16 @@ export function policyFailure(stack: LocalStack, answer: Reading): string | unde
 }
 
 /** Whether the application's middleware answered the request itself, and what the edge said. */
-export function middlewareAnswered(answer: Reading): string | undefined {
+export function middlewareAnswered(answer: Pick<Reading, 'headers'>): string | undefined {
   const answered = answeredBy(answer);
   return MIDDLEWARE_ANSWERED.test(answered)
     ? `answered by the application's middleware (${answered})`
     : undefined;
+}
+
+/** The same ownership test at response headers, before a direct document's body is read. */
+export function middlewareHeadersOnly(_status: number, headers: Reading['headers']): boolean {
+  return middlewareAnswered({ headers }) !== undefined;
 }
 
 /**

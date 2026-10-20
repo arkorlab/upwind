@@ -11540,7 +11540,7 @@ describe('what the check makes of the middleware', () => {
           {
             path: '/',
             reason:
-              'its prefetch segment /_tree, redirected to /login, answered as text/plain, not text/x-component',
+              'its prefetch segment /_tree, redirected to /login, answered as text/plain; charset=utf-8, not text/x-component',
           },
         ],
       },
@@ -11552,7 +11552,7 @@ describe('what the check makes of the middleware', () => {
           {
             path: '/',
             reason:
-              'its prefetch segment /_tree, redirected to /login, answered as text/plain, not text/x-component',
+              'its prefetch segment /_tree, redirected to /login, answered as text/plain; charset=utf-8, not text/x-component',
           },
         ],
       },

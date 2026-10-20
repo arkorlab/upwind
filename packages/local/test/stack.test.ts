@@ -522,6 +522,51 @@ describe('a local stack', () => {
     START_MS,
   );
 
+  it(
+    'preserves synthetic client coding metadata when probing standalone middleware',
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'upwind-local-middleware-cf-'));
+      let stack: LocalStack | undefined;
+      try {
+        await writeBundle(
+          dir,
+          `export default {
+          fetch(request) {
+            const valid = request.cf.clientAcceptEncoding === request.headers.get('x-client-codings')
+              && request.headers.get('accept-encoding') === 'gzip, br';
+            return valid
+              ? new Response(null, { headers: { 'x-middleware-next': '1' } })
+              : new Response('incorrect client coding metadata', { status: 500 });
+          },
+        };`,
+        );
+        stack = await startStack({ bundleDir: path.join(dir, OUT_DIR_NAME) });
+        const probe = new URL('middleware?path=/guard', stack.backstage);
+        const codings = ['identity', 'zstd', 'gzip, br'];
+        const responses = await Promise.all(
+          codings.map((coding) =>
+            fetch(probe, {
+              headers: { 'accept-encoding': coding, 'x-client-codings': coding },
+            }),
+          ),
+        );
+        const decisions = await Promise.all(
+          responses.map(async (response) => {
+            const decision: unknown = await response.json();
+            return decision;
+          }),
+        );
+
+        expect(responses.map((response) => response.status)).toStrictEqual(codings.map(() => 200));
+        expect(decisions).toStrictEqual(codings.map(() => ({ kind: 'continue', status: 200 })));
+      } finally {
+        await stack?.dispose();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    START_MS,
+  );
+
   it('hands a Function a request said to come over HTTPS under that origin, as a check’s is', async () => {
     const stack = started();
 

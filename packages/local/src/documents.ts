@@ -14,6 +14,7 @@ import {
   withGenerationEvidence,
   middlewareCovers,
   middlewareAnswered,
+  middlewareHeadersOnly,
   middlewareRan,
   policyFailure,
   SHELL_ANSWER,
@@ -554,7 +555,8 @@ export async function routeVerdict(
   const url = new URL(asked.requested, stack.site);
   await using tracing = await traced(stack, asked.headers);
   const { headers, trace } = tracing;
-  const answer = await readDocument(stack, headBytes, asked, headers);
+  const request = { ...asked, headersOnly: middlewareHeadersOnly };
+  const answer = await readDocument(stack, headBytes, request, headers);
   if (typeof answer === 'string') {
     return failed(answer);
   }

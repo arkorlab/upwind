@@ -106,13 +106,18 @@ function headerFixture(request: IncomingMessage, response: ServerResponse): bool
   return false;
 }
 
-const server = createServer((request, response) => {
+/** The transport fixture takes precedence over the existing header-only fixtures. */
+function responseFixture(request: IncomingMessage, response: ServerResponse): boolean {
   if (request.headers['x-transport-test'] === '1') {
     viaVisits.push(transportVisit(request));
     response.end('via loopback authority');
-    return;
+    return true;
   }
-  if (headerFixture(request, response)) return;
+  return headerFixture(request, response);
+}
+
+const server = createServer((request, response) => {
+  if (responseFixture(request, response)) return;
   const coded = Object.hasOwn(CODED, request.url ?? '') ? CODED[request.url ?? ''] : undefined;
   if (coded !== undefined) {
     const [coding, bytes] = coded;
@@ -351,7 +356,7 @@ describe('an answer read as it streams', () => {
       },
     ]);
     expect(otherVisits).toStrictEqual([]);
-    expect(reading.length).toBe(0);
+    expect(reading).toHaveLength(0);
     expect(reading.sha256).toBe(sha256Of(''));
   });
 
