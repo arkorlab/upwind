@@ -21,7 +21,7 @@ export async function staticPagesOf(
   scopeId: string,
   enabled = true,
 ): Promise<StaticPageEntry[]> {
-  if (!enabled) return [];
+  if (!enabled || bundle.config.trailingSlash) return [];
   const placed = placedRoutes(bundle.entrypoints);
   const pages: StaticPageEntry[] = [];
   const members = staticPagesMembersOf(bundle);

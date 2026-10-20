@@ -1,3 +1,5 @@
+import type { DeploymentBundle } from '@stayingupwind/core/bundle';
+import { deriveEntry } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
 import { cacheEntryIdsOf } from '../../deploy/src/cache-seed.ts';
@@ -19,29 +21,33 @@ function assertAssembled(
   if (value.kind !== 'assembled') throw new Error(value.reason);
 }
 
+function assemble(bundle: DeploymentBundle): ReturnType<typeof assembleManifest> {
+  return assembleManifest({
+    bundle,
+    previous: undefined,
+    projectId: 'site',
+    runId: 'run',
+    originHost: 'site.example',
+    deploymentId: bundle.deploymentId,
+    fingerprint: {
+      dplId: bundle.deploymentId,
+      buildId: 'build',
+      assetSetHash: 'a'.repeat(64),
+      observedAt: bundle.generatedAt,
+    },
+    app: { deploymentId: bundle.deploymentId, scriptName: 'app-script' },
+    generatedAt: bundle.generatedAt,
+    encodings: new Map(),
+    preloads: {},
+    recoverySource: "'sha256-recovery'",
+    nextVersionJudged: true,
+  });
+}
+
 describe('version-three Pages build publication', () => {
   it('assembles native parameter descriptors without creating a class generation', async () => {
     const fixture = await fallbackPageFixture();
-    const manifest = await assembleManifest({
-      bundle: fixture.bundle,
-      previous: undefined,
-      projectId: 'site',
-      runId: 'run',
-      originHost: 'site.example',
-      deploymentId: fixture.bundle.deploymentId,
-      fingerprint: {
-        dplId: fixture.bundle.deploymentId,
-        buildId: 'build',
-        assetSetHash: 'a'.repeat(64),
-        observedAt: fixture.bundle.generatedAt,
-      },
-      app: { deploymentId: fixture.bundle.deploymentId, scriptName: 'app-script' },
-      generatedAt: fixture.bundle.generatedAt,
-      encodings: new Map(),
-      preloads: {},
-      recoverySource: "'sha256-recovery'",
-      nextVersionJudged: true,
-    });
+    const manifest = await assemble(fixture.bundle);
 
     expect(manifest.kind).toBe('assembled');
 
@@ -167,6 +173,82 @@ describe('version-three Pages build publication', () => {
       expect(pagesFallbacksOf(bundle)).toStrictEqual([]);
     },
   );
+
+  it.each([false, 2] as const)(
+    'preserves native routing and raw seed identity without trailing-slash sharing for revalidate %j',
+    async (initialRevalidate) => {
+      const fixture = await fallbackPageFixture();
+      const page = {
+        ...fixture.page,
+        route: '/news',
+        pathname: '/news',
+        allowQuery: [],
+        parentFallbackMode: undefined,
+        initialRevalidate,
+        initialExpiration: undefined,
+      };
+      const bundle = {
+        ...fixture.bundle,
+        config: { ...fixture.bundle.config, trailingSlash: true },
+        entrypoints: [{ id: 'page', kind: 'pages' as const, pathname: '/news' }],
+        prerenders: [page],
+      };
+      const seeded = await seedRouteFor(bundle, page, {
+        scopeId: bundle.deploymentId,
+        generatedAt: FALLBACK_NOW,
+      });
+      const { entryId } = await deriveEntry(bundle.deploymentId, {
+        kind: 'pages',
+        route: '/news',
+        pathname: '/news',
+      });
+      const manifest = await assemble(bundle);
+
+      assertAssembled(manifest);
+
+      expect(seeded?.input.descriptor).toStrictEqual({
+        kind: 'pages',
+        route: '/news',
+        pathname: '/news',
+      });
+      expect(manifest.manifest.staticPages).toBeUndefined();
+      expect(manifest.manifest.routes['/news/']?.cache?.entryId).toBe(entryId);
+      expect(manifest.manifest.pagesFallbacks).toBeUndefined();
+    },
+  );
+
+  it.each([
+    { name: 'another group', groupId: 99 },
+    { name: 'another source', parentOutputId: 'foreign-page' },
+    { name: 'same owner', groupId: 1, parentOutputId: 'page' },
+  ])('imports no paired props for duplicate-path ambiguity: $name', async (changes) => {
+    const fixture = await fallbackPageFixture();
+    const foreign = {
+      ...fixture.twin,
+      ...changes,
+      id: 'foreign-props',
+      body: { sha256: 'd'.repeat(64), byteLength: 30, contentType: 'application/json' },
+    };
+    const bundle = {
+      ...fixture.bundle,
+      prerenders: [fixture.page, foreign, fixture.twin, fixture.fallback],
+    };
+    const props = shellsOf(bundle).filter((shell) => shell.kind === 'static-data');
+
+    await expect(staticPagesOf(bundle, 'deployment')).resolves.toStrictEqual([]);
+    expect(props).toStrictEqual([]);
+  });
+
+  it('keeps parameter fallback authority disabled for trailing-slash builds', async () => {
+    const fixture = await fallbackPageFixture();
+    const bundle = {
+      ...fixture.bundle,
+      config: { ...fixture.bundle.config, trailingSlash: true },
+    };
+
+    await expect(staticPagesOf(bundle, 'deployment')).resolves.toStrictEqual([]);
+    expect(pagesFallbacksOf(bundle)).toStrictEqual([]);
+  });
 
   it('keeps a missing or private props twin outside concrete sharing authority', async () => {
     const fixture = await fallbackPageFixture();

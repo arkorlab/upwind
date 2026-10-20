@@ -10,6 +10,7 @@ import {
   staticFallbackPagesOf,
   type ServableOptions,
 } from '@stayingupwind/core/bundle';
+import { pagesDataOf } from '@stayingupwind/host/bundle';
 
 /**
  * What a deployment stores an artifact as: a page's own document, a prefetch segment or the whole
@@ -99,8 +100,8 @@ export function shellsOf(
   for (const data of props) {
     add(data.prerender, 'static-data');
   }
-  for (const member of members.values()) {
-    const data = bundle.prerenders.find((prerender) => prerender.pathname === member.dataPathname);
+  for (const member of members.keys()) {
+    const data = pagesDataOf(bundle, member);
     if (data !== undefined) add(data, 'static-data');
   }
   return [...shells.values()];

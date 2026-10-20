@@ -217,7 +217,7 @@ function outputOf(
  * (`@stayingupwind/core/bundle`): a bundle does not hold a pathname to one prerender, and another
  * group's prerender of the same data pathname holds the props of another render.
  */
-function pagesDataOf(bundle: DeploymentBundle, prerender: Prerender): Prerender | undefined {
+export function pagesDataOf(bundle: DeploymentBundle, prerender: Prerender): Prerender | undefined {
   const pathname = pagesDataPathnameUnder(
     bundle.buildId,
     bundle.config.basePath,
