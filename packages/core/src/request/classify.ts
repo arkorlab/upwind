@@ -11,12 +11,10 @@ import {
   matchDynamicRoute,
   memberRouteFor,
   type RouteEntry,
-  type RouteBodyEntry,
-  type StaticPageEntry,
   type ProjectManifest,
-  type StaticFileEntry,
   staticFileBuildWithoutDpl,
 } from '../manifest/index.ts';
+import type { StaticFileEntry } from '../manifest/schema.ts';
 import { acceptsHtml } from './accept.ts';
 import { blockingMetadataReason } from './blocking-metadata.ts';
 import { anyConditionHolds } from './conditions.ts';
@@ -42,78 +40,12 @@ import {
 } from './constants.ts';
 import { parseCookieHeader } from './cookies.ts';
 import { dataRequestHeaders } from './headers.ts';
+import { fallbackPagesRequest } from './pages-fallback.ts';
 import { hasRouteBodyControlHeader } from './route-bodies.ts';
 import { staticPageRequestPrivate } from './static-pages.ts';
+import type { PassthroughReason, RequestClass, ClassifyInput } from './types.ts';
 
-export type PassthroughReason =
-  | 'method'
-  | 'service-worker'
-  | 'range'
-  | 'well-known'
-  | 'next-internal'
-  | 'router-header'
-  | 'internal-header'
-  | 'bot'
-  | 'html-limited-bots'
-  | 'bypass-cookie'
-  | 'vdpl-mismatch'
-  | 'cookie'
-  | 'bypass-query'
-  | 'dpl-mismatch'
-  | 'sec-fetch-dest'
-  | 'sec-fetch-mode'
-  | 'accept'
-  | 'no-manifest'
-  | 'repeated-slash'
-  | 'route-body-bypass'
-  | 'static-page-bypass'
-  | 'route-not-proved';
-
-export type RequestClass =
-  /** `entry.pathname` is the manifest key: the pathname itself, or the template of its class. */
-  | { readonly kind: 'document'; readonly entry: RouteEntry }
-  /** A complete non-HTML body, read only from the host's trusted cache record. */
-  | { readonly kind: 'route-body'; readonly entry: RouteBodyEntry }
-  /** An exact static Pages build document, subject to its versioned record proof. */
-  | { readonly kind: 'static-page'; readonly entry: StaticPageEntry }
-  | { readonly kind: 'immutable-asset-candidate'; readonly originUrl: URL }
-  /** A file the manifest holds by content: served from storage, and nobody is asked. */
-  | { readonly kind: 'static-file'; readonly pathname: string; readonly file: StaticFileEntry }
-  | { readonly kind: 'rsc' }
-  /**
-   * A router prefetch of part of a page: `segmentPath` is the `next-router-segment-prefetch` it
-   * asks under, and `entry` the route it belongs to — `undefined` where the build proved none, as
-   * it is for a document at a pathname the build never wrote.
-   */
-  | {
-      readonly kind: 'segment-prefetch';
-      readonly segmentPath: string;
-      readonly entry: RouteEntry | undefined;
-    }
-  /**
-   * A router's request for the whole payload of a page: the build payload, or a cache-backed
-   * App Router generation which can supply one. `entry` is the route its URL names, or absent
-   * for a dynamic class with no shell whose concrete member record the host must check.
-   * Other requests for React Server Components remain `rsc`.
-   */
-  | { readonly kind: 'rsc-payload'; readonly entry: RouteEntry | undefined }
-  /**
-   * A Pages Router client's request for a page's props, at a page whose props the build wrote
-   * (`RouteEntry.pagesData`): `entry` is that page's route. Any other `/_next/data` request is the
-   * Function's, as every one was before.
-   */
-  | { readonly kind: 'pages-data'; readonly entry: RouteEntry }
-  | { readonly kind: 'action' }
-  | { readonly kind: 'passthrough'; readonly reason: PassthroughReason };
-
-export interface ClassifyInput {
-  readonly method: string;
-  readonly url: URL;
-  readonly headers: Headers;
-  readonly manifest: ProjectManifest | undefined;
-  readonly deployment: DeploymentFingerprint | undefined;
-}
-
+export type { PassthroughReason, RequestClass, ClassifyInput } from './types.ts';
 /**
  * Only a top-level document is served from the edge, and only when the client says it is one.
  *
@@ -137,8 +69,11 @@ const DOCUMENT_REQUEST_INTERNAL_PREFIXES: readonly string[] = ['x-middleware-', 
 
 const BYPASS_QUERY: PassthroughReason = 'bypass-query';
 const RSC_CLASS = 'rsc';
+const PAGES_FALLBACK_PRIVACY = 3;
 const DPL_MISMATCH: PassthroughReason = 'dpl-mismatch';
 const ROUTE_BODY_BYPASS: PassthroughReason = 'route-body-bypass';
+const STATIC_PAGE_BYPASS: PassthroughReason = 'static-page-bypass';
+const INTERNAL_HEADER: PassthroughReason = 'internal-header';
 
 function passthrough(reason: PassthroughReason): RequestClass {
   return { kind: 'passthrough', reason };
@@ -498,7 +433,7 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   }
   const segmentPath = segmentPrefetchOf(headers);
   if (hasInternalDocumentHeader(headers, segmentPath !== undefined)) {
-    return passthrough('internal-header');
+    return passthrough(INTERNAL_HEADER);
   }
   const late = classifyByPins(url, headers, segmentPath !== undefined, input.deployment);
   if (late !== undefined) {
@@ -562,10 +497,18 @@ function classifyEarly(input: ClassifyInput): RequestClass | undefined {
     classifyByMethod(input.method, headers) ??
     (headers.has('service-worker') ? passthrough('service-worker') : undefined) ??
     (headers.has('range') ? passthrough('range') : undefined) ??
+    fallbackPagesRequest(input, fallbackPageControls) ??
     pagesDataRequest(input) ??
     classifyByPath(url) ??
     classifyByRouterHeaders(headers);
   return early?.kind === RSC_CLASS ? (payloadRequest(input) ?? early) : early;
+}
+
+/** Protocol gates shared with exact static pages; run before a new representation is selected. */
+function fallbackPageControls(input: ClassifyInput, pagesData: boolean): RequestClass | undefined {
+  if (hasInternalDocumentHeader(input.headers, false, pagesData))
+    return passthrough(INTERNAL_HEADER);
+  return classifyByPins(input.url, input.headers, false, input.deployment);
 }
 
 /** A route body needs no browser navigation hints, but keeps every request-level bypass. */
@@ -576,12 +519,14 @@ function routeBodyRequest(input: ClassifyInput): RequestClass | undefined {
   }
   const staticPage =
     manifest.staticPages === undefined ? undefined : findStaticPage(manifest, url.pathname);
+  if (staticPage?.staticPagePrivacy === PAGES_FALLBACK_PRIVACY)
+    return passthrough(STATIC_PAGE_BYPASS);
   const entry = staticPage ?? findRouteBody(manifest, url.pathname);
   if (entry === undefined) {
     return undefined;
   }
   const bypass: PassthroughReason =
-    staticPage === undefined ? ROUTE_BODY_BYPASS : 'static-page-bypass';
+    staticPage === undefined ? ROUTE_BODY_BYPASS : STATIC_PAGE_BYPASS;
   if (manifest.cache === undefined) {
     return passthrough(bypass);
   }
@@ -589,7 +534,7 @@ function routeBodyRequest(input: ClassifyInput): RequestClass | undefined {
     return passthrough('repeated-slash');
   }
   if (hasInternalDocumentHeader(headers, false)) {
-    return passthrough('internal-header');
+    return passthrough(INTERNAL_HEADER);
   }
   const pins = classifyByPins(url, headers, false, input.deployment);
   if (pins !== undefined) {

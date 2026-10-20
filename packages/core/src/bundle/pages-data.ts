@@ -96,6 +96,11 @@ export function pagesDataPathnameUnder(
   return `${dataPrefixOf(buildId, basePath)}${page}${DATA_SUFFIX}`;
 }
 
+/** A manifest's already-spelled build prefix with the canonical props name beneath it. */
+export function pagesDataPathnameAtPrefix(prefix: string, pathname: string): string {
+  return `${prefix}${pagesDataPathnameUnder('', '', pathname).slice(DATA_PREFIX.length)}`;
+}
+
 /**
  * The page a data pathname of this build names, under the base path as the build names its pages —
  * the root of the base path is the base path itself: the page whose props `pagesDataPathnameUnder`
