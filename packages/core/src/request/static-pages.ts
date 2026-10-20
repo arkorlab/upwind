@@ -7,6 +7,9 @@ const PRIVATE_HEADERS = [
   'if-range',
   'if-unmodified-since',
   'proxy-authorization',
+  'x-matched-path',
+  'x-next-revalidate-tag-token',
+  'x-next-revalidated-tags',
 ];
 
 /** Version 1 admits no query, visitor state or conditional representation of static Pages HTML. */
