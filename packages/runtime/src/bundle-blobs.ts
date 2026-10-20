@@ -18,7 +18,7 @@
 /** The bytes of one blob, or `undefined` where the host does not hold it. */
 export type BundleBlobReader = (
   sha256: string,
-  /** The bundle's known size, so a buffering host can bound the read before taking any bytes. */
+  /** Known immutable size, so a buffering host can reject an oversized read before taking bytes. */
   expectedByteLength?: number,
 ) => Promise<Uint8Array | undefined>;
 
@@ -68,6 +68,9 @@ function detail(error: unknown): string {
  * same thing, the segment is served by nobody and the client navigates instead of prefetching.
  * Both are logged, because a host that offers this and is failing would otherwise be
  * indistinguishable from one that never offered it.
+ *
+ * A completed page body may use this reader too (`built-page.ts`). Its caller requires the exact
+ * recorded body, and fails if this reader returns none rather than rendering a different answer.
  *
  * Nothing is memoised. A read happens once per request, on a path the host could not serve, and a
  * cache of a build's bytes in an isolate serving every other request is not worth that; the host

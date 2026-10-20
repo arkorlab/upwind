@@ -3,6 +3,7 @@ import { pageOfPagesData } from '../bundle/pages-data.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import {
   findRouteBody,
+  findStaticPage,
   findRouteEntry,
   findStaticFile,
   isExactPathname,
@@ -11,6 +12,7 @@ import {
   memberRouteFor,
   type RouteEntry,
   type RouteBodyEntry,
+  type StaticPageEntry,
   type ProjectManifest,
   type StaticFileEntry,
   staticFileBuildWithoutDpl,
@@ -40,6 +42,7 @@ import {
 } from './constants.ts';
 import { parseCookieHeader } from './cookies.ts';
 import { dataRequestHeaders } from './headers.ts';
+import { staticPageRequestPrivate } from './static-pages.ts';
 
 export type PassthroughReason =
   | 'method'
@@ -62,6 +65,7 @@ export type PassthroughReason =
   | 'no-manifest'
   | 'repeated-slash'
   | 'route-body-bypass'
+  | 'static-page-bypass'
   | 'route-not-proved';
 
 export type RequestClass =
@@ -69,6 +73,8 @@ export type RequestClass =
   | { readonly kind: 'document'; readonly entry: RouteEntry }
   /** A complete non-HTML body, read only from the host's trusted cache record. */
   | { readonly kind: 'route-body'; readonly entry: RouteBodyEntry }
+  /** An exact static Pages build document, subject to its versioned record proof. */
+  | { readonly kind: 'static-page'; readonly entry: StaticPageEntry }
   | { readonly kind: 'immutable-asset-candidate'; readonly originUrl: URL }
   /** A file the manifest holds by content: served from storage, and nobody is asked. */
   | { readonly kind: 'static-file'; readonly pathname: string; readonly file: StaticFileEntry }
@@ -571,12 +577,16 @@ function routeBodyRequest(input: ClassifyInput): RequestClass | undefined {
   if (manifest === undefined) {
     return undefined;
   }
-  const entry = findRouteBody(manifest, url.pathname);
+  const staticPage =
+    manifest.staticPages === undefined ? undefined : findStaticPage(manifest, url.pathname);
+  const entry = staticPage ?? findRouteBody(manifest, url.pathname);
   if (entry === undefined) {
     return undefined;
   }
+  const bypass: PassthroughReason =
+    staticPage === undefined ? ROUTE_BODY_BYPASS : 'static-page-bypass';
   if (manifest.cache === undefined) {
-    return passthrough(ROUTE_BODY_BYPASS);
+    return passthrough(bypass);
   }
   if (url.pathname.includes('//')) {
     return passthrough('repeated-slash');
@@ -588,10 +598,18 @@ function routeBodyRequest(input: ClassifyInput): RequestClass | undefined {
   if (pins !== undefined) {
     return pins;
   }
-  return isReserved(manifest, url, headers, true) ||
+  if (staticPage !== undefined && staticPageRequestPrivate(url, headers)) {
+    return passthrough(bypass);
+  }
+  if (
+    isReserved(manifest, url, headers, true) ||
     anyConditionHolds(entry.bypassFor ?? [], url, headers)
-    ? passthrough(ROUTE_BODY_BYPASS)
-    : { kind: 'route-body', entry };
+  ) {
+    return passthrough(bypass);
+  }
+  return staticPage === undefined
+    ? { kind: 'route-body', entry }
+    : { kind: 'static-page', entry: staticPage };
 }
 
 /**

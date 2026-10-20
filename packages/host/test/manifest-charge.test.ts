@@ -251,3 +251,21 @@ describe('the memory held by route-body mappings', () => {
     ).toBe(80 * objects);
   });
 });
+
+describe('the memory held by trusted static Pages mappings', () => {
+  it('charges the optional table and bypass objects beside existing route-body mappings', () => {
+    const plain = manifestOf([]);
+    const page = {
+      pathname: '/page',
+      route: '/page',
+      entryId: 'entry_page',
+      bypassFor: [{ type: 'header' as const, key: 'x-bypass', value: 'yes' }],
+    };
+    const routeBodies = { '/route': { ...page, pathname: '/route', route: '/route' } };
+    const bodies = { ...plain, routeBodies };
+    const listed = { ...bodies, staticPages: { '/page': page } };
+
+    expect(manifestCharge(listed, 0) - manifestCharge(bodies, 0)).toBe(4 * 80);
+    expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(8 * 80);
+  });
+});
