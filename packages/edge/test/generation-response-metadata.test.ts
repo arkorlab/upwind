@@ -179,6 +179,10 @@ async function seed(saved: Awaited<ReturnType<typeof record>>) {
   await env.CACHE_STATE.put(RECORD_KEY, saved.bytes);
 }
 
+function isRecordKey(key: unknown): boolean {
+  return typeof key === 'string' && key === RECORD_KEY;
+}
+
 function serve(test: Awaited<ReturnType<typeof fixture>>, part = false, method = 'GET') {
   const request = navigation('/', {
     method,
@@ -248,7 +252,7 @@ describe('replaying generation response metadata at its use boundary', () => {
         value,
       );
       expect(test.edge.runtime.memory.generations.get(RECORD_KEY)).toBe(held);
-      expect(test.get.mock.calls.filter(([key]) => key === RECORD_KEY)).toHaveLength(1);
+      expect(test.get.mock.calls.filter(([key]) => isRecordKey(key))).toHaveLength(1);
       await waitOnExecutionContext(test.edge.ctx);
       expect(test.points.map((point) => point.subrequests)).toStrictEqual([1, 1]);
     },
@@ -508,7 +512,7 @@ describe('replaying generation response metadata at its use boundary', () => {
       expect(first.headers.get(CSP)).toBe(expected);
       expect(second.headers.get(CSP)).toBe(expected);
       expect(test.edge.runtime.memory.generations.get(RECORD_KEY)).toBe(held);
-      expect(test.get.mock.calls.filter(([key]) => key === RECORD_KEY)).toHaveLength(1);
+      expect(test.get.mock.calls.filter(([key]) => isRecordKey(key))).toHaveLength(1);
       expect(test.artifactGet).not.toHaveBeenCalled();
       expect(test.dispatch).not.toHaveBeenCalled();
       await waitOnExecutionContext(test.edge.ctx);
@@ -529,7 +533,7 @@ describe('replaying generation response metadata at its use boundary', () => {
     expect(await second.text()).toBe(new TextDecoder().decode(PART));
     expect(first.headers.get('content-type')).toBe(expected);
     expect(second.headers.get('content-type')).toBe(expected);
-    expect(test.get.mock.calls.filter(([key]) => key === RECORD_KEY)).toHaveLength(1);
+    expect(test.get.mock.calls.filter(([key]) => isRecordKey(key))).toHaveLength(1);
     expect(test.artifactGet).toHaveBeenCalledTimes(1);
     expect(test.dispatch).not.toHaveBeenCalled();
     await waitOnExecutionContext(test.edge.ctx);
