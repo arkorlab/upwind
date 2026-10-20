@@ -78,6 +78,8 @@ headers and lifetime before attaching 2 to the primary output. `__NEXT_DATA__` s
 supplementary consistency facts. JSON siblings remain unmarked. A host must independently recheck
 build or runtime source, policy, identity and privacy on every output before projecting the proof.
 No response's public TTL or prior generation's marker grants permission to its replacement.
+Runtime admission is computed lazily once per immutable Function manifest. Each new render still
+undergoes its own privacy and representation checks; the general build selectors remain uncached.
 
 The `static-page` request class is only a candidate. A host must still enforce gates, request and
 middleware privacy, nonce policy and current-generation validity before serving unchanged HTML.
