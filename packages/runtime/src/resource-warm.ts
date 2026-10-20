@@ -112,6 +112,7 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
           }),
           ...(parameters !== undefined && { parameters }),
         },
+        staticPagesManifest: store.manifest,
         previewToken: store.manifest.bypassToken,
         waitUntil,
         run: context.run,

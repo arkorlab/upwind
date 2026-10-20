@@ -60,13 +60,24 @@ combine it with its normal revalidation policy rather than infer browser freshne
 
 `staticPagesPrivacy: 1` lets a host identify exact Node.js Pages documents completed at build time
 with `revalidate: false`. `edgeServableStaticPages` checks the classified primary HTML output and
-privacy vetoes before filters discard them. ISR, dynamic routes, loading/PPR shells, JSON siblings,
+privacy vetoes before filters discard them. Version 1 excludes ISR; dynamic routes, loading/PPR shells, JSON siblings,
 error documents, unknown request dependencies and older bundles grant no permission.
 
 A host can publish their existing Pages cache identity in the optional `staticPages` table and mark
 only the admitted primary build output with `staticPagePrivacy: 1`. Its delivery-record projection
 must verify the build source, Pages kind, complete/static output, status, HTML identity and unbounded
-policy before retaining that proof. Runtime regeneration and older records remain unmarked.
+policy before retaining that proof. Runtime regeneration never inherits version 1; older records remain unmarked.
+
+`staticPagesPrivacy: 2` also admits exact literal Node.js Pages ISR documents with a known positive
+revalidation lifetime, currently without a base path or locale routing. `staticPagePrivacyFor`
+returns the expected output version: false-revalidate pages still receive 1. A table entry's optional
+`staticPagePrivacy: 2` requires version 2 on each delivered generation; absence still expects 1.
+The Function receives capability 2 only when its build has an eligible ISR document. Its own
+synthetic regeneration checks the immutable manifest, scope, route, complete HTML, raw privacy
+headers and lifetime before attaching 2 to the primary output. `__NEXT_DATA__` supplies only
+supplementary consistency facts. JSON siblings remain unmarked. A host must independently recheck
+build or runtime source, policy, identity and privacy on every output before projecting the proof.
+No response's public TTL or prior generation's marker grants permission to its replacement.
 
 The `static-page` request class is only a candidate. A host must still enforce gates, request and
 middleware privacy, nonce policy and current-generation validity before serving unchanged HTML.

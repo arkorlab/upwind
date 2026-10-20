@@ -131,4 +131,8 @@ export {
 
 export { edgeServableRouteBodies } from './route-bodies.ts';
 
-export { edgeServableStaticPages } from './static-pages.ts';
+export {
+  edgeServableStaticPages,
+  staticPagePrivacyFor,
+  staticPagesPrivacyOf,
+} from './static-pages.ts';

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  edgeServableStaticPages,
   bundleBlobs,
   type DeploymentBundle,
   type DurableObjectDeclaration,
@@ -239,7 +240,7 @@ async function onBuildComplete(
 
   const bypassToken = bypassTokenOf(ctx.outputs);
   const routing = bundleRouting(ctx.routing, middleware);
-  const runtimeManifest = {
+  const baseRuntimeManifest = {
     // One-pass, as the bundle says below: a host that knows nothing of that refuses the version.
     v: ONE_PASS_BUNDLE_VERSION as number,
     resourceChanges: 1 as const,
@@ -261,6 +262,13 @@ async function onBuildComplete(
         ctx.config.basePath,
       ),
     ],
+  };
+  const pagesManifest = { ...baseRuntimeManifest, staticPagesPrivacy: 2 as const };
+  const runtimeManifest = {
+    ...baseRuntimeManifest,
+    ...(edgeServableStaticPages(pagesManifest).some((page) => page.initialRevalidate !== false) && {
+      staticPagesPrivacy: 2 as const,
+    }),
   };
   const files = filesRead(ctx, {
     workflow,
@@ -335,7 +343,7 @@ async function onBuildComplete(
     aiInference: 1,
     // Its runtime records privacy vetoes and targeted no-transform prohibitions for route bodies.
     routeBodyPrivacy: 2,
-    staticPagesPrivacy: 1,
+    staticPagesPrivacy: 2,
     ...objects.bundle,
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).
