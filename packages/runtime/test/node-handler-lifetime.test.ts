@@ -1,4 +1,3 @@
-import { EventEmitter } from 'node:events';
 import type { createServer, RequestListener } from 'node:http';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -20,7 +19,8 @@ vi.mock(import('node:http'), () => {
   };
 });
 
-vi.mock(import('cloudflare:node'), () => {
+vi.mock(import('cloudflare:node'), async () => {
+  const { EventEmitter } = await import('node:events');
   return {
     handleAsNodeRequest: (_port: number, request: Request, _env: unknown, dispatch: unknown) => {
       const answer = Promise.withResolvers<Response>();
