@@ -50,6 +50,14 @@ URL and headers after middleware before selecting a body. Serve only the current
 in the manifest's deployment and cache scope, with its freshness and privacy vetoes checked. A
 classified route or a public response header alone grants no permission to share its bytes.
 
+A complete static Node.js route body may list only the fixed Next.js build protocol headers:
+`host`, `x-matched-path`, `x-prerender-revalidate`, `x-prerender-revalidate-if-generated`,
+`x-next-revalidated-tags`, and `x-next-revalidate-tag-token`. Unknown request dependencies still
+exclude it. A request carrying any non-host protocol header or router control must reach the
+Function. Hosts must preserve that veto on the original and classified headers, and on middleware
+headers before and after forwarding or credential removal. Update these readers before publishing
+new route-body tables; a matching header name in a build is no permission to answer a control request.
+
 Only bundles declaring `routeBodyPrivacy: 2` are eligible: their runtime preserves privacy vetoes
 and `no-transform` prohibitions, including those in targeted CDN cache-control fields. Version 1
 bundles still parse but stay with the Function. Update bundle readers before enabling version 2
