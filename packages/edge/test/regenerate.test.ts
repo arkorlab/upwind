@@ -1,11 +1,31 @@
-import { DEFAULT_RUNTIME_CACHE_SETTINGS } from '@stayingupwind/host/delivery';
+import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
+import {
+  CACHE_ENTRY_HEADER,
+  INVALIDATED_REVISION_HEADER,
+  INVALIDATED_TAGS_HEADER,
+  parseScopeRevision,
+  SCOPE_REVISION_HEADER,
+  scopeRevisionValue,
+} from '@stayingupwind/core/paas';
+import {
+  DEFAULT_DELIVERY_POLICY,
+  DEFAULT_RUNTIME_CACHE_SETTINGS,
+} from '@stayingupwind/host/delivery';
+import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, expect, it, vi } from 'vitest';
 
-import { allowAnotherAsk, shouldAsk } from '../src/cache/regenerate.ts';
+import { takeInvalidation } from '../src/cache/condemned.ts';
+import {
+  allowAnotherAsk,
+  foregroundDocument,
+  shouldAsk,
+  triggerDetached,
+} from '../src/cache/regenerate.ts';
 import type { EdgeRuntime } from '../src/edge-runtime.ts';
 import { followClient, followResume, settle } from '../src/handlers/document-upstream.ts';
 import type { DocumentInput } from '../src/handlers/document.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
+import { STANDALONE_NAMES } from '../src/standalone/host.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
 
 /**
@@ -14,6 +34,7 @@ import type { EdgeContext } from '../src/strategies/context.ts';
  */
 
 const HOUR = 3_600_000;
+const T0 = 1_800_000_000_000;
 
 /** What `shouldAsk` reads of a request: the manifest, the isolate's clock and its memory. */
 function edgeAt(clock: { now: number }): EdgeContext {
@@ -30,6 +51,103 @@ function edgeAt(clock: { now: number }): EdgeContext {
 }
 
 describe('a regeneration asked for', () => {
+  it.each([
+    { mode: 'foreground', run: foregroundDocument, expectedBody: 'fresh generation' },
+    {
+      mode: 'detached',
+      run: (edge: EdgeContext, input: Parameters<typeof foregroundDocument>[1]) => {
+        triggerDetached(edge, input);
+        return Promise.resolve(undefined);
+      },
+      expectedBody: undefined,
+    },
+  ])(
+    'forwards the $mode target scope and takes the response invalidation in the same scope',
+    async ({ run, expectedBody }) => {
+      const scopeId = 'scope-of-the-record';
+      const deploymentId = 'deployment-of-the-function';
+      const sent: Request[] = [];
+      const read = vi.fn(() => {
+        throw new Error('no new host read belongs on this dispatch');
+      });
+      const base = edgeAt({ now: T0 });
+      const edge: EdgeContext = {
+        ...base,
+        runtime: {
+          ...base.runtime,
+          fetchImpl: read,
+          dispatchApp: (_script: string, request: Request) => {
+            sent.push(request);
+            return Promise.resolve(
+              new Response('fresh generation', {
+                headers: { [INVALIDATED_TAGS_HEADER]: 'posts', [INVALIDATED_REVISION_HEADER]: '8' },
+              }),
+            );
+          },
+        },
+        ctx: createExecutionContext(),
+        app: { deploymentId, scriptName: 'regenerating-app' },
+        forwarding: { previewDomain: 'example', previewHost: 'site.example', clientIp: undefined },
+        host: {
+          names: STANDALONE_NAMES,
+          sharedDomain: 'example',
+          ownDomains: ['example'],
+          credentials: { cookies: [], headers: [] },
+          functionGone: () => false,
+          observer: { metric: vi.fn(), recordServed: vi.fn(), imageTransformed: vi.fn() },
+        },
+        policy: DEFAULT_DELIVERY_POLICY,
+        projectId: 'site',
+        privateDelivery: false,
+      };
+      takeInvalidation(edge.runtime.memory, scopeId, { value: 'posts', bound: '7' });
+      edge.runtime.memory.scopes.set(deploymentId, {
+        revision: 0,
+        invalidatedAt: null,
+        checkedAt: T0,
+      });
+      const input = {
+        request: new Request('https://site.example/posts/one', {
+          headers: {
+            [SCOPE_REVISION_HEADER]: scopeRevisionValue({ revision: 999, invalidatedAt: T0 }),
+          },
+        }),
+        target: {
+          entryId: 'entry-posts-one',
+          pack: {
+            header: { scopeId, route: '/posts/[id]', generationId: 'gen-one', seq: 1 },
+          } as DecodedGenerationPack,
+        },
+        middleware: undefined,
+        function: undefined,
+      };
+
+      const response = await run(edge, input);
+      const body = await response?.text();
+      await waitOnExecutionContext(edge.ctx);
+
+      expect({
+        body,
+        sent: sent.length,
+        scope: parseScopeRevision(sent[0]?.headers.get(SCOPE_REVISION_HEADER) ?? null),
+        target: sent[0]?.headers.get(CACHE_ENTRY_HEADER),
+        recorded: edge.runtime.memory.invalidations.responseRevisionOf(scopeId)?.revision,
+        otherScope: edge.runtime.memory.invalidations.responseRevisionOf(deploymentId),
+        complete: edge.runtime.memory.scopes.get(scopeId),
+        reads: read.mock.calls.length,
+      }).toStrictEqual({
+        body: expectedBody,
+        sent: 1,
+        scope: { revision: 7, invalidatedAt: T0 },
+        target: 'entry-posts-one',
+        recorded: 8,
+        otherScope: undefined,
+        complete: undefined,
+        reads: 0,
+      });
+    },
+  );
+
   it.each([
     ['a', 'b:c', 'a:b', 'c'],
     ['a/', 'b:c', 'a/:b', 'c'],

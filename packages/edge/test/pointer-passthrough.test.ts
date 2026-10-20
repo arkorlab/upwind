@@ -12,8 +12,11 @@ import {
   INVALIDATED_TAGS_HEADER,
   MIDDLEWARE_DONE_HEADER,
   MISDIRECTED_STATUS,
+  parseScopeRevision,
+  SCOPE_REVISION_HEADER,
+  scopeRevisionValue,
 } from '@stayingupwind/core/paas';
-import { EDGE_DEBUG_HEADER } from '@stayingupwind/core/request';
+import { EDGE_DEBUG_HEADER, NEXT_RESUME_HEADER } from '@stayingupwind/core/request';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
@@ -49,6 +52,16 @@ function pendingManifest(
   pending: Promise<Lookup<ProjectManifest>>,
 ): Promise<Lookup<ProjectManifest>> {
   return pending;
+}
+
+/** Finish a continuation after the first shell chunk has already reached its reader. */
+async function remainingText(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  decoder = new TextDecoder(),
+): Promise<string> {
+  const part = await reader.read();
+  if (part.done) return decoder.decode();
+  return decoder.decode(part.value, { stream: true }) + (await remainingText(reader, decoder));
 }
 
 /** A fresh tagged generation that an Action invalidates while its own manifest is still out. */
@@ -232,6 +245,224 @@ describe('passthrough before unused pointer reads', () => {
     }
 
     expect(runtime.memory.invalidations.of('scope-of-the-manifest')?.tags.get('posts')).toBe(7);
+  });
+
+  it.each([
+    { state: 'pending', read: pendingManifest },
+    { state: 'available', read: availableManifest },
+  ])('tells the next RSC about an Action while its manifest was $state', async (example) => {
+    const site = await seedSite({ document: pprDocument() });
+    const scopeId = 'distinct-action-scope';
+    const stored: Lookup<ProjectManifest> = {
+      kind: 'found',
+      value: {
+        ...site.manifest,
+        cache: { keySchemaVersion: 1, scopeId },
+      },
+    };
+    const held = Promise.withResolvers<Lookup<ProjectManifest>>();
+    const policy = Promise.withResolvers<PolicyLookup>();
+    const actionCtx = createExecutionContext();
+    const nextCtx = createExecutionContext();
+    const asked: Request[] = [];
+    const payloads: string[] = [];
+    const forged = scopeRevisionValue({ revision: 999, invalidatedAt: Date.now() });
+    let flightClosed = false;
+    const stream = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
+    const flight = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('fresh Flight'));
+        stream.resolve(controller);
+      },
+    });
+    const runtime = standaloneRuntime(env, {
+      memory: createEdgeMemory(() => Date.now()),
+      dispatchApp: async (_script, request) => {
+        asked.push(request);
+        if (request.method === 'POST') {
+          payloads.push(await request.text());
+          return new Response('updated', {
+            headers: { [INVALIDATED_TAGS_HEADER]: 'posts', [INVALIDATED_REVISION_HEADER]: '7' },
+          });
+        }
+        return new Response(flight, { headers: { 'content-type': 'text/x-component' } });
+      },
+    });
+    runtime.memory.scopes.set(scopeId, {
+      revision: 0,
+      invalidatedAt: null,
+      checkedAt: Date.now(),
+    });
+    const common = {
+      env,
+      runtime,
+      host: { ...standaloneHost(env), scopeSignals: undefined },
+      pointer: site.pointer,
+      pointerMs: 0,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    };
+    try {
+      const action = navigation('/', {
+        method: 'POST',
+        headers: { 'next-action': 'update-post', [SCOPE_REVISION_HEADER]: forged },
+        body: 'action payload',
+      });
+      const response = await serveFromPointer(
+        { ...common, request: action, url: new URL(action.url), ctx: actionCtx },
+        { manifestLookup: example.read(stored, held.promise), policyLookup: policy.promise },
+      );
+      const actionBody = await response.text();
+
+      expect({
+        body: actionBody,
+        tags: response.headers.get(INVALIDATED_TAGS_HEADER),
+        revision: response.headers.get(INVALIDATED_REVISION_HEADER),
+        scope: response.headers.get(SCOPE_REVISION_HEADER),
+      }).toStrictEqual({ body: 'updated', tags: null, revision: null, scope: null });
+
+      expect(asked[0]?.headers.get(SCOPE_REVISION_HEADER)).not.toBe(forged);
+
+      const next = navigation('/?foo=bar', {
+        headers: { rsc: '1', [SCOPE_REVISION_HEADER]: forged },
+      });
+      const answer = await serveFromPointer(
+        { ...common, request: next, url: new URL(next.url), ctx: nextCtx },
+        { manifestLookup: availableManifest(stored), policyLookup: Promise.resolve(POLICY) },
+      );
+
+      expect({
+        requests: asked.length,
+        payloads,
+        scopeView: runtime.memory.scopes.get(scopeId)?.revision,
+        provisional: runtime.memory.invalidations.responseRevisionOf(
+          site.pointer.app!.deploymentId,
+        ),
+      }).toStrictEqual({
+        requests: 2,
+        payloads: ['action payload'],
+        scopeView: 0,
+        provisional: undefined,
+      });
+
+      const receipt = runtime.memory.invalidations.responseRevisionOf(scopeId);
+
+      expect(
+        parseScopeRevision(asked[1]?.headers.get(SCOPE_REVISION_HEADER) ?? null),
+      ).toStrictEqual({
+        revision: 7,
+        invalidatedAt: receipt?.observedAt,
+      });
+
+      const reader = answer.body!.getReader();
+
+      await expect(reader.read()).resolves.toMatchObject({
+        done: false,
+        value: new TextEncoder().encode('fresh Flight'),
+      });
+
+      (await stream.promise).close();
+      flightClosed = true;
+
+      await expect(reader.read()).resolves.toMatchObject({ done: true });
+
+      expect(answer.headers.has(SCOPE_REVISION_HEADER)).toBe(false);
+    } finally {
+      if (!flightClosed) (await stream.promise).close();
+      held.resolve(stored);
+      policy.resolve(POLICY);
+      await Promise.all([waitOnExecutionContext(actionCtx), waitOnExecutionContext(nextCtx)]);
+    }
+  });
+
+  it('forwards an acknowledged manifest scope while its PPR continuation streams', async () => {
+    const document = pprDocument('Fresh tagged continuation');
+    const site = await seedSite({ document });
+    const scopeId = 'scope-of-the-resumed-page';
+    const stored: Lookup<ProjectManifest> = {
+      kind: 'found',
+      value: { ...site.manifest, cache: { keySchemaVersion: 1, scopeId } },
+    };
+    const ready = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
+    const suffix = new ReadableStream<Uint8Array>({
+      start(controller) {
+        ready.resolve(controller);
+      },
+    });
+    const asked: Request[] = [];
+    const runtime = standaloneRuntime(env, {
+      memory: createEdgeMemory(() => Date.now()),
+      dispatchApp: (_script, request) => {
+        asked.push(request);
+        return Promise.resolve(
+          new Response(suffix, { headers: { 'content-type': 'text/html; charset=utf-8' } }),
+        );
+      },
+    });
+    runtime.memory.scopes.set(scopeId, {
+      revision: 0,
+      invalidatedAt: null,
+      checkedAt: Date.now(),
+    });
+    takeInvalidation(runtime.memory, scopeId, { value: 'posts', bound: '7' });
+    const receipt = runtime.memory.invalidations.responseRevisionOf(scopeId);
+    const forged = scopeRevisionValue({ revision: 999, invalidatedAt: Date.now() });
+    const request = navigation('/', {
+      headers: { 'accept-encoding': 'identity', [SCOPE_REVISION_HEADER]: forged },
+    });
+    const ctx = createExecutionContext();
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let closed = false;
+    try {
+      const response = await serveFromPointer(
+        {
+          request,
+          url: new URL(request.url),
+          env,
+          ctx,
+          runtime,
+          host: standaloneHost(env),
+          pointer: site.pointer,
+          pointerMs: 0,
+          privateDelivery: false,
+          cspReportingPath: undefined,
+        },
+        { manifestLookup: availableManifest(stored), policyLookup: Promise.resolve(POLICY) },
+      );
+      reader = response.body!.getReader();
+
+      expect({
+        requests: asked.length,
+        scope: parseScopeRevision(asked[0]?.headers.get(SCOPE_REVISION_HEADER) ?? null),
+        resume: asked[0]?.headers.get(NEXT_RESUME_HEADER),
+        complete: runtime.memory.scopes.get(scopeId)?.revision,
+        leaked: response.headers.has(SCOPE_REVISION_HEADER),
+      }).toStrictEqual({
+        requests: 1,
+        scope: { revision: 7, invalidatedAt: receipt?.observedAt },
+        resume: '1',
+        complete: 0,
+        leaked: false,
+      });
+
+      const first = await reader.read();
+
+      expect({
+        done: first.done,
+        loading: new TextDecoder().decode(first.value).includes('Loading'),
+      }).toStrictEqual({ done: false, loading: true });
+
+      const controller = await ready.promise;
+      controller.enqueue(document.suffix);
+      controller.close();
+      closed = true;
+
+      await expect(remainingText(reader)).resolves.toContain('Fresh tagged continuation');
+    } finally {
+      if (!closed) (await ready.promise).close();
+      await reader?.cancel();
+      await waitOnExecutionContext(ctx);
+    }
   });
 
   it('invalidates a distinct cache scope when the next GET resolves its manifest first', async () => {
