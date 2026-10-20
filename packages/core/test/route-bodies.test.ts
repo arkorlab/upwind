@@ -366,8 +366,8 @@ describe('host delivery of a complete route body', () => {
 });
 
 describe('kept file status under a base path', () => {
-  it.each([404, 500])('keeps status %s when the request selects the previous bytes', (status) => {
-    const pathname = `/docs/${status}`;
+  it.each([404, 500])("does not give the previous asset this build's status %s", (status) => {
+    const pathname = `/_next/static/prior/${status}`;
     const previous = {
       sha256: 'c'.repeat(64),
       byteLength: 3,
@@ -387,7 +387,7 @@ describe('kept file status under a base path', () => {
     expect(classifyRequest(request(manifest, {}, `${pathname}?dpl=previous`))).toStrictEqual({
       kind: 'static-file',
       pathname,
-      file: { ...previous, immutable: false, status },
+      file: { ...previous, immutable: false },
     });
     expect(classifyRequest(request(manifest, {}, pathname))).toStrictEqual({
       kind: 'static-file',
