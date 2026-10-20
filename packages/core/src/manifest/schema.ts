@@ -40,11 +40,17 @@ const PAGES_FALLBACK_PRIVACY = 3;
  * 7: `staticFileRequestKeys` names actual file request URLs. A reader of 6 would reinterpret a
  * missing request through the asset-prefix rewrite and could serve another file. Writers keep
  * version 6 when that field is absent, so ordinary deployments keep their stored bytes.
+ *
+ * 8: `pagesFallbacks` loading shells also appear in the route table. A reader that drops their
+ * fallback authority could serve a loading shell without generating its concrete member. Only
+ * manifests with these classes use 8; earlier readers refuse the unsupported version.
  */
 /** The unchanged writer version for manifests that use canonical static-file keys. */
 export const MANIFEST_SCHEMA_VERSION = 6;
-/** Latest supported format: static-file keys name actual request URLs, not rewrite destinations. */
+/** The first format whose static-file keys can name actual request URLs. */
 export const REQUEST_FILE_KEYS_SCHEMA_VERSION = 7;
+/** Loading Pages classes require a reader that understands their concrete-member generation. */
+export const PAGES_FALLBACK_SCHEMA_VERSION = 8;
 /** The first version a manifest may store what its routes repeat in `tables` at (above). */
 export const TABLES_SCHEMA_VERSION = 6;
 /** The version before, which `routerReferences` was first published at. */
@@ -66,6 +72,7 @@ const CANONICAL_FILE_SCHEMA_VERSIONS = [
 export const READ_MANIFEST_SCHEMA_VERSIONS = [
   ...CANONICAL_FILE_SCHEMA_VERSIONS,
   REQUEST_FILE_KEYS_SCHEMA_VERSION,
+  PAGES_FALLBACK_SCHEMA_VERSION,
 ] as const;
 const HTTP_OK = 200;
 
@@ -697,16 +704,32 @@ const projectFields = {
  * This is a discriminated schema: parse/safeParse remain public, rather than object-only helpers.
  */
 export const projectManifestSchema = z.discriminatedUnion('schemaVersion', [
+  z
+    .object({
+      ...manifestFields,
+      schemaVersion: z.literal(CANONICAL_FILE_SCHEMA_VERSIONS),
+      ...projectFields,
+    })
+    .refine((manifest) => manifest.pagesFallbacks === undefined, {
+      message: 'Pages loading classes require manifest schema version 8',
+      path: ['pagesFallbacks'],
+    }),
+  z
+    .object({
+      ...manifestFields,
+      schemaVersion: z.literal(REQUEST_FILE_KEYS_SCHEMA_VERSION),
+      ...projectFields,
+      /** Actual request URL keys, including retained files of the previous build. */
+      staticFileRequestKeys: z.literal(true).optional(),
+    })
+    .refine((manifest) => manifest.pagesFallbacks === undefined, {
+      message: 'Pages loading classes require manifest schema version 8',
+      path: ['pagesFallbacks'],
+    }),
   z.object({
     ...manifestFields,
-    schemaVersion: z.literal(CANONICAL_FILE_SCHEMA_VERSIONS),
+    schemaVersion: z.literal(PAGES_FALLBACK_SCHEMA_VERSION),
     ...projectFields,
-  }),
-  z.object({
-    ...manifestFields,
-    schemaVersion: z.literal(REQUEST_FILE_KEYS_SCHEMA_VERSION),
-    ...projectFields,
-    /** Actual request URL keys, including retained files of the previous build. */
     staticFileRequestKeys: z.literal(true).optional(),
   }),
 ]);
