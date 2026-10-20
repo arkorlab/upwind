@@ -56,7 +56,7 @@ export interface InvokeInput {
 /** The methods that ask for something and change nothing (RFC 9110, "Safe Methods"). */
 const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
 
-/** Whether a request with this method may change something: whether it is held to its end. */
+/** Whether a request with this method may change something before answering. */
 export function changesSomething(method: string): boolean {
   return !SAFE_METHODS.has(method);
 }
@@ -287,13 +287,11 @@ function onRequest(req: IncomingMessage, res: ServerResponse): void {
   settableSocket(req);
   singleRedirectLocation(res);
   const handled = handle(dispatch, req, res);
-  // The handler held to its own end for a request that may change something: its response leaves
-  // as soon as its headers commit, and a handler that goes on after them — a `POST` API route that
-  // writes and then updates a database — would otherwise be cancelled with a client that went away
-  // (`function.ts`).
-  if (changesSomething(dispatch.input.request.method)) {
-    dispatch.input.waitUntil(handled);
-  }
+  // The response leaves as soon as its headers commit. The handler may still be awaiting work:
+  // a GET's error hook as much as a POST's write. Keep that work after the response ends or its
+  // reader disconnects, without holding back the headers or body. The host's waitUntil lifetime
+  // bounds it; a hook that never settles must not keep a response open.
+  dispatch.input.waitUntil(handled);
 }
 
 /**

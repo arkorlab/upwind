@@ -214,6 +214,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @stayingupwind/adapter build
+      - name: Node handler lifetime after completed GET responses
+        env:
+          UPWIND_MATRIX_PROOF_DIR: ${{ runner.temp }}/instrumentation-proof
+        run: node tools/next-matrix/src/node-handler-lifetime.ts
       - name: Compiled host and project instrumentation
         env:
           UPWIND_MATRIX_PROOF_DIR: ${{ runner.temp }}/instrumentation-proof
