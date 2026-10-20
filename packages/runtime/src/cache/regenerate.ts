@@ -240,14 +240,15 @@ function staticRequest(input: RegenerationInput, attemptId: string): Request {
  * what it writes is what is kept: without it, the line of text Next.js ends with was kept, and
  * served, in place of the application's not-found page.
  */
-function renderStatic(
+async function renderStatic(
   input: RegenerationInput,
   attemptId: string,
   held: HeldTags,
 ): Promise<CapturedRender | undefined> {
   const request = staticRequest(input, attemptId);
-  return renderCaptured(input.target.descriptor.kind, (meta) => {
-    return invokeNodeHandler({
+  let answered: number | undefined;
+  const captured = await renderCaptured(input.target.descriptor.kind, async (meta) => {
+    const response = await invokeNodeHandler({
       handler: input.handler,
       request,
       url: staticUrl(input.target),
@@ -262,7 +263,15 @@ function renderStatic(
       run: (work) => input.run(() => asRegeneration(() => held.run(work))),
       expectNoResponse: meta.expectNoResponse,
     });
+    answered = response.status;
+    return response;
   });
+  // A server error answered rather than kept is the render failing, as one kept is (`regenerate`):
+  // not a page dynamic here, which answers what it renders, and not to be remembered as one.
+  if (captured === undefined && answered !== undefined && answered >= HTTP_SERVER_ERROR) {
+    throw new Error(`the render answered ${answered}`);
+  }
+  return captured;
 }
 
 /**
