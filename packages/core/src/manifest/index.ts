@@ -64,6 +64,8 @@ export {
   routeCacheSchema,
   type RouteBodyEntry,
   routeBodyEntrySchema,
+  type StaticPageEntry,
+  staticPageEntrySchema,
   type PartialFallbackUpgrade,
   partialFallbackUpgradeSchema,
   type RouteEntry,
@@ -84,3 +86,5 @@ export { spellsPrefixOf } from './spelled-prefix.ts';
 export { fromStoredManifest } from './stored.ts';
 
 export { findRouteBody } from './route-bodies.ts';
+
+export { findStaticPage } from './static-pages.ts';

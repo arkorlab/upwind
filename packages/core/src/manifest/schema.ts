@@ -102,6 +102,16 @@ export const routeBodyEntrySchema = z.object({
 });
 export type RouteBodyEntry = z.infer<typeof routeBodyEntrySchema>;
 
+/** A separate exact Pages document authority, never inferred from application response headers. */
+export const staticPageEntrySchema = z.object({
+  pathname: z.string().startsWith('/'),
+  route: z.string().startsWith('/'),
+  entryId: z.string().min(1),
+  bypassFor: z.array(routeHasSchema).optional(),
+  function: splitFunctionNameSchema.optional(),
+});
+export type StaticPageEntry = z.infer<typeof staticPageEntrySchema>;
+
 /** The scope a manifest's cache entries belong to: one deployment, under one key schema. */
 export const manifestCacheSchema = z.object({
   keySchemaVersion: z.literal(KEY_SCHEMA_VERSION),
@@ -520,6 +530,8 @@ const projectFields = {
    * field existed. Omitted when the host serves none, preserving existing manifests' bytes.
    */
   routeBodies: z.record(z.string().startsWith('/'), routeBodyEntrySchema).optional(),
+  /** Version 1 static Pages build authority. Absent on older publications, which stay private. */
+  staticPages: z.record(z.string().startsWith('/'), staticPageEntrySchema).optional(),
   /** The application's middleware matchers: a document these match is not served without it. */
   middleware: middlewareConfigSchema.optional(),
   /**
