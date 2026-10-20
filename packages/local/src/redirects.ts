@@ -381,8 +381,8 @@ async function hopAnswered(
   const reading =
     sent.whole === true
       ? {
-          headersOnly: (status: number, headers: Reading['headers']) =>
-            redirectHeaders(status, headers) || middlewareHeadersOnly(status, headers),
+          headersOnly: (status: number, replyHeaders: Reading['headers']) =>
+            redirectHeaders(status, replyHeaders) || middlewareHeadersOnly(status, replyHeaders),
           decode: undoneUnlessStored(true),
         }
       : { headersOnly: true };

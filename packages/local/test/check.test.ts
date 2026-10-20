@@ -11683,12 +11683,12 @@ describe('what the check makes of the middleware', () => {
           body: '',
         });
         const open = streamingRedirect('/hop');
-        const cookies: (string | undefined)[] = [];
+        const replayedCookies: (string | undefined)[] = [];
         partAnswers.set('/hop|/_tree', {
           ...segmentAnswer('hop tree'),
           when: {
             test: (headers) => {
-              cookies.push(headers.cookie);
+              replayedCookies.push(headers.cookie);
               return false;
             },
             headers: {},
@@ -11711,7 +11711,7 @@ describe('what the check makes of the middleware', () => {
           expect(result.failures).toStrictEqual([]);
           expect(result.checked).toBe(routes.length);
           expect(open.responses.length).toBeGreaterThan(0);
-          expect(cookies).toContain('from=hop');
+          expect(replayedCookies).toContain('from=hop');
 
           const closed = await Promise.all(open.closed);
 
@@ -11738,10 +11738,12 @@ describe('what the check makes of the middleware', () => {
       // Keep the existing hash so the router adopts this response without replaying it.
       partAnswers.set('/|/_tree', {
         ...redirect,
-        forSearch: (search) => ({
-          ...redirect,
-          headers: { ...redirect.headers, location: `/hop${search}` },
-        }),
+        forSearch: (search) => {
+          return {
+            ...redirect,
+            headers: { ...redirect.headers, location: `/hop${search}` },
+          };
+        },
       });
       const good = segmentAnswer('hop tree');
       const seen: string[] = [];
