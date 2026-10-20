@@ -42,6 +42,7 @@ import { spellsPrefixOf } from './spelled-prefix.ts';
 import { staticPageFields } from './static-pages.ts';
 import { fromStoredManifest, toStoredManifest } from './stored.ts';
 
+const PAGES_FALLBACK_PRIVACY = 3;
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 15_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 300_000;
 
@@ -249,9 +250,13 @@ function gateFields(
   return { gates, ...(gatedPathnames !== undefined && { gatedPathnames }) };
 }
 
-/** Loading classes require their own reader; unrelated builds keep their existing format. */
+/** Version-three Pages authority requires its reader; unrelated builds keep their format. */
 function schemaVersionFor(input: BuildProjectManifestInput): ProjectManifest['schemaVersion'] {
-  if ((input.pagesFallbacks?.length ?? 0) > 0) return PAGES_FALLBACK_SCHEMA_VERSION;
+  if (
+    (input.pagesFallbacks?.length ?? 0) > 0 ||
+    input.staticPages?.some((page) => page.staticPagePrivacy === PAGES_FALLBACK_PRIVACY) === true
+  )
+    return PAGES_FALLBACK_SCHEMA_VERSION;
   return input.staticFileRequestKeys === true
     ? REQUEST_FILE_KEYS_SCHEMA_VERSION
     : MANIFEST_SCHEMA_VERSION;

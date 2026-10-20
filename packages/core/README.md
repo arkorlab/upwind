@@ -106,9 +106,10 @@ project it into the record, bound to one scope, entry, route, concrete path and 
 
 The `pages-fallback` request candidate distinguishes HTML from `pages-data`; exact members use
 `static-page` with an explicit data representation. Loading bytes never answer a data request.
-Manifests with a nonempty `pagesFallbacks` table use schema version 8, so older edge readers
-refuse the unsupported manifest rather than mistake its loading bytes for a complete dynamic page.
-Update readers before enabling these writers; ordinary manifests retain versions 6 or 7.
+Manifests with version-3 `staticPages` members or a nonempty `pagesFallbacks` table use schema
+version 8. Older edge readers refuse the unsupported manifest; a new loading shell must never
+look like a complete dynamic page to one. Update readers before enabling these writers.
+Ordinary manifests retain versions 6 or 7.
 Readers must retain request, middleware, nonce, configured-header, raw privacy and freshness
 checks for both representations. Fresh generations require no additional authority lookup;
 only cold or expired data requests may wait for their own publication and a strictly newer
