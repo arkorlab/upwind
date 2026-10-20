@@ -5,17 +5,23 @@ import {
   type ProjectManifest,
   serializeManifest,
 } from '@stayingupwind/core/manifest';
+import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { kvManifestKey } from '@stayingupwind/host/storage';
+import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { assert, describe, expect, it } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 
 import { replayedDocumentHeaders } from '../src/handlers/document-headers.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { getManifest } from '../src/preview/manifest.ts';
-import { standaloneRuntime } from '../src/standalone/index.ts';
+import { serveFromPointer } from '../src/route.ts';
+import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
+import { navigation, pprDocument, seedSite } from './helpers/site.ts';
 
 const DATE = '2026-10-20T00:00:00.000Z';
 const CSP = 'content-security-policy';
+const FILE_PATH = '/artifact-type.txt';
+const FILE_BODY = 'the shipped Unicode-typed artifact';
 const CONFIG: ImagesConfig = {
   path: '/_next/image',
   basePath: '',
@@ -73,6 +79,17 @@ async function coldRead(manifest: ProjectManifest, mode: 'schema' | 'digest') {
   const runtime = standaloneRuntime(env, { memory });
   const result = await getManifest(env, runtime, manifestId, { live: false });
   return { result, memory, runtime, manifestId };
+}
+
+async function fileWithType(contentType: string) {
+  const site = await seedSite({ document: pprDocument(), files: { [FILE_PATH]: FILE_BODY } });
+  const file = site.manifest.staticFiles?.[FILE_PATH];
+  if (file === undefined) throw new Error('the fixture must ship its artifact');
+  const manifest: ProjectManifest = {
+    ...site.manifest,
+    staticFiles: { [FILE_PATH]: { ...file, contentType } },
+  };
+  return { site, manifest };
 }
 
 describe.each(['schema', 'digest'] as const)(
@@ -161,5 +178,68 @@ describe.each(['schema', 'digest'] as const)(
       expect(headers.has('x-not-replayed')).toBe(false);
       expect(subject.result.value.images).toBeUndefined();
     });
+
+    it.each(['\0', '\r', '\n'])(
+      'still refuses an artifact type with embedded %j before retaining the manifest',
+      async (control) => {
+        const { manifest } = await fileWithType(`text/plain; name=a${control}b`);
+        const subject = await coldRead(manifest, mode);
+
+        expect(subject.result.kind).toBe('missing');
+        expect(subject.memory.manifests.get(subject.manifestId)).toBeUndefined();
+        expect(subject.memory.absentManifests.get(subject.manifestId)).toBe(true);
+      },
+    );
+
+    it.each([
+      { contentType: 'text/plain; name="日本語"', sent: 'text/plain; name="日本語"' },
+      {
+        contentType: '\r\n \ttext/plain; name="日本語"\t \r\n',
+        sent: 'text/plain; name="日本語"',
+      },
+    ])(
+      'decodes and serves a Workers-native artifact type $contentType',
+      async ({ contentType, sent }) => {
+        const { site, manifest } = await fileWithType(contentType);
+        const subject = await coldRead(manifest, mode);
+        assert(subject.result.kind === 'found');
+        const dispatchApp = vi.fn(() => Promise.resolve(new Response('unexpected Function')));
+        const runtime = { ...subject.runtime, dispatchApp };
+        const ctx = createExecutionContext();
+        const request = navigation(FILE_PATH);
+
+        const response = await serveFromPointer(
+          {
+            request,
+            url: new URL(request.url),
+            env,
+            ctx,
+            runtime,
+            host: standaloneHost(env),
+            pointer: { ...site.pointer, manifestId: subject.manifestId },
+            pointerMs: 0,
+            privateDelivery: false,
+            cspReportingPath: undefined,
+          },
+          {
+            manifestLookup: Promise.resolve(subject.result),
+            policyLookup: Promise.resolve({
+              kind: 'found',
+              source: 'exact',
+              policy: DEFAULT_DELIVERY_POLICY,
+            }),
+          },
+        );
+
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe(FILE_BODY);
+        expect(response.headers.get('content-type')).toBe(sent);
+        expect(subject.result.value.staticFiles?.[FILE_PATH]?.contentType).toBe(contentType);
+        expect(dispatchApp).not.toHaveBeenCalled();
+        const repeated = await getManifest(env, runtime, subject.manifestId);
+        expect(repeated.kind === 'found' && repeated.value).toBe(subject.result.value);
+        await waitOnExecutionContext(ctx);
+      },
+    );
   },
 );

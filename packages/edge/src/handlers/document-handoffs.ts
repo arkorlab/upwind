@@ -22,6 +22,21 @@ export function headToApplication(input: DocumentInput): Promise<Response> {
   return input.passthrough('head-resumed', input.middleware, input.entry.pathname);
 }
 
+/** Give back an undispatched regeneration ask before handing unusable metadata to the Function. */
+export function delegateCorruptDocument(
+  input: DocumentInput,
+  shellLookup: Promise<ShellLoadResult>,
+): Promise<Response> {
+  (input.generation?.onAbandoned ?? input.onBuildAbandoned)?.();
+  if (input.generation !== undefined) {
+    input.edge.ctx.waitUntil(shellLookup);
+    return input.passthrough('shell-corrupt', input.middleware, input.entry.pathname);
+  }
+  const accounted = withShellAccounting(input);
+  abandonShellRead(accounted.edge, shellLookup);
+  return accounted.passthrough('shell-corrupt', input.middleware, input.entry.pathname);
+}
+
 /** A request whose final policy blocks recovery must ask the Worker for a whole document. */
 export function delegateSandboxedDocument(
   input: DocumentInput,

@@ -2,7 +2,6 @@ import type { ArtifactLocator, ShellEncodings } from '@stayingupwind/core/artifa
 import type { ProjectManifest, RouteSegment } from '@stayingupwind/core/manifest';
 import { filterShellResponseHeaders, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 
-import { transportableHeaderValue } from '../header-values.ts';
 import { retainSafePreloads } from './manifest-preloads.ts';
 
 const MIN_RESPONSE_STATUS = 200;
@@ -45,10 +44,6 @@ function headerCheck(): (artifact: Pick<ArtifactLocator, 'contentType'> | undefi
   return (artifact) => {
     if (artifact === undefined || checked.has(artifact.contentType)) return;
     headers.set('content-type', artifact.contentType);
-    const normalized = headers.get('content-type');
-    if (normalized === null || !transportableHeaderValue(normalized)) {
-      throw new TypeError('the stored artifact content type cannot be sent as a header');
-    }
     checked.add(artifact.contentType);
   };
 }
