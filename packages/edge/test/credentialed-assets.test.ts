@@ -16,12 +16,24 @@ const BACKENDS = ['r2-mirror', 'cache-api-readthrough'] as const;
 const CLIENTS: readonly {
   readonly label: string;
   readonly headers: Readonly<Record<string, string>>;
-  readonly warm: boolean;
+  readonly prepare: (fixture: AssetFixture) => Promise<void>;
 }[] = [
-  { label: 'cookie, cold', headers: { cookie: 'session=secret' }, warm: false },
-  { label: 'authorization, cold', headers: { authorization: 'Bearer secret' }, warm: false },
-  { label: 'cookie, warm', headers: { cookie: 'session=secret' }, warm: true },
-  { label: 'authorization, warm', headers: { authorization: 'Bearer secret' }, warm: true },
+  {
+    label: 'cookie, cold',
+    headers: { cookie: 'session=secret' },
+    prepare: () => Promise.resolve(),
+  },
+  {
+    label: 'authorization, cold',
+    headers: { authorization: 'Bearer secret' },
+    prepare: () => Promise.resolve(),
+  },
+  { label: 'cookie, warm', headers: { cookie: 'session=secret' }, prepare: warmAsset },
+  {
+    label: 'authorization, warm',
+    headers: { authorization: 'Bearer secret' },
+    prepare: warmAsset,
+  },
 ];
 
 interface AssetFixture {
@@ -103,21 +115,24 @@ async function assetFixture(backend: AssetBackendId, setsCookie = false): Promis
   return { asked, points, ask };
 }
 
+async function warmAsset(fixture: AssetFixture): Promise<void> {
+  const cold = await fixture.ask();
+  const hit = await fixture.ask();
+
+  expect({ cold: cold.text, hit: hit.text, requests: fixture.asked.length }).toStrictEqual({
+    cold: PUBLIC_ASSET,
+    hit: PUBLIC_ASSET,
+    requests: 1,
+  });
+  expect(hit.response.headers.get('x-arkor-edge')).toContain('hit=1');
+}
+
 describe.each(BACKENDS)('credentialed assets under the %s policy', (backend) => {
   afterEach(() => vi.restoreAllMocks());
 
   it.each(CLIENTS)('sends only the client request for $label', async (client) => {
     const fixture = await assetFixture(backend);
-    if (client.warm) {
-      const cold = await fixture.ask();
-      const hit = await fixture.ask();
-      expect({ cold: cold.text, hit: hit.text, requests: fixture.asked.length }).toStrictEqual({
-        cold: PUBLIC_ASSET,
-        hit: PUBLIC_ASSET,
-        requests: 1,
-      });
-      expect(hit.response.headers.get('x-arkor-edge')).toContain('hit=1');
-    }
+    await client.prepare(fixture);
     const sentBefore = fixture.asked.length;
     const pointsBefore = fixture.points.length;
     const cacheOpens = vi.spyOn(caches, 'open');
@@ -145,9 +160,9 @@ describe.each(BACKENDS)('credentialed assets under the %s policy', (backend) => 
       },
     ]);
     expect(
-      fixture.points.slice(pointsBefore).map((point) => {
-        return { kind: point.kind, subrequests: point.subrequests };
-      }),
+      fixture.points
+        .slice(pointsBefore)
+        .map((point) => ({ kind: point.kind, subrequests: point.subrequests })),
     ).toStrictEqual([{ kind: 'passthrough', subrequests: 1 }]);
   });
 
@@ -181,9 +196,7 @@ describe.each(BACKENDS)('credentialed assets under the %s policy', (backend) => 
       'original',
     ]);
     expect(
-      fixture.points.map((point) => {
-        return { kind: point.kind, subrequests: point.subrequests };
-      }),
+      fixture.points.map((point) => ({ kind: point.kind, subrequests: point.subrequests })),
     ).toStrictEqual([{ kind: 'passthrough', subrequests: 2 }]);
   });
 });
