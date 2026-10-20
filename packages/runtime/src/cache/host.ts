@@ -270,6 +270,8 @@ export interface CommitArtifact {
  * they are here because only the runtime knows which it produced.
  */
 export interface CommitOutput {
+  /** An ISR proof earned by the Function's own synthetic render, never an inherited build proof. */
+  readonly staticPagePrivacy?: 2 | undefined;
   readonly representationKey: string;
   readonly pathname: string | null;
   readonly status: number | null;

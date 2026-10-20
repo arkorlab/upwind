@@ -1,7 +1,7 @@
 import { MAX_TAG_LENGTH, MAX_TAGS_PER_ENTRY } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
-import { commitRequestSchema } from '../src/cache/gateway-contract.ts';
+import { commitOutputSchema, commitRequestSchema } from '../src/cache/gateway-contract.ts';
 
 const UNKNOWN = { kind: 'unknown' } as const;
 
@@ -78,6 +78,29 @@ describe("a commit's headers", () => {
   ])('are not %s', (_, headers) => {
     expect(() => new Headers(headers)).toThrow(TypeError);
     expect(commitRequestSchema.safeParse(commit({ headers })).success).toBe(false);
+  });
+});
+
+describe('an independently earned static Pages commit claim', () => {
+  it('retains version two through the complete gateway request parser', () => {
+    const output = { ...commit().generation.outputs[0], staticPagePrivacy: 2 };
+    const parsed = commitRequestSchema.parse(commit({ outputs: [output] }));
+
+    expect(parsed.generation.outputs[0]?.staticPagePrivacy).toBe(2);
+  });
+
+  it.each([1, 3, '2', null])('refuses an unsupported runtime claim %j', (staticPagePrivacy) => {
+    const output = { ...commit().generation.outputs[0], staticPagePrivacy };
+
+    expect(commitRequestSchema.safeParse(commit({ outputs: [output] })).success).toBe(false);
+  });
+
+  it('preserves the serialized output when an older runtime supplies no claim', () => {
+    const output = commit().generation.outputs[0];
+    const parsed = commitOutputSchema.parse(output);
+
+    expect(parsed).not.toHaveProperty('staticPagePrivacy');
+    expect(JSON.stringify(parsed)).toBe(JSON.stringify(output));
   });
 });
 

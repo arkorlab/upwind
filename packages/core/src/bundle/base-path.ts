@@ -12,7 +12,10 @@ import type { DeploymentBundle } from './schema.ts';
 const INTERNAL_PAGES: ReadonlySet<string> = new Set(['/_error', '/_global-error', '/_not-found']);
 
 /** Whether a pathname of the build names one of Next.js's error documents, under its base path. */
-export function isInternalPage(bundle: DeploymentBundle, pathname: string): boolean {
+export function isInternalPage(
+  bundle: Pick<DeploymentBundle, 'config'>,
+  pathname: string,
+): boolean {
   const { basePath } = bundle.config;
   return pathname.startsWith(basePath) && INTERNAL_PAGES.has(pathname.slice(basePath.length));
 }
