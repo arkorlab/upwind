@@ -95,13 +95,18 @@ earn output proof 1 or 2; they never inherit 3. `staticPagesMembersOf` identifie
 HTML with exactly one same-source, same-group JSON twin at the canonical build-scoped data URL.
 `staticFallbackPageFor` derives named parameters only for the native first unconditional owner,
 preserving exact-route and rewrite precedence. The initial scope excludes encoded aliases,
-trailing-slash spellings, base paths, locales, export, catch-all and optional parameters.
+trailing-slash spellings, base paths, locales, export, catch-all and optional parameters. Builds
+that normalize Pages-data URLs before middleware remain with the Function, as for `routePagesData`.
 
 Complete members have `staticPages` entries with proof 3, exact parameters and concrete
 `dataPathname`. Build-owned loading bytes instead live in `pagesFallbacks`, with a template data
 path and an immutable shell reference; a loading class has no entry ID or generation marker. A
 first concrete runtime generation may earn proof 3 at sequence 1 only after its own synthetic
-render proves complete HTML and matching props. Both outputs require proof 3 before the host may
+render proves complete HTML, matching props and its own positive finite revalidation lifetime.
+The loading shell may omit a lifetime; that supplies no lifetime or generation proof for a concrete
+member. An explicit nonpositive, unbounded or invalid loading lifetime excludes the class before
+publication. An unbounded or otherwise unproved concrete render remains with the Function.
+Both outputs require proof 3 before the host may
 project it into the record, bound to one scope, entry, route, concrete path and generation.
 
 The `pages-fallback` request candidate distinguishes HTML from `pages-data`; exact members use

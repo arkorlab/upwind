@@ -213,6 +213,7 @@ function safeFallback(
     page.response === 'initial' &&
     page.compute === 'static' &&
     page.parentFallbackMode === undefined &&
+    (page.initialRevalidate === undefined || lifetime(page)) &&
     ordinaryOutput(page, params) &&
     publicOutput(bundle, page, 'text/html')
   );
@@ -282,6 +283,7 @@ function admissionFor(bundle: ServingBundle): Admission {
   if (
     bundle.staticPagesPrivacy !== PRIVACY_VERSION ||
     !reproducesDynamicRouting(bundle) ||
+    bundle.routing.shouldNormalizeNextData ||
     bundle.config.basePath !== '' ||
     bundle.config.trailingSlash ||
     bundle.config['output'] === 'export'

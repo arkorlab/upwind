@@ -43,6 +43,19 @@ describe('build-owned Pages fallback authority', () => {
     expect(staticPagesPrivacyOf(bundle).size).toBe(0);
   });
 
+  it('keeps normalized Pages-data requests and their fallback authority with the Function', () => {
+    const original = fallbackBundle();
+    const bundle = {
+      ...original,
+      routing: { ...original.routing, shouldNormalizeNextData: true },
+    };
+
+    expect(staticPagesMembersOf(bundle).size).toBe(0);
+    expect(staticFallbackPagesOf(bundle)).toStrictEqual([]);
+    expect(staticFallbackPageFor(bundle, FALLBACK_ROUTE, FALLBACK_MEMBER.pathname)).toBeUndefined();
+    expect(staticFallbackPageFor(bundle, FALLBACK_ROUTE, '/fallback-true/second')).toBeUndefined();
+  });
+
   it.each([undefined, 1, 2] as const)(
     'does not borrow version %s authority',
     (staticPagesPrivacy) => {
@@ -146,6 +159,32 @@ describe('build-owned Pages fallback authority', () => {
     expect(staticFallbackPagesOf(bundle)).toStrictEqual([]);
     expect(staticFallbackPageFor(bundle, FALLBACK_ROUTE, '/fallback-true/second')).toBeUndefined();
   });
+
+  it.each([
+    { initialRevalidate: false },
+    { initialRevalidate: 0 },
+    { initialRevalidate: -1 },
+    { initialRevalidate: 0.5 },
+    { initialRevalidate: Infinity },
+    { initialRevalidate: NaN },
+    { initialRevalidate: 2, initialExpiration: 1 },
+  ] satisfies Partial<Prerender>[])(
+    'does not publish fallback authority for an explicit unsupported class lifetime: %j',
+    (patch) => {
+      const bundle = fallbackBundle({
+        prerenders: [FALLBACK_MEMBER, FALLBACK_DATA, { ...FALLBACK_PAGE, ...patch }],
+      });
+
+      expect(staticPagesMembersOf(bundle).size).toBe(0);
+      expect(staticFallbackPagesOf(bundle)).toStrictEqual([]);
+      expect(
+        staticFallbackPageFor(bundle, FALLBACK_ROUTE, FALLBACK_MEMBER.pathname),
+      ).toBeUndefined();
+      expect(
+        staticFallbackPageFor(bundle, FALLBACK_ROUTE, '/fallback-true/second'),
+      ).toBeUndefined();
+    },
+  );
 
   it('requires the native first owner and leaves exact routes and configured rewrites alone', () => {
     const base = fallbackBundle();

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   FALLBACK_DATA,
   FALLBACK_MEMBER,
+  FALLBACK_PAGE,
   FALLBACK_ROUTE,
   fallbackBundle,
 } from '../../core/test/fallback-pages-fixtures.ts';
@@ -153,6 +154,36 @@ describe('version3 Pages members earn paired authority from synthetic capture', 
       });
     },
   );
+
+  it('proves a finite concrete render independently of an unknown loading-shell lifetime', async () => {
+    const original = manifestOf();
+    const manifest = {
+      ...original,
+      prerenders: original.prerenders.map((page) => {
+        return page === FALLBACK_PAGE
+          ? { ...page, initialRevalidate: undefined, initialExpiration: undefined }
+          : page;
+      }),
+    };
+    const { commit } = await rendered({ slug: 'second', manifest });
+
+    expect(commit?.generation.outputs.map((output) => output.staticPagePrivacy)).toStrictEqual([
+      3, 3,
+    ]);
+  });
+
+  it('does not borrow a finite loading-shell lifetime for an unbounded concrete render', async () => {
+    const { commit } = await rendered({
+      slug: 'second',
+      headers: { 'cache-control': 's-maxage=31536000' },
+    });
+
+    expect(commit?.generation.outputs).toHaveLength(2);
+    expect(commit?.generation.outputs.map((output) => output.staticPagePrivacy)).toStrictEqual([
+      undefined,
+      undefined,
+    ]);
+  });
 
   it('cannot borrow loading authority for an unproved existing build member', async () => {
     const original = manifestOf();
