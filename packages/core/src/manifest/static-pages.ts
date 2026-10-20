@@ -145,7 +145,9 @@ export function findPagesFallback(
   )
     return undefined;
   const owner = dynamicRouteFor(manifest, url, headers);
-  const route = owner?.route ?? owner?.members?.route;
+  if (owner === undefined || owner.has !== undefined || owner.missing !== undefined)
+    return undefined;
+  const route = owner.route ?? owner.members?.route;
   const entry = route === undefined ? undefined : manifest.pagesFallbacks[route];
   if (entry === undefined || entry.route !== route) return undefined;
   const parameters = staticFallbackParametersFor(entry.route, url.pathname);

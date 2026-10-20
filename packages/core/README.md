@@ -80,14 +80,37 @@ policy before retaining that proof. Runtime regeneration never inherits version 
 revalidation lifetime, currently without a base path or locale routing. `staticPagePrivacyFor`
 returns the expected output version: false-revalidate pages still receive 1. A table entry's optional
 `staticPagePrivacy: 2` requires version 2 on each delivered generation; absence still expects 1.
-The Function receives capability 2 only when its build has an eligible ISR document. Its own
-synthetic regeneration checks the immutable manifest, scope, route, complete HTML, raw privacy
+The Function receives a Pages capability only when its build has an eligible ISR document or
+supported fallback class. A fixed-page synthetic
+regeneration checks the immutable manifest, scope, route, complete HTML, raw privacy
 headers and lifetime before attaching 2 to the primary output. `__NEXT_DATA__` supplies only
 supplementary consistency facts. JSON siblings remain unmarked. A host must independently recheck
 build or runtime source, policy, identity and privacy on every output before projecting the proof.
 No response's public TTL or prior generation's marker grants permission to its replacement.
 Runtime admission is computed lazily once per immutable Function manifest. Each new render still
 undergoes its own privacy and representation checks; the general build selectors remain uncached.
+
+`staticPagesPrivacy: 3` adds supported Node.js Pages `fallback: true` routes. Fixed documents still
+earn output proof 1 or 2; they never inherit 3. `staticPagesMembersOf` identifies complete built
+HTML with exactly one same-source, same-group JSON twin at the canonical build-scoped data URL.
+`staticFallbackPageFor` derives named parameters only for the native first unconditional owner,
+preserving exact-route and rewrite precedence. The initial scope excludes encoded aliases,
+trailing-slash spellings, base paths, locales, export, catch-all and optional parameters.
+
+Complete members have `staticPages` entries with proof 3, exact parameters and concrete
+`dataPathname`. Build-owned loading bytes instead live in `pagesFallbacks`, with a template data
+path and an immutable shell reference; a loading class has no entry ID or generation marker. A
+first concrete runtime generation may earn proof 3 at sequence 1 only after its own synthetic
+render proves complete HTML and matching props. Both outputs require proof 3 before the host may
+project it into the record, bound to one scope, entry, route, concrete path and generation.
+
+The `pages-fallback` request candidate distinguishes HTML from `pages-data`; exact members use
+`static-page` with an explicit data representation. Loading bytes never answer a data request.
+Readers must retain request, middleware, nonce, configured-header, raw privacy and freshness
+checks for both representations. Fresh generations require no additional authority lookup;
+only cold or expired data requests may wait for their own publication and a strictly newer
+verified record. Unsupported or unproved results stay with the Function. Admission tables are
+cached once per immutable bundle, with no cache of visitor pathnames.
 
 The `static-page` request class is only a candidate. A host must still enforce gates, request and
 middleware privacy, nonce policy and current-generation validity before serving unchanged HTML.

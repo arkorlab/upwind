@@ -135,6 +135,59 @@ describe('version 3 Pages manifest and representation routing', () => {
     ).toStrictEqual({ kind: 'pages-fallback', ...common, representation: 'pages-data' });
   });
 
+  it.each(['first', 'second'])(
+    'validates the deployment header only as a router pin for canonical data: %s',
+    (member) => {
+      const pathname = `/_next/data/build/fallback-true/${member}.json`;
+      const matching = classify(pathname, {
+        'x-nextjs-data': '1',
+        'x-deployment-id': 'deployment',
+      });
+
+      expect(matching.kind).toBe(member === 'first' ? 'static-page' : 'pages-fallback');
+      expect(
+        classify(pathname, { 'x-nextjs-data': '1', 'x-deployment-id': 'other' }),
+      ).toStrictEqual({ kind: 'passthrough', reason: 'dpl-mismatch' });
+      expect(
+        classify(`/fallback-true/${member}`, { 'x-deployment-id': 'deployment' }),
+      ).toStrictEqual({ kind: 'passthrough', reason: 'internal-header' });
+      expect(classify(`/fallback-true/${member}`, { 'x-deployment-id': 'other' })).toStrictEqual({
+        kind: 'passthrough',
+        reason: 'internal-header',
+      });
+    },
+  );
+
+  it('keeps visitor state and other router protocols private beside a matching data pin', () => {
+    const pathname = '/_next/data/build/fallback-true/first.json';
+    const headers = { 'x-nextjs-data': '1', 'x-deployment-id': 'deployment' };
+
+    expect(classify(`${pathname}?slug=other`, headers).kind).toBe('passthrough');
+    expect(classify(pathname, { ...headers, cookie: 'session=visitor' }).kind).toBe('passthrough');
+    expect(classify(pathname, { ...headers, authorization: 'Bearer visitor' }).kind).toBe(
+      'passthrough',
+    );
+    expect(classify(pathname, { ...headers, rsc: '1' }).kind).toBe('passthrough');
+  });
+
+  it('preserves deployment-pin handling for an existing Pages-data build with no version 3 tables', () => {
+    const about = {
+      pathname: '/about',
+      status: 200 as const,
+      shell: HTML,
+      headers: {},
+      pagesData: { artifact: { ...HTML, contentType: 'application/json' } },
+    };
+    const extra = { routes: [about], staticPages: [], pagesFallbacks: [], dynamicRoutes: [] };
+
+    expect(
+      classify('/_next/data/build/about.json', { 'x-deployment-id': 'deployment' }, extra),
+    ).toStrictEqual({ kind: 'pages-data', entry: about });
+    expect(
+      classify('/_next/data/build/about.json', { 'x-deployment-id': 'other' }, extra).kind,
+    ).toBe('passthrough');
+  });
+
   it.each([
     'authorization',
     'cookie',
@@ -206,6 +259,28 @@ describe('version 3 Pages manifest and representation routing', () => {
     ).toBe('passthrough');
   });
 
+  it.each(['has', 'missing'] as const)(
+    'does not grant loading authority through a matched native %s condition',
+    (condition) => {
+      const headers: Record<string, string> =
+        condition === 'has' ? { 'x-native-condition': 'yes' } : {};
+      const dynamicRoutes = [
+        {
+          sourceRegex: '^/fallback-true/([^/]+?)(?:/)?$',
+          route: FALLBACK_ROUTE,
+          [condition]: [{ type: 'header' as const, key: 'x-native-condition', value: 'yes' }],
+        },
+      ];
+
+      expect(classify('/fallback-true/second', headers, { dynamicRoutes }).kind).not.toBe(
+        'pages-fallback',
+      );
+      expect(
+        classify('/_next/data/build/fallback-true/second.json', headers, { dynamicRoutes }).kind,
+      ).not.toBe('pages-fallback');
+    },
+  );
+
   it.each([
     { staticPages: [{ ...MEMBER, parameters: { slug: 'other' } }] },
     { staticPages: [{ ...MEMBER, dataPathname: '/_next/data/other/fallback-true/first.json' }] },
@@ -251,5 +326,36 @@ describe('version 3 Pages manifest and representation routing', () => {
         name: 'allow',
       });
     }
+  });
+
+  it('does not borrow a dynamic gate for an exact ungated member while the lazy member retains its own gate', () => {
+    const manifest = buildProjectManifest(
+      inputOf({
+        dynamicRoutes: [
+          {
+            sourceRegex: '^/fallback-true/([^/]+?)$',
+            route: FALLBACK_ROUTE,
+            gated: FALLBACK_ROUTE,
+          },
+        ],
+        gates: { [FALLBACK_ROUTE]: 'allow' },
+        gatedPathnames: {},
+      }),
+    );
+
+    expect(
+      gateFor(
+        manifest,
+        new URL('https://app.example/_next/data/build/fallback-true/first.json'),
+        new Headers(),
+      ),
+    ).toBeUndefined();
+    expect(
+      gateFor(
+        manifest,
+        new URL('https://app.example/_next/data/build/fallback-true/second.json'),
+        new Headers(),
+      ),
+    ).toStrictEqual({ route: FALLBACK_ROUTE, name: 'allow' });
   });
 });
