@@ -1,5 +1,6 @@
 import { deriveEntry } from '@stayingupwind/core/cache';
 import {
+  completedPathname,
   documentHeaderRulesFor,
   foldedHeadersFor,
   headerRulesFor,
@@ -322,27 +323,39 @@ export async function recordedOf(
 
 /**
  * The entry a record of `route`'s kind is kept under, named by the route it is filed under and the
- * pathname it is of, as the runtime keys every entry (`deriveEntry`); none for a route of no record.
+ * pathname it is of, as the runtime keys every entry (`deriveEntry`). An unseeded partial
+ * fallback completes into an app-page record too.
  */
 async function derivedEntry(
   stack: CheckedStack,
   route: RouteEntry,
   named: { readonly route: string; readonly pathname: string },
 ): Promise<string | undefined> {
-  const { cache } = route;
+  const kind = route.cache?.kind ?? (route.partialFallback === undefined ? undefined : 'app-page');
   const scope = stack.manifest.cache;
-  if (cache === undefined || scope === undefined) {
+  if (kind === undefined || scope === undefined) {
     return undefined;
   }
-  const derived = await deriveEntry(scope.scopeId, { kind: cache.kind, ...named });
+  const derived = await deriveEntry(scope.scopeId, { kind, ...named });
   return derived.entryId;
+}
+
+/** A partial fallback's completed shell key, as `partialFallbackInHand` names it at the edge. */
+function memberPathname(route: RouteEntry, pathname: string): string {
+  const fallback = route.partialFallback;
+  if (fallback === undefined) return pathname;
+  const bare = pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+  return fallback.keyedBy === undefined
+    ? bare
+    : completedPathname(fallback.route, fallback.keyedBy, pathname);
 }
 
 /**
  * The entry a route's record is kept under for a request at `pathname`: the route's own — or, for a
  * member's own entry beside its class shell (`runtimeCache.concreteUpgrade`), whose id no manifest
  * names, the one derived from the member's pathname under the route the class is filed under, as
- * the edge derives it (`deriveMemberKey` in the edge), of the class's kind.
+ * the edge derives it (`deriveMemberKey` in the edge), of the class's kind. A partial fallback
+ * instead names its completed shell, independently of whether the class has a seeded record.
  */
 async function entryFor(
   stack: CheckedStack,
@@ -350,12 +363,14 @@ async function entryFor(
   member: { readonly pathname: string; readonly own: boolean },
 ): Promise<string | undefined> {
   const { cache } = route;
-  if (cache === undefined || !member.own) {
+  if (!member.own) {
     return cache?.entryId;
   }
+  const pathname = memberPathname(route, member.pathname);
+  if (route.partialFallback !== undefined && pathname === route.pathname) return undefined;
   return derivedEntry(stack, route, {
-    route: cache.route ?? route.pathname,
-    pathname: member.pathname,
+    route: route.partialFallback?.route ?? cache?.route ?? route.pathname,
+    pathname,
   });
 }
 
@@ -363,7 +378,8 @@ async function entryFor(
  * The entries a part of `route` asked at `pathname` may be answered from a record under: the route's
  * own, and — for a member of a class of pages, whose own record the edge reads in the class's place
  * where the stack's policy upgrades a member so (`upgradesMember` in the edge) — the member's
- * (`entryFor`). None for a route of no record.
+ * (`entryFor`); a partial fallback's completion does not require that policy upgrade or a seeded
+ * class record. None for a route with neither kind of record.
  */
 export async function recordEntriesOf(
   stack: CheckedStack,
@@ -371,15 +387,17 @@ export async function recordEntriesOf(
   pathname: string,
 ): Promise<readonly string[]> {
   const own = route.cache?.entryId;
-  if (own === undefined) {
+  if (own === undefined && route.partialFallback === undefined) {
     return [];
   }
   const upgraded =
-    runtimeCacheOf(stack.policy).concreteUpgrade &&
-    route.cache?.kind === 'app-page' &&
-    route.pathname.includes('[') &&
-    route.pathname !== pathname;
+    route.partialFallback !== undefined ||
+    (runtimeCacheOf(stack.policy).concreteUpgrade &&
+      route.cache?.kind === 'app-page' &&
+      route.pathname.includes('[') &&
+      route.pathname !== pathname);
   const member = upgraded ? await entryFor(stack, route, { pathname, own: true }) : undefined;
+  if (own === undefined) return member === undefined ? [] : [member];
   return member === undefined || member === own ? [own] : [own, member];
 }
 
