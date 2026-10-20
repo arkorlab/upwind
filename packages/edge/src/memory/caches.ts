@@ -205,9 +205,8 @@ const REWRITE_SEEN_TTL_MS = MINUTE_MS;
 const REWRITE_SEEN_MAX_ENTRIES = 2048;
 
 /**
- * How long an asset candidate the asset strategy refused is remembered, and how many are
- * (`handlers/asset-answer.ts`). A minute: the upstream may come to answer the file in a way that is
- * kept, which an admission makes known at once and the end of this makes known in any case.
+ * The legacy refused-asset memo, retained for hosts composing their own asset path. The built-in
+ * handler now sends credentialed requests directly, without consulting or filling this memo.
  */
 const REFUSED_ASSET_TTL_MS = MINUTE_MS;
 const REFUSED_ASSET_MAX_ENTRIES = 1024;
@@ -297,7 +296,7 @@ export interface EdgeMemory {
   readonly memberEntries: TtlCache<string, string>;
   /** What the middleware last did with a document's pathname, by manifest and pathname. */
   readonly rewritesSeen: TtlCache<string, RewriteSeen>;
-  /** Asset URLs whose anonymous fetch the asset strategy refused, by manifest and URL. */
+  /** Legacy refused-asset memo for composed hosts; the built-in handler no longer uses it. */
   readonly refusedAssets: TtlCache<string, true>;
 }
 
