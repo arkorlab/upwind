@@ -544,11 +544,11 @@ describe('a local stack', () => {
         const probe = new URL('middleware?path=/guard', stack.backstage);
         const codings = ['identity', 'zstd', 'gzip, br'];
         const responses = await Promise.all(
-          codings.map((coding) =>
-            fetch(probe, {
+          codings.map((coding) => {
+            return fetch(probe, {
               headers: { 'accept-encoding': coding, 'x-client-codings': coding },
-            }),
-          ),
+            });
+          }),
         );
         const decisions = await Promise.all(
           responses.map(async (response) => {
