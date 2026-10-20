@@ -79,6 +79,7 @@ describe('a retained static asset beside a new base path', () => {
         originHost: 'site.example',
         deployment: { dplId: SCOPE, assetSetHash: 'assets', observedAt: bundle.generatedAt },
         routes: [],
+        app: { deploymentId: bundle.deploymentId, scriptName: 'icon-app' },
         staticFiles: staticFilesOf(bundle, previous),
       });
       const current = classifyRequest({
