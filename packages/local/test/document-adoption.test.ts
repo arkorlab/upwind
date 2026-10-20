@@ -51,6 +51,7 @@ const fixture = {
   override: undefined as 'br' | 'gzip' | undefined,
   target: '/landing',
   unknownOpen: false,
+  knownOpen: false,
   middleClosed: Promise.withResolvers<true>(),
   terminalClosed: Promise.withResolvers<true>(),
 };
@@ -89,6 +90,13 @@ function landing(request: IncomingMessage, response: ServerResponse): void {
       : `shell;cont=none;policy=default;enc=${rendering};route=/landing`,
     ...(coding !== undefined && { 'content-encoding': coding }),
   });
+  if (fixture.knownOpen) {
+    response.on('close', () => {
+      fixture.terminalClosed.resolve(true);
+    });
+    response.flushHeaders();
+    return;
+  }
   response.end(body);
 }
 
@@ -350,6 +358,7 @@ describe('redirected documents retain their original request and response', () =
     fixture.override = undefined;
     fixture.target = '/landing';
     fixture.unknownOpen = false;
+    fixture.knownOpen = false;
     fixture.middleClosed = Promise.withResolvers<true>();
     fixture.terminalClosed = Promise.withResolvers<true>();
     direct.headers = undefined;
@@ -674,12 +683,12 @@ describe('redirected documents retain their original request and response', () =
   });
 
   it.each([
-    { delivery: 'resume', agent: 'Chrome/', failure: undefined },
-    { delivery: 'complete', agent: 'Chrome/', failure: BOT_SHELL_FAILURE },
-    { delivery: 'resume', agent: 'Firefox/', failure: BOT_SHELL_FAILURE },
+    { delivery: 'resume', agent: 'Chrome/', failure: undefined, captured: false },
+    { delivery: 'complete', agent: 'Chrome/', failure: BOT_SHELL_FAILURE, captured: true },
+    { delivery: 'resume', agent: 'Firefox/', failure: BOT_SHELL_FAILURE, captured: true },
   ] as const)(
     'uses the original $agent metadata policy for a redirected $delivery page',
-    async ({ delivery, agent, failure }) => {
+    async ({ delivery, agent, failure, captured }) => {
       fixture.bot = true;
       const original = stack();
       const route = original.manifest.routes['/landing'];
@@ -715,14 +724,17 @@ describe('redirected documents retain their original request and response', () =
 
       expect(followed.failure).toBeUndefined();
       await expect(judge()).resolves.toBe(failure);
-      expect(followed.last?.whole?.sha256).toBe(DIGEST);
+      expect(followed.last?.whole?.sha256).toBe(captured ? DIGEST : undefined);
       expect(visits.at(-1)?.headers['user-agent']).toBe(agent);
-      expect(traces).toStrictEqual(['PUT', 'DELETE', 'PUT', 'GET', 'DELETE']);
+      expect(traces).toStrictEqual(
+        captured ? ['PUT', 'DELETE', 'PUT', 'GET', 'DELETE'] : ['PUT', 'DELETE', 'PUT', 'DELETE'],
+      );
     },
   );
 
   it('keeps an intentionally unjudged metadata landing through the actual follow-up verdict', async () => {
     fixture.bot = true;
+    fixture.knownOpen = true;
     const own = metadataStack();
     const route = own.manifest.routes['/start'];
     assert(route !== undefined, 'the starting route is recorded');
@@ -734,10 +746,39 @@ describe('redirected documents retain their original request and response', () =
       exact: true,
     });
 
+    await fixture.terminalClosed.promise;
+
     expect(failure).toBeUndefined();
     expect(visits.some(({ path: pathname }) => pathname === '/landing')).toBe(true);
-    expect(traces).toContain('GET');
+    expect(traces).not.toContain('GET');
   });
+
+  it.each([
+    { requested: '/landing', bot: true },
+    { requested: '/unrecorded', bot: false },
+  ])(
+    'closes a known blocking-metadata stream requested as $requested',
+    async ({ requested, bot }) => {
+      fixture.bot = bot;
+      fixture.knownOpen = true;
+      const own = metadataStack();
+      const answered = await documentAnswerAt(
+        own,
+        Buffer.byteLength(DOCUMENT),
+        { url: new URL(requested, own.site), headers: { ...HEADERS, 'user-agent': 'Chrome/' } },
+        'gzip',
+      );
+      assert(typeof answered !== 'string', 'the known policy stream was released at its headers');
+      const judge = answered.documentFailure;
+      assert(judge !== undefined, 'an intentional policy exemption retains its deferred verdict');
+      await fixture.terminalClosed.promise;
+
+      await expect(judge()).resolves.toBeUndefined();
+      expect(answered.whole).toBeUndefined();
+      expect(visits.map(({ path: pathname }) => pathname)).toStrictEqual([requested]);
+      expect(traces).toStrictEqual(['PUT', 'DELETE']);
+    },
+  );
 
   it('closes an unrecorded streaming landing at its headers through actual follow-ups', async () => {
     fixture.target = '/unrecorded';

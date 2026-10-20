@@ -18,22 +18,28 @@ export async function documentAnswerAt(
   const requestedKey = documentRouteAt(stack.manifest, url, headers);
   const keyOf = (account: string): string | undefined =>
     requestedKey ?? landedRouteOf(stack.manifest, account);
+  const requestHeaders = new Headers(headers);
+  const blockingOf = (key: string | undefined): boolean => {
+    const route = key === undefined ? undefined : stack.manifest.routes[key];
+    return route !== undefined && sentBlockingMetadata(stack.manifest, route, requestHeaders);
+  };
   const read = await capturedDocument(stack, headBytes, {
     requested,
     headers,
     coding,
     headersOnly: (status, responseHeaders) => {
-      return (
-        redirectHeaders(status, responseHeaders) ||
-        keyOf(String(responseHeaders[EDGE_HEADER] ?? '')) === undefined
-      );
+      if (redirectHeaders(status, responseHeaders)) {
+        return true;
+      }
+      const key = keyOf(String(responseHeaders[EDGE_HEADER] ?? ''));
+      return key === undefined || blockingOf(key);
     },
   });
   if (typeof read === 'string') {
     return read;
   }
   const answered = answeredOf(read.answer);
-  if (read.kind === 'headers') {
+  if (read.kind === 'headers' && redirectHeaders(read.answer.status, read.answer.headers)) {
     return answered;
   }
   const key = keyOf(answeredBy(read.answer));
@@ -41,8 +47,11 @@ export async function documentAnswerAt(
   if (key === undefined || route === undefined) {
     return answered;
   }
-  if (sentBlockingMetadata(stack.manifest, route, new Headers(headers))) {
+  if (blockingOf(key)) {
     return { ...answered, documentFailure: () => Promise.resolve(undefined) };
+  }
+  if (read.kind === 'headers') {
+    return answered;
   }
   const asked = {
     key,
