@@ -1,4 +1,4 @@
-import { answeredBy, type CheckedStack, EDGE_HEADER } from './answers.ts';
+import { answeredBy, type CheckedStack, EDGE_HEADER, middlewareAnswered } from './answers.ts';
 import { sentBlockingMetadata } from './browsers.ts';
 import type { Accepted } from './codings.ts';
 import { capturedDocument } from './document-reading.ts';
@@ -31,6 +31,9 @@ export async function documentAnswerAt(
       if (redirectHeaders(status, responseHeaders)) {
         return true;
       }
+      if (middlewareAnswered({ headers: responseHeaders }) !== undefined) {
+        return true;
+      }
       const key = keyOf(String(responseHeaders[EDGE_HEADER] ?? ''));
       return key === undefined || blockingOf(key);
     },
@@ -46,6 +49,9 @@ export async function documentAnswerAt(
   const route = key === undefined ? undefined : stack.manifest.routes[key];
   if (key === undefined || route === undefined) {
     return answered;
+  }
+  if (middlewareAnswered(read.answer) !== undefined) {
+    return { ...answered, documentFailure: () => Promise.resolve(undefined) };
   }
   if (blockingOf(key)) {
     return { ...answered, documentFailure: () => Promise.resolve(undefined) };

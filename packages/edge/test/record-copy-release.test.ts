@@ -141,9 +141,9 @@ describe('giving up a record copy after its existing read deadline', () => {
   });
 
   it.each([
-    ['high surrogate in scope', 'scope-\uD800', 'entry'],
-    ['low surrogate in entry', 'scope', 'entry-\uDC00'],
-    ['another high surrogate', 'scope-\uD801', 'entry'],
+    ['high surrogate in scope', 'scope-\u{D800}', 'entry'],
+    ['low surrogate in entry', 'scope', 'entry-\u{DC00}'],
+    ['another high surrogate', 'scope-\u{D801}', 'entry'],
   ])('keeps, reads and deletes a copy with %s', async (_what, scopeId, entryId) => {
     const { edge, match } = await fixture();
     match.mockRestore();
@@ -151,7 +151,7 @@ describe('giving up a record copy after its existing read deadline', () => {
     await keepCopyAhead(
       edge,
       key,
-      { bytes: BYTES, revision: 3 },
+      { bytes: new Uint8Array(BYTES), revision: 3 },
       { maxAgeMs: MAX_AGE_MS, wanted: () => true },
     );
     const found = await readCopy(edge, key, MAX_AGE_MS);
@@ -171,22 +171,28 @@ describe('giving up a record copy after its existing read deadline', () => {
       'scope/entry',
       'utf16/value',
       String.raw`scope-\ud800`,
-      'scope-\uFFFD',
+      'scope-\u{FFFD}',
       '日本語-😀',
     ];
     for (const key of ordinary) {
       expect(recordCopyUrl(host, key)).toBe(`https://${host}/${encodeURIComponent(key)}`);
     }
-    const keys = ['scope-\uD800', 'scope-\uD801', 'scope-\uDC00'];
+    const keys = ['scope-\u{D800}', 'scope-\u{D801}', 'scope-\u{DC00}'];
     const urls = keys.map((key) => recordCopyUrl(host, key));
     const ordinaryUrls = ordinary.map((key) => recordCopyUrl(host, key));
+    const uniqueUrls = new Set(urls);
+    for (const url of ordinaryUrls) {
+      uniqueUrls.add(url);
+    }
 
-    expect(new Set([...urls, ...ordinaryUrls]).size).toBe(urls.length + ordinary.length);
+    expect(uniqueUrls.size).toBe(urls.length + ordinary.length);
+
     for (const [index, url] of urls.entries()) {
       const path = new URL(url).pathname;
+      const decodedKey: unknown = JSON.parse(decodeURIComponent(path.slice('/utf16/'.length)));
 
       expect(path.startsWith('/utf16/')).toBe(true);
-      expect(JSON.parse(decodeURIComponent(path.slice('/utf16/'.length)))).toBe(keys[index]);
+      expect(decodedKey).toBe(keys[index]);
     }
   });
 

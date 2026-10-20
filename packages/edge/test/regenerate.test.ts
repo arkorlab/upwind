@@ -99,6 +99,7 @@ describe('a regeneration asked for', () => {
         policy: DEFAULT_DELIVERY_POLICY,
         projectId: 'site',
         privateDelivery: false,
+        timings: { pointerMs: undefined, manifestMs: undefined, middlewareMs: undefined },
       };
       takeInvalidation(edge.runtime.memory, scopeId, { value: 'posts', bound: '7' });
       edge.runtime.memory.scopes.set(deploymentId, {

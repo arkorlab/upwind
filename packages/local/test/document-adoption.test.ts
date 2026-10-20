@@ -34,6 +34,7 @@ const fixture = {
   stack: undefined as CheckedStack | undefined,
   status: 200,
   bot: false,
+  middleware: false,
   override: undefined as 'br' | 'gzip' | undefined,
   target: '/landing',
   unknownOpen: false,
@@ -57,15 +58,16 @@ function landing(request: IncomingMessage, response: ServerResponse): void {
   if (coding === 'br') body = brotliCompressSync(body);
   else if (coding === 'gzip') body = gzipSync(body);
   const rendering = coding === undefined ? 'identity' : `${coding}-live`;
+  let account = `shell;cont=none;policy=default;enc=${rendering};route=/landing`;
+  if (fixture.bot) account = BOT_ACCOUNT;
+  if (fixture.middleware) account = 'passthrough;reason=middleware;mw=hit';
   response.writeHead(fixture.status, {
     'content-type': HTML,
     'cache-control': NO_STORE_CACHE_CONTROL,
     vary: 'accept-encoding',
     // A Location on a non-redirect status must not discard this body's evidence.
     location: '/not-a-redirect',
-    'x-arkor-edge': fixture.bot
-      ? BOT_ACCOUNT
-      : `shell;cont=none;policy=default;enc=${rendering};route=/landing`,
+    'x-arkor-edge': account,
     ...(coding !== undefined && { 'content-encoding': coding }),
   });
   if (fixture.knownOpen) {
@@ -225,7 +227,7 @@ function stack(): CheckedStack {
   return fixture.stack;
 }
 
-function metadataStack(): CheckedStack {
+function metadataStack(htmlLimitedBots = '.*'): CheckedStack {
   const original = stack();
   const route = original.manifest.routes['/landing'];
   assert(route?.cache !== undefined, 'the landing has a cache delivery policy');
@@ -234,7 +236,7 @@ function metadataStack(): CheckedStack {
     ...original,
     manifest: {
       ...original.manifest,
-      htmlLimitedBots: '.*',
+      htmlLimitedBots,
       routes: {
         ...original.manifest.routes,
         '/landing': landingRoute,
@@ -260,6 +262,7 @@ describe('redirected documents retain their original request and response', () =
   beforeEach(() => {
     fixture.status = 200;
     fixture.bot = false;
+    fixture.middleware = false;
     fixture.override = undefined;
     fixture.target = '/landing';
     fixture.unknownOpen = false;
@@ -400,36 +403,44 @@ describe('redirected documents retain their original request and response', () =
     },
   );
 
-  it('keeps an intentionally unjudged metadata landing through the actual follow-up verdict', async () => {
-    fixture.bot = true;
-    fixture.knownOpen = true;
-    const own = metadataStack();
-    const route = own.manifest.routes['/start'];
-    assert(route !== undefined, 'the starting route is recorded');
-    const failure = await routeFollowUpFailure(own, Buffer.byteLength(DOCUMENT), {
-      key: '/start',
-      route,
-      requested: '/start',
-      headers: { ...HEADERS, 'user-agent': 'Chrome/' },
-      exact: true,
-    });
+  it.each(['metadata', 'middleware'] as const)(
+    'keeps an unjudged %s landing through the follow-up verdict',
+    async (kind) => {
+      fixture.bot = kind === 'metadata';
+      fixture.middleware = kind === 'middleware';
+      fixture.knownOpen = true;
+      const own = metadataStack(kind === 'metadata' ? '.*' : '^$');
+      const route = own.manifest.routes['/start'];
+      assert(route !== undefined, 'the starting route is recorded');
+      const failure = await routeFollowUpFailure(own, Buffer.byteLength(DOCUMENT), {
+        key: '/start',
+        route,
+        requested: '/start',
+        headers: { ...HEADERS, 'user-agent': 'Chrome/' },
+        exact: true,
+      });
 
-    await fixture.terminalClosed.promise;
+      await fixture.terminalClosed.promise;
 
-    expect(failure).toBeUndefined();
-    expect(visits.some(({ path: pathname }) => pathname === '/landing')).toBe(true);
-    expect(traces).not.toContain('GET');
-  });
+      expect(failure).toBeUndefined();
+      expect(visits.some(({ path: pathname }) => pathname === '/landing')).toBe(true);
+      expect(traces).not.toContain('GET');
+    },
+  );
 
   it.each([
-    { requested: '/landing', bot: true },
-    { requested: '/unrecorded', bot: false },
+    { requested: '/landing', bot: true, middleware: false, status: 200 },
+    { requested: '/unrecorded', bot: false, middleware: false, status: 200 },
+    { requested: '/landing', bot: false, middleware: true, status: 200 },
+    { requested: '/landing', bot: false, middleware: true, status: 500 },
   ])(
-    'closes a known blocking-metadata stream requested as $requested',
-    async ({ requested, bot }) => {
+    'closes an unjudged $status stream requested as $requested (middleware=$middleware)',
+    async ({ requested, bot, middleware, status }) => {
+      fixture.status = status;
       fixture.bot = bot;
+      fixture.middleware = middleware;
       fixture.knownOpen = true;
-      const own = metadataStack();
+      const own = middleware ? stack() : metadataStack();
       const answered = await documentAnswerAt(
         own,
         Buffer.byteLength(DOCUMENT),
