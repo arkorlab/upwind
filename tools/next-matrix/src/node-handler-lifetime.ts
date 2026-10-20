@@ -47,9 +47,12 @@ interface Lane {
   readonly method: 'GET' | 'POST';
   readonly mode: 'retained' | 'previous-method-guard';
   responseBeforeCompletion: boolean;
+  hookStarted: boolean;
   held: number | undefined;
   completedAfterRelease: boolean;
   egressAttempts: number;
+  stage: string;
+  failureStage?: string;
 }
 
 /** Bound worker startup, response reads, observation and disposal independently. */
@@ -104,6 +107,7 @@ async function exercise(bridge: string, tasks: string, lane: Lane): Promise<void
         [OBSERVER_BINDING]: async (request) => {
           const pathname = new URL(request.url).pathname;
           if (pathname === '/hold') {
+            lane.hookStarted = true;
             started.resolve(undefined);
             await release.promise;
           } else {
@@ -122,25 +126,41 @@ async function exercise(bridge: string, tasks: string, lane: Lane): Promise<void
   );
   const signal = AbortSignal.timeout(REQUEST_MS);
   try {
+    lane.stage = 'worker-start';
     await bounded(runtime.ready, signal);
+    lane.stage = 'response-headers';
     const response = await bounded(
       runtime.dispatchFetch('https://handler.test/respond', { method: lane.method }),
       signal,
     );
     assert.equal(response.status, HTTP_OK);
+    lane.stage = 'response-body';
     assert.equal(await bounded(response.text(), signal), 'response before hook completion');
-    await bounded(started.promise, signal);
+    const expected = lane.mode === 'previous-method-guard' && lane.method === 'GET' ? 0 : 1;
+    // An unretained GET can end before even the observer receives its first call. Only retained
+    // lanes must reach that call; requiring it from the former guard would wait for cancelled work.
+    if (expected === 1) {
+      lane.stage = 'hook-start';
+      await bounded(started.promise, signal);
+    }
+    lane.stage = 'held-state';
     const observation = await bounded(runtime.dispatchFetch('https://handler.test/state'), signal);
     const state = (await bounded(observation.json(), signal)) as State;
     assert.equal(state.completed, false, 'the hook finished before the response was read');
     lane.responseBeforeCompletion = true;
     lane.held = state.held;
-    const expected = lane.mode === 'previous-method-guard' && lane.method === 'GET' ? 0 : 1;
     assert.equal(state.held, expected, 'the bridge did not retain the expected handler promise');
     release.resolve(undefined);
     // The control establishes the former missing lifetime registration. Miniflare need not cancel
     // its unheld work identically to a deployed Worker, so make no assertion that it is cancelled.
-    if (expected === 1) await bounded(completed.promise, signal);
+    if (expected === 1) {
+      lane.stage = 'hook-completion';
+      await bounded(completed.promise, signal);
+    }
+    lane.stage = 'completed';
+  } catch (error) {
+    lane.failureStage = lane.stage;
+    throw error;
   } finally {
     release.resolve(undefined);
     await bounded(runtime.dispose(), AbortSignal.timeout(CLEANUP_MS));
@@ -173,9 +193,11 @@ try {
         mode,
         method,
         responseBeforeCompletion: false,
+        hookStarted: false,
         held: undefined,
         completedAfterRelease: false,
         egressAttempts: 0,
+        stage: 'created',
       };
       lanes.push(lane);
       await exercise(bridge, tasks, lane);
