@@ -9,6 +9,7 @@ import { KEY_SCHEMA_VERSION } from '../cache/keys.ts';
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
 import { imagesConfigSchema } from '../images/config.ts';
 import * as z from '../schema/index.ts';
+const PAGES_FALLBACK_PRIVACY = 3;
 
 /**
  * Bumped when a manifest starts to mean something an older reader would get wrong. An edge that
@@ -103,15 +104,28 @@ export const routeBodyEntrySchema = z.object({
 export type RouteBodyEntry = z.infer<typeof routeBodyEntrySchema>;
 
 /** A separate exact Pages document authority, never inferred from application response headers. */
-export const staticPageEntrySchema = z.object({
-  /** Absent expects the original build-only proof; 2 requires an ISR-aware output proof. */
-  staticPagePrivacy: z.literal(2).optional(),
-  pathname: z.string().startsWith('/'),
-  route: z.string().startsWith('/'),
-  entryId: z.string().min(1),
-  bypassFor: z.array(routeHasSchema).optional(),
-  function: splitFunctionNameSchema.optional(),
-});
+export const staticPageEntrySchema = z
+  .object({
+    /** Absent expects the original build-only proof; 2 requires an ISR-aware output proof. */
+    staticPagePrivacy: z.literal([2, PAGES_FALLBACK_PRIVACY]).optional(),
+    pathname: z.string().startsWith('/'),
+    route: z.string().startsWith('/'),
+    entryId: z.string().min(1),
+    /** Version 3 binds the member and its paired props to this build-owned route. */
+    parameters: z.record(z.string().min(1), z.string().min(1)).optional(),
+    dataPathname: z.string().startsWith('/').optional(),
+    bypassFor: z.array(routeHasSchema).optional(),
+    function: splitFunctionNameSchema.optional(),
+  })
+  .refine(
+    (entry) => {
+      return (
+        entry.staticPagePrivacy !== PAGES_FALLBACK_PRIVACY ||
+        (entry.parameters !== undefined && entry.dataPathname !== undefined)
+      );
+    },
+    { message: 'version 3 requires its parameters and paired data pathname' },
+  );
 export type StaticPageEntry = z.infer<typeof staticPageEntrySchema>;
 
 /** The scope a manifest's cache entries belong to: one deployment, under one key schema. */
@@ -155,6 +169,18 @@ export const routeSegmentSchema = z.object({
   encodings: shellEncodingsSchema.optional(),
 });
 export type RouteSegment = z.infer<typeof routeSegmentSchema>;
+
+/** A build-owned loading response, never a concrete member or generation authority. */
+export const pagesFallbackEntrySchema = z.object({
+  staticPagePrivacy: z.literal(PAGES_FALLBACK_PRIVACY),
+  route: z.string().startsWith('/'),
+  dataPathname: z.string().startsWith('/'),
+  shell: routeSegmentSchema,
+  headers: z.record(z.string(), z.string()),
+  function: splitFunctionNameSchema.optional(),
+  bypassFor: z.array(routeHasSchema).optional(),
+});
+export type PagesFallbackEntry = z.infer<typeof pagesFallbackEntrySchema>;
 
 /** The source route and parameter key of a shell completed behind a partial fallback response. */
 export const partialFallbackUpgradeSchema = z.object({
@@ -534,6 +560,8 @@ const projectFields = {
   routeBodies: z.record(z.string().startsWith('/'), routeBodyEntrySchema).optional(),
   /** Exact static Pages authority, versioned per entry. Absent publications stay private. */
   staticPages: z.record(z.string().startsWith('/'), staticPageEntrySchema).optional(),
+  /** Separate immutable loading shells for supported Pages fallback classes. */
+  pagesFallbacks: z.record(z.string().startsWith('/'), pagesFallbackEntrySchema).optional(),
   /** The application's middleware matchers: a document these match is not served without it. */
   middleware: middlewareConfigSchema.optional(),
   /**

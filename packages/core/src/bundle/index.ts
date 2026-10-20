@@ -70,6 +70,7 @@ export {
   pageOfDataPathname,
   pageOfPagesData,
   pagesDataPathnameUnder,
+  pagesDataPathnameAtPrefix,
   underBasePath,
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
@@ -111,6 +112,7 @@ export {
   routeHandlerPrerenders,
   type ServableOptions,
   type ServedRewrite,
+  type ServingBundle,
   shellHeaders,
 } from './serving.ts';
 export { spelledPrefixOf } from './spelled-prefix.ts';
@@ -136,3 +138,11 @@ export {
   staticPagePrivacyFor,
   staticPagesPrivacyOf,
 } from './static-pages.ts';
+
+export {
+  staticFallbackParametersFor,
+  staticFallbackPageFor,
+  staticFallbackPagesOf,
+  staticPagesMembersOf,
+  type StaticFallbackPage,
+} from './fallback-pages.ts';

@@ -10,6 +10,7 @@ import {
   TAG_KINDS,
 } from './keys.ts';
 import { GENERATION_SOURCE_KINDS, PACK_SCHEMA_VERSION } from './pack-header.ts';
+import { STATIC_PAGES_FALLBACK_PRIVACY } from './static-page-version.ts';
 import { CACHE_POLICY_SOURCES } from './timing.ts';
 
 /**
@@ -170,7 +171,7 @@ export const headerValuesSchema = z.record(z.string(), headerValueSchema);
 export const outputSnapshotSchema = z.object({
   outputId: z.string().min(1),
   /** A host-admitted static Pages output proof; regeneration must earn version 2 independently. */
-  staticPagePrivacy: z.literal([1, 2]).optional(),
+  staticPagePrivacy: z.literal([1, 2, STATIC_PAGES_FALLBACK_PRIVACY]).optional(),
   /** Which representation of the entry this is: `html`, `rsc`, `segment:<path>`, `pages-data`, … */
   representationKey: z.string().min(1),
   pathname: z.string().nullable(),
@@ -210,7 +211,7 @@ export const generationPackHeaderSchema = z.object({
   seq: z.number().int().positive(),
   source: generationSourceKindSchema,
   /** Versioned host proof projected only from an independently admitted static Pages output. */
-  staticPagePrivacy: z.literal([1, 2]).optional(),
+  staticPagePrivacy: z.literal([1, 2, STATIC_PAGES_FALLBACK_PRIVACY]).optional(),
   kind: routeEntryKindSchema,
   route: z.string().startsWith('/'),
   pathname: z.string().startsWith('/'),

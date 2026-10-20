@@ -1,4 +1,8 @@
-import { staticPagesPrivacyOf } from '@stayingupwind/core/bundle';
+import {
+  type StaticFallbackPage,
+  staticFallbackPageFor,
+  staticPagesPrivacyOf,
+} from '@stayingupwind/core/bundle';
 import {
   type RouteEntryDescriptor,
   type RouteEntryKind,
@@ -18,10 +22,11 @@ type StaticPage = StaticPagesManifest['prerenders'][number];
 const admissions = new WeakMap<StaticPagesManifest, ReadonlyMap<string, StaticPage>>();
 
 const HTTP_OK = 200;
+export const PAGES_FALLBACK_PRIVACY = 3;
 
 /** Internal proof earned only by this module's synthetic-render boundary. */
 export interface StaticRender extends CapturedRender {
-  readonly staticPagePrivacy?: 2 | undefined;
+  readonly staticPagePrivacy?: 2 | typeof PAGES_FALLBACK_PRIVACY | undefined;
 }
 
 interface RenderInput {
@@ -31,6 +36,7 @@ interface RenderInput {
   readonly request: Request;
   readonly parameters: Readonly<Record<string, string>> | undefined;
   readonly allowHeader: readonly string[] | undefined;
+  readonly dataPathname: string | undefined;
   readonly render: CapturedRender;
 }
 
@@ -61,16 +67,26 @@ function admittedPages(manifest: StaticPagesManifest): ReadonlyMap<string, Stati
 }
 
 /** Called only after renderStatic made and rendered its own synthetic request. */
-function staticPageRenderPrivacy(input: RenderInput): 2 | undefined {
+function staticPageRenderPrivacy(
+  input: RenderInput,
+): 2 | typeof PAGES_FALLBACK_PRIVACY | undefined {
   const { manifest, descriptor, request, render } = input;
   if (
-    manifest?.staticPagesPrivacy !== 2 ||
-    manifest.deploymentId !== input.scopeId ||
+    manifest?.deploymentId !== input.scopeId ||
     descriptor.kind !== 'pages' ||
-    descriptor.pathname !== descriptor.route ||
     request.method !== 'GET' ||
     new URL(request.url).search !== '' ||
     Object.keys(input.parameters ?? {}).length > 0
+  )
+    return undefined;
+  const fallback = staticFallbackPageFor(manifest, descriptor.route, descriptor.pathname);
+  if (fallback !== undefined) {
+    return fallbackRenderAgrees(input, fallback, manifest) ? PAGES_FALLBACK_PRIVACY : undefined;
+  }
+  if (
+    (manifest.staticPagesPrivacy !== 2 && manifest.staticPagesPrivacy !== PAGES_FALLBACK_PRIVACY) ||
+    descriptor.pathname !== descriptor.route ||
+    Object.keys(render.pagesStatic?.query ?? {}).length > 0
   )
     return undefined;
   const page = admittedPages(manifest).get(descriptor.pathname);
@@ -81,6 +97,34 @@ function staticPageRenderPrivacy(input: RenderInput): 2 | undefined {
   )
     return undefined;
   return 2;
+}
+
+function fallbackRenderAgrees(
+  input: RenderInput,
+  fallback: StaticFallbackPage,
+  manifest: StaticPagesManifest,
+): boolean {
+  return (
+    input.dataPathname === fallback.dataPathname &&
+    input.render.data !== undefined &&
+    parametersAgree(input.render.pagesStatic?.query, fallback.params) &&
+    (input.allowHeader ?? []).every((name) => (fallback.page.allowHeader ?? []).includes(name)) &&
+    renderAgrees(manifest, input.descriptor, input.render)
+  );
+}
+
+function parametersAgree(
+  query: Readonly<Record<string, string | readonly string[]>> | undefined,
+  parameters: Readonly<Record<string, string>>,
+): boolean {
+  const entries = Object.entries(query ?? {});
+  return (
+    entries.length === Object.keys(parameters).length &&
+    entries.every(
+      ([name, value]) =>
+        typeof value === 'string' && Object.hasOwn(parameters, name) && value === parameters[name],
+    )
+  );
 }
 
 function renderAgrees(
@@ -111,6 +155,7 @@ interface StaticInput {
     readonly descriptor: RouteEntryDescriptor;
     readonly parameters?: Readonly<Record<string, string>> | undefined;
     readonly allowHeader?: readonly string[] | undefined;
+    readonly dataPathname?: string | undefined;
   };
 }
 
@@ -126,6 +171,7 @@ export function staticPageRender(
     descriptor: input.target.descriptor,
     parameters: input.target.parameters,
     allowHeader: input.target.allowHeader,
+    dataPathname: input.target.dataPathname,
     request,
     render,
   });
@@ -138,7 +184,10 @@ export function generationHeadersFor(
   render: StaticRender,
 ): Record<string, string> {
   const headers = generationResponseHeaders(kind, render.status, Object.entries(render.headers));
-  if (render.staticPagePrivacy === 2 && staticPageHasNoTransform(Object.entries(render.headers))) {
+  if (
+    render.staticPagePrivacy !== undefined &&
+    staticPageHasNoTransform(Object.entries(render.headers))
+  ) {
     headers['cache-control'] = 'no-transform';
   }
   return headers;

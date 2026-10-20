@@ -10,7 +10,8 @@ import { findRouteEntry, findStaticFile } from './manifest.ts';
 import { pageKeyOf } from './page-keys.ts';
 import { findRouteBody } from './route-bodies.ts';
 import type { ProjectManifest, ReservedRoute } from './schema.ts';
-import { findStaticPage } from './static-pages.ts';
+import { findStaticPage, findPagesFallback } from './static-pages.ts';
+const PAGES_FALLBACK_PRIVACY = 3;
 
 /**
  * Which gate a request is asked of before the edge serves it anything, for a deployment that
@@ -123,7 +124,7 @@ function namedOf(manifest: ProjectManifest, pathname: string): Named | undefined
  * manifest's `pagesDataPrefix` whose page holds the props the build wrote (`RouteEntry.pagesData`).
  * Any other request at a data URL — of an App Router page among them — is no request for those.
  */
-function propsPageOf(manifest: ProjectManifest, url: URL): string | undefined {
+function propsPageOf(manifest: ProjectManifest, url: URL, headers: Headers): string | undefined {
   const prefix = manifest.pagesDataPrefix;
   if (prefix === undefined) {
     return undefined;
@@ -133,7 +134,16 @@ function propsPageOf(manifest: ProjectManifest, url: URL): string | undefined {
   const page = pageOfPagesData(prefix, basePath, url.pathname, trailingSlash);
   const entry =
     page !== undefined && Object.hasOwn(manifest.routes, page) ? manifest.routes[page] : undefined;
-  return entry?.pagesData === undefined ? undefined : page;
+  if (entry?.pagesData !== undefined) return page;
+  if (page === undefined) return undefined;
+  const exact = findStaticPage(manifest, page);
+  if (exact?.staticPagePrivacy === PAGES_FALLBACK_PRIVACY && exact.dataPathname === url.pathname)
+    return page;
+  const pageUrl = new URL(url.href);
+  pageUrl.pathname = page;
+  return findPagesFallback(manifest, pageUrl, headers)?.dataPathname === url.pathname
+    ? page
+    : undefined;
 }
 
 /** Each manifest's rules as its router has them (`routerRules`), by its reserved routes. */
@@ -179,9 +189,11 @@ function gatedRouteOf(manifest: ProjectManifest, url: URL, headers: Headers): st
   if (isReserved(manifest, url, routed, true)) {
     return undefined;
   }
-  const props = propsPageOf(manifest, url);
+  const props = propsPageOf(manifest, url, routed);
   if (props !== undefined) {
-    return gatedOf(manifest, props);
+    const pageUrl = new URL(url.href);
+    pageUrl.pathname = props;
+    return gatedOf(manifest, props) ?? routedDynamicRouteFor(manifest, pageUrl, routed)?.gated;
   }
   const named = namedOf(manifest, url.pathname);
   if (named !== undefined) {
