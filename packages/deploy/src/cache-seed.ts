@@ -2,6 +2,7 @@ import {
   cacheablePrerenders,
   type DeploymentBundle,
   type Prerender,
+  staticPagesMembersOf,
 } from '@stayingupwind/core/bundle';
 import { KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
 import { bundleGeneratedAtMs, type SeedContext, seedRouteFor } from '@stayingupwind/host/bundle';
@@ -37,7 +38,14 @@ export function seedScopeOf(input: ScopeOfDeployment): SeedScopeInput['scope'] {
 
 /** The prerenders the cache holds a generation of, by id, in the bundle's order. */
 export function cacheEntryIdsOf(bundle: DeploymentBundle): string[] {
-  return cacheablePrerenders(bundle).map((prerender) => prerender.id);
+  return cachePrerendersOf(bundle).map((prerender) => prerender.id);
+}
+
+/** Version three independently admits concrete parameter outputs, never a class generation. */
+export function cachePrerendersOf(bundle: DeploymentBundle): Prerender[] {
+  const prerenders = new Set(cacheablePrerenders(bundle));
+  for (const page of staticPagesMembersOf(bundle).keys()) prerenders.add(page);
+  return [...prerenders];
 }
 
 /**
@@ -54,7 +62,7 @@ export function seededGenerationAt(bundle: DeploymentBundle, now: number): numbe
 
 /** The prerenders the cache holds a generation of, by id: what each batch of a seeding is read from. */
 export function cacheEntriesOf(bundle: DeploymentBundle): ReadonlyMap<string, Prerender> {
-  return new Map(cacheablePrerenders(bundle).map((prerender) => [prerender.id, prerender]));
+  return new Map(cachePrerendersOf(bundle).map((prerender) => [prerender.id, prerender]));
 }
 
 /**

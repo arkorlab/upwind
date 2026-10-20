@@ -253,3 +253,43 @@ describe('the memory held by trusted static Pages mappings', () => {
     expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(8 * 80);
   });
 });
+
+describe('the memory held by version-three Pages authority', () => {
+  it('charges concrete parameter objects independently of fixed mappings', () => {
+    const plain = manifestOf([]);
+    const page = {
+      pathname: '/post/first',
+      route: '/post/[slug]',
+      entryId: 'entry_post',
+      staticPagePrivacy: 3 as const,
+      parameters: { slug: 'first' },
+      dataPathname: '/_next/data/build/post/first.json',
+    };
+    const listed = { ...plain, staticPages: { '/post/first': page } };
+
+    expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(3 * 80);
+  });
+
+  it('charges loading metadata and compressed artifact objects', () => {
+    const plain = manifestOf([]);
+    const artifact = {
+      sha256: 'a'.repeat(64),
+      byteLength: 10,
+      contentType: 'text/html',
+      encoding: 'identity' as const,
+    };
+    const entry = {
+      route: '/post/[slug]',
+      staticPagePrivacy: 3 as const,
+      dataPathname: '/_next/data/build/post/[slug].json',
+      shell: {
+        artifact,
+        encodings: { gzip: { ...artifact, encoding: 'gzip' as const, crc32: 0 } },
+      },
+      headers: {},
+    };
+    const listed = { ...plain, pagesFallbacks: { '/post/[slug]': entry } };
+
+    expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(7 * 80);
+  });
+});

@@ -5,6 +5,8 @@ import {
   type Prerender,
   prerenderResponseHeaders,
   sharedShellPathname,
+  staticPagesPrivacyOf,
+  staticPagesMembersOf,
   standsForClass,
 } from '@stayingupwind/core/bundle';
 import {
@@ -16,6 +18,7 @@ import {
   parseCacheTagsHeader,
   policyFromBuild,
   sharedShellTagOf,
+  staticPageHasNoTransform,
   type RouteEntryDescriptor,
   type RouteEntryKind,
   tagKindOf,
@@ -43,6 +46,7 @@ const CACHE_TAGS_HEADER = 'x-next-cache-tags';
 /** Seconds the client router may keep the page, as the build records it. */
 const STALE_TIME_HEADER = 'x-nextjs-stale-time';
 const HTTP_OK = 200;
+const FALLBACK_PRIVACY = 3;
 
 export interface SeedContext {
   readonly scopeId: string;
@@ -69,6 +73,7 @@ interface BundleIndex {
   readonly kinds: ReadonlyMap<string, EntrypointKind>;
   /** The prerenders of each pathname, in the bundle's order. */
   readonly prerenders: ReadonlyMap<string, readonly Prerender[]>;
+  readonly staticPages: ReadonlyMap<Prerender, 1 | 2 | typeof FALLBACK_PRIVACY>;
 }
 
 /**
@@ -99,7 +104,12 @@ function indexOf(bundle: DeploymentBundle): BundleIndex {
       named.push(prerender);
     }
   }
-  const index = { kinds, prerenders };
+  const staticPages = new Map<Prerender, 1 | 2 | typeof FALLBACK_PRIVACY>(
+    staticPagesPrivacyOf(bundle),
+  );
+  for (const [prerender] of staticPagesMembersOf(bundle))
+    staticPages.set(prerender, FALLBACK_PRIVACY);
+  const index = { kinds, prerenders, staticPages };
   INDEXES.set(bundle, index);
   return index;
 }
@@ -213,15 +223,20 @@ function pagesDataOf(bundle: DeploymentBundle, prerender: Prerender): Prerender 
     bundle.config.basePath,
     prerender.pathname,
   );
-  return indexOf(bundle)
+  const candidates = indexOf(bundle)
     .prerenders.get(pathname)
-    ?.find((twin) => {
+    ?.filter((twin) => {
       return (
         twin.route === prerender.route &&
         twin.groupId === prerender.groupId &&
+        (indexOf(bundle).staticPages.get(prerender) !== FALLBACK_PRIVACY ||
+          twin.parentOutputId === prerender.parentOutputId) &&
         twin.body !== undefined
       );
     });
+  return indexOf(bundle).staticPages.get(prerender) === FALLBACK_PRIVACY && candidates?.length !== 1
+    ? undefined
+    : candidates?.[0];
 }
 
 /** The outputs of the build's generation: the primary body, its state, and a page's data. */
@@ -234,20 +249,36 @@ function outputsOf(
   if (kind === 'app-route') {
     return [outputOf(prerender, 'route-body', [artifactOf('route-body', body)], null)];
   }
-  const document = outputOf(
-    prerender,
-    'html',
-    [
-      artifactOf('html', body),
-      ...(prerender.postponed === undefined ? [] : [artifactOf('postponed', prerender.postponed)]),
-    ],
-    prerender.htmlSize ?? null,
-  );
+  const staticPagePrivacy = indexOf(bundle).staticPages.get(prerender);
+  const document: SeedOutput = {
+    ...outputOf(
+      prerender,
+      'html',
+      [
+        artifactOf('html', body),
+        ...(prerender.postponed === undefined
+          ? []
+          : [artifactOf('postponed', prerender.postponed)]),
+      ],
+      prerender.htmlSize ?? null,
+    ),
+    ...(staticPagePrivacy !== undefined && { staticPagePrivacy }),
+  };
   const data = kind === 'pages' ? pagesDataOf(bundle, prerender) : undefined;
   if (data?.body === undefined) {
     return [document];
   }
-  return [document, outputOf(data, 'pages-data', [artifactOf('pages-data', data.body)], null)];
+  return [
+    document,
+    {
+      ...outputOf(data, 'pages-data', [artifactOf('pages-data', data.body)], null),
+      ...(staticPagePrivacy === FALLBACK_PRIVACY && {
+        staticPagePrivacy: FALLBACK_PRIVACY,
+        compute: 'static' as const,
+        response: 'complete' as const,
+      }),
+    },
+  ];
 }
 
 /**
@@ -273,6 +304,21 @@ export async function seedRouteFor(
   };
   const derived = await deriveEntry(ctx.scopeId, descriptor);
   const generationId = await buildGenerationIdFor(ctx.scopeId, derived.entryId);
+  const responseHeaders = prerenderResponseHeaders(bundle, prerender);
+  const headers = generationResponseHeaders(
+    kind,
+    prerender.initialStatus ?? HTTP_OK,
+    responseHeaders,
+  );
+  if (indexOf(bundle).staticPages.has(prerender)) {
+    const original = Object.entries(prerender.initialHeaders ?? {}).map<[string, string]>(
+      ([name, value]) => [name, headerText(value) ?? ''],
+    );
+    if (staticPageHasNoTransform([...original, ...responseHeaders])) {
+      // Preserve the prohibition alone; application/CDN freshness never grants sharing authority.
+      headers['cache-control'] = 'no-transform';
+    }
+  }
   const input: SeedEntryInput = {
     descriptor,
     ...(prerender.allowQuery !== undefined &&
@@ -288,11 +334,7 @@ export async function seedRouteFor(
         clientStale: clientStaleOf(prerender),
       }),
       status: prerender.initialStatus ?? HTTP_OK,
-      headers: generationResponseHeaders(
-        kind,
-        prerender.initialStatus ?? HTTP_OK,
-        prerenderResponseHeaders(bundle, prerender),
-      ),
+      headers,
       tags: seededTagsOf(bundle, prerender, kind, derived.entryId),
       outputs: outputsOf(bundle, kind, prerender, body),
       dependencyCoverage: 'complete',

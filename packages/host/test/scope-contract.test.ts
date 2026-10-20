@@ -148,6 +148,19 @@ describe('a seed batch', () => {
     artifacts: [artifact],
   };
 
+  it.each([1, 2, 3, undefined])('retains the supported build proof %j', (staticPagePrivacy) => {
+    const marked = { ...output, staticPagePrivacy };
+    const parsed = seedEntriesInputSchema.parse(batchOf([marked]));
+
+    expect(parsed.entries[0]?.generation.outputs[0]?.staticPagePrivacy).toBe(staticPagePrivacy);
+  });
+
+  it.each([0, 4, '3', null])('rejects an unknown build proof %j', (staticPagePrivacy) => {
+    expect(
+      seedEntriesInputSchema.safeParse(batchOf([{ ...output, staticPagePrivacy }])).success,
+    ).toBe(false);
+  });
+
   it('holds an entry of as many outputs, each of as many artifacts, as a seed may', () => {
     const artifacts = Array.from({ length: MAX_SEED_OUTPUT_ARTIFACTS }, () => artifact);
     const outputs = Array.from({ length: MAX_SEED_OUTPUTS }, () => ({ ...output, artifacts }));
