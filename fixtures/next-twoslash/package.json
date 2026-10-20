@@ -1,0 +1,19 @@
+{
+  "name": "@upwind-fixture/next-twoslash",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Twoslash type annotations through a built Next.js route and its emitted Function.",
+  "type": "module",
+  "scripts": {
+    "build": "next build"
+  },
+  "dependencies": {
+    "@types/node": "26.1.0",
+    "next": "16.4.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "twoslash": "0.3.4",
+    "twoslash-protocol": "0.3.4",
+    "typescript": "5.9.2"
+  }
+}

@@ -175,6 +175,7 @@ export interface SplitInput {
   /** What every Function carries besides its routes. */
   readonly base: readonly BasePart[];
   readonly projectDir: string;
+  readonly repoRoot?: string | undefined;
   readonly distDir: string;
   readonly budget: PlanBudget;
 }
@@ -361,7 +362,12 @@ async function piecesOf(route: RouteCode, input: SplitInput, weights: Weights): 
     pieces.push(name);
     weights.items.set(name, { bytes: await sizeOf(file), code: true });
   }
-  const read = tracedFiles([{ assets: route.assets }], input.projectDir, input.distDir);
+  const read = tracedFiles(
+    [{ assets: route.assets }],
+    input.projectDir,
+    input.distDir,
+    input.repoRoot,
+  );
   for (const file of read) {
     const name = `f:${file.name}`;
     pieces.push(name);

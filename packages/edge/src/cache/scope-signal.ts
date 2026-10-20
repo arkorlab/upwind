@@ -498,7 +498,9 @@ export async function lookAtScope(look: ScopeLook, scopeId: string): Promise<voi
 
 /**
  * `request` as it goes to the scope's Functions, told where the scope stands as this isolate last
- * found it (`SCOPE_REVISION_HEADER`); as it is where the isolate knows nothing of the scope.
+ * found it, and at least where a recent response confirmed it (`SCOPE_REVISION_HEADER`). A response
+ * confirms no complete tag view: never advance `memory.scopes`, which `takeIn` uses to decide
+ * whether an authority answer brings new invalidations.
  */
 export function withScopeRevision(
   runtime: EdgeRuntime,
@@ -506,10 +508,18 @@ export function withScopeRevision(
   request: Request,
 ): Request {
   const known = runtime.memory.scopes.get(scopeId);
-  if (known === undefined) {
+  const response = runtime.memory.invalidations.responseRevisionOf(scopeId);
+  if (known === undefined && response === undefined) {
     return request;
   }
+  const scope = {
+    revision: Math.max(known?.revision ?? 0, response?.revision ?? 0),
+    invalidatedAt:
+      response === undefined
+        ? (known?.invalidatedAt ?? null)
+        : Math.max(known?.invalidatedAt ?? 0, response.observedAt),
+  };
   const headers = new Headers(request.headers);
-  headers.set(SCOPE_REVISION_HEADER, scopeRevisionValue(known));
+  headers.set(SCOPE_REVISION_HEADER, scopeRevisionValue(scope));
   return new Request(request, { headers });
 }

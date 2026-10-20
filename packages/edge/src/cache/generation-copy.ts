@@ -53,7 +53,13 @@ function errorDetail(error: unknown): string {
  * (`EdgeNames.recordCache`), so a `fetch()` filling `caches.default` never meets one.
  */
 export function recordCopyUrl(cacheKeyHost: string, recordKey: string): string {
-  return `https://${cacheKeyHost}/${encodeURIComponent(recordKey)}`;
+  try {
+    return `https://${cacheKeyHost}/${encodeURIComponent(recordKey)}`;
+  } catch (error) {
+    if (!(error instanceof URIError)) throw error;
+    // A separate path segment cannot collide with the existing single encoded component.
+    return `https://${cacheKeyHost}/utf16/${encodeURIComponent(JSON.stringify(recordKey))}`;
+  }
 }
 
 function copyRequest(edge: EdgeContext, recordKey: string): Request {

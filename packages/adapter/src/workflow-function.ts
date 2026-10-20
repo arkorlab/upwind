@@ -164,6 +164,7 @@ export async function buildWorkflowFunction(
   return buildFunction({
     kind: 'workflow',
     projectDir: ctx.projectDir,
+    repoRoot: ctx.repoRoot,
     outDir: context.outDir,
     patch: await patchFor(context, entry.chunks, wasm),
     entries: entry.modules,

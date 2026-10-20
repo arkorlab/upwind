@@ -1,0 +1,51 @@
+import { createTwoslasher } from 'twoslash';
+import ts from 'typescript';
+
+/** A fixed diagnostic category, never the exception's message, filename, stack or source. */
+function errorCategory(error) {
+  const message = typeof error?.message === 'string' ? error.message.slice(0, 512) : '';
+  if (
+    error?.name === 'TypeError' &&
+    message.includes('require') &&
+    message.includes('.resolve is not a function')
+  ) {
+    return 'require-resolve-unavailable';
+  }
+  if (error?.code === 'MODULE_NOT_FOUND' || error?.code === 'ERR_MODULE_NOT_FOUND') {
+    if (message.includes('typescript')) return 'missing-typescript';
+    return 'module-not-found';
+  }
+  if (message.startsWith('TSVFS: A request was made')) {
+    return 'missing-library';
+  }
+  return 'other';
+}
+
+/** The computation and returned JSON of Next.js 16.4.2's official Twoslash fixture. */
+export function GET(request) {
+  try {
+    const options = request.nextUrl.searchParams.has('esnext')
+      ? {
+          target: ts.ScriptTarget.ESNext,
+          lib: ['ESNext', 'DOM', 'esnext', 'dom', 'es2020'],
+        }
+      : {};
+    const code = `type X = Promise<number>;
+'hello'.toUpperCase()`;
+    const twoslasher = createTwoslasher({ compilerOptions: options });
+    const response = Response.json(twoslasher(code));
+    response.headers.set('x-upwind-twoslash-stage', 'handler-complete');
+    return response;
+  } catch (error) {
+    const response = Response.json({ error });
+    response.headers.set('x-upwind-twoslash-stage', 'handler-error');
+    response.headers.set('x-upwind-twoslash-error', errorCategory(error));
+    for (const key of ['name', 'code']) {
+      const value = error?.[key];
+      if (typeof value === 'string' && /^[\w.-]{1,64}$/.test(value)) {
+        response.headers.set(`x-upwind-twoslash-error-${key}`, value);
+      }
+    }
+    return response;
+  }
+}

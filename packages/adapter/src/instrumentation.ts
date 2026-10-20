@@ -2,8 +2,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { jsLiteral } from './codegen.ts';
-import { nftAssets, nftChunks, nftWasm } from './collect.ts';
 import { exists } from './fs.ts';
+import { nftAssets, nftChunks, nftWasm } from './nft.ts';
 
 /**
  * The instrumentation hook a Function runs, when the host has one of its own to add.
@@ -151,13 +151,14 @@ export async function instrumentationOf(
   distDir: string,
   outDir: string,
   exported: boolean,
-  hosts: readonly string[],
+  input: { readonly hosts: readonly string[]; readonly repoRoot: string },
 ): Promise<{
   readonly file: string | undefined;
   readonly chunks: readonly string[];
   readonly wasm: readonly string[];
   readonly assets: Readonly<Record<string, string>>;
 }> {
+  const { hosts, repoRoot } = input;
   const file = path.join(distDir, 'server', 'instrumentation.js');
   const own = (await exists(file)) ? file : undefined;
   if (exported) {
@@ -178,6 +179,6 @@ export async function instrumentationOf(
     file: composed,
     chunks: await nftChunks(own),
     wasm: await nftWasm(own),
-    assets: await nftAssets(own),
+    assets: await nftAssets(own, repoRoot),
   };
 }
