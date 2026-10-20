@@ -11573,7 +11573,7 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
-    it('lets the check go on where a part redirects to a Location no browser can read', async () => {
+    it('rejects a part redirect to a Location no browser can read', async () => {
       const routes = [await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } })];
       answers.set('/', documentAnswer(FRONT, 'mw=miss;route=/'));
       partAnswers.set('/|/_tree', {
@@ -11584,9 +11584,63 @@ describe('what the check makes of the middleware', () => {
 
       await expect(checkStack(stackOf(routes, {}))).resolves.toStrictEqual({
         checked: 1,
-        failures: [],
+        failures: [
+          {
+            path: '/',
+            reason: 'its prefetch segment /_tree, redirected to a Location no browser can read',
+          },
+        ],
         skipped: [],
       });
+    });
+
+    it('rejects a document redirect to a Location no browser can read', async () => {
+      const routes = [await routeOf('/', FRONT)];
+      answers.set('/', {
+        status: 307,
+        headers: { location: 'http://[', 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' },
+        body: '',
+      });
+      const result = await checkStack(stackOf(routes, {}));
+
+      expect(result.failures).toStrictEqual([
+        {
+          path: '/',
+          reason: 'its navigation, redirected to a Location no browser can read',
+        },
+      ]);
+    });
+
+    it.each([
+      {
+        label: 'an external origin',
+        location: 'https://127.0.0.2/redirect-control',
+        steps: 0,
+        visited: false,
+      },
+      { label: 'the same origin', location: '/redirect-control', steps: 1, visited: true },
+    ])('retains valid redirect behavior for $label', async ({ location, steps, visited }) => {
+      const front = await routeOf('/', FRONT);
+      const local = stackOf([front], {});
+      const stack = { ...local, site: local.url };
+      answers.set('/redirect-control', {
+        headers: { 'content-type': TEXT, 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' },
+        body: 'the terminal response',
+      });
+      const followed = await redirectsFrom(
+        stack,
+        {
+          answered: { changes: NO_COOKIE_CHANGES, account: '', page: false, location },
+          url: new URL('/', stack.site),
+          headers: {},
+          jar: [],
+        },
+        new Map(),
+      );
+
+      expect(followed.failure).toBeUndefined();
+      expect(followed.steps).toHaveLength(steps);
+      expect(askedHeaders.has('/redirect-control')).toBe(visited);
     });
 
     it.each([

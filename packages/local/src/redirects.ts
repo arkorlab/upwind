@@ -275,8 +275,8 @@ type Onward =
  * `Location` names (`hop`); where it redirects no further, but a redirect brought the fetch there,
  * to that URL again with the `_rsc` a router's request carries (`replay`), where it lacks it — as
  * Next.js's router asks again (`createFetch`); or nowhere: it landed there (`end`), it left the
- * site's answers — for another site's, or for a `Location` no browser can read, on which a fetch
- * fails (`left`) — or it failed past as many redirects as it follows.
+ * site's answers for another site's (`left`) — or it failed on a `Location` no browser can read,
+ * or past as many redirects as it follows.
  */
 function onwardFrom(
   at: {
@@ -291,7 +291,10 @@ function onwardFrom(
   const { location } = answered;
   if (location !== undefined) {
     const next = URL.canParse(location, url) ? new URL(location, url) : undefined;
-    if (next?.origin !== url.origin) {
+    if (next === undefined) {
+      return { kind: 'failed', failure: 'redirected to a Location no browser can read' };
+    }
+    if (next.origin !== url.origin) {
       return { kind: 'left' };
     }
     return counted.hops === MAX_REDIRECTS
