@@ -98,7 +98,12 @@ const server = createServer((request, response) => {
   }
   visits.push({ path: pathname, headers: request.headers });
   if (pathname === '/start') {
-    response.writeHead(307, { location: '/middle' }).end();
+    response
+      .writeHead(307, {
+        location: '/middle',
+        ...(fixture.middleware && { 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' }),
+      })
+      .end();
     return;
   }
   if (pathname === '/middle') {
