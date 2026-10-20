@@ -185,6 +185,7 @@ function runJob(
           : undefined,
       parameters: routingParameters(store, descriptor.route, descriptor.pathname),
     },
+    staticPagesManifest: store.manifest,
     previewToken: store.manifest.bypassToken,
     waitUntil: input.waitUntil,
     run: input.run,

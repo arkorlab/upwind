@@ -59,6 +59,8 @@ export interface CapturedRender {
   readonly cacheControl: RuntimeCacheControl;
   /** The props a Pages Router page was rendered with, as its data route serves them. */
   readonly data: Uint8Array | undefined;
+  /** Supplementary Next metadata, never permission to publish shared HTML by itself. */
+  readonly pagesStatic?: { readonly page: string; readonly buildId: string } | undefined;
 }
 
 type OnCacheEntry = (
@@ -135,25 +137,51 @@ function captureCallback(): {
  * the props the page was rendered with, and the data route answers exactly those. One render,
  * one generation, its two outputs in agreement.
  */
-function pagesDataOf(html: Uint8Array): Uint8Array | undefined {
+function emptyQuery(query: unknown): boolean {
+  if (query === null || typeof query !== 'object' || Array.isArray(query)) return false;
+  return Object.keys(query).length === 0;
+}
+
+function pagesStaticOf(value: Record<string, unknown>): CapturedRender['pagesStatic'] {
+  if (
+    value['gsp'] !== true ||
+    ['gssp', 'gip', 'appGip', 'isPreview'].some(
+      (name) => value[name] !== undefined && value[name] !== false,
+    ) ||
+    value['isFallback'] !== false ||
+    value['err'] !== undefined ||
+    typeof value['page'] !== 'string' ||
+    typeof value['buildId'] !== 'string' ||
+    !emptyQuery(value['query'])
+  )
+    return undefined;
+  return { page: value['page'], buildId: value['buildId'] };
+}
+
+function pagesDataOf(html: Uint8Array): Pick<CapturedRender, 'data' | 'pagesStatic'> {
   const text = new TextDecoder().decode(html);
   const marker = text.indexOf(NEXT_DATA_MARKER);
   if (marker === -1) {
-    return undefined;
+    return { data: undefined };
   }
   const start = text.indexOf('>', marker);
   const end = start === -1 ? -1 : text.indexOf(SCRIPT_END, start);
   if (start === -1 || end === -1) {
-    return undefined;
+    return { data: undefined };
   }
   try {
     const parsed: unknown = JSON.parse(text.slice(start + 1, end));
     if (typeof parsed !== 'object' || parsed === null || !('props' in parsed)) {
-      return undefined;
+      return { data: undefined };
     }
-    return new TextEncoder().encode(JSON.stringify(parsed.props));
+    return {
+      data: new TextEncoder().encode(JSON.stringify(parsed.props)),
+      ...(!text.includes(NEXT_DATA_MARKER, marker + NEXT_DATA_MARKER.length) && {
+        pagesStatic: pagesStaticOf(parsed),
+      }),
+    };
   } catch {
-    return undefined;
+    return { data: undefined };
   }
 }
 
@@ -243,5 +271,5 @@ export async function renderCaptured(
   if (render === undefined || kind === 'app-route') {
     return render;
   }
-  return { ...render, data: pagesDataOf(render.html) };
+  return { ...render, ...pagesDataOf(render.html) };
 }
