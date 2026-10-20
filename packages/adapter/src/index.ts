@@ -54,6 +54,7 @@ import { declaredGates } from './gates.ts';
 import { instrumentationOf, writeClientInstrumentation } from './instrumentation.ts';
 import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
+import { checkPageBodyHost, type UnshippedPrerenderBodies } from './page-bodies.ts';
 import { readProjectConfig } from './project-config.ts';
 import { projectDirOf } from './project-dir.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
@@ -122,9 +123,13 @@ function filesRead(
           [...appPages, ...appRoutes, ...pages, ...pagesApi, ...own, ...hook],
           ctx.projectDir,
           ctx.distDir,
+          ctx.repoRoot,
         ),
-    middleware: tracedFiles([...own, ...hook], ctx.projectDir, ctx.distDir),
-    workflow: flow === undefined ? [] : tracedFiles([flow, ...hook], ctx.projectDir, ctx.distDir),
+    middleware: tracedFiles([...own, ...hook], ctx.projectDir, ctx.distDir, ctx.repoRoot),
+    workflow:
+      flow === undefined
+        ? []
+        : tracedFiles([flow, ...hook], ctx.projectDir, ctx.distDir, ctx.repoRoot),
   };
 }
 
@@ -178,7 +183,10 @@ async function onBuildComplete(
     hosts: options.instrumentationModules ?? [],
     worldModule: options.workflowWorldModule,
   });
-  const instrumentation = await instrumentationOf(ctx.distDir, outDir, exported, workflow.hosts);
+  const instrumentation = await instrumentationOf(ctx.distDir, outDir, exported, {
+    hosts: workflow.hosts,
+    repoRoot: ctx.repoRoot,
+  });
   // Not asked of a static export, whose Function runs none of the application's code.
   const cacheHandlers = exported ? undefined : await cacheHandlersModule(ctx.distDir, outDir);
   const id = deploymentId();
@@ -194,6 +202,8 @@ async function onBuildComplete(
     basePath: ctx.config.basePath,
     rsc: ctx.routing.rsc,
     unshipped: options.unshippedOutputs ?? 'none',
+    unshippedBodies: options.unshippedPrerenderBodies,
+    entrypoints,
     // The host serves no segment of an edge-runtime page and the Function cannot render one, so
     // those stay shipped whatever the option says (`PrerenderCollection.edgeRuntimeRoutes`).
     edgeRuntimeRoutes: new Set(
@@ -263,6 +273,7 @@ async function onBuildComplete(
     outDir,
     blobs,
     cacheHostModule: options.cacheHostModule,
+    requireBundleBlobReader: options.unshippedPrerenderBodies !== undefined,
     sourceMaps: options.sourceMaps,
     keptMaps,
     manifests,
@@ -324,6 +335,7 @@ async function onBuildComplete(
     aiInference: 1,
     // Its runtime records privacy vetoes and targeted no-transform prohibitions for route bodies.
     routeBodyPrivacy: 2,
+    staticPagesPrivacy: 1,
     ...objects.bundle,
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).
@@ -552,6 +564,23 @@ export interface AdapterOptions {
    */
   readonly unshippedOutputs?: 'none' | 'prefetch-segments' | undefined;
   /**
+   * Opt in to leave completed Node App-page HTML and whole RSC bodies in the host's bundle
+   * storage when their individual byte lengths fall in this inclusive range. Every body reference
+   * and uploaded blob stays unchanged; small bodies, reusable shells, postponed state, error
+   * documents, Pages Router outputs and edge-runtime outputs remain in the Function.
+   *
+   * The default is unset: every page body is shipped. A host choosing this must name a nonempty
+   * `cacheHostModule` exporting `createBundleBlobReader`, and set maxBytes to a size its reader can
+   * return. A missing or blank host module is rejected when the adapter is created. The build
+   * requires a named runtime ESM export, including reexports; a CommonJS host can provide an
+   * ESM facade. This checks the export without executing the host or proving backend availability.
+   * A Function falling back to an omitted body waits for that reader and fails if the exact body is
+   * unavailable.
+   * Edge delivery and shipped bodies do not make that read. This trades fallback latency for
+   * a smaller Function, and does not promise an improvement in request-time memory or TTFB.
+   */
+  readonly unshippedPrerenderBodies?: UnshippedPrerenderBodies | undefined;
+  /**
    * Names the host reads a project's configuration under besides this adapter's own, for a host
    * that once called that file something else. Looked for after `upwind.*` and before
    * `vercel.json` (`configFileOrder`); a build that simply stopped looking would read an empty
@@ -741,6 +770,7 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
  */
 export function createAdapter(options: AdapterOptions = {}): NextAdapter {
   checkSplitOptions(options.functions?.split);
+  checkPageBodyHost(options.unshippedPrerenderBodies, options.cacheHostModule);
   const edgeHosts = checkedEdgeInstrumentationModules(options.edgeInstrumentationModules);
   return {
     name: 'upwind',

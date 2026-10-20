@@ -138,6 +138,12 @@ function manifestObjects(manifest: ProjectManifest): number {
       bodies += 1 + listObjects(entry.bypassFor);
     }
   }
+  if (manifest.staticPages !== undefined) {
+    bodies += 1;
+    for (const entry of Object.values(manifest.staticPages)) {
+      bodies += 1 + listObjects(entry.bypassFor);
+    }
+  }
   return (
     bodies +
     keysOf(manifest.routes) +

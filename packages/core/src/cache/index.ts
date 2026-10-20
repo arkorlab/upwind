@@ -135,3 +135,5 @@ export {
   UNKNOWN_DEADLINE,
   UNKNOWN_DURATION,
 } from './timing.ts';
+
+export { staticPageHeadersAllowSharing, staticPageHasNoTransform } from './static-pages.ts';

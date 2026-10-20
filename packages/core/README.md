@@ -56,6 +56,24 @@ bundles still parse but stay with the Function. Update bundle readers before ena
 writers. A stored `cache-control: no-transform` alone supplies only a prohibition; the host must
 combine it with its normal revalidation policy rather than infer browser freshness or sharing rights.
 
+## Complete static Pages documents
+
+`staticPagesPrivacy: 1` lets a host identify exact Node.js Pages documents completed at build time
+with `revalidate: false`. `edgeServableStaticPages` checks the classified primary HTML output and
+privacy vetoes before filters discard them. ISR, dynamic routes, loading/PPR shells, JSON siblings,
+error documents, unknown request dependencies and older bundles grant no permission.
+
+A host can publish their existing Pages cache identity in the optional `staticPages` table and mark
+only the admitted primary build output with `staticPagePrivacy: 1`. Its delivery-record projection
+must verify the build source, Pages kind, complete/static output, status, HTML identity and unbounded
+policy before retaining that proof. Runtime regeneration and older records remain unmarked.
+
+The `static-page` request class is only a candidate. A host must still enforce gates, request and
+middleware privacy, nonce policy and current-generation validity before serving unchanged HTML.
+Application response headers never grant this authority. Query, cookie, authorization, conditional,
+router and internal requests retain their existing private paths. A host may forward HEAD without
+reading a full record. `no-transform` remains a prohibition, not a public TTL or sharing grant.
+
 ## The seam with a host
 
 `./paas` is the only part that describes two parties talking. The protocol is headers, all prefixed
