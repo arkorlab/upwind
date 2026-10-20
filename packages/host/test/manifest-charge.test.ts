@@ -20,9 +20,10 @@ const MANY_CONDITIONS = 600;
 
 function manifestOf(
   dynamicRoutes: readonly DynamicRoute[],
-  gateFields: {
+  options: {
     readonly gates?: Readonly<Record<string, string>>;
     readonly gatedPathnames?: Readonly<Record<string, string>>;
+    readonly staticFileRequestKeys?: boolean;
   } = {},
 ) {
   return buildProjectManifest({
@@ -34,7 +35,7 @@ function manifestOf(
     routes: [],
     app: { deploymentId: 'dpl_manifestMemory', scriptName: 'manifest-app' },
     dynamicRoutes,
-    ...gateFields,
+    ...options,
   });
 }
 
@@ -200,7 +201,7 @@ describe('the additional lookup tables of a gated manifest', () => {
 describe('the request-key static file format', () => {
   it('charges its primitive mode flag through the existing stored JSON multiplier', () => {
     const plain = manifestOf([]);
-    const listed = { ...plain, schemaVersion: 7 as const, staticFileRequestKeys: true as const };
+    const listed = manifestOf([], { staticFileRequestKeys: true });
     const plainStored = serializeManifest(plain);
     const stored = serializeManifest(listed);
     const parsed = parseProjectManifest(stored);
@@ -265,7 +266,7 @@ describe('the memory held by version-three Pages authority', () => {
       parameters: { slug: 'first' },
       dataPathname: '/_next/data/build/post/first.json',
     };
-    const listed = { ...plain, staticPages: { '/post/first': page } };
+    const listed = { ...plain, schemaVersion: 8 as const, staticPages: { '/post/first': page } };
 
     expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(3 * 80);
   });
@@ -288,7 +289,11 @@ describe('the memory held by version-three Pages authority', () => {
       },
       headers: {},
     };
-    const listed = { ...plain, pagesFallbacks: { '/post/[slug]': entry } };
+    const listed = {
+      ...plain,
+      schemaVersion: 8 as const,
+      pagesFallbacks: { '/post/[slug]': entry },
+    };
 
     expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(7 * 80);
   });
