@@ -126,7 +126,7 @@ async function assetFixture(
         'content-type': 'text/javascript',
         'content-length': String(body.length),
       });
-      if (options.setsCookie === true && !personal) {
+      if (!personal && options.setsCookie === true) {
         headers.set('set-cookie', 'session=created; Path=/; HttpOnly');
       }
       return Promise.resolve(new Response(body, { headers }));
