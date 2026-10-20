@@ -243,6 +243,7 @@ async function onBuildComplete(
   const baseRuntimeManifest = {
     // One-pass, as the bundle says below: a host that knows nothing of that refuses the version.
     v: ONE_PASS_BUNDLE_VERSION as number,
+    routerReferences: 'one-pass' as const,
     resourceChanges: 1 as const,
     deploymentId: id,
     nextVersion: ctx.nextVersion,
@@ -333,8 +334,8 @@ async function onBuildComplete(
     ...objects.sourceMaps,
   ];
 
-  // Two things the bundle carries and `runtimeManifest` does not, for the same reason: nothing in
-  // the Function reads either, and every byte of its manifest is parsed before its first response.
+  // Publication adds capabilities the host needs; routing reference semantics also travel with
+  // the Function so its own static admission agrees with the published bundle.
   const bundle: DeploymentBundle = deploymentBundleSchema.parse({
     ...functions.runtimeManifest,
     // How the Functions this adapter builds fill a header's `$` references: with the router the

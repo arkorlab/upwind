@@ -1,3 +1,4 @@
+import * as bundle from '@stayingupwind/core/bundle';
 import { type RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -23,6 +24,12 @@ const POLICY = 's-maxage=2, stale-while-revalidate=58';
 
 function htmlOf(metadata: Record<string, unknown> = METADATA): string {
   return `<main>new</main><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(metadata)}</script>`;
+}
+
+function firstPage(manifest: StaticPagesManifest) {
+  const page = manifest.prerenders[0];
+  if (page === undefined) throw new Error('Missing built page');
+  return page;
 }
 
 interface Scenario {
@@ -84,6 +91,7 @@ async function rendered(scenario: Scenario = {}) {
 describe('pages ISR proof earned by the real synthetic regeneration', () => {
   afterEach(() => {
     vi.mocked(invokeNodeHandler).mockReset();
+    vi.restoreAllMocks();
   });
 
   it('marks only primary HTML after an owned static request and keeps data output unmarked', async () => {
@@ -114,6 +122,47 @@ describe('pages ISR proof earned by the real synthetic regeneration', () => {
 
     expect(outcome.kind).toBe('accepted');
     expect(commit?.generation.outputs[0]).not.toHaveProperty('staticPagePrivacy');
+  });
+
+  it('computes admission once per immutable manifest and checks every new render', async () => {
+    const manifest = manifestOf();
+    const select = vi.spyOn(bundle, 'staticPagesPrivacyOf');
+    const first = await rendered({ manifest });
+    const next = await rendered({ manifest });
+    const privateRender = await rendered({ manifest, headers: { 'set-cookie': 'visitor=one' } });
+
+    expect(first.commit?.generation.outputs[0]?.staticPagePrivacy).toBe(2);
+    expect(next.commit?.generation.outputs[0]?.staticPagePrivacy).toBe(2);
+    expect(privateRender.commit?.generation.outputs[0]?.staticPagePrivacy).toBeUndefined();
+    expect(select).toHaveBeenCalledTimes(1);
+
+    const another = await rendered({
+      manifest: manifestOf({ config: { ...manifest.config, basePath: '/docs' } }),
+    });
+
+    expect(another.commit?.generation.outputs[0]?.staticPagePrivacy).toBeUndefined();
+    expect(select).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not cache a grant from another output at the same literal path', async () => {
+    const original = manifestOf();
+    const page = firstPage(original);
+    const manifest = manifestOf({
+      prerenders: [
+        {
+          ...page,
+          id: 'private-first',
+          groupId: 2,
+          initialHeaders: { 'set-cookie': 'visitor=one' },
+        },
+        page,
+      ],
+    });
+    const first = await rendered({ manifest });
+    const next = await rendered({ manifest });
+
+    expect(first.commit?.generation.outputs[0]?.staticPagePrivacy).toBeUndefined();
+    expect(next.commit?.generation.outputs[0]?.staticPagePrivacy).toBeUndefined();
   });
 
   it('ordinary capture exposes supplementary metadata without granting a privacy marker', async () => {

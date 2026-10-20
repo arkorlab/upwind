@@ -1,4 +1,4 @@
-import { staticPagePrivacyFor } from '@stayingupwind/core/bundle';
+import { staticPagesPrivacyOf } from '@stayingupwind/core/bundle';
 import {
   type RouteEntryDescriptor,
   type RouteEntryKind,
@@ -10,7 +10,12 @@ import {
 import type { CapturedRender } from './capture.ts';
 
 /** Existing immutable build data, not a capability supplied by the regeneration's caller. */
-export type StaticPagesManifest = Parameters<typeof staticPagePrivacyFor>[0];
+export type StaticPagesManifest = Parameters<typeof staticPagesPrivacyOf>[0];
+
+type StaticPage = StaticPagesManifest['prerenders'][number];
+
+// Only this runtime's immutable Store manifests are cached, on the first ISR regeneration.
+const admissions = new WeakMap<StaticPagesManifest, ReadonlyMap<string, StaticPage>>();
 
 const HTTP_OK = 200;
 
@@ -39,6 +44,22 @@ function knownLifetime(render: CapturedRender): boolean {
   );
 }
 
+function admittedPages(manifest: StaticPagesManifest): ReadonlyMap<string, StaticPage> {
+  const held = admissions.get(manifest);
+  if (held !== undefined) return held;
+  const eligible = staticPagesPrivacyOf(manifest);
+  const seen = new Set<string>();
+  const pages = new Map<string, StaticPage>();
+  for (const page of manifest.prerenders) {
+    if (page.route !== page.pathname || seen.has(page.pathname)) continue;
+    // Preserve the previous exact first-match rule even if malformed inputs repeat a pathname.
+    seen.add(page.pathname);
+    if (eligible.get(page) === 2) pages.set(page.pathname, page);
+  }
+  admissions.set(manifest, pages);
+  return pages;
+}
+
 /** Called only after renderStatic made and rendered its own synthetic request. */
 function staticPageRenderPrivacy(input: RenderInput): 2 | undefined {
   const { manifest, descriptor, request, render } = input;
@@ -52,13 +73,9 @@ function staticPageRenderPrivacy(input: RenderInput): 2 | undefined {
     Object.keys(input.parameters ?? {}).length > 0
   )
     return undefined;
-  const page = manifest.prerenders.find(
-    (candidate) =>
-      candidate.pathname === descriptor.pathname && candidate.route === descriptor.route,
-  );
+  const page = admittedPages(manifest).get(descriptor.pathname);
   if (
     page === undefined ||
-    staticPagePrivacyFor(manifest, page) !== 2 ||
     (input.allowHeader ?? []).some((name) => !(page.allowHeader ?? []).includes(name)) ||
     !renderAgrees(manifest, descriptor, render)
   )
