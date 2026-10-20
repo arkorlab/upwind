@@ -158,7 +158,12 @@ function owns(admission: Admission, route: string, pathname: string, built: bool
 }
 
 function emptyAdmission(bundle: ServingBundle): Admission {
-  const outputs = Map.groupBy(bundle.prerenders, (page) => page.pathname);
+  const outputs = new Map<string, Prerender[]>();
+  for (const page of bundle.prerenders) {
+    const group = outputs.get(page.pathname);
+    if (group === undefined) outputs.set(page.pathname, [page]);
+    else group.push(page);
+  }
   const exact = new Set(
     bundle.entrypoints
       .filter((entry) => !entry.pathname.includes('['))

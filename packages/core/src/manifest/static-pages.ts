@@ -58,7 +58,7 @@ function shellAgrees(entry: PagesFallbackEntry, route: RouteEntry | undefined): 
     route.shell.sha256 === artifact.sha256 &&
     route.shell.byteLength === artifact.byteLength &&
     route.shell.contentType === artifact.contentType &&
-    artifact.contentType === 'text/html' &&
+    artifact.contentType.split(';', 1)[0]?.trim().toLowerCase() === 'text/html' &&
     staticPageHeadersAllowSharing(Object.entries(entry.headers)) &&
     staticPageHeadersAllowSharing(Object.entries(route.headers))
   );

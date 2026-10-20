@@ -84,6 +84,18 @@ function classify(
   });
 }
 
+function withLoadingType(contentType: string): BuildProjectManifestInput {
+  const input = inputOf();
+  const shell = { ...HTML, contentType };
+  return {
+    ...input,
+    routes: input.routes.map((route) =>
+      route.pathname === FALLBACK_ROUTE ? { ...route, shell } : route,
+    ),
+    pagesFallbacks: [{ ...FALLBACK, shell: { artifact: shell } }],
+  };
+}
+
 describe('version 3 Pages manifest and representation routing', () => {
   it('round-trips a separate immutable loading authority with no class entry ID or marker', () => {
     const manifest = buildProjectManifest(inputOf());
@@ -95,6 +107,24 @@ describe('version 3 Pages manifest and representation routing', () => {
     expect(manifest.routes[FALLBACK_ROUTE]).not.toHaveProperty('cache');
     expect(manifest.pagesDataPrefix).toBe('/_next/data/build');
   });
+
+  it('preserves the native HTML charset on the identical loading artifact and route shell', () => {
+    const input = withLoadingType('text/html; charset=utf-8');
+    const manifest = buildProjectManifest(input);
+
+    expect(parseProjectManifest(serializeManifest(manifest))).toStrictEqual(manifest);
+    expect(manifest.pagesFallbacks?.[FALLBACK_ROUTE]?.shell.artifact.contentType).toBe(
+      'text/html; charset=utf-8',
+    );
+    expect(manifest.routes[FALLBACK_ROUTE]?.shell.contentType).toBe('text/html; charset=utf-8');
+  });
+
+  it.each(['application/json; charset=utf-8', 'application/xhtml+xml'])(
+    'rejects a non-HTML loading representation even when its artifact identity matches: %s',
+    (contentType) => {
+      expect(() => buildProjectManifest(withLoadingType(contentType))).toThrow(/loading shell/u);
+    },
+  );
 
   it('rejects loading bytes that pretend to own a concrete cache generation', () => {
     const input = inputOf();
@@ -290,6 +320,14 @@ describe('version 3 Pages manifest and representation routing', () => {
       ],
     },
     { pagesFallbacks: [{ ...FALLBACK, shell: { artifact: { ...HTML, sha256: 'b'.repeat(64) } } }] },
+    {
+      pagesFallbacks: [
+        {
+          ...FALLBACK,
+          shell: { artifact: { ...HTML, contentType: 'text/html; charset=utf-8' } },
+        },
+      ],
+    },
     { pagesFallbacks: [FALLBACK, FALLBACK] },
     { pagesDataUnder: undefined },
   ])('rejects an inconsistent publication: %j', (extra) => {
