@@ -468,6 +468,11 @@ async function rewritten(stack: CheckedStack, asked: Asked, read: Swapped): Prom
     : failed(`rewritten to ${onto.pathname}, the route ${route.pathname}, and ${failure}`);
 }
 
+/** A seeded or derivable completion entry; its trace must still name the record regenerated. */
+function canRegenerate(route: RouteEntry | undefined): route is RouteEntry {
+  return route !== undefined && (route.cache !== undefined || route.partialFallback !== undefined);
+}
+
 /**
  * A page the edge regenerated in the foreground — the Function's render, which says nothing of the
  * route it is — judged as the route whose record the edge had the Function regenerate (`keptOf`):
@@ -509,7 +514,7 @@ async function regeneratedVerdict(
   const pathname = decided?.kind === 'continue' ? decided.url.pathname : url.pathname;
   if (rewriteOf(decided) === undefined && landed?.pathname === asked.route.pathname) {
     return failed(
-      asked.route.cache === undefined && asked.route.partialFallback === undefined
+      !canRegenerate(asked.route)
         ? 'regenerated in the foreground, though the route has no record to regenerate'
         : ((await regenerationFailure(captured, asked.route, { regenerated, pathname })) ??
             regeneratedFailure(asked.route, read.answer, asked.coding) ??
@@ -517,10 +522,7 @@ async function regeneratedVerdict(
     );
   }
   const { did, done } = moveOf(decided);
-  if (
-    landed === undefined ||
-    (landed.cache === undefined && landed.partialFallback === undefined)
-  ) {
+  if (!canRegenerate(landed)) {
     return failed(`${done} ${whereLanded(landed)}, which has no record, and regenerated`);
   }
   const failure =

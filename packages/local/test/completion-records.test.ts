@@ -460,7 +460,7 @@ const foregroundServer = createServer((request, response) => {
   response.writeHead(200, {
     'content-type': transport.type,
     'cache-control': 'private, no-store',
-    'x-arkor-edge': `passthrough;reason=regenerate;m=0000;policy=default;scope=${SCOPE}${transport.rewrite === undefined ? '' : ';mw=hit'}`,
+    'x-arkor-edge': `passthrough;reason=regenerate;m=0000;policy=${DEFAULT_DELIVERY_POLICY.id};scope=${SCOPE}${transport.rewrite === undefined ? '' : ';mw=hit'}`,
   });
   response.end(transport.body);
 });
@@ -513,14 +513,15 @@ async function foreground(example: Completion, rewritten = false) {
   return {
     route,
     entryId,
-    ask: (selected: RouteEntry = asked) =>
-      routeVerdict(own, 4096, {
+    ask: (selected: RouteEntry = asked) => {
+      return routeVerdict(own, 4096, {
         key: selected.pathname,
         route: selected,
         requested: rewritten ? '/before' : example.pathname,
         headers: { 'accept-encoding': 'identity' },
         coding: undefined,
-      }),
+      });
+    },
   };
 }
 
@@ -562,19 +563,18 @@ describe('foreground completions through Local HTTP and trace reading', () => {
     const { ask } = await foreground(example, true);
     transport.regenerated = { entry: 'ent_other', route: example.source, member: false };
     const verdict = await ask();
+    assert(verdict.kind === 'failed', 'the foreign entry fails the foreground verdict');
 
-    expect(verdict).toMatchObject({ kind: 'failed', reason: expect.stringContaining('ent_other') });
+    expect(verdict.reason).toContain('ent_other');
   });
 
   it('rejects a rewritten completion with a foreign source route', async () => {
     const { ask, entryId } = await foreground(COMPLETIONS[3]!, true);
     transport.regenerated = { entry: entryId, route: '/wrong/[id]', member: false };
     const verdict = await ask();
+    assert(verdict.kind === 'failed', 'the foreign route fails the foreground verdict');
 
-    expect(verdict).toMatchObject({
-      kind: 'failed',
-      reason: expect.stringContaining('regenerated as the route /wrong/[id]'),
-    });
+    expect(verdict.reason).toContain('regenerated as the route /wrong/[id]');
   });
 
   it('requires the actual regeneration trace', async () => {
