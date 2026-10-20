@@ -56,7 +56,7 @@ export interface InvokeInput {
 /** The methods that ask for something and change nothing (RFC 9110, "Safe Methods"). */
 const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
 
-/** Whether a request with this method may change something: whether it is held to its end. */
+/** Whether a request with this method may change something before answering. */
 export function changesSomething(method: string): boolean {
   return !SAFE_METHODS.has(method);
 }
@@ -287,13 +287,38 @@ function onRequest(req: IncomingMessage, res: ServerResponse): void {
   settableSocket(req);
   singleRedirectLocation(res);
   const handled = handle(dispatch, req, res);
-  // The handler held to its own end for a request that may change something: its response leaves
-  // as soon as its headers commit, and a handler that goes on after them — a `POST` API route that
-  // writes and then updates a database — would otherwise be cancelled with a client that went away
-  // (`function.ts`).
-  if (changesSomething(dispatch.input.request.method)) {
-    dispatch.input.waitUntil(handled);
+  retainHandler(dispatch.input, res, handled);
+}
+
+/**
+ * Keep mutations from the start, and a safe request's work once its response ends normally.
+ * An open body already owns the request's lifetime. Retaining its handler then would keep an
+ * upstream event stream subscribed after its reader disconnects. A normal finish can still leave
+ * work behind it — a GET's error hook, for example — and retains that work before the response's
+ * reader can finish. A premature close earns no such lifetime.
+ */
+function retainHandler(input: InvokeInput, res: ServerResponse, handled: Promise<void>): void {
+  if (changesSomething(input.request.method) || res.writableFinished) {
+    input.waitUntil(handled);
+    return;
   }
+  if (res.destroyed) return;
+  if (res.writableEnded) {
+    input.waitUntil(handled);
+    return;
+  }
+  function forget(): void {
+    res.off('finish', finished);
+    res.off('close', forget);
+  }
+  function finished(): void {
+    forget();
+    input.waitUntil(handled);
+  }
+  res.once('finish', finished);
+  res.once('close', forget);
+  // eslint-disable-next-line unicorn/prefer-await -- Remove listeners without awaiting the handler before returning the response.
+  handled.then(forget).catch(forget);
 }
 
 /**
