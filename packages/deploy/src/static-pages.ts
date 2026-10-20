@@ -1,3 +1,4 @@
+import { type EncodedShellRef, shellEncodingsOf } from '@stayingupwind/core/artifact';
 import {
   type DeploymentBundle,
   functionOfPrerender,
@@ -56,19 +57,27 @@ export async function staticPagesOf(
 }
 
 /** Lazy loading bytes are build-owned, and never pretend to be a concrete generation. */
-export function pagesFallbacksOf(bundle: DeploymentBundle, enabled = true): PagesFallbackEntry[] {
+export function pagesFallbacksOf(
+  bundle: DeploymentBundle,
+  enabled = true,
+  encodings?: ReadonlyMap<string, readonly EncodedShellRef[]>,
+): PagesFallbackEntry[] {
   if (!enabled) return [];
   const placed = placedRoutes(bundle.entrypoints);
   return staticFallbackPagesOf(bundle).flatMap((prerender) => {
     const { body } = prerender;
     if (body === undefined) return [];
     const fn = functionOfPrerender(placed, prerender);
+    const rendered = shellEncodingsOf(encodings?.get(body.sha256) ?? []);
     return [
       {
         staticPagePrivacy: FALLBACK_PRIVACY,
         route: prerender.route,
         dataPathname: pagesDataPathnameUnder(bundle.buildId, '', prerender.route),
-        shell: { artifact: { ...body, encoding: 'identity' as const } },
+        shell: {
+          artifact: { ...body, encoding: 'identity' as const },
+          ...(rendered !== undefined && { encodings: rendered }),
+        },
         headers: shellHeaders(bundle, prerender),
         ...(prerender.bypassFor !== undefined && { bypassFor: prerender.bypassFor }),
         ...(fn !== PRIMARY_FUNCTION && { function: fn }),

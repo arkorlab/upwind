@@ -1,8 +1,10 @@
+import type { EncodedShellRef } from '@stayingupwind/core/artifact';
 import type { DeploymentBundle } from '@stayingupwind/core/bundle';
 import { deriveEntry } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
 import { cacheEntryIdsOf } from '../../deploy/src/cache-seed.ts';
+import { shellPlacementsOf } from '../../deploy/src/delivery.ts';
 import { assembleManifest } from '../../deploy/src/manifest.ts';
 import { shellsOf } from '../../deploy/src/shells.ts';
 import { pagesFallbacksOf, staticPagesOf } from '../../deploy/src/static-pages.ts';
@@ -21,7 +23,10 @@ function assertAssembled(
   if (value.kind !== 'assembled') throw new Error(value.reason);
 }
 
-function assemble(bundle: DeploymentBundle): ReturnType<typeof assembleManifest> {
+function assemble(
+  bundle: DeploymentBundle,
+  encodings: ReadonlyMap<string, readonly EncodedShellRef[]> = new Map(),
+): ReturnType<typeof assembleManifest> {
   return assembleManifest({
     bundle,
     previous: undefined,
@@ -37,7 +42,7 @@ function assemble(bundle: DeploymentBundle): ReturnType<typeof assembleManifest>
     },
     app: { deploymentId: bundle.deploymentId, scriptName: 'app-script' },
     generatedAt: bundle.generatedAt,
-    encodings: new Map(),
+    encodings,
     preloads: {},
     recoverySource: "'sha256-recovery'",
     nextVersionJudged: true,
@@ -66,6 +71,43 @@ describe('version-three Pages build publication', () => {
       ]),
     );
   });
+
+  it.each(['page', 'fallback'] as const)(
+    'publishes prepared loading shell encodings only for their identity digest: %s',
+    async (source) => {
+      const fixture = await fallbackPageFixture();
+      const br = {
+        sha256: 'b'.repeat(64),
+        byteLength: 17,
+        contentType: 'text/html',
+        encoding: 'br' as const,
+      };
+      const gzip = {
+        sha256: 'c'.repeat(64),
+        byteLength: 23,
+        contentType: 'text/html',
+        encoding: 'gzip' as const,
+        crc32: 1234,
+      };
+      const encodings = new Map<string, readonly EncodedShellRef[]>([
+        [fixture[source].body!.sha256, [br, gzip]],
+      ]);
+      const result = await assemble(fixture.bundle, encodings);
+
+      assertAssembled(result);
+
+      const expected = { page: undefined, fallback: { br, gzip } }[source];
+      const loading = result.manifest.pagesFallbacks?.[FALLBACK_ROUTE];
+      const placement = shellPlacementsOf(result.manifest).find(
+        (shell) => shell.sha256 === fixture.fallback.body!.sha256,
+      );
+
+      expect(loading?.shell.artifact.sha256).toBe(fixture.fallback.body!.sha256);
+      expect(loading?.shell.encodings).toStrictEqual(expected);
+      expect(result.manifest.routes[FALLBACK_ROUTE]?.shellEncodings).toStrictEqual(expected);
+      expect(placement?.renderings).toStrictEqual({ page: [], fallback: [br, gzip] }[source]);
+    },
+  );
 
   it('seeds paired concrete outputs and publishes a separate class loading blob', async () => {
     const fixture = await fallbackPageFixture();

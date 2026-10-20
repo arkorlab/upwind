@@ -265,7 +265,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   const prerenders = manifestPrerendersOf(bundle, servable, cached);
   const caches = cached ? await routeCachesOf(bundle, input.deploymentId) : new Map();
   const staticPages = await staticPagesOf(bundle, input.deploymentId, cached);
-  const pagesFallbacks = pagesFallbacksOf(bundle, cached);
+  const pagesFallbacks = pagesFallbacksOf(bundle, cached, input.encodings);
   const middlewareMatchers = middlewareMatchersOf(bundle);
   const rules = headerRulesOf(bundle);
   const context: ManifestContext = {
