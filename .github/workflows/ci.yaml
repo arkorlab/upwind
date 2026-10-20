@@ -126,6 +126,7 @@ jobs:
           UPWIND_MATRIX_PROOF_DIR: ${{ runner.temp }}/instrumentation-proof
         run: node tools/next-matrix/src/node-handler-lifetime.ts
       - name: Compiled host and project instrumentation
+        if: ${{ !cancelled() }}
         env:
           UPWIND_MATRIX_PROOF_DIR: ${{ runner.temp }}/instrumentation-proof
         run: |
