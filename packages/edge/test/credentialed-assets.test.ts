@@ -1,3 +1,4 @@
+import type { HostCredentials } from '@stayingupwind/host/credentials';
 import { type AssetBackendId, DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
@@ -36,16 +37,65 @@ const CLIENTS: readonly {
   },
 ];
 
+interface HostClient {
+  readonly label: string;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly credentials: HostCredentials;
+}
+
+const HOST_CLIENTS: readonly HostClient[] = [
+  {
+    label: 'a host session cookie',
+    headers: { cookie: 'host_session=secret' },
+    credentials: { cookies: ['host_session'], headers: [] },
+  },
+  {
+    label: 'a host authorization header',
+    headers: { authorization: 'Bearer host' },
+    credentials: { cookies: [], headers: ['Authorization'] },
+  },
+];
+
+const MIXED_CLIENTS: readonly (HostClient & {
+  readonly forwarded: Readonly<Record<string, string>>;
+})[] = [
+  {
+    label: 'a host cookie and an app cookie',
+    headers: { cookie: 'host_session=secret; session=secret' },
+    credentials: { cookies: ['host_session'], headers: [] },
+    forwarded: { cookie: 'session=secret' },
+  },
+  {
+    label: 'host authorization and an app cookie',
+    headers: { authorization: 'Bearer host', cookie: 'session=secret' },
+    credentials: { cookies: [], headers: ['Authorization'] },
+    forwarded: { cookie: 'session=secret' },
+  },
+  {
+    label: 'a host cookie and app authorization',
+    headers: { cookie: 'host_session=secret', authorization: 'Bearer app' },
+    credentials: { cookies: ['host_session'], headers: [] },
+    forwarded: { authorization: 'Bearer app' },
+  },
+];
+
 interface AssetFixture {
   readonly asked: Request[];
   readonly points: EdgeMetric[];
   readonly ask: (
     headers?: Readonly<Record<string, string>>,
-  ) => Promise<{ readonly response: Response; readonly text: string }>;
+  ) => Promise<{ readonly response: Response; readonly text: string; readonly request: Request }>;
 }
 
 /** The real asset route and Cache API, with only the application's responses supplied here. */
-async function assetFixture(backend: AssetBackendId, setsCookie = false): Promise<AssetFixture> {
+async function assetFixture(
+  backend: AssetBackendId,
+  options: {
+    readonly setsCookie?: boolean;
+    readonly credentials?: HostCredentials;
+    readonly immutable?: boolean;
+  } = {},
+): Promise<AssetFixture> {
   const site = await seedSite({ document: pprDocument() });
   const url = `https://site.example/_next/static/chunks/credential-${crypto.randomUUID()}.js`;
   const asked: Request[] = [];
@@ -53,6 +103,7 @@ async function assetFixture(backend: AssetBackendId, setsCookie = false): Promis
   const baseHost = standaloneHost(env);
   const host = {
     ...baseHost,
+    credentials: options.credentials ?? baseHost.credentials,
     observer: {
       ...baseHost.observer,
       metric: (point: EdgeMetric): void => {
@@ -69,12 +120,13 @@ async function assetFixture(backend: AssetBackendId, setsCookie = false): Promis
         request.headers.has('authorization') ||
         request.headers.has('x-client-lane');
       const body = personal ? CLIENT_ASSET : PUBLIC_ASSET;
+      const publicControl = options.immutable === false ? 'public, max-age=60' : IMMUTABLE;
       const headers = new Headers({
-        'cache-control': personal ? 'private, no-store' : IMMUTABLE,
+        'cache-control': personal ? 'private, no-store' : publicControl,
         'content-type': 'text/javascript',
         'content-length': String(body.length),
       });
-      if (setsCookie && !personal) {
+      if (options.setsCookie === true && !personal) {
         headers.set('set-cookie', 'session=created; Path=/; HttpOnly');
       }
       return Promise.resolve(new Response(body, { headers }));
@@ -110,7 +162,7 @@ async function assetFixture(backend: AssetBackendId, setsCookie = false): Promis
     );
     const text = await response.text();
     await waitOnExecutionContext(ctx);
-    return { response, text };
+    return { response, text, request };
   };
   return { asked, points, ask };
 }
@@ -183,7 +235,7 @@ describe.each(BACKENDS)('credentialed assets under the %s policy', (backend) => 
   });
 
   it('still hands an anonymous cookie-setting refusal to the original request', async () => {
-    const fixture = await assetFixture(backend, true);
+    const fixture = await assetFixture(backend, { setsCookie: true });
 
     const answer = await fixture.ask({ 'x-client-lane': 'original' });
 
@@ -198,5 +250,64 @@ describe.each(BACKENDS)('credentialed assets under the %s policy', (backend) => 
     expect(
       fixture.points.map((point) => ({ kind: point.kind, subrequests: point.subrequests })),
     ).toStrictEqual([{ kind: 'passthrough', subrequests: 2 }]);
+  });
+
+  it.each(HOST_CLIENTS)('keeps anonymous cache admission and hits with $label', async (client) => {
+    const fixture = await assetFixture(backend, { credentials: client.credentials });
+    const cold = await fixture.ask(client.headers);
+    const hit = await fixture.ask(client.headers);
+
+    expect({ cold: cold.text, hit: hit.text, requests: fixture.asked.length }).toStrictEqual({
+      cold: PUBLIC_ASSET,
+      hit: PUBLIC_ASSET,
+      requests: 1,
+    });
+    expect(hit.response.headers.get('x-arkor-edge')).toContain('hit=1');
+    expect(fixture.asked[0]?.headers.has('cookie')).toBe(false);
+    expect(fixture.asked[0]?.headers.has('authorization')).toBe(false);
+    expect({
+      cookie: cold.request.headers.get('cookie'),
+      authorization: cold.request.headers.get('authorization'),
+    }).toStrictEqual({
+      cookie: new Headers(client.headers).get('cookie'),
+      authorization: new Headers(client.headers).get('authorization'),
+    });
+  });
+
+  it.each(HOST_CLIENTS)('answers a non-immutable probe once with $label', async (client) => {
+    const fixture = await assetFixture(backend, {
+      credentials: client.credentials,
+      immutable: false,
+    });
+    const answer = await fixture.ask(client.headers);
+
+    expect(answer.text).toBe(PUBLIC_ASSET);
+    expect(fixture.asked).toHaveLength(1);
+    expect(answer.response.headers.get('x-arkor-edge')).not.toBe(
+      'passthrough;reason=asset-unshareable',
+    );
+    expect(fixture.asked[0]?.headers.has('cookie')).toBe(false);
+    expect(fixture.asked[0]?.headers.has('authorization')).toBe(false);
+  });
+
+  it.each(MIXED_CLIENTS)('still sends only the client request for $label', async (client) => {
+    const fixture = await assetFixture(backend, { credentials: client.credentials });
+    const cacheOpens = vi.spyOn(caches, 'open');
+    const answer = await fixture.ask(client.headers);
+
+    expect(answer.text).toBe(CLIENT_ASSET);
+    expect(answer.response.headers.get('x-arkor-edge')).toBe(
+      'passthrough;reason=asset-unshareable',
+    );
+    expect(cacheOpens).not.toHaveBeenCalled();
+    expect(fixture.asked).toHaveLength(1);
+    expect({
+      cookie: fixture.asked[0]?.headers.get('cookie'),
+      authorization: fixture.asked[0]?.headers.get('authorization'),
+    }).toStrictEqual({
+      cookie: new Headers(client.forwarded).get('cookie'),
+      authorization: new Headers(client.forwarded).get('authorization'),
+    });
+    expect(fixture.points.map((point) => point.subrequests)).toStrictEqual([1]);
   });
 });

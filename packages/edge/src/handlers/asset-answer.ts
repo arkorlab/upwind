@@ -1,6 +1,7 @@
 import { releaseStream } from '@stayingupwind/core/util';
+import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 
-import { hasCredentials, unshareable } from '../request-context.ts';
+import { hasCredentials } from '../request-context.ts';
 import { type AssetInput, handleAsset } from './asset.ts';
 import { observeMetric } from './observer.ts';
 
@@ -13,7 +14,8 @@ import { observeMetric } from './observer.ts';
  * An app can put cookie-aware middleware in front of `/_next/static/`. The asset fetch carries no
  * credentials, so what came back is what an anonymous visitor sees. A client with credentials goes
  * straight to its own request, before any asset cache lookup or anonymous fetch, even where an
- * anonymous response was previously admitted. Only anonymous clients reach the strategy.
+ * anonymous response was previously admitted. Host-owned credentials are removed before this
+ * decision, as they are from anything forwarded. Only clients anonymous to the app reach the strategy.
  *
  * An anonymous answer that sets a cookie also needs the client's own request. The header is checked
  * independently of admission's first rejection reason: a redirect or a response that is not
@@ -23,16 +25,24 @@ export async function answerAsset(
   input: AssetInput,
   unshared: (subrequests: number) => Promise<Response>,
 ): Promise<Response> {
-  // An anonymous asset cannot decide how the application answers this client's credentials.
-  // Send the client's request directly, without a cache lookup or anonymous probe ahead of it.
+  // No copy or cookie parsing for a request without credentials. The host's own fields stay on
+  // the original request; only a copy is filtered to decide what the application would see.
   if (hasCredentials(input.request.headers)) {
-    return unshared(0);
+    const { credentials } = input.edge.host;
+    if (
+      (credentials.cookies.length === 0 && credentials.headers.length === 0) ||
+      hasCredentials(withoutHostCredentials(new Headers(input.request.headers), credentials))
+    ) {
+      return unshared(0);
+    }
   }
   const asset = await handleAsset(input);
   if (asset.admitted) {
     return asset.response;
   }
-  if (!unshareable(input.request, asset)) {
+  // Every client that reaches the strategy is anonymous to the app. Only the response's own
+  // cookie requires its original request after a refusal.
+  if (!asset.response.headers.has('set-cookie')) {
     observeMetric(input.edge.host, asset.point);
     return asset.response;
   }
