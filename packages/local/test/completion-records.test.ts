@@ -98,6 +98,7 @@ function captured(scopeId: string, entryId: string, seq: number, example: Comple
       artifacts: [],
     },
     HTML,
+    undefined,
   );
   const evidence = new GenerationEvidence(256);
   evidence.begin('completion');
