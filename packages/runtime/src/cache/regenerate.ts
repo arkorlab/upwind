@@ -7,9 +7,8 @@ import {
 } from '@stayingupwind/core/cache';
 
 import type { NodeHandler } from '../app-module.ts';
-import { render404 } from '../error-pages.ts';
-import { invokeNodeHandler, type Run } from '../node-bridge.ts';
-import { type CapturedRender, renderCaptured } from './capture.ts';
+import type { Run } from '../node-bridge.ts';
+import type { CapturedRender } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { asRegeneration } from './context.ts';
 import {
@@ -58,6 +57,7 @@ import {
   type StaticRender,
   staticPageRender,
 } from './static-pages.ts';
+import { renderStatically } from './static-render.ts';
 import { refusedTags } from './tag-bounds.ts';
 import { uploaderFor } from './uploads.ts';
 
@@ -88,20 +88,10 @@ const OCTET_STREAM = 'application/octet-stream';
 const ROUTE_BODY = 'route-body';
 /** The artifact role and representation of a Pages Router page's data. */
 const PAGES_DATA = 'pages-data';
-/** Headers every static render is given, as a browser navigation carries them. */
-const STATIC_REQUEST_HEADERS: Readonly<Record<string, string>> = {
-  accept: 'text/html,application/xhtml+xml',
-  'sec-fetch-dest': 'document',
-  'sec-fetch-mode': 'navigate',
-};
 /**
- * How Next.js is told that a regeneration was asked for rather than come due: the header it
- * compares against the build's own token (`checkIsOnDemandRevalidate`, `api-utils/index.ts`). It
- * is what `getStaticProps` reads as `revalidateReason: 'on-demand'`, where a render without it
- * reads `'stale'` however the regeneration came about.
+ * The reasons that are somebody asking — `revalidate()`, and an invalidation of a tag — which the
+ * render is told of (`StaticRenderInput.onDemandToken`).
  */
-const ON_DEMAND_HEADER = 'x-prerender-revalidate';
-/** The reasons that are somebody asking: `revalidate()`, and an invalidation of a tag. */
 const ON_DEMAND_REASONS: ReadonlySet<AttemptReason> = new Set<AttemptReason>([
   'invalidated',
   'manual',
@@ -207,71 +197,28 @@ function detail(error: unknown): string {
 }
 
 /**
- * The URL a static render is handed: the entry's pathname, with the parameters routing would name
- * in its query where there are any (`RegenerationTarget.parameters`).
- */
-function staticUrl(target: RegenerationTarget): string {
-  const { descriptor, parameters } = target;
-  return parameters === undefined
-    ? descriptor.pathname
-    : `${descriptor.pathname}?${new URLSearchParams(parameters).toString()}`;
-}
-
-/** The request a static render is given: the pathname, and nothing of the visitor's. */
-function staticRequest(input: RegenerationInput, attemptId: string): Request {
-  const url = new URL(input.target.descriptor.pathname, input.request.url);
-  const headers = new Headers(STATIC_REQUEST_HEADERS);
-  const host = input.request.headers.get('host');
-  if (host !== null) {
-    headers.set('host', host);
-  }
-  if (input.target.allowHeader !== undefined) {
-    for (const name of input.target.allowHeader) {
-      const value = input.request.headers.get(name);
-      if (value !== null) {
-        headers.set(name, value);
-      }
-    }
-  }
-  // Next.js's own scoping of its minimal-mode response cache to one invocation.
-  headers.set('x-invocation-id', attemptId);
-  if (input.previewToken !== undefined && ON_DEMAND_REASONS.has(input.target.reason)) {
-    headers.set(ON_DEMAND_HEADER, input.previewToken);
-  }
-  return new Request(url, { headers });
-}
-
-/**
- * Render the entry statically and keep what a cache would; nothing is answered. A Pages Router
- * render that ends in `notFound: true` asks for `render404` here as on a visitor's request, and
- * what it writes is what is kept: without it, the line of text Next.js ends with was kept, and
- * served, in place of the application's not-found page.
+ * Render the entry statically (`renderStatically`) and keep what a cache would; nothing is
+ * answered. The render's reads are a regeneration's (`asRegeneration`), each noted under the tags
+ * it was judged under (`HeldTags`), and the build's token tells Next.js that somebody asked for it
+ * where somebody did (`ON_DEMAND_REASONS`).
  */
 async function renderStatic(
   input: RegenerationInput,
   attemptId: string,
   held: HeldTags,
 ): Promise<StaticRender | undefined> {
-  const request = staticRequest(input, attemptId);
-  let answered: number | undefined;
-  const captured = await renderCaptured(input.target.descriptor.kind, async (meta) => {
-    const response = await invokeNodeHandler({
-      handler: input.handler,
-      request,
-      url: staticUrl(input.target),
-      requestMeta: {
-        minimalMode: true,
-        relativeProjectDir: '.',
-        initURL: request.url,
-        render404,
-        ...meta.requestMeta,
-      },
-      waitUntil: input.waitUntil,
-      run: (work) => input.run(() => asRegeneration(() => held.run(work))),
-      expectNoResponse: meta.expectNoResponse,
-    });
-    answered = response.status;
-    return response;
+  const { target } = input;
+  const { request, captured, answered } = await renderStatically({
+    request: input.request,
+    handler: input.handler,
+    kind: target.descriptor.kind,
+    pathname: target.descriptor.pathname,
+    parameters: target.parameters,
+    allowHeader: target.allowHeader,
+    onDemandToken: ON_DEMAND_REASONS.has(target.reason) ? input.previewToken : undefined,
+    invocationId: attemptId,
+    waitUntil: input.waitUntil,
+    run: (work) => input.run(() => asRegeneration(() => held.run(work))),
   });
   // A server error answered rather than kept is the render failing, as one kept is (`regenerate`):
   // not a page dynamic here, which answers what it renders, and not to be remembered as one.

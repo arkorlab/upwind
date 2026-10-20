@@ -99,9 +99,9 @@ reading a full record. `no-transform` remains a prohibition, not a public TTL or
 
 `./paas` is the only part that describes two parties talking. The protocol is headers, all prefixed
 `x-arkor-`, and both sides import the names rather than spelling them: what the edge asks of a
-Function (run only the middleware, resume this shell, regenerate this entry) and what the Function
-says back (which generation answered, what the cache did, which tags the request invalidated at
-once, and at which revision of the scope). `PLATFORM_REQUEST_HEADERS` is the whole
+Function (run only the middleware, resume this shell, regenerate this entry, capture this page) and
+what the Function says back (which generation answered, what the cache did, which tags the request
+invalidated at once, and at which revision of the scope). `PLATFORM_REQUEST_HEADERS` is the whole
 list of the ones that tell the runtime what to do, which is what lets it strip every one of them
 before the application sees a request.
 
@@ -115,9 +115,9 @@ One answer goes the other way. In a deployment whose routes the build split acro
 `MISDIRECTED_STATUS` (421) with `FUNCTION_HEADER`, naming the Function that does, and the request's
 body, unread; the host sends the request on to that Function with that body. Where the Function
 routed the request before it found the route elsewhere, the answer also carries `ROUTED_HEADER`, the
-routing it already did, and the host sends that header on too. A resume or a regeneration names its
-route up front and is answered before any routing, so it comes back without one and goes on as it
-was asked. Which
+routing it already did, and the host sends that header on too. A resume, a regeneration or a
+capture names its route up front and is answered before any routing, so it comes back without one
+and goes on as it was asked. Which
 Function a request should go to in the first place is the manifest's to say (`./manifest`,
 `functionFor`), as far as a table can; and where a split bundle puts each route, `./bundle`
 (`placedRoutes`, `functionOfRoute`, `appFunctions`).

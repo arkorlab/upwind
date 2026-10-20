@@ -296,3 +296,21 @@ export function isRegeneration(): boolean {
 export function currentRegeneration(): Regeneration | undefined {
   return regenerations.getStore();
 }
+
+/** The renders made for a capture (`asCapture`), which keep nothing. */
+const captures = new AsyncLocalStorage<true>();
+
+/**
+ * Run a render as a capture's (`capture-invoke.ts`), whose outputs are handed to the edge whole and
+ * kept by nobody here: what the render would write to the cache — a value it fetched, a `use cache`
+ * value, an invalidation — is written nowhere (`handlers.ts`). Its reads are whatever the context
+ * it runs in makes them: a capture runs it as a regeneration (`asRegeneration`) as well.
+ */
+export function asCapture<T>(work: () => Promise<T>): Promise<T> {
+  return captures.run(true, work);
+}
+
+/** Whether the render writing to the cache is a capture's (`asCapture`), which keeps nothing. */
+export function isCapture(): boolean {
+  return captures.getStore() === true;
+}
