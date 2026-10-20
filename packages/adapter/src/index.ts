@@ -335,6 +335,7 @@ async function onBuildComplete(
     aiInference: 1,
     // Its runtime records privacy vetoes and targeted no-transform prohibitions for route bodies.
     routeBodyPrivacy: 2,
+    staticPagesPrivacy: 1,
     ...objects.bundle,
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).

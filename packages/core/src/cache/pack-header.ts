@@ -256,7 +256,7 @@ export function packHeaderOf(value: unknown): GenerationPackHeader | undefined {
   const headers = headersOf(value['headers']);
   const tags = listOf(value['tags'], tagOf, MAX_TAGS_PER_ENTRY);
   const artifacts = listOf(value['artifacts'], artifactOf);
-  const { cacheTimestamp, producedAt, status, revision, invalidation } = value;
+  const { cacheTimestamp, producedAt, status, revision, invalidation, staticPagePrivacy } = value;
   const invalidationState = invalidation === undefined ? undefined : invalidationOf(invalidation);
   if (
     identity === undefined ||
@@ -269,6 +269,7 @@ export function packHeaderOf(value: unknown): GenerationPackHeader | undefined {
     !isIntegerOrNull(producedAt) ||
     !isInteger(status) ||
     !isCount(revision) ||
+    (staticPagePrivacy !== 1 && staticPagePrivacy !== undefined) ||
     (invalidation !== undefined && invalidationState === undefined)
   ) {
     return undefined;
@@ -280,6 +281,7 @@ export function packHeaderOf(value: unknown): GenerationPackHeader | undefined {
     generationId: identity.generationId,
     seq: identity.seq,
     source: identity.source,
+    ...(staticPagePrivacy === 1 && { staticPagePrivacy }),
     kind: identity.kind,
     route: identity.route,
     pathname: identity.pathname,
