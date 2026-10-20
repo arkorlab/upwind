@@ -1,12 +1,23 @@
 import type { ArtifactLocator, ShellEncodings } from '@stayingupwind/core/artifact';
 import type { ProjectManifest, RouteSegment } from '@stayingupwind/core/manifest';
-import { NULL_BODY_STATUSES } from '@stayingupwind/core/request';
+import { filterShellResponseHeaders, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 
 import { transportableHeaderValue } from '../header-values.ts';
 import { retainSafePreloads } from './manifest-preloads.ts';
 
 const MIN_RESPONSE_STATUS = 200;
 const MAX_RESPONSE_STATUS = 599;
+const INVALID_RESPONSE_VALUE = /[\0\r\n]/u;
+const HTTP_EDGE_WHITESPACE = /^[\t\r\n ]+|[\t\r\n ]+$/gu;
+
+/** Workers permits Unicode values, rejecting NUL/CR/LF after trimming HTTP whitespace. */
+function checkResponseValue(value: string | undefined): void {
+  if (value === undefined || !INVALID_RESPONSE_VALUE.test(value)) return;
+  const normalized = value.replace(HTTP_EDGE_WHITESPACE, '');
+  if (INVALID_RESPONSE_VALUE.test(normalized)) {
+    throw new TypeError('the stored response header value cannot be sent');
+  }
+}
 
 /** Check transport validity, allowing the same HTTP whitespace normalization as Headers.set. */
 function headerCheck(): (artifact: Pick<ArtifactLocator, 'contentType'> | undefined) => void {
@@ -62,7 +73,10 @@ function checkFiles(check: Check, files: ProjectManifest['staticFiles'] | null):
 /** Cold decode only: a digest authenticates bytes, not their safety as response headers. */
 export function checkManifestContentTypes(manifest: ProjectManifest): void {
   const check = headerCheck();
+  checkResponseValue(manifest.images?.contentSecurityPolicy);
   for (const route of Object.values(manifest.routes)) {
+    const headers = filterShellResponseHeaders(Object.entries(route.headers));
+    for (const value of Object.values(headers)) checkResponseValue(value);
     check(route.shell);
     checkEncodings(check, route.shellEncodings);
     if (route.segments !== undefined) {
