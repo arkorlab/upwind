@@ -387,6 +387,7 @@ function servedAtEdge(classification: RequestClass): boolean {
       // `routeHostedDocument` leaves to the Function rather than run in a data request's way.
       return true;
     }
+    case 'static-page':
     case 'rsc':
     case 'action': {
       return false;

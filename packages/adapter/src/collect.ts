@@ -19,6 +19,7 @@ import { type BlobStore, contentTypeFor } from './blobs.ts';
 import type { EdgeEntry } from './edge.ts';
 import { exists } from './fs.ts';
 import type { EntryModule } from './function.ts';
+import { pageBodyOmission, type UnshippedPrerenderBodies } from './page-bodies.ts';
 import { segmentPathOf, withBasePath } from './segments.ts';
 
 /**
@@ -148,43 +149,6 @@ export function tracedChunks(assets: Record<string, string>): string[] {
  */
 export function tracedWasm(assets: Record<string, string>): string[] {
   return [...new Set(Object.values(assets).filter((file) => file.endsWith('.wasm')))];
-}
-
-/** Every file a `.nft.json` trace next to an entry names, resolved against the entry. */
-async function nftFiles(entryFile: string): Promise<string[]> {
-  const traceFile = `${entryFile}.nft.json`;
-  if (!(await exists(traceFile))) {
-    return [];
-  }
-  const trace = JSON.parse(await readFile(traceFile, 'utf8')) as { files?: string[] };
-  const dir = path.dirname(entryFile);
-  return (trace.files ?? []).map((file) => path.resolve(dir, file));
-}
-
-/** Chunks named by a `.nft.json` trace next to an entry that `onBuildComplete` does not describe. */
-export async function nftChunks(entryFile: string): Promise<string[]> {
-  return (await nftFiles(entryFile)).filter(
-    (file) => file.endsWith('.js') && file.includes(SERVER_CHUNKS_SEGMENT),
-  );
-}
-
-/**
- * Everything such an entry's trace names, keyed as an output's `assets` are: what it reads through
- * `node:fs` is among them, beside its code, for `tracedFiles` to tell apart.
- */
-export async function nftAssets(entryFile: string): Promise<Record<string, string>> {
-  return Object.fromEntries((await nftFiles(entryFile)).map((file) => [file, file]));
-}
-
-/**
- * The WebAssembly such an entry reaches. The instrumentation hook is the one entry the adapter
- * finds this way rather than being handed, and its chunks go into both Functions — so a `.wasm` it
- * imports has to be collected the same way, or the loader those chunks carry is rewritten with a
- * table that does not name it (and, when the build has no other WebAssembly, is not rewritten at
- * all and fails the build instead).
- */
-export async function nftWasm(entryFile: string): Promise<string[]> {
-  return [...new Set((await nftFiles(entryFile)).filter((file) => file.endsWith('.wasm')))];
 }
 
 /**
@@ -481,6 +445,9 @@ export interface PrerenderCollection {
   readonly rsc: BuildContext['routing']['rsc'];
   /** Outputs recorded without their bytes; `'none'` by default (`AdapterOptions`). */
   readonly unshipped?: 'none' | 'prefetch-segments' | undefined;
+  readonly unshippedBodies?: UnshippedPrerenderBodies | undefined;
+  /** Actual entries, required to prove that an omitted body belongs to a Node App page. */
+  readonly entrypoints?: readonly Entrypoint[] | undefined;
   /**
    * The routes whose entrypoint is on Next.js's edge runtime, by the pathname a prerender names
    * them with — `entrypoints` filtered on `runtime === 'edge'`.
@@ -528,6 +495,22 @@ export async function collectPrerenders(
   // Which document each output travels with, asked of the bundle by the rule the bundle is read
   // with, so a segment is placed against the same document the host will serve it under.
   const documents = primaryPrerenders(collected.map((each) => each.prerender));
+  const omitBody = pageBodyOmission({
+    sources: collected.map(({ output, prerender }) => {
+      return {
+        prerender,
+        hasPostponed:
+          output.fallback?.postponedState !== undefined && output.fallback.postponedState !== '',
+      };
+    }),
+    entrypoints: input.entrypoints ?? [],
+    nodeAppPageIds: new Set(
+      outputs.appPages.filter((page) => page.runtime !== 'edge').map((page) => page.id),
+    ),
+    range: input.unshippedBodies,
+    basePath,
+    rscSuffix: rsc.suffix,
+  });
   for (const { output, prerender } of collected) {
     const segmentPath = segmentPathOf(prerender, documents.get(prerender.id), basePath, rsc);
     if (segmentPath !== undefined) {
@@ -543,7 +526,7 @@ export async function collectPrerenders(
     if (filePath !== undefined && (await exists(filePath))) {
       const bytes = new Uint8Array(await readFile(filePath));
       const ref = await blobs.put(bytes, contentTypeFor(filePath));
-      if (embeds) {
+      if (embeds && !omitBody(prerender, bytes.byteLength)) {
         ship(ref.sha256, bytes, prerender.route);
       }
       prerender.body = ref;

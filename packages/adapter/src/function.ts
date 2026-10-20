@@ -103,6 +103,8 @@ export interface BuildFunctionInput {
    */
   readonly name?: string | undefined;
   readonly projectDir: string;
+  /** The trusted repository root Next.js used to name explicitly traced declarations. */
+  readonly repoRoot?: string | undefined;
   readonly outDir: string;
   readonly patch: PatchContext;
   readonly entries: readonly EntryModule[];
@@ -116,6 +118,7 @@ export interface BuildFunctionInput {
   readonly runtimeManifest: string;
   /** The module `arkor:cache-host` resolves to; a build given none gets no runtime cache. */
   readonly cacheHostModule: string | undefined;
+  readonly requireBundleBlobReader?: boolean | undefined;
   /** Blobs to ship inside the Function (prerendered bodies and postponed states). */
   readonly blobs: readonly { sha256: string; bytes: Uint8Array }[];
   /** The files the entries read through `node:fs`, at their paths in the project (`traced-files.ts`). */
@@ -287,6 +290,7 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
     edge: input.edgeEntries.length > 0,
     wasm: input.wasm.hasCandidates,
     cacheHostModule: input.cacheHostModule,
+    requireBundleBlobReader: input.requireBundleBlobReader,
   });
   return outFile;
 }
@@ -417,6 +421,9 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
   );
   // What the chunks import from `.next/node_modules`, named only once the app bundle has run.
   const linked = await bundleLinkedExternals({
+    projectDir: input.projectDir,
+    repoRoot: input.repoRoot,
+    files: input.files,
     distDir: input.patch.distDir,
     workDir,
     kind: name,

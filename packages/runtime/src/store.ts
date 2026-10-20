@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 
 import {
   type DeploymentBundle,
@@ -197,6 +197,19 @@ function readBundleFileIfThere(name: string): Uint8Array<ArrayBuffer> | undefine
     if (code === 'ENOENT') {
       return undefined;
     }
+    throw error;
+  }
+}
+
+/** Metadata of an immutable bundle blob; HEAD must not read or copy its body bytes. */
+export function hasBundleBlob(sha256: string): boolean {
+  try {
+    // Only a selected, build-owned BlobRef reaches this path, never a request's pathname.
+    // eslint-disable-next-line security/detect-non-literal-fs-filename
+    return statSync(`${BUNDLE_ROOT}/blobs/${sha256}`).isFile();
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')
+      return false;
     throw error;
   }
 }

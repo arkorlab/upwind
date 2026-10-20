@@ -10,6 +10,7 @@ import { findRouteEntry, findStaticFile } from './manifest.ts';
 import { pageKeyOf } from './page-keys.ts';
 import { findRouteBody } from './route-bodies.ts';
 import type { ProjectManifest, ReservedRoute } from './schema.ts';
+import { findStaticPage } from './static-pages.ts';
 
 /**
  * Which gate a request is asked of before the edge serves it anything, for a deployment that
@@ -66,7 +67,10 @@ function basePathOf(manifest: ProjectManifest): string {
  * as a route is (`pageKeyOf`), so that a page of its own the path also spells wins as it does there.
  */
 function exactKeyOf(manifest: ProjectManifest, pathname: string): string | undefined {
-  const entry = findRouteEntry(manifest, pathname) ?? findRouteBody(manifest, pathname);
+  const entry =
+    findRouteEntry(manifest, pathname) ??
+    findRouteBody(manifest, pathname) ??
+    findStaticPage(manifest, pathname);
   if (entry !== undefined) {
     return entry.pathname;
   }

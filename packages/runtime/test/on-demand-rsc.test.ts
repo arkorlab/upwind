@@ -7,6 +7,11 @@ import {
   packBodyDigests,
   type RouteEntryDescriptor,
 } from '@stayingupwind/core/cache';
+import {
+  CACHE_OUTCOME_HEADER,
+  CACHE_ROUTE_HEADER,
+  REGENERATE_HEADER,
+} from '@stayingupwind/core/paas';
 import { TtlCache } from '@stayingupwind/core/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -266,7 +271,7 @@ function requests(runtime: CacheRuntime | undefined, partial = false) {
   const route = partial ? PARTIAL_ROUTE : STATIC_ROUTE;
   const pending: Promise<unknown>[] = [];
   return {
-    ask: (pathname: string, headers: Record<string, string> = RSC_HEADERS) => {
+    ask: (pathname: string, headers: Record<string, string> = RSC_HEADERS, clock = NOW) => {
       return handleRequest({
         app: { entries: { [route]: () => ({ handler }) } },
         edge: { entries: {} },
@@ -275,7 +280,7 @@ function requests(runtime: CacheRuntime | undefined, partial = false) {
         waitUntil: (work) => {
           pending.push(work);
         },
-        clock: NOW,
+        clock,
       });
     },
     drain: async () => {
@@ -339,6 +344,12 @@ function nativeInvocation(input: InvokeInput) {
     capture: input.requestMeta['onCacheEntryV2'],
     postponed: input.requestMeta['postponed'],
   };
+}
+
+/** A page dynamic here: its static render (an attempt's) keeps nothing; a visitor's answers. */
+function dynamicHere(input: InvokeInput): Promise<Response> {
+  const attempt = input.request.headers.get('x-invocation-id')?.startsWith('attempt-');
+  return Promise.resolve(new Response(attempt === true ? null : 'live'));
 }
 
 /** The bridge alone understands these frozen fixture states; runtime code treats them as opaque. */
@@ -638,6 +649,99 @@ describe('ordinary RSC navigation of an unbuilt fallback', () => {
     ]);
     expect(test.commits).toHaveLength(0);
     expect(test.fail).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an RSC navigation', RSC_HEADERS],
+    ['a document', {}],
+  ] as const)(
+    'answers %s of a page found dynamic as it came for five minutes, with no static render first',
+    async (_label, headers) => {
+      const test = cache();
+      vi.mocked(invokeNodeHandler).mockImplementation(dynamicHere);
+      const client = requests(test.runtime);
+      const first = await client.ask('/fully-static-params/t1', headers);
+
+      await client.drain();
+
+      await expect(first.text()).resolves.toBe('live');
+      expect(test.startAttempt).toHaveBeenCalledTimes(1);
+      expect(invokeNodeHandler).toHaveBeenCalledTimes(2);
+
+      const later = await client.ask('/fully-static-params/t1', headers, NOW + 299_999);
+
+      await client.drain();
+
+      await expect(later.text()).resolves.toBe('live');
+      expect(test.startAttempt).toHaveBeenCalledTimes(1);
+      expect(invokeNodeHandler).toHaveBeenCalledTimes(3);
+
+      await client.ask('/fully-static-params/t1', headers, NOW + 300_000);
+      await client.drain();
+
+      expect(test.startAttempt).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('schedules no render behind a prefetch of a page found dynamic', async () => {
+    const test = cache();
+    vi.mocked(invokeNodeHandler).mockImplementation(dynamicHere);
+    const client = requests(test.runtime);
+    await client.ask('/fully-static-params/t1');
+    await client.drain();
+
+    expect(test.startAttempt).toHaveBeenCalledTimes(1);
+
+    const prefetch = await client.ask('/fully-static-params/t1', {
+      rsc: '1',
+      'next-router-prefetch': '1',
+    });
+    await client.drain();
+
+    expect(prefetch.status).toBe(200);
+    expect(test.startAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes a server error a static render answered for a failure, not for a page dynamic here', async () => {
+    const test = cache();
+    vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+      const attempt = input.request.headers.get('x-invocation-id')?.startsWith('attempt-');
+      return Promise.resolve(
+        attempt === true ? new Response('boom', { status: 500 }) : new Response('live'),
+      );
+    });
+    const client = requests(test.runtime);
+    await client.ask('/fully-static-params/t1');
+    await client.drain();
+
+    expect(test.fail.mock.calls[0]?.[1].outcome).toBe('failed');
+
+    await client.ask('/fully-static-params/t1');
+    await client.drain();
+
+    expect(test.startAttempt).toHaveBeenCalledTimes(2);
+  });
+
+  it('remembers a page found dynamic in a foreground regeneration of no record', async () => {
+    const test = cache();
+    vi.mocked(invokeNodeHandler).mockImplementation(dynamicHere);
+    const client = requests(test.runtime);
+    const foreground = {
+      [REGENERATE_HEADER]: 'foreground',
+      [CACHE_ROUTE_HEADER]: STATIC_ROUTE,
+    };
+    const first = await client.ask('/fully-static-params/t1', foreground);
+    await client.drain();
+
+    await expect(first.text()).resolves.toBe('live');
+    expect(test.startAttempt).toHaveBeenCalledTimes(1);
+
+    const again = await client.ask('/fully-static-params/t1', foreground);
+    await client.drain();
+
+    await expect(again.text()).resolves.toBe('live');
+    expect(again.headers.get(CACHE_OUTCOME_HEADER)).toBe('skipped');
+    expect(test.startAttempt).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a class whose key already equals its source on the original native resume', async () => {

@@ -169,6 +169,8 @@ export const headerValuesSchema = z.record(z.string(), headerValueSchema);
 
 export const outputSnapshotSchema = z.object({
   outputId: z.string().min(1),
+  /** A host-admitted, complete static Pages build document; never inherited by regeneration. */
+  staticPagePrivacy: z.literal(1).optional(),
   /** Which representation of the entry this is: `html`, `rsc`, `segment:<path>`, `pages-data`, … */
   representationKey: z.string().min(1),
   pathname: z.string().nullable(),
@@ -207,6 +209,8 @@ export const generationPackHeaderSchema = z.object({
   generationId: z.string().min(1),
   seq: z.number().int().positive(),
   source: generationSourceKindSchema,
+  /** Versioned host proof projected only from an admitted static Pages build output. */
+  staticPagePrivacy: z.literal(1).optional(),
   kind: routeEntryKindSchema,
   route: z.string().startsWith('/'),
   pathname: z.string().startsWith('/'),
