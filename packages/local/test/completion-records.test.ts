@@ -22,7 +22,7 @@ import {
 import { assert, describe, expect, it } from 'vitest';
 
 import type { CheckedStack } from '../src/answers.ts';
-import { recordedOf, recordEntriesOf } from '../src/recorded.ts';
+import { recordedOf, recordEntriesOf, regenerationFailure } from '../src/recorded.ts';
 import { GenerationEvidence } from '../src/workers/generation-evidence.ts';
 import type { RecordedGeneration } from '../src/workers/protocol.ts';
 
@@ -38,6 +38,7 @@ interface Completion {
   readonly query: readonly string[];
   readonly pathname: string;
   readonly completed: string;
+  readonly regenerationMember: boolean;
 }
 
 const COMPLETIONS: readonly Completion[] = [
@@ -47,6 +48,7 @@ const COMPLETIONS: readonly Completion[] = [
     query: ['nxtPid'],
     pathname: '/posts/one',
     completed: '/posts/one',
+    regenerationMember: true,
   },
   {
     label: 'a concrete member with a trailing slash',
@@ -54,6 +56,7 @@ const COMPLETIONS: readonly Completion[] = [
     query: ['nxtPid'],
     pathname: '/posts/one/',
     completed: '/posts/one',
+    regenerationMember: true,
   },
   {
     label: 'a shell shared by unkeyed parameters',
@@ -61,6 +64,7 @@ const COMPLETIONS: readonly Completion[] = [
     query: ['nxtPlang'],
     pathname: '/en/posts/one',
     completed: '/en/posts/[id]',
+    regenerationMember: false,
   },
   {
     label: 'a shared shell with a trailing slash',
@@ -68,6 +72,7 @@ const COMPLETIONS: readonly Completion[] = [
     query: ['nxtPlang'],
     pathname: '/en/posts/two/',
     completed: '/en/posts/[id]',
+    regenerationMember: false,
   },
 ];
 
@@ -329,5 +334,95 @@ describe('captured completions of an unseeded partial fallback', () => {
     expect(result).toStrictEqual({
       failure: 'said to be served from generation 1 of a record, where the route has none',
     });
+  });
+});
+
+describe('regeneration identities of partial fallback completions', () => {
+  it.each(COMPLETIONS)(
+    'recognizes $label with the render mode kept by the trace',
+    async (example) => {
+      const { stack, route, entryId } = await fixture(example);
+      const failure = await regenerationFailure(stack, route, {
+        pathname: example.pathname,
+        regenerated: {
+          entry: entryId,
+          route: example.source,
+          member: example.regenerationMember,
+        },
+      });
+
+      expect(failure).toBeUndefined();
+    },
+  );
+
+  it.each([COMPLETIONS[2]!, COMPLETIONS[3]!])(
+    'also recognizes $label when asked to render the member',
+    async (example) => {
+      const { stack, route, entryId } = await fixture(example);
+      const failure = await regenerationFailure(stack, route, {
+        pathname: example.pathname,
+        regenerated: { entry: entryId, route: example.source, member: true },
+      });
+
+      expect(failure).toBeUndefined();
+    },
+  );
+
+  it.each([COMPLETIONS[1]!, COMPLETIONS[3]!])(
+    'rejects a foreign entry for $label',
+    async (example) => {
+      const { stack, route } = await fixture(example);
+      const failure = await regenerationFailure(stack, route, {
+        pathname: example.pathname,
+        regenerated: {
+          entry: 'ent_other',
+          route: example.source,
+          member: example.regenerationMember,
+        },
+      });
+
+      expect(failure).toContain('regenerated as the entry ent_other, not');
+    },
+  );
+
+  it.each([COMPLETIONS[1]!, COMPLETIONS[3]!])(
+    'rejects a foreign source route for $label',
+    async (example) => {
+      const { stack, route, entryId } = await fixture(example);
+      const failure = await regenerationFailure(stack, route, {
+        pathname: example.pathname,
+        regenerated: {
+          entry: entryId,
+          route: '/wrong/[id]',
+          member: example.regenerationMember,
+        },
+      });
+
+      expect(failure).toContain('regenerated as the route /wrong/[id]');
+    },
+  );
+
+  it('does not infer an unkeyed completion from a trace that renders the class', async () => {
+    const example = COMPLETIONS[1]!;
+    const { stack, route, entryId } = await fixture(example);
+    const failure = await regenerationFailure(stack, route, {
+      pathname: example.pathname,
+      regenerated: { entry: entryId, route: example.source, member: false },
+    });
+
+    expect(failure).toContain('not its own (none)');
+  });
+
+  it('requires an actual regeneration trace for a keyed completion', async () => {
+    const example = COMPLETIONS[3]!;
+    const { stack, route } = await fixture(example);
+    const failure = await regenerationFailure(stack, route, {
+      pathname: example.pathname,
+      regenerated: undefined,
+    });
+
+    expect(failure).toBe(
+      'said to be regenerated, where the edge had its Function regenerate nothing',
+    );
   });
 });

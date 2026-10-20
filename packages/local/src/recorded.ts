@@ -416,14 +416,17 @@ export async function regenerationFailure(
     return 'said to be regenerated, where the edge had its Function regenerate nothing';
   }
   const own = regenerated.member;
-  const expected = await entryFor(stack, route, { pathname: read.pathname, own });
+  // A keyed completion regenerates its shared shell without CACHE_UPGRADE_HEADER, so a trace
+  // with member=false still names the derived completion entry.
+  const derived = own || route.partialFallback?.keyedBy !== undefined;
+  const expected = await entryFor(stack, route, { pathname: read.pathname, own: derived });
   if (regenerated.entry !== expected) {
     const whose = own ? `the member ${read.pathname}'s` : 'its own';
     return `regenerated as the entry ${regenerated.entry}, not ${whose} ${expected ?? '(none)'}`;
   }
   // And as the route the entry is kept under, which the Function renders: one that, with the
   // pathname the entry is of, names the entry (`deriveEntry`), as no other route does.
-  const pathname = own ? read.pathname : route.pathname;
+  const pathname = derived ? memberPathname(route, read.pathname) : route.pathname;
   const named = await derivedEntry(stack, route, { route: regenerated.route, pathname });
   return named === regenerated.entry
     ? undefined
