@@ -73,6 +73,7 @@ export {
   underBasePath,
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
+export { completeAppPageBody } from './page-bodies.ts';
 export { partialFallbackUpgradeOf } from './partial-fallback.ts';
 export { sharedShellPathname } from './shared-shell.ts';
 export {

@@ -4,6 +4,7 @@ import type { Prerender } from '@stayingupwind/core/bundle';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppModule, NodeHandler } from '../src/app-module.ts';
+import type { BundleBlobReader } from '../src/bundle-blobs.ts';
 import { serveFromGeneration } from '../src/generations.ts';
 import { handleRequest } from '../src/handle.ts';
 import { invokeNodeHandler, type InvokeInput } from '../src/node-bridge.ts';
@@ -78,11 +79,21 @@ function deployment(postponed = false, route = PAGE): Store {
   } as unknown as Store;
 }
 
-function handle(load: AppModule['entries'][string], request: Request, route = PAGE) {
+function missingBuiltBody(): never {
+  throw Object.assign(new Error('body was not shipped'), { code: 'ENOENT' });
+}
+
+function handle(
+  load: AppModule['entries'][string],
+  request: Request,
+  route = PAGE,
+  blobs?: BundleBlobReader,
+) {
   return handleRequest({
     app: { entries: { [route]: load } },
     edge: { entries: {} },
     request,
+    blobs,
     waitUntil: () => {
       // These requests schedule no background work.
     },
@@ -164,17 +175,52 @@ describe('page outputs before the Node.js renderer is needed', () => {
   it.each([false, true])(
     'serves a complete generation with RSC=%s without evaluating its module',
     async (rsc) => {
+      const readBlob = vi.fn<Store['readBlob']>(missingBuiltBody);
+      const blobs = vi.fn<BundleBlobReader>().mockResolvedValue(undefined);
+      vi.mocked(getStore).mockReturnValue({ ...deployment(), readBlob });
       vi.mocked(serveFromGeneration).mockResolvedValue(new Response('cached generation'));
       const load = vi.fn(() => {
         throw new Error('the renderer must stay unloaded');
       });
       const request = new Request(`https://app.test${PAGE}`, { headers: rsc ? { rsc: '1' } : {} });
 
-      const answer = await handle(load, request);
+      const answer = await handle(load, request, PAGE, blobs);
 
       await expect(answer.text()).resolves.toBe('cached generation');
+      expect(blobs).not.toHaveBeenCalled();
+      expect(readBlob).not.toHaveBeenCalled();
       expect(load).not.toHaveBeenCalled();
       expect(invokeNodeHandler).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'renders a draft with RSC=%s without reading an omitted body',
+    async (rsc) => {
+      const readBlob = vi.fn<Store['readBlob']>(missingBuiltBody);
+      const blobs = vi.fn<BundleBlobReader>().mockResolvedValue(undefined);
+      const store = deployment();
+      vi.mocked(getStore).mockReturnValue({
+        ...store,
+        readBlob,
+        manifest: { ...store.manifest, bypassToken: 'draft-token' },
+      });
+      const handler = vi.fn<NodeHandler>().mockResolvedValue(undefined);
+      const load = vi.fn(() => Promise.resolve({ handler }));
+      const headers = { cookie: '__prerender_bypass=draft-token', ...(rsc && { rsc: '1' }) };
+
+      const answer = await handle(
+        load,
+        new Request(`https://app.test${PAGE}`, { headers }),
+        PAGE,
+        blobs,
+      );
+
+      await expect(answer.text()).resolves.toBe('resumed');
+      expect(blobs).not.toHaveBeenCalled();
+      expect(readBlob).not.toHaveBeenCalled();
+      expect(load).toHaveBeenCalledExactlyOnceWith();
+      expect(handler).toHaveBeenCalledTimes(1);
     },
   );
 
