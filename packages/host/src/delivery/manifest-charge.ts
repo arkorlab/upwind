@@ -130,14 +130,22 @@ function ruleObjects(
 
 /** The routes, files and pathnames a manifest lists, and the objects of its rules. */
 function manifestObjects(manifest: ProjectManifest): number {
-  const bodies = manifest.routeBodies;
-  const bodyObjects =
-    bodies === undefined
-      ? 0
-      : 1 +
-        Object.values(bodies).reduce((count, entry) => count + 1 + listObjects(entry.bypassFor), 0);
+  let bodies = 0;
+  if (manifest.routeBodies !== undefined) {
+    // The table, each entry and its optional condition list/objects are held beside the JSON.
+    bodies = 1;
+    for (const entry of Object.values(manifest.routeBodies)) {
+      bodies += 1 + listObjects(entry.bypassFor);
+    }
+  }
+  if (manifest.staticPages !== undefined) {
+    bodies += 1;
+    for (const entry of Object.values(manifest.staticPages)) {
+      bodies += 1 + listObjects(entry.bypassFor);
+    }
+  }
   return (
-    bodyObjects +
+    bodies +
     keysOf(manifest.routes) +
     keysOf(manifest.staticFiles) +
     keysOf(manifest.exactPathnames) +
