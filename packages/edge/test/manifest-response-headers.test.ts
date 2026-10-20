@@ -232,12 +232,15 @@ describe.each(['schema', 'digest'] as const)(
         );
 
         expect(response.status).toBe(200);
-        expect(await response.text()).toBe(FILE_BODY);
+        await expect(response.text()).resolves.toBe(FILE_BODY);
         expect(response.headers.get('content-type')).toBe(sent);
         expect(subject.result.value.staticFiles?.[FILE_PATH]?.contentType).toBe(contentType);
         expect(dispatchApp).not.toHaveBeenCalled();
+
         const repeated = await getManifest(env, runtime, subject.manifestId);
+
         expect(repeated.kind === 'found' && repeated.value).toBe(subject.result.value);
+
         await waitOnExecutionContext(ctx);
       },
     );
