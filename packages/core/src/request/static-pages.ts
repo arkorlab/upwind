@@ -1,3 +1,5 @@
+import { ROUTER_REQUEST_HEADERS } from './constants.ts';
+
 const PRIVATE_HEADERS = [
   'authorization',
   'cookie',
@@ -14,5 +16,9 @@ const PRIVATE_HEADERS = [
 
 /** Version 1 admits no query, visitor state or conditional representation of static Pages HTML. */
 export function staticPageRequestPrivate(url: URL, headers: Headers): boolean {
-  return url.search !== '' || PRIVATE_HEADERS.some((name) => headers.has(name));
+  return (
+    url.search !== '' ||
+    PRIVATE_HEADERS.some((name) => headers.has(name)) ||
+    ROUTER_REQUEST_HEADERS.some((name) => headers.has(name))
+  );
 }

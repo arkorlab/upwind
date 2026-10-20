@@ -20,6 +20,9 @@ describe('static Pages sharing privacy before filtering', () => {
     ['Vary', '*'],
     ['Vary', 'Authorization'],
     ['Vary', 'Accept-Encoding, Cookie'],
+    ['Vary', 'rsc, Cookie'],
+    ['Vary', 'next-router-prefetch, X-Visitor'],
+    ['Vary', 'next-router-state-tree, *'],
     ['content-disposition', 'attachment'],
     ['location', '/elsewhere'],
     ['refresh', '0;url=/elsewhere'],
@@ -32,6 +35,19 @@ describe('static Pages sharing privacy before filtering', () => {
   ])('refuses %s=%s', (name, value) => {
     expect(staticPageHeadersAllowSharing([[name, value]])).toBe(false);
   });
+
+  it.each([
+    'rsc',
+    'Next-Router-State-Tree',
+    'next-router-prefetch, next-router-segment-prefetch',
+    'rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch',
+    'Accept-Encoding, rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch',
+  ])(
+    'retains fixed Next router variation without allowing a static HTML request for it: %s',
+    (value) => {
+      expect(staticPageHeadersAllowSharing([['Vary', value]])).toBe(true);
+    },
+  );
 
   it('keeps static HTML content and encoding policy with no personal fields', () => {
     expect(

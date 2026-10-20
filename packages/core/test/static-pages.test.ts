@@ -184,6 +184,40 @@ describe('build proof for complete static Pages HTML', () => {
     expect(edgeServableStaticPages(bundleOf({ prerenders: [page] }))).toStrictEqual([page]);
   });
 
+  it('maps the complete static Pages build with the fixed Next router Vary protocol', () => {
+    const page = {
+      ...PAGE,
+      id: '/something',
+      allowHeader: [
+        'host',
+        'x-matched-path',
+        'x-prerender-revalidate',
+        'x-prerender-revalidate-if-generated',
+        'x-next-revalidated-tags',
+        'x-next-revalidate-tag-token',
+      ],
+      initialHeaders: {
+        vary: 'rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch',
+        'content-type': 'text/html; charset=utf-8',
+      },
+      body: {
+        sha256: 'd8572094aef1ffa6c3633212dc6639c2c41b6a0fc47f47ac7e35a16e0c0cf71a',
+        byteLength: 2100,
+        contentType: 'text/html; charset=utf-8',
+      },
+    };
+    const admitted = edgeServableStaticPages(bundleOf({ prerenders: [page] }));
+    const manifest = manifestOf({
+      staticPages: admitted.map(({ pathname, route }) => ({ ...ENTRY, pathname, route })),
+    });
+
+    expect(admitted).toStrictEqual([page]);
+    expect(findStaticPage(manifest, '/something')).toStrictEqual(ENTRY);
+    expect(page.initialHeaders.vary).toBe(
+      'rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch',
+    );
+  });
+
   it('grants nothing to an old bundle even when rebuilt by a current host', () => {
     const bundle = bundleOf({ staticPagesPrivacy: undefined });
 
@@ -418,6 +452,45 @@ describe('static Pages publication and request boundaries', () => {
       }).kind,
     ).toBe('passthrough');
   });
+
+  it.each(
+    [
+      'rsc',
+      'next-router-state-tree',
+      'next-router-prefetch',
+      'next-router-segment-prefetch',
+      'next-action',
+    ].flatMap((name) => ['', '0', '1'].map((value) => ({ name, value }))),
+  )('never grants static HTML to a present router header: $name=$value', ({ name, value }) => {
+    const manifest = manifestOf();
+
+    expect(
+      classifyRequest({
+        method: 'GET',
+        url: new URL('https://app.example/something'),
+        headers: new Headers({ [name]: value }),
+        manifest,
+        deployment: manifest.deployment,
+      }).kind,
+    ).not.toBe('static-page');
+  });
+
+  it.each(['/_tree', '', '0'])(
+    'never grants static HTML to a combined RSC and segment request: %s',
+    (segment) => {
+      const manifest = manifestOf();
+
+      expect(
+        classifyRequest({
+          method: 'GET',
+          url: new URL('https://app.example/something'),
+          headers: new Headers({ rsc: '1', 'next-router-segment-prefetch': segment }),
+          manifest,
+          deployment: manifest.deployment,
+        }).kind,
+      ).not.toBe('static-page');
+    },
+  );
 
   it.each([
     '/something?foo=bar',

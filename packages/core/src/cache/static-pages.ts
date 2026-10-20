@@ -1,10 +1,11 @@
-import { SHARED_CACHE_CONTROL_HEADERS } from '../request/constants.ts';
+import { RSC_VARY, SHARED_CACHE_CONTROL_HEADERS } from '../request/constants.ts';
 import { rendersInline } from '../request/headers.ts';
 
 const HTML_TYPE = 'text/html';
 const CACHE_CONTROL = 'cache-control';
 const CSP = 'content-security-policy';
 const CSP_REPORT_ONLY = 'content-security-policy-report-only';
+const STATIC_VARY: ReadonlySet<string> = new Set(['accept-encoding', ...RSC_VARY.split(', ')]);
 const VETO_FIELDS: ReadonlySet<string> = new Set([
   'clear-site-data',
   'content-range',
@@ -40,7 +41,7 @@ function representationVeto(name: string, value: string): boolean {
   if (name === 'content-disposition') return !rendersInline(value);
   return (
     name === 'vary' &&
-    lower.split(',').some((part) => part.trim() !== '' && part.trim() !== 'accept-encoding')
+    lower.split(',').some((part) => part.trim() !== '' && !STATIC_VARY.has(part.trim()))
   );
 }
 
