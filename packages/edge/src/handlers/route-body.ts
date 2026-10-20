@@ -172,7 +172,11 @@ function bodyHeaders(pack: DecodedGenerationPack, entry: RouteBodyEntry): Header
         : `${cacheControl}, ${NO_TRANSFORM}`,
     );
   }
-  headers.set(CONTENT_TYPE, contentType);
+  try {
+    headers.set(CONTENT_TYPE, contentType);
+  } catch {
+    return undefined;
+  }
   headers.delete(CONTENT_ENCODING);
   headers.delete('accept-ranges');
   headers.set('content-length', String(body.byteLength));

@@ -108,19 +108,22 @@ function scopedValue(name: string, value: string, scope: PassthroughResponseCont
  * either. Left off instead, and the rest of the answer is the application's. A document the edge
  * composes is not at risk: the rules reach it only through the shell's allowlist of names.
  *
- * A `try` around the call rather than a check before it, so a header that is fine costs nothing
- * more on a request.
+ * The native setter checks the value without a separate validation pass.
+ * The result lets a retained generation decline replay instead of dropping
+ * one of its recorded protections; configured-rule callers keep their existing omission policy.
  */
 export function setConfigured(
   headers: Headers,
   name: string,
   value: string,
   scope: PassthroughResponseContext,
-): void {
+): boolean {
   try {
     headers.set(name, scopedValue(name, value, scope));
+    return true;
   } catch {
     // Not a header, on this request: left off.
+    return false;
   }
 }
 
