@@ -183,9 +183,8 @@ function isRecordKey(key: unknown): boolean {
   return typeof key === 'string' && key === RECORD_KEY;
 }
 
-function serve(test: Awaited<ReturnType<typeof fixture>>, part = false, method = 'GET') {
+function serve(test: Awaited<ReturnType<typeof fixture>>, part = false) {
   const request = navigation('/', {
-    method,
     headers: part ? { rsc: '1', 'next-router-prefetch': '1' } : {},
   });
   return serveFromPointer(
@@ -209,12 +208,12 @@ function serve(test: Awaited<ReturnType<typeof fixture>>, part = false, method =
 }
 
 function documentInput(test: Awaited<ReturnType<typeof fixture>>) {
-  const passthrough = vi.fn<DocumentInput['passthrough']>(() => {
-    return Promise.resolve(htmlResponse(FALLBACK));
-  });
+  const passthrough = vi.fn<DocumentInput['passthrough']>(() =>
+    Promise.resolve(htmlResponse(FALLBACK)),
+  );
   const input: DocumentInput = {
     request: navigation('/'),
-    entry: test.manifest.routes['/']!,
+    entry: test.manifest.routes['/'],
     manifest: test.manifest,
     resolved: resolvePolicy(edgeStrategyRegistry, test.edge.policy),
     edge: test.edge,
@@ -242,10 +241,14 @@ describe('replaying generation response metadata at its use boundary', () => {
       const held = test.edge.runtime.memory.generations.get(RECORD_KEY);
       const warm = await serve(test);
 
-      expect(await response.text()).toBe(FALLBACK);
-      expect(await warm.text()).toBe(FALLBACK);
-      expect(response.headers.get(CSP)).toBeNull();
-      expect(response.headers.get('cache-control')).toContain('private');
+      await expect(Promise.all([response.text(), warm.text()])).resolves.toStrictEqual([
+        FALLBACK,
+        FALLBACK,
+      ]);
+      expect({
+        policy: response.headers.get(CSP),
+        privateCache: response.headers.get('cache-control')?.includes('private'),
+      }).toStrictEqual({ policy: null, privateCache: true });
       expect(test.dispatch).toHaveBeenCalledTimes(2);
       expect(test.dispatch.mock.calls[0]?.[1].headers.has(NEXT_RESUME_HEADER)).toBe(false);
       expect(test.edge.runtime.memory.generations.get(RECORD_KEY)?.pack.header.headers[CSP]).toBe(
@@ -253,7 +256,9 @@ describe('replaying generation response metadata at its use boundary', () => {
       );
       expect(test.edge.runtime.memory.generations.get(RECORD_KEY)).toBe(held);
       expect(test.get.mock.calls.filter(([key]) => isRecordKey(key))).toHaveLength(1);
+
       await waitOnExecutionContext(test.edge.ctx);
+
       expect(test.points.map((point) => point.subrequests)).toStrictEqual([1, 1]);
     },
   );
@@ -264,24 +269,28 @@ describe('replaying generation response metadata at its use boundary', () => {
 
     const response = await serve(test);
 
-    expect(await response.text()).toBe(FALLBACK);
+    await expect(response.text()).resolves.toBe(FALLBACK);
     expect(test.dispatch).toHaveBeenCalledTimes(1);
     expect(test.dispatch.mock.calls[0]?.[1].headers.has(NEXT_RESUME_HEADER)).toBe(false);
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
   it('returns a stale partial record regeneration ask when metadata prevents its resume', async () => {
     const test = await fixture();
     await seed(await record({ partial: true, headers: { [CSP]: 'default-src a\0b' } }));
+
     test.clock.now += 60_001;
 
     const response = await serve(test);
 
-    expect(await response.text()).toBe(FALLBACK);
+    await expect(response.text()).resolves.toBe(FALLBACK);
     expect(test.dispatch).toHaveBeenCalledTimes(1);
     expect(test.dispatch.mock.calls[0]?.[1].headers.has(NEXT_RESUME_HEADER)).toBe(false);
     expect(shouldAsk(test.edge, KEY.entryId, test.settings)).toBe(true);
+
     await waitOnExecutionContext(test.edge.ctx);
+
     expect(test.points.map((point) => point.subrequests)).toStrictEqual([1]);
   });
 
@@ -289,15 +298,17 @@ describe('replaying generation response metadata at its use boundary', () => {
     const test = await fixture();
     const saved = await record({ partial: true });
     await seed(saved);
+
     test.clock.now += 60_001;
 
     const response = await serve(test);
 
-    expect(await response.text()).toContain(saved.document.suffixText);
+    await expect(response.text()).resolves.toContain(saved.document.suffixText);
     expect(test.dispatch).toHaveBeenCalledTimes(1);
     expect(test.dispatch.mock.calls[0]?.[1].headers.get(NEXT_RESUME_HEADER)).toBe('1');
     expect(test.dispatch.mock.calls[0]?.[1].headers.get(REGENERATE_HEADER)).toBe('background');
     expect(shouldAsk(test.edge, KEY.entryId, test.settings)).toBe(false);
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
@@ -305,7 +316,9 @@ describe('replaying generation response metadata at its use boundary', () => {
     const test = await fixture();
     const saved = await record({ partial: true, headers: { [CSP]: 'a\0b' } });
     const { input, passthrough } = documentInput(test);
+
     expect(shouldAsk(test.edge, KEY.entryId, test.settings)).toBe(true);
+
     const abandoned = vi.fn(allowAnotherAsk(test.edge, KEY.entryId));
     const buildAbandoned = vi.fn();
 
@@ -328,19 +341,22 @@ describe('replaying generation response metadata at its use boundary', () => {
       onBuildAbandoned: buildAbandoned,
     });
 
-    expect(await response.text()).toBe(FALLBACK);
+    await expect(response.text()).resolves.toBe(FALLBACK);
     expect(abandoned).toHaveBeenCalledTimes(1);
     expect(buildAbandoned).not.toHaveBeenCalled();
     expect(passthrough).toHaveBeenCalledExactlyOnceWith('shell-corrupt', undefined, '/');
     expect(shouldAsk(test.edge, KEY.entryId, test.settings)).toBe(true);
     expect(test.dispatch).not.toHaveBeenCalled();
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
   it('returns an undispatched build reservation and preserves the real shell accounting', async () => {
     const test = await fixture();
     const { input, passthrough } = documentInput(test);
+
     expect(shouldAsk(test.edge, 'build-completion', test.settings)).toBe(true);
+
     const abandoned = vi.fn(allowAnotherAsk(test.edge, 'build-completion'));
     const shell = Promise.resolve({
       kind: 'ok' as const,
@@ -354,14 +370,17 @@ describe('replaying generation response metadata at its use boundary', () => {
       onBuildAbandoned: abandoned,
     });
 
-    expect(await response.text()).toBe(FALLBACK);
+    await expect(response.text()).resolves.toBe(FALLBACK);
     expect(abandoned).toHaveBeenCalledTimes(1);
     expect(shouldAsk(test.edge, 'build-completion', test.settings)).toBe(true);
     expect(test.dispatch).not.toHaveBeenCalled();
     expect(passthrough).toHaveBeenCalledTimes(1);
+
     const accounting = passthrough.mock.calls[0]?.[3]?.abandonedShells;
+
     expect(accounting).toBeDefined();
     await expect(accounting?.requests).resolves.toBe(1);
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
@@ -373,30 +392,34 @@ describe('replaying generation response metadata at its use boundary', () => {
 
     const response = await serve(test);
 
-    expect(await response.text()).toBe(FALLBACK);
+    await expect(response.text()).resolves.toBe(FALLBACK);
     expect(test.dispatch).toHaveBeenCalledTimes(1);
     expect(test.dispatch.mock.calls[0]?.[1].headers.has(NEXT_RESUME_HEADER)).toBe(false);
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
   it('protects document replay from a young Cache API copy when KV fails', async () => {
     const test = await fixture(true);
     const saved = await record({ headers: { [CSP]: 'a\rb' } });
+
     test.match.mockResolvedValue(
       new Response(saved.bytes, {
         headers: { 'x-arkor-kept-at': String(NOW), 'x-arkor-revision': '3' },
       }),
     );
+
     test.get.mockRejectedValue(new Error('KV is unavailable'));
 
     const response = await serve(test);
 
-    expect(await response.text()).toBe(FALLBACK);
+    await expect(response.text()).resolves.toBe(FALLBACK);
     expect(test.match).toHaveBeenCalledTimes(1);
     expect(test.edge.runtime.memory.generations.get(RECORD_KEY)?.pack.header.headers[CSP]).toBe(
       'a\rb',
     );
     expect(test.dispatch).toHaveBeenCalledTimes(1);
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
@@ -408,12 +431,13 @@ describe('replaying generation response metadata at its use boundary', () => {
 
       const response = await serve(test, true);
 
-      expect(await response.text()).toBe(FALLBACK);
+      await expect(response.text()).resolves.toBe(FALLBACK);
       expect(test.dispatch).toHaveBeenCalledTimes(1);
       expect(test.artifactGet).toHaveBeenCalledTimes(1);
       expect(test.edge.runtime.memory.generations.get(RECORD_KEY)?.pack.header.source).toBe(
         'runtime',
       );
+
       await waitOnExecutionContext(test.edge.ctx);
     },
   );
@@ -424,31 +448,35 @@ describe('replaying generation response metadata at its use boundary', () => {
 
     const response = await serve(test, true);
 
-    expect(await response.text()).toBe(FALLBACK);
+    await expect(response.text()).resolves.toBe(FALLBACK);
     expect(test.dispatch).toHaveBeenCalledTimes(1);
     expect(test.artifactGet).toHaveBeenCalledTimes(1);
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
   it('protects a selected part type from a retained Cache API record with the default shell layers enabled', async () => {
     const test = await fixture(true);
     const saved = await record({ contentType: 'text/x-component; a\0b' });
+
     test.match.mockResolvedValue(
       new Response(saved.bytes, {
         headers: { 'x-arkor-kept-at': String(NOW), 'x-arkor-revision': '3' },
       }),
     );
+
     test.get.mockRejectedValue(new Error('KV is unavailable'));
 
     const response = await serve(test, true);
 
-    expect(await response.text()).toBe(FALLBACK);
+    await expect(response.text()).resolves.toBe(FALLBACK);
     expect(test.edge.policy.shell.cacheApiLayer).toBe(true);
     expect(test.dispatch).toHaveBeenCalledTimes(1);
     expect(test.artifactGet).toHaveBeenCalledTimes(1);
     expect(test.edge.runtime.memory.generations.get(RECORD_KEY)?.pack.header.source).toBe(
       'runtime',
     );
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
@@ -463,9 +491,10 @@ describe('replaying generation response metadata at its use boundary', () => {
 
     const document = await serve(test);
 
-    expect(await document.text()).toBe(new TextDecoder().decode(HTML));
+    await expect(document.text()).resolves.toBe(new TextDecoder().decode(HTML));
     expect(document.headers.get('x-not-replayed')).toBeNull();
     expect(test.dispatch).not.toHaveBeenCalled();
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
@@ -475,9 +504,10 @@ describe('replaying generation response metadata at its use boundary', () => {
 
     const response = await serve(test, true);
 
-    expect(await response.text()).toBe(new TextDecoder().decode(PART));
+    await expect(response.text()).resolves.toBe(new TextDecoder().decode(PART));
     expect(response.headers.get('content-type')).toBe('text/x-component');
     expect(test.dispatch).not.toHaveBeenCalled();
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
@@ -487,10 +517,11 @@ describe('replaying generation response metadata at its use boundary', () => {
 
     const response = await serve(test);
 
-    expect(await response.text()).toBe(new TextDecoder().decode(HTML));
+    await expect(response.text()).resolves.toBe(new TextDecoder().decode(HTML));
     expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
     expect(test.dispatch).not.toHaveBeenCalled();
     expect(test.artifactGet).not.toHaveBeenCalled();
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
@@ -507,14 +538,15 @@ describe('replaying generation response metadata at its use boundary', () => {
       const held = test.edge.runtime.memory.generations.get(RECORD_KEY);
       const second = await serve(test);
 
-      expect(await first.text()).toBe(new TextDecoder().decode(HTML));
-      expect(await second.text()).toBe(new TextDecoder().decode(HTML));
+      await expect(first.text()).resolves.toBe(new TextDecoder().decode(HTML));
+      await expect(second.text()).resolves.toBe(new TextDecoder().decode(HTML));
       expect(first.headers.get(CSP)).toBe(expected);
       expect(second.headers.get(CSP)).toBe(expected);
       expect(test.edge.runtime.memory.generations.get(RECORD_KEY)).toBe(held);
       expect(test.get.mock.calls.filter(([key]) => isRecordKey(key))).toHaveLength(1);
       expect(test.artifactGet).not.toHaveBeenCalled();
       expect(test.dispatch).not.toHaveBeenCalled();
+
       await waitOnExecutionContext(test.edge.ctx);
     },
   );
@@ -529,13 +561,14 @@ describe('replaying generation response metadata at its use boundary', () => {
     const first = await serve(test, true);
     const second = await serve(test, true);
 
-    expect(await first.text()).toBe(new TextDecoder().decode(PART));
-    expect(await second.text()).toBe(new TextDecoder().decode(PART));
+    await expect(first.text()).resolves.toBe(new TextDecoder().decode(PART));
+    await expect(second.text()).resolves.toBe(new TextDecoder().decode(PART));
     expect(first.headers.get('content-type')).toBe(expected);
     expect(second.headers.get('content-type')).toBe(expected);
     expect(test.get.mock.calls.filter(([key]) => isRecordKey(key))).toHaveLength(1);
     expect(test.artifactGet).toHaveBeenCalledTimes(1);
     expect(test.dispatch).not.toHaveBeenCalled();
+
     await waitOnExecutionContext(test.edge.ctx);
   });
 
@@ -547,9 +580,10 @@ describe('replaying generation response metadata at its use boundary', () => {
 
       const response = await serve(test);
 
-      expect(await response.text()).toBe(FALLBACK);
+      await expect(response.text()).resolves.toBe(FALLBACK);
       expect(test.dispatch).toHaveBeenCalledTimes(1);
       expect(test.artifactGet).not.toHaveBeenCalled();
+
       await waitOnExecutionContext(test.edge.ctx);
     },
   );
