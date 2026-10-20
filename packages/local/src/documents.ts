@@ -514,11 +514,11 @@ async function regeneratedVerdict(
   const pathname = decided?.kind === 'continue' ? decided.url.pathname : url.pathname;
   if (rewriteOf(decided) === undefined && landed?.pathname === asked.route.pathname) {
     return failed(
-      !canRegenerate(asked.route)
-        ? 'regenerated in the foreground, though the route has no record to regenerate'
-        : ((await regenerationFailure(captured, asked.route, { regenerated, pathname })) ??
+      canRegenerate(asked.route)
+        ? ((await regenerationFailure(captured, asked.route, { regenerated, pathname })) ??
             regeneratedFailure(asked.route, read.answer, asked.coding) ??
-            laid),
+            laid)
+        : 'regenerated in the foreground, though the route has no record to regenerate',
     );
   }
   const { did, done } = moveOf(decided);
