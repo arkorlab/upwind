@@ -68,6 +68,7 @@ export interface FunctionsContext {
   readonly outDir: string;
   readonly blobs: BlobStore;
   readonly cacheHostModule: string | undefined;
+  readonly requireBundleBlobReader?: boolean | undefined;
   readonly sourceMaps: SourceMapsOption;
   /** The maps that came through the build's `runAfterProductionCompile` (`kept-maps.ts`). */
   readonly keptMaps: KeptMaps | undefined;
@@ -249,6 +250,7 @@ export async function buildAppFunction(
     manifests: parts.manifests,
     runtimeManifest,
     cacheHostModule: context.cacheHostModule,
+    requireBundleBlobReader: context.requireBundleBlobReader,
     ...(carriesMaps(context.sourceMaps) && {
       sourceMaps: context.sourceMaps,
       keptMaps: context.keptMaps,

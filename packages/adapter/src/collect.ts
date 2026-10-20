@@ -19,6 +19,7 @@ import { type BlobStore, contentTypeFor } from './blobs.ts';
 import type { EdgeEntry } from './edge.ts';
 import { exists } from './fs.ts';
 import type { EntryModule } from './function.ts';
+import { pageBodyOmission, type UnshippedPrerenderBodies } from './page-bodies.ts';
 import { segmentPathOf, withBasePath } from './segments.ts';
 
 /**
@@ -444,6 +445,9 @@ export interface PrerenderCollection {
   readonly rsc: BuildContext['routing']['rsc'];
   /** Outputs recorded without their bytes; `'none'` by default (`AdapterOptions`). */
   readonly unshipped?: 'none' | 'prefetch-segments' | undefined;
+  readonly unshippedBodies?: UnshippedPrerenderBodies | undefined;
+  /** Actual entries, required to prove that an omitted body belongs to a Node App page. */
+  readonly entrypoints?: readonly Entrypoint[] | undefined;
   /**
    * The routes whose entrypoint is on Next.js's edge runtime, by the pathname a prerender names
    * them with — `entrypoints` filtered on `runtime === 'edge'`.
@@ -491,6 +495,22 @@ export async function collectPrerenders(
   // Which document each output travels with, asked of the bundle by the rule the bundle is read
   // with, so a segment is placed against the same document the host will serve it under.
   const documents = primaryPrerenders(collected.map((each) => each.prerender));
+  const omitBody = pageBodyOmission({
+    sources: collected.map(({ output, prerender }) => {
+      return {
+        prerender,
+        hasPostponed:
+          output.fallback?.postponedState !== undefined && output.fallback.postponedState !== '',
+      };
+    }),
+    entrypoints: input.entrypoints ?? [],
+    nodeAppPageIds: new Set(
+      outputs.appPages.filter((page) => page.runtime !== 'edge').map((page) => page.id),
+    ),
+    range: input.unshippedBodies,
+    basePath,
+    rscSuffix: rsc.suffix,
+  });
   for (const { output, prerender } of collected) {
     const segmentPath = segmentPathOf(prerender, documents.get(prerender.id), basePath, rsc);
     if (segmentPath !== undefined) {
@@ -506,7 +526,7 @@ export async function collectPrerenders(
     if (filePath !== undefined && (await exists(filePath))) {
       const bytes = new Uint8Array(await readFile(filePath));
       const ref = await blobs.put(bytes, contentTypeFor(filePath));
-      if (embeds) {
+      if (embeds && !omitBody(prerender, bytes.byteLength)) {
         ship(ref.sha256, bytes, prerender.route);
       }
       prerender.body = ref;

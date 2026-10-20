@@ -1,0 +1,17 @@
+{
+  "name": "@upwind-fixture/next-large-prerender-bodies",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Completed large App page bodies through the normal adapter and emitted Function.",
+  "scripts": {
+    "build": "next build"
+  },
+  "dependencies": {
+    "@types/node": "26.1.0",
+    "@types/react": "19.2.18",
+    "next": "16.4.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "typescript": "5.9.2"
+  }
+}

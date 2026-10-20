@@ -17,6 +17,7 @@ const FETCH_CACHE_WAIT_UNTIL = 'fetch-cache-wait-until';
 const GRAPH_MANIFESTS = 'graph-manifests';
 const RESOURCE_CACHE_BRIDGE = 'resource-cache-bridge';
 const TURBOPACK_RUNTIME = 'turbopack-runtime';
+const HOST_ADAPTER = 'adapter.mjs';
 /** The same runtime chunk's roots, rewritten wherever the runtime is (`patches/turbopack-root.ts`). */
 const TURBOPACK_ROOT = 'turbopack-root';
 /** The Workflow SDK's QuickJS engine, its WebAssembly shipped compiled (`patches/workflow-quickjs.ts`). */
@@ -86,14 +87,14 @@ export const FIXTURE_COVERAGE = {
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
   'next-edge-instrumentation': {
-    adapterFile: 'adapter.mjs',
+    adapterFile: HOST_ADAPTER,
     expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
   'next-edge-instrumentation-no-own': {
     sourceFixture: 'next-edge-instrumentation',
     removeOwnInstrumentation: true,
-    adapterFile: 'adapter.mjs',
+    adapterFile: HOST_ADAPTER,
     expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
@@ -102,6 +103,12 @@ export const FIXTURE_COVERAGE = {
   'next-external-output': {
     buildDirectory: '../.next/',
     expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT, 'external-pages-api-dist'],
+    chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+  },
+  'next-large-prerender-bodies': {
+    proofVersion: '16.4.2',
+    adapterFile: HOST_ADAPTER,
+    expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
   'next-twoslash': {
