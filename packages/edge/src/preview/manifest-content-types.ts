@@ -10,13 +10,19 @@ const MAX_RESPONSE_STATUS = 599;
 const INVALID_RESPONSE_VALUE = /[\0\r\n]/u;
 const HTTP_EDGE_WHITESPACE = /^[\t\r\n ]+|[\t\r\n ]+$/gu;
 
-/** Workers permits Unicode values, rejecting NUL/CR/LF after trimming HTTP whitespace. */
-function checkResponseValue(value: string | undefined): void {
-  if (value === undefined || !INVALID_RESPONSE_VALUE.test(value)) return;
-  const normalized = value.replace(HTTP_EDGE_WHITESPACE, '');
-  if (INVALID_RESPONSE_VALUE.test(normalized)) {
-    throw new TypeError('the stored response header value cannot be sent');
-  }
+/** Workers permits Unicode; repeated stored values need only one cold transport check. */
+function responseValueCheck(): (value: string | undefined) => void {
+  const checked = new Set<string>();
+  return (value) => {
+    if (value === undefined || checked.has(value)) return;
+    if (INVALID_RESPONSE_VALUE.test(value)) {
+      const normalized = value.replace(HTTP_EDGE_WHITESPACE, '');
+      if (INVALID_RESPONSE_VALUE.test(normalized)) {
+        throw new TypeError('the stored response header value cannot be sent');
+      }
+    }
+    checked.add(value);
+  };
 }
 
 /** Check transport validity, allowing the same HTTP whitespace normalization as Headers.set. */
@@ -73,10 +79,11 @@ function checkFiles(check: Check, files: ProjectManifest['staticFiles'] | null):
 /** Cold decode only: a digest authenticates bytes, not their safety as response headers. */
 export function checkManifestContentTypes(manifest: ProjectManifest): void {
   const check = headerCheck();
-  checkResponseValue(manifest.images?.contentSecurityPolicy);
+  const checkResponse = responseValueCheck();
+  checkResponse(manifest.images?.contentSecurityPolicy);
   for (const route of Object.values(manifest.routes)) {
     const headers = filterShellResponseHeaders(Object.entries(route.headers));
-    for (const value of Object.values(headers)) checkResponseValue(value);
+    for (const value of Object.values(headers)) checkResponse(value);
     check(route.shell);
     checkEncodings(check, route.shellEncodings);
     if (route.segments !== undefined) {

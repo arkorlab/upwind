@@ -39,7 +39,7 @@ function manifestWith(
 ): ProjectManifest {
   const route = {
     pathname: '/',
-    status: 200,
+    status: 200 as const,
     shell: {
       sha256: 'a'.repeat(64),
       byteLength: 1,
