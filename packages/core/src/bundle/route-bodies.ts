@@ -1,4 +1,5 @@
 import { generationResponseHeaders } from '../cache/response-headers.ts';
+import { ROUTE_BODY_BUILD_HEADERS } from '../request/constants.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
 import {
   prerenderResponseHeaders,
@@ -7,6 +8,7 @@ import {
 } from './serving.ts';
 
 const HTTP_OK = 200;
+const BUILD_HEADERS: ReadonlySet<string> = new Set(ROUTE_BODY_BUILD_HEADERS);
 const PRIVATE_CACHE_CONTROL = /(?:^|,)\s*(?:private|no-store)(?:[\s,=]|$)/iu;
 
 /** A non-HTML media type: an HTML response keeps the document's own security policy. */
@@ -68,7 +70,7 @@ export function edgeServableRouteBodies(bundle: DeploymentBundle): Prerender[] {
       prerender.postponed === undefined &&
       (prerender.initialStatus ?? HTTP_OK) === HTTP_OK &&
       (prerender.allowQuery?.length ?? 0) === 0 &&
-      (prerender.allowHeader?.length ?? 0) === 0 &&
+      (prerender.allowHeader ?? []).every((name) => BUILD_HEADERS.has(name.toLowerCase())) &&
       publicBody(bundle, prerender)
     );
   });
