@@ -129,3 +129,5 @@ export {
 } from './durable-objects.ts';
 
 export { edgeServableRouteBodies } from './route-bodies.ts';
+
+export { edgeServableStaticPages } from './static-pages.ts';

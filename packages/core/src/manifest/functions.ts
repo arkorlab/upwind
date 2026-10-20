@@ -4,6 +4,7 @@ import { findRouteEntry } from './manifest.ts';
 import { pageKeyOf } from './page-keys.ts';
 import { findRouteBody } from './route-bodies.ts';
 import type { AppRuntime, ProjectManifest } from './schema.ts';
+import { findStaticPage } from './static-pages.ts';
 
 /**
  * Which app Function an edge sends a request to, for a deployment whose routes the build split
@@ -42,7 +43,7 @@ export function functionFor(
   if (shell !== undefined) {
     return shell.function ?? PRIMARY_FUNCTION;
   }
-  const body = findRouteBody(manifest, pathname);
+  const body = findRouteBody(manifest, pathname) ?? findStaticPage(manifest, pathname);
   if (body !== undefined) {
     return body.function ?? PRIMARY_FUNCTION;
   }

@@ -26,6 +26,7 @@ import {
   type MiddlewareMatcher,
   type ReservedRoute,
   type RouteBodyEntry,
+  type StaticPageEntry,
   type RouteEntry,
   type ProjectManifest,
   projectManifestSchema,
@@ -36,6 +37,7 @@ import {
   type StaticFileLocales,
 } from './schema.ts';
 import { spellsPrefixOf } from './spelled-prefix.ts';
+import { staticPageFields } from './static-pages.ts';
 import { fromStoredManifest, toStoredManifest } from './stored.ts';
 
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 15_000;
@@ -59,6 +61,7 @@ export interface BuildProjectManifestInput {
   readonly deployment: DeploymentFingerprint;
   readonly routes: readonly RouteEntry[];
   readonly routeBodies?: readonly RouteBodyEntry[] | undefined;
+  readonly staticPages?: readonly StaticPageEntry[] | undefined;
   readonly continuation?: Partial<ContinuationConfig> | undefined;
   readonly assetPolicy?: Partial<AssetPolicy> | undefined;
   readonly app: AppRuntime;
@@ -162,17 +165,10 @@ function unreachableFunctions(input: BuildProjectManifestInput): string[] {
       unreachable.add(name);
     }
   };
-  for (const route of input.routes) {
-    check(route.function);
-  }
-  if (input.routeBodies !== undefined) {
-    for (const body of input.routeBodies) {
-      check(body.function);
-    }
-  }
-  if (input.dynamicRoutes !== undefined) {
-    for (const route of input.dynamicRoutes) {
-      check(route.function);
+  const routeTables = [input.routes, input.routeBodies, input.staticPages, input.dynamicRoutes];
+  for (const entries of routeTables) {
+    if (entries !== undefined) {
+      for (const entry of entries) check(entry.function);
     }
   }
   if (input.exactFunctions !== undefined) {
@@ -318,6 +314,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.reservedRoutes !== undefined && { reservedRoutes: input.reservedRoutes }),
     ...pathnameFields(input),
     ...routeBodyFields(input, routes),
+    ...staticPageFields(input, routes),
     ...(input.exactFunctions !== undefined && { exactFunctions: input.exactFunctions }),
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
     ...(input.routerReferences !== undefined && { routerReferences: input.routerReferences }),
@@ -719,7 +716,10 @@ export function findRouteEntry(
   manifest: ProjectManifest,
   pathname: string,
 ): RouteEntry | undefined {
-  const named = manifest.routeBodies === undefined ? manifest.routes : manifest.exactPathnames;
+  const named =
+    manifest.routeBodies === undefined && manifest.staticPages === undefined
+      ? manifest.routes
+      : manifest.exactPathnames;
   const key = named === undefined ? undefined : pageKeyOf(named, pathname, manifest);
   return key === undefined ? undefined : manifest.routes[key];
 }

@@ -48,6 +48,12 @@ trace names a Pages page runtime and no Pages API runtime: webpack builds a page
 into a Pages API route, Turbopack into a page. The installed-version checker validates the
 conditional patch with an external-output context, and the matrix serves a real Pages API route.
 
+Bundles also declare `staticPagesPrivacy: 1`. This enables a host's separate, versioned proof for
+complete static Node.js Pages HTML with no time-based revalidation. It changes no Function response
+headers and grants nothing to older bundles, ISR, loading shells, data JSON or runtime generations.
+The [core contract](../core/README.md#complete-static-pages-documents) defines the host's remaining
+identity, privacy and request checks.
+
 ## What the adapter reads
 
 From `onBuildComplete`'s context, and where each thing ends up. "Recorded" means the field is
