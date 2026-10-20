@@ -211,6 +211,7 @@ function partsOf(
       [...own.map((route) => ({ runtime: runtimeOf(route), assets: route.assets })), ...base],
       context.ctx.projectDir,
       context.ctx.distDir,
+      context.ctx.repoRoot,
     ),
     manifests: manifestsOf(context.manifests, [...own, ...base], [...context.routes, ...base]),
   };
@@ -238,6 +239,7 @@ export async function buildAppFunction(
     kind: 'app',
     ...(held !== undefined && held.name !== PRIMARY_FUNCTION && { name: held.name }),
     projectDir: ctx.projectDir,
+    repoRoot: ctx.repoRoot,
     outDir: context.outDir,
     patch: await patchFor(context, [...parts.chunks, ...middleware.chunks], wasm),
     entries: [...parts.modules, ...middleware.node],
@@ -278,6 +280,7 @@ export async function buildMiddlewareFunction(
   return buildFunction({
     kind: 'middleware',
     projectDir: ctx.projectDir,
+    repoRoot: ctx.repoRoot,
     outDir: context.outDir,
     patch: await patchFor(context, middleware.chunks, wasm),
     entries: middleware.node,
@@ -379,6 +382,7 @@ export async function appFunctionsOf<
       { assets: hook.assets, wasm: hook.wasm },
     ],
     projectDir: ctx.projectDir,
+    repoRoot: ctx.repoRoot,
     distDir: ctx.distDir,
     budget,
   });
