@@ -1,12 +1,16 @@
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { type OutputChunk, type Plugin, rolldown } from 'rolldown';
 
+import { jsLiteral } from './codegen.ts';
 import { bundled, type BundleTrace } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { externalsPlugin } from './patches/index.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from './throwing-globals.ts';
+import type { TracedFile } from './traced-files.ts';
+import { typescriptVfsPlugin } from './vfs-typescript.ts';
 
 /**
  * The packages a build leaves to the runtime as ES modules, carried as modules of the Function's own.
@@ -46,6 +50,36 @@ export function linkedImportsIn(code: string): string[] {
 
 /** Shared code between two of them, beside the modules named for what imports them. */
 const SHARED_CHUNKS = '__linked/[name]-[hash].js';
+
+/**
+ * The legacy Worker module registry has no module URL. Rolldown's Node require helper needs
+ * one before the module evaluates; retain a native URL when the registry already supplies it.
+ * Each emitted chunk is mounted under its own name, including shared and scoped modules.
+ */
+export function linkedModuleBanner(fileName: string): string {
+  const filename = path.posix.join('/bundle', fileName);
+  const url = pathToFileURL(filename, { windows: false }).href;
+  return [
+    `if(import.meta.url===undefined)import.meta.url=${jsLiteral(url)};`,
+    `if(import.meta.filename===undefined)import.meta.filename=${jsLiteral(filename)};`,
+    `if(import.meta.dirname===undefined)import.meta.dirname=${jsLiteral(path.posix.dirname(filename))};`,
+  ].join('');
+}
+
+/** Final names avoid percent-encoding Rolldown's preliminary hash placeholders in a banner. */
+function linkedModuleURLsPlugin(): Plugin {
+  return {
+    name: 'upwind-linked-module-urls',
+    generateBundle(_options, output) {
+      for (const chunk of Object.values(output)) {
+        if (chunk.type === 'chunk') {
+          // Linked modules carry no source map. Their deployment blob SHA covers this final prefix.
+          chunk.code = `${linkedModuleBanner(chunk.fileName)}\n${chunk.code}`;
+        }
+      }
+    },
+  };
+}
 
 /** The names the chunks import linked packages by, as each chunk is loaded into the app bundle. */
 export function linkedImportsPlugin(onLinked: (id: string) => void): Plugin {
@@ -94,6 +128,9 @@ export interface LinkedExternals {
  * `undefined` when none of them is linked.
  */
 export async function bundleLinkedExternals(input: {
+  readonly projectDir: string;
+  readonly repoRoot?: string | undefined;
+  readonly files: readonly TracedFile[];
   readonly distDir: string;
   readonly workDir: string;
   readonly kind: string;
@@ -118,10 +155,21 @@ export async function bundleLinkedExternals(input: {
     cwd: path.join(input.distDir, 'server', 'chunks'),
     input: Object.fromEntries(linked.toSorted((a, b) => a.localeCompare(b)).map((id) => [id, id])),
     platform: 'node',
-    plugins: [globalObjectPlugin(), externalsPlugin((specifier) => externals.add(specifier))],
+    plugins: [
+      globalObjectPlugin(),
+      typescriptVfsPlugin(input),
+      externalsPlugin((specifier) => externals.add(specifier)),
+      linkedModuleURLsPlugin(),
+    ],
     transform: {
       inject: GLOBAL_OBJECT,
-      define: { ...THROWING_GLOBALS, 'process.env.NODE_ENV': '"production"' },
+      define: {
+        ...THROWING_GLOBALS,
+        'process.env.NODE_ENV': '"production"',
+        // Binding-aware definitions preserve a module's own locals while following its emitted chunk.
+        __filename: 'import.meta.filename',
+        __dirname: 'import.meta.dirname',
+      },
     },
     // A module these packages name and nobody installed is left to fail as it would under
     // Node.js — at run time, when the import runs — rather than failing the build: the package

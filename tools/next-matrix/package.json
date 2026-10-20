@@ -14,7 +14,8 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "miniflare": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "engines": {
     "node": ">=24"

@@ -40,6 +40,7 @@
   "devDependencies": {
     "@oxc-project/types": "catalog:",
     "@types/node": "catalog:",
+    "miniflare": "catalog:",
     "next": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
