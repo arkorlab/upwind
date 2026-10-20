@@ -12,16 +12,24 @@ import path from 'node:path';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 
 import { deriveEntry, KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
-import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manifest';
+import {
+  buildProjectManifest,
+  type RouteEntry,
+  type StaticFileEntry,
+} from '@stayingupwind/core/manifest';
 import { NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { afterAll, assert, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { CheckedStack } from '../src/answers.ts';
+import { askedAgain } from '../src/asked-again.ts';
 import { BROWSER_CODINGS } from '../src/codings.ts';
 import { documentAnswerAt } from '../src/document-adoption.ts';
 import { readDocument } from '../src/document-reading.ts';
 import { routeVerdict } from '../src/documents.ts';
+import { fileVerdict } from '../src/files.ts';
+import type { Part } from '../src/part-marks.ts';
+import { partFailure } from '../src/part-verdicts.ts';
 import { read, type Reading } from '../src/reading.ts';
 import { documentRedirects } from '../src/redirects.ts';
 import { routeFollowUpFailure } from '../src/route-follow-ups.ts';
@@ -53,6 +61,8 @@ const direct = {
   prefix: '',
   opened: Promise.withResolvers<ServerResponse>(),
   closed: Promise.withResolvers<true>(),
+  responses: [] as ServerResponse[],
+  closures: [] as Promise<true>[],
 };
 
 function codingOf(request: IncomingMessage): 'br' | 'gzip' | undefined {
@@ -95,9 +105,13 @@ function backstage(request: IncomingMessage, response: ServerResponse): void {
 /** A direct response whose headers arrive now and whose body only the test may finish. */
 function directResponse(request: IncomingMessage, response: ServerResponse): boolean {
   if (request.url !== '/landing' || direct.headers === undefined) return false;
+  const closed = Promise.withResolvers<true>();
+  direct.responses.push(response);
+  direct.closures.push(closed.promise);
   response.writeHead(200, direct.headers);
   response.once('close', () => {
     direct.closed.resolve(true);
+    closed.resolve(true);
   });
   response.flushHeaders();
   if (direct.prefix !== '') response.write(direct.prefix);
@@ -243,6 +257,59 @@ function stack(): CheckedStack {
   return fixture.stack;
 }
 
+const SIBLING_FILE: StaticFileEntry = {
+  sha256: DIGEST,
+  byteLength: Buffer.byteLength(DOCUMENT),
+  contentType: HTML,
+  immutable: false,
+};
+const SIBLING_ACCOUNT = 'passthrough;reason=external-rewrite;mw=hit';
+const CHANGED_BODY = DOCUMENT.replaceAll('landing', 'changed');
+
+/** The same real HTTP endpoint as a shipped file, its follow-up, or a direct router part. */
+function siblingStack(): CheckedStack {
+  const own = stack();
+  return {
+    ...own,
+    manifest: { ...own.manifest, staticFiles: { '/landing': SIBLING_FILE } },
+  };
+}
+
+function siblingPart(own: CheckedStack): Part {
+  const route = own.manifest.routes['/landing'];
+  assert(route !== undefined, 'the direct part has a recorded route');
+  const built = {
+    sha256: DIGEST,
+    byteLength: Buffer.byteLength(DOCUMENT),
+    contentType: 'text/x-component',
+  };
+  return {
+    kind: 'segment',
+    what: 'its direct segment',
+    url: new URL('/landing', own.site),
+    headers: { 'accept-encoding': 'identity', rsc: '1', 'next-router-segment-prefetch': '/_tree' },
+    built,
+    route,
+    builtOn: () => built,
+    exact: true,
+  };
+}
+
+type SiblingRead = 'file' | 'file follow-up' | 'router part';
+
+function readSibling(own: CheckedStack, reader: SiblingRead) {
+  if (reader === 'file') {
+    return fileVerdict(own, '/landing', { file: SIBLING_FILE, prover: 'checker' });
+  }
+  if (reader === 'file follow-up') {
+    return askedAgain(own, new URL('/landing', own.site), {
+      sent: { 'if-none-match': '"another-file"' },
+      what: 'on its entity tag',
+    });
+  }
+  return partFailure(own, siblingPart(own));
+}
+
 function metadataStack(): CheckedStack {
   const original = stack();
   const route = original.manifest.routes['/landing'];
@@ -287,6 +354,8 @@ describe('redirected documents retain their original request and response', () =
     direct.prefix = '';
     direct.opened = Promise.withResolvers<ServerResponse>();
     direct.closed = Promise.withResolvers<true>();
+    direct.responses.length = 0;
+    direct.closures.length = 0;
     visits.length = 0;
     traces.length = 0;
   });
@@ -346,6 +415,128 @@ describe('redirected documents retain their original request and response', () =
       }
     },
   );
+
+  it.each([
+    {
+      reader: 'file',
+      makeStack: siblingStack,
+      expected: {
+        kind: 'skipped',
+        reason: `answered by the application's middleware (${SIBLING_ACCOUNT})`,
+      },
+      requests: 1,
+    },
+    {
+      reader: 'file follow-up',
+      makeStack: siblingStack,
+      expected: { kind: 'theirs' },
+      requests: 1,
+    },
+    { reader: 'router part', makeStack: stack, expected: undefined, requests: 4 },
+  ] as const)(
+    'releases a middleware-owned open gzip stream for a direct $reader read',
+    async ({ reader, makeStack, expected, requests }) => {
+      direct.headers = {
+        'content-type': 'text/event-stream',
+        'content-encoding': 'gzip',
+        'x-arkor-edge': SIBLING_ACCOUNT,
+      };
+      direct.prefix = 'not a gzip stream';
+      const own = makeStack();
+      try {
+        const pending = readSibling(own, reader);
+        await direct.opened.promise;
+        const result = await pending;
+        const closed = await Promise.all(direct.closures);
+
+        expect(result).toStrictEqual(expected);
+        expect(direct.responses).toHaveLength(requests);
+        expect(closed).toStrictEqual(direct.closures.map(() => true));
+        expect(traces).toStrictEqual(direct.responses.flatMap(() => ['PUT', 'DELETE']));
+      } finally {
+        for (const response of direct.responses) response.destroy();
+      }
+    },
+  );
+
+  it.each([
+    {
+      reader: 'file',
+      makeStack: siblingStack,
+      type: HTML,
+      account: 'static;policy=default;mw=miss;enc=identity',
+      expected: {
+        kind: 'failed',
+        reason: `answered ${Buffer.byteLength(CHANGED_BODY)} bytes other than its own ${SIBLING_FILE.byteLength}`,
+      },
+    },
+    {
+      reader: 'file follow-up',
+      makeStack: siblingStack,
+      type: HTML,
+      account: 'static;policy=default;mw=miss;enc=identity',
+      expected: expect.objectContaining({
+        kind: 'answered',
+        answer: expect.objectContaining({
+          truncated: false,
+          length: Buffer.byteLength(CHANGED_BODY),
+          sha256: createHash('sha256').update(CHANGED_BODY).digest('hex'),
+        }) as unknown,
+      }) as unknown,
+    },
+    {
+      reader: 'router part',
+      makeStack: stack,
+      type: 'text/x-component',
+      account: 'segment;policy=default;mw=miss;enc=identity',
+      expected: `answered ${Buffer.byteLength(CHANGED_BODY)} bytes other than the ${SIBLING_FILE.byteLength} the build wrote`,
+    },
+  ] as const)(
+    'still reads an ordinary direct $reader body and retains its byte evidence',
+    async ({ reader, makeStack, type, account, expected }) => {
+      direct.headers = {
+        'content-type': type,
+        'content-length': Buffer.byteLength(CHANGED_BODY),
+        'cache-control': 'public, max-age=0, must-revalidate',
+        'x-arkor-edge': account,
+      };
+      const own = makeStack();
+      try {
+        const pending = readSibling(own, reader);
+        const response = await direct.opened.promise;
+        response.end(CHANGED_BODY);
+        const result = await pending;
+        await direct.closed.promise;
+
+        expect(result).toStrictEqual(expected);
+        expect(traces).toStrictEqual(['PUT', 'GET', 'DELETE']);
+      } finally {
+        for (const response of direct.responses) response.destroy();
+      }
+    },
+  );
+
+  it('still rejects an ordinary direct part sent in a coding its request did not accept', async () => {
+    direct.headers = {
+      'content-type': 'text/x-component',
+      'content-encoding': 'gzip',
+      'x-arkor-edge': 'segment;policy=default;mw=miss;enc=gzip',
+    };
+    try {
+      const pending = partFailure(stack(), siblingPart(stack()));
+      const response = await direct.opened.promise;
+      response.end('not a gzip stream');
+      const failure = await pending;
+      await direct.closed.promise;
+
+      expect(failure).toBe(
+        'answered with Content-Encoding gzip to a request that accepts identity alone',
+      );
+      expect(traces).toStrictEqual(['PUT', 'GET', 'DELETE']);
+    } finally {
+      for (const response of direct.responses) response.destroy();
+    }
+  });
 
   it.each([
     { label: 'valid', body: DOCUMENT, type: HTML, verdict: { kind: 'ok' } },

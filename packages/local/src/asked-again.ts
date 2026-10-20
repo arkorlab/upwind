@@ -10,6 +10,7 @@ import {
   EDGE_HEADER,
   FROM_STORAGE,
   middlewareAnswered,
+  middlewareHeadersOnly,
   policyFailure,
   traced,
   edgeReads,
@@ -80,6 +81,7 @@ export async function askedAgain(
     method: asked.method,
     headers,
     headBytes: RANGE_BYTES,
+    headersOnly: middlewareHeadersOnly,
   });
   if (typeof answer === 'string') {
     return { kind: 'failed', reason: `asked for ${what}, ${answer}` };

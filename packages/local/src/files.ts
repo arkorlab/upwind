@@ -12,6 +12,7 @@ import {
   failed,
   FROM_STORAGE,
   middlewareAnswered,
+  middlewareHeadersOnly,
   policyFailure,
   skipped,
   traced,
@@ -148,7 +149,12 @@ export async function fileVerdict(
   await using tracing = await traced(stack, sampled.headers);
   const { headers, trace } = tracing;
   // Its first bytes kept, which a range of it is held to (`rangeFailure`).
-  const answer = await answerTo(url, { via: stack.url, headers, headBytes: RANGE_BYTES + 1 });
+  const answer = await answerTo(url, {
+    via: stack.url,
+    headers,
+    headBytes: RANGE_BYTES + 1,
+    headersOnly: middlewareHeadersOnly,
+  });
   if (typeof answer === 'string') {
     return failed(answer);
   }

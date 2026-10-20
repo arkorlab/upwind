@@ -29,6 +29,7 @@ import {
   keptOf,
   withGenerationEvidence,
   middlewareAnswered,
+  middlewareHeadersOnly,
   middlewareCovers,
   policyFailure,
   skipped,
@@ -416,6 +417,7 @@ async function askedVerdict(
     via: stack.url,
     headers,
     decode: undoneUnlessStored(coding !== undefined),
+    headersOnly: middlewareHeadersOnly,
   });
   if (typeof answer === 'string') {
     return failed(answer);
