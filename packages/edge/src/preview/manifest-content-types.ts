@@ -10,7 +10,7 @@ const MAX_RESPONSE_STATUS = 599;
 const INVALID_RESPONSE_VALUE = /[\0\r\n]/u;
 
 function httpWhitespace(character: string | undefined): boolean {
-  return character === '\t' || character === '\r' || character === '\n' || character === ' ';
+  return character !== undefined && '\t\r\n '.includes(character);
 }
 
 /** Match Workers' edge trim with bounded scans, without copying or backtracking. */
@@ -21,7 +21,7 @@ function invalidAfterHttpWhitespace(value: string): boolean {
   while (end > start && httpWhitespace(value[end - 1])) end -= 1;
   for (let at = start; at < end; at += 1) {
     const character = value[at];
-    if (character === '\0' || character === '\r' || character === '\n') return true;
+    if (character !== undefined && '\0\r\n'.includes(character)) return true;
   }
   return false;
 }
