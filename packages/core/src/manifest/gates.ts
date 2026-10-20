@@ -191,9 +191,11 @@ function gatedRouteOf(manifest: ProjectManifest, url: URL, headers: Headers): st
   }
   const props = propsPageOf(manifest, url, routed);
   if (props !== undefined) {
+    const named = namedOf(manifest, props);
+    if (named !== undefined) return named.gated;
     const pageUrl = new URL(url.href);
     pageUrl.pathname = props;
-    return gatedOf(manifest, props) ?? routedDynamicRouteFor(manifest, pageUrl, routed)?.gated;
+    return routedDynamicRouteFor(manifest, pageUrl, routed)?.gated;
   }
   const named = namedOf(manifest, url.pathname);
   if (named !== undefined) {

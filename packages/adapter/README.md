@@ -48,12 +48,17 @@ trace names a Pages page runtime and no Pages API runtime: webpack builds a page
 into a Pages API route, Turbopack into a page. The installed-version checker validates the
 conditional patch with an external-output context, and the matrix serves a real Pages API route.
 
-Bundles declare `staticPagesPrivacy: 2`. Complete static Node.js Pages HTML with no time-based
+Bundles declare `staticPagesPrivacy: 3`. Complete static Node.js Pages HTML with no time-based
 revalidation retains its version 1 build proof. Exact literal Node.js Pages ISR routes can earn
 version 2, including a regenerated primary HTML output checked against the immutable build manifest
 and the runtime's own synthetic request. Captured Next metadata is a consistency check, never
-permission by itself. Loading shells, data JSON, dynamic routes and older bundles grant no new
-permission. The host must verify each generation before sharing; a runtime proof retains the
+permission by itself. Version 3 separately admits supported `fallback: true` Pages members with
+paired HTML and build-scoped data JSON. Both outputs must earn their own version 3 proof in the
+same generation. A loading class is published separately as immutable loading bytes, with no
+entry ID or complete-generation marker. The initial scope is canonical unencoded named single
+segments, without a base path, locale routing, export, catch-all or optional parameters. Every
+other loading/PPR shell, JSON output, dynamic route and older bundle grants no new permission.
+The host must verify each generation before sharing; a runtime proof retains the
 Function's existing private delivery policy.
 The [core contract](../core/README.md#complete-static-pages-documents) defines the host's remaining
 identity, privacy and request checks.

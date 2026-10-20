@@ -506,9 +506,9 @@ function classifyEarly(input: ClassifyInput): RequestClass | undefined {
 
 /** Protocol gates shared with exact static pages; run before a new representation is selected. */
 function fallbackPageControls(input: ClassifyInput, pagesData: boolean): RequestClass | undefined {
-  if (hasInternalDocumentHeader(input.headers, false, pagesData))
+  if (hasInternalDocumentHeader(input.headers, pagesData, pagesData))
     return passthrough(INTERNAL_HEADER);
-  return classifyByPins(input.url, input.headers, false, input.deployment);
+  return classifyByPins(input.url, input.headers, pagesData, input.deployment);
 }
 
 /** A route body needs no browser navigation hints, but keeps every request-level bypass. */
