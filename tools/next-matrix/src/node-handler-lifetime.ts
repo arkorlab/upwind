@@ -98,6 +98,12 @@ interface Lane {
   failureStage?: string;
 }
 
+const PATHNAMES: Readonly<Record<Lane['kind'], string>> = {
+  'finite-response': '/respond',
+  [STREAM_KIND]: '/stream',
+  [DELAYED_FINISH_KIND]: '/delayed-finish',
+};
+
 /** Bound worker startup, response reads, observation and disposal independently. */
 async function bounded<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
@@ -171,7 +177,6 @@ async function observeCancellation(
 }
 
 /** Run the actual bridge in workerd; the observer is an in-process service, never the network. */
-// eslint-disable-next-line unicorn/no-unnecessary-parameters -- Each control receives the same pinned task scheduler source beside its mutated bridge.
 async function exercise(bridge: string, tasks: string, lane: Lane): Promise<void> {
   const release = Promise.withResolvers<undefined>();
   const finish = Promise.withResolvers<undefined>();
@@ -240,9 +245,7 @@ async function exercise(bridge: string, tasks: string, lane: Lane): Promise<void
     lane.stage = 'worker-start';
     await bounded(runtime.ready, signal);
     lane.stage = 'response-headers';
-    let pathname = '/respond';
-    if (lane.kind === STREAM_KIND) pathname = '/stream';
-    if (lane.kind === DELAYED_FINISH_KIND) pathname = '/delayed-finish';
+    const pathname = PATHNAMES[lane.kind];
     const response = await bounded(
       runtime.dispatchFetch(`${HANDLER_ORIGIN}${pathname}`, { method: lane.method }),
       signal,
@@ -257,14 +260,15 @@ async function exercise(bridge: string, tasks: string, lane: Lane): Promise<void
       const { body } = response;
       assert.ok(body !== null);
       const reader = body.getReader();
+      lane.stage = 'delayed-held-open';
+      const observation = await bounded(runtime.dispatchFetch(STATE_URL), signal);
+      const state = (await bounded(observation.json(), signal)) as State;
+      lane.heldWhileOpen = state.held;
+      assert.equal(state.held, lane.mode === UNCONDITIONAL_MODE ? 1 : 0);
       lane.stage = 'delayed-first-chunk';
       const first = await bounded(reader.read(), signal);
       assert.ok(first.value instanceof Uint8Array);
       assert.equal(new TextDecoder().decode(first.value), 'first');
-      const observation = await bounded(runtime.dispatchFetch(STATE_URL), signal);
-      const state = (await bounded(observation.json(), signal)) as State;
-      lane.heldWhileOpen = state.held;
-      assert.equal(state.held, 0);
       finish.resolve(undefined);
       let rest = '';
       for (;;) {
@@ -316,21 +320,36 @@ const previous = source.replace(HOLD, () => GUARDED_HOLD);
 const unconditional = source.replace(HOLD, () => UNCONDITIONAL_HOLD);
 const tasks = compiled(await readFile(path.join(ROOT, 'packages/runtime/src/tasks.ts'), 'utf8'));
 const lanes: Lane[] = [];
+const failures: {
+  readonly kind: Lane['kind'];
+  readonly mode: Lane['mode'];
+  readonly detail: string;
+}[] = [];
 const proof = {
   status: 'running',
   sourceSha256: createHash('sha256').update(source).digest('hex'),
   control: 'current bridge with the previous method-only guard restored',
   officialCase: 'not-run',
   lanes,
+  failures,
 };
 const directory = process.env['UPWIND_MATRIX_PROOF_DIR'] ?? path.join(ROOT, '.node-handler-proof');
 await mkdir(directory, { recursive: true });
+async function collect(variant: string, lane: Lane): Promise<void> {
+  lanes.push(lane);
+  const bridge = compiled(variant).replace(TASK_SOURCE_IMPORT, () => TASK_COMPILED_IMPORT);
+  try {
+    await exercise(bridge, tasks, lane);
+  } catch (error) {
+    failures.push({
+      kind: lane.kind,
+      mode: lane.mode,
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 try {
   for (const mode of [GUARDED_MODE, 'retained'] as const) {
-    const bridge = compiled(mode === 'retained' ? source : previous).replace(
-      TASK_SOURCE_IMPORT,
-      () => TASK_COMPILED_IMPORT,
-    );
     for (const method of ['GET', 'POST'] as const) {
       const lane: Lane = {
         kind: 'finite-response',
@@ -343,32 +362,30 @@ try {
         egressAttempts: 0,
         stage: 'created',
       };
-      lanes.push(lane);
-      await exercise(bridge, tasks, lane);
+      await collect(mode === 'retained' ? source : previous, lane);
     }
   }
-  const delayed: Lane = {
-    kind: DELAYED_FINISH_KIND,
-    mode: 'retained',
-    method: 'GET',
-    responseBeforeCompletion: false,
-    hookStarted: false,
-    held: undefined,
-    completedAfterRelease: false,
-    egressAttempts: 0,
-    stage: 'created',
-  };
-  lanes.push(delayed);
-  await exercise(
-    compiled(source).replace(TASK_SOURCE_IMPORT, () => TASK_COMPILED_IMPORT),
-    tasks,
-    delayed,
-  );
   for (const mode of [GUARDED_MODE, UNCONDITIONAL_MODE, 'retained'] as const) {
     let variant = source;
     if (mode === GUARDED_MODE) variant = previous;
     if (mode === UNCONDITIONAL_MODE) variant = unconditional;
-    const bridge = compiled(variant).replace(TASK_SOURCE_IMPORT, () => TASK_COMPILED_IMPORT);
+    const delayed: Lane = {
+      kind: DELAYED_FINISH_KIND,
+      mode,
+      method: 'GET',
+      responseBeforeCompletion: false,
+      hookStarted: false,
+      held: undefined,
+      completedAfterRelease: false,
+      egressAttempts: 0,
+      stage: 'created',
+    };
+    await collect(variant, delayed);
+  }
+  for (const mode of [GUARDED_MODE, UNCONDITIONAL_MODE, 'retained'] as const) {
+    let variant = source;
+    if (mode === GUARDED_MODE) variant = previous;
+    if (mode === UNCONDITIONAL_MODE) variant = unconditional;
     const lane: Lane = {
       kind: STREAM_KIND,
       mode,
@@ -380,9 +397,9 @@ try {
       egressAttempts: 0,
       stage: 'created',
     };
-    lanes.push(lane);
-    await exercise(bridge, tasks, lane);
+    await collect(variant, lane);
   }
+  assert.equal(failures.length, 0, 'one or more handler lifetime controls failed');
   proof.status = 'success';
 } catch (error) {
   proof.status = 'failed';
