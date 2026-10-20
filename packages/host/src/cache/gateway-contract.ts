@@ -261,6 +261,8 @@ export const commitOutputSchema = z.object({
   headers: headerValuesSchema,
   compute: outputComputeSchema,
   response: outputResponseSchema,
+  /** An explicit runtime claim; the cache must independently validate it before sharing. */
+  staticPagePrivacy: z.literal(2).optional(),
   htmlSize: z.number().int().nonnegative().nullable(),
   artifacts: z.array(commitArtifactSchema),
 });

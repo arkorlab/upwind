@@ -1,11 +1,14 @@
 import type { DeploymentBundle, Prerender } from '@stayingupwind/core/bundle';
 import { deriveEntry } from '@stayingupwind/core/cache';
+import { buildProjectManifest, staticFileStatus } from '@stayingupwind/core/manifest';
+import { classifyRequest } from '@stayingupwind/core/request';
 import { describe, expect, it } from 'vitest';
 
 // Exercise the host writer's pure assembly without adding a cyclic production or test package dependency.
 import { assembleManifest } from '../../deploy/src/manifest.ts';
 // Validate the writer's internal identity helper without exporting it as a production API.
 import { routeBodiesOf } from '../../deploy/src/route-bodies.ts';
+import { staticFilesOf } from '../../deploy/src/static-files.ts';
 import { seedRouteFor } from '../src/bundle/cache-seed.ts';
 import { shellBundle } from './shared-shell-fixture.ts';
 
@@ -35,6 +38,78 @@ function bundleOf(prerender = ICON) {
     entrypoints: [{ id: prerender.route, kind: 'app-route' as const, pathname: prerender.route }],
   };
 }
+
+describe('a retained static asset beside a new base path', () => {
+  it.each([404, 500])(
+    "keeps the previous asset at 200 beside this build's %s document",
+    (status) => {
+      const pathname = `/_next/static/prior/${status}`;
+      // The old build emitted an ordinary asset at this name; only the new base path makes it an
+      // error document. Retention carries the old _next/static file, not an old public error page.
+      const previous = {
+        ...bundleOf(),
+        deploymentId: 'dpl_previous',
+        staticFiles: [
+          {
+            pathname,
+            blob: {
+              sha256: 'b'.repeat(64),
+              byteLength: 3,
+              contentType: 'application/octet-stream',
+            },
+            immutable: false,
+          },
+        ],
+      };
+      const bundle = {
+        ...bundleOf(),
+        config: { ...previous.config, basePath: '/_next/static/prior' },
+        staticFiles: [
+          {
+            pathname,
+            blob: { sha256: 'c'.repeat(64), byteLength: 4, contentType: 'text/html' },
+            immutable: false,
+          },
+        ],
+      };
+      const manifest = buildProjectManifest({
+        projectId: 'site',
+        runId: 'run_files',
+        generatedAt: bundle.generatedAt,
+        originHost: 'site.example',
+        deployment: { dplId: SCOPE, assetSetHash: 'assets', observedAt: bundle.generatedAt },
+        routes: [],
+        staticFiles: staticFilesOf(bundle, previous),
+      });
+      const current = classifyRequest({
+        method: 'GET',
+        url: new URL(`https://site.example${pathname}`),
+        headers: new Headers(),
+        manifest,
+        deployment: manifest.deployment,
+      });
+      const selected = classifyRequest({
+        method: 'GET',
+        url: new URL(`https://site.example${pathname}?dpl=${previous.deploymentId}`),
+        headers: new Headers(),
+        manifest,
+        deployment: manifest.deployment,
+      });
+
+      expect(current).toHaveProperty('file.status', status);
+      expect(selected).toStrictEqual({
+        kind: 'static-file',
+        pathname,
+        file: {
+          ...previous.staticFiles[0]!.blob,
+          deploymentId: previous.deploymentId,
+          immutable: false,
+        },
+      });
+      expect(staticFileStatus(pathname, previous.config.basePath)).toBe(200);
+    },
+  );
+});
 
 describe('the host manifest points non-HTML bodies at their seeded generations', () => {
   it('uses the same app-route identity as seeding and carries no frozen body or TTL', async () => {
