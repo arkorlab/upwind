@@ -7,10 +7,17 @@ import {
   buildProjectManifest,
   parseProjectManifest,
   serializeManifest,
+  staticFileKey,
   type BuildProjectManifestInput,
 } from '../src/manifest/manifest.ts';
-import type { PagesFallbackEntry, StaticPageEntry } from '../src/manifest/schema.ts';
+import {
+  projectManifestSchema,
+  READ_MANIFEST_SCHEMA_VERSIONS,
+  type PagesFallbackEntry,
+  type StaticPageEntry,
+} from '../src/manifest/schema.ts';
 import { classifyRequest } from '../src/request/classify.ts';
+import * as z from '../src/schema/index.ts';
 import { FALLBACK_ROUTE } from './fallback-pages-fixtures.ts';
 
 const HTML = {
@@ -101,11 +108,141 @@ describe('version 3 Pages manifest and representation routing', () => {
     const manifest = buildProjectManifest(inputOf());
 
     expect(parseProjectManifest(serializeManifest(manifest))).toStrictEqual(manifest);
+    expect(manifest.schemaVersion).toBe(8);
     expect(manifest.pagesFallbacks?.[FALLBACK_ROUTE]).toStrictEqual(FALLBACK);
     expect(manifest.pagesFallbacks?.[FALLBACK_ROUTE]).not.toHaveProperty('entryId');
     expect(manifest.routes[FALLBACK_ROUTE]).not.toHaveProperty('staticPagePrivacy');
     expect(manifest.routes[FALLBACK_ROUTE]).not.toHaveProperty('cache');
     expect(manifest.pagesDataPrefix).toBe('/_next/data/build');
+  });
+
+  it('keeps loading-only classes out of the versions prior readers accept', () => {
+    const manifest = buildProjectManifest(
+      inputOf({
+        routes: inputOf().routes.filter((route) => route.pathname === FALLBACK_ROUTE),
+        staticPages: [],
+      }),
+    );
+    // These are the two schema branches that readers supported before loading classes.
+    const legacyReader = z.discriminatedUnion('schemaVersion', [
+      projectManifestSchema.options[0],
+      projectManifestSchema.options[1],
+    ]);
+
+    expect(legacyReader.safeParse(manifest).success).toBe(false);
+    expect(manifest.schemaVersion).toBe(8);
+
+    const classified = classifyRequest({
+      method: 'GET',
+      url: new URL('https://app.example/fallback-true/second'),
+      headers: new Headers(),
+      manifest: parseProjectManifest(serializeManifest(manifest)),
+      deployment: manifest.deployment,
+    });
+
+    expect(classified.kind).toBe('pages-fallback');
+
+    for (const schemaVersion of [6, 7]) {
+      const downgraded = { ...manifest, schemaVersion };
+
+      expect(projectManifestSchema.safeParse(downgraded).success).toBe(false);
+      expect(() => parseProjectManifest(JSON.stringify(downgraded))).toThrow(/schema version 8/u);
+    }
+
+    expect(READ_MANIFEST_SCHEMA_VERSIONS).toContain(8);
+    expect(projectManifestSchema.safeParse({ ...manifest, schemaVersion: 9 }).success).toBe(false);
+  });
+
+  it.each([false, true])(
+    'preserves ordinary bytes with empty or absent fallback tables: %s',
+    (requestKeys) => {
+      const input = inputOf({
+        routes: [],
+        staticPages: [],
+        pagesFallbacks: undefined,
+        dynamicRoutes: [],
+      });
+      const ordinary = buildProjectManifest({ ...input, staticFileRequestKeys: requestKeys });
+      const empty = buildProjectManifest({
+        ...input,
+        staticFileRequestKeys: requestKeys,
+        pagesFallbacks: [],
+      });
+
+      expect(ordinary.schemaVersion).toBe(requestKeys ? 7 : 6);
+      expect(serializeManifest(empty)).toBe(serializeManifest(ordinary));
+      expect(empty).not.toHaveProperty('pagesFallbacks');
+    },
+  );
+
+  it.each([1, 2] as const)(
+    'preserves the prior writer version for fixed proof %s',
+    (staticPagePrivacy) => {
+      const page: StaticPageEntry = {
+        pathname: '/about',
+        route: '/about',
+        entryId: 'fixed',
+        ...(staticPagePrivacy === 2 && { staticPagePrivacy }),
+      };
+      const manifest = buildProjectManifest(
+        inputOf({
+          routes: [
+            {
+              pathname: '/about',
+              status: 200,
+              shell: HTML,
+              headers: {},
+              cache: { kind: 'pages', entryId: 'fixed', delivery: 'complete' },
+            },
+          ],
+          staticPages: [page],
+          pagesFallbacks: [],
+          dynamicRoutes: [],
+        }),
+      );
+
+      expect(manifest.schemaVersion).toBe(6);
+      expect(manifest.staticPages?.['/about']).toStrictEqual(page);
+    },
+  );
+
+  it('retains actual request-key semantics beside loading classes in version eight', () => {
+    const alias = '/cdn/_next/static/app.js';
+    const canonical = '/docs/_next/static/app.js';
+    const file = { ...HTML, immutable: true };
+    const built = buildProjectManifest(
+      inputOf({
+        staticFiles: { [canonical]: file, [alias]: file },
+        staticFileAssetPrefix: { basePath: '/docs', assetPrefix: '/cdn' },
+        staticFileRequestKeys: true,
+      }),
+    );
+    const manifest = parseProjectManifest(serializeManifest(built));
+    const absentAlias = buildProjectManifest(
+      inputOf({
+        staticFiles: { [canonical]: file },
+        staticFileAssetPrefix: { basePath: '/docs', assetPrefix: '/cdn' },
+        staticFileRequestKeys: true,
+      }),
+    );
+
+    const canonicalMode = buildProjectManifest(
+      inputOf({
+        staticFiles: { [canonical]: file },
+        staticFileAssetPrefix: { basePath: '/docs', assetPrefix: '/cdn' },
+      }),
+    );
+
+    expect(canonicalMode.schemaVersion).toBe(8);
+    expect(canonicalMode.staticFileRequestKeys).toBeUndefined();
+    expect(staticFileKey(canonicalMode, alias)).toBe(canonical);
+    expect(manifest.schemaVersion).toBe(8);
+    expect(staticFileKey(manifest, alias)).toBe(alias);
+    expect(staticFileKey(manifest, '/%63dn/_next/static/app.js')).toBeUndefined();
+    expect(staticFileKey(absentAlias, alias)).toBeUndefined();
+    expect(
+      projectManifestSchema.safeParse({ ...manifest, staticFileRequestKeys: false }).success,
+    ).toBe(false);
   });
 
   it('preserves the native HTML charset on the identical loading artifact and route shell', () => {

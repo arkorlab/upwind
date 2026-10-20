@@ -22,6 +22,7 @@ import {
   type ContinuationConfig,
   type DynamicRoute,
   MANIFEST_SCHEMA_VERSION,
+  PAGES_FALLBACK_SCHEMA_VERSION,
   type ManifestCache,
   type MiddlewareMatcher,
   type ReservedRoute,
@@ -248,6 +249,14 @@ function gateFields(
   return { gates, ...(gatedPathnames !== undefined && { gatedPathnames }) };
 }
 
+/** Loading classes require their own reader; unrelated builds keep their existing format. */
+function schemaVersionFor(input: BuildProjectManifestInput): ProjectManifest['schemaVersion'] {
+  if ((input.pagesFallbacks?.length ?? 0) > 0) return PAGES_FALLBACK_SCHEMA_VERSION;
+  return input.staticFileRequestKeys === true
+    ? REQUEST_FILE_KEYS_SCHEMA_VERSION
+    : MANIFEST_SCHEMA_VERSION;
+}
+
 /** Assemble a manifest from a build's routes; validates the result against the schema. */
 export function buildProjectManifest(input: BuildProjectManifestInput): ProjectManifest {
   const unreachable = unreachableFunctions(input);
@@ -265,10 +274,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     routes[entry.pathname] = entry;
   }
   return projectManifestSchema.parse({
-    schemaVersion:
-      input.staticFileRequestKeys === true
-        ? REQUEST_FILE_KEYS_SCHEMA_VERSION
-        : MANIFEST_SCHEMA_VERSION,
+    schemaVersion: schemaVersionFor(input),
     projectId: input.projectId,
     runId: input.runId,
     generatedAt: input.generatedAt,
@@ -387,7 +393,8 @@ function keyOf(
   if (
     assetPrefix !== undefined &&
     manifest?.staticFileRequestKeys === true &&
-    manifest.schemaVersion === REQUEST_FILE_KEYS_SCHEMA_VERSION &&
+    manifest.schemaVersion !== undefined &&
+    manifest.schemaVersion >= REQUEST_FILE_KEYS_SCHEMA_VERSION &&
     decoded.startsWith(`${assetPrefix.assetPrefix}/_next/`) &&
     !spellsPrefixOf({ basePath: assetPrefix.assetPrefix }, pathname, decoded)
   ) {
@@ -483,7 +490,8 @@ export function staticFileKey(manifest: FileLookup, pathname: string): string | 
   }
   if (
     manifest.staticFileRequestKeys === true &&
-    manifest.schemaVersion === REQUEST_FILE_KEYS_SCHEMA_VERSION
+    manifest.schemaVersion !== undefined &&
+    manifest.schemaVersion >= REQUEST_FILE_KEYS_SCHEMA_VERSION
   ) {
     return undefined;
   }
