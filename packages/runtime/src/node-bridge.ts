@@ -287,11 +287,38 @@ function onRequest(req: IncomingMessage, res: ServerResponse): void {
   settableSocket(req);
   singleRedirectLocation(res);
   const handled = handle(dispatch, req, res);
-  // The response leaves as soon as its headers commit. The handler may still be awaiting work:
-  // a GET's error hook as much as a POST's write. Keep that work after the response ends or its
-  // reader disconnects, without holding back the headers or body. The host's waitUntil lifetime
-  // bounds it; a hook that never settles must not keep a response open.
-  dispatch.input.waitUntil(handled);
+  retainHandler(dispatch.input, res, handled);
+}
+
+/**
+ * Keep mutations from the start, and a safe request's work once its response ends normally.
+ * An open body already owns the request's lifetime. Retaining its handler then would keep an
+ * upstream event stream subscribed after its reader disconnects. A normal finish can still leave
+ * work behind it — a GET's error hook, for example — and retains that work before the response's
+ * reader can finish. A premature close earns no such lifetime.
+ */
+function retainHandler(input: InvokeInput, res: ServerResponse, handled: Promise<void>): void {
+  if (changesSomething(input.request.method) || res.writableFinished) {
+    input.waitUntil(handled);
+    return;
+  }
+  if (res.destroyed) return;
+  if (res.writableEnded) {
+    input.waitUntil(handled);
+    return;
+  }
+  function forget(): void {
+    res.off('finish', finished);
+    res.off('close', forget);
+  }
+  function finished(): void {
+    forget();
+    input.waitUntil(handled);
+  }
+  res.once('finish', finished);
+  res.once('close', forget);
+  // eslint-disable-next-line unicorn/prefer-await -- Remove listeners without awaiting the handler before returning the response.
+  handled.then(forget).catch(forget);
 }
 
 /**
