@@ -104,6 +104,8 @@ export type RouteBodyEntry = z.infer<typeof routeBodyEntrySchema>;
 
 /** A separate exact Pages document authority, never inferred from application response headers. */
 export const staticPageEntrySchema = z.object({
+  /** Absent expects the original build-only proof; 2 requires an ISR-aware output proof. */
+  staticPagePrivacy: z.literal(2).optional(),
   pathname: z.string().startsWith('/'),
   route: z.string().startsWith('/'),
   entryId: z.string().min(1),
@@ -530,7 +532,7 @@ const projectFields = {
    * field existed. Omitted when the host serves none, preserving existing manifests' bytes.
    */
   routeBodies: z.record(z.string().startsWith('/'), routeBodyEntrySchema).optional(),
-  /** Version 1 static Pages build authority. Absent on older publications, which stay private. */
+  /** Exact static Pages authority, versioned per entry. Absent publications stay private. */
   staticPages: z.record(z.string().startsWith('/'), staticPageEntrySchema).optional(),
   /** The application's middleware matchers: a document these match is not served without it. */
   middleware: middlewareConfigSchema.optional(),

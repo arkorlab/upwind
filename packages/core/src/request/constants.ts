@@ -138,6 +138,16 @@ export const INTERNAL_REQUEST_HEADER_PREFIXES: readonly string[] = [
   PLATFORM_HEADER_PREFIX,
 ];
 
+/** Fixed Next.js build protocol fields; active request controls are checked separately. */
+export const ROUTE_BODY_BUILD_HEADERS: readonly string[] = [
+  'host',
+  'x-matched-path',
+  'x-prerender-revalidate',
+  'x-prerender-revalidate-if-generated',
+  'x-next-revalidated-tags',
+  'x-next-revalidate-tag-token',
+];
+
 /**
  * What a client's router puts on a request of its own, and a browser's navigation never does: a
  * request that carries any one of them, whatever its value, is the router's — a payload, a

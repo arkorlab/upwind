@@ -24,6 +24,12 @@ import { assetPrefixRewrite, travelsWithFunction } from './static-files.ts';
  * shows what that publication will decide, so the two never disagree.
  */
 
+/** Build routing data shared by publication and the immutable Function manifest. */
+export type ServingBundle = Omit<
+  DeploymentBundle,
+  'functions' | 'projectDir' | 'generatedAt' | 'v'
+>;
+
 const HTTP_OK = 200;
 /**
  * A path with nothing in it for a router to interpret: no parameter, no group, no wildcard. Only
@@ -115,13 +121,13 @@ export function documentPrerenders(
  * matched as it arrives, prefix and all, and lands on the class shell whose name carries the same
  * prefix.
  */
-export function reproducesDynamicRouting(bundle: DeploymentBundle): boolean {
+export function reproducesDynamicRouting(bundle: ServingBundle): boolean {
   const { i18n } = bundle.config;
   return i18n === null || i18n === undefined;
 }
 
 /** The templates the edge could reach: the ones a dynamic route resolves to (`pageRoutes`). */
-function reachableTemplates(bundle: DeploymentBundle): ReadonlySet<string> {
+function reachableTemplates(bundle: ServingBundle): ReadonlySet<string> {
   if (!reproducesDynamicRouting(bundle)) {
     return new Set();
   }
@@ -146,7 +152,7 @@ function isConditional(rule: Route): boolean {
  * a deployment id, and counted here it left no page of a build the edge does not route on the edge
  * at all.
  */
-function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): boolean {
+function headersReproducible(bundle: ServingBundle, prerender: Prerender): boolean {
   if (reproducesDynamicRouting(bundle)) {
     return true;
   }
@@ -167,7 +173,7 @@ function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): bo
  * The phases Next.js evaluates before it looks at the filesystem: the redirects and the rewrites
  * of `next.config` that claim a path outright, whatever the build wrote under it.
  */
-export function beforeFilesPhases(bundle: DeploymentBundle): Route[] {
+export function beforeFilesPhases(bundle: ServingBundle): Route[] {
   const { routing } = bundle;
   return [
     // A `beforeMiddleware` rule that neither answers nor rewrites is a header rule and claims
@@ -194,7 +200,7 @@ export function beforeFilesPhases(bundle: DeploymentBundle): Route[] {
  * the request the rule claims. A rule no document meets (`mayHoldForDocument`) claims no document
  * either way.
  */
-function claimedBeforeFiles(bundle: DeploymentBundle, prerender: Prerender): boolean {
+function claimedBeforeFiles(bundle: ServingBundle, prerender: Prerender): boolean {
   return beforeFilesPhases(bundle).some((rule) => {
     return (
       (reproducesDynamicRouting(bundle) ? !isConditional(rule) : mayHoldForDocument(rule)) &&
@@ -208,14 +214,14 @@ function claimedBeforeFiles(bundle: DeploymentBundle, prerender: Prerender): boo
 }
 
 /** The routes the build put on the edge runtime, by the pathname a prerender names them with. */
-function edgeRuntimeRoutes(bundle: DeploymentBundle): ReadonlySet<string> {
+function edgeRuntimeRoutes(bundle: ServingBundle): ReadonlySet<string> {
   return new Set(
     bundle.entrypoints.flatMap((entry) => (entry.runtime === 'edge' ? [entry.pathname] : [])),
   );
 }
 
 /** The routes of Pages Router pages, by the pathname a prerender names them with. */
-function pagesRoutes(bundle: DeploymentBundle): ReadonlySet<string> {
+function pagesRoutes(bundle: ServingBundle): ReadonlySet<string> {
   return new Set(
     bundle.entrypoints.flatMap((entry) => (entry.kind === 'pages' ? [entry.pathname] : [])),
   );
@@ -232,7 +238,7 @@ function pagesRoutes(bundle: DeploymentBundle): ReadonlySet<string> {
  * member it never saw is a loading page, not the page, which Next.js renders only at build — the
  * Function renders the member instead, and a runtime cache holds no generation of the class.
  */
-function generationIn(bundle: DeploymentBundle): (prerender: Prerender) => boolean {
+function generationIn(bundle: ServingBundle): (prerender: Prerender) => boolean {
   const edgeRuntime = edgeRuntimeRoutes(bundle);
   const pages = pagesRoutes(bundle);
   const rewritten = new Set(edgeServedRewrites(bundle).map((served) => served.pathname));
@@ -263,7 +269,7 @@ function generationIn(bundle: DeploymentBundle): (prerender: Prerender) => boole
  * locale of the host it is asked on, which a route keyed by its pathname alone cannot tell apart.
  * Such a page stays with the deployment's Function, which picks it.
  */
-function localePickedPerRequest(bundle: DeploymentBundle): (prerender: Prerender) => boolean {
+function localePickedPerRequest(bundle: ServingBundle): (prerender: Prerender) => boolean {
   const { basePath, i18n } = bundle.config;
   if (i18n === null || i18n === undefined) {
     return () => false;
@@ -278,7 +284,7 @@ function localePickedPerRequest(bundle: DeploymentBundle): (prerender: Prerender
   return (prerender) => prerender.pathname === root;
 }
 
-function servableIn(bundle: DeploymentBundle): (prerender: Prerender) => boolean {
+function servableIn(bundle: ServingBundle): (prerender: Prerender) => boolean {
   const generation = generationIn(bundle);
   const templates = reachableTemplates(bundle);
   const localePicked = localePickedPerRequest(bundle);
@@ -326,7 +332,7 @@ export function resumablePrerenders(bundle: DeploymentBundle): Prerender[] {
  * neither.
  */
 function applicableHeaders(
-  bundle: DeploymentBundle,
+  bundle: ServingBundle,
   prerender: Prerender,
   conditional: 'fold' | 'leave',
 ): Map<string, string> {
@@ -379,7 +385,7 @@ function applicableHeaders(
  * for a header whose whole purpose is to change what the response does. Save a rule no document
  * meets: no request the edge answers with this page can be answered with the header.
  */
-function actsThroughHeaders(bundle: DeploymentBundle, prerender: Prerender): boolean {
+function actsThroughHeaders(bundle: ServingBundle, prerender: Prerender): boolean {
   const headers = applicableHeaders(bundle, prerender, 'fold');
   if (BEHAVIORAL_RESPONSE_HEADERS.some((name) => headers.has(name))) {
     return true;
@@ -396,7 +402,7 @@ function actsThroughHeaders(bundle: DeploymentBundle, prerender: Prerender): boo
  * to key by.
  */
 function completeBy(
-  bundle: DeploymentBundle,
+  bundle: ServingBundle,
   eligible: (prerender: Prerender) => boolean,
 ): Prerender[] {
   return bundle.prerenders.filter((prerender) => {
@@ -411,7 +417,7 @@ function completeBy(
   });
 }
 
-export function completePrerenders(bundle: DeploymentBundle): Prerender[] {
+export function completePrerenders(bundle: ServingBundle): Prerender[] {
   return completeBy(bundle, servableIn(bundle));
 }
 
@@ -632,7 +638,7 @@ function rewriteCandidate(
  * the rest of that phase; an `afterFiles` rewrite is reached only when no file or exact route
  * claims its source. Conditions and rewrite chains stay with the router that can resolve them.
  */
-export function edgeServedRewrites(bundle: DeploymentBundle): ServedRewrite[] {
+export function edgeServedRewrites(bundle: ServingBundle): ServedRewrite[] {
   if (!reproducesDynamicRouting(bundle)) {
     return [];
   }
@@ -795,7 +801,7 @@ function headerValue(value: string | readonly string[]): string {
 }
 
 /** The routing phases whose header rules apply to a document, in the order Next.js applies them. */
-export function headerPhases(bundle: DeploymentBundle): Route[] {
+export function headerPhases(bundle: ServingBundle): Route[] {
   return [
     ...bundle.routing.beforeMiddleware,
     ...bundle.routing.afterFiles,
@@ -814,7 +820,7 @@ export function headerPhases(bundle: DeploymentBundle): Route[] {
  * request is looked at cannot honour here; it travels in the manifest and is judged at the edge.
  */
 export function prerenderResponseHeaders(
-  bundle: DeploymentBundle,
+  bundle: ServingBundle,
   prerender: Prerender,
 ): Map<string, string> {
   return applicableHeaders(bundle, prerender, 'leave');

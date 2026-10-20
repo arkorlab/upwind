@@ -1,6 +1,5 @@
 import {
   type DecodedGenerationPack,
-  generationResponseHeaders,
   type GenerationTag,
   policyFromCacheControl,
   type RouteEntryDescriptor,
@@ -53,6 +52,12 @@ import {
   publishingKeyOf,
 } from './publishing.ts';
 import type { CacheRuntime } from './runtime.ts';
+import {
+  generationHeadersFor,
+  type StaticPagesManifest,
+  type StaticRender,
+  staticPageRender,
+} from './static-pages.ts';
 import { refusedTags } from './tag-bounds.ts';
 import { uploaderFor } from './uploads.ts';
 
@@ -133,6 +138,8 @@ export interface RegenerationInput {
   readonly request: Request;
   readonly handler: NodeHandler;
   readonly target: RegenerationTarget;
+  /** The Store's immutable build manifest; runtime proof is earned inside renderStatic. */
+  readonly staticPagesManifest?: StaticPagesManifest | undefined;
   /**
    * The token `next build` generated for this build, which says a request may make Next.js render
    * rather than read what the build wrote. Absent for a build that generated none.
@@ -244,7 +251,7 @@ async function renderStatic(
   input: RegenerationInput,
   attemptId: string,
   held: HeldTags,
-): Promise<CapturedRender | undefined> {
+): Promise<StaticRender | undefined> {
   const request = staticRequest(input, attemptId);
   let answered: number | undefined;
   const captured = await renderCaptured(input.target.descriptor.kind, async (meta) => {
@@ -271,7 +278,8 @@ async function renderStatic(
   if (captured === undefined && answered !== undefined && answered >= HTTP_SERVER_ERROR) {
     throw new Error(`the render answered ${answered}`);
   }
-  return captured;
+  if (captured === undefined) return undefined;
+  return staticPageRender(input, request, captured);
 }
 
 /**
@@ -357,12 +365,13 @@ function artifact(
 /** The primary output: the document of a page, or the body of a route handler. */
 function primaryOutput(
   target: RegenerationTarget,
-  render: CapturedRender,
+  render: StaticRender,
   uploads: Uploads,
 ): CommitOutput {
   const { pathname, kind } = target.descriptor;
   const primary = bodyArtifact(target, render);
   return {
+    ...(render.staticPagePrivacy === 2 && { staticPagePrivacy: 2 }),
     representationKey: kind === 'app-route' ? ROUTE_BODY : 'html',
     pathname,
     status: render.status,
@@ -400,7 +409,7 @@ function sideOutput(
 
 function outputsOf(
   target: RegenerationTarget,
-  render: CapturedRender,
+  render: StaticRender,
   uploads: Uploads,
 ): CommitOutput[] {
   const { pathname } = target.descriptor;
@@ -434,26 +443,10 @@ interface Made {
   readonly heldTagRevisions: Readonly<Record<string, number>>;
 }
 
-/**
- * The headers the generation a render publishes is recorded with (`generationResponseHeaders`),
- * which every answer from it carries, whether from the render itself while it is being published
- * (`Publishing`) or from the generation once it is.
- */
-function generationHeadersOf(
-  target: RegenerationTarget,
-  render: CapturedRender,
-): Record<string, string> {
-  return generationResponseHeaders(
-    target.descriptor.kind,
-    render.status,
-    Object.entries(render.headers),
-  );
-}
-
 function commitRequest(
   input: RegenerationInput,
   lease: Leased,
-  render: CapturedRender,
+  render: StaticRender,
   made: Made,
 ): CommitRequest {
   const now = nowMs();
@@ -466,7 +459,7 @@ function commitRequest(
       producedAt: now,
       policy: policyFromCacheControl(render.cacheControl),
       status: render.status,
-      headers: generationHeadersOf(input.target, render),
+      headers: generationHeadersFor(input.target.descriptor.kind, render),
       // Handed in rather than read here, because `tagsOf` ran before the uploads did: a render
       // carrying more tags than a generation may is refused without paying to store its outputs.
       tags: [...made.tags],
@@ -643,7 +636,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   // The view the render's reads are judged against: its revision, and the marks it had let go of.
   let observed: { readonly tagRevision: number; readonly losses: number };
   let viewed: boolean;
-  let captured: CapturedRender | undefined;
+  let captured: StaticRender | undefined;
   try {
     viewed = await within(synced, TAG_SYNC_DEADLINE_MS, {
       code: 'tags_not_synced',
@@ -687,7 +680,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
         runtime,
         key,
         {
-          render: { ...captured, headers: generationHeadersOf(target, captured) },
+          render: { ...captured, headers: generationHeadersFor(target.descriptor.kind, captured) },
           attemptId: lease.attemptId,
           tags: [
             ...generationTagValues(target.descriptor, captured, lease.entryId, target.isClass),

@@ -38,7 +38,9 @@ export function staticFileLocalesOf(bundle: DeploymentBundle): StaticFileLocales
  * `<assetPrefix>/_next/:path+` to `<basePath>/_next/:path+` (`loadRewrites`, in
  * `lib/load-custom-routes.ts`). `undefined` for a build without one.
  */
-export function assetPrefixRewrite(bundle: DeploymentBundle): Route | undefined {
+export function assetPrefixRewrite(
+  bundle: Pick<DeploymentBundle, 'config' | 'routing'>,
+): Route | undefined {
   const { assetPrefix, basePath } = bundle.config;
   const [rule] = bundle.routing.beforeFiles;
   if (

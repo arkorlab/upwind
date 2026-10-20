@@ -267,6 +267,7 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
           : undefined,
       ...(parameters !== undefined && { parameters }),
     },
+    staticPagesManifest: store.manifest,
     previewToken: store.manifest.bypassToken,
     waitUntil: context.waitUntil,
     run: context.run,

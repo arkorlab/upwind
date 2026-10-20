@@ -42,6 +42,7 @@ import {
 } from './constants.ts';
 import { parseCookieHeader } from './cookies.ts';
 import { dataRequestHeaders } from './headers.ts';
+import { hasRouteBodyControlHeader } from './route-bodies.ts';
 import { staticPageRequestPrivate } from './static-pages.ts';
 
 export type PassthroughReason =
@@ -599,6 +600,9 @@ function routeBodyRequest(input: ClassifyInput): RequestClass | undefined {
     return pins;
   }
   if (staticPage !== undefined && staticPageRequestPrivate(url, headers)) {
+    return passthrough(bypass);
+  }
+  if (staticPage === undefined && hasRouteBodyControlHeader(headers)) {
     return passthrough(bypass);
   }
   if (

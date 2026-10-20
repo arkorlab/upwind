@@ -20,11 +20,20 @@ import {
 import { findRouteBody } from '../src/manifest/route-bodies.ts';
 import type { ProjectManifest, RouteEntry, StaticFileEntry } from '../src/manifest/schema.ts';
 import { classifyRequest } from '../src/request/classify.ts';
+import { ROUTER_PROTOCOL_HEADERS } from '../src/request/constants.ts';
 import { createId } from '../src/util/index.ts';
 
 const GENERATED_AT = '2026-10-19T00:00:00.000Z';
 const BODY = { pathname: '/icon', route: '/icon', entryId: 'icon-entry' };
 const HTTP_OK = 200;
+const BUILD_PROTOCOL = [
+  'host',
+  'x-matched-path',
+  'x-prerender-revalidate',
+  'x-prerender-revalidate-if-generated',
+  'x-next-revalidated-tags',
+  'x-next-revalidate-tag-token',
+];
 const NAVIGATION = {
   'sec-fetch-dest': 'document',
   'sec-fetch-mode': 'navigate',
@@ -129,6 +138,52 @@ function request(
 }
 
 describe('host delivery of a complete route body', () => {
+  it.each(
+    ROUTER_PROTOCOL_HEADERS.flatMap((name) =>
+      ['', '1', 'one, two'].map((value) => ({ name, value })),
+    ),
+  )(
+    'never answers a router-controlled request with a sealed body: $name=$value',
+    ({ name, value }) => {
+      const manifest = buildProjectManifest(input);
+
+      expect(classifyRequest(request(manifest, { [name]: value })).kind).not.toBe('route-body');
+    },
+  );
+
+  it('allows an ordinary Host field on a sealed body request', () => {
+    const manifest = buildProjectManifest(input);
+
+    expect(classifyRequest(request(manifest, { HOST: 'app.example' })).kind).toBe('route-body');
+  });
+
+  it.each(
+    BUILD_PROTOCOL.filter((name) => name !== 'host').flatMap((name) =>
+      ['', 'control', 'one, two'].map((value) => ({ name, value })),
+    ),
+  )('keeps a protocol-controlled body in the Function: $name=$value', ({ name, value }) => {
+    const manifest = buildProjectManifest(input);
+
+    expect(classifyRequest(request(manifest, { [name]: value })).kind).toBe('passthrough');
+  });
+
+  it('does not interpret an RSC segment request as a complete image body', () => {
+    const manifest = buildProjectManifest(input);
+
+    expect(
+      classifyRequest(request(manifest, { rsc: '1', 'next-router-segment-prefetch': '/segment' }))
+        .kind,
+    ).toBe('passthrough');
+
+    const document = buildProjectManifest({ ...input, routeBodies: [], routes: [HTML] });
+
+    expect(
+      classifyRequest(
+        request(document, { rsc: '1', 'next-router-segment-prefetch': '/segment' }, '/page'),
+      ).kind,
+    ).toBe('segment-prefetch');
+  });
+
   it.each(['GET', 'HEAD'])('classifies %s without browser document navigation hints', (method) => {
     const manifest = buildProjectManifest(input);
 
@@ -382,6 +437,29 @@ describe('kept file status under a base path', () => {
 });
 
 describe('sealed route-body eligibility', () => {
+  it.each(
+    [
+      ...BUILD_PROTOCOL.map((name) => [name]),
+      BUILD_PROTOCOL,
+      BUILD_PROTOCOL.map((name) => name.toUpperCase()),
+    ].map((allowHeader) => ({ allowHeader })),
+  )('admits only build-owned protocol inputs: %j', ({ allowHeader }) => {
+    const page = { ...PRERENDER, allowHeader };
+
+    expect(edgeServableRouteBodies(bundleOf({ prerenders: [page] }))).toStrictEqual([page]);
+  });
+
+  it.each(['authorization', 'cookie', 'x-visitor', 'rsc', 'next-router-segment-prefetch'])(
+    'rejects a mixed protocol and application-dependent header: %s',
+    (name) => {
+      expect(
+        edgeServableRouteBodies(
+          bundleOf({ prerenders: [{ ...PRERENDER, allowHeader: [...BUILD_PROTOCOL, name] }] }),
+        ),
+      ).toStrictEqual([]);
+    },
+  );
+
   it('requires the bundled privacy contract; old bundles remain byte-identical and unsupported', () => {
     const modern = deploymentBundleSchema.parse(bundleOf());
     const old = deploymentBundleSchema.parse(bundleOf({ routeBodyPrivacy: undefined }));
