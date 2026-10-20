@@ -154,6 +154,45 @@ describe('version 3 Pages manifest and representation routing', () => {
   });
 
   it.each([false, true])(
+    'versions member-only authority independently of loading tables: %s',
+    (requestKeys) => {
+      const built = buildProjectManifest(
+        inputOf({
+          routes: inputOf().routes.filter((route) => route.pathname === MEMBER.pathname),
+          pagesFallbacks: undefined,
+          staticFileRequestKeys: requestKeys,
+        }),
+      );
+      const manifest = parseProjectManifest(serializeManifest(built));
+      const classified = classifyRequest({
+        method: 'GET',
+        url: new URL(`https://app.example${MEMBER.dataPathname}`),
+        headers: new Headers({ 'x-nextjs-data': '1' }),
+        manifest,
+        deployment: manifest.deployment,
+      });
+
+      expect(manifest.schemaVersion).toBe(8);
+      expect(manifest).not.toHaveProperty('pagesFallbacks');
+      expect(manifest.staticPages?.[MEMBER.pathname]).toStrictEqual(MEMBER);
+      expect(classified).toStrictEqual({
+        kind: 'static-page',
+        entry: MEMBER,
+        representation: 'pages-data',
+      });
+
+      for (const schemaVersion of [6, 7]) {
+        const downgraded = { ...manifest, schemaVersion };
+
+        expect(projectManifestSchema.safeParse(downgraded).success).toBe(false);
+        expect(() => parseProjectManifest(JSON.stringify(downgraded))).toThrow(
+          /staticPagePrivacy/u,
+        );
+      }
+    },
+  );
+
+  it.each([false, true])(
     'preserves ordinary bytes with empty or absent fallback tables: %s',
     (requestKeys) => {
       const input = inputOf({

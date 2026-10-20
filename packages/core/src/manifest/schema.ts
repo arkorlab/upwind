@@ -42,14 +42,15 @@ const PAGES_FALLBACK_PRIVACY = 3;
  * version 6 when that field is absent, so ordinary deployments keep their stored bytes.
  *
  * 8: `pagesFallbacks` loading shells also appear in the route table. A reader that drops their
- * fallback authority could serve a loading shell without generating its concrete member. Only
- * manifests with these classes use 8; earlier readers refuse the unsupported version.
+ * fallback authority could serve a loading shell without generating its concrete member. Version-3
+ * `staticPages` members require the same reader even without a loading table. Ordinary manifests
+ * keep 6 or 7; earlier readers refuse the unsupported version.
  */
 /** The unchanged writer version for manifests that use canonical static-file keys. */
 export const MANIFEST_SCHEMA_VERSION = 6;
 /** The first format whose static-file keys can name actual request URLs. */
 export const REQUEST_FILE_KEYS_SCHEMA_VERSION = 7;
-/** Loading Pages classes require a reader that understands their concrete-member generation. */
+/** Paired Pages members and loading classes require a reader that understands version three. */
 export const PAGES_FALLBACK_SCHEMA_VERSION = 8;
 /** The first version a manifest may store what its routes repeat in `tables` at (above). */
 export const TABLES_SCHEMA_VERSION = 6;
@@ -134,6 +135,15 @@ export const staticPageEntrySchema = z
     { message: 'version 3 requires its parameters and paired data pathname' },
   );
 export type StaticPageEntry = z.infer<typeof staticPageEntrySchema>;
+
+/** Earlier manifest versions admit only the original build proof and fixed ISR proof. */
+const fixedStaticPageEntrySchema = z.object({
+  ...staticPageEntrySchema.shape,
+  staticPagePrivacy: z.literal(2).optional(),
+});
+const fixedStaticPagesSchema = z
+  .record(z.string().startsWith('/'), fixedStaticPageEntrySchema)
+  .optional();
 
 /** The scope a manifest's cache entries belong to: one deployment, under one key schema. */
 export const manifestCacheSchema = z.object({
@@ -709,6 +719,7 @@ export const projectManifestSchema = z.discriminatedUnion('schemaVersion', [
       ...manifestFields,
       schemaVersion: z.literal(CANONICAL_FILE_SCHEMA_VERSIONS),
       ...projectFields,
+      staticPages: fixedStaticPagesSchema,
     })
     .refine((manifest) => manifest.pagesFallbacks === undefined, {
       message: 'Pages loading classes require manifest schema version 8',
@@ -719,6 +730,7 @@ export const projectManifestSchema = z.discriminatedUnion('schemaVersion', [
       ...manifestFields,
       schemaVersion: z.literal(REQUEST_FILE_KEYS_SCHEMA_VERSION),
       ...projectFields,
+      staticPages: fixedStaticPagesSchema,
       /** Actual request URL keys, including retained files of the previous build. */
       staticFileRequestKeys: z.literal(true).optional(),
     })
