@@ -361,10 +361,31 @@ fails in the Function into its own `catch`, as it does under Node.js with the mo
 — which is how `@protobufjs/inquire` loads `protobufjs`'s optional modules, and how TypeScript
 loads a compiler plugin. `auditFunctionSize` fails the build on a server bundle over the
 64 MiB limit, so that the build says so rather than the upload. That limit applies to the uncompressed bundle.
+
 The former compressed limits — 3 MB and 10 MB — were removed on 2026-09-04, so the
 gzipped figure in the record is informational. A server bundle
 well inside the limit can still be worth making smaller: larger bundles can increase startup
 time, which is a cost the audit does not measure and a first response pays.
+A host that keeps the deployment's blobs can opt in to leaving large, completed Node App-page
+HTML and whole RSC bodies out of the Function with
+`unshippedPrerenderBodies: { minBytes: 1024 * 1024, maxBytes: 32 * 1024 * 1024 }`.
+The range is inclusive and applies to each body independently. The default ships every body;
+small bodies, reusable or postponed shells, error pages, Pages Router and edge-runtime outputs
+stay shipped. The bundle still records and uploads every immutable blob, and a body shared with
+an output that needs it stays in that output's Function.
+
+This option requires a nonempty `cacheHostModule` path whose module exports
+`createBundleBlobReader`. A missing or blank module path is rejected when the adapter is created,
+before a build writes output. The build requires a named runtime ESM export, including named or
+star reexports; a CommonJS host can provide an explicit ESM facade. This links the export without
+executing the host, and does not prove the factory's return value or backend availability.
+Its reader receives the exact blob hash and an optional expected byte
+length; older hash-only readers remain compatible. Set `maxBytes` to what that reader can return
+within its own size and time bounds.
+Shipped responses remain synchronous and edge delivery is unchanged. A Function missing an
+eligible body waits for the reader and fails if the bytes are unavailable or have the wrong
+length; it does not render a replacement. HEAD and bodyless statuses read no body. This reduces
+Function size, while the latency and memory cost of that fallback depend on the host.
 
 The middleware Function answers one request, which runs the middleware and hands back its response,
 and carries what that path reads: its runtime manifest keeps the configuration and the `next.config`
