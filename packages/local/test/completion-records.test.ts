@@ -484,11 +484,12 @@ async function foreground(example: Completion, rewritten = false) {
     bundle: {
       ...stack.bundle,
       config: { ...stack.bundle.config, trailingSlash: true, skipTrailingSlashRedirect: true },
-      middleware: { matchers: [{ regexp: '^/before$' }] },
+      middleware: { matchers: [{ sourceRegex: '^/before$' }] },
     },
     manifest: {
       ...stack.manifest,
       app,
+      middleware: { matchers: [{ sourceRegex: '^/before$' }] },
       trailingSlash: true,
       routes: { ...stack.manifest.routes, '/before': original },
       dynamicRoutes: [
