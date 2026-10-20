@@ -280,6 +280,19 @@ describe('build proof for complete static Pages HTML', () => {
     ).toStrictEqual([]);
   });
 
+  it('admits the canonical static Pages home document under a base path', () => {
+    const basePath = '/docs';
+    const page = { ...PAGE, pathname: basePath, route: basePath };
+    const bundle = bundleOf({
+      prerenders: [page],
+      entrypoints: [{ id: 'page', kind: 'pages', pathname: basePath }],
+    });
+
+    expect(
+      edgeServableStaticPages({ ...bundle, config: { ...bundle.config, basePath } }),
+    ).toStrictEqual([page]);
+  });
+
   it('refuses request-dependent locale routing and malformed base path identities', () => {
     const bundle = bundleOf();
 

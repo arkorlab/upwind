@@ -47,7 +47,10 @@ function fixedDocument(page: Prerender): boolean {
 
 function ordinaryPath(bundle: DeploymentBundle, pathname: string): boolean {
   const { basePath } = bundle.config;
-  return pathname.startsWith(`${basePath}/`) && !ERROR_PAGES.has(pathname.slice(basePath.length));
+  return (
+    (pathname === basePath || pathname.startsWith(`${basePath}/`)) &&
+    !ERROR_PAGES.has(pathname.slice(basePath.length))
+  );
 }
 
 function publicHtml(bundle: DeploymentBundle, page: Prerender): boolean {
