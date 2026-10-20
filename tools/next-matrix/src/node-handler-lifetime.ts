@@ -9,10 +9,13 @@ import ts from 'typescript';
 const REQUEST_MS = 10_000;
 const CLEANUP_MS = 5000;
 const STREAM_CANCEL_MS = 2000;
+const STREAM_OBSERVATION_INTERVAL_MS = 25;
 const HTTP_OK = 200;
 const OBSERVER_BINDING = 'OBSERVER';
+const UPSTREAM_WORKER = 'node-handler-upstream';
 const HANDLER_ORIGIN = 'https://handler.test';
 const STATE_URL = `${HANDLER_ORIGIN}/state`;
+const UPSTREAM_STATE_URL = `${HANDLER_ORIGIN}/upstream-state`;
 const STREAM_KIND = 'stream-cancellation';
 const DELAYED_FINISH_KIND = 'delayed-finish';
 const UNCONDITIONAL_MODE = 'unconditional-retention';
@@ -36,13 +39,16 @@ export default {
     if (new URL(request.url).pathname === '/state') {
       return Response.json({ held, completed });
     }
+    if (new URL(request.url).pathname === '/upstream-state') {
+      return env.EVENTS.fetch('https://upstream.test/state');
+    }
     return invokeNodeHandler({
       request,
       requestMeta: {},
       waitUntil(pending) { held++; ctx.waitUntil(pending); },
       async handler(_request, response) {
         if (new URL(request.url).pathname === '/stream') {
-          const upstream = await env.OBSERVER.fetch('https://observer.test/events');
+          const upstream = await env.EVENTS.fetch('https://upstream.test/events');
           const reader = upstream.body.getReader();
           const close = () => { reader.cancel().catch(() => {}); };
           response.once('close', close);
@@ -63,7 +69,7 @@ export default {
         if (new URL(request.url).pathname === '/delayed-finish') {
           response.setHeader('content-type', 'text/plain');
           response.flushHeaders();
-          response.write('first');
+          response.write(new TextEncoder().encode('first'));
           const finish = await env.OBSERVER.fetch('https://observer.test/finish');
           await finish.text();
           response.end('last');
@@ -81,6 +87,20 @@ export default {
 };
 `;
 
+const UPSTREAM = String.raw`
+let active = 0;
+export default {
+  fetch(request) {
+    if (new URL(request.url).pathname === '/state') return Response.json({ active });
+    active++;
+    return new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode(': open\n\n')); },
+      cancel() { active--; },
+    }), { headers: { 'content-type': 'text/event-stream' } });
+  },
+};
+`;
+
 interface Lane {
   readonly kind: 'finite-response' | typeof STREAM_KIND | typeof DELAYED_FINISH_KIND;
   readonly method: 'GET' | 'POST';
@@ -93,7 +113,10 @@ interface Lane {
   egressAttempts: number;
   upstreamCancelledBeforeDeadline?: boolean;
   responseCancelCompleted?: boolean;
-  exposesRetentionRegression?: boolean;
+  activeBeforeCancel?: number;
+  cancellationOutcome?: 'released' | 'deadline';
+  cancellationDeadlineStage?: 'reader-cancel' | 'upstream-cancel';
+  activeAfterCancel?: number;
   stage: string;
   failureStage?: string;
 }
@@ -136,9 +159,8 @@ async function observeCancellation(
   runtime: Miniflare,
   response: Awaited<ReturnType<Miniflare['dispatchFetch']>>,
   lane: Lane,
-  gates: { readonly completed: Promise<undefined>; readonly signal: AbortSignal },
+  signal: AbortSignal,
 ): Promise<void> {
-  const { completed, signal } = gates;
   const { body } = response;
   assert.ok(body !== null);
   const reader = body.getReader();
@@ -150,6 +172,10 @@ async function observeCancellation(
   const state = (await bounded(observation.json(), signal)) as State;
   lane.held = state.held;
   assert.equal(state.held, lane.mode === UNCONDITIONAL_MODE ? 1 : 0);
+  const upstream = await bounded(runtime.dispatchFetch(UPSTREAM_STATE_URL), signal);
+  const before = (await bounded(upstream.json(), signal)) as { readonly active: number };
+  lane.activeBeforeCancel = before.active;
+  assert.equal(before.active, 1);
   const cancellationDeadline = AbortSignal.timeout(STREAM_CANCEL_MS);
   lane.upstreamCancelledBeforeDeadline = false;
   lane.responseCancelCompleted = false;
@@ -158,8 +184,25 @@ async function observeCancellation(
     await bounded(reader.cancel(), cancellationDeadline);
     lane.responseCancelCompleted = true;
     lane.stage = 'stream-upstream-cancel';
-    await bounded(completed, cancellationDeadline);
+    for (;;) {
+      const afterCancellation = await bounded(
+        runtime.dispatchFetch(UPSTREAM_STATE_URL),
+        cancellationDeadline,
+      );
+      const current = (await bounded(afterCancellation.json(), cancellationDeadline)) as {
+        readonly active: number;
+      };
+      lane.activeAfterCancel = current.active;
+      if (current.active === 0) break;
+      await bounded(
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, STREAM_OBSERVATION_INTERVAL_MS);
+        }),
+        cancellationDeadline,
+      );
+    }
     lane.upstreamCancelledBeforeDeadline = true;
+    lane.cancellationOutcome = 'released';
   } catch (error) {
     if (
       lane.mode !== UNCONDITIONAL_MODE ||
@@ -167,11 +210,11 @@ async function observeCancellation(
       error !== cancellationDeadline.reason
     )
       throw error;
+    lane.cancellationOutcome = 'deadline';
+    lane.cancellationDeadlineStage = lane.responseCancelCompleted
+      ? 'upstream-cancel'
+      : 'reader-cancel';
   }
-  // A runtime may propagate cancellation even while retained: record whether this control
-  // reproduces the integration regression, without claiming an absent reproduction did.
-  lane.exposesRetentionRegression =
-    lane.mode === UNCONDITIONAL_MODE && !lane.upstreamCancelledBeforeDeadline;
   if (lane.mode !== UNCONDITIONAL_MODE) assert.ok(lane.upstreamCancelledBeforeDeadline);
   lane.stage = 'completed';
 }
@@ -184,60 +227,64 @@ async function exercise(bridge: string, tasks: string, lane: Lane): Promise<void
   const completed = Promise.withResolvers<undefined>();
   const runtime = new Miniflare(
     convertV4MiniflareOptions({
-      name: 'node-handler-lifetime',
-      modulesRoot: '/lifetime',
-      modules: [
-        { type: 'ESModule', path: '/lifetime/worker.mjs', contents: WORKER },
-        { type: 'ESModule', path: '/lifetime/node-bridge.mjs', contents: bridge },
-        { type: 'ESModule', path: '/lifetime/tasks.mjs', contents: tasks },
-      ],
-      // The Function pins these in packages/adapter/src/function.ts.
-      compatibilityDate: '2026-09-15',
-      compatibilityFlags: ['nodejs_compat', 'global_fetch_strictly_public'],
       cf: false,
       telemetry: { enabled: false },
       log: new Log(LogLevel.NONE),
-      serviceBindings: {
-        [OBSERVER_BINDING]: async (request) => {
-          const pathname = new URL(request.url).pathname;
-          switch (pathname) {
-            case '/hold': {
-              lane.hookStarted = true;
-              started.resolve(undefined);
-              await release.promise;
+      workers: [
+        {
+          name: 'node-handler-lifetime',
+          modulesRoot: '/lifetime',
+          modules: [
+            { type: 'ESModule', path: '/lifetime/worker.mjs', contents: WORKER },
+            { type: 'ESModule', path: '/lifetime/node-bridge.mjs', contents: bridge },
+            { type: 'ESModule', path: '/lifetime/tasks.mjs', contents: tasks },
+          ],
+          // The Function pins these in packages/adapter/src/function.ts.
+          compatibilityDate: '2026-09-15',
+          compatibilityFlags: ['nodejs_compat', 'global_fetch_strictly_public'],
+          serviceBindings: {
+            EVENTS: UPSTREAM_WORKER,
+            [OBSERVER_BINDING]: async (request) => {
+              const pathname = new URL(request.url).pathname;
+              switch (pathname) {
+                case '/hold': {
+                  lane.hookStarted = true;
+                  started.resolve(undefined);
+                  await release.promise;
 
-              break;
-            }
-            case '/finish': {
-              await finish.promise;
+                  break;
+                }
+                case '/finish': {
+                  await finish.promise;
 
-              break;
-            }
-            case '/events': {
-              return new Response(
-                new ReadableStream({
-                  start(controller) {
-                    controller.enqueue(new TextEncoder().encode(': open\n\n'));
-                  },
-                  cancel() {
-                    completed.resolve(undefined);
-                  },
-                }),
-              );
-            }
-            default: {
-              assert.equal(pathname, '/completed');
-              lane.completedAfterRelease = true;
-              completed.resolve(undefined);
-            }
-          }
-          return new Response('observed');
+                  break;
+                }
+                default: {
+                  assert.equal(pathname, '/completed');
+                  lane.completedAfterRelease = true;
+                  completed.resolve(undefined);
+                }
+              }
+              return new Response('observed');
+            },
+          },
+          outboundService: () => {
+            lane.egressAttempts += 1;
+            throw new Error('Handler lifetime proof attempted outbound network');
+          },
         },
-      },
-      outboundService: () => {
-        lane.egressAttempts += 1;
-        throw new Error('Handler lifetime proof attempted outbound network');
-      },
+        {
+          name: UPSTREAM_WORKER,
+          modulesRoot: '/upstream',
+          modules: [{ type: 'ESModule', path: '/upstream/worker.mjs', contents: UPSTREAM }],
+          compatibilityDate: '2026-09-15',
+          compatibilityFlags: ['nodejs_compat', 'global_fetch_strictly_public'],
+          outboundService: () => {
+            lane.egressAttempts += 1;
+            throw new Error('Upstream lifetime proof attempted outbound network');
+          },
+        },
+      ],
     }),
   );
   const signal = AbortSignal.timeout(REQUEST_MS);
@@ -253,7 +300,7 @@ async function exercise(bridge: string, tasks: string, lane: Lane): Promise<void
     assert.equal(response.status, HTTP_OK);
     lane.stage = 'response-body';
     if (lane.kind === STREAM_KIND) {
-      await observeCancellation(runtime, response, lane, { completed: completed.promise, signal });
+      await observeCancellation(runtime, response, lane, signal);
       return;
     }
     if (lane.kind === DELAYED_FINISH_KIND) {
@@ -332,6 +379,13 @@ const proof = {
   officialCase: 'not-run',
   lanes,
   failures,
+  cancellationComparison: {
+    baselineReleased: false,
+    currentReleased: false,
+    unconditionalReleased: false,
+    reproducesRetentionRegression: false,
+    status: 'inconclusive',
+  },
 };
 const directory = process.env['UPWIND_MATRIX_PROOF_DIR'] ?? path.join(ROOT, '.node-handler-proof');
 await mkdir(directory, { recursive: true });
@@ -398,6 +452,37 @@ try {
       stage: 'created',
     };
     await collect(variant, lane);
+  }
+  const baseline = lanes.find((lane) => lane.kind === STREAM_KIND && lane.mode === GUARDED_MODE);
+  const current = lanes.find((lane) => lane.kind === STREAM_KIND && lane.mode === 'retained');
+  const unconditionallyHeld = lanes.find(
+    (lane) => lane.kind === STREAM_KIND && lane.mode === UNCONDITIONAL_MODE,
+  );
+  function completedControl(lane: Lane | undefined): boolean {
+    return (
+      lane?.stage === 'completed' &&
+      failures.every((failure) => failure.kind !== lane.kind || failure.mode !== lane.mode)
+    );
+  }
+  proof.cancellationComparison.baselineReleased =
+    baseline?.upstreamCancelledBeforeDeadline === true;
+  proof.cancellationComparison.currentReleased = current?.upstreamCancelledBeforeDeadline === true;
+  proof.cancellationComparison.unconditionalReleased =
+    unconditionallyHeld?.upstreamCancelledBeforeDeadline === true;
+  proof.cancellationComparison.reproducesRetentionRegression =
+    completedControl(baseline) &&
+    completedControl(current) &&
+    completedControl(unconditionallyHeld) &&
+    proof.cancellationComparison.baselineReleased &&
+    proof.cancellationComparison.currentReleased &&
+    unconditionallyHeld?.cancellationOutcome === 'deadline';
+  if (
+    completedControl(baseline) &&
+    completedControl(current) &&
+    proof.cancellationComparison.baselineReleased &&
+    proof.cancellationComparison.currentReleased
+  ) {
+    proof.cancellationComparison.status = 'observed';
   }
   assert.equal(failures.length, 0, 'one or more handler lifetime controls failed');
   proof.status = 'success';
