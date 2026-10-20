@@ -509,7 +509,7 @@ async function regeneratedVerdict(
   const pathname = decided?.kind === 'continue' ? decided.url.pathname : url.pathname;
   if (rewriteOf(decided) === undefined && landed?.pathname === asked.route.pathname) {
     return failed(
-      asked.route.cache === undefined
+      asked.route.cache === undefined && asked.route.partialFallback === undefined
         ? 'regenerated in the foreground, though the route has no record to regenerate'
         : ((await regenerationFailure(captured, asked.route, { regenerated, pathname })) ??
             regeneratedFailure(asked.route, read.answer, asked.coding) ??
@@ -517,7 +517,10 @@ async function regeneratedVerdict(
     );
   }
   const { did, done } = moveOf(decided);
-  if (landed?.cache === undefined) {
+  if (
+    landed === undefined ||
+    (landed.cache === undefined && landed.partialFallback === undefined)
+  ) {
     return failed(`${done} ${whereLanded(landed)}, which has no record, and regenerated`);
   }
   const failure =

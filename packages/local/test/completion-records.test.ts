@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
 
 import {
   cacheablePrerenders,
@@ -19,12 +21,13 @@ import {
   DEFAULT_RUNTIME_CACHE_SETTINGS,
   runtimeCacheOf,
 } from '@stayingupwind/host/delivery';
-import { assert, describe, expect, it } from 'vitest';
+import { afterAll, assert, beforeAll, describe, expect, it } from 'vitest';
 
 import type { CheckedStack } from '../src/answers.ts';
+import { routeVerdict } from '../src/documents.ts';
 import { recordedOf, recordEntriesOf, regenerationFailure } from '../src/recorded.ts';
 import { GenerationEvidence } from '../src/workers/generation-evidence.ts';
-import type { RecordedGeneration } from '../src/workers/protocol.ts';
+import type { RecordedGeneration, Regeneration } from '../src/workers/protocol.ts';
 
 const SCOPE = 'scope_completion';
 const AT = '2026-10-20T00:00:00.000Z';
@@ -424,5 +427,197 @@ describe('regeneration identities of partial fallback completions', () => {
     expect(failure).toBe(
       'said to be regenerated, where the edge had its Function regenerate nothing',
     );
+  });
+});
+
+const FOREGROUND_HTML = '<!doctype html><html><body>foreground render</body></html>';
+const transport = {
+  origin: new URL('http://127.0.0.1'),
+  regenerated: undefined as Regeneration | undefined,
+  rewrite: undefined as string | undefined,
+  body: FOREGROUND_HTML,
+  type: 'text/html',
+};
+const foregroundServer = createServer((request, response) => {
+  if (request.url?.startsWith('/_backstage/') === true) {
+    if (request.method === 'GET') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          decision:
+            transport.rewrite === undefined
+              ? null
+              : { status: 200, headers: [['x-middleware-rewrite', transport.rewrite]] },
+          regenerated: transport.regenerated ?? null,
+          generations: {},
+        }),
+      );
+      return;
+    }
+    response.writeHead(204).end();
+    return;
+  }
+  response.writeHead(200, {
+    'content-type': transport.type,
+    'cache-control': 'private, no-store',
+    'x-arkor-edge': `passthrough;reason=regenerate;m=0000;policy=default;scope=${SCOPE}${transport.rewrite === undefined ? '' : ';mw=hit'}`,
+  });
+  response.end(transport.body);
+});
+
+/** A controlled edge response and trace over HTTP, through the real Local document verdict. */
+async function foreground(example: Completion, rewritten = false) {
+  const { stack, route, entryId } = await fixture(example);
+  const original: RouteEntry = {
+    pathname: '/before',
+    status: route.status,
+    shell: route.shell,
+    headers: route.headers,
+  };
+  const asked = rewritten ? original : route;
+  const app = { ...stack.app, middlewareScriptName: 'middleware' };
+  const own: CheckedStack = {
+    ...stack,
+    app,
+    url: transport.origin,
+    backstage: new URL('/_backstage/', transport.origin),
+    bundle: {
+      ...stack.bundle,
+      config: { ...stack.bundle.config, trailingSlash: true, skipTrailingSlashRedirect: true },
+      middleware: { matchers: [{ regexp: '^/before$' }] },
+    },
+    manifest: {
+      ...stack.manifest,
+      app,
+      trailingSlash: true,
+      routes: { ...stack.manifest.routes, '/before': original },
+      dynamicRoutes: [
+        {
+          sourceRegex: example.source.startsWith('/posts/')
+            ? '^/posts/([^/]+?)(?:/)?$'
+            : '^/([^/]+?)/posts/([^/]+?)(?:/)?$',
+          route: route.pathname,
+        },
+      ],
+    },
+  };
+  transport.regenerated = {
+    entry: entryId,
+    route: example.source,
+    member: example.regenerationMember,
+  };
+  transport.rewrite = rewritten ? new URL(example.pathname, own.site).href : undefined;
+  transport.body = FOREGROUND_HTML;
+  transport.type = 'text/html';
+  return {
+    route,
+    entryId,
+    ask: (selected: RouteEntry = asked) =>
+      routeVerdict(own, 4096, {
+        key: selected.pathname,
+        route: selected,
+        requested: rewritten ? '/before' : example.pathname,
+        headers: { 'accept-encoding': 'identity' },
+        coding: undefined,
+      }),
+  };
+}
+
+describe('foreground completions through Local HTTP and trace reading', () => {
+  beforeAll(async () => {
+    foregroundServer.listen(0, '127.0.0.1');
+    await once(foregroundServer, 'listening');
+    const address = foregroundServer.address();
+    assert(address !== null && typeof address !== 'string', 'the controlled edge has a socket');
+    transport.origin = new URL(`http://127.0.0.1:${String(address.port)}`);
+  });
+
+  afterAll(async () => {
+    foregroundServer.closeAllConnections();
+    foregroundServer.close();
+    await once(foregroundServer, 'close');
+  });
+
+  it.each(COMPLETIONS)('accepts the foreground render of $label', async (example) => {
+    const { ask } = await foreground(example);
+
+    await expect(ask()).resolves.toStrictEqual({ kind: 'ok' });
+  });
+
+  it.each([COMPLETIONS[1]!, COMPLETIONS[3]!])(
+    'judges a middleware rewrite onto $label',
+    async (example) => {
+      const { ask, route } = await foreground(example, true);
+
+      await expect(ask()).resolves.toStrictEqual({
+        kind: 'skipped',
+        reason: `the application's middleware rewrote it to ${example.pathname}, the route ${route.pathname}, regenerated`,
+      });
+    },
+  );
+
+  it('rejects a rewritten completion with a foreign entry', async () => {
+    const example = COMPLETIONS[3]!;
+    const { ask } = await foreground(example, true);
+    transport.regenerated = { entry: 'ent_other', route: example.source, member: false };
+    const verdict = await ask();
+
+    expect(verdict).toMatchObject({ kind: 'failed', reason: expect.stringContaining('ent_other') });
+  });
+
+  it('rejects a rewritten completion with a foreign source route', async () => {
+    const { ask, entryId } = await foreground(COMPLETIONS[3]!, true);
+    transport.regenerated = { entry: entryId, route: '/wrong/[id]', member: false };
+    const verdict = await ask();
+
+    expect(verdict).toMatchObject({
+      kind: 'failed',
+      reason: expect.stringContaining('regenerated as the route /wrong/[id]'),
+    });
+  });
+
+  it('requires the actual regeneration trace', async () => {
+    const { ask } = await foreground(COMPLETIONS[0]!);
+    transport.regenerated = undefined;
+
+    await expect(ask()).resolves.toStrictEqual({
+      kind: 'failed',
+      reason: 'said to be regenerated, where the edge had its Function regenerate nothing',
+    });
+  });
+
+  it('still rejects an ordinary cacheless route with no completion', async () => {
+    const { ask, route } = await foreground(COMPLETIONS[0]!);
+    const ordinary: RouteEntry = {
+      pathname: route.pathname,
+      status: route.status,
+      shell: route.shell,
+      headers: route.headers,
+    };
+
+    await expect(ask(ordinary)).resolves.toStrictEqual({
+      kind: 'failed',
+      reason: 'regenerated in the foreground, though the route has no record to regenerate',
+    });
+  });
+
+  it('still requires an HTML response for a completed foreground record', async () => {
+    const { ask } = await foreground(COMPLETIONS[0]!);
+    transport.type = 'text/plain';
+
+    await expect(ask()).resolves.toStrictEqual({
+      kind: 'failed',
+      reason: 'answered as text/plain, not an HTML document',
+    });
+  });
+
+  it('still requires a complete HTML document from the foreground render', async () => {
+    const { ask } = await foreground(COMPLETIONS[0]!);
+    transport.body = '<html><body>incomplete';
+
+    await expect(ask()).resolves.toStrictEqual({
+      kind: 'failed',
+      reason: 'the document does not end with </body></html>',
+    });
   });
 });
