@@ -388,6 +388,9 @@ describe('static Pages publication and request boundaries', () => {
     { 'if-range': 'tag' },
     { range: 'bytes=0-1' },
     { 'next-resume': '1' },
+    { 'x-matched-path': '/other' },
+    { 'x-next-revalidated-tags': 'tag' },
+    { 'x-next-revalidate-tag-token': 'token' },
     { 'x-prerender-revalidate': 'value' },
   ])('keeps personalized/conditional/internal requests private: %j', (headers) => {
     const manifest = manifestOf();
