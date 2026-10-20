@@ -63,7 +63,7 @@ import { originAt, partsOf } from '../src/parts.ts';
 import { read } from '../src/reading.ts';
 import { redirectsFrom } from '../src/redirects.ts';
 import type { CspNonceSetting, LocalStack } from '../src/stack.ts';
-import type { Regeneration } from '../src/workers/protocol.ts';
+import type { RecordedGeneration, Regeneration } from '../src/workers/protocol.ts';
 
 /**
  * The check against an edge whose every answer the test writes — and a Function, where one is
@@ -318,6 +318,8 @@ const builtGenerations = new Set<string>();
 const generationFreshness = new Map<string, unknown>();
 /** Records whose metadata the fake backstage captures in the part's own trace reply. */
 const capturedPartRecords = new Map<string, string>();
+/** Generation snapshots kept by a HEAD's own trace, apart from the live generation endpoint. */
+const capturedHeadRecords = new Map<string, Record<string, RecordedGeneration>>();
 /** A refresh after the final redirected response's trace is released, before its deferred verdict. */
 const afterPartTraces = new Map<string, { remaining: number; readonly apply: () => void }>();
 /** The value of the trace header each registered id is to go on with (`?as=`), and by pathname. */
@@ -739,6 +741,7 @@ function capturedPartGenerations(
   trace: string,
   pathname: string,
 ): Record<string, unknown> | undefined {
+  if (headTraces.has(trace)) return capturedHeadRecords.get(pathname);
   const record = capturedPartRecords.get(pathname);
   if (record === undefined || !traceSegments.has(trace)) return undefined;
   const [scope = '', entryId = ''] = record.split('|', 2);
@@ -2020,6 +2023,7 @@ describe('what the check makes of the middleware', () => {
     generationHeaders.clear();
     generationOutputs.clear();
     capturedPartRecords.clear();
+    capturedHeadRecords.clear();
     afterPartTraces.clear();
     partialGenerations.clear();
     builtGenerations.clear();
@@ -5308,6 +5312,255 @@ describe('what the check makes of the middleware', () => {
         },
       ]);
       expect(unrun.failures).toStrictEqual([
+        {
+          path: '/',
+          reason:
+            "asked for with HEAD, the application's middleware covers it, and the edge handed it on without running the middleware",
+        },
+      ]);
+    });
+
+    it.each([
+      { getComplete: true, headMode: 'resumed' },
+      { getComplete: false, headMode: 'whole' },
+    ])(
+      'judges a $headMode HEAD from its own generation after the GET changed mode',
+      async ({ getComplete }) => {
+        const finished = `${FRONT}${REST}`;
+        const routes = [
+          await routeOf('/', getComplete ? finished : FRONT, { complete: getComplete }),
+        ];
+        const entry = await entryOf('/', '/');
+        const record = `dpl_site|${entry}`;
+        const initial = getComplete
+          ? finishedAnswer(finished, '/')
+          : documentAnswer(FRONT, 'mw=hit;route=/');
+        generationHeaders.set(`${record}|2`, { 'content-type': HTML });
+        if (!getComplete) partialGenerations.add(`${record}|2`);
+        // A later lookup disagrees with the HEAD's captured partial flag and headers.
+        generationHeaders.set(`${record}|3`, { 'content-type': HTML, 'x-recorded': 'later-live' });
+        if (!getComplete) partialGenerations.add(`${record}|3`);
+        const ownHeaders = { 'content-type': HTML, 'x-recorded': 'head-snapshot' };
+        capturedHeadRecords.set('/', {
+          [`${kvGenerationKey('dpl_site', entry)}|3`]: {
+            headers: ownHeaders,
+            artifacts: [],
+            partial: getComplete,
+            source: 'runtime',
+          },
+        });
+        answers.set('/', {
+          ...initial,
+          headers: {
+            ...initial.headers,
+            'x-arkor-edge': `${String(initial.headers['x-arkor-edge'])};cache=HIT;seq=2`,
+          },
+          onHead: {
+            ...initial.headers,
+            ...ownHeaders,
+            'x-arkor-edge': getComplete
+              ? 'passthrough;reason=head-resumed;mw=hit'
+              : `${finishedAccount('/')};cache=HIT;seq=3`,
+          },
+        });
+
+        const result = await checkStack(stackOf(routes, {}));
+
+        expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+        expect(headTraces.size).toBeGreaterThan(0);
+      },
+    );
+
+    it('rejects a resumed HEAD whose own trace read only complete generations', async () => {
+      const finished = `${FRONT}${REST}`;
+      const routes = [await routeOf('/', finished, { complete: true })];
+      const entry = await entryOf('/', '/');
+      const complete = finishedAnswer(finished, '/');
+      capturedHeadRecords.set('/', {
+        [`${kvGenerationKey('dpl_site', entry)}|3`]: {
+          headers: { 'content-type': HTML },
+          artifacts: [],
+          partial: false,
+          source: 'runtime',
+        },
+      });
+      answers.set('/', {
+        ...complete,
+        onHead: { 'content-type': HTML, 'x-arkor-edge': 'passthrough;reason=head-resumed;mw=hit' },
+      });
+
+      const result = await checkStack(stackOf(routes, {}));
+
+      expect(result.failures).toStrictEqual([
+        {
+          path: '/',
+          reason:
+            'asked for with HEAD, handed on for a resume, though this HEAD read only complete generations',
+        },
+      ]);
+    });
+
+    it('rejects a whole HEAD whose selected captured generation still needs a resume', async () => {
+      const routes = [await routeOf('/', FRONT)];
+      const entry = await entryOf('/', '/');
+      const resumed = documentAnswer(FRONT, 'mw=hit;route=/');
+      // The live endpoint would hide the bad HEAD by calling this generation complete.
+      generationHeaders.set(`dpl_site|${entry}|3`, { 'content-type': HTML });
+      capturedHeadRecords.set('/', {
+        [`${kvGenerationKey('dpl_site', entry)}|3`]: {
+          headers: { 'content-type': HTML },
+          artifacts: [],
+          partial: true,
+          source: 'runtime',
+        },
+      });
+      answers.set('/', {
+        ...resumed,
+        onHead: {
+          'content-type': HTML,
+          'x-arkor-edge': `${finishedAccount('/')};cache=HIT;seq=3`,
+        },
+      });
+
+      const result = await checkStack(stackOf(routes, {}));
+
+      expect(result.failures).toStrictEqual([
+        {
+          path: '/',
+          reason: 'asked for with HEAD, answered whole from a generation this HEAD read as partial',
+        },
+      ]);
+    });
+
+    it.each(['expired', 'unbounded'] as const)(
+      'accepts an expired HEAD with its own %s record without guessing local condemnation',
+      async (lifetime) => {
+        const finished = `${FRONT}${REST}`;
+        const routes = [await routeOf('/', finished, { complete: true })];
+        const entry = await entryOf('/', '/');
+        const complete = finishedAnswer(finished, '/');
+        capturedHeadRecords.set('/', {
+          [`${kvGenerationKey('dpl_site', entry)}|3`]: {
+            headers: { 'content-type': HTML },
+            artifacts: [],
+            partial: false,
+            source: 'runtime',
+            freshness: {
+              cacheTimestamp: 0,
+              policy: {
+                revalidateAfter:
+                  lifetime === 'expired' ? { kind: 'finite', seconds: 1 } : { kind: 'unbounded' },
+                expireAfter:
+                  lifetime === 'expired' ? { kind: 'finite', seconds: 1 } : { kind: 'unbounded' },
+                clientStale: { kind: 'unbounded' },
+                source: 'runtime-output',
+              },
+            },
+          },
+        });
+        answers.set('/', {
+          ...complete,
+          onHead: {
+            'content-type': HTML,
+            'x-arkor-edge': 'passthrough;reason=head-expired;mw=hit',
+          },
+        });
+
+        const result = await checkStack(stackOf(routes, {}));
+
+        expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      },
+    );
+
+    it.each(['missing', 'another entry', 'invalid sequence'] as const)(
+      'rejects an expired HEAD whose applicable captured record is %s',
+      async (evidence) => {
+        const finished = `${FRONT}${REST}`;
+        const routes = [await routeOf('/', finished, { complete: true })];
+        const entry = await entryOf('/', '/');
+        const complete = finishedAnswer(finished, '/');
+        // A live record exists, but it is not evidence that this HEAD read it.
+        generationHeaders.set(`dpl_site|${entry}|2`, { 'content-type': HTML });
+        const capturedEntry =
+          evidence === 'another entry' ? await entryOf('/other', '/other') : entry;
+        const seq = evidence === 'invalid sequence' ? 0 : 3;
+        capturedHeadRecords.set(
+          '/',
+          evidence === 'missing'
+            ? {}
+            : {
+                [`${kvGenerationKey('dpl_site', capturedEntry)}|${String(seq)}`]: {
+                  headers: { 'content-type': HTML },
+                  artifacts: [],
+                  partial: false,
+                  source: 'runtime',
+                },
+              },
+        );
+        answers.set('/', {
+          ...complete,
+          onHead: {
+            'content-type': HTML,
+            'x-arkor-edge': 'passthrough;reason=head-expired;mw=hit',
+          },
+        });
+
+        const result = await checkStack(stackOf(routes, {}));
+
+        expect(result.failures).toStrictEqual([
+          {
+            path: '/',
+            reason:
+              'asked for with HEAD, handed on as expired, though this HEAD read none of its applicable records',
+          },
+        ]);
+      },
+    );
+
+    it('still rejects an unrelated HEAD handoff for a complete build page', async () => {
+      const finished = `${FRONT}${REST}`;
+      const routes = [await routeOf('/', finished, { complete: true })];
+      const complete = finishedAnswer(finished, '/');
+      answers.set('/', {
+        ...complete,
+        onHead: { 'content-type': HTML, 'x-arkor-edge': 'passthrough;reason=head' },
+      });
+
+      const result = await checkStack(stackOf(routes, {}));
+
+      expect(result.failures).toStrictEqual([
+        {
+          path: '/',
+          reason:
+            'asked for with HEAD, not answered from the shell of its own route (x-arkor-edge: passthrough;reason=head)',
+        },
+      ]);
+    });
+
+    it('still rejects an expired HEAD handed on without its covering middleware', async () => {
+      const finished = `${FRONT}${REST}`;
+      const routes = [await routeOf('/', finished, { complete: true })];
+      const entry = await entryOf('/', '/');
+      const complete = finishedAnswer(finished, '/');
+      capturedHeadRecords.set('/', {
+        [`${kvGenerationKey('dpl_site', entry)}|3`]: {
+          headers: { 'content-type': HTML },
+          artifacts: [],
+          partial: false,
+          source: 'runtime',
+        },
+      });
+      answers.set('/', {
+        ...complete,
+        onHead: { 'content-type': HTML, 'x-arkor-edge': 'passthrough;reason=head-expired' },
+      });
+      unkeptOnHead.add('/');
+
+      const result = await checkStack(
+        withMiddleware(stackOf(routes, {}), [{ sourceRegex: '^/$' }]),
+      );
+
+      expect(result.failures).toStrictEqual([
         {
           path: '/',
           reason:

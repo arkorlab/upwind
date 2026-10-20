@@ -17,6 +17,7 @@ import {
   middlewareAnswered,
   middlewareRan,
   policyFailure,
+  recordedGenerationsOf,
   SHELL_ANSWER,
   skipped,
   stampedOf,
@@ -49,14 +50,17 @@ import {
   type Application,
   applicationOf,
   laidFailure,
+  recordEntriesOf,
   recordedOf,
   regeneratedLaidFailure,
   regenerationFailure,
   renderedSince,
   servedGeneration,
   servedWhole,
+  type ServedGeneration,
 } from './recorded.ts';
 import { shellOf } from './shells.ts';
+import type { RecordedGeneration } from './workers/protocol.ts';
 
 /**
  * A prerendered route, as the check asks for it (`check.ts`): a browser's navigation, answered with
@@ -203,18 +207,14 @@ async function servedFailure(
 
 /**
  * Why a page, asked for its headers alone (`HEAD`) as a link checker asks, is not answered as the
- * edge answers it (`handleDocument`), as it composed the `GET` of it (`complete`): one whole — the
+ * edge answers this request (`handleDocument`): one whole — the
  * build's finished shell, or a generation complete in itself — from what it holds, under the
  * stack's policy, with the headers the `GET` would carry and no body; one a resume completes
  * handed on to the Function behind the middleware (`headToApplication`), as its headers are the
  * resume's to decide. A request of its own to the application's routing: one the middleware
  * answers, or moves, is the middleware's.
  */
-async function headFailure(
-  stack: CheckedStack,
-  asked: Asked,
-  complete: boolean,
-): Promise<string | undefined> {
+async function headFailure(stack: CheckedStack, asked: Asked): Promise<string | undefined> {
   const url = new URL(asked.requested, stack.site);
   await using tracing = await traced(stack, asked.headers);
   const { headers, trace } = tracing;
@@ -229,6 +229,10 @@ async function headFailure(
   const kept = await keptOf(stack, trace, url, asked.headers);
   const { decided } = kept;
   const captured = withGenerationEvidence(stack, kept);
+  const answered = answeredBy(answer);
+  const complete = answered.startsWith(SHELL_ANSWER)
+    ? servedWhole(answered)
+    : !HEAD_HANDED_ON.test(answered) && asked.route.cache?.delivery === 'complete';
   const covered = middlewareCovers(stack, url, asked.headers);
   const unkept =
     keptFailure(answer, decided, covered) ??
@@ -242,8 +246,97 @@ async function headFailure(
   return failure === undefined ? undefined : `asked for with HEAD, ${failure}`;
 }
 
-/** What the edge says of a `HEAD` of a page a resume completes it hands on (`headToApplication`). */
-const HEAD_HANDED_ON = 'passthrough;reason=head-resumed';
+/** The two document decisions that hand a `HEAD` to the Function. */
+const HEAD_HANDED_ON = /^passthrough;reason=head-(resumed|expired)(?:;|$)/u;
+
+/** Only records this `HEAD` observed, for its routed class or eligible member. */
+async function headGenerations(
+  stack: CheckedStack,
+  route: RouteEntry,
+  pathname: string,
+  served?: ServedGeneration,
+): Promise<readonly RecordedGeneration[]> {
+  const scopeId = stack.manifest.cache?.scopeId;
+  if (scopeId === undefined || stack.generationEvidence === undefined) return [];
+  const entries = (await recordEntriesOf(stack, route, pathname)).filter(
+    (entryId) => served === undefined || (entryId !== route.cache?.entryId) === served.member,
+  );
+  const records = await Promise.all(
+    entries.map((entryId) => recordedGenerationsOf(stack, { scopeId, entryId })),
+  );
+  return records.flatMap((generations) => {
+    if (served === undefined) {
+      return [...generations].flatMap(([seq, generation]) =>
+        Number.isSafeInteger(seq) && seq > 0 ? [generation] : [],
+      );
+    }
+    const generation = generations.get(served.seq);
+    return generation === undefined ? [] : [generation];
+  });
+}
+
+/** Check the claimed handoff against this request's record evidence, never an earlier `GET`. */
+async function headRecordHandoffFailure(
+  stack: CheckedStack,
+  route: RouteEntry,
+  pathname: string,
+  answered: string,
+): Promise<string | undefined> {
+  const generations = await headGenerations(stack, route, pathname);
+  if (HEAD_HANDED_ON.exec(answered)?.[1] === 'expired') {
+    // The edge also expires locally condemned records. The trace proves the record read, not
+    // that unrecorded decision or its instant; do not infer it from the stored freshness alone.
+    return generations.length > 0
+      ? undefined
+      : 'handed on as expired, though this HEAD read none of its applicable records';
+  }
+  if (generations.length > 0) {
+    return generations.some((generation) => generation.partial)
+      ? undefined
+      : 'handed on for a resume, though this HEAD read only complete generations';
+  }
+  return route.cache?.delivery === 'complete'
+    ? 'handed on for a resume, though its build finished it and this HEAD read no partial generation'
+    : undefined;
+}
+
+/** The same record checks where this `HEAD`'s middleware moved it to another route. */
+async function headLandingHandoffFailure(
+  stack: CheckedStack,
+  landed: RouteEntry | undefined,
+  read: { readonly pathname: string; readonly answered: string; readonly done: string },
+): Promise<string | undefined> {
+  const { answered, done } = read;
+  if (landed !== undefined && HEAD_HANDED_ON.test(answered)) {
+    const failure = await headRecordHandoffFailure(stack, landed, read.pathname, answered);
+    return failure === undefined
+      ? undefined
+      : `${done} the route ${landed.pathname}, and ${failure}`;
+  }
+  return landed?.cache?.delivery === 'complete'
+    ? `${done} the route ${landed.pathname}, and not answered from its shell (${EDGE_HEADER}: ${answered})`
+    : undefined;
+}
+
+/** A shell `HEAD` must be whole in its own build or selected generation. */
+async function wholeHeadFailure(
+  stack: CheckedStack,
+  route: RouteEntry,
+  pathname: string,
+  answer: Reading,
+): Promise<string | undefined> {
+  if (!servedWhole(answeredBy(answer))) return 'answered from a shell a resume still completes';
+  const served = servedGeneration(answer, route);
+  if (served === undefined) {
+    return route.cache?.delivery === 'complete'
+      ? undefined
+      : 'answered whole from a build shell a resume still completes';
+  }
+  const generations = await headGenerations(stack, route, pathname, served);
+  return generations.some((generation) => generation.partial)
+    ? 'answered whole from a generation this HEAD read as partial'
+    : undefined;
+}
 
 /**
  * Why a `HEAD` of a page a resume completes is not handed on to the Function as the edge hands one
@@ -267,9 +360,16 @@ async function handedOnHeadFailure(
   if (bypassed !== undefined) {
     return bypassed.kind === 'failed' ? bypassed.reason : undefined;
   }
-  return answered === HEAD_HANDED_ON || answered.startsWith(`${HEAD_HANDED_ON};`)
-    ? undefined
-    : `not handed on to the Function, as a page a resume completes is (${EDGE_HEADER}: ${answered})`;
+  if (!HEAD_HANDED_ON.test(answered)) {
+    return `not handed on to the Function, as a page a resume completes is (${EDGE_HEADER}: ${answered})`;
+  }
+  const pathname = decided?.kind === 'continue' ? decided.url.pathname : asked.requested;
+  return headRecordHandoffFailure(
+    stack,
+    asked.route,
+    new URL(pathname, stack.site).pathname,
+    answered,
+  );
 }
 
 /**
@@ -308,6 +408,7 @@ async function headAnswerFailure(
   const application = applicationOf(stack, asked, decided, 'whole');
   return (
     heldPolicyFailure(stack, answer, answered) ??
+    (await wholeHeadFailure(stack, asked.route, pathname, answer)) ??
     (await servedFailure(
       stack,
       { route: asked.route, pathname },
@@ -353,9 +454,11 @@ async function movedHeadFailure(
   const landed = landingOf(stack, decided.url, decided);
   const { done } = moveOf(decided);
   if (!answered.startsWith(SHELL_ANSWER)) {
-    return landed?.cache?.delivery === 'complete'
-      ? `${done} the route ${landed.pathname}, and not answered from its shell (${EDGE_HEADER}: ${answered})`
-      : undefined;
+    return headLandingHandoffFailure(stack, landed, {
+      pathname: decided.url.pathname,
+      answered,
+      done,
+    });
   }
   const route = servedAs(stack.manifest, answered, landed);
   if (landed === undefined || route?.pathname !== landed.pathname) {
@@ -367,7 +470,9 @@ async function movedHeadFailure(
   }
   const application = applicationOf(stack, asked, decided, 'whole');
   const served = { route: landed, pathname: decided.url.pathname };
-  const failure = await servedFailure(stack, served, { answer, application, head: true });
+  const failure =
+    (await wholeHeadFailure(stack, landed, decided.url.pathname, answer)) ??
+    (await servedFailure(stack, served, { answer, application, head: true }));
   return failure === undefined ? undefined : `${done} the route ${landed.pathname}, and ${failure}`;
 }
 
@@ -654,7 +759,7 @@ async function composedVerdict(
     return failed(
       movedFailure(stack, asked.route, decided) ??
         (await servedFailure(stack, served, { answer, application, ...codedOf(asked) })) ??
-        (asked.coding === undefined ? await headFailure(stack, asked, whole) : undefined),
+        (asked.coding === undefined ? await headFailure(stack, asked) : undefined),
     );
   }
   return middlewareRan(answer)
