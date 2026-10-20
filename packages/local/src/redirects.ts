@@ -368,7 +368,9 @@ async function hopAnswered(
     }
   }
   const reading =
-    sent.whole === true ? { decode: undoneUnlessStored(true) } : { headersOnly: true };
+    sent.whole === true
+      ? { headersOnly: redirectHeaders, decode: undoneUnlessStored(true) }
+      : { headersOnly: true };
   const read = await answerTo(url, { via: stack.url, headers, method, ...reading });
   if (typeof read === 'string') {
     return read;

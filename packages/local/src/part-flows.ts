@@ -37,6 +37,7 @@ import {
   askKey,
   COOKIE,
   cookieOn,
+  redirectHeaders,
   redirectsFrom,
   type Sent,
   type Step,
@@ -230,6 +231,7 @@ async function partHopAnswer(
   const answer = await answerTo(sent.url, {
     via: stack.url,
     headers: tracing.headers,
+    headersOnly: redirectHeaders,
     decode: undoneUnlessStored(true),
   });
   if (typeof answer === 'string') {

@@ -120,6 +120,8 @@ interface Answer {
   readonly body: string;
   /** Whether the answer never ends, as a stream an application keeps open does. */
   readonly endless?: boolean;
+  /** Observe the real response whose body is held open until the reader cancels it. */
+  readonly opened?: ((response: ServerResponse) => void) | undefined;
   /** Whether a file is answered whole to a request for a range of it. */
   readonly rangeless?: boolean;
   /** What a request for a range of it is answered with instead, where not the file's range. */
@@ -1185,11 +1187,39 @@ const server = createServer((request, response) => {
   }
   response.writeHead(answer.status ?? 200, { ...account, ...answer.headers, ...tagged });
   if (answer.endless === true) {
+    answer.opened?.(response);
+    response.flushHeaders();
     response.write(answer.body);
     return;
   }
   response.end(answer.body);
 });
+
+/** A redirect with flushed headers and an invalid gzip prefix whose body never ends. */
+function streamingRedirect(location: string) {
+  const closed: Promise<boolean>[] = [];
+  const responses: ServerResponse[] = [];
+  const answer: Answer = {
+    status: 307,
+    headers: {
+      location,
+      'content-encoding': 'gzip',
+      'set-cookie': 'from=hop; Path=/',
+      'x-arkor-edge': 'passthrough;reason=middleware;mw=hit',
+    },
+    body: 'not a gzip stream',
+    endless: true,
+    opened: (response) => {
+      const ended = Promise.withResolvers<boolean>();
+      responses.push(response);
+      closed.push(ended.promise);
+      response.once('close', () => {
+        ended.resolve(true);
+      });
+    },
+  };
+  return { answer, responses, closed };
+}
 
 /** A redirect's initial responses, then a refresh, all recorded without retaining body streams. */
 function initialPartAnswers(
@@ -5321,11 +5351,11 @@ describe('what the check makes of the middleware', () => {
     });
 
     it.each([
-      { getComplete: true, headMode: 'resumed' },
-      { getComplete: false, headMode: 'whole' },
+      { getComplete: true, headMode: 'resumed', partials: [] },
+      { getComplete: false, headMode: 'whole', partials: [2, 3] },
     ])(
       'judges a $headMode HEAD from its own generation after the GET changed mode',
-      async ({ getComplete }) => {
+      async ({ getComplete, partials }) => {
         const finished = `${FRONT}${REST}`;
         const routes = [
           await routeOf('/', getComplete ? finished : FRONT, { complete: getComplete }),
@@ -5336,10 +5366,9 @@ describe('what the check makes of the middleware', () => {
           ? finishedAnswer(finished, '/')
           : documentAnswer(FRONT, 'mw=hit;route=/');
         generationHeaders.set(`${record}|2`, { 'content-type': HTML });
-        if (!getComplete) partialGenerations.add(`${record}|2`);
         // A later lookup disagrees with the HEAD's captured partial flag and headers.
         generationHeaders.set(`${record}|3`, { 'content-type': HTML, 'x-recorded': 'later-live' });
-        if (!getComplete) partialGenerations.add(`${record}|3`);
+        for (const seq of partials) partialGenerations.add(`${record}|${seq}`);
         const ownHeaders = { 'content-type': HTML, 'x-recorded': 'head-snapshot' };
         capturedHeadRecords.set('/', {
           [`${kvGenerationKey('dpl_site', entry)}|3`]: {
@@ -11499,6 +11528,79 @@ describe('what the check makes of the middleware', () => {
         skipped: [],
       });
     });
+
+    it.each([
+      { label: 'known part', hopPaths: ['/hop'], finalType: RSC, failures: [] },
+      { label: 'fallback hop', hopPaths: [], finalType: RSC, failures: [] },
+      {
+        label: 'known part with invalid terminal type',
+        hopPaths: ['/hop'],
+        finalType: TEXT,
+        failures: [
+          {
+            path: '/',
+            reason:
+              'its prefetch segment /_tree, redirected to /login, answered as text/plain, not text/x-component',
+          },
+        ],
+      },
+      {
+        label: 'fallback hop with invalid terminal type',
+        hopPaths: [],
+        finalType: TEXT,
+        failures: [
+          {
+            path: '/',
+            reason:
+              'its prefetch segment /_tree, redirected to /login, answered as text/plain, not text/x-component',
+          },
+        ],
+      },
+    ])(
+      'follows and cancels a flushed open gzip redirect through a $label',
+      async ({ hopPaths, finalType, failures }) => {
+        const front = await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } });
+        const intermediate = await Promise.all(
+          hopPaths.map((pathname) =>
+            routeOf(pathname, finished, { complete: true, segments: { '/_tree': 'hop tree' } }),
+          ),
+        );
+        const login = await routeOf('/login', finished, {
+          complete: true,
+          segments: { '/_tree': 'login tree' },
+        });
+        const routes = [front, ...intermediate, login];
+        answers.set('/', documentAnswer(FRONT, 'mw=miss;route=/'));
+        answers.set('/hop', finishedAnswer(finished, '/hop'));
+        answers.set('/login', finishedAnswer(finished, '/login'));
+        partAnswers.set('/|/_tree', {
+          status: 307,
+          headers: { location: '/hop', 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' },
+          body: '',
+        });
+        const open = streamingRedirect('/login');
+        // Only the redirected fetch without its router hash gets the open intermediate body.
+        // Direct checks of /hop's own part still receive its normal, finite bytes.
+        partAnswers.set('/hop|/_tree', { ...segmentAnswer('hop tree'), unbusted: open.answer });
+        partAnswers.set('/login|/_tree', {
+          ...segmentAnswer('login tree'),
+          withCookie: { name: 'from', headers: { 'content-type': finalType } },
+        });
+        try {
+          const result = await checkStack(stackOf(routes, {}));
+
+          expect(result.failures).toStrictEqual(failures);
+          expect(result.checked).toBe(routes.length);
+          expect(open.responses.length).toBeGreaterThan(0);
+
+          const closed = await Promise.all(open.closed);
+
+          expect(closed).toStrictEqual(open.closed.map(() => true));
+        } finally {
+          for (const response of open.responses) response.destroy();
+        }
+      },
+    );
 
     it("is judged where a redirect leads its browser's fetch, as that page's part", async () => {
       const routes = [

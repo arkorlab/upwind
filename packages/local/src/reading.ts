@@ -275,6 +275,16 @@ class Copy {
   }
 }
 
+/** Keep the physical authority while carrying the logical path, even when it begins with `//`. */
+function requestTarget(url: URL, via: URL | undefined): URL {
+  if (via === undefined) return url;
+  const target = new URL(via);
+  target.pathname = url.pathname;
+  target.search = url.search;
+  target.hash = '';
+  return target;
+}
+
 /**
  * A GET of `url` (or a HEAD, `options.method`) with exactly `options.headers`, its body kept as
  * `Reading` says: as it comes, with nothing decoded — which a check asks for (`accept-encoding:
@@ -285,7 +295,7 @@ export function read(url: URL, options: ReadOptions): Promise<Reading> {
   return new Promise((resolve, reject) => {
     const signal = AbortSignal.timeout(options.deadlineMs);
     const { headers, method = 'GET', via } = options;
-    const target = via === undefined ? url : new URL(`${url.pathname}${url.search}`, via);
+    const target = requestTarget(url, via);
     const request = http.request(target, { method, headers, signal }, (response) => {
       const kept = new Kept(options);
       // Once: a response let go of past its bound may still say it ended, and its digest is taken

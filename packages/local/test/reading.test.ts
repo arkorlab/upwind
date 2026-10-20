@@ -10,7 +10,7 @@ import type { AddressInfo } from 'node:net';
 import { brotliCompressSync, gzipSync, zstdCompressSync } from 'node:zlib';
 
 import { RECOVERY_MARKER } from '@stayingupwind/core/request';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { undoneUnlessStored } from '../src/answers.ts';
 import { read } from '../src/reading.ts';
@@ -27,6 +27,29 @@ const DOCUMENT = PIECES.join('');
 /** A body longer than a copy's way holds at once, which the copy has to wait to drain for. */
 const LONG_PIECE = 'y'.repeat(64 * 1024);
 const LONG_PIECES = 32;
+const TRANSPORT_COOKIE = 'session=loopback-only';
+const TRANSPORT_AUTHORIZATION = 'Bearer loopback-only';
+const TRANSPORT_HOST = 'logical.example:443';
+
+/** The actual socket that received a request, apart from the logical Host it carried. */
+function transportVisit(request: IncomingMessage) {
+  return {
+    method: request.method,
+    pathname: request.url,
+    host: request.headers.host,
+    cookie: request.headers.cookie,
+    authorization: request.headers.authorization,
+    port: request.socket.localPort,
+  };
+}
+
+const viaVisits: ReturnType<typeof transportVisit>[] = [];
+const otherVisits: ReturnType<typeof transportVisit>[] = [];
+/** A second loopback authority makes a mistaken protocol-relative parse observable without DNS. */
+const otherServer = createServer((request, response) => {
+  otherVisits.push(transportVisit(request));
+  response.end('other loopback authority');
+});
 
 function sha256Of(text: string | Buffer): string {
   return createHash('sha256').update(text).digest('hex');
@@ -84,6 +107,11 @@ function headerFixture(request: IncomingMessage, response: ServerResponse): bool
 }
 
 const server = createServer((request, response) => {
+  if (request.headers['x-transport-test'] === '1') {
+    viaVisits.push(transportVisit(request));
+    response.end('via loopback authority');
+    return;
+  }
   if (headerFixture(request, response)) return;
   const coded = Object.hasOwn(CODED, request.url ?? '') ? CODED[request.url ?? ''] : undefined;
   if (coded !== undefined) {
@@ -171,13 +199,22 @@ const server = createServer((request, response) => {
 });
 
 describe('an answer read as it streams', () => {
-  const state: { url?: URL } = {};
+  const state: { url?: URL; other?: URL } = {};
 
   beforeAll(async () => {
     await new Promise<void>((resolve) => {
       server.listen(0, '127.0.0.1', resolve);
     });
     state.url = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    await new Promise<void>((resolve) => {
+      otherServer.listen(0, '127.0.0.1', resolve);
+    });
+    state.other = new URL(`http://127.0.0.1:${(otherServer.address() as AddressInfo).port}`);
+  });
+
+  beforeEach(() => {
+    viaVisits.length = 0;
+    otherVisits.length = 0;
   });
 
   afterAll(async () => {
@@ -186,6 +223,159 @@ describe('an answer read as it streams', () => {
         resolve();
       });
     });
+    await new Promise<void>((resolve) => {
+      otherServer.close(() => {
+        resolve();
+      });
+    });
+  });
+
+  it.each(['/.//', '/..//', '/%2e//', '/%2e%2e//'])(
+    'keeps a same-origin %s hop and its cookies on the selected via socket',
+    async (prefix) => {
+      const other = new URL('/', state.other);
+      const url = new URL(
+        `${prefix}${other.host}/kept%2Fpath?one=1&one=2&next=%2F%2Felsewhere#not-sent`,
+        other,
+      );
+      const via = new URL('/discarded/base?discarded=1#discarded', state.url);
+      const original = [url.href, via.href];
+      const reading = await read(url, {
+        via,
+        headers: {
+          host: TRANSPORT_HOST,
+          cookie: TRANSPORT_COOKIE,
+          authorization: TRANSPORT_AUTHORIZATION,
+          'x-transport-test': '1',
+        },
+        deadlineMs: 5000,
+      });
+
+      expect(url.origin).toBe(other.origin);
+      expect(url.pathname).toBe(`//${other.host}/kept%2Fpath`);
+      expect(viaVisits).toStrictEqual([
+        {
+          method: 'GET',
+          pathname: `//${other.host}/kept%2Fpath?one=1&one=2&next=%2F%2Felsewhere`,
+          host: TRANSPORT_HOST,
+          cookie: TRANSPORT_COOKIE,
+          authorization: TRANSPORT_AUTHORIZATION,
+          port: Number(via.port),
+        },
+      ]);
+      expect(otherVisits).toStrictEqual([]);
+      expect(reading.sha256).toBe(sha256Of('via loopback authority'));
+      expect([url.href, via.href]).toStrictEqual(original);
+    },
+  );
+
+  it('preserves a literal double-slash pathname without interpreting it as an authority', async () => {
+    const other = new URL('/', state.other);
+    const url = new URL('/before', other);
+    url.pathname = `//${other.host}/literal`;
+    url.search = '?next=%2F%2Felsewhere&empty=';
+    const via = new URL('/discarded/base?discarded=1', state.url);
+    const reading = await read(url, {
+      via,
+      headers: { cookie: TRANSPORT_COOKIE, 'x-transport-test': '1' },
+      deadlineMs: 5000,
+    });
+
+    expect(viaVisits).toStrictEqual([
+      {
+        method: 'GET',
+        pathname: `//${other.host}/literal?next=%2F%2Felsewhere&empty=`,
+        host: via.host,
+        cookie: TRANSPORT_COOKIE,
+        authorization: undefined,
+        port: Number(via.port),
+      },
+    ]);
+    expect(otherVisits).toStrictEqual([]);
+    expect(reading.sha256).toBe(sha256Of('via loopback authority'));
+  });
+
+  it.each([
+    '/ordinary?one=1&one=2&empty=',
+    '/escaped%2fpath/%23literal?next=%2F%2Felsewhere&space=+&space=%20',
+    '/path:with-colon/%40name?encoded=%3F%23%26&bare',
+  ])('preserves the exact path and query spelling of %s via the stack', async (pathname) => {
+    const url = new URL(pathname, state.other);
+    const via = new URL('/discarded/base?discarded=1#discarded', state.url);
+    const original = [url.href, via.href];
+    const reading = await read(url, {
+      via,
+      headers: { host: TRANSPORT_HOST, 'x-transport-test': '1' },
+      deadlineMs: 5000,
+    });
+
+    expect(viaVisits).toStrictEqual([
+      {
+        method: 'GET',
+        pathname,
+        host: TRANSPORT_HOST,
+        cookie: undefined,
+        authorization: undefined,
+        port: Number(via.port),
+      },
+    ]);
+    expect(otherVisits).toStrictEqual([]);
+    expect(reading.sha256).toBe(sha256Of('via loopback authority'));
+    expect([url.href, via.href]).toStrictEqual(original);
+  });
+
+  it('keeps a HEAD with a double-slash pathname on the via socket as well', async () => {
+    const other = new URL('/', state.other);
+    const url = new URL(`/.//${other.host}/head?kept=%2F`, other);
+    const via = new URL('/', state.url);
+    const reading = await read(url, {
+      via,
+      method: 'HEAD',
+      headers: {
+        host: TRANSPORT_HOST,
+        cookie: TRANSPORT_COOKIE,
+        authorization: TRANSPORT_AUTHORIZATION,
+        'x-transport-test': '1',
+      },
+      deadlineMs: 5000,
+    });
+
+    expect(viaVisits).toStrictEqual([
+      {
+        method: 'HEAD',
+        pathname: `//${other.host}/head?kept=%2F`,
+        host: TRANSPORT_HOST,
+        cookie: TRANSPORT_COOKIE,
+        authorization: TRANSPORT_AUTHORIZATION,
+        port: Number(via.port),
+      },
+    ]);
+    expect(otherVisits).toStrictEqual([]);
+    expect(reading.length).toBe(0);
+    expect(reading.sha256).toBe(sha256Of(''));
+  });
+
+  it('uses the URL own authority unchanged when no via socket was selected', async () => {
+    const url = new URL('/direct%2Fpath?one=1&one=2#not-sent', state.other);
+    const original = url.href;
+    const reading = await read(url, {
+      headers: { cookie: TRANSPORT_COOKIE, authorization: TRANSPORT_AUTHORIZATION },
+      deadlineMs: 5000,
+    });
+
+    expect(viaVisits).toStrictEqual([]);
+    expect(otherVisits).toStrictEqual([
+      {
+        method: 'GET',
+        pathname: '/direct%2Fpath?one=1&one=2',
+        host: url.host,
+        cookie: TRANSPORT_COOKIE,
+        authorization: TRANSPORT_AUTHORIZATION,
+        port: Number(url.port),
+      },
+    ]);
+    expect(reading.sha256).toBe(sha256Of('other loopback authority'));
+    expect(url.href).toBe(original);
   });
 
   it.each(['redirect', 'page'])('reads a flushed %s without waiting for its body', async (kind) => {
