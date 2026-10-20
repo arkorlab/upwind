@@ -14,7 +14,10 @@ import type { CacheRuntime } from './runtime.ts';
 interface LeaseHolder {
   readonly runtime: CacheRuntime;
   readonly waitUntil: (promise: Promise<unknown>) => void;
-  readonly target: { readonly descriptor: { readonly pathname: string } };
+  readonly target: {
+    readonly descriptor: { readonly pathname: string };
+    readonly replaces?: string | null | undefined;
+  };
 }
 
 function detail(error: unknown): string {
@@ -66,7 +69,11 @@ export async function within<T>(
 
 export async function abandon(
   input: LeaseHolder,
-  lease: { attemptId: string; fencingToken: number },
+  lease: {
+    attemptId: string;
+    fencingToken: number;
+    current?: CurrentSummary | null | undefined;
+  },
   outcome: 'failed' | 'skipped',
   error?: unknown,
 ): Promise<void> {
@@ -74,6 +81,10 @@ export async function abandon(
     await input.runtime.host.fail(lease.attemptId, {
       fencingToken: lease.fencingToken,
       outcome,
+      // With no generation, backoff still renders each visitor but cannot keep a recovered page.
+      ...(outcome === 'failed' &&
+        input.target.replaces === null &&
+        lease.current === null && { retryAfterMs: 0 }),
       // The failure's own word where it has one, so a refusal decided here reads as itself and
       // not as a render that threw; the gateway enumerates none of them.
       ...(error !== undefined && {
