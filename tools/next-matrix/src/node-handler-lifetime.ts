@@ -47,6 +47,7 @@ export default {
           const close = () => { reader.cancel().catch(() => {}); };
           response.once('close', close);
           response.setHeader('content-type', 'text/event-stream');
+          response.flushHeaders();
           try {
             for (;;) {
               const chunk = await reader.read();
@@ -60,6 +61,8 @@ export default {
           return;
         }
         if (new URL(request.url).pathname === '/delayed-finish') {
+          response.setHeader('content-type', 'text/plain');
+          response.flushHeaders();
           response.write('first');
           const finish = await env.OBSERVER.fetch('https://observer.test/finish');
           await finish.text();
@@ -254,6 +257,7 @@ async function exercise(bridge: string, tasks: string, lane: Lane): Promise<void
       const { body } = response;
       assert.ok(body !== null);
       const reader = body.getReader();
+      lane.stage = 'delayed-first-chunk';
       const first = await bounded(reader.read(), signal);
       assert.ok(first.value instanceof Uint8Array);
       assert.equal(new TextDecoder().decode(first.value), 'first');
