@@ -246,6 +246,10 @@ function bodiesOf(value: Fields): Bodies | undefined {
 }
 
 /** The header `value` is, or `undefined` when `generationPackHeaderSchema` would refuse it. */
+function isStaticPagePrivacy(value: unknown): value is 1 | 2 | undefined {
+  return value === undefined || (typeof value === 'number' && [1, 2].includes(value));
+}
+
 export function packHeaderOf(value: unknown): GenerationPackHeader | undefined {
   if (!isFields(value) || value['schemaVersion'] !== PACK_SCHEMA_VERSION) {
     return undefined;
@@ -269,7 +273,7 @@ export function packHeaderOf(value: unknown): GenerationPackHeader | undefined {
     !isIntegerOrNull(producedAt) ||
     !isInteger(status) ||
     !isCount(revision) ||
-    (staticPagePrivacy !== 1 && staticPagePrivacy !== undefined) ||
+    !isStaticPagePrivacy(staticPagePrivacy) ||
     (invalidation !== undefined && invalidationState === undefined)
   ) {
     return undefined;
@@ -281,7 +285,7 @@ export function packHeaderOf(value: unknown): GenerationPackHeader | undefined {
     generationId: identity.generationId,
     seq: identity.seq,
     source: identity.source,
-    ...(staticPagePrivacy === 1 && { staticPagePrivacy }),
+    ...(staticPagePrivacy !== undefined && { staticPagePrivacy }),
     kind: identity.kind,
     route: identity.route,
     pathname: identity.pathname,

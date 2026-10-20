@@ -57,7 +57,7 @@ import {
   type MiddlewareTiming,
   routedHeaders,
 } from './middleware.ts';
-import { observeServed } from './observer.ts';
+import { abandonShellRead, observeServed, withShellAccounting } from './observer.ts';
 import type { PassthroughWait } from './passthrough.ts';
 import { dispatchedSoFar, dispatchesMade } from './upstream.ts';
 
@@ -621,7 +621,20 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
   // sandbox flags. Decide before dispatching a resume, which cannot serve a whole document.
   const recorded = recordedHeaders(input);
   const rules = documentRules(input);
-  const headers = replayedDocumentHeaders(recorded, rules);
+  let headers: Headers;
+  try {
+    headers = replayedDocumentHeaders(recorded, rules);
+  } catch {
+    // A retained record may predate transport validation. Keep its policy intact by asking for
+    // a whole application response, before a continuation that could only finish its body starts.
+    if (generation !== undefined) {
+      input.edge.ctx.waitUntil(shellLookup);
+      return input.passthrough('shell-corrupt', input.middleware, entry.pathname);
+    }
+    const accounted = withShellAccounting(input);
+    abandonShellRead(accounted.edge, shellLookup);
+    return accounted.passthrough('shell-corrupt', input.middleware, entry.pathname);
+  }
   const delegated = delegateSandboxedDocument(input, complete, headers, shellLookup);
   if (delegated !== undefined) {
     return delegated;

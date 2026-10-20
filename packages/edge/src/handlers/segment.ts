@@ -224,7 +224,10 @@ function applicationHeaders(input: SegmentInput, headers: Headers): void {
   for (const [name, value] of Object.entries(input.routeHeaders)) {
     const normalized = name.toLowerCase();
     if ((normalized !== 'link' || input.kind === 'data') && !leftBehind.has(normalized)) {
-      setConfigured(headers, name, value, input.edge.forwarding);
+      const set = setConfigured(headers, name, value, input.edge.forwarding);
+      if (!set && input.generation !== undefined) {
+        throw new TypeError('a recorded router-part header cannot be replayed');
+      }
     }
   }
   // Explicit rules describe this request, including any Link the application intentionally sets.
@@ -315,7 +318,11 @@ function segmentHeaders(input: SegmentInput, rendering: Rendering, source: strin
 function storageFailure(input: SegmentInput, reason: string): Response {
   const own = serviceUnavailableResponse(reason);
   const headers = new Headers();
-  applicationHeaders(input, headers);
+  try {
+    applicationHeaders(input, headers);
+  } catch {
+    return own;
+  }
   if (input.middleware !== undefined) {
     mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, input.edge.forwarding);
   }
@@ -427,7 +434,20 @@ export async function handleSegment(input: SegmentInput): Promise<Response> {
     });
     return storageFailure(input, `${input.kind}-${loaded.kind}`);
   }
-  const headers = segmentHeaders(input, rendering, loaded.read.source);
+  let headers: Headers;
+  try {
+    headers = segmentHeaders(input, rendering, loaded.read.source);
+  } catch {
+    if (input.onUnavailable !== undefined) return input.onUnavailable(reads);
+    recordDelivery(input, {
+      source: 'corrupt',
+      rendering,
+      lookupMs: edge.runtime.now() - lookupStartedAt,
+      bytes: 0,
+      reads,
+    });
+    return storageFailure(input, `${input.kind}-metadata`);
+  }
   const { bytes } = loaded.read;
   recordDelivery(input, {
     source: loaded.read.source,

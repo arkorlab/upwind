@@ -1,4 +1,5 @@
 export { negotiateContentEncoding } from './accept.ts';
+export { hasRouteBodyControlHeader } from './route-bodies.ts';
 export {
   bypassForHolds,
   judgesHtmlLimitedBots,

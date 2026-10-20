@@ -306,6 +306,35 @@ async function fixture(
   };
 }
 
+/** Read response metadata from a digest-valid runtime record, without inheriting its build type. */
+async function runtimeBodyType(
+  test: Awaited<ReturnType<typeof fixture>>,
+  contentType: string,
+  headers: Record<string, string> = {},
+) {
+  const record = encodeGenerationPack(
+    {
+      ...test.pack.header,
+      generationId: 'gen_runtime_body_type',
+      seq: 2,
+      revision: 2,
+      source: 'runtime',
+      headers,
+      artifacts: test.pack.header.artifacts.map((artifact) => {
+        return artifact.role === 'route-body' && artifact.representationKey === 'route-body'
+          ? { ...artifact, contentType }
+          : artifact;
+      }),
+    },
+    BODY,
+    undefined,
+  );
+
+  test.edge.runtime.memory.generations.delete(test.key);
+
+  await env.CACHE_STATE.put(test.key, record);
+}
+
 /** Exercise the dispatcher too: a non-document request must never enter HTML composition. */
 function routed(
   test: Awaited<ReturnType<typeof fixture>>,
@@ -1166,6 +1195,66 @@ describe('the host serves complete route-body generations', () => {
     await expect(response.text()).resolves.toBe('Function');
     expect(response.headers.get('cache-control')).toBe('private, no-store');
     expect(test.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each(['\0', '\r', '\n'])(
+    'leaves a selected runtime body type containing %j to the Function',
+    async (control) => {
+      const test = await fixture();
+      const contentType = `image/png; name=a${control}b`;
+
+      await runtimeBodyType(test, contentType);
+
+      const response = await routed(test);
+
+      expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(REPLACEMENT);
+      expect(response.headers.get('content-type')).toBe('image/png');
+      expect(response.headers.get('cache-control')).toContain('private');
+      expect(test.dispatch).toHaveBeenCalledTimes(1);
+      expect(test.edge.runtime.memory.generations.get(test.key)?.pack.header.source).toBe(
+        'runtime',
+      );
+
+      await test.drain();
+
+      expect(test.points.map((point) => point.outcomeKind)).toContain('route-body-record-mismatch');
+    },
+  );
+
+  it.each([
+    { contentType: 'image/png; name="日本語"', expected: 'image/png; name="日本語"' },
+    { contentType: ' \timage/png; name=icon\t ', expected: 'image/png; name=icon' },
+  ])(
+    'uses native normalization for a selected runtime body type: $contentType',
+    async (example) => {
+      const test = await fixture();
+
+      await runtimeBodyType(test, example.contentType);
+
+      const response = await routed(test);
+
+      expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(BODY);
+      expect(response.headers.get('content-type')).toBe(example.expected);
+      expect(response.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate');
+      expect(test.dispatch).not.toHaveBeenCalled();
+
+      await test.drain();
+    },
+  );
+
+  it('keeps a recorded body type ahead of an unused malformed artifact type', async () => {
+    const test = await fixture();
+
+    await runtimeBodyType(test, 'image/png; name=a\r\nb', { 'content-type': 'image/png' });
+
+    const response = await routed(test);
+
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(BODY);
+    expect(response.headers.get('content-type')).toBe('image/png');
+    expect(response.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate');
+    expect(test.dispatch).not.toHaveBeenCalled();
+
+    await test.drain();
   });
 
   it.each([

@@ -90,12 +90,19 @@ async function readCacheApi(
 }
 
 function storeCacheApi(ctx: EdgeContext, ref: ArtifactLocator, bytes: Uint8Array): void {
-  const response = new Response(bytes, {
-    headers: {
-      'content-type': ref.contentType,
-      'cache-control': `public, max-age=${ONE_YEAR_SECONDS}, immutable`,
-    },
-  });
+  let response: Response;
+  try {
+    response = new Response(bytes, {
+      headers: {
+        'content-type': ref.contentType,
+        'cache-control': `public, max-age=${ONE_YEAR_SECONDS}, immutable`,
+      },
+    });
+  } catch {
+    // An optional byte copy must not fail a read over unusable recorded response metadata.
+    // The caller still judges the fields it actually replays before answering the client.
+    return;
+  }
   ctx.ctx.waitUntil(putCacheApi(ctx, ref, response));
 }
 

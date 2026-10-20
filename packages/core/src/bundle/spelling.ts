@@ -136,7 +136,7 @@ export function builtSpellings(pathname: string, basePath: string): string[] {
  * out, Next.js serves a page at both spellings, and the edge serves it at the one the build named
  * it by, as it always did — the spelling without the slash stays the edge's.
  */
-export function keepsTrailingSlash(bundle: DeploymentBundle): boolean {
+export function keepsTrailingSlash(bundle: Pick<DeploymentBundle, 'config'>): boolean {
   const { skipTrailingSlashRedirect, trailingSlash } = bundle.config;
   return trailingSlash && !skipTrailingSlashRedirect;
 }
@@ -151,7 +151,10 @@ export function keepsTrailingSlash(bundle: DeploymentBundle): boolean {
  * Read against the name the build gave the page instead, the redirect `next build` adds for
  * `trailingSlash` claimed every page but the root, and kept all of them off the edge.
  */
-export function requestedPathname(bundle: DeploymentBundle, pathname: string): string {
+export function requestedPathname(
+  bundle: Pick<DeploymentBundle, 'config'>,
+  pathname: string,
+): string {
   if (!keepsTrailingSlash(bundle)) {
     return pathname;
   }
@@ -168,7 +171,10 @@ export function requestedPathname(bundle: DeploymentBundle, pathname: string): s
  * whether or not the build writes the redirect: `skipTrailingSlashRedirect` leaves the page named
  * without the slash, and the router still finds it by both spellings.
  */
-export function routerSpellings(bundle: DeploymentBundle, pathname: string): string[] {
+export function routerSpellings(
+  bundle: Pick<DeploymentBundle, 'config'>,
+  pathname: string,
+): string[] {
   const takesSlash =
     bundle.config.trailingSlash &&
     namesNoFile(pathname) &&
