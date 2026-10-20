@@ -6,6 +6,7 @@ import {
   keptOf,
   withGenerationEvidence,
   middlewareAnswered,
+  middlewareHeadersOnly,
   middlewareCovers,
   traced,
   undoneUnlessStored,
@@ -231,7 +232,8 @@ async function partHopAnswer(
   const answer = await answerTo(sent.url, {
     via: stack.url,
     headers: tracing.headers,
-    headersOnly: redirectHeaders,
+    headersOnly: (status, headers) =>
+      redirectHeaders(status, headers) || middlewareHeadersOnly(status, headers),
     decode: undoneUnlessStored(true),
   });
   if (typeof answer === 'string') {

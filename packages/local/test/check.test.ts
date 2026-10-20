@@ -11308,6 +11308,66 @@ describe('what the check makes of the middleware', () => {
       );
     });
 
+    it.each([200, 404])(
+      'does not invent router requests for middleware-owned HTML with status %s',
+      async (status) => {
+        const front = await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } });
+        const account = 'passthrough;reason=middleware;mw=hit';
+        answers.set('/', {
+          status,
+          headers: { 'content-type': HTML, 'x-arkor-edge': account },
+          body: '<!doctype html><html><body>application-owned page</body></html>',
+        });
+        partAnswers.set('/|/_tree', {
+          status: 500,
+          headers: { 'content-type': TEXT, 'x-arkor-edge': 'segment;mw=miss' },
+          body: 'this HTML has no client router',
+        });
+        const result = await checkStack(stackOf([front], {}));
+
+        expect(result.failures).toStrictEqual([]);
+        expect(result.skipped).toStrictEqual([
+          { path: '/', reason: `answered by the application's middleware (${account})` },
+        ]);
+        expect(partsAsked.size).toBe(0);
+      },
+    );
+
+    it.each([200, 404])(
+      'does not use middleware-owned HTML status %s as a router origin for another page',
+      async (status) => {
+        const routes = [
+          await routeOf('/about', finished, {
+            complete: true,
+            segments: { '/_tree': 'tree bytes' },
+          }),
+          await routeOf('/shop', FRONT),
+        ];
+        answers.set('/about', finishedAnswer(finished, '/about'));
+        answers.set('/shop', {
+          status,
+          headers: {
+            'content-type': HTML,
+            'set-cookie': 'mark=1; Path=/',
+            'x-arkor-edge': 'passthrough;reason=middleware;mw=hit',
+          },
+          body: '<!doctype html><html><body>application-owned page</body></html>',
+        });
+        partAnswers.set('/about|/_tree', {
+          ...segmentAnswer('tree bytes'),
+          withCookie: { name: 'mark', headers: { 'content-type': TEXT } },
+        });
+        const result = await checkStack(stackOf(routes, {}));
+        const requests = partsAskedEach.get('/about|/_tree');
+
+        expect(result.failures).toStrictEqual([]);
+        expect(requests).toBeDefined();
+        expect(requests?.some((headers) => headers.cookie?.includes('mark=1') === true)).toBe(
+          false,
+        );
+      },
+    );
+
     it('is asked from no page whose answer is of a type that only begins as HTML does', async () => {
       const routes = [
         await routeOf('/about', finished, { complete: true, segments: { '/_tree': 'tree bytes' } }),
@@ -11601,6 +11661,142 @@ describe('what the check makes of the middleware', () => {
         }
       },
     );
+
+    it.each([
+      { label: 'known part', hopPaths: ['/hop'] },
+      { label: 'fallback hop', hopPaths: [] },
+    ])(
+      'releases an owned terminal stream through a $label and retains its cookie for replay',
+      async ({ hopPaths }) => {
+        const front = await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } });
+        const hops = await Promise.all(
+          hopPaths.map((pathname) =>
+            routeOf(pathname, finished, { complete: true, segments: { '/_tree': 'hop tree' } }),
+          ),
+        );
+        const routes = [front, ...hops];
+        answers.set('/', documentAnswer(FRONT, 'mw=miss;route=/'));
+        answers.set('/hop', finishedAnswer(finished, '/hop'));
+        partAnswers.set('/|/_tree', {
+          status: 307,
+          headers: { location: '/hop', 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' },
+          body: '',
+        });
+        const open = streamingRedirect('/hop');
+        const cookies: (string | undefined)[] = [];
+        partAnswers.set('/hop|/_tree', {
+          ...segmentAnswer('hop tree'),
+          when: {
+            test: (headers) => {
+              cookies.push(headers.cookie);
+              return false;
+            },
+            headers: {},
+          },
+          // The first terminal response has no router hash; its replay is finite.
+          unbusted: {
+            ...open.answer,
+            status: 200,
+            headers: {
+              'content-type': 'text/event-stream',
+              'content-encoding': 'gzip',
+              'set-cookie': 'from=hop; Path=/',
+              'x-arkor-edge': 'passthrough;reason=external-rewrite;mw=hit',
+            },
+          },
+        });
+        try {
+          const result = await checkStack(stackOf(routes, {}));
+
+          expect(result.failures).toStrictEqual([]);
+          expect(result.checked).toBe(routes.length);
+          expect(open.responses.length).toBeGreaterThan(0);
+          expect(cookies).toContain('from=hop');
+
+          const closed = await Promise.all(open.closed);
+
+          expect(closed).toStrictEqual(open.closed.map(() => true));
+        } finally {
+          for (const response of open.responses) response.destroy();
+        }
+      },
+    );
+
+    it('still judges the bytes of an ordinary known router landing before a later good sample', async () => {
+      const front = await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } });
+      const hop = await routeOf('/hop', finished, {
+        complete: true,
+        segments: { '/_tree': 'hop tree' },
+      });
+      answers.set('/', documentAnswer(FRONT, 'mw=miss;route=/'));
+      answers.set('/hop', finishedAnswer(finished, '/hop'));
+      const redirect = {
+        status: 307,
+        headers: { 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' },
+        body: '',
+      };
+      // Keep the existing hash so the router adopts this response without replaying it.
+      partAnswers.set('/|/_tree', {
+        ...redirect,
+        forSearch: (search) => ({
+          ...redirect,
+          headers: { ...redirect.headers, location: `/hop${search}` },
+        }),
+      });
+      const good = segmentAnswer('hop tree');
+      const seen: string[] = [];
+      partAnswers.set('/hop|/_tree', {
+        ...good,
+        forSearch: initialPartAnswers(segmentAnswer('bad tree'), good, seen, 1),
+      });
+      const result = await checkStack(stackOf([front, hop], {}));
+
+      expect(result.failures).toStrictEqual([
+        {
+          path: '/',
+          reason:
+            'its prefetch segment /_tree, redirected to /hop, answered 8 bytes other than the 8 the build wrote',
+        },
+      ]);
+      expect(seen[0]).toBe('bad tree');
+      expect(seen).toContain('hop tree');
+    });
+
+    it('keeps whole byte evidence for an ordinary fallback hop with a near-miss ownership reason', async () => {
+      const front = await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } });
+      const local = stackOf([front], {});
+      const stack = { ...local, site: local.url };
+      const body = 'unowned terminal bytes';
+      const account = 'passthrough;reason=external-rewrite-extra;mw=hit';
+      partAnswers.set('/outside|/_tree', {
+        headers: { 'content-type': RSC, 'x-arkor-edge': account },
+        body,
+      });
+      const followed = await redirectsFrom(
+        stack,
+        {
+          answered: { changes: NO_COOKIE_CHANGES, account: '', page: false, location: '/outside' },
+          url: new URL('/', stack.site),
+          headers: {
+            rsc: '1',
+            'next-router-segment-prefetch': '/_tree',
+            'accept-encoding': 'identity',
+          },
+          jar: [],
+          whole: true,
+        },
+        new Map(),
+      );
+
+      expect(followed.failure).toBeUndefined();
+      expect(followed.steps).toHaveLength(1);
+      expect(followed.last?.account).toBe(account);
+      expect(followed.last?.whole).toStrictEqual({
+        status: 200,
+        length: Buffer.byteLength(body),
+        sha256: sha256Of(body),
+      });
+    });
 
     it("is judged where a redirect leads its browser's fetch, as that page's part", async () => {
       const routes = [

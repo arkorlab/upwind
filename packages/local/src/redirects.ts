@@ -1,7 +1,14 @@
 import { RSC_CACHE_BUSTING_QUERY } from '@stayingupwind/core/request';
 import { isHtmlContentType } from '@stayingupwind/core/util';
 
-import { answeredBy, answerTo, type CheckedStack, undoneUnlessStored } from './answers.ts';
+import {
+  answeredBy,
+  answerTo,
+  type CheckedStack,
+  middlewareAnswered,
+  middlewareHeadersOnly,
+  undoneUnlessStored,
+} from './answers.ts';
 import {
   type CookieChanges,
   cookieChangesOf,
@@ -56,7 +63,11 @@ const PAGE_NOT_FOUND = 404;
  */
 function routerPage(answer: Reading): boolean {
   const html = isHtmlContentType(answer.headers['content-type'] ?? null);
-  return html && (answer.status === PAGE_FOUND || answer.status === PAGE_NOT_FOUND);
+  return (
+    middlewareAnswered(answer) === undefined &&
+    html &&
+    (answer.status === PAGE_FOUND || answer.status === PAGE_NOT_FOUND)
+  );
 }
 
 /** `headers` with `cookie` as the cookies they carry, where there are any. */
@@ -369,7 +380,11 @@ async function hopAnswered(
   }
   const reading =
     sent.whole === true
-      ? { headersOnly: redirectHeaders, decode: undoneUnlessStored(true) }
+      ? {
+          headersOnly: (status: number, headers: Reading['headers']) =>
+            redirectHeaders(status, headers) || middlewareHeadersOnly(status, headers),
+          decode: undoneUnlessStored(true),
+        }
       : { headersOnly: true };
   const read = await answerTo(url, { via: stack.url, headers, method, ...reading });
   if (typeof read === 'string') {

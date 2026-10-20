@@ -265,6 +265,8 @@ const SIBLING_FILE: StaticFileEntry = {
 };
 const SIBLING_ACCOUNT = 'passthrough;reason=external-rewrite;mw=hit';
 const CHANGED_BODY = DOCUMENT.replaceAll('landing', 'changed');
+const CHANGED_LENGTH = Buffer.byteLength(CHANGED_BODY);
+const CHANGED_DIGEST = createHash('sha256').update(CHANGED_BODY).digest('hex');
 
 /** The same real HTTP endpoint as a shipped file, its follow-up, or a direct router part. */
 function siblingStack(): CheckedStack {
@@ -479,8 +481,8 @@ describe('redirected documents retain their original request and response', () =
         kind: 'answered',
         answer: expect.objectContaining({
           truncated: false,
-          length: Buffer.byteLength(CHANGED_BODY),
-          sha256: createHash('sha256').update(CHANGED_BODY).digest('hex'),
+          length: CHANGED_LENGTH,
+          sha256: CHANGED_DIGEST,
         }) as unknown,
       }) as unknown,
     },
