@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { changesSomething, invokeNodeHandler } from '../src/node-bridge.ts';
 
-const transport = vi.hoisted(() => ({ listener: undefined as RequestListener | undefined }));
+type Listener = RequestListener | undefined;
+const transport = vi.hoisted(() => ({ listener: undefined as Listener, delayFinish: false }));
 
 vi.mock(import('node:http'), () => {
   return {
@@ -73,10 +74,12 @@ vi.mock(import('cloudflare:node'), async () => {
           this.#commit();
           if (chunk !== undefined) this.#controller?.enqueue(new TextEncoder().encode(chunk));
           this.writableEnded = true;
-          this.writableFinished = true;
           this.#controller?.close();
-          this.emit('finish');
-          this.emit('close');
+          if (!transport.delayFinish) {
+            this.writableFinished = true;
+            this.emit('finish');
+            this.emit('close');
+          }
         }
 
         destroy(): this {
@@ -128,6 +131,45 @@ describe('node handler completion after its response', () => {
       expect(finished).toBe(true);
     },
   );
+
+  it('retains a completed producer before finish is emitted, including a later disconnect', async () => {
+    const release = Promise.withResolvers<undefined>();
+    const held: Promise<unknown>[] = [];
+    let active: Parameters<RequestListener>[1] | undefined;
+    let finished = false;
+    transport.delayFinish = true;
+    try {
+      const answer = await invokeNodeHandler({
+        request: new Request('https://handler.test/ended'),
+        requestMeta: {},
+        waitUntil: (pending) => {
+          held.push(pending);
+        },
+        handler: async (_request, response) => {
+          active = response;
+          response.end('producer ended');
+          await release.promise;
+          finished = true;
+        },
+      });
+
+      await expect(answer.text()).resolves.toBe('producer ended');
+      expect(active?.writableEnded).toBe(true);
+      expect(active?.writableFinished).toBe(false);
+      expect(held).toHaveLength(1);
+      expect(finished).toBe(false);
+
+      active?.destroy();
+
+      expect(held).toHaveLength(1);
+    } finally {
+      transport.delayFinish = false;
+      release.resolve(undefined);
+      await Promise.all(held);
+    }
+
+    expect(finished).toBe(true);
+  });
 
   it('retains safe work at a later normal finish, with no hold while its body is open', async () => {
     const finish = Promise.withResolvers<undefined>();
