@@ -354,7 +354,8 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
 ```
 upwind dev [directory]
 upwind build [directory]
-upwind deploy [directory] --dry-run
+upwind deploy [directory]
+upwind destroy [directory] --yes
 
   -p, --port <port>      Port to listen on, `dev` only (default: $PORT, else 3000)
   -H, --hostname <host>  Hostname to bind, `dev` only (default: every interface)
@@ -365,6 +366,9 @@ upwind deploy [directory] --dry-run
       --env-file <file>  Secrets for the deployment's Functions, `deploy` only; may repeat
       --keep <n>         Deployments kept to roll back to, `deploy` only (default: 5)
       --message <text>   What the deployment is noted as, `deploy` only
+      --reset-cache-key  Give the runtime cache a new key, `deploy` only
+      --yes              Delete everything a deploy made, `destroy` only
+      --include-storage  And the storage deploy.storage names, with its data, `destroy` only
   -v, --version          Print upwind's version
   -h, --help             Print the usage
       --                 Everything after this is the directory, even `--help`
