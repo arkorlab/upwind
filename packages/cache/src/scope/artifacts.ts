@@ -63,19 +63,24 @@ export function artifactFailed(sql: SqlStorage, row: ArtifactRow): boolean {
   return failureNames(readMeta(sql, FAILURE_PREFIX + row.sha256), row.byte_length, row.storage_ref);
 }
 
-/** Remember the existing verification's result; no extra body read is needed to repair it. */
+/**
+ * Remember the existing verification's result; no extra body read is needed to repair it. Whether
+ * it was remembered: not where the artifact is no longer where the verification read it.
+ */
 export function rememberArtifactFailure(
   sql: SqlStorage,
   artifact: { readonly sha256: string; readonly storageRef: string; readonly byteLength: number },
-): void {
+): boolean {
   const row = findArtifactBySha(sql, artifact.sha256);
-  if (row?.storage_ref === artifact.storageRef && row.byte_length === artifact.byteLength) {
-    writeMeta(
-      sql,
-      FAILURE_PREFIX + row.sha256,
-      JSON.stringify([row.byte_length, row.storage_ref, crypto.randomUUID()]),
-    );
+  if (row?.storage_ref !== artifact.storageRef || row.byte_length !== artifact.byteLength) {
+    return false;
   }
+  writeMeta(
+    sql,
+    FAILURE_PREFIX + row.sha256,
+    JSON.stringify([row.byte_length, row.storage_ref, crypto.randomUUID()]),
+  );
+  return true;
 }
 
 export function forgetArtifactFailure(sql: SqlStorage, sha256: string): void {

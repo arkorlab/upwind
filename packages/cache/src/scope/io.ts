@@ -1,4 +1,4 @@
-import { releaseStream } from '@stayingupwind/core/util';
+import { releaseStream, withDeadline } from '@stayingupwind/core/util';
 
 /**
  * What the authority writes to after a commit, behind interfaces narrow enough to fake, and the
@@ -185,7 +185,59 @@ export async function writeKey(write: () => Promise<void>): Promise<void> {
   }
 }
 
-export function blobStore(bucket: R2Bucket, faults: () => TestFaults): BlobStore {
+/**
+ * How long a stored body may take to arrive once its object has answered: the ten seconds the
+ * artifact gateway gives a read of one (`seed-repair.ts` holds a verification to the same).
+ */
+const BLOB_READ_MS = 10_000;
+
+/**
+ * A stored body's bytes, read no further than its declared length and no longer than `readMs`. A
+ * body that stalls is cancelled when the time is up, and the read fails as any read of storage
+ * may: what awaits it — a delivery record's projection, which every later settle of the scope
+ * waits behind — fails into the retry its alarm makes, rather than waiting on a body that never
+ * comes (Codex).
+ */
+async function bodyWithin(
+  object: R2ObjectBody,
+  byteLength: number,
+  readMs: number,
+): Promise<Uint8Array> {
+  const reader = object.body.getReader();
+  const bytes = new Uint8Array(byteLength);
+  let read = 0;
+  const reading = async (): Promise<Uint8Array> => {
+    for (;;) {
+      const item: ReadableStreamReadResult<unknown> = await reader.read();
+      if (item.done) break;
+      const chunk = item.value;
+      if (!(chunk instanceof Uint8Array)) throw new TypeError('a stored body is not bytes');
+      if (read + chunk.byteLength > byteLength) {
+        throw new BlobLengthError(read + chunk.byteLength, byteLength);
+      }
+      bytes.set(chunk, read);
+      read += chunk.byteLength;
+    }
+    if (read !== byteLength) {
+      throw new BlobLengthError(read, byteLength);
+    }
+    return bytes;
+  };
+  try {
+    return await withDeadline(reading(), readMs, 'a stored blob read');
+  } catch (error) {
+    // Nothing more of it is wanted: the body is given back, whatever is still on its way.
+    releaseStream(reader);
+    throw error;
+  }
+}
+
+export function blobStore(
+  bucket: R2Bucket,
+  faults: () => TestFaults,
+  options: { readonly readMs?: number } = {},
+): BlobStore {
+  const readMs = options.readMs ?? BLOB_READ_MS;
   return {
     read: async (key, byteLength) => {
       checkFault(faults, 'r2');
@@ -195,7 +247,7 @@ export function blobStore(bucket: R2Bucket, faults: () => TestFaults): BlobStore
         releaseStream(object.body);
         throw new BlobLengthError(object.size, byteLength);
       }
-      return new Uint8Array(await object.arrayBuffer());
+      return bodyWithin(object, byteLength, readMs);
     },
     exists: async (key) => {
       checkFault(faults, 'r2');

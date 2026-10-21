@@ -1,5 +1,11 @@
 import { MAX_TAG_LENGTH, MAX_TAGS_PER_ENTRY } from '@stayingupwind/core/cache';
-import { type CommitRequest, commitRequestSchema } from '@stayingupwind/host/cache';
+import {
+  ARTIFACT_ROLE_HEADER,
+  type CommitRequest,
+  commitRequestSchema,
+  FENCING_TOKEN_HEADER,
+  MAX_BATCHED_CONTENT_TYPE_LENGTH,
+} from '@stayingupwind/host/cache';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -116,5 +122,57 @@ describe('a commit body before it reaches the scope queue', () => {
 
     expect(response.status).toBe(200);
     expect(publish).toHaveBeenCalledExactlyOnceWith('attempt', request, 1);
+  });
+
+  // An artifact the scope holds already is published with the type the commit names, and nothing
+  // of it uploaded again: what names the type is held to the rule an upload is (Codex).
+  it.each([
+    ['a control character', 'text/html\u{7}'],
+    ['a line break', 'text/html\r\nx-injected: 1'],
+    ['a character past ASCII', 'text/html; name="\u{E9}"'],
+    ['more than a header would take', `text/${'x'.repeat(MAX_BATCHED_CONTENT_TYPE_LENGTH)}`],
+  ])('refuses an artifact type holding %s, before the scope is asked', async (_, contentType) => {
+    const request = commit();
+    for (const output of request.generation.outputs) {
+      for (const artifact of output.artifacts) {
+        artifact.contentType = contentType;
+      }
+    }
+    const { app, publish } = gateway();
+
+    const response = await app.request('/attempts/attempt/commit', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+
+    expect(response.status).toBe(400);
+    expect(publish).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'invalid_request' },
+    });
+  });
+
+  it('refuses an upload whose type no artifact may be served as, before it reads the bytes', async () => {
+    const { app } = gateway();
+
+    const response = await app.request(`/attempts/attempt/artifacts/${'a'.repeat(64)}`, {
+      method: 'PUT',
+      headers: {
+        'content-type': `text/${'x'.repeat(MAX_BATCHED_CONTENT_TYPE_LENGTH)}`,
+        [ARTIFACT_ROLE_HEADER]: 'html',
+        [FENCING_TOKEN_HEADER]: '1',
+      },
+      body: 'x',
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: 'invalid_request',
+        message: 'content-type must be a type an artifact can be served as',
+      },
+    });
   });
 });
