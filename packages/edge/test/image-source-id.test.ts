@@ -51,7 +51,7 @@ function file(sha256: string): StaticFileEntry {
   return { sha256, byteLength: 32, contentType: 'image/png', immutable: false };
 }
 
-function gated(sha256: string, href = '/logo.png'): ImageSource {
+function gated(sha256: string, href = '/logo.png'): Extract<ImageSource, { kind: 'blob' }> {
   return { kind: 'blob', file: file(sha256), href, gate: 'middleware' };
 }
 
@@ -167,13 +167,13 @@ describe('an optimized image source identity', () => {
     expect(served.transform).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['local', 'middleware', 'reserved'] as const)(
-    'keeps URL-significant project names apart for a %s source in the actual cache',
-    async (kind) => {
-      const source: ImageSource =
-        kind === 'local'
-          ? { kind, href: '/dynamic.png' }
-          : { ...gated('a'.repeat(64)), gate: kind };
+  it.each([
+    { kind: 'local', source: { kind: 'local', href: '/dynamic.png' } },
+    { kind: 'middleware', source: gated('a'.repeat(64)) },
+    { kind: 'reserved', source: { ...gated('a'.repeat(64)), gate: 'reserved' } },
+  ] as const)(
+    'keeps URL-significant project names apart for a $kind source in the actual cache',
+    async ({ source }) => {
       const cache = await caches.open(`project-image-identity-${crypto.randomUUID()}`);
       const keys = await Promise.all(
         ['a/../local:b', 'b', 'a%2Fb', 'a/b', '\u{D800}', '\u{D801}'].map(async (project) => {
