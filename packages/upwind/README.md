@@ -243,14 +243,13 @@ a bundle rather than a Vercel deployment names the adapter in the environment an
 ## `upwind deploy`
 
 ```bash
-CLOUDFLARE_API_TOKEN=… pnpm upwind deploy --dry-run
+CLOUDFLARE_API_TOKEN=… pnpm upwind deploy
 ```
 
 The project, deployed to a Cloudflare account of your own: the edge in front, the runtime cache
 behind it, and each deployment's Functions as Workers of their own, the edge switched to a new
-deployment only once the new one answers. This version goes as far as the plan — it builds the
-project for a deployment, checks the build and the account, and says what it would make there — and
-changes nothing on the account; run it with `--dry-run`.
+deployment only once the new one answers. `--dry-run` builds the project, checks the build and the
+account, and says what a deploy would make there, changing nothing.
 
 - **The build is a deploy's own.** It is `upwind build` with the deployment's id chosen first, so
   that every asset carries it; with the runtime cache's host in every Function, named to the
@@ -288,6 +287,33 @@ export default {
   },
 } satisfies UpwindConfig;
 ```
+
+### What a deploy makes, and how it goes live
+
+For a project named `shop`, the account holds:
+
+|                                                     | What it is                                                                                                                                                                                                                                 |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `shop-edge`                                         | The edge. Each deployment is a version of it, with that deployment's pointer fixed in it, so nothing is read before a visitor's first byte that the version could have been given. On `workers.dev` unless `deploy.workersDev` is `false`. |
+| `shop-<deployment>-app`, `-app-2`…, `-mw`           | Each deployment's Functions. On neither `workers.dev` nor a preview URL: only the edge reaches them.                                                                                                                                       |
+| `shop-cache`, `shop-cache-read`, `shop-prefetch`    | The runtime cache's authority and read gateway, and the Worker a Function reads the files its build left out of it from. Reached by service bindings alone.                                                                                |
+| `shop-agent`                                        | What a deploy writes the stores through, on `workers.dev`, answering only a key the running deploy set and discards when it ends. It writes only what a deployment's files are named by: their digests.                                    |
+| `upwind:shop:edge-state`, `upwind:shop:cache-state` | KV namespaces: what the edge serves by, and the runtime cache's state.                                                                                                                                                                     |
+| `shop-artifacts`                                    | The R2 bucket of every deployment's files, with a mark saying it is the project's. A deploy uses nothing of that name it did not make.                                                                                                     |
+
+A deploy uploads the new deployment's Functions and a version of the edge that takes no traffic,
+then asks that version, by name, which deployment it serves, and asks it for each of
+`deploy.checks` (`/` by default). Only when it answers as itself, and no check answers with a 5xx,
+is it given all the edge's traffic. Otherwise the version that was live stays live, and the run
+says what failed. A deploy stopped part way can be run again: what it wrote is found again, under
+its digest or the deployment's id.
+
+The token needs, on the account: **Workers Scripts: Edit**, **Workers KV Storage: Edit**, **Workers
+R2 Storage: Edit**, and **D1: Edit** where `deploy.storage` names a database. A custom domain is
+attached to `shop-edge` by hand, in Cloudflare, and named in `deploy.hostnames`.
+
+`upwind destroy --yes` deletes everything a deploy made for the project, its edge first. The storage
+`deploy.storage` names holds the application's data, and is deleted only with `--include-storage`.
 
 ## Options
 
