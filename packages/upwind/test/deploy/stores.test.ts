@@ -20,25 +20,49 @@ type Step =
   | { readonly mark: { readonly made: Record<string, string>; readonly pending: string[] } }
   | { readonly made: string };
 
+/**
+ * What another run does on the account while this one runs, as a request of this run's reaches the
+ * fake: told the request's method, its path under the account and its body, before the fake answers
+ * it and after.
+ */
+interface Meddler {
+  readonly before?: (method: string, path: string, body: unknown) => void;
+  readonly after?: (method: string, path: string, body: unknown) => void;
+}
+
+/** A request's body, as the JSON it is; nothing for a body that is not. */
+async function bodyOf(request: Request): Promise<unknown> {
+  try {
+    return (await request.clone().json()) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The account, reached through the fake, with every write of the owner mark and every creation logged. */
-function accountOf(fake: FakeCloudflare): {
+function accountOf(
+  fake: FakeCloudflare,
+  meddler: Meddler = {},
+): {
   readonly scope: AccountScope;
   readonly steps: Step[];
 } {
   const steps: Step[] = [];
   const logged: typeof fetch = async (input, init) => {
     const request = new Request(input, init);
-    const { pathname } = new URL(request.url);
-    if (request.method === 'PUT' && pathname.endsWith(`/objects/${OWNER_KEY}`)) {
-      const mark = (await request.clone().json()) as {
-        readonly made: Record<string, string>;
-        readonly pending: string[];
-      };
-      steps.push({ mark });
+    const path = new URL(request.url).pathname.replace(/^.*\/accounts\/[^/]+/u, '');
+    const body = await bodyOf(request);
+    if (request.method === 'PUT' && path.endsWith(`/objects/${OWNER_KEY}`)) {
+      steps.push({ mark: body as Extract<Step, { mark: unknown }>['mark'] });
     } else if (request.method === 'POST') {
-      steps.push({ made: pathname.replace(/^.*\/accounts\/[^/]+/u, '') });
+      steps.push({ made: path });
     }
-    return fake.fetch(request);
+    meddler.before?.(request.method, path, body);
+    try {
+      return await fake.fetch(request);
+    } finally {
+      meddler.after?.(request.method, path, body);
+    }
   };
   const client = createCloudflareClient({
     apiToken: 'token',
@@ -56,8 +80,9 @@ function markIn(fake: FakeCloudflare): unknown {
 async function ensure(
   fake: FakeCloudflare,
   storage: readonly StorageBinding[] = STORAGE,
+  meddler: Meddler = {},
 ): Promise<Awaited<ReturnType<typeof ensureStores>> & { readonly steps: Step[] }> {
-  const { scope, steps } = accountOf(fake);
+  const { scope, steps } = accountOf(fake, meddler);
   const account = await readAccount(scope, NAMES);
   const stores = await ensureStores({ scope, names: NAMES, account, storage });
   return { ...stores, steps };
@@ -175,6 +200,123 @@ describe("a project's stores", () => {
 
     await expect(ensure(fake, [{ name: 'FILES', kind: 'r2' }])).rejects.toThrow(
       "shop-r2-files is on the account, and was not made for shop's FILES",
+    );
+  });
+
+  it('refuses a store it did not make before it makes anything, the bucket included', async () => {
+    const fake = fakeCloudflare();
+    fake.d1.set('d1-theirs', { uuid: 'd1-theirs', name: 'shop-d1-db' });
+
+    await expect(ensure(fake, [{ name: 'DB', kind: 'd1' }])).rejects.toThrow(
+      "shop-d1-db is on the account, and was not made for shop's DB",
+    );
+    expect(fake.buckets.has(NAMES.artifactsBucket)).toBe(false);
+    expect(fake.requests.filter((request) => request.method !== 'GET')).toStrictEqual([]);
+  });
+
+  it('marks the bucket as it makes it, so a run stopped after that leaves nothing refused', async () => {
+    const fake = fakeCloudflare();
+    fake.fail({ method: 'POST', path: /\/storage\/kv\/namespaces$/u }, 500);
+
+    await expect(ensure(fake, [])).rejects.toThrow('injected');
+    expect(markIn(fake)).toStrictEqual({
+      v: 1,
+      project: 'shop',
+      made: {},
+      pending: [NAMES.edgeStateTitle, NAMES.cacheStateTitle],
+    });
+
+    const stores = await ensure(fake, []);
+
+    expect(stores.edgeState).toBe(titled(fake, NAMES.edgeStateTitle));
+    expect(markIn(fake)).toMatchObject({ pending: [] });
+  });
+
+  it('refuses a bucket of its name with no mark in it, and says how to clear one', async () => {
+    const fake = fakeCloudflare();
+    fake.buckets.set(NAMES.artifactsBucket, new Map());
+
+    await expect(ensure(fake, [])).rejects.toThrow(
+      'it holds no owner mark. If a deploy of shop stopped as it made the bucket, the bucket holds nothing; delete it, and run again',
+    );
+    expect(fake.kv.size).toBe(0);
+    expect(markIn(fake)).toBeUndefined();
+  });
+
+  it('stops where another run makes a store as this one goes to make it', async () => {
+    const fake = fakeCloudflare();
+    const meddler: Meddler = {
+      before: (method, path, body) => {
+        const title = (body as { readonly title?: string } | undefined)?.title;
+        if (method === 'POST' && path === '/storage/kv/namespaces' && title !== undefined) {
+          fake.kv.set('kv-theirs', { id: 'kv-theirs', title });
+        }
+      },
+    };
+
+    await expect(ensure(fake, [], meddler)).rejects.toThrow(
+      `${NAMES.edgeStateTitle} was made by another run as this one went to make it: another deploy of shop is making its stores, and a project is deployed by one run at a time`,
+    );
+  });
+
+  it('stops where another run made a namespace of the title beside the one this run made', async () => {
+    const fake = fakeCloudflare();
+    const meddler: Meddler = {
+      after: (method, path, body) => {
+        const title = (body as { readonly title?: string } | undefined)?.title;
+        if (method === 'POST' && path === '/storage/kv/namespaces' && title !== undefined) {
+          // Beside this run's: two of one title, as two runs at once could leave them.
+          fake.kv.set('kv-theirs', { id: 'kv-theirs', title });
+        }
+      },
+    };
+
+    await expect(ensure(fake, [], meddler)).rejects.toThrow(
+      `the account now has 2 KV namespaces titled ${NAMES.edgeStateTitle}`,
+    );
+
+    // The mark records this run's, which says which of the two is the other run's.
+    const titles = new Map<string, string>();
+    for (const namespace of fake.kv.values()) {
+      titles.set(namespace.id, namespace.title);
+    }
+    titles.delete('kv-theirs');
+    const mine = [...titles].find(([, title]) => title === NAMES.edgeStateTitle);
+
+    expect(markIn(fake)).toMatchObject({ made: { [NAMES.edgeStateTitle]: mine?.[0] } });
+  });
+
+  it('stops where another run makes a database or the bucket as this one goes to', async () => {
+    const fake = fakeCloudflare();
+    const theirs: Meddler = {
+      before: (method, path, body) => {
+        const name = (body as { readonly name?: string } | undefined)?.name;
+        if (method === 'POST' && path === '/d1/database' && name !== undefined) {
+          fake.d1.set('d1-theirs', { uuid: 'd1-theirs', name });
+        }
+        if (method === 'POST' && path === '/r2/buckets' && name === NAMES.artifactsBucket) {
+          fake.buckets.set(name, new Map());
+        }
+      },
+    };
+
+    await expect(ensure(fake, [], theirs)).rejects.toThrow(
+      `${NAMES.artifactsBucket} was made by another run as this one went to make it`,
+    );
+
+    const later = fakeCloudflare();
+    await ensure(later, []);
+    const meddled: Meddler = {
+      before: (method, path, body) => {
+        const name = (body as { readonly name?: string } | undefined)?.name;
+        if (method === 'POST' && path === '/d1/database' && name !== undefined) {
+          later.d1.set('d1-theirs', { uuid: 'd1-theirs', name });
+        }
+      },
+    };
+
+    await expect(ensure(later, [{ name: 'DB', kind: 'd1' }], meddled)).rejects.toThrow(
+      'shop-d1-db was made by another run as this one went to make it',
     );
   });
 

@@ -142,6 +142,26 @@ export async function writeOwnerMark(
   });
 }
 
+/**
+ * Why the bucket of the project's name is not the project's, or nothing where it is.
+ *
+ * A bucket with no mark in it was not made by a deploy of the project — or was, by one that stopped
+ * between making it and marking it, which leaves it empty. Either way it is not taken up: whether it
+ * is that empty bucket is the person's to say, and deleting it is theirs to do.
+ */
+export function bucketRefusal(
+  names: ProjectNames,
+  owner: OwnerMark | undefined,
+): string | undefined {
+  const refused = `the bucket ${names.artifactsBucket} is already on the account, and was not made by upwind deploy for ${names.project}`;
+  if (owner === undefined) {
+    return `${refused}: it holds no owner mark. If a deploy of ${names.project} stopped as it made the bucket, the bucket holds nothing; delete it, and run again. Otherwise, choose another deploy.name`;
+  }
+  return owner.project === names.project
+    ? undefined
+    : `${refused} but for ${owner.project}; choose another deploy.name`;
+}
+
 /** Whether the mark says the project made, or was making, what it calls by that name and id. */
 export function markOwns(mark: OwnerMark | undefined, name: string, id: string): boolean {
   return mark !== undefined && (mark.made[name] === id || mark.pending.includes(name));
@@ -176,10 +196,9 @@ export async function readAccount(scope: AccountScope, names: ProjectNames): Pro
       "the account has no workers.dev subdomain, where a deploy reaches the Worker it stages a build through; choose one in Cloudflare's settings for Workers",
     );
   }
-  if (bucket !== undefined && owner?.project !== names.project) {
-    problems.push(
-      `the bucket ${names.artifactsBucket} is already on the account, and was not made by upwind deploy for ${names.project}; choose another deploy.name`,
-    );
+  const refused = bucket === undefined ? undefined : bucketRefusal(names, owner);
+  if (refused !== undefined) {
+    problems.push(refused);
   }
   for (const [title, found] of [
     [names.edgeStateTitle, edgeState],
