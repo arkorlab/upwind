@@ -221,6 +221,10 @@ export async function activate(input: ActivateInput): Promise<Activation> {
   // Read now, not when the run began: what this run makes the deployment is said from what it is.
   const [current] = (await listDeployments(scope, edge)) ?? [];
   const previous = liveVersionOf(current);
+  if (previous === expected.versionId) {
+    // Live already: nothing to switch, and a split of a version with itself is no deployment.
+    return activateFirst(input);
+  }
   const checking = [
     { version_id: previous, percentage: FULL },
     { version_id: expected.versionId, percentage: 0 },
