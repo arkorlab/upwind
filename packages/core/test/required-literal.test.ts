@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { requiresLiteral } from '../src/request/required-literal.ts';
 
 const LITERAL = '/catalog';
+const DATA_LITERAL = '.rsc';
 
 describe('mandatory routing literals across group boundaries', () => {
   it.each([
@@ -53,6 +54,76 @@ describe('mandatory routing literals across group boundaries', () => {
 
     for (const value of matches) {
       expect(value).toContain(LITERAL);
+    }
+  });
+});
+
+describe('mandatory routing literals outside groups', () => {
+  it.each([
+    String.raw`^/(?<locale>en|ja)/(?<slug>[^/]+)\.rsc(?:/)?$`,
+    String.raw`^(?:alpha|beta){0,2}\.rsc$`,
+    String.raw`^(?:alpha|beta)\.rsc$|^(?:gamma|delta)\.rsc$`,
+    String.raw`^[()](?:alpha|beta)\.rsc$`,
+    String.raw`^\((?:alpha|beta)\.rsc$`,
+    String.raw`^(?=alpha)alpha\.rsc$`,
+    String.raw`^(?:alpha|beta)\x2ersc$`,
+  ])('proves a mandatory suffix without relying on the group contents: %s', (source) => {
+    expect(requiresLiteral(source, DATA_LITERAL)).toBe(true);
+  });
+
+  it.each([
+    String.raw`^(\.rsc)\1$`,
+    String.raw`^(\.rsc)\c$`,
+    String.raw`^(\.rsc)(?:unfinished`,
+    String.raw`^(\.rsc)[unfinished`,
+  ])('retains an earlier group proof before an unread later token: %s', (source) => {
+    // Failure of the outside-only attempt is not a negative proof: the ordinary reader can have
+    // proved the group before it would encounter this later unsupported or malformed token.
+    expect(requiresLiteral(source, DATA_LITERAL)).toBe(true);
+  });
+
+  it.each([
+    String.raw`^(?:alpha|beta)\.rsc$|^/other$`,
+    String.raw`^(\.rsc)?(?:alpha|beta)$`,
+    String.raw`^(\.rsc){1}\1$`,
+    String.raw`^(?:alpha|beta)\.rsc\1$`,
+    String.raw`^(?:alpha|beta)\.rsc(?:unfinished`,
+    String.raw`^(\.rsc))`,
+    String.raw`^(?:alpha|beta)\.rsc?$`,
+    String.raw`^(?:alpha|beta)[.]rsc$`,
+    String.raw`^(?:alpha|beta)\01.rsc$`,
+    String.raw`^(?:alpha|beta){oops}\.rsc$`,
+    String.raw`^(?:\.rs)c$`,
+  ])('retains conservative alternative, quantifier and token boundaries: %s', (source) => {
+    expect(requiresLiteral(source, DATA_LITERAL)).toBe(false);
+  });
+
+  it('keeps the flat and empty-literal paths unchanged', () => {
+    expect(requiresLiteral(String.raw`^/catalog\.rsc$`, DATA_LITERAL)).toBe(true);
+    expect(requiresLiteral('^/catalog$', DATA_LITERAL)).toBe(false);
+    expect(requiresLiteral(String.raw`^(?:alpha|beta)\.rsc$`, '')).toBe(false);
+  });
+
+  it.each([
+    [
+      String.raw`^/(?<locale>en|ja)/(?<slug>[^/]+)\.rsc(?:/)?$`,
+      ['/en/article.rsc', '/ja/story.rsc/', '/EN/ARTICLE.RSC', '/en/article'],
+    ],
+    [String.raw`^(?:alpha|beta){0,2}\.rsc$`, ['.rsc', 'alphabeta.rsc', 'ALPHA.RSC', 'alpha']],
+    [String.raw`^(\.rsc)\1$`, ['.rsc.rsc', '.RSC.RSC', '.rsc']],
+  ] as const)('keeps every native match inside the suffix proof: %s', (source, values) => {
+    expect(requiresLiteral(source, DATA_LITERAL)).toBe(true);
+
+    for (const flags of ['', 'i']) {
+      // eslint-disable-next-line security/detect-non-literal-regexp -- compare proof-preserving paths with native routing and case behavior
+      const pattern = new RegExp(source, flags);
+      const matches = values.filter((value) => pattern.test(value));
+
+      expect(matches.length).toBeGreaterThan(0);
+
+      for (const value of matches) {
+        expect(value.toLowerCase()).toContain(DATA_LITERAL);
+      }
     }
   });
 });
