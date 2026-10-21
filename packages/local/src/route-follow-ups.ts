@@ -494,20 +494,23 @@ async function navigatedOf(
  * (`landingsOf`) — and fails where the check proves nothing past its redirects: one it could not
  * read, or more than a browser follows.
  */
-export async function routeFollowUpFailure(
+interface FollowedAsked extends Asked {
+  /** Whether `requested` is one only the rules ahead of the filesystem claim. */
+  readonly exact: boolean;
+  /** What its document's answer did to the cookies its parts are asked with (`parts.ts`). */
+  readonly cookieChanges?: CookieChanges | undefined;
+  /** The route its document was served as, where another (`parts.ts`). */
+  readonly served?: string | undefined;
+}
+
+/** Coded documents, redirects and router requests for one navigation, without new rule witnesses. */
+async function sampleFailure(
   stack: CheckedStack,
   headBytes: number,
-  asked: Asked & {
-    /** Whether `requested` is one only the rules ahead of the filesystem claim. */
-    readonly exact: boolean;
-    /** What its document's answer did to the cookies its parts are asked with (`parts.ts`). */
-    readonly cookieChanges?: CookieChanges | undefined;
-    /** The route its document was served as, where another (`parts.ts`). */
-    readonly served?: string | undefined;
-  },
+  asked: FollowedAsked,
+  coded: readonly CodedAsk[],
 ): Promise<string | undefined> {
   const navigations = new Map<string, OwnNavigation>();
-  const coded = codedAsks(stack, asked);
   for (const ask of coded) {
     const failure = await codedFailure(stack, headBytes, { asked, ask }, navigations);
     if (failure !== undefined) {
@@ -529,10 +532,26 @@ export async function routeFollowUpFailure(
       return landed;
     }
   }
-  return documentRuleFailure(
-    stack,
-    headBytes,
-    asked,
-    coded.map((ask) => ask.headers),
-  );
+  return undefined;
+}
+
+/** Follow each navigation's own cookie changes through the same document and router checks. */
+export async function routeFollowUpFailure(
+  stack: CheckedStack,
+  headBytes: number,
+  asked: FollowedAsked,
+): Promise<string | undefined> {
+  const coded = codedAsks(stack, asked);
+  const failure = await sampleFailure(stack, headBytes, asked, coded);
+  if (failure !== undefined) return failure;
+  return documentRuleFailure(stack, headBytes, asked, {
+    sampled: coded.map((ask) => ask.headers),
+    followUp: (witness) =>
+      sampleFailure(
+        stack,
+        headBytes,
+        { ...witness, exact: asked.exact },
+        codedAsks(stack, witness),
+      ),
+  });
 }

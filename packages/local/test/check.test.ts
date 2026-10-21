@@ -3684,6 +3684,39 @@ describe('what the check makes of the middleware', () => {
       expect(elsewhere).toStrictEqual({ checked: 1, failures: [], skipped: [] });
     });
 
+    it('reports overlapping file type selectors as unproved when one witness selects both', async () => {
+      const broad: HeaderRule = {
+        sourceRegex: '^/a[.]txt$',
+        has: [{ type: 'header', key: 'x-mode', value: 'foo|bar' }],
+        headers: { 'Content-Type': 'image/png' },
+      };
+      const narrow: HeaderRule = {
+        ...broad,
+        has: [{ type: 'header', key: 'x-mode', value: 'foo' }],
+        headers: { 'Content-Type': TEXT },
+      };
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+      });
+
+      const result = await checkStack(stackOf([], files, { headerRules: [broad, narrow] }));
+      const elsewhere = await checkStack(
+        stackOf([], files, {
+          headerRules: [broad, { ...narrow, sourceRegex: '^/other[.]txt$' }],
+        }),
+      );
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toContain('distinct conditioned header rules');
+      expect(result.failures[0]?.reason).toContain('no request proves them');
+      // The single remaining rule is exercised and fails its declared image type.
+      expect(elsewhere.failures).toHaveLength(1);
+      expect(elsewhere.failures[0]?.reason).toContain('image/png');
+      expect(elsewhere.failures[0]?.reason).not.toContain('distinct conditioned header rules');
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
     it('is asked for as a request a rule of next.config types it for where a header is missing', async () => {
       const unencoded: HeaderRule = {
         sourceRegex: String.raw`^/a\.txt$`,
@@ -6342,6 +6375,147 @@ describe('what the check makes of the middleware', () => {
         expect(traceIds.letGo).toStrictEqual(traceIds.registered);
       },
     );
+
+    it.each(['query', 'header'] as const)(
+      'follows cookies set only by a document selected with a %s rule',
+      async (type) => {
+        const rule: HeaderRule = {
+          sourceRegex: '^/$',
+          has: [{ type, key: 'variant', value: 'dark' }],
+          missing: [{ type: 'header', key: 'rsc' }],
+          headers: { 'X-Robots-Tag': 'noindex' },
+        };
+        const stack = stackOf(
+          [await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } })],
+          {},
+          { headerRules: [rule] },
+        );
+        const composed = documentAnswer(FRONT, 'mw=miss;route=/');
+        answers.set('/', {
+          ...composed,
+          when: {
+            test: (headers, _method, url) =>
+              type === 'query'
+                ? url.searchParams.get('variant') === 'dark'
+                : headers['variant'] === 'dark',
+            headers: { 'x-robots-tag': 'noindex', 'set-cookie': 'seen=dark; Path=/' },
+          },
+        });
+        const tree = segmentAnswer('tree bytes');
+        const privateTree = { ...tree, headers: { ...tree.headers, 'cache-control': GATED } };
+        partAnswers.set('/|/_tree', privateTree);
+        const correct = await checkStack(stack);
+        const witnessedCookies = new Set<string>();
+        partAnswers.set('/|/_tree', {
+          ...privateTree,
+          when: {
+            test: (headers) => {
+              const sentCookie = headers.cookie ?? '';
+              witnessedCookies.add(sentCookie);
+              return sentCookie.includes('seen=dark');
+            },
+            status: 500,
+          },
+        });
+        const broken = await checkStack(stack);
+
+        expect(correct).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+        expect(broken.failures).toHaveLength(1);
+        expect(broken.failures[0]?.reason).toContain('the header rule');
+        expect(broken.failures[0]?.reason).toContain('500');
+        expect(witnessedCookies.has('seen=dark')).toBe(true);
+        expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+      },
+    );
+
+    it('does not prove an overlapping rule from a request that selects its overriding rule too', async () => {
+      const broad: HeaderRule = {
+        sourceRegex: '^/$',
+        has: [{ type: 'header', key: 'x-mode', value: 'foo|bar' }],
+        missing: [{ type: 'header', key: 'rsc' }],
+        headers: { 'X-Robots-Tag': 'index' },
+      };
+      const narrow: HeaderRule = {
+        ...broad,
+        has: [{ type: 'header', key: 'x-mode', value: 'foo' }],
+        headers: { 'X-Robots-Tag': 'noindex' },
+      };
+      const composed = documentAnswer(FRONT, 'mw=miss;route=/');
+      // This drops the broad rule's bar branch while preserving its foo override.
+      answers.set('/', {
+        ...composed,
+        when: {
+          test: (headers) => headers['x-mode']?.includes('foo') === true,
+          headers: { 'x-robots-tag': 'noindex' },
+        },
+      });
+
+      const result = await checkStack(
+        stackOf([await routeOf('/', FRONT)], {}, { headerRules: [broad, narrow] }),
+      );
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toContain('distinct conditioned header rules');
+      expect(result.failures[0]?.reason).toContain('no request proves them');
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
+    it('keeps identical header selectors in different casing as the same rule branch', async () => {
+      const first: HeaderRule = {
+        sourceRegex: '^/$',
+        has: [{ type: 'header', key: 'x-mode', value: 'foo' }],
+        headers: { 'X-Robots-Tag': 'index' },
+      };
+      const last: HeaderRule = {
+        ...first,
+        has: [{ type: 'header', key: 'X-Mode', value: 'foo' }],
+        headers: { 'X-Robots-Tag': 'noindex' },
+      };
+      const composed = documentAnswer(FRONT, 'mw=miss;route=/');
+      answers.set('/', {
+        ...composed,
+        when: {
+          test: (headers) => headers['x-mode'] === 'foo',
+          headers: { 'x-robots-tag': 'noindex' },
+        },
+      });
+
+      const result = await checkStack(
+        stackOf([await routeOf('/', FRONT)], {}, { headerRules: [first, last] }),
+      );
+
+      expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
+    it('keeps a condition and its missing complement as disjoint document branches', async () => {
+      const present: HeaderRule = {
+        sourceRegex: '^/$',
+        has: [{ type: 'header', key: 'x-mode', value: 'foo' }],
+        headers: { 'X-Robots-Tag': 'noindex' },
+      };
+      const absent: HeaderRule = {
+        sourceRegex: '^/$',
+        missing: [{ type: 'header', key: 'x-mode', value: 'foo' }],
+        headers: { 'X-Robots-Tag': 'index' },
+      };
+      const composed = documentAnswer(FRONT, 'mw=miss;route=/');
+      answers.set('/', {
+        ...composed,
+        headers: { ...composed.headers, 'x-robots-tag': 'index' },
+        when: {
+          test: (headers) => headers['x-mode'] === 'foo',
+          headers: { 'x-robots-tag': 'noindex' },
+        },
+      });
+
+      const result = await checkStack(
+        stackOf([await routeOf('/', FRONT)], {}, { headerRules: [present, absent] }),
+      );
+
+      expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
 
     it('holds a page the edge composed whole to the policy a rule sets as the application set it', async () => {
       const policy = "script-src 'self'";
