@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
 
-import { type AccountView, markOwns, type OwnerMark, writeOwnerMark } from './account.ts';
+import {
+  type AccountView,
+  bucketRefusal,
+  markOwns,
+  OWNER_KEY,
+  type OwnerMark,
+  writeOwnerMark,
+} from './account.ts';
+import { CloudflareApiError } from './cloudflare/client.ts';
 import {
   createBucket,
   createD1Database,
@@ -18,10 +26,17 @@ import type { ProjectNames } from './names.ts';
  * The stores a deployment is served from, found or made: the edge's namespace and the cache's,
  * the bucket of artifacts, and each store the application asked for by name (`deploy.storage`).
  *
- * The bucket is made first, and the owner mark in it (`OWNER_KEY`) before anything else: every
- * other store is trusted as the project's only alongside that mark. Each store is written into the
- * mark as one about to be made (`pending`) before it is made, and with its id once it is, so a run
- * stopped between the two leaves nothing the next run would refuse as somebody else's.
+ * Everything is looked up, and every store found is held to the owner mark (`OWNER_KEY`), before
+ * anything is made: a refusal leaves the account as it was. Then the bucket is made, where there is
+ * none, and the mark written in it at once, naming as about to be made (`pending`) every store
+ * this run makes after it; each is recorded with its id once it is made. A run stopped between
+ * making a store and recording it leaves nothing the next run would refuse as somebody else's — and
+ * one stopped between making the bucket and marking it leaves a bucket that holds nothing, which
+ * the next run refuses (`bucketRefusal`) and says how to clear.
+ *
+ * A project is deployed by one run at a time. One that finds another making the same stores — a
+ * store that was not there when it looked, there when it went to make it, or there twice once it
+ * made it — stops, and says so, rather than taking either for its own.
  */
 
 /** What a project's stores are, once they are there. */
@@ -141,7 +156,7 @@ async function existingOf(
   return existingStore(scope, wanted.kind, wanted.name);
 }
 
-async function create(scope: AccountScope, wanted: Wanted): Promise<string> {
+async function createOnce(scope: AccountScope, wanted: Wanted): Promise<string> {
   switch (wanted.kind) {
     case 'kv': {
       return (await createKvNamespace(scope, wanted.name)).id;
@@ -152,6 +167,52 @@ async function create(scope: AccountScope, wanted: Wanted): Promise<string> {
     case 'r2': {
       return (await createBucket(scope, wanted.name)).name;
     }
+  }
+}
+
+/** What a run that finds another making the project's stores says, beside what it found. */
+function oneAtATime(project: string): string {
+  return `another deploy of ${project} is making its stores, and a project is deployed by one run at a time`;
+}
+
+/**
+ * Make a store this run found absent — refused, with what happened said, where another run made it
+ * in the meantime: by a refusal to make it that the store's being there now explains.
+ */
+async function create(scope: AccountScope, project: string, wanted: Wanted): Promise<string> {
+  try {
+    return await createOnce(scope, wanted);
+  } catch (error) {
+    if (!(error instanceof CloudflareApiError)) {
+      throw error;
+    }
+    const namespaces = wanted.kind === 'kv' ? await listKvNamespaces(scope) : [];
+    if ((await existingOf(scope, wanted, namespaces)) === undefined) {
+      throw error;
+    }
+    throw new Error(
+      `${wanted.name} was made by another run as this one went to make it: ${oneAtATime(project)}; let that one finish, and run this again`,
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * Refuses a namespace this run made that another run made beside it: two of one title, which no
+ * later run could tell apart. The one the mark records is this run's, and says which to delete.
+ */
+async function assertOnly(scope: AccountScope, names: ProjectNames, wanted: Wanted): Promise<void> {
+  if (wanted.kind !== 'kv') {
+    // A database's name and a bucket's are the account's once: a second is refused as it is made.
+    return;
+  }
+  const titled = (await listKvNamespaces(scope)).filter(
+    (namespace) => namespace.title === wanted.name,
+  );
+  if (titled.length > 1) {
+    throw new Error(
+      `the account now has ${String(titled.length)} KV namespaces titled ${wanted.name} (${titled.map((namespace) => namespace.id).join(', ')}): ${oneAtATime(names.project)}. Let that one finish, delete the one ${OWNER_KEY} in ${names.artifactsBucket} does not record, and run this again`,
+    );
   }
 }
 
@@ -174,19 +235,9 @@ function madeStorage(binding: StorageBinding, id = ''): MadeStorage {
   return { binding: binding.name, kind: binding.kind, id };
 }
 
-/** Find or make every store the deployment needs, and say what each is. */
-export async function ensureStores(input: {
-  readonly scope: AccountScope;
-  readonly names: ProjectNames;
-  readonly account: AccountView;
-  readonly storage: readonly StorageBinding[];
-}): Promise<ProjectStores> {
-  const { scope, names, account, storage } = input;
-  assertDistinct(names.project, storage);
-  if (account.bucket === undefined) {
-    await createBucket(scope, names.artifactsBucket);
-  }
-  const wanted: Wanted[] = [
+/** Every store the deployment needs, as the mark records it and the account names it. */
+function wantedOf(names: ProjectNames, storage: readonly StorageBinding[]): Wanted[] {
+  return [
     { recorded: names.edgeStateTitle, kind: 'kv', name: names.edgeStateTitle, of: 'the edge' },
     { recorded: names.cacheStateTitle, kind: 'kv', name: names.cacheStateTitle, of: 'the cache' },
     ...storage.map((binding) => {
@@ -198,30 +249,111 @@ export async function ensureStores(input: {
       };
     }),
   ];
+}
+
+/** The store a name in the mark stands for, as the account names it; nothing for any other name. */
+function recordedAs(names: ProjectNames, recorded: string): Wanted | undefined {
+  if (recorded === names.edgeStateTitle || recorded === names.cacheStateTitle) {
+    return { recorded, kind: 'kv', name: recorded, of: 'the deployment' };
+  }
+  const colon = recorded.indexOf(':');
+  const kind = recorded.slice(0, colon);
+  if (colon === -1 || (kind !== 'd1' && kind !== 'kv' && kind !== 'r2')) {
+    return undefined;
+  }
+  const binding = { name: recorded.slice(colon + 1), kind } as const;
+  return { recorded, kind, name: storageName(names.project, binding), of: binding.name };
+}
+
+/**
+ * Every store the mark records, by the name it records each under: those it says were made, and
+ * those it says were about to be made and are on the account — a run stopped between making a
+ * store and recording it leaves only its name. One that is not on the account was never made.
+ */
+export async function recordedStores(
+  scope: AccountScope,
+  names: ProjectNames,
+  mark: OwnerMark,
+): Promise<Readonly<Record<string, string>>> {
+  const recorded: Record<string, string> = { ...mark.made };
+  const pending = mark.pending.filter((name) => recorded[name] === undefined);
+  if (pending.length === 0) {
+    return recorded;
+  }
   const namespaces = await listKvNamespaces(scope);
-  const found = await Promise.all(wanted.map((one) => existingOf(scope, one, namespaces)));
+  for (const name of pending) {
+    const wanted = recordedAs(names, name);
+    const id = wanted === undefined ? undefined : await existingOf(scope, wanted, namespaces);
+    if (id !== undefined) {
+      recorded[name] = id;
+    }
+  }
+  return recorded;
+}
+
+/**
+ * Refuses what the account holds under the project's names and the mark does not say is the
+ * project's: the bucket, and every store found.
+ */
+function assertOwned(
+  names: ProjectNames,
+  account: AccountView,
+  owned: { readonly wanted: readonly Wanted[]; readonly found: readonly (string | undefined)[] },
+): OwnerMark {
+  const refused = account.bucket === undefined ? undefined : bucketRefusal(names, account.owner);
+  if (refused !== undefined) {
+    throw new Error(refused);
+  }
   // Judged by the mark as it was before this run, which marks as pending only what is not there
   // yet: a store of the project's name that the mark does not say is the project's is refused,
   // here and on every later run.
   const initial = account.owner ?? { v: 1, project: names.project, made: {}, pending: [] };
-  for (const [index, one] of wanted.entries()) {
-    const id = found[index];
+  for (const [index, one] of owned.wanted.entries()) {
+    const id = owned.found[index];
     if (id !== undefined && !markOwns(initial, one.recorded, id)) {
       throw new Error(
         `${one.name} is on the account, and was not made for ${names.project}'s ${one.of}`,
       );
     }
   }
+  return initial;
+}
+
+/** Find or make every store the deployment needs, and say what each is. */
+export async function ensureStores(input: {
+  readonly scope: AccountScope;
+  readonly names: ProjectNames;
+  readonly account: AccountView;
+  readonly storage: readonly StorageBinding[];
+}): Promise<ProjectStores> {
+  const { scope, names, account, storage } = input;
+  assertDistinct(names.project, storage);
+  const wanted = wantedOf(names, storage);
+  const namespaces = await listKvNamespaces(scope);
+  const found = await Promise.all(wanted.map((one) => existingOf(scope, one, namespaces)));
+  const initial = assertOwned(names, account, { wanted, found });
+  const absent = wanted.filter((_, index) => found[index] === undefined).map((one) => one.recorded);
   const mark = markOf(scope, names.artifactsBucket, initial);
-  const absent = wanted.filter((_, index) => found[index] === undefined);
-  if (account.owner === undefined || absent.length > 0) {
-    await mark.intend(absent.map((one) => one.recorded));
+  if (account.bucket === undefined) {
+    // The bucket, and at once the mark in it: nothing between the two can be refused.
+    await create(scope, names.project, {
+      recorded: OWNER_KEY,
+      kind: 'r2',
+      name: names.artifactsBucket,
+      of: 'the deployments',
+    });
+    await mark.intend(absent);
+  } else if (absent.length > 0) {
+    await mark.intend(absent);
   }
   const ids: string[] = [];
   for (const [index, one] of wanted.entries()) {
-    const id = found[index] ?? (await create(scope, one));
+    const id = found[index] ?? (await create(scope, names.project, one));
     if (mark.value.made[one.recorded] !== id) {
       await mark.made(one.recorded, id);
+    }
+    if (found[index] === undefined) {
+      await assertOnly(scope, names, one);
     }
     ids.push(id);
   }

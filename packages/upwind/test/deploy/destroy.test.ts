@@ -11,6 +11,7 @@ import {
   deployOptions,
   type LiveAccount,
   liveAccount,
+  ownerMarkOf,
   sorted,
 } from './live-account.ts';
 
@@ -79,6 +80,25 @@ describe('`upwind destroy`', () => {
       account.io,
     );
   };
+
+  /** Write the owner mark into the project's bucket, as a run stopped part way would leave it. */
+  async function rewriteMark(
+    edit: (mark: { made: Record<string, string>; pending: string[] }) => void,
+  ): Promise<void> {
+    const mark = await ownerMarkOf(account);
+    if (mark === undefined) {
+      throw new Error('the project has no owner mark to rewrite');
+    }
+    const next = {
+      v: 1,
+      project: mark.project,
+      made: { ...mark.made },
+      pending: [...mark.pending],
+    };
+    edit(next);
+    const bucket = await account.stack.mf.getR2Bucket('ARTIFACTS', 'agent');
+    await bucket.put(OWNER_KEY, JSON.stringify(next));
+  }
 
   /** What the account holds of the project: its Workers, namespaces, databases and buckets. */
   async function holdings(): Promise<unknown> {
@@ -189,6 +209,93 @@ describe('`upwind destroy`', () => {
     await expect(holdings()).resolves.toMatchObject({
       databases: kept.databases,
       buckets: kept.buckets,
+    });
+  });
+
+  it('takes up again a destroy that stopped after the namespaces of its own went', async () => {
+    const dir = await deployed({ storage: STORAGE });
+    // A database that will not go, the first time: after the namespaces of the project's own did.
+    // Refused rather than broken, which a deploy does not ask again.
+    account.fake.fail({ method: 'DELETE', path: /\/d1\/database\/[^/]+$/u }, 400);
+
+    await expect(destroy(dir, { includeStorage: true })).rejects.toThrow('injected');
+    await expect(holdings()).resolves.toMatchObject({ namespaces: [] });
+    await expect(ownerMarkOf(account)).resolves.toMatchObject({
+      made: { [NAMES.edgeStateTitle]: expect.any(String) as unknown },
+    });
+
+    // An upload that binds what the account no longer holds is refused, as Cloudflare refuses it:
+    // the agent that empties the bucket again binds none of what went.
+    account.fake.checkBindings = true;
+
+    await expect(destroy(dir, { includeStorage: true })).resolves.toBe(0);
+    await expect(holdings()).resolves.toStrictEqual({
+      scripts: [],
+      namespaces: [],
+      databases: [],
+      buckets: [],
+      objects: [],
+    });
+  });
+
+  it('deletes the stores a stopped deploy made and never recorded', async () => {
+    const dir = await deployed({ storage: STORAGE });
+    // As a deploy that stopped after making them, before writing down what each was made as.
+    await rewriteMark((mark) => {
+      for (const name of [NAMES.edgeStateTitle, 'kv:UPWIND_KV']) {
+        Reflect.deleteProperty(mark.made, name);
+        mark.pending.push(name);
+      }
+    });
+
+    await expect(destroy(dir, { includeStorage: true })).resolves.toBe(0);
+    await expect(holdings()).resolves.toStrictEqual({
+      scripts: [],
+      namespaces: [],
+      databases: [],
+      buckets: [],
+      objects: [],
+    });
+  });
+
+  it('keeps in its record the stores a stopped deploy made, where it leaves them', async () => {
+    const dir = await deployed({ storage: STORAGE });
+    let kv: string | undefined;
+    for (const namespace of account.fake.kv.values()) {
+      if (namespace.title === `upwind:${PROJECT}:kv:UPWIND_KV`) {
+        kv = namespace.id;
+      }
+    }
+    await rewriteMark((mark) => {
+      Reflect.deleteProperty(mark.made, 'kv:UPWIND_KV');
+      mark.pending.push('kv:UPWIND_KV');
+    });
+
+    await expect(destroy(dir)).resolves.toBe(0);
+    await expect(ownerMarkOf(account)).resolves.toMatchObject({
+      made: { 'kv:UPWIND_KV': kv },
+      pending: [],
+    });
+    await expect(holdings()).resolves.toMatchObject({
+      namespaces: [`upwind:${PROJECT}:kv:UPWIND_KV`],
+    });
+  });
+
+  it('writes the owner mark back where the bucket could not be deleted after it', async () => {
+    const dir = await deployed();
+    account.fake.fail({ method: 'DELETE', path: `/r2/buckets/${NAMES.artifactsBucket}` }, 400);
+
+    await expect(destroy(dir)).rejects.toThrow('injected');
+    expect(account.fake.buckets.has(NAMES.artifactsBucket)).toBe(true);
+    await expect(ownerMarkOf(account)).resolves.toMatchObject({ project: PROJECT });
+
+    await expect(destroy(dir)).resolves.toBe(0);
+    await expect(holdings()).resolves.toStrictEqual({
+      scripts: [],
+      namespaces: [],
+      databases: [],
+      buckets: [],
+      objects: [],
     });
   });
 

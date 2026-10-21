@@ -1,4 +1,10 @@
-import { type AccountView, readAccount, resolveAccount, writeOwnerMark } from './account.ts';
+import {
+  type AccountView,
+  type OwnerMark,
+  readAccount,
+  resolveAccount,
+  writeOwnerMark,
+} from './account.ts';
 import type { AgentClient } from './agent-client.ts';
 import { openAgent } from './agent-session.ts';
 import type { DestroyOptions } from './args.ts';
@@ -14,6 +20,7 @@ import { readDeploySettings } from './config.ts';
 import type { CloudflareCredentials } from './credentials.ts';
 import { deploymentOfScript, type ProjectNames, projectNames } from './names.ts';
 import { shippedWorkers } from './shipped.ts';
+import { recordedStores } from './stores.ts';
 import { AGENT_PATHS, OWNER_KEY } from './workers/protocol.ts';
 
 /**
@@ -28,8 +35,10 @@ import { AGENT_PATHS, OWNER_KEY } from './workers/protocol.ts';
  * again by, as the project's, and a later destroy deletes them by.
  *
  * Every step is one a second run finds done or does: a Worker or a store that is gone already is
- * passed over, and the owner mark is the last thing in the bucket deleted, so a run stopped half way
- * can be run again on what the mark still says is the project's.
+ * passed over, and the owner mark is the last thing in the bucket deleted — written back where the
+ * bucket then could not be — so a run stopped half way can be run again on what the mark still says
+ * is the project's. What the mark says was about to be made is looked up first, and what of it is
+ * on the account is the project's as much as what it says was made.
  */
 
 export interface DestroyIo {
@@ -90,7 +99,9 @@ async function emptyBucket(
   const session = await openAgent({
     scope,
     names,
-    stores: { bucket: names.artifactsBucket, edgeState: account.owner?.made[names.edgeStateTitle] },
+    // The bucket alone: emptying it is all a destroy asks of the agent, and the edge's namespace may
+    // be gone already, deleted by a destroy that stopped after it.
+    stores: { bucket: names.artifactsBucket, edgeState: undefined },
     script: scripts.agent,
     subdomain: account.subdomain,
     mode: 'destroy',
@@ -107,13 +118,11 @@ async function emptyBucket(
 /** The application's stores, deleted where asked to, and listed where not. */
 async function applicationStores(
   scope: AccountScope,
-  account: AccountView,
+  recorded: Readonly<Record<string, string>>,
   includeStorage: boolean,
 ): Promise<LeftStore[]> {
   const left: LeftStore[] = [];
-  const made = Object.entries(account.owner?.made ?? {}).filter(([name]) =>
-    /^(?:kv|d1|r2):/u.test(name),
-  );
+  const made = Object.entries(recorded).filter(([name]) => /^(?:kv|d1|r2):/u.test(name));
   for (const [name, id] of made) {
     if (!includeStorage) {
       left.push({ name, id });
@@ -159,15 +168,32 @@ function refusalOf(names: ProjectNames, account: AccountView): string | undefine
  * The bucket deleted, its owner mark last — or, where the application's storage is left, kept with
  * the mark as the record of it: without that, a later deploy would refuse the project's own storage
  * as somebody else's.
+ *
+ * A bucket that cannot be deleted once its mark is gone has the mark written back, as it stood: a
+ * bucket left without one is one no later destroy would touch.
  */
 async function settleBucket(
   scope: AccountScope,
   names: ProjectNames,
-  left: readonly LeftStore[],
+  input: { readonly left: readonly LeftStore[]; readonly mark: OwnerMark },
 ): Promise<void> {
+  const { left, mark } = input;
   if (left.length === 0) {
     await deleteObject(scope, names.artifactsBucket, OWNER_KEY);
-    await deleteBucket(scope, names.artifactsBucket);
+    try {
+      await deleteBucket(scope, names.artifactsBucket);
+    } catch (error) {
+      try {
+        await writeOwnerMark(scope, names.artifactsBucket, mark);
+      } catch (error_) {
+        const why = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `${names.artifactsBucket} could not be deleted (${why}), and its owner mark could not be written back: it holds nothing of the project's now — delete it by hand`,
+          { cause: error_ },
+        );
+      }
+      throw error;
+    }
     return;
   }
   await writeOwnerMark(scope, names.artifactsBucket, {
@@ -185,6 +211,9 @@ async function destroyAll(
   account: AccountView,
   input: { readonly options: DestroyOptions; readonly io: DestroyIo },
 ): Promise<LeftStore[]> {
+  const mark: OwnerMark = account.owner ?? { v: 1, project: names.project, made: {}, pending: [] };
+  // Read before anything is deleted: the stores a stopped deploy made and never recorded.
+  const recorded = await recordedStores(scope, names, mark);
   for (const name of workersOf(names, account)) {
     // `force`: a Worker another binds is deleted all the same, its Durable Objects with it.
     await deleteScript(scope, name, { force: true });
@@ -195,14 +224,17 @@ async function destroyAll(
   }
   await deleteScript(scope, names.agent, { force: true });
   for (const title of [names.edgeStateTitle, names.cacheStateTitle]) {
-    const id = account.owner?.made[title];
+    const id = recorded[title];
     if (id !== undefined) {
       await deleteKvNamespace(scope, id);
     }
   }
-  const left = await applicationStores(scope, account, input.options.includeStorage);
+  const left = await applicationStores(scope, recorded, input.options.includeStorage);
   if (account.bucket !== undefined) {
-    await settleBucket(scope, names, left);
+    await settleBucket(scope, names, {
+      left,
+      mark: { ...mark, made: recorded, pending: [] },
+    });
   }
   return left;
 }

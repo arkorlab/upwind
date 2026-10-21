@@ -78,6 +78,26 @@ describe('reading the account', () => {
     expect((await readAccount(scopeOf(fake), NAMES)).problems).toHaveLength(1);
   });
 
+  it('says how to clear a bucket of its name that holds no mark, and whose a marked one is', async () => {
+    const fake = fakeCloudflare();
+    fake.buckets.set(NAMES.artifactsBucket, new Map());
+    const [unmarked] = (await readAccount(scopeOf(fake), NAMES)).problems;
+
+    expect(unmarked).toContain('it holds no owner mark');
+    expect(unmarked).toContain(
+      'If a deploy of shop stopped as it made the bucket, the bucket holds nothing; delete it, and run again',
+    );
+
+    fake.buckets.set(
+      NAMES.artifactsBucket,
+      new Map([[OWNER_KEY, { bytes: mark('other'), contentType: 'application/json' }]]),
+    );
+    const [marked] = (await readAccount(scopeOf(fake), NAMES)).problems;
+
+    expect(marked).toContain('was not made by upwind deploy for shop but for other');
+    expect(marked).not.toContain('delete it');
+  });
+
   it('accepts what it made, and refuses a namespace of its title that it did not', async () => {
     const fake = fakeCloudflare();
     fake.kv.set('kv-mine', { id: 'kv-mine', title: NAMES.edgeStateTitle });
