@@ -65,7 +65,10 @@ export interface Preflight {
   readonly bundleDir: string;
   readonly bundle: DeploymentBundle;
   readonly functions: readonly FunctionScript[];
-  /** Workers the project's deployments will hold at most: its Functions for each kept one, and its own. */
+  /**
+   * Workers the project holds at most, at a deploy's peak: its own, and the Functions of each kept
+   * deployment, the live one, and the one being deployed.
+   */
   readonly projectedWorkers: number;
   /** Every reason the deployment would be refused, in the order found. */
   readonly problems: readonly string[];
@@ -238,7 +241,9 @@ export async function preflight(input: CheckInput): Promise<Preflight> {
     ...(await wrongAtRuntime(bundleDir, bundle)),
   );
   const functions = functionScripts(settings.project, bundle);
-  const projectedWorkers = functions.length * (settings.keep + 1) + PROJECT_WORKERS;
+  // At a deploy's peak: the deployments kept and the live one are all still there while the new
+  // one's Functions are uploaded, and the oldest of them go only once the new one is live.
+  const projectedWorkers = functions.length * (settings.keep + 2) + PROJECT_WORKERS;
   if (projectedWorkers > MAX_ACCOUNT_WORKERS) {
     problems.push(
       `keeping ${settings.keep} deployments of ${functions.length} Functions each would take ${projectedWorkers} Workers, over the ${MAX_ACCOUNT_WORKERS} an account on Workers Paid may hold; lower deploy.keep`,

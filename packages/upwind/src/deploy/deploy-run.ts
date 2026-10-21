@@ -175,6 +175,49 @@ async function cleanUp(
   }
 }
 
+/**
+ * A run of the deployment that is live already. Staged again, it would be staged without the
+ * deployment before it, whose files its open pages still ask for; and switched to again, it would
+ * be switched from itself. What a run that made it live may have left undone is done, though, and
+ * nothing else: the edge's reach, which a run narrows only once its deployment is live, and the
+ * cleanup of older deployments, which takes the agent — a failure of either is left for the next
+ * run, which may be this one.
+ */
+async function finishLive(
+  run: DeployRun,
+  input: {
+    readonly names: ProjectNames;
+    readonly subdomain: string;
+    readonly reach: ScriptSubdomain;
+  },
+): Promise<number> {
+  const { scope, account, settings, plan } = run;
+  const { names } = input;
+  await narrowReach(scope, names.edge, input.reach);
+  const stores = await ensureStores({ scope, names, account, storage: settings.storage });
+  const scripts = await shippedWorkers();
+  const session = await openAgent({
+    scope,
+    names,
+    stores,
+    script: scripts.agent,
+    subdomain: input.subdomain,
+    mode: 'deploy',
+    existing: new Set(account.projectWorkers),
+    withCache: true,
+    fetch: run.fetch,
+    sleep: run.sleep,
+    now: run.now,
+  });
+  try {
+    await cleanUp(run, names, remoteTarget(session.client, plan.bundleDir).cache);
+  } finally {
+    await session.close();
+  }
+  say(`${plan.bundle.deploymentId} is live already; nothing else was changed`);
+  return 0;
+}
+
 /** Make the deployment on the account; what the command exits with. */
 export async function deployToAccount(run: DeployRun): Promise<number> {
   const { scope, account, settings, plan } = run;
@@ -188,13 +231,7 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
   const reach: ScriptSubdomain = { enabled: settings.workersDev, previews_enabled: false };
   const previous = await liveDeployment(scope, names, account);
   if (previous === bundle.deploymentId) {
-    // Staged again, it would be staged without the deployment before it, whose files its open
-    // pages still ask for; and switched to again, it would be switched from itself. What a run
-    // that made it live may have left undone is done, though: the edge's reach, which it narrows
-    // only once the deployment is live, and a narrowing that failed is left for the next run.
-    await narrowReach(scope, names.edge, reach);
-    say(`${bundle.deploymentId} is live already; nothing else was changed`);
-    return 0;
+    return finishLive(run, { names, subdomain, reach });
   }
   const existing = new Set(account.projectWorkers);
   say('finding or making the stores');
