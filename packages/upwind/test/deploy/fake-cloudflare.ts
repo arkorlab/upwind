@@ -29,6 +29,8 @@ export interface FakeScript {
   subdomain: { enabled: boolean; previews_enabled: boolean };
   migrationTag: string | undefined;
   readonly secrets: Map<string, string>;
+  /** When the Worker was made, as the list of Workers says; a test sets it to age one. */
+  createdOn?: string;
 }
 
 export interface LoggedRequest {
@@ -113,6 +115,19 @@ function emptyScript(name: string): FakeScript {
   };
 }
 
+/** How many of a Worker's newest versions a deployment can choose among. */
+const DEPLOYABLE_VERSIONS = 100;
+
+/** The items of one page of a list; all of them where the request asks for no page. */
+function pageOf<T>(all: readonly T[], url: URL): readonly T[] {
+  const perPage = url.searchParams.get('per_page');
+  if (perPage === null) {
+    return all;
+  }
+  const page = Number(url.searchParams.get('page') ?? '1');
+  return all.slice((page - 1) * Number(perPage), page * Number(perPage));
+}
+
 /** A page of a list, as Cloudflare numbers pages. */
 function paged(all: readonly unknown[], url: URL, defaultPerPage: number): Response {
   const page = Number(url.searchParams.get('page') ?? '1');
@@ -177,7 +192,16 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
     {
       method: 'GET',
       path: /^\/workers\/scripts$/u,
-      answer: () => envelope([...scripts.keys()].map((id) => ({ id }))),
+      answer: () => {
+        return envelope(
+          [...scripts.values()].map((script) => {
+            return {
+              id: script.name,
+              ...(script.createdOn !== undefined && { created_on: script.createdOn }),
+            };
+          }),
+        );
+      },
     },
     {
       method: 'POST',
@@ -237,14 +261,17 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
     {
       method: 'GET',
       path: /^\/workers\/scripts\/([^/]+)\/versions$/u,
-      answer: (_, match) => {
+      answer: (_, match, url) => {
         const target = scriptOr(match);
         if (target instanceof Response) {
           return target;
         }
-        return envelope({
-          items: target.versions.map((version) => summaryOf(version)),
-        });
+        // A deployment chooses among the newest hundred, which is all `deployable` lists, unpaged.
+        const items =
+          url.searchParams.get('deployable') === 'true'
+            ? target.versions.slice(0, DEPLOYABLE_VERSIONS)
+            : pageOf(target.versions, url);
+        return envelope({ items: items.map((version) => summaryOf(version)) });
       },
     },
     {
@@ -254,7 +281,10 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
         const version = scripts
           .get(match[1] ?? '')
           ?.versions.find((candidate) => candidate.id === match[2]);
-        return version === undefined ? notFound('version') : envelope(version);
+        // As Cloudflare answers for one version: what it was uploaded with, under `resources`.
+        return version === undefined
+          ? notFound('version')
+          : envelope({ ...version, resources: { bindings: version.metadata['bindings'] ?? [] } });
       },
     },
     {

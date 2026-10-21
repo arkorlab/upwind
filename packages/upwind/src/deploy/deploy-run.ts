@@ -12,6 +12,7 @@ import { ensureInfra } from './infra.ts';
 import { appRuntimeOf, type ProjectNames, projectNames } from './names.ts';
 import { publishPointer } from './pointer.ts';
 import type { Preflight } from './preflight.ts';
+import { retainDeployments } from './retention.ts';
 import { shippedWorkers } from './shipped.ts';
 import { stageBuild } from './stage.ts';
 import { ensureStores } from './stores.ts';
@@ -65,7 +66,7 @@ async function liveDeployment(
 }
 
 /** Where the site is reached on the account's side, as the edge's names and its first one. */
-function siteOf(
+export function siteOf(
   settings: DeploySettings,
   names: ProjectNames,
   subdomain: string,
@@ -81,7 +82,8 @@ function siteOf(
   return { hostnames, origin: new URL(`https://${first}/`) };
 }
 
-function report(activation: Activation, deploymentId: string, origin: URL): number {
+/** What a check-then-switch came to, said; what the command exits with. */
+export function report(activation: Activation, deploymentId: string, origin: URL): number {
   switch (activation.kind) {
     case 'live': {
       say(`${deploymentId} is live at ${origin.href}`);
@@ -109,6 +111,38 @@ function report(activation: Activation, deploymentId: string, origin: URL): numb
       }
       return 1;
     }
+  }
+}
+
+/**
+ * The older deployments cleaned up, once this one is live (`retention.ts`): best done, and said
+ * where it could not be — the deployment is live either way, and the next run tries again.
+ */
+async function cleanUp(
+  run: DeployRun,
+  names: ProjectNames,
+  cache: Parameters<typeof retainDeployments>[0]['cache'],
+): Promise<void> {
+  try {
+    const retention = await retainDeployments({
+      scope: run.scope,
+      names,
+      keep: run.settings.keep,
+      deploymentId: run.plan.bundle.deploymentId,
+      cache,
+      now: run.now,
+    });
+    say(`kept ${retention.kept.join(', ')}`);
+    if (retention.deleted.length > 0) {
+      say(`deleted the Functions of ${retention.deleted.join(', ')}`);
+    }
+    if (retention.orphans.length > 0) {
+      say(`deleted ${retention.orphans.join(', ')}, which no deployment named`);
+    }
+  } catch (error) {
+    console.warn(
+      `upwind: warning: the deployment is live, and older ones were not cleaned up: ${error instanceof Error ? error.message : String(error)}; the next deploy tries again`,
+    );
   }
 }
 
@@ -216,7 +250,11 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
       sleep: run.sleep,
       now: run.now,
     });
-    return report(activation, bundle.deploymentId, site.origin);
+    const code = report(activation, bundle.deploymentId, site.origin);
+    if (activation.kind === 'live') {
+      await cleanUp(run, names, remoteTarget(session.client, bundleDir).cache);
+    }
+    return code;
   } finally {
     await session.close();
   }

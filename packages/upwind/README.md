@@ -289,6 +289,26 @@ export default {
 } satisfies UpwindConfig;
 ```
 
+### Deployments, and going back to one
+
+```bash
+CLOUDFLARE_API_TOKEN=… pnpm upwind deployments
+CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
+```
+
+- **`upwind deployments`** lists the project's deployments, the newest first: the live one, one
+  held at none of the traffic while a run checks it, those a rollback can go back to, and those
+  whose Functions are gone. It reads the account and changes nothing on it.
+- **`upwind rollback`** gives the edge's traffic back to an older deployment — the one before the
+  live one, or the one `--to` names — with nothing uploaded. It is checked first, as a new
+  deployment is, and given the traffic only once it answers as itself and passes the project's
+  checks; one that does not is given none.
+- **What is kept.** Once a deployment is live, a deploy keeps it, every deployment the edge's
+  traffic is with, and the newest `deploy.keep` others (`--keep`, for one run) a rollback can still
+  go back to; the rest lose their Functions, and their scope of the runtime cache. Cloudflare keeps
+  the newest hundred versions of the edge for a deployment to choose among, so nothing older can be
+  gone back to, whatever is kept. Every deployment's files stay in the bucket.
+
 ## Options
 
 ```
