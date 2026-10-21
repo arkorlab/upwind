@@ -1273,6 +1273,53 @@ describe('the host serves complete route-body generations', () => {
     expect(get).not.toHaveBeenCalled();
   });
 
+  it.each(
+    ['record', 'configured', 'middleware'].flatMap((layer) =>
+      ['Accept-Language', 'Accept-Encoding, aCcEpT-LaNgUaGe'].map((vary) => ({ layer, vary })),
+    ),
+  )('does not share an unkeyed variant from $layer: $vary', async ({ layer, vary }) => {
+    const test = await fixture({
+      ...(layer === 'configured' && {
+        headerRules: [{ sourceRegex: '^/icon$', headers: { vary } }],
+      }),
+      ...(layer === 'middleware' && { middlewareHeaders: { vary } }),
+    });
+    if (layer === 'record') await runtimeBodyType(test, 'image/png', { vary });
+
+    const response = await test.serve({ headers: { 'accept-language': 'fr' } });
+
+    await expect(response.text()).resolves.toBe('Function');
+    expect(test.fallback).toHaveBeenCalledTimes(1);
+
+    await test.drain();
+  });
+
+  it.each(
+    ['record', 'configured', 'middleware'].flatMap((layer) =>
+      ['Accept-Encoding', 'aCcEpT-EnCoDiNg'].map((vary) => ({ layer, vary })),
+    ),
+  )(
+    'keeps serving identity bytes with compression Vary from $layer: $vary',
+    async ({ layer, vary }) => {
+      const test = await fixture({
+        ...(layer === 'configured' && {
+          headerRules: [{ sourceRegex: '^/icon$', headers: { vary } }],
+        }),
+        ...(layer === 'middleware' && { middlewareHeaders: { vary } }),
+      });
+      if (layer === 'record') await runtimeBodyType(test, 'image/png', { vary });
+
+      const response = await test.serve({ headers: { 'accept-encoding': 'gzip' } });
+
+      expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(BODY);
+      expect(test.fallback).not.toHaveBeenCalled();
+      expect(response.headers.get('content-encoding')).toBeNull();
+      expect(test.dispatch).toHaveBeenCalledTimes(layer === 'middleware' ? 1 : 0);
+
+      await test.drain();
+    },
+  );
+
   it.each([
     { 'cache-control': 'private' },
     { 'cache-control': 'no-store' },
