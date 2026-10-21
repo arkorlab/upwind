@@ -39,6 +39,15 @@ step. It runs as a Worker or under Node.
 | `./fingerprint`  | A deployment's fingerprint, which the edge's deployment checks read                                         |
 | `./pointer`      | The pointer that has the edge serve a site from a deployment's manifest                                     |
 
+## Prefetch service capabilities
+
+When supplying `prefetch` to `functionBindings`, also supply
+`prefetchBlobs: prefetchBlobsOf(acceptedBundle)` from `./prefetch`. An explicitly empty capability is
+valid for a bundle with no blobs to grant. Omitting the capability is a TypeScript error and throws
+at binding assembly for JavaScript callers, before an unusable strict binding can be deployed.
+A host without a prefetch service needs neither field. This changes deployment configuration only;
+it adds no work to a visitor's request and does not migrate existing deployed service bindings.
+
 ## Overlapping asset prefixes: request-key manifest rollout
 
 When an asset-prefix rewrite also covers the build's canonical `_next/static` directory,
