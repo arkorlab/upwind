@@ -185,11 +185,15 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
     throw new Error('the account has no workers.dev subdomain');
   }
   const site = siteOf(settings, names, subdomain);
+  const reach: ScriptSubdomain = { enabled: settings.workersDev, previews_enabled: false };
   const previous = await liveDeployment(scope, names, account);
   if (previous === bundle.deploymentId) {
     // Staged again, it would be staged without the deployment before it, whose files its open
-    // pages still ask for; and switched to again, it would be switched from itself.
-    say(`${bundle.deploymentId} is live already; nothing was changed`);
+    // pages still ask for; and switched to again, it would be switched from itself. What a run
+    // that made it live may have left undone is done, though: the edge's reach, which it narrows
+    // only once the deployment is live, and a narrowing that failed is left for the next run.
+    await narrowReach(scope, names.edge, reach);
+    say(`${bundle.deploymentId} is live already; nothing else was changed`);
     return 0;
   }
   const existing = new Set(account.projectWorkers);
@@ -256,7 +260,6 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
       sleep: run.sleep,
     });
     const message = run.message ?? `upwind deploy ${bundle.deploymentId}`;
-    const reach: ScriptSubdomain = { enabled: settings.workersDev, previews_enabled: false };
     const edge = await uploadEdgeVersion({
       scope,
       names,
