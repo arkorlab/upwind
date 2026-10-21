@@ -28,6 +28,7 @@ import { DurableObject } from 'cloudflare:workers';
 import type { CacheBindings } from '../bindings.ts';
 import { limitsOf, parseVars, type ScopeLimits, type Vars } from '../env.ts';
 import { createLogger, detailOf, type Logger } from '../logger.ts';
+import { rememberArtifactFailure } from './artifacts.ts';
 import {
   applyFail,
   applyHeartbeat,
@@ -384,12 +385,12 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   /**
-   * Everything of the scope left in storage once its history is over: whatever the host's history
-   * wrote under the scope's prefix, and any blob a failed write left behind. Its tables are about
-   * to go, and after that nothing could name them.
+   * `body` under the lock, in one transaction of its own: a change that leaves no record and asks
+   * for no run. Answered with `empty` where the object holds no tables, and nothing is written.
    */
-  async #eraseStorage(): Promise<boolean> {
-    return eraseScopeStorage(this.#scopeId, this.#blobs(), this.#log);
+  #locked<T>(empty: T, body: () => T): Promise<T> {
+    const { storage } = this.ctx;
+    return this.#mutations.run(() => (this.#tables ? storage.transactionSync(body) : empty));
   }
 
   #requireTestHooks(): void {
@@ -461,20 +462,16 @@ export class CacheScope extends DurableObject<CacheBindings> {
     input: ListResourceWarmJobsInput,
     now: number,
   ): Promise<ListResourceWarmJobsResult> {
-    return this.#mutations.run(() => {
-      if (!this.#tables) return { jobs: [], nextRetryAt: null };
-      return this.ctx.storage.transactionSync(() => claimResourceWarmJobs(this.#sql, input, now));
-    });
+    const none: ListResourceWarmJobsResult = { jobs: [], nextRetryAt: null };
+    return this.#locked(none, () => claimResourceWarmJobs(this.#sql, input, now));
   }
 
   async finishResourceWarmJob(
     input: FinishResourceWarmJobInput,
     now: number,
   ): Promise<FinishResourceWarmJobResult> {
-    return this.#mutations.run(() => {
-      if (!this.#tables) return { kind: 'unknown', nextRetryAt: null };
-      return this.ctx.storage.transactionSync(() => finishResourceWarmJob(this.#sql, input, now));
-    });
+    const none: FinishResourceWarmJobResult = { kind: 'unknown', nextRetryAt: null };
+    return this.#locked(none, () => finishResourceWarmJob(this.#sql, input, now));
   }
 
   // ---- regeneration ----------------------------------------------------------------------------
@@ -584,6 +581,17 @@ export class CacheScope extends DurableObject<CacheBindings> {
     return this.#tables ? locateArtifact(this.#sql, artifactId) : undefined;
   }
 
+  /**
+   * Remember that storage holds other bytes at an artifact's location than the scope names, as a
+   * read found from the digest storage keeps of them (`artifactBytes`, Codex): the next upload of
+   * the bytes is then a repair, as it is after a projection that could not read them. Only where
+   * the location is still the artifact's (`rememberArtifactFailure`): one moved since the read was
+   * answered is left as it is, and the answer is whether the failure was remembered.
+   */
+  async rememberCorruptArtifact(location: ArtifactLocation): Promise<boolean> {
+    return this.#locked(false, () => rememberArtifactFailure(this.#sql, location));
+  }
+
   readArtifactLocation(generationId: string, artifactId: string): ReadArtifactLocationResult {
     return this.#tables
       ? readArtifactLocation(this.#sql, this.#scopeId, generationId, artifactId)
@@ -641,7 +649,10 @@ export class CacheScope extends DurableObject<CacheBindings> {
     // history owes — would go with the storage. A run that owes anything has armed its retry, and
     // the next retention looks again.
     const owed = await this.#settleOwes();
-    if (deleteAll && !owed && (await this.#eraseStorage())) {
+    // Everything of the scope left in storage once its history is over — whatever the host's
+    // history wrote under the scope's prefix, and any blob a failed write left behind — erased
+    // first: its tables are about to go, and after that nothing could name them.
+    if (deleteAll && !owed && (await eraseScopeStorage(this.#scopeId, this.#blobs(), this.#log))) {
       // Under the lock, so that no change is planned against tables that go meanwhile; the tables
       // are given up first, so that no settle run begins against them, and those under way end.
       await this.#mutations.run(async () => {

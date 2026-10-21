@@ -142,7 +142,9 @@ async function storeArtifact(
   }
   const target = recorded.storageRef ?? storageRef;
   if (recorded.replace === true || (await c.env.ARTIFACTS.head(target)) === null) {
+    // With the digest already taken, for storage to keep: a read compares it, unread (`entries.ts`).
     await c.env.ARTIFACTS.put(target, bytes as BufferSource, {
+      sha256,
       httpMetadata: { contentType: headers.contentType },
     });
   }
@@ -260,6 +262,7 @@ async function uploadArtifacts(c: GatewayContext): Promise<Response> {
     [...blobs.values()].map(async ({ upload, bytes, replace }) => {
       if (replace === true || (await c.env.ARTIFACTS.head(upload.storageRef)) === null) {
         await c.env.ARTIFACTS.put(upload.storageRef, bytes as BufferSource, {
+          sha256: upload.sha256,
           httpMetadata: { contentType: upload.contentType },
         });
       }

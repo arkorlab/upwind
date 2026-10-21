@@ -171,6 +171,7 @@ async function storeValue(
   // the authority, so a rejected writer can never remove another generation's bytes.
   const storageRef = dataUploadKey(c.get('scopeId'), sha256, c.get('now'));
   await c.env.ARTIFACTS.put(storageRef, bytes as BufferSource, {
+    sha256,
     httpMetadata: { contentType: OCTET_STREAM },
   });
   timing.lap('upload');
