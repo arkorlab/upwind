@@ -7,7 +7,6 @@ import type { WorkerBinding } from './cloudflare/form.ts';
 import {
   type AccountScope,
   listDeployments,
-  listVersions,
   putScript,
   type ScriptSubdomain,
   uploadVersion,
@@ -24,9 +23,9 @@ import { COMPATIBILITY_DATE, ensureWorker, holdReach, shippedForm } from './uplo
  *
  * The first deployment of a project creates the edge with its version live at once — there is no
  * other to keep serving. Every other one uploads a version that takes no traffic until it has been
- * checked (`activate.ts`). A version is tagged with its deployment and its pointer's digest, and a
- * run that finds one tagged as it would tag its own — a run stopped after its upload — takes that
- * one rather than uploading another.
+ * checked (`activate.ts`). A version is tagged with its deployment and its pointer's digest. A run
+ * stopped after its upload leaves a version nothing serves; the next run stages the build anew —
+ * another manifest, another pointer — and uploads one of its own.
  */
 
 const TAG_DIGITS = 12;
@@ -93,7 +92,7 @@ function bindingsOf(input: EdgeVersionInput): WorkerBinding[] {
   ];
 }
 
-/** Upload the edge's version for the deployment, or take the one a stopped run uploaded. */
+/** Upload the edge's version for the deployment. */
 export async function uploadEdgeVersion(input: EdgeVersionInput): Promise<EdgeVersion> {
   const { scope, names } = input;
   const tag = edgeTag(input.app.deploymentId, input.pointer);
@@ -101,13 +100,6 @@ export async function uploadEdgeVersion(input: EdgeVersionInput): Promise<EdgeVe
     ? await listDeployments(scope, names.edge)
     : undefined;
   const first = deployments === undefined || deployments.length === 0;
-  if (!first) {
-    const versions = await listVersions(scope, names.edge);
-    const uploaded = versions.find((version) => version.annotations?.['workers/tag'] === tag);
-    if (uploaded !== undefined) {
-      return { versionId: uploaded.id, live: false };
-    }
-  }
   const form = shippedForm(input.script.script, {
     compatibility_date: COMPATIBILITY_DATE,
     // The edge compresses as it serves, with `node:zlib`.

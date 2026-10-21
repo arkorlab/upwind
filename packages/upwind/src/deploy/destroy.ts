@@ -1,4 +1,4 @@
-import { type AccountView, readAccount, resolveAccount } from './account.ts';
+import { type AccountView, readAccount, resolveAccount, writeOwnerMark } from './account.ts';
 import type { AgentClient } from './agent-client.ts';
 import { openAgent } from './agent-session.ts';
 import type { DestroyOptions } from './args.ts';
@@ -23,7 +23,9 @@ import { AGENT_PATHS, OWNER_KEY } from './workers/protocol.ts';
  *
  * Only what the owner mark says is the project's (`account.ts`), and only with `--yes`. The stores
  * the application asked for (`deploy.storage`) hold its data, not a deployment's, and are deleted
- * only with `--include-storage`; without it they are listed, and left.
+ * only with `--include-storage`; without it they are listed, and left — and so is the bucket, with
+ * the owner mark and nothing else in it: the record of them, which a later deploy takes them up
+ * again by, as the project's, and a later destroy deletes them by.
  *
  * Every step is one a second run finds done or does: a Worker or a store that is gone already is
  * passed over, and the owner mark is the last thing in the bucket deleted, so a run stopped half way
@@ -34,6 +36,15 @@ export interface DestroyIo {
   readonly fetch?: typeof fetch | undefined;
   readonly sleep?: ((ms: number) => Promise<void>) | undefined;
   readonly now?: (() => number) | undefined;
+}
+
+/** One of the application's stores the mark records, left where it is. */
+interface LeftStore {
+  /** As the mark names it: its kind and its binding. */
+  readonly name: string;
+  readonly id: string;
+  /** Why it is left, where it was not left by being asked to. */
+  readonly why?: string;
 }
 
 /** What R2 answers a deletion of a bucket that still holds objects with. */
@@ -98,14 +109,14 @@ async function applicationStores(
   scope: AccountScope,
   account: AccountView,
   includeStorage: boolean,
-): Promise<string[]> {
-  const left: string[] = [];
+): Promise<LeftStore[]> {
+  const left: LeftStore[] = [];
   const made = Object.entries(account.owner?.made ?? {}).filter(([name]) =>
     /^(?:kv|d1|r2):/u.test(name),
   );
   for (const [name, id] of made) {
     if (!includeStorage) {
-      left.push(`${name} (${id})`);
+      left.push({ name, id });
       continue;
     }
     if (name.startsWith('kv:')) {
@@ -117,7 +128,7 @@ async function applicationStores(
         await deleteBucket(scope, id);
       } catch (error) {
         if (error instanceof CloudflareApiError && error.codes.includes(BUCKET_NOT_EMPTY)) {
-          left.push(`${name} (${id}), which still holds objects: empty it, and run this again`);
+          left.push({ name, id, why: 'which still holds objects: empty it, and run this again' });
           continue;
         }
         throw error;
@@ -144,13 +155,36 @@ function refusalOf(names: ProjectNames, account: AccountView): string | undefine
     : undefined;
 }
 
+/**
+ * The bucket deleted, its owner mark last — or, where the application's storage is left, kept with
+ * the mark as the record of it: without that, a later deploy would refuse the project's own storage
+ * as somebody else's.
+ */
+async function settleBucket(
+  scope: AccountScope,
+  names: ProjectNames,
+  left: readonly LeftStore[],
+): Promise<void> {
+  if (left.length === 0) {
+    await deleteObject(scope, names.artifactsBucket, OWNER_KEY);
+    await deleteBucket(scope, names.artifactsBucket);
+    return;
+  }
+  await writeOwnerMark(scope, names.artifactsBucket, {
+    v: 1,
+    project: names.project,
+    made: Object.fromEntries(left.map((store) => [store.name, store.id])),
+    pending: [],
+  });
+}
+
 /** Delete what the account holds of the project; what is left of the application's storage. */
 async function destroyAll(
   scope: AccountScope,
   names: ProjectNames,
   account: AccountView,
   input: { readonly options: DestroyOptions; readonly io: DestroyIo },
-): Promise<string[]> {
+): Promise<LeftStore[]> {
   for (const name of workersOf(names, account)) {
     // `force`: a Worker another binds is deleted all the same, its Durable Objects with it.
     await deleteScript(scope, name, { force: true });
@@ -168,8 +202,7 @@ async function destroyAll(
   }
   const left = await applicationStores(scope, account, input.options.includeStorage);
   if (account.bucket !== undefined) {
-    await deleteObject(scope, names.artifactsBucket, OWNER_KEY);
-    await deleteBucket(scope, names.artifactsBucket);
+    await settleBucket(scope, names, left);
   }
   return left;
 }
@@ -205,9 +238,12 @@ export async function runDestroy(
   const left = await destroyAll(scope, names, account, { options, io });
   say(`destroyed ${names.project}`);
   if (left.length > 0) {
-    say("the application's storage is left as it is (--include-storage deletes it):");
+    say(
+      `the application's storage is left as it is, and ${names.artifactsBucket} with the record of it (--include-storage deletes them):`,
+    );
     for (const store of left) {
-      console.log(`  ${store}`);
+      const why = store.why === undefined ? '' : `, ${store.why}`;
+      console.log(`  ${store.name} (${store.id})${why}`);
     }
   }
   return 0;

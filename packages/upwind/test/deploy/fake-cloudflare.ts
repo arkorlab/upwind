@@ -7,6 +7,12 @@
  * a Worker's newest version is not its deployed one — and keeps a log of every request, so a test can
  * say what was asked as well as what came of it. `fail` makes the next requests that match answer
  * with a status of the test's choosing, as Cloudflare does when it is busy or broken.
+ *
+ * A Worker's `workers.dev` name answers too, where the test says how (`workersDev`) and the Worker
+ * is on `workers.dev` and deployed: with the version its deployment gives the traffic to, or the one
+ * a request names (`cloudflare-workers-version-overrides`) where — and only where — the deployment
+ * holds it, as Cloudflare routes one. A bucket may keep its objects elsewhere (`linkBucket`): in a
+ * Miniflare bucket a Worker of the test writes, so the API and the Worker see the same objects.
  */
 
 export interface FakeVersion {
@@ -33,6 +39,21 @@ export interface FakeScript {
   createdOn?: string;
 }
 
+/** What answers a Worker's `workers.dev` name: the request, and the version it was routed to. */
+export type WorkersDevHandler = (
+  request: Request,
+  version: FakeVersion,
+  script: FakeScript,
+) => Promise<Response> | Response;
+
+/** A bucket's objects, kept where a test keeps them. */
+export interface LinkedBucket {
+  get(key: string): Promise<{ bytes: Uint8Array; contentType: string } | undefined>;
+  put(key: string, bytes: Uint8Array, contentType: string): Promise<void>;
+  delete(key: string): Promise<void>;
+  isEmpty(): Promise<boolean>;
+}
+
 export interface LoggedRequest {
   readonly method: string;
   readonly path: string;
@@ -41,7 +62,8 @@ export interface LoggedRequest {
 
 interface Failure {
   readonly method: string | undefined;
-  readonly path: RegExp;
+  /** A pattern of the path, or what the path ends with. */
+  readonly path: RegExp | string;
   readonly status: number;
   readonly headers: Readonly<Record<string, string>>;
   remaining: number;
@@ -56,9 +78,15 @@ export interface FakeCloudflare {
   readonly kv: Map<string, { id: string; title: string }>;
   readonly buckets: Map<string, Map<string, { bytes: Uint8Array; contentType: string }>>;
   readonly d1: Map<string, { uuid: string; name: string }>;
-  /** Answer the next `times` requests that match with `status`. */
+  /** What answers each Worker's `workers.dev` name, by the Worker's name. */
+  readonly workersDev: Map<string, WorkersDevHandler>;
+  /** Every request to a `workers.dev` name: its method, and its host and path. */
+  readonly workersDevRequests: LoggedRequest[];
+  /** Keep a bucket's objects in `store` rather than here. */
+  linkBucket(name: string, store: LinkedBucket): void;
+  /** Answer the next `times` requests that match — by a pattern, or by how the path ends — with `status`. */
   fail(
-    match: { readonly method?: string; readonly path: RegExp },
+    match: { readonly method?: string; readonly path: RegExp | string },
     status: number,
     options?: { readonly times?: number; readonly headers?: Readonly<Record<string, string>> },
   ): void;
@@ -97,6 +125,32 @@ interface Route {
     match: RegExpExecArray,
     url: URL,
   ) => Promise<Response> | Response;
+}
+
+const OVERRIDE = /^([^=]+)="([^"]+)"$/u;
+
+/**
+ * The version a request to a Worker reaches: the one its request names, where the Worker's
+ * deployment holds it — Cloudflare's version override — and the one with the largest share
+ * otherwise, without a word that the named one was passed over.
+ */
+export function selectedVersion(script: FakeScript, request: Request): FakeVersion | undefined {
+  const shares = script.deployments[0]?.versions ?? [];
+  const named = OVERRIDE.exec(request.headers.get('cloudflare-workers-version-overrides') ?? '');
+  const asked = named?.[1] === script.name ? named[2] : undefined;
+  const held = shares.some((share) => share.version_id === asked) ? asked : undefined;
+  const id =
+    held ?? shares.toSorted((one, other) => other.percentage - one.percentage)[0]?.version_id;
+  return script.versions.find((version) => version.id === id);
+}
+
+/** A binding's text, as a version was uploaded with it. */
+export function bindingText(version: FakeVersion, name: string): string | undefined {
+  const bindings = (version.metadata['bindings'] ?? []) as readonly {
+    readonly name?: string;
+    readonly text?: string;
+  }[];
+  return bindings.find((binding) => binding.name === name)?.text;
 }
 
 /** A version as a listing of versions shows it. */
@@ -151,6 +205,9 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
   const kv = new Map<string, { id: string; title: string }>();
   const buckets = new Map<string, Map<string, { bytes: Uint8Array; contentType: string }>>();
   const d1 = new Map<string, { uuid: string; name: string }>();
+  const linked = new Map<string, LinkedBucket>();
+  const workersDev = new Map<string, WorkersDevHandler>();
+  const workersDevRequests: LoggedRequest[] = [];
   const state: { subdomain: string | undefined } = { subdomain: 'example' };
 
   async function versionOf(target: FakeScript, request: Request): Promise<FakeVersion> {
@@ -230,6 +287,21 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
         const target = scripts.get(name) ?? emptyScript(name);
         scripts.set(name, target);
         const version = await versionOf(target, request);
+        // The secrets the upload names, and those it keeps (`keep_bindings`) of the version before.
+        const keep = version.metadata['keep_bindings'] as readonly string[] | undefined;
+        if (keep?.includes('secret_text') !== true) {
+          target.secrets.clear();
+        }
+        const bindings = (version.metadata['bindings'] ?? []) as readonly {
+          readonly type: string;
+          readonly name: string;
+          readonly text?: string;
+        }[];
+        for (const binding of bindings) {
+          if (binding.type === 'secret_text' && binding.text !== undefined) {
+            target.secrets.set(binding.name, binding.text);
+          }
+        }
         target.deployments.unshift({
           id: nextId('deployment'),
           versions: [{ version_id: version.id, percentage: 100 }],
@@ -304,6 +376,14 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
           return target;
         }
         const body = (await request.json()) as { versions: Share[] };
+        const named = body.versions.map((share) => share.version_id);
+        const total = body.versions.reduce((sum, share) => sum + share.percentage, 0);
+        const known = named.every((id) => target.versions.some((version) => version.id === id));
+        // As Cloudflare refuses one: a version the Worker does not have, shares that are not all of
+        // the traffic, or a version twice.
+        if (!known || total !== 100 || new Set(named).size !== named.length) {
+          return refusal(400, 10_219, `no deployment of ${named.join(', ')} at ${String(total)}%`);
+        }
         const deployment = { id: nextId('deployment'), versions: body.versions };
         target.deployments.unshift(deployment);
         return envelope(deployment);
@@ -407,13 +487,14 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
     {
       method: 'DELETE',
       path: /^\/r2\/buckets\/([^/]+)$/u,
-      answer: (_, match) => {
+      answer: async (_, match) => {
         const name = match[1] ?? '';
         const bucket = buckets.get(name);
         if (bucket === undefined) {
           return notFound('bucket');
         }
-        if (bucket.size > 0) {
+        const store = linked.get(name);
+        if (bucket.size > 0 || (store !== undefined && !(await store.isEmpty()))) {
           return refusal(409, 10_008, 'the bucket is not empty');
         }
         buckets.delete(name);
@@ -423,8 +504,13 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
     {
       method: 'GET',
       path: /^\/r2\/buckets\/([^/]+)\/objects\/(.+)$/u,
-      answer: (_, match) => {
-        const object = buckets.get(match[1] ?? '')?.get(match[2] ?? '');
+      answer: async (_, match) => {
+        const name = match[1] ?? '';
+        const store = linked.get(name);
+        const object =
+          store === undefined || !buckets.has(name)
+            ? buckets.get(name)?.get(match[2] ?? '')
+            : await store.get(match[2] ?? '');
         return object === undefined
           ? new Response('', { status: 404 })
           : new Response(object.bytes as Uint8Array<ArrayBuffer>, {
@@ -436,15 +522,38 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
       method: 'PUT',
       path: /^\/r2\/buckets\/([^/]+)\/objects\/(.+)$/u,
       answer: async (request, match) => {
-        const bucket = buckets.get(match[1] ?? '');
+        const name = match[1] ?? '';
+        const bucket = buckets.get(name);
         if (bucket === undefined) {
           return notFound('bucket');
         }
-        bucket.set(match[2] ?? '', {
-          bytes: new Uint8Array(await request.arrayBuffer()),
-          contentType: request.headers.get('content-type') ?? 'application/octet-stream',
-        });
+        const bytes = new Uint8Array(await request.arrayBuffer());
+        const contentType = request.headers.get('content-type') ?? 'application/octet-stream';
+        const store = linked.get(name);
+        if (store === undefined) {
+          bucket.set(match[2] ?? '', { bytes, contentType });
+        } else {
+          await store.put(match[2] ?? '', bytes, contentType);
+        }
         return envelope({ key: match[2] });
+      },
+    },
+    {
+      method: 'DELETE',
+      path: /^\/r2\/buckets\/([^/]+)\/objects\/(.+)$/u,
+      answer: async (_, match) => {
+        const name = match[1] ?? '';
+        const bucket = buckets.get(name);
+        if (bucket === undefined) {
+          return notFound('bucket');
+        }
+        const store = linked.get(name);
+        if (store === undefined) {
+          bucket.delete(match[2] ?? '');
+        } else {
+          await store.delete(match[2] ?? '');
+        }
+        return envelope(null);
       },
     },
     {
@@ -481,7 +590,9 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
       return (
         candidate.remaining > 0 &&
         (candidate.method === undefined || candidate.method === method) &&
-        candidate.path.test(path)
+        (typeof candidate.path === 'string'
+          ? path.endsWith(candidate.path)
+          : candidate.path.test(path))
       );
     });
     if (failure === undefined) {
@@ -494,8 +605,35 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
     );
   }
 
+  /** A request to a Worker's `workers.dev` name, answered as the test says it is. */
+  async function workersDevAnswer(request: Request, url: URL): Promise<Response | undefined> {
+    const suffix = `.${state.subdomain ?? ''}.workers.dev`;
+    if (state.subdomain === undefined || !url.hostname.endsWith(suffix)) {
+      return undefined;
+    }
+    const name = url.hostname.slice(0, -suffix.length);
+    workersDevRequests.push({
+      method: request.method,
+      path: `${url.hostname}${url.pathname}`,
+      query: Object.fromEntries(url.searchParams),
+    });
+    const script = scripts.get(name);
+    const version = script === undefined ? undefined : selectedVersion(script, request);
+    const handler = workersDev.get(name);
+    if (handler === undefined || version === undefined || script?.subdomain.enabled !== true) {
+      // What `workers.dev` answers for a name nothing is deployed to.
+      return new Response('There is nothing here yet', { status: 404 });
+    }
+    return handler(request, version, script);
+  }
+
   const fake: FakeCloudflare = {
     requests: [],
+    workersDevRequests,
+    workersDev,
+    linkBucket(name, store) {
+      linked.set(name, store);
+    },
     accounts: [{ id: accountId, name: 'Test account' }],
     get subdomain() {
       return state.subdomain;
@@ -520,7 +658,9 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
       const request = new Request(input, init);
       const url = new URL(request.url);
       if (!url.href.startsWith(BASE)) {
-        return new Response('not the API', { status: 400 });
+        return (
+          (await workersDevAnswer(request, url)) ?? new Response('not the API', { status: 400 })
+        );
       }
       const path = decodeURI(url.pathname.slice(BASE_PATH.length));
       fake.requests.push({
