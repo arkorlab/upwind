@@ -42,6 +42,10 @@ export type TransformImage = (
   request: ImageTransformRequest,
 ) => Promise<ImageTransformResult>;
 
+export function transformMode(transform: TransformImage | undefined): string {
+  return transform === undefined ? 'original' : 'transform';
+}
+
 /**
  * Ask the host's blob reader for an object of the bucket by its content address — `/<sha256>`, or
  * `/manifests/<sha256>` — and the request's headers and signal: a reader that answers through a
