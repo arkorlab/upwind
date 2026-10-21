@@ -180,21 +180,40 @@ describe('`upwind rollback` on an account', () => {
     expect(agentKey).not.toBe(taken[0]);
   });
 
-  it("switches to the deployment's version as it stands where its bundle is not kept", async () => {
+  it('refuses a deployment named whose bundle is not kept, and switches nothing', async () => {
     const dir = await deployableProject(PROJECT);
-    const { first, firstVersion } = await twoDeployed(dir);
+    const { first, second } = await twoDeployed(dir);
+    const live = liveVersion(account());
     const bucket = await account().stack.mf.getR2Bucket('ARTIFACTS', 'agent');
     await bucket.delete(bundleObjectKey(PROJECT, first.deploymentId));
 
     await expect(
       runRollback({ projectDir: dir, to: first.deploymentId }, account().credentials, account().io),
-    ).resolves.toBe(0);
-    expect(liveVersion(account())).toBe(firstVersion);
-    expect(held.warnings).toStrictEqual([
+    ).resolves.toBe(1);
+    // Its own version as it stands would serve none of the second's files, and nothing would have
+    // asked whether its cache scope still answers.
+    expect(liveVersion(account())).toBe(live);
+    expect(servedBy(account(), NAMES.edge)).toBe(second.deploymentId);
+    expect(held.errors).toStrictEqual([
       expect.stringContaining(
-        `keeps no bundle of ${first.deploymentId}, so its version is switched to as it stands`,
+        `keeps no bundle of ${first.deploymentId}, so it cannot be published again`,
       ),
     ]);
+  });
+
+  it('keeps the live deployment where the one it goes back to fails its checks', async () => {
+    const dir = await deployableProject(PROJECT);
+    const { second } = await twoDeployed(dir);
+    const live = liveVersion(account());
+    account().site = (_, version) =>
+      version.id === live ? undefined : new Response('broken', { status: 500 });
+
+    await expect(
+      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io),
+    ).resolves.toBe(1);
+    expect(liveVersion(account())).toBe(live);
+    expect(servedBy(account(), NAMES.edge)).toBe(second.deploymentId);
+    expect(held.errors).toContainEqual('  - / was answered with 500');
   });
 
   /** Three deployments made, one after another, the third live. */
@@ -232,6 +251,21 @@ describe('`upwind rollback` on an account', () => {
     await expect(rollBack()).resolves.toBe(0);
     expect(servedBy(account(), NAMES.edge)).toBe(one?.deploymentId);
     expect(held.errors).toStrictEqual([]);
+  });
+
+  it('passes over a deployment whose bundle is not kept, to the one before it', async () => {
+    const dir = await deployableProject(PROJECT);
+    const [one, two] = await threeDeployed(dir);
+    const bucket = await account().stack.mf.getR2Bucket('ARTIFACTS', 'agent');
+    await bucket.delete(bundleObjectKey(PROJECT, String(two?.deploymentId)));
+
+    await expect(
+      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io),
+    ).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(one?.deploymentId);
+    expect(held.warnings).toContainEqual(
+      expect.stringContaining(`keeps no bundle of ${String(two?.deploymentId)}`),
+    );
   });
 
   it('passes over a deployment whose cache scope a stopped cleanup retired', async () => {

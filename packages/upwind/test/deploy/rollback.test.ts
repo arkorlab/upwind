@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { runRollback } from '../../src/deploy/rollback.ts';
+import { createCloudflareClient } from '../../src/deploy/cloudflare/client.ts';
+import { readHistory } from '../../src/deploy/history.ts';
+import { chooseTarget, runRollback } from '../../src/deploy/rollback.ts';
 import { ownVersion } from '../../src/manifest.ts';
 import { fakeEdge, NAMES } from './edge-history.ts';
-import { fakeCloudflare } from './fake-cloudflare.ts';
+import { type FakeCloudflare, fakeCloudflare } from './fake-cloudflare.ts';
 import { projectWith } from './project.ts';
 
 const CREDENTIALS = { apiToken: 'token', accountId: undefined };
@@ -23,6 +25,16 @@ function clock(): { readonly sleep: () => Promise<void>; readonly now: () => num
 
 async function project(): Promise<string> {
   return projectWith({ adapterVersion: await ownVersion(), packageName: NAMES.project });
+}
+
+/** Where a rollback would go on this account, by its edge's history: the deployment, or why none. */
+async function chosen(fake: FakeCloudflare, to?: string): Promise<string> {
+  const scope = {
+    client: createCloudflareClient({ apiToken: 'token', fetch: fake.fetch }),
+    accountId: 'account-1',
+  };
+  const choice = await chooseTarget(scope, NAMES, await readHistory(scope, NAMES), to);
+  return typeof choice === 'string' ? choice : choice.found.target.deploymentId;
 }
 
 /** Three deployments, the newest live. */
@@ -46,10 +58,12 @@ describe('`upwind rollback`', () => {
     vi.spyOn(console, 'log').mockImplementation((text: string) => {
       printed.push(text);
     });
-    // An account of an edge and Functions alone, with no bucket to stage again from: each
-    // deployment is switched to as its version stands, and the run says so.
+    // An account of an edge and Functions alone, with no bucket to publish a deployment again
+    // from: which deployment a rollback goes to is asked of its history (`chosen`), and a run is
+    // refused before it changes anything. Going back on an account that has one is
+    // `rollback-flow.test.ts`'s.
     vi.spyOn(console, 'warn').mockImplementation(() => {
-      // Said, and not what these tests are about (`rollback-flow.test.ts` is).
+      // Nothing a run here gets far enough to warn of.
     });
     vi.spyOn(console, 'error').mockImplementation((text: string) => {
       errors.push(text);
@@ -60,44 +74,40 @@ describe('`upwind rollback`', () => {
     vi.restoreAllMocks();
   });
 
-  it('gives the edge back to the deployment before the live one, once it answers as itself', async () => {
-    const { edge, second } = threeDeployed();
+  it('goes back to the deployment before the live one', async () => {
+    const { fake, second } = threeDeployed();
+
+    await expect(chosen(fake)).resolves.toBe(second.deploymentId);
+  });
+
+  it('refuses where the account keeps no bucket to publish the deployment again from', async () => {
+    const { edge, third } = threeDeployed();
 
     await expect(
       runRollback({ projectDir: await project(), to: undefined }, CREDENTIALS, {
         fetch: edge.fetch(),
         ...clock(),
       }),
-    ).resolves.toBe(0);
+    ).resolves.toBe(1);
+    // Nothing switched: its own version as it stands would serve none of the live one's files, and
+    // nothing would have asked whether its cache scope still answers.
     expect(edge.script.deployments[0]?.versions).toStrictEqual([
-      { version_id: second.versionId, percentage: 100 },
+      { version_id: third.versionId, percentage: 100 },
     ]);
-    // Checked first, at none of the traffic, beside the version that had all of it.
-    expect(edge.script.deployments[1]?.versions).toContainEqual({
-      version_id: second.versionId,
-      percentage: 0,
-    });
-    expect(printed).toContainEqual(
-      `upwind: ${second.deploymentId} is live at https://shop-edge.example.workers.dev/`,
-    );
+    expect(errors).toStrictEqual([
+      expect.stringContaining('shop-artifacts is not on the account, and a rollback publishes'),
+    ]);
+    expect(printed).toStrictEqual([]);
   });
 
   it('goes further back with each rollback, never forward to the one it went back from', async () => {
-    const { edge, first, second } = threeDeployed();
+    const { fake, edge, first, second } = threeDeployed();
     // A rollback to the second, as one that publishes it again leaves the edge: its newest version
     // is the second's, and serves.
     const again = edge.redeploy(second);
     edge.serve([{ versionId: again.versionId, percentage: 100 }]);
 
-    await expect(
-      runRollback({ projectDir: await project(), to: undefined }, CREDENTIALS, {
-        fetch: edge.fetch(),
-        ...clock(),
-      }),
-    ).resolves.toBe(0);
-    expect(edge.script.deployments[0]?.versions).toStrictEqual([
-      { version_id: first.versionId, percentage: 100 },
-    ]);
+    await expect(chosen(fake)).resolves.toBe(first.deploymentId);
   });
 
   it('goes back to the deployment that was live before, over a newer one that never was', async () => {
@@ -110,15 +120,7 @@ describe('`upwind rollback`', () => {
     const third = edge.deploy();
     edge.serve([{ versionId: third.versionId, percentage: 100 }]);
 
-    await expect(
-      runRollback({ projectDir: await project(), to: undefined }, CREDENTIALS, {
-        fetch: edge.fetch(),
-        ...clock(),
-      }),
-    ).resolves.toBe(0);
-    expect(edge.script.deployments[0]?.versions).toStrictEqual([
-      { version_id: first.versionId, percentage: 100 },
-    ]);
+    await expect(chosen(fake)).resolves.toBe(first.deploymentId);
   });
 
   it('goes back from a deployment made after a rollback to the one rolled back to', async () => {
@@ -134,36 +136,23 @@ describe('`upwind rollback`', () => {
     const fourth = edge.deploy();
     edge.serve([{ versionId: fourth.versionId, percentage: 100 }]);
 
-    await expect(
-      runRollback({ projectDir: await project(), to: undefined }, CREDENTIALS, {
-        fetch: edge.fetch(),
-        ...clock(),
-      }),
-    ).resolves.toBe(0);
     // The first, live before the fourth — not the second, which was gone back from.
-    expect(edge.script.deployments[0]?.versions).toStrictEqual([
-      { version_id: again.versionId, percentage: 100 },
-    ]);
+    await expect(chosen(fake)).resolves.toBe(first.deploymentId);
+    expect(again.deploymentId).toBe(first.deploymentId);
   });
 
   it('goes back to the deployment named, and to none whose Functions are gone', async () => {
     const { fake, edge, first, second } = threeDeployed();
-    const dir = await project();
 
-    await expect(
-      runRollback({ projectDir: dir, to: first.deploymentId }, CREDENTIALS, {
-        fetch: edge.fetch(),
-        ...clock(),
-      }),
-    ).resolves.toBe(0);
-    expect(edge.script.deployments[0]?.versions).toStrictEqual([
-      { version_id: first.versionId, percentage: 100 },
-    ]);
+    await expect(chosen(fake, first.deploymentId)).resolves.toBe(first.deploymentId);
 
     fake.scripts.delete(second.scriptName);
 
+    await expect(chosen(fake, second.deploymentId)).resolves.toBe(
+      `${second.deploymentId}'s Functions are no longer on the account`,
+    );
     await expect(
-      runRollback({ projectDir: dir, to: second.deploymentId }, CREDENTIALS, {
+      runRollback({ projectDir: await project(), to: second.deploymentId }, CREDENTIALS, {
         fetch: edge.fetch(),
         ...clock(),
       }),
@@ -171,22 +160,6 @@ describe('`upwind rollback`', () => {
     expect(errors).toStrictEqual([
       `upwind: ${second.deploymentId}'s Functions are no longer on the account`,
     ]);
-  });
-
-  it('keeps the live deployment where the one before it fails its checks', async () => {
-    const { edge, second, third } = threeDeployed();
-    const failing = edge.fetch(new Set([second.deploymentId]));
-
-    await expect(
-      runRollback({ projectDir: await project(), to: undefined }, CREDENTIALS, {
-        fetch: failing,
-        ...clock(),
-      }),
-    ).resolves.toBe(1);
-    expect(edge.script.deployments[0]?.versions).toStrictEqual([
-      { version_id: third.versionId, percentage: 100 },
-    ]);
-    expect(errors).toContainEqual('  - / was answered with 500');
   });
 
   it('refuses a deployment no version of the edge a deployment can choose serves', async () => {
@@ -198,25 +171,12 @@ describe('`upwind rollback`', () => {
     }
     const live = edge.deploy();
     edge.serve([{ versionId: live.versionId, percentage: 100 }]);
-    const dir = await project();
 
-    await expect(
-      runRollback({ projectDir: dir, to: old.deploymentId }, CREDENTIALS, {
-        fetch: edge.fetch(),
-        ...clock(),
-      }),
-    ).resolves.toBe(1);
-    expect(errors).toStrictEqual([
-      expect.stringMatching(/older than the 100 a deployment of the edge can choose from/u),
-    ]);
-    await expect(
-      runRollback({ projectDir: dir, to: undefined }, CREDENTIALS, {
-        fetch: edge.fetch(),
-        ...clock(),
-      }),
-    ).resolves.toBe(1);
-    expect(errors).toContainEqual(
-      'upwind: no deployment before the live one can be rolled back to',
+    await expect(chosen(fake, old.deploymentId)).resolves.toMatch(
+      /older than the 100 a deployment of the edge can choose from/u,
+    );
+    await expect(chosen(fake)).resolves.toBe(
+      'no deployment before the live one can be rolled back to',
     );
   });
 
@@ -228,26 +188,11 @@ describe('`upwind rollback`', () => {
     edge.upload();
     const untagged = edge.script.versions[0]?.id ?? '';
     edge.serve([{ versionId: untagged, percentage: 100 }]);
-    const dir = await project();
 
-    await expect(
-      runRollback({ projectDir: dir, to: undefined }, CREDENTIALS, {
-        fetch: edge.fetch(),
-        ...clock(),
-      }),
-    ).resolves.toBe(1);
-    expect(errors).toStrictEqual([
-      `upwind: shop-edge's live version ${untagged} is not one upwind deploy made, so which deployment came before it is not known; name one with --to`,
-    ]);
-    await expect(
-      runRollback({ projectDir: dir, to: first.deploymentId }, CREDENTIALS, {
-        fetch: edge.fetch(),
-        ...clock(),
-      }),
-    ).resolves.toBe(0);
-    expect(edge.script.deployments[0]?.versions).toStrictEqual([
-      { version_id: first.versionId, percentage: 100 },
-    ]);
+    await expect(chosen(fake)).resolves.toBe(
+      `shop-edge's live version ${untagged} is not one upwind deploy made, so which deployment came before it is not known; name one with --to`,
+    );
+    await expect(chosen(fake, first.deploymentId)).resolves.toBe(first.deploymentId);
   });
 
   it('has nothing to go back to before a first deploy, nor to the live one', async () => {

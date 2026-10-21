@@ -336,7 +336,8 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
 - **`upwind rollback`** gives the edge's traffic back to an older deployment — one first deployed
   before the live one, the one live most recently among those first, or the one `--to` names. Run
   again, it goes further back: a deployment gone back to is no newer for it. One whose cache scope a
-  stopped cleanup retired is passed over, or, named, refused. Nothing of it is built: its bundle,
+  stopped cleanup retired, or whose bundle the bucket no longer keeps, is passed over, or, named,
+  refused: deploy its build again instead. Nothing of it is built: its bundle,
   kept in the bucket, is published again against the live deployment, as a new deployment is against
   the one before it, so the live deployment's files stay served to its pages still open; and its
   Functions are the ones it has had since it was deployed. It is checked first, as a new deployment
