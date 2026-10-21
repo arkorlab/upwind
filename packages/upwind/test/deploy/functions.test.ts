@@ -251,6 +251,33 @@ describe("a deployment's Functions", () => {
     expect(version.metadata['observability']).toBeUndefined();
   });
 
+  it('stop being taken up once one of them fails to upload, and settle before it is said', async () => {
+    const fake = fakeCloudflare();
+    const { input } = build();
+    const { app } = input.bundle.functions;
+    const names = Array.from({ length: 8 }, (_, index) => `app-${String(index + 2)}`);
+    const split = Object.fromEntries(names.map((name) => [name, app]));
+    const bundle = { ...input.bundle, functions: { app, split } };
+    const scripts = functionScripts(NAMES.project, bundle);
+    const [first] = scripts;
+    fake.fail({ method: 'PUT', path: `/workers/scripts/${first?.scriptName ?? ''}` }, 400);
+
+    await expect(uploadFunctions({ ...input, bundle, scope: scopeOf(fake) })).rejects.toThrow(
+      /Cloudflare answered PUT/u,
+    );
+
+    const made = (): number =>
+      scripts.filter((script) => fake.scripts.has(script.scriptName)).length;
+    const when = made();
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+
+    // As many as were being uploaded beside it, at most; none after it failed, nor after it said so.
+    expect(when).toBeLessThanOrEqual(4);
+    expect(made()).toBe(when);
+  });
+
   it('are not uploaded, nor made, where a module is not the blob its bundle names', async () => {
     const fake = fakeCloudflare();
     const { input } = build();
