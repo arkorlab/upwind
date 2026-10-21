@@ -688,15 +688,14 @@ export function fileRequestsFor(file: FileTarget): readonly Sampled[] {
       ].map((headers) => sentTo(target, headers));
     }),
   ];
-  const unclaimed = asked.filter(
-    (headers) =>
-      !isReserved(
-        target.manifest,
-        target.url,
-        reservedReads(target, target.url, headers),
-        target.exact,
-      ),
-  );
+  const unclaimed = asked.filter((headers) => {
+    return !isReserved(
+      target.manifest,
+      target.url,
+      reservedReads(target, target.url, headers),
+      target.exact,
+    );
+  });
   return unclaimed.length > 0
     ? unclaimed.map((headers) => ({ kind: 'asked', headers }))
     : [unclaimedOf(target, asked) ?? { kind: 'unproved', reason: UNPROVED_FILE }];
