@@ -237,10 +237,36 @@ describe('a later deployment', () => {
       return Promise.resolve(new Response('ok'));
     };
 
-    await expect(activate(inputOf(fake, edge))).rejects.toThrow(
-      `${EDGE}'s deployment changed while this run checked its version; this run switched nothing`,
-    );
+    await expect(activate(inputOf(fake, edge))).resolves.toStrictEqual({
+      kind: 'overtaken',
+      reasons: [],
+    });
     expect(deploymentsOf(fake)[0]).toStrictEqual(other);
+    // The checking split, and nothing after it.
+    expect(deploymentWrites(fake)).toBe(1);
+  });
+
+  it('puts nothing back where the deployment changed while failing checks ran', async () => {
+    const fake = fakeCloudflare();
+    const edge = edgeOf(fake, [{ version_id: 'v-old', percentage: 100 }]);
+    const rollback = [{ version_id: 'v-older', percentage: 100 }];
+    edge.check = (path) => {
+      if (path === '/about') {
+        // A rollback somebody makes while this run's checks fail: it is theirs to keep.
+        fake.scripts
+          .get(EDGE)
+          ?.deployments.unshift({ id: 'deployment-rollback', versions: rollback });
+        return Promise.resolve(new Response('', { status: 500 }));
+      }
+      return Promise.resolve(new Response('ok'));
+    };
+
+    await expect(activate(inputOf(fake, edge))).resolves.toStrictEqual({
+      kind: 'overtaken',
+      reasons: ['/about was answered with 500'],
+    });
+    expect(deploymentsOf(fake)[0]).toStrictEqual(rollback);
+    expect(deploymentWrites(fake)).toBe(1);
   });
 
   it('is unconfirmed where it does not answer unnamed once it has the traffic', async () => {

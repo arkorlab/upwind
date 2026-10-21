@@ -74,6 +74,12 @@ export interface FakeCloudflare {
   readonly requests: LoggedRequest[];
   readonly accounts: { id: string; name: string }[];
   subdomain: string | undefined;
+  /**
+   * Whether an upload is refused, as Cloudflare refuses one, where it binds a namespace, a bucket or
+   * a database the account does not hold. Off by default: a suite that uploads Workers bound to
+   * stores it never made opts out by leaving it so.
+   */
+  checkBindings: boolean;
   readonly scripts: Map<string, FakeScript>;
   readonly kv: Map<string, { id: string; title: string }>;
   readonly buckets: Map<string, Map<string, { bytes: Uint8Array; contentType: string }>>;
@@ -182,6 +188,16 @@ function pageOf<T>(all: readonly T[], url: URL): readonly T[] {
   return all.slice((page - 1) * Number(perPage), page * Number(perPage));
 }
 
+/** Whether any of the values is one `matches` takes. */
+function holds<T>(values: Iterable<T>, matches: (value: T) => boolean): boolean {
+  for (const value of values) {
+    if (matches(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** A page of a list, as Cloudflare numbers pages. */
 function paged(all: readonly unknown[], url: URL, defaultPerPage: number): Response {
   const page = Number(url.searchParams.get('page') ?? '1');
@@ -208,14 +224,49 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
   const linked = new Map<string, LinkedBucket>();
   const workersDev = new Map<string, WorkersDevHandler>();
   const workersDevRequests: LoggedRequest[] = [];
-  const state: { subdomain: string | undefined } = { subdomain: 'example' };
+  const state: { subdomain: string | undefined; checkBindings: boolean } = {
+    subdomain: 'example',
+    checkBindings: false,
+  };
 
-  async function versionOf(target: FakeScript, request: Request): Promise<FakeVersion> {
+  /** A store an upload binds that the account does not hold; nothing where it holds them all. */
+  function unheld(metadata: Record<string, unknown>): string | undefined {
+    const bindings = (metadata['bindings'] ?? []) as readonly {
+      readonly type: string;
+      readonly name: string;
+      readonly namespace_id?: string;
+      readonly bucket_name?: string;
+      readonly id?: string;
+    }[];
+    const missing = bindings.find((binding) => {
+      switch (binding.type) {
+        case 'kv_namespace': {
+          return !kv.has(binding.namespace_id ?? '');
+        }
+        case 'r2_bucket': {
+          return !buckets.has(binding.bucket_name ?? '');
+        }
+        case 'd1': {
+          return !d1.has(binding.id ?? '');
+        }
+        default: {
+          return false;
+        }
+      }
+    });
+    return missing?.name;
+  }
+
+  async function versionOf(target: FakeScript, request: Request): Promise<FakeVersion | Response> {
     const form = await request.formData();
     const metadata = JSON.parse(await (form.get('metadata') as Blob).text()) as Record<
       string,
       unknown
     >;
+    const binding = state.checkBindings ? unheld(metadata) : undefined;
+    if (binding !== undefined) {
+      return refusal(400, 10_041, `the binding ${binding} names nothing the account holds`);
+    }
     const version: FakeVersion = {
       id: nextId('version'),
       number: target.versions.length + 1,
@@ -285,8 +336,11 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
       answer: async (request, match) => {
         const name = match[1] ?? '';
         const target = scripts.get(name) ?? emptyScript(name);
-        scripts.set(name, target);
         const version = await versionOf(target, request);
+        if (version instanceof Response) {
+          return version;
+        }
+        scripts.set(name, target);
         // The secrets the upload names, and those it keeps (`keep_bindings`) of the version before.
         const keep = version.metadata['keep_bindings'] as readonly string[] | undefined;
         if (keep?.includes('secret_text') !== true) {
@@ -323,6 +377,9 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
           return target;
         }
         const version = await versionOf(target, request);
+        if (version instanceof Response) {
+          return version;
+        }
         return envelope({
           id: version.id,
           number: version.number,
@@ -454,6 +511,10 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
       path: /^\/storage\/kv\/namespaces$/u,
       answer: async (request) => {
         const body = (await request.json()) as { title: string };
+        // A title is the account's once, as a database's name and a bucket's are.
+        if (holds(kv.values(), (namespace) => namespace.title === body.title)) {
+          return refusal(400, 10_014, 'a namespace with this account ID and title already exists');
+        }
         const namespace = { id: nextId('kv'), title: body.title };
         kv.set(namespace.id, namespace);
         return envelope(namespace);
@@ -570,6 +631,9 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
       path: /^\/d1\/database$/u,
       answer: async (request) => {
         const body = (await request.json()) as { name: string };
+        if (holds(d1.values(), (database) => database.name === body.name)) {
+          return refusal(400, 7502, 'a database with that name already exists');
+        }
         const database = { uuid: nextId('d1'), name: body.name };
         d1.set(database.uuid, database);
         return envelope(database);
@@ -640,6 +704,12 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
     },
     set subdomain(value) {
       state.subdomain = value;
+    },
+    get checkBindings() {
+      return state.checkBindings;
+    },
+    set checkBindings(value) {
+      state.checkBindings = value;
     },
     scripts,
     kv,

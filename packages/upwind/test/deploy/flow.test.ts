@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { agentTakesKey } from '../../src/deploy/agent-client.ts';
+import { type AgentInput, openAgent } from '../../src/deploy/agent-session.ts';
+import { createCloudflareClient } from '../../src/deploy/cloudflare/client.ts';
 import { runDeploy } from '../../src/deploy/command.ts';
 import { functionScriptName, projectNames } from '../../src/deploy/names.ts';
+import { shippedWorkers } from '../../src/deploy/shipped.ts';
 import {
   buildIn,
   deployableProject,
@@ -223,10 +227,150 @@ describe('`upwind deploy` to an account', () => {
     };
     buildIn(dir);
 
-    await expect(deploy(account(), dir)).rejects.toThrow(
-      /changed while this run checked its version/u,
-    );
+    await expect(deploy(account(), dir)).resolves.toBe(1);
     expect(scriptOn(account(), NAMES.edge).deployments[0]?.id).toBe('somebody-else');
+    expect(errors().join('\n')).toMatch(/changed while this run checked/u);
+  });
+
+  it('puts nothing back where the edge changed while failing checks ran', async () => {
+    const dir = await deployableProject(PROJECT);
+    buildIn(dir);
+
+    await expect(deploy(account(), dir)).resolves.toBe(0);
+
+    const before = liveVersion(account()) ?? '';
+    account().site = (request, version) => {
+      if (version.id === before) {
+        return;
+      }
+      // A rollback somebody makes while the new version fails its checks.
+      scriptOn(account(), NAMES.edge).deployments.unshift({
+        id: 'rolled-back',
+        versions: [{ version_id: before, percentage: 100 }],
+      });
+      return new Response('broken', { status: request.url.endsWith('/') ? 500 : 200 });
+    };
+    buildIn(dir);
+
+    await expect(deploy(account(), dir)).resolves.toBe(1);
+    expect(scriptOn(account(), NAMES.edge).deployments[0]?.id).toBe('rolled-back');
+    expect(errors().join('\n')).toMatch(/put nothing back/u);
+  });
+});
+
+/** The site's own name, routed to the edge as a custom domain attached to it would be. */
+const HOSTNAME = 'shop.example.com';
+
+function throughHostname(live: LiveAccount): LiveAccount['io'] {
+  return {
+    ...live.io,
+    fetch: (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.hostname !== HOSTNAME) {
+        return live.io.fetch(request);
+      }
+      url.hostname = `${NAMES.edge}.example.workers.dev`;
+      return live.io.fetch(new Request(url, request));
+    },
+  };
+}
+
+describe("the edge's reach, as the settings change it", () => {
+  const { account, setUp, tearDown } = liveSuite();
+
+  beforeEach(setUp, 60_000);
+
+  afterEach(tearDown);
+
+  /**
+   * Deploy one on workers.dev, then the next with `workersDev` off, reached on a hostname — from a
+   * checkout of the project of its own, whose settings say so: a process reads a project's once.
+   */
+  async function offWorkersDev(broken: boolean): Promise<{ code: number; during: boolean[] }> {
+    const first = await deployableProject(PROJECT);
+    buildIn(first);
+
+    await expect(deploy(account(), first)).resolves.toBe(0);
+
+    const before = liveVersion(account());
+    const during: boolean[] = [];
+    account().site = (_, version) => {
+      during.push(scriptOn(account(), NAMES.edge).subdomain.enabled);
+      return broken && version.id !== before ? new Response('broken', { status: 500 }) : undefined;
+    };
+    const dir = await deployableProject(PROJECT, { workersDev: false, hostnames: [HOSTNAME] });
+    buildIn(dir);
+    const code = await runDeploy(
+      deployOptions(dir),
+      account().credentials,
+      throughHostname(account()),
+    );
+    return { code, during };
+  }
+
+  it('is narrowed only once the new version has the traffic', async () => {
+    const { code, during } = await offWorkersDev(false);
+
+    expect(code).toBe(0);
+    // On workers.dev while the version was checked, as the live one was reached there.
+    expect(during.length).toBeGreaterThan(0);
+    expect(during.every(Boolean)).toBe(true);
+    expect(scriptOn(account(), NAMES.edge).subdomain.enabled).toBe(false);
+  });
+
+  it('is left as it was where the new version fails its checks', async () => {
+    const { code } = await offWorkersDev(true);
+
+    expect(code).toBe(1);
+    expect(scriptOn(account(), NAMES.edge).subdomain.enabled).toBe(true);
+  });
+});
+
+describe("a run's key to the agent", () => {
+  const { account, setUp, tearDown } = liveSuite();
+
+  beforeEach(setUp, 60_000);
+
+  afterEach(tearDown);
+
+  it('is taken away at its end only while it is still the one the agent takes', async () => {
+    const live = account();
+    const warnings: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((text: string) => {
+      warnings.push(text);
+    });
+    const scope = {
+      client: createCloudflareClient({
+        apiToken: 'token',
+        fetch: live.io.fetch,
+        sleep: live.io.sleep,
+      }),
+      accountId: 'account-1',
+    };
+    const input: AgentInput = {
+      scope,
+      names: NAMES,
+      stores: { bucket: NAMES.artifactsBucket, edgeState: undefined },
+      script: (await shippedWorkers()).agent,
+      subdomain: 'example',
+      mode: 'deploy',
+      existing: new Set(),
+      withCache: false,
+      ...live.io,
+    };
+    const older = await openAgent(input);
+    // A newer run sets a key of its own while the older one is still going.
+    const newer = await openAgent({ ...input, existing: new Set([NAMES.agent]) });
+
+    await older.close();
+
+    await expect(agentTakesKey(newer.client)).resolves.toBe(true);
+    expect(warnings.join('\n')).toMatch(/does not take this run's key/u);
+
+    await newer.close();
+
+    await expect(agentTakesKey(newer.client)).resolves.toBe(false);
   });
 });
 

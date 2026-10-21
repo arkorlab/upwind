@@ -134,15 +134,32 @@ describe("the edge's version for a deployment", () => {
     expect(bindingsOf(newest(fake))).toContainEqual({ type: 'images', name: 'IMAGES' });
   });
 
-  it("holds the edge to the reach the project's settings give it", async () => {
+  it('narrows nothing of the reach the live version has, for a later deployment', async () => {
     const fake = fakeCloudflare();
     await uploadEdgeVersion(inputOf(fake, createId('dpl')));
     await uploadEdgeVersion(
       inputOf(fake, createId('dpl'), { reach: { enabled: false, previews_enabled: false } }),
     );
 
+    // Still on workers.dev: the live version is reached there until the new one has the traffic.
     expect(fake.scripts.get(NAMES.edge)?.subdomain).toStrictEqual({
-      enabled: false,
+      enabled: true,
+      previews_enabled: false,
+    });
+  });
+
+  it('widens the reach for a later deployment, for its version to be asked there', async () => {
+    const fake = fakeCloudflare();
+    await uploadEdgeVersion(
+      inputOf(fake, createId('dpl'), { reach: { enabled: false, previews_enabled: false } }),
+    );
+
+    expect(fake.scripts.get(NAMES.edge)?.subdomain.enabled).toBe(false);
+
+    await uploadEdgeVersion(inputOf(fake, createId('dpl')));
+
+    expect(fake.scripts.get(NAMES.edge)?.subdomain).toStrictEqual({
+      enabled: true,
       previews_enabled: false,
     });
   });

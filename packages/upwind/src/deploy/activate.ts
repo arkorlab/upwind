@@ -21,9 +21,11 @@ import { READINESS_PATH, type Readiness } from './workers/protocol.ts';
  * (`deploy.checks`) is asked through it as well. A version that does not answer as itself, or a
  * path that fails, leaves the live version as it was, all its traffic its own again.
  *
- * Only then is the version given all of it: after reading the deployment again, to see that it is
- * still the one this run made, since Cloudflare's deployments take no condition that would refuse
- * a change somebody else made between the two.
+ * Only then is the version given all of it. Either way, the deployment is read again first, to see
+ * that it is still the one this run made: Cloudflare's deployments take no condition that would
+ * refuse a change somebody else made in between, and a run puts back or switches only what it
+ * changed itself. Where somebody has changed it since — another deploy, a rollback made while the
+ * checks ran — theirs stays as it is, failed checks or not.
  *
  * A project's first deployment is live as soon as its edge is uploaded, with nothing to go back
  * to. It is asked the same questions, without naming a version.
@@ -68,6 +70,11 @@ export type Activation =
   | { readonly kind: 'unconfirmed' }
   /** It failed its checks, and the live version keeps the traffic. */
   | { readonly kind: 'kept'; readonly versionId: string; readonly reasons: readonly string[] }
+  /**
+   * The edge's deployment was changed by somebody else while the version was checked: nothing was
+   * switched, and nothing put back. The reasons are its checks' failures, where they failed.
+   */
+  | { readonly kind: 'overtaken'; readonly reasons: readonly string[] }
   /** It is live, being a first, and failed its checks. */
   | { readonly kind: 'failing'; readonly reasons: readonly string[] };
 
@@ -204,6 +211,15 @@ async function failures(
   return found;
 }
 
+/** Whether the edge's deployment is still the one this run made to check its version. */
+async function stillChecking(
+  input: ActivateInput,
+  checking: readonly VersionShare[],
+): Promise<boolean> {
+  const [now] = (await listDeployments(input.scope, input.edge)) ?? [];
+  return sameShares(now?.versions, checking);
+}
+
 async function activateFirst(input: ActivateInput): Promise<Activation> {
   if (!(await answered(input, {}, READY_WAIT_MS))) {
     return { kind: 'unconfirmed' };
@@ -234,6 +250,10 @@ export async function activate(input: ActivateInput): Promise<Activation> {
   const reasons = (await answered(input, headers, READY_WAIT_MS))
     ? await failures(input, headers)
     : [`the new version did not answer as itself within ${String(READY_WAIT_MS / SECOND_MS)} s`];
+  // Read again before either write: what somebody else made of the deployment meanwhile stays.
+  if (!(await stillChecking(input, checking))) {
+    return { kind: 'overtaken', reasons };
+  }
   if (reasons.length > 0) {
     await createDeployment(
       scope,
@@ -242,12 +262,6 @@ export async function activate(input: ActivateInput): Promise<Activation> {
       `${input.message} (not switched)`,
     );
     return { kind: 'kept', versionId: previous, reasons };
-  }
-  const [now] = (await listDeployments(scope, edge)) ?? [];
-  if (!sameShares(now?.versions, checking)) {
-    throw new Error(
-      `${edge}'s deployment changed while this run checked its version; this run switched nothing — run it again`,
-    );
   }
   await createDeployment(
     scope,
