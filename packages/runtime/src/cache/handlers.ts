@@ -12,6 +12,7 @@ import { readWithin } from './body.ts';
 import { nowMs } from './clock.ts';
 import {
   hasResourceReceipt,
+  isCapture,
   isRegeneration,
   type RequestContext,
   requestContext,
@@ -164,6 +165,9 @@ const invalidationsOut = new WeakMap<RequestContext, Map<string, Promise<void>>>
  * made then was answered — here or in any other isolate — before the host had recorded the
  * invalidation, and what it fetched meanwhile was written as made before it, which the host
  * condemned by that invalidation and the next read fetched again.
+ *
+ * Nothing at all for a capture's render (`asCapture`), which keeps nothing: what it would
+ * invalidate stands as it was, here and at the host.
  */
 function invalidateOnce(
   runtime: CacheRuntime,
@@ -175,7 +179,7 @@ function invalidateOnce(
     context !== undefined && durations?.expire === NEXT_ONE_YEAR_SECONDS
       ? tags.filter((tag) => tag !== DEFAULT_D1_CACHE_TAG || !hasResourceReceipt(context, tag))
       : tags;
-  if (effectiveTags.length === 0) return Promise.resolve();
+  if (effectiveTags.length === 0 || isCapture()) return Promise.resolve();
   if (context === undefined) {
     return invalidateLogged(runtime, effectiveTags, durations);
   }
@@ -433,6 +437,9 @@ export class PlatformFetchCache {
    * the key as this answers, where it held it until the write had landed — is answered with the
    * value the write carries (`get`), without a trip to the host. A read in any other isolate is
    * answered with what was there before, as it always was.
+   *
+   * A capture's render (`asCapture`) keeps nothing, and writes nothing here: what it fetched is in
+   * its resume data cache, as for any prerender, which is where its reads and its resume find it.
    */
   set(cacheKey: string, data: CachedFetchValue | null, ctx: FetchSetContext): Promise<void> {
     const current = state.current;
@@ -441,7 +448,8 @@ export class PlatformFetchCache {
       current === undefined ||
       context === undefined ||
       data === null ||
-      ctx.fetchCache !== true
+      ctx.fetchCache !== true ||
+      isCapture()
     ) {
       return Promise.resolve();
     }
@@ -633,10 +641,11 @@ async function setUseCache(
   try {
     const entry = await pendingEntry;
     // Next.js keeps its own render copy: this stream belongs to the handler alone. An entry that
-    // expires at once is dynamic, never served from a store. Its cancellation must not wait for
-    // another branch held by the wrapper to finish, or requests joining this write cannot proceed.
-    if (entry.expire === 0) {
-      releaseStream(entry.value, 'dynamic use cache value is not stored');
+    // expires at once is dynamic, never served from a store, and a capture's render keeps nothing
+    // (`asCapture`). Its cancellation must not wait for another branch held by the wrapper to
+    // finish, or requests joining this write cannot proceed.
+    if (entry.expire === 0 || isCapture()) {
+      releaseStream(entry.value, 'use cache value not stored');
       return;
     }
     const bytes = await readWithin(entry.value, MAX_VALUE_BYTES);
