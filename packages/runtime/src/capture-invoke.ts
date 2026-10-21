@@ -43,6 +43,7 @@ const HTTP_OK = 200;
 const HTTP_SUCCESS_END = 300;
 const HTTP_CONTENT_TOO_LARGE = 413;
 const HTTP_UNPROCESSABLE = 422;
+const HTTP_INTERNAL_ERROR = 500;
 const TEXT_TYPE = 'text/plain; charset=utf-8';
 /** What a capture answers is for the edge that asked, and for no cache on the way to it. */
 const NOT_STORED = 'private, no-store';
@@ -146,9 +147,22 @@ function answerOf(render: CapturedRender): CaptureAnswer {
  * Refused with `422` where there is no such render to hand over — Next.js answered the render
  * itself, as it does a page dynamic here, or the render answered other than 2xx — and with `413`
  * where its outputs come to more than the largest body a delivery record carries
- * (`MAX_CAPTURED_BYTES`). Nothing is kept either way.
+ * (`MAX_CAPTURED_BYTES`). Nothing is kept either way. A failure past those — the page's module
+ * failing as it is evaluated, the render throwing — is answered `500` as the Function answers one,
+ * its cause in the Function's log, and kept by nobody, as every answer to a capture is.
  */
 export async function handleCapture(input: RoutedInput, store: Store): Promise<Response> {
+  try {
+    return await answerCapture(input, store);
+  } catch (error) {
+    // eslint-disable-next-line no-console -- the Function's own log, as its entry's catch writes it
+    console.error('next-runtime: capture failed', error);
+    return refused('the capture failed', HTTP_INTERNAL_ERROR);
+  }
+}
+
+/** A capture's answer, as `handleCapture` says, where nothing it did not expect fails. */
+async function answerCapture(input: RoutedInput, store: Store): Promise<Response> {
   const page = await pageOf(input, store);
   if (page instanceof Response) {
     return page;
