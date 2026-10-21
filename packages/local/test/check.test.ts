@@ -54,7 +54,7 @@ import { recoveryScriptCspSource } from '@stayingupwind/host/splice';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { type CheckResult, checkStack } from '../src/check.ts';
-import { NO_COOKIE_CHANGES } from '../src/cookie-jar.ts';
+import { jarOf, NO_COOKIE_CHANGES } from '../src/cookie-jar.ts';
 import { documentAnswerAt } from '../src/document-adoption.ts';
 import { expectationOf, fileFailure, fileHeadFailure } from '../src/file-expectations.ts';
 import { flowFailure } from '../src/part-flows.ts';
@@ -12965,6 +12965,70 @@ describe('what the check makes of the middleware', () => {
       ]);
       expect(claimed.failures).toStrictEqual([]);
     });
+
+    it.each(['cookie', 'Cookie'])(
+      'rebuilds a part request after its last %s is deleted, and keeps a retained cookie',
+      async (cookieHeader) => {
+        const front = await routeOf('/', FRONT, {
+          segments: { '/_tree': 'tree bytes', '/leaf': 'leaf bytes' },
+        });
+        const local = stackOf([front], {});
+        const stack = { ...local, site: local.url };
+        const page = new URL('/', stack.site);
+        const built = await partsOf(
+          stack,
+          { key: '/', route: front, requested: '/', headers: {}, exact: true },
+          { browser: {}, origin: originAt(stack, page, '') },
+        );
+        const leaf = built.find((part) => part.headers['next-router-segment-prefetch'] === '/leaf');
+        if (leaf === undefined) throw new Error('the build did not yield its leaf segment');
+        const parts = [treePart(built), leaf].map((part) => {
+          return { ...part, headers: { ...part.headers, [cookieHeader]: 'seen=1' } };
+        });
+        const owned = segmentAnswer('tree bytes');
+        const ownedHeaders = {
+          ...owned.headers,
+          'x-arkor-edge': 'passthrough;reason=middleware;mw=hit',
+        };
+        partAnswers.set('/|/_tree', {
+          ...owned,
+          headers: { ...ownedHeaders, 'set-cookie': 'seen=; Path=/; Max-Age=0' },
+        });
+        const answer = segmentAnswer('leaf bytes');
+        partAnswers.set('/|/leaf', {
+          ...answer,
+          headers: { ...answer.headers, 'cache-control': GATED },
+        });
+        const deleted = await flowFailure(
+          stack,
+          parts,
+          { jar: jarOf('seen=1', { document: page }), referred: 'none', as: '' },
+          { judged: new Map(), followed: new Map() },
+        );
+        const afterDeletion = (partsAskedEach.get('/|/leaf') ?? []).map(
+          (headers) => headers.cookie,
+        );
+        partsAskedEach.delete('/|/leaf');
+        partAnswers.set('/|/_tree', { ...owned, headers: ownedHeaders });
+        const retained = await flowFailure(
+          stack,
+          parts,
+          { jar: jarOf('seen=1', { document: page }), referred: 'none', as: '' },
+          { judged: new Map(), followed: new Map() },
+        );
+        const afterRetention = (partsAskedEach.get('/|/leaf') ?? []).map(
+          (headers) => headers.cookie,
+        );
+
+        expect(deleted).toBeUndefined();
+        expect(afterDeletion).toContain('seen=1');
+        expect(afterDeletion.some((cookie) => cookie === undefined)).toBe(true);
+        expect(retained).toBeUndefined();
+        expect(afterRetention).not.toHaveLength(0);
+        expect(afterRetention.every((cookie) => cookie === 'seen=1')).toBe(true);
+        expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+      },
+    );
 
     it('is asked with the cookies its document set, as a browser keeps them', async () => {
       const routes = [await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } })];
