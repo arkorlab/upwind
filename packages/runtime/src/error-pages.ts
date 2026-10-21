@@ -105,7 +105,7 @@ const NOT_COPIED: ReadonlySet<string> = new Set([
 /**
  * The URL a render for the request being answered is told the client asked for: the visitor's, and
  * in a regeneration — which renders for no visitor, under the request's own context — the URL of the
- * request the render was given (`staticRequest`, `cache/regenerate.ts`).
+ * request the render was given (`staticRequest`, `cache/static-render.ts`).
  */
 function initUrlFor(context: RequestContext, active: IncomingMessage): string {
   return isRegeneration()

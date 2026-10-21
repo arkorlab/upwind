@@ -14,6 +14,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 import { nowMs } from './cache/clock.ts';
 import { requestContextFor } from './cache/context.ts';
 import { catchUpWithScope } from './cache/pulls.ts';
+import { asksForCapture, handleCapture, keptByNobody } from './capture-invoke.ts';
 import {
   crawlerWantsWholePage,
   documentFromBuild,
@@ -108,6 +109,8 @@ import { renderedBy, serveWithBody } from './with-body.ts';
  * - regenerate: the edge served a stale generation, or had none valid to serve, and asks for a
  *   new one — after a resume, in the foreground, or on its own;
  * - resume: the edge served a shell, the build's or a generation's, and wants the rest;
+ * - capture: the edge wants a page rendered as a regeneration renders it, and what the render made
+ *   handed back rather than the page, with none of it kept here (`capture-invoke.ts`);
  * - everything else: a full request, routed as Next.js would, with a shell streamed ahead of its
  *   resume whenever the build or the cache holds one.
  *
@@ -520,7 +523,11 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
   const store = getStore();
   const elsewhere = misdirectedAhead(store, request);
   if (elsewhere !== undefined) {
-    return elsewhere;
+    return asksForCapture(request) ? keptByNobody(elsewhere) : elsewhere;
+  }
+  // Ahead of every mode that may keep something: a capture keeps nothing, whatever else it says.
+  if (asksForCapture(request)) {
+    return handleCapture(input, store);
   }
   const mode = regenerateMode(request);
   if (mode === 'detached') {
