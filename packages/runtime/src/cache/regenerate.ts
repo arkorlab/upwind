@@ -24,7 +24,6 @@ import { HeldTags } from './held-tags.ts';
 import {
   type AttemptOutcome,
   type AttemptReason,
-  type AttemptRequest,
   CacheHostError,
   type CommitArtifact,
   type CommitOutput,
@@ -35,6 +34,7 @@ import {
 import { answerable, supersededWith, turnedAway } from './later.ts';
 import {
   abandon,
+  attemptRequestOf,
   elapsedSince,
   giveUp,
   heartbeat,
@@ -541,20 +541,6 @@ async function publish(
       rememberRecord(runtime, lease.entryId, published);
     }
   }
-}
-
-/**
- * What the host is asked for a lease of the entry with: what the edge served, where it said, and the
- * generation the request judged (`replaces`), for a host to hand back the record of a later one it
- * holds (`AttemptOutcome.record`).
- */
-function attemptRequestOf(target: RegenerationTarget): AttemptRequest {
-  return {
-    entry: target.descriptor,
-    reason: target.reason,
-    ...(target.observation !== undefined && { observation: target.observation }),
-    ...(target.replaces !== undefined && { replaces: target.replaces }),
-  };
 }
 
 /**
