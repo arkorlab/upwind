@@ -2,9 +2,12 @@ import { createHash } from 'node:crypto';
 
 import type { Prerender } from '@stayingupwind/core/bundle';
 import {
+  decodeGenerationPack,
+  type DecodedGenerationPack,
   deriveEntry,
   encodeGenerationPack,
   packBodyDigests,
+  policyFromBuild,
   type RouteEntryDescriptor,
   sharedShellTagOf,
 } from '@stayingupwind/core/cache';
@@ -20,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { NodeHandler } from '../src/app-module.ts';
 import { withClock } from '../src/cache/clock.ts';
+import { currentGenerationAfterResponse, entryIdOf, rememberRecord } from '../src/cache/current.ts';
 import type { CacheHost, CommitRequest } from '../src/cache/host.ts';
 import { regenerate } from '../src/cache/regenerate.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
@@ -215,6 +219,9 @@ function cache() {
     },
     fail,
     readRecord: vi.fn<CacheHost['readRecord']>((entryId) => Promise.resolve(records.get(entryId))),
+    readNewerRecord: vi
+      .fn<NonNullable<CacheHost['readNewerRecord']>>()
+      .mockResolvedValue(undefined),
     readArtifact: (artifactId) => Promise.resolve(artifacts.get(artifactId)),
     getData: unasked,
     setData: unasked,
@@ -244,7 +251,12 @@ function cache() {
   return { runtime, startAttempt, commits, fail };
 }
 
-function requests(runtime: CacheRuntime, route = ROUTE, pathname = '/two') {
+function requests(
+  runtime: CacheRuntime,
+  route = ROUTE,
+  pathname = '/two',
+  clock: number | null = NOW,
+) {
   const pending: Promise<unknown>[] = [];
   return {
     ask: (headers: Record<string, string> = {}, method = 'GET') => {
@@ -256,7 +268,7 @@ function requests(runtime: CacheRuntime, route = ROUTE, pathname = '/two') {
         waitUntil: (work) => {
           pending.push(work);
         },
-        clock: NOW,
+        clock: clock ?? undefined,
       });
     },
     drain: async () => {
@@ -302,6 +314,75 @@ async function capture(input: InvokeInput, postponed?: string): Promise<Response
   return new Response(null);
 }
 
+async function storedRecord(
+  entryId: string,
+  state: 'fresh' | 'stale' | 'expired' = 'fresh',
+  options: { scopeId?: string; pathname?: string; seq?: number; tags?: string[] } = {},
+): Promise<Uint8Array> {
+  const html = encoder.encode(UPGRADED);
+  const seq = options.seq ?? 2;
+  return encodeGenerationPack(
+    {
+      schemaVersion: 1,
+      scopeId: options.scopeId ?? SCOPE,
+      entryId,
+      kind: 'app-page',
+      route: ROUTE,
+      pathname: options.pathname ?? '/two',
+      generationId: `stored-${String(seq)}`,
+      seq,
+      revision: seq,
+      source: 'runtime',
+      cacheTimestamp: NOW - 1000,
+      producedAt: NOW - 1000,
+      policy: policyFromBuild({
+        initialRevalidate: state === 'fresh' ? false : 0,
+        initialExpiration: state === 'expired' ? 0 : undefined,
+      }),
+      status: 200,
+      headers: {},
+      tags: (options.tags ?? []).map((value) => ({ kind: 'next-explicit' as const, value })),
+      artifacts: [],
+      ...(await packBodyDigests(html, undefined)),
+    },
+    html,
+    undefined,
+  );
+}
+
+type UnverifiedRead = 'corrupt' | 'digest' | 'entry' | 'scope' | 'error';
+
+async function unverifiedRecord(entryId: string, failure: UnverifiedRead): Promise<Uint8Array> {
+  if (failure === 'error') throw new Error('host unavailable');
+  if (failure === 'corrupt') return encoder.encode('not a record');
+  const bytes = await storedRecord(failure === 'entry' ? 'wrong-entry' : entryId, 'fresh', {
+    scopeId: failure === 'scope' ? 'other-scope' : SCOPE,
+  });
+  if (failure === 'digest') {
+    const last = bytes.length - 1;
+    bytes[last] = bytes[last] === 0 ? 1 : 0;
+  }
+  return bytes;
+}
+
+function configureUpgrade(condition: 'HEAD' | 'ineligible'): void {
+  if (condition === 'HEAD') return;
+  const store = deployment();
+  vi.mocked(getStore).mockReturnValue({
+    ...store,
+    manifest: {
+      ...store.manifest,
+      config: { ...store.manifest.config, partialPrefetching: false },
+    },
+  });
+}
+
+function checkedPack(bytes: Uint8Array): DecodedGenerationPack {
+  const decoded = decodeGenerationPack(bytes);
+  if (decoded.kind !== 'ok') throw new Error('invalid control record');
+  return decoded.pack;
+}
+
 describe('partial fallback shell promotion', () => {
   beforeEach(() => {
     vi.stubGlobal('__ARKOR_FUNCTION_KIND__', 'app');
@@ -309,6 +390,7 @@ describe('partial fallback shell promotion', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.resetAllMocks();
   });
@@ -405,6 +487,587 @@ describe('partial fallback shell promotion', () => {
       expect(fail).not.toHaveBeenCalled();
     } finally {
       suffix.resolve(undefined);
+      await drain();
+    }
+  });
+
+  it('keeps the first partial response bounded while its slow initial record read can schedule behind the body', async () => {
+    const { runtime, startAttempt, commits } = cache();
+    await entryIdOf(runtime, { kind: 'app-page', route: ROUTE, pathname: '/two' });
+    const pending = Promise.withResolvers<Uint8Array | undefined>();
+    const started = Promise.withResolvers<undefined>();
+    vi.spyOn(runtime.host, 'readRecord').mockImplementation(() => {
+      started.resolve(undefined);
+      return pending.promise;
+    });
+    const { ask, drain } = requests(runtime);
+    vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+      return input.requestMeta['onCacheEntryV2'] === undefined
+        ? Promise.resolve(new Response('<div id="slug">two</div></main>'))
+        : capture(input);
+    });
+    vi.useFakeTimers();
+    try {
+      const responding = ask();
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(201);
+      const response = await responding;
+      const body = await response.text();
+
+      expect(body.startsWith(FALLBACK)).toBe(true);
+      expect(startAttempt).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(49);
+      pending.resolve(undefined);
+      await drain();
+
+      expect(startAttempt).toHaveBeenCalledExactlyOnceWith({
+        entry: { kind: 'app-page', route: ROUTE, pathname: '/two' },
+        reason: 'miss',
+        replaces: null,
+      });
+      expect(vi.spyOn(runtime.host, 'readRecord')).toHaveBeenCalledTimes(1);
+      expect(commits).toHaveLength(1);
+      await expect((await ask()).text()).resolves.toBe(UPGRADED);
+    } finally {
+      pending.resolve(undefined);
+      await drain();
+    }
+  });
+
+  it.each([6000, 30_001])(
+    'keeps the original pending read and deadline when the partial body lasts %sms',
+    async (elapsed) => {
+      const { runtime, startAttempt } = cache();
+      await entryIdOf(runtime, { kind: 'app-page', route: ROUTE, pathname: '/two' });
+      const pending = Promise.withResolvers<Uint8Array | undefined>();
+      const started = Promise.withResolvers<undefined>();
+      const suffix = Promise.withResolvers<undefined>();
+      vi.spyOn(runtime.host, 'readRecord').mockImplementation(() => {
+        started.resolve(undefined);
+        return pending.promise;
+      });
+      vi.mocked(invokeNodeHandler).mockImplementation(async (input) => {
+        if (input.requestMeta['onCacheEntryV2'] !== undefined) return capture(input);
+        await suffix.promise;
+        return new Response('tail');
+      });
+      // Normal requests use the advancing wall clock, rather than an explicit frozen test clock.
+      const { ask, drain } = requests(runtime, ROUTE, '/two', null);
+      vi.useFakeTimers();
+      try {
+        const responding = ask();
+        await started.promise;
+        await vi.advanceTimersByTimeAsync(201);
+        const reader = readerOf(await responding);
+
+        expect(new TextDecoder().decode((await reader.read()).value)).toBe(FALLBACK);
+
+        await vi.advanceTimersByTimeAsync(elapsed - 201);
+        suffix.resolve(undefined);
+        while (!(await reader.read()).done) {
+          /* Consume the existing response only. */
+        }
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(vi.spyOn(runtime.host, 'readRecord')).toHaveBeenCalledTimes(1);
+        expect(startAttempt).not.toHaveBeenCalled();
+
+        pending.resolve(undefined);
+        await drain();
+
+        expect(startAttempt).toHaveBeenCalledTimes(elapsed < 30_000 ? 1 : 0);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        suffix.resolve(undefined);
+        pending.resolve(undefined);
+        await drain();
+      }
+    },
+  );
+
+  it('waits behind an already-sent partial body when its completed-key read was evicted during streaming', async () => {
+    const { runtime, startAttempt, commits } = cache();
+    const descriptor = { kind: 'app-page' as const, route: ROUTE, pathname: '/two' };
+    const entryId = await entryIdOf(runtime, descriptor);
+    const suffix = Promise.withResolvers<undefined>();
+    const pending = Promise.withResolvers<Uint8Array | undefined>();
+    const started = Promise.withResolvers<undefined>();
+    const { ask, drain } = requests(runtime);
+    vi.mocked(invokeNodeHandler).mockImplementation(async (input) => {
+      if (input.requestMeta['onCacheEntryV2'] !== undefined) return capture(input);
+      await suffix.promise;
+      return new Response('<div id="slug">two</div></main>');
+    });
+    try {
+      const first = await ask();
+      const reader = readerOf(first);
+
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe(FALLBACK);
+      expect(startAttempt).not.toHaveBeenCalled();
+
+      runtime.recordMemo.delete(entryId);
+      vi.spyOn(runtime.host, 'readRecord').mockImplementation(() => {
+        started.resolve(undefined);
+        return pending.promise;
+      });
+      vi.useFakeTimers();
+      suffix.resolve(undefined);
+      while (!(await reader.read()).done) {
+        // Only consuming the already-available body starts the after-body upgrade.
+      }
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(201);
+
+      expect(startAttempt).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(49);
+      pending.resolve(undefined);
+      await drain();
+
+      expect(startAttempt).toHaveBeenCalledExactlyOnceWith({
+        entry: descriptor,
+        reason: 'miss',
+        replaces: null,
+      });
+      expect(vi.spyOn(runtime.host, 'readRecord')).toHaveBeenCalledTimes(2);
+      expect(commits).toHaveLength(1);
+    } finally {
+      suffix.resolve(undefined);
+      pending.resolve(undefined);
+      await drain();
+    }
+  });
+
+  it.each(['fresh', 'stale', 'expired'] as const)(
+    'uses a slow verified %s record after the first response without guessing absence',
+    async (state) => {
+      const { runtime, startAttempt } = cache();
+      const entryId = await entryIdOf(runtime, {
+        kind: 'app-page',
+        route: ROUTE,
+        pathname: '/two',
+      });
+      const bytes = await storedRecord(entryId, state);
+      const pending = Promise.withResolvers<Uint8Array | undefined>();
+      const started = Promise.withResolvers<undefined>();
+      vi.spyOn(runtime.host, 'readRecord').mockImplementation(() => {
+        started.resolve(undefined);
+        return pending.promise;
+      });
+      vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+        return input.requestMeta['onCacheEntryV2'] === undefined
+          ? Promise.resolve(new Response('tail'))
+          : capture(input);
+      });
+      const { ask, drain } = requests(runtime);
+      vi.useFakeTimers();
+      try {
+        const responding = ask();
+        await started.promise;
+        await vi.advanceTimersByTimeAsync(201);
+        await (await responding).text();
+        await vi.advanceTimersByTimeAsync(49);
+        pending.resolve(bytes);
+        await drain();
+        const expected =
+          state === 'fresh'
+            ? []
+            : [
+                [
+                  {
+                    entry: { kind: 'app-page', route: ROUTE, pathname: '/two' },
+                    reason: state,
+                    replaces: 'stored-2',
+                  },
+                ],
+              ];
+
+        expect(startAttempt.mock.calls).toStrictEqual(expected);
+
+        const observed = state === 'fresh' ? await (await ask()).text() : undefined;
+
+        expect(observed).toBe(state === 'fresh' ? UPGRADED : undefined);
+
+        expect(vi.spyOn(runtime.host, 'readRecord')).toHaveBeenCalledTimes(1);
+      } finally {
+        pending.resolve(undefined);
+        await drain();
+      }
+    },
+  );
+
+  it('awaits a slow authority correction after cached absence without reusing its foreground deadline', async () => {
+    const { runtime, startAttempt } = cache();
+    const entryId = await entryIdOf(runtime, { kind: 'app-page', route: ROUTE, pathname: '/two' });
+    const bytes = await storedRecord(entryId);
+    const pending = Promise.withResolvers<Uint8Array | undefined>();
+    const first = Promise.withResolvers<undefined>();
+    const second = Promise.withResolvers<undefined>();
+    const newer = vi.fn<NonNullable<CacheHost['readNewerRecord']>>().mockImplementation(() => {
+      if (newer.mock.calls.length === 1) first.resolve(undefined);
+      else second.resolve(undefined);
+      return pending.promise;
+    });
+    runtime.host.readNewerRecord = newer;
+    vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('tail'));
+    const { ask, drain } = requests(runtime);
+    vi.useFakeTimers();
+    try {
+      const responding = ask();
+      await first.promise;
+      await vi.advanceTimersByTimeAsync(201);
+      await (await responding).text();
+      await second.promise;
+      await vi.advanceTimersByTimeAsync(250);
+
+      expect(startAttempt).not.toHaveBeenCalled();
+
+      pending.resolve(bytes);
+      await drain();
+
+      expect(startAttempt).not.toHaveBeenCalled();
+      expect(newer).toHaveBeenCalledTimes(2);
+      await expect((await ask()).text()).resolves.toBe(UPGRADED);
+    } finally {
+      pending.resolve(undefined);
+      await drain();
+    }
+  });
+
+  it.each(['corrupt', 'digest', 'entry', 'scope', 'error'] as const)(
+    'never schedules a miss or memoizes absence from an unverified %s read',
+    async (failure) => {
+      const { runtime, startAttempt } = cache();
+      const entryId = await entryIdOf(runtime, {
+        kind: 'app-page',
+        route: ROUTE,
+        pathname: '/two',
+      });
+      vi.spyOn(runtime.host, 'readRecord').mockImplementation(() =>
+        unverifiedRecord(entryId, failure),
+      );
+      vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('tail'));
+      const { ask, drain } = requests(runtime);
+      await (await ask()).text();
+      await drain();
+
+      expect(startAttempt).not.toHaveBeenCalled();
+      expect(runtime.recordMemo.get(entryId)).toBeUndefined();
+    },
+  );
+
+  it.each(['corrupt', 'digest', 'entry', 'scope', 'error'] as const)(
+    'does not infer absence from an unverified %s authority correction',
+    async (failure) => {
+      const { runtime, startAttempt } = cache();
+      const entryId = await entryIdOf(runtime, {
+        kind: 'app-page',
+        route: ROUTE,
+        pathname: '/two',
+      });
+      const newer = vi
+        .spyOn(runtime.host, 'readNewerRecord')
+        .mockImplementation(() => unverifiedRecord(entryId, failure));
+      vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('tail'));
+      const { ask, drain } = requests(runtime);
+      await (await ask()).text();
+      await drain();
+
+      expect(startAttempt).not.toHaveBeenCalled();
+      expect(newer).toHaveBeenCalledTimes(2);
+      expect(runtime.recordMemo.get(entryId)).toBeNull();
+    },
+  );
+
+  it('uses the original primary lifetime for the newer hop and never adopts its late response', async () => {
+    const { runtime, startAttempt } = cache();
+    const entryId = await entryIdOf(runtime, { kind: 'app-page', route: ROUTE, pathname: '/two' });
+    const bytes = await storedRecord(entryId);
+    const primary = Promise.withResolvers<Uint8Array | undefined>();
+    const started = Promise.withResolvers<undefined>();
+    const later = Promise.withResolvers<Uint8Array | undefined>();
+    const laterStarted = Promise.withResolvers<undefined>();
+    vi.spyOn(runtime.host, 'readRecord').mockImplementation(() => {
+      started.resolve(undefined);
+      return primary.promise;
+    });
+    vi.spyOn(runtime.host, 'readNewerRecord').mockImplementation(() => {
+      laterStarted.resolve(undefined);
+      return later.promise;
+    });
+    vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('tail'));
+    const { ask, drain } = requests(runtime);
+    vi.useFakeTimers();
+    try {
+      const responding = ask();
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(201);
+      await (await responding).text();
+      await vi.advanceTimersByTimeAsync(29_549);
+      primary.resolve(undefined);
+      await laterStarted.promise;
+      await vi.advanceTimersByTimeAsync(251);
+
+      expect(startAttempt).not.toHaveBeenCalled();
+      expect(runtime.recordMemo.get(entryId)).toBeNull();
+
+      later.resolve(bytes);
+      await drain();
+
+      expect(startAttempt).not.toHaveBeenCalled();
+      expect(runtime.recordMemo.get(entryId)).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      primary.resolve(undefined);
+      later.resolve(undefined);
+      await drain();
+    }
+  });
+
+  it('keeps a newer publication when an older pending primary read finally answers', async () => {
+    const { runtime, startAttempt } = cache();
+    const entryId = await entryIdOf(runtime, { kind: 'app-page', route: ROUTE, pathname: '/two' });
+    const old = await storedRecord(entryId, 'stale');
+    const next = checkedPack(await storedRecord(entryId, 'fresh', { seq: 3 }));
+    const pending = Promise.withResolvers<Uint8Array | undefined>();
+    const started = Promise.withResolvers<undefined>();
+    vi.spyOn(runtime.host, 'readRecord').mockImplementation(() => {
+      started.resolve(undefined);
+      return pending.promise;
+    });
+    vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('tail'));
+    const { ask, drain } = requests(runtime);
+    vi.useFakeTimers();
+    try {
+      const responding = ask();
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(201);
+      await (await responding).text();
+      rememberRecord(runtime, entryId, next);
+      pending.resolve(old);
+      await drain();
+
+      expect(startAttempt).not.toHaveBeenCalled();
+      expect(runtime.recordMemo.get(entryId)?.header.seq).toBe(3);
+    } finally {
+      pending.resolve(undefined);
+      await drain();
+    }
+  });
+
+  it.each(['HEAD', 'ineligible'] as const)(
+    'does not attach slow-read upgrade work for %s',
+    async (condition) => {
+      const { runtime, startAttempt } = cache();
+      await entryIdOf(runtime, { kind: 'app-page', route: ROUTE, pathname: '/two' });
+      configureUpgrade(condition);
+      const pending = Promise.withResolvers<Uint8Array | undefined>();
+      const started = Promise.withResolvers<undefined>();
+      vi.spyOn(runtime.host, 'readRecord').mockImplementation(() => {
+        started.resolve(undefined);
+        return pending.promise;
+      });
+      vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('tail'));
+      const { ask, drain } = requests(runtime);
+      vi.useFakeTimers();
+      try {
+        const responding = ask({}, condition === 'HEAD' ? 'HEAD' : 'GET');
+        await started.promise;
+        await vi.advanceTimersByTimeAsync(201);
+        const response = await responding;
+        await response.text();
+        pending.resolve(undefined);
+        await drain();
+
+        expect(startAttempt).not.toHaveBeenCalled();
+        expect(vi.spyOn(runtime.host, 'readRecord')).toHaveBeenCalledTimes(1);
+      } finally {
+        pending.resolve(undefined);
+        await drain();
+      }
+    },
+  );
+
+  it('retains actual-pending authority slots after the background deadline until the calls settle', async () => {
+    const { runtime } = cache();
+    const descriptor = { kind: 'app-page' as const, route: ROUTE, pathname: '/two' };
+    const entryId = await entryIdOf(runtime, descriptor);
+    runtime.recordMemo.set(entryId, null);
+    const pending = Promise.withResolvers<Uint8Array | undefined>();
+    const kept: Promise<unknown>[] = [];
+    const waitUntil = (work: Promise<unknown>): void => {
+      kept.push(work);
+    };
+    const newer = vi.fn(() => pending.promise);
+    runtime.host.readNewerRecord = newer;
+    vi.useFakeTimers();
+    try {
+      const lookups = Array.from({ length: 256 }, () =>
+        currentGenerationAfterResponse(runtime, descriptor, waitUntil),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(newer).toHaveBeenCalledTimes(256);
+
+      await vi.advanceTimersByTimeAsync(30_001);
+
+      expect((await Promise.all(lookups)).every((result) => result.kind === 'unavailable')).toBe(
+        true,
+      );
+      expect((await currentGenerationAfterResponse(runtime, descriptor, waitUntil)).kind).toBe(
+        'unavailable',
+      );
+      expect(newer).toHaveBeenCalledTimes(256);
+
+      pending.resolve(undefined);
+      await Promise.all(kept);
+
+      expect((await currentGenerationAfterResponse(runtime, descriptor, waitUntil)).kind).toBe(
+        'none',
+      );
+      expect(newer).toHaveBeenCalledTimes(257);
+
+      await Promise.all(kept);
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      pending.resolve(undefined);
+      await Promise.all(kept);
+    }
+  });
+
+  it('does not land an ignored-abort primary read after its original lifetime', async () => {
+    const { runtime, startAttempt } = cache();
+    const descriptor = { kind: 'app-page' as const, route: ROUTE, pathname: '/two' };
+    const entryId = await entryIdOf(runtime, descriptor);
+    const bytes = await storedRecord(entryId);
+    const pending = Promise.withResolvers<Uint8Array | undefined>();
+    const started = Promise.withResolvers<undefined>();
+    vi.spyOn(runtime.host, 'readRecord').mockImplementation(() => {
+      started.resolve(undefined);
+      return pending.promise;
+    });
+    vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('tail'));
+    const { ask, drain } = requests(runtime);
+    vi.useFakeTimers();
+    try {
+      const responding = ask();
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(201);
+      await (await responding).text();
+      await vi.advanceTimersByTimeAsync(29_800);
+
+      expect(startAttempt).not.toHaveBeenCalled();
+
+      pending.resolve(bytes);
+      await drain();
+
+      expect(startAttempt).not.toHaveBeenCalled();
+      expect(runtime.recordMemo.get(entryId)).toBeUndefined();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      pending.resolve(undefined);
+      await drain();
+    }
+  });
+
+  it.each(['cancel', 'error'] as const)(
+    'still checks authority behind a slow partial body that ends by %s',
+    async (ending) => {
+      const { runtime, startAttempt } = cache();
+      await entryIdOf(runtime, { kind: 'app-page', route: ROUTE, pathname: '/two' });
+      const pending = Promise.withResolvers<Uint8Array | undefined>();
+      const started = Promise.withResolvers<undefined>();
+      const failing = Promise.withResolvers<undefined>();
+      vi.spyOn(runtime.host, 'readRecord').mockImplementation(() => {
+        started.resolve(undefined);
+        return pending.promise;
+      });
+      vi.mocked(invokeNodeHandler).mockImplementation(async (input) => {
+        if (input.requestMeta['onCacheEntryV2'] !== undefined) return capture(input);
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              await failing.promise;
+              controller.error(new Error('the partial body ended'));
+            },
+          }),
+        );
+      });
+      const { ask, drain } = requests(runtime);
+      vi.useFakeTimers();
+      try {
+        const responding = ask();
+        await started.promise;
+        await vi.advanceTimersByTimeAsync(201);
+        const reader = readerOf(await responding);
+
+        expect(new TextDecoder().decode((await reader.read()).value)).toBe(FALLBACK);
+
+        const end = {
+          cancel: () => reader.cancel(),
+          error: () => {
+            failing.resolve(undefined);
+            return reader.read();
+          },
+        }[ending];
+        const settled = await Promise.allSettled([end()]);
+
+        expect(settled[0].status).toBe(ending === 'cancel' ? 'fulfilled' : 'rejected');
+
+        expect(startAttempt).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(49);
+        pending.resolve(undefined);
+        await drain();
+
+        expect(startAttempt).toHaveBeenCalledExactlyOnceWith({
+          entry: { kind: 'app-page', route: ROUTE, pathname: '/two' },
+          reason: 'miss',
+          replaces: null,
+        });
+      } finally {
+        pending.resolve(undefined);
+        failing.resolve(undefined);
+        await drain();
+      }
+    },
+  );
+
+  it('rejudges local invalidation received during the slow authority lookup', async () => {
+    const { runtime, startAttempt } = cache();
+    const entryId = await entryIdOf(runtime, { kind: 'app-page', route: ROUTE, pathname: '/two' });
+    const bytes = await storedRecord(entryId, 'fresh', { tags: ['changed'] });
+    const pending = Promise.withResolvers<Uint8Array | undefined>();
+    const started = Promise.withResolvers<undefined>();
+    vi.spyOn(runtime.host, 'readRecord').mockImplementation(() => {
+      started.resolve(undefined);
+      return pending.promise;
+    });
+    vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+      return input.requestMeta['onCacheEntryV2'] === undefined
+        ? Promise.resolve(new Response('tail'))
+        : capture(input);
+    });
+    const { ask, drain } = requests(runtime);
+    vi.useFakeTimers();
+    try {
+      const responding = ask();
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(201);
+      await (await responding).text();
+      runtime.tags.applyLocal(['changed'], { staleAt: NOW, hardExpireAt: NOW });
+      pending.resolve(bytes);
+      await drain();
+
+      expect(startAttempt).toHaveBeenCalledExactlyOnceWith({
+        entry: { kind: 'app-page', route: ROUTE, pathname: '/two' },
+        reason: 'expired',
+        replaces: 'stored-2',
+      });
+    } finally {
+      pending.resolve(undefined);
       await drain();
     }
   });

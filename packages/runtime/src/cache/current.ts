@@ -9,6 +9,7 @@ import {
 } from '@stayingupwind/core/cache';
 import { withDeadline } from '@stayingupwind/core/util';
 
+import { nowMs } from './clock.ts';
 import type { CacheRuntime, RecordRead } from './runtime.ts';
 import { servable } from './servable.ts';
 
@@ -48,7 +49,7 @@ function detail(error: unknown): string {
 const RECORD_READ_LIFETIME_MS = 30_000;
 
 /**
- * An entry's record as the pack it holds; `null` for none, or for bytes that are not one. The read
+ * An entry's verified record, or `null` for confirmed absence. Invalid bytes never authorize a miss. The read
  * is called off once it has been out for as long as a read can be (`RECORD_READ_LIFETIME_MS`): the
  * request that began it may go on for longer, and a read out that long is not coming back.
  */
@@ -60,17 +61,24 @@ async function readRecordPack(
   const timer = setTimeout(() => {
     calledOff.abort(new Error('a read of a record out past its lifetime'));
   }, RECORD_READ_LIFETIME_MS);
-  let bytes: Uint8Array | undefined;
   try {
-    bytes = await runtime.host.readRecord(entryId, calledOff.signal);
+    const bytes = await runtime.host.readRecord(entryId, calledOff.signal);
+    calledOff.signal.throwIfAborted();
+    if (bytes === undefined) return null;
+    const decoded = decodeGenerationPack(bytes);
+    if (
+      decoded.kind !== 'ok' ||
+      decoded.pack.header.entryId !== entryId ||
+      decoded.pack.header.scopeId !== runtime.scopeId ||
+      !(await verifyGenerationPack(decoded.pack))
+    ) {
+      throw new Error('delivery record identity or digests differ');
+    }
+    calledOff.signal.throwIfAborted();
+    return decoded.pack;
   } finally {
     clearTimeout(timer);
   }
-  if (bytes === undefined) {
-    return null;
-  }
-  const decoded = decodeGenerationPack(bytes);
-  return decoded.kind === 'ok' && (await verifyGenerationPack(decoded.pack)) ? decoded.pack : null;
 }
 
 /**
@@ -124,6 +132,10 @@ async function newerPack(
   runtime: CacheRuntime,
   entryId: string,
   than: number,
+  background?: {
+    readonly deadlineMs: number;
+    readonly waitUntil: (promise: Promise<unknown>) => void;
+  },
 ): Promise<DecodedGenerationPack | undefined> {
   const { host } = runtime;
   if (host.readNewerRecord === undefined) {
@@ -133,12 +145,23 @@ async function newerPack(
   // checked, and a long one past a quick read would keep the document waiting all the same.
   const read = async (): Promise<DecodedGenerationPack | undefined> => {
     const bytes = await host.readNewerRecord?.(entryId, than);
-    return bytes === undefined ? undefined : recordPackOf(bytes, entryId);
+    if (bytes === undefined) return undefined;
+    const pack = await recordPackOf(bytes, entryId);
+    if (pack?.header.scopeId !== runtime.scopeId)
+      throw new Error('later delivery record identity or digests differ');
+    return pack;
   };
   try {
-    const pack = await withDeadline(read(), NEWER_RECORD_DEADLINE_MS, 'a later delivery record');
-    return pack !== undefined && pack.header.seq > than ? pack : undefined;
+    const operation =
+      background === undefined ? read() : retainedNewerRead(runtime, read, background.waitUntil);
+    const pack = await withDeadline(
+      operation,
+      background?.deadlineMs ?? NEWER_RECORD_DEADLINE_MS,
+      'a later delivery record',
+    );
+    return pack !== undefined && pack !== null && pack.header.seq > than ? pack : undefined;
   } catch (error) {
+    if (background !== undefined) throw error;
     // What the read found is answered as it would have been without the host's later record.
     runtime.log('later delivery record not read', { entryId, detail: detail(error) });
     return undefined;
@@ -152,6 +175,8 @@ async function newerPack(
  * ends, and it is these that `MAX_RECORD_READS` bounds.
  */
 const readsOut = new WeakMap<CacheRuntime, Map<RecordRead, number>>();
+/** A timed-out background authority call keeps its slot until its underlying work actually settles. */
+const retainedReads = new WeakSet<RecordRead>();
 
 /**
  * Keep what a read said for the requests after it, once it has said it, and only while it is still
@@ -171,6 +196,7 @@ async function land(runtime: CacheRuntime, entryId: string, read: RecordRead): P
       runtime.recordReads.delete(entryId);
     }
     readsOut.get(runtime)?.delete(read);
+    retainedReads.delete(read);
   }
 }
 
@@ -186,7 +212,7 @@ function stillOut(runtime: CacheRuntime): Map<RecordRead, number> {
   }
   const now = performance.now();
   for (const [read, since] of reads) {
-    if (now - since >= RECORD_READ_LIFETIME_MS) {
+    if (!retainedReads.has(read) && now - since >= RECORD_READ_LIFETIME_MS) {
       reads.delete(read);
     }
   }
@@ -225,28 +251,59 @@ function sharedRead(
   entryId: string,
   now: number,
   waitUntil: (promise: Promise<unknown>) => void,
-): Promise<DecodedGenerationPack | null> {
+): RecordRead {
   const joined = runtime.recordReads.get(entryId);
   if (joined !== undefined && now - joined.startedAt < runtime.holdMs) {
-    return joined.pack;
+    return joined;
   }
   // As many out as the budget lets, joined or not: past it the host is not answering them, and
   // another read would wait out its deadline as they do, for nothing.
   const out = stillOut(runtime);
   if (out.size >= MAX_RECORD_READS) {
-    return Promise.reject(
-      new Error(`${String(MAX_RECORD_READS)} reads of records are out already`),
-    );
+    throw new Error(`${String(MAX_RECORD_READS)} reads of records are out already`);
   }
+  const began = performance.now();
   const read: RecordRead = { startedAt: now, pack: readRecordPack(runtime, entryId) };
-  out.set(read, performance.now());
+  out.set(read, began);
   // Taken out before it is put back, so that the reads stand in the order they were begun, and
   // the ones past their hold are the first to be let go.
   runtime.recordReads.delete(entryId);
   sweepReads(runtime, now);
   runtime.recordReads.set(entryId, read);
   waitUntil(land(runtime, entryId, read));
+  return read;
+}
+
+/** Track background authority I/O in the existing actual-pending budget, including late calls. */
+function retainedNewerRead(
+  runtime: CacheRuntime,
+  work: () => Promise<DecodedGenerationPack | undefined>,
+  waitUntil: (promise: Promise<unknown>) => void,
+): Promise<DecodedGenerationPack | null> {
+  const out = stillOut(runtime);
+  if (out.size >= MAX_RECORD_READS)
+    throw new Error(`${String(MAX_RECORD_READS)} reads of records are out already`);
+  const began = performance.now();
+  const keep = async (): Promise<DecodedGenerationPack | null> => {
+    const pack = await work();
+    return pack ?? null;
+  };
+  const read: RecordRead = { startedAt: nowMs(), pack: keep() };
+  out.set(read, began);
+  retainedReads.add(read);
+  waitUntil(releaseRetainedRead(runtime, read));
   return read.pack;
+}
+
+async function releaseRetainedRead(runtime: CacheRuntime, read: RecordRead): Promise<void> {
+  try {
+    await read.pack;
+  } catch {
+    /* The lookup reports the failure; its budget still waits for settlement. */
+  } finally {
+    readsOut.get(runtime)?.delete(read);
+    retainedReads.delete(read);
+  }
 }
 
 async function readPack(
@@ -260,7 +317,7 @@ async function readPack(
     return remembered;
   }
   return withDeadline(
-    sharedRead(runtime, entryId, now, waitUntil),
+    sharedRead(runtime, entryId, now, waitUntil).pack,
     RECORD_DEADLINE_MS,
     'delivery record',
   );
@@ -449,22 +506,103 @@ export async function currentGeneration(
   }
   const validity = pack === null ? undefined : judged(runtime, pack, now);
   if (validity === undefined || SEVERITY[validity] > SEVERITY.fresh) {
-    const than = pack?.header.seq ?? 0;
-    const newer = laterOf(runtime, entryId, await newerPack(runtime, entryId, than), than);
-    const later = newer === undefined ? undefined : judged(runtime, newer, now);
-    if (
-      newer !== undefined &&
-      later !== undefined &&
-      (validity === undefined || SEVERITY[later] <= SEVERITY[validity])
-    ) {
-      // What a commit of this isolate's left meanwhile may be later still (`rememberRecord`).
-      const held = rememberRecord(runtime, entryId, newer);
-      const standing = held === newer ? later : judged(runtime, held, now);
-      return { kind: 'generation', current: { entryId, pack: held, validity: standing } };
-    }
+    return finishLookup(runtime, { entryId, pack, validity, now });
   }
-  if (pack === null || validity === undefined) {
-    return { kind: 'none', entryId };
-  }
+  if (pack === null) return { kind: 'none', entryId };
   return { kind: 'generation', current: { entryId, pack, validity } };
+}
+
+/**
+ * The same verified lookup after a partial response has ended. Its primary read is shared with
+ * the foreground lookup, but the visitor's 200ms budget no longer discards the upgrade. The
+ * shared read's original monotonic lifetime bounds the complete lookup, including any newer
+ * record read; this cannot give an old pending read another thirty seconds. Fresh memo hits
+ * ask nothing, and a failed, lost or late read never authorizes regeneration.
+ */
+export async function currentGenerationAfterResponse(
+  runtime: CacheRuntime,
+  descriptor: RouteEntryDescriptor,
+  waitUntil: (promise: Promise<unknown>) => void,
+): Promise<CurrentLookup> {
+  const entryId = await entryIdOf(runtime, descriptor);
+  let until = performance.now() + RECORD_READ_LIFETIME_MS;
+  let pack = runtime.recordMemo.get(entryId);
+  try {
+    if (pack === undefined) {
+      // A response can stream past the foreground hold. Its original read is still the same
+      // pending authority call, with the same lifetime; never renew it merely because the body ended.
+      const read =
+        runtime.recordReads.get(entryId) ?? sharedRead(runtime, entryId, nowMs(), waitUntil);
+      const began = readsOut.get(runtime)?.get(read);
+      if (began === undefined) return { kind: 'unavailable', entryId };
+      until = began + RECORD_READ_LIFETIME_MS;
+      const remaining = until - performance.now();
+      if (remaining <= 0) return { kind: 'unavailable', entryId };
+      retainedReads.add(read);
+      pack = await withDeadline(read.pack, remaining, 'background delivery record');
+    }
+    if (performance.now() >= until) return { kind: 'unavailable', entryId };
+    // A commit may have overtaken the pending read. Never decide to replace its older generation.
+    pack = laterOf(runtime, entryId, undefined, pack?.header.seq ?? 0) ?? pack;
+    const now = nowMs();
+    const validity = pack === null ? undefined : judged(runtime, pack, now);
+    if (validity === undefined || SEVERITY[validity] > SEVERITY.fresh) {
+      return await finishLookup(runtime, { entryId, pack, validity, now }, { until, waitUntil });
+    }
+    if (pack === null) return { kind: 'none', entryId };
+    return { kind: 'generation', current: { entryId, pack, validity } };
+  } catch (error) {
+    runtime.log('background delivery record not read', { entryId, detail: detail(error) });
+    return { kind: 'unavailable', entryId };
+  }
+}
+
+/** The existing optional newer-record decision, within a background lookup's remaining lifetime. */
+async function finishLookup(
+  runtime: CacheRuntime,
+  snapshot: {
+    readonly entryId: string;
+    readonly pack: DecodedGenerationPack | null;
+    readonly validity: Validity | undefined;
+    readonly now: number;
+  },
+  background?: { readonly until: number; readonly waitUntil: (promise: Promise<unknown>) => void },
+): Promise<CurrentLookup> {
+  const { entryId, pack, validity, now } = snapshot;
+  const remaining =
+    background === undefined ? NEWER_RECORD_DEADLINE_MS : background.until - performance.now();
+  if (remaining <= 0) return { kind: 'unavailable', entryId };
+  const than = pack?.header.seq ?? 0;
+  const newer = laterOf(
+    runtime,
+    entryId,
+    await newerPack(
+      runtime,
+      entryId,
+      than,
+      background === undefined
+        ? undefined
+        : { deadlineMs: remaining, waitUntil: background.waitUntil },
+    ),
+    than,
+  );
+  if (background !== undefined && performance.now() >= background.until)
+    return { kind: 'unavailable', entryId };
+  // A background read can take seconds. Rejudge after its last wait, including local invalidations.
+  const observedAt = background === undefined ? now : nowMs();
+  const standing =
+    background === undefined || pack === null ? validity : judged(runtime, pack, observedAt);
+  const later = newer === undefined ? undefined : judged(runtime, newer, observedAt);
+  if (
+    newer !== undefined &&
+    later !== undefined &&
+    (standing === undefined || SEVERITY[later] <= SEVERITY[standing])
+  ) {
+    // What a commit of this isolate's left meanwhile may be later still (rememberRecord).
+    const held = rememberRecord(runtime, entryId, newer);
+    const state = held === newer ? later : judged(runtime, held, observedAt);
+    return { kind: 'generation', current: { entryId, pack: held, validity: state } };
+  }
+  if (pack === null || standing === undefined) return { kind: 'none', entryId };
+  return { kind: 'generation', current: { entryId, pack, validity: standing } };
 }
