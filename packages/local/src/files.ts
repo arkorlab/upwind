@@ -54,7 +54,7 @@ import type { Reading } from './reading.ts';
 /** The header a rule sets a file's type by. */
 const CONTENT_TYPE = 'content-type';
 /** Bound simultaneous browser samples; each owns its own trace and response cleanup. */
-const FILE_SAMPLES_AT_ONCE = 4;
+const FILE_SAMPLES_AT_ONCE = 16;
 
 /**
  * A request the middleware rewrote onto the file of the build at `onto`, served as that file:

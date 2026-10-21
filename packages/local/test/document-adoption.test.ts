@@ -471,7 +471,7 @@ describe('redirected documents retain their original request and response', () =
 
         expect(followed.failure).toBeUndefined();
         expect(followed.last?.account).toBe(account);
-        expect(followed.last?.documentFailure).toBeUndefined();
+        await expect(followed.last?.documentFailure?.()).resolves.toBeUndefined();
         expect(followed.last?.whole).toBeUndefined();
         expect(visits.map(({ path: pathname }) => pathname)).toStrictEqual([
           '/start',

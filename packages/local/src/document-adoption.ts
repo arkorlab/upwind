@@ -35,7 +35,9 @@ export async function documentAnswerAt(
   }
   const answered = answeredOf(read.answer);
   if (read.kind === 'headers') {
-    return answered;
+    return middlewareHeadersOnly(read.answer.status, read.answer.headers)
+      ? { ...answered, documentFailure: () => Promise.resolve(undefined) }
+      : answered;
   }
   const key = keyOf(answeredBy(read.answer));
   const route = key === undefined ? undefined : stack.manifest.routes[key];
