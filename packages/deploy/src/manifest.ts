@@ -81,6 +81,35 @@ export function oversizedManifest(
 }
 
 /**
+ * Build membership is an optional improvement, never a reason to reject a previously publishable
+ * deployment. Where it exceeds either the wire or parsed-memory budget, omit each complete list
+ * before the final admission check. Unknown membership preserves the older reader's behavior.
+ */
+export function fitBuildTags(manifest: ProjectManifest): {
+  readonly manifest: ProjectManifest;
+  readonly serialized: string;
+} {
+  const serialized = serializeManifest(manifest);
+  if (oversizedManifest(manifest, serialized) === undefined) {
+    return { manifest, serialized };
+  }
+  let changed = false;
+  const routes: ProjectManifest['routes'] = {};
+  for (const [pathname, route] of Object.entries(manifest.routes)) {
+    if (route.cache?.buildTags === undefined) {
+      routes[pathname] = route;
+      continue;
+    }
+    const cache = { ...route.cache };
+    delete cache.buildTags;
+    changed = true;
+    routes[pathname] = { ...route, cache };
+  }
+  const fitted = changed ? { ...manifest, routes } : manifest;
+  return { manifest: fitted, serialized: changed ? serializeManifest(fitted) : serialized };
+}
+
+/**
  * The pages a deployment's manifest routes, asked of the build as its servability is
  * (`ServableOptions`): every page the edge serves where the deployment has a runtime cache, and
  * only the pages the edge resumes where it has none. The edge tells a page the build finished from
@@ -306,7 +335,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   // What the router reads of a path as written, which no page or file is found by decoding.
   const spelledPrefix = spelledPrefixOf(bundle);
   const routing = dynamicRouting(bundle, routeKeys);
-  const manifest = buildProjectManifest({
+  const built = buildProjectManifest({
     projectId: input.projectId,
     runId: input.runId,
     generatedAt: input.generatedAt,
@@ -343,7 +372,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     }),
     ...(cached && { cache: { keySchemaVersion: KEY_SCHEMA_VERSION, scopeId: input.deploymentId } }),
   });
-  const serialized = serializeManifest(manifest);
+  const { manifest, serialized } = fitBuildTags(built);
   const refused = oversizedManifest(manifest, serialized);
   if (refused !== undefined) {
     return { kind: 'refused', reason: refused };
@@ -353,7 +382,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     manifest,
     manifestId: await computeManifestId(manifest),
     serialized,
-    routes,
+    routes: routes.map((route) => manifest.routes[route.pathname] ?? route),
     staticFiles,
     routing,
   };
