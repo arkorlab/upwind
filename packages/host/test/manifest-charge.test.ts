@@ -4,6 +4,7 @@ import {
   MAX_MANIFEST_BYTES,
   parseProjectManifest,
   serializeManifest,
+  type RouteEntry,
 } from '@stayingupwind/core/manifest';
 import { encodeUtf8 } from '@stayingupwind/core/util';
 import { describe, expect, it } from 'vitest';
@@ -56,6 +57,49 @@ function manifestOf(
 }
 
 describe('the memory held by a manifest’s member routes', () => {
+  it.each([false, true])(
+    'charges every route build tag array and object even for shared input: %s',
+    (shared) => {
+      const tags = [{ kind: 'next-explicit' as const, value: 'posts' }];
+      const route: RouteEntry = {
+        pathname: '/first',
+        status: 200,
+        shell: {
+          sha256: 'a'.repeat(64),
+          byteLength: 1,
+          contentType: 'text/html',
+          encoding: 'identity',
+        },
+        headers: {},
+        cache: { entryId: 'entry', kind: 'app-page', delivery: 'complete' },
+      };
+      const base = manifestOf([]);
+      const plain = {
+        ...base,
+        routes: { '/first': route, '/second': { ...route, pathname: '/second' } },
+      };
+      const listed = {
+        ...plain,
+        routes: {
+          '/first': { ...route, cache: { ...route.cache!, buildTags: tags } },
+          '/second': {
+            ...route,
+            pathname: '/second',
+            cache: { ...route.cache!, buildTags: shared ? tags : tags.map((tag) => ({ ...tag })) },
+          },
+        },
+      };
+
+      const parsed = parseProjectManifest(serializeManifest(listed));
+
+      expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(80 * 4);
+      expect(parsed.routes['/first']?.cache?.buildTags).not.toBe(
+        parsed.routes['/second']?.cache?.buildTags,
+      );
+      expect(manifestCharge(parsed, 0) - manifestCharge(plain, 0)).toBe(80 * 4);
+    },
+  );
+
   it.each([
     { shared: true, objects: 4 },
     { shared: false, objects: 6 },
