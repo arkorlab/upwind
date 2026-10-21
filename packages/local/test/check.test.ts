@@ -207,6 +207,15 @@ function treePart(parts: readonly Part[]): Part {
   return tree;
 }
 
+/** A built segment selected by the header its real router request carries. */
+function namedSegment(parts: readonly Part[], segmentPath: string): Part {
+  const found = parts.find((part) => part.headers['next-router-segment-prefetch'] === segmentPath);
+  if (found === undefined) {
+    throw new Error(`the build wrote no ${segmentPath} segment`);
+  }
+  return found;
+}
+
 /** The hash Next appended after any earlier bare or encoded query keys. */
 function appendedHash(part: Part): string {
   const hash = part.url.searchParams.getAll('_rsc').at(-1);
@@ -12980,11 +12989,10 @@ describe('what the check makes of the middleware', () => {
           { key: '/', route: front, requested: '/', headers: {}, exact: true },
           { browser: {}, origin: originAt(stack, page, '') },
         );
-        const leaf = built.find((part) => part.headers['next-router-segment-prefetch'] === '/leaf');
-        if (leaf === undefined) throw new Error('the build did not yield its leaf segment');
-        const parts = [treePart(built), leaf].map((part) => {
-          return { ...part, headers: { ...part.headers, [cookieHeader]: 'seen=1' } };
-        });
+        const parts = [namedSegment(built, '/_tree'), namedSegment(built, '/leaf')].map((part) => ({
+          ...part,
+          headers: { ...part.headers, [cookieHeader]: 'seen=1' },
+        }));
         const owned = segmentAnswer('tree bytes');
         const ownedHeaders = {
           ...owned.headers,
@@ -13022,7 +13030,7 @@ describe('what the check makes of the middleware', () => {
 
         expect(deleted).toBeUndefined();
         expect(afterDeletion).toContain('seen=1');
-        expect(afterDeletion.some((cookie) => cookie === undefined)).toBe(true);
+        expect(afterDeletion).toContain(undefined);
         expect(retained).toBeUndefined();
         expect(afterRetention).not.toHaveLength(0);
         expect(afterRetention.every((cookie) => cookie === 'seen=1')).toBe(true);
