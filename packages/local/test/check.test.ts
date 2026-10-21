@@ -1837,8 +1837,8 @@ function withMiddleware(
   matchers: readonly {
     readonly sourceRegex: string;
     readonly source?: string;
-    readonly has?: readonly { readonly type: 'header'; readonly key: string }[];
-    readonly missing?: readonly { readonly type: 'header'; readonly key: string }[];
+    readonly has?: readonly RouteHas[];
+    readonly missing?: readonly RouteHas[];
   }[],
 ): LocalStack {
   const app = { ...stack.app, middlewareScriptName: 'site-middleware' };
@@ -6385,12 +6385,22 @@ describe('what the check makes of the middleware', () => {
           missing: [{ type: 'header', key: 'rsc' }],
           headers: { 'X-Robots-Tag': 'noindex' },
         };
-        const stack = stackOf(
-          [await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } })],
-          {},
-          { headerRules: [rule] },
+        const stack = withMiddleware(
+          stackOf(
+            [await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } })],
+            {},
+            { headerRules: [rule] },
+          ),
+          [
+            { sourceRegex: rule.sourceRegex, has: rule.has ?? [], missing: rule.missing ?? [] },
+            { sourceRegex: '^/middleware-probe$', source: '/middleware-probe' },
+          ],
         );
+        const setCookie = 'seen=dark; Path=/';
+        decisions.set('/', { 'x-middleware-next': '1', 'set-cookie': setCookie });
+        decisions.set('/middleware-probe', { 'x-middleware-next': '1' });
         const composed = documentAnswer(FRONT, 'mw=miss;route=/');
+        const throughMiddleware = documentAnswer(FRONT, 'mw=hit;route=/');
         answers.set('/', {
           ...composed,
           when: {
@@ -6399,7 +6409,11 @@ describe('what the check makes of the middleware', () => {
                 (type === 'query' ? url.searchParams.get('variant') : headers['variant']) === 'dark'
               );
             },
-            headers: { 'x-robots-tag': 'noindex', 'set-cookie': 'seen=dark; Path=/' },
+            headers: {
+              ...throughMiddleware.headers,
+              'x-robots-tag': 'noindex',
+              'set-cookie': setCookie,
+            },
           },
         });
         const tree = segmentAnswer('tree bytes');
@@ -6420,7 +6434,7 @@ describe('what the check makes of the middleware', () => {
         });
         const broken = await checkStack(stack);
 
-        expect(correct).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+        expect(correct).toStrictEqual({ checked: 2, failures: [], skipped: [] });
         expect(broken.failures).toHaveLength(1);
         expect(broken.failures[0]?.reason).toContain('the header rule');
         expect(broken.failures[0]?.reason).toContain('500');
