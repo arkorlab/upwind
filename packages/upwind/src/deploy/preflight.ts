@@ -10,6 +10,7 @@ import {
 
 import { authLayout } from '../auth/layout.ts';
 import type { DeploySettings } from './config.ts';
+import { isHostBound } from './env.ts';
 import { type FunctionScript, functionScripts } from './names.ts';
 
 /**
@@ -152,6 +153,16 @@ function unsupported(bundle: DeploymentBundle, settings: DeploySettings): string
   return problems;
 }
 
+/** Storage named as one of the host's own bindings, which a Function cannot be given twice. */
+function clashing(settings: DeploySettings): string[] {
+  const taken = settings.storage.map((binding) => binding.name).filter((name) => isHostBound(name));
+  return taken.length === 0
+    ? []
+    : [
+        `deploy.storage names ${taken.join(', ')}, which the host binds in every Function itself; give the storage another name`,
+      ];
+}
+
 /** What Cloudflare would refuse of a Function, or take and break: its size, its variables, a module's name. */
 function beyondLimits(bundle: DeploymentBundle, input: CheckInput): string[] {
   const problems: string[] = [];
@@ -222,6 +233,7 @@ export async function preflight(input: CheckInput): Promise<Preflight> {
   }
   problems.push(
     ...unsupported(bundle, settings),
+    ...clashing(settings),
     ...beyondLimits(bundle, input),
     ...(await wrongAtRuntime(bundleDir, bundle)),
   );

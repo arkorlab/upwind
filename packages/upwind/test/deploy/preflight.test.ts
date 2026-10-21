@@ -147,6 +147,26 @@ describe('checking a build before a deploy', () => {
     expect(signed.warnings).toStrictEqual([]);
   });
 
+  it("refuses storage named as one of the host's own bindings", async () => {
+    const dir = projectDir();
+    writeBundle(dir, bundleOf(deployableFunction(dir)));
+    const plan = await preflight({
+      projectDir: dir,
+      settings: {
+        ...SETTINGS,
+        storage: [
+          { name: 'ARKOR_CACHE', kind: 'kv' },
+          { name: 'UPWIND_KV', kind: 'kv' },
+        ],
+      },
+      secrets: NO_SECRETS,
+    });
+
+    expect(plan.problems).toStrictEqual([
+      expect.stringMatching(/^deploy\.storage names ARKOR_CACHE, which the host binds/u),
+    ]);
+  });
+
   it('says where to build when there is no build', async () => {
     const dir = projectDir();
 
