@@ -24,6 +24,11 @@ import { pprDocument, seedSite } from './helpers/site.ts';
 const CURRENT = 'dpl_site';
 const PREVIOUS = 'dpl_previous';
 const HOST = 'site.example';
+const PROJECT = 'site';
+
+function imageIdentity(deploymentId = CURRENT, host = HOST, projectId = PROJECT) {
+  return { projectId, app: { deploymentId }, forwarding: { previewHost: host } };
+}
 const CONFIG: ImagesConfig = {
   path: '/_next/image',
   basePath: '',
@@ -96,7 +101,7 @@ async function serving(matchers: readonly MiddlewareMatcher[] = [{ sourceRegex: 
     dispatchApp: middleware,
     transformImage: transform,
   });
-  const get = async (dpl: string, country?: string) => {
+  const get = async (dpl: string, country?: string, projectId = site.pointer.projectId) => {
     const query = new URLSearchParams({ url: path, w: '64', q: '75', dpl });
     const request = new Request<unknown, IncomingRequestCfProperties>(
       `https://${HOST}/_next/image?${query.toString()}`,
@@ -121,13 +126,13 @@ async function serving(matchers: readonly MiddlewareMatcher[] = [{ sourceRegex: 
         ctx,
         runtime,
         host: standaloneHost(env),
-        pointer: { ...site.pointer, app },
+        pointer: { ...site.pointer, projectId, app },
         pointerMs: 0,
         privateDelivery: false,
         cspReportingPath: undefined,
       },
       {
-        manifestLookup: Promise.resolve({ kind: 'found', value: manifest }),
+        manifestLookup: Promise.resolve({ kind: 'found', value: { ...manifest, projectId } }),
         policyLookup: Promise.resolve({
           kind: 'found',
           source: 'exact',
@@ -143,6 +148,52 @@ async function serving(matchers: readonly MiddlewareMatcher[] = [{ sourceRegex: 
 }
 
 describe('an optimized image source identity', () => {
+  it('isolates projects sharing a hostname, deployment, gated source and configuration', async () => {
+    const served = await serving();
+    const one = png('first project');
+    const two = png('second project');
+    served.middleware
+      .mockResolvedValueOnce(new Response(one, { headers: { 'content-type': 'image/png' } }))
+      .mockResolvedValueOnce(new Response(two, { headers: { 'content-type': 'image/png' } }));
+
+    const first = await served.get(CURRENT, undefined, 'first-project');
+    const other = await served.get(CURRENT, undefined, 'second-project');
+    const repeated = await served.get(CURRENT, undefined, 'first-project');
+
+    expect([first.body, other.body, repeated.body]).toStrictEqual([one, two, one]);
+    expect(other.response.headers.get('x-nextjs-cache')).toBe('MISS');
+    expect(repeated.response.headers.get('x-nextjs-cache')).toBe('HIT');
+    expect(served.middleware).toHaveBeenCalledTimes(2);
+    expect(served.transform).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['local', 'middleware', 'reserved'] as const)(
+    'keeps URL-significant project names apart for a %s source in the actual cache',
+    async (kind) => {
+      const source: ImageSource =
+        kind === 'local'
+          ? { kind, href: '/dynamic.png' }
+          : { ...gated('a'.repeat(64)), gate: kind };
+      const cache = await caches.open(`project-image-identity-${crypto.randomUUID()}`);
+      const keys = await Promise.all(
+        ['a/../local:b', 'b', 'a%2Fb', 'a/b', '\u{D800}', '\u{D801}'].map(async (project) => {
+          const id = await imageSourceId(source, imageIdentity(CURRENT, HOST, project));
+          return new Request(`https://images.test.invalid/${id}/64/75/image/webp`);
+        }),
+      );
+      expect(new Set(keys.map((key) => key.url)).size).toBe(keys.length);
+      for (const [index, key] of keys.entries()) {
+        await cache.put(
+          key,
+          new Response(String(index), { headers: { 'cache-control': 'max-age=60' } }),
+        );
+      }
+      for (const [index, key] of keys.entries()) {
+        await expect((await cache.match(key))?.text()).resolves.toBe(String(index));
+      }
+    },
+  );
+
   it('keeps source middleware anonymous before sharing its result between countries', async () => {
     const served = await serving();
     const anonymous = png('anonymous');
@@ -215,7 +266,7 @@ describe('an optimized image source identity', () => {
         expect(appRuntimeSchema.validate({ deploymentId, scriptName: 'site-app' })).toBe(true);
 
         return new Request(
-          `https://images.test.invalid/${await imageSourceId(source, deploymentId, host)}/64/75/image/webp`,
+          `https://images.test.invalid/${await imageSourceId(source, imageIdentity(deploymentId, host))}/64/75/image/webp`,
         );
       };
       const [one, two] = await Promise.all([key(first), key(second)]);
@@ -234,7 +285,9 @@ describe('an optimized image source identity', () => {
   it('keeps literal escapes and distinct UTF-16 strings apart without refusing a valid ID', async () => {
     const source: ImageSource = { kind: 'local', href: '/dynamic.png' };
     const deployments = ['a/b', 'a%2Fb', '\u{D800}', '\u{D801}', String.raw`\ud800`, '\u{FFFD}'];
-    const ids = await Promise.all(deployments.map((id) => imageSourceId(source, id, HOST)));
+    const ids = await Promise.all(
+      deployments.map((id) => imageSourceId(source, imageIdentity(id))),
+    );
     const urls = ids.map((id) => new Request(`https://images.test.invalid/${id}`).url);
 
     expect(new Set(urls).size).toBe(deployments.length);
@@ -247,27 +300,29 @@ describe('an optimized image source identity', () => {
       const before = { ...gated('b'.repeat(64)), gate };
 
       const [current, previous] = await Promise.all([
-        imageSourceId(now, CURRENT, HOST),
-        imageSourceId(before, CURRENT, HOST),
+        imageSourceId(now, imageIdentity()),
+        imageSourceId(before, imageIdentity()),
       ]);
 
       expect(previous).not.toBe(current);
-      expect(current).toMatch(/^local:dpl_site:site\.example:[0-9a-f]{64}$/u);
+      expect(current).toMatch(/^local:site:dpl_site:site\.example:[0-9a-f]{64}$/u);
     },
   );
 
   it('keeps a gated file separated by deployment, host and path, and reuses the same selected bytes', async () => {
     const source = gated('a'.repeat(64));
-    const current = await imageSourceId(source, CURRENT, HOST);
+    const current = await imageSourceId(source, imageIdentity());
     const otherPath = gated('a'.repeat(64), '/other.png');
 
-    await expect(imageSourceId(source, CURRENT, HOST)).resolves.toBe(current);
-    await expect(imageSourceId(source, PREVIOUS, HOST)).resolves.not.toBe(current);
-    await expect(imageSourceId(source, CURRENT, 'other.example')).resolves.not.toBe(current);
-    await expect(imageSourceId(otherPath, CURRENT, HOST)).resolves.not.toBe(current);
+    await expect(imageSourceId(source, imageIdentity())).resolves.toBe(current);
+    await expect(imageSourceId(source, imageIdentity(PREVIOUS))).resolves.not.toBe(current);
+    await expect(imageSourceId(source, imageIdentity(CURRENT, 'other.example'))).resolves.not.toBe(
+      current,
+    );
+    await expect(imageSourceId(otherPath, imageIdentity())).resolves.not.toBe(current);
   });
 
-  it('preserves ordinary file, local and remote identity bytes', async () => {
+  it('keeps content-addressed and remote identities while namespacing local images', async () => {
     const sha256 = 'a'.repeat(64);
     const source: ImageSource = {
       kind: 'blob',
@@ -278,12 +333,14 @@ describe('an optimized image source identity', () => {
     const local = '/draw.png';
     const remote = 'https://cdn.example/logo.png';
 
-    await expect(imageSourceId(source, CURRENT, HOST)).resolves.toBe(`blob:${sha256}`);
-    await expect(imageSourceId(source, PREVIOUS, 'other.example')).resolves.toBe(`blob:${sha256}`);
-    await expect(imageSourceId({ kind: 'local', href: local }, CURRENT, HOST)).resolves.toBe(
-      `local:${CURRENT}:${HOST}:${await sha256HexOfText(local)}`,
+    await expect(imageSourceId(source, imageIdentity())).resolves.toBe(`blob:${sha256}`);
+    await expect(imageSourceId(source, imageIdentity(PREVIOUS, 'other.example'))).resolves.toBe(
+      `blob:${sha256}`,
     );
-    await expect(imageSourceId({ kind: 'remote', href: remote }, CURRENT, HOST)).resolves.toBe(
+    await expect(imageSourceId({ kind: 'local', href: local }, imageIdentity())).resolves.toBe(
+      `local:${PROJECT}:${CURRENT}:${HOST}:${await sha256HexOfText(local)}`,
+    );
+    await expect(imageSourceId({ kind: 'remote', href: remote }, imageIdentity())).resolves.toBe(
       `remote:${await sha256HexOfText(remote)}`,
     );
   });

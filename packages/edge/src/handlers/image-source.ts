@@ -213,18 +213,22 @@ function imagePathPart(value: string): string {
  * file is its hash, shared across deployments and invalidated by a change to the file — unless a
  * gate stands on its path, when the result is this deployment's answer for that path on the host
  * the request came in on, as another pathname of the application is bound to the deployment and
- * the host that answered it: the application sees the host, and may answer each differently; a
+ * the host and project that answered it: a hostname may move between projects whose deployment
+ * identifiers coincide, and each application's answer stays its own; a
  * URL is itself. A gated file still names its selected bytes in that answer: middleware can let
  * either this build's file or the previous build's through at the same path (Greptile), and those
  * must not share the result. The hash goes into the same digest as the path, with no extra read.
  */
-export async function imageSourceId(
-  source: ImageSource,
-  deploymentId: string,
-  host: string,
-): Promise<string> {
+interface ImageIdentity {
+  readonly projectId: string;
+  readonly app?: { readonly deploymentId: string } | undefined;
+  readonly forwarding: { readonly previewHost: string };
+}
+
+export async function imageSourceId(source: ImageSource, identity: ImageIdentity): Promise<string> {
+  const { projectId, app, forwarding } = identity;
   const answered = async (href: string): Promise<string> =>
-    `local:${imagePathPart(deploymentId)}:${imagePathPart(host)}:${await sha256HexOfText(href)}`;
+    `local:${imagePathPart(projectId)}:${imagePathPart(app?.deploymentId ?? '')}:${imagePathPart(forwarding.previewHost)}:${await sha256HexOfText(href)}`;
   switch (source.kind) {
     case 'blob': {
       return source.gate === 'none'
