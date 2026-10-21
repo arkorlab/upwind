@@ -24,7 +24,6 @@ import { HeldTags } from './held-tags.ts';
 import {
   type AttemptOutcome,
   type AttemptReason,
-  type AttemptRequest,
   CacheHostError,
   type CommitArtifact,
   type CommitOutput,
@@ -35,6 +34,7 @@ import {
 import { answerable, supersededWith, turnedAway } from './later.ts';
 import {
   abandon,
+  attemptRequestOf,
   elapsedSince,
   giveUp,
   heartbeat,
@@ -526,7 +526,7 @@ async function publish(
     });
     return { kind: 'refused', reason: committed.reason };
   } catch (error) {
-    return { kind: 'failed', error: await giveUp(input, lease, error, began) };
+    return { kind: 'failed', error: await giveUp(input, lease, { error, began }) };
   } finally {
     stopHeartbeat();
     // Whatever came of it. A read begun since the render let go of the entry may have kept the
@@ -541,20 +541,6 @@ async function publish(
       rememberRecord(runtime, lease.entryId, published);
     }
   }
-}
-
-/**
- * What the host is asked for a lease of the entry with: what the edge served, where it said, and the
- * generation the request judged (`replaces`), for a host to hand back the record of a later one it
- * holds (`AttemptOutcome.record`).
- */
-function attemptRequestOf(target: RegenerationTarget): AttemptRequest {
-  return {
-    entry: target.descriptor,
-    reason: target.reason,
-    ...(target.observation !== undefined && { observation: target.observation }),
-    ...(target.replaces !== undefined && { replaces: target.replaces }),
-  };
 }
 
 /**
@@ -643,12 +629,14 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   let observed: { readonly tagRevision: number; readonly losses: number };
   let viewed: boolean;
   let captured: StaticRender | undefined;
+  let failureStage: 'render' | undefined;
   try {
     viewed = await within(synced, TAG_SYNC_DEADLINE_MS, {
       code: 'tags_not_synced',
       message: 'the tags were not synced',
     });
     observed = { tagRevision: runtime.tags.revision, losses: runtime.tags.losses.count };
+    failureStage = 'render';
     captured = await renderStatic(input, lease.attemptId, held);
     // What the render read is all read: work it left behind its answer reads in its context still.
     held.close();
@@ -666,7 +654,11 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     }
   } catch (error) {
     stopHeartbeat();
-    return { kind: 'failed', render: captured, error: await giveUp(input, lease, error, began) };
+    return {
+      kind: 'failed',
+      render: captured,
+      error: await giveUp(input, lease, { error, began, stage: failureStage }),
+    };
   }
   // What this isolate holds of the entry is the generation the render replaces. Let go of it with
   // the answer rather than with the commit, so that a request after the answer asks the host —

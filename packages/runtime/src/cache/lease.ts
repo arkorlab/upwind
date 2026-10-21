@@ -1,7 +1,7 @@
 import { evaluateFreshness } from '@stayingupwind/core/cache';
 
 import { nowMs } from './clock.ts';
-import type { AttemptOutcome, AttemptReason, CurrentSummary } from './host.ts';
+import type { AttemptOutcome, AttemptReason, AttemptRequest, CurrentSummary } from './host.ts';
 import type { CacheRuntime } from './runtime.ts';
 
 /**
@@ -14,7 +14,35 @@ import type { CacheRuntime } from './runtime.ts';
 interface LeaseHolder {
   readonly runtime: CacheRuntime;
   readonly waitUntil: (promise: Promise<unknown>) => void;
-  readonly target: { readonly descriptor: { readonly pathname: string } };
+  readonly target: {
+    readonly descriptor: { readonly pathname: string };
+    readonly replaces?: string | null | undefined;
+  };
+}
+
+interface AttemptFailure {
+  readonly error: unknown;
+  /** Only a failed initial render can bypass backoff when no generation exists. */
+  readonly stage?: 'render' | undefined;
+}
+
+/**
+ * What the host is asked for a lease of the entry with: what the edge served, where it said, and the
+ * generation the request judged (`replaces`), for a host to hand back the record of a later one it
+ * holds (`AttemptOutcome.record`).
+ */
+export function attemptRequestOf(target: {
+  readonly descriptor: AttemptRequest['entry'];
+  readonly reason: AttemptRequest['reason'];
+  readonly observation?: AttemptRequest['observation'];
+  readonly replaces?: AttemptRequest['replaces'];
+}): AttemptRequest {
+  return {
+    entry: target.descriptor,
+    reason: target.reason,
+    ...(target.observation !== undefined && { observation: target.observation }),
+    ...(target.replaces !== undefined && { replaces: target.replaces }),
+  };
 }
 
 function detail(error: unknown): string {
@@ -66,20 +94,29 @@ export async function within<T>(
 
 export async function abandon(
   input: LeaseHolder,
-  lease: { attemptId: string; fencingToken: number },
+  lease: {
+    attemptId: string;
+    fencingToken: number;
+    current?: CurrentSummary | null | undefined;
+  },
   outcome: 'failed' | 'skipped',
-  error?: unknown,
+  failure?: AttemptFailure,
 ): Promise<void> {
   try {
     await input.runtime.host.fail(lease.attemptId, {
       fencingToken: lease.fencingToken,
       outcome,
+      // With no generation, backoff still renders each visitor but cannot keep a recovered page.
+      ...(outcome === 'failed' &&
+        failure?.stage === 'render' &&
+        input.target.replaces === null &&
+        lease.current === null && { retryAfterMs: 0 }),
       // The failure's own word where it has one, so a refusal decided here reads as itself and
       // not as a render that threw; the gateway enumerates none of them.
-      ...(error !== undefined && {
+      ...(failure?.error !== undefined && {
         error: {
-          code: error instanceof RegenerationError ? error.code : 'render_failed',
-          message: detail(error),
+          code: failure.error instanceof RegenerationError ? failure.error.code : 'render_failed',
+          message: detail(failure.error),
         },
       }),
     });
@@ -92,16 +129,15 @@ export async function abandon(
 export async function giveUp(
   input: LeaseHolder,
   lease: Leased,
-  error: unknown,
-  began: number,
+  failure: AttemptFailure & { readonly began: number },
 ): Promise<string> {
-  await abandon(input, lease, 'failed', error);
+  await abandon(input, lease, 'failed', failure);
   input.runtime.log('regeneration failed', {
     pathname: input.target.descriptor.pathname,
-    detail: detail(error),
-    elapsedMs: elapsedSince(began),
+    detail: detail(failure.error),
+    elapsedMs: elapsedSince(failure.began),
   });
-  return detail(error);
+  return detail(failure.error);
 }
 
 /**

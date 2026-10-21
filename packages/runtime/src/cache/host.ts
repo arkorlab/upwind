@@ -339,6 +339,8 @@ export type CommitOutcome =
 export interface FailRequest {
   readonly fencingToken: number;
   readonly outcome: 'failed' | 'skipped';
+  /** A retry delay for this failure; absent leaves the host's normal failure backoff in place. */
+  readonly retryAfterMs?: number | undefined;
   readonly error?: { readonly code: string; readonly message: string } | undefined;
 }
 
