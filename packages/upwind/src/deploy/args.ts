@@ -28,6 +28,11 @@ export interface DeployOptions {
   readonly message: string | undefined;
   /** Say what would be done, and change nothing. */
   readonly dryRun: boolean;
+  /**
+   * Give the runtime cache a new key where its two Workers hold different ones and a deployment is
+   * live, which closes the cache to every deployment but this one.
+   */
+  readonly resetCacheKey: boolean;
 }
 
 export type DeployRequest =
@@ -64,6 +69,7 @@ export function parseDeployRequest(args: readonly string[]): DeployRequest {
       keep: { type: 'string' },
       message: { type: 'string' },
       'dry-run': { type: 'boolean' },
+      'reset-cache-key': { type: 'boolean' },
     },
     allowPositionals: true,
     strict: true,
@@ -99,6 +105,53 @@ export function parseDeployRequest(args: readonly string[]): DeployRequest {
       keep: keepOf(values.keep),
       message,
       dryRun: values['dry-run'] === true,
+      resetCacheKey: values['reset-cache-key'] === true,
+    },
+  };
+}
+
+export interface DestroyOptions {
+  readonly projectDir: string;
+  /** That everything is to be deleted: nothing is without it. */
+  readonly yes: boolean;
+  /** Delete the stores the application asked for, with their data, as well. */
+  readonly includeStorage: boolean;
+}
+
+export type DestroyRequest =
+  | { readonly answer: 'help' | 'version' }
+  | { readonly answer: undefined; readonly options: DestroyOptions };
+
+/** What `upwind destroy` understands: a directory, `--yes`, and `--include-storage`. */
+export function parseDestroyRequest(args: readonly string[]): DestroyRequest {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    options: {
+      help: { type: 'boolean', short: 'h' },
+      version: { type: 'boolean', short: 'v' },
+      yes: { type: 'boolean' },
+      'include-storage': { type: 'boolean' },
+    },
+    allowPositionals: true,
+    strict: true,
+  });
+  if (values.help === true) {
+    return { answer: 'help' };
+  }
+  if (values.version === true) {
+    return { answer: 'version' };
+  }
+  if (positionals.length > 1) {
+    throw new Error(
+      `\`upwind destroy\` takes at most one directory, and was given ${positionals.length}`,
+    );
+  }
+  return {
+    answer: undefined,
+    options: {
+      projectDir: path.resolve(positionals[0] ?? '.'),
+      yes: values.yes === true,
+      includeStorage: values['include-storage'] === true,
     },
   };
 }

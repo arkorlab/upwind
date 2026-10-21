@@ -16,6 +16,7 @@ describe('`upwind deploy` arguments', () => {
         keep: undefined,
         message: undefined,
         dryRun: false,
+        resetCacheKey: false,
       },
     });
   });
@@ -45,6 +46,7 @@ describe('`upwind deploy` arguments', () => {
         keep: 3,
         message: 'fix',
         dryRun: true,
+        resetCacheKey: false,
       },
     });
   });

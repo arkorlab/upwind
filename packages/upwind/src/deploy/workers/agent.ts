@@ -14,6 +14,7 @@ import {
   DESTROY_MODE,
   METADATA_HEADER,
   MISSING_BATCH,
+  OWNER_KEY,
 } from './protocol.ts';
 
 /**
@@ -315,13 +316,16 @@ async function cache(request: Request, env: AgentEnv, pathname: string): Promise
   return Response.json(await env.CACHE_CONTROL.retireScope(retireScopeInputSchema.parse(input)));
 }
 
-/** A batch of the bucket deleted, for a project being destroyed. */
+/**
+ * A batch of the bucket deleted, for a project being destroyed: all but the owner mark, which the
+ * destroy deletes last, itself, so that one stopped before it can be run again.
+ */
 async function purge(env: AgentEnv): Promise<Response> {
   if (env.AGENT_MODE !== DESTROY_MODE) {
     return said(HTTP_FORBIDDEN, 'the agent deletes nothing outside a project being destroyed');
   }
   const listed = await env.ARTIFACTS.list({ limit: PURGE_BATCH });
-  const keys = listed.objects.map((object) => object.key);
+  const keys = listed.objects.map((object) => object.key).filter((key) => key !== OWNER_KEY);
   if (keys.length > 0) {
     await env.ARTIFACTS.delete(keys);
   }

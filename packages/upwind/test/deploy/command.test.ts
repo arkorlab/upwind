@@ -46,6 +46,7 @@ function optionsFor(dir: string, overrides: Partial<DeployOptions> = {}): Deploy
     keep: undefined,
     message: undefined,
     dryRun: true,
+    resetCacheKey: false,
     ...overrides,
   };
 }
@@ -148,10 +149,12 @@ describe('`upwind deploy --dry-run`', () => {
     expect(errors).toStrictEqual([expect.stringMatching(/nothing it built is here/u)]);
   });
 
-  it('stops after planning, in this version, without --dry-run', async () => {
+  it('goes no further than the plan without the token that reaches the account', async () => {
     const { dir } = await builtProject();
 
     await expect(runDeploy(optionsFor(dir, { dryRun: false }), undefined)).resolves.toBe(1);
-    expect(errors).toStrictEqual([expect.stringMatching(/run it with --dry-run/u)]);
+    expect(errors).toStrictEqual([
+      expect.stringMatching(/CLOUDFLARE_API_TOKEN, which is not set/u),
+    ]);
   });
 });

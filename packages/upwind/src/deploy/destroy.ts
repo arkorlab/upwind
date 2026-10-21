@@ -1,0 +1,214 @@
+import { type AccountView, readAccount, resolveAccount } from './account.ts';
+import type { AgentClient } from './agent-client.ts';
+import { openAgent } from './agent-session.ts';
+import type { DestroyOptions } from './args.ts';
+import { CloudflareApiError, createCloudflareClient } from './cloudflare/client.ts';
+import {
+  deleteBucket,
+  deleteD1Database,
+  deleteKvNamespace,
+  deleteObject,
+} from './cloudflare/storage.ts';
+import { type AccountScope, deleteScript } from './cloudflare/workers.ts';
+import { readDeploySettings } from './config.ts';
+import type { CloudflareCredentials } from './credentials.ts';
+import { deploymentOfScript, type ProjectNames, projectNames } from './names.ts';
+import { shippedWorkers } from './shipped.ts';
+import { AGENT_PATHS, OWNER_KEY } from './workers/protocol.ts';
+
+/**
+ * `upwind destroy`: everything a deploy made for the project, deleted — its edge first, so the site
+ * stops before anything behind it goes, then each deployment's Functions, every file of every
+ * deployment, the Workers behind them, and the stores.
+ *
+ * Only what the owner mark says is the project's (`account.ts`), and only with `--yes`. The stores
+ * the application asked for (`deploy.storage`) hold its data, not a deployment's, and are deleted
+ * only with `--include-storage`; without it they are listed, and left.
+ *
+ * Every step is one a second run finds done or does: a Worker or a store that is gone already is
+ * passed over, and the owner mark is the last thing in the bucket deleted, so a run stopped half way
+ * can be run again on what the mark still says is the project's.
+ */
+
+export interface DestroyIo {
+  readonly fetch?: typeof fetch | undefined;
+  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
+  readonly now?: (() => number) | undefined;
+}
+
+/** What R2 answers a deletion of a bucket that still holds objects with. */
+const BUCKET_NOT_EMPTY = 10_008;
+
+function say(text: string): void {
+  console.log(`upwind: ${text}`);
+}
+
+/** Every file of every deployment deleted, through the agent, a batch at a time. */
+async function purge(agent: AgentClient): Promise<number> {
+  let deleted = 0;
+  for (;;) {
+    const response = await agent.call('POST', AGENT_PATHS.purge);
+    const answer = (await response?.json()) as
+      | { readonly deleted?: number; readonly more?: boolean }
+      | undefined;
+    if (answer?.deleted === undefined) {
+      throw new Error('the deploy agent did not say what it deleted');
+    }
+    deleted += answer.deleted;
+    if (answer.more !== true) {
+      return deleted;
+    }
+  }
+}
+
+/** The project's Workers, the edge first and the agent, which empties the bucket, last. */
+function workersOf(names: ProjectNames, account: AccountView): readonly string[] {
+  const functions = account.projectWorkers.filter(
+    (name) => deploymentOfScript(names.project, name) !== undefined,
+  );
+  return [names.edge, ...functions, names.cacheRead, names.prefetch, names.cache];
+}
+
+async function emptyBucket(
+  scope: AccountScope,
+  names: ProjectNames,
+  account: AccountView & { readonly subdomain: string },
+  io: DestroyIo,
+): Promise<void> {
+  const scripts = await shippedWorkers();
+  const session = await openAgent({
+    scope,
+    names,
+    stores: { bucket: names.artifactsBucket, edgeState: account.owner?.made[names.edgeStateTitle] },
+    script: scripts.agent,
+    subdomain: account.subdomain,
+    mode: 'destroy',
+    existing: new Set(account.projectWorkers),
+    // Gone by now (`workersOf`), and nothing a destroy asks of the agent reaches it.
+    withCache: false,
+    fetch: io.fetch,
+    sleep: io.sleep,
+    now: io.now,
+  });
+  say(`emptied ${names.artifactsBucket} of ${String(await purge(session.client))} objects`);
+}
+
+/** The application's stores, deleted where asked to, and listed where not. */
+async function applicationStores(
+  scope: AccountScope,
+  account: AccountView,
+  includeStorage: boolean,
+): Promise<string[]> {
+  const left: string[] = [];
+  const made = Object.entries(account.owner?.made ?? {}).filter(([name]) =>
+    /^(?:kv|d1|r2):/u.test(name),
+  );
+  for (const [name, id] of made) {
+    if (!includeStorage) {
+      left.push(`${name} (${id})`);
+      continue;
+    }
+    if (name.startsWith('kv:')) {
+      await deleteKvNamespace(scope, id);
+    } else if (name.startsWith('d1:')) {
+      await deleteD1Database(scope, id);
+    } else {
+      try {
+        await deleteBucket(scope, id);
+      } catch (error) {
+        if (error instanceof CloudflareApiError && error.codes.includes(BUCKET_NOT_EMPTY)) {
+          left.push(`${name} (${id}), which still holds objects: empty it, and run this again`);
+          continue;
+        }
+        throw error;
+      }
+    }
+    say(`deleted ${name}`);
+  }
+  return left;
+}
+
+/** Why nothing of the account may be destroyed; nothing where it may. */
+function refusalOf(names: ProjectNames, account: AccountView): string | undefined {
+  const { bucket, subdomain } = account;
+  if (bucket === undefined) {
+    return account.projectWorkers.length > 0
+      ? `the account has Workers named for ${names.project} and no ${names.artifactsBucket} saying they are its; delete them by hand if they are`
+      : undefined;
+  }
+  if (account.owner?.project !== names.project) {
+    return `${names.artifactsBucket} was not made by upwind deploy for ${names.project}, so nothing of it is destroyed`;
+  }
+  return subdomain === undefined
+    ? "the account has no workers.dev subdomain, where the agent that empties the bucket is reached; choose one in Cloudflare's settings for Workers"
+    : undefined;
+}
+
+/** Delete what the account holds of the project; what is left of the application's storage. */
+async function destroyAll(
+  scope: AccountScope,
+  names: ProjectNames,
+  account: AccountView,
+  input: { readonly options: DestroyOptions; readonly io: DestroyIo },
+): Promise<string[]> {
+  for (const name of workersOf(names, account)) {
+    // `force`: a Worker another binds is deleted all the same, its Durable Objects with it.
+    await deleteScript(scope, name, { force: true });
+  }
+  const { subdomain } = account;
+  if (subdomain !== undefined && account.bucket !== undefined) {
+    await emptyBucket(scope, names, { ...account, subdomain }, input.io);
+  }
+  await deleteScript(scope, names.agent, { force: true });
+  for (const title of [names.edgeStateTitle, names.cacheStateTitle]) {
+    const id = account.owner?.made[title];
+    if (id !== undefined) {
+      await deleteKvNamespace(scope, id);
+    }
+  }
+  const left = await applicationStores(scope, account, input.options.includeStorage);
+  if (account.bucket !== undefined) {
+    await deleteObject(scope, names.artifactsBucket, OWNER_KEY);
+    await deleteBucket(scope, names.artifactsBucket);
+  }
+  return left;
+}
+
+/** Delete everything a deploy made for the project; what the command exits with. */
+export async function runDestroy(
+  options: DestroyOptions,
+  credentials: CloudflareCredentials | undefined,
+  io: DestroyIo = {},
+): Promise<number> {
+  if (!options.yes) {
+    console.error(
+      "upwind: destroy deletes the project's site, every deployment of it and every file they serve; run it with --yes",
+    );
+    return 1;
+  }
+  if (credentials === undefined) {
+    console.error(
+      'upwind: destroy reaches the account with CLOUDFLARE_API_TOKEN, which is not set',
+    );
+    return 1;
+  }
+  const settings = await readDeploySettings(options.projectDir);
+  const names = projectNames(settings.project);
+  const client = createCloudflareClient({ apiToken: credentials.apiToken, fetch: io.fetch });
+  const scope = { client, accountId: await resolveAccount(client, credentials.accountId) };
+  const account = await readAccount(scope, names);
+  const refused = refusalOf(names, account);
+  if (refused !== undefined) {
+    console.error(`upwind: ${refused}`);
+    return 1;
+  }
+  const left = await destroyAll(scope, names, account, { options, io });
+  say(`destroyed ${names.project}`);
+  if (left.length > 0) {
+    say("the application's storage is left as it is (--include-storage deletes it):");
+    for (const store of left) {
+      console.log(`  ${store}`);
+    }
+  }
+  return 0;
+}

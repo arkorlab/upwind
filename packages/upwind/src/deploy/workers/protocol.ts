@@ -33,6 +33,12 @@ export const AGENT_KEY_MIN_LENGTH = 32;
 /** How many keys one question about missing objects may name. */
 export const MISSING_BATCH = 1000;
 
+/**
+ * The object in the artifacts bucket that says whose the bucket is (`account.ts`): the one a purge
+ * leaves, so that a destroy stopped half way can be run again on what it marked as the project's.
+ */
+export const OWNER_KEY = 'upwind/owner.json';
+
 /** What the agent's mode is when it may destroy, and is otherwise never. */
 export const DESTROY_MODE = 'destroy';
 
