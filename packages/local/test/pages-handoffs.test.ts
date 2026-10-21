@@ -123,7 +123,7 @@ function dataPart(): Part {
     headers: { 'x-nextjs-data': '1' },
     route: MEMBER_ROUTE,
     built: undefined,
-    builtOn: (route) => route.pagesData,
+    builtOn: (route) => route.pagesData?.artifact,
     exact: true,
   };
 }
