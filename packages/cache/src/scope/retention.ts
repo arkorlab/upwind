@@ -56,6 +56,9 @@ const UPLOAD_GRACE_MS = MILLISECONDS_PER_HOUR;
  * came back full (`letGoOfWithdrawn`).
  */
 const META_RETIRED_WITHDRAWING = 'retired_withdrawing';
+/** One bounded pass over borrowed metadata left unreferenced by earlier authorities. */
+const META_BORROWED_SWEEP_CURSOR = 'borrowed_artifact_sweep_cursor';
+const META_BORROWED_SWEEP_DONE = 'borrowed_artifact_sweep_done';
 /** An entry with no value now, and no render holding a lease on it, as an SQL condition. */
 const UNUSED = `e.current_generation_id IS NULL
   AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.entry_id = e.entry_id AND a.status IN ('leased', 'uploading'))`;
@@ -468,6 +471,31 @@ function forgetWriterMarks(input: RetentionInput): boolean {
   return removed.length === PRUNE_BATCH;
 }
 
+/** Old zero-reference rows, sought through the existing primary key without a new index build. */
+function forgetUnusedBorrowedArtifacts(input: RetentionInput): boolean {
+  const { sql } = input;
+  if (readMeta(sql, META_BORROWED_SWEEP_DONE) !== undefined) return false;
+  const rows = sql
+    .exec<{ artifact_id: string; sha256: string; owned: number; refs: number }>(
+      `SELECT artifact_id, sha256, owned, refs FROM artifacts
+       WHERE artifact_id > ? ORDER BY artifact_id LIMIT ?`,
+      readMeta(sql, META_BORROWED_SWEEP_CURSOR) ?? '',
+      PRUNE_BATCH,
+    )
+    .toArray();
+  for (const row of rows) {
+    if (row.owned === 0 && row.refs === 0) deleteArtifactRow(sql, row.sha256);
+  }
+  const last = rows.at(-1);
+  if (rows.length === PRUNE_BATCH && last !== undefined) {
+    writeMeta(sql, META_BORROWED_SWEEP_CURSOR, last.artifact_id);
+    return true;
+  }
+  deleteMeta(sql, META_BORROWED_SWEEP_CURSOR);
+  writeMeta(sql, META_BORROWED_SWEEP_DONE, '1');
+  return false;
+}
+
 /** Runs inside one transaction; the caller deletes what the plan names afterwards. */
 export function applyRetention(input: RetentionInput): RetentionPlan {
   const deletable: string[] = [];
@@ -491,7 +519,11 @@ export function applyRetention(input: RetentionInput): RetentionPlan {
       forgetWriterMarks(input),
     );
   }
-  full.push(dropOrphanedUploads(input, deletable), ageOutHistory(input, windows, deletable));
+  full.push(
+    dropOrphanedUploads(input, deletable),
+    ageOutHistory(input, windows, deletable),
+    forgetUnusedBorrowedArtifacts(input),
+  );
   queueDeletions(input.sql, deletable, input.now);
   forgetReferenced(input.sql);
   const page = pendingDeletions(input.sql, PRUNE_BATCH);

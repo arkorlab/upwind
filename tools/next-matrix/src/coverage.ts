@@ -17,9 +17,14 @@ const FETCH_CACHE_WAIT_UNTIL = 'fetch-cache-wait-until';
 const GRAPH_MANIFESTS = 'graph-manifests';
 const RESOURCE_CACHE_BRIDGE = 'resource-cache-bridge';
 const TURBOPACK_RUNTIME = 'turbopack-runtime';
-const HOST_ADAPTER = 'adapter.mjs';
 /** The same runtime chunk's roots, rewritten wherever the runtime is (`patches/turbopack-root.ts`). */
 const TURBOPACK_ROOT = 'turbopack-root';
+/**
+ * Next.js's `"use cache"` wrapper, joined within a request alone (`patches/use-cache-cross-request.ts`).
+ * A build compiles it into a chunk wherever a cached function is, from 16.2 on; it finds deduplication
+ * to rewrite there from 16.3, and in 16.2 is applied and leaves the chunk as it is.
+ */
+const USE_CACHE_CROSS_REQUEST = 'use-cache-cross-request';
 /** The Workflow SDK's QuickJS engine, its WebAssembly shipped compiled (`patches/workflow-quickjs.ts`). */
 const WORKFLOW_QUICKJS = 'workflow-quickjs-wasm';
 /**
@@ -27,6 +32,8 @@ const WORKFLOW_QUICKJS = 'workflow-quickjs-wasm';
  * 16.3, and the Turbopack runtime itself in 16.2 (`patches/wasm-loader.ts`).
  */
 const WASM_LOADER = ['wasm-loader', 'runtime-wasm-loader'] as const;
+/** The file a fixture that configures the adapter itself does it in. */
+const ADAPTER_FILE = 'adapter.mjs';
 
 /** The rewrites that reach Next.js's own package, and so every build of any fixture. */
 const PACKAGE_PATCHES = [
@@ -87,14 +94,14 @@ export const FIXTURE_COVERAGE = {
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
   'next-edge-instrumentation': {
-    adapterFile: HOST_ADAPTER,
+    adapterFile: ADAPTER_FILE,
     expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
   'next-edge-instrumentation-no-own': {
     sourceFixture: 'next-edge-instrumentation',
     removeOwnInstrumentation: true,
-    adapterFile: HOST_ADAPTER,
+    adapterFile: ADAPTER_FILE,
     expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
@@ -107,7 +114,7 @@ export const FIXTURE_COVERAGE = {
   },
   'next-large-prerender-bodies': {
     proofVersion: '16.4.2',
-    adapterFile: HOST_ADAPTER,
+    adapterFile: ADAPTER_FILE,
     expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
@@ -124,6 +131,7 @@ export const FIXTURE_COVERAGE = {
       RESOURCE_CACHE_BRIDGE,
       TURBOPACK_RUNTIME,
       TURBOPACK_ROOT,
+      USE_CACHE_CROSS_REQUEST,
       WASM_LOADER,
       'vercel-og',
       'vercel-og-font',
@@ -136,6 +144,7 @@ export const FIXTURE_COVERAGE = {
       'hanging-input-abort',
       TURBOPACK_RUNTIME,
       TURBOPACK_ROOT,
+      USE_CACHE_CROSS_REQUEST,
       'vercel-og',
       WASM_LOADER,
     ],
@@ -159,6 +168,13 @@ export const FIXTURE_COVERAGE = {
       TURBOPACK_ROOT,
       WORKFLOW_QUICKJS,
     ],
+  },
+  // Two requests for one `"use cache"` entry in one isolate, the second while the first reads it,
+  // against a cache host of the fixture's own: the Function is run in workerd, not only built.
+  'next-use-cache-concurrency': {
+    adapterFile: ADAPTER_FILE,
+    expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT, USE_CACHE_CROSS_REQUEST],
+    chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT, USE_CACHE_CROSS_REQUEST],
   },
 } as const satisfies Readonly<Record<string, FixtureCoverage>>;
 

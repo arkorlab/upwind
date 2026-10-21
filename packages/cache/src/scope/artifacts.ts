@@ -325,6 +325,8 @@ export function releaseArtifact(sql: SqlStorage, sha256: string): ReleasedArtifa
   }
   const refs = existing.refs - 1;
   sql.exec(`UPDATE artifacts SET refs = ? WHERE sha256 = ?`, refs, sha256);
+  // The build still owns the blob, but no generation needs this scope's metadata any longer.
+  if (refs === 0 && existing.owned === 0) deleteArtifactRow(sql, sha256);
   return {
     sha256,
     storageRef: existing.storage_ref,

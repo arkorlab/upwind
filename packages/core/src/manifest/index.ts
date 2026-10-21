@@ -64,6 +64,8 @@ export {
   routeCacheSchema,
   type RouteBodyEntry,
   routeBodyEntrySchema,
+  type PagesFallbackEntry,
+  pagesFallbackEntrySchema,
   type StaticPageEntry,
   staticPageEntrySchema,
   type PartialFallbackUpgrade,
@@ -87,4 +89,4 @@ export { fromStoredManifest } from './stored.ts';
 
 export { findRouteBody } from './route-bodies.ts';
 
-export { findStaticPage } from './static-pages.ts';
+export { findStaticPage, findPagesFallback } from './static-pages.ts';

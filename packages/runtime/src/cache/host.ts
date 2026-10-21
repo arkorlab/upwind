@@ -10,6 +10,8 @@ import type {
 } from '@stayingupwind/core/cache';
 import type { ScopeRevision } from '@stayingupwind/core/paas';
 
+import type { PAGES_FALLBACK_PRIVACY } from './static-pages.ts';
+
 /**
  * The cache a deployment's Function takes part in, as this runtime speaks to it.
  *
@@ -271,7 +273,7 @@ export interface CommitArtifact {
  */
 export interface CommitOutput {
   /** An ISR proof earned by the Function's own synthetic render, never an inherited build proof. */
-  readonly staticPagePrivacy?: 2 | undefined;
+  readonly staticPagePrivacy?: 2 | typeof PAGES_FALLBACK_PRIVACY | undefined;
   readonly representationKey: string;
   readonly pathname: string | null;
   readonly status: number | null;
@@ -337,6 +339,8 @@ export type CommitOutcome =
 export interface FailRequest {
   readonly fencingToken: number;
   readonly outcome: 'failed' | 'skipped';
+  /** A retry delay for this failure; absent leaves the host's normal failure backoff in place. */
+  readonly retryAfterMs?: number | undefined;
   readonly error?: { readonly code: string; readonly message: string } | undefined;
 }
 

@@ -13,6 +13,7 @@ What each file is for:
 | `instrumentation.js`             | `instrumentation` (the computed `require` of the hook)                                                  |
 | `proxy.js`                       | the middleware on the Node.js runtime: a second Function, bundled from the same graph                   |
 | `next.config.mjs` (`cacheComponents`) | `task-timers`, `resume-cache-limit`, `cache-signal-timers`                                         |
+| `app/page.js`                    | `use-cache-cross-request`: a `"use cache"` component, which puts Next.js's cache wrapper in a chunk     |
 | `app/blog/[slug]/page.js`        | `hanging-input-abort`: a `"use cache"` function handed promises made from `params`                      |
 | `app/api/cached-fetch/route.js`  | `fetch-cache-wait-until`: `patch-fetch`, and a `fetch` with a `revalidate`                              |
 | `app/api/dynamic-import/route.js` | `cache-signal-timers`: a route handler loading an async module on demand                               |

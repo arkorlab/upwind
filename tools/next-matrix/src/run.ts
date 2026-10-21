@@ -22,6 +22,7 @@ import { instrumentationHolds } from './instrumentation.ts';
 import { largePrerenderHolds } from './large-prerender.ts';
 import { checkFixtureVersions, selectFixtures } from './selection.ts';
 import { twoslashHolds } from './twoslash.ts';
+import { useCacheConcurrencyHolds } from './use-cache-concurrency.ts';
 
 /**
  * Builds real applications with real Next.js versions, and holds each build to what the adapter
@@ -275,6 +276,7 @@ const HOLDS: Readonly<Record<FixtureName, Holds>> = {
   'next-minimal': minimalHolds,
   'next-edge': edgeHolds,
   'next-workflow': workflowHolds,
+  'next-use-cache-concurrency': useCacheConcurrencyHolds,
 };
 
 /**

@@ -62,7 +62,7 @@ export function timedDeps<D extends { readonly kv: KvSink; readonly blobs: BlobS
   };
   const timedBlobs: BlobStore = {
     ...blobs,
-    read: (key) => timing.timed('storage-read', () => blobs.read(key)),
+    read: (key, byteLength) => timing.timed('storage-read', () => blobs.read(key, byteLength)),
   };
   return { ...deps, kv: timedKv, blobs: timedBlobs };
 }

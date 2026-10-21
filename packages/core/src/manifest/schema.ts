@@ -9,6 +9,7 @@ import { KEY_SCHEMA_VERSION } from '../cache/keys.ts';
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
 import { imagesConfigSchema } from '../images/config.ts';
 import * as z from '../schema/index.ts';
+const PAGES_FALLBACK_PRIVACY = 3;
 
 /**
  * Bumped when a manifest starts to mean something an older reader would get wrong. An edge that
@@ -39,11 +40,18 @@ import * as z from '../schema/index.ts';
  * 7: `staticFileRequestKeys` names actual file request URLs. A reader of 6 would reinterpret a
  * missing request through the asset-prefix rewrite and could serve another file. Writers keep
  * version 6 when that field is absent, so ordinary deployments keep their stored bytes.
+ *
+ * 8: `pagesFallbacks` loading shells also appear in the route table. A reader that drops their
+ * fallback authority could serve a loading shell without generating its concrete member. Version-3
+ * `staticPages` members require the same reader even without a loading table. Ordinary manifests
+ * keep 6 or 7; earlier readers refuse the unsupported version.
  */
 /** The unchanged writer version for manifests that use canonical static-file keys. */
 export const MANIFEST_SCHEMA_VERSION = 6;
-/** Latest supported format: static-file keys name actual request URLs, not rewrite destinations. */
+/** The first format whose static-file keys can name actual request URLs. */
 export const REQUEST_FILE_KEYS_SCHEMA_VERSION = 7;
+/** Paired Pages members and loading classes require a reader that understands version three. */
+export const PAGES_FALLBACK_SCHEMA_VERSION = 8;
 /** The first version a manifest may store what its routes repeat in `tables` at (above). */
 export const TABLES_SCHEMA_VERSION = 6;
 /** The version before, which `routerReferences` was first published at. */
@@ -65,6 +73,7 @@ const CANONICAL_FILE_SCHEMA_VERSIONS = [
 export const READ_MANIFEST_SCHEMA_VERSIONS = [
   ...CANONICAL_FILE_SCHEMA_VERSIONS,
   REQUEST_FILE_KEYS_SCHEMA_VERSION,
+  PAGES_FALLBACK_SCHEMA_VERSION,
 ] as const;
 const HTTP_OK = 200;
 
@@ -103,16 +112,38 @@ export const routeBodyEntrySchema = z.object({
 export type RouteBodyEntry = z.infer<typeof routeBodyEntrySchema>;
 
 /** A separate exact Pages document authority, never inferred from application response headers. */
-export const staticPageEntrySchema = z.object({
-  /** Absent expects the original build-only proof; 2 requires an ISR-aware output proof. */
-  staticPagePrivacy: z.literal(2).optional(),
-  pathname: z.string().startsWith('/'),
-  route: z.string().startsWith('/'),
-  entryId: z.string().min(1),
-  bypassFor: z.array(routeHasSchema).optional(),
-  function: splitFunctionNameSchema.optional(),
-});
+export const staticPageEntrySchema = z
+  .object({
+    /** Absent expects the original build-only proof; 2 requires an ISR-aware output proof. */
+    staticPagePrivacy: z.literal([2, PAGES_FALLBACK_PRIVACY]).optional(),
+    pathname: z.string().startsWith('/'),
+    route: z.string().startsWith('/'),
+    entryId: z.string().min(1),
+    /** Version 3 binds the member and its paired props to this build-owned route. */
+    parameters: z.record(z.string().min(1), z.string().min(1)).optional(),
+    dataPathname: z.string().startsWith('/').optional(),
+    bypassFor: z.array(routeHasSchema).optional(),
+    function: splitFunctionNameSchema.optional(),
+  })
+  .refine(
+    (entry) => {
+      return (
+        entry.staticPagePrivacy !== PAGES_FALLBACK_PRIVACY ||
+        (entry.parameters !== undefined && entry.dataPathname !== undefined)
+      );
+    },
+    { message: 'version 3 requires its parameters and paired data pathname' },
+  );
 export type StaticPageEntry = z.infer<typeof staticPageEntrySchema>;
+
+/** Earlier manifest versions admit only the original build proof and fixed ISR proof. */
+const fixedStaticPageEntrySchema = z.object({
+  ...staticPageEntrySchema.shape,
+  staticPagePrivacy: z.literal(2).optional(),
+});
+const fixedStaticPagesSchema = z
+  .record(z.string().startsWith('/'), fixedStaticPageEntrySchema)
+  .optional();
 
 /** The scope a manifest's cache entries belong to: one deployment, under one key schema. */
 export const manifestCacheSchema = z.object({
@@ -155,6 +186,18 @@ export const routeSegmentSchema = z.object({
   encodings: shellEncodingsSchema.optional(),
 });
 export type RouteSegment = z.infer<typeof routeSegmentSchema>;
+
+/** A build-owned loading response, never a concrete member or generation authority. */
+export const pagesFallbackEntrySchema = z.object({
+  staticPagePrivacy: z.literal(PAGES_FALLBACK_PRIVACY),
+  route: z.string().startsWith('/'),
+  dataPathname: z.string().startsWith('/'),
+  shell: routeSegmentSchema,
+  headers: z.record(z.string(), z.string()),
+  function: splitFunctionNameSchema.optional(),
+  bypassFor: z.array(routeHasSchema).optional(),
+});
+export type PagesFallbackEntry = z.infer<typeof pagesFallbackEntrySchema>;
 
 /** The source route and parameter key of a shell completed behind a partial fallback response. */
 export const partialFallbackUpgradeSchema = z.object({
@@ -534,6 +577,8 @@ const projectFields = {
   routeBodies: z.record(z.string().startsWith('/'), routeBodyEntrySchema).optional(),
   /** Exact static Pages authority, versioned per entry. Absent publications stay private. */
   staticPages: z.record(z.string().startsWith('/'), staticPageEntrySchema).optional(),
+  /** Separate immutable loading shells for supported Pages fallback classes. */
+  pagesFallbacks: z.record(z.string().startsWith('/'), pagesFallbackEntrySchema).optional(),
   /** The application's middleware matchers: a document these match is not served without it. */
   middleware: middlewareConfigSchema.optional(),
   /**
@@ -669,16 +714,34 @@ const projectFields = {
  * This is a discriminated schema: parse/safeParse remain public, rather than object-only helpers.
  */
 export const projectManifestSchema = z.discriminatedUnion('schemaVersion', [
+  z
+    .object({
+      ...manifestFields,
+      schemaVersion: z.literal(CANONICAL_FILE_SCHEMA_VERSIONS),
+      ...projectFields,
+      staticPages: fixedStaticPagesSchema,
+    })
+    .refine((manifest) => manifest.pagesFallbacks === undefined, {
+      message: 'Pages loading classes require manifest schema version 8',
+      path: ['pagesFallbacks'],
+    }),
+  z
+    .object({
+      ...manifestFields,
+      schemaVersion: z.literal(REQUEST_FILE_KEYS_SCHEMA_VERSION),
+      ...projectFields,
+      staticPages: fixedStaticPagesSchema,
+      /** Actual request URL keys, including retained files of the previous build. */
+      staticFileRequestKeys: z.literal(true).optional(),
+    })
+    .refine((manifest) => manifest.pagesFallbacks === undefined, {
+      message: 'Pages loading classes require manifest schema version 8',
+      path: ['pagesFallbacks'],
+    }),
   z.object({
     ...manifestFields,
-    schemaVersion: z.literal(CANONICAL_FILE_SCHEMA_VERSIONS),
+    schemaVersion: z.literal(PAGES_FALLBACK_SCHEMA_VERSION),
     ...projectFields,
-  }),
-  z.object({
-    ...manifestFields,
-    schemaVersion: z.literal(REQUEST_FILE_KEYS_SCHEMA_VERSION),
-    ...projectFields,
-    /** Actual request URL keys, including retained files of the previous build. */
     staticFileRequestKeys: z.literal(true).optional(),
   }),
 ]);

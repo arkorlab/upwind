@@ -20,6 +20,7 @@ describe('dedicated proof fixture selection', () => {
       'next-minimal',
       'next-edge',
       'next-workflow',
+      'next-use-cache-concurrency',
     ]);
     expect(() => {
       checkFixtureVersions(selected, ['16.2.0', '16.3.0', '16.4.2']);

@@ -26,6 +26,7 @@ export const EDGE_ISOLATE_BUDGET_BYTES = EDGE_ISOLATE_BUDGET_MIB * MIB;
  */
 const MANIFEST_JSON_FACTOR = 1.5;
 const MANIFEST_OBJECT_BYTES = 80;
+const FALLBACK_ENTRY_OBJECTS = 4;
 /**
  * Each pathname a split deployment names an app Function for (`exactFunctions`) is charged 48 bytes
  * beside its JSON. It is a pathname `exactPathnames` lists as well (`withFunctions`,
@@ -141,7 +142,17 @@ function manifestObjects(manifest: ProjectManifest): number {
   if (manifest.staticPages !== undefined) {
     bodies += 1;
     for (const entry of Object.values(manifest.staticPages)) {
-      bodies += 1 + listObjects(entry.bypassFor);
+      bodies += 1 + listObjects(entry.bypassFor) + (entry.parameters === undefined ? 0 : 1);
+    }
+  }
+  if (manifest.pagesFallbacks !== undefined) {
+    bodies += 1;
+    for (const entry of Object.values(manifest.pagesFallbacks)) {
+      const { encodings } = entry.shell;
+      bodies +=
+        FALLBACK_ENTRY_OBJECTS +
+        listObjects(entry.bypassFor) +
+        (encodings === undefined ? 0 : 1 + Object.keys(encodings).length);
     }
   }
   return (
