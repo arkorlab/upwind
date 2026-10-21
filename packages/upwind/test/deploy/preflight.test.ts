@@ -40,7 +40,8 @@ describe('checking a build before a deploy', () => {
 
     expect(plan.problems).toStrictEqual([]);
     expect(plan.functions.map((script) => script.name)).toStrictEqual(['app']);
-    expect(plan.projectedWorkers).toBe(1 * 6 + 5);
+    // One Function for each of the five kept, the live one and the one being deployed; five of its own.
+    expect(plan.projectedWorkers).toBe(1 * 7 + 5);
   });
 
   it('refuses a Function built without the runtime cache', async () => {
