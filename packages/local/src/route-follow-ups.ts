@@ -546,12 +546,13 @@ export async function routeFollowUpFailure(
   if (failure !== undefined) return failure;
   return documentRuleFailure(stack, headBytes, asked, {
     sampled: coded.map((ask) => ask.headers),
-    followUp: (witness) =>
-      sampleFailure(
+    followUp: (witness) => {
+      return sampleFailure(
         stack,
         headBytes,
         { ...witness, exact: asked.exact },
         codedAsks(stack, witness),
-      ),
+      );
+    },
   });
 }

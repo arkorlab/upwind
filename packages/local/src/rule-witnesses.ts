@@ -67,8 +67,14 @@ export function requestsForRules(
     // A fixed host/front-line header, or a payload-only protocol field, cannot be changed to
     // select this rule while keeping a request of this class. Other query/cookie/header values can.
     if (!applies(stack, url, sent, rule)) continue;
-    const carried = carryingEach(sent, url, rule.has ?? []);
-    const made = carried === undefined ? undefined : lackingEach(carried, rule.missing ?? []);
+    // Fixed conditions already hold for this request class. Only movable fields need changing;
+    // asking lackingEach to remove a protocol field would reject even one already absent.
+    const movableHas = (rule.has ?? []).filter((condition) => !protocolCondition(condition));
+    const movableMissing = (rule.missing ?? []).filter(
+      (condition) => !protocolCondition(condition),
+    );
+    const carried = carryingEach(sent, url, movableHas);
+    const made = carried === undefined ? undefined : lackingEach(carried, movableMissing);
     if (carried === undefined || made === undefined || !selected(made.headers, made.url)) {
       return {
         requests,

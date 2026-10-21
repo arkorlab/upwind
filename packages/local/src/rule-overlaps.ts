@@ -17,7 +17,11 @@ function conditionKey(condition: RouteHas): string {
 
 function testsOf(conditions: readonly RouteHas[] = []): readonly string[] {
   return [
-    ...new Set(conditions.filter((condition) => !protocolCondition(condition)).map(conditionKey)),
+    ...new Set(
+      conditions
+        .filter((condition) => !protocolCondition(condition))
+        .map((condition) => conditionKey(condition)),
+    ),
   ].toSorted(compareCodeUnits);
 }
 
@@ -39,7 +43,8 @@ export function ruleOverlapFailure(rules: readonly HeaderRule[]): string | undef
     .map((rule) => ({ has: testsOf(rule.has), missing: testsOf(rule.missing) }))
     .filter((selector) => selector.has.length > 0 || selector.missing.length > 0);
   for (const [index, left] of selectors.entries()) {
-    for (const right of selectors.slice(index + 1)) {
+    const later = selectors.slice(index + 1);
+    for (const right of later) {
       if (JSON.stringify(left) !== JSON.stringify(right) && !disjoint(left, right)) {
         return 'distinct conditioned header rules are not proved disjoint, and the check does not cover every overlapping branch: no request proves them';
       }

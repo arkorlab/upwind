@@ -6394,10 +6394,11 @@ describe('what the check makes of the middleware', () => {
         answers.set('/', {
           ...composed,
           when: {
-            test: (headers, _method, url) =>
-              type === 'query'
-                ? url.searchParams.get('variant') === 'dark'
-                : headers['variant'] === 'dark',
+            test: (headers, _method, url) => {
+              return (
+                (type === 'query' ? url.searchParams.get('variant') : headers['variant']) === 'dark'
+              );
+            },
             headers: { 'x-robots-tag': 'noindex', 'set-cookie': 'seen=dark; Path=/' },
           },
         });
