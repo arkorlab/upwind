@@ -449,6 +449,28 @@ describe('`upwind deploy` stopped part way, and run again', () => {
     expect(servedBy(account(), NAMES.edge)).toBe(deploymentId);
   });
 
+  it('cleans up, run again for the live deployment, where the run that made it live could not', async () => {
+    const first = await deployableProject(PROJECT);
+    const older = buildIn(first).deploymentId;
+
+    await expect(deploy(account(), first)).resolves.toBe(0);
+
+    const dir = await deployableProject(PROJECT);
+    buildIn(dir);
+    const keepNone = (): Promise<number> =>
+      runDeploy(deployOptions(dir, { keep: 0 }), account().credentials, account().io);
+    const olderApp = functionScriptName(PROJECT, older, 'app');
+    // Refused once, and not asked again: the run warns and ends live, the older one still there.
+    account().fake.fail({ method: 'DELETE', path: `/workers/scripts/${olderApp}` }, 400);
+
+    await expect(keepNone()).resolves.toBe(0);
+    expect(account().fake.scripts.has(olderApp)).toBe(true);
+
+    // The same deployment again: nothing staged or switched, and the cleanup done.
+    await expect(keepNone()).resolves.toBe(0);
+    expect(account().fake.scripts.has(olderApp)).toBe(false);
+  });
+
   it('does nothing for the deployment that is live already', async () => {
     const dir = await deployableProject(PROJECT);
     const { deploymentId } = buildIn(dir);
