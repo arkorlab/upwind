@@ -23,7 +23,7 @@ import {
   permitsAnyInlineScript,
   sandboxBlocksRecovery,
 } from '@stayingupwind/core/request';
-import { bundleGeneratedAtMs, seedRouteFor } from '@stayingupwind/host/bundle';
+import { BuildTagBudget, bundleGeneratedAtMs, seedRouteFor } from '@stayingupwind/host/bundle';
 import { withoutAdvertised, withoutForbidden } from '@stayingupwind/host/preloads';
 
 import { cachePrerendersOf } from './cache-seed.ts';
@@ -407,12 +407,13 @@ export async function routeCachesOf(
   scopeId: string,
 ): Promise<ReadonlyMap<string, RouteCache>> {
   const caches = new Map<string, RouteCache>();
+  const buildTags = new BuildTagBudget();
   const context = { scopeId, generatedAt: bundleGeneratedAtMs(bundle) };
   for (const prerender of cachePrerendersOf(bundle)) {
     const seeded = await seedRouteFor(bundle, prerender, context);
     // A route handler's entry is the Worker's alone: no manifest route names it.
     if (seeded?.cache !== undefined) {
-      caches.set(prerender.id, seeded.cache);
+      caches.set(prerender.id, buildTags.fit(seeded.cache));
     }
   }
   return caches;

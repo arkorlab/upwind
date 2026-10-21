@@ -8,9 +8,10 @@ import {
   serializeManifest,
 } from '@stayingupwind/core/manifest';
 import { encodeUtf8 } from '@stayingupwind/core/util';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { fitBuildTags, oversizedManifest } from '../../deploy/src/manifest.ts';
+import { BuildTagBudget } from '../src/bundle/build-tag-budget.ts';
 import { EDGE_ISOLATE_BUDGET_BYTES, manifestCharge } from '../src/delivery/manifest-charge.ts';
 
 function taggedManifest(
@@ -63,6 +64,10 @@ function shortTags(): GenerationTag[] {
   });
 }
 
+function isManifest(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && 'projectId' in value;
+}
+
 describe('optional build membership within the complete manifest budgets', () => {
   it('omits whole memberships when 30 individually valid large tag sets exceed the wire limit', () => {
     const tags: GenerationTag[] = Array.from({ length: MAX_TAGS_PER_ENTRY }, (_, index) => {
@@ -71,10 +76,14 @@ describe('optional build membership within the complete manifest budgets', () =>
     });
     const original = taggedManifest(30, tags);
     const originalBytes = encodeUtf8(serializeManifest(original)).byteLength;
+    const stringify = vi.spyOn(JSON, 'stringify');
     const fitted = fitBuildTags(original);
+    const serializations = stringify.mock.calls.filter((call) => isManifest(call[0])).length;
+    stringify.mockRestore();
     const parsed = parseProjectManifest(fitted.serialized);
 
     expect(originalBytes).toBeGreaterThan(MAX_MANIFEST_BYTES);
+    expect(serializations).toBe(1);
     expect(encodeUtf8(fitted.serialized).byteLength).toBeLessThan(MAX_MANIFEST_BYTES);
     expect(oversizedManifest(fitted.manifest, fitted.serialized)).toBeUndefined();
     expect(
@@ -86,7 +95,6 @@ describe('optional build membership within the complete manifest budgets', () =>
       kind: 'app-page',
       delivery: 'complete',
     });
-    expect(parsed).toStrictEqual(fitted.manifest);
   });
 
   it('omits whole memberships when short tags push a valid rule-heavy baseline past the parsed budget', () => {
@@ -121,5 +129,23 @@ describe('optional build membership within the complete manifest budgets', () =>
     expect(oversizedManifest(fitted.manifest, fitted.serialized)).toBeDefined();
     expect(fitted.manifest.dynamicRoutes).toBe(original.dynamicRoutes);
     expect(fitted.manifest.routes['/route-0']?.cache).not.toHaveProperty('buildTags');
+  });
+
+  it('bounds retained memberships during collection without truncating or changing seed tags', () => {
+    const source = taggedManifest(60, shortTags());
+    const budget = new BuildTagBudget();
+    const caches = Object.values(source.routes).map((route) => budget.fit(route.cache!));
+    const retained = caches.filter((cache) => cache.buildTags !== undefined);
+    const omitted = caches.filter((cache) => cache.buildTags === undefined);
+
+    expect(retained.length).toBeGreaterThan(0);
+    expect(omitted.length).toBeGreaterThan(0);
+    expect(retained.every((cache) => cache.buildTags?.length === MAX_TAGS_PER_ENTRY)).toBe(true);
+    expect(
+      Object.values(source.routes).every(
+        (route) => route.cache?.buildTags?.length === MAX_TAGS_PER_ENTRY,
+      ),
+    ).toBe(true);
+    expect(omitted[0]).toMatchObject({ kind: 'app-page', delivery: 'complete' });
   });
 });

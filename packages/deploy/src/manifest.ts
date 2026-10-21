@@ -30,6 +30,7 @@ import {
   type StaticFileEntry,
 } from '@stayingupwind/core/manifest';
 import { encodeUtf8 } from '@stayingupwind/core/util';
+import { BuildTagBudget } from '@stayingupwind/host/bundle';
 import { EDGE_ISOLATE_BUDGET_BYTES, manifestCharge } from '@stayingupwind/host/delivery';
 import {
   nextSupportOf,
@@ -85,14 +86,7 @@ export function oversizedManifest(
  * deployment. Where it exceeds either the wire or parsed-memory budget, omit each complete list
  * before the final admission check. Unknown membership preserves the older reader's behavior.
  */
-export function fitBuildTags(manifest: ProjectManifest): {
-  readonly manifest: ProjectManifest;
-  readonly serialized: string;
-} {
-  const serialized = serializeManifest(manifest);
-  if (oversizedManifest(manifest, serialized) === undefined) {
-    return { manifest, serialized };
-  }
+function withoutBuildTags(manifest: ProjectManifest): ProjectManifest {
   let changed = false;
   const routes: ProjectManifest['routes'] = {};
   for (const [pathname, route] of Object.entries(manifest.routes)) {
@@ -106,7 +100,34 @@ export function fitBuildTags(manifest: ProjectManifest): {
     routes[pathname] = { ...route, cache };
   }
   const fitted = changed ? { ...manifest, routes } : manifest;
-  return { manifest: fitted, serialized: changed ? serializeManifest(fitted) : serialized };
+  return fitted;
+}
+
+/** Check optional aggregation without first cloning or serializing its tag objects. */
+function boundedBuildTags(manifest: ProjectManifest): ProjectManifest {
+  const budget = new BuildTagBudget();
+  for (const route of Object.values(manifest.routes)) {
+    if (route.cache !== undefined && budget.fit(route.cache) !== route.cache) {
+      return withoutBuildTags(manifest);
+    }
+  }
+  return manifest;
+}
+
+export function fitBuildTags(manifest: ProjectManifest): {
+  readonly manifest: ProjectManifest;
+  readonly serialized: string;
+} {
+  const bounded = boundedBuildTags(manifest);
+  const serialized = serializeManifest(bounded);
+  if (oversizedManifest(bounded, serialized) === undefined) {
+    return { manifest: bounded, serialized };
+  }
+  const fitted = withoutBuildTags(bounded);
+  return {
+    manifest: fitted,
+    serialized: fitted === bounded ? serialized : serializeManifest(fitted),
+  };
 }
 
 /**
