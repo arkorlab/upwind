@@ -83,7 +83,7 @@ export interface FileExpectation {
   readonly ranges: 'bytes' | 'none';
   /** Only a captured rewrite of a base-200 file can remove the representation's body. */
   readonly bodylessRewrite: boolean;
-  /** The type it is served as: what a rule sets on it, or the type it was written as. */
+  /** Its type after rules and middleware, falling back to the type it was written as. */
   readonly type: string;
   /**
    * The entity tag it is served under: its digest's, or one the middleware set in its place, which
@@ -92,7 +92,7 @@ export interface FileExpectation {
   readonly etag: string;
   /**
    * The coding it is said to be in: none, as the edge stores a file and sends it to a request that
-   * accepts it as it is (`accept-encoding: identity`), but for one a rule of `next.config` names.
+   * accepts it as it is (`accept-encoding: identity`), but for one a rule or middleware names.
    */
   readonly encoding: string | undefined;
   readonly holding: Holding;
@@ -174,14 +174,14 @@ export function expectationOf(
     conditioned: configured.conditioned,
     cacheControl: laid.get(CACHE_CONTROL) ?? undefined,
   };
-  const type = laid.get(CONTENT_TYPE) ?? file.contentType;
-  const encoding = laid.get(CONTENT_ENCODING) ?? undefined;
   const middleware = read.middleware === DID_NOT_RUN ? undefined : read.middleware;
   const own = middleware?.kind === 'continue' ? middleware.responseHeaders.get('etag') : null;
   const status = file.status ?? HTTP_OK;
   if (middleware?.kind === 'continue') {
     mergeScopedMiddlewareHeaders(laid, middleware.responseHeaders, scope);
   }
+  const type = laid.get(CONTENT_TYPE) ?? file.contentType;
+  const encoding = laid.get(CONTENT_ENCODING) ?? undefined;
   appendRouterVary(laid, routed, middleware);
   return {
     status:

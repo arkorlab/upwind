@@ -3572,6 +3572,30 @@ describe('what the check makes of the middleware', () => {
       expect(destinations.get('/a.txt')).toBe('image');
     });
 
+    it('takes a continuing middleware file type after the build and configured types', async () => {
+      const pathname = '/a.txt';
+      const fileHeaders = {
+        'content-type': 'image/png',
+        'cache-control': GATED,
+        'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+      };
+      decisions.set(pathname, { 'x-middleware-next': '1', 'content-type': 'image/png' });
+      const stack = withMiddleware(stackOf([], files), [{ sourceRegex: '^/a[.]txt$' }]);
+      answers.set(pathname, { headers: fileHeaders, body: 'kept bytes' });
+
+      const correct = await checkStack(stack);
+      answers.set(pathname, {
+        headers: { ...fileHeaders, 'content-type': TEXT },
+        body: 'kept bytes',
+      });
+      const broken = await checkStack(stack);
+
+      expect(correct).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(broken.failures).toHaveLength(1);
+      expect(broken.failures[0]?.reason).toContain(`answered as ${TEXT}, not image/png`);
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
     it('is asked for as a request a rule of next.config alone types it for, and held to that type', async () => {
       const variant: HeaderRule = {
         sourceRegex: String.raw`^/a\.txt$`,
@@ -5651,6 +5675,43 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
+    it.each(['absent', 'other entry', 'other sequence'] as const)(
+      'rejects a whole HEAD with only %s generation evidence',
+      async (evidence) => {
+        const routes = [await routeOf('/', FRONT)];
+        const entry = evidence === 'other entry' ? 'ent_other' : await entryOf('/', '/');
+        const seq = evidence === 'other sequence' ? 4 : 3;
+        const captured =
+          evidence === 'absent'
+            ? {}
+            : {
+                [`${kvGenerationKey('dpl_site', entry)}|${seq}`]: {
+                  headers: { 'content-type': HTML },
+                  artifacts: [],
+                  partial: false,
+                  source: 'runtime' as const,
+                },
+              };
+        capturedHeadRecords.set('/', captured);
+        answers.set('/', {
+          ...documentAnswer(FRONT, 'mw=hit;route=/'),
+          onHead: {
+            'content-type': HTML,
+            'x-arkor-edge': `${finishedAccount('/')};cache=HIT;seq=3`,
+          },
+        });
+
+        const result = await checkStack(stackOf(routes, {}));
+
+        expect(result.failures).toStrictEqual([
+          {
+            path: '/',
+            reason: 'asked for with HEAD, answered whole from a generation this HEAD did not read',
+          },
+        ]);
+      },
+    );
+
     it.each(['expired', 'unbounded'] as const)(
       'accepts an expired HEAD with its own %s record without guessing local condemnation',
       async (lifetime) => {
@@ -6214,8 +6275,11 @@ describe('what the check makes of the middleware', () => {
           url: URL,
         ) => {
           let matches = headers['variant'] === 'dark';
-          if (type === 'query') matches = url.searchParams.get('variant') === 'dark';
-          if (type === 'cookie') matches = headers.cookie?.includes('variant=dark') === true;
+          if (type === 'query') {
+            matches = url.searchParams.get('variant') === 'dark';
+          } else if (type === 'cookie') {
+            matches = headers.cookie?.includes('variant=dark') === true;
+          }
           selected.add(matches);
           return matches;
         };

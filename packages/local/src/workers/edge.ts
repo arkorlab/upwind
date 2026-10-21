@@ -482,7 +482,7 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
    */
   private async probe(name: string, pathname: string, request: Request): Promise<Response> {
     const origin = originOf(request);
-    const cf = clientCodingsOf(request.headers, undefined);
+    const cf = clientCodingsOf(request.headers, request.cf);
     const env = servedEnv(this.env, origin, undefined, cf);
     const pointer = edgePointerSchema.safeParse(await pointerOf(env));
     if (!pointer.success) {
@@ -535,7 +535,7 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
    */
   private async middleware(pathname: string, request: Request): Promise<Response> {
     const origin = originOf(request);
-    const cf = clientCodingsOf(request.headers, undefined);
+    const cf = clientCodingsOf(request.headers, request.cf);
     const env = servedEnv(this.env, origin, undefined, cf);
     const pointer = edgePointerSchema.safeParse(await pointerOf(env));
     const scriptName = pointer.success ? pointer.data.app?.middlewareScriptName : undefined;

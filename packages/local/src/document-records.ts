@@ -101,6 +101,9 @@ export async function wholeHeadFailure(
       : 'answered whole from a build shell a resume still completes';
   }
   const generations = await headGenerations(stack, route, pathname, served);
+  if (generations.length === 0) {
+    return 'answered whole from a generation this HEAD did not read';
+  }
   return generations.some((generation) => generation.partial)
     ? 'answered whole from a generation this HEAD read as partial'
     : undefined;

@@ -373,6 +373,7 @@ describe('held routes include build-owned Pages fallback authority', () => {
 
     const missing = { ...stack, manifest: { ...stack.manifest, routes: {} } };
     const failures = await routeFailures(missing);
+
     expect(failures.some((failure) => failure.path === route)).toBe(true);
     expect(failures.some((failure) => failure.path === member.pathname)).toBe(true);
   });

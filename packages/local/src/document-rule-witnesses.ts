@@ -15,8 +15,8 @@ export async function documentRuleFailure(
   const url = new URL(asked.requested, stack.site);
   const rules = (stack.manifest.headerRules ?? []).filter((rule) => {
     const alone = { ...stack.manifest, headerRules: [rule] };
-    return !sampled.some(
-      (headers) => headerRulesFor(alone, url, routedReads(url, headers)).conditioned,
+    return sampled.every(
+      (headers) => !headerRulesFor(alone, url, routedReads(url, headers)).conditioned,
     );
   });
   const { requests, unproved } = requestsForRules(stack, url, asked.headers, rules);
