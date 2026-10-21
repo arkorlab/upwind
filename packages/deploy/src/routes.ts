@@ -405,11 +405,14 @@ export function routeArtifactsOf(
 export async function routeCachesOf(
   bundle: DeploymentBundle,
   scopeId: string,
+  manifested: readonly Prerender[],
 ): Promise<ReadonlyMap<string, RouteCache>> {
   const caches = new Map<string, RouteCache>();
   const buildTags = new BuildTagBudget();
+  const included = new Set(manifested.map((prerender) => prerender.id));
   const context = { scopeId, generatedAt: bundleGeneratedAtMs(bundle) };
   for (const prerender of cachePrerendersOf(bundle)) {
+    if (!included.has(prerender.id)) continue;
     const seeded = await seedRouteFor(bundle, prerender, context);
     // A route handler's entry is the Worker's alone: no manifest route names it.
     if (seeded?.cache !== undefined) {

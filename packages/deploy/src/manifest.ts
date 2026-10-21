@@ -313,7 +313,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   const cached = input.runtimeCache !== false;
   const servable = routedPages(input.runtimeCache);
   const prerenders = manifestPrerendersOf(bundle, servable, cached);
-  const caches = cached ? await routeCachesOf(bundle, input.deploymentId) : new Map();
+  const caches = cached ? await routeCachesOf(bundle, input.deploymentId, prerenders) : new Map();
   const staticPages = await staticPagesOf(bundle, input.deploymentId, cached);
   const pagesFallbacks = pagesFallbacksOf(bundle, cached, input.encodings);
   const middlewareMatchers = middlewareMatchersOf(bundle);

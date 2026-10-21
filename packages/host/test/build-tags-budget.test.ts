@@ -1,3 +1,4 @@
+import { edgeServablePrerenders, type Prerender } from '@stayingupwind/core/bundle';
 import { MAX_TAG_LENGTH, MAX_TAGS_PER_ENTRY, type GenerationTag } from '@stayingupwind/core/cache';
 import {
   buildProjectManifest,
@@ -10,9 +11,15 @@ import {
 import { encodeUtf8 } from '@stayingupwind/core/util';
 import { describe, expect, it, vi } from 'vitest';
 
-import { fitBuildTags, oversizedManifest } from '../../deploy/src/manifest.ts';
+import {
+  assembleManifest,
+  type AssembledManifest,
+  fitBuildTags,
+  oversizedManifest,
+} from '../../deploy/src/manifest.ts';
 import { BuildTagBudget } from '../src/bundle/build-tag-budget.ts';
 import { EDGE_ISOLATE_BUDGET_BYTES, manifestCharge } from '../src/delivery/manifest-charge.ts';
+import { SHARED_SHELL, shellBundle } from './shared-shell-fixture.ts';
 
 function taggedManifest(
   routes: number,
@@ -66,6 +73,12 @@ function shortTags(): GenerationTag[] {
 
 function isManifest(value: unknown): boolean {
   return typeof value === 'object' && value !== null && 'projectId' in value;
+}
+
+function requiredAssembly(result: AssembledManifest) {
+  if (result.kind !== 'assembled')
+    throw new Error(`fixture manifest was refused: ${result.reason}`);
+  return result;
 }
 
 describe('optional build membership within the complete manifest budgets', () => {
@@ -147,5 +160,72 @@ describe('optional build membership within the complete manifest budgets', () =>
       ),
     ).toBe(true);
     expect(omitted[0]).toMatchObject({ kind: 'app-page', delivery: 'complete' });
+  });
+
+  it('reserves the budget for manifested routes after tag-heavy Function-only pages', async () => {
+    const tags = shortTags()
+      .slice(0, 1000)
+      .map((tag) => tag.value)
+      .join(',');
+    const hidden: Prerender[] = Array.from({ length: 60 }, (_, index) => {
+      const pathname = `/function-${index}`;
+      return {
+        ...SHARED_SHELL,
+        id: pathname,
+        pathname,
+        route: pathname,
+        routeType: 'page',
+        response: 'complete',
+        compute: 'static',
+        renderingMode: 'STATIC',
+        postponed: undefined,
+        initialHeaders: { 'x-next-cache-tags': tags },
+      };
+    });
+    const target: Prerender = {
+      ...hidden[0]!,
+      id: 'target',
+      pathname: '/target',
+      route: '/target',
+      initialHeaders: { 'x-next-cache-tags': 'test-update-tag' },
+    };
+    const bundle = shellBundle(target);
+    bundle.prerenders = [...hidden, target];
+    bundle.entrypoints = bundle.prerenders.map((prerender) => {
+      const id = prerender.id;
+      return { id, kind: 'app-page' as const, pathname: prerender.route };
+    });
+    bundle.routing.beforeFiles = [
+      { sourceRegex: '^/function-', destination: 'https://origin.example/handled' },
+    ];
+    const manifested = edgeServablePrerenders(bundle, { complete: true });
+
+    const assembled = requiredAssembly(
+      await assembleManifest({
+        bundle,
+        previous: undefined,
+        projectId: 'build-tag-budget',
+        runId: 'run',
+        originHost: 'app.example',
+        deploymentId: bundle.deploymentId,
+        fingerprint: {
+          dplId: bundle.deploymentId,
+          assetSetHash: 'assets',
+          observedAt: bundle.generatedAt,
+        },
+        app: { deploymentId: bundle.deploymentId, scriptName: 'app' },
+        generatedAt: bundle.generatedAt,
+        encodings: new Map(),
+        preloads: {},
+        recoverySource: "'sha256-recovery'",
+      }),
+    );
+
+    expect(manifested.map((prerender) => prerender.id)).toStrictEqual(['target']);
+    expect(Object.keys(assembled.manifest.routes)).toStrictEqual(['/target']);
+    expect(assembled.manifest.routes['/target']?.cache?.buildTags).toContainEqual({
+      kind: 'next-explicit',
+      value: 'test-update-tag',
+    });
   });
 });
