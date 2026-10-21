@@ -193,3 +193,82 @@ export function fromStoredManifest(parsed: unknown): unknown {
     ...(dynamicRoutes !== undefined && { dynamicRoutes }),
   };
 }
+
+/** An inherited field could lead outside the fresh JSON tree; use the copy reader in that case. */
+const RESTORATION_FIELDS = [
+  'tables',
+  'schemaVersion',
+  'routes',
+  'dynamicRoutes',
+  'members',
+  'headers',
+  'conditions',
+  'preloads',
+  'bypassFor',
+] as const;
+
+/** Only called on JSON-owned records after inherited restoration fields have been excluded. */
+function restoreOwnedRoute(entry: unknown, tables: Tables): void {
+  if (!isRecord(entry)) {
+    return;
+  }
+  entry['headers'] = placed(tables.headers, entry['headers'], 'headers');
+  if (entry['bypassFor'] !== undefined) {
+    entry['bypassFor'] = placed(tables.conditions, entry['bypassFor'], 'conditions');
+  }
+  if (entry['preloads'] !== undefined) {
+    entry['preloads'] = placed(tables.preloads, entry['preloads'], 'preloads');
+  }
+}
+
+function restoreOwnedDynamicRoute(route: unknown, tables: Tables): void {
+  const members = isRecord(route) ? route['members'] : undefined;
+  if (isRecord(members) && members['bypassFor'] !== undefined) {
+    members['bypassFor'] = placed(tables.conditions, members['bypassFor'], 'conditions');
+  }
+}
+
+/**
+ * Parse stored manifest JSON and restore its table references, without validating the schema.
+ * The fresh parsed graph belongs to this call, so its route and member records can be restored
+ * without copying each one. Invalid JSON and invalid table references throw.
+ *
+ * Use `parseProjectManifest` when parsing also needs schema validation. When starting with an
+ * existing parsed value, `fromStoredManifest` leaves that caller-owned value unchanged.
+ */
+export function parseStoredManifest(json: string): unknown {
+  const parsed: unknown = JSON.parse(json);
+  if (!isRecord(parsed)) {
+    return parsed;
+  }
+  // Presence does not invoke a getter. Fall back before any lookup could find a foreign graph,
+  // not after some numeric references have already been replaced and could no longer be read.
+  if (RESTORATION_FIELDS.some((name) => name in Object.prototype)) {
+    return fromStoredManifest(parsed);
+  }
+  if (!isRecord(parsed['tables']) || !namesPlaces(parsed['schemaVersion'])) {
+    return parsed;
+  }
+  // Keep the small root copy that omits tables; the route and member containers are already ours.
+  const { tables: stored, ...manifest } = parsed;
+  const tables: Tables = {
+    headers: tableOf(stored, 'headers'),
+    conditions: tableOf(stored, 'conditions'),
+    preloads: tableOf(stored, 'preloads'),
+  };
+  const routes = manifest['routes'];
+  if (isRecord(routes)) {
+    for (const entry of Object.values(routes)) {
+      restoreOwnedRoute(entry, tables);
+    }
+  }
+  const classes = manifest['dynamicRoutes'];
+  if (Array.isArray(classes)) {
+    for (const route of classes) {
+      restoreOwnedDynamicRoute(route, tables);
+    }
+  }
+  // The copy reader also creates this own property when a compact input omitted its routes.
+  manifest['routes'] = routes;
+  return manifest;
+}
