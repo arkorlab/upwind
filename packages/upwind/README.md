@@ -343,11 +343,6 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
 - **One at a time.** One deploy or rollback of a project runs at a time: each takes the deploy
   agent with a key of its own, and one that another has taken it from stops. Run them from one
   place — one CI job at a time, say.
-- **What is kept.** Once a deployment is live, a deploy keeps it, every deployment the edge's
-  traffic is with, and the newest `deploy.keep` others (`--keep`, for one run) a rollback can still
-  go back to; the rest lose their Functions, and their scope of the runtime cache. Cloudflare keeps
-  the newest hundred versions of the edge for a deployment to choose among, so nothing older can be
-  gone back to, whatever is kept. Every deployment's files stay in the bucket.
 
 ## Options
 
@@ -355,6 +350,8 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
 upwind dev [directory]
 upwind build [directory]
 upwind deploy [directory]
+upwind deployments [directory]
+upwind rollback [directory] [--to <deployment>]
 upwind destroy [directory] --yes
 
   -p, --port <port>      Port to listen on, `dev` only (default: $PORT, else 3000)
@@ -369,6 +366,7 @@ upwind destroy [directory] --yes
       --reset-cache-key  Give the runtime cache a new key, `deploy` only
       --yes              Delete everything a deploy made, `destroy` only
       --include-storage  And the storage deploy.storage names, with its data, `destroy` only
+      --to <deployment>  The deployment to go back to, `rollback` only (default: the one before)
   -v, --version          Print upwind's version
   -h, --help             Print the usage
       --                 Everything after this is the directory, even `--help`
