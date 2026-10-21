@@ -49,6 +49,7 @@ import {
   rewriteOf,
   whereLanded,
 } from './landings.ts';
+import { pagesHandoffVerdict, pagesHeadersOnly } from './pages-handoffs.ts';
 import { APPLICATIONS, bypassedFor, generationsServed, handedOnVerdict } from './part-handoffs.ts';
 import {
   CACHE_CONTROL,
@@ -406,7 +407,7 @@ async function askedVerdict(
     via: stack.url,
     headers,
     decode: undoneUnlessStored(coding !== undefined),
-    headersOnly: middlewareHeadersOnly,
+    headersOnly: pagesHeadersOnly(stack, part.url, asked, middlewareHeadersOnly),
   });
   if (typeof answer === 'string') {
     return failed(answer);
@@ -420,6 +421,8 @@ async function askedVerdict(
   if (middlewareAnswered(answer) !== undefined) {
     return skipped(APPLICATIONS);
   }
+  const pages = pagesHandoffVerdict(stack, part.url, asked, answer);
+  if (pages !== undefined) return pages;
   // What the middleware decided, which the edge answers a part it covers behind.
   const kept = await keptOf(stack, trace, part.url, asked);
   const { decided } = kept;
@@ -449,6 +452,8 @@ export async function partAnswerVerdict(
   },
 ): Promise<Verdict> {
   const { answer, decided, covered, coding, asked, within } = read;
+  const pages = pagesHandoffVerdict(stack, part.url, asked, answer);
+  if (pages !== undefined) return pages;
   const answered = answeredBy(answer);
   if (answered.startsWith('passthrough;')) {
     return handedOnVerdict(stack, part, { answered, decided, covered, asked });
@@ -508,6 +513,8 @@ export async function propsHeadVerdict(
   if (typeof answer === 'string') {
     return { verdict: failed(answer) };
   }
+  const pages = pagesHandoffVerdict(stack, part.url, part.headers, answer, 'HEAD');
+  if (pages !== undefined) return { verdict: pages, answer };
   const answered = answeredBy(answer);
   if (middlewareAnswered(answer) !== undefined || PROPS_HEAD.test(answered)) {
     return { verdict: skipped(APPLICATIONS), answer };

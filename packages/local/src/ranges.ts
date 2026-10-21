@@ -12,6 +12,7 @@ import {
   subjectOf,
 } from './asked-again.ts';
 import { describedFailure, expectationOf, fileFailure } from './file-expectations.ts';
+import { rangeDigestOf } from './range-digests.ts';
 import type { Reading } from './reading.ts';
 
 /**
@@ -249,7 +250,7 @@ export async function rangeFormsFailure(
       continue;
     }
     const subject = subjectOf(stack, again, { file: asked.file, head: asked.answer.head });
-    const failure = formFailure(stack, url, {
+    const failure = await formFailure(stack, url, {
       range,
       startOf,
       subject,
@@ -265,7 +266,7 @@ export async function rangeFormsFailure(
 }
 
 /** Why a range by its end or from a byte on is not those bytes of the file it serves (`rangeFormsFailure`). */
-function formFailure(
+async function formFailure(
   stack: CheckedStack,
   url: URL,
   read: {
@@ -277,7 +278,7 @@ function formFailure(
     /** The whole file asked for, as answered. */
     readonly whole: Reading;
   },
-): string | undefined {
+): Promise<string | undefined> {
   const { range, subject, again, sent } = read;
   const { file } = subject;
   const { answer } = again;
@@ -314,6 +315,15 @@ function formFailure(
   }
   if (!answer.head.subarray(0, bytes.length).equals(bytes)) {
     return `answered ${range} with other bytes than the file's`;
+  }
+  if (size > bytes.length) {
+    const expectedDigest = await rangeDigestOf(stack, file, start);
+    if (expectedDigest === undefined) {
+      return `answered ${range} of a file the build holds no bytes of`;
+    }
+    if (answer.sha256 !== expectedDigest) {
+      return `answered ${range} with other bytes than the file's`;
+    }
   }
   const described = describedFailure(answer, expected, false);
   return described === undefined ? undefined : `asked for ${range}, ${described}`;

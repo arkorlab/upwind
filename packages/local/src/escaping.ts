@@ -5,6 +5,7 @@ import {
   BYPASS_QUERY_KEYS,
   BYPASS_QUERY_PREFIXES,
   DEPLOYMENT_ID_QUERY,
+  DEPLOYMENT_ID_REQUEST_HEADER,
   INTERNAL_REQUEST_HEADER_PREFIXES,
   ROUTER_REQUEST_HEADERS,
   RSC_CACHE_BUSTING_QUERY,
@@ -97,6 +98,15 @@ const PROTOCOL_QUERY_KEYS: ReadonlySet<string> = new Set([
   DEPLOYMENT_ID_QUERY,
   RSC_CACHE_BUSTING_QUERY,
 ]);
+/** Fixed by routing/front-line behavior, or inseparable from the request's protocol class. */
+const PROTOCOL_HEADER_KEYS: ReadonlySet<string> = new Set([
+  'host',
+  'accept-encoding',
+  'range',
+  'service-worker',
+  'via',
+  DEPLOYMENT_ID_REQUEST_HEADER,
+]);
 
 /**
  * Whether carrying `condition` would make the request another class, or one the edge strips — or
@@ -110,8 +120,7 @@ export function protocolCondition(condition: RouteHas): boolean {
   switch (condition.type) {
     case 'header': {
       return (
-        name === 'host' ||
-        name === 'accept-encoding' ||
+        PROTOCOL_HEADER_KEYS.has(name) ||
         ROUTER_REQUEST_HEADERS.includes(name) ||
         INTERNAL_REQUEST_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix))
       );
@@ -136,11 +145,12 @@ const NOT_IN_A_HEADER = /[\r\n]/u;
 /** Plain values a condition's pattern is tried with, before the literals it spells. */
 const PLAIN_WITNESSES: readonly string[] = ['1', 'true', 'a'];
 
-/** Whether Next.js matches `value` against a condition's `pattern` (`matchHas`): whole. */
+/** Whether a candidate matches the shared condition compiler's whole-value form. */
 function nextMatches(pattern: string, value: string): boolean {
   try {
-    // eslint-disable-next-line security/detect-non-literal-regexp -- the application's own pattern from its build, tried on a value the check makes up, as Next.js tries it.
-    return new RegExp(`^${pattern}$`, 'u').test(value);
+    // Next.js and the shared compiler omit Unicode mode; identity escapes are valid patterns.
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+    return new RegExp(`^(?:${pattern})$`).test(value);
   } catch {
     return false;
   }

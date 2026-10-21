@@ -50,6 +50,7 @@ import {
   whereLanded,
 } from './landings.ts';
 import { noncedOf, unstampedFailure } from './nonces.ts';
+import { pagesHandoffVerdict } from './pages-handoffs.ts';
 import { DOCUMENT_HANDOFFS, documentHandedOnVerdict } from './part-handoffs.ts';
 import type { Reading } from './reading.ts';
 import {
@@ -586,6 +587,8 @@ export async function documentVerdict(
     return skipped(middleware);
   }
   const answered = answeredBy(answer);
+  const pages = pagesHandoffVerdict(stack, url, asked.headers, answer);
+  if (pages !== undefined) return pages;
   // A page regenerated in the foreground is the Function's render, not the build's shell: judged
   // first for what was kept of the middleware, then for its policy (`regeneratedVerdict`).
   if (REGENERATED.test(answered)) {

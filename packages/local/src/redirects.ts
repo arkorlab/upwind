@@ -455,8 +455,8 @@ export async function redirectsFrom(
     if (held !== undefined) {
       return { steps, failure: `redirected to ${next.pathname}, ${held}` };
     }
-    const referred =
-      policy === undefined ? from.headers : referredUnder(from.headers, policy, next);
+    const referring = onward.kind === 'replay' ? from.headers : headers;
+    const referred = policy === undefined ? referring : referredUnder(referring, policy, next);
     const cookie = cookieFor(jar, next, { crossSite: from.crossSite === true });
     headers = cookieOn(uncookied(referred), cookie);
     const asked = {

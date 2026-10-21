@@ -16,11 +16,13 @@ import type { Reading } from '../src/reading.ts';
 const AT = '2026-10-19T00:00:00.000Z';
 const TEXT = 'text/plain';
 const ORIGINAL = 'kept bytes';
+const LONG = 'a'.repeat(256);
 const CONTENTS: Readonly<Record<string, string>> = {
   '/a.txt': ORIGINAL,
   '/b.txt': 'another file',
   '/404': 'not here',
   '/418': 'no coffee',
+  '/long.txt': LONG,
 };
 
 function digest(body: string): string {
@@ -43,6 +45,7 @@ const FILES: Readonly<Record<string, StaticFileEntry>> = {
   '/b.txt': fileOf('another file'),
   '/404': fileOf('not here', 404),
   '/418': fileOf('no coffee', 418),
+  '/long.txt': fileOf(LONG),
 };
 
 interface Reply {
@@ -51,6 +54,7 @@ interface Reply {
   readonly partialOnMismatch?: boolean;
   readonly wholeStatus?: number;
   readonly wholeBody?: string;
+  readonly corruptOpenEnded?: boolean;
 }
 
 const fixture = {
@@ -89,7 +93,10 @@ function answerPart(
   const [, first = '', last = ''] = /^bytes=(\d*)-(\d*)$/u.exec(range) ?? [];
   const start = first === '' ? Math.max(0, bytes.length - Number(last)) : Number(first);
   const end = last === '' || first === '' ? bytes.length - 1 : Number(last);
-  const part = bytes.subarray(start, end + 1);
+  const part = Buffer.from(bytes.subarray(start, end + 1));
+  if (range === 'bytes=1-' && fixture.reply.corruptOpenEnded === true) {
+    part[100] = 0x58;
+  }
   response.writeHead(206, {
     ...headers,
     'content-range': `bytes ${start}-${end}/${bytes.length}`,
@@ -100,7 +107,7 @@ function answerPart(
 
 /** The HTTP fixture implements the independently specified strong If-Range selection. */
 function answerFile(request: IncomingMessage, response: ServerResponse): void {
-  const pathname = fixture.reply.rewrite ?? '/a.txt';
+  const pathname = fixture.reply.rewrite ?? new URL(request.url ?? '/', fixture.origin).pathname;
   const file = FILES[pathname];
   const content = CONTENTS[pathname];
   if (file === undefined || content === undefined) throw new Error('unknown fixture file');
@@ -214,13 +221,13 @@ function stackOf(): CheckedStack {
   };
 }
 
-function wholeAnswer(): Reading {
-  const body = Buffer.from(ORIGINAL);
+function wholeAnswer(text = ORIGINAL): Reading {
+  const body = Buffer.from(text);
   return {
     status: 200,
     headers: {},
     length: body.length,
-    sha256: ORIGINAL_FILE.sha256,
+    sha256: digest(text),
     head: body,
     tail: body,
     marked: false,
@@ -238,14 +245,32 @@ async function resumed(): Promise<string | undefined> {
   });
 }
 
-async function forms(): Promise<string | undefined> {
+async function forms(pathname = '/a.txt'): Promise<string | undefined> {
   const stack = stackOf();
-  return rangeFormsFailure(stack, new URL('/a.txt', stack.site), {
-    file: ORIGINAL_FILE,
+  const file = FILES[pathname];
+  const text = CONTENTS[pathname];
+  if (file === undefined || text === undefined) throw new Error('unknown range subject');
+  return rangeFormsFailure(stack, new URL(pathname, stack.site), {
+    file,
     headers: {},
-    answer: wholeAnswer(),
+    answer: wholeAnswer(text),
   });
 }
+
+const LARGE_REQUESTS = [
+  {
+    name: 'original',
+    pathname: '/long.txt',
+    reply: {},
+    ranges: ['bytes=-64', 'bytes=1-'],
+  },
+  {
+    name: 'rewritten',
+    pathname: '/a.txt',
+    reply: { rewrite: '/long.txt' },
+    ranges: ['bytes=-10', 'bytes=1-'],
+  },
+];
 
 describe('range follow-ups select the representation of their own request', () => {
   beforeAll(async () => {
@@ -339,5 +364,21 @@ describe('range follow-ups select the representation of their own request', () =
     const failure = await forms();
 
     expect(failure).toContain('bytes other than its own');
+  });
+
+  it.each(LARGE_REQUESTS)('accepts the complete $name open-ended range', async (example) => {
+    fixture.reply = example.reply;
+    const failure = await forms(example.pathname);
+
+    expect(failure).toBeUndefined();
+    expect(requestedRanges).toStrictEqual(example.ranges);
+  });
+
+  it.each(LARGE_REQUESTS)('rejects corruption beyond the $name range prefix', async (example) => {
+    fixture.reply = { ...example.reply, corruptOpenEnded: true };
+    const failure = await forms(example.pathname);
+
+    expect(failure).toContain("answered bytes=1- with other bytes than the file's");
+    expect(requestedRanges).toStrictEqual(example.ranges);
   });
 });

@@ -10,6 +10,7 @@ import {
 } from './answers.ts';
 import type { Accepted } from './codings.ts';
 import { restampAt } from './nonces.ts';
+import { pagesHeadersOnly } from './pages-handoffs.ts';
 import type { ReadOptions, Reading } from './reading.ts';
 
 const RECOVERY = Buffer.from(RECOVERY_MARKER);
@@ -37,7 +38,7 @@ export function readDocument(
     marker: RECOVERY,
     copyTo: (sent) => restampAt(stack, sent, asked.coding !== undefined),
     decode: undoneUnlessStored(asked.coding !== undefined),
-    headersOnly: asked.headersOnly,
+    headersOnly: pagesHeadersOnly(stack, url, asked.headers, asked.headersOnly),
   });
 }
 
