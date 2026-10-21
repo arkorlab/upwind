@@ -23,10 +23,21 @@ import { deploymentOfScript, type ProjectNames } from './names.ts';
  * Function its pointer names has to be on the account still.
  */
 
+/** How a version ranks to stand for its deployment. */
+const HELD_WITH_TRAFFIC = 3;
+const HELD = 2;
+const SERVED = 1;
+const UNSERVED = 0;
+
 /** A deployment of the project, as the edge's version for it says. */
 export interface DeploymentRecord {
   readonly deploymentId: string;
-  /** The edge's version for it: the one the edge's deployment holds, or else its newest. */
+  /**
+   * The edge's version for it: the one the edge's deployment gives traffic to, or holds at none;
+   * or else the newest that one of the edge's deployments gave traffic to; or else its newest. A
+   * deployment deployed again gets a version of its own each time, and one that failed its checks
+   * is no better a way back than the one that served it.
+   */
   readonly versionId: string;
   readonly number: number | undefined;
   readonly message: string | undefined;
@@ -78,15 +89,25 @@ export async function readHistory(scope: AccountScope, names: ProjectNames): Pro
   const shares = new Map(
     (current?.versions ?? []).map((share) => [share.version_id, share.percentage]),
   );
+  const served = servedVersions(deployments);
+  // What stands for a deployment among its versions: the one the edge gives traffic to, then one
+  // it holds at none, then one that has served, then any; the newest of the best.
+  const rank = (versionId: string): number => {
+    const share = shares.get(versionId);
+    if (share !== undefined) {
+      return share > 0 ? HELD_WITH_TRAFFIC : HELD;
+    }
+    return served.has(versionId) ? SERVED : UNSERVED;
+  };
   const records = new Map<string, DeploymentRecord>();
   for (const version of all) {
     const deploymentId = deploymentOfTag(version.annotations?.['workers/tag']);
     if (deploymentId === undefined) {
       continue;
     }
-    const held = records.get(deploymentId);
-    // The newest version stands for its deployment, unless an older one is the one the edge holds.
-    if (held === undefined || (held.share === undefined && shares.has(version.id))) {
+    const standing = records.get(deploymentId);
+    // Newest first, so a later version replaces one only by ranking above it.
+    if (standing === undefined || rank(version.id) > rank(standing.versionId)) {
       records.set(deploymentId, {
         deploymentId,
         versionId: version.id,
@@ -98,6 +119,19 @@ export async function readHistory(scope: AccountScope, names: ProjectNames): Pro
     }
   }
   return { current, deployments: [...records.values()], functions };
+}
+
+/** Every version one of the edge's deployments, as Cloudflare lists them, gave traffic to. */
+function servedVersions(deployments: readonly WorkerDeployment[]): ReadonlySet<string> {
+  const served = new Set<string>();
+  for (const deployment of deployments) {
+    for (const share of deployment.versions) {
+      if (share.percentage > 0) {
+        served.add(share.version_id);
+      }
+    }
+  }
+  return served;
 }
 
 /** The pointer an edge version was uploaded with; nothing where it was uploaded with none. */

@@ -31,10 +31,18 @@ function retiring(): {
 
 function scopeOf(fake: ReturnType<typeof fakeCloudflare>) {
   return {
-    client: createCloudflareClient({ apiToken: 'token', fetch: fake.fetch }),
+    // Retries that wait no time: a failure a test asks for is asked again at once.
+    client: createCloudflareClient({
+      apiToken: 'token',
+      fetch: fake.fetch,
+      sleep: () => Promise.resolve(),
+    }),
     accountId: 'account-1',
   };
 }
+
+/** How many times the client asks before it gives a failure up. */
+const CLIENT_ATTEMPTS = 5;
 
 describe('keeping deployments to roll back to', () => {
   it('keeps the live one and the newest few, and deletes the Functions of the rest', async () => {
@@ -139,6 +147,83 @@ describe('keeping deployments to roll back to', () => {
     expect(retired).toStrictEqual([stopped]);
     expect(fake.scripts.has(stoppedScript)).toBe(false);
     expect(fake.scripts.has(runningScript)).toBe(true);
+  });
+
+  it("stops where the edge's deployment moves while it cleans up", async () => {
+    const fake = fakeCloudflare();
+    const edge = fakeEdge(fake);
+    const older = edge.deploy();
+    const old = edge.deploy();
+    const live = edge.deploy();
+    edge.serve([{ versionId: live.versionId, percentage: 100 }]);
+    const retired: string[] = [];
+    const cache = {
+      retireScope: (input: RetireScopeInput) => {
+        retired.push(input.scopeId);
+        // A rollback to it, made while this cleanup retires it.
+        edge.serve([
+          {
+            versionId: input.scopeId === old.deploymentId ? old.versionId : live.versionId,
+            percentage: 100,
+          },
+        ]);
+        return Promise.resolve({ kind: 'retired' as const });
+      },
+    };
+
+    await expect(
+      retainDeployments({
+        scope: scopeOf(fake),
+        names: NAMES,
+        keep: 0,
+        deploymentId: live.deploymentId,
+        cache,
+        now: () => NOW,
+      }),
+    ).rejects.toThrow("shop-edge's deployment changed while this run cleaned up");
+    // What the edge serves now is never deleted, nor anything more on the old reading.
+    expect(retired).toStrictEqual([old.deploymentId]);
+    expect(fake.scripts.has(old.scriptName)).toBe(true);
+    expect(fake.scripts.has(older.scriptName)).toBe(true);
+  });
+
+  it('retires a scope before its Functions go, so a run stopped between does both again', async () => {
+    const fake = fakeCloudflare();
+    const edge = fakeEdge(fake);
+    const old = edge.deploy();
+    const live = edge.deploy();
+    edge.serve([{ versionId: live.versionId, percentage: 100 }]);
+    const present: boolean[] = [];
+    const cache = {
+      retireScope: (input: RetireScopeInput) => {
+        present.push(fake.scripts.has(old.scriptName));
+
+        expect(input.scopeId).toBe(old.deploymentId);
+
+        return Promise.resolve({ kind: 'retired' as const });
+      },
+    };
+    const input = {
+      scope: scopeOf(fake),
+      names: NAMES,
+      keep: 0,
+      deploymentId: live.deploymentId,
+      cache,
+      now: () => NOW,
+    };
+    // The run stops as it deletes the Functions.
+    fake.fail({ method: 'DELETE', path: `/workers/scripts/${old.scriptName}` }, 500, {
+      times: CLIENT_ATTEMPTS,
+    });
+
+    await expect(retainDeployments(input)).rejects.toThrow('injected');
+    expect(fake.scripts.has(old.scriptName)).toBe(true);
+
+    const again = await retainDeployments(input);
+
+    expect(again.deleted).toStrictEqual([old.deploymentId]);
+    expect(present).toStrictEqual([true, true]);
+    expect(fake.scripts.has(old.scriptName)).toBe(false);
   });
 
   it('deletes nothing the edge still sends requests to', async () => {

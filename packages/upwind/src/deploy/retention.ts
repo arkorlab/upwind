@@ -1,6 +1,13 @@
+import { compareCodeUnits } from '@stayingupwind/core/util';
 import type { RetireScopeInput, RetireScopeResult } from '@stayingupwind/host/cache';
 
-import { type AccountScope, deleteScript, type ScriptSummary } from './cloudflare/workers.ts';
+import {
+  type AccountScope,
+  deleteScript,
+  listDeployments,
+  type ScriptSummary,
+  type WorkerDeployment,
+} from './cloudflare/workers.ts';
 import { type EdgeHistory, functionsRemain, pointerOf, readHistory, scriptsOf } from './history.ts';
 import type { ProjectNames } from './names.ts';
 
@@ -11,9 +18,14 @@ import type { ProjectNames } from './names.ts';
  *
  * Kept: every deployment the edge's deployment holds, the one this run made, and the newest
  * `keep` others a rollback could still go back to — those whose edge version a deployment of the
- * edge can choose, and whose Functions are all there. Every other deployment loses its Functions,
- * after a last look that the edge's deployment does not send a request to any of them, and then its
- * cache scope, which nothing reads once its Functions are gone.
+ * edge can choose, and whose Functions are all there. Every other deployment loses its cache scope,
+ * and then its Functions. The scope goes first: retiring one is done once however often it is
+ * asked, so a run stopped before the Functions went finds them still there, and does both again.
+ *
+ * Before each, the edge's deployment is read again. A rollback or another deploy may have moved it
+ * since this cleanup began — one deploy or rollback of a project runs at a time, but nothing on the
+ * account enforces it — and where it has, the cleanup stops: nothing a version the edge's deployment
+ * now holds names is ever deleted, nor anything more on the strength of an old reading.
  *
  * Functions no edge version names — a run stopped after it uploaded them and before it uploaded the
  * edge's version — are deleted as well, once they are an hour old: a run that is still going has
@@ -51,10 +63,10 @@ export interface Retention {
 async function heldScripts(
   scope: AccountScope,
   names: ProjectNames,
-  history: EdgeHistory,
+  deployment: WorkerDeployment | undefined,
 ): Promise<ReadonlySet<string>> {
   const held = new Set<string>();
-  const shares = history.current?.versions;
+  const shares = deployment?.versions;
   if (shares === undefined) {
     return held;
   }
@@ -121,37 +133,75 @@ function orphansOf(history: EdgeHistory, now: number): Map<string, readonly Scri
   return orphans;
 }
 
-/** Delete a deployment's Functions, and then retire its cache scope. */
-async function remove(
+/** A deployment's shares, as one string: the same shares are the same string. */
+function sharesOf(deployment: WorkerDeployment): string {
+  return deployment.versions
+    .map((share) => `${share.version_id}=${String(share.percentage)}`)
+    .toSorted(compareCodeUnits)
+    .join(',');
+}
+
+/** Whether the edge's deployment is the one a cleanup began from. */
+function unmoved(now: WorkerDeployment | undefined, began: WorkerDeployment | undefined): boolean {
+  if (now === undefined || began === undefined) {
+    return now === began;
+  }
+  return now.id === began.id && sharesOf(now) === sharesOf(began);
+}
+
+/**
+ * The edge's deployment read again, just before a deployment loses something: the cleanup stops
+ * where it moved since it began, and where a version it holds names any of these Functions.
+ */
+async function guard(
   input: RetentionInput,
+  began: WorkerDeployment | undefined,
   deploymentId: string,
   scripts: readonly ScriptSummary[],
-  held: ReadonlySet<string>,
 ): Promise<void> {
+  const { scope, names } = input;
+  const [now] = (await listDeployments(scope, names.edge)) ?? [];
+  if (!unmoved(now, began)) {
+    throw new Error(
+      `${names.edge}'s deployment changed while this run cleaned up, so nothing more was deleted`,
+    );
+  }
+  const held = await heldScripts(scope, names, now);
   const live = scripts.filter((script) => held.has(script.id));
   if (live.length > 0) {
     throw new Error(
       `${live.map((script) => script.id).join(', ')} of ${deploymentId} is still sent requests by the edge, so nothing more was cleaned up`,
     );
   }
+}
+
+/** Retire a deployment's cache scope, and then delete its Functions, each after a look. */
+async function remove(
+  input: RetentionInput,
+  began: WorkerDeployment | undefined,
+  deploymentId: string,
+  scripts: readonly ScriptSummary[],
+): Promise<void> {
+  await guard(input, began, deploymentId, scripts);
+  await input.cache.retireScope({ scopeId: deploymentId, reason: 'upwind deploy retention' });
+  await guard(input, began, deploymentId, scripts);
   for (const script of scripts) {
     await deleteScript(input.scope, script.id, { force: true });
   }
-  await input.cache.retireScope({ scopeId: deploymentId, reason: 'upwind deploy retention' });
 }
 
 /** Keep what a project keeps, and delete the Functions of the rest. */
 export async function retainDeployments(input: RetentionInput): Promise<Retention> {
   const history = await readHistory(input.scope, input.names);
-  const held = await heldScripts(input.scope, input.names, history);
+  const began = history.current;
   const { kept, doomed } = await sorted(input, history);
   for (const deploymentId of doomed) {
-    await remove(input, deploymentId, history.functions.get(deploymentId) ?? [], held);
+    await remove(input, began, deploymentId, history.functions.get(deploymentId) ?? []);
   }
   const orphans: string[] = [];
   const stopped = orphansOf(history, (input.now ?? Date.now)());
   for (const [deploymentId, scripts] of stopped) {
-    await remove(input, deploymentId, scripts, held);
+    await remove(input, began, deploymentId, scripts);
     orphans.push(...scripts.map((script) => script.id));
   }
   return { kept, deleted: doomed, orphans };
