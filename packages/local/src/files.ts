@@ -154,7 +154,7 @@ export async function fileVerdict(
   // Finish with the original representative and its full follow-ups, keeping the ordinary witness.
   const checked = await fileSampleVerdict(stack, at, { file, sampled: preferred, followUps: true });
   if (failure !== undefined) return failure;
-  return checked.kind === 'skipped' && served ? failed(undefined) : checked;
+  return served && checked.kind === 'skipped' ? failed(undefined) : checked;
 }
 
 /** Each browser's answer is judged independently, with that request's own middleware trace. */

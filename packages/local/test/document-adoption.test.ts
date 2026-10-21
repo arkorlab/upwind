@@ -277,6 +277,25 @@ function siblingStack(): CheckedStack {
   };
 }
 
+/** Browser sampling is covered by check.test; direct stream controls keep one unclaimed checker. */
+function singleFileSampleStack(): CheckedStack {
+  const own = siblingStack();
+  return {
+    ...own,
+    manifest: {
+      ...own.manifest,
+      reservedRoutes: [
+        ...(own.manifest.reservedRoutes ?? []),
+        {
+          sourceRegex: '^/landing$',
+          beforeFiles: true,
+          has: [{ type: 'header', key: 'user-agent', value: 'Mozilla/.*' }],
+        },
+      ],
+    },
+  };
+}
+
 function siblingPart(own: CheckedStack): Part {
   const route = own.manifest.routes['/landing'];
   assert(route !== undefined, 'the direct part has a recorded route');
@@ -421,12 +440,12 @@ describe('redirected documents retain their original request and response', () =
   it.each([
     {
       reader: 'file',
-      makeStack: siblingStack,
+      makeStack: singleFileSampleStack,
       expected: {
         kind: 'skipped',
         reason: `answered by the application's middleware (${SIBLING_ACCOUNT})`,
       },
-      requests: 101,
+      requests: 1,
     },
     {
       reader: 'file follow-up',
@@ -464,7 +483,7 @@ describe('redirected documents retain their original request and response', () =
   it.each([
     {
       reader: 'file',
-      makeStack: siblingStack,
+      makeStack: singleFileSampleStack,
       type: HTML,
       account: 'static;policy=default;mw=miss;enc=identity',
       expected: {

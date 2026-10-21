@@ -2515,6 +2515,7 @@ describe('what the check makes of the middleware', () => {
       expect(asked.some((agent) => agent?.includes('Firefox') === true)).toBe(true);
       expect(asked.some((agent) => agent?.includes('Macintosh') === true)).toBe(true);
       expect(asked.some((agent) => agent?.includes('Android') === true)).toBe(true);
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
     });
 
     it('is asked as the next browser where a rule claims the check and Chrome', async () => {
