@@ -235,11 +235,11 @@ async function nextPartRecord(saved: Awaited<ReturnType<typeof record>>, now: nu
   const sha256 = await sha256Hex(body);
   const storageRef = `${PART_KEY}-next`;
   await env.ARTIFACTS.put(storageRef, body);
-  const artifacts = saved.pack.header.artifacts.map((artifact) =>
-    artifact.role === 'rsc'
+  const artifacts = saved.pack.header.artifacts.map((artifact) => {
+    return artifact.role === 'rsc'
       ? { ...artifact, sha256, byteLength: body.byteLength, storageRef }
-      : artifact,
-  );
+      : artifact;
+  });
   const bytes = encodeGenerationPack(
     {
       ...saved.pack.header,
@@ -270,8 +270,11 @@ describe('replaying generation response metadata at its use boundary', () => {
     const saved = await record();
     await seed(saved);
     const first = await serve(test, true);
+
     await first.text();
+
     test.clock.now += 60_001;
+
     const next = await nextPartRecord(saved, test.clock.now);
     try {
       const stale = await serve(test, true);
