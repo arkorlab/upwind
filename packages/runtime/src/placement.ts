@@ -10,6 +10,7 @@ import {
   ROUTED_HEADER,
 } from '@stayingupwind/core/paas';
 
+import { asksForCapture } from './capture-invoke.ts';
 import type { Resolved } from './outputs.ts';
 import type { Store } from './store.ts';
 
@@ -109,20 +110,22 @@ export function misdirected(
 }
 
 /**
- * The route a request that arrives already decided names, ahead of any routing: the prerender a
- * resume asks for, or the route a runtime resume or a regeneration names. `undefined` for a request
- * that names none, which is routed first.
+ * The route a request that arrives already decided names, ahead of any routing: the route a capture
+ * names, whatever else it carries, as a capture is answered ahead of every other mode
+ * (`asksForCapture`); the prerender a resume asks for; or the route a runtime resume or a
+ * regeneration names. `undefined` for a request that names none, which is routed first.
  */
 function namedRoute(store: Store, request: Request): string | undefined {
+  const named = pathFromHeaders(request.headers, CACHE_ROUTE_HEADER, CACHE_ROUTE_ESCAPED_HEADER);
+  if (asksForCapture(request)) {
+    return named;
+  }
   const prerenderId = pathFromHeaders(
     request.headers,
     RESUME_PRERENDER_HEADER,
     RESUME_PRERENDER_ESCAPED_HEADER,
   );
-  if (prerenderId !== undefined) {
-    return store.prerendersById.get(prerenderId)?.route;
-  }
-  return pathFromHeaders(request.headers, CACHE_ROUTE_HEADER, CACHE_ROUTE_ESCAPED_HEADER);
+  return prerenderId === undefined ? named : store.prerendersById.get(prerenderId)?.route;
 }
 
 /** The Function a response of `misdirected` names; `undefined` for any other response. */

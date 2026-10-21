@@ -59,6 +59,46 @@ export const RESUME_STATE_LENGTH_HEADER = 'x-arkor-resume-state-length';
 export const REGENERATE_HEADER = 'x-arkor-regenerate';
 export const REGENERATE_MODES = ['background', 'foreground', 'detached'] as const;
 export type RegenerateMode = (typeof REGENERATE_MODES)[number];
+/**
+ * Render the page the request names as a regeneration renders it — statically, handed nothing of
+ * the visitor's — and answer with what the render made (`CaptureAnswer`) in place of the page,
+ * keeping none of it: no lease, no upload, no record, no value of the data cache, no invalidation.
+ * `1` asks for one. The request is a `GET` of the page's own path, which is what is rendered, its
+ * query left out as a regeneration leaves it out; and it names the page's route up front
+ * (`CACHE_ROUTE_HEADER`), as a resume or a regeneration does. Whatever of the request the
+ * application reads for itself is the request's own, though Next.js is handed none of it.
+ *
+ * A request that cannot be captured — not a `GET`, a route the Function renders no App Router page
+ * for, a page Next.js answered dynamically rather than handing its render over, a render that
+ * answered other than 2xx — is answered `422`, and a render whose outputs come to more than the
+ * largest body a delivery record carries `413`, each with a line of plain text that says why.
+ */
+export const CAPTURE_HEADER = 'x-arkor-capture';
+/** What a capture is answered with: `CaptureAnswer`, as JSON. */
+export const CAPTURE_CONTENT_TYPE = 'application/vnd.upwind.capture+json';
+/** The version of `CaptureAnswer` this protocol writes, which every answer carries as `v`. */
+export const CAPTURE_VERSION = 1;
+/**
+ * A capture's answer (`CAPTURE_HEADER`): the status the page is answered with, and of its headers
+ * those a shell may replay, by their lower-case names, as a generation of the page keeps them
+ * (`generationResponseHeaders`); its document, and the state that resumes it where the render left
+ * anything to a resume; its RSC payload and the segments of it a prefetch asks for, by key, in
+ * base64; and the lifetime Next.js gave the render — `revalidate` `false` for none, and `expire`
+ * `null` where it set none.
+ */
+export interface CaptureAnswer {
+  readonly v: typeof CAPTURE_VERSION;
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly html: string;
+  readonly postponed: string | null;
+  readonly rsc: string | null;
+  readonly segments: readonly (readonly [key: string, base64: string])[];
+  readonly cacheControl: {
+    readonly revalidate: number | false;
+    readonly expire: number | null;
+  };
+}
 /** The cache scope and entry the request concerns, when it concerns one. */
 export const CACHE_SCOPE_REQUEST_HEADER = 'x-arkor-cache-scope';
 export const CACHE_ENTRY_HEADER = 'x-arkor-cache-entry';
@@ -105,6 +145,7 @@ export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
   RESUME_STATE_HEADER,
   RESUME_STATE_LENGTH_HEADER,
   REGENERATE_HEADER,
+  CAPTURE_HEADER,
   CACHE_SCOPE_REQUEST_HEADER,
   CACHE_ENTRY_HEADER,
   CACHE_ROUTE_HEADER,

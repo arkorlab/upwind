@@ -115,10 +115,18 @@ resume or a regeneration naming another's route is answered so before anything i
 routing back, the Function that holds the route serves it without routing it again: the middleware
 has run, and what it decided travels with the request.
 
-A resume is the one exchange worth naming here. The edge serves the build's shell and asks the
+Two exchanges are worth naming here. In a resume, the edge serves the build's shell and asks the
 Function for the rest of the document, which comes back as the postponed part alone — so the visitor
 is not sent the shell twice. A route that cannot resume one (an entrypoint on the edge runtime never
 can) is not among the shells an edge is told it may serve.
+
+In a capture (`x-arkor-capture`, `capture-invoke.ts`), the edge names an App Router page's route as
+a regeneration does, and the page is rendered as a regeneration renders it — statically, handed
+nothing of the visitor's — but the Function answers with what the render made, as JSON
+(`CaptureAnswer` in `@stayingupwind/core`'s `./paas`), rather than with the page, and keeps none of
+it: no lease, no upload, no record, no value of the data cache, no invalidation. The render runs
+within the request, so what the application reads of the request for itself — its headers, through
+the request context below — is that request's own.
 
 ## What libraries find on the global
 
