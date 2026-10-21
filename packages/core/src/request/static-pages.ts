@@ -1,4 +1,4 @@
-import { ROUTER_REQUEST_HEADERS } from './constants.ts';
+import { NEXT_DATA_HEADER, ROUTER_PROTOCOL_HEADERS } from './constants.ts';
 
 const PRIVATE_HEADERS = [
   'authorization',
@@ -15,10 +15,12 @@ const PRIVATE_HEADERS = [
 ];
 
 /** Version 1 admits no query, visitor state or conditional representation of static Pages HTML. */
-export function staticPageRequestPrivate(url: URL, headers: Headers): boolean {
+export function staticPageRequestPrivate(url: URL, headers: Headers, pagesData = false): boolean {
   return (
     url.search !== '' ||
     PRIVATE_HEADERS.some((name) => headers.has(name)) ||
-    ROUTER_REQUEST_HEADERS.some((name) => headers.has(name))
+    [...ROUTER_PROTOCOL_HEADERS, NEXT_DATA_HEADER].some(
+      (name) => (!pagesData || name !== NEXT_DATA_HEADER) && headers.has(name),
+    )
   );
 }

@@ -1,4 +1,5 @@
 import { sha256HexSchema } from '../artifact/artifact.ts';
+import { STATIC_PAGES_FALLBACK_PRIVACY } from '../cache/static-page-version.ts';
 import { cronsSchema } from '../cron/schema.ts';
 import { checkedImagesConfigSchema } from '../images/build.ts';
 import { runnableSourceRegexSchema, unsafeRoutePatternReason } from '../request/pattern-safety.ts';
@@ -451,7 +452,7 @@ const bundleSchema = z.object({
   /** 1 preserves privacy vetoes; 2 also preserves targeted no-transform prohibitions. */
   routeBodyPrivacy: z.literal([1, 2]).optional(),
   /** 1 proves static build HTML; 2 also supports independently proved Pages ISR outputs. */
-  staticPagesPrivacy: z.literal([1, 2]).optional(),
+  staticPagesPrivacy: z.literal([1, 2, STATIC_PAGES_FALLBACK_PRIVACY]).optional(),
   /**
    * How this deployment's Functions fill a header's `$` references (`routerReferencesSchema`), so
    * that what the edge answers for them carries the values the Function would have given it. Said
@@ -777,9 +778,7 @@ export const deploymentBundleSchema = bundleSchema
 /** The complete reference walk shared by validation and collection. */
 function forEachBlob(bundle: DeploymentBundle, visit: (ref: BlobRef) => void): void {
   const add = (ref: BlobRef | undefined): void => {
-    if (ref !== undefined) {
-      visit(ref);
-    }
+    if (ref !== undefined) visit(ref);
   };
   for (const prerender of bundle.prerenders) {
     add(prerender.body);

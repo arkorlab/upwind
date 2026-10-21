@@ -55,6 +55,7 @@ import {
 import { isRead, methodNotAllowed, readsOnly } from './methods.ts';
 import { answerMiddlewareOnly, MIDDLEWARE_ENTRY_ID } from './middleware-invoke.ts';
 import { type Resolved, servePagesData, serveRouteHandler, serveRsc } from './outputs.ts';
+import { documentGenerationSource } from './pages-fallback.ts';
 import {
   misdirected,
   misdirectedAhead,
@@ -94,14 +95,7 @@ import {
   withoutBody,
   withWritesLanded,
 } from './serve.ts';
-import {
-  completedShell,
-  entrypointKindOf,
-  findShell,
-  generationPathname,
-  getStore,
-  type Store,
-} from './store.ts';
+import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { unrouted } from './unrouted.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
 
@@ -186,22 +180,10 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
   const crawled =
     shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request);
   if (shell !== undefined && entry.kind === 'node') {
-    const pathname = generationPathname(shell, resolved.pathname);
-    const built = shell.body !== undefined && !crawled && pathname === shell.pathname;
     const current = await serveFromGeneration(
       input,
       store,
-      {
-        // The route the build filed the shell under, which its entry is keyed by: a locale's
-        // route of an application with `i18n` finds the page's (`findShell`). A member of a route
-        // that blocks is kept under the shell it completes to, where the build keys the route's
-        // entries on some of its parameters (`completedShell`), and under its own pathname else.
-        route: shell.route,
-        pathname: crawled ? completedShell(shell, resolved.pathname) : pathname,
-        url: resolved.url,
-        representation: 'html',
-        onMiss: built ? 'build' : 'render',
-      },
+      documentGenerationSource(store, shell, resolved, crawled),
       entry.handler,
     );
     if (current !== undefined) {

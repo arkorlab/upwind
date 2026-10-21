@@ -34,9 +34,9 @@ function policyVeto(name: string, lower: string): boolean {
   return name === 'connection' && lower.split(',').some((part) => PRIVATE_FIELDS.has(part.trim()));
 }
 
-function representationVeto(name: string, value: string): boolean {
+function representationVeto(name: string, value: string, contentType: string): boolean {
   const lower = value.toLowerCase();
-  if (name === 'content-type') return lower.split(';', 1)[0]?.trim() !== HTML_TYPE;
+  if (name === 'content-type') return lower.split(';', 1)[0]?.trim() !== contentType;
   if (name === 'content-encoding') return lower.trim() !== 'identity';
   if (name === 'content-disposition') return !rendersInline(value);
   return (
@@ -46,17 +46,27 @@ function representationVeto(name: string, value: string): boolean {
 }
 
 /** Privacy vetoes are checked before storage filters can hide their original presence. */
-export function staticPageHeadersAllowSharing(headers: Iterable<[string, string]>): boolean {
+function headersAllowSharing(headers: Iterable<[string, string]>, contentType: string): boolean {
   for (const [rawName, value] of headers) {
     const name = rawName.toLowerCase();
     if (
       VETO_FIELDS.has(name) ||
       policyVeto(name, value.toLowerCase()) ||
-      representationVeto(name, value)
+      representationVeto(name, value, contentType)
     )
       return false;
   }
   return true;
+}
+
+/** Privacy proof for a complete Pages HTML representation. */
+export function staticPageHeadersAllowSharing(headers: Iterable<[string, string]>): boolean {
+  return headersAllowSharing(headers, HTML_TYPE);
+}
+
+/** The paired props retain every HTML privacy veto with an explicit JSON representation. */
+export function staticPageDataHeadersAllowSharing(headers: Iterable<[string, string]>): boolean {
+  return headersAllowSharing(headers, 'application/json');
 }
 
 /** A transform prohibition survives targeted CDN policy filtering; no freshness is copied. */

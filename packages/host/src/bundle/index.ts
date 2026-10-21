@@ -2,6 +2,7 @@
 export {
   buildTagsOf,
   bundleGeneratedAtMs,
+  pagesDataOf,
   prerenderEntryKind,
   type SeedContext,
   type SeededRoute,

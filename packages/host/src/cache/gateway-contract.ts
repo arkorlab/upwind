@@ -254,6 +254,8 @@ export const commitArtifactSchema = z.object({
 });
 export type CommitArtifact = z.infer<typeof commitArtifactSchema>;
 
+const FALLBACK_PRIVACY = 3;
+
 export const commitOutputSchema = z.object({
   representationKey: z.string().min(1),
   pathname: z.string().nullable(),
@@ -261,8 +263,8 @@ export const commitOutputSchema = z.object({
   headers: headerValuesSchema,
   compute: outputComputeSchema,
   response: outputResponseSchema,
-  /** An explicit runtime claim; the cache must independently validate it before sharing. */
-  staticPagePrivacy: z.literal(2).optional(),
+  /** Each runtime render independently proves fixed ISR or a paired concrete fallback member. */
+  staticPagePrivacy: z.union([z.literal(2), z.literal(FALLBACK_PRIVACY)]).optional(),
   htmlSize: z.number().int().nonnegative().nullable(),
   artifacts: z.array(commitArtifactSchema),
 });

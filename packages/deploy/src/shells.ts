@@ -6,8 +6,11 @@ import {
   type Prerender,
   routePagesData,
   routePayloads,
+  staticPagesMembersOf,
+  staticFallbackPagesOf,
   type ServableOptions,
 } from '@stayingupwind/core/bundle';
+import { pagesDataOf } from '@stayingupwind/host/bundle';
 
 /**
  * What a deployment stores an artifact as: a page's own document, a prefetch segment or the whole
@@ -75,7 +78,13 @@ export function shellsOf(
       kind,
     });
   };
-  const documents = edgeServablePrerenders(bundle, servable);
+  const members: ReadonlyMap<Prerender, { readonly dataPathname: string }> =
+    servable.complete === true ? staticPagesMembersOf(bundle) : new Map();
+  const documents = new Set(edgeServablePrerenders(bundle, servable));
+  for (const page of members.keys()) documents.add(page);
+  if (servable.complete === true) {
+    for (const page of staticFallbackPagesOf(bundle)) documents.add(page);
+  }
   for (const prerender of documents) {
     add(prerender, DOCUMENT_KIND);
   }
@@ -90,6 +99,10 @@ export function shellsOf(
   const props = routePagesData(bundle, servable);
   for (const data of props) {
     add(data.prerender, 'static-data');
+  }
+  for (const member of members.keys()) {
+    const data = pagesDataOf(bundle, member);
+    if (data !== undefined) add(data, 'static-data');
   }
   return [...shells.values()];
 }
