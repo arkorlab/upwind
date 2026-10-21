@@ -186,10 +186,14 @@ function stateFor(test: Fixture) {
 }
 
 /** Queue a real projection so its existing blob read, length and digest check record the failure. */
-async function breakValue(test: Fixture, entryId: string, fault: 'missing' | 'digest') {
+async function breakValue(test: Fixture, entryId: string, fault: 'missing' | 'digest' | 'length') {
   const before = await stateFor(test);
   if (fault === 'missing') await env.ARTIFACTS.delete(before.artifact.storage_ref);
-  else await env.ARTIFACTS.put(before.artifact.storage_ref, new Uint8Array(test.bytes.length));
+  else
+    await env.ARTIFACTS.put(
+      before.artifact.storage_ref,
+      new Uint8Array(test.bytes.length + (fault === 'length' ? 1 : 0)),
+    );
   await runInDurableObject(test.stub, (_instance, state) => {
     state.storage.sql.exec(
       `UPDATE entries SET record_revision = record_revision + 1, kv_revision = 0 WHERE entry_id = ?`,
@@ -340,26 +344,29 @@ describe('a data upload replacing a known broken canonical artifact', () => {
     REPAIR_TEST_TIMEOUT_MS,
   );
 
-  it('replaces a corrupt owned value with one PUT and no extra body-byte charge', async () => {
-    const test = await fixture(ABOVE_CARRIED_BYTES, false);
-    const first = await test.client.setData(requestFor(test, 'value', NOW));
-    const broken = await breakValue(test, first.entryId, 'digest');
-    const put = vi.spyOn(env.ARTIFACTS, 'put');
+  it.each(['digest', 'length'] as const)(
+    'replaces an owned value with a %s mismatch using one PUT and no extra body-byte charge',
+    async (fault) => {
+      const test = await fixture(ABOVE_CARRIED_BYTES, false);
+      const first = await test.client.setData(requestFor(test, 'value', NOW));
+      const broken = await breakValue(test, first.entryId, fault);
+      const put = vi.spyOn(env.ARTIFACTS, 'put');
 
-    const rewritten = await test.client.setData(requestFor(test, 'value', NOW + 1));
+      const rewritten = await test.client.setData(requestFor(test, 'value', NOW + 1));
 
-    await test.drain();
+      await test.drain();
 
-    const repaired = await stateFor(test);
+      const repaired = await stateFor(test);
 
-    expect(broken.failed).toBe(true);
-    expect(rewritten.generationId).not.toBe(first.generationId);
-    expect(put).toHaveBeenCalledTimes(1);
-    expect(repaired.bodyBytes).toBe(broken.bodyBytes);
-    expect(repaired.artifact.storage_ref).not.toBe(broken.artifact.storage_ref);
-    expect(repaired.failed).toBe(false);
-    await expect(valueOf(test, 'value')).resolves.toStrictEqual(test.bytes);
-  });
+      expect(broken.failed).toBe(true);
+      expect(rewritten.generationId).not.toBe(first.generationId);
+      expect(put).toHaveBeenCalledTimes(1);
+      expect(repaired.bodyBytes).toBe(broken.bodyBytes);
+      expect(repaired.artifact.storage_ref).not.toBe(broken.artifact.storage_ref);
+      expect(repaired.failed).toBe(false);
+      await expect(valueOf(test, 'value')).resolves.toStrictEqual(test.bytes);
+    },
+  );
 
   it('keeps healthy deduplication and unchanged-generation replies', async () => {
     const test = await fixture(ABOVE_CARRIED_BYTES, false);

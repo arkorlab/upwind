@@ -29,7 +29,7 @@ import { toZod } from '@stayingupwind/host/zod';
 import { z } from 'zod';
 
 import { condemnedOf } from './generations.ts';
-import type { BlobStore, CarriedValue } from './io.ts';
+import { BlobLengthError, type BlobStore, type CarriedValue } from './io.ts';
 import {
   type EntryRow,
   generationHeaders,
@@ -109,7 +109,17 @@ export class InvalidArtifactError extends Error {
 
 async function verifiedBytes(deps: RecordDeps, artifact: RecordArtifact): Promise<Uint8Array> {
   const verified = deps.verifying?.(artifact);
-  const bytes = await deps.blobs.read(artifact.storageRef);
+  let bytes: Uint8Array | undefined;
+  try {
+    bytes = await deps.blobs.read(artifact.storageRef, artifact.byteLength);
+  } catch (error) {
+    if (!(error instanceof BlobLengthError)) throw error;
+    throw new InvalidArtifactError(
+      `artifact ${artifact.sha256} (${artifact.role}) has ${error.byteLength} bytes, not ${artifact.byteLength}`,
+      artifact,
+      { cause: error },
+    );
+  }
   if (bytes === undefined) {
     throw new InvalidArtifactError(
       `artifact ${artifact.sha256} (${artifact.role}) is not in storage`,
