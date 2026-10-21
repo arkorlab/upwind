@@ -480,7 +480,7 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
    * `Host`, over the scheme it says it came by), the Functions reached as the site's requests reach
    * them.
    */
-  private async probe(name: string, pathname: string, request: Request): Promise<Response> {
+  private async probe(name: string, pathname: string, request: IncomingRequest): Promise<Response> {
     const origin = originOf(request);
     const cf = clientCodingsOf(request.headers, request.cf);
     const env = servedEnv(this.env, origin, undefined, cf);
@@ -533,7 +533,7 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
    * nothing the check asks for is still loaded and run once. What it made of the request, as the
    * edge reads it (`readMiddlewareResponse`), or that it failed.
    */
-  private async middleware(pathname: string, request: Request): Promise<Response> {
+  private async middleware(pathname: string, request: IncomingRequest): Promise<Response> {
     const origin = originOf(request);
     const cf = clientCodingsOf(request.headers, request.cf);
     const env = servedEnv(this.env, origin, undefined, cf);
@@ -571,7 +571,7 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
     return Response.json(probe);
   }
 
-  override async fetch(request: Request): Promise<Response> {
+  override async fetch(request: IncomingRequest): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === BACKSTAGE_ROUTES.middleware) {
       return this.middleware(url.searchParams.get('path') ?? '/', request);
