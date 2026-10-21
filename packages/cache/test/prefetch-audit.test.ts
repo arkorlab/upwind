@@ -167,6 +167,51 @@ describe('a prefetch binding witness during an explicit migration window', () =>
     await expect(env.ARTIFACTS.head(prefetchAuditKey(audit.nonce))).resolves.not.toBeNull();
   });
 
+  it('remembers completed witnesses for alternating deployment bindings', async () => {
+    const audits = [identity(), identity()];
+    const put = vi.spyOn(env.ARTIFACTS, 'put');
+
+    for (const audit of [...audits, ...audits, ...audits]) {
+      const { worker, ctx } = entry(
+        { allowedSha256: { [OWN]: true }, migrationAudit: audit },
+        SERVICE,
+      );
+      const response = await worker.fetch(asking());
+
+      await expect(response.text()).resolves.toBe(BODY);
+      await waitOnExecutionContext(ctx);
+    }
+
+    expect(put).toHaveBeenCalledTimes(2);
+    for (const audit of audits) {
+      await expect(env.ARTIFACTS.head(prefetchAuditKey(audit.nonce))).resolves.not.toBeNull();
+    }
+  });
+
+  it('coalesces pending witnesses independently for alternating deployment bindings', async () => {
+    const audits = [identity(), identity()];
+    const release = Promise.withResolvers<true>();
+    const originalPut = env.ARTIFACTS.put.bind(env.ARTIFACTS);
+    const put = vi.spyOn(env.ARTIFACTS, 'put').mockImplementation(async (...args) => {
+      await release.promise;
+      return originalPut(...args);
+    });
+    const requests = [...audits, ...audits, ...audits].map((audit) =>
+      entry({ allowedSha256: { [OWN]: true }, migrationAudit: audit }, SERVICE),
+    );
+    try {
+      const bodies = await Promise.all(
+        requests.map(async ({ worker }) => (await worker.fetch(asking())).text()),
+      );
+
+      expect(bodies).toStrictEqual(requests.map(() => BODY));
+      expect(put).toHaveBeenCalledTimes(2);
+    } finally {
+      release.resolve(true);
+      await Promise.all(requests.map(({ ctx }) => waitOnExecutionContext(ctx)));
+    }
+  });
+
   it('retries expired work without letting an older failure clear the new marker', async () => {
     const audit = identity();
     const props = { allowedSha256: { [OWN]: true }, migrationAudit: audit };

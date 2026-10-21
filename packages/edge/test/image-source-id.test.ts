@@ -76,21 +76,28 @@ async function serving(
 ) {
   const prefix = staticSource ? '/_next/static/media/' : '/gated/';
   const path = `${prefix}${crypto.randomUUID()}.png`;
+  const target = `${prefix}${crypto.randomUUID()}.png`;
   const site = await seedSite({ document: pprDocument(), images: CONFIG });
-  const now = png('current image');
-  const before = png('previous image');
+  const now = png(`current image ${path}`);
+  const before = png(`previous image ${path}`);
   const [own, kept] = await Promise.all([store(now), store(before)]);
   const app = {
     deploymentId: CURRENT,
     scriptName: 'site-app',
     middlewareScriptName: 'site-middleware',
   };
+  const current = {
+    ...own,
+    deploymentId: CURRENT,
+    previous: { ...kept, deploymentId: PREVIOUS },
+  };
   const manifest: ProjectManifest = {
     ...site.manifest,
     deployment: { ...site.manifest.deployment, dplId: CURRENT },
     middleware: { matchers: [...matchers] },
     staticFiles: {
-      [path]: { ...own, deploymentId: CURRENT, previous: { ...kept, deploymentId: PREVIOUS } },
+      [path]: current,
+      [target]: own,
     },
   };
   const middleware = vi.fn<DispatchApp>(() =>
@@ -108,7 +115,12 @@ async function serving(
   const get = async (
     dpl: string,
     country?: string,
-    options: { readonly projectId?: string; readonly transform?: boolean } = {},
+    options: {
+      readonly projectId?: string;
+      readonly transform?: boolean;
+      readonly fileStatus?: number;
+      readonly targetStatus?: number;
+    } = {},
   ) => {
     const projectId = options.projectId ?? site.pointer.projectId;
     const query = new URLSearchParams({ url: path, w: '64', q: '75', dpl });
@@ -141,7 +153,24 @@ async function serving(
         cspReportingPath: undefined,
       },
       {
-        manifestLookup: Promise.resolve({ kind: 'found', value: { ...manifest, projectId } }),
+        manifestLookup: Promise.resolve({
+          kind: 'found',
+          value: {
+            ...manifest,
+            projectId,
+            staticFiles: {
+              ...manifest.staticFiles,
+              [path]: {
+                ...current,
+                ...(options.fileStatus !== undefined && { status: options.fileStatus }),
+              },
+              [target]: {
+                ...own,
+                ...(options.targetStatus !== undefined && { status: options.targetStatus }),
+              },
+            },
+          },
+        }),
         policyLookup: Promise.resolve({
           kind: 'found',
           source: 'exact',
@@ -153,10 +182,73 @@ async function serving(
     await waitOnExecutionContext(ctx);
     return { response, body };
   };
-  return { get, now, before, middleware, transform };
+  return { get, now, before, target, middleware, transform };
 }
 
 describe('an optimized image source identity', () => {
+  it.each([204, 205, 302, 404, 500])(
+    'rejects a shipped source with status %s even beside an existing healthy image cache entry',
+    async (fileStatus) => {
+      const served = await serving([]);
+      const first = await served.get(CURRENT);
+      const get = vi.spyOn(env.ARTIFACTS, 'get');
+      try {
+        const refused = await served.get(CURRENT, undefined, { fileStatus });
+        const healthy = await served.get(CURRENT);
+
+        expect(first.response.status).toBe(200);
+        expect(refused.response.status).toBe(400);
+        expect(new TextDecoder().decode(refused.body)).toContain('internal response is invalid');
+        expect(healthy.response.headers.get('x-nextjs-cache')).toBe('HIT');
+        expect(served.transform).toHaveBeenCalledTimes(1);
+        expect(served.middleware).not.toHaveBeenCalled();
+        expect(get).not.toHaveBeenCalled();
+      } finally {
+        get.mockRestore();
+      }
+    },
+  );
+
+  it.each([404, 500])(
+    'rejects a middleware-selected shipped source with status %s',
+    async (targetStatus) => {
+      const served = await serving();
+      served.middleware.mockResolvedValueOnce(
+        new Response(null, {
+          headers: { 'x-middleware-rewrite': `https://${HOST}${served.target}` },
+        }),
+      );
+      const get = vi.spyOn(env.ARTIFACTS, 'get');
+      try {
+        const refused = await served.get(CURRENT, undefined, { targetStatus });
+
+        expect(refused.response.status).toBe(400);
+        expect(served.transform).not.toHaveBeenCalled();
+        expect(served.middleware).toHaveBeenCalledTimes(1);
+        expect(get).not.toHaveBeenCalled();
+      } finally {
+        get.mockRestore();
+      }
+    },
+  );
+
+  it('uses a successful middleware rewrite status over the shipped file status', async () => {
+    const served = await serving();
+    served.middleware.mockResolvedValueOnce(
+      new Response(null, {
+        status: 201,
+        headers: { 'x-middleware-rewrite': `https://${HOST}${served.target}` },
+      }),
+    );
+
+    const result = await served.get(CURRENT, undefined, { targetStatus: 404 });
+
+    expect(result.response.status).toBe(200);
+    expect(result.body).toStrictEqual(served.now);
+    expect(served.middleware).toHaveBeenCalledTimes(1);
+    expect(served.transform).toHaveBeenCalledTimes(1);
+  });
+
   it('separates cached originals from a subsequently enabled transformer and keeps both warm', async () => {
     const served = await serving([{ sourceRegex: '^/_next/static/media/' }], true);
     const resized = png('resized');

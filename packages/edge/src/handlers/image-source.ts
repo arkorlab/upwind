@@ -231,9 +231,10 @@ export async function imageSourceId(source: ImageSource, identity: ImageIdentity
     `local:${imagePathPart(projectId)}:${imagePathPart(app?.deploymentId ?? '')}:${imagePathPart(forwarding.previewHost)}:${await sha256HexOfText(href)}`;
   switch (source.kind) {
     case 'blob': {
-      return source.gate === 'none'
-        ? `blob:${source.file.sha256}`
-        : answered(`blob:${source.file.sha256}:${source.href}`);
+      const blob = sourceUnder(source.file.status)
+        ? source.file.sha256
+        : `refused:${source.file.status}:${source.file.sha256}`;
+      return source.gate === 'none' ? `blob:${blob}` : answered(`blob:${blob}:${source.href}`);
     }
     case 'local': {
       return answered(source.href);
@@ -427,6 +428,7 @@ async function readBlob(
   file: StaticFileEntry,
   requests: number,
   budgetMs = SOURCE_FETCH_BUDGET_MS,
+  status: number | undefined = file.status,
 ): Promise<SourceResult> {
   const { edge, config, signal } = local;
   if (signal.aborted) {
@@ -434,6 +436,9 @@ async function readBlob(
   }
   if (budgetMs <= 0) {
     return refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, requests);
+  }
+  if (!sourceUnder(status)) {
+    return refused(HTTP_BAD_REQUEST, INTERNAL_INVALID, requests);
   }
   if (file.byteLength > sourceLimit(config)) {
     return refused(HTTP_PAYLOAD_TOO_LARGE, INTERNAL_INVALID, requests);
@@ -523,10 +528,7 @@ async function fetchBlob(
           budgetMs: left(),
         });
       }
-      // Refused unread under a status the optimizer takes no source under.
-      return sourceUnder(outcome.rewriteStatus)
-        ? readBlob(local, shipped, dispatches, left())
-        : refused(HTTP_BAD_REQUEST, INTERNAL_INVALID, dispatches);
+      return readBlob(local, shipped, dispatches, left(), outcome.rewriteStatus ?? shipped.status);
     }
     case 'responded': {
       if (!outcome.response.ok) {
