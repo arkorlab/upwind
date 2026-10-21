@@ -84,6 +84,31 @@ describe('keeping deployments to roll back to', () => {
     expect(retention.orphans).toStrictEqual([]);
   });
 
+  it('keeps the deployment live before over a newer one that never was', async () => {
+    const fake = fakeCloudflare();
+    const edge = fakeEdge(fake);
+    const before = edge.deploy();
+    edge.serve([{ versionId: before.versionId, percentage: 100 }]);
+    // Deployed, and failing its checks: never given any of the traffic.
+    const failed = edge.deploy();
+    const live = edge.deploy();
+    edge.serve([{ versionId: live.versionId, percentage: 100 }]);
+    const { cache } = retiring();
+
+    const retention = await retainDeployments({
+      scope: scopeOf(fake),
+      names: NAMES,
+      keep: 1,
+      deploymentId: live.deploymentId,
+      cache,
+      now: () => NOW,
+    });
+
+    // What a rollback would go back to is what is kept.
+    expect(retention.kept).toStrictEqual([live.deploymentId, before.deploymentId]);
+    expect(retention.deleted).toStrictEqual([failed.deploymentId]);
+  });
+
   it('counts no deployment it could not roll back to among those it keeps', async () => {
     const fake = fakeCloudflare();
     const edge = fakeEdge(fake);

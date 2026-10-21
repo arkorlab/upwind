@@ -29,6 +29,11 @@ export interface FakeEdge {
   readonly script: FakeScript;
   /** Upload a deployment's edge version, newest first, and its Function unless told not to. */
   deploy(input?: { readonly functions?: boolean; readonly createdOn?: string }): Deployed;
+  /**
+   * Upload another version of the edge for a deployment there already, as a rollback publishing it
+   * again does: a pointer of its own, to a manifest of its own, and the deployment's Functions.
+   */
+  redeploy(deployed: Deployed): Deployed;
   /** A version of no deployment's, as another upload of the edge would leave. */
   upload(): void;
   /** Give the edge's traffic as said. */
@@ -66,6 +71,34 @@ export function fakeEdge(fake: FakeCloudflare): FakeEdge {
   const edge = scriptOf(NAMES.edge);
   fake.scripts.set(NAMES.edge, edge);
   let count = 0;
+  /** A version of the edge for the deployment, with a manifest of its own, uploaded newest. */
+  const upload = (deploymentId: string, scriptName: string): Deployed => {
+    count += 1;
+    const manifestId = count.toString(HEX).padStart(MANIFEST_DIGITS, '0');
+    const pointer = JSON.stringify({
+      v: 1,
+      projectId: NAMES.project,
+      originHost: `${NAMES.edge}.example.workers.dev`,
+      mode: 'edge',
+      manifestId,
+      policyId: DEFAULT_DELIVERY_POLICY.id,
+      selectedPolicy: 'builtin',
+      app: { deploymentId, scriptName },
+      updatedAt: LONG_AGO,
+    });
+    const versionId = `version-edge-${String(count)}`;
+    edge.versions.unshift({
+      id: versionId,
+      number: edge.versions.length + 1,
+      metadata: { bindings: [{ type: 'plain_text', name: 'POINTER', text: pointer }] },
+      modules: ['index.mjs'],
+      annotations: {
+        'workers/tag': edgeTag(deploymentId, pointer),
+        'workers/message': `upwind deploy ${deploymentId}`,
+      },
+    });
+    return { deploymentId, versionId, manifestId, scriptName };
+  };
   const routed = (request: Request): FakeVersion | undefined => {
     const shares = edge.deployments[0]?.versions ?? [];
     // `<worker>="<version>"`: the version is between the quotes.
@@ -78,37 +111,15 @@ export function fakeEdge(fake: FakeCloudflare): FakeEdge {
   return {
     script: edge,
     deploy(input = {}) {
-      count += 1;
       const deploymentId = createId('dpl');
-      const manifestId = count.toString(HEX).padStart(MANIFEST_DIGITS, '0');
       const scriptName = functionScriptName(NAMES.project, deploymentId, 'app');
-      const pointer = JSON.stringify({
-        v: 1,
-        projectId: NAMES.project,
-        originHost: `${NAMES.edge}.example.workers.dev`,
-        mode: 'edge',
-        manifestId,
-        policyId: DEFAULT_DELIVERY_POLICY.id,
-        selectedPolicy: 'builtin',
-        app: { deploymentId, scriptName },
-        updatedAt: LONG_AGO,
-      });
-      const versionId = `version-edge-${String(count)}`;
-      edge.versions.unshift({
-        id: versionId,
-        number: edge.versions.length + 1,
-        metadata: { bindings: [{ type: 'plain_text', name: 'POINTER', text: pointer }] },
-        modules: ['index.mjs'],
-        annotations: {
-          'workers/tag': edgeTag(deploymentId, pointer),
-          'workers/message': `upwind deploy ${deploymentId}`,
-        },
-      });
+      const deployed = upload(deploymentId, scriptName);
       if (input.functions !== false) {
         fake.scripts.set(scriptName, scriptOf(scriptName, input.createdOn ?? LONG_AGO));
       }
-      return { deploymentId, versionId, manifestId, scriptName };
+      return deployed;
     },
+    redeploy: (deployed) => upload(deployed.deploymentId, deployed.scriptName),
     upload() {
       count += 1;
       edge.versions.unshift({
