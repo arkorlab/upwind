@@ -202,9 +202,10 @@ export function requiresLiteral(pattern: string, literal: string): boolean {
   // Raw spelling only selects the attempt; without it the ordinary reader runs once. A parenthesis
   // inside an escape or class can also select it. Neither presence nor absence is a proof.
   const outsideGroups = pattern.includes('(') && pattern.includes(literal);
-  return alternatives.every(
-    ([from, to]) =>
+  return alternatives.every(([from, to]) => {
+    return (
       (outsideGroups && outsideSequenceSpells(pattern, from, to, literal)) ||
-      sequenceSpells(pattern, from, to, literal),
-  );
+      sequenceSpells(pattern, from, to, literal)
+    );
+  });
 }

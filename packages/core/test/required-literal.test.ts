@@ -90,7 +90,7 @@ describe('mandatory routing literals outside groups', () => {
     String.raw`^(?:alpha|beta)\.rsc(?:unfinished`,
     String.raw`^(\.rsc))`,
     String.raw`^(?:alpha|beta)\.rsc?$`,
-    String.raw`^(?:alpha|beta)[.]rsc$`,
+    '^(?:alpha|beta)[.]rsc$',
     String.raw`^(?:alpha|beta)\01.rsc$`,
     String.raw`^(?:alpha|beta){oops}\.rsc$`,
     String.raw`^(?:\.rs)c$`,
