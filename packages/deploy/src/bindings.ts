@@ -85,6 +85,26 @@ export function cacheBindings(grant: CacheGrant): {
   return { text, services };
 }
 
+type PrefetchGrant =
+  | { readonly prefetch?: undefined; readonly prefetchBlobs?: undefined }
+  | {
+      /** The service a Function reads unshipped bundle blobs from. */
+      readonly prefetch?: string | undefined;
+      /** Explicit capability from prefetchBlobsOf on the accepted bundle, including an empty set. */
+      readonly prefetchBlobs: PrefetchBlobs;
+    };
+
+/** A JavaScript host must get the same explicit upgrade failure as a typed host. */
+function deploymentPrefetch(input: PrefetchGrant): readonly ServiceBinding[] {
+  if (input.prefetch === undefined) return [];
+  if (input.prefetchBlobs === undefined) {
+    throw new TypeError(
+      'prefetchBlobs is required with prefetch; use prefetchBlobsOf on the accepted bundle',
+    );
+  }
+  return [prefetchBinding(input.prefetch, input.prefetchBlobs)];
+}
+
 /**
  * What every Function of a deployment is bound to beside its environment, in the order it is bound
  * in: Next.js's deployment id, the runtime, the way to the cache and the token that opens the
@@ -92,19 +112,13 @@ export function cacheBindings(grant: CacheGrant): {
  * is given no way to one and no token: it has no scope to open. The prefetch Worker follows the
  * cache's services, where the host runs one.
  */
-export function functionBindings(input: {
-  readonly deploymentId: string;
-  /** What the deployment's Functions reach their runtime cache with; none for a host that runs none. */
-  readonly cache?: CacheGrant | undefined;
-  /**
-   * The service name of the Worker a Function reads a blob its build left out of it from
-   * (`PREFETCH_SERVICE_BINDING`) — a build without its prefetch segments falls back to it for a
-   * prefetch the edge did not serve; none for a host that runs none.
-   */
-  readonly prefetch?: string | undefined;
-  /** Use prefetchBlobsOf on the accepted bundle; an omitted capability grants no blob access. */
-  readonly prefetchBlobs?: PrefetchBlobs | undefined;
-}): {
+export function functionBindings(
+  input: {
+    readonly deploymentId: string;
+    /** What the deployment's Functions reach their runtime cache with; none for a host that runs none. */
+    readonly cache?: CacheGrant | undefined;
+  } & PrefetchGrant,
+): {
   readonly text: readonly TextBinding[];
   readonly services: readonly ServiceBinding[];
 } {
@@ -120,11 +134,6 @@ export function functionBindings(input: {
       ...token,
       { name: RESPONSE_CACHE_TTL_BINDING, value: RESPONSE_CACHE_TTL_MS, secret: false },
     ],
-    services: [
-      ...reached.services,
-      ...(input.prefetch === undefined
-        ? []
-        : [prefetchBinding(input.prefetch, input.prefetchBlobs ?? {})]),
-    ],
+    services: [...reached.services, ...deploymentPrefetch(input)],
   };
 }
