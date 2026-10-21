@@ -5,6 +5,7 @@ import {
 } from '@stayingupwind/core/images';
 import { type ConfiguredHeaders, isReserved } from '@stayingupwind/core/manifest';
 import { DEPLOYMENT_ID_QUERY, PatternBudgetExceededError } from '@stayingupwind/core/request';
+import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 
 import { type HostedGateInput, serveAfterMiddleware, type TimedContinue } from './hosted-gate.ts';
 import { serveHostedFile } from './hosted-static-file.ts';
@@ -38,10 +39,14 @@ function answering(
   dispatches: number,
   configured: ConfiguredHeaders,
 ): ImageAnswerInput {
+  let headers = middleware?.requestHeaders ?? input.request.headers;
+  const { credentials } = input.edge.host;
+  if (credentials.headers.length > 0 && credentials.headers.some((name) => headers.has(name))) {
+    headers = withoutHostCredentials(new Headers(headers), credentials);
+  }
+  // Host-owned format and conditional headers cannot select an application's image response.
   const request =
-    middleware === undefined
-      ? input.request
-      : new Request(input.request, { headers: middleware.requestHeaders });
+    headers === input.request.headers ? input.request : new Request(input.request, { headers });
   const { edge, config } = input;
   return {
     request,
