@@ -2593,7 +2593,7 @@ describe('what the check makes of the middleware', () => {
       const pathname = '/chunk.js';
       const script = { [pathname]: fileOf('kept script', SCRIPT) };
       let warmed = false;
-      const agents: string[] = [];
+      const observedAgents: string[] = [];
       answers.set(pathname, {
         headers: {
           'content-type': SCRIPT,
@@ -2604,7 +2604,7 @@ describe('what the check makes of the middleware', () => {
         when: {
           test: (headers) => {
             const agent = headers['user-agent'] ?? '';
-            agents.push(agent);
+            observedAgents.push(agent);
             if (agent.includes('Mozilla')) warmed = true;
             return agent === 'upwind-local-check/1.0' && !warmed;
           },
@@ -2619,7 +2619,7 @@ describe('what the check makes of the middleware', () => {
 
       expect(result.failures).toHaveLength(1);
       expect(result.failures[0]?.reason).toContain('500');
-      expect(agents[0]).toBe('upwind-local-check/1.0');
+      expect(observedAgents[0]).toBe('upwind-local-check/1.0');
       expect(warmed).toBe(false);
       expect(traceIds.letGo).toStrictEqual(traceIds.registered);
     });
