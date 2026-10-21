@@ -336,6 +336,8 @@ export function read(url: URL, options: ReadOptions): Promise<Reading> {
         body.resume();
       };
       body.on('data', (chunk: Buffer) => {
+        // Buffered events can outlive cancellation; a settled digest must stay final.
+        if (settled) return;
         kept.take(chunk);
         if (options.limitBytes !== undefined && kept.length >= options.limitBytes) {
           copy?.abandon();
