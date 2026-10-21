@@ -177,7 +177,12 @@ async function uploadOne(
   await holdReach(input.scope, scriptName, UNREACHED);
 }
 
-/** Upload every Function of the deployment, a few at once. */
+/**
+ * Upload every Function of the deployment, a few at once. One that fails stops the rest from taking
+ * another — the run is over, and a Function uploaded after it would be one more for nothing — and
+ * the failure is thrown once those being uploaded beside it have settled, so that nothing of this
+ * call is still writing when it returns.
+ */
 export async function uploadFunctions(input: FunctionsInput): Promise<readonly string[]> {
   const specs = specsOf(input.bundle);
   const bindings = bindingsOf(input);
@@ -186,13 +191,22 @@ export async function uploadFunctions(input: FunctionsInput): Promise<readonly s
   const next = async (): Promise<void> => {
     for (let script = queue.shift(); script !== undefined; script = queue.shift()) {
       const spec = specs.get(script.name);
-      if (spec === undefined) {
-        throw new Error(`the build has no Function called ${script.name}`);
+      try {
+        if (spec === undefined) {
+          throw new Error(`the build has no Function called ${script.name}`);
+        }
+        await uploadOne(input, script.scriptName, spec, bindings);
+      } catch (error) {
+        queue.length = 0;
+        throw error;
       }
-      await uploadOne(input, script.scriptName, spec, bindings);
       uploaded.push(script.scriptName);
     }
   };
-  await Promise.all(Array.from({ length: CONCURRENCY }, next));
+  const settled = await Promise.allSettled(Array.from({ length: CONCURRENCY }, next));
+  const failed = settled.find((result) => result.status === 'rejected');
+  if (failed !== undefined) {
+    throw failed.reason;
+  }
   return uploaded;
 }
