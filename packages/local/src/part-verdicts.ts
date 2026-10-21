@@ -215,10 +215,23 @@ function provenanceOf(
  * Why a part is not of its type: the one the build wrote it as — or, for a page's props, the one a
  * rule of `next.config` judged for their URL sets, which the edge keeps.
  */
-function typeFailure(part: Part, answer: Reading, configured: ConfiguredHeaders) {
+function typeFailure(part: Part, answer: Reading, configured: ConfiguredHeaders, runtime: boolean) {
   const written = part.built?.contentType ?? RSC_CONTENT_TYPE;
   const expected = part.kind === 'data' ? (configured.headers['content-type'] ?? written) : written;
   const type = answer.headers['content-type'];
+  // Runtime Pages props use UTF-8 JSON; the build commonly records just its media type.
+  // Keep explicit rule types and build-owned representations exact, and retain generation evidence.
+  const json = /^application\/json(?:\s*;\s*charset\s*=\s*(?:"utf-8"|utf-8))?\s*$/iu;
+  if (
+    runtime &&
+    part.kind === 'data' &&
+    configured.headers['content-type'] === undefined &&
+    type !== undefined &&
+    json.test(type) &&
+    json.test(expected)
+  ) {
+    return undefined;
+  }
   return type === expected ? undefined : `answered as ${type ?? 'no type'}, not ${expected}`;
 }
 
@@ -643,7 +656,7 @@ async function judgedFailure(
   const unvaried = variesBy(answer, PART_VARY[part.kind]);
   const visitors = oneVisitors(answer, configured, runtime);
   const marked =
-    typeFailure(part, answer, configured) ??
+    typeFailure(part, answer, configured, runtime) ??
     (unvaried === undefined ? undefined : `answered under no Vary naming ${unvaried}`) ??
     markedFailure(part, answer.headers, {
       runtime,

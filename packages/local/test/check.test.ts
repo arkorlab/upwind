@@ -3572,10 +3572,10 @@ describe('what the check makes of the middleware', () => {
       expect(destinations.get('/a.txt')).toBe('image');
     });
 
-    it('takes a continuing middleware file type after the build and configured types', async () => {
+    it('uses the shared middleware merge contract for a shipped file type', async () => {
       const pathname = '/a.txt';
       const fileHeaders = {
-        'content-type': 'image/png',
+        'content-type': TEXT,
         'cache-control': GATED,
         'x-arkor-edge': `${FILE_EDGE};mw=hit`,
       };
@@ -3585,14 +3585,14 @@ describe('what the check makes of the middleware', () => {
 
       const correct = await checkStack(stack);
       answers.set(pathname, {
-        headers: { ...fileHeaders, 'content-type': TEXT },
+        headers: { ...fileHeaders, 'content-type': 'image/png' },
         body: 'kept bytes',
       });
       const broken = await checkStack(stack);
 
-      expect(correct).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(correct).toStrictEqual({ checked: 2, failures: [], skipped: [] });
       expect(broken.failures).toHaveLength(1);
-      expect(broken.failures[0]?.reason).toContain(`answered as ${TEXT}, not image/png`);
+      expect(broken.failures[0]?.reason).toContain(`answered as image/png, not ${TEXT}`);
       expect(traceIds.letGo).toStrictEqual(traceIds.registered);
     });
 
@@ -6359,6 +6359,16 @@ describe('what the check makes of the middleware', () => {
       };
       const routes = [await routeOf('/en', FRONT)];
       await readGenerations('/en', [1, 2]);
+
+      const headKey = `${kvGenerationKey('dpl_site', await entryOf('/en', '/en'))}|2`;
+      const headRecord: RecordedGeneration = {
+        headers: { 'content-type': HTML },
+        artifacts: [],
+        partial: false,
+        source: 'runtime',
+      };
+      // The whole HEAD reads this complete generation; the later resumed HEAD reads it partial.
+      capturedHeadRecords.set('/en', { [headKey]: headRecord });
       // A build the edge does not route publishes its unconditional rules apart (`foldedHeaderRules`).
       const i18n = { defaultLocale: 'en', locales: ['en'] };
       const stack = stackOf(routes, {}, { headerRules: [rule], i18n });
@@ -6366,6 +6376,7 @@ describe('what the check makes of the middleware', () => {
       const wholeAsSet = await checkStack(stack);
       answers.set('/en', servedUnder('none', laid));
       const wholeWidened = await checkStack(stack);
+      capturedHeadRecords.set('/en', { [headKey]: { ...headRecord, partial: true } });
       answers.set('/en', servedUnder('resume', laid));
       const resumedPermitted = await checkStack(stack);
 
@@ -8904,6 +8915,65 @@ describe('what the check makes of the middleware', () => {
         /^its page's props \(\/_next\/data\/test\/about\.json\), not answered by the edge as the part it is /u,
       );
     });
+
+    it.each([
+      { type: 'application/json; charset=utf-8', runtime: true, configured: false, accepted: true },
+      {
+        type: 'Application/JSON; Charset="UTF-8"',
+        runtime: true,
+        configured: false,
+        accepted: true,
+      },
+      { type: 'text/plain; charset=utf-8', runtime: true, configured: false, accepted: false },
+      { type: 'application/json; charset=utf-8', runtime: true, configured: true, accepted: false },
+      {
+        type: 'application/json; charset=utf-8',
+        runtime: false,
+        configured: false,
+        accepted: false,
+      },
+    ])(
+      'judges Pages props type $type with runtime=$runtime, configured=$configured',
+      async (example) => {
+        const about = `${ABOUT}<main>finished</main></body></html>`;
+        const props = '{"pageProps":{}}';
+        const routes = [
+          await routeOf('/about', about, { complete: true, pages: true, pagesData: props }),
+        ];
+        const data = '/_next/data/test/about.json';
+        answers.set('/about', finishedAnswer(about, '/about'));
+        answers.set(data, {
+          headers: {
+            'content-type': example.type,
+            vary: 'accept-encoding',
+            'x-nextjs-cache': example.runtime ? 'STALE' : 'HIT',
+            ...(example.runtime && { 'cache-control': 'no-store' }),
+            'x-arkor-edge':
+              'data;src=r2;enc=identity;strategy=r2;project=site;policy=default;m=0000',
+          },
+          body: example.runtime ? '{"pageProps":{"since":true}}' : props,
+        });
+        const rules: HeaderRule[] = example.configured
+          ? [
+              {
+                sourceRegex: '^/_next/data/test/about[.]json$',
+                headers: { 'content-type': JSON_TYPE },
+              },
+            ]
+          : [];
+
+        const result = await checkStack(stackOf(routes, {}, { headerRules: rules }));
+
+        if (example.accepted) {
+          expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+        } else {
+          expect(result.failures).toHaveLength(1);
+          expect(result.failures[0]?.reason).toContain(
+            `answered as ${example.type}, not ${JSON_TYPE}`,
+          );
+        }
+      },
+    );
 
     it("is held to the build's props though marked as a runtime generation's segment or payload is", async () => {
       const about = `${ABOUT}<main>finished</main></body></html>`;
