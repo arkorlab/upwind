@@ -171,18 +171,22 @@ describe('a prefetch binding witness during an explicit migration window', () =>
     const audits = [identity(), identity()];
     const put = vi.spyOn(env.ARTIFACTS, 'put');
 
-    for (const audit of [...audits, ...audits, ...audits]) {
-      const { worker, ctx } = entry(
-        { allowedSha256: { [OWN]: true }, migrationAudit: audit },
-        SERVICE,
-      );
-      const response = await worker.fetch(asking());
+    for (let round = 0; round < 3; round += 1) {
+      for (const audit of audits) {
+        const { worker, ctx } = entry(
+          { allowedSha256: { [OWN]: true }, migrationAudit: audit },
+          SERVICE,
+        );
+        const response = await worker.fetch(asking());
 
-      await expect(response.text()).resolves.toBe(BODY);
-      await waitOnExecutionContext(ctx);
+        await expect(response.text()).resolves.toBe(BODY);
+
+        await waitOnExecutionContext(ctx);
+      }
     }
 
     expect(put).toHaveBeenCalledTimes(2);
+
     for (const audit of audits) {
       await expect(env.ARTIFACTS.head(prefetchAuditKey(audit.nonce))).resolves.not.toBeNull();
     }
