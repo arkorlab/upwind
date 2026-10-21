@@ -327,9 +327,15 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
   held at none of the traffic while a run checks it, those a rollback can go back to, and those
   whose Functions are gone. It reads the account and changes nothing on it.
 - **`upwind rollback`** gives the edge's traffic back to an older deployment — the one before the
-  live one, or the one `--to` names — with nothing uploaded. It is checked first, as a new
-  deployment is, and given the traffic only once it answers as itself and passes the project's
-  checks; one that does not is given none.
+  live one, or the one `--to` names. Nothing of it is built: its bundle, kept in the bucket, is
+  published again against the live deployment, as a new deployment is against the one before it,
+  so the live deployment's files stay served to its pages still open; and its Functions are the
+  ones it has had since it was deployed. It is checked first, as a new deployment is, and given the
+  traffic only once it answers as itself and passes the project's checks; one that does not is
+  given none.
+- **One at a time.** One deploy or rollback of a project runs at a time: each takes the deploy
+  agent with a key of its own, and one that another has taken it from stops. Run them from one
+  place — one CI job at a time, say.
 - **What is kept.** Once a deployment is live, a deploy keeps it, every deployment the edge's
   traffic is with, and the newest `deploy.keep` others (`--keep`, for one run) a rollback can still
   go back to; the rest lose their Functions, and their scope of the runtime cache. Cloudflare keeps

@@ -66,7 +66,8 @@ edge in front, the runtime cache behind it, each deployment's Functions as Worke
 and the edge switched to the new deployment once it answers. It reads CLOUDFLARE_API_TOKEN and
 CLOUDFLARE_ACCOUNT_ID from the environment, and the project's \`deploy\` settings from
 upwind.config.ts. \`upwind deployments\` lists the deployments it made, \`upwind rollback\` gives
-the edge back to one of them, and \`upwind destroy\` deletes everything it made.
+the edge back to one of them, and \`upwind destroy\` deletes everything it made. One deploy or
+rollback of a project runs at a time.
 `;
 
 function fail(message: string): never {

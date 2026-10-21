@@ -46,6 +46,11 @@ describe('`upwind rollback`', () => {
     vi.spyOn(console, 'log').mockImplementation((text: string) => {
       printed.push(text);
     });
+    // An account of an edge and Functions alone, with no bucket to stage again from: each
+    // deployment is switched to as its version stands, and the run says so.
+    vi.spyOn(console, 'warn').mockImplementation(() => {
+      // Said, and not what these tests are about (`rollback-flow.test.ts` is).
+    });
     vi.spyOn(console, 'error').mockImplementation((text: string) => {
       errors.push(text);
     });
@@ -149,6 +154,36 @@ describe('`upwind rollback`', () => {
     expect(errors).toContainEqual(
       'upwind: no deployment before the live one can be rolled back to',
     );
+  });
+
+  it('names no deployment before a live version no deploy made, and goes to one named', async () => {
+    const fake = fakeCloudflare();
+    const edge = fakeEdge(fake);
+    const first = edge.deploy();
+    // A version of the edge some other upload made, which says nothing of what came before it.
+    edge.upload();
+    const untagged = edge.script.versions[0]?.id ?? '';
+    edge.serve([{ versionId: untagged, percentage: 100 }]);
+    const dir = await project();
+
+    await expect(
+      runRollback({ projectDir: dir, to: undefined }, CREDENTIALS, {
+        fetch: edge.fetch(),
+        ...clock(),
+      }),
+    ).resolves.toBe(1);
+    expect(errors).toStrictEqual([
+      `upwind: shop-edge's live version ${untagged} is not one upwind deploy made, so which deployment came before it is not known; name one with --to`,
+    ]);
+    await expect(
+      runRollback({ projectDir: dir, to: first.deploymentId }, CREDENTIALS, {
+        fetch: edge.fetch(),
+        ...clock(),
+      }),
+    ).resolves.toBe(0);
+    expect(edge.script.deployments[0]?.versions).toStrictEqual([
+      { version_id: first.versionId, percentage: 100 },
+    ]);
   });
 
   it('has nothing to go back to before a first deploy, nor to the live one', async () => {

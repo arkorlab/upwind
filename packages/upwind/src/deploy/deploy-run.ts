@@ -129,7 +129,7 @@ export function report(activation: Activation, deploymentId: string, origin: URL
  * then the live version kept what it was reached on (`uploadEdgeVersion`). A failure here leaves
  * the deployment live, and the next run narrows it.
  */
-async function narrowReach(
+export async function narrowReach(
   scope: AccountScope,
   edge: string,
   reach: ScriptSubdomain,
