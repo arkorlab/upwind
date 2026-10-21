@@ -130,7 +130,8 @@ function sequenceSpells(pattern: string, start: number, end: number, literal: st
   let index = start;
   while (index < end) {
     // A preceding run already proves the sequence, once this group's token and end are checked.
-    const alreadySpelled = pattern[index] === '(' && run.includes(literal);
+    const isGroup = pattern[index] === '(';
+    const alreadySpelled = isGroup && run.includes(literal);
     const token = tokenAt(pattern, index, literal, alreadySpelled);
     if (token === undefined || token.end > end) {
       return false;
@@ -139,7 +140,7 @@ function sequenceSpells(pattern: string, start: number, end: number, literal: st
       return true;
     }
     if (token.char === undefined) {
-      if (run.includes(literal)) {
+      if (alreadySpelled || (!isGroup && run.includes(literal))) {
         return true;
       }
       run = '';
