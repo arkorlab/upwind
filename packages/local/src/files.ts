@@ -145,14 +145,14 @@ export async function fileVerdict(
     const verdicts = await Promise.all(
       samples
         .slice(index, index + FILE_SAMPLES_AT_ONCE)
-        .map((sampled) => fileSampleVerdict(stack, at, { file, sampled, followUps: false })),
+        .map((sampled) => fileSampleVerdict(stack, at, { file, sampled })),
     );
     failure = verdicts.find((verdict) => verdict.kind === 'failed');
     served ||= verdicts.some((verdict) => verdict.kind === 'ok');
     if (failure !== undefined) break;
   }
-  // Finish with the original representative and its full follow-ups, keeping the ordinary witness.
-  const checked = await fileSampleVerdict(stack, at, { file, sampled: preferred, followUps: true });
+  // Finish with the original representative, keeping the ordinary witness.
+  const checked = await fileSampleVerdict(stack, at, { file, sampled: preferred });
   if (failure !== undefined) return failure;
   return served && checked.kind === 'skipped' ? failed(undefined) : checked;
 }
@@ -164,10 +164,9 @@ async function fileSampleVerdict(
   asking: {
     readonly file: StaticFileEntry;
     readonly sampled: Sampled;
-    readonly followUps: boolean;
   },
 ): Promise<Verdict> {
-  const { file, sampled, followUps } = asking;
+  const { file, sampled } = asking;
   if (sampled.kind === 'claimed') {
     return skipped(CLAIMED);
   }
@@ -209,7 +208,7 @@ async function fileSampleVerdict(
   if ('failure' in decision) {
     return failed(decision.failure);
   }
-  const read = { file, headers: sampled.headers, answer, middleware: decision.decided, followUps };
+  const read = { file, headers: sampled.headers, answer, middleware: decision.decided };
   return await servedVerdict(stack, url, read);
 }
 
@@ -227,8 +226,6 @@ async function servedVerdict(
     readonly headers: Readonly<Record<string, string>>;
     readonly answer: Reading;
     readonly middleware: Decided;
-    /** The original sample retains HEAD/range/validator controls; every sample checks its GET. */
-    readonly followUps: boolean;
   },
 ): Promise<Verdict> {
   const { file, answer, middleware: decided } = read;
@@ -256,7 +253,7 @@ async function servedVerdict(
   }
   // No representation bytes were sent to compare a later range against. Its status, absent
   // body/framing and retained metadata were checked above; ordinary file follow-ups are unchanged.
-  if (expected.bodylessRewrite || !read.followUps) {
+  if (expected.bodylessRewrite) {
     return failed(undefined);
   }
   return failed(

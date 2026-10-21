@@ -2499,6 +2499,54 @@ describe('what the check makes of the middleware', () => {
       expect(agentsAsked.get(pathname)).toContain('upwind-local-check/1.0');
     });
 
+    it.each([
+      {
+        label: 'Range',
+        matches: (headers: IncomingMessage['headers']) => headers.range !== undefined,
+      },
+      {
+        label: 'If-None-Match',
+        matches: (headers: IncomingMessage['headers']) => headers['if-none-match'] !== undefined,
+      },
+      {
+        label: 'HEAD',
+        matches: (headers: IncomingMessage['headers'], method: string | undefined) =>
+          method === 'HEAD' && headers['sec-fetch-dest'] === 'script',
+      },
+    ])('checks Chrome-specific $label file follow-ups', async ({ matches }) => {
+      const pathname = '/chunk.js';
+      const script = { [pathname]: fileOf('kept script', SCRIPT) };
+      const selected = new Set<boolean>();
+      answers.set(pathname, {
+        headers: {
+          'content-type': SCRIPT,
+          'cache-control': GATED,
+          'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+        },
+        body: 'kept script',
+        when: {
+          test: (headers, method) => {
+            const broken =
+              headers['user-agent']?.includes('Chrome') === true && matches(headers, method);
+            selected.add(broken);
+            return broken;
+          },
+          headers: { 'x-arkor-edge': 'static;policy=other;mw=hit;enc=identity' },
+        },
+      });
+      decisions.set(pathname, { 'x-middleware-next': '1' });
+
+      const result = await checkStack(
+        withMiddleware(stackOf([], script), [{ sourceRegex: '^/chunk[.]js$' }]),
+      );
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]).toMatchObject({ path: pathname });
+      expect(result.failures[0]?.reason).toContain('not answered under the delivery policy');
+      expect(selected.has(true)).toBe(true);
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
     it('checks the prover and each browser when every file response is healthy', async () => {
       answers.set('/a.txt', {
         headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },

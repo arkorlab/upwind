@@ -1,4 +1,4 @@
-import { answeredBy, type CheckedStack, EDGE_HEADER } from './answers.ts';
+import { answeredBy, type CheckedStack, EDGE_HEADER, middlewareHeadersOnly } from './answers.ts';
 import { sentBlockingMetadata } from './browsers.ts';
 import type { Accepted } from './codings.ts';
 import { capturedDocument } from './document-reading.ts';
@@ -25,6 +25,7 @@ export async function documentAnswerAt(
     headersOnly: (status, responseHeaders) => {
       return (
         redirectHeaders(status, responseHeaders) ||
+        middlewareHeadersOnly(status, responseHeaders) ||
         keyOf(String(responseHeaders[EDGE_HEADER] ?? '')) === undefined
       );
     },

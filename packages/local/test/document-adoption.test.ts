@@ -438,6 +438,55 @@ describe('redirected documents retain their original request and response', () =
   );
 
   it.each([
+    { reason: 'middleware', coding: undefined, prefix: '' },
+    { reason: 'external-rewrite', coding: 'gzip', prefix: 'not a gzip stream' },
+  ] as const)(
+    'releases a redirected document owned by $reason at its headers',
+    async ({ reason, coding, prefix }) => {
+      const account = `passthrough;reason=${reason};mw=hit`;
+      direct.headers = {
+        'content-type': 'text/event-stream',
+        'x-arkor-edge': account,
+        ...(coding !== undefined && { 'content-encoding': coding }),
+      };
+      direct.prefix = prefix;
+      const own = stack();
+      try {
+        const first = await read(new URL('/start', own.site), {
+          via: own.url,
+          headers: HEADERS,
+          headersOnly: true,
+          deadlineMs: 1000,
+        });
+        const followed = await documentRedirects(own, {
+          answer: first,
+          url: new URL('/start', own.site),
+          headers: HEADERS,
+          jar: [],
+          documentAnswer: (sent) =>
+            documentAnswerAt(own, Buffer.byteLength(DOCUMENT), sent, 'gzip'),
+        });
+        await fixture.middleClosed.promise;
+        await direct.closed.promise;
+
+        expect(followed.failure).toBeUndefined();
+        expect(followed.last?.account).toBe(account);
+        expect(followed.last?.documentFailure).toBeUndefined();
+        expect(followed.last?.whole).toBeUndefined();
+        expect(visits.map(({ path: pathname }) => pathname)).toStrictEqual([
+          '/start',
+          '/middle',
+          '/landing',
+        ]);
+        expect(direct.responses).toHaveLength(1);
+        expect(traces).toStrictEqual(['PUT', 'DELETE', 'PUT', 'DELETE']);
+      } finally {
+        for (const response of direct.responses) response.destroy();
+      }
+    },
+  );
+
+  it.each([
     {
       reader: 'file',
       makeStack: singleFileSampleStack,
