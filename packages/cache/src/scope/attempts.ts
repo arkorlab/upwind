@@ -36,6 +36,19 @@ const MILLISECONDS_PER_SECOND = 1000;
 const MAX_BACKOFF_SECONDS = 300;
 const LEASE_SWEEP_BATCH = 200;
 const LIVE_STATUSES = new Set(['leased', 'uploading']);
+// Even six-byte JSON escapes for every code unit leave the retained error below 4 KiB.
+const ERROR_CODE_UNITS = 128;
+const ERROR_MESSAGE_UNITS = 512;
+
+/** Retain diagnostic prefixes; accepting and ending a failed attempt needs no new quota. */
+function retainedError(error: FailRequest['error']): string | null {
+  return error === undefined
+    ? null
+    : JSON.stringify({
+        code: error.code.slice(0, ERROR_CODE_UNITS),
+        message: error.message.slice(0, ERROR_MESSAGE_UNITS),
+      });
+}
 
 /** `min(2^n, 300)` seconds after the n-th consecutive failure. */
 function backoffMs(failedCount: number): number {
@@ -522,7 +535,7 @@ export function applyFail(
     `UPDATE attempts SET status = ?, finished_at = ?, error = ? WHERE attempt_id = ?`,
     failed ? 'failed' : 'skipped',
     now,
-    request.error === undefined ? null : JSON.stringify(request.error),
+    retainedError(request.error),
     attemptId,
   );
   setRegeneration(sql, {

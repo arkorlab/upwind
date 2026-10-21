@@ -11,11 +11,18 @@ interface PendingAudit {
 }
 
 const PENDING_MS = 10_000;
+const MAX_TRACKED_AUDITS = 128;
 // Retain only bounded data; another request must never await this request's I/O Promise.
-const written: { nonce: string; pending: PendingAudit | undefined } = {
-  nonce: '',
-  pending: undefined,
-};
+const audits = new Map<string, PendingAudit | true>();
+
+function track(pending: PendingAudit): void {
+  audits.delete(pending.nonce);
+  audits.set(pending.nonce, pending);
+  if (audits.size > MAX_TRACKED_AUDITS) {
+    const oldest = audits.keys().next().value;
+    if (oldest !== undefined) audits.delete(oldest);
+  }
+}
 
 /** Missing evidence blocks the operator audit; a failed write never blocks a blob response. */
 export async function recordPrefetchAudit(
@@ -27,11 +34,13 @@ export async function recordPrefetchAudit(
   try {
     if (typeof props !== 'object' || props === null) return;
     const identity = prefetchAuditIdentity(Reflect.get(props, 'migrationAudit'));
-    if (identity === undefined || identity.nonce === written.nonce) return;
+    if (identity === undefined) return;
+    const previous = audits.get(identity.nonce);
+    if (previous === true) return;
     const now = Date.now();
-    if (written.pending?.nonce === identity.nonce && written.pending.expiresAt > now) return;
+    if (previous !== undefined && previous.expiresAt > now) return;
     pending = { nonce: identity.nonce, expiresAt: now + PENDING_MS };
-    written.pending = pending;
+    track(pending);
     const witness: PrefetchAuditWitness = {
       version: 1,
       ...identity,
@@ -42,11 +51,13 @@ export async function recordPrefetchAudit(
     await bucket.put(prefetchAuditKey(identity.nonce), JSON.stringify(witness), {
       httpMetadata: { contentType: 'application/json' },
     });
-    written.nonce = identity.nonce;
+    if (audits.get(identity.nonce) === pending) audits.set(identity.nonce, true);
   } catch {
     // waitUntil can fail or expire. Leave this nonce retryable; no evidence means unverified.
   } finally {
     // Expired work must not clear the marker belonging to a newer attempt.
-    if (pending !== undefined && written.pending === pending) written.pending = undefined;
+    if (pending !== undefined && audits.get(pending.nonce) === pending) {
+      audits.delete(pending.nonce);
+    }
   }
 }
