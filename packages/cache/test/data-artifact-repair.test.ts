@@ -289,6 +289,7 @@ describe('a data upload replacing a known broken canonical artifact', () => {
         ok: false,
         error: { code: 'artifact_mismatch' },
       });
+
       await given.drain();
     },
   );
@@ -307,6 +308,7 @@ describe('a data upload replacing a known broken canonical artifact', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-length')).toBe('64');
     expect(bytes).toStrictEqual(given.bytes);
+
     await given.drain();
   });
 
