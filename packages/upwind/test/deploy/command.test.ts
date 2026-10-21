@@ -76,7 +76,7 @@ describe('`upwind deploy --dry-run`', () => {
     expect(printed).toStrictEqual([
       `upwind: shop, deployment ${deploymentId}`,
       `  Functions: app as shop-${deploymentLabel(deploymentId)}-app`,
-      '  Workers: up to 11 for this project, keeping 5 deployments to roll back to',
+      '  Workers: up to 12 for this project, keeping 5 deployments to roll back to',
       '  reached at: shop-edge on workers.dev',
       '  account: not read, since CLOUDFLARE_API_TOKEN is not set',
     ]);
@@ -96,7 +96,7 @@ describe('`upwind deploy --dry-run`', () => {
     ).resolves.toBe(0);
     expect(printed).toContain('  reached at: https://shop-edge.example.workers.dev');
     expect(printed).toContain(
-      "  account account-1: 0 Workers, 0 of them this project's; with this project's at most, 11 of 500",
+      "  account account-1: 0 Workers, 0 of them this project's; with this project's at most, 12 of 500",
     );
     expect(printed).toContain('  live: nothing yet; this would be the first deployment');
     expect(fake.requests.every((request) => request.method === 'GET')).toBe(true);
@@ -126,7 +126,7 @@ describe('`upwind deploy --dry-run`', () => {
     expect(errors).toStrictEqual([
       'upwind: one thing stops this deployment:',
       expect.stringContaining(
-        "holds 490 Workers besides this project's, and with this project's at most it would hold 501, over the 500",
+        "holds 490 Workers besides this project's, and with this project's at most it would hold 502, over the 500",
       ),
     ]);
   });
