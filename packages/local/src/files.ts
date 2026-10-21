@@ -53,6 +53,8 @@ import type { Reading } from './reading.ts';
 
 /** The header a rule sets a file's type by. */
 const CONTENT_TYPE = 'content-type';
+/** Bound simultaneous browser samples; each owns its own trace and response cleanup. */
+const FILE_SAMPLES_AT_ONCE = 4;
 
 /**
  * A request the middleware rewrote onto the file of the build at `onto`, served as that file:
@@ -135,22 +137,37 @@ export async function fileVerdict(
     prover: asking.prover,
     contentTypes: typesOf(stack, at, file),
   });
-  let checked: Verdict | undefined;
-  for (const sampled of samples) {
-    const verdict = await fileSampleVerdict(stack, at, { file, sampled });
-    if (verdict.kind === 'failed') return verdict;
-    if (checked === undefined || verdict.kind === 'ok') checked = verdict;
+  const preferred = samples[0];
+  if (preferred === undefined) return skipped(CLAIMED);
+  let failure: Verdict | undefined;
+  let served = false;
+  for (let index = 1; index < samples.length; index += FILE_SAMPLES_AT_ONCE) {
+    const verdicts = await Promise.all(
+      samples
+        .slice(index, index + FILE_SAMPLES_AT_ONCE)
+        .map((sampled) => fileSampleVerdict(stack, at, { file, sampled, followUps: false })),
+    );
+    failure = verdicts.find((verdict) => verdict.kind === 'failed');
+    served ||= verdicts.some((verdict) => verdict.kind === 'ok');
+    if (failure !== undefined) break;
   }
-  return checked ?? skipped(CLAIMED);
+  // Finish with the original representative and its full follow-ups, keeping the ordinary witness.
+  const checked = await fileSampleVerdict(stack, at, { file, sampled: preferred, followUps: true });
+  if (failure !== undefined) return failure;
+  return checked.kind === 'skipped' && served ? failed(undefined) : checked;
 }
 
 /** Each browser's answer is judged independently, with that request's own middleware trace. */
 async function fileSampleVerdict(
   stack: CheckedStack,
   at: URL,
-  asking: { readonly file: StaticFileEntry; readonly sampled: Sampled },
+  asking: {
+    readonly file: StaticFileEntry;
+    readonly sampled: Sampled;
+    readonly followUps: boolean;
+  },
 ): Promise<Verdict> {
-  const { file, sampled } = asking;
+  const { file, sampled, followUps } = asking;
   if (sampled.kind === 'claimed') {
     return skipped(CLAIMED);
   }
@@ -192,7 +209,7 @@ async function fileSampleVerdict(
   if ('failure' in decision) {
     return failed(decision.failure);
   }
-  const read = { file, headers: sampled.headers, answer, middleware: decision.decided };
+  const read = { file, headers: sampled.headers, answer, middleware: decision.decided, followUps };
   return await servedVerdict(stack, url, read);
 }
 
@@ -210,6 +227,8 @@ async function servedVerdict(
     readonly headers: Readonly<Record<string, string>>;
     readonly answer: Reading;
     readonly middleware: Decided;
+    /** The original sample retains HEAD/range/validator controls; every sample checks its GET. */
+    readonly followUps: boolean;
   },
 ): Promise<Verdict> {
   const { file, answer, middleware: decided } = read;
@@ -237,7 +256,7 @@ async function servedVerdict(
   }
   // No representation bytes were sent to compare a later range against. Its status, absent
   // body/framing and retained metadata were checked above; ordinary file follow-ups are unchanged.
-  if (expected.bodylessRewrite) {
+  if (expected.bodylessRewrite || !read.followUps) {
     return failed(undefined);
   }
   return failed(

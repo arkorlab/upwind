@@ -3466,8 +3466,12 @@ describe('what the check makes of the middleware', () => {
         has: [{ type: 'header', key: 'sec-fetch-dest', value: 'empty' }],
       };
       answers.set('/a.txt', {
-        headers: { 'content-type': 'image/png', 'cache-control': GATED, 'x-arkor-edge': FILE_EDGE },
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
         body: 'kept bytes',
+        when: {
+          test: (headers) => headers['sec-fetch-dest'] === 'image',
+          headers: { 'content-type': 'image/png', 'cache-control': GATED },
+        },
       });
       const result = await checkStack(
         stackOf([], files, { headerRules: [typed], reservedRoutes: [unnamed, fetched] }),
@@ -6813,7 +6817,9 @@ describe('what the check makes of the middleware', () => {
           body,
           endless: true,
           opened: (response) => {
-            response.once('close', () => closed.resolve(true));
+            response.once('close', () => {
+              closed.resolve(true);
+            });
             response.flushHeaders();
           },
         });
@@ -6821,6 +6827,7 @@ describe('what the check makes of the middleware', () => {
         const result = await checkStack(stackOf([], {}, { functions: ['app'] }));
 
         expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+
         await closed.promise;
       },
     );

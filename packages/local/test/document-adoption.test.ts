@@ -426,7 +426,7 @@ describe('redirected documents retain their original request and response', () =
         kind: 'skipped',
         reason: `answered by the application's middleware (${SIBLING_ACCOUNT})`,
       },
-      requests: 1,
+      requests: 101,
     },
     {
       reader: 'file follow-up',
