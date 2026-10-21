@@ -95,7 +95,12 @@ function unitAt(pattern: string, index: number): Omit<Token, 'spells'> | undefin
   return undefined;
 }
 
-function tokenAt(pattern: string, index: number, literal: string): Token | undefined {
+function tokenAt(
+  pattern: string,
+  index: number,
+  literal: string,
+  alreadySpelled: boolean,
+): Token | undefined {
   if (pattern[index] !== '(') {
     const unit = unitAt(pattern, index);
     if (unit === undefined) {
@@ -113,6 +118,7 @@ function tokenAt(pattern: string, index: number, literal: string): Token | undef
   const quantifier = quantifierAt(pattern, close);
   const contents = groupContents(pattern, index);
   const spells =
+    !alreadySpelled &&
     quantifier === undefined &&
     contents !== undefined &&
     everyAlternativeSpells(pattern, contents, close - 1, literal);
@@ -123,7 +129,10 @@ function sequenceSpells(pattern: string, start: number, end: number, literal: st
   let run = '';
   let index = start;
   while (index < end) {
-    const token = tokenAt(pattern, index, literal);
+    // A preceding run already proves the sequence, once this group's token and end are checked.
+    const isGroup = pattern[index] === '(';
+    const alreadySpelled = isGroup && run.includes(literal);
+    const token = tokenAt(pattern, index, literal, alreadySpelled);
     if (token === undefined || token.end > end) {
       return false;
     }
@@ -131,7 +140,7 @@ function sequenceSpells(pattern: string, start: number, end: number, literal: st
       return true;
     }
     if (token.char === undefined) {
-      if (run.includes(literal)) {
+      if (alreadySpelled || (!isGroup && run.includes(literal))) {
         return true;
       }
       run = '';
