@@ -26,7 +26,8 @@ export interface KvSink {
 }
 
 export interface BlobStore {
-  read(key: string): Promise<Uint8Array | undefined>;
+  /** Read only the declared length, using the metadata returned by the same storage GET. */
+  read(key: string, byteLength: number): Promise<Uint8Array | undefined>;
   /** Whether anything is stored under the key, without reading it. */
   exists(key: string): Promise<boolean>;
   write(key: string, value: string | Uint8Array, contentType: string): Promise<void>;
@@ -55,6 +56,18 @@ export interface CarriedValue {
 }
 
 const HEX_RADIX = 16;
+
+/** A stored body differs from its declared size, before any of its bytes are materialized. */
+export class BlobLengthError extends Error {
+  override name = 'BlobLengthError';
+
+  readonly byteLength: number;
+
+  constructor(byteLength: number, expected: number) {
+    super(`stored blob has ${byteLength} bytes, not ${expected}`);
+    this.byteLength = byteLength;
+  }
+}
 
 class InjectedFaultError extends Error {
   constructor(target: string, options?: ErrorOptions) {
@@ -174,10 +187,15 @@ export async function writeKey(write: () => Promise<void>): Promise<void> {
 
 export function blobStore(bucket: R2Bucket, faults: () => TestFaults): BlobStore {
   return {
-    read: async (key) => {
+    read: async (key, byteLength) => {
       checkFault(faults, 'r2');
       const object = await bucket.get(key);
-      return object === null ? undefined : new Uint8Array(await object.arrayBuffer());
+      if (object === null) return undefined;
+      if (object.size !== byteLength) {
+        releaseStream(object.body);
+        throw new BlobLengthError(object.size, byteLength);
+      }
+      return new Uint8Array(await object.arrayBuffer());
     },
     exists: async (key) => {
       checkFault(faults, 'r2');

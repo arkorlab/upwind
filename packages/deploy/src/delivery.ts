@@ -128,5 +128,10 @@ export function shellPlacementsOf(manifest: ProjectManifest): ShellPlacement[] {
       place(segment.artifact, segment.encodings, `${entry.pathname}${segmentPath}`);
     }
   }
+  if (manifest.pagesFallbacks !== undefined) {
+    for (const entry of Object.values(manifest.pagesFallbacks)) {
+      place(entry.shell.artifact, entry.shell.encodings, entry.route);
+    }
+  }
   return [...shells.values()];
 }

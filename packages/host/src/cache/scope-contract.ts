@@ -110,6 +110,8 @@ export const seedArtifactSchema = z.object({
 });
 export type SeedArtifact = z.infer<typeof seedArtifactSchema>;
 
+const FALLBACK_PRIVACY = 3;
+
 export const seedOutputSchema = z.object({
   representationKey: z.string().min(1),
   pathname: z.string().nullable(),
@@ -117,6 +119,8 @@ export const seedOutputSchema = z.object({
   headers: toZod(headerValuesSchema),
   compute: toZod(outputComputeSchema),
   response: toZod(outputResponseSchema),
+  /** Build-owned Pages outputs; the cache independently validates each sharing claim. */
+  staticPagePrivacy: z.union([z.literal(1), z.literal(2), z.literal(FALLBACK_PRIVACY)]).optional(),
   htmlSize: z.number().int().nonnegative().nullable(),
   artifacts: z.array(seedArtifactSchema).max(MAX_SEED_OUTPUT_ARTIFACTS),
 });

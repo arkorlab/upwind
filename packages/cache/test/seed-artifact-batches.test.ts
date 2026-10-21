@@ -6,11 +6,18 @@ import { env } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
-import { referenceArtifact, releaseArtifact } from '../src/scope/artifacts.ts';
+import {
+  referenceArtifact,
+  referenceBuildArtifacts,
+  releaseArtifact,
+  rememberArtifactFailure,
+} from '../src/scope/artifacts.ts';
 import { NO_HISTORY } from '../src/scope/history.ts';
+import { applyRetention } from '../src/scope/retention.ts';
 import type { ArtifactRow } from '../src/scope/rows.ts';
 import { applySchema } from '../src/scope/schema.ts';
 import { applySeedScope, planSeedEntries } from '../src/scope/seed.ts';
+import { readMeta } from '../src/scope/state.ts';
 import { scopeStub } from '../src/scope/stub.ts';
 import type { TxInput } from '../src/scope/tx.ts';
 
@@ -105,6 +112,95 @@ function countedArtifacts<T>(sql: SqlStorage, apply: () => T) {
 }
 
 describe('a build seed referencing its borrowed artifacts', () => {
+  it('reclaims borrowed metadata at the last generation reference without queuing its blob', async () => {
+    const result = await inScope(async (tx, storage) => {
+      const { sql } = tx;
+      const artifact = artifactAt(0);
+      const apply = await planSeedEntries(tx, {
+        scopeId: tx.scopeId,
+        batchIndex: 0,
+        entries: [seedOf([artifact], '/first'), seedOf([artifact], '/second')],
+      });
+      storage.transactionSync(apply);
+      rememberArtifactFailure(sql, artifact);
+      const snapshots = [];
+      for (const pathname of ['/first', '/second']) {
+        sql.exec(
+          `UPDATE generations SET publication = 'retired' WHERE entry_id =
+           (SELECT entry_id FROM entries WHERE pathname = ?)`,
+          pathname,
+        );
+        const plan = storage.transactionSync(() => applyRetention(tx));
+        snapshots.push({
+          deletable: plan.deletable,
+          artifacts: sql.exec<ArtifactRow>(`SELECT * FROM artifacts`).toArray(),
+        });
+      }
+      return {
+        snapshots,
+        marker: readMeta(sql, `artifact_failure:${artifact.sha256}`),
+        bodyBytes: sql.exec<{ body_bytes: number }>(`SELECT body_bytes FROM scope`).one()
+          .body_bytes,
+      };
+    });
+
+    expect(result.snapshots[0]?.artifacts).toHaveLength(1);
+    expect(result.snapshots[0]?.artifacts[0]?.refs).toBe(1);
+    expect(result.snapshots[1]?.artifacts).toStrictEqual([]);
+    expect(result.snapshots.map((snapshot) => snapshot.deletable)).toStrictEqual([[], []]);
+    expect(result.marker).toBeUndefined();
+    expect(result.bodyBytes).toBe(0);
+  });
+
+  it('drains legacy unused borrowed metadata through bounded primary-key pages only once', async () => {
+    const result = await inScope((tx, storage) => {
+      const { sql } = tx;
+      const refs = Array.from({ length: 401 }, (_, index) => ({
+        ...artifactAt(index),
+        artifactId: `legacy-${String(index).padStart(4, '0')}`,
+      }));
+      referenceBuildArtifacts(sql, refs, NOW);
+      sql.exec(`UPDATE artifacts SET refs = 0`);
+      sql.exec(`UPDATE artifacts SET owned = 1 WHERE artifact_id = 'legacy-0000'`);
+      sql.exec(`UPDATE artifacts SET refs = 1 WHERE artifact_id = 'legacy-0001'`);
+      rememberArtifactFailure(sql, refs[400]!);
+      const pages = [];
+      for (let index = 0; index < 3; index += 1) {
+        const plan = storage.transactionSync(() => applyRetention(tx));
+        pages.push({
+          count: sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM artifacts`).one().n,
+          more: plan.more,
+          deletable: plan.deletable,
+        });
+      }
+      return {
+        pages,
+        remaining: sql
+          .exec<{ artifact_id: string }>(`SELECT artifact_id FROM artifacts ORDER BY artifact_id`)
+          .toArray(),
+        done: readMeta(sql, 'borrowed_artifact_sweep_done'),
+        cursor: readMeta(sql, 'borrowed_artifact_sweep_cursor'),
+        marker: readMeta(sql, `artifact_failure:${refs[400]!.sha256}`),
+        again: storage.transactionSync(() => applyRetention(tx)),
+      };
+    });
+
+    expect(result.pages).toStrictEqual([
+      { count: 203, more: true, deletable: [] },
+      { count: 3, more: true, deletable: [] },
+      { count: 2, more: false, deletable: [] },
+    ]);
+    expect(result.remaining).toStrictEqual([
+      { artifact_id: 'legacy-0000' },
+      { artifact_id: 'legacy-0001' },
+    ]);
+    expect(result.done).toBe('1');
+    expect(result.cursor).toBeUndefined();
+    expect(result.marker).toBeUndefined();
+    expect(result.again.more).toBe(false);
+    expect(result.again.deletable).toStrictEqual([]);
+  });
+
   it.each([0, 1, 16, 17, 99, 100, 101, 512, 1024])(
     'references %i artifacts within SQLite statement and parameter bounds',
     async (count) => {

@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  edgeServableStaticPages,
   bundleBlobs,
   type DeploymentBundle,
   type DurableObjectDeclaration,
@@ -11,6 +10,7 @@ import {
   ONE_PASS_BUNDLE_VERSION,
   travelsWithFunction,
 } from '@stayingupwind/core/bundle';
+import { STATIC_PAGES_FALLBACK_PRIVACY } from '@stayingupwind/core/cache';
 import { SECURITY_RELEASE_URL, securityFloorOf } from '@stayingupwind/core/next';
 import { UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
 import type { AdapterOutput, NextAdapter } from 'next';
@@ -61,6 +61,7 @@ import { projectDirOf } from './project-dir.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
 import { buildSplitBudget, checkSplitOptions, type SplitOptions } from './split.ts';
 import { collectStaticFiles, rewriteTargetFiles } from './static-files.ts';
+import { staticPagesRuntimeFields } from './static-pages.ts';
 import { type TracedFile, tracedFiles } from './traced-files.ts';
 import {
   buildWorkflowFunction,
@@ -264,12 +265,9 @@ async function onBuildComplete(
       ),
     ],
   };
-  const pagesManifest = { ...baseRuntimeManifest, staticPagesPrivacy: 2 as const };
   const runtimeManifest = {
     ...baseRuntimeManifest,
-    ...(edgeServableStaticPages(pagesManifest).some((page) => page.initialRevalidate !== false) && {
-      staticPagesPrivacy: 2 as const,
-    }),
+    ...staticPagesRuntimeFields(baseRuntimeManifest),
   };
   const files = filesRead(ctx, {
     workflow,
@@ -344,7 +342,7 @@ async function onBuildComplete(
     aiInference: 1,
     // Its runtime records privacy vetoes and targeted no-transform prohibitions for route bodies.
     routeBodyPrivacy: 2,
-    staticPagesPrivacy: 2,
+    staticPagesPrivacy: STATIC_PAGES_FALLBACK_PRIVACY,
     ...objects.bundle,
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).

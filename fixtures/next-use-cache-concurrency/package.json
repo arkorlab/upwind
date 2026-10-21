@@ -1,0 +1,15 @@
+{
+  "name": "@upwind-fixture/next-use-cache-concurrency",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Two requests for one \"use cache\" entry, in one isolate, the second while the first reads it.",
+  "type": "module",
+  "scripts": {
+    "build": "next build"
+  },
+  "dependencies": {
+    "next": "16.4.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

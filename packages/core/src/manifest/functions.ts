@@ -1,10 +1,12 @@
 import { PRIMARY_FUNCTION } from '../bundle/function-name.ts';
+import { pageOfPagesData } from '../bundle/pages-data.ts';
 import { dynamicRouteFor, isExactPathname, isReserved } from './dynamic.ts';
 import { findRouteEntry } from './manifest.ts';
 import { pageKeyOf } from './page-keys.ts';
 import { findRouteBody } from './route-bodies.ts';
 import type { AppRuntime, ProjectManifest } from './schema.ts';
-import { findStaticPage } from './static-pages.ts';
+import { findStaticPage, findPagesFallback } from './static-pages.ts';
+const PAGES_FALLBACK_PRIVACY = 3;
 
 /**
  * Which app Function an edge sends a request to, for a deployment whose routes the build split
@@ -39,6 +41,8 @@ export function functionFor(
     return undefined;
   }
   const { pathname } = url;
+  const props = pairedPropsFunction(manifest, url, headers);
+  if (props !== undefined) return props;
   const shell = findRouteEntry(manifest, pathname);
   if (shell !== undefined) {
     return shell.function ?? PRIMARY_FUNCTION;
@@ -64,6 +68,34 @@ export function functionFor(
   // pages are kept there, but the Function that holds its route is the same either way.
   const dynamic = dynamicRouteFor(manifest, url, headers, true);
   return dynamic === undefined ? undefined : (dynamic.function ?? PRIMARY_FUNCTION);
+}
+
+/** Versioned props are sent to the Function of their actual member or native class. */
+function pairedPropsFunction(
+  manifest: ProjectManifest,
+  url: URL,
+  headers: Headers,
+): string | undefined {
+  const pathname = url.pathname;
+  const props =
+    manifest.pagesDataPrefix === undefined
+      ? undefined
+      : pageOfPagesData(
+          manifest.pagesDataPrefix,
+          manifest.pagesDataBasePath ?? '',
+          pathname,
+          manifest.trailingSlash === true,
+        );
+  if (props !== undefined) {
+    const pageUrl = new URL(url.href);
+    pageUrl.pathname = props;
+    const page = findStaticPage(manifest, props);
+    if (page?.staticPagePrivacy === PAGES_FALLBACK_PRIVACY && page.dataPathname === pathname)
+      return page.function ?? PRIMARY_FUNCTION;
+    const fallback = findPagesFallback(manifest, pageUrl, headers);
+    if (fallback?.dataPathname === pathname) return fallback.entry.function ?? PRIMARY_FUNCTION;
+  }
+  return undefined;
 }
 
 /**

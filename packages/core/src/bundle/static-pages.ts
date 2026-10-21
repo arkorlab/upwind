@@ -1,3 +1,4 @@
+import { STATIC_PAGES_FALLBACK_PRIVACY } from '../cache/static-page-version.ts';
 import { staticPageHeadersAllowSharing } from '../cache/static-pages.ts';
 import type { Prerender } from './schema.ts';
 import {
@@ -68,7 +69,8 @@ function privacyVersion(bundle: ServingBundle, page: Prerender): 1 | 2 | undefin
   if (page.initialRevalidate === false && page.initialExpiration === undefined) return 1;
   const { initialRevalidate, initialExpiration } = page;
   return typeof initialRevalidate === 'number' &&
-    bundle.staticPagesPrivacy === 2 &&
+    (bundle.staticPagesPrivacy === 2 ||
+      bundle.staticPagesPrivacy === STATIC_PAGES_FALLBACK_PRIVACY) &&
     bundle.config.basePath === '' &&
     bundle.config['output'] !== 'export' &&
     Number.isSafeInteger(initialRevalidate) &&
@@ -83,7 +85,9 @@ function privacyVersion(bundle: ServingBundle, page: Prerender): 1 | 2 | undefin
 export function staticPagesPrivacyOf(bundle: ServingBundle): ReadonlyMap<Prerender, 1 | 2> {
   const admitted = new Map<Prerender, 1 | 2>();
   if (
-    (bundle.staticPagesPrivacy !== 1 && bundle.staticPagesPrivacy !== 2) ||
+    (bundle.staticPagesPrivacy !== 1 &&
+      bundle.staticPagesPrivacy !== 2 &&
+      bundle.staticPagesPrivacy !== STATIC_PAGES_FALLBACK_PRIVACY) ||
     !reproducesDynamicRouting(bundle)
   )
     return admitted;

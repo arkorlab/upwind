@@ -1,8 +1,6 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-
 import type { DeploymentBundle } from '@stayingupwind/core/bundle';
-import type { MiniflareWorkerConfig } from 'miniflare';
+
+import { functionWorker } from './function-worker.ts';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const HTTP_OK = 200;
@@ -17,34 +15,12 @@ export async function externalOutputHolds(
     return ['the external-output page was prerendered instead of remaining dynamic'];
   }
   const spec = bundle.functions.app;
-  const modules: NonNullable<MiniflareWorkerConfig['manifest']>['modules'] = {};
-  for (const module of spec.modules) {
-    const bytes = await readFile(path.join(out, 'blobs', module.blob.sha256));
-    modules[module.name] = {
-      type: module.type === 'commonjs' ? 'cjs' : module.type,
-      contents:
-        module.type === 'data' || module.type === 'wasm'
-          ? new Uint8Array(bytes)
-          : bytes.toString('utf8'),
-    };
-  }
-  if (Object.keys(modules).every((name) => !name.endsWith('_client-reference-manifest.json'))) {
+  if (spec.modules.every(({ name }) => !name.endsWith('_client-reference-manifest.json'))) {
     return ['the external-output Function carries no client-reference manifest'];
   }
-  // Other matrix fixtures need no native runtime: load it only for this HTTP integration.
+  // Most matrix fixtures need no native runtime: load it only for the ones that make a request.
   const { Miniflare } = await import('miniflare');
-  const runtime = new Miniflare({
-    workers: [
-      {
-        config: {
-          name: 'external-output',
-          compatibilityDate: spec.compatibilityDate,
-          compatibilityFlags: spec.compatibilityFlags,
-          manifest: { mainModule: spec.mainModule, modulesRoot: '/bundle', modules },
-        },
-      },
-    ],
-  });
+  const runtime = new Miniflare({ workers: [await functionWorker('external-output', spec, out)] });
   try {
     const response = await runtime.dispatchFetch('http://external-output.test/', {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
