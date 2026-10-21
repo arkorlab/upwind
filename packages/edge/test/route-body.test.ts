@@ -342,16 +342,23 @@ function varyCases(values: readonly string[]) {
   return VARY_LAYERS.flatMap((layer) => values.map((vary) => ({ layer, vary })));
 }
 
-/** Place variation on the selected runtime record or on the layer that actually supplies it. */
-async function varyFixture(layer: VaryLayer, vary: string) {
-  const test = await fixture({
-    ...(layer === 'configured' && {
+const VARY_FIXTURES = {
+  record: async (vary: string) => {
+    const test = await fixture();
+    await runtimeBodyType(test, 'image/png', { vary });
+    return test;
+  },
+  configured: (vary: string) => {
+    return fixture({
       headerRules: [{ sourceRegex: '^/icon$', headers: { vary } }],
-    }),
-    ...(layer === 'middleware' && { middlewareHeaders: { vary } }),
-  });
-  if (layer === 'record') await runtimeBodyType(test, 'image/png', { vary });
-  return test;
+    });
+  },
+  middleware: (vary: string) => fixture({ middlewareHeaders: { vary } }),
+};
+
+/** Place variation on the selected runtime record or on the layer that actually supplies it. */
+function varyFixture(layer: VaryLayer, vary: string) {
+  return VARY_FIXTURES[layer](vary);
 }
 
 /** Exercise the dispatcher too: a non-document request must never enter HTML composition. */
