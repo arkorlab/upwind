@@ -842,4 +842,5 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
 export default createAdapter();
 
 export { bundleDurableObjects, type BundledDurableObject } from './durable-objects.ts';
-export type { UpwindConfig } from './project-config.ts';
+// What `upwind deploy` reads the project's configuration with: the reader its build uses.
+export { type DeployConfig, readProjectConfig, type UpwindConfig } from './project-config.ts';

@@ -27,7 +27,8 @@
   "scripts": {
     "build": "node scripts/build.ts",
     "prepack": "node scripts/build.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@stayingupwind/core": "workspace:*",
@@ -35,15 +36,17 @@
     "wrangler": "catalog:"
   },
   "devDependencies": {
+    "@stayingupwind/host": "workspace:*",
     "@types/node": "catalog:",
     "next": "catalog:",
     "rolldown": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "peerDependencies": {
     "next": ">=16.2.0 <17"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=24.10"
   }
 }

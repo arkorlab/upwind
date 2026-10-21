@@ -240,15 +240,64 @@ export default {
 And `NEXT_ADAPTER_PATH` still wins, for the build that means it: a job that runs on Vercel to produce
 a bundle rather than a Vercel deployment names the adapter in the environment and gets one.
 
+## `upwind deploy`
+
+```bash
+CLOUDFLARE_API_TOKEN=… pnpm upwind deploy --dry-run
+```
+
+The project, deployed to a Cloudflare account of your own: the edge in front, the runtime cache
+behind it, and each deployment's Functions as Workers of their own, the edge switched to a new
+deployment only once the new one answers. This version goes as far as the plan — it builds the
+project for a deployment, checks the build and the account, and says what it would make there — and
+changes nothing on the account; run it with `--dry-run`.
+
+- **The build is a deploy's own.** It is `upwind build` with the deployment's id chosen first, so
+  that every asset carries it, and with no storage published while pages prerender: a deployment's
+  pages are never rendered from a development database. `--build-only` builds and stops, for a job
+  that holds no credentials; `--prebuilt` deploys what that build left, in a job that does.
+- **Credentials come from the environment, never a flag.** `CLOUDFLARE_API_TOKEN`, and
+  `CLOUDFLARE_ACCOUNT_ID` where the token reaches more than one account. They are taken out of the
+  environment before the project's configuration or its build runs, so neither is handed them.
+- **The project says what it is given.** Its `deploy` section, in `upwind.config.ts` (or
+  `upwind.jsonc`, `upwind.json`), names the project on the account, the hostnames the edge is
+  reached on beside `workers.dev`, how many deployments to keep for rolling back to, the storage
+  every Function is bound to, and the secrets read from the environment on every deploy.
+  `--env-file` adds a file's variables to those secrets. Nothing is guessed from the code: storage
+  a project does not name is not made.
+- **What would be wrong is refused before the account is touched**: a Function built without the
+  runtime cache, a cron nobody would fire, a project that signs users in without its secret, more
+  Workers than an account holds. Each is said, and the run ends.
+
+```ts
+import type { UpwindConfig } from '@stayingupwind/adapter';
+
+export default {
+  deploy: {
+    name: 'shop',
+    hostnames: ['shop.example.com'],
+    storage: { UPWIND_D1: 'd1' },
+    secrets: ['AUTH_SECRET'],
+  },
+} satisfies UpwindConfig;
+```
+
 ## Options
 
 ```
 upwind dev [directory]
 upwind build [directory]
+upwind deploy [directory] --dry-run
 
   -p, --port <port>      Port to listen on, `dev` only (default: $PORT, else 3000)
   -H, --hostname <host>  Hostname to bind, `dev` only (default: every interface)
       --remote-ai        Enable declared Workers AI bindings, `dev` only
+      --dry-run          Say what a deploy would do and change nothing, `deploy` only
+      --build-only       Build for a deploy and stop, `deploy` only
+      --prebuilt         Deploy what --build-only built, `deploy` only
+      --env-file <file>  Secrets for the deployment's Functions, `deploy` only; may repeat
+      --keep <n>         Deployments kept to roll back to, `deploy` only (default: 5)
+      --message <text>   What the deployment is noted as, `deploy` only
   -v, --version          Print upwind's version
   -h, --help             Print the usage
       --                 Everything after this is the directory, even `--help`
