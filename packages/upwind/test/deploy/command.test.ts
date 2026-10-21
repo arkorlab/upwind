@@ -1,11 +1,13 @@
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { createId } from '@stayingupwind/core/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { OWNER_KEY } from '../../src/deploy/account.ts';
 import type { DeployOptions } from '../../src/deploy/args.ts';
 import { runDeploy } from '../../src/deploy/command.ts';
-import { deploymentLabel } from '../../src/deploy/names.ts';
+import { deploymentLabel, functionScriptName, projectNames } from '../../src/deploy/names.ts';
 import { ownVersion } from '../../src/manifest.ts';
 import {
   bundleOf,
@@ -15,12 +17,19 @@ import {
   projectDir,
   writeBundle,
 } from './bundle.ts';
-import { fakeCloudflare } from './fake-cloudflare.ts';
+import { type FakeCloudflare, fakeCloudflare, type FakeScript } from './fake-cloudflare.ts';
 import { projectWith } from './project.ts';
 
-/** A project with a build `upwind deploy --build-only` made, and the adapter to read its settings. */
+/**
+ * A project with a build `upwind deploy --build-only` made, and the adapter to read its settings:
+ * one Function, or as many as `functions` says, the first one's pages split among the rest.
+ */
 async function builtProject(
-  input: { readonly deployable?: boolean; readonly noted?: boolean } = {},
+  input: {
+    readonly deployable?: boolean;
+    readonly noted?: boolean;
+    readonly functions?: number;
+  } = {},
 ) {
   const dir = projectDir();
   projectWith({ dir, adapterVersion: await ownVersion(), packageName: 'shop' });
@@ -28,13 +37,47 @@ async function builtProject(
     input.deployable === false
       ? functionOf([moduleOf(dir, 'index.mjs', 'esm', 'export default {};')])
       : deployableFunction(dir);
-  const bundle = bundleOf(app);
+  const split = Array.from(
+    { length: (input.functions ?? 1) - 1 },
+    (_, index) => `app-${index + 2}`,
+  );
+  const bundle =
+    split.length === 0
+      ? bundleOf(app)
+      : bundleOf(app, {
+          v: 2,
+          entrypoints: [
+            { id: '/', kind: 'app-page', pathname: '/' },
+            ...split.map((name) => {
+              return {
+                id: `/${name}`,
+                kind: 'app-page' as const,
+                pathname: `/${name}`,
+                function: name,
+              };
+            }),
+          ],
+          functions: { app, split: Object.fromEntries(split.map((name) => [name, app])) },
+        });
   writeBundle(dir, bundle);
   if (input.noted !== false) {
     const note = { v: 1, deploymentId: bundle.deploymentId, upwind: '0.4.0', builtAt: 'now' };
     writeFileSync(path.join(dir, '.arkor/upwind-deploy.json'), JSON.stringify(note));
   }
   return { dir, deploymentId: bundle.deploymentId };
+}
+
+/** A Worker on the fake account, of any kind: what the account's count of them is made of. */
+function workerOn(fake: FakeCloudflare, name: string): void {
+  const script: FakeScript = {
+    name,
+    versions: [],
+    deployments: [],
+    subdomain: { enabled: true, previews_enabled: true },
+    migrationTag: undefined,
+    secrets: new Map(),
+  };
+  fake.scripts.set(name, script);
 }
 
 function optionsFor(dir: string, overrides: Partial<DeployOptions> = {}): DeployOptions {
@@ -106,14 +149,7 @@ describe('`upwind deploy --dry-run`', () => {
     const { dir } = await builtProject();
     const fake = fakeCloudflare();
     for (let index = 0; index < 490; index += 1) {
-      fake.scripts.set(`other-${index}`, {
-        name: `other-${index}`,
-        versions: [],
-        deployments: [],
-        subdomain: { enabled: true, previews_enabled: true },
-        migrationTag: undefined,
-        secrets: new Map(),
-      });
+      workerOn(fake, `other-${index}`);
     }
 
     await expect(
@@ -127,6 +163,50 @@ describe('`upwind deploy --dry-run`', () => {
       'upwind: one thing stops this deployment:',
       expect.stringContaining(
         "holds 490 Workers besides this project's, and with this project's at most it would hold 502, over the 500",
+      ),
+    ]);
+  });
+
+  it('refuses a deployment the account has no room for at its peak, before older ones are cleaned up', async () => {
+    // Six deployments of seven Functions each, kept or live, beside 450 Workers of others: 497 in
+    // all. A build of four Functions keeps to 483 once it has cleaned up, and needs 501 before.
+    const { dir } = await builtProject({ functions: 4 });
+    const fake = fakeCloudflare();
+    for (let index = 0; index < 450; index += 1) {
+      workerOn(fake, `other-${index}`);
+    }
+    const names = projectNames('shop');
+    for (const own of [names.edge, names.cache, names.cacheRead, names.prefetch, names.agent]) {
+      workerOn(fake, own);
+    }
+    const roles = ['app', ...Array.from({ length: 6 }, (_, index) => `app-${index + 2}`)];
+    for (let deployment = 0; deployment < 6; deployment += 1) {
+      const deploymentId = createId('dpl');
+      for (const role of roles) {
+        workerOn(fake, functionScriptName('shop', deploymentId, role));
+      }
+    }
+    // The project's own, marked as such, so nothing but room stops the deploy.
+    const mark = new TextEncoder().encode(JSON.stringify({ v: 1, project: 'shop', made: {} }));
+    fake.buckets.set(
+      names.artifactsBucket,
+      new Map([[OWNER_KEY, { bytes: mark, contentType: 'application/json' }]]),
+    );
+
+    await expect(
+      runDeploy(
+        optionsFor(dir),
+        { apiToken: 'token', accountId: undefined },
+        { fetch: fake.fetch },
+      ),
+    ).resolves.toBe(1);
+    expect(printed).toContain(
+      "  account account-1: 497 Workers, 47 of them this project's; with this project's at most, 501 of 500",
+    );
+    expect(errors).toStrictEqual([
+      'upwind: one thing stops this deployment:',
+      expect.stringContaining(
+        "holds 497 Workers, 47 of them this project's, and this deploy would bring it to 501 before it cleans any up, over the 500",
       ),
     ]);
   });
