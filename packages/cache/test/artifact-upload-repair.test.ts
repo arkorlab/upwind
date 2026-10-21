@@ -947,8 +947,13 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     expect(
       head.mock.calls.map(([key]) => key).filter((key) => key.startsWith(prefix)),
     ).toStrictEqual([ordinaryUpload]);
+    // Stored with its digest, which a read compares with the authority's (Codex).
     expect(put.mock.calls.filter(([key]) => key.startsWith(prefix))).toStrictEqual([
-      [ordinaryUpload, plan.bytes, { httpMetadata: { contentType: TYPE } }],
+      [
+        ordinaryUpload,
+        plan.bytes,
+        { sha256: plan.artifact.sha256, httpMetadata: { contentType: TYPE } },
+      ],
     ]);
 
     await expect(bodyFor(scope, plan)).resolves.toBe(BODY);
