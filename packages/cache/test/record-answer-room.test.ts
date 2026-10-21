@@ -297,10 +297,13 @@ describe('room for unrecognized delivery record bytes', () => {
     } finally {
       reader.releaseLock();
     }
+    const served = concatBytes([first.value ?? new Uint8Array(), rest]);
+    const [actualDigest, expectedDigest] = await Promise.all([sha256Hex(served), sha256Hex(bytes)]);
 
     expect(first.value?.byteLength).toBeLessThanOrEqual(4 * 1024);
     expect(response.headers.get('content-length')).toBe(String(bytes.byteLength));
-    expect(concatBytes([first.value ?? new Uint8Array(), rest])).toStrictEqual(bytes);
+    expect(served.byteLength).toBe(bytes.byteLength);
+    expect(actualDigest).toBe(expectedDigest);
   });
 
   it('answers a header larger than the first buffer before its gated body arrives', async () => {
