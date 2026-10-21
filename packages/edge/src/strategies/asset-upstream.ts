@@ -10,6 +10,7 @@ import {
   PLATFORM_HEADER_PREFIX,
 } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
+import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import type { AssetKeepOutcome } from '@stayingupwind/host/delivery';
 
 import { applyCspReporting } from '../handlers/csp-reporting-headers.ts';
@@ -52,7 +53,12 @@ export function assetUpstreamRequest(
   // negotiates compression and decodes what comes back, and a response that still names an
   // encoding is refused rather than measured (`screenImmutableAsset`).
   headers.set('via', '1.1 arkor-edge');
-  return new Request(originUrl.href, { method: 'GET', headers, redirect: 'manual', ...init });
+  return new Request(originUrl.href, {
+    method: 'GET',
+    headers: withoutHostCredentials(headers, ctx.host.credentials),
+    redirect: 'manual',
+    ...init,
+  });
 }
 
 /**

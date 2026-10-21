@@ -135,6 +135,88 @@ describe('a prefetch binding witness during an explicit migration window', () =>
     expect(put).not.toHaveBeenCalled();
   });
 
+  it('coalesces concurrent witnesses without delaying any blob response', async () => {
+    const audit = identity();
+    const props = { allowedSha256: { [OWN]: true }, migrationAudit: audit };
+    const release = Promise.withResolvers<true>();
+    const originalPut = env.ARTIFACTS.put.bind(env.ARTIFACTS);
+    const put = vi.spyOn(env.ARTIFACTS, 'put').mockImplementation(async (...args) => {
+      await release.promise;
+      return originalPut(...args);
+    });
+    const requests = Array.from({ length: 6 }, () => entry(props, SERVICE));
+
+    try {
+      const delivered = await Promise.all(
+        requests.map(async ({ worker }) => {
+          const response = await worker.fetch(asking());
+          return { status: response.status, body: await response.text() };
+        }),
+      );
+
+      expect(delivered).toStrictEqual(
+        Array.from({ length: 6 }, () => ({ status: 200, body: BODY })),
+      );
+      expect(put).toHaveBeenCalledTimes(1);
+      await expect(env.ARTIFACTS.get(prefetchAuditKey(audit.nonce))).resolves.toBeNull();
+    } finally {
+      release.resolve(true);
+      await Promise.all(requests.map(({ ctx }) => waitOnExecutionContext(ctx)));
+    }
+
+    await expect(env.ARTIFACTS.head(prefetchAuditKey(audit.nonce))).resolves.not.toBeNull();
+  });
+
+  it('retries expired work without letting an older failure clear the new marker', async () => {
+    const audit = identity();
+    const props = { allowedSha256: { [OWN]: true }, migrationAudit: audit };
+    const firstWrite = Promise.withResolvers<true>();
+    const secondWrite = Promise.withResolvers<true>();
+    const originalPut = env.ARTIFACTS.put.bind(env.ARTIFACTS);
+    const put = vi.spyOn(env.ARTIFACTS, 'put');
+    put.mockImplementationOnce(async (...args) => {
+      await firstWrite.promise;
+      return originalPut(...args);
+    });
+    put.mockImplementationOnce(async (...args) => {
+      await secondWrite.promise;
+      return originalPut(...args);
+    });
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const first = entry(props, SERVICE);
+    const second = entry(props, SERVICE);
+    const third = entry(props, SERVICE);
+
+    try {
+      const original = await first.worker.fetch(asking());
+
+      await expect(original.text()).resolves.toBe(BODY);
+      expect(put).toHaveBeenCalledTimes(1);
+
+      now += 60_000;
+      const retried = await second.worker.fetch(asking());
+
+      await expect(retried.text()).resolves.toBe(BODY);
+      expect(put).toHaveBeenCalledTimes(2);
+
+      firstWrite.reject(new Error('the expired write eventually failed'));
+      await waitOnExecutionContext(first.ctx);
+
+      const concurrent = await third.worker.fetch(asking());
+
+      await expect(concurrent.text()).resolves.toBe(BODY);
+      expect(put).toHaveBeenCalledTimes(2);
+      expect([original.status, retried.status, concurrent.status]).toStrictEqual([200, 200, 200]);
+    } finally {
+      firstWrite.resolve(true);
+      secondWrite.resolve(true);
+      await Promise.all([first, second, third].map(({ ctx }) => waitOnExecutionContext(ctx)));
+    }
+
+    await expect(env.ARTIFACTS.head(prefetchAuditKey(audit.nonce))).resolves.not.toBeNull();
+  });
+
   it('delivers the blob before an independent witness write settles', async () => {
     const audit = identity();
     const release = Promise.withResolvers<true>();

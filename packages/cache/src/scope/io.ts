@@ -63,8 +63,8 @@ export class BlobLengthError extends Error {
 
   readonly byteLength: number;
 
-  constructor(byteLength: number, expected: number) {
-    super(`stored blob has ${byteLength} bytes, not ${expected}`);
+  constructor(byteLength: number, expected: number, options?: ErrorOptions) {
+    super(`stored blob has ${byteLength} bytes, not ${expected}`, options);
     this.byteLength = byteLength;
   }
 }
@@ -190,7 +190,7 @@ export function blobStore(bucket: R2Bucket, faults: () => TestFaults): BlobStore
     read: async (key, byteLength) => {
       checkFault(faults, 'r2');
       const object = await bucket.get(key);
-      if (object === null) return undefined;
+      if (object === null) return;
       if (object.size !== byteLength) {
         releaseStream(object.body);
         throw new BlobLengthError(object.size, byteLength);

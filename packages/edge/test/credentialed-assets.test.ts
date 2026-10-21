@@ -179,6 +179,39 @@ async function warmAsset(fixture: AssetFixture): Promise<void> {
   expect(hit.response.headers.get('x-arkor-edge')).toContain('hit=1');
 }
 
+describe.each(['passthrough', ...BACKENDS] as const)('host asset headers under %s', (backend) => {
+  const requests = backend === 'passthrough' ? 2 : 1;
+  it.each(['Accept', 'User-Agent', 'Accept-Language'])(
+    'removes a host-reserved %s while preserving other asset headers and cache hits',
+    async (reserved) => {
+      const headers = {
+        accept: 'application/javascript',
+        'user-agent': 'browser',
+        'accept-language': 'ja',
+      };
+      const fixture = await assetFixture(backend, {
+        credentials: { cookies: [], headers: [reserved] },
+      });
+      const cold = await fixture.ask(headers);
+      const repeated = await fixture.ask(headers);
+      const expected = new Headers(headers);
+      expected.delete(reserved);
+      const sent = fixture.asked.map((request) => {
+        return Object.keys(headers).map((name) => request.headers.get(name));
+      });
+      const expectedValues = Object.keys(headers).map((name) => expected.get(name));
+
+      expect([cold.text, repeated.text]).toStrictEqual([PUBLIC_ASSET, PUBLIC_ASSET]);
+      expect(fixture.asked).toHaveLength(requests);
+      expect(sent).toStrictEqual(Array.from({ length: requests }, () => expectedValues));
+      expect(cold.request.headers.get(reserved)).toBe(new Headers(headers).get(reserved));
+      expect(repeated.response.headers.get('x-arkor-edge')?.includes('hit=1')).toBe(
+        backend !== 'passthrough',
+      );
+    },
+  );
+});
+
 describe.each(BACKENDS)('credentialed assets under the %s policy', (backend) => {
   afterEach(() => vi.restoreAllMocks());
 

@@ -388,6 +388,7 @@ function servedAtEdge(classification: RequestClass): boolean {
       return true;
     }
     case 'static-page':
+    case 'pages-fallback':
     case 'rsc':
     case 'action': {
       return false;

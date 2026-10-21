@@ -1274,9 +1274,12 @@ describe('the host serves complete route-body generations', () => {
   });
 
   it.each(
-    ['record', 'configured', 'middleware'].flatMap((layer) =>
-      ['Accept-Language', 'Accept-Encoding, aCcEpT-LaNgUaGe'].map((vary) => ({ layer, vary })),
-    ),
+    ['record', 'configured', 'middleware'].flatMap((layer) => {
+      return ['Accept-Language', 'Accept-Encoding, aCcEpT-LaNgUaGe'].map((vary) => ({
+        layer,
+        vary,
+      }));
+    }),
   )('does not share an unkeyed variant from $layer: $vary', async ({ layer, vary }) => {
     const test = await fixture({
       ...(layer === 'configured' && {
@@ -1295,9 +1298,9 @@ describe('the host serves complete route-body generations', () => {
   });
 
   it.each(
-    ['record', 'configured', 'middleware'].flatMap((layer) =>
-      ['Accept-Encoding', 'aCcEpT-EnCoDiNg'].map((vary) => ({ layer, vary })),
-    ),
+    ['record', 'configured', 'middleware'].flatMap((layer) => {
+      return ['Accept-Encoding', 'aCcEpT-EnCoDiNg'].map((vary) => ({ layer, vary }));
+    }),
   )(
     'keeps serving identity bytes with compression Vary from $layer: $vary',
     async ({ layer, vary }) => {

@@ -1,4 +1,5 @@
 import { deriveEntry, kvGenerationKey } from '@stayingupwind/core/cache';
+import { releaseStream } from '@stayingupwind/core/util';
 import { ARTIFACT_SHA256_HEADER, resolveRequestSchema } from '@stayingupwind/host/cache';
 import { Hono } from 'hono';
 
@@ -66,6 +67,10 @@ async function artifactBytes(c: GatewayContext): Promise<Response> {
   const object = await c.env.ARTIFACTS.get(location.storageRef);
   if (object === null) {
     return fail(c, 'artifact_missing', 'the artifact is not in storage');
+  }
+  if (object.size !== location.byteLength) {
+    releaseStream(object.body, 'the stored artifact length differs from its authority');
+    return fail(c, 'artifact_mismatch', 'the stored artifact length differs from its authority');
   }
   meterRead(c.get('host'), c.get('scopeId'), location.byteLength);
   return new Response(object.body, {

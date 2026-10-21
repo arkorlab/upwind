@@ -1,8 +1,14 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
-import { buildGenerationIdFor, deriveEntry, policyFromBuild } from '@stayingupwind/core/cache';
+import {
+  artifactIdFor,
+  buildGenerationIdFor,
+  deriveEntry,
+  policyFromBuild,
+} from '@stayingupwind/core/cache';
 import { createId, fromBase64, toBase64 } from '@stayingupwind/core/util';
 import {
   type DataSetRequest,
+  gatewayScopePath,
   MAX_INLINE_DATA_VALUE_BYTES,
   signCacheToken,
 } from '@stayingupwind/host/cache';
@@ -18,7 +24,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { limitsOf, parseVars } from '../src/env.ts';
 import { Gateway } from '../src/function/gateway.ts';
 import { createGatewayApp } from '../src/gateway/app.ts';
-import { artifactFailed, findArtifactBySha, releaseArtifact } from '../src/scope/artifacts.ts';
+import { artifactFailed, findArtifactBySha } from '../src/scope/artifacts.ts';
 import { findEntry } from '../src/scope/entries.ts';
 import { markPruned } from '../src/scope/generations.ts';
 import { requireActiveScope, writeMeta } from '../src/scope/state.ts';
@@ -130,6 +136,14 @@ async function fixture(length: number, borrowed: boolean) {
     bytes,
     sha256,
     seedEntryId: borrowed ? entryId : undefined,
+    async artifactResponse() {
+      const artifactId = await artifactIdFor(scopeId, sha256);
+      return send(
+        new Request(`https://cache.invalid${gatewayScopePath(scopeId)}/artifacts/${artifactId}`, {
+          headers: { authorization: `Bearer ${token}` },
+        }),
+      );
+    },
     async drain() {
       await Promise.all(contexts.splice(0).map((ctx) => waitOnExecutionContext(ctx)));
     },
@@ -215,7 +229,7 @@ async function valueOf(test: Fixture, key: string): Promise<Uint8Array> {
   return bytes;
 }
 
-/** Retention leaves a borrowed row when its last generation has only archived metadata. */
+/** A legacy authority left a borrowed row when its last generation was archived. */
 async function archiveBrokenSeed(given: Fixture) {
   const entryId = given.seedEntryId;
   if (entryId === undefined) throw new Error('the fixture needs a borrowed seed');
@@ -232,7 +246,8 @@ async function archiveBrokenSeed(given: Fixture) {
       entryId,
     );
     markPruned(sql, entry.current_generation_id, given.now);
-    releaseArtifact(sql, given.sha256);
+    // New releases reclaim the row; inject the old retained shape to keep repair compatibility covered.
+    sql.exec(`UPDATE artifacts SET refs = refs - 1 WHERE sha256 = ?`, given.sha256);
     return sql
       .exec<{ storage: string; publication: string }>(
         `SELECT storage, publication FROM generations WHERE generation_id = ?`,
@@ -254,6 +269,45 @@ async function fillOtherBytes(given: Fixture, available: number): Promise<number
 describe('a data upload replacing a known broken canonical artifact', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it.each([-1, 1])(
+    'checks a stored artifact size differing by %i before serving it',
+    async (delta) => {
+      const given = await fixture(64, true);
+      const key = `build/${given.scopeId}/${given.sha256}`;
+      await env.ARTIFACTS.put(key, new Uint8Array(64 + delta));
+      const get = vi.spyOn(env.ARTIFACTS, 'get');
+      const head = vi.spyOn(env.ARTIFACTS, 'head');
+
+      const response = await given.artifactResponse();
+
+      expect(get).toHaveBeenCalledExactlyOnceWith(key);
+      expect(head).not.toHaveBeenCalled();
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'artifact_mismatch' },
+      });
+      await given.drain();
+    },
+  );
+
+  it('serves a matching stored artifact through the same single GET', async () => {
+    const given = await fixture(64, true);
+    const key = `build/${given.scopeId}/${given.sha256}`;
+    const get = vi.spyOn(env.ARTIFACTS, 'get');
+    const head = vi.spyOn(env.ARTIFACTS, 'head');
+
+    const response = await given.artifactResponse();
+    const bytes = new Uint8Array(await response.arrayBuffer());
+
+    expect(get).toHaveBeenCalledExactlyOnceWith(key);
+    expect(head).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-length')).toBe('64');
+    expect(bytes).toStrictEqual(given.bytes);
+    await given.drain();
   });
 
   it.each([

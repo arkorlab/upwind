@@ -5,8 +5,17 @@ import {
   PREFETCH_DEPLOYMENT_ENTRYPOINT,
 } from '@stayingupwind/host/prefetch-audit';
 
-// One settled nonce only: never retain another request's I/O Promise or an unbounded map.
-const written = { nonce: '' };
+interface PendingAudit {
+  readonly nonce: string;
+  readonly expiresAt: number;
+}
+
+const PENDING_MS = 10_000;
+// Retain only bounded data; another request must never await this request's I/O Promise.
+const written: { nonce: string; pending: PendingAudit | undefined } = {
+  nonce: '',
+  pending: undefined,
+};
 
 /** Missing evidence blocks the operator audit; a failed write never blocks a blob response. */
 export async function recordPrefetchAudit(
@@ -14,10 +23,15 @@ export async function recordPrefetchAudit(
   service: string,
   props: unknown,
 ): Promise<void> {
+  let pending: PendingAudit | undefined;
   try {
     if (typeof props !== 'object' || props === null) return;
     const identity = prefetchAuditIdentity(Reflect.get(props, 'migrationAudit'));
     if (identity === undefined || identity.nonce === written.nonce) return;
+    const now = Date.now();
+    if (written.pending?.nonce === identity.nonce && written.pending.expiresAt > now) return;
+    pending = { nonce: identity.nonce, expiresAt: now + PENDING_MS };
+    written.pending = pending;
     const witness: PrefetchAuditWitness = {
       version: 1,
       ...identity,
@@ -31,5 +45,8 @@ export async function recordPrefetchAudit(
     written.nonce = identity.nonce;
   } catch {
     // waitUntil can fail or expire. Leave this nonce retryable; no evidence means unverified.
+  } finally {
+    // Expired work must not clear the marker belonging to a newer attempt.
+    if (pending !== undefined && written.pending === pending) written.pending = undefined;
   }
 }
