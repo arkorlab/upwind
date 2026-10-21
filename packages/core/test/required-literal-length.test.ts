@@ -7,11 +7,21 @@ describe('a match length proved by a mandatory literal', () => {
     expect(requiredLiteralLength('^/(?<locale>[^/]+)/(?<team>[^/]+)/catalog$')).toBe(8);
   });
 
+  it('retains a prefix length proof before nested groups and their quantifiers', () => {
+    const nested = `${'(?:'.repeat(24)}alpha|beta${')'.repeat(24)}`;
+
+    expect(requiredLiteralLength(`^/catalog${nested}$`)).toBe(8);
+    expect(requiredLiteralLength('^/catalog(?:alpha|beta)?$')).toBe(8);
+    expect(requiredLiteralLength('^/catalog(?:alpha|beta){0,2}$')).toBe(8);
+  });
+
   it.each([
     '^/short$|^/catalog$',
     '^(?:/catalog)?$',
     '^(?=/catalog)/.*$',
     String.raw`^(x)\1/catalog$`,
+    String.raw`^/catalog\1$`,
+    '^/catalog(?:unfinished',
     '^/[catalog]+$',
   ])('does not turn an uncertain candidate into a length proof: %s', (source) => {
     expect(requiredLiteralLength(source)).toBeUndefined();

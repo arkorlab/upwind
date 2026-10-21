@@ -88,6 +88,38 @@ describe('proven short routing non-matches', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it.each(['', 'i'])('keeps one-step prefix proofs before nested groups with flags %s', (flags) => {
+    const nested = `${'(?:'.repeat(24)}alpha|beta${')'.repeat(24)}`;
+    const pattern = compiled(`^/catalog${nested}$`, flags);
+    const execute = vi.spyOn(pattern, 'exec');
+    current = { remaining: 1 };
+
+    expect(testWithin(pattern, '/')).toBe(false);
+    expect(current.remaining).toBe(0);
+    expect(() => execWithin(pattern, '/')).toThrow(PatternBudgetExceededError);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('does not grant a nested prefix proof to a fresh exhausted request', () => {
+    const pattern = compiled('^/catalog(?:(?:alpha|beta))$');
+    const execute = vi.spyOn(pattern, 'exec');
+    current = { remaining: 0 };
+
+    expect(() => testWithin(pattern, '/')).toThrow(PatternBudgetExceededError);
+    expect(current.remaining).toBe(0);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('does not turn an unsupported non-group suffix into a one-step budget shortcut', () => {
+    const pattern = compiled(String.raw`^/catalog\1$`);
+    const execute = vi.spyOn(pattern, 'exec');
+    current = { remaining: 1 };
+
+    expect(() => testWithin(pattern, '/')).toThrow(PatternBudgetExceededError);
+    expect(current.remaining).toBe(1);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('preserves the public affordability check even when a wrapper can prove a miss', () => {
     current = { remaining: 1 };
     const pattern = compiled();
