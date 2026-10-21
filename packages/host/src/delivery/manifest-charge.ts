@@ -129,6 +129,17 @@ function ruleObjects(
   return objects;
 }
 
+/** Each route and its build memberships, which storage does not intern. */
+function routeObjects(manifest: ProjectManifest): number {
+  let objects = 0;
+  for (const route of Object.values(manifest.routes)) {
+    // Build tags are not stored in an interned table. Even equal or shared input arrays become
+    // a separate array and separate tag objects for each route after JSON is read.
+    objects += 1 + listObjects(route.cache?.buildTags);
+  }
+  return objects;
+}
+
 /** The routes, files and pathnames a manifest lists, and the objects of its rules. */
 function manifestObjects(manifest: ProjectManifest): number {
   let bodies = 0;
@@ -157,7 +168,7 @@ function manifestObjects(manifest: ProjectManifest): number {
   }
   return (
     bodies +
-    keysOf(manifest.routes) +
+    routeObjects(manifest) +
     keysOf(manifest.staticFiles) +
     keysOf(manifest.exactPathnames) +
     keysOf(manifest.filesystemPages) +

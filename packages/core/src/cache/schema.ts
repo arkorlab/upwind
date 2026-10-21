@@ -4,14 +4,20 @@ import { ARTIFACT_ENCODINGS, ARTIFACT_ROLES } from './artifacts.ts';
 import {
   CACHE_ENTRY_KINDS,
   DATA_ENTRY_KINDS,
-  MAX_TAG_LENGTH,
   MAX_TAGS_PER_ENTRY,
   ROUTE_ENTRY_KINDS,
-  TAG_KINDS,
 } from './keys.ts';
 import { GENERATION_SOURCE_KINDS, PACK_SCHEMA_VERSION } from './pack-header.ts';
 import { STATIC_PAGES_FALLBACK_PRIVACY } from './static-page-version.ts';
+import { generationTagSchema } from './tag-schema.ts';
 import { CACHE_POLICY_SOURCES } from './timing.ts';
+
+export {
+  type GenerationTag,
+  generationTagSchema,
+  type TagKind,
+  tagKindSchema,
+} from './tag-schema.ts';
 
 /**
  * The cache's shapes, as core's schemas check them: what a host validates on its way in and what the
@@ -75,17 +81,6 @@ export const keyDescriptorSchema = z.object({
   allowQuery: z.array(z.string()).optional(),
 });
 export type KeyDescriptor = z.infer<typeof keyDescriptorSchema>;
-
-export const tagKindSchema = z.enum(TAG_KINDS);
-export type TagKind = z.infer<typeof tagKindSchema>;
-
-/** One tag a generation carries, as the generation records it. */
-export const generationTagSchema = z.object({
-  kind: tagKindSchema,
-  /** Exact, case-sensitive; never normalised. */
-  value: z.string().min(1).max(MAX_TAG_LENGTH),
-});
-export type GenerationTag = z.infer<typeof generationTagSchema>;
 
 export const durationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('finite'), seconds: z.number().nonnegative() }),

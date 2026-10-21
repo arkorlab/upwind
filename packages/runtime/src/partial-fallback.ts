@@ -2,18 +2,18 @@ import { partialFallbackUpgradeOf } from '@stayingupwind/core/bundle';
 
 import { afterBody } from './after-body.ts';
 import type { Target } from './answers.ts';
-import { nowMs } from './cache/clock.ts';
-import { currentGeneration } from './cache/current.ts';
+import { currentGenerationAfterResponse, type PendingRecordLookup } from './cache/current.ts';
 import type { AttemptReason } from './cache/host.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import type { RoutedInput } from './serve.ts';
 import { findShell, generationPathname, type Store } from './store.ts';
 
-interface PartialFallbackJob {
+export interface PartialFallbackJob {
   readonly input: RoutedInput;
   readonly store: Store;
   readonly runtime: CacheRuntime;
   readonly target: Target;
+  readonly pending?: PendingRecordLookup | undefined;
 }
 
 type Schedule = (reason: AttemptReason, base: string | null) => boolean;
@@ -54,7 +54,12 @@ export function partialUpgrade(job: PartialFallbackJob): boolean {
 /** A different request may have published the completed shell while this response was streaming. */
 async function upgradeAfterResponse(job: PartialFallbackJob, schedule: Schedule): Promise<void> {
   const { runtime, target, input } = job;
-  const lookup = await currentGeneration(runtime, target.descriptor, nowMs(), input.waitUntil);
+  const lookup = await currentGenerationAfterResponse(
+    runtime,
+    target.descriptor,
+    input.waitUntil,
+    job.pending,
+  );
   if (lookup.kind === 'none') {
     schedule('miss', null);
   } else if (lookup.kind === 'generation' && lookup.current.validity === 'stale') {
