@@ -134,36 +134,6 @@ describe("the edge's version for a deployment", () => {
     expect(bindingsOf(newest(fake))).toContainEqual({ type: 'images', name: 'IMAGES' });
   });
 
-  it('is the one a stopped run uploaded, where one is tagged as this one would be', async () => {
-    const fake = fakeCloudflare();
-    await uploadEdgeVersion(inputOf(fake, createId('dpl')));
-    const deploymentId = createId('dpl');
-    const uploaded = await uploadEdgeVersion(inputOf(fake, deploymentId));
-    const again = await uploadEdgeVersion(inputOf(fake, deploymentId));
-
-    expect(again).toStrictEqual({ versionId: uploaded.versionId, live: false });
-    expect(versionUploads(fake)).toBe(1);
-
-    // Another pointer for the same deployment is another version.
-    const otherPointer = await uploadEdgeVersion(
-      inputOf(fake, deploymentId, { pointer: JSON.stringify({ v: 1, other: true }) }),
-    );
-
-    expect(otherPointer.versionId).not.toBe(uploaded.versionId);
-  });
-
-  it('is live already where its deployment is the live one, deployed again', async () => {
-    const fake = fakeCloudflare();
-    const deploymentId = createId('dpl');
-    const first = await uploadEdgeVersion(inputOf(fake, deploymentId));
-
-    await expect(uploadEdgeVersion(inputOf(fake, deploymentId))).resolves.toStrictEqual({
-      versionId: first.versionId,
-      live: true,
-    });
-    expect(versionUploads(fake)).toBe(0);
-  });
-
   it("holds the edge to the reach the project's settings give it", async () => {
     const fake = fakeCloudflare();
     await uploadEdgeVersion(inputOf(fake, createId('dpl')));

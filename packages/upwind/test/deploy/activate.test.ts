@@ -6,7 +6,7 @@ import { type ActivateInput, activate, liveVersionOf } from '../../src/deploy/ac
 import { createCloudflareClient } from '../../src/deploy/cloudflare/client.ts';
 import type { AccountScope, VersionShare } from '../../src/deploy/cloudflare/workers.ts';
 import { READINESS_PATH } from '../../src/deploy/workers/protocol.ts';
-import { type FakeCloudflare, fakeCloudflare } from './fake-cloudflare.ts';
+import { type FakeCloudflare, fakeCloudflare, type FakeVersion } from './fake-cloudflare.ts';
 
 const EDGE = 'shop-edge';
 const ORIGIN = new URL(`https://${EDGE}.example.workers.dev/`);
@@ -31,10 +31,15 @@ interface Edge {
   readonly seen: { readonly path: string; readonly override: string | null }[];
 }
 
+/** A version of the edge the fake API holds, which a deployment may name. */
+function versionOf(id: string, number: number): FakeVersion {
+  return { id, number, metadata: {}, modules: [], annotations: {} };
+}
+
 function edgeOf(fake: FakeCloudflare, shares: readonly VersionShare[]): Edge {
   fake.scripts.set(EDGE, {
     name: EDGE,
-    versions: [],
+    versions: [versionOf('v-new', 2), versionOf('v-old', 1)],
     deployments: [{ id: 'deployment-0', versions: shares }],
     subdomain: { enabled: true, previews_enabled: false },
     migrationTag: undefined,

@@ -306,7 +306,8 @@ then asks that version, by name, which deployment it serves, and asks it for eac
 `deploy.checks` (`/` by default). Only when it answers as itself, and no check answers with a 5xx,
 is it given all the edge's traffic. Otherwise the version that was live stays live, and the run
 says what failed. A deploy stopped part way can be run again: what it wrote is found again, under
-its digest or the deployment's id.
+its digest or the deployment's id. A deployment is what it was built as: deploying the live one
+again changes nothing, so a new secret's value reaches the Functions with a new build.
 
 The token needs, on the account: **Workers Scripts: Edit**, **Workers KV Storage: Edit**, **Workers
 R2 Storage: Edit**, and **D1: Edit** where `deploy.storage` names a database. A custom domain is
