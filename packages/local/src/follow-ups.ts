@@ -15,7 +15,7 @@ import {
   staleRangeFailure,
 } from './ranges.ts';
 import type { Reading } from './reading.ts';
-import { requestsForRules } from './rule-witnesses.ts';
+import { requestsForRules, type RuleRequests } from './rule-witnesses.ts';
 
 /** The status of an answer to a request on a validator its holder already has. */
 const NOT_MODIFIED_STATUS = 304;
@@ -138,25 +138,20 @@ function typedRequestsOf(
   stack: CheckedStack,
   url: URL,
   sent: Readonly<Record<string, string>>,
-):
-  | readonly {
-      readonly headers: Readonly<Record<string, string>>;
-      readonly url: URL;
-      readonly what: string;
-    }[]
-  | string {
+): RuleRequests {
   const rules = (stack.manifest.headerRules ?? []).filter(
     (rule) => typeSetIn(rule.headers) !== undefined,
   );
-  const requests = requestsForRules(stack, url, sent, rules);
-  return typeof requests === 'string'
-    ? requests
-    : requests.map((request) => {
-        return {
-          ...request,
-          what: `the request a rule of next.config types it for (${request.what})`,
-        };
-      });
+  const result = requestsForRules(stack, url, sent, rules);
+  return {
+    ...result,
+    requests: result.requests.map((request) => {
+      return {
+        ...request,
+        what: `the request a rule of next.config types it for (${request.what})`,
+      };
+    }),
+  };
 }
 
 /**
@@ -173,8 +168,8 @@ async function typedFailure(
     readonly head: Buffer;
   },
 ): Promise<string | undefined> {
-  const typedRequests = typedRequestsOf(stack, url, asked.headers);
-  if (typeof typedRequests === 'string') return typedRequests;
+  const { requests: typedRequests, unproved } = typedRequestsOf(stack, url, asked.headers);
+  if (unproved !== undefined) return unproved;
   for (const typed of typedRequests) {
     const again = await askedAgain(stack, typed.url, { sent: typed.headers, what: typed.what });
     if (again.kind === 'failed') {

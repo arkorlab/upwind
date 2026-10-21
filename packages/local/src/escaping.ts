@@ -103,8 +103,9 @@ const PROTOCOL_QUERY_KEYS: ReadonlySet<string> = new Set([
  * is what no request can carry to the edge: its `Accept-Encoding`, which Cloudflare's front line
  * sets on every request in the visitor's place (`edgeReads`).
  */
-function protocolCondition(condition: RouteHas & { readonly key: string }): boolean {
+export function protocolCondition(condition: RouteHas): boolean {
   const { key } = condition;
+  if (key === undefined) return true;
   const name = key.toLowerCase();
   switch (condition.type) {
     case 'header': {

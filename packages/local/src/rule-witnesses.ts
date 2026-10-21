@@ -1,7 +1,7 @@
 import { headerRulesFor, type HeaderRule } from '@stayingupwind/core/manifest';
 
 import type { CheckedStack } from './answers.ts';
-import { carryingEach, lackingEach } from './escaping.ts';
+import { carryingEach, lackingEach, protocolCondition } from './escaping.ts';
 import { routedReads } from './routing-reads.ts';
 
 export interface RuleRequest {
@@ -10,13 +10,18 @@ export interface RuleRequest {
   readonly what: string;
 }
 
+export interface RuleRequests {
+  readonly requests: readonly RuleRequest[];
+  readonly unproved?: string;
+}
+
 /** Requests selecting each applicable conditioned rule; an unwitnessed rule proves nothing. */
 export function requestsForRules(
   stack: CheckedStack,
   url: URL,
   sent: Readonly<Record<string, string>>,
   rules: readonly HeaderRule[],
-): readonly RuleRequest[] | string {
+): RuleRequests {
   const requests: RuleRequest[] = [];
   for (const rule of rules) {
     if (rule.has === undefined && rule.missing === undefined) continue;
@@ -24,6 +29,19 @@ export function requestsForRules(
     const selected = (headers: Readonly<Record<string, string>>, at: URL): boolean =>
       headerRulesFor(alone, at, routedReads(at, headers)).conditioned;
     if (selected(sent, url)) continue;
+    // A fixed host/front-line header, or a payload-only protocol field, cannot be changed to
+    // select this rule while keeping a request of this class. Other query/cookie/header values can.
+    const fixed = {
+      ...stack.manifest,
+      headerRules: [
+        {
+          ...rule,
+          has: (rule.has ?? []).filter(protocolCondition),
+          missing: (rule.missing ?? []).filter(protocolCondition),
+        },
+      ],
+    };
+    if (!headerRulesFor(fixed, url, routedReads(url, sent)).conditioned) continue;
     // A condition for another pathname is not a missing witness for this file or page.
     const pathOnly = {
       ...stack.manifest,
@@ -35,7 +53,11 @@ export function requestsForRules(
     const carried = carryingEach(sent, url, rule.has ?? []);
     const made = carried === undefined ? undefined : lackingEach(carried, rule.missing ?? []);
     if (carried === undefined || made === undefined || !selected(made.headers, made.url)) {
-      return 'a conditioned header rule applies to this path, but the check finds no request selecting it: no request proves it';
+      return {
+        requests,
+        unproved:
+          'a conditioned header rule applies to this path, but the check finds no request selecting it: no request proves it',
+      };
     }
     requests.push({
       headers: made.headers,
@@ -45,5 +67,5 @@ export function requestsForRules(
         'as it was asked',
     });
   }
-  return requests;
+  return { requests };
 }

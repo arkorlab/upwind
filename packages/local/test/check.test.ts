@@ -999,14 +999,7 @@ function answeredComposedCoded(
  */
 function claimedAnswer(answer: Answer, request: IncomingMessage): Answer {
   const handedOn = { 'x-arkor-edge': 'passthrough;reason=route-not-proved' };
-  const ruled =
-    answer.when?.test(
-      request.headers,
-      request.method,
-      new URL(request.url ?? '/', 'http://localhost'),
-    ) === true
-      ? answer.when
-      : undefined;
+  const ruled = matchingAnswer(answer, request);
   return { ...answer, headers: { ...answer.headers, ...ruled?.headers, ...handedOn } };
 }
 
@@ -1026,14 +1019,7 @@ function answerCarrying(answer: Answer | undefined, request: IncomingMessage): A
   const carried = cookie !== undefined && pairs.some((pair) => pair.startsWith(`${cookie.name}=`));
   const lacked = lacking !== undefined && request.headers[lacking.name] === undefined;
   const had = having !== undefined && request.headers[having.name] !== undefined;
-  const held =
-    answer.when?.test(
-      request.headers,
-      request.method,
-      new URL(request.url ?? '/', 'http://localhost'),
-    ) === true
-      ? answer.when
-      : undefined;
+  const held = matchingAnswer(answer, request);
   return {
     ...answer,
     headers: {
@@ -1047,6 +1033,12 @@ function answerCarrying(answer: Answer | undefined, request: IncomingMessage): A
     ...(held?.hangsUp === true && { hangsUp: true }),
     ...(held?.onHead !== undefined && { onHead: held.onHead }),
   };
+}
+
+/** The fixture's conditional answer, with the same URL view for whole and handed-on responses. */
+function matchingAnswer(answer: Answer, request: IncomingMessage): Answer['when'] {
+  const url = new URL(request.url ?? '/', 'http://localhost');
+  return answer.when?.test(request.headers, request.method, url) === true ? answer.when : undefined;
 }
 
 /**
@@ -6212,7 +6204,7 @@ describe('what the check makes of the middleware', () => {
         const rule: HeaderRule = {
           sourceRegex: '^/$',
           has: [condition],
-          headers: { 'X-Robots-Tag': 'noindex', 'Set-Cookie': 'theme=dark; Path=/' },
+          headers: { 'X-Robots-Tag': 'noindex', 'Content-Security-Policy': "script-src 'self'" },
         };
         const stack = stackOf([await routeOf('/', FRONT)], {}, { headerRules: [rule] });
         const selected = new Set<boolean>();
@@ -6221,12 +6213,9 @@ describe('what the check makes of the middleware', () => {
           _method: string | undefined,
           url: URL,
         ) => {
-          const matches =
-            type === 'query'
-              ? url.searchParams.get('variant') === 'dark'
-              : type === 'cookie'
-                ? headers.cookie?.includes('variant=dark') === true
-                : headers['variant'] === 'dark';
+          let matches = headers['variant'] === 'dark';
+          if (type === 'query') matches = url.searchParams.get('variant') === 'dark';
+          if (type === 'cookie') matches = headers.cookie?.includes('variant=dark') === true;
           selected.add(matches);
           return matches;
         };
@@ -6235,7 +6224,10 @@ describe('what the check makes of the middleware', () => {
           ...answer,
           when: {
             test,
-            headers: { 'x-robots-tag': 'noindex', 'set-cookie': ['theme=dark; Path=/'] },
+            headers: {
+              'x-robots-tag': 'noindex',
+              'content-security-policy': permitted("script-src 'self'"),
+            },
           },
         });
 

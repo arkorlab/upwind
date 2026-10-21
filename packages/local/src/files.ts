@@ -139,21 +139,23 @@ export async function fileVerdict(
   });
   const preferred = samples[0];
   if (preferred === undefined) return skipped(CLAIMED);
-  // Without application routing, the shipped-file handler reads only its conditions/range and
+  // Without request-dependent routing, the shipped-file handler reads only its conditions/range and
   // RSC, none of which fileRequestsFor varies between browser GETs. Check every GET, but share
-  // the representative's follow-ups for that one handler. Any middleware or rule keeps each
-  // browser's full suite: it can distinguish its metadata together with a range or a condition.
+  // the representative's follow-ups for that one handler. Middleware or a conditioned rule keeps
+  // each browser's full suite: it can distinguish metadata together with a range or a condition.
+  const rules = [...(stack.manifest.headerRules ?? []), ...(stack.manifest.reservedRoutes ?? [])];
   const repeatFollowUps =
     stack.manifest.middleware !== undefined ||
-    (stack.manifest.headerRules?.length ?? 0) > 0 ||
-    (stack.manifest.reservedRoutes?.length ?? 0) > 0;
+    rules.some((rule) => rule.has !== undefined || rule.missing !== undefined);
   let failure: Verdict | undefined;
   let served = false;
   for (let index = 1; index < samples.length; index += FILE_SAMPLES_AT_ONCE) {
     const verdicts = await Promise.all(
-      samples.slice(index, index + FILE_SAMPLES_AT_ONCE).map((sampled) => {
-        return fileSampleVerdict(stack, at, { file, sampled, followUps: repeatFollowUps });
-      }),
+      samples
+        .slice(index, index + FILE_SAMPLES_AT_ONCE)
+        .map((sampled) =>
+          fileSampleVerdict(stack, at, { file, sampled, followUps: repeatFollowUps }),
+        ),
     );
     failure = verdicts.find((verdict) => verdict.kind === 'failed');
     served ||= verdicts.some((verdict) => verdict.kind === 'ok');

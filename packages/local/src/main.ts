@@ -55,7 +55,7 @@ function hostOf(value: string): string | null {
     return null;
   }
   try {
-    return new URL(`http://${value}`).host;
+    return new URL(`https://${value}`).host;
   } catch {
     return null;
   }

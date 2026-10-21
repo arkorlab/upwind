@@ -506,10 +506,9 @@ export async function routeFollowUpFailure(
     readonly served?: string | undefined;
   },
 ): Promise<string | undefined> {
-  const ruled = await documentRuleFailure(stack, headBytes, asked);
-  if (ruled !== undefined) return ruled;
   const navigations = new Map<string, OwnNavigation>();
-  for (const ask of codedAsks(stack, asked)) {
+  const coded = codedAsks(stack, asked);
+  for (const ask of coded) {
     const failure = await codedFailure(stack, headBytes, { asked, ask }, navigations);
     if (failure !== undefined) {
       return failure;
@@ -530,5 +529,10 @@ export async function routeFollowUpFailure(
       return landed;
     }
   }
-  return undefined;
+  return documentRuleFailure(
+    stack,
+    headBytes,
+    asked,
+    coded.map((ask) => ask.headers),
+  );
 }
