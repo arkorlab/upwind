@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 
 import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manifest';
 import { NAVIGATION_REQUEST_HEADERS } from '@stayingupwind/core/request';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, assert, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { CheckedStack } from '../src/answers.ts';
 import { documentAnswerAt } from '../src/document-adoption.ts';
@@ -222,9 +222,12 @@ describe('pages requests owned by the Function under the current shared classifi
       { url: new URL(example.requested, SITE), headers: example.headers },
       'gzip',
     );
-    if (typeof answer === 'string' || answer.documentFailure === undefined) {
-      throw new Error('the adopted Pages response lost its own document verdict');
-    }
+
+    assert(
+      typeof answer !== 'string' && answer.documentFailure !== undefined,
+      'the adopted Pages response lost its own document verdict',
+    );
+
     const failure = await answer.documentFailure();
     await fixture.closed.promise;
 

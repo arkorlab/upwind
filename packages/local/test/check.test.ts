@@ -2767,8 +2767,16 @@ describe('what the check makes of the middleware', () => {
     });
 
     it.each([
-      { type: 'image/png', broken: false },
-      { type: TEXT, broken: true },
+      { type: 'image/png', failures: [] },
+      {
+        type: TEXT,
+        failures: [
+          {
+            path: '/a.txt',
+            reason: `asked for as the request a rule of next.config types it for (x-deployment-id: canary), answered as ${TEXT}, not image/png`,
+          },
+        ],
+      },
     ])('checks a deployment-header file type rule answered as $type', async (example) => {
       const rule: HeaderRule = {
         sourceRegex: '^/a[.]txt$',
@@ -2778,7 +2786,10 @@ describe('what the check makes of the middleware', () => {
       answers.set('/a.txt', {
         headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
         body: 'kept bytes',
-        withHeader: { name: 'x-deployment-id', headers: { 'content-type': example.type } },
+        withHeader: {
+          name: 'x-deployment-id',
+          headers: { 'content-type': example.type, 'cache-control': GATED },
+        },
       });
 
       const result = await checkStack(stackOf([], files, { headerRules: [rule] }));
@@ -2788,8 +2799,7 @@ describe('what the check makes of the middleware', () => {
           (headers) => headers['x-deployment-id'] === 'canary',
         ),
       ).toBe(true);
-      expect(result.failures).toHaveLength(example.broken ? 1 : 0);
-      if (example.broken) expect(result.failures[0]?.reason).toContain('not image/png');
+      expect(result).toStrictEqual({ checked: 1, failures: example.failures, skipped: [] });
     });
 
     it('is asked as the page a visitor goes to, where it is an HTML file a rule claims a fetch of', async () => {

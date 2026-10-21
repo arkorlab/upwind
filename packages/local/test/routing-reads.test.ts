@@ -1,7 +1,7 @@
 import { buildProjectManifest, type ReservedRoute } from '@stayingupwind/core/manifest';
 import { middlewareApplies } from '@stayingupwind/core/paas';
 import { EDGE_BYPASS_COOKIE } from '@stayingupwind/core/request';
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 
 import { fileRequestsFor } from '../src/browsers.ts';
 import { claimedBy, escaping, type Target } from '../src/escaping.ts';
@@ -125,6 +125,7 @@ describe('the headers used for pre-middleware rule and matcher checks', () => {
       url: URL_OF_FILE,
       prover: 'checker',
       exact: true,
+      requestClass: 'file',
     };
     const sent = clientHeaders();
 
@@ -149,9 +150,9 @@ describe('the headers used for pre-middleware rule and matcher checks', () => {
     });
     const sample = samples[0];
 
+    assert(sample?.kind === 'asked', 'no ordinary file witness');
+
     expect(samples).toHaveLength(1);
-    expect(sample?.kind).toBe('asked');
-    if (sample?.kind !== 'asked') throw new Error('no ordinary file witness');
     expect(sample.headers['x-deployment-id']).toBe('canary');
   });
 });

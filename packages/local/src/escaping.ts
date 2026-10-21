@@ -12,7 +12,7 @@ import {
 } from '@stayingupwind/core/request';
 import { compareCodeUnits } from '@stayingupwind/core/util';
 
-import { routedReads } from './routing-reads.ts';
+import { edgeReads, routedReads } from './routing-reads.ts';
 
 /**
  * A request past the rules of `next.config` that claim every request the check makes of something
@@ -43,6 +43,15 @@ export interface Target {
 /** The document gates do not apply to a file classified ahead of them. */
 export type WitnessClass = 'document' | 'file';
 
+/** File reservations run at the hosted gate; document classification precedes that gate. */
+export function reservedReads(
+  target: Target,
+  url: URL,
+  headers: Readonly<Record<string, string>>,
+): Headers {
+  return target.requestClass === 'file' ? routedReads(url, headers) : edgeReads(headers);
+}
+
 /** Whether the rules `keep` keeps alone claim the target asked with `headers`, at `url`. */
 export function claimedBy(
   target: Target,
@@ -54,7 +63,7 @@ export function claimedBy(
   return isReserved(
     { ...target.manifest, reservedRoutes },
     url,
-    routedReads(url, headers),
+    reservedReads(target, url, headers),
     target.exact,
   );
 }
@@ -553,7 +562,7 @@ export function escaping(
     tried.add(key);
     const url = new URL(target.url);
     url.search = carried.search.toString();
-    const asked = routedReads(url, carried.headers);
+    const asked = reservedReads(target, url, carried.headers);
     const claiming = rules.filter((rule) => claimedByRule(target, asked, rule, url));
     if (claiming.length === 0) {
       if (served(carried.headers, url)) {

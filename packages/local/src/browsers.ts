@@ -20,8 +20,7 @@ import {
   UPGRADE_INSECURE_REQUESTS,
   USER_AGENT,
 } from './browser-samples.ts';
-import { claimedBy, escaping, type Target } from './escaping.ts';
-import { routedReads } from './routing-reads.ts';
+import { claimedBy, escaping, reservedReads, type Target } from './escaping.ts';
 
 /**
  * The agents a check asks a page or a file as, in the order it tries them, as a deployment's
@@ -647,8 +646,12 @@ function unclaimedOf(
   // As the target: a request the edge passes on is answered by another than it.
   const unclaimed = asked.find((headers) => {
     return (
-      !isReserved(target.manifest, target.url, routedReads(target.url, headers), target.exact) &&
-      served(headers, target.url)
+      !isReserved(
+        target.manifest,
+        target.url,
+        reservedReads(target, target.url, headers),
+        target.exact,
+      ) && served(headers, target.url)
     );
   });
   if (unclaimed !== undefined) {
@@ -687,7 +690,12 @@ export function fileRequestsFor(file: FileTarget): readonly Sampled[] {
   ];
   const unclaimed = asked.filter(
     (headers) =>
-      !isReserved(target.manifest, target.url, routedReads(target.url, headers), target.exact),
+      !isReserved(
+        target.manifest,
+        target.url,
+        reservedReads(target, target.url, headers),
+        target.exact,
+      ),
   );
   return unclaimed.length > 0
     ? unclaimed.map((headers) => ({ kind: 'asked', headers }))
