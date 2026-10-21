@@ -16,6 +16,7 @@ import {
   ROUTER_REQUEST_HEADERS,
   serializeCookieHeader,
   SKEW_PROTECTION_COOKIE,
+  STATIC_PAGE_PRIVATE_HEADERS,
 } from '@stayingupwind/core/request';
 import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { resolvePolicy } from '@stayingupwind/host/delivery';
@@ -238,6 +239,7 @@ const CLASSIFIED_HEADERS: ReadonlySet<string> = new Set([
   'cookie',
   'user-agent',
 ]);
+const STATIC_CLASSIFIED_HEADERS: ReadonlySet<string> = new Set(STATIC_PAGE_PRIVATE_HEADERS);
 /** How the internal headers it turns a request away for begin (`hasInternalDocumentHeader`). */
 const CLASSIFIED_HEADER_PREFIXES: readonly string[] = ['x-middleware-', 'x-prerender-'];
 /**
@@ -251,17 +253,26 @@ const CLASSIFIED_COOKIES: ReadonlySet<string> = new Set([
 ]);
 
 /** What `classificationReadsCredentials` found for a host's credentials. */
-const credentialsRead = new WeakMap<HostCredentials, boolean>();
+const credentialsRead = new WeakMap<
+  HostCredentials,
+  {
+    readonly general: boolean;
+    readonly staticPages: boolean;
+  }
+>();
 
 /**
  * Whether the classification reads one of the host's credentials by name (`CLASSIFIED_HEADERS`,
  * `CLASSIFIED_COOKIES`): a cookie it names, a header it names, or the `cookie` header whole. Asked
  * once for a host's credentials, which are the host's for as long as it is.
  */
-function classificationReadsCredentials(credentials: HostCredentials): boolean {
+function classificationReadsCredentials(
+  credentials: HostCredentials,
+  staticPages: boolean,
+): boolean {
   let reads = credentialsRead.get(credentials);
   if (reads === undefined) {
-    reads =
+    const general =
       credentials.cookies.some((name) => CLASSIFIED_COOKIES.has(name)) ||
       credentials.headers.some((header) => {
         const name = header.toLowerCase();
@@ -270,9 +281,15 @@ function classificationReadsCredentials(credentials: HostCredentials): boolean {
           CLASSIFIED_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix))
         );
       });
+    reads = {
+      general,
+      staticPages: credentials.headers.some((name) =>
+        STATIC_CLASSIFIED_HEADERS.has(name.toLowerCase()),
+      ),
+    };
     credentialsRead.set(credentials, reads);
   }
-  return reads;
+  return reads.general || (staticPages && reads.staticPages);
 }
 
 /**
@@ -299,7 +316,9 @@ function keptForClassification(name: string, headers: Headers): boolean {
     return getCookieValue(headers.get('cookie'), EDGE_BYPASS_COOKIE) !== undefined;
   }
   return (
-    (name !== 'host' && name !== 'x-real-ip' && CLASSIFIED_HEADERS.has(name)) ||
+    (name !== 'host' &&
+      name !== 'x-real-ip' &&
+      (CLASSIFIED_HEADERS.has(name) || STATIC_CLASSIFIED_HEADERS.has(name))) ||
     CLASSIFIED_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix))
   );
 }
@@ -329,7 +348,9 @@ function headersToClassify(
 ): Headers {
   const kept = credentials.cookies.length > 0 || credentials.headers.length > 0;
   const routing = manifest === undefined ? undefined : routingReadsFor(manifest, credentials);
-  const copied = kept && (classificationReadsCredentials(credentials) || routing?.reads === true);
+  const staticPages = manifest?.staticPages !== undefined || manifest?.pagesFallbacks !== undefined;
+  const copied =
+    kept && (classificationReadsCredentials(credentials, staticPages) || routing?.reads === true);
   const classified = copied ? withoutCredentials(headers, credentials) : headers;
   const fields = routing?.forwardedFields ?? [];
   if (fields.length === 0) return classified;

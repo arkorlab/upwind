@@ -181,6 +181,7 @@ async function warmAsset(fixture: AssetFixture): Promise<void> {
 
 describe.each(['passthrough', ...BACKENDS] as const)('host asset headers under %s', (backend) => {
   const requests = backend === 'passthrough' ? 2 : 1;
+
   it.each(['Accept', 'User-Agent', 'Accept-Language'])(
     'removes a host-reserved %s while preserving other asset headers and cache hits',
     async (reserved) => {
@@ -196,9 +197,9 @@ describe.each(['passthrough', ...BACKENDS] as const)('host asset headers under %
       const repeated = await fixture.ask(headers);
       const expected = new Headers(headers);
       expected.delete(reserved);
-      const sent = fixture.asked.map((request) => {
-        return Object.keys(headers).map((name) => request.headers.get(name));
-      });
+      const sent = fixture.asked.map((request) =>
+        Object.keys(headers).map((name) => request.headers.get(name)),
+      );
       const expectedValues = Object.keys(headers).map((name) => expected.get(name));
 
       expect([cold.text, repeated.text]).toStrictEqual([PUBLIC_ASSET, PUBLIC_ASSET]);

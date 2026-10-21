@@ -335,6 +335,25 @@ async function runtimeBodyType(
   await env.CACHE_STATE.put(test.key, record);
 }
 
+const VARY_LAYERS = ['record', 'configured', 'middleware'] as const;
+type VaryLayer = (typeof VARY_LAYERS)[number];
+
+function varyCases(values: readonly string[]) {
+  return VARY_LAYERS.flatMap((layer) => values.map((vary) => ({ layer, vary })));
+}
+
+/** Place variation on the selected runtime record or on the layer that actually supplies it. */
+async function varyFixture(layer: VaryLayer, vary: string) {
+  const test = await fixture({
+    ...(layer === 'configured' && {
+      headerRules: [{ sourceRegex: '^/icon$', headers: { vary } }],
+    }),
+    ...(layer === 'middleware' && { middlewareHeaders: { vary } }),
+  });
+  if (layer === 'record') await runtimeBodyType(test, 'image/png', { vary });
+  return test;
+}
+
 /** Exercise the dispatcher too: a non-document request must never enter HTML composition. */
 function routed(
   test: Awaited<ReturnType<typeof fixture>>,
@@ -1273,44 +1292,24 @@ describe('the host serves complete route-body generations', () => {
     expect(get).not.toHaveBeenCalled();
   });
 
-  it.each(
-    ['record', 'configured', 'middleware'].flatMap((layer) => {
-      return ['Accept-Language', 'Accept-Encoding, aCcEpT-LaNgUaGe'].map((vary) => ({
-        layer,
-        vary,
-      }));
-    }),
-  )('does not share an unkeyed variant from $layer: $vary', async ({ layer, vary }) => {
-    const test = await fixture({
-      ...(layer === 'configured' && {
-        headerRules: [{ sourceRegex: '^/icon$', headers: { vary } }],
-      }),
-      ...(layer === 'middleware' && { middlewareHeaders: { vary } }),
-    });
-    if (layer === 'record') await runtimeBodyType(test, 'image/png', { vary });
+  it.each(varyCases(['Accept-Language', 'Accept-Encoding, aCcEpT-LaNgUaGe']))(
+    'does not share an unkeyed variant from $layer: $vary',
+    async ({ layer, vary }) => {
+      const test = await varyFixture(layer, vary);
 
-    const response = await test.serve({ headers: { 'accept-language': 'fr' } });
+      const response = await test.serve({ headers: { 'accept-language': 'fr' } });
 
-    await expect(response.text()).resolves.toBe('Function');
-    expect(test.fallback).toHaveBeenCalledTimes(1);
+      await expect(response.text()).resolves.toBe('Function');
+      expect(test.fallback).toHaveBeenCalledTimes(1);
 
-    await test.drain();
-  });
+      await test.drain();
+    },
+  );
 
-  it.each(
-    ['record', 'configured', 'middleware'].flatMap((layer) => {
-      return ['Accept-Encoding', 'aCcEpT-EnCoDiNg'].map((vary) => ({ layer, vary }));
-    }),
-  )(
+  it.each(varyCases(['Accept-Encoding', 'aCcEpT-EnCoDiNg']))(
     'keeps serving identity bytes with compression Vary from $layer: $vary',
     async ({ layer, vary }) => {
-      const test = await fixture({
-        ...(layer === 'configured' && {
-          headerRules: [{ sourceRegex: '^/icon$', headers: { vary } }],
-        }),
-        ...(layer === 'middleware' && { middlewareHeaders: { vary } }),
-      });
-      if (layer === 'record') await runtimeBodyType(test, 'image/png', { vary });
+      const test = await varyFixture(layer, vary);
 
       const response = await test.serve({ headers: { 'accept-encoding': 'gzip' } });
 

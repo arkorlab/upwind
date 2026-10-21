@@ -70,8 +70,12 @@ async function store(bytes: Uint8Array): Promise<StaticFileEntry> {
 }
 
 /** Middleware covers only the file; the optimizer itself remains eligible for the shared cache. */
-async function serving(matchers: readonly MiddlewareMatcher[] = [{ sourceRegex: '^/gated/' }]) {
-  const path = `/gated/${crypto.randomUUID()}.png`;
+async function serving(
+  matchers: readonly MiddlewareMatcher[] = [{ sourceRegex: '^/gated/' }],
+  staticSource = false,
+) {
+  const prefix = staticSource ? '/_next/static/media/' : '/gated/';
+  const path = `${prefix}${crypto.randomUUID()}.png`;
   const site = await seedSite({ document: pprDocument(), images: CONFIG });
   const now = png('current image');
   const before = png('previous image');
@@ -101,7 +105,12 @@ async function serving(matchers: readonly MiddlewareMatcher[] = [{ sourceRegex: 
     dispatchApp: middleware,
     transformImage: transform,
   });
-  const get = async (dpl: string, country?: string, projectId = site.pointer.projectId) => {
+  const get = async (
+    dpl: string,
+    country?: string,
+    options: { readonly projectId?: string; readonly transform?: boolean } = {},
+  ) => {
+    const projectId = options.projectId ?? site.pointer.projectId;
     const query = new URLSearchParams({ url: path, w: '64', q: '75', dpl });
     const request = new Request<unknown, IncomingRequestCfProperties>(
       `https://${HOST}/_next/image?${query.toString()}`,
@@ -124,7 +133,7 @@ async function serving(matchers: readonly MiddlewareMatcher[] = [{ sourceRegex: 
         url: new URL(request.url),
         env,
         ctx,
-        runtime,
+        runtime: options.transform === false ? { ...runtime, transformImage: undefined } : runtime,
         host: standaloneHost(env),
         pointer: { ...site.pointer, projectId, app },
         pointerMs: 0,
@@ -148,6 +157,32 @@ async function serving(matchers: readonly MiddlewareMatcher[] = [{ sourceRegex: 
 }
 
 describe('an optimized image source identity', () => {
+  it('separates cached originals from a subsequently enabled transformer and keeps both warm', async () => {
+    const served = await serving([{ sourceRegex: '^/_next/static/media/' }], true);
+    const resized = png('resized');
+    served.transform.mockImplementation(async (source) => {
+      await new Response(source).arrayBuffer();
+      return { contentType: 'image/webp', body: new Blob([resized]).stream() };
+    });
+
+    const original = await served.get(CURRENT, undefined, { transform: false });
+    const transformed = await served.get(CURRENT);
+    const transformedHit = await served.get(CURRENT);
+    const originalHit = await served.get(CURRENT, undefined, { transform: false });
+
+    expect([original.body, transformed.body, transformedHit.body, originalHit.body]).toStrictEqual([
+      served.now,
+      resized,
+      resized,
+      served.now,
+    ]);
+    expect(transformed.response.headers.get('x-nextjs-cache')).toBe('MISS');
+    expect(transformedHit.response.headers.get('x-nextjs-cache')).toBe('HIT');
+    expect(originalHit.response.headers.get('x-nextjs-cache')).toBe('HIT');
+    expect(served.transform).toHaveBeenCalledTimes(1);
+    expect(served.middleware).toHaveBeenCalledTimes(2);
+  });
+
   it('isolates projects sharing a hostname, deployment, gated source and configuration', async () => {
     const served = await serving();
     const one = png('first project');
@@ -156,9 +191,9 @@ describe('an optimized image source identity', () => {
       .mockResolvedValueOnce(new Response(one, { headers: { 'content-type': 'image/png' } }))
       .mockResolvedValueOnce(new Response(two, { headers: { 'content-type': 'image/png' } }));
 
-    const first = await served.get(CURRENT, undefined, 'first-project');
-    const other = await served.get(CURRENT, undefined, 'second-project');
-    const repeated = await served.get(CURRENT, undefined, 'first-project');
+    const first = await served.get(CURRENT, undefined, { projectId: 'first-project' });
+    const other = await served.get(CURRENT, undefined, { projectId: 'second-project' });
+    const repeated = await served.get(CURRENT, undefined, { projectId: 'first-project' });
 
     expect([first.body, other.body, repeated.body]).toStrictEqual([one, two, one]);
     expect(other.response.headers.get('x-nextjs-cache')).toBe('MISS');
@@ -181,7 +216,9 @@ describe('an optimized image source identity', () => {
           return new Request(`https://images.test.invalid/${id}/64/75/image/webp`);
         }),
       );
+
       expect(new Set(keys.map((key) => key.url)).size).toBe(keys.length);
+
       for (const [index, key] of keys.entries()) {
         await cache.put(
           key,

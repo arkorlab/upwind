@@ -1,3 +1,4 @@
+import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manifest';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
@@ -26,33 +27,87 @@ function cookielessHost(): EdgeHost {
 /** `request` answered by `host`, the site seeded as `site` says, its Function answering. */
 async function answered(
   request: IncomingRequest,
-  site: Omit<SiteOptions, 'document'>,
+  site: Omit<SiteOptions, 'document'> & { readonly staticPage?: boolean },
   host: EdgeHost,
 ): Promise<Response> {
-  const { pointer } = await seedSite({ document: pprDocument(), ...site });
+  const { pointer, manifest: seeded } = await seedSite({ document: pprDocument(), ...site });
+  const manifest =
+    site.staticPage === true
+      ? buildProjectManifest({
+          projectId: seeded.projectId,
+          runId: seeded.runId,
+          generatedAt: seeded.generatedAt,
+          originHost: seeded.originHost,
+          deployment: seeded.deployment,
+          app: seeded.app,
+          routes: Object.values(seeded.routes).map((route): RouteEntry => {
+            return {
+              ...route,
+              cache: { entryId: 'static-entry', kind: 'pages', delivery: 'complete' },
+            };
+          }),
+          cache: { scopeId: 'static-scope', keySchemaVersion: 1 },
+          staticPages: [{ pathname: '/', route: '/', entryId: 'static-entry' }],
+        })
+      : seeded;
   const runtime = standaloneRuntime(env, {
     memory: createEdgeMemory(() => Date.now()),
     dispatchApp: () => Promise.resolve(new Response('from the Function')),
   });
   const ctx = createExecutionContext();
-  const response = await serveFromPointer({
-    request,
-    url: new URL(request.url),
-    env,
-    ctx,
-    runtime,
-    host,
-    pointer,
-    pointerMs: 0,
-    privateDelivery: false,
-    cspReportingPath: undefined,
-  });
+  const response = await serveFromPointer(
+    {
+      request,
+      url: new URL(request.url),
+      env,
+      ctx,
+      runtime,
+      host,
+      pointer,
+      pointerMs: 0,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    },
+    { manifestLookup: Promise.resolve({ kind: 'found', value: manifest }) },
+  );
   await response.arrayBuffer();
   await waitOnExecutionContext(ctx);
   return response;
 }
 
 describe("the headers an application's rules are judged on", () => {
+  it.each(['Authorization', 'Proxy-Authorization', 'If-None-Match'])(
+    'removes host-owned %s before static-page privacy classification',
+    async (header) => {
+      const host = { ...standaloneHost(env), credentials: { cookies: [], headers: [header] } };
+      const response = await answered(
+        navigation('/', { headers: { [header]: 'host-secret' } }),
+        { staticPage: true },
+        host,
+      );
+
+      // This Edge version forwards static-page classes; this verifies classification, not a cache hit.
+      expect(response.headers.get('x-arkor-edge')).toMatch(
+        /^passthrough;reason=static-page(?:;|$)/u,
+      );
+    },
+  );
+
+  it.each(['Authorization', 'Proxy-Authorization', 'If-None-Match'])(
+    'keeps application-visible %s private for static-page classification',
+    async (header) => {
+      const response = await answered(
+        navigation('/', { headers: { [header]: 'app-value' } }),
+        { staticPage: true },
+        standaloneHost(env),
+      );
+
+      expect(response.headers.get('x-arkor-edge')).toMatch(
+        /^passthrough;reason=static-page-bypass(?:;|$)/u,
+      );
+    },
+  );
+
   /**
    * A host may keep the `cookie` header whole rather than cookies by name: no cookie reaches the
    * application then, so a `missing` that names one holds for a visitor who sends it, and the
