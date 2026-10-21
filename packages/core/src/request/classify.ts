@@ -412,7 +412,11 @@ function staticFileBuild(
   if (file.previous?.deploymentId === dplId) {
     // A name kept with the build before beside it is not a content hash (`previous`), so neither
     // are its bytes, whatever the entry says of its own build.
-    return { ...file.previous, immutable: false };
+    return {
+      ...file.previous,
+      immutable: false,
+      ...(file.status !== undefined && { status: file.status }),
+    };
   }
   return undefined;
 }

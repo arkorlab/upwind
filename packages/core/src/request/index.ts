@@ -39,6 +39,7 @@ export {
   MANIFEST_ID_PREFIX_LENGTH,
   manifestIdPrefix,
   respondedUnderPolicy,
+  routeDebugValue,
 } from './edge-response.ts';
 export {
   type CookieHostContext,

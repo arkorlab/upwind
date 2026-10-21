@@ -18,7 +18,7 @@ import {
   serializeManifest,
 } from '../src/manifest/manifest.ts';
 import { findRouteBody } from '../src/manifest/route-bodies.ts';
-import type { ProjectManifest, RouteEntry } from '../src/manifest/schema.ts';
+import type { ProjectManifest, RouteEntry, StaticFileEntry } from '../src/manifest/schema.ts';
 import { classifyRequest } from '../src/request/classify.ts';
 import { ROUTER_PROTOCOL_HEADERS } from '../src/request/constants.ts';
 import { createId } from '../src/util/index.ts';
@@ -362,6 +362,77 @@ describe('host delivery of a complete route body', () => {
         request({ ...manifest, reservedRoutes: [{ sourceRegex: '^/icon$', beforeFiles: true }] }),
       ),
     ).toStrictEqual({ kind: 'passthrough', reason: 'route-body-bypass' });
+  });
+});
+
+describe('kept file status under a base path', () => {
+  it.each([404, 500])('keeps status %s when the request selects the previous bytes', (status) => {
+    const pathname = `/docs/${status}`;
+    const previous = {
+      sha256: 'c'.repeat(64),
+      byteLength: 3,
+      contentType: 'text/html',
+      deploymentId: 'previous',
+    };
+    const file: StaticFileEntry = {
+      sha256: 'd'.repeat(64),
+      byteLength: 4,
+      contentType: 'text/html',
+      immutable: false,
+      status,
+      previous,
+    };
+    const manifest = buildProjectManifest({ ...input, staticFiles: { [pathname]: file } });
+
+    expect(classifyRequest(request(manifest, {}, `${pathname}?dpl=previous`))).toStrictEqual({
+      kind: 'static-file',
+      pathname,
+      file: { ...previous, immutable: false, status },
+    });
+    expect(classifyRequest(request(manifest, {}, pathname))).toStrictEqual({
+      kind: 'static-file',
+      pathname,
+      file,
+    });
+    expect(classifyRequest(request(manifest, {}, `${pathname}?dpl=deployment`))).toStrictEqual({
+      kind: 'static-file',
+      pathname,
+      file,
+    });
+    expect(classifyRequest(request(manifest, {}, `${pathname}?dpl=unknown`))).toStrictEqual({
+      kind: 'passthrough',
+      reason: 'dpl-mismatch',
+    });
+  });
+
+  it('retains absent status and the current bytes of a content-addressed file', () => {
+    const pathname = '/docs/asset';
+    const previous = {
+      sha256: 'e'.repeat(64),
+      byteLength: 1,
+      contentType: 'text/plain',
+      deploymentId: 'previous',
+    };
+    const file: StaticFileEntry = {
+      ...previous,
+      deploymentId: 'deployment',
+      immutable: false,
+      previous,
+    };
+    const manifest = buildProjectManifest({ ...input, staticFiles: { [pathname]: file } });
+    const immutable = { ...file, immutable: true };
+    const shared = buildProjectManifest({ ...input, staticFiles: { [pathname]: immutable } });
+
+    expect(classifyRequest(request(manifest, {}, `${pathname}?dpl=previous`))).toStrictEqual({
+      kind: 'static-file',
+      pathname,
+      file: { ...previous, immutable: false },
+    });
+    expect(classifyRequest(request(shared, {}, `${pathname}?dpl=previous`))).toStrictEqual({
+      kind: 'static-file',
+      pathname,
+      file: immutable,
+    });
   });
 });
 
