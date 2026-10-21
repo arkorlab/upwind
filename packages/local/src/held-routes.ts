@@ -1,6 +1,5 @@
 import {
   type BlobRef,
-  cacheablePrerenders,
   type DeploymentBundle,
   edgeServablePrerenders,
   functionOfPrerender,
@@ -12,6 +11,8 @@ import {
   resumablePrerenders,
   routePathnameOf,
   shellHeaders,
+  staticFallbackPagesOf,
+  staticPagesMembersOf,
 } from '@stayingupwind/core/bundle';
 import type {
   HeaderRule,
@@ -21,6 +22,7 @@ import type {
 } from '@stayingupwind/core/manifest';
 import { allowRecoveryScript, sandboxBlocksRecovery } from '@stayingupwind/core/request';
 import { compareCodeUnits } from '@stayingupwind/core/util';
+import { cachePrerendersOf } from '@stayingupwind/deploy/cache-seed';
 import { bundleGeneratedAtMs, seedRouteFor } from '@stayingupwind/host/bundle';
 import {
   scanPreloadLinks,
@@ -106,7 +108,10 @@ function routedOf(stack: CheckedStack): Routed {
   const resumable = new Set(resumablePrerenders(bundle).map((prerender) => prerender.id));
   const named = new Map<string, Prerender & { readonly body: BlobRef }>();
   const leftOut = new Set<string>();
-  const servable = edgeServablePrerenders(bundle, { complete: true });
+  // Local stacks deploy with a runtime cache: match manifest assembly's cached Pages additions.
+  const servable = new Set(edgeServablePrerenders(bundle, { complete: true }));
+  for (const page of staticPagesMembersOf(bundle).keys()) servable.add(page);
+  for (const page of staticFallbackPagesOf(bundle)) servable.add(page);
   for (const prerender of servable) {
     const { body } = prerender;
     if (body === undefined) {
@@ -352,7 +357,7 @@ async function seededCaches(stack: CheckedStack): Promise<ReadonlyMap<string, Ro
   const { bundle } = stack;
   const context = { scopeId: stack.deploymentId, generatedAt: bundleGeneratedAtMs(bundle) };
   const caches = new Map<string, RouteCache>();
-  for (const prerender of cacheablePrerenders(bundle)) {
+  for (const prerender of cachePrerendersOf(bundle)) {
     const seeded = await seedRouteFor(bundle, prerender, context);
     if (seeded?.cache !== undefined) {
       caches.set(prerender.id, seeded.cache);

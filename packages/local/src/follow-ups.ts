@@ -1,8 +1,7 @@
-import { headerRulesFor, type StaticFileEntry } from '@stayingupwind/core/manifest';
+import type { StaticFileEntry } from '@stayingupwind/core/manifest';
 
 import { type CheckedStack, HTTP_OK } from './answers.ts';
 import { askedAgain, opaqueTag, said, subjectOf } from './asked-again.ts';
-import { carryingEach, lackingEach } from './escaping.ts';
 import {
   describedFailure,
   expectationOf,
@@ -16,7 +15,7 @@ import {
   staleRangeFailure,
 } from './ranges.ts';
 import type { Reading } from './reading.ts';
-import { routedReads } from './routing-reads.ts';
+import { requestsForRules } from './rule-witnesses.ts';
 
 /** The status of an answer to a request on a validator its holder already has. */
 const NOT_MODIFIED_STATUS = 304;
@@ -139,37 +138,25 @@ function typedRequestsOf(
   stack: CheckedStack,
   url: URL,
   sent: Readonly<Record<string, string>>,
-): { readonly headers: Record<string, string>; readonly url: URL; readonly what: string }[] {
-  const typed: {
-    readonly headers: Record<string, string>;
-    readonly url: URL;
-    readonly what: string;
-  }[] = [];
-  const { headerRules } = stack.manifest;
-  if (headerRules === undefined) {
-    return typed;
-  }
-  for (const rule of headerRules) {
-    const alone = { ...stack.manifest, headerRules: [rule] };
-    const typedBy = (headers: Readonly<Record<string, string>>, at: URL): boolean =>
-      typeSetIn(headerRulesFor(alone, at, routedReads(at, headers)).headers) !== undefined;
-    const conditioned = rule.has !== undefined || rule.missing !== undefined;
-    if (!conditioned || typeSetIn(rule.headers) === undefined || typedBy(sent, url)) {
-      continue;
-    }
-    // Carrying what the rule asks for, and lacking what it says is missing.
-    const carried = carryingEach(sent, url, rule.has ?? []);
-    const made = carried === undefined ? undefined : lackingEach(carried, rule.missing ?? []);
-    if (carried !== undefined && made !== undefined && typedBy(made.headers, made.url)) {
-      const asked = [carried.carried, made.lacked].filter((part) => part !== '').join(', ');
-      typed.push({
-        headers: { ...made.headers },
-        url: made.url,
-        what: `the request a rule of next.config types it for (${asked || 'as it was asked'})`,
+):
+  | readonly {
+      readonly headers: Readonly<Record<string, string>>;
+      readonly url: URL;
+      readonly what: string;
+    }[]
+  | string {
+  const rules = (stack.manifest.headerRules ?? []).filter(
+    (rule) => typeSetIn(rule.headers) !== undefined,
+  );
+  const requests = requestsForRules(stack, url, sent, rules);
+  return typeof requests === 'string'
+    ? requests
+    : requests.map((request) => {
+        return {
+          ...request,
+          what: `the request a rule of next.config types it for (${request.what})`,
+        };
       });
-    }
-  }
-  return typed;
 }
 
 /**
@@ -187,6 +174,7 @@ async function typedFailure(
   },
 ): Promise<string | undefined> {
   const typedRequests = typedRequestsOf(stack, url, asked.headers);
+  if (typeof typedRequests === 'string') return typedRequests;
   for (const typed of typedRequests) {
     const again = await askedAgain(stack, typed.url, { sent: typed.headers, what: typed.what });
     if (again.kind === 'failed') {

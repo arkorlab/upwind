@@ -7,6 +7,7 @@ import { type Accepted, acceptedInWords, browserCodingsOf } from './codings.ts';
 import { type CookieChanges, type CookieJar, jarKeyOf, jarOf, strictly } from './cookie-jar.ts';
 import { type Scoped, scopesOf } from './cookie-scopes.ts';
 import { documentAnswerAt } from './document-adoption.ts';
+import { documentRuleFailure } from './document-rule-witnesses.ts';
 import { type Asked, routeVerdict } from './documents.ts';
 import { documentRouteAt, exactRouteAt, landedRouteOf, servedOtherThan } from './landings.ts';
 import { withheldSets, withheldWords } from './origin-visits.ts';
@@ -505,6 +506,8 @@ export async function routeFollowUpFailure(
     readonly served?: string | undefined;
   },
 ): Promise<string | undefined> {
+  const ruled = await documentRuleFailure(stack, headBytes, asked);
+  if (ruled !== undefined) return ruled;
   const navigations = new Map<string, OwnNavigation>();
   for (const ask of codedAsks(stack, asked)) {
     const failure = await codedFailure(stack, headBytes, { asked, ask }, navigations);

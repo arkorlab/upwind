@@ -180,6 +180,10 @@ async function deployed(pathname: string, rules: readonly HeaderRule[], folded =
       },
     },
   };
+  return assembledStack(bundle, directory);
+}
+
+async function assembledStack(bundle: DeploymentBundle, directory: string) {
   const recovery = await recoveryScriptCspSource();
   const app = { deploymentId: 'dpl_site', scriptName: 'app' };
   const assembled = await assembleManifest({
@@ -308,5 +312,67 @@ describe('held preload policies follow the build for class members and path capt
     expect(route?.preloads ?? []).toHaveLength(example.hints);
 
     await expect(routeFailures(stack)).resolves.toStrictEqual([]);
+  });
+});
+
+describe('held routes include build-owned Pages fallback authority', () => {
+  afterEach(removeFixtures);
+
+  it('agrees with deploy assembly for the fallback shell and its concrete member', async () => {
+    const { stack: base } = await deployed('/fallback-true/first', []);
+    const route = '/fallback-true/[slug]';
+    const fallback: Prerender = {
+      id: route,
+      pathname: route,
+      route,
+      parentOutputId: 'page',
+      groupId: 2,
+      routeType: 'fallback',
+      response: 'initial',
+      compute: 'static',
+      initialRevalidate: 1,
+      allowQuery: ['nxtPslug'],
+      body: SHELL,
+    };
+    const member: Prerender = {
+      ...fallback,
+      id: '/fallback-true/first',
+      pathname: '/fallback-true/first',
+      groupId: 1,
+      routeType: 'page',
+      response: 'complete',
+      parentFallbackMode: `${route}.html`,
+      initialRevalidate: 2,
+      initialExpiration: 31_536_000,
+    };
+    const data: Prerender = {
+      ...member,
+      id: '/_next/data/build/fallback-true/first.json',
+      pathname: '/_next/data/build/fallback-true/first.json',
+      routeType: undefined,
+      response: undefined,
+      compute: undefined,
+      body: { sha256: 'c'.repeat(64), byteLength: 2, contentType: 'application/json' },
+    };
+    const bundle: DeploymentBundle = {
+      ...base.bundle,
+      staticPagesPrivacy: 3,
+      entrypoints: [{ id: 'page', kind: 'pages', pathname: route }],
+      prerenders: [member, data, fallback],
+      routing: {
+        ...base.bundle.routing,
+        dynamicRoutes: [{ sourceRegex: '^/fallback-true/([^/]+?)(?:/)?$', destination: route }],
+      },
+    };
+    const { stack } = await assembledStack(bundle, base.bundleDir);
+
+    expect(Object.keys(stack.manifest.routes)).toContain(route);
+    expect(Object.keys(stack.manifest.routes)).toContain(member.pathname);
+    await expect(routeFailures(stack)).resolves.toStrictEqual([]);
+
+    const missing = { ...stack, manifest: { ...stack.manifest, routes: {} } };
+    const failures = await routeFailures(missing);
+    expect(failures.some((failure) => failure.path === route)).toBe(true);
+    expect(failures.some((failure) => failure.path === member.pathname)).toBe(true);
   });
 });

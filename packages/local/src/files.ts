@@ -54,7 +54,7 @@ import type { Reading } from './reading.ts';
 /** The header a rule sets a file's type by. */
 const CONTENT_TYPE = 'content-type';
 /** Bound simultaneous browser samples; each owns its own trace and response cleanup. */
-const FILE_SAMPLES_AT_ONCE = 32;
+const FILE_SAMPLES_AT_ONCE = 16;
 
 /**
  * A request the middleware rewrote onto the file of the build at `onto`, served as that file:
@@ -139,13 +139,21 @@ export async function fileVerdict(
   });
   const preferred = samples[0];
   if (preferred === undefined) return skipped(CLAIMED);
+  // Without application routing, the shipped-file handler reads only its conditions/range and
+  // RSC, none of which fileRequestsFor varies between browser GETs. Check every GET, but share
+  // the representative's follow-ups for that one handler. Any middleware or rule keeps each
+  // browser's full suite: it can distinguish its metadata together with a range or a condition.
+  const repeatFollowUps =
+    stack.manifest.middleware !== undefined ||
+    (stack.manifest.headerRules?.length ?? 0) > 0 ||
+    (stack.manifest.reservedRoutes?.length ?? 0) > 0;
   let failure: Verdict | undefined;
   let served = false;
   for (let index = 1; index < samples.length; index += FILE_SAMPLES_AT_ONCE) {
     const verdicts = await Promise.all(
-      samples
-        .slice(index, index + FILE_SAMPLES_AT_ONCE)
-        .map((sampled) => fileSampleVerdict(stack, at, { file, sampled })),
+      samples.slice(index, index + FILE_SAMPLES_AT_ONCE).map((sampled) => {
+        return fileSampleVerdict(stack, at, { file, sampled, followUps: repeatFollowUps });
+      }),
     );
     failure = verdicts.find((verdict) => verdict.kind === 'failed');
     served ||= verdicts.some((verdict) => verdict.kind === 'ok');
@@ -164,6 +172,7 @@ async function fileSampleVerdict(
   asking: {
     readonly file: StaticFileEntry;
     readonly sampled: Sampled;
+    readonly followUps?: boolean;
   },
 ): Promise<Verdict> {
   const { file, sampled } = asking;
@@ -208,7 +217,13 @@ async function fileSampleVerdict(
   if ('failure' in decision) {
     return failed(decision.failure);
   }
-  const read = { file, headers: sampled.headers, answer, middleware: decision.decided };
+  const read = {
+    file,
+    headers: sampled.headers,
+    answer,
+    middleware: decision.decided,
+    followUps: asking.followUps,
+  };
   return await servedVerdict(stack, url, read);
 }
 
@@ -226,6 +241,7 @@ async function servedVerdict(
     readonly headers: Readonly<Record<string, string>>;
     readonly answer: Reading;
     readonly middleware: Decided;
+    readonly followUps?: boolean | undefined;
   },
 ): Promise<Verdict> {
   const { file, answer, middleware: decided } = read;
@@ -253,7 +269,7 @@ async function servedVerdict(
   }
   // No representation bytes were sent to compare a later range against. Its status, absent
   // body/framing and retained metadata were checked above; ordinary file follow-ups are unchanged.
-  if (expected.bodylessRewrite) {
+  if (expected.bodylessRewrite || read.followUps === false) {
     return failed(undefined);
   }
   return failed(

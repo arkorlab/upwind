@@ -153,7 +153,11 @@ interface Answer {
    * (`hangsUp`).
    */
   readonly when?: {
-    readonly test: (headers: IncomingMessage['headers'], method: string | undefined) => boolean;
+    readonly test: (
+      headers: IncomingMessage['headers'],
+      method: string | undefined,
+      url: URL,
+    ) => boolean;
     readonly headers?: OutgoingHttpHeaders;
     readonly status?: number;
     readonly hangsUp?: boolean;
@@ -996,7 +1000,13 @@ function answeredComposedCoded(
 function claimedAnswer(answer: Answer, request: IncomingMessage): Answer {
   const handedOn = { 'x-arkor-edge': 'passthrough;reason=route-not-proved' };
   const ruled =
-    answer.when?.test(request.headers, request.method) === true ? answer.when : undefined;
+    answer.when?.test(
+      request.headers,
+      request.method,
+      new URL(request.url ?? '/', 'http://localhost'),
+    ) === true
+      ? answer.when
+      : undefined;
   return { ...answer, headers: { ...answer.headers, ...ruled?.headers, ...handedOn } };
 }
 
@@ -2547,6 +2557,40 @@ describe('what the check makes of the middleware', () => {
       expect(traceIds.letGo).toStrictEqual(traceIds.registered);
     });
 
+    it('checks browser range follow-ups when a conditional rule runs without middleware', async () => {
+      const pathname = '/chunk.js';
+      const script = { [pathname]: fileOf('kept script', SCRIPT) };
+      const ranged: HeaderRule = {
+        sourceRegex: '^/chunk[.]js$',
+        has: [
+          { type: 'header', key: 'user-agent', value: '.*Chrome.*' },
+          { type: 'header', key: 'range' },
+        ],
+        headers: { 'x-ranged': '1' },
+      };
+      const selected = new Set<boolean>();
+      answers.set(pathname, {
+        headers: { 'content-type': SCRIPT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept script',
+        when: {
+          test: (headers) => {
+            const broken =
+              headers['user-agent']?.includes('Chrome') === true && headers.range !== undefined;
+            selected.add(broken);
+            return broken;
+          },
+          headers: { 'cache-control': GATED },
+        },
+      });
+
+      const result = await checkStack(stackOf([], script, { headerRules: [ranged] }));
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toContain('x-ranged');
+      expect(selected.has(true)).toBe(true);
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
     it('checks the prover and each browser when every file response is healthy', async () => {
       answers.set('/a.txt', {
         headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
@@ -3559,6 +3603,28 @@ describe('what the check makes of the middleware', () => {
           reason: `asked for as the request a rule of next.config types it for (the cookie variant=1), answered as ${TEXT}, not image/png`,
         },
       ]);
+    });
+
+    it('reports an unwitnessed quantified type condition instead of passing it over', async () => {
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+      });
+      const quantified: HeaderRule = {
+        sourceRegex: '^/a[.]txt$',
+        has: [{ type: 'header', key: 'x-tenant', value: String.raw`\d{2}` }],
+        headers: { 'Content-Type': 'image/png' },
+      };
+      const unproved = await checkStack(stackOf([], files, { headerRules: [quantified] }));
+      const elsewhere = await checkStack(
+        stackOf([], files, {
+          headerRules: [{ ...quantified, sourceRegex: '^/other[.]txt$' }],
+        }),
+      );
+
+      expect(unproved.failures).toHaveLength(1);
+      expect(unproved.failures[0]?.reason).toContain('no request proves it');
+      expect(elsewhere).toStrictEqual({ checked: 1, failures: [], skipped: [] });
     });
 
     it('is asked for as a request a rule of next.config types it for where a header is missing', async () => {
@@ -6132,6 +6198,53 @@ describe('what the check makes of the middleware', () => {
         },
       ]);
     });
+
+    it.each(['query', 'cookie', 'header'] as const)(
+      'checks document headers selected only by a preexisting %s value',
+      async (type) => {
+        const condition = { type, key: 'variant', value: 'dark' };
+        const rule: HeaderRule = {
+          sourceRegex: '^/$',
+          has: [condition],
+          headers: { 'X-Robots-Tag': 'noindex', 'Set-Cookie': 'theme=dark; Path=/' },
+        };
+        const stack = stackOf([await routeOf('/', FRONT)], {}, { headerRules: [rule] });
+        const selected = new Set<boolean>();
+        const test = (
+          headers: IncomingMessage['headers'],
+          _method: string | undefined,
+          url: URL,
+        ) => {
+          const matches =
+            type === 'query'
+              ? url.searchParams.get('variant') === 'dark'
+              : type === 'cookie'
+                ? headers.cookie?.includes('variant=dark') === true
+                : headers.variant === 'dark';
+          selected.add(matches);
+          return matches;
+        };
+        const answer = documentAnswer(FRONT, 'mw=miss;route=/');
+        answers.set('/', {
+          ...answer,
+          when: {
+            test,
+            headers: { 'x-robots-tag': 'noindex', 'set-cookie': ['theme=dark; Path=/'] },
+          },
+        });
+
+        const correct = await checkStack(stack);
+        answers.set('/', { ...answer, when: { test } });
+        const broken = await checkStack(stack);
+
+        expect(correct).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+        expect(broken.failures).toHaveLength(1);
+        expect(broken.failures[0]?.reason).toContain('the header rule');
+        expect(broken.failures[0]?.reason).toContain('the application set');
+        expect(selected.has(true)).toBe(true);
+        expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+      },
+    );
 
     it('holds a page the edge composed whole to the policy a rule sets as the application set it', async () => {
       const policy = "script-src 'self'";
