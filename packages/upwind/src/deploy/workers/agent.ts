@@ -28,9 +28,11 @@ import {
  *   Worker's secret (`AGENT_KEY`), compared by digest so the time a comparison takes says nothing
  *   of it; a deploy sets a fresh one when it starts and a discarded one when it ends, so between
  *   deploys nobody holds a key that works.
- * - **Only the keys a deployment writes**, and of each kind only what it can be: an artifact or a
- *   blob is stored under its own digest, which is checked, so a write can only ever put the bytes
- *   the name says; a policy is written once.
+ * - **Only the keys a deployment writes**, and of each kind only what it can be: an artifact, a
+ *   manifest or a blob is stored under its own digest, which is checked, so a write can only ever
+ *   put the bytes the name says; a build's bundle is written once, by a write the bucket refuses
+ *   where one is already there. No delivery policy is written: a deployment's pointer carries its
+ *   own.
  * - **Nothing taken away**, except by a deploy destroying the project (`AGENT_MODE`), which uploads
  *   the agent again to say so.
  *
@@ -56,11 +58,22 @@ const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 const HTTP_CONFLICT = 409;
+const HTTP_LENGTH_REQUIRED = 411;
+const HTTP_TOO_LARGE = 413;
 const HTTP_UNPROCESSABLE = 422;
 const HTTP_UNAVAILABLE = 503;
 
-/** What the edge's namespace holds of a deployment: its manifest, its placed shells, its policy. */
-const KV_KEY = /^(?:manifest:[\da-f]{64}|art:[\da-f]{64}|policy:[\w.-]{1,128})$/u;
+/**
+ * The most a write is read into memory for: what a KV value may be, 25 MiB. A blob is not read at
+ * all, but streamed to the bucket, which checks its digest itself: several large ones at once would
+ * otherwise be more than a Worker's memory.
+ */
+const MAX_BUFFERED_BYTES = 26_214_400;
+/** How R2 ends the message of a write whose bytes are not the SHA-256 it was given. */
+const R2_BAD_DIGEST = '(10037)';
+
+/** What the edge's namespace holds of a deployment: its manifest and its placed shells. */
+const KV_KEY = /^(?:manifest:[\da-f]{64}|art:[\da-f]{64})$/u;
 /** What the bucket holds of one: blobs, artifacts and manifests by digest, and each build's bundle. */
 const BLOB_KEY =
   /^(?:blobs\/[\da-f]{64}|artifacts\/[\da-f]{64}|manifests\/[\da-f]{64}\.json|deployments\/[a-z][\da-z-]{1,23}\/dpl_[1-9A-HJ-NP-Za-km-z]{21}\/bundle\.json)$/u;
@@ -129,12 +142,39 @@ function stringsOf(value: unknown): Record<string, string> | undefined {
   );
 }
 
-/** Whether the bytes are what a content-addressed key says they are; any bytes for another key. */
-async function holdsWhatItNames(key: string, bytes: ArrayBuffer): Promise<boolean> {
-  const digest = DIGEST.exec(key)?.[1];
-  return digest === undefined || (await sha256Of(bytes)) === digest;
+/** The length a request says its body has, or nothing where it says none a write can rely on. */
+function declaredLength(request: Request): number | undefined {
+  const header = request.headers.get('content-length');
+  const length = header === null ? NaN : Number(header);
+  return Number.isSafeInteger(length) && length >= 0 ? length : undefined;
 }
 
+/** Why a body is not one to read into memory, or nothing where it is. */
+function unbuffered(request: Request): Response | undefined {
+  const length = declaredLength(request);
+  if (length === undefined) {
+    return empty(HTTP_LENGTH_REQUIRED);
+  }
+  return length > MAX_BUFFERED_BYTES
+    ? said(HTTP_TOO_LARGE, `at most ${MAX_BUFFERED_BYTES} bytes are taken in one write`)
+    : undefined;
+}
+
+/** The digest a content-addressed key names. */
+function digestOf(key: string): string | undefined {
+  return DIGEST.exec(key)?.[1];
+}
+
+function httpMetadataOf(request: Request): Pick<R2PutOptions, 'customMetadata' | 'httpMetadata'> {
+  const contentType = request.headers.get('content-type');
+  const customMetadata = stringsOf(metadataOf(request));
+  return {
+    ...(contentType !== null && { httpMetadata: { contentType } }),
+    ...(customMetadata !== undefined && { customMetadata }),
+  };
+}
+
+/** Every key the namespace takes names its own digest, so a value is written once and checked. */
 async function kv(request: Request, env: AgentEnv, key: string): Promise<Response> {
   if (request.method === 'GET') {
     const value = await env.EDGE_STATE.get(key, 'arrayBuffer');
@@ -143,20 +183,82 @@ async function kv(request: Request, env: AgentEnv, key: string): Promise<Respons
   if (request.method !== 'PUT') {
     return empty(HTTP_METHOD_NOT_ALLOWED);
   }
-  const bytes = await request.arrayBuffer();
-  if (!(await holdsWhatItNames(key, bytes))) {
-    return said(HTTP_UNPROCESSABLE, `the bytes are not what ${key} names`);
+  const refused = unbuffered(request);
+  if (refused !== undefined) {
+    return refused;
   }
-  const held = await env.EDGE_STATE.get(key, 'arrayBuffer');
+  // What a digest names is the same bytes whoever wrote it.
+  const held = await env.EDGE_STATE.get(key, 'stream');
   if (held !== null) {
-    // What a digest names is the same bytes whoever wrote it; a policy is written once.
-    return DIGEST.test(key) || (await sha256Of(held)) === (await sha256Of(bytes))
-      ? empty(HTTP_NO_CONTENT)
-      : said(HTTP_CONFLICT, `${key} holds other bytes`);
+    await held.cancel();
+    await request.body?.cancel();
+    return empty(HTTP_NO_CONTENT);
+  }
+  const bytes = await request.arrayBuffer();
+  if ((await sha256Of(bytes)) !== digestOf(key)) {
+    return said(HTTP_UNPROCESSABLE, `the bytes are not what ${key} names`);
   }
   const metadata = metadataOf(request);
   await env.EDGE_STATE.put(key, bytes, metadata === undefined ? {} : { metadata });
   return empty(HTTP_NO_CONTENT);
+}
+
+/**
+ * A blob under its own digest, streamed to the bucket with the digest for it to check: what
+ * arrives is never held here whole.
+ */
+async function putAddressed(
+  request: Request,
+  env: AgentEnv,
+  key: string,
+  digest: string,
+): Promise<Response> {
+  if ((await env.ARTIFACTS.head(key)) !== null) {
+    // What a digest names is the same bytes whoever wrote it.
+    await request.body?.cancel();
+    return empty(HTTP_NO_CONTENT);
+  }
+  // A stream the bucket takes is one of a known length.
+  if (declaredLength(request) === undefined) {
+    return empty(HTTP_LENGTH_REQUIRED);
+  }
+  try {
+    await env.ARTIFACTS.put(key, request.body ?? new Uint8Array(), {
+      sha256: digest,
+      ...httpMetadataOf(request),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.endsWith(R2_BAD_DIGEST)) {
+      return said(HTTP_UNPROCESSABLE, `the bytes are not what ${key} names`);
+    }
+    throw error;
+  }
+  return empty(HTTP_NO_CONTENT);
+}
+
+/**
+ * A build's bundle, written where none is, in one step the bucket refuses where one is already
+ * there: two writes of other bytes cannot both land. The same bytes again are the same write.
+ */
+async function putOnce(request: Request, env: AgentEnv, key: string): Promise<Response> {
+  const refused = unbuffered(request);
+  if (refused !== undefined) {
+    return refused;
+  }
+  const bytes = await request.arrayBuffer();
+  const sha256 = await sha256Of(bytes);
+  const written = await env.ARTIFACTS.put(key, bytes, {
+    sha256,
+    onlyIf: { etagDoesNotMatch: '*' },
+    ...httpMetadataOf(request),
+  });
+  if (written !== null) {
+    return empty(HTTP_NO_CONTENT);
+  }
+  const held = (await env.ARTIFACTS.head(key))?.checksums.sha256;
+  return held !== undefined && toHex(new Uint8Array(held)) === sha256
+    ? empty(HTTP_NO_CONTENT)
+    : said(HTTP_CONFLICT, `${key} holds other bytes`);
 }
 
 async function blob(request: Request, env: AgentEnv, key: string): Promise<Response> {
@@ -167,29 +269,10 @@ async function blob(request: Request, env: AgentEnv, key: string): Promise<Respo
   if (request.method !== 'PUT') {
     return empty(HTTP_METHOD_NOT_ALLOWED);
   }
-  const bytes = await request.arrayBuffer();
-  if (!(await holdsWhatItNames(key, bytes))) {
-    return said(HTTP_UNPROCESSABLE, `the bytes are not what ${key} names`);
-  }
-  const sha256 = await sha256Of(bytes);
-  const held = await env.ARTIFACTS.head(key);
-  if (held !== null) {
-    // What a digest names is the same bytes whoever wrote it; a build's bundle is written once.
-    const heldSha = held.checksums.sha256;
-    const same = heldSha !== undefined && toHex(new Uint8Array(heldSha)) === sha256;
-    return same || DIGEST.test(key)
-      ? empty(HTTP_NO_CONTENT)
-      : said(HTTP_CONFLICT, `${key} holds other bytes`);
-  }
-  const contentType = request.headers.get('content-type');
-  const customMetadata = stringsOf(metadataOf(request));
-  // With its digest, so the bucket checks what arrived against what was sent.
-  await env.ARTIFACTS.put(key, bytes, {
-    sha256,
-    ...(contentType !== null && { httpMetadata: { contentType } }),
-    ...(customMetadata !== undefined && { customMetadata }),
-  });
-  return empty(HTTP_NO_CONTENT);
+  const digest = digestOf(key);
+  return digest === undefined
+    ? putOnce(request, env, key)
+    : putAddressed(request, env, key, digest);
 }
 
 /** The keys a `missing` request asks about: at most a batch of them, each one the bucket takes. */

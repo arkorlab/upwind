@@ -82,20 +82,44 @@ function stagedBlobs(bundle: DeploymentBundle): BlobRef[] {
   return [...refs.values()];
 }
 
-/** Of these keys, the ones the bucket does not hold. */
+/** The keys of an answer to `missing`, each one of those asked about; nothing for any other answer. */
+function absentOf(answer: unknown, asked: ReadonlySet<string>): readonly string[] | undefined {
+  const absent: unknown =
+    typeof answer === 'object' && answer !== null ? Reflect.get(answer, 'missing') : undefined;
+  if (!Array.isArray(absent)) {
+    return undefined;
+  }
+  const keys: string[] = [];
+  for (const key of absent) {
+    if (typeof key !== 'string' || !asked.has(key)) {
+      return undefined;
+    }
+    keys.push(key);
+  }
+  return keys;
+}
+
+/**
+ * Of these keys, the ones the bucket does not hold. An agent that answers anything but the list
+ * stops the deploy here: taking it for "all held" would send nothing, and fail at publication over
+ * a blob that was never sent.
+ */
 async function missingOf(agent: AgentClient, keys: readonly string[]): Promise<Set<string>> {
   const missing = new Set<string>();
   for (let start = 0; start < keys.length; start += MISSING_BATCH) {
+    const batch = keys.slice(start, start + MISSING_BATCH);
     const response = await agent.call('POST', AGENT_PATHS.missing, {
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ keys: keys.slice(start, start + MISSING_BATCH) }),
+      body: JSON.stringify({ keys: batch }),
     });
-    const answer = (await response?.json()) as { readonly missing?: readonly string[] } | undefined;
-    const absent = answer?.missing;
-    if (absent !== undefined) {
-      for (const key of absent) {
-        missing.add(key);
-      }
+    const absent = absentOf(await response?.json(), new Set(batch));
+    if (absent === undefined) {
+      throw new Error(
+        `the deploy agent at ${agent.url.host} did not say which blobs the bucket lacks; it is not the agent this version of upwind deploys`,
+      );
+    }
+    for (const key of absent) {
+      missing.add(key);
     }
   }
   return missing;

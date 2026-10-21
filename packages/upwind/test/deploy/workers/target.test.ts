@@ -76,6 +76,31 @@ describe('staging and publishing through the deploy agent', () => {
     await expect(target.bucket.get(`manifests/${staged.manifestId}.json`)).resolves.toBeDefined();
   });
 
+  it('sends nothing, and stops, where the agent does not say which blobs are missing', async () => {
+    const dir = projectDir();
+    const robots = moduleOf(dir, 'robots.txt', 'text', 'User-agent: *\n');
+    const bundle = bundleOf(deployableFunction(dir), {
+      staticFiles: [{ pathname: '/robots.txt', blob: robots.blob, immutable: false }],
+    });
+    const sent: string[] = [];
+    // An agent that answers the query with nothing: one of another version, or not one at all.
+    const agent = agentClient({
+      url: new URL('https://agent.example/'),
+      key: AGENT_KEY,
+      fetch: (input, init) => {
+        const url = input instanceof Request ? input.url : input;
+        sent.push(`${init?.method ?? 'GET'} ${new URL(url).pathname}`);
+        return Promise.resolve(new Response(null, { status: 404 }));
+      },
+    });
+    const bundleDir = path.dirname(path.join(dir, BUNDLE_PATH));
+
+    await expect(uploadBuildBlobs(agent, bundleDir, bundle)).rejects.toThrow(
+      'did not say which blobs the bucket lacks',
+    );
+    expect(sent).toStrictEqual(['POST /v1/blobs/missing']);
+  });
+
   it('stops a run whose key another run has replaced', async () => {
     const agent = agentClient({ url: await stack.url('agent'), key: 'x'.repeat(48) });
 

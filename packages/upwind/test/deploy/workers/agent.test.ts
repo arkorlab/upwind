@@ -58,12 +58,11 @@ describe('the deploy agent', () => {
     ).toBe(422);
   });
 
-  it('writes a policy once, and refuses what no deployment writes', async () => {
+  it('refuses what no deployment writes: a pointer, a policy, a key of no kind', async () => {
     const policy = `${AGENT_PATHS.kv}${encodeURIComponent('policy:custom')}`;
 
-    expect((await ask(policy, { method: 'PUT', body: '{"a":1}' })).status).toBe(204);
-    expect((await ask(policy, { method: 'PUT', body: '{"a":1}' })).status).toBe(204);
-    expect((await ask(policy, { method: 'PUT', body: '{"a":2}' })).status).toBe(409);
+    // A deployment's pointer carries its policy; one in the namespace is what the edge would read.
+    expect((await ask(policy, { method: 'PUT', body: '{"a":1}' })).status).toBe(403);
     expect((await ask(`${AGENT_PATHS.kv}pointer`, { method: 'PUT', body: '{}' })).status).toBe(403);
     expect((await ask(`${AGENT_PATHS.blob}anything`, { method: 'PUT', body: '' })).status).toBe(
       403,
@@ -102,8 +101,18 @@ describe('the deploy agent', () => {
       'deployments/shop/dpl_4Fixture2Minima1AppXy/bundle.json',
     )}`;
 
-    expect((await ask(bundle, { method: 'PUT', body: '{"v":1}' })).status).toBe(204);
-    expect((await ask(bundle, { method: 'PUT', body: '{"v":2}' })).status).toBe(409);
+    const raced = await Promise.all(
+      ['{"v":1}', '{"v":2}'].map(
+        async (body) => (await ask(bundle, { method: 'PUT', body })).status,
+      ),
+    );
+
+    // Of two writes of other bytes at once, one lands, and the other is refused.
+    expect(raced.toSorted((a, b) => a - b)).toStrictEqual([204, 409]);
+
+    const kept = await (await ask(bundle)).text();
+
+    expect((await ask(bundle, { method: 'PUT', body: kept })).status).toBe(204);
     expect((await ask(AGENT_PATHS.purge, { method: 'POST' })).status).toBe(403);
 
     const purged = await ask(AGENT_PATHS.purge, { method: 'POST', on: 'agent-destroying' });
