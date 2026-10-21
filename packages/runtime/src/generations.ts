@@ -22,6 +22,7 @@ import {
   answerFromRender,
   answerWith,
   documentWant,
+  renderCompletedRscForVisitor,
   renderForVisitor,
   resumeRsc,
   type Target,
@@ -608,9 +609,7 @@ export async function serveFromGeneration(
   if (once && lookup.kind === 'unavailable' && partialUpgrade(job)) {
     return answerMiss({ ...job, pending: lookup.pending }, source, want, once);
   }
-  if (lookup.kind !== 'generation') {
-    return undefined;
-  }
+  if (lookup.kind !== 'generation') return renderCompletedRscForVisitor(job, source, once);
   const { pack, validity } = lookup.current;
   if (validity === 'expired' && !once) {
     return renderRequest(job, source.url);
