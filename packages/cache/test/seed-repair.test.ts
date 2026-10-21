@@ -768,6 +768,8 @@ describe('a seed whose artifact projection could not read', () => {
           outputs: plan.seed.generation.outputs.map((output) => {
             return {
               ...output,
+              // This fixture is an App Router page, with no Pages Router authority to inherit.
+              staticPagePrivacy: undefined,
               htmlSize: bytes.byteLength,
               artifacts: [artifact],
             };
