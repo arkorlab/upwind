@@ -82,18 +82,21 @@ describe("a commit's headers", () => {
 });
 
 describe('an independently earned static Pages commit claim', () => {
-  it('retains version two through the complete gateway request parser', () => {
-    const output = { ...commit().generation.outputs[0], staticPagePrivacy: 2 };
+  it.each([2, 3])('retains version %i through the complete gateway request parser', (version) => {
+    const output = { ...commit().generation.outputs[0], staticPagePrivacy: version };
     const parsed = commitRequestSchema.parse(commit({ outputs: [output] }));
 
-    expect(parsed.generation.outputs[0]?.staticPagePrivacy).toBe(2);
+    expect(parsed.generation.outputs[0]?.staticPagePrivacy).toBe(version);
   });
 
-  it.each([1, 3, '2', null])('refuses an unsupported runtime claim %j', (staticPagePrivacy) => {
-    const output = { ...commit().generation.outputs[0], staticPagePrivacy };
+  it.each([1, 4, '2', '3', null])(
+    'refuses an unsupported runtime claim %j',
+    (staticPagePrivacy) => {
+      const output = { ...commit().generation.outputs[0], staticPagePrivacy };
 
-    expect(commitRequestSchema.safeParse(commit({ outputs: [output] })).success).toBe(false);
-  });
+      expect(commitRequestSchema.safeParse(commit({ outputs: [output] })).success).toBe(false);
+    },
+  );
 
   it('preserves the serialized output when an older runtime supplies no claim', () => {
     const output = commit().generation.outputs[0];

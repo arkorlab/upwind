@@ -174,6 +174,23 @@ describe('pages ISR proof earned by the real synthetic regeneration', () => {
     expect(captured).not.toHaveProperty('staticPagePrivacy');
   });
 
+  it('retains parameter metadata as supplementary evidence without granting authority', async () => {
+    const captured = await renderCaptured('pages', () => {
+      return Promise.resolve(
+        new Response(htmlOf({ ...METADATA, query: { slug: 'first' } }), {
+          headers: { 'cache-control': POLICY },
+        }),
+      );
+    });
+
+    expect(captured?.pagesStatic).toStrictEqual({
+      page: '/something',
+      buildId: 'build',
+      query: { slug: 'first' },
+    });
+    expect(captured).not.toHaveProperty('staticPagePrivacy');
+  });
+
   it.each([
     { name: 'legacy capability', manifest: manifestOf({ staticPagesPrivacy: undefined }) },
     { name: 'version1 capability', manifest: manifestOf({ staticPagesPrivacy: 1 }) },

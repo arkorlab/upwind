@@ -20,9 +20,10 @@ const MANY_CONDITIONS = 600;
 
 function manifestOf(
   dynamicRoutes: readonly DynamicRoute[],
-  gateFields: {
+  options: {
     readonly gates?: Readonly<Record<string, string>>;
     readonly gatedPathnames?: Readonly<Record<string, string>>;
+    readonly staticFileRequestKeys?: boolean;
   } = {},
 ) {
   return buildProjectManifest({
@@ -34,7 +35,7 @@ function manifestOf(
     routes: [],
     app: { deploymentId: 'dpl_manifestMemory', scriptName: 'manifest-app' },
     dynamicRoutes,
-    ...gateFields,
+    ...options,
   });
 }
 
@@ -200,7 +201,7 @@ describe('the additional lookup tables of a gated manifest', () => {
 describe('the request-key static file format', () => {
   it('charges its primitive mode flag through the existing stored JSON multiplier', () => {
     const plain = manifestOf([]);
-    const listed = { ...plain, schemaVersion: 7 as const, staticFileRequestKeys: true as const };
+    const listed = manifestOf([], { staticFileRequestKeys: true });
     const plainStored = serializeManifest(plain);
     const stored = serializeManifest(listed);
     const parsed = parseProjectManifest(stored);
@@ -251,5 +252,49 @@ describe('the memory held by trusted static Pages mappings', () => {
 
     expect(manifestCharge(listed, 0) - manifestCharge(bodies, 0)).toBe(4 * 80);
     expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(8 * 80);
+  });
+});
+
+describe('the memory held by version-three Pages authority', () => {
+  it('charges concrete parameter objects independently of fixed mappings', () => {
+    const plain = manifestOf([]);
+    const page = {
+      pathname: '/post/first',
+      route: '/post/[slug]',
+      entryId: 'entry_post',
+      staticPagePrivacy: 3 as const,
+      parameters: { slug: 'first' },
+      dataPathname: '/_next/data/build/post/first.json',
+    };
+    const listed = { ...plain, schemaVersion: 8 as const, staticPages: { '/post/first': page } };
+
+    expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(3 * 80);
+  });
+
+  it('charges loading metadata and compressed artifact objects', () => {
+    const plain = manifestOf([]);
+    const artifact = {
+      sha256: 'a'.repeat(64),
+      byteLength: 10,
+      contentType: 'text/html',
+      encoding: 'identity' as const,
+    };
+    const entry = {
+      route: '/post/[slug]',
+      staticPagePrivacy: 3 as const,
+      dataPathname: '/_next/data/build/post/[slug].json',
+      shell: {
+        artifact,
+        encodings: { gzip: { ...artifact, encoding: 'gzip' as const, crc32: 0 } },
+      },
+      headers: {},
+    };
+    const listed = {
+      ...plain,
+      schemaVersion: 8 as const,
+      pagesFallbacks: { '/post/[slug]': entry },
+    };
+
+    expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(7 * 80);
   });
 });

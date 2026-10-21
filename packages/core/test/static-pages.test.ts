@@ -167,7 +167,7 @@ describe('trusted complete static Pages documents', () => {
       'staticPagePrivacy',
       2,
     );
-    expect(packHeaderOf({ ...HEADER, staticPagePrivacy: 3 })).toBeUndefined();
+    expect(packHeaderOf({ ...HEADER, staticPagePrivacy: 4 })).toBeUndefined();
   });
 });
 
@@ -531,7 +531,7 @@ describe('static Pages publication and request boundaries', () => {
     ).toStrictEqual({ kind: 'passthrough', reason: 'static-page-bypass' });
   });
 
-  it.each([null, 0, 3, '1', false])(
+  it.each([null, 0, 4, '1', false])(
     'rejects invalid proof %j identically in schema and fast decoder',
     (staticPagePrivacy) => {
       const value = { ...HEADER, staticPagePrivacy };
@@ -571,6 +571,6 @@ describe('static Pages publication and request boundaries', () => {
       'staticPagePrivacy',
       2,
     );
-    expect(outputSnapshotSchema.safeParse({ ...output, staticPagePrivacy: 3 }).success).toBe(false);
+    expect(outputSnapshotSchema.safeParse({ ...output, staticPagePrivacy: 4 }).success).toBe(false);
   });
 });

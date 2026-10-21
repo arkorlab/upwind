@@ -1426,6 +1426,17 @@ describe('the gate a request for a page’s props is asked of', () => {
     expect(gateOf(withProps(), `/_next/data/${BUILD}/news/yesterday.json`)).toStrictEqual(newsGate);
   });
 
+  it('does not borrow a gated catch-all for the props of an exact ungated page', () => {
+    const manifest = withProps({
+      routes: [routeEntry('/about', { pagesData: { artifact: ARTIFACT } })],
+      gates: { [ALL]: 'checker' },
+      gatedPathnames: {},
+      dynamicRoutes: [{ sourceRegex: '^/(.+?)(?:/)?$', route: ALL, gated: ALL }],
+    });
+
+    expect(gateOf(manifest, `/_next/data/${BUILD}/about.json`)).toBeUndefined();
+  });
+
   /** A redirect or a rewrite ahead of the filesystem takes the request elsewhere first. */
   it.each([
     [
