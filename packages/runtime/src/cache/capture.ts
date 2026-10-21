@@ -60,7 +60,14 @@ export interface CapturedRender {
   /** The props a Pages Router page was rendered with, as its data route serves them. */
   readonly data: Uint8Array | undefined;
   /** Supplementary Next metadata, never permission to publish shared HTML by itself. */
-  readonly pagesStatic?: { readonly page: string; readonly buildId: string } | undefined;
+  readonly pagesStatic?:
+    | {
+        readonly page: string;
+        readonly buildId: string;
+        /** Supplementary path parameters, checked against immutable build authority before use. */
+        readonly query?: Readonly<Record<string, string | readonly string[]>> | undefined;
+      }
+    | undefined;
 }
 
 type OnCacheEntry = (
@@ -137,9 +144,18 @@ function captureCallback(): {
  * the props the page was rendered with, and the data route answers exactly those. One render,
  * one generation, its two outputs in agreement.
  */
-function emptyQuery(query: unknown): boolean {
-  if (query === null || typeof query !== 'object' || Array.isArray(query)) return false;
-  return Object.keys(query).length === 0;
+function pageQuery(query: unknown): Record<string, string | readonly string[]> | undefined {
+  if (query === null || typeof query !== 'object' || Array.isArray(query)) return undefined;
+  const parsed: Record<string, string | readonly string[]> = {};
+  for (const [name, value] of Object.entries(query)) {
+    if (
+      typeof value !== 'string' &&
+      (!Array.isArray(value) || value.some((part: unknown) => typeof part !== 'string'))
+    )
+      return undefined;
+    Object.defineProperty(parsed, name, { value, enumerable: true });
+  }
+  return parsed;
 }
 
 function pagesStaticOf(value: Record<string, unknown>): CapturedRender['pagesStatic'] {
@@ -151,11 +167,17 @@ function pagesStaticOf(value: Record<string, unknown>): CapturedRender['pagesSta
     value['isFallback'] !== false ||
     value['err'] !== undefined ||
     typeof value['page'] !== 'string' ||
-    typeof value['buildId'] !== 'string' ||
-    !emptyQuery(value['query'])
+    typeof value['buildId'] !== 'string'
   )
     return undefined;
-  return { page: value['page'], buildId: value['buildId'] };
+  const query = pageQuery(value['query']);
+  return query === undefined
+    ? undefined
+    : {
+        page: value['page'],
+        buildId: value['buildId'],
+        ...(Object.keys(query).length > 0 && { query }),
+      };
 }
 
 function pagesDataOf(html: Uint8Array): Pick<CapturedRender, 'data' | 'pagesStatic'> {

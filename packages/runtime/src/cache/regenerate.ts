@@ -53,6 +53,7 @@ import {
 import type { CacheRuntime } from './runtime.ts';
 import {
   generationHeadersFor,
+  PAGES_FALLBACK_PRIVACY,
   type StaticPagesManifest,
   type StaticRender,
   staticPageRender,
@@ -318,7 +319,9 @@ function primaryOutput(
   const { pathname, kind } = target.descriptor;
   const primary = bodyArtifact(target, render);
   return {
-    ...(render.staticPagePrivacy === 2 && { staticPagePrivacy: 2 }),
+    ...(render.staticPagePrivacy !== undefined && {
+      staticPagePrivacy: render.staticPagePrivacy,
+    }),
     representationKey: kind === 'app-route' ? ROUTE_BODY : 'html',
     pathname,
     status: render.status,
@@ -362,10 +365,13 @@ function outputsOf(
   const { pathname } = target.descriptor;
   const outputs: CommitOutput[] = [primaryOutput(target, render, uploads)];
   if (uploads.data !== undefined) {
+    const data = sideOutput(PAGES_DATA, target.dataPathname ?? pathname, JSON_UTF8_TYPE, [
+      artifact(PAGES_DATA, uploads.data, JSON_UTF8_TYPE),
+    ]);
     outputs.push(
-      sideOutput(PAGES_DATA, target.dataPathname ?? pathname, JSON_UTF8_TYPE, [
-        artifact(PAGES_DATA, uploads.data, JSON_UTF8_TYPE),
-      ]),
+      render.staticPagePrivacy === PAGES_FALLBACK_PRIVACY
+        ? { ...data, staticPagePrivacy: PAGES_FALLBACK_PRIVACY }
+        : data,
     );
   }
   if (uploads.rsc !== undefined) {

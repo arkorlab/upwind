@@ -127,6 +127,15 @@ describe('versioned static Pages ISR admission', () => {
     ).not.toHaveProperty('staticPagePrivacy');
   });
 
+  it('preserves fixed-page proof versions instead of inheriting fallback capability 3', () => {
+    const finite = bundleOf({ staticPagesPrivacy: 3 });
+    const immutable = { ...PAGE, initialRevalidate: false as const };
+
+    expect(staticPagePrivacyFor(finite, PAGE)).toBe(2);
+    expect(staticPagePrivacyFor({ ...finite, prerenders: [immutable] }, immutable)).toBe(1);
+    expect(deploymentBundleSchema.parse(finite)).toHaveProperty('staticPagesPrivacy', 3);
+  });
+
   it.each([1, undefined] as const)(
     'does not infer ISR permission from capability %s',
     (staticPagesPrivacy) => {
@@ -213,7 +222,7 @@ describe('versioned static Pages ISR admission', () => {
 
   it('retains capability 2 and refuses unknown schema versions', () => {
     expect(deploymentBundleSchema.parse(bundleOf())).toHaveProperty('staticPagesPrivacy', 2);
-    expect(deploymentBundleSchema.safeParse({ ...bundleOf(), staticPagesPrivacy: 3 }).success).toBe(
+    expect(deploymentBundleSchema.safeParse({ ...bundleOf(), staticPagesPrivacy: 4 }).success).toBe(
       false,
     );
     expect(

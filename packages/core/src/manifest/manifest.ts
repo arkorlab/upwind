@@ -13,7 +13,7 @@ import {
   spellingReaching,
 } from './built-names.ts';
 import { pageKeyOf } from './page-keys.ts';
-import { namesPagesDataPrefix, pagesDataPrefixOf } from './pages-data-prefix.ts';
+import { pagesDataFields, unaddressedProps } from './pages-data.ts';
 import { routeBodyFields } from './route-bodies.ts';
 import {
   type AppRuntime,
@@ -22,11 +22,13 @@ import {
   type ContinuationConfig,
   type DynamicRoute,
   MANIFEST_SCHEMA_VERSION,
+  PAGES_FALLBACK_SCHEMA_VERSION,
   type ManifestCache,
   type MiddlewareMatcher,
   type ReservedRoute,
   type RouteBodyEntry,
   type StaticPageEntry,
+  type PagesFallbackEntry,
   type RouteEntry,
   type ProjectManifest,
   projectManifestSchema,
@@ -40,6 +42,7 @@ import { spellsPrefixOf } from './spelled-prefix.ts';
 import { staticPageFields } from './static-pages.ts';
 import { fromStoredManifest, toStoredManifest } from './stored.ts';
 
+const PAGES_FALLBACK_PRIVACY = 3;
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 15_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 300_000;
 
@@ -62,6 +65,7 @@ export interface BuildProjectManifestInput {
   readonly routes: readonly RouteEntry[];
   readonly routeBodies?: readonly RouteBodyEntry[] | undefined;
   readonly staticPages?: readonly StaticPageEntry[] | undefined;
+  readonly pagesFallbacks?: readonly PagesFallbackEntry[] | undefined;
   readonly continuation?: Partial<ContinuationConfig> | undefined;
   readonly assetPolicy?: Partial<AssetPolicy> | undefined;
   readonly app: AppRuntime;
@@ -165,7 +169,13 @@ function unreachableFunctions(input: BuildProjectManifestInput): string[] {
       unreachable.add(name);
     }
   };
-  const routeTables = [input.routes, input.routeBodies, input.staticPages, input.dynamicRoutes];
+  const routeTables = [
+    input.routes,
+    input.routeBodies,
+    input.staticPages,
+    input.pagesFallbacks,
+    input.dynamicRoutes,
+  ];
   for (const entries of routeTables) {
     if (entries !== undefined) {
       for (const entry of entries) check(entry.function);
@@ -178,43 +188,6 @@ function unreachableFunctions(input: BuildProjectManifestInput): string[] {
     }
   }
   return [...unreachable].toSorted(compareCodeUnits);
-}
-
-/**
- * What is wrong with where the manifest says a client asks for a page's props, if anything. Props
- * no prefix names are asked for at no URL, and a base path or a build id a prefix cannot carry, or a
- * request cannot spell as written, names no request: either way every data request would go to the
- * Function, and nothing would say why. So a manifest like that is refused where it is built, as one
- * naming an unreachable Function is.
- */
-function unaddressedProps(input: BuildProjectManifestInput): string | undefined {
-  const under = input.pagesDataUnder;
-  if (under !== undefined && !namesPagesDataPrefix(under.basePath, under.buildId)) {
-    return `pagesDataUnder names no prefix: base path ${under.basePath}, build ${under.buildId}`;
-  }
-  if (under === undefined && input.routes.some((route) => route.pagesData !== undefined)) {
-    return "routes hold a page's props (pagesData), and no pagesDataUnder says where a client asks for them";
-  }
-  return undefined;
-}
-
-/**
- * Where a client asks for props, where a route holds some (`RouteEntry.pagesData`): the prefix as a
- * request spells it, and the base path it is under, as the build wrote it, for naming the page a
- * request asks for; neither where no route's props sit under them, so that the fields say what
- * they say.
- */
-function pagesDataFields(
-  input: BuildProjectManifestInput,
-): Pick<ProjectManifest, 'pagesDataBasePath' | 'pagesDataPrefix'> {
-  const under = input.pagesDataUnder;
-  if (under === undefined || input.routes.every((route) => route.pagesData === undefined)) {
-    return {};
-  }
-  return {
-    pagesDataPrefix: pagesDataPrefixOf(under.buildId, under.basePath),
-    ...(under.basePath !== '' && { pagesDataBasePath: under.basePath }),
-  };
 }
 
 /** The routes the manifest finds a request of by its exact pathname, and by a dynamic route. */
@@ -277,6 +250,18 @@ function gateFields(
   return { gates, ...(gatedPathnames !== undefined && { gatedPathnames }) };
 }
 
+/** Version-three Pages authority requires its reader; unrelated builds keep their format. */
+function schemaVersionFor(input: BuildProjectManifestInput): ProjectManifest['schemaVersion'] {
+  if (
+    (input.pagesFallbacks?.length ?? 0) > 0 ||
+    input.staticPages?.some((page) => page.staticPagePrivacy === PAGES_FALLBACK_PRIVACY) === true
+  )
+    return PAGES_FALLBACK_SCHEMA_VERSION;
+  return input.staticFileRequestKeys === true
+    ? REQUEST_FILE_KEYS_SCHEMA_VERSION
+    : MANIFEST_SCHEMA_VERSION;
+}
+
 /** Assemble a manifest from a build's routes; validates the result against the schema. */
 export function buildProjectManifest(input: BuildProjectManifestInput): ProjectManifest {
   const unreachable = unreachableFunctions(input);
@@ -294,10 +279,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     routes[entry.pathname] = entry;
   }
   return projectManifestSchema.parse({
-    schemaVersion:
-      input.staticFileRequestKeys === true
-        ? REQUEST_FILE_KEYS_SCHEMA_VERSION
-        : MANIFEST_SCHEMA_VERSION,
+    schemaVersion: schemaVersionFor(input),
     projectId: input.projectId,
     runId: input.runId,
     generatedAt: input.generatedAt,
@@ -416,7 +398,8 @@ function keyOf(
   if (
     assetPrefix !== undefined &&
     manifest?.staticFileRequestKeys === true &&
-    manifest.schemaVersion === REQUEST_FILE_KEYS_SCHEMA_VERSION &&
+    manifest.schemaVersion !== undefined &&
+    manifest.schemaVersion >= REQUEST_FILE_KEYS_SCHEMA_VERSION &&
     decoded.startsWith(`${assetPrefix.assetPrefix}/_next/`) &&
     !spellsPrefixOf({ basePath: assetPrefix.assetPrefix }, pathname, decoded)
   ) {
@@ -512,7 +495,8 @@ export function staticFileKey(manifest: FileLookup, pathname: string): string | 
   }
   if (
     manifest.staticFileRequestKeys === true &&
-    manifest.schemaVersion === REQUEST_FILE_KEYS_SCHEMA_VERSION
+    manifest.schemaVersion !== undefined &&
+    manifest.schemaVersion >= REQUEST_FILE_KEYS_SCHEMA_VERSION
   ) {
     return undefined;
   }
