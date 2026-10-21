@@ -1027,7 +1027,13 @@ function answerCarrying(answer: Answer | undefined, request: IncomingMessage): A
   const lacked = lacking !== undefined && request.headers[lacking.name] === undefined;
   const had = having !== undefined && request.headers[having.name] !== undefined;
   const held =
-    answer.when?.test(request.headers, request.method) === true ? answer.when : undefined;
+    answer.when?.test(
+      request.headers,
+      request.method,
+      new URL(request.url ?? '/', 'http://localhost'),
+    ) === true
+      ? answer.when
+      : undefined;
   return {
     ...answer,
     headers: {
@@ -6220,7 +6226,7 @@ describe('what the check makes of the middleware', () => {
               ? url.searchParams.get('variant') === 'dark'
               : type === 'cookie'
                 ? headers.cookie?.includes('variant=dark') === true
-                : headers.variant === 'dark';
+                : headers['variant'] === 'dark';
           selected.add(matches);
           return matches;
         };
