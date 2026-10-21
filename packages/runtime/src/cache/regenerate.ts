@@ -18,7 +18,7 @@ import {
   publishedRecordOf,
   rememberRecord,
 } from './current.ts';
-import { generationTags } from './generation-tags.ts';
+import { generationTags, generationTagValues } from './generation-tags.ts';
 import { HeldTags } from './held-tags.ts';
 import {
   type AttemptOutcome,
