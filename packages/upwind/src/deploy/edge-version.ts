@@ -30,6 +30,7 @@ import { COMPATIBILITY_DATE, ensureWorker, holdReach, shippedForm } from './uplo
  */
 
 const TAG_DIGITS = 12;
+const FULL = 100;
 
 export interface EdgeVersionInput {
   readonly scope: AccountScope;
@@ -105,7 +106,11 @@ export async function uploadEdgeVersion(input: EdgeVersionInput): Promise<EdgeVe
     const versions = await listVersions(scope, names.edge);
     const uploaded = versions.find((version) => version.annotations?.['workers/tag'] === tag);
     if (uploaded !== undefined) {
-      return { versionId: uploaded.id, live: false };
+      // The deployment made live again, the version that serves it takes all the traffic already.
+      const live = deployments[0]?.versions.some(
+        (share) => share.version_id === uploaded.id && share.percentage === FULL,
+      );
+      return { versionId: uploaded.id, live: live === true };
     }
   }
   const form = shippedForm(input.script.script, {

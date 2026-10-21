@@ -107,32 +107,14 @@ function markOf(scope: AccountScope, bucket: string, initial: OwnerMark): Mark {
   };
 }
 
-/**
- * A namespace of the title, found or made, and recorded in the mark under `recorded` either way:
- * its title, for the deployment's own; its binding, for one of the application's.
- */
-async function namespaceOf(
-  scope: AccountScope,
-  mark: Mark,
-  namespace: { readonly title: string; readonly recorded: string },
-  found: readonly KvNamespace[],
-): Promise<string> {
-  const { title, recorded } = namespace;
-  const existing = found.find((candidate) => candidate.title === title);
-  if (existing !== undefined) {
-    if (!markOwns(mark.value, recorded, existing.id)) {
-      throw new Error(
-        `the KV namespace ${title} is on the account, and was not made for this project`,
-      );
-    }
-    if (mark.value.made[recorded] !== existing.id) {
-      await mark.made(recorded, existing.id);
-    }
-    return existing.id;
-  }
-  const made = await createKvNamespace(scope, title);
-  await mark.made(recorded, made.id);
-  return made.id;
+/** A store the deployment needs: what the mark calls it, and what the account does. */
+interface Wanted {
+  readonly recorded: string;
+  readonly kind: StorageKind;
+  /** A namespace's title, or a database's or a bucket's name. */
+  readonly name: string;
+  /** Whose it is, for a message: the deployment's, or one of the application's bindings. */
+  readonly of: string;
 }
 
 /** The id of an application's database or bucket on the account; nothing where there is none. */
@@ -147,40 +129,30 @@ async function existingStore(
   return (await getBucket(scope, name)) === undefined ? undefined : name;
 }
 
-async function createStore(scope: AccountScope, kind: 'd1' | 'r2', name: string): Promise<string> {
-  return kind === 'd1'
-    ? (await createD1Database(scope, name)).uuid
-    : (await createBucket(scope, name)).name;
+/** The id of a store the account holds under the wanted name; nothing where it holds none. */
+async function existingOf(
+  scope: AccountScope,
+  wanted: Wanted,
+  namespaces: readonly KvNamespace[],
+): Promise<string | undefined> {
+  if (wanted.kind === 'kv') {
+    return namespaces.find((namespace) => namespace.title === wanted.name)?.id;
+  }
+  return existingStore(scope, wanted.kind, wanted.name);
 }
 
-/** An application's store, found or made, and recorded in the mark either way. */
-async function storeOf(
-  scope: AccountScope,
-  mark: Mark,
-  binding: StorageBinding & { readonly project: string },
-  namespaces: readonly KvNamespace[],
-): Promise<MadeStorage> {
-  const name = storageName(binding.project, binding);
-  const recorded = markName(binding);
-  if (binding.kind === 'kv') {
-    const id = await namespaceOf(scope, mark, { title: name, recorded }, namespaces);
-    return { binding: binding.name, kind: binding.kind, id };
-  }
-  const existing = await existingStore(scope, binding.kind, name);
-  if (existing !== undefined) {
-    if (!markOwns(mark.value, recorded, existing)) {
-      throw new Error(
-        `${name} is on the account, and was not made for this project's ${binding.name}`,
-      );
+async function create(scope: AccountScope, wanted: Wanted): Promise<string> {
+  switch (wanted.kind) {
+    case 'kv': {
+      return (await createKvNamespace(scope, wanted.name)).id;
     }
-    if (mark.value.made[recorded] !== existing) {
-      await mark.made(recorded, existing);
+    case 'd1': {
+      return (await createD1Database(scope, wanted.name)).uuid;
     }
-    return { binding: binding.name, kind: binding.kind, id: existing };
+    case 'r2': {
+      return (await createBucket(scope, wanted.name)).name;
+    }
   }
-  const id = await createStore(scope, binding.kind, name);
-  await mark.made(recorded, id);
-  return { binding: binding.name, kind: binding.kind, id };
 }
 
 /** Refuses two bindings whose stores would have one name. */
@@ -198,6 +170,10 @@ function assertDistinct(project: string, storage: readonly StorageBinding[]): vo
   }
 }
 
+function madeStorage(binding: StorageBinding, id = ''): MadeStorage {
+  return { binding: binding.name, kind: binding.kind, id };
+}
+
 /** Find or make every store the deployment needs, and say what each is. */
 export async function ensureStores(input: {
   readonly scope: AccountScope;
@@ -210,36 +186,50 @@ export async function ensureStores(input: {
   if (account.bucket === undefined) {
     await createBucket(scope, names.artifactsBucket);
   }
-  const mark = markOf(
-    scope,
-    names.artifactsBucket,
-    account.owner ?? { v: 1, project: names.project, made: {}, pending: [] },
-  );
-  const namespaces = await listKvNamespaces(scope);
-  const wanted = [
-    names.edgeStateTitle,
-    names.cacheStateTitle,
-    ...storage.map((binding) => markName(binding)),
+  const wanted: Wanted[] = [
+    { recorded: names.edgeStateTitle, kind: 'kv', name: names.edgeStateTitle, of: 'the edge' },
+    { recorded: names.cacheStateTitle, kind: 'kv', name: names.cacheStateTitle, of: 'the cache' },
+    ...storage.map((binding) => {
+      return {
+        recorded: markName(binding),
+        kind: binding.kind,
+        name: storageName(names.project, binding),
+        of: binding.name,
+      };
+    }),
   ];
-  const unrecorded = wanted.filter((name) => mark.value.made[name] === undefined);
-  if (account.owner === undefined || unrecorded.length > 0) {
-    await mark.intend(unrecorded);
+  const namespaces = await listKvNamespaces(scope);
+  const found = await Promise.all(wanted.map((one) => existingOf(scope, one, namespaces)));
+  // Judged by the mark as it was before this run, which marks as pending only what is not there
+  // yet: a store of the project's name that the mark does not say is the project's is refused,
+  // here and on every later run.
+  const initial = account.owner ?? { v: 1, project: names.project, made: {}, pending: [] };
+  for (const [index, one] of wanted.entries()) {
+    const id = found[index];
+    if (id !== undefined && !markOwns(initial, one.recorded, id)) {
+      throw new Error(
+        `${one.name} is on the account, and was not made for ${names.project}'s ${one.of}`,
+      );
+    }
   }
-  const edgeState = await namespaceOf(
-    scope,
-    mark,
-    { title: names.edgeStateTitle, recorded: names.edgeStateTitle },
-    namespaces,
-  );
-  const cacheState = await namespaceOf(
-    scope,
-    mark,
-    { title: names.cacheStateTitle, recorded: names.cacheStateTitle },
-    namespaces,
-  );
-  const made: MadeStorage[] = [];
-  for (const binding of storage) {
-    made.push(await storeOf(scope, mark, { ...binding, project: names.project }, namespaces));
+  const mark = markOf(scope, names.artifactsBucket, initial);
+  const absent = wanted.filter((_, index) => found[index] === undefined);
+  if (account.owner === undefined || absent.length > 0) {
+    await mark.intend(absent.map((one) => one.recorded));
   }
-  return { edgeState, cacheState, bucket: names.artifactsBucket, storage: made };
+  const ids: string[] = [];
+  for (const [index, one] of wanted.entries()) {
+    const id = found[index] ?? (await create(scope, one));
+    if (mark.value.made[one.recorded] !== id) {
+      await mark.made(one.recorded, id);
+    }
+    ids.push(id);
+  }
+  const [edgeState = '', cacheState = '', ...rest] = ids;
+  return {
+    edgeState,
+    cacheState,
+    bucket: names.artifactsBucket,
+    storage: storage.map((binding, index) => madeStorage(binding, rest[index])),
+  };
 }
