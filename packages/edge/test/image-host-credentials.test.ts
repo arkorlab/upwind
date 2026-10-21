@@ -53,8 +53,16 @@ async function serving(middleware: boolean) {
     return Promise.resolve(response);
   });
   const transform = vi.fn<TransformImage>(async (source, options) => {
-    const body = await new Response(source).arrayBuffer();
-    return { contentType: options.format, body: new Blob([body]).stream() };
+    const body = new Uint8Array(await new Response(source).arrayBuffer());
+    return {
+      contentType: options.format,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(body);
+          controller.close();
+        },
+      }),
+    };
   });
   const runtime = standaloneRuntime(env, {
     memory: createEdgeMemory(() => Date.now()),
