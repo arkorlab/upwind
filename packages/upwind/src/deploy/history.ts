@@ -9,6 +9,7 @@ import {
   listVersions,
   type ScriptSummary,
   type WorkerDeployment,
+  type WorkerVersion,
 } from './cloudflare/workers.ts';
 import { deploymentOfTag } from './edge-version.ts';
 import { deploymentOfScript, type ProjectNames } from './names.ts';
@@ -21,6 +22,12 @@ import { deploymentOfScript, type ProjectNames } from './names.ts';
  * A deployment is as rollbackable as two things allow. Its edge version has to be among the ones a
  * deployment of the edge can still choose — Cloudflare keeps the newest hundred so — and every
  * Function its pointer names has to be on the account still.
+ *
+ * Deployments are ordered by when each was first deployed: its oldest edge version's number. A
+ * deployment published again — rolled back to — gets a new version, and is no newer a deployment
+ * for it. The way back from the live deployment (`wayBackOrder`) goes to deployments first deployed
+ * before it, the one the edge gave traffic to most recently first: one that was live before it,
+ * rather than one that never was, or one the live deployment was rolled back to replace.
  */
 
 /** How a version ranks to stand for its deployment. */
@@ -45,12 +52,22 @@ export interface DeploymentRecord {
   readonly reachable: boolean;
   /** Its share of the edge's traffic; nothing where the edge's deployment does not hold it. */
   readonly share: number | undefined;
+  /**
+   * When it was first deployed, as the edge numbers its versions: the number of the oldest version
+   * tagged with it. Higher is later; only the order means anything.
+   */
+  readonly firstDeployed: number;
+  /**
+   * How many of the edge's deployments, as Cloudflare lists them, ago one of its versions last had
+   * traffic: 0 for the current one, 1 for the one before. Nothing where none listed gave it any.
+   */
+  readonly lastServed: number | undefined;
 }
 
 export interface EdgeHistory {
   /** The edge's deployment now; nothing for an edge with none, or none at all. */
   readonly current: WorkerDeployment | undefined;
-  /** Every deployment an edge version is tagged with, newest first. */
+  /** Every deployment an edge version is tagged with, the one first deployed most recently first. */
   readonly deployments: readonly DeploymentRecord[];
   /** The project's Function Workers on the account, by the deployment each belongs to. */
   readonly functions: ReadonlyMap<string, readonly ScriptSummary[]>;
@@ -99,14 +116,14 @@ export async function readHistory(scope: AccountScope, names: ProjectNames): Pro
     }
     return served.has(versionId) ? SERVED : UNSERVED;
   };
+  const tagged = taggedVersions(all);
+  const lastServed = lastServedOf(deployments, tagged);
   const records = new Map<string, DeploymentRecord>();
-  for (const version of all) {
-    const deploymentId = deploymentOfTag(version.annotations?.['workers/tag']);
-    if (deploymentId === undefined) {
-      continue;
-    }
+  for (const { version, deploymentId, number } of tagged) {
     const standing = records.get(deploymentId);
-    // Newest first, so a later version replaces one only by ranking above it.
+    // Newest first, so a later version replaces one only by ranking above it; the oldest seen last
+    // says when the deployment was first deployed.
+    const firstDeployed = Math.min(standing?.firstDeployed ?? number, number);
     if (standing === undefined || rank(version.id) > rank(standing.versionId)) {
       records.set(deploymentId, {
         deploymentId,
@@ -115,10 +132,67 @@ export async function readHistory(scope: AccountScope, names: ProjectNames): Pro
         message: version.annotations?.['workers/message'],
         reachable: reachable.has(version.id),
         share: shares.get(version.id),
+        firstDeployed,
+        lastServed: lastServed.get(deploymentId),
       });
+    } else {
+      records.set(deploymentId, { ...standing, firstDeployed });
     }
   }
-  return { current, deployments: [...records.values()], functions };
+  const ordered = [...records.values()].toSorted((a, b) => b.firstDeployed - a.firstDeployed);
+  return { current, deployments: ordered, functions };
+}
+
+/**
+ * The edge's versions a deploy tagged, newest first, each with its deployment and its number — or,
+ * for a listing that numbers none, its place counted from the oldest, which orders them the same.
+ */
+function taggedVersions(all: readonly WorkerVersion[]): readonly {
+  readonly version: WorkerVersion;
+  readonly deploymentId: string;
+  readonly number: number;
+}[] {
+  const tagged: { version: WorkerVersion; deploymentId: string; number: number }[] = [];
+  for (const [index, version] of all.entries()) {
+    const deploymentId = deploymentOfTag(version.annotations?.['workers/tag']);
+    if (deploymentId !== undefined) {
+      tagged.push({ version, deploymentId, number: version.number ?? all.length - index });
+    }
+  }
+  return tagged;
+}
+
+/** How many of the edge's listed deployments ago each deployment last had traffic. */
+function lastServedOf(
+  deployments: readonly WorkerDeployment[],
+  tagged: readonly { readonly version: WorkerVersion; readonly deploymentId: string }[],
+): ReadonlyMap<string, number> {
+  const deploymentOf = new Map(tagged.map((one) => [one.version.id, one.deploymentId]));
+  const last = new Map<string, number>();
+  for (const [index, deployment] of deployments.entries()) {
+    for (const share of deployment.versions) {
+      const deploymentId = deploymentOf.get(share.version_id);
+      if (deploymentId !== undefined && share.percentage > 0 && !last.has(deploymentId)) {
+        last.set(deploymentId, index);
+      }
+    }
+  }
+  return last;
+}
+
+/**
+ * The order the way back is tried in, and kept in: a deployment the edge gave traffic to more
+ * recently first — the one live before, over one that never was live, or one replaced by being
+ * rolled back from — and among those alike, the one first deployed most recently.
+ */
+export function wayBackOrder(a: DeploymentRecord, b: DeploymentRecord): number {
+  if (a.lastServed !== b.lastServed) {
+    if (a.lastServed === undefined) {
+      return 1;
+    }
+    return b.lastServed === undefined ? -1 : a.lastServed - b.lastServed;
+  }
+  return b.firstDeployed - a.firstDeployed;
 }
 
 /** Every version one of the edge's deployments, as Cloudflare lists them, gave traffic to. */

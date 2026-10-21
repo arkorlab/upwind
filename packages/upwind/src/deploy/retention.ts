@@ -8,7 +8,14 @@ import {
   type ScriptSummary,
   type WorkerDeployment,
 } from './cloudflare/workers.ts';
-import { type EdgeHistory, functionsRemain, pointerOf, readHistory, scriptsOf } from './history.ts';
+import {
+  type EdgeHistory,
+  functionsRemain,
+  pointerOf,
+  readHistory,
+  scriptsOf,
+  wayBackOrder,
+} from './history.ts';
 import type { ProjectNames } from './names.ts';
 
 /**
@@ -16,9 +23,10 @@ import type { ProjectNames } from './names.ts';
  * deployment is made live, while the deploy agent still answers, so that each deleted deployment's
  * scope of the runtime cache is retired as well.
  *
- * Kept: every deployment the edge's deployment holds, the one this run made, and the newest
- * `keep` others a rollback could still go back to — those whose edge version a deployment of the
- * edge can choose, and whose Functions are all there. Every other deployment loses its cache scope,
+ * Kept: every deployment the edge's deployment holds, the one this run made, and the first `keep`
+ * others a rollback could still go back to, in the order a rollback tries them (`wayBackOrder`):
+ * those the edge served most recently, then the newest deployed — each with an edge version a
+ * deployment of the edge can choose, and all its Functions there. Every other deployment loses its cache scope,
  * and then its Functions. The scope goes first: retiring one is done once however often it is
  * asked, so a run stopped before the Functions went finds them still there, and does both again.
  *
@@ -99,7 +107,7 @@ async function sorted(
   ];
   const doomed: string[] = [];
   let room = input.keep;
-  for (const record of history.deployments) {
+  for (const record of history.deployments.toSorted(wayBackOrder)) {
     if (kept.includes(record.deploymentId) || !history.functions.has(record.deploymentId)) {
       continue;
     }
