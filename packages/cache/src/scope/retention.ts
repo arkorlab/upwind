@@ -487,7 +487,7 @@ function forgetUnusedBorrowedArtifacts(input: RetentionInput): boolean {
     if (row.owned === 0 && row.refs === 0) deleteArtifactRow(sql, row.sha256);
   }
   const last = rows.at(-1);
-  if (rows.length === PRUNE_BATCH && last !== undefined) {
+  if (last !== undefined && rows.length === PRUNE_BATCH) {
     writeMeta(sql, META_BORROWED_SWEEP_CURSOR, last.artifact_id);
     return true;
   }

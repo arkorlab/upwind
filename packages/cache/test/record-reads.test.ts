@@ -232,7 +232,10 @@ describe('the reads a delivery record holds room for', () => {
     const deps = { blobs: store(read), scopeId: 'scope' };
     const building = generationRecordBytes(deps, ENTRY, current);
 
-    expect(read.mock.calls).toStrictEqual([['html'], ['postponed']]);
+    expect(read.mock.calls).toStrictEqual([
+      ['html', HTML.byteLength],
+      ['postponed', STATE.byteLength],
+    ]);
 
     state.resolve(STATE);
     html.resolve(HTML);

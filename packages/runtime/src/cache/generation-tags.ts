@@ -1,14 +1,18 @@
 import { type Prerender, standsForClass } from '@stayingupwind/core/bundle';
 import {
   appPathFor,
+  type GenerationTag,
   implicitTagsFor,
   parseCacheTagsHeader,
   type RouteEntryDescriptor,
   sharedShellTagOf,
+  tagKindOf,
 } from '@stayingupwind/core/cache';
 
 import { isClassShell } from '../store.ts';
 import type { CapturedRender } from './capture.ts';
+import { RegenerationError } from './lease.ts';
+import { refusedTags } from './tag-bounds.ts';
 
 /** Use the selected build's classification only when it describes this exact entry. */
 export function generationClassShell(
@@ -43,4 +47,21 @@ export function generationTagValues(
     values.add(sharedShellTagOf(entryId));
   }
   return values;
+}
+
+/** Refuse the render's tags before uploading, keeping the pathname and refusal code on its attempt. */
+export function generationTags(
+  descriptor: RouteEntryDescriptor,
+  render: CapturedRender,
+  entryId: string,
+  isClass: boolean | undefined,
+): GenerationTag[] {
+  const values = [...generationTagValues(descriptor, render, entryId, isClass)];
+  const refused = refusedTags(values);
+  if (refused !== undefined) {
+    throw new RegenerationError(`the render of ${descriptor.pathname} ${refused.message}`, {
+      code: refused.code,
+    });
+  }
+  return values.map((value) => ({ kind: tagKindOf(value), value }));
 }

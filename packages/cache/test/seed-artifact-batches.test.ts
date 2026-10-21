@@ -155,10 +155,12 @@ describe('a build seed referencing its borrowed artifacts', () => {
   it('drains legacy unused borrowed metadata through bounded primary-key pages only once', async () => {
     const result = await inScope((tx, storage) => {
       const { sql } = tx;
-      const refs = Array.from({ length: 401 }, (_, index) => ({
-        ...artifactAt(index),
-        artifactId: `legacy-${String(index).padStart(4, '0')}`,
-      }));
+      const refs = Array.from({ length: 401 }, (_, index) => {
+        return {
+          ...artifactAt(index),
+          artifactId: `legacy-${String(index).padStart(4, '0')}`,
+        };
+      });
       referenceBuildArtifacts(sql, refs, NOW);
       sql.exec(`UPDATE artifacts SET refs = 0`);
       sql.exec(`UPDATE artifacts SET owned = 1 WHERE artifact_id = 'legacy-0000'`);
