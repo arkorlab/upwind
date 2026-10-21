@@ -1,0 +1,103 @@
+name: Deploy to Cloudflare
+
+# `upwind deploy` against a real Cloudflare account: three builds of `fixtures/next-minimal`
+# deployed to one project in turn, with what each has to show checked between them, rolled back and
+# forward again, trimmed by retention, deployed a second time unchanged — and the project destroyed
+# at the end, whatever happened before (`packages/upwind/scripts/check-deploy.ts` says what each
+# step checks).
+#
+# Apart from CI, for the same reasons as `deploy-tests.yaml`: it needs credentials, which a pull
+# request from a fork must never be given, and it deploys, which takes minutes and an account. It
+# runs on every push to the default branch, and by hand on a feature branch (`feat/*`) to try a
+# change before it merges. A pull request never runs it.
+#
+# The credentials sit in the `cloudflare-e2e` environment, which only the job that deploys names:
+# the job that builds — installing and running the fixture's dependencies and a `next build` — holds
+# none, and hands the deploying job only what it built. The environment's protection rules (its
+# reviewers, and the branches it allows) are set in the repository's settings, not here.
+#
+# The account is one kept for this: every project here is named `ci-<run>-<attempt>`, and a run
+# destroys what earlier runs left behind before it starts.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+# Never two at once: retention and the clean-up of earlier runs both read the whole account, and a
+# run in flight is not one another may take for left behind.
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build three deployments
+    # A dispatch names its branch; only the default branch and feature branches are deployed from.
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/feat/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Before packing: the adapter's `exports` name its `dist/` in `publishConfig`, which a pack
+      # takes as it stands. The CLI builds its own as it is packed (`prepack`).
+      - run: pnpm build
+      # The packs, and three copies of the fixture installed from them and built for a deploy.
+      - run: pnpm check:deploy-cloudflare build --out "$RUNNER_TEMP/deploy-cloudflare"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deploy-cloudflare
+          # Without the installed modules, which the deploying job installs again from each copy's
+          # lockfile and the packs beside it, and without what `next build` leaves for itself.
+          # Hidden files included: each build is `.arkor/`, its blobs and the deploy's note in it.
+          path: |
+            ${{ runner.temp }}/deploy-cloudflare
+            !${{ runner.temp }}/deploy-cloudflare/*/node_modules
+            !${{ runner.temp }}/deploy-cloudflare/*/.next
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: Deploy, check, roll back and destroy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: cloudflare-e2e
+    permissions:
+      contents: read
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      # For the check itself, which reads the account with the CLI's own client.
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: deploy-cloudflare
+          path: ${{ runner.temp }}/deploy-cloudflare
+      # The project's name says which run and which attempt it is, so an attempt run again never
+      # meets what the last one left, and a later run knows it for left behind.
+      - run: pnpm check:deploy-cloudflare run --dir "$RUNNER_TEMP/deploy-cloudflare" --project "ci-${RUN_ID}-${RUN_ATTEMPT}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
