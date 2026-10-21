@@ -95,14 +95,17 @@ type PrefetchGrant =
     };
 
 /** A JavaScript host must get the same explicit upgrade failure as a typed host. */
-function deploymentPrefetch(input: PrefetchGrant): readonly ServiceBinding[] {
-  if (input.prefetch === undefined) return [];
-  if (input.prefetchBlobs === undefined) {
+function deploymentPrefetch(
+  service: string | undefined,
+  blobs: PrefetchBlobs | undefined,
+): readonly ServiceBinding[] {
+  if (service === undefined) return [];
+  if (blobs === undefined) {
     throw new TypeError(
       'prefetchBlobs is required with prefetch; use prefetchBlobsOf on the accepted bundle',
     );
   }
-  return [prefetchBinding(input.prefetch, input.prefetchBlobs)];
+  return [prefetchBinding(service, blobs)];
 }
 
 /**
@@ -113,11 +116,11 @@ function deploymentPrefetch(input: PrefetchGrant): readonly ServiceBinding[] {
  * cache's services, where the host runs one.
  */
 export function functionBindings(
-  input: {
+  input: PrefetchGrant & {
     readonly deploymentId: string;
     /** What the deployment's Functions reach their runtime cache with; none for a host that runs none. */
     readonly cache?: CacheGrant | undefined;
-  } & PrefetchGrant,
+  },
 ): {
   readonly text: readonly TextBinding[];
   readonly services: readonly ServiceBinding[];
@@ -134,6 +137,6 @@ export function functionBindings(
       ...token,
       { name: RESPONSE_CACHE_TTL_BINDING, value: RESPONSE_CACHE_TTL_MS, secret: false },
     ],
-    services: [...reached.services, ...deploymentPrefetch(input)],
+    services: [...reached.services, ...deploymentPrefetch(input.prefetch, input.prefetchBlobs)],
   };
 }
