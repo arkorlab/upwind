@@ -5,7 +5,8 @@ import {
   routerReferencesSchema,
   splitFunctionNameSchema,
 } from '../bundle/carried.ts';
-import { KEY_SCHEMA_VERSION } from '../cache/keys.ts';
+import { KEY_SCHEMA_VERSION, MAX_TAGS_PER_ENTRY } from '../cache/keys.ts';
+import { generationTagSchema } from '../cache/tag-schema.ts';
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
 import { imagesConfigSchema } from '../images/config.ts';
 import * as z from '../schema/index.ts';
@@ -94,6 +95,13 @@ export const routeCacheSchema = z.object({
    * class's pathname stands in for it.
    */
   route: z.string().startsWith('/').optional(),
+  /**
+   * The immutable build generation's tags, recorded by the host that seeded it. An acknowledged
+   * immediate invalidation can then rule out the build shell even while a delivery-record lookup
+   * still reports no entry. These are not the tags of a later generation, nor application response
+   * headers. Absent in older manifests, where the build's tag membership is unknown.
+   */
+  buildTags: z.array(generationTagSchema).max(MAX_TAGS_PER_ENTRY).optional(),
 });
 export type RouteCache = z.infer<typeof routeCacheSchema>;
 
