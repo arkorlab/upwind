@@ -526,7 +526,7 @@ async function publish(
     });
     return { kind: 'refused', reason: committed.reason };
   } catch (error) {
-    return { kind: 'failed', error: await giveUp(input, lease, error, began) };
+    return { kind: 'failed', error: await giveUp(input, lease, { error, began }) };
   } finally {
     stopHeartbeat();
     // Whatever came of it. A read begun since the render let go of the entry may have kept the
@@ -643,12 +643,14 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   let observed: { readonly tagRevision: number; readonly losses: number };
   let viewed: boolean;
   let captured: StaticRender | undefined;
+  let failureStage: 'render' | undefined;
   try {
     viewed = await within(synced, TAG_SYNC_DEADLINE_MS, {
       code: 'tags_not_synced',
       message: 'the tags were not synced',
     });
     observed = { tagRevision: runtime.tags.revision, losses: runtime.tags.losses.count };
+    failureStage = 'render';
     captured = await renderStatic(input, lease.attemptId, held);
     // What the render read is all read: work it left behind its answer reads in its context still.
     held.close();
@@ -666,7 +668,11 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     }
   } catch (error) {
     stopHeartbeat();
-    return { kind: 'failed', render: captured, error: await giveUp(input, lease, error, began) };
+    return {
+      kind: 'failed',
+      render: captured,
+      error: await giveUp(input, lease, { error, began, stage: failureStage }),
+    };
   }
   // What this isolate holds of the entry is the generation the render replaces. Let go of it with
   // the answer rather than with the commit, so that a request after the answer asks the host —
