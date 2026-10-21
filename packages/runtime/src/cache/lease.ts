@@ -1,7 +1,7 @@
 import { evaluateFreshness } from '@stayingupwind/core/cache';
 
 import { nowMs } from './clock.ts';
-import type { AttemptOutcome, AttemptReason, CurrentSummary } from './host.ts';
+import type { AttemptOutcome, AttemptReason, AttemptRequest, CurrentSummary } from './host.ts';
 import type { CacheRuntime } from './runtime.ts';
 
 /**
@@ -24,6 +24,25 @@ interface AttemptFailure {
   readonly error: unknown;
   /** Only a failed initial render can bypass backoff when no generation exists. */
   readonly stage?: 'render' | undefined;
+}
+
+/**
+ * What the host is asked for a lease of the entry with: what the edge served, where it said, and the
+ * generation the request judged (`replaces`), for a host to hand back the record of a later one it
+ * holds (`AttemptOutcome.record`).
+ */
+export function attemptRequestOf(target: {
+  readonly descriptor: AttemptRequest['entry'];
+  readonly reason: AttemptRequest['reason'];
+  readonly observation?: AttemptRequest['observation'];
+  readonly replaces?: AttemptRequest['replaces'];
+}): AttemptRequest {
+  return {
+    entry: target.descriptor,
+    reason: target.reason,
+    ...(target.observation !== undefined && { observation: target.observation }),
+    ...(target.replaces !== undefined && { replaces: target.replaces }),
+  };
 }
 
 function detail(error: unknown): string {
