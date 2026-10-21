@@ -561,11 +561,15 @@ export function refuseImage(input: ImageAnswerInput, error: SourceError, reason:
   return refusal(input, error, reason);
 }
 
+function transformMode(transform: TransformImage | undefined): string {
+  return transform === undefined ? 'original' : 'transform';
+}
+
 export async function handleImage(input: ImageInput): Promise<Response> {
   const { edge, params } = input;
   const startedAt = edge.runtime.now();
   const source = resolveImageSource(edge, input.manifest, params, input.dpl);
-  const availability = edge.runtime.transformImage === undefined ? 'original' : 'transform';
+  const availability = transformMode(edge.runtime.transformImage);
   const key = await cacheKey(
     edge.host.names.imageKeyOrigin,
     input.config,
