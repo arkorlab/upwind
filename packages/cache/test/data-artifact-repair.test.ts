@@ -271,12 +271,12 @@ describe('a data upload replacing a known broken canonical artifact', () => {
     vi.restoreAllMocks();
   });
 
-  it.each([-1, 0, 1])(
+  it.each([-1, 1])(
     'checks a stored artifact size differing by %i before serving it',
     async (delta) => {
       const given = await fixture(64, true);
       const key = `build/${given.scopeId}/${given.sha256}`;
-      if (delta !== 0) await env.ARTIFACTS.put(key, new Uint8Array(64 + delta));
+      await env.ARTIFACTS.put(key, new Uint8Array(64 + delta));
       const get = vi.spyOn(env.ARTIFACTS, 'get');
       const head = vi.spyOn(env.ARTIFACTS, 'head');
 
@@ -284,20 +284,31 @@ describe('a data upload replacing a known broken canonical artifact', () => {
 
       expect(get).toHaveBeenCalledExactlyOnceWith(key);
       expect(head).not.toHaveBeenCalled();
-      if (delta === 0) {
-        expect(response.status).toBe(200);
-        expect(response.headers.get('content-length')).toBe('64');
-        expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(given.bytes);
-      } else {
-        expect(response.status).toBe(422);
-        await expect(response.json()).resolves.toMatchObject({
-          ok: false,
-          error: { code: 'artifact_mismatch' },
-        });
-      }
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'artifact_mismatch' },
+      });
       await given.drain();
     },
   );
+
+  it('serves a matching stored artifact through the same single GET', async () => {
+    const given = await fixture(64, true);
+    const key = `build/${given.scopeId}/${given.sha256}`;
+    const get = vi.spyOn(env.ARTIFACTS, 'get');
+    const head = vi.spyOn(env.ARTIFACTS, 'head');
+
+    const response = await given.artifactResponse();
+    const bytes = new Uint8Array(await response.arrayBuffer());
+
+    expect(get).toHaveBeenCalledExactlyOnceWith(key);
+    expect(head).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-length')).toBe('64');
+    expect(bytes).toStrictEqual(given.bytes);
+    await given.drain();
+  });
 
   it.each([
     { kind: 'inline above the carried limit', length: ABOVE_CARRIED_BYTES },

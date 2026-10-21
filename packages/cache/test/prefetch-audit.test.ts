@@ -190,19 +190,22 @@ describe('a prefetch binding witness during an explicit migration window', () =>
 
     try {
       const original = await first.worker.fetch(asking());
-      expect(await original.text()).toBe(BODY);
+
+      await expect(original.text()).resolves.toBe(BODY);
       expect(put).toHaveBeenCalledTimes(1);
 
       now += 60_000;
       const retried = await second.worker.fetch(asking());
-      expect(await retried.text()).toBe(BODY);
+
+      await expect(retried.text()).resolves.toBe(BODY);
       expect(put).toHaveBeenCalledTimes(2);
 
       firstWrite.reject(new Error('the expired write eventually failed'));
       await waitOnExecutionContext(first.ctx);
 
       const concurrent = await third.worker.fetch(asking());
-      expect(await concurrent.text()).toBe(BODY);
+
+      await expect(concurrent.text()).resolves.toBe(BODY);
       expect(put).toHaveBeenCalledTimes(2);
       expect([original.status, retried.status, concurrent.status]).toStrictEqual([200, 200, 200]);
     } finally {
