@@ -65,7 +65,7 @@ const MANIFEST = buildProjectManifest({
       headers: {},
     },
   ],
-  dynamicRoutes: [{ sourceRegex: '^/posts/([^/]+?)(?:/)?$', destination: CLASS }],
+  dynamicRoutes: [{ sourceRegex: '^/posts/([^/]+?)(?:/)?$', route: CLASS }],
 });
 
 const fixture = {
