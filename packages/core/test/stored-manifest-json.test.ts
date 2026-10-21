@@ -53,6 +53,7 @@ describe('json-owned stored manifest restoration', () => {
 
       expect(parseStoredManifest(stored)).toStrictEqual(baseline(stored));
       expect(parseStoredManifest(inline)).toStrictEqual(baseline(inline));
+
       const raw = parseStoredManifest(stored);
       const validated = projectManifestSchema.parse(raw);
 
