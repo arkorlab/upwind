@@ -136,4 +136,10 @@ export {
   UNKNOWN_DURATION,
 } from './timing.ts';
 
-export { staticPageHeadersAllowSharing, staticPageHasNoTransform } from './static-pages.ts';
+export {
+  staticPageHeadersAllowSharing,
+  staticPageDataHeadersAllowSharing,
+  staticPageHasNoTransform,
+} from './static-pages.ts';
+
+export { STATIC_PAGES_FALLBACK_PRIVACY, type StaticPagePrivacy } from './static-page-version.ts';

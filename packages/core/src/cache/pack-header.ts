@@ -9,6 +9,7 @@ import type {
   InvalidationState,
   PackArtifactRef,
 } from './schema.ts';
+import { STATIC_PAGES_FALLBACK_PRIVACY, type StaticPagePrivacy } from './static-page-version.ts';
 import { CACHE_POLICY_SOURCES } from './timing.ts';
 
 /**
@@ -246,8 +247,11 @@ function bodiesOf(value: Fields): Bodies | undefined {
 }
 
 /** The header `value` is, or `undefined` when `generationPackHeaderSchema` would refuse it. */
-function isStaticPagePrivacy(value: unknown): value is 1 | 2 | undefined {
-  return value === undefined || (typeof value === 'number' && [1, 2].includes(value));
+function isStaticPagePrivacy(value: unknown): value is StaticPagePrivacy | undefined {
+  return (
+    value === undefined ||
+    (typeof value === 'number' && [1, 2, STATIC_PAGES_FALLBACK_PRIVACY].includes(value))
+  );
 }
 
 export function packHeaderOf(value: unknown): GenerationPackHeader | undefined {

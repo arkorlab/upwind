@@ -6,6 +6,7 @@ import {
   foldedHeaderRulesOf,
   headerRulesOf,
   placedRoutes,
+  type Prerender,
   resumablePrerenders,
   routePagesData,
   routePayloads,
@@ -13,6 +14,8 @@ import {
   spelledPrefixOf,
   staticFileAssetPrefixOf,
   staticFileLocalesOf,
+  staticPagesMembersOf,
+  staticFallbackPagesOf,
 } from '@stayingupwind/core/bundle';
 import { KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
 import type { DeploymentFingerprint } from '@stayingupwind/core/deployment';
@@ -45,6 +48,7 @@ import {
   routeSegmentsOf,
 } from './routes.ts';
 import { staticFileRequestKeysOf, staticFilesOf } from './static-files.ts';
+import { pagesFallbacksOf, staticPagesOf } from './static-pages.ts';
 
 /**
  * The manifest a deployment publishes, assembled from its build: everything the edge answers a
@@ -229,6 +233,19 @@ function manifestRefusal(input: AssembleManifestInput): string | undefined {
   );
 }
 
+function manifestPrerendersOf(
+  bundle: DeploymentBundle,
+  servable: Parameters<typeof edgeServablePrerenders>[1],
+  cached: boolean,
+): Prerender[] {
+  const prerenders = new Set(edgeServablePrerenders(bundle, servable));
+  if (cached) {
+    for (const page of staticPagesMembersOf(bundle).keys()) prerenders.add(page);
+    for (const page of staticFallbackPagesOf(bundle)) prerenders.add(page);
+  }
+  return [...prerenders];
+}
+
 /**
  * Assemble the manifest from the build: one entry per edge-servable prerender.
  *
@@ -245,8 +262,10 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   // The scope is the deployment; the same derivation the seed used names each entry.
   const cached = input.runtimeCache !== false;
   const servable = routedPages(input.runtimeCache);
-  const prerenders = edgeServablePrerenders(bundle, servable);
+  const prerenders = manifestPrerendersOf(bundle, servable, cached);
   const caches = cached ? await routeCachesOf(bundle, input.deploymentId) : new Map();
+  const staticPages = await staticPagesOf(bundle, input.deploymentId, cached);
+  const pagesFallbacks = pagesFallbacksOf(bundle, cached, input.encodings);
   const middlewareMatchers = middlewareMatchersOf(bundle);
   const rules = headerRulesOf(bundle);
   const context: ManifestContext = {
@@ -294,6 +313,8 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     originHost: input.originHost,
     deployment: input.fingerprint,
     routes,
+    staticPages,
+    pagesFallbacks,
     app: input.app,
     staticFiles,
     ...(middlewareMatchers !== undefined && { middleware: { matchers: middlewareMatchers } }),
@@ -317,7 +338,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     ...(staticFileRequestKeysOf(bundle, input.previous) && { staticFileRequestKeys: true }),
     ...(spelledPrefix !== undefined && { spelledPrefix }),
     // Where a route holds a Pages Router page's props, what a client asks for them under.
-    ...(context.pagesData.size > 0 && {
+    ...((context.pagesData.size > 0 || pagesFallbacks.length > 0) && {
       pagesDataUnder: { basePath: bundle.config.basePath, buildId: bundle.buildId },
     }),
     ...(cached && { cache: { keySchemaVersion: KEY_SCHEMA_VERSION, scopeId: input.deploymentId } }),

@@ -40,18 +40,20 @@ import { servable } from './cache/servable.ts';
 import { documentFromBuild, rscFromBuild } from './documents.ts';
 import { foundDynamic, rememberingDynamic } from './dynamic-misses.ts';
 import { nodeHandlerOf } from './entries.ts';
+import type { GenerationSource } from './generation-source.ts';
 import { observationOf } from './incoming.ts';
+import {
+  entryPathnameFor,
+  firstFallbackMember,
+  foregroundPagesData,
+  foregroundPagesPathname,
+  loadingFallbackResponse,
+} from './pages-fallback.ts';
 import { partialUpgrade, upgradePathname, withPartialFallbackUpgrade } from './partial-fallback.ts';
 import { PAGES_DATA, ROUTE_BODY, SEGMENT_PREFIX } from './representations.ts';
 import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
-import {
-  entrypointKindOf,
-  findShell,
-  generationPathname,
-  isClassShell,
-  type Store,
-} from './store.ts';
+import { entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
 
 /**
  * The runtime cache's part in answering a request: a regeneration the edge asked for beside a
@@ -65,6 +67,8 @@ import {
  * statically, to publish, and once resumed from that render, for the visitor.
  */
 
+export type { GenerationSource } from './generation-source.ts';
+
 const HTTP_ACCEPTED = 202;
 
 export function regenerateMode(request: Request): RegenerateMode | undefined {
@@ -75,20 +79,6 @@ export function regenerateMode(request: Request): RegenerateMode | undefined {
 /** Whether the cache may hold a generation of the entry made at request time. */
 function regenerable(descriptor: RouteEntryDescriptor): boolean {
   return descriptor.kind !== 'pages' || !isClassShell(descriptor.pathname, descriptor.route);
-}
-
-/**
- * The entry a request for `pathname` under `route` is answered from: the pathname's own — a
- * member the build prerendered, keyed as the seed keyed it, or one it never saw, whose entry the
- * lease creates — or the class shell's, when the build made one and none for the member, or the
- * shell a member of a route that blocks completes to (`completedShell`).
- */
-function entryPathnameOf(store: Store, route: string, pathname: string): string {
-  const shell = findShell(store, route, pathname);
-  if (shell === undefined) {
-    return pathname;
-  }
-  return generationPathname(shell, pathname);
 }
 
 /** The kind of entry a route makes, from the entrypoint the build recorded for it. */
@@ -129,11 +119,12 @@ async function targetOf(input: RoutedInput, store: Store): Promise<Target | unde
   if (handler === undefined) {
     return undefined;
   }
-  const asked = new URL(input.request.url).pathname;
+  const asked = foregroundPagesPathname(store, route, new URL(input.request.url).pathname);
+  if (asked === undefined) return undefined;
   const member = input.request.headers.has(CACHE_UPGRADE_HEADER) && !isClassShell(asked, route);
   const pathname = member
     ? upgradePathname(store, route, asked)
-    : entryPathnameOf(store, route, asked);
+    : entryPathnameFor(store, route, asked);
   const shell = store.prerendersByPathname.get(pathname) ?? findShell(store, route, pathname);
   if (bypassesPrerender(store, input.request, shell) || queryDependent(shell, route, pathname)) {
     return undefined;
@@ -235,7 +226,10 @@ function withOutcome(response: Response, outcome: string): Response {
 /** Answer at once; the regeneration runs after, on its own. */
 export async function handleDetached(input: RoutedInput, store: Store): Promise<Response> {
   const job = await jobOf(input, store);
-  const scheduled = job !== undefined && scheduleJob(job, 'stale');
+  const firstMember = job !== undefined && firstFallbackMember(input, store, job.target.descriptor);
+  const scheduled =
+    job !== undefined &&
+    scheduleJob(job, firstMember ? 'miss' : 'stale', firstMember ? null : undefined);
   return new Response(null, {
     status: HTTP_ACCEPTED,
     headers: { [CACHE_OUTCOME_HEADER]: scheduled ? 'accepted' : 'skipped' },
@@ -362,11 +356,12 @@ export async function handleForeground(
   if (served === null) {
     holdFirstPublish(outcome);
   }
+  const data = await foregroundPagesData(input, store, job.target.descriptor, outcome);
   return {
     response: await answerFromJob(
       job,
       outcome,
-      documentWant(input, job.store, job.target.descriptor.route),
+      data ?? documentWant(input, job.store, job.target.descriptor.route),
     ),
     outcome: outcome.kind,
     regenerated: job.target.descriptor,
@@ -375,22 +370,6 @@ export async function handleForeground(
 
 export function outcomeOn(response: Response, outcome: string): Response {
   return withOutcome(response, outcome);
-}
-
-export interface GenerationSource extends Want {
-  readonly route: string;
-  /** The entry's pathname: as the seed keyed it, or the member asked for when the build made none. */
-  readonly pathname: string;
-  /** A page's data route, which the build's generation of the data is read under. */
-  readonly dataPathname?: string | undefined;
-  /**
-   * Without a record: the build's own output answers (`build`), or the entry is rendered now and
-   * kept (`render`) — a member of a route the build left to the first request for it — or the
-   * build's output answers and the entry is rendered behind it, for the requests after (`behind`):
-   * a prefetch of such a member, which a deployment of Next.js answers from the class's own output
-   * while it renders the member's, and which is not kept waiting on a render it may never use.
-   */
-  readonly onMiss: 'build' | 'render' | 'behind';
 }
 
 async function readArtifact(
@@ -579,6 +558,11 @@ async function answerMiss(
     return input.request.method === 'HEAD' ? response : afterPartialFallback(job, response);
   }
   const onMiss = foundDynamic(job.runtime, job.target.descriptor) ? 'build' : source.onMiss;
+  if (once && onMiss === 'behind' && source.pagesFallback === true) {
+    return loadingFallbackResponse(job, source, () => {
+      scheduleJob(job, 'miss', null);
+    });
+  }
   if (onMiss === 'render' && once) {
     const outcome = await runJob(job, 'miss', null);
     holdFirstPublish(outcome);
