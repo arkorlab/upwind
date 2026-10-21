@@ -28,7 +28,18 @@ export interface CurrentGeneration {
 export type CurrentLookup =
   | { readonly kind: 'generation'; readonly current: CurrentGeneration }
   | { readonly kind: 'none'; readonly entryId: string }
-  | { readonly kind: 'unavailable'; readonly entryId: string };
+  | {
+      readonly kind: 'unavailable';
+      readonly entryId: string;
+      readonly pending?: PendingRecordLookup;
+    };
+
+/** The exact primary read a foreground deadline left unfinished, with its original lifetime. */
+export interface PendingRecordLookup {
+  readonly entryId: string;
+  readonly read: RecordRead;
+  readonly until: number;
+}
 
 /**
  * How long a document waits for its record before the build's own shell answers instead. The
@@ -175,7 +186,11 @@ async function newerPack(
  * ends, and it is these that `MAX_RECORD_READS` bounds.
  */
 const readsOut = new WeakMap<CacheRuntime, Map<RecordRead, number>>();
-/** A timed-out background authority call keeps its slot until its underlying work actually settles. */
+/**
+ * A timed-out background authority call keeps its slot until its underlying work actually settles.
+ * A host that never settles can exhaust this budget until the isolate is replaced. Releasing its
+ * slot on a deadline would allow unbounded uncancellable I/O instead; fresh memo hits still work.
+ */
 const retainedReads = new WeakSet<RecordRead>();
 
 /**
@@ -304,23 +319,6 @@ async function releaseRetainedRead(runtime: CacheRuntime, read: RecordRead): Pro
     readsOut.get(runtime)?.delete(read);
     retainedReads.delete(read);
   }
-}
-
-async function readPack(
-  runtime: CacheRuntime,
-  entryId: string,
-  now: number,
-  waitUntil: (promise: Promise<unknown>) => void,
-): Promise<DecodedGenerationPack | null> {
-  const remembered = runtime.recordMemo.get(entryId);
-  if (remembered !== undefined) {
-    return remembered;
-  }
-  return withDeadline(
-    sharedRead(runtime, entryId, now, waitUntil).pack,
-    RECORD_DEADLINE_MS,
-    'delivery record',
-  );
 }
 
 /**
@@ -498,11 +496,25 @@ export async function currentGeneration(
 ): Promise<CurrentLookup> {
   const entryId = await entryIdOf(runtime, descriptor);
   let pack: DecodedGenerationPack | null;
+  let read: RecordRead | undefined;
+  let until: number | undefined;
   try {
-    pack = await readPack(runtime, entryId, now, waitUntil);
+    const remembered = runtime.recordMemo.get(entryId);
+    if (remembered === undefined) {
+      read = sharedRead(runtime, entryId, now, waitUntil);
+      const began = readsOut.get(runtime)?.get(read);
+      until = began === undefined ? 0 : began + RECORD_READ_LIFETIME_MS;
+      pack = await withDeadline(read.pack, RECORD_DEADLINE_MS, 'delivery record');
+    } else {
+      pack = remembered;
+    }
   } catch (error) {
     runtime.log('delivery record not read', { entryId, detail: detail(error) });
-    return { kind: 'unavailable', entryId };
+    return {
+      kind: 'unavailable',
+      entryId,
+      ...(read !== undefined && { pending: { entryId, read, until: until ?? 0 } }),
+    };
   }
   const validity = pack === null ? undefined : judged(runtime, pack, now);
   if (validity === undefined || SEVERITY[validity] > SEVERITY.fresh) {
@@ -510,6 +522,39 @@ export async function currentGeneration(
   }
   if (pack === null) return { kind: 'none', entryId };
   return { kind: 'generation', current: { entryId, pack, validity } };
+}
+
+/** A verified memo publication needs no upgrade or authority call. */
+function freshMemo(
+  runtime: CacheRuntime,
+  entryId: string,
+  pack: DecodedGenerationPack | null | undefined,
+): CurrentLookup | undefined {
+  if (pack === undefined || pack === null) return undefined;
+  const validity = judged(runtime, pack, nowMs());
+  return SEVERITY[validity] === SEVERITY.fresh
+    ? { kind: 'generation', current: { entryId, pack, validity } }
+    : undefined;
+}
+
+/** Join the exact primary call within its original lifetime, even if the mutable join table changed. */
+async function backgroundPack(
+  runtime: CacheRuntime,
+  entryId: string,
+  waitUntil: (promise: Promise<unknown>) => void,
+  pending?: PendingRecordLookup,
+): Promise<{ readonly pack: DecodedGenerationPack | null; readonly until: number }> {
+  const read =
+    pending?.read ??
+    runtime.recordReads.get(entryId) ??
+    sharedRead(runtime, entryId, nowMs(), waitUntil);
+  const began = readsOut.get(runtime)?.get(read);
+  const until = pending?.until ?? (began === undefined ? 0 : began + RECORD_READ_LIFETIME_MS);
+  const remaining = until - performance.now();
+  if (remaining <= 0) throw new Error('background delivery record lifetime exhausted');
+  retainedReads.add(read);
+  const pack = await withDeadline(read.pack, remaining, 'background delivery record');
+  return { pack, until };
 }
 
 /**
@@ -523,23 +568,21 @@ export async function currentGenerationAfterResponse(
   runtime: CacheRuntime,
   descriptor: RouteEntryDescriptor,
   waitUntil: (promise: Promise<unknown>) => void,
+  pending?: PendingRecordLookup,
 ): Promise<CurrentLookup> {
   const entryId = await entryIdOf(runtime, descriptor);
-  let until = performance.now() + RECORD_READ_LIFETIME_MS;
+  if (pending !== undefined && pending.entryId !== entryId) return { kind: 'unavailable', entryId };
+  let until = pending?.until ?? performance.now() + RECORD_READ_LIFETIME_MS;
   let pack = runtime.recordMemo.get(entryId);
   try {
-    if (pack === undefined) {
-      // A response can stream past the foreground hold. Its original read is still the same
-      // pending authority call, with the same lifetime; never renew it merely because the body ended.
-      const read =
-        runtime.recordReads.get(entryId) ?? sharedRead(runtime, entryId, nowMs(), waitUntil);
-      const began = readsOut.get(runtime)?.get(read);
-      if (began === undefined) return { kind: 'unavailable', entryId };
-      until = began + RECORD_READ_LIFETIME_MS;
-      const remaining = until - performance.now();
-      if (remaining <= 0) return { kind: 'unavailable', entryId };
-      retainedReads.add(read);
-      pack = await withDeadline(read.pack, remaining, 'background delivery record');
+    // Another request's verified fresh publication needs no upgrade, even if the original read
+    // was retired or ran out its lifetime while this response streamed.
+    const fresh = freshMemo(runtime, entryId, pack);
+    if (fresh !== undefined) return fresh;
+    if (pending !== undefined || pack === undefined) {
+      const read = await backgroundPack(runtime, entryId, waitUntil, pending);
+      pack = read.pack;
+      until = read.until;
     }
     if (performance.now() >= until) return { kind: 'unavailable', entryId };
     // A commit may have overtaken the pending read. Never decide to replace its older generation.

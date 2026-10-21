@@ -49,7 +49,12 @@ import {
   foregroundPagesPathname,
   loadingFallbackResponse,
 } from './pages-fallback.ts';
-import { partialUpgrade, upgradePathname, withPartialFallbackUpgrade } from './partial-fallback.ts';
+import {
+  type PartialFallbackJob as Job,
+  partialUpgrade,
+  upgradePathname,
+  withPartialFallbackUpgrade,
+} from './partial-fallback.ts';
 import { PAGES_DATA, ROUTE_BODY, SEGMENT_PREFIX } from './representations.ts';
 import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
@@ -88,14 +93,6 @@ export function descriptorFor(store: Store, route: string, pathname: string): Ro
     return { kind: 'pages', route, pathname };
   }
   return { kind: entrypoint === 'app-route' ? 'app-route' : 'app-page', route, pathname };
-}
-
-/** One regeneration as a request asks for it: the entry, and what it takes to render it. */
-interface Job {
-  readonly input: RoutedInput;
-  readonly store: Store;
-  readonly runtime: CacheRuntime;
-  readonly target: Target;
 }
 
 /**
@@ -607,8 +604,9 @@ export async function serveFromGeneration(
   // (`routeRequest`), and found the entry dynamic here, which is all another would find: what is
   // left is a render of the request as it came — the build's path, for an entry with no record.
   const once = !sameEntry(input.regenerated, descriptor);
-  if (lookup.kind === 'none' || (once && lookup.kind === 'unavailable' && partialUpgrade(job))) {
-    return answerMiss(job, source, want, once);
+  if (lookup.kind === 'none') return answerMiss(job, source, want, once);
+  if (once && lookup.kind === 'unavailable' && partialUpgrade(job)) {
+    return answerMiss({ ...job, pending: lookup.pending }, source, want, once);
   }
   if (lookup.kind !== 'generation') {
     return undefined;
