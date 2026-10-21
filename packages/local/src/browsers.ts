@@ -660,11 +660,11 @@ function unclaimedOf(
 }
 
 /**
- * How a file of the build is asked at `url`: as the first browser no rule of `next.config` claims.
+ * How a file of the build is asked at `url`: as every sampled browser no rule of `next.config` claims.
  * Claimed as every one, it is the application's where the rules claim it as any agent, and proved
  * by none where they ask of the agent: one the check does not ask as may be served the file.
  */
-export function fileRequestFor(target: FileTarget): Sampled {
+export function fileRequestsFor(target: FileTarget): readonly Sampled[] {
   // The check's own agent asks as validation's prover does, with nothing of a browser's, accepting
   // any type; each browser with what it accepts for a file of this type, and the Fetch Metadata it
   // sends for one, in each mode it may ask in — and, but for a page, as any file is opened.
@@ -683,7 +683,12 @@ export function fileRequestFor(target: FileTarget): Sampled {
       ].map((headers) => sentTo(target, headers));
     }),
   ];
-  return unclaimedOf(target, asked) ?? { kind: 'unproved', reason: UNPROVED_FILE };
+  const unclaimed = asked.filter((headers) => {
+    return !isReserved(target.manifest, target.url, edgeReads(headers), target.exact);
+  });
+  return unclaimed.length > 0
+    ? unclaimed.map((headers) => ({ kind: 'asked', headers }))
+    : [unclaimedOf(target, asked) ?? { kind: 'unproved', reason: UNPROVED_FILE }];
 }
 
 /**

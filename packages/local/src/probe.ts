@@ -37,11 +37,6 @@ import { BACKSTAGE_ROUTES } from './workers/protocol.ts';
 const NOT_FOUND_STATUS = 404;
 /** What the edge's account of a request it handed to an app Function begins with. */
 const HANDED_ON = 'passthrough;';
-/**
- * As much of a Function's answer as a probe reads, as validation's does, before it lets the rest
- * go: a catch-all may stream for as long as it likes, and the status is the probe's verdict.
- */
-const PROBE_READ_BYTES = 1024;
 /** An export's not-found document, under its base path: what its Function answers a miss with. */
 const NOT_FOUND_DOCUMENT = '/404';
 
@@ -198,8 +193,9 @@ export async function probeVerdict(
   );
   const answer = await answerTo(probe, {
     headers: forwarded(stack.site, proverNavigation(probed.prover)),
+    headersOnly: notFound === undefined,
     // An export's not-found read to a byte past its length, which only a longer answer reaches.
-    limitBytes: notFound === undefined ? PROBE_READ_BYTES : notFound.byteLength + 1,
+    ...(notFound !== undefined && { limitBytes: notFound.byteLength + 1 }),
   });
   if (typeof answer === 'string') {
     return failed(answer);

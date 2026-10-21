@@ -20,7 +20,7 @@ import {
   edgeReads,
 } from './answers.ts';
 import { RANGE_BYTES } from './asked-again.ts';
-import { fileRequestFor } from './browsers.ts';
+import { fileRequestsFor, type Sampled } from './browsers.ts';
 import {
   CHANGED_SELECTION,
   decisionOf,
@@ -128,13 +128,29 @@ export async function fileVerdict(
   const { file } = asking;
   const at = new URL(asked, stack.site);
   // A file is claimed only by the rules ahead of the filesystem, as the edge judges it.
-  const sampled = fileRequestFor({
+  const samples = fileRequestsFor({
     manifest: stack.manifest,
     url: at,
     exact: true,
     prover: asking.prover,
     contentTypes: typesOf(stack, at, file),
   });
+  let checked: Verdict | undefined;
+  for (const sampled of samples) {
+    const verdict = await fileSampleVerdict(stack, at, { file, sampled });
+    if (verdict.kind === 'failed') return verdict;
+    if (checked === undefined || verdict.kind === 'ok') checked = verdict;
+  }
+  return checked ?? skipped(CLAIMED);
+}
+
+/** Each browser's answer is judged independently, with that request's own middleware trace. */
+async function fileSampleVerdict(
+  stack: CheckedStack,
+  at: URL,
+  asking: { readonly file: StaticFileEntry; readonly sampled: Sampled },
+): Promise<Verdict> {
+  const { file, sampled } = asking;
   if (sampled.kind === 'claimed') {
     return skipped(CLAIMED);
   }

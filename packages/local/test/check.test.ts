@@ -2465,15 +2465,73 @@ describe('what the check makes of the middleware', () => {
       has: [{ type: 'header', key: 'user-agent', value: '.*(Chrome|upwind).*' }],
     };
 
+    it.each([
+      {
+        label: 'a script destination',
+        matches: (headers: IncomingMessage['headers']) => headers['sec-fetch-dest'] === 'script',
+      },
+      {
+        label: 'a Chrome user agent',
+        matches: (headers: IncomingMessage['headers']) =>
+          headers['user-agent']?.includes('Chrome') === true,
+      },
+    ])('fails browser-specific middleware errors selected by $label', async ({ matches }) => {
+      const pathname = '/chunk.js';
+      const script = { [pathname]: fileOf('kept script', SCRIPT) };
+      answers.set(pathname, {
+        headers: {
+          'content-type': SCRIPT,
+          'cache-control': GATED,
+          'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+        },
+        body: 'kept script',
+        when: { test: matches, status: 500 },
+      });
+      decisions.set(pathname, { 'x-middleware-next': '1' });
+
+      const result = await checkStack(
+        withMiddleware(stackOf([], script), [{ sourceRegex: '^/chunk[.]js$' }]),
+      );
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]).toMatchObject({ path: pathname });
+      expect(result.failures[0]?.reason).toContain('500');
+      expect(agentsAsked.get(pathname)).toContain('upwind-local-check/1.0');
+    });
+
+    it('checks the prover and each browser when every file response is healthy', async () => {
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+      });
+
+      const result = await checkStack(stackOf([], files));
+      const asked = agentsAsked.get('/a.txt') ?? [];
+
+      expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(asked).toContain('upwind-local-check/1.0');
+      expect(asked.some((agent) => agent?.includes('Chrome') === true)).toBe(true);
+      expect(asked.some((agent) => agent?.includes('iPhone') === true)).toBe(true);
+      expect(asked.some((agent) => agent?.includes('Firefox') === true)).toBe(true);
+      expect(asked.some((agent) => agent?.includes('Macintosh') === true)).toBe(true);
+      expect(asked.some((agent) => agent?.includes('Android') === true)).toBe(true);
+    });
+
     it('is asked as the next browser where a rule claims the check and Chrome', async () => {
       answers.set('/a.txt', {
         headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
         body: 'kept bytes',
       });
       const result = await checkStack(stackOf([], files, { reservedRoutes: [chromeOnly] }));
+      const asked = agentsAsked.get('/a.txt') ?? [];
 
       expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
-      expect(agents.get('/a.txt')).toContain('iPhone');
+      expect(asked.some((agent) => agent?.includes('iPhone') === true)).toBe(true);
+      expect(
+        asked.every(
+          (agent) => agent?.includes('Chrome') !== true && agent !== 'upwind-local-check/1.0',
+        ),
+      ).toBe(true);
     });
 
     it('is asked with the Fetch Metadata a browser sends for it, where a rule claims a request without', async () => {
@@ -2487,9 +2545,13 @@ describe('what the check makes of the middleware', () => {
         body: 'kept bytes',
       });
       const result = await checkStack(stackOf([], files, { reservedRoutes: [withoutMetadata] }));
+      const asked = askedHeadersEach.get('/a.txt') ?? [];
 
       expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
-      expect(agents.get('/a.txt')).toContain('Windows NT 10.0');
+      expect(
+        asked.some((headers) => headers['user-agent']?.includes('Windows NT 10.0') === true),
+      ).toBe(true);
+      expect(asked.every((headers) => headers['sec-fetch-dest'] !== undefined)).toBe(true);
     });
 
     it('fails where a rule that asks of the agent claims every browser the check asks as', async () => {
@@ -2573,9 +2635,16 @@ describe('what the check makes of the middleware', () => {
         body: FRONT + REST,
       });
       const result = await checkStack(stackOf([], page, { reservedRoutes: rules }));
+      const asked = askedHeadersEach.get('/about') ?? [];
 
       expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
-      expect(destinations.get('/about')).toBe('iframe');
+      expect(asked.some((headers) => headers['sec-fetch-dest'] === 'iframe')).toBe(true);
+      expect(
+        asked.every((headers) => {
+          const destination = headers['sec-fetch-dest'];
+          return destination !== undefined && destination !== 'document' && destination !== 'empty';
+        }),
+      ).toBe(true);
     });
 
     it('is asked with the deployment named too, as the documents of a build that names one ask', async () => {
@@ -2638,7 +2707,11 @@ describe('what the check makes of the middleware', () => {
       );
 
       expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
-      expect(modes.get('/w.js')).toBe('same-origin');
+      expect(
+        (askedHeadersEach.get('/w.js') ?? []).some(
+          (headers) => headers['sec-fetch-mode'] === 'same-origin',
+        ),
+      ).toBe(true);
     });
 
     it('is asked as a module worker loads it, where rules claim it asked for by an element or a classic worker', async () => {
@@ -6731,6 +6804,27 @@ describe('what the check makes of the middleware', () => {
   });
 
   describe('a Function, asked for a miss', () => {
+    it.each(['', 'data: ready\n\n'])(
+      'accepts a quiet stream with a %s prefix as soon as its headers arrive',
+      async (body) => {
+        const closed = Promise.withResolvers<true>();
+        answers.set(MISS, {
+          headers: { 'content-type': 'text/event-stream' },
+          body,
+          endless: true,
+          opened: (response) => {
+            response.once('close', () => closed.resolve(true));
+            response.flushHeaders();
+          },
+        });
+
+        const result = await checkStack(stackOf([], {}, { functions: ['app'] }));
+
+        expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+        await closed.promise;
+      },
+    );
+
     it('is let go of once it has sent as much as is read of it, and keeps the stream open', async () => {
       answers.set(MISS, {
         headers: { 'content-type': TEXT },
