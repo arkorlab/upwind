@@ -1,4 +1,4 @@
-import { createId } from '@stayingupwind/core/util';
+import { createId, encodeUtf8 } from '@stayingupwind/core/util';
 import { type AttemptError, attemptErrorSchema } from '@stayingupwind/host/cache';
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
@@ -52,7 +52,7 @@ async function failedWith(error?: AttemptError) {
 describe('retained render failure diagnostics', () => {
   it.each([
     { label: 'plain text', message: 'failure '.repeat(40_000) },
-    { label: 'escaped control characters', message: '\u0000'.repeat(60_000) },
+    { label: 'escaped control characters', message: '\0'.repeat(60_000) },
     { label: 'Unicode', message: '失敗😀'.repeat(30_000) },
   ])(
     'accepts a large $label failure and retains bounded diagnostic prefixes',
@@ -64,7 +64,7 @@ describe('retained render failure diagnostics', () => {
 
       expect(result).toMatchObject({ regeneration: 'failed' });
       expect(stored.status).toBe('failed');
-      expect(Buffer.byteLength(stored.error)).toBeLessThanOrEqual(4096);
+      expect(encodeUtf8(stored.error).byteLength).toBeLessThanOrEqual(4096);
       expect(retained.code.length).toBeGreaterThan(0);
       expect(retained.message.length).toBeGreaterThan(0);
       expect(retained.code).toBe(error.code.slice(0, retained.code.length));
