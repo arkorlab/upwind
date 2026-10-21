@@ -41,7 +41,7 @@ function answering(
 ): ImageAnswerInput {
   let headers = middleware?.requestHeaders ?? input.request.headers;
   const { credentials } = input.edge.host;
-  if (credentials.headers.length > 0 && credentials.headers.some((name) => headers.has(name))) {
+  if (credentials.headers.some((name) => headers.has(name))) {
     headers = withoutHostCredentials(new Headers(headers), credentials);
   }
   // Host-owned format and conditional headers cannot select an application's image response.
