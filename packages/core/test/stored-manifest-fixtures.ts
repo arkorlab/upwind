@@ -118,7 +118,12 @@ export function publishedManifest(): ProjectManifest {
       return {
         pathname,
         status: 200 as const,
-        shell: { sha256: 'a'.repeat(64), byteLength: 10, contentType: 'text/html' },
+        shell: {
+          sha256: 'a'.repeat(64),
+          byteLength: 10,
+          contentType: 'text/html',
+          encoding: 'identity' as const,
+        },
         headers: { 'x-policy': 'shared' },
         bypassFor: [{ type: 'header' as const, key: 'x-preview' }],
         preloads: ['</app.css>; rel=preload; as=style'],
