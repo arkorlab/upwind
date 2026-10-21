@@ -2589,6 +2589,41 @@ describe('what the check makes of the middleware', () => {
       expect(traceIds.letGo).toStrictEqual(traceIds.registered);
     });
 
+    it('checks the prover before browser requests can warm pathname-specific middleware state', async () => {
+      const pathname = '/chunk.js';
+      const script = { [pathname]: fileOf('kept script', SCRIPT) };
+      let warmed = false;
+      const agents: string[] = [];
+      answers.set(pathname, {
+        headers: {
+          'content-type': SCRIPT,
+          'cache-control': GATED,
+          'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+        },
+        body: 'kept script',
+        when: {
+          test: (headers) => {
+            const agent = headers['user-agent'] ?? '';
+            agents.push(agent);
+            if (agent.includes('Mozilla')) warmed = true;
+            return agent === 'upwind-local-check/1.0' && !warmed;
+          },
+          status: 500,
+        },
+      });
+      decisions.set(pathname, { 'x-middleware-next': '1' });
+
+      const result = await checkStack(
+        withMiddleware(stackOf([], script), [{ sourceRegex: '^/chunk[.]js$' }]),
+      );
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toContain('500');
+      expect(agents[0]).toBe('upwind-local-check/1.0');
+      expect(warmed).toBe(false);
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
     it('checks the prover and each browser when every file response is healthy', async () => {
       answers.set('/a.txt', {
         headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
@@ -8964,14 +8999,16 @@ describe('what the check makes of the middleware', () => {
 
         const result = await checkStack(stackOf(routes, {}, { headerRules: rules }));
 
-        if (example.accepted) {
-          expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
-        } else {
-          expect(result.failures).toHaveLength(1);
-          expect(result.failures[0]?.reason).toContain(
-            `answered as ${example.type}, not ${JSON_TYPE}`,
-          );
-        }
+        const failures = example.accepted
+          ? []
+          : [
+              {
+                path: '/about',
+                reason: `its page's props (${data}), answered as ${example.type}, not ${JSON_TYPE}`,
+              },
+            ];
+
+        expect(result).toStrictEqual({ checked: 1, failures, skipped: [] });
       },
     );
 
