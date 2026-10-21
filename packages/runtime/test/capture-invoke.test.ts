@@ -7,6 +7,8 @@ import {
   FUNCTION_HEADER,
   MISDIRECTED_STATUS,
   pathHeaders,
+  RESUME_PRERENDER_ESCAPED_HEADER,
+  RESUME_PRERENDER_HEADER,
 } from '@stayingupwind/core/paas';
 import { toBase64, TtlCache } from '@stayingupwind/core/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -587,6 +589,43 @@ describe('a capture', () => {
     expect(response.headers.get(FUNCTION_HEADER)).toBe('app-2');
     expect(response.headers.get('cache-control')).toBe('private, no-store');
     expect(invokeNodeHandler).not.toHaveBeenCalled();
+  });
+
+  it('is answered here where it names a route here, whatever resume it carries beside', async () => {
+    const test = cache();
+    const store = deployment();
+    vi.mocked(getStore).mockReturnValue({
+      ...store,
+      prerendersById: new Map([['elsewhere', { route: ELSEWHERE }]]),
+    } as unknown as Store);
+    vi.mocked(invokeNodeHandler).mockImplementationOnce((input) => handOver(input));
+
+    const response = await handle(test.runtime, BOARD, {
+      headers: {
+        ...captureOf(BOARD),
+        ...pathHeaders(RESUME_PRERENDER_HEADER, RESUME_PRERENDER_ESCAPED_HEADER, 'elsewhere'),
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.has(FUNCTION_HEADER)).toBe(false);
+    expect(invoked()).toHaveLength(1);
+  });
+
+  it('is answered 500, kept by nobody, where its render fails as nothing expects', async () => {
+    const test = cache();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {
+      // The Function's own log, which the test reads rather than prints.
+    });
+    vi.mocked(invokeNodeHandler).mockRejectedValueOnce(new Error('the page threw'));
+
+    const response = await handle(test.runtime, BOARD, { headers: captureOf(BOARD) });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get('cache-control')).toBe(NOT_STORED);
+    await expect(response.text()).resolves.toBe('the capture failed');
+    expect(logged).toHaveBeenCalledWith('next-runtime: capture failed', expect.any(Error));
+    expect(test.written()).toStrictEqual([]);
   });
 
   it.each([
