@@ -6,6 +6,7 @@ import { createCloudflareClient } from '../../src/deploy/cloudflare/client.ts';
 import { runDeploy } from '../../src/deploy/command.ts';
 import { functionScriptName, projectNames } from '../../src/deploy/names.ts';
 import { shippedWorkers } from '../../src/deploy/shipped.ts';
+import { READINESS_PATH } from '../../src/deploy/workers/protocol.ts';
 import {
   buildIn,
   deployableProject,
@@ -396,7 +397,7 @@ describe("a run's key to the agent", () => {
 });
 
 describe('`upwind deploy` stopped part way, and run again', () => {
-  const { account, setUp, tearDown } = liveSuite();
+  const { account, errors, setUp, tearDown } = liveSuite();
 
   beforeEach(setUp, 60_000);
 
@@ -469,6 +470,60 @@ describe('`upwind deploy` stopped part way, and run again', () => {
     // The same deployment again: nothing staged or switched, and the cleanup done.
     await expect(keepNone()).resolves.toBe(0);
     expect(account().fake.scripts.has(olderApp)).toBe(false);
+  });
+
+  /**
+   * Two deployments made live in turn, the first kept; then the second run again, keeping none, as
+   * a run of the live deployment that has to confirm it first.
+   */
+  async function rerunKeepingNone(): Promise<{
+    readonly olderApp: string;
+    rerun: () => Promise<number>;
+  }> {
+    const first = await deployableProject(PROJECT);
+    const older = buildIn(first).deploymentId;
+
+    await expect(deploy(account(), first)).resolves.toBe(0);
+
+    const dir = await deployableProject(PROJECT);
+    buildIn(dir);
+
+    await expect(deploy(account(), dir)).resolves.toBe(0);
+
+    return {
+      olderApp: functionScriptName(PROJECT, older, 'app'),
+      rerun: () => runDeploy(deployOptions(dir, { keep: 0 }), account().credentials, account().io),
+    };
+  }
+
+  it('deletes nothing, run again for a live deployment that fails its checks', async () => {
+    const { olderApp, rerun } = await rerunKeepingNone();
+    const edge = scriptOn(account(), NAMES.edge);
+    const before = { versions: edge.versions.length, deployments: edge.deployments.length };
+    // The live deployment's pages fail now, as one a run left failing its checks would.
+    account().site = () => new Response('broken', { status: 500 });
+
+    await expect(rerun()).resolves.toBe(1);
+    expect(errors().some((line) => line.includes('failed its checks'))).toBe(true);
+    // The deployment before it is still there to be rolled back to, and the edge as it was.
+    expect(account().fake.scripts.has(olderApp)).toBe(true);
+    expect({ versions: edge.versions.length, deployments: edge.deployments.length }).toStrictEqual(
+      before,
+    );
+  });
+
+  it('deletes nothing, run again for a live deployment that never answers as itself', async () => {
+    const { olderApp, rerun } = await rerunKeepingNone();
+    const answer = account().fake.workersDev.get(NAMES.edge);
+    // The live version no longer says which deployment it serves.
+    account().fake.workersDev.set(NAMES.edge, (request, version, script) => {
+      return answer === undefined || new URL(request.url).pathname === READINESS_PATH
+        ? new Response(null, { status: 503 })
+        : answer(request, version, script);
+    });
+
+    await expect(rerun()).resolves.toBe(3);
+    expect(account().fake.scripts.has(olderApp)).toBe(true);
   });
 
   it('does nothing for the deployment that is live already', async () => {
