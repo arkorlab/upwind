@@ -15,6 +15,8 @@ import {
   deriveEntry,
   generationResponseHeaders,
   implicitTagsFor,
+  MAX_TAG_LENGTH,
+  MAX_TAGS_PER_ENTRY,
   parseCacheTagsHeader,
   policyFromBuild,
   sharedShellTagOf,
@@ -160,6 +162,17 @@ function seededTagsOf(
     }
   }
   return tags;
+}
+
+/**
+ * A seed outside the authority's per-entry quota is still submitted for that entry's refusal,
+ * without stopping the deployment. Its manifest must not truncate the membership or reject the
+ * whole build: leave it unknown, as it was before build tags were recorded.
+ */
+function manifestTagsOf(tags: GenerationTag[]): GenerationTag[] | undefined {
+  return tags.length > MAX_TAGS_PER_ENTRY || tags.some((tag) => tag.value.length > MAX_TAG_LENGTH)
+    ? undefined
+    : tags;
 }
 
 /** When the build ran, in unix milliseconds: the origin every seeded lifetime is measured from. */
@@ -340,6 +353,7 @@ export async function seedRouteFor(
       dependencyCoverage: 'complete',
     },
   };
+  const buildTags = manifestTagsOf(input.generation.tags);
   return {
     input,
     cache:
@@ -349,6 +363,7 @@ export async function seedRouteFor(
             entryId: derived.entryId,
             kind,
             delivery: prerender.postponed === undefined ? 'complete' : 'resume',
+            ...(buildTags !== undefined && { buildTags }),
             // What a member's own entry is keyed by beside a class's: the route, not the template.
             ...(standsForClass(prerender) && { route: prerender.route }),
           },

@@ -30,6 +30,7 @@ import {
   type StaticFileEntry,
 } from '@stayingupwind/core/manifest';
 import { encodeUtf8 } from '@stayingupwind/core/util';
+import { BuildTagBudget } from '@stayingupwind/host/bundle';
 import { EDGE_ISOLATE_BUDGET_BYTES, manifestCharge } from '@stayingupwind/host/delivery';
 import {
   nextSupportOf,
@@ -45,6 +46,7 @@ import {
   routeArtifactsOf,
   routeCachesOf,
   routeEntryOf,
+  routePrerendersOf,
   routeSegmentsOf,
 } from './routes.ts';
 import { staticFileRequestKeysOf, staticFilesOf } from './static-files.ts';
@@ -78,6 +80,55 @@ export function oversizedManifest(
   return charge > EDGE_ISOLATE_BUDGET_BYTES
     ? `this deployment's manifest lists so many routes, files, pathnames and rules that the edge would take ${charge} bytes to hold it, past the ${EDGE_ISOLATE_BUDGET_BYTES} an isolate holds everything in, so fewer prerendered routes, files or rules`
     : undefined;
+}
+
+/**
+ * Build membership is an optional improvement, never a reason to reject a previously publishable
+ * deployment. Where it exceeds either the wire or parsed-memory budget, omit each complete list
+ * before the final admission check. Unknown membership preserves the older reader's behavior.
+ */
+function withoutBuildTags(manifest: ProjectManifest): ProjectManifest {
+  let changed = false;
+  const routes: ProjectManifest['routes'] = {};
+  for (const [pathname, route] of Object.entries(manifest.routes)) {
+    if (route.cache?.buildTags === undefined) {
+      routes[pathname] = route;
+      continue;
+    }
+    const cache = { ...route.cache };
+    delete cache.buildTags;
+    changed = true;
+    routes[pathname] = { ...route, cache };
+  }
+  const fitted = changed ? { ...manifest, routes } : manifest;
+  return fitted;
+}
+
+/** Check optional aggregation without first cloning or serializing its tag objects. */
+function boundedBuildTags(manifest: ProjectManifest): ProjectManifest {
+  const budget = new BuildTagBudget();
+  for (const route of Object.values(manifest.routes)) {
+    if (route.cache !== undefined && budget.fit(route.cache) !== route.cache) {
+      return withoutBuildTags(manifest);
+    }
+  }
+  return manifest;
+}
+
+export function fitBuildTags(manifest: ProjectManifest): {
+  readonly manifest: ProjectManifest;
+  readonly serialized: string;
+} {
+  const bounded = boundedBuildTags(manifest);
+  const serialized = serializeManifest(bounded);
+  if (oversizedManifest(bounded, serialized) === undefined) {
+    return { manifest: bounded, serialized };
+  }
+  const fitted = withoutBuildTags(bounded);
+  return {
+    manifest: fitted,
+    serialized: fitted === bounded ? serialized : serializeManifest(fitted),
+  };
 }
 
 /**
@@ -262,8 +313,12 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   // The scope is the deployment; the same derivation the seed used names each entry.
   const cached = input.runtimeCache !== false;
   const servable = routedPages(input.runtimeCache);
-  const prerenders = manifestPrerendersOf(bundle, servable, cached);
-  const caches = cached ? await routeCachesOf(bundle, input.deploymentId) : new Map();
+  const resumable = new Set(resumablePrerenders(bundle).map((prerender) => prerender.id));
+  const prerenders = routePrerendersOf(manifestPrerendersOf(bundle, servable, cached), {
+    bundle,
+    resumable,
+  });
+  const caches = cached ? await routeCachesOf(bundle, input.deploymentId, prerenders) : new Map();
   const staticPages = await staticPagesOf(bundle, input.deploymentId, cached);
   const pagesFallbacks = pagesFallbacksOf(bundle, cached, input.encodings);
   const middlewareMatchers = middlewareMatchersOf(bundle);
@@ -277,7 +332,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     matchers: middlewareMatchers ?? [],
     policyRules: rules.filter(maySetPreloadPolicy),
     recoverySource: input.recoverySource,
-    resumable: new Set(resumablePrerenders(bundle).map((prerender) => prerender.id)),
+    resumable,
     segments: routeSegmentsOf(bundle, input.encodings, servable),
     payloads: routeArtifactsOf(routePayloads(bundle, servable), input.encodings),
     pagesData: routeArtifactsOf(routePagesData(bundle, servable), input.encodings),
@@ -306,7 +361,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   // What the router reads of a path as written, which no page or file is found by decoding.
   const spelledPrefix = spelledPrefixOf(bundle);
   const routing = dynamicRouting(bundle, routeKeys);
-  const manifest = buildProjectManifest({
+  const built = buildProjectManifest({
     projectId: input.projectId,
     runId: input.runId,
     generatedAt: input.generatedAt,
@@ -343,7 +398,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     }),
     ...(cached && { cache: { keySchemaVersion: KEY_SCHEMA_VERSION, scopeId: input.deploymentId } }),
   });
-  const serialized = serializeManifest(manifest);
+  const { manifest, serialized } = fitBuildTags(built);
   const refused = oversizedManifest(manifest, serialized);
   if (refused !== undefined) {
     return { kind: 'refused', reason: refused };
@@ -353,7 +408,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     manifest,
     manifestId: await computeManifestId(manifest),
     serialized,
-    routes,
+    routes: routes.map((route) => manifest.routes[route.pathname] ?? route),
     staticFiles,
     routing,
   };
