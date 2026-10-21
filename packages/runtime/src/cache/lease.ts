@@ -20,6 +20,12 @@ interface LeaseHolder {
   };
 }
 
+interface AttemptFailure {
+  readonly error: unknown;
+  /** Only a failed initial render can bypass backoff when no generation exists. */
+  readonly stage?: 'render' | undefined;
+}
+
 function detail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -75,7 +81,7 @@ export async function abandon(
     current?: CurrentSummary | null | undefined;
   },
   outcome: 'failed' | 'skipped',
-  error?: unknown,
+  failure?: AttemptFailure,
 ): Promise<void> {
   try {
     await input.runtime.host.fail(lease.attemptId, {
@@ -83,14 +89,15 @@ export async function abandon(
       outcome,
       // With no generation, backoff still renders each visitor but cannot keep a recovered page.
       ...(outcome === 'failed' &&
+        failure?.stage === 'render' &&
         input.target.replaces === null &&
         lease.current === null && { retryAfterMs: 0 }),
       // The failure's own word where it has one, so a refusal decided here reads as itself and
       // not as a render that threw; the gateway enumerates none of them.
-      ...(error !== undefined && {
+      ...(failure?.error !== undefined && {
         error: {
-          code: error instanceof RegenerationError ? error.code : 'render_failed',
-          message: detail(error),
+          code: failure.error instanceof RegenerationError ? failure.error.code : 'render_failed',
+          message: detail(failure.error),
         },
       }),
     });
@@ -103,16 +110,15 @@ export async function abandon(
 export async function giveUp(
   input: LeaseHolder,
   lease: Leased,
-  error: unknown,
-  began: number,
+  failure: AttemptFailure & { readonly began: number },
 ): Promise<string> {
-  await abandon(input, lease, 'failed', error);
+  await abandon(input, lease, 'failed', failure);
   input.runtime.log('regeneration failed', {
     pathname: input.target.descriptor.pathname,
-    detail: detail(error),
-    elapsedMs: elapsedSince(began),
+    detail: detail(failure.error),
+    elapsedMs: elapsedSince(failure.began),
   });
-  return detail(error);
+  return detail(failure.error);
 }
 
 /**

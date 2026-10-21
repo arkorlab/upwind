@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { policyFromBuild } from '@stayingupwind/core/cache';
+import { MAX_TAG_LENGTH, policyFromBuild } from '@stayingupwind/core/cache';
 import { CACHE_ROUTE_HEADER } from '@stayingupwind/core/paas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,6 +12,7 @@ import type {
   FailRequest,
 } from '../src/cache/host.ts';
 import { abandon } from '../src/cache/lease.ts';
+import { regenerate, type RegenerationOutcome } from '../src/cache/regenerate.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { nodeHandlerOf } from '../src/entries.ts';
 import { handleForeground } from '../src/generations.ts';
@@ -140,6 +141,10 @@ function authority(historicalRequest = false) {
   return { runtime, state, failures, commits, artifacts, pending, input, startAttempt };
 }
 
+async function settledKind(outcome: RegenerationOutcome): Promise<string> {
+  return outcome.kind === 'accepted' ? (await outcome.published).kind : outcome.kind;
+}
+
 describe('a failed render with no published generation', () => {
   beforeEach(() => {
     vi.mocked(nodeHandlerOf).mockResolvedValue(handler);
@@ -218,7 +223,7 @@ describe('a failed render with no published generation', () => {
       },
       { attemptId: 'attempt', fencingToken: 7, current: scenario.current },
       scenario.outcome,
-      new Error('render failed'),
+      { error: new Error('render failed'), stage: 'render' },
     );
 
     expect(model.failures[0]?.retryAfterMs).toBe(scenario.retryAfterMs);
@@ -241,5 +246,97 @@ describe('a failed render with no published generation', () => {
     expect(model.commits).toHaveLength(0);
     expect(model.failures).toHaveLength(0);
     expect(model.startAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves host backoff unless the caller identifies the failed render stage', async () => {
+    const model = authority();
+    await abandon(
+      {
+        runtime: model.runtime,
+        waitUntil: model.input.waitUntil,
+        target: { descriptor: { pathname: PATHNAME }, replaces: null },
+      },
+      { attemptId: 'attempt', fencingToken: 1, current: null },
+      'failed',
+      { error: new Error('failure outside rendering') },
+    );
+
+    expect(model.failures).toHaveLength(1);
+    expect(Object.hasOwn(model.failures[0]!, 'retryAfterMs')).toBe(false);
+  });
+
+  it.each([
+    {
+      name: 'pre-render tag sync',
+      expectedKind: 'failed',
+      renderCalls: 0,
+      arrange: (model: ReturnType<typeof authority>) => {
+        vi.spyOn(model.runtime.tags, 'sync').mockRejectedValue(new Error('tag sync failed'));
+      },
+    },
+    {
+      name: 'artifact upload',
+      expectedKind: 'accepted',
+      renderCalls: 1,
+      arrange: (model: ReturnType<typeof authority>) => {
+        vi.spyOn(model.runtime.host, 'uploadArtifact').mockRejectedValue(
+          new Error('upload failed'),
+        );
+      },
+    },
+    {
+      name: 'generation commit',
+      expectedKind: 'accepted',
+      renderCalls: 1,
+      arrange: (model: ReturnType<typeof authority>) => {
+        vi.spyOn(model.runtime.host, 'commit').mockRejectedValue(new Error('commit failed'));
+      },
+    },
+    {
+      name: 'publication tag bounds',
+      expectedKind: 'accepted',
+      renderCalls: 1,
+      arrange: () => {
+        vi.mocked(invokeNodeHandler).mockResolvedValue(
+          new Response('ready', {
+            headers: {
+              'cache-control': 's-maxage=60',
+              'x-next-cache-tags': 't'.repeat(MAX_TAG_LENGTH + 1),
+            },
+          }),
+        );
+      },
+    },
+  ])('preserves host backoff for a $name failure on a cold entry', async (scenario) => {
+    const model = authority();
+    vi.mocked(invokeNodeHandler).mockResolvedValue(
+      new Response('ready', { headers: { 'cache-control': 's-maxage=60' } }),
+    );
+    scenario.arrange(model);
+
+    const outcome = await withClock(NOW, () => {
+      return regenerate({
+        runtime: model.runtime,
+        request: model.input.request,
+        handler,
+        target: {
+          descriptor: { kind: 'app-route', route: PATHNAME, pathname: PATHNAME },
+          reason: 'expired',
+          replaces: null,
+        },
+        previewToken: undefined,
+        waitUntil: model.input.waitUntil,
+        run: model.input.run,
+      });
+    });
+    const settled = await settledKind(outcome);
+    await Promise.allSettled(model.pending);
+
+    expect(outcome.kind).toBe(scenario.expectedKind);
+    expect(settled).toBe('failed');
+    expect(model.failures).toHaveLength(1);
+    expect(Object.hasOwn(model.failures[0]!, 'retryAfterMs')).toBe(false);
+    expect(model.commits).toHaveLength(0);
+    expect(invokeNodeHandler).toHaveBeenCalledTimes(scenario.renderCalls);
   });
 });
