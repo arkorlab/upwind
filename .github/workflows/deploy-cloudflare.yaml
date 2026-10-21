@@ -93,6 +93,9 @@ jobs:
         with:
           name: deploy-cloudflare
           path: ${{ runner.temp }}/deploy-cloudflare
+      # Each build's modules, in a step of their own that holds no credentials, with no install
+      # script run: no dependency's code runs where the token is.
+      - run: pnpm check:deploy-cloudflare install --dir "$RUNNER_TEMP/deploy-cloudflare"
       # The project's name says which run and which attempt it is, so an attempt run again never
       # meets what the last one left, and a later run knows it for left behind.
       - run: pnpm check:deploy-cloudflare run --dir "$RUNNER_TEMP/deploy-cloudflare" --project "ci-${RUN_ID}-${RUN_ATTEMPT}"

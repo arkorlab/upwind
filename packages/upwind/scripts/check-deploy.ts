@@ -38,7 +38,11 @@ import {
  * `build` (`check-deploy-build.ts`), in a job that holds no credentials: three builds of
  * `fixtures/next-minimal`, each installed from packs of this checkout and built for a deploy.
  *
- * `run`, here, in the job that holds them. The three builds are deployed to one project, one after
+ * `install`, in the job that deploys, in a step that holds no credentials either: each build's
+ * modules installed again from its lockfile, which the artifact comes without, and with no package's
+ * install scripts run. Nothing a dependency runs ever runs where the token is.
+ *
+ * `run`, here, in the step that holds them. The three builds are deployed to one project, one after
  * another, with what each deployment has to show checked between them: the site served, a page of
  * each kind the fixture has, what must stay closed, the previous deployment's files kept, rollback
  * and forward again, retention, a deploy of what is live already changing nothing — and the project
@@ -99,14 +103,30 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
-/** Each version, installed again from its lockfile where the artifact came without its modules. */
+/**
+ * Each version's modules, installed again from its lockfile: the artifact comes without them. Run
+ * in a step without the credentials, and with no install script run — none of the packs has one,
+ * and nothing a deploy reads of a project needs one.
+ */
+function installAll(dir: string): void {
+  assert.ok(
+    process.env['CLOUDFLARE_API_TOKEN'] === undefined,
+    'install runs where no credentials are: a dependency never runs beside the token',
+  );
+  for (const version of VERSIONS) {
+    succeed('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], path.join(dir, version));
+  }
+}
+
+/** Each version, as `install` left it. */
 async function buildsIn(dir: string, project: string): Promise<Record<Version, Build>> {
   const builds: Partial<Record<Version, Build>> = {};
   for (const version of VERSIONS) {
     const at = path.join(dir, version);
-    if (!(await exists(path.join(at, 'node_modules')))) {
-      succeed('npm', ['ci', '--no-audit', '--no-fund'], at);
-    }
+    assert.ok(
+      await exists(path.join(at, 'node_modules')),
+      `${at} has no modules: run the install phase first, in a step without the credentials`,
+    );
     const config = { deploy: { name: project, checks: CHECKS } };
     await writeFile(path.join(at, CONFIG_FILE), `${JSON.stringify(config, undefined, 2)}\n`);
     const bundle = JSON.parse(await readFile(path.join(at, BUNDLE_PATH), 'utf8')) as {
@@ -486,12 +506,16 @@ async function main(): Promise<void> {
     await buildAll(path.resolve(values.out));
     return;
   }
+  if (phase === 'install' && values.dir !== undefined) {
+    installAll(path.resolve(values.dir));
+    return;
+  }
   if (phase === 'run' && values.dir !== undefined && values.project !== undefined) {
     await runChecks(path.resolve(values.dir), values.project);
     return;
   }
   throw new Error(
-    'usage: check-deploy.ts build --out <dir> | run --dir <dir> --project <ci-run-attempt>',
+    'usage: check-deploy.ts build --out <dir> | install --dir <dir> | run --dir <dir> --project <ci-run-attempt>',
   );
 }
 
