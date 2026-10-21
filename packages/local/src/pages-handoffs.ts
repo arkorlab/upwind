@@ -62,21 +62,25 @@ export function pagesHandoffVerdict(
   stack: CheckedStack,
   url: URL,
   sent: Readonly<Record<string, string>>,
-  answer: Reading,
-  method: 'GET' | 'HEAD' = 'GET',
+  read: { readonly answer: Reading; readonly method?: 'GET' | 'HEAD' },
 ): Verdict | undefined {
+  const { answer, method = 'GET' } = read;
   const expected = expectedHandoff(stack, url, sent, method);
   const actual = PAGES_HANDOFF.exec(answeredBy(answer))?.[1];
-  if (expected === undefined && actual === undefined) return undefined;
+  if (expected === undefined) {
+    return actual === undefined
+      ? undefined
+      : failed(`Pages handoff ${actual} does not match the shared request classification none`);
+  }
   if (actual !== expected) {
     return failed(
-      `Pages handoff ${actual ?? 'none'} does not match the shared request classification ${expected ?? 'none'}`,
+      `Pages handoff ${actual ?? 'none'} does not match the shared request classification ${expected}`,
     );
   }
   const unhealthy = failureStatus(answer);
   return unhealthy === undefined
     ? skipped(
-        `the Function owns this ${expected ?? 'Pages'} request; its application body is not a shell proof`,
+        `the Function owns this ${expected} request; its application body is not a shell proof`,
       )
     : failed(unhealthy);
 }
