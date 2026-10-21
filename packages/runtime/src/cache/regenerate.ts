@@ -429,7 +429,7 @@ function commitRequest(
  * what a request left out never settles once it has — and the attempt ends as failed rather than
  * holding its lease, renewed by its heartbeat, for as long as the request lives.
  */
-const TAG_SYNC_DEADLINE_MS = 10_000;
+export const TAG_SYNC_DEADLINE_MS = 10_000;
 
 /**
  * Upload what the render made and commit it, behind whoever was answered from the render, and keep

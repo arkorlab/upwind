@@ -1,3 +1,4 @@
+import { queryDependent } from '@stayingupwind/core/bundle';
 import { generationResponseHeaders } from '@stayingupwind/core/cache';
 import {
   CACHE_ROUTE_ESCAPED_HEADER,
@@ -12,12 +13,16 @@ import { decodeUtf8, encodeUtf8, releaseStream, toBase64 } from '@stayingupwind/
 
 import type { NodeHandler } from './app-module.ts';
 import { type CapturedRender, MAX_CAPTURED_BYTES } from './cache/capture.ts';
+import { nowMs } from './cache/clock.ts';
 import { asCapture, asRegeneration } from './cache/context.ts';
+import { within } from './cache/lease.ts';
+import { TAG_SYNC_DEADLINE_MS } from './cache/regenerate.ts';
+import type { CacheRuntime } from './cache/runtime.ts';
 import { renderStatically } from './cache/static-render.ts';
 import { nodeHandlerOf } from './entries.ts';
 import { routingParameters } from './route-parameters.ts';
-import type { RoutedInput } from './serve.ts';
-import { entrypointKindOf, type Store } from './store.ts';
+import { bypassesPrerender, type RoutedInput } from './serve.ts';
+import { entrypointKindOf, findShell, type Store } from './store.ts';
 
 /**
  * A capture (`CAPTURE_HEADER`): the edge asks for the page a request names, rendered as a
@@ -44,6 +49,7 @@ const HTTP_SUCCESS_END = 300;
 const HTTP_CONTENT_TOO_LARGE = 413;
 const HTTP_UNPROCESSABLE = 422;
 const HTTP_INTERNAL_ERROR = 500;
+const HTTP_UNAVAILABLE = 503;
 const TEXT_TYPE = 'text/plain; charset=utf-8';
 /** What a capture answers is for the edge that asked, and for no cache on the way to it. */
 const NOT_STORED = 'private, no-store';
@@ -90,7 +96,10 @@ function succeeded(status: number): boolean {
  * resume or a regeneration names one (`CACHE_ROUTE_HEADER`) — and so the one a request for another
  * Function's route has been answered for before it came here (`misdirectedAhead`). The route's
  * kind is asked of the table before its module is loaded, so a route of another kind is never
- * evaluated for it. A refusal where it names no page this Function renders on Node.js.
+ * evaluated for it. A refusal where it names no page this Function renders on Node.js, or one a
+ * regeneration would not make: of a request its prerender is bypassed for — a draft, a condition
+ * the build bypasses it on — or a prerender that varies on a query its pathname does not name
+ * (`queryDependent`), as `generations.ts` judges the regeneration of an entry.
  */
 async function pageOf(input: RoutedInput, store: Store): Promise<Page | Response> {
   const { request } = input;
@@ -102,12 +111,36 @@ async function pageOf(input: RoutedInput, store: Store): Promise<Page | Response
   if (route === undefined) {
     return refused(`a capture names its route (${CACHE_ROUTE_HEADER}), and this one names none`);
   }
+  const { pathname } = new URL(request.url);
+  const shell = store.prerendersByPathname.get(pathname) ?? findShell(store, route, pathname);
+  if (bypassesPrerender(store, request, shell) || queryDependent(shell, route, pathname)) {
+    return refused(`${pathname} is rendered for each request here, as no regeneration renders it`);
+  }
   const handler =
     entrypointKindOf(store, route) === 'app-page' ? await nodeHandlerOf(input, route) : undefined;
   if (handler === undefined) {
     return refused(`no App Router page entry renders ${route} here`);
   }
-  return { route, pathname: new URL(request.url).pathname, handler };
+  return { route, pathname, handler };
+}
+
+/**
+ * The view of the tags brought up to the host's revision, whatever its hold says, as a
+ * regeneration's is before it renders (`regenerate`): what the render's reads of the data cache
+ * are judged by, which a capture hands on as made now. Whether it was, within the time a
+ * regeneration gives it (`TAG_SYNC_DEADLINE_MS`).
+ */
+async function tagsBroughtUp(input: RoutedInput, runtime: CacheRuntime): Promise<boolean> {
+  const synced = runtime.tags.sync(runtime.host, nowMs(), { force: true });
+  input.waitUntil(synced);
+  try {
+    return await within(synced, TAG_SYNC_DEADLINE_MS, {
+      code: 'tags_not_synced',
+      message: 'the tags were not synced',
+    });
+  } catch {
+    return false;
+  }
 }
 
 /** What the render's outputs come to together: everything the answer carries of it. */
@@ -168,6 +201,12 @@ async function answerCapture(input: RoutedInput, store: Store): Promise<Response
     return page;
   }
   const { pathname } = page;
+  if (input.cache !== undefined && !(await tagsBroughtUp(input, input.cache))) {
+    return refused(
+      `the tags were not brought up for ${pathname}: its render would read by a view behind the host's`,
+      HTTP_UNAVAILABLE,
+    );
+  }
   const { captured, answered } = await renderStatically({
     request: input.request,
     handler: page.handler,

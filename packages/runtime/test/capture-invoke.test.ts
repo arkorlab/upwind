@@ -612,6 +612,51 @@ describe('a capture', () => {
     expect(invoked()).toHaveLength(1);
   });
 
+  it('is refused, rendering nothing, where its prerender varies on a query its path does not name', async () => {
+    const test = cache();
+    const store = deployment();
+    vi.mocked(getStore).mockReturnValue({
+      ...store,
+      prerendersByPathname: new Map([[BOARD, { allowQuery: ['tab'] }]]),
+    } as unknown as Store);
+
+    const response = await handle(test.runtime, BOARD, { headers: captureOf(BOARD) });
+
+    expect(response.status).toBe(422);
+    expect(response.headers.get('cache-control')).toBe(NOT_STORED);
+    await expect(response.text()).resolves.toMatch(/rendered for each request/u);
+    expect(invokeNodeHandler).not.toHaveBeenCalled();
+  });
+
+  it('is refused 503, rendering nothing, where the tags cannot be brought up', async () => {
+    const test = cache();
+
+    test.host.tagsDelta.mockRejectedValue(new Error('the host is gone'));
+
+    const response = await handle(test.runtime, BOARD, { headers: captureOf(BOARD) });
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('cache-control')).toBe(NOT_STORED);
+    expect(invokeNodeHandler).not.toHaveBeenCalled();
+  });
+
+  it('brings the tags up before it renders, whatever the hold says', async () => {
+    const test = cache();
+
+    await test.runtime.tags.sync(test.host, NOW);
+
+    test.host.tagsDelta.mockClear();
+
+    vi.mocked(invokeNodeHandler).mockImplementationOnce((input) => handOver(input));
+
+    const response = await handle(test.runtime, BOARD, { headers: captureOf(BOARD) });
+    await response.body?.cancel();
+
+    expect(response.status).toBe(200);
+    // Past the revision the view stood at: the pull the hold would have spared it.
+    expect(test.host.tagsDelta).toHaveBeenCalledWith(test.runtime.tags.revision);
+  });
+
   it('is answered 500, kept by nobody, where its render fails as nothing expects', async () => {
     const test = cache();
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {
