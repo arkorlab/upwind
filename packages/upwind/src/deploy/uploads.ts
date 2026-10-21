@@ -8,6 +8,7 @@ import {
   listVersions,
   type ScriptSubdomain,
   setScriptSubdomain,
+  type WorkerVersion,
 } from './cloudflare/workers.ts';
 
 /**
@@ -54,9 +55,18 @@ export function infraTag(script: string, metadata: unknown): string {
   return `upwind:infra:${digest.slice(0, TAG_DIGITS)}`;
 }
 
-/** The tag of a Worker's newest version; nothing for a Worker with none, or none tagged. */
+/**
+ * The tag of a Worker's newest version — the one numbered highest, whatever order a listing is in;
+ * nothing for a Worker with none, or none tagged.
+ */
 export async function newestTag(scope: AccountScope, name: string): Promise<string | undefined> {
-  const [newest] = await listVersions(scope, name);
+  const versions = await listVersions(scope, name);
+  let newest: WorkerVersion | undefined;
+  for (const version of versions) {
+    if (newest === undefined || (version.number ?? 0) > (newest.number ?? 0)) {
+      newest = version;
+    }
+  }
   return newest?.annotations?.['workers/tag'];
 }
 
