@@ -63,6 +63,8 @@ const RUNTIME_NEUTRAL_FILES = [
   'packages/edge/**/*.ts',
   // A local stack's own Workers. The rest of `packages/local` runs them from Node, listed below.
   'packages/local/src/workers/**/*.ts',
+  // The Workers `upwind deploy` puts on an account; the command around them runs under Node.
+  'packages/upwind/src/deploy/workers/**/*.ts',
   'packages/sdk/src/**/*.ts',
 ];
 /** The suites, and what they share, wherever a package or a tool keeps them. */
@@ -555,7 +557,11 @@ export default defineConfig([
   // The packages that serve a deployment are refused a Node.js built-in by its resolved name as well
   // as by the specifiers above, as they are wherever they are developed beside a host.
   {
-    files: ['packages/{cache,deploy,edge,host}/**/*.ts', 'packages/local/src/workers/**/*.ts'],
+    files: [
+      'packages/{cache,deploy,edge,host}/**/*.ts',
+      'packages/local/src/workers/**/*.ts',
+      'packages/upwind/src/deploy/workers/**/*.ts',
+    ],
     rules: { 'import-x/no-nodejs-modules': 'error' },
   },
 
@@ -586,6 +592,7 @@ export default defineConfig([
       'packages/cache/src/standalone/{read-worker,worker}.ts',
       'packages/edge/src/{blob,standalone}/worker.ts',
       'packages/local/src/workers/{agent,edge,outbound}.ts',
+      'packages/upwind/src/deploy/workers/{agent,edge}.ts',
     ],
     rules: { 'import-x/no-default-export': 'off' },
   },
