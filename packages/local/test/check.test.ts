@@ -12989,10 +12989,10 @@ describe('what the check makes of the middleware', () => {
           { key: '/', route: front, requested: '/', headers: {}, exact: true },
           { browser: {}, origin: originAt(stack, page, '') },
         );
-        const parts = [namedSegment(built, '/_tree'), namedSegment(built, '/leaf')].map((part) => ({
-          ...part,
-          headers: { ...part.headers, [cookieHeader]: 'seen=1' },
-        }));
+        const parts = [namedSegment(built, '/_tree'), namedSegment(built, '/leaf')].map((part) => {
+          const headers = { ...part.headers, [cookieHeader]: 'seen=1' };
+          return { ...part, headers };
+        });
         const owned = segmentAnswer('tree bytes');
         const ownedHeaders = {
           ...owned.headers,
