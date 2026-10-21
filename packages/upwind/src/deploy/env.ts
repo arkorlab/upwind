@@ -57,6 +57,11 @@ const HOST_NAMES: readonly string[] = [
   RESOURCES_MANIFEST_BINDING,
 ];
 
+/** Whether every Function is given a binding of that name by the host. */
+export function isHostBound(name: string): boolean {
+  return HOST_NAMES.includes(name);
+}
+
 /** The names a secret may not have: the host's, and the storage bindings the project asked for. */
 export function reservedNames(storage: readonly { readonly name: string }[]): ReadonlySet<string> {
   const names = new Set(HOST_NAMES);
