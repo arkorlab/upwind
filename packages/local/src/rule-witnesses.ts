@@ -1,7 +1,8 @@
 import { headerRulesFor, type HeaderRule } from '@stayingupwind/core/manifest';
+import { classifyStaticFile } from '@stayingupwind/core/request';
 
 import type { CheckedStack } from './answers.ts';
-import { carryingEach, lackingEach, protocolCondition } from './escaping.ts';
+import { carryingEach, lackingEach, protocolCondition, type WitnessClass } from './escaping.ts';
 import { routedReads } from './routing-reads.ts';
 import { ruleOverlapFailure } from './rule-overlaps.ts';
 
@@ -21,15 +22,18 @@ function applies(
   stack: CheckedStack,
   url: URL,
   sent: Readonly<Record<string, string>>,
-  rule: HeaderRule,
+  input: { readonly rule: HeaderRule; readonly requestClass: WitnessClass },
 ): boolean {
+  const { rule, requestClass } = input;
   const fixed = {
     ...stack.manifest,
     headerRules: [
       {
         ...rule,
-        has: (rule.has ?? []).filter(protocolCondition),
-        missing: (rule.missing ?? []).filter(protocolCondition),
+        has: (rule.has ?? []).filter((condition) => protocolCondition(condition, requestClass)),
+        missing: (rule.missing ?? []).filter((condition) =>
+          protocolCondition(condition, requestClass),
+        ),
       },
     ],
   };
@@ -52,10 +56,19 @@ export function requestsForRules(
   rules: readonly HeaderRule[],
 ): RuleRequests {
   const requests: RuleRequest[] = [];
+  const classified = classifyStaticFile({
+    method: 'GET',
+    url,
+    manifest: stack.manifest,
+    deployment: stack.manifest.deployment,
+  });
+  const requestClass = classified?.kind === 'static-file' ? 'file' : 'document';
   // Include rules already selected by an ordinary sample: they can conceal a new witness's
   // other branch too. No independent regex-language prover is implied by one matching request.
   const unproved = ruleOverlapFailure(
-    (stack.manifest.headerRules ?? []).filter((rule) => applies(stack, url, sent, rule)),
+    (stack.manifest.headerRules ?? []).filter((rule) =>
+      applies(stack, url, sent, { rule, requestClass }),
+    ),
   );
   if (unproved !== undefined) return { requests, unproved };
   for (const rule of rules) {
@@ -66,15 +79,18 @@ export function requestsForRules(
     if (selected(sent, url)) continue;
     // A fixed host/front-line header, or a payload-only protocol field, cannot be changed to
     // select this rule while keeping a request of this class. Other query/cookie/header values can.
-    if (!applies(stack, url, sent, rule)) continue;
+    if (!applies(stack, url, sent, { rule, requestClass })) continue;
     // Fixed conditions already hold for this request class. Only movable fields need changing;
     // asking lackingEach to remove a protocol field would reject even one already absent.
-    const movableHas = (rule.has ?? []).filter((condition) => !protocolCondition(condition));
-    const movableMissing = (rule.missing ?? []).filter(
-      (condition) => !protocolCondition(condition),
+    const movableHas = (rule.has ?? []).filter(
+      (condition) => !protocolCondition(condition, requestClass),
     );
-    const carried = carryingEach(sent, url, movableHas);
-    const made = carried === undefined ? undefined : lackingEach(carried, movableMissing);
+    const movableMissing = (rule.missing ?? []).filter(
+      (condition) => !protocolCondition(condition, requestClass),
+    );
+    const carried = carryingEach(sent, url, movableHas, requestClass);
+    const made =
+      carried === undefined ? undefined : lackingEach(carried, movableMissing, requestClass);
     if (carried === undefined || made === undefined || !selected(made.headers, made.url)) {
       return {
         requests,

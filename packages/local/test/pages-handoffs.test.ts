@@ -6,6 +6,7 @@ import { NAVIGATION_REQUEST_HEADERS } from '@stayingupwind/core/request';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { CheckedStack } from '../src/answers.ts';
+import { documentAnswerAt } from '../src/document-adoption.ts';
 import { routeVerdict } from '../src/documents.ts';
 import type { Part } from '../src/part-marks.ts';
 import { partFailure, propsHeadVerdict } from '../src/part-verdicts.ts';
@@ -122,12 +123,12 @@ function dataPart(): Part {
     headers: { 'x-nextjs-data': '1' },
     route: MEMBER_ROUTE,
     built: undefined,
-    builtOn: () => undefined,
+    builtOn: (route) => route.pagesData,
     exact: true,
   };
 }
 
-describe('Pages requests owned by the Function under the current shared classifier', () => {
+describe('pages requests owned by the Function under the current shared classifier', () => {
   beforeAll(async () => {
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -195,6 +196,41 @@ describe('Pages requests owned by the Function under the current shared classifi
     });
 
     expect(verdict).toStrictEqual({ kind: 'failed', reason: 'answered 503' });
+  });
+
+  it.each([
+    { requested: MEMBER, reason: 'static-page', status: 200, headers: NAVIGATION_REQUEST_HEADERS },
+    {
+      requested: '/posts/new',
+      reason: 'pages-fallback',
+      status: 200,
+      headers: NAVIGATION_REQUEST_HEADERS,
+    },
+    {
+      requested: MEMBER,
+      reason: 'static-page-bypass',
+      status: 200,
+      headers: { ...NAVIGATION_REQUEST_HEADERS, cookie: 'session=1' },
+    },
+    { requested: MEMBER, reason: 'static-page', status: 503, headers: NAVIGATION_REQUEST_HEADERS },
+  ])('retains the adopted $reason document verdict with status $status', async (example) => {
+    fixture.account = `passthrough;reason=${example.reason}`;
+    fixture.status = example.status;
+    const answer = await documentAnswerAt(
+      stackOf(),
+      64,
+      { url: new URL(example.requested, SITE), headers: example.headers },
+      'gzip',
+    );
+    if (typeof answer === 'string' || answer.documentFailure === undefined) {
+      throw new Error('the adopted Pages response lost its own document verdict');
+    }
+    const failure = await answer.documentFailure();
+    await fixture.closed.promise;
+
+    expect(failure).toBe(example.status === 503 ? 'answered 503' : undefined);
+    expect(fixture.requests).toBe(1);
+    expect(fixture.backstageGets).toBe(0);
   });
 
   it('rejects a Pages handoff account on an ordinary document', async () => {

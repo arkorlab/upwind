@@ -21,6 +21,7 @@ import {
   type Verdict,
   edgeReads,
 } from './answers.ts';
+import { routedReads } from './routing-reads.ts';
 
 /**
  * Where a document landed, as the check reads it (`documents.ts`): the route the edge's account of
@@ -292,7 +293,12 @@ export function claimedAsLeft(
   if (moved) {
     return isReserved(stack.manifest, decided.url, decided.requestHeaders, true);
   }
-  return isReserved(stack.manifest, sent.url, edgeReads(sent.headers), sent.exact ?? true);
+  return isReserved(
+    stack.manifest,
+    sent.url,
+    routedReads(sent.url, sent.headers),
+    sent.exact ?? true,
+  );
 }
 
 /**

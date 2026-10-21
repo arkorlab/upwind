@@ -16,7 +16,6 @@ import {
   middlewareAnswered,
   middlewareHeadersOnly,
   middlewareRan,
-  policyFailure,
   SHELL_ANSWER,
   skipped,
   stampedOf,
@@ -27,6 +26,7 @@ import {
 import { sharedCacheFailure } from './cache-control.ts';
 import { type Accepted, codingFailure, codedOf } from './codings.ts';
 import { finishedFailure, incompleteness } from './completeness.ts';
+import { heldPolicyFailure } from './document-policy.ts';
 import { readDocument } from './document-reading.ts';
 import {
   HEAD_HANDED_ON,
@@ -533,23 +533,6 @@ async function regeneratedVerdict(
   return failure === undefined
     ? skipped(`the application's middleware ${did} the route ${landed.pathname}, regenerated`)
     : failed(`${done} the route ${landed.pathname}, and ${failure}`);
-}
-
-/**
- * Why an answer the edge gave from what the deployment holds — a shell, a file — or regenerated in
- * front of it does not say it did so under the stack's policy, as validation holds a candidate's
- * (`policyFailure`). None for any other answer, which names no policy.
- */
-function heldPolicyFailure(
-  stack: CheckedStack,
-  answer: Reading,
-  answered: string,
-): string | undefined {
-  const held =
-    REGENERATED.test(answered) ||
-    answered.startsWith(SHELL_ANSWER) ||
-    answered.startsWith(FROM_STORAGE);
-  return held ? policyFailure(stack, answer) : undefined;
 }
 
 /** A route, asked for as validation asks for it, and judged. */

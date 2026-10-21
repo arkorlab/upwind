@@ -46,11 +46,10 @@ export function pagesHeadersOnly(
   otherwise: ReadOptions['headersOnly'],
 ): ReadOptions['headersOnly'] {
   const expected = expectedHandoff(stack, url, sent, 'GET');
-  if (expected === undefined) return otherwise;
   return (status, headers) => {
     const given = PAGES_HANDOFF.exec(String(headers[EDGE_HEADER] ?? ''))?.[1];
     return (
-      given === expected ||
+      (expected !== undefined && given === expected) ||
       otherwise === true ||
       (typeof otherwise === 'function' && otherwise(status, headers))
     );

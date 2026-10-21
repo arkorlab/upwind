@@ -270,6 +270,17 @@ type Onward =
   | { readonly kind: 'left' }
   | { readonly kind: 'failed'; readonly failure: string };
 
+/** Redirects keep the reduced referrer; a router replay starts from the page again. */
+function headersOnward(
+  original: Readonly<Record<string, string>>,
+  current: Readonly<Record<string, string>>,
+  onward: Extract<Onward, { readonly kind: 'hop' | 'replay' }>,
+  policy: string | undefined,
+): Readonly<Record<string, string>> {
+  const referring = onward.kind === 'replay' ? original : current;
+  return policy === undefined ? referring : referredUnder(referring, policy, onward.url);
+}
+
 /**
  * Where a browser's fetch goes on from an answer to `url`: to the URL of the site's own its
  * `Location` names (`hop`); where it redirects no further, but a redirect brought the fetch there,
@@ -455,8 +466,7 @@ export async function redirectsFrom(
     if (held !== undefined) {
       return { steps, failure: `redirected to ${next.pathname}, ${held}` };
     }
-    const referring = onward.kind === 'replay' ? from.headers : headers;
-    const referred = policy === undefined ? referring : referredUnder(referring, policy, next);
+    const referred = headersOnward(from.headers, headers, onward, policy);
     const cookie = cookieFor(jar, next, { crossSite: from.crossSite === true });
     headers = cookieOn(uncookied(referred), cookie);
     const asked = {

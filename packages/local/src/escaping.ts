@@ -12,7 +12,7 @@ import {
 } from '@stayingupwind/core/request';
 import { compareCodeUnits } from '@stayingupwind/core/util';
 
-import { edgeReads } from './answers.ts';
+import { routedReads } from './routing-reads.ts';
 
 /**
  * A request past the rules of `next.config` that claim every request the check makes of something
@@ -37,7 +37,11 @@ export interface Target {
    * the rules ahead of the filesystem claim.
    */
   readonly exact: boolean;
+  readonly requestClass?: WitnessClass;
 }
+
+/** The document gates do not apply to a file classified ahead of them. */
+export type WitnessClass = 'document' | 'file';
 
 /** Whether the rules `keep` keeps alone claim the target asked with `headers`, at `url`. */
 export function claimedBy(
@@ -47,7 +51,12 @@ export function claimedBy(
   url = target.url,
 ): boolean {
   const reservedRoutes = (target.manifest.reservedRoutes ?? []).filter((rule) => keep(rule));
-  return isReserved({ ...target.manifest, reservedRoutes }, url, edgeReads(headers), target.exact);
+  return isReserved(
+    { ...target.manifest, reservedRoutes },
+    url,
+    routedReads(url, headers),
+    target.exact,
+  );
 }
 
 /**
@@ -74,6 +83,7 @@ function claimedByRule(target: Target, headers: Headers, rule: ReservedRoute, ur
 
 /** What a request carries to escape a rule that claims it for what it lacks. */
 interface Carried {
+  readonly requestClass: WitnessClass;
   readonly headers: Record<string, string>;
   readonly search: URLSearchParams;
   /**
@@ -100,12 +110,12 @@ const PROTOCOL_QUERY_KEYS: ReadonlySet<string> = new Set([
 ]);
 /** Fixed by routing/front-line behavior, or inseparable from the request's protocol class. */
 const PROTOCOL_HEADER_KEYS: ReadonlySet<string> = new Set([
-  'host',
   'accept-encoding',
+  DEPLOYMENT_ID_REQUEST_HEADER,
+  'host',
   'range',
   'service-worker',
   'via',
-  DEPLOYMENT_ID_REQUEST_HEADER,
 ]);
 
 /**
@@ -113,12 +123,16 @@ const PROTOCOL_HEADER_KEYS: ReadonlySet<string> = new Set([
  * is what no request can carry to the edge: its `Accept-Encoding`, which Cloudflare's front line
  * sets on every request in the visitor's place (`edgeReads`).
  */
-export function protocolCondition(condition: RouteHas): boolean {
+export function protocolCondition(
+  condition: RouteHas,
+  requestClass: WitnessClass = 'document',
+): boolean {
   const { key } = condition;
   if (key === undefined) return true;
   const name = key.toLowerCase();
   switch (condition.type) {
     case 'header': {
+      if (requestClass === 'file' && name === DEPLOYMENT_ID_REQUEST_HEADER) return false;
       return (
         PROTOCOL_HEADER_KEYS.has(name) ||
         ROUTER_REQUEST_HEADERS.includes(name) ||
@@ -210,7 +224,11 @@ type Carrying = typeof CARRIED | typeof NOT_CARRIED | typeof UNWITNESSED;
 function carry(condition: RouteHas, carried: Carried): Carrying {
   const { key } = condition;
   // Nor what would make it another request — a payload's, a draft's — than the one it is to be.
-  if (key === undefined || condition.type === 'host' || protocolCondition({ ...condition, key })) {
+  if (
+    key === undefined ||
+    condition.type === 'host' ||
+    protocolCondition({ ...condition, key }, carried.requestClass)
+  ) {
     return NOT_CARRIED;
   }
   const slot = slotOf({ ...condition, key });
@@ -246,10 +264,12 @@ export function carryingEach(
   sample: Readonly<Record<string, string>>,
   url: URL,
   conditions: readonly RouteHas[],
+  requestClass: WitnessClass = 'document',
 ):
   | { readonly headers: Record<string, string>; readonly url: URL; readonly carried: string }
   | undefined {
   const carried: Carried = {
+    requestClass,
     headers: { ...sample },
     search: new URLSearchParams(url.search),
     patterns: new Map(),
@@ -290,6 +310,7 @@ interface Made {
 export function lackingEach(
   made: Made,
   conditions: readonly RouteHas[],
+  requestClass: WitnessClass = 'document',
 ): (Made & { readonly lacked: string }) | undefined {
   let request: Made = made;
   const said: string[] = [];
@@ -298,7 +319,7 @@ export function lackingEach(
     if (key === undefined || condition.type === 'host') {
       continue;
     }
-    if (protocolCondition({ ...condition, key })) {
+    if (protocolCondition({ ...condition, key }, requestClass)) {
       return undefined;
     }
     const without = lacking(condition.type, key, request);
@@ -392,6 +413,7 @@ function carriedOf(carried: Carried, sample: Readonly<Record<string, string>>, u
 /** A copy of `carried`, carrying each of `conditions` besides (`carry`). */
 function carrying(carried: Carried, conditions: readonly RouteHas[]): Carried {
   const way: Carried = {
+    requestClass: carried.requestClass,
     headers: { ...carried.headers },
     search: new URLSearchParams(carried.search),
     patterns: new Map(carried.patterns),
@@ -510,6 +532,7 @@ export function escaping(
   const rules = target.manifest.reservedRoutes ?? [];
   const pending: Carried[] = [
     {
+      requestClass: target.requestClass ?? 'document',
       headers: { ...sample },
       search: new URLSearchParams(target.url.search),
       patterns: new Map(),
@@ -530,7 +553,7 @@ export function escaping(
     tried.add(key);
     const url = new URL(target.url);
     url.search = carried.search.toString();
-    const asked = edgeReads(carried.headers);
+    const asked = routedReads(url, carried.headers);
     const claiming = rules.filter((rule) => claimedByRule(target, asked, rule, url));
     if (claiming.length === 0) {
       if (served(carried.headers, url)) {

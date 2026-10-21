@@ -304,6 +304,27 @@ async function formFailure(
   if (answer.headers['content-length'] !== String(size) || answer.length !== size) {
     return `answered ${range} with ${answer.length} bytes, not the range's ${size}`;
   }
+  const bytes = await formBytesFailure(stack, subject, { range, start, answer, whole: read.whole });
+  if (bytes !== undefined) return bytes;
+  const described = describedFailure(answer, expected, false);
+  return described === undefined ? undefined : `asked for ${range}, ${described}`;
+}
+
+/** Prove every range byte, using retained bytes only when they cover the complete range. */
+async function formBytesFailure(
+  stack: CheckedStack,
+  subject: Subject,
+  read: {
+    readonly range: string;
+    readonly start: number;
+    readonly answer: Reading;
+    readonly whole: Reading;
+  },
+): Promise<string | undefined> {
+  const { range, start, answer } = read;
+  const { file } = subject;
+  const length = file.byteLength;
+  const size = length - start;
   // The file asked for, by what its whole answer kept of it; another it was rewritten onto, by its
   // blob of the build.
   const bytes =
@@ -317,7 +338,12 @@ async function formFailure(
     return `answered ${range} with other bytes than the file's`;
   }
   if (size > bytes.length) {
-    const expectedDigest = await rangeDigestOf(stack, file, start);
+    const expectedDigest = await rangeDigestOf(
+      stack,
+      file,
+      start,
+      subject.onto === undefined ? read.whole : undefined,
+    );
     if (expectedDigest === undefined) {
       return `answered ${range} of a file the build holds no bytes of`;
     }
@@ -325,8 +351,7 @@ async function formFailure(
       return `answered ${range} with other bytes than the file's`;
     }
   }
-  const described = describedFailure(answer, expected, false);
-  return described === undefined ? undefined : `asked for ${range}, ${described}`;
+  return undefined;
 }
 
 /**
@@ -335,8 +360,8 @@ async function formFailure(
  */
 function keptBytesAt(whole: Reading, start: number, length: number): Buffer | undefined {
   const wanted = Math.min(length - start, RANGE_BYTES);
-  if (start + wanted <= whole.head.length) {
-    return whole.head.subarray(start, start + wanted);
+  if (start < whole.head.length) {
+    return whole.head.subarray(start, Math.min(start + wanted, whole.head.length));
   }
   const fromEnd = length - start;
   if (fromEnd > whole.tail.length) {

@@ -2729,6 +2729,69 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
+    it('skips a file reserved by the Via value routing always supplies', async () => {
+      const rule: ReservedRoute = {
+        sourceRegex: '^/a[.]txt$',
+        beforeFiles: true,
+        has: [{ type: 'header', key: 'via', value: '^1[.]1 arkor-edge$' }],
+      };
+      answers.set('/a.txt', {
+        headers: { 'x-arkor-edge': 'passthrough;reason=reserved' },
+        body: 'application-owned',
+      });
+
+      const result = await checkStack(stackOf([], files, { reservedRoutes: [rule] }));
+
+      expect(result.failures).toStrictEqual([]);
+      expect(result.skipped).toStrictEqual([
+        { path: '/a.txt', reason: 'claimed by a redirect or rewrite of next.config' },
+      ]);
+      expect(agentsAsked.has('/a.txt')).toBe(false);
+    });
+
+    it('checks a file a missing-Via rule cannot claim after forwarding', async () => {
+      const rule: ReservedRoute = {
+        sourceRegex: '^/a[.]txt$',
+        beforeFiles: true,
+        missing: [{ type: 'header', key: 'via' }],
+      };
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+      });
+
+      const result = await checkStack(stackOf([], files, { reservedRoutes: [rule] }));
+
+      expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(agentsAsked.get('/a.txt')).toContain('upwind-local-check/1.0');
+    });
+
+    it.each([
+      { type: 'image/png', broken: false },
+      { type: TEXT, broken: true },
+    ])('checks a deployment-header file type rule answered as $type', async (example) => {
+      const rule: HeaderRule = {
+        sourceRegex: '^/a[.]txt$',
+        has: [{ type: 'header', key: 'x-deployment-id', value: '^canary$' }],
+        headers: { 'content-type': 'image/png' },
+      };
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+        withHeader: { name: 'x-deployment-id', headers: { 'content-type': example.type } },
+      });
+
+      const result = await checkStack(stackOf([], files, { headerRules: [rule] }));
+
+      expect(
+        (askedHeadersEach.get('/a.txt') ?? []).some(
+          (headers) => headers['x-deployment-id'] === 'canary',
+        ),
+      ).toBe(true);
+      expect(result.failures).toHaveLength(example.broken ? 1 : 0);
+      if (example.broken) expect(result.failures[0]?.reason).toContain('not image/png');
+    });
+
     it('is asked as the page a visitor goes to, where it is an HTML file a rule claims a fetch of', async () => {
       const page = { '/about': fileOf(FRONT + REST, HTML) };
       const fetchesOnly: ReservedRoute = {

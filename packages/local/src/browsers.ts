@@ -21,6 +21,7 @@ import {
   USER_AGENT,
 } from './browser-samples.ts';
 import { claimedBy, escaping, type Target } from './escaping.ts';
+import { routedReads } from './routing-reads.ts';
 
 /**
  * The agents a check asks a page or a file as, in the order it tries them, as a deployment's
@@ -646,7 +647,7 @@ function unclaimedOf(
   // As the target: a request the edge passes on is answered by another than it.
   const unclaimed = asked.find((headers) => {
     return (
-      !isReserved(target.manifest, target.url, edgeReads(headers), target.exact) &&
+      !isReserved(target.manifest, target.url, routedReads(target.url, headers), target.exact) &&
       served(headers, target.url)
     );
   });
@@ -664,7 +665,8 @@ function unclaimedOf(
  * Claimed as every one, it is the application's where the rules claim it as any agent, and proved
  * by none where they ask of the agent: one the check does not ask as may be served the file.
  */
-export function fileRequestsFor(target: FileTarget): readonly Sampled[] {
+export function fileRequestsFor(file: FileTarget): readonly Sampled[] {
+  const target = { ...file, requestClass: 'file' as const };
   // The check's own agent asks as validation's prover does, with nothing of a browser's, accepting
   // any type; each browser with what it accepts for a file of this type, and the Fetch Metadata it
   // sends for one, in each mode it may ask in — and, but for a page, as any file is opened.
@@ -684,7 +686,8 @@ export function fileRequestsFor(target: FileTarget): readonly Sampled[] {
     }),
   ];
   const unclaimed = asked.filter(
-    (headers) => !isReserved(target.manifest, target.url, edgeReads(headers), target.exact),
+    (headers) =>
+      !isReserved(target.manifest, target.url, routedReads(target.url, headers), target.exact),
   );
   return unclaimed.length > 0
     ? unclaimed.map((headers) => ({ kind: 'asked', headers }))

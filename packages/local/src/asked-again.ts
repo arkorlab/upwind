@@ -13,7 +13,6 @@ import {
   middlewareHeadersOnly,
   policyFailure,
   traced,
-  edgeReads,
 } from './answers.ts';
 import {
   decisionOf,
@@ -24,6 +23,7 @@ import {
 } from './file-decisions.ts';
 import type { Decided } from './file-expectations.ts';
 import type { Reading } from './reading.ts';
+import { routedReads } from './routing-reads.ts';
 
 /**
  * A file the edge answered from storage, asked for again (`follow-ups.ts`, `ranges.ts`): a request
@@ -71,7 +71,7 @@ export async function askedAgain(
   },
 ): Promise<AskedAgain> {
   const { sent, what } = asked;
-  if (isReserved(stack.manifest, url, edgeReads(sent), true)) {
+  if (isReserved(stack.manifest, url, routedReads(url, sent), true)) {
     return { kind: 'theirs' };
   }
   await using tracing = await traced(stack, sent);
