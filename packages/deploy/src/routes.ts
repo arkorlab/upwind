@@ -266,25 +266,44 @@ function recordedHeaders(
   return cache?.delivery === 'complete' ? built : allowRecoveryScript(built, recoverySource);
 }
 
+/** The same final construction gate for route entries and their optional cache metadata. */
+function mayBeRoute(
+  prerender: Prerender,
+  context: Pick<ManifestContext, 'bundle' | 'resumable'>,
+): prerender is Prerender & { readonly body: NonNullable<Prerender['body']> } {
+  if (prerender.body === undefined) return false;
+  // A recovery hash cannot relax sandbox flags; complete documents need no continuation.
+  const policy = shellHeaders(context.bundle, prerender)['content-security-policy'];
+  return (
+    policy === undefined ||
+    !context.resumable.has(prerender.id) ||
+    sandboxBlocksRecovery(policy) === undefined
+  );
+}
+
+/** Resolve construction eligibility and the last winner for each pathname before tag allocation. */
+export function routePrerendersOf(
+  prerenders: readonly Prerender[],
+  context: Pick<ManifestContext, 'bundle' | 'resumable'>,
+): Prerender[] {
+  const named = new Map<string, Prerender>();
+  for (const prerender of prerenders) {
+    if (mayBeRoute(prerender, context)) {
+      named.set(routePathnameOf(context.bundle, prerender), prerender);
+    }
+  }
+  return [...named.values()];
+}
+
 export function routeEntryOf(
   prerender: Prerender,
   context: ManifestContext,
 ): RouteEntry | undefined {
-  if (prerender.body === undefined) {
+  if (!mayBeRoute(prerender, context)) {
     return undefined;
   }
   const { bundle } = context;
   const built = shellHeaders(bundle, prerender);
-  // A recovery hash cannot relax sandbox flags. A resumable shell that cannot recover from a
-  // failed continuation stays with the Worker; a complete document needs no continuation.
-  const sandboxed = built['content-security-policy'];
-  if (
-    sandboxed !== undefined &&
-    context.resumable.has(prerender.id) &&
-    sandboxBlocksRecovery(sandboxed) !== undefined
-  ) {
-    return undefined;
-  }
   const shellEncodings = shellEncodingsOf(context.encodings.get(prerender.body.sha256) ?? []);
   const cache = context.caches.get(prerender.id);
   const headers = recordedHeaders(built, cache, context.recoverySource);

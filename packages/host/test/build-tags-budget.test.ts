@@ -1,4 +1,8 @@
-import { edgeServablePrerenders, type Prerender } from '@stayingupwind/core/bundle';
+import {
+  type DeploymentBundle,
+  edgeServablePrerenders,
+  type Prerender,
+} from '@stayingupwind/core/bundle';
 import { MAX_TAG_LENGTH, MAX_TAGS_PER_ENTRY, type GenerationTag } from '@stayingupwind/core/cache';
 import {
   buildProjectManifest,
@@ -81,7 +85,81 @@ function requiredAssembly(result: AssembledManifest) {
   return result;
 }
 
+function overwrittenBundle(reason: 'sandbox' | 'pathname winner'): DeploymentBundle {
+  const tags = shortTags()
+    .slice(0, 1000)
+    .map((tag) => tag.value)
+    .join(',');
+  const hidden: Prerender[] = Array.from({ length: 60 }, (_, index) => {
+    const pathname = reason === 'sandbox' ? `/sandbox-${index}` : '/target';
+    return {
+      ...SHARED_SHELL,
+      id: `discarded-${index}`,
+      pathname,
+      route: pathname,
+      routeType: 'page',
+      initialHeaders: {
+        'x-next-cache-tags': tags,
+        ...(reason === 'sandbox' && { 'content-security-policy': 'sandbox' }),
+      },
+    };
+  });
+  const target: Prerender = {
+    ...SHARED_SHELL,
+    id: 'target',
+    pathname: '/target',
+    route: '/target',
+    routeType: 'page',
+    initialHeaders: { 'x-next-cache-tags': `${tags},test-update-tag` },
+  };
+  const bundle = shellBundle(target);
+  bundle.prerenders = [...hidden, target];
+  bundle.entrypoints = bundle.prerenders.map((prerender) => {
+    const id = prerender.id;
+    return { id, kind: 'app-page', pathname: prerender.route };
+  });
+  return bundle;
+}
+
+async function assembledBundle(bundle: DeploymentBundle) {
+  return requiredAssembly(
+    await assembleManifest({
+      bundle,
+      previous: undefined,
+      projectId: 'build-tag-budget',
+      runId: 'run',
+      originHost: 'app.example',
+      deploymentId: bundle.deploymentId,
+      fingerprint: {
+        dplId: bundle.deploymentId,
+        assetSetHash: 'assets',
+        observedAt: bundle.generatedAt,
+      },
+      app: { deploymentId: bundle.deploymentId, scriptName: 'app' },
+      generatedAt: bundle.generatedAt,
+      encodings: new Map(),
+      preloads: {},
+      recoverySource: "'sha256-recovery'",
+    }),
+  );
+}
+
 describe('optional build membership within the complete manifest budgets', () => {
+  it.each(['sandbox', 'pathname winner'] as const)(
+    'does not spend metadata on routes discarded for %s',
+    async (reason) => {
+      const bundle = overwrittenBundle(reason);
+      const assembled = await assembledBundle(bundle);
+
+      expect(Object.keys(assembled.manifest.routes)).toStrictEqual(['/target']);
+      expect(assembled.manifest.routes['/target']?.prerenderId).toBe('target');
+      expect(assembled.manifest.routes['/target']?.cache?.buildTags).toContainEqual({
+        kind: 'next-explicit',
+        value: 'test-update-tag',
+      });
+    },
+  );
+
   it('omits whole memberships when 30 individually valid large tag sets exceed the wire limit', () => {
     const tags: GenerationTag[] = Array.from({ length: MAX_TAGS_PER_ENTRY }, (_, index) => {
       const value = String(index).padStart(MAX_TAG_LENGTH, 'a');
@@ -187,7 +265,7 @@ describe('optional build membership within the complete manifest budgets', () =>
       id: 'target',
       pathname: '/target',
       route: '/target',
-      initialHeaders: { 'x-next-cache-tags': 'test-update-tag' },
+      initialHeaders: { 'x-next-cache-tags': `${tags},test-update-tag` },
     };
     const bundle = shellBundle(target);
     bundle.prerenders = [...hidden, target];

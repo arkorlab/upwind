@@ -46,6 +46,7 @@ import {
   routeArtifactsOf,
   routeCachesOf,
   routeEntryOf,
+  routePrerendersOf,
   routeSegmentsOf,
 } from './routes.ts';
 import { staticFileRequestKeysOf, staticFilesOf } from './static-files.ts';
@@ -312,7 +313,11 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   // The scope is the deployment; the same derivation the seed used names each entry.
   const cached = input.runtimeCache !== false;
   const servable = routedPages(input.runtimeCache);
-  const prerenders = manifestPrerendersOf(bundle, servable, cached);
+  const resumable = new Set(resumablePrerenders(bundle).map((prerender) => prerender.id));
+  const prerenders = routePrerendersOf(manifestPrerendersOf(bundle, servable, cached), {
+    bundle,
+    resumable,
+  });
   const caches = cached ? await routeCachesOf(bundle, input.deploymentId, prerenders) : new Map();
   const staticPages = await staticPagesOf(bundle, input.deploymentId, cached);
   const pagesFallbacks = pagesFallbacksOf(bundle, cached, input.encodings);
@@ -327,7 +332,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     matchers: middlewareMatchers ?? [],
     policyRules: rules.filter(maySetPreloadPolicy),
     recoverySource: input.recoverySource,
-    resumable: new Set(resumablePrerenders(bundle).map((prerender) => prerender.id)),
+    resumable,
     segments: routeSegmentsOf(bundle, input.encodings, servable),
     payloads: routeArtifactsOf(routePayloads(bundle, servable), input.encodings),
     pagesData: routeArtifactsOf(routePagesData(bundle, servable), input.encodings),
