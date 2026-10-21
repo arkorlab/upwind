@@ -3,7 +3,7 @@ import {
   deleteKvNamespace,
   listKvNamespaces,
 } from '../src/deploy/cloudflare/storage.ts';
-import { type AccountScope, listScripts } from '../src/deploy/cloudflare/workers.ts';
+import { type AccountScope, deleteScript, listScripts } from '../src/deploy/cloudflare/workers.ts';
 
 /**
  * What `check-deploy.ts` reads of the account: everything named for a `ci-<run>-<attempt>` project,
@@ -95,8 +95,17 @@ export function staleProjects(all: Leftovers, current: string, now: number): Set
   );
 }
 
+/**
+ * Delete what is named for a project its destroy could not take: a Worker it stopped before, a
+ * namespace no owner mark records any longer, an empty bucket with no mark in it. A bucket that still
+ * holds objects is said, and left for a person.
+ */
 export async function sweep(scope: AccountScope, project: string): Promise<void> {
-  const { namespaces, buckets } = await everything(scope);
+  const { workers, namespaces, buckets } = await everything(scope);
+  const left = workers.filter((one) => CI_WORKER.exec(one.id)?.[1] === project);
+  for (const worker of left) {
+    await deleteScript(scope, worker.id, { force: true });
+  }
   const named = namespaces.filter((one) => CI_NAMESPACE.exec(one.title)?.[1] === project);
   for (const namespace of named) {
     await deleteKvNamespace(scope, namespace.id);
