@@ -11,28 +11,78 @@ import {
   type RouteGraph,
 } from './stored-manifest-fixtures.ts';
 
+const PROTOTYPE_KEYS_JSON =
+  '{"schemaVersion":6,"tables":{"headers":[{"__proto__":"ordinary","constructor":"header"}]},"routes":{"__proto__":{"headers":0},"constructor":{"headers":0},"prototype":{"headers":0}}}';
+
+/** Describe own keys as entries so a data key called constructor stays an ordinary value. */
+function ownRouteProperties(routes: RouteGraph['routes']): unknown[] {
+  const names = Object.getOwnPropertyNames(routes);
+  return names.map((name) => [name, Object.getOwnPropertyDescriptor(routes, name)]);
+}
+
+function compareReaders(json: string): {
+  readonly old: ReturnType<typeof outcome>;
+  readonly owned: ReturnType<typeof outcome>;
+} {
+  return { old: outcome(baseline, json), owned: outcome(parseStoredManifest, json) };
+}
+
 describe('owned JSON restoration keeps prototype keys as data', () => {
   it('retains hostile dictionary keys without changing any prototype', () => {
-    const json =
-      '{"schemaVersion":6,"tables":{"headers":[{"__proto__":"ordinary","constructor":"header"}]},"routes":{"__proto__":{"headers":0},"constructor":{"headers":0},"prototype":{"headers":0}}}';
     const before = Object.getOwnPropertyNames(Object.prototype);
-    const restored = parseStoredManifest(json) as RouteGraph;
+    const restored = parseStoredManifest(PROTOTYPE_KEYS_JSON) as RouteGraph;
+    const expected = baseline(PROTOTYPE_KEYS_JSON) as RouteGraph;
+    const described = ownRouteProperties(restored.routes);
+    const expectedProperties = ownRouteProperties(expected.routes);
 
-    expect(restored).toStrictEqual(baseline(json));
+    expect(JSON.stringify(restored)).toBe(JSON.stringify(expected));
+    expect(described).toStrictEqual(expectedProperties);
     expect(Object.getPrototypeOf(restored)).toBe(Object.prototype);
     expect(Object.getPrototypeOf(restored.routes)).toBe(Object.prototype);
     expect(Object.keys(restored.routes)).toStrictEqual(['__proto__', 'constructor', 'prototype']);
-    expect(Object.hasOwn(restored.routes, '__proto__')).toBe(true);
-    expect(restored.routes['__proto__']?.headers).toHaveProperty('__proto__', 'ordinary');
     expect(Object.getOwnPropertyNames(Object.prototype)).toStrictEqual(before);
+  });
+
+  it('restores hostile own data fields with their descriptors and exact table identity', () => {
+    const read = capturedRead(PROTOTYPE_KEYS_JSON);
+    const parsed = read.parsed as CompactGraph;
+    const restored = read.value as RouteGraph;
+    const route = Reflect.get(restored.routes, '__proto__') as { headers: unknown };
+    const { headers } = route;
+
+    expect(Object.getOwnPropertyDescriptor(restored.routes, '__proto__')).toStrictEqual({
+      value: route,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    expect(route).toBe(Reflect.get(parsed.routes, '__proto__'));
+    expect(headers).toBe(parsed.tables.headers[0]);
+    expect(Object.getPrototypeOf(route)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf(headers)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(headers, '__proto__')).toStrictEqual({
+      value: 'ordinary',
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    expect(Object.getOwnPropertyDescriptor(headers, 'constructor')).toStrictEqual({
+      value: 'header',
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   });
 
   it('keeps native last-value behavior for duplicate JSON names', () => {
     const json =
       '{"schemaVersion":5,"schemaVersion":6,"tables":{"headers":[{}]},"routes":{"__proto__":{"headers":8},"__proto__":{"headers":0}}}';
+    const restored = parseStoredManifest(json) as RouteGraph;
+    const route = Reflect.get(restored.routes, '__proto__') as { headers: unknown };
 
-    expect(parseStoredManifest(json)).toStrictEqual(baseline(json));
-    expect(parseStoredManifest(json)).toHaveProperty(['routes', '__proto__', 'headers'], {});
+    expect(restored).toStrictEqual(baseline(json));
+    expect(Object.hasOwn(restored.routes, '__proto__')).toBe(true);
+    expect(route.headers).toStrictEqual({});
   });
 });
 
@@ -64,9 +114,9 @@ describe('an inherited restoration field selects the unchanged nonmutating reade
   it('does not mutate a foreign inherited routes container', () => {
     const foreign = { '/foreign': { headers: 0 } };
     const json = JSON.stringify({ schemaVersion: 6, tables: compactGraph().tables });
-    const answers = withInheritedField('routes', { value: foreign, writable: true }, () => {
-      return { old: outcome(baseline, json), owned: outcome(parseStoredManifest, json) };
-    });
+    const answers = withInheritedField('routes', { value: foreign, writable: true }, () =>
+      compareReaders(json),
+    );
 
     expect(answers.owned).toStrictEqual(answers.old);
     expect(foreign).toStrictEqual({ '/foreign': { headers: 0 } });
@@ -79,9 +129,9 @@ describe('an inherited restoration field selects the unchanged nonmutating reade
       tables: compactGraph().tables,
       routes: { '/a': { headers: 0 } },
     });
-    const answers = withInheritedField('dynamicRoutes', { value: foreign, writable: true }, () => {
-      return { old: outcome(baseline, json), owned: outcome(parseStoredManifest, json) };
-    });
+    const answers = withInheritedField('dynamicRoutes', { value: foreign, writable: true }, () =>
+      compareReaders(json),
+    );
 
     expect(answers.owned).toStrictEqual(answers.old);
     expect(foreign).toStrictEqual([{ members: { bypassFor: 0 } }]);
@@ -95,9 +145,9 @@ describe('an inherited restoration field selects the unchanged nonmutating reade
       routes: { '/a': { headers: 0 } },
       dynamicRoutes: [{}],
     });
-    const answers = withInheritedField('members', { value: foreign, writable: true }, () => {
-      return { old: outcome(baseline, json), owned: outcome(parseStoredManifest, json) };
-    });
+    const answers = withInheritedField('members', { value: foreign, writable: true }, () =>
+      compareReaders(json),
+    );
 
     expect(answers.owned).toStrictEqual(answers.old);
     expect(foreign).toStrictEqual({ bypassFor: 0 });
@@ -150,9 +200,7 @@ describe('an inherited restoration field selects the unchanged nonmutating reade
           throw new Error('foreign header');
         },
       },
-      () => {
-        return { old: outcome(baseline, json), owned: outcome(parseStoredManifest, json) };
-      },
+      () => compareReaders(json),
     );
 
     expect(answers.owned).toStrictEqual(answers.old);

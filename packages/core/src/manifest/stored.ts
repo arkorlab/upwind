@@ -243,7 +243,7 @@ export function parseStoredManifest(json: string): unknown {
   }
   // Presence does not invoke a getter. Fall back before any lookup could find a foreign graph,
   // not after some numeric references have already been replaced and could no longer be read.
-  if (RESTORATION_FIELDS.some((name) => name in Object.prototype)) {
+  if (RESTORATION_FIELDS.some((name) => Reflect.has(Object.prototype, name))) {
     return fromStoredManifest(parsed);
   }
   if (!isRecord(parsed['tables']) || !namesPlaces(parsed['schemaVersion'])) {
