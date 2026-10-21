@@ -101,6 +101,7 @@ export function rewrittenOnto(
 function typesOf(stack: CheckedStack, url: URL, file: StaticFileEntry): string[] {
   const { headerRules = [] } = stack.manifest;
   const setting = headerRules.flatMap((rule) => {
+    // Collect possible types by pathname alone; conditions are deliberately left out here.
     const ruled = { sourceRegex: rule.sourceRegex, headers: rule.headers };
     const manifest = { ...stack.manifest, headerRules: [ruled] };
     const configured = headerRulesFor(manifest, url, edgeReads({}));
@@ -139,6 +140,9 @@ export async function fileVerdict(
   });
   const preferred = samples[0];
   if (preferred === undefined) return skipped(CLAIMED);
+  // Validation's prover runs before browsers can warm middleware state for this pathname.
+  const initial = await fileSampleVerdict(stack, at, { file, sampled: preferred });
+  if (initial.kind === 'failed' || samples.length === 1) return initial;
   // Without request-dependent routing, the shipped-file handler reads only its conditions/range and
   // RSC, none of which fileRequestsFor varies between browser GETs. Check every GET, but share
   // the representative's follow-ups for that one handler. Middleware or a conditioned rule keeps
@@ -161,7 +165,7 @@ export async function fileVerdict(
     served ||= verdicts.some((verdict) => verdict.kind === 'ok');
     if (failure !== undefined) break;
   }
-  // Finish with the original representative, keeping the ordinary witness.
+  // Recheck the representative after browsers, retaining the ordinary final witness as well.
   const checked = await fileSampleVerdict(stack, at, { file, sampled: preferred });
   if (failure !== undefined) return failure;
   return served && checked.kind === 'skipped' ? failed(undefined) : checked;

@@ -13,7 +13,6 @@ import {
   NO_STORE_CACHE_CONTROL,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   NEXT_ROUTER_STATE_TREE_HEADER,
-  RSC_CONTENT_TYPE,
   RSC_HEADER,
 } from '@stayingupwind/core/request';
 
@@ -68,6 +67,7 @@ import {
   PRERENDER_HEADER,
   STALE,
 } from './part-marks.ts';
+import { partTypeFailure } from './part-types.ts';
 import type { Reading } from './reading.ts';
 import { routedReads } from './routing-reads.ts';
 
@@ -209,17 +209,6 @@ function provenanceOf(
     (prerendered && setByApplication(PRERENDER_HEADER, configured, decided) === undefined) ||
     (kept && setByApplication(CACHE_CONTROL, configured, decided) !== NO_STORE_CACHE_CONTROL);
   return own ? 'runtime' : 'either';
-}
-
-/**
- * Why a part is not of its type: the one the build wrote it as — or, for a page's props, the one a
- * rule of `next.config` judged for their URL sets, which the edge keeps.
- */
-function typeFailure(part: Part, answer: Reading, configured: ConfiguredHeaders) {
-  const written = part.built?.contentType ?? RSC_CONTENT_TYPE;
-  const expected = part.kind === 'data' ? (configured.headers['content-type'] ?? written) : written;
-  const type = answer.headers['content-type'];
-  return type === expected ? undefined : `answered as ${type ?? 'no type'}, not ${expected}`;
 }
 
 /**
@@ -643,7 +632,7 @@ async function judgedFailure(
   const unvaried = variesBy(answer, PART_VARY[part.kind]);
   const visitors = oneVisitors(answer, configured, runtime);
   const marked =
-    typeFailure(part, answer, configured) ??
+    partTypeFailure(part, answer, configured, runtime) ??
     (unvaried === undefined ? undefined : `answered under no Vary naming ${unvaried}`) ??
     markedFailure(part, answer.headers, {
       runtime,

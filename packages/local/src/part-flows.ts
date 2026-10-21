@@ -538,7 +538,11 @@ async function askedFailure(
   answered: AnsweredAsks,
 ): Promise<{ readonly failure?: string; readonly moves: readonly Move[] }> {
   const { part, flow, state } = asking;
-  const headers = cookieOn(referredAs(part.headers, flow.referred), cookieFor(state.jar, part.url));
+  // An earlier answer may have deleted the jar's last cookie.
+  const uncookied = Object.fromEntries(
+    Object.entries(part.headers).filter(([name]) => name.toLowerCase() !== COOKIE),
+  );
+  const headers = cookieOn(referredAs(uncookied, flow.referred), cookieFor(state.jar, part.url));
   const asked = { ...part, what: `${part.what}${flow.as}${state.by}`, headers };
   const own = await judgedAnswer(stack, asked, answered);
   if (typeof own === 'string') {

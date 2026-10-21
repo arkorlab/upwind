@@ -15,6 +15,11 @@ manifest the edge serves by is the one a deployment of that build would have.
 each file of the build and each app Function, as a browser and the router ask for them. It names
 every answer that is not what a deployment would give.
 
+Conditioned document header rules have their own requests checked, with the response's cookies
+carried into the router checks that follow. Distinct conditioned selectors whose branches the
+check cannot distinguish are reported as unproved. Identical selectors and a condition paired
+with its `missing` complement are recognized; other disjoint patterns may still be unproved.
+
 The build is the directory `next build` left with the deployment adapter. For the runtime cache,
 build with the cache's preset, which bundles the cache's client into the Functions:
 `NEXT_ADAPTER_PATH` set to `@stayingupwind/cache`'s `./adapter`. Set `NEXT_DEPLOYMENT_ID` as a

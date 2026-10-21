@@ -54,7 +54,7 @@ import { recoveryScriptCspSource } from '@stayingupwind/host/splice';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { type CheckResult, checkStack } from '../src/check.ts';
-import { NO_COOKIE_CHANGES } from '../src/cookie-jar.ts';
+import { jarOf, NO_COOKIE_CHANGES } from '../src/cookie-jar.ts';
 import { documentAnswerAt } from '../src/document-adoption.ts';
 import { expectationOf, fileFailure, fileHeadFailure } from '../src/file-expectations.ts';
 import { flowFailure } from '../src/part-flows.ts';
@@ -205,6 +205,15 @@ function treePart(parts: readonly Part[]): Part {
     throw new Error('the build wrote no tree segment');
   }
   return tree;
+}
+
+/** A built segment selected by the header its real router request carries. */
+function namedSegment(parts: readonly Part[], segmentPath: string): Part {
+  const found = parts.find((part) => part.headers['next-router-segment-prefetch'] === segmentPath);
+  if (found === undefined) {
+    throw new Error(`the build wrote no ${segmentPath} segment`);
+  }
+  return found;
 }
 
 /** The hash Next appended after any earlier bare or encoded query keys. */
@@ -1837,8 +1846,8 @@ function withMiddleware(
   matchers: readonly {
     readonly sourceRegex: string;
     readonly source?: string;
-    readonly has?: readonly { readonly type: 'header'; readonly key: string }[];
-    readonly missing?: readonly { readonly type: 'header'; readonly key: string }[];
+    readonly has?: readonly RouteHas[];
+    readonly missing?: readonly RouteHas[];
   }[],
 ): LocalStack {
   const app = { ...stack.app, middlewareScriptName: 'site-middleware' };
@@ -2586,6 +2595,41 @@ describe('what the check makes of the middleware', () => {
       expect(result.failures).toHaveLength(1);
       expect(result.failures[0]?.reason).toContain('x-ranged');
       expect(selected.has(true)).toBe(true);
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
+    it('checks the prover before browser requests can warm pathname-specific middleware state', async () => {
+      const pathname = '/chunk.js';
+      const script = { [pathname]: fileOf('kept script', SCRIPT) };
+      let warmed = false;
+      const observedAgents: string[] = [];
+      answers.set(pathname, {
+        headers: {
+          'content-type': SCRIPT,
+          'cache-control': GATED,
+          'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+        },
+        body: 'kept script',
+        when: {
+          test: (headers) => {
+            const agent = headers['user-agent'] ?? '';
+            observedAgents.push(agent);
+            if (agent.includes('Mozilla')) warmed = true;
+            return agent === 'upwind-local-check/1.0' && !warmed;
+          },
+          status: 500,
+        },
+      });
+      decisions.set(pathname, { 'x-middleware-next': '1' });
+
+      const result = await checkStack(
+        withMiddleware(stackOf([], script), [{ sourceRegex: '^/chunk[.]js$' }]),
+      );
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toContain('500');
+      expect(observedAgents[0]).toBe('upwind-local-check/1.0');
+      expect(warmed).toBe(false);
       expect(traceIds.letGo).toStrictEqual(traceIds.registered);
     });
 
@@ -3572,10 +3616,10 @@ describe('what the check makes of the middleware', () => {
       expect(destinations.get('/a.txt')).toBe('image');
     });
 
-    it('takes a continuing middleware file type after the build and configured types', async () => {
+    it('uses the shared middleware merge contract for a shipped file type', async () => {
       const pathname = '/a.txt';
       const fileHeaders = {
-        'content-type': 'image/png',
+        'content-type': TEXT,
         'cache-control': GATED,
         'x-arkor-edge': `${FILE_EDGE};mw=hit`,
       };
@@ -3585,14 +3629,14 @@ describe('what the check makes of the middleware', () => {
 
       const correct = await checkStack(stack);
       answers.set(pathname, {
-        headers: { ...fileHeaders, 'content-type': TEXT },
+        headers: { ...fileHeaders, 'content-type': 'image/png' },
         body: 'kept bytes',
       });
       const broken = await checkStack(stack);
 
-      expect(correct).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(correct).toStrictEqual({ checked: 2, failures: [], skipped: [] });
       expect(broken.failures).toHaveLength(1);
-      expect(broken.failures[0]?.reason).toContain(`answered as ${TEXT}, not image/png`);
+      expect(broken.failures[0]?.reason).toContain(`answered as image/png, not ${TEXT}`);
       expect(traceIds.letGo).toStrictEqual(traceIds.registered);
     });
 
@@ -3634,7 +3678,7 @@ describe('what the check makes of the middleware', () => {
       });
       const quantified: HeaderRule = {
         sourceRegex: '^/a[.]txt$',
-        has: [{ type: 'header', key: 'x-tenant', value: String.raw`\d{2}` }],
+        has: [{ type: 'header', key: 'x-site', value: String.raw`\d{2}` }],
         headers: { 'Content-Type': 'image/png' },
       };
       const unproved = await checkStack(stackOf([], files, { headerRules: [quantified] }));
@@ -3647,6 +3691,39 @@ describe('what the check makes of the middleware', () => {
       expect(unproved.failures).toHaveLength(1);
       expect(unproved.failures[0]?.reason).toContain('no request proves it');
       expect(elsewhere).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+    });
+
+    it('reports overlapping file type selectors as unproved when one witness selects both', async () => {
+      const broad: HeaderRule = {
+        sourceRegex: '^/a[.]txt$',
+        has: [{ type: 'header', key: 'x-mode', value: 'foo|bar' }],
+        headers: { 'Content-Type': 'image/png' },
+      };
+      const narrow: HeaderRule = {
+        ...broad,
+        has: [{ type: 'header', key: 'x-mode', value: 'foo' }],
+        headers: { 'Content-Type': TEXT },
+      };
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+      });
+
+      const result = await checkStack(stackOf([], files, { headerRules: [broad, narrow] }));
+      const elsewhere = await checkStack(
+        stackOf([], files, {
+          headerRules: [broad, { ...narrow, sourceRegex: '^/other[.]txt$' }],
+        }),
+      );
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toContain('distinct conditioned header rules');
+      expect(result.failures[0]?.reason).toContain('no request proves them');
+      // The single remaining rule is exercised and fails its declared image type.
+      expect(elsewhere.failures).toHaveLength(1);
+      expect(elsewhere.failures[0]?.reason).toContain('image/png');
+      expect(elsewhere.failures[0]?.reason).not.toContain('distinct conditioned header rules');
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
     });
 
     it('is asked for as a request a rule of next.config types it for where a header is missing', async () => {
@@ -6308,6 +6385,162 @@ describe('what the check makes of the middleware', () => {
       },
     );
 
+    it.each(['query', 'header'] as const)(
+      'follows cookies set only by a document selected with a %s rule',
+      async (type) => {
+        const rule: HeaderRule = {
+          sourceRegex: '^/$',
+          has: [{ type, key: 'variant', value: 'dark' }],
+          missing: [{ type: 'header', key: 'rsc' }],
+          headers: { 'X-Robots-Tag': 'noindex' },
+        };
+        const stack = withMiddleware(
+          stackOf(
+            [await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } })],
+            {},
+            { headerRules: [rule] },
+          ),
+          [
+            { sourceRegex: rule.sourceRegex, has: rule.has ?? [], missing: rule.missing ?? [] },
+            { sourceRegex: '^/middleware-probe$', source: '/middleware-probe' },
+          ],
+        );
+        const setCookie = 'seen=dark; Path=/';
+        decisions.set('/', { 'x-middleware-next': '1', 'set-cookie': setCookie });
+        decisions.set('/middleware-probe', { 'x-middleware-next': '1' });
+        const composed = documentAnswer(FRONT, 'mw=miss;route=/');
+        const throughMiddleware = documentAnswer(FRONT, 'mw=hit;route=/');
+        answers.set('/', {
+          ...composed,
+          when: {
+            test: (headers, _method, url) => {
+              return (
+                (type === 'query' ? url.searchParams.get('variant') : headers['variant']) === 'dark'
+              );
+            },
+            headers: {
+              ...throughMiddleware.headers,
+              'x-robots-tag': 'noindex',
+              'set-cookie': setCookie,
+            },
+          },
+        });
+        const tree = segmentAnswer('tree bytes');
+        const privateTree = { ...tree, headers: { ...tree.headers, 'cache-control': GATED } };
+        partAnswers.set('/|/_tree', privateTree);
+        const correct = await checkStack(stack);
+        const witnessedCookies = new Set<string>();
+        partAnswers.set('/|/_tree', {
+          ...privateTree,
+          when: {
+            test: (headers) => {
+              const sentCookie = headers.cookie ?? '';
+              witnessedCookies.add(sentCookie);
+              return sentCookie.includes('seen=dark');
+            },
+            status: 500,
+          },
+        });
+        const broken = await checkStack(stack);
+
+        expect(correct).toStrictEqual({ checked: 2, failures: [], skipped: [] });
+        expect(broken.failures).toHaveLength(1);
+        expect(broken.failures[0]?.reason).toContain('the header rule');
+        expect(broken.failures[0]?.reason).toContain('500');
+        expect(witnessedCookies.has('seen=dark')).toBe(true);
+        expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+      },
+    );
+
+    it('does not prove an overlapping rule from a request that selects its overriding rule too', async () => {
+      const broad: HeaderRule = {
+        sourceRegex: '^/$',
+        has: [{ type: 'header', key: 'x-mode', value: 'foo|bar' }],
+        missing: [{ type: 'header', key: 'rsc' }],
+        headers: { 'X-Robots-Tag': 'index' },
+      };
+      const narrow: HeaderRule = {
+        ...broad,
+        has: [{ type: 'header', key: 'x-mode', value: 'foo' }],
+        headers: { 'X-Robots-Tag': 'noindex' },
+      };
+      const composed = documentAnswer(FRONT, 'mw=miss;route=/');
+      // This drops the broad rule's bar branch while preserving its foo override.
+      answers.set('/', {
+        ...composed,
+        when: {
+          test: (headers) => headers['x-mode']?.includes('foo') === true,
+          headers: { 'x-robots-tag': 'noindex' },
+        },
+      });
+
+      const result = await checkStack(
+        stackOf([await routeOf('/', FRONT)], {}, { headerRules: [broad, narrow] }),
+      );
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toContain('distinct conditioned header rules');
+      expect(result.failures[0]?.reason).toContain('no request proves them');
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
+    it('keeps identical header selectors in different casing as the same rule branch', async () => {
+      const first: HeaderRule = {
+        sourceRegex: '^/$',
+        has: [{ type: 'header', key: 'x-mode', value: 'foo' }],
+        headers: { 'X-Robots-Tag': 'index' },
+      };
+      const last: HeaderRule = {
+        ...first,
+        has: [{ type: 'header', key: 'X-Mode', value: 'foo' }],
+        headers: { 'X-Robots-Tag': 'noindex' },
+      };
+      const composed = documentAnswer(FRONT, 'mw=miss;route=/');
+      answers.set('/', {
+        ...composed,
+        when: {
+          test: (headers) => headers['x-mode'] === 'foo',
+          headers: { 'x-robots-tag': 'noindex' },
+        },
+      });
+
+      const result = await checkStack(
+        stackOf([await routeOf('/', FRONT)], {}, { headerRules: [first, last] }),
+      );
+
+      expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
+    it('keeps a condition and its missing complement as disjoint document branches', async () => {
+      const present: HeaderRule = {
+        sourceRegex: '^/$',
+        has: [{ type: 'header', key: 'x-mode', value: 'foo' }],
+        headers: { 'X-Robots-Tag': 'noindex' },
+      };
+      const absent: HeaderRule = {
+        sourceRegex: '^/$',
+        missing: [{ type: 'header', key: 'x-mode', value: 'foo' }],
+        headers: { 'X-Robots-Tag': 'index' },
+      };
+      const composed = documentAnswer(FRONT, 'mw=miss;route=/');
+      answers.set('/', {
+        ...composed,
+        headers: { ...composed.headers, 'x-robots-tag': 'index' },
+        when: {
+          test: (headers) => headers['x-mode'] === 'foo',
+          headers: { 'x-robots-tag': 'noindex' },
+        },
+      });
+
+      const result = await checkStack(
+        stackOf([await routeOf('/', FRONT)], {}, { headerRules: [present, absent] }),
+      );
+
+      expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
     it('holds a page the edge composed whole to the policy a rule sets as the application set it', async () => {
       const policy = "script-src 'self'";
       const laid = permitted(policy);
@@ -6359,6 +6592,16 @@ describe('what the check makes of the middleware', () => {
       };
       const routes = [await routeOf('/en', FRONT)];
       await readGenerations('/en', [1, 2]);
+
+      const headKey = `${kvGenerationKey('dpl_site', await entryOf('/en', '/en'))}|2`;
+      const headRecord: RecordedGeneration = {
+        headers: { 'content-type': HTML },
+        artifacts: [],
+        partial: false,
+        source: 'runtime',
+      };
+      // The whole HEAD reads this complete generation; the later resumed HEAD reads it partial.
+      capturedHeadRecords.set('/en', { [headKey]: headRecord });
       // A build the edge does not route publishes its unconditional rules apart (`foldedHeaderRules`).
       const i18n = { defaultLocale: 'en', locales: ['en'] };
       const stack = stackOf(routes, {}, { headerRules: [rule], i18n });
@@ -6366,6 +6609,7 @@ describe('what the check makes of the middleware', () => {
       const wholeAsSet = await checkStack(stack);
       answers.set('/en', servedUnder('none', laid));
       const wholeWidened = await checkStack(stack);
+      capturedHeadRecords.set('/en', { [headKey]: { ...headRecord, partial: true } });
       answers.set('/en', servedUnder('resume', laid));
       const resumedPermitted = await checkStack(stack);
 
@@ -8904,6 +9148,67 @@ describe('what the check makes of the middleware', () => {
         /^its page's props \(\/_next\/data\/test\/about\.json\), not answered by the edge as the part it is /u,
       );
     });
+
+    it.each([
+      { type: 'application/json; charset=utf-8', runtime: true, configured: false, accepted: true },
+      {
+        type: 'Application/JSON; Charset="UTF-8"',
+        runtime: true,
+        configured: false,
+        accepted: true,
+      },
+      { type: 'text/plain; charset=utf-8', runtime: true, configured: false, accepted: false },
+      { type: 'application/json; charset=utf-8', runtime: true, configured: true, accepted: false },
+      {
+        type: 'application/json; charset=utf-8',
+        runtime: false,
+        configured: false,
+        accepted: false,
+      },
+    ])(
+      'judges Pages props type $type with runtime=$runtime, configured=$configured',
+      async (example) => {
+        const about = `${ABOUT}<main>finished</main></body></html>`;
+        const props = '{"pageProps":{}}';
+        const routes = [
+          await routeOf('/about', about, { complete: true, pages: true, pagesData: props }),
+        ];
+        const data = '/_next/data/test/about.json';
+        answers.set('/about', finishedAnswer(about, '/about'));
+        answers.set(data, {
+          headers: {
+            'content-type': example.type,
+            vary: 'accept-encoding',
+            'x-nextjs-cache': example.runtime ? 'STALE' : 'HIT',
+            ...(example.runtime && { 'cache-control': 'no-store' }),
+            'x-arkor-edge':
+              'data;src=r2;enc=identity;strategy=r2;project=site;policy=default;m=0000',
+          },
+          body: example.runtime ? '{"pageProps":{"since":true}}' : props,
+        });
+        const rules: HeaderRule[] = example.configured
+          ? [
+              {
+                sourceRegex: '^/_next/data/test/about[.]json$',
+                headers: { 'content-type': JSON_TYPE },
+              },
+            ]
+          : [];
+
+        const result = await checkStack(stackOf(routes, {}, { headerRules: rules }));
+
+        const failures = example.accepted
+          ? []
+          : [
+              {
+                path: '/about',
+                reason: `its page's props (${data}), answered as ${example.type}, not ${JSON_TYPE}`,
+              },
+            ];
+
+        expect(result).toStrictEqual({ checked: 1, failures, skipped: [] });
+      },
+    );
 
     it("is held to the build's props though marked as a runtime generation's segment or payload is", async () => {
       const about = `${ABOUT}<main>finished</main></body></html>`;
@@ -12669,6 +12974,69 @@ describe('what the check makes of the middleware', () => {
       ]);
       expect(claimed.failures).toStrictEqual([]);
     });
+
+    it.each(['cookie', 'Cookie'])(
+      'rebuilds a part request after its last %s is deleted, and keeps a retained cookie',
+      async (cookieHeader) => {
+        const front = await routeOf('/', FRONT, {
+          segments: { '/_tree': 'tree bytes', '/leaf': 'leaf bytes' },
+        });
+        const local = stackOf([front], {});
+        const stack = { ...local, site: local.url };
+        const page = new URL('/', stack.site);
+        const built = await partsOf(
+          stack,
+          { key: '/', route: front, requested: '/', headers: {}, exact: true },
+          { browser: {}, origin: originAt(stack, page, '') },
+        );
+        const parts = [namedSegment(built, '/_tree'), namedSegment(built, '/leaf')].map((part) => {
+          const headers = { ...part.headers, [cookieHeader]: 'seen=1' };
+          return { ...part, headers };
+        });
+        const owned = segmentAnswer('tree bytes');
+        const ownedHeaders = {
+          ...owned.headers,
+          'x-arkor-edge': 'passthrough;reason=middleware;mw=hit',
+        };
+        partAnswers.set('/|/_tree', {
+          ...owned,
+          headers: { ...ownedHeaders, 'set-cookie': 'seen=; Path=/; Max-Age=0' },
+        });
+        const answer = segmentAnswer('leaf bytes');
+        partAnswers.set('/|/leaf', {
+          ...answer,
+          headers: { ...answer.headers, 'cache-control': GATED },
+        });
+        const deleted = await flowFailure(
+          stack,
+          parts,
+          { jar: jarOf('seen=1', { document: page }), referred: 'none', as: '' },
+          { judged: new Map(), followed: new Map() },
+        );
+        const afterDeletion = (partsAskedEach.get('/|/leaf') ?? []).map(
+          (headers) => headers.cookie,
+        );
+        partsAskedEach.delete('/|/leaf');
+        partAnswers.set('/|/_tree', { ...owned, headers: ownedHeaders });
+        const retained = await flowFailure(
+          stack,
+          parts,
+          { jar: jarOf('seen=1', { document: page }), referred: 'none', as: '' },
+          { judged: new Map(), followed: new Map() },
+        );
+        const afterRetention = (partsAskedEach.get('/|/leaf') ?? []).map(
+          (headers) => headers.cookie,
+        );
+
+        expect(deleted).toBeUndefined();
+        expect(afterDeletion).toContain('seen=1');
+        expect(afterDeletion).toContain(undefined);
+        expect(retained).toBeUndefined();
+        expect(afterRetention).not.toHaveLength(0);
+        expect(afterRetention.every((cookie) => cookie === 'seen=1')).toBe(true);
+        expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+      },
+    );
 
     it('is asked with the cookies its document set, as a browser keeps them', async () => {
       const routes = [await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } })];
