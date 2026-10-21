@@ -6,9 +6,11 @@ import { functionBinding } from '@stayingupwind/host/bindings';
 import type { WorkerBinding } from './cloudflare/form.ts';
 import {
   type AccountScope,
+  getScriptSubdomain,
   listDeployments,
   putScript,
   type ScriptSubdomain,
+  setScriptSubdomain,
   uploadVersion,
 } from './cloudflare/workers.ts';
 import type { ProjectNames } from './names.ts';
@@ -26,6 +28,12 @@ import { COMPATIBILITY_DATE, ensureWorker, holdReach, shippedForm } from './uplo
  * checked (`activate.ts`). A version is tagged with its deployment and its pointer's digest. A run
  * stopped after its upload leaves a version nothing serves; the next run stages the build anew —
  * another manifest, another pointer — and uploads one of its own.
+ *
+ * The edge's reach — whether it is on `workers.dev` — is the Worker's, not a version's: it changes
+ * for the live version as soon as it is set. So a later deployment only widens it here, where its
+ * settings say to, for the new version to be asked there; the reach is narrowed to what the
+ * settings say once the new version has the traffic, and not before (`deploy-run.ts`). A version
+ * that fails its checks leaves the live one reached where it was.
  */
 
 const TAG_DIGITS = 12;
@@ -92,6 +100,25 @@ function bindingsOf(input: EdgeVersionInput): WorkerBinding[] {
   ];
 }
 
+/**
+ * The edge's reach widened to take in what the settings give it, and narrowed in nothing: what the
+ * live version is reached on stays until the new one has the traffic.
+ */
+async function widenReach(
+  scope: AccountScope,
+  name: string,
+  reach: ScriptSubdomain,
+): Promise<void> {
+  const now = await getScriptSubdomain(scope, name);
+  const wide: ScriptSubdomain = {
+    enabled: now?.enabled === true || reach.enabled,
+    previews_enabled: now?.previews_enabled === true || reach.previews_enabled,
+  };
+  if (now?.enabled !== wide.enabled || now.previews_enabled !== wide.previews_enabled) {
+    await setScriptSubdomain(scope, name, wide);
+  }
+}
+
 /** Upload the edge's version for the deployment. */
 export async function uploadEdgeVersion(input: EdgeVersionInput): Promise<EdgeVersion> {
   const { scope, names } = input;
@@ -109,8 +136,9 @@ export async function uploadEdgeVersion(input: EdgeVersionInput): Promise<EdgeVe
   });
   if (!first) {
     const version = await uploadVersion(scope, names.edge, form);
-    // `deploy.workersDev` may have changed since the edge was made.
-    await holdReach(scope, names.edge, input.reach);
+    // `deploy.workersDev` may have changed since the edge was made: on now where it is to be, for
+    // the version to be asked there; off only once the version has the traffic.
+    await widenReach(scope, names.edge, input.reach);
     return { versionId: version.id, live: false };
   }
   await ensureWorker(scope, names.edge, input.reach, input.existing);

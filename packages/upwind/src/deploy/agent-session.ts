@@ -22,6 +22,9 @@ import { type DESTROY_MODE } from './workers/protocol.ts';
  * and the key at once, so a run never reaches an agent of another version with its key. The key is
  * the run's lock as well — a second run uploads its own, and the first one's calls are refused from
  * then on (`agent-client.ts`).
+ *
+ * So the key a run takes away at its end is only ever its own: one the agent no longer takes was
+ * replaced by a newer run, whose key a write now would take away from under it.
  */
 
 /** The agent is reached on `workers.dev`, and on no version's preview URL. */
@@ -36,7 +39,7 @@ export type AgentMode = 'deploy' | typeof DESTROY_MODE;
 
 export interface AgentSession {
   readonly client: AgentClient;
-  /** Give the agent a key nobody holds. */
+  /** Give the agent a key nobody holds, where it still takes this run's. */
   close(): Promise<void>;
 }
 
@@ -111,7 +114,16 @@ export async function openAgent(input: AgentInput): Promise<AgentSession> {
     sleep,
   });
   const close = async (): Promise<void> => {
-    await putSecret(scope, names.agent, { name: 'AGENT_KEY', text: freshKey() });
+    // Between this question and the write, a newer run could still set its key: the window two
+    // deploys of the same project at once have anyway, which a project's deploys are run one at a
+    // time to close.
+    if (await agentTakesKey(client)) {
+      await putSecret(scope, names.agent, { name: 'AGENT_KEY', text: freshKey() });
+      return;
+    }
+    console.warn(
+      `upwind: ${names.agent} does not take this run's key — a newer run set its own, or the agent was not reached — so its key was left as it is`,
+    );
   };
   const now = input.now ?? Date.now;
   const until = now() + AGENT_WAIT_MS;

@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { AccountView } from './account.ts';
 import { type Activation, activate } from './activate.ts';
 import { openAgent } from './agent-session.ts';
-import { type AccountScope, getVersion } from './cloudflare/workers.ts';
+import { type AccountScope, getVersion, type ScriptSubdomain } from './cloudflare/workers.ts';
 import type { DeploySettings } from './config.ts';
 import { deploymentOfTag, uploadEdgeVersion } from './edge-version.ts';
 import { uploadFunctions } from './functions.ts';
@@ -16,6 +16,7 @@ import { shippedWorkers } from './shipped.ts';
 import { stageBuild } from './stage.ts';
 import { ensureStores } from './stores.ts';
 import { remoteTarget } from './target.ts';
+import { holdReach } from './uploads.ts';
 
 /**
  * A deployment made on the account, once the plan has been checked (`command.ts`): its stores and
@@ -109,6 +110,34 @@ function report(activation: Activation, deploymentId: string, origin: URL): numb
       }
       return 1;
     }
+    case 'overtaken': {
+      console.error(
+        `upwind: the edge's deployment changed while this run checked ${deploymentId}; this run switched nothing and put nothing back — run it again`,
+      );
+      for (const reason of activation.reasons) {
+        console.error(`  - ${reason}`);
+      }
+      return 1;
+    }
+  }
+}
+
+/**
+ * The edge's reach narrowed to what the settings say, once the new version has the traffic; until
+ * then the live version kept what it was reached on (`uploadEdgeVersion`). A failure here leaves
+ * the deployment live, and the next run narrows it.
+ */
+async function narrowReach(
+  scope: AccountScope,
+  edge: string,
+  reach: ScriptSubdomain,
+): Promise<void> {
+  try {
+    await holdReach(scope, edge, reach);
+  } catch (error) {
+    console.warn(
+      `upwind: ${edge} is still reached where deploy.workersDev no longer says: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -193,6 +222,7 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
       sleep: run.sleep,
     });
     const message = run.message ?? `upwind deploy ${bundle.deploymentId}`;
+    const reach: ScriptSubdomain = { enabled: settings.workersDev, previews_enabled: false };
     const edge = await uploadEdgeVersion({
       scope,
       names,
@@ -202,7 +232,7 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
       app: appRuntimeOf(names.project, bundle),
       hostnames: site.hostnames.join(','),
       images: settings.images,
-      reach: { enabled: settings.workersDev, previews_enabled: false },
+      reach,
       message,
       existing,
     });
@@ -223,6 +253,10 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
       sleep: run.sleep,
       now: run.now,
     });
+    const switched = activation.kind === 'live' || activation.kind === 'unconfirmed';
+    if (switched && !edge.live) {
+      await narrowReach(scope, names.edge, reach);
+    }
     return report(activation, bundle.deploymentId, site.origin);
   } finally {
     await session.close();
