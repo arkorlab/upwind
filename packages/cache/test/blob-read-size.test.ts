@@ -1,3 +1,4 @@
+import { isDeadlineError } from '@stayingupwind/core/util';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,7 +14,33 @@ async function storedBody() {
   const get = vi.spyOn(env.ARTIFACTS, 'get').mockResolvedValue(object);
   const head = vi.spyOn(env.ARTIFACTS, 'head');
   const buffered = vi.spyOn(object, 'arrayBuffer');
-  return { key, object, get, head, buffered, blobs: blobStore(env.ARTIFACTS, () => ({})) };
+  const reading = vi.spyOn(object.body, 'getReader');
+  return {
+    key,
+    object,
+    get,
+    head,
+    buffered,
+    reading,
+    blobs: blobStore(env.ARTIFACTS, () => ({})),
+  };
+}
+
+/** An object whose body says it holds `size` bytes, and gives what `pull` gives it. */
+function objectOf(
+  size: number,
+  pull: (controller: ReadableStreamDefaultController<Uint8Array>) => Promise<void> | void,
+) {
+  const cancelled: unknown[] = [];
+  const body = new ReadableStream<Uint8Array>({
+    pull,
+    cancel: (reason: unknown) => {
+      cancelled.push(reason);
+    },
+  });
+  // As R2's own does, `arrayBuffer` reads the body whole.
+  const arrayBuffer = (): Promise<ArrayBuffer> => new Response(body).arrayBuffer();
+  return { object: { size, body, arrayBuffer } as unknown as R2ObjectBody, cancelled };
 }
 
 describe('projection reads bounded by the generation artifact length', () => {
@@ -30,6 +57,7 @@ describe('projection reads bounded by the generation artifact length', () => {
       await expect(test.blobs.read(test.key, byteLength)).rejects.toBeInstanceOf(BlobLengthError);
 
       expect(test.buffered).not.toHaveBeenCalled();
+      expect(test.reading).not.toHaveBeenCalled();
       expect(cancel).toHaveBeenCalledTimes(1);
       expect(test.get).toHaveBeenCalledTimes(1);
       expect(test.head).not.toHaveBeenCalled();
@@ -56,9 +84,52 @@ describe('projection reads bounded by the generation artifact length', () => {
     const bytes = await test.blobs.read(test.key, BYTES.byteLength);
 
     expect(bytes).toStrictEqual(BYTES);
-    expect(test.buffered).toHaveBeenCalledTimes(1);
+    expect(test.reading).toHaveBeenCalledTimes(1);
     expect(test.get).toHaveBeenCalledTimes(1);
     expect(test.head).not.toHaveBeenCalled();
+  });
+
+  it('gives up on a body that stalls once its time is up, and cancels it (Codex)', async () => {
+    const stalled = objectOf(BYTES.byteLength, () => {
+      return new Promise<void>(() => {
+        /* The body never comes. */
+      });
+    });
+    vi.spyOn(env.ARTIFACTS, 'get').mockResolvedValue(stalled.object);
+    const blobs = blobStore(env.ARTIFACTS, () => ({}), { readMs: 20 });
+
+    let failure: unknown;
+    try {
+      await blobs.read('stalled', BYTES.byteLength);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(isDeadlineError(failure)).toBe(true);
+    expect(stalled.cancelled).toHaveLength(1);
+  });
+
+  it('refuses a body that holds more than its object says, without reading past it', async () => {
+    let pulls = 0;
+    // One byte past its object's size, and then nothing more, ever: a read that took the whole of
+    // it would wait for the rest.
+    const longer = objectOf(BYTES.byteLength, (controller) => {
+      pulls += 1;
+      if (pulls === 1) {
+        controller.enqueue(new Uint8Array([...BYTES, 0]));
+        return Promise.resolve();
+      }
+      return new Promise<void>(() => {
+        /* Nothing more comes. */
+      });
+    });
+    vi.spyOn(env.ARTIFACTS, 'get').mockResolvedValue(longer.object);
+
+    await expect(
+      blobStore(env.ARTIFACTS, () => ({})).read('longer', BYTES.byteLength),
+    ).rejects.toBeInstanceOf(BlobLengthError);
+    expect(longer.cancelled).toHaveLength(1);
+    expect(pulls).toBe(1);
   });
 
   it('keeps missing objects as a miss', async () => {

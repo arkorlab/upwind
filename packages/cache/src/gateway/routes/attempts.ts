@@ -4,6 +4,7 @@ import { fromBase64, toBase64 } from '@stayingupwind/core/util';
 import {
   ARTIFACT_ENCODING_HEADER,
   ARTIFACT_ROLE_HEADER,
+  artifactContentTypeSchema,
   commitRequestSchema,
   failRequestSchema,
   FENCING_TOKEN_HEADER,
@@ -70,10 +71,18 @@ function uploadHeaders(c: GatewayContext): UploadHeaders | Response {
   if (!Number.isSafeInteger(fencingToken) || fencingToken <= 0) {
     return fail(c, 'invalid_request', `${FENCING_TOKEN_HEADER} must be the lease's token`);
   }
+  // Held to the rule a batch's artifact and a commit's are: the commit that publishes this upload
+  // names its type again, and is refused for one outside it.
+  const contentType = artifactContentTypeSchema.safeParse(
+    c.req.header('content-type') ?? DEFAULT_CONTENT_TYPE,
+  );
+  if (!contentType.success) {
+    return fail(c, 'invalid_request', 'content-type must be a type an artifact can be served as');
+  }
   return {
     role: role.data,
     encoding: encoding.data,
-    contentType: c.req.header('content-type') ?? DEFAULT_CONTENT_TYPE,
+    contentType: contentType.data,
     fencingToken,
   };
 }
@@ -142,7 +151,9 @@ async function storeArtifact(
   }
   const target = recorded.storageRef ?? storageRef;
   if (recorded.replace === true || (await c.env.ARTIFACTS.head(target)) === null) {
+    // With the digest already taken, for storage to keep: a read compares it, unread (`entries.ts`).
     await c.env.ARTIFACTS.put(target, bytes as BufferSource, {
+      sha256,
       httpMetadata: { contentType: headers.contentType },
     });
   }
@@ -260,6 +271,7 @@ async function uploadArtifacts(c: GatewayContext): Promise<Response> {
     [...blobs.values()].map(async ({ upload, bytes, replace }) => {
       if (replace === true || (await c.env.ARTIFACTS.head(upload.storageRef)) === null) {
         await c.env.ARTIFACTS.put(upload.storageRef, bytes as BufferSource, {
+          sha256: upload.sha256,
           httpMetadata: { contentType: upload.contentType },
         });
       }

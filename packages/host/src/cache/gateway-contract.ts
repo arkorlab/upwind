@@ -208,17 +208,29 @@ export const MAX_ARTIFACT_BATCH_BYTES = ARTIFACT_BATCH_KIB * KIB;
 export const MAX_BATCHED_CONTENT_TYPE_LENGTH = 256;
 
 /**
- * What a batch's content type may be made of: what an upload alone could carry in its header, which
- * the edge sets on a response serving the artifact — printable ASCII, a space and a tab, none of
- * which JSON escapes to more than two bytes (`BATCH_BODY_BYTES` counts on it).
+ * What an artifact's content type may be made of: what an upload alone could carry in its header,
+ * which the edge sets on a response serving the artifact — printable ASCII, a space and a tab, none
+ * of which JSON escapes to more than two bytes (`BATCH_BODY_BYTES` counts on it).
  */
 const HEADER_VALUE = /^[\t\u{20}-\u{7E}]+$/u;
+
+/**
+ * An artifact's content type, wherever a client names one: an upload's header, a batch's artifact,
+ * a commit's. One rule for every one of them, since a generation is served with the type its
+ * commit names — of an artifact it uploaded, and of one the scope held already and it uploaded
+ * nothing of, alike (Codex).
+ */
+export const artifactContentTypeSchema = z
+  .string()
+  .min(1)
+  .max(MAX_BATCHED_CONTENT_TYPE_LENGTH)
+  .regex(HEADER_VALUE);
 
 /** One artifact of a batch: what an upload's headers and path say of it, and its bytes in base64. */
 export const batchedArtifactSchema = z.object({
   role: artifactRoleSchema,
   sha256: sha256HexSchema,
-  contentType: z.string().min(1).max(MAX_BATCHED_CONTENT_TYPE_LENGTH).regex(HEADER_VALUE),
+  contentType: artifactContentTypeSchema,
   bytes: z.string(),
 });
 export type BatchedArtifact = z.infer<typeof batchedArtifactSchema>;
@@ -249,7 +261,7 @@ export const commitArtifactSchema = z.object({
   role: artifactRoleSchema,
   sha256: sha256HexSchema,
   byteLength: z.number().int().nonnegative(),
-  contentType: z.string().min(1),
+  contentType: artifactContentTypeSchema,
   encoding: artifactEncodingSchema,
 });
 export type CommitArtifact = z.infer<typeof commitArtifactSchema>;

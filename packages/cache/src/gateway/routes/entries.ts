@@ -1,8 +1,10 @@
 import { deriveEntry, kvGenerationKey } from '@stayingupwind/core/cache';
-import { releaseStream } from '@stayingupwind/core/util';
+import { releaseStream, toHex } from '@stayingupwind/core/util';
 import { ARTIFACT_SHA256_HEADER, resolveRequestSchema } from '@stayingupwind/host/cache';
 import { Hono } from 'hono';
 
+import { createLogger, detailOf } from '../../logger.ts';
+import type { ArtifactLocation } from '../../scope/reads.ts';
 import {
   answerScope,
   type GatewayContext,
@@ -28,6 +30,9 @@ import { fail, HTTP, ok } from '../respond.ts';
  */
 
 const OCTET_STREAM = 'application/octet-stream';
+const OTHER_BYTES = 'the stored artifact is not the bytes its authority names';
+
+const logger = createLogger({ component: 'gateway' });
 
 async function currentRecord(c: GatewayContext): Promise<Response> {
   const entryId = c.req.param('entryId') ?? '';
@@ -53,6 +58,41 @@ async function currentRecord(c: GatewayContext): Promise<Response> {
   return recordResponse(record);
 }
 
+/**
+ * Whether storage holds other bytes than the authority names, by the digest it keeps of an object
+ * written with one (Codex): compared as it stands, with nothing of the body read, so a read that
+ * passes waits on no hash of tens of MiB. An object written without one says nothing either way,
+ * and is answered as its length allows, as it always was; the Function still hashes what it keeps
+ * of it, behind the response.
+ */
+function storedOtherBytes(object: R2ObjectBody, sha256: string): boolean {
+  const stored = object.checksums.sha256;
+  return stored !== undefined && toHex(new Uint8Array(stored)) !== sha256;
+}
+
+/**
+ * Tell the authority of an artifact storage holds other bytes for, so that the next upload of the
+ * bytes repairs it (`rememberCorruptArtifact`). The read is refused whether or not it is told: a
+ * failure to tell it is logged, and the next read that finds the same tries again. One the
+ * authority has moved since its location was read is no longer the artifact's, and is said.
+ */
+async function reportOtherBytes(c: GatewayContext, location: ArtifactLocation): Promise<void> {
+  try {
+    if (!(await c.get('scope').rememberCorruptArtifact(location))) {
+      logger.warn('corrupt artifact moved before it was reported', {
+        scopeId: c.get('scopeId'),
+        sha256: location.sha256,
+      });
+    }
+  } catch (error) {
+    logger.error('corrupt artifact not reported', {
+      scopeId: c.get('scopeId'),
+      sha256: location.sha256,
+      detail: detailOf(error),
+    });
+  }
+}
+
 async function artifactBytes(c: GatewayContext): Promise<Response> {
   const [location, retired] = await Promise.all([
     c.get('scope').artifact(c.req.param('artifactId') ?? ''),
@@ -71,6 +111,13 @@ async function artifactBytes(c: GatewayContext): Promise<Response> {
   if (object.size !== location.byteLength) {
     releaseStream(object.body, 'the stored artifact length differs from its authority');
     return fail(c, 'artifact_mismatch', 'the stored artifact length differs from its authority');
+  }
+  // Refused before a byte of it goes out, rather than served and found out by a hash behind the
+  // response, which a runtime holding the bytes meanwhile would never hear of.
+  if (storedOtherBytes(object, location.sha256)) {
+    releaseStream(object.body, OTHER_BYTES);
+    await reportOtherBytes(c, location);
+    return fail(c, 'artifact_mismatch', OTHER_BYTES);
   }
   meterRead(c.get('host'), c.get('scopeId'), location.byteLength);
   return new Response(object.body, {
