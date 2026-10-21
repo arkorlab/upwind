@@ -607,7 +607,7 @@ export async function serveFromGeneration(
   // (`routeRequest`), and found the entry dynamic here, which is all another would find: what is
   // left is a render of the request as it came — the build's path, for an entry with no record.
   const once = !sameEntry(input.regenerated, descriptor);
-  if (lookup.kind === 'none') {
+  if (lookup.kind === 'none' || (once && lookup.kind === 'unavailable' && partialUpgrade(job))) {
     return answerMiss(job, source, want, once);
   }
   if (lookup.kind !== 'generation') {
