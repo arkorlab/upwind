@@ -11,9 +11,6 @@ import { type CloudflareClient, unlessMissing, UPLOAD_TIMEOUT_MS } from './clien
  * live one, and the first for whatever has no traffic to protect.
  */
 
-/** What Cloudflare keeps of a deployment's message; it cuts the rest. */
-const DEPLOYMENT_MESSAGE_LENGTH = 100;
-
 export interface AccountScope {
   readonly client: CloudflareClient;
   readonly accountId: string;
@@ -165,7 +162,10 @@ export async function listDeployments(
   return answer === undefined ? undefined : (answer.result.deployments ?? []);
 }
 
-/** Give a Worker's traffic to these versions, in these shares. */
+/**
+ * Give a Worker's traffic to these versions, in these shares. The message is given whole: what a
+ * deploy takes of one (`args.ts`) is well inside what Cloudflare keeps.
+ */
 export async function createDeployment(
   scope: AccountScope,
   name: string,
@@ -179,7 +179,7 @@ export async function createDeployment(
       body: {
         strategy: 'percentage',
         versions,
-        annotations: { 'workers/message': message.slice(0, DEPLOYMENT_MESSAGE_LENGTH) },
+        annotations: { 'workers/message': message },
       },
       // The same shares asked for twice are the same deployment.
       repeatable: true,

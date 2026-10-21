@@ -43,9 +43,28 @@ function reachedAt(settings: DeploySettings, account: AccountView | undefined): 
   return reached;
 }
 
-function describeAccount(plan: Preflight, settings: DeploySettings, account: AccountView): void {
+/** The account's Workers other than the project's, and how many it would hold with the project's at most. */
+function workersOf(plan: Preflight, account: AccountView): { others: number; total: number } {
   const others = account.workers - account.projectWorkers.length;
-  const total = others + plan.projectedWorkers;
+  return { others, total: others + plan.projectedWorkers };
+}
+
+/**
+ * What the account cannot take: more Workers than it may hold, counting the ones it has of others.
+ * More than the project's alone would hold is the plan's problem already (`preflight`).
+ */
+function capacityProblems(plan: Preflight, account: AccountView): string[] {
+  const { others, total } = workersOf(plan, account);
+  if (plan.projectedWorkers > MAX_ACCOUNT_WORKERS || total <= MAX_ACCOUNT_WORKERS) {
+    return [];
+  }
+  return [
+    `the account holds ${others} Workers besides this project's, and with this project's at most it would hold ${total}, over the ${MAX_ACCOUNT_WORKERS} an account on Workers Paid may; lower deploy.keep or --keep, or delete Workers the account no longer needs`,
+  ];
+}
+
+function describeAccount(plan: Preflight, account: AccountView): void {
+  const { total } = workersOf(plan, account);
   line(
     `account ${account.accountId}: ${account.workers} Workers, ${account.projectWorkers.length} of them this project's; with this project's at most, ${total} of ${MAX_ACCOUNT_WORKERS}`,
   );
@@ -57,11 +76,6 @@ function describeAccount(plan: Preflight, settings: DeploySettings, account: Acc
       ? 'live: nothing yet; this would be the first deployment'
       : `live: ${shares.join(', ')}`,
   );
-  if (account.subdomain === undefined && settings.workersDev) {
-    line(
-      "workers.dev: the account has no subdomain yet; choose one in Cloudflare's settings for Workers",
-    );
-  }
 }
 
 function describePlan(input: {
@@ -91,7 +105,7 @@ function describePlan(input: {
     line('account: not read, since CLOUDFLARE_API_TOKEN is not set');
     return;
   }
-  describeAccount(plan, settings, account);
+  describeAccount(plan, account);
 }
 
 /**
@@ -167,12 +181,18 @@ export async function runDeploy(
     reserved: reservedNames(settings.storage),
   });
   const plan = await preflight({ projectDir: options.projectDir, settings, secrets });
-  if (options.prebuilt && !(await isNotedBuild(options, plan))) {
+  if (!(await isNotedBuild(options, plan))) {
     return 1;
   }
   const account = await accountOf(credentials, settings, io);
   describePlan({ plan, settings, secrets, account });
-  const problems = [...plan.problems, ...(account?.problems ?? [])];
+  for (const warning of plan.warnings) {
+    console.warn(`upwind: warning: ${warning}`);
+  }
+  const problems = [
+    ...plan.problems,
+    ...(account === undefined ? [] : [...account.problems, ...capacityProblems(plan, account)]),
+  ];
   if (problems.length > 0) {
     const things = plural(problems.length, 'one thing stops', `${problems.length} things stop`);
     console.error(`upwind: ${things} this deployment:`);

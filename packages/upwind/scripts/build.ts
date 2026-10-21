@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import { rolldown } from 'rolldown';
 
+import { writeShipped } from './shipped.ts';
+
 /**
  * The CLI as a published package reads: one JavaScript module with a hashbang.
  *
@@ -53,6 +55,9 @@ async function main(): Promise<void> {
   }
   const bytes = Buffer.byteLength(entry.code);
   console.log(`dist/cli.js: ${String(bytes)} bytes, ${String(output.length)} chunk(s)`);
+  // What `upwind deploy` builds with, bundled once here rather than on every machine it runs on.
+  await writeShipped(path.join(OUT_DIR, 'shipped'));
+  console.log('dist/shipped: the cache host');
 }
 
 await main();

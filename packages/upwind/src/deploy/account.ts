@@ -135,6 +135,13 @@ export async function readAccount(scope: AccountScope, names: ProjectNames): Pro
     ? (await listDeployments(scope, names.edge))?.[0]
     : undefined;
   const problems: string[] = [];
+  if (subdomain === undefined) {
+    // Where a deploy reaches the Worker it stages a build through, whether or not the edge is
+    // reached there as well.
+    problems.push(
+      "the account has no workers.dev subdomain, where a deploy reaches the Worker it stages a build through; choose one in Cloudflare's settings for Workers",
+    );
+  }
   if (bucket !== undefined && owner?.project !== names.project) {
     problems.push(
       `the bucket ${names.artifactsBucket} is already on the account, and was not made by upwind deploy for ${names.project}; choose another deploy.name`,

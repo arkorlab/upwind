@@ -8,7 +8,11 @@ import {
 } from '../../src/deploy/cloudflare/client.ts';
 import { fakeCloudflare } from './fake-cloudflare.ts';
 
-function clientOf(fake: ReturnType<typeof fakeCloudflare>, waits: number[] = []) {
+function clientOf(
+  fake: ReturnType<typeof fakeCloudflare>,
+  waits: number[] = [],
+  random: () => number = () => 0.5,
+) {
   return createCloudflareClient({
     apiToken: 'token',
     fetch: fake.fetch,
@@ -16,7 +20,7 @@ function clientOf(fake: ReturnType<typeof fakeCloudflare>, waits: number[] = [])
       waits.push(ms);
       return Promise.resolve();
     },
-    random: () => 0.5,
+    random,
   });
 }
 
@@ -40,11 +44,11 @@ describe('the Cloudflare client', () => {
     await expect(refused).rejects.toThrow(/bucket not found \(10007\)/u);
   });
 
-  it('asks again after the wait a 429 names', async () => {
+  it('asks again after the wait a 429 names, and never sooner', async () => {
     const fake = fakeCloudflare();
     fake.fail({ path: /\/workers\/subdomain$/u }, 429, { headers: { 'retry-after': '3' } });
     const waits: number[] = [];
-    const answer = await clientOf(fake, waits).request(
+    const answer = await clientOf(fake, waits, () => 0).request(
       'GET',
       '/accounts/account-1/workers/subdomain',
     );
@@ -52,6 +56,15 @@ describe('the Cloudflare client', () => {
     expect(answer.result).toStrictEqual({ subdomain: 'example' });
     expect(waits).toStrictEqual([3000]);
     expect(fake.requests.filter((request) => request.path.endsWith('/subdomain'))).toHaveLength(2);
+
+    fake.fail({ path: /\/workers\/subdomain$/u }, 429, { headers: { 'retry-after': '3' } });
+    const later: number[] = [];
+    await clientOf(fake, later, () => 0.999).request(
+      'GET',
+      '/accounts/account-1/workers/subdomain',
+    );
+
+    expect(later).toStrictEqual([3599]);
   });
 
   it('asks again after a 5xx, waiting longer each time, and gives up after five', async () => {
@@ -107,7 +120,7 @@ describe('the Cloudflare client', () => {
     ).rejects.toMatchObject({ status: 403 });
   });
 
-  it('answers a missing object as nothing, and an object as its bytes', async () => {
+  it('answers a missing object as nothing, and a write with nowhere to go as a failure', async () => {
     const fake = fakeCloudflare();
     fake.buckets.set(
       'b',
@@ -122,5 +135,8 @@ describe('the Cloudflare client', () => {
     const found = await client.raw('GET', '/accounts/account-1/r2/buckets/b/objects/a/b.txt');
 
     await expect(found?.text()).resolves.toBe('hi');
+    await expect(
+      client.raw('PUT', '/accounts/account-1/r2/buckets/gone/objects/a', { body: 'hi' }),
+    ).rejects.toMatchObject({ status: 404, notFound: true });
   });
 });

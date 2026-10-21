@@ -20,6 +20,10 @@ import { type FunctionScript, functionScripts } from './names.ts';
  * away, which it says itself, but one it would take and serve: a Function missing its runtime
  * cache answers every read a miss, a cron nobody fires never runs, an auth secret nobody set fails
  * the first sign-in. None of those shows until a visitor finds it.
+ *
+ * The limits held to are Workers Paid's, which a deployment of a Next.js application needs: on
+ * Workers Free, whose limits are lower (100 Workers, 64 variables a Worker), Cloudflare refuses what
+ * goes past them when it is uploaded.
  */
 
 /** Where `upwind build` writes the deployment bundle, in the project. */
@@ -27,7 +31,7 @@ export const BUNDLE_PATH = '.arkor/bundle.json';
 
 /** What Cloudflare holds a Worker to, unpacked — 64 MiB; `dependencies.ts` in the adapter splits by it. */
 const MAX_WORKER_BYTES = 67_108_864;
-/** How many variables and secrets one Worker may have. */
+/** How many variables and secrets one Worker may have on Workers Paid. */
 const MAX_WORKER_VARIABLES = 128;
 /** How many Workers an account may hold on Workers Paid. */
 export const MAX_ACCOUNT_WORKERS = 500;
@@ -50,7 +54,10 @@ const METADATA_PART = 'metadata';
  */
 const CACHE_HOST_MARK = 'upwind-cache-host-artifacts-v1';
 
-/** The variables a project's auth reads its secret from, any one of which will do. */
+/**
+ * The variables a project's auth reads its secret from where its configuration names none, any one
+ * of which will do (`@stayingupwind/auth`'s `secret.ts`).
+ */
 const AUTH_SECRETS = ['AUTH_SECRET', 'BETTER_AUTH_SECRET', 'BETTER_AUTH_SECRETS'];
 
 export interface Preflight {
@@ -61,6 +68,8 @@ export interface Preflight {
   readonly projectedWorkers: number;
   /** Every reason the deployment would be refused, in the order found. */
   readonly problems: readonly string[];
+  /** What may be wrong, where the build cannot say whether it is. */
+  readonly warnings: readonly string[];
 }
 
 /** The bundle a build left, read and held to its schema. */
@@ -150,7 +159,7 @@ function beyondLimits(bundle: DeploymentBundle, input: CheckInput): string[] {
     HOST_VARIABLES + input.secrets.size + (input.settings.storage.length > 0 ? 1 : 0);
   if (variables > MAX_WORKER_VARIABLES) {
     problems.push(
-      `each Function would hold ${variables} variables and secrets, over the ${MAX_WORKER_VARIABLES} a Worker may`,
+      `each Function would hold ${variables} variables and secrets, over the ${MAX_WORKER_VARIABLES} a Worker may on Workers Paid`,
     );
   }
   const specs: (readonly [string, FunctionSpec])[] = [...appFunctions(bundle)];
@@ -173,12 +182,8 @@ function beyondLimits(bundle: DeploymentBundle, input: CheckInput): string[] {
   return problems;
 }
 
-/** What the deployment would run and get wrong: a cache it cannot reach, a sign-in with no secret. */
-async function wrongAtRuntime(
-  bundleDir: string,
-  bundle: DeploymentBundle,
-  input: CheckInput,
-): Promise<string[]> {
+/** What the deployment would run and get wrong: a cache it cannot reach. */
+async function wrongAtRuntime(bundleDir: string, bundle: DeploymentBundle): Promise<string[]> {
   const problems: string[] = [];
   for (const [name, spec] of appFunctions(bundle)) {
     if (!(await carriesCacheHost(bundleDir, spec))) {
@@ -187,13 +192,22 @@ async function wrongAtRuntime(
       );
     }
   }
-  const signsIn = authLayout(input.projectDir) !== undefined;
-  if (signsIn && AUTH_SECRETS.every((name) => !input.secrets.has(name))) {
-    problems.push(
-      `the project signs users in, and none of ${AUTH_SECRETS.join(', ')} is among the secrets; name one in deploy.secrets or an --env-file`,
-    );
-  }
   return problems;
+}
+
+/**
+ * What may be wrong at runtime, where only the project's code knows whether it is: a sign-in with
+ * no secret in the environment, which is right where the project's auth configuration names its
+ * own. An empty value is no secret, as the auth package reads it.
+ */
+function mayBeWrong(input: CheckInput): string[] {
+  const signsIn = authLayout(input.projectDir) !== undefined;
+  const given = AUTH_SECRETS.some((name) => (input.secrets.get(name) ?? '') !== '');
+  return signsIn && !given
+    ? [
+        `the project signs users in, and none of ${AUTH_SECRETS.join(', ')} is among the secrets with a value; unless its auth configuration names its secret itself, sign-in will refuse to answer — name one in deploy.secrets or an --env-file`,
+      ]
+    : [];
 }
 
 /** Every reason this build, deployed with these settings, would be wrong. */
@@ -209,14 +223,14 @@ export async function preflight(input: CheckInput): Promise<Preflight> {
   problems.push(
     ...unsupported(bundle, settings),
     ...beyondLimits(bundle, input),
-    ...(await wrongAtRuntime(bundleDir, bundle, input)),
+    ...(await wrongAtRuntime(bundleDir, bundle)),
   );
   const functions = functionScripts(settings.project, bundle);
   const projectedWorkers = functions.length * (settings.keep + 1) + PROJECT_WORKERS;
   if (projectedWorkers > MAX_ACCOUNT_WORKERS) {
     problems.push(
-      `keeping ${settings.keep} deployments of ${functions.length} Functions each would take ${projectedWorkers} Workers, over the ${MAX_ACCOUNT_WORKERS} an account may hold; lower deploy.keep`,
+      `keeping ${settings.keep} deployments of ${functions.length} Functions each would take ${projectedWorkers} Workers, over the ${MAX_ACCOUNT_WORKERS} an account on Workers Paid may hold; lower deploy.keep`,
     );
   }
-  return { bundleDir, bundle, functions, projectedWorkers, problems };
+  return { bundleDir, bundle, functions, projectedWorkers, problems, warnings: mayBeWrong(input) };
 }

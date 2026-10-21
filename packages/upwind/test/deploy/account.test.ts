@@ -53,6 +53,15 @@ describe('reading the account', () => {
     });
   });
 
+  it('refuses an account with no workers.dev subdomain, where a deploy reaches it', async () => {
+    const fake = fakeCloudflare();
+    fake.subdomain = undefined;
+    const view = await readAccount(scopeOf(fake), NAMES);
+
+    expect(view.subdomain).toBeUndefined();
+    expect(view.problems).toStrictEqual([expect.stringMatching(/no workers\.dev subdomain/u)]);
+  });
+
   it("refuses a bucket of the project's name that the deploy did not make for it", async () => {
     const fake = fakeCloudflare();
     fake.buckets.set(NAMES.artifactsBucket, new Map());

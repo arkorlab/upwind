@@ -189,11 +189,18 @@ export function createCloudflareClient(options: CloudflareClientOptions): Cloudf
   const sleep = options.sleep ?? waitFor;
   const random = options.random ?? Math.random;
 
+  /**
+   * How long to wait before the next attempt: as long as Cloudflare asked, and a little longer, or a
+   * wait of its own that grows, a little either way. Never less than it asked: an attempt made
+   * sooner is refused for the same reason, and spends one of the few there are.
+   */
   function waitBefore(attempt: number, response: Response | undefined): number {
     const asked = response === undefined ? undefined : retryAfter(response);
+    if (asked !== undefined) {
+      return Math.round(asked * (1 + random() * JITTER));
+    }
     const grown = Math.min(MAX_WAIT_MS, FIRST_WAIT_MS * 2 ** (attempt - 1));
-    const wait = asked ?? grown;
-    return Math.round(wait * (1 + (random() * 2 - 1) * JITTER));
+    return Math.round(grown * (1 + (random() * 2 - 1) * JITTER));
   }
 
   /** The request, made again as long as Cloudflare asks and it may be. */
@@ -264,7 +271,8 @@ export function createCloudflareClient(options: CloudflareClientOptions): Cloudf
       request: RequestOptions = {},
     ): Promise<Response | undefined> {
       const response = await exchange(method, path, request);
-      if (response.status === NOT_FOUND) {
+      // Nothing to read is an answer; nothing to write to is not, and is thrown like any refusal.
+      if (response.status === NOT_FOUND && (method === 'GET' || method === 'HEAD')) {
         await response.body?.cancel();
         return undefined;
       }

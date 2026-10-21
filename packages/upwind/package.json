@@ -36,8 +36,10 @@
     "wrangler": "catalog:"
   },
   "devDependencies": {
+    "@stayingupwind/cache": "workspace:*",
     "@stayingupwind/host": "workspace:*",
     "@types/node": "catalog:",
+    "esbuild": "catalog:",
     "next": "catalog:",
     "rolldown": "catalog:",
     "typescript": "catalog:",

@@ -115,18 +115,28 @@ describe('checking a build before a deploy', () => {
     });
 
     expect(crowded.problems).toStrictEqual([
-      expect.stringMatching(/over the 500 an account may hold/u),
+      expect.stringMatching(/over the 500 an account on Workers Paid may hold/u),
     ]);
   });
 
-  it('refuses a project that signs users in without its secret', async () => {
+  it('warns of a project that signs users in with no secret in its environment', async () => {
     const dir = projectDir();
     mkdirSync(path.join(dir, 'app'));
     writeFileSync(path.join(dir, 'auth.ts'), 'export default {};');
     writeBundle(dir, bundleOf(deployableFunction(dir)));
     const plan = await preflight({ projectDir: dir, settings: SETTINGS, secrets: NO_SECRETS });
 
-    expect(plan.problems).toStrictEqual([expect.stringMatching(/signs users in/u)]);
+    // Its auth configuration may name a secret of its own, which only its code knows.
+    expect(plan.problems).toStrictEqual([]);
+    expect(plan.warnings).toStrictEqual([expect.stringMatching(/signs users in/u)]);
+
+    const empty = await preflight({
+      projectDir: dir,
+      settings: SETTINGS,
+      secrets: new Map([['AUTH_SECRET', '']]),
+    });
+
+    expect(empty.warnings).toStrictEqual([expect.stringMatching(/signs users in/u)]);
 
     const signed = await preflight({
       projectDir: dir,
@@ -134,7 +144,7 @@ describe('checking a build before a deploy', () => {
       secrets: new Map([['AUTH_SECRET', 'x']]),
     });
 
-    expect(signed.problems).toStrictEqual([]);
+    expect(signed.warnings).toStrictEqual([]);
   });
 
   it('says where to build when there is no build', async () => {

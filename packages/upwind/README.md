@@ -253,9 +253,11 @@ project for a deployment, checks the build and the account, and says what it wou
 changes nothing on the account; run it with `--dry-run`.
 
 - **The build is a deploy's own.** It is `upwind build` with the deployment's id chosen first, so
-  that every asset carries it, and with no storage published while pages prerender: a deployment's
-  pages are never rendered from a development database. `--build-only` builds and stops, for a job
-  that holds no credentials; `--prebuilt` deploys what that build left, in a job that does.
+  that every asset carries it; with the runtime cache's host in every Function, named to the
+  adapter through the environment, so that the project's `next.config` needs no change; and with no
+  storage published while pages prerender: a deployment's pages are never rendered from a
+  development database. `--build-only` builds and stops, for a job that holds no credentials;
+  `--prebuilt` deploys what that build left, in a job that does.
 - **Credentials come from the environment, never a flag.** `CLOUDFLARE_API_TOKEN`, and
   `CLOUDFLARE_ACCOUNT_ID` where the token reaches more than one account. They are taken out of the
   environment before the project's configuration or its build runs, so neither is handed them.
@@ -265,9 +267,14 @@ changes nothing on the account; run it with `--dry-run`.
   every Function is bound to, and the secrets read from the environment on every deploy.
   `--env-file` adds a file's variables to those secrets. Nothing is guessed from the code: storage
   a project does not name is not made.
-- **What would be wrong is refused before the account is touched**: a Function built without the
-  runtime cache, a cron nobody would fire, a project that signs users in without its secret, more
-  Workers than an account holds. Each is said, and the run ends.
+- **What would be wrong is refused before the account is changed**: a Function built without the
+  runtime cache, a cron nobody would fire, more Workers than the account can hold beside the ones
+  it has, an account with no `workers.dev` subdomain to reach. Each is said, and the run ends. A
+  project that signs users in with no secret among its secrets is warned of, since its auth
+  configuration may name one itself.
+- **The account is on Workers Paid.** Its limits are the ones held to — 500 Workers an account,
+  128 variables a Worker — and a deployment of a Next.js application needs them; on Workers Free,
+  Cloudflare refuses at upload what goes past its lower ones.
 
 ```ts
 import type { UpwindConfig } from '@stayingupwind/adapter';

@@ -35,7 +35,10 @@ export type DeployRequest =
   | { readonly answer: undefined; readonly options: DeployOptions };
 
 const MAX_KEEP = 50;
-/** What a version's message keeps of one; Cloudflare cuts at 1000 bytes. */
+/**
+ * How long a message may be, in UTF-16 units: at most 600 bytes of UTF-8, inside the 1000 Cloudflare
+ * keeps of a version's or a deployment's message, so neither is ever cut.
+ */
 const MAX_MESSAGE = 200;
 
 function keepOf(raw: string | undefined): number | undefined {

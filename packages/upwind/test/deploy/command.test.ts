@@ -102,6 +102,35 @@ describe('`upwind deploy --dry-run`', () => {
     expect(fake.requests.every((request) => request.method === 'GET')).toBe(true);
   });
 
+  it('refuses a deployment the account has no room for, counting its other Workers', async () => {
+    const { dir } = await builtProject();
+    const fake = fakeCloudflare();
+    for (let index = 0; index < 490; index += 1) {
+      fake.scripts.set(`other-${index}`, {
+        name: `other-${index}`,
+        versions: [],
+        deployments: [],
+        subdomain: { enabled: true, previews_enabled: true },
+        migrationTag: undefined,
+        secrets: new Map(),
+      });
+    }
+
+    await expect(
+      runDeploy(
+        optionsFor(dir),
+        { apiToken: 'token', accountId: undefined },
+        { fetch: fake.fetch },
+      ),
+    ).resolves.toBe(1);
+    expect(errors).toStrictEqual([
+      'upwind: one thing stops this deployment:',
+      expect.stringContaining(
+        "holds 490 Workers besides this project's, and with this project's at most it would hold 501, over the 500",
+      ),
+    ]);
+  });
+
   it('refuses what a deployment would get wrong, and says each thing', async () => {
     const { dir } = await builtProject({ deployable: false });
 
