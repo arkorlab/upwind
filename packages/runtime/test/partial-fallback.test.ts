@@ -586,6 +586,76 @@ describe('partial fallback shell promotion', () => {
     },
   );
 
+  it.each(['/two', '/three'])(
+    'does not renew a streaming response deadline when request %s replaces or evicts its still-pending read',
+    async (pathname) => {
+      const { runtime, startAttempt } = cache();
+      await entryIdOf(runtime, { kind: 'app-page', route: ROUTE, pathname: '/two' });
+      const original = Promise.withResolvers<Uint8Array | undefined>();
+      const replacement = Promise.withResolvers<Uint8Array | undefined>();
+      const firstStarted = Promise.withResolvers<undefined>();
+      const secondStarted = Promise.withResolvers<undefined>();
+      const firstSuffix = Promise.withResolvers<undefined>();
+      const secondSuffix = Promise.withResolvers<undefined>();
+      const read = vi
+        .spyOn(runtime.host, 'readRecord')
+        .mockImplementationOnce(() => {
+          firstStarted.resolve(undefined);
+          return original.promise;
+        })
+        .mockImplementationOnce(() => {
+          secondStarted.resolve(undefined);
+          return replacement.promise;
+        });
+      let rendered = 0;
+      vi.mocked(invokeNodeHandler).mockImplementation(async (input) => {
+        if (input.requestMeta['onCacheEntryV2'] !== undefined) return capture(input);
+        const suffix = rendered === 0 ? firstSuffix : secondSuffix;
+        rendered += 1;
+        await suffix.promise;
+        return new Response('tail');
+      });
+      const { ask, drain } = requests(runtime, ROUTE, '/two', null);
+      vi.useFakeTimers();
+      try {
+        const first = ask();
+        await firstStarted.promise;
+        await vi.advanceTimersByTimeAsync(201);
+        const firstReader = readerOf(await first);
+        await firstReader.read();
+        await vi.advanceTimersByTimeAsync(5800);
+        const second = requests(runtime, ROUTE, pathname, null).ask();
+        await secondStarted.promise;
+        await vi.advanceTimersByTimeAsync(201);
+        const secondReader = readerOf(await second);
+        await secondReader.read();
+        await vi.advanceTimersByTimeAsync(25_000);
+        firstSuffix.resolve(undefined);
+        while (!(await firstReader.read()).done) {
+          /* Only A's original body has ended. */
+        }
+        await vi.advanceTimersByTimeAsync(0);
+        replacement.resolve(undefined);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(startAttempt).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(6000);
+        secondSuffix.resolve(undefined);
+        while (!(await secondReader.read()).done) {
+          /* B may use its own later read and deadline. */
+        }
+      } finally {
+        original.resolve(undefined);
+        replacement.resolve(undefined);
+        firstSuffix.resolve(undefined);
+        secondSuffix.resolve(undefined);
+        await drain();
+      }
+    },
+  );
+
   it('waits behind an already-sent partial body when its completed-key read was evicted during streaming', async () => {
     const { runtime, startAttempt, commits } = cache();
     const descriptor = { kind: 'app-page' as const, route: ROUTE, pathname: '/two' };
@@ -920,6 +990,19 @@ describe('partial fallback shell promotion', () => {
       );
       expect(newer).toHaveBeenCalledTimes(256);
 
+      const fresh = checkedPack(await storedRecord(entryId));
+      runtime.recordMemo.set(entryId, fresh);
+      const { ask } = requests(runtime);
+
+      const freshBody = await (await ask()).text();
+
+      expect({
+        body: freshBody,
+        primaryCalls: vi.spyOn(runtime.host, 'readRecord').mock.calls.length,
+        newerCalls: newer.mock.calls.length,
+      }).toStrictEqual({ body: UPGRADED, primaryCalls: 0, newerCalls: 256 });
+
+      runtime.recordMemo.set(entryId, null);
       pending.resolve(undefined);
       await Promise.all(kept);
 
