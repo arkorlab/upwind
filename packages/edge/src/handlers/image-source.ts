@@ -428,7 +428,6 @@ async function readBlob(
   file: StaticFileEntry,
   requests: number,
   budgetMs = SOURCE_FETCH_BUDGET_MS,
-  status: number | undefined = file.status,
 ): Promise<SourceResult> {
   const { edge, config, signal } = local;
   if (signal.aborted) {
@@ -437,7 +436,7 @@ async function readBlob(
   if (budgetMs <= 0) {
     return refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, requests);
   }
-  if (!sourceUnder(status)) {
+  if (!sourceUnder(file.status)) {
     return refused(HTTP_BAD_REQUEST, INTERNAL_INVALID, requests);
   }
   if (file.byteLength > sourceLimit(config)) {
@@ -528,7 +527,14 @@ async function fetchBlob(
           budgetMs: left(),
         });
       }
-      return readBlob(local, shipped, dispatches, left(), outcome.rewriteStatus ?? shipped.status);
+      return readBlob(
+        local,
+        outcome.rewriteStatus === undefined
+          ? shipped
+          : { ...shipped, status: outcome.rewriteStatus },
+        dispatches,
+        left(),
+      );
     }
     case 'responded': {
       if (!outcome.response.ok) {
