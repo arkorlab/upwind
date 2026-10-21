@@ -9,6 +9,8 @@ import {
   renderAppPage,
   renderCaptured,
 } from './cache/capture.ts';
+import { foundDynamic } from './dynamic-misses.ts';
+import type { GenerationSource } from './generation-source.ts';
 import { invokeNodeHandler } from './node-bridge.ts';
 import {
   answerHeaders,
@@ -16,7 +18,7 @@ import {
   type Representation,
   SEGMENT_PREFIX,
 } from './representations.ts';
-import { resumeUrlOf } from './route-parameters.ts';
+import { resumeUrlOf, routingParameters } from './route-parameters.ts';
 import {
   baseRequestMeta,
   concatShell,
@@ -26,7 +28,7 @@ import {
   type RoutedInput,
   stripPlatformHeaders,
 } from './serve.ts';
-import type { Store } from './store.ts';
+import { findShell, generationPathname, isClassShell, type Store } from './store.ts';
 
 /**
  * The visitor's answer from an entry's bytes — a render just made, or what a generation holds —
@@ -241,6 +243,7 @@ export async function renderForVisitor(
   input: RoutedInput,
   target: Target,
   want: Want,
+  captureFailure?: 'fallback',
 ): Promise<Response | undefined> {
   const headers = stripPlatformHeaders(input.request.headers);
   headers.delete('cookie');
@@ -257,16 +260,67 @@ export async function renderForVisitor(
     headers.delete(name);
   }
   const url = new URL(pathname, input.request.url);
-  const render = await renderCaptured(kind, (meta) => {
-    return invokeNodeHandler({
-      handler: target.handler,
-      request: new Request(url, { headers }),
-      url: pathname,
-      requestMeta: { ...baseRequestMeta(input), ...meta.requestMeta },
-      waitUntil: input.waitUntil,
-      run: input.run,
-      expectNoResponse: meta.expectNoResponse,
+  let render: CapturedRender | undefined;
+  try {
+    render = await renderCaptured(kind, (meta) => {
+      return invokeNodeHandler({
+        handler: target.handler,
+        request: new Request(url, { headers }),
+        url: pathname,
+        requestMeta: { ...baseRequestMeta(input), ...meta.requestMeta },
+        waitUntil: input.waitUntil,
+        run: input.run,
+        expectNoResponse: meta.expectNoResponse,
+      });
     });
-  });
+  } catch (error) {
+    if (captureFailure !== 'fallback') throw error;
+    input.cache?.log('completed RSC visitor capture failed');
+    return undefined;
+  }
+  // Only the static capture may fall back: a visitor's failing resume keeps its own error.
   return render === undefined ? undefined : answerFromRender(input, target.handler, render, want);
+}
+
+/**
+ * An ordinary cold RSC navigation still needs the static stage of its completed class when the
+ * authority read is unavailable. Capture it for this visitor alone, as when a lease is held
+ * elsewhere: a generic build resume can leave the newly resolved parameters dynamic. Only the selected
+ * class is eligible; request-specific bypass and query guards have already run in the caller.
+ */
+export function renderCompletedRscForVisitor(
+  job: { readonly input: RoutedInput; readonly store: Store; readonly target: Target },
+  source: GenerationSource,
+  once: boolean,
+): Promise<Response | undefined> {
+  const { input, store, target } = job;
+  const { descriptor } = target;
+  if (
+    !once ||
+    source.onMiss !== 'render' ||
+    input.request.method !== 'GET' ||
+    descriptor.kind !== 'app-page' ||
+    source.representation !== 'rsc' ||
+    source.prefetch === true ||
+    input.request.headers.has(store.manifest.routing.rsc.prefetchHeader) ||
+    input.cache === undefined ||
+    foundDynamic(input.cache, descriptor)
+  ) {
+    return Promise.resolve(undefined);
+  }
+  const pathname = new URL(source.url, input.request.url).pathname;
+  const shell = findShell(store, descriptor.route, pathname);
+  if (
+    shell === undefined ||
+    shell.body !== undefined ||
+    shell.ensureStatic === 'navigation' ||
+    descriptor.pathname === shell.pathname ||
+    !isClassShell(descriptor.pathname, descriptor.route) ||
+    generationPathname(shell, pathname) !== descriptor.pathname ||
+    // This helper renders the class pathname, without regeneration's separated catch-all query.
+    routingParameters(store, descriptor.route, descriptor.pathname) !== undefined
+  ) {
+    return Promise.resolve(undefined);
+  }
+  return renderForVisitor(input, target, source, 'fallback');
 }
