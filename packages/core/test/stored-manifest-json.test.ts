@@ -35,12 +35,13 @@ const IMAGES = {
   contentDispositionType: 'attachment',
 };
 
-describe('JSON-owned stored manifest restoration', () => {
+describe('json-owned stored manifest restoration', () => {
   it('exports the raw reader without replacing the validated parser', () => {
+    const json = serializeManifest(publishedManifest());
+    const raw = publicReader(json);
+
     expect(publicReader).toBe(parseStoredManifest);
-    expect(
-      projectManifestSchema.parse(publicReader(serializeManifest(publishedManifest()))),
-    ).toStrictEqual(parseProjectManifest(serializeManifest(publishedManifest())));
+    expect(projectManifestSchema.parse(raw)).toStrictEqual(parseProjectManifest(json));
   });
 
   it.each(READ_MANIFEST_SCHEMA_VERSIONS)(
@@ -52,12 +53,11 @@ describe('JSON-owned stored manifest restoration', () => {
 
       expect(parseStoredManifest(stored)).toStrictEqual(baseline(stored));
       expect(parseStoredManifest(inline)).toStrictEqual(baseline(inline));
-      expect(projectManifestSchema.parse(parseStoredManifest(stored))).toStrictEqual(
-        parseProjectManifest(stored),
-      );
-      expect(serializeManifest(projectManifestSchema.parse(parseStoredManifest(stored)))).toBe(
-        stored,
-      );
+      const raw = parseStoredManifest(stored);
+      const validated = projectManifestSchema.parse(raw);
+
+      expect(validated).toStrictEqual(parseProjectManifest(stored));
+      expect(serializeManifest(validated)).toBe(stored);
     },
   );
 
@@ -155,7 +155,7 @@ describe('JSON-owned stored manifest restoration', () => {
 
     expect(fromStoredManifest(legacy)).toBe(legacy);
     expect(fromStoredManifest(null)).toBeNull();
-    expect(record['routes']).toStrictEqual(compactGraph().routes);
+    expect(record.routes).toStrictEqual(compactGraph().routes);
     expect(restored.routes['/first']?.headers).toStrictEqual({ 'x-policy': 'shared' });
     expect(Object.getPrototypeOf(record)).toBeNull();
   });

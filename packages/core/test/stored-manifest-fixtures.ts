@@ -98,7 +98,7 @@ export function withInheritedField<T>(
     return read();
   } finally {
     if (previous === undefined) {
-      Reflect.deleteProperty(Object.prototype as Record<string, unknown>, name);
+      Reflect.deleteProperty(Object.prototype, name);
     } else {
       // eslint-disable-next-line no-extend-native -- restore the native prototype's pre-test descriptor
       Object.defineProperty(Object.prototype, name, previous);
