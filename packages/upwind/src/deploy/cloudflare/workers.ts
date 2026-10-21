@@ -90,6 +90,14 @@ export interface WorkerVersion {
     readonly created_on?: string;
     readonly source?: string;
   };
+  /** What the version was uploaded with; in the answer for one version, not in a listing. */
+  readonly resources?: {
+    readonly bindings?: readonly {
+      readonly type: string;
+      readonly name: string;
+      readonly text?: string;
+    }[];
+  };
 }
 
 /** Upload a version that takes no traffic until a deployment gives it some. */
@@ -120,6 +128,41 @@ export async function listVersions(
     { query: { deployable: true } },
   );
   return answer.result.items ?? [];
+}
+
+/** A listing asks for this many versions a page. */
+const VERSIONS_PAGE = 100;
+/** And reads no more than this many pages: a Worker's oldest versions are of no deployment's use. */
+const MAX_VERSION_PAGES = 10;
+
+/**
+ * Every version of a Worker, newest first — those a deployment can no longer choose among as well
+ * as those it can (`listVersions`) — up to `VERSIONS_PAGE` × `MAX_VERSION_PAGES` of them.
+ */
+export async function listAllVersions(
+  scope: AccountScope,
+  name: string,
+): Promise<readonly WorkerVersion[]> {
+  const versions: WorkerVersion[] = [];
+  const seen = new Set<string>();
+  for (let page = 1; page <= MAX_VERSION_PAGES; page += 1) {
+    const answer = await scope.client.request<{ readonly items?: readonly WorkerVersion[] }>(
+      'GET',
+      `${script(scope, name)}/versions`,
+      { query: { page, per_page: VERSIONS_PAGE } },
+    );
+    const items = answer.result.items ?? [];
+    // A page of none new is the end, whether the listing pages or answers every page whole.
+    const fresh = items.filter((version) => !seen.has(version.id));
+    for (const version of fresh) {
+      seen.add(version.id);
+      versions.push(version);
+    }
+    if (fresh.length === 0 || items.length < VERSIONS_PAGE) {
+      return versions;
+    }
+  }
+  return versions;
 }
 
 export async function getVersion(

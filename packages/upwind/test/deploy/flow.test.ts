@@ -325,6 +325,27 @@ describe("the edge's reach, as the settings change it", () => {
     expect(code).toBe(1);
     expect(scriptOn(account(), NAMES.edge).subdomain.enabled).toBe(true);
   });
+
+  it('is narrowed by a run of the live deployment where the run that made it live could not', async () => {
+    const first = await deployableProject(PROJECT);
+    buildIn(first);
+
+    await expect(deploy(account(), first)).resolves.toBe(0);
+
+    const dir = await deployableProject(PROJECT, { workersDev: false, hostnames: [HOSTNAME] });
+    buildIn(dir);
+    const again = (): Promise<number> =>
+      runDeploy(deployOptions(dir), account().credentials, throughHostname(account()));
+    // Refused once, and not asked again: the run warns and ends live, still on workers.dev.
+    account().fake.fail({ method: 'POST', path: `/workers/scripts/${NAMES.edge}/subdomain` }, 400);
+
+    await expect(again()).resolves.toBe(0);
+    expect(scriptOn(account(), NAMES.edge).subdomain.enabled).toBe(true);
+
+    // The same deployment again: nothing staged or switched, and the narrowing done.
+    await expect(again()).resolves.toBe(0);
+    expect(scriptOn(account(), NAMES.edge).subdomain.enabled).toBe(false);
+  });
 });
 
 describe("a run's key to the agent", () => {

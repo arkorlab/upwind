@@ -12,6 +12,7 @@ import { ensureInfra } from './infra.ts';
 import { appRuntimeOf, type ProjectNames, projectNames } from './names.ts';
 import { publishPointer } from './pointer.ts';
 import type { Preflight } from './preflight.ts';
+import { retainDeployments } from './retention.ts';
 import { shippedWorkers } from './shipped.ts';
 import { stageBuild } from './stage.ts';
 import { ensureStores } from './stores.ts';
@@ -66,7 +67,7 @@ async function liveDeployment(
 }
 
 /** Where the site is reached on the account's side, as the edge's names and its first one. */
-function siteOf(
+export function siteOf(
   settings: DeploySettings,
   names: ProjectNames,
   subdomain: string,
@@ -82,7 +83,8 @@ function siteOf(
   return { hostnames, origin: new URL(`https://${first}/`) };
 }
 
-function report(activation: Activation, deploymentId: string, origin: URL): number {
+/** What a check-then-switch came to, said; what the command exits with. */
+export function report(activation: Activation, deploymentId: string, origin: URL): number {
   switch (activation.kind) {
     case 'live': {
       say(`${deploymentId} is live at ${origin.href}`);
@@ -127,7 +129,7 @@ function report(activation: Activation, deploymentId: string, origin: URL): numb
  * then the live version kept what it was reached on (`uploadEdgeVersion`). A failure here leaves
  * the deployment live, and the next run narrows it.
  */
-async function narrowReach(
+export async function narrowReach(
   scope: AccountScope,
   edge: string,
   reach: ScriptSubdomain,
@@ -137,6 +139,38 @@ async function narrowReach(
   } catch (error) {
     console.warn(
       `upwind: ${edge} is still reached where deploy.workersDev no longer says: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * The older deployments cleaned up, once this one is live (`retention.ts`): best done, and said
+ * where it could not be — the deployment is live either way, and the next run tries again.
+ */
+async function cleanUp(
+  run: DeployRun,
+  names: ProjectNames,
+  cache: Parameters<typeof retainDeployments>[0]['cache'],
+): Promise<void> {
+  try {
+    const retention = await retainDeployments({
+      scope: run.scope,
+      names,
+      keep: run.settings.keep,
+      deploymentId: run.plan.bundle.deploymentId,
+      cache,
+      now: run.now,
+    });
+    say(`kept ${retention.kept.join(', ')}`);
+    if (retention.deleted.length > 0) {
+      say(`deleted the Functions of ${retention.deleted.join(', ')}`);
+    }
+    if (retention.orphans.length > 0) {
+      say(`deleted ${retention.orphans.join(', ')}, which no deployment named`);
+    }
+  } catch (error) {
+    console.warn(
+      `upwind: warning: the deployment is live, and older ones were not cleaned up: ${error instanceof Error ? error.message : String(error)}; the next deploy tries again`,
     );
   }
 }
@@ -151,11 +185,15 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
     throw new Error('the account has no workers.dev subdomain');
   }
   const site = siteOf(settings, names, subdomain);
+  const reach: ScriptSubdomain = { enabled: settings.workersDev, previews_enabled: false };
   const previous = await liveDeployment(scope, names, account);
   if (previous === bundle.deploymentId) {
     // Staged again, it would be staged without the deployment before it, whose files its open
-    // pages still ask for; and switched to again, it would be switched from itself.
-    say(`${bundle.deploymentId} is live already; nothing was changed`);
+    // pages still ask for; and switched to again, it would be switched from itself. What a run
+    // that made it live may have left undone is done, though: the edge's reach, which it narrows
+    // only once the deployment is live, and a narrowing that failed is left for the next run.
+    await narrowReach(scope, names.edge, reach);
+    say(`${bundle.deploymentId} is live already; nothing else was changed`);
     return 0;
   }
   const existing = new Set(account.projectWorkers);
@@ -222,7 +260,6 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
       sleep: run.sleep,
     });
     const message = run.message ?? `upwind deploy ${bundle.deploymentId}`;
-    const reach: ScriptSubdomain = { enabled: settings.workersDev, previews_enabled: false };
     const edge = await uploadEdgeVersion({
       scope,
       names,
@@ -257,7 +294,11 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
     if (switched && !edge.live) {
       await narrowReach(scope, names.edge, reach);
     }
-    return report(activation, bundle.deploymentId, site.origin);
+    const code = report(activation, bundle.deploymentId, site.origin);
+    if (activation.kind === 'live') {
+      await cleanUp(run, names, remoteTarget(session.client, bundleDir).cache);
+    }
+    return code;
   } finally {
     await session.close();
   }

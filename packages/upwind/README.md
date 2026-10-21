@@ -309,6 +309,13 @@ says what failed. A deploy stopped part way can be run again: what it wrote is f
 its digest or the deployment's id. A deployment is what it was built as: deploying the live one
 again changes nothing, so a new secret's value reaches the Functions with a new build.
 
+Once a deployment is live, a deploy keeps it, every deployment the edge's traffic is with, and the
+newest `deploy.keep` others (`--keep`, for one run) whose version of the edge can still be given
+the traffic again; the rest lose their Functions, and their scope of the runtime cache. Cloudflare
+keeps the newest hundred versions of the edge for a deployment to choose among, so nothing older can
+be gone back to, whatever is kept. Every deployment's files stay in the bucket. One deploy of a
+project runs at a time.
+
 The token needs, on the account: **Workers Scripts: Edit**, **Workers KV Storage: Edit**, **Workers
 R2 Storage: Edit**, and **D1: Edit** where `deploy.storage` names a database. A custom domain is
 attached to `shop-edge` by hand, in Cloudflare, and named in `deploy.hostnames`.
