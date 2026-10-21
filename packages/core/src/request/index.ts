@@ -67,3 +67,4 @@ export {
   quietensASameOriginFetch,
 } from './referrer.ts';
 export { computeRscCacheBustingParam, type RscCacheBustingInput } from './rsc.ts';
+export { STATIC_PAGE_PRIVATE_HEADERS } from './static-pages.ts';

@@ -565,10 +565,11 @@ export async function handleImage(input: ImageInput): Promise<Response> {
   const { edge, params } = input;
   const startedAt = edge.runtime.now();
   const source = resolveImageSource(edge, input.manifest, params, input.dpl);
+  const availability = edge.runtime.transformImage === undefined ? 'original' : 'transform';
   const key = await cacheKey(
     edge.host.names.imageKeyOrigin,
     input.config,
-    await imageSourceId(source, edge),
+    `${availability}:${await imageSourceId(source, edge)}`,
     params,
   );
   // Validation reads nothing live traffic cached, as it writes nothing (below): the key names no

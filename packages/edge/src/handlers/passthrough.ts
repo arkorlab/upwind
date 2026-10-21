@@ -62,6 +62,7 @@ export function passthroughReason(classification: RequestClass): string {
     case 'rsc':
     case 'rsc-payload':
     case 'pages-data':
+    case 'pages-fallback':
     case 'segment-prefetch':
     case 'action':
     case ASSET_CLASS:
