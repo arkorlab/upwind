@@ -30,7 +30,7 @@ async function answered(
   request: IncomingRequest,
   site: Omit<SiteOptions, 'document'> & { readonly staticPage?: boolean },
   host: EdgeHost,
-): Promise<Response> {
+): Promise<{ readonly response: Response; readonly body: string }> {
   const { pointer, manifest: seeded } = await seedSite({ document: pprDocument(), ...site });
   const manifest =
     site.staticPage === true
@@ -78,9 +78,9 @@ async function answered(
       }),
     },
   );
-  await response.arrayBuffer();
+  const body = await response.text();
   await waitOnExecutionContext(ctx);
-  return response;
+  return { response, body };
 }
 
 describe("the headers an application's rules are judged on", () => {
@@ -88,7 +88,7 @@ describe("the headers an application's rules are judged on", () => {
     'removes host-owned %s before static-page privacy classification',
     async (header) => {
       const host = { ...standaloneHost(env), credentials: { cookies: [], headers: [header] } };
-      const response = await answered(
+      const { response } = await answered(
         navigation('/', { headers: { [header]: 'host-secret' } }),
         { staticPage: true },
         host,
@@ -104,7 +104,7 @@ describe("the headers an application's rules are judged on", () => {
   it.each(['Authorization', 'Proxy-Authorization', 'If-None-Match'])(
     'keeps application-visible %s private for static-page classification',
     async (header) => {
-      const response = await answered(
+      const { response } = await answered(
         navigation('/', { headers: { [header]: 'app-value' } }),
         { staticPage: true },
         standaloneHost(env),
@@ -122,7 +122,7 @@ describe("the headers an application's rules are judged on", () => {
    * rule's headers are what the application's router answers that visitor with.
    */
   it('sets the headers of a rule whose `missing` names a cookie the host keeps the header of', async () => {
-    const response = await answered(
+    const { response } = await answered(
       navigation('/', { headers: { cookie: 'theme=dark' } }),
       {
         headerRules: [
@@ -138,5 +138,55 @@ describe("the headers an application's rules are judged on", () => {
 
     expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);
     expect(response.headers.get('x-robots-tag')).toBe('noindex');
+  });
+
+  it.each([
+    { header: 'If-Match', value: '"host-secret"', status: 412, body: '' },
+    { header: 'If-None-Match', value: '*', status: 304, body: '' },
+    { header: 'Range', value: 'bytes=0-2', status: 206, body: 'the' },
+  ])('keeps host-owned $header out of shipped file selection', async (condition) => {
+    const body = 'the shipped file';
+    const site = { files: { '/manual.txt': body } };
+    const headers = { [condition.header]: condition.value };
+    const request = navigation('/manual.txt', { headers });
+    const host = {
+      ...standaloneHost(env),
+      credentials: { cookies: [], headers: [condition.header] },
+    };
+
+    const owned = await answered(request, site, host);
+    const visible = await answered(
+      navigation('/manual.txt', { headers }),
+      site,
+      standaloneHost(env),
+    );
+
+    expect([owned.response.status, owned.body]).toStrictEqual([200, body]);
+    expect([visible.response.status, visible.body]).toStrictEqual([
+      condition.status,
+      condition.body,
+    ]);
+    expect(request.headers.get(condition.header)).toBe(condition.value);
+    expect(owned.response.headers.get('x-arkor-edge')).toMatch(/^static;/u);
+  });
+
+  it('ignores a host-owned If-Range while retaining an application-visible Range', async () => {
+    const headers = { 'If-Range': '"host-secret"', Range: 'bytes=0-2' };
+    const site = { files: { '/manual.txt': 'the shipped file' } };
+    const request = navigation('/manual.txt', { headers });
+    const owned = await answered(request, site, {
+      ...standaloneHost(env),
+      credentials: { cookies: [], headers: ['If-Range'] },
+    });
+    const visible = await answered(
+      navigation('/manual.txt', { headers }),
+      site,
+      standaloneHost(env),
+    );
+
+    expect([owned.response.status, owned.body]).toStrictEqual([206, 'the']);
+    expect([visible.response.status, visible.body]).toStrictEqual([200, 'the shipped file']);
+    expect(request.headers.get('If-Range')).toBe('"host-secret"');
+    expect(request.headers.get('Range')).toBe('bytes=0-2');
   });
 });
