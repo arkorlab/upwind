@@ -7,6 +7,7 @@ import {
 } from '@stayingupwind/core/manifest';
 import { NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
+import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 
 import type { StaticFileContext } from '../strategies/context.ts';
 import {
@@ -78,6 +79,18 @@ async function answeredUnder(answered: Promise<Response>, status: number): Promi
   return underRewriteStatus(await answered, status);
 }
 
+/** Conditions and ranges belong to the application, never to the host's credentials. */
+function fileRequest(input: HostedFileInput, middleware?: TimedContinue): Request {
+  let headers = middleware?.requestHeaders ?? input.request.headers;
+  const { credentials } = input.edge.host;
+  if (credentials.headers.some((name) => headers.has(name))) {
+    headers = withoutHostCredentials(new Headers(headers), credentials);
+  }
+  return headers === input.request.headers
+    ? input.request
+    : new Request(input.request, { headers });
+}
+
 /**
  * A shipped file of a hosted application, served from storage under the headers `next.config`
  * gives its path and what the middleware set, and under the status it gave its rewrite.
@@ -91,10 +104,7 @@ function serveFile(
   // The request as the middleware left it. It may have removed a `Range` or an `If-None-Match`,
   // and the application's own Worker would never see them; answering 206 or 304 on headers the
   // middleware took away is the edge deciding something the application already decided.
-  const request =
-    middleware === undefined
-      ? input.request
-      : new Request(input.request, { headers: middleware.requestHeaders });
+  const request = fileRequest(input, middleware);
   const answered = handleStaticFile(
     {
       request,
@@ -183,7 +193,7 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
     // `Last-Modified` fails is the manifest's to answer, with no read begun beside the middleware.
     start: (configured) => {
       early = startFileRead({
-        request: input.request,
+        request: fileRequest(servedInput),
         pathname: url.pathname,
         file: input.file,
         edge: servedInput.edge,

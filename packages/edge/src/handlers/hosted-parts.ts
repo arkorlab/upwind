@@ -98,6 +98,7 @@ function readPartAgain(
   input: PartInput,
   pack: DecodedGenerationPack,
   member: MemberRecord | undefined,
+  servedStale = false,
 ): void {
   if (member?.refreshRecord !== undefined) {
     member.refreshRecord();
@@ -107,7 +108,7 @@ function readPartAgain(
     input.edge,
     pack,
     runtimeCacheOf(input.edge.policy),
-    member === undefined ? {} : { holdAbsence: true },
+    member === undefined ? { servedStale } : { holdAbsence: true, servedStale },
   );
 }
 
@@ -390,7 +391,7 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
   // Counted in the part's point, or in the passthrough's where the part cannot be read after all.
   const detached = stale ? refreshPart(input, part, generation) : undefined;
   if (stale) {
-    readPartAgain(input, generation.pack, generation.member);
+    readPartAgain(input, generation.pack, generation.member, true);
   }
   // loadShell retains the existing memory / Cache API race and hash verification. No authority read.
   const strategy: ShellDeliveryStrategy<EdgeContext> = {

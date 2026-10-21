@@ -98,7 +98,11 @@ async function record(
   return { bytes, pack: decoded.pack, document };
 }
 
-async function fixture(copies = false, headerRules?: HeaderRule[]) {
+async function fixture(
+  copies = false,
+  headerRules?: HeaderRule[],
+  currentRecord?: EdgeContext['host']['currentRecord'],
+) {
   const document = pprDocument();
   const site = await seedSite({ document, headerRules });
   const settings = {
@@ -142,6 +146,7 @@ async function fixture(copies = false, headerRules?: HeaderRule[]) {
     runtime,
     host: {
       ...host,
+      ...(currentRecord !== undefined && { currentRecord }),
       observer: {
         ...host.observer,
         metric(point) {
@@ -225,9 +230,92 @@ function documentInput(test: Awaited<ReturnType<typeof fixture>>) {
   return { input, passthrough };
 }
 
+async function nextPartRecord(saved: Awaited<ReturnType<typeof record>>, now: number) {
+  const body = encodeUtf8('the newly published Flight payload');
+  const sha256 = await sha256Hex(body);
+  const storageRef = `${PART_KEY}-next`;
+  await env.ARTIFACTS.put(storageRef, body);
+  const artifacts = saved.pack.header.artifacts.map((artifact) =>
+    artifact.role === 'rsc'
+      ? { ...artifact, sha256, byteLength: body.byteLength, storageRef }
+      : artifact,
+  );
+  const bytes = encodeGenerationPack(
+    {
+      ...saved.pack.header,
+      generationId: 'gen_response_metadata_next',
+      seq: 2,
+      revision: 4,
+      cacheTimestamp: now,
+      producedAt: now,
+      artifacts,
+    },
+    saved.pack.html,
+    undefined,
+  );
+  return { bytes: new Uint8Array(bytes).buffer, body: new TextDecoder().decode(body) };
+}
+
 describe('replaying generation response metadata at its use boundary', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('serves stale Flight before authority completion and adopts its next record despite old KV', async () => {
+    const gate = Promise.withResolvers<ArrayBuffer | undefined>();
+    const currentRecord = vi
+      .fn<NonNullable<EdgeContext['host']['currentRecord']>>()
+      .mockReturnValue(gate.promise);
+    const test = await fixture(false, undefined, currentRecord);
+    const saved = await record();
+    await seed(saved);
+    const first = await serve(test, true);
+    await first.text();
+    test.clock.now += 60_001;
+    const next = await nextPartRecord(saved, test.clock.now);
+    try {
+      const stale = await serve(test, true);
+
+      await expect(stale.text()).resolves.toBe(new TextDecoder().decode(PART));
+      expect(currentRecord).toHaveBeenCalledExactlyOnceWith(KEY.scopeId, KEY.entryId, 3);
+      expect(test.edge.runtime.memory.generations.get(RECORD_KEY)?.pack.header.revision).toBe(3);
+
+      gate.resolve(next.bytes);
+      await waitOnExecutionContext(test.edge.ctx);
+      const fresh = await serve(test, true);
+
+      await expect(fresh.text()).resolves.toBe(next.body);
+      expect(test.edge.runtime.memory.generations.get(RECORD_KEY)?.pack.header.revision).toBe(4);
+      expect(currentRecord).toHaveBeenCalledTimes(1);
+      await expect(env.CACHE_STATE.get(RECORD_KEY, 'arrayBuffer')).resolves.toStrictEqual(
+        new Uint8Array(saved.bytes).buffer,
+      );
+    } finally {
+      gate.resolve(undefined);
+      await waitOnExecutionContext(test.edge.ctx);
+    }
+  });
+
+  it('keeps fresh Flight free of authority reads across repeated requests', async () => {
+    const currentRecord = vi
+      .fn<NonNullable<EdgeContext['host']['currentRecord']>>()
+      .mockResolvedValue(undefined);
+    const test = await fixture(false, undefined, currentRecord);
+    await seed(await record());
+
+    const first = await serve(test, true);
+    const next = await serve(test, true);
+
+    await expect(Promise.all([first.text(), next.text()])).resolves.toStrictEqual([
+      new TextDecoder().decode(PART),
+      new TextDecoder().decode(PART),
+    ]);
+    expect(currentRecord).not.toHaveBeenCalled();
+    expect(test.get.mock.calls.filter(([key]) => isRecordKey(key))).toHaveLength(1);
+
+    await waitOnExecutionContext(test.edge.ctx);
+
+    expect(currentRecord).not.toHaveBeenCalled();
   });
 
   it.each(INVALID_VALUES)(
