@@ -28,7 +28,8 @@ import { READINESS_PATH, type Readiness } from './workers/protocol.ts';
  * checks ran — theirs stays as it is, failed checks or not.
  *
  * A project's first deployment is live as soon as its edge is uploaded, with nothing to go back
- * to. It is asked the same questions, without naming a version.
+ * to. It is asked the same questions, without naming a version — as is the deployment that is live
+ * already, when a run of it confirms it before it takes anything of it for granted (`confirmLive`).
  */
 
 const OVERRIDE_HEADER = 'cloudflare-workers-version-overrides';
@@ -62,6 +63,12 @@ export interface ActivateInput {
   readonly sleep?: ((ms: number) => Promise<void>) | undefined;
   readonly now?: (() => number) | undefined;
 }
+
+/** What asking the edge takes: where it is reached, what it should answer, the paths to check. */
+export type Asking = Pick<
+  ActivateInput,
+  'checks' | 'expected' | 'fetch' | 'now' | 'origin' | 'sleep'
+>;
 
 export type Activation =
   /** The version takes all the edge's traffic, and answers as itself. */
@@ -120,7 +127,7 @@ function sameShares(
 }
 
 /** Whether the answer is the version's, serving the deployment from a manifest in place. */
-function answersAs(readiness: Readiness | undefined, expected: ActivateInput['expected']): boolean {
+function answersAs(readiness: Readiness | undefined, expected: Asking['expected']): boolean {
   return (
     readiness?.deploymentId === expected.deploymentId &&
     readiness.manifestId === expected.manifestId &&
@@ -131,7 +138,7 @@ function answersAs(readiness: Readiness | undefined, expected: ActivateInput['ex
 }
 
 async function readinessOf(
-  input: ActivateInput,
+  input: Asking,
   headers: Readonly<Record<string, string>>,
 ): Promise<Readiness | undefined> {
   const send = input.fetch ?? fetch;
@@ -153,7 +160,7 @@ async function readinessOf(
 
 /** Ask until the version answers as itself, or the wait is over; whether it did. */
 async function answered(
-  input: ActivateInput,
+  input: Asking,
   headers: Readonly<Record<string, string>>,
   waitMs: number,
 ): Promise<boolean> {
@@ -173,7 +180,7 @@ async function answered(
 
 /** Why a path fails, asked through the version; nothing where it does not. */
 async function failureOf(
-  input: ActivateInput,
+  input: Asking,
   path: string,
   headers: Readonly<Record<string, string>>,
 ): Promise<string | undefined> {
@@ -198,7 +205,7 @@ async function failureOf(
 }
 
 async function failures(
-  input: ActivateInput,
+  input: Asking,
   headers: Readonly<Record<string, string>>,
 ): Promise<string[]> {
   const found: string[] = [];
@@ -220,12 +227,34 @@ async function stillChecking(
   return sameShares(now?.versions, checking);
 }
 
-async function activateFirst(input: ActivateInput): Promise<Activation> {
-  if (!(await answered(input, {}, READY_WAIT_MS))) {
+/** What confirming a version that has the traffic comes to. */
+export type Confirmation = Extract<Activation, { kind: 'failing' | 'live' | 'unconfirmed' }>;
+
+/**
+ * Ask the version that has the edge's traffic, unnamed, until it answers as itself or the wait is
+ * over, and then ask it each of the project's paths.
+ */
+async function confirm(input: Asking, waitMs: number): Promise<Confirmation> {
+  if (!(await answered(input, {}, waitMs))) {
     return { kind: 'unconfirmed' };
   }
   const reasons = await failures(input, {});
   return reasons.length === 0 ? { kind: 'live' } : { kind: 'failing', reasons };
+}
+
+/**
+ * Confirm the version that has the edge's traffic: that it answers as itself, unnamed, within the
+ * wait a switch is given, and that the project's paths pass through it. What a run of the
+ * deployment that is live already asks before it does anything the deployment's being live would
+ * allow.
+ */
+export function confirmLive(input: Asking): Promise<Confirmation> {
+  return confirm(input, LIVE_WAIT_MS);
+}
+
+/** A first deployment, live from its upload: given the wait a new Worker takes to be routed. */
+function activateFirst(input: ActivateInput): Promise<Confirmation> {
+  return confirm(input, READY_WAIT_MS);
 }
 
 /** Check the new version, and give it the edge's traffic if it passes. */

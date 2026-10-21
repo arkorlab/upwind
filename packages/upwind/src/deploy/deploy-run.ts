@@ -2,12 +2,13 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { AccountView } from './account.ts';
-import { type Activation, activate } from './activate.ts';
+import { type Activation, activate, confirmLive } from './activate.ts';
 import { openAgent } from './agent-session.ts';
 import { type AccountScope, getVersion, type ScriptSubdomain } from './cloudflare/workers.ts';
 import type { DeploySettings } from './config.ts';
 import { deploymentOfTag, uploadEdgeVersion } from './edge-version.ts';
 import { uploadFunctions } from './functions.ts';
+import { pointerOf } from './history.ts';
 import { ensureInfra } from './infra.ts';
 import { appRuntimeOf, type ProjectNames, projectNames } from './names.ts';
 import { publishPointer } from './pointer.ts';
@@ -52,18 +53,27 @@ function say(text: string): void {
   console.log(`upwind: ${text}`);
 }
 
-/** The deployment the edge serves now: the one its live version is tagged with. */
-async function liveDeployment(
+/** The edge's version that has its traffic, and the deployment it is tagged with. */
+interface LiveVersion {
+  readonly versionId: string;
+  readonly deploymentId: string | undefined;
+}
+
+/** What the edge serves now: its live version, and the deployment that version is tagged with. */
+async function liveVersionOf(
   scope: AccountScope,
   names: ProjectNames,
   account: AccountView,
-): Promise<string | undefined> {
+): Promise<LiveVersion | undefined> {
   const live = account.live?.versions.find((share) => share.percentage > 0);
   if (live === undefined) {
     return undefined;
   }
   const version = await getVersion(scope, names.edge, live.version_id);
-  return deploymentOfTag(version.annotations?.['workers/tag']);
+  return {
+    versionId: live.version_id,
+    deploymentId: deploymentOfTag(version.annotations?.['workers/tag']),
+  };
 }
 
 /** Where the site is reached on the account's side, as the edge's names and its first one. */
@@ -176,12 +186,52 @@ async function cleanUp(
 }
 
 /**
+ * Whether the live version answers as the deployment it is tagged with, unnamed, and passes the
+ * project's checks: what the version's own pointer names — the manifest — read from what the
+ * version was uploaded with. Said where it does not; nothing where it does.
+ */
+async function unconfirmedLive(
+  run: DeployRun,
+  input: { readonly names: ProjectNames; readonly origin: URL; readonly versionId: string },
+): Promise<number | undefined> {
+  const deploymentId = run.plan.bundle.deploymentId;
+  const pointer = await pointerOf(run.scope, input.names.edge, input.versionId);
+  if (pointer?.manifestId === undefined) {
+    console.error(
+      `upwind: ${deploymentId} is live, and ${input.names.edge}'s version ${input.versionId} names no manifest this run can confirm it by; nothing was changed`,
+    );
+    return 1;
+  }
+  const confirmed = await confirmLive({
+    origin: input.origin,
+    expected: { deploymentId, manifestId: pointer.manifestId, versionId: input.versionId },
+    checks: run.settings.checks,
+    fetch: run.fetch,
+    sleep: run.sleep,
+    now: run.now,
+  });
+  if (confirmed.kind === 'live') {
+    return undefined;
+  }
+  const code = report(confirmed, deploymentId, input.origin);
+  console.error(
+    "upwind: the edge's reach and the deployments before it are left as they are until it answers as it should",
+  );
+  return code;
+}
+
+/**
  * A run of the deployment that is live already. Staged again, it would be staged without the
  * deployment before it, whose files its open pages still ask for; and switched to again, it would
  * be switched from itself. What a run that made it live may have left undone is done, though, and
  * nothing else: the edge's reach, which a run narrows only once its deployment is live, and the
  * cleanup of older deployments, which takes the agent — a failure of either is left for the next
  * run, which may be this one.
+ *
+ * Neither is done before the deployment is confirmed live, as a deploy confirms one it has just
+ * switched to: a run that made it live may have ended with it unconfirmed, or failing its checks,
+ * and what such a run would not have done, this one does not do either — least of all delete the
+ * Functions of the deployment it would be rolled back to.
  */
 async function finishLive(
   run: DeployRun,
@@ -189,10 +239,16 @@ async function finishLive(
     readonly names: ProjectNames;
     readonly subdomain: string;
     readonly reach: ScriptSubdomain;
+    readonly origin: URL;
+    readonly versionId: string;
   },
 ): Promise<number> {
   const { scope, account, settings, plan } = run;
   const { names } = input;
+  const unconfirmed = await unconfirmedLive(run, input);
+  if (unconfirmed !== undefined) {
+    return unconfirmed;
+  }
   await narrowReach(scope, names.edge, input.reach);
   const stores = await ensureStores({ scope, names, account, storage: settings.storage });
   const scripts = await shippedWorkers();
@@ -214,7 +270,7 @@ async function finishLive(
   } finally {
     await session.close();
   }
-  say(`${plan.bundle.deploymentId} is live already; nothing else was changed`);
+  say(`${plan.bundle.deploymentId} is live already, and answers as it; nothing else was changed`);
   return 0;
 }
 
@@ -229,10 +285,17 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
   }
   const site = siteOf(settings, names, subdomain);
   const reach: ScriptSubdomain = { enabled: settings.workersDev, previews_enabled: false };
-  const previous = await liveDeployment(scope, names, account);
-  if (previous === bundle.deploymentId) {
-    return finishLive(run, { names, subdomain, reach });
+  const live = await liveVersionOf(scope, names, account);
+  if (live?.deploymentId === bundle.deploymentId) {
+    return finishLive(run, {
+      names,
+      subdomain,
+      reach,
+      origin: site.origin,
+      versionId: live.versionId,
+    });
   }
+  const previous = live?.deploymentId;
   const existing = new Set(account.projectWorkers);
   say('finding or making the stores');
   const stores = await ensureStores({ scope, names, account, storage: settings.storage });

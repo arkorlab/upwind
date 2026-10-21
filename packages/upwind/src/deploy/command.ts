@@ -45,30 +45,66 @@ function reachedAt(settings: DeploySettings, account: AccountView | undefined): 
   return reached;
 }
 
-/** The account's Workers other than the project's, and how many it would hold with the project's at most. */
-function workersOf(plan: Preflight, account: AccountView): { others: number; total: number } {
+/** How many Workers the account would hold, counted two ways (`workersOf`). */
+interface WorkerCount {
+  /** The account's Workers other than the project's. */
+  readonly others: number;
+  /**
+   * What this deploy holds at its peak: every Worker on the account now, the project's among them,
+   * with the new build's Functions and whatever of the project's own Workers is not there yet. The
+   * deployments kept now keep their Functions until the new one is live, however many each has.
+   */
+  readonly peak: number;
+  /** What a deploy of this build's size holds at most, once older deployments are down to `keep`. */
+  readonly steady: number;
+}
+
+function workersOf(plan: Preflight, settings: DeploySettings, account: AccountView): WorkerCount {
+  const present = new Set(account.projectWorkers);
+  const names = projectNames(settings.project);
+  const own = [names.edge, names.cache, names.cacheRead, names.prefetch, names.agent];
+  // A Worker already there is counted once: a run of a deployment stopped part way has some of its
+  // Functions on the account, and the project's own Workers are there after its first deploy.
+  const added = [...plan.functions.map((script) => script.scriptName), ...own].filter(
+    (name) => !present.has(name),
+  );
   const others = account.workers - account.projectWorkers.length;
-  return { others, total: others + plan.projectedWorkers };
+  return {
+    others,
+    peak: account.workers + added.length,
+    steady: others + plan.projectedWorkers,
+  };
 }
 
 /**
- * What the account cannot take: more Workers than it may hold, counting the ones it has of others.
- * More than the project's alone would hold is the plan's problem already (`preflight`).
+ * What the account cannot take: more Workers than it may hold, at this deploy's peak or once a
+ * deploy of this size has cleaned up. More than the project's alone would hold is the plan's problem
+ * already (`preflight`).
  */
-function capacityProblems(plan: Preflight, account: AccountView): string[] {
-  const { others, total } = workersOf(plan, account);
-  if (plan.projectedWorkers > MAX_ACCOUNT_WORKERS || total <= MAX_ACCOUNT_WORKERS) {
-    return [];
+function capacityProblems(
+  plan: Preflight,
+  settings: DeploySettings,
+  account: AccountView,
+): string[] {
+  const { others, peak, steady } = workersOf(plan, settings, account);
+  const problems: string[] = [];
+  if (peak > MAX_ACCOUNT_WORKERS) {
+    problems.push(
+      `the account holds ${account.workers} Workers, ${account.projectWorkers.length} of them this project's, and this deploy would bring it to ${peak} before it cleans any up, over the ${MAX_ACCOUNT_WORKERS} an account on Workers Paid may: the deployments kept now keep their Functions until the new one is live; delete Workers the account no longer needs`,
+    );
   }
-  return [
-    `the account holds ${others} Workers besides this project's, and with this project's at most it would hold ${total}, over the ${MAX_ACCOUNT_WORKERS} an account on Workers Paid may; lower deploy.keep or --keep, or delete Workers the account no longer needs`,
-  ];
+  if (plan.projectedWorkers <= MAX_ACCOUNT_WORKERS && steady > MAX_ACCOUNT_WORKERS) {
+    problems.push(
+      `the account holds ${others} Workers besides this project's, and with this project's at most it would hold ${steady}, over the ${MAX_ACCOUNT_WORKERS} an account on Workers Paid may; lower deploy.keep or --keep, or delete Workers the account no longer needs`,
+    );
+  }
+  return problems;
 }
 
-function describeAccount(plan: Preflight, account: AccountView): void {
-  const { total } = workersOf(plan, account);
+function describeAccount(plan: Preflight, settings: DeploySettings, account: AccountView): void {
+  const { peak, steady } = workersOf(plan, settings, account);
   line(
-    `account ${account.accountId}: ${account.workers} Workers, ${account.projectWorkers.length} of them this project's; with this project's at most, ${total} of ${MAX_ACCOUNT_WORKERS}`,
+    `account ${account.accountId}: ${account.workers} Workers, ${account.projectWorkers.length} of them this project's; with this project's at most, ${Math.max(peak, steady)} of ${MAX_ACCOUNT_WORKERS}`,
   );
   const shares = account.live?.versions.map(
     (share) => `${share.version_id} at ${String(share.percentage)}%`,
@@ -107,7 +143,7 @@ function describePlan(input: {
     line('account: not read, since CLOUDFLARE_API_TOKEN is not set');
     return;
   }
-  describeAccount(plan, account);
+  describeAccount(plan, settings, account);
 }
 
 /**
@@ -196,7 +232,9 @@ export async function runDeploy(
   }
   const problems = [
     ...plan.problems,
-    ...(account === undefined ? [] : [...account.problems, ...capacityProblems(plan, account)]),
+    ...(account === undefined
+      ? []
+      : [...account.problems, ...capacityProblems(plan, settings, account)]),
   ];
   if (problems.length > 0) {
     const things = plural(problems.length, 'one thing stops', `${problems.length} things stop`);
