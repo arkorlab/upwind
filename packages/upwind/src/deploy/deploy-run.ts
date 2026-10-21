@@ -122,6 +122,13 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
     throw new Error('the account has no workers.dev subdomain');
   }
   const site = siteOf(settings, names, subdomain);
+  const previous = await liveDeployment(scope, names, account);
+  if (previous === bundle.deploymentId) {
+    // Staged again, it would be staged without the deployment before it, whose files its open
+    // pages still ask for; and switched to again, it would be switched from itself.
+    say(`${bundle.deploymentId} is live already; nothing was changed`);
+    return 0;
+  }
   const existing = new Set(account.projectWorkers);
   say('finding or making the stores');
   const stores = await ensureStores({ scope, names, account, storage: settings.storage });
@@ -163,7 +170,7 @@ export async function deployToAccount(run: DeployRun): Promise<number> {
       project: names.project,
       owner: scope.accountId,
       originHost: settings.hostnames[0] ?? `${names.edge}.${subdomain}.workers.dev`,
-      previous: await liveDeployment(scope, names, account),
+      previous,
       now: run.now,
     });
     const functions = await uploadFunctions({
