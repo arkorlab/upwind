@@ -33,6 +33,7 @@ describe('seeding the shared identity of a reusable terminal shell', () => {
       { kind: 'next-implicit', value },
     ]);
     expect(seeded?.cache?.entryId).toBe(value.slice('_N_T_upwind:shared-shell:'.length));
+    expect(seeded?.cache?.buildTags).toStrictEqual(seeded?.input.generation.tags);
   });
 
   it.each<Partial<Prerender>>([
@@ -111,8 +112,20 @@ describe('seeding the shared identity of a reusable terminal shell', () => {
         { kind: 'next-implicit', value: await sharedTag() },
       ]);
       expect(seeded?.input.generation.tags).toHaveLength(count + 1);
+      expect(seeded?.cache?.buildTags).toStrictEqual(
+        count < 1024 ? seeded?.input.generation.tags : undefined,
+      );
     },
   );
+
+  it('leaves overlong build membership unknown without truncating the seed', async () => {
+    const value = 't'.repeat(257);
+    const prerender = { ...SHARED_SHELL, initialHeaders: { 'x-next-cache-tags': value } };
+    const seeded = await seedRouteFor(shellBundle(prerender), prerender, CONTEXT);
+
+    expect(seeded?.input.generation.tags).toContainEqual({ kind: 'next-explicit', value });
+    expect(seeded?.cache).not.toHaveProperty('buildTags');
+  });
 });
 
 describe('concrete pathname tags and class metadata in a seed', () => {
@@ -218,6 +231,7 @@ describe('concrete pathname tags and class metadata in a seed', () => {
     expect(seeded).toBeDefined();
     expect(seeded?.input.generation.tags.some((tag) => tag.value === pathnameTag)).toBe(!classed);
     expect(seeded?.cache?.route).toBe(classed ? prerender.route : undefined);
+    expect(seeded?.cache?.buildTags).toStrictEqual(seeded?.input.generation.tags);
   });
 
   it('keeps recorded Pages tags without adding App Router pathname tags', () => {
