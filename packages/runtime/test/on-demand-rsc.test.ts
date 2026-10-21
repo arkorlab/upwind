@@ -15,13 +15,16 @@ import {
 import { TtlCache } from '@stayingupwind/core/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { renderCompletedRscForVisitor } from '../src/answers.ts';
 import type { NodeHandler } from '../src/app-module.ts';
 import type { CacheHost, CommitRequest } from '../src/cache/host.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { TagState } from '../src/cache/tags.ts';
 import { handleRequest } from '../src/handle.ts';
 import { invokeNodeHandler, type InvokeInput } from '../src/node-bridge.ts';
-import { getStore, type Store } from '../src/store.ts';
+import { routingParameters } from '../src/route-parameters.ts';
+import type { RoutedInput } from '../src/serve.ts';
+import { generationPathname, getStore, isClassShell, type Store } from '../src/store.ts';
 
 vi.mock(import('../src/store.ts'), async (importOriginal) => {
   const original = await importOriginal();
@@ -55,6 +58,7 @@ function deployment(
   partial: boolean,
   sourcePathname?: string,
   ensureStatic?: Prerender['ensureStatic'],
+  overrides: Partial<Prerender> = {},
 ): Store {
   const route = partial ? PARTIAL_ROUTE : STATIC_ROUTE;
   const pathname = sourcePathname ?? route;
@@ -71,6 +75,7 @@ function deployment(
     allowQuery: ['nxtPtop'],
     ensureStatic,
     initialRevalidate: false,
+    ...overrides,
   };
   const dynamic = {
     sourceRegex: partial
@@ -264,18 +269,23 @@ function cache(beforeCommit: () => Promise<void> = () => Promise.resolve()) {
     artifactMemo: new TtlCache(HOLD_MS, ENTRIES, frozen),
     log: vi.fn(),
   };
-  return { runtime, startAttempt, commits, fail, readArtifact, readRecord };
+  return { runtime, startAttempt, commits, fail, readArtifact, readRecord, records };
 }
 
 function requests(runtime: CacheRuntime | undefined, partial = false) {
   const route = partial ? PARTIAL_ROUTE : STATIC_ROUTE;
   const pending: Promise<unknown>[] = [];
   return {
-    ask: (pathname: string, headers: Record<string, string> = RSC_HEADERS, clock = NOW) => {
+    ask: (
+      pathname: string,
+      headers: Record<string, string> = RSC_HEADERS,
+      clock = NOW,
+      method = 'GET',
+    ) => {
       return handleRequest({
         app: { entries: { [route]: () => ({ handler }) } },
         edge: { entries: {} },
-        request: new Request(`https://app.test${pathname}`, { headers }),
+        request: new Request(`https://app.test${pathname}`, { headers, method }),
         cache: runtime,
         waitUntil: (work) => {
           pending.push(work);
@@ -363,6 +373,23 @@ function captureClass(input: InvokeInput): Promise<Response> {
   return capture(input, new Uint8Array([0, 255, 10, 50]), state);
 }
 
+function completedResponse(input: InvokeInput): Promise<Response> {
+  return input.requestMeta['onCacheEntryV2'] === undefined
+    ? Promise.resolve(new Response(String(input.requestMeta['postponed'])))
+    : captureClass(input);
+}
+
+async function remoteClassRecord(outcome: string): Promise<Uint8Array | undefined> {
+  if (outcome !== 'published') return undefined;
+  const seeded = cache();
+  const client = requests(seeded.runtime, true);
+  await (await client.ask('/required-fallback-params/t2/b1')).text();
+  await client.drain();
+  const record = [...seeded.records.values()][0];
+  if (record === undefined) throw new Error('the fixture did not publish a record');
+  return record;
+}
+
 describe('ordinary RSC navigation of an unbuilt fallback', () => {
   beforeEach(() => {
     vi.stubGlobal('__ARKOR_FUNCTION_KIND__', 'app');
@@ -370,9 +397,558 @@ describe('ordinary RSC navigation of an unbuilt fallback', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.resetAllMocks();
   });
+
+  it('captures a completed RSC class for its visitor after a slow authority read', async () => {
+    vi.useFakeTimers();
+    vi.mocked(getStore).mockReturnValue(deployment(true));
+    const test = cache();
+    const reading = Promise.withResolvers<undefined>();
+    const record = Promise.withResolvers<Uint8Array | undefined>();
+
+    test.readRecord.mockImplementation(() => {
+      reading.resolve(undefined);
+      return record.promise;
+    });
+
+    const { ask, drain } = requests(test.runtime, true);
+    vi.mocked(invokeNodeHandler).mockImplementation(completedResponse);
+
+    try {
+      const answered = ask('/required-fallback-params/t2/b1');
+
+      await reading.promise;
+      await vi.advanceTimersByTimeAsync(250);
+
+      const response = await answered;
+
+      await expect(response.text()).resolves.toBe(FIRST_STATE);
+      expect(
+        vi.mocked(invokeNodeHandler).mock.calls.map(([input]) => {
+          return {
+            ...nativeInvocation(input),
+            capture: typeof input.requestMeta['onCacheEntryV2'],
+            query: new URL(input.url ?? '/', 'https://app.test').search,
+          };
+        }),
+      ).toStrictEqual([
+        {
+          pathname: '/required-fallback-params/t2/[bottom]',
+          query: '',
+          rsc: null,
+          prefetch: null,
+          capture: 'function',
+          postponed: undefined,
+        },
+        {
+          pathname: '/required-fallback-params/t2/b1',
+          query: '?nxtPtop=t2&nxtPbottom=b1',
+          rsc: '1',
+          prefetch: null,
+          capture: 'undefined',
+          postponed: FIRST_STATE,
+        },
+      ]);
+      expect(test.readRecord).toHaveBeenCalledTimes(1);
+      expect(test.startAttempt).not.toHaveBeenCalled();
+      expect(test.commits).toHaveLength(0);
+      expect(test.fail).not.toHaveBeenCalled();
+    } finally {
+      record.resolve(undefined);
+      await drain();
+    }
+  });
+
+  it.each(['b1', 'b2'])(
+    'keeps visitor inputs out of the unavailable class capture and resumes %s with them',
+    async (bottom) => {
+      const store = deployment(true);
+      vi.mocked(getStore).mockReturnValue(store);
+      const test = cache();
+
+      test.readRecord.mockRejectedValue(new Error('authority unavailable'));
+
+      const { ask, drain } = requests(test.runtime, true);
+      vi.mocked(invokeNodeHandler).mockImplementation(completedResponse);
+      const router = '["",{}]';
+
+      const response = await ask(`/required-fallback-params/t2/${bottom}?view=own`, {
+        rsc: '1',
+        cookie: 'session=visitor',
+        'next-router-state-tree': router,
+      });
+
+      await expect(response.text()).resolves.toBe(FIRST_STATE);
+
+      await drain();
+
+      expect(
+        routingParameters(store, PARTIAL_ROUTE, '/required-fallback-params/t2/[bottom]'),
+      ).toBeUndefined();
+      expect(
+        vi.mocked(invokeNodeHandler).mock.calls.map(([input]) => {
+          return {
+            ...nativeInvocation(input),
+            capture: typeof input.requestMeta['onCacheEntryV2'],
+            query: new URL(input.url ?? '/', 'https://app.test').search,
+            cookie: input.request.headers.get('cookie'),
+            router: input.request.headers.get('next-router-state-tree'),
+          };
+        }),
+      ).toStrictEqual([
+        {
+          pathname: '/required-fallback-params/t2/[bottom]',
+          query: '',
+          rsc: null,
+          prefetch: null,
+          capture: 'function',
+          postponed: undefined,
+          cookie: null,
+          router: null,
+        },
+        {
+          pathname: `/required-fallback-params/t2/${bottom}`,
+          query: `?view=own&nxtPtop=t2&nxtPbottom=${bottom}`,
+          rsc: '1',
+          prefetch: null,
+          capture: 'undefined',
+          postponed: FIRST_STATE,
+          cookie: 'session=visitor',
+          router,
+        },
+      ]);
+      expect(test.readRecord).toHaveBeenCalledTimes(1);
+      expect(test.startAttempt).not.toHaveBeenCalled();
+      expect(test.commits).toHaveLength(0);
+      expect(test.fail).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['absent', 'published'])(
+    'publishes nothing when the delayed authority eventually answers %s',
+    async (outcome) => {
+      vi.useFakeTimers();
+      vi.mocked(getStore).mockReturnValue(deployment(true));
+      vi.mocked(invokeNodeHandler).mockImplementation(completedResponse);
+      const remote = await remoteClassRecord(outcome);
+      const test = cache();
+      const reading = Promise.withResolvers<undefined>();
+      const record = Promise.withResolvers<Uint8Array | undefined>();
+
+      test.readRecord.mockImplementation(() => {
+        reading.resolve(undefined);
+        return record.promise;
+      });
+
+      const { ask, drain } = requests(test.runtime, true);
+
+      try {
+        const answered = ask('/required-fallback-params/t2/b2');
+        await reading.promise;
+        await vi.advanceTimersByTimeAsync(250);
+
+        await expect((await answered).text()).resolves.toBe(FIRST_STATE);
+        expect(test.startAttempt).not.toHaveBeenCalled();
+        expect(test.commits).toHaveLength(0);
+      } finally {
+        record.resolve(remote);
+        await drain();
+      }
+
+      expect({
+        reads: test.readRecord.mock.calls.length,
+        attempts: test.startAttempt.mock.calls.length,
+        commits: test.commits.length,
+        failures: test.fail.mock.calls.length,
+      }).toStrictEqual({ reads: 1, attempts: 0, commits: 0, failures: 0 });
+
+      const { entryId } = await deriveEntry(SCOPE, {
+        kind: 'app-page',
+        route: PARTIAL_ROUTE,
+        pathname: '/required-fallback-params/t2/[bottom]',
+      });
+
+      const remembered = test.runtime.recordMemo.get(entryId);
+
+      expect(remembered === null ? 'absent' : remembered?.header.generationId).toBe(
+        outcome === 'published' ? 'generation-attempt-1' : 'absent',
+      );
+    },
+  );
+
+  it.each(['dynamic', 'server-error', 'throw'])(
+    'keeps the generic fallback when the unavailable visitor capture is %s',
+    async (failure) => {
+      vi.mocked(getStore).mockReturnValue(deployment(true));
+      const test = cache();
+
+      test.readRecord.mockRejectedValue(new Error('authority unavailable'));
+
+      const { ask, drain } = requests(test.runtime, true);
+      vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+        if (input.requestMeta['onCacheEntryV2'] === undefined) return completedResponse(input);
+        if (failure === 'throw') return Promise.reject(new Error('static capture rejected'));
+        return Promise.resolve(
+          new Response(null, { status: failure === 'server-error' ? 500 : 200 }),
+        );
+      });
+
+      await expect((await ask('/required-fallback-params/t2/b1')).text()).resolves.toBe(
+        GENERIC_STATE,
+      );
+
+      vi.mocked(invokeNodeHandler).mockImplementation(completedResponse);
+
+      await expect((await ask('/required-fallback-params/t2/b2')).text()).resolves.toBe(
+        FIRST_STATE,
+      );
+
+      await drain();
+
+      expect(test.startAttempt).not.toHaveBeenCalled();
+      expect(test.commits).toHaveLength(0);
+      expect(test.fail).not.toHaveBeenCalled();
+
+      expect(
+        vi
+          .mocked(test.runtime.log)
+          .mock.calls.filter(([message]) => message === 'completed RSC visitor capture failed'),
+      ).toHaveLength(failure === 'throw' ? 1 : 0);
+    },
+  );
+
+  it('does not hide a visitor resume failure after the unavailable static capture succeeds', async () => {
+    vi.mocked(getStore).mockReturnValue(deployment(true));
+    const test = cache();
+
+    test.readRecord.mockRejectedValue(new Error('authority unavailable'));
+
+    const { ask, drain } = requests(test.runtime, true);
+    vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+      return input.requestMeta['onCacheEntryV2'] === undefined
+        ? Promise.reject(new Error('visitor resume rejected'))
+        : captureClass(input);
+    });
+
+    await expect(ask('/required-fallback-params/t2/b1')).rejects.toThrow('visitor resume rejected');
+
+    await drain();
+
+    expect(test.runtime.log).not.toHaveBeenCalledWith('completed RSC visitor capture failed');
+    expect(test.startAttempt).not.toHaveBeenCalled();
+    expect(test.commits).toHaveLength(0);
+  });
+
+  it.each([
+    { label: 'prefetch=1', headers: { rsc: '1', 'next-router-prefetch': '1' } },
+    { label: 'prefetch=2', headers: { rsc: '1', 'next-router-prefetch': '2' } },
+    { label: 'prefetch=3', headers: { rsc: '1', 'next-router-prefetch': '3' } },
+    { label: 'empty prefetch', headers: { rsc: '1', 'next-router-prefetch': '' } },
+    { label: 'segment', headers: { rsc: '1', 'next-router-segment-prefetch': '/_tree' } },
+  ])('adds no unavailable static capture to $label', async ({ headers }) => {
+    vi.mocked(getStore).mockReturnValue(deployment(true));
+    const test = cache();
+
+    test.readRecord.mockRejectedValue(new Error('authority unavailable'));
+
+    const { ask, drain } = requests(test.runtime, true);
+    vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('native'));
+
+    await expect((await ask('/required-fallback-params/t2/b1', headers)).text()).resolves.toBe(
+      'native',
+    );
+
+    await drain();
+
+    expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(invokeNodeHandler).mock.calls[0]?.[0].requestMeta['onCacheEntryV2'],
+    ).toBeUndefined();
+    expect(test.startAttempt).not.toHaveBeenCalled();
+    expect(test.commits).toHaveLength(0);
+  });
+
+  it('refuses a literal-placeholder catch-all target that needs a separated query', async () => {
+    const base = deployment(true);
+    const route = '/required-fallback-params/[top]/[...bottom]';
+    const shell: Prerender = {
+      id: route,
+      route,
+      pathname: route,
+      parentOutputId: route,
+      groupId: 1,
+      routeType: 'page',
+      response: 'empty',
+      compute: 'blocking',
+      renderingMode: 'PARTIALLY_STATIC',
+      allowQuery: ['nxtPbottom'],
+      initialRevalidate: false,
+    };
+    const store: Store = {
+      ...base,
+      manifest: {
+        ...base.manifest,
+        entrypoints: [{ id: route, pathname: route, kind: 'app-page' }],
+        prerenders: [shell],
+      },
+      prerendersByPathname: new Map([[route, shell]]),
+      shellsByRoute: new Map([
+        [
+          route,
+          {
+            pages: new Map(),
+            patterns: [{ pattern: /^\/required-fallback-params\/[^/]+\/.+$/u, prerender: shell }],
+          },
+        ],
+      ]),
+    };
+    const pathname = '/required-fallback-params/[top]/a%2Fb';
+    const completed = pathname;
+    const test = cache();
+    const input: RoutedInput = {
+      app: { entries: {} },
+      edge: { entries: {} },
+      request: new Request(`https://app.test${pathname}`, { headers: RSC_HEADERS }),
+      initURL: `https://app.test${pathname}`,
+      cache: test.runtime,
+      run: (work) => work(),
+      waitUntil: vi.fn(),
+    };
+
+    expect(generationPathname(shell, pathname)).toBe(completed);
+    expect(isClassShell(completed, route)).toBe(true);
+    expect(routingParameters(store, route, completed)).toStrictEqual({
+      nxtPtop: '[top]',
+      nxtPbottom: 'a/b',
+    });
+    await expect(
+      renderCompletedRscForVisitor(
+        {
+          input,
+          store,
+          target: { descriptor: { kind: 'app-page', route, pathname: completed }, handler },
+        },
+        { route, pathname: completed, representation: 'rsc', url: pathname, onMiss: 'render' },
+        true,
+      ),
+    ).resolves.toBeUndefined();
+    expect(invokeNodeHandler).not.toHaveBeenCalled();
+  });
+
+  it('keeps a valid draft and a matching bypass on their request-specific paths', async () => {
+    const base = deployment(true, undefined, undefined, {
+      bypassFor: [{ type: 'header', key: 'x-bypass', value: 'yes' }],
+    });
+    vi.mocked(getStore).mockReturnValue({
+      ...base,
+      manifest: { ...base.manifest, bypassToken: 'draft-token' },
+    });
+    const test = cache();
+
+    test.readRecord.mockRejectedValue(new Error('authority unavailable'));
+
+    const { ask, drain } = requests(test.runtime, true);
+    vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('visitor'));
+
+    for (const headers of [
+      { rsc: '1', cookie: '__prerender_bypass=draft-token' },
+      { rsc: '1', 'x-bypass': 'yes' },
+    ]) {
+      await expect((await ask('/required-fallback-params/t2/b1', headers)).text()).resolves.toBe(
+        'visitor',
+      );
+
+      vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('visitor'));
+    }
+    await drain();
+
+    expect(test.readRecord).not.toHaveBeenCalled();
+    expect(test.startAttempt).not.toHaveBeenCalled();
+    expect(test.commits).toHaveLength(0);
+    expect(
+      vi
+        .mocked(invokeNodeHandler)
+        .mock.calls.every(([input]) => input.requestMeta['onCacheEntryV2'] === undefined),
+    ).toBe(true);
+  });
+
+  it('preserves the dynamic miss suppression when its next authority read is unavailable', async () => {
+    vi.mocked(getStore).mockReturnValue(deployment(true));
+    const test = cache();
+    const { ask, drain } = requests(test.runtime, true);
+    vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+      return input.requestMeta['onCacheEntryV2'] === undefined
+        ? completedResponse(input)
+        : Promise.resolve(new Response(null));
+    });
+
+    await expect((await ask('/required-fallback-params/t2/b1')).text()).resolves.toBe(
+      GENERIC_STATE,
+    );
+
+    await drain();
+
+    expect(test.fail).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ outcome: 'skipped' }),
+    );
+
+    const { entryId } = await deriveEntry(SCOPE, {
+      kind: 'app-page',
+      route: PARTIAL_ROUTE,
+      pathname: '/required-fallback-params/t2/[bottom]',
+    });
+
+    test.runtime.recordMemo.delete(entryId);
+
+    test.runtime.recordReads.delete(entryId);
+
+    test.startAttempt.mockClear();
+
+    test.fail.mockClear();
+
+    vi.mocked(invokeNodeHandler).mockClear();
+
+    test.readRecord.mockRejectedValue(new Error('authority unavailable'));
+
+    vi.mocked(invokeNodeHandler).mockImplementation(completedResponse);
+
+    await expect((await ask('/required-fallback-params/t2/b2')).text()).resolves.toBe(
+      GENERIC_STATE,
+    );
+
+    await drain();
+
+    expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(invokeNodeHandler).mock.calls[0]?.[0].requestMeta['onCacheEntryV2'],
+    ).toBeUndefined();
+    expect(test.startAttempt).not.toHaveBeenCalled();
+    expect(test.fail).not.toHaveBeenCalled();
+    expect(test.commits).toHaveLength(0);
+  });
+
+  it('does not recapture after the foreground path already tried the same class', async () => {
+    vi.mocked(getStore).mockReturnValue(deployment(true));
+    const test = cache();
+
+    test.startAttempt.mockResolvedValue({ kind: 'busy' });
+
+    test.readRecord.mockRejectedValue(new Error('authority unavailable'));
+
+    const { ask, drain } = requests(test.runtime, true);
+    vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+      return input.requestMeta['onCacheEntryV2'] === undefined
+        ? completedResponse(input)
+        : Promise.resolve(new Response(null));
+    });
+
+    const response = await ask('/required-fallback-params/t2/b1', {
+      rsc: '1',
+      [REGENERATE_HEADER]: 'foreground',
+      [CACHE_ROUTE_HEADER]: PARTIAL_ROUTE,
+    });
+
+    await expect(response.text()).resolves.toBe(GENERIC_STATE);
+
+    await drain();
+
+    expect(test.startAttempt).toHaveBeenCalledTimes(1);
+    expect(
+      vi
+        .mocked(invokeNodeHandler)
+        .mock.calls.filter(([input]) => input.requestMeta['onCacheEntryV2'] !== undefined),
+    ).toHaveLength(1);
+    expect(test.commits).toHaveLength(0);
+    expect(test.fail).not.toHaveBeenCalled();
+  });
+
+  it('adds no authority reads or static captures to a fresh completed-class hit', async () => {
+    vi.mocked(getStore).mockReturnValue(deployment(true));
+    const test = cache();
+    const { ask, drain } = requests(test.runtime, true);
+    vi.mocked(invokeNodeHandler).mockImplementation(completedResponse);
+    await (await ask('/required-fallback-params/t2/b1')).text();
+    await drain();
+
+    expect(test.commits).toHaveLength(1);
+
+    test.readRecord.mockClear();
+
+    test.startAttempt.mockClear();
+
+    vi.mocked(invokeNodeHandler).mockClear();
+
+    await expect((await ask('/required-fallback-params/t2/b2')).text()).resolves.toBe(FIRST_STATE);
+
+    await drain();
+
+    expect(test.readRecord).not.toHaveBeenCalled();
+    expect(test.readArtifact).not.toHaveBeenCalled();
+    expect(test.startAttempt).not.toHaveBeenCalled();
+    expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(invokeNodeHandler).mock.calls[0]?.[0].requestMeta['onCacheEntryV2'],
+    ).toBeUndefined();
+    expect(test.commits).toHaveLength(1);
+  });
+
+  it.each([
+    { label: 'HEAD', method: 'HEAD', source: undefined, ensure: undefined, overrides: {} },
+    {
+      label: 'unchanged class',
+      method: 'GET',
+      source: '/required-fallback-params/t2/[bottom]',
+      ensure: undefined,
+      overrides: {},
+    },
+    {
+      label: 'navigation-static',
+      method: 'GET',
+      source: undefined,
+      ensure: 'navigation' as const,
+      overrides: {},
+    },
+    {
+      label: 'built shell',
+      method: 'GET',
+      source: undefined,
+      ensure: undefined,
+      overrides: { body: { sha256: 'unused', byteLength: 1, contentType: 'text/html' } },
+    },
+    {
+      label: 'query-dependent',
+      method: 'GET',
+      source: undefined,
+      ensure: undefined,
+      overrides: { allowQuery: ['unrepresented'] },
+    },
+  ])(
+    'keeps an unavailable $label on its existing native path',
+    async ({ method, source, ensure, overrides }) => {
+      vi.mocked(getStore).mockReturnValue(deployment(true, source, ensure, overrides));
+      const test = cache();
+
+      test.readRecord.mockRejectedValue(new Error('authority unavailable'));
+
+      const { ask, drain } = requests(test.runtime, true);
+      vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('native'));
+
+      const response = await ask('/required-fallback-params/t2/b1', RSC_HEADERS, NOW, method);
+      await response.text();
+      await drain();
+
+      expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+      expect(
+        vi.mocked(invokeNodeHandler).mock.calls[0]?.[0].requestMeta['onCacheEntryV2'],
+      ).toBeUndefined();
+      expect(test.startAttempt).not.toHaveBeenCalled();
+      expect(test.commits).toHaveLength(0);
+    },
+  );
 
   it('captures once, preserves opaque Flight bytes, and sends them before its commit lands', async () => {
     const committing = Promise.withResolvers<undefined>();
@@ -568,7 +1144,8 @@ describe('ordinary RSC navigation of an unbuilt fallback', () => {
       const runtime = fallbackRuntime(test, mode);
       const { ask, drain } = requests(runtime, true);
       const flight = new Uint8Array([0, 255, 11, 8]);
-      const captures = mode === 'capture-refused' || mode === 'busy-capture-refused' ? 1 : 0;
+      const attempts = mode === 'capture-refused' || mode === 'busy-capture-refused' ? 1 : 0;
+      const captures = mode === 'no-cache' ? 0 : 1;
       vi.mocked(invokeNodeHandler).mockImplementation((input) => {
         const bytes = input.requestMeta['onCacheEntryV2'] === undefined ? flight : null;
         return Promise.resolve(new Response(bytes));
@@ -600,7 +1177,7 @@ describe('ordinary RSC navigation of an unbuilt fallback', () => {
           .mocked(invokeNodeHandler)
           .mock.calls.filter(([input]) => input.requestMeta['onCacheEntryV2'] !== undefined).length,
         commits: test.commits.length,
-      }).toStrictEqual({ attempts: captures, captures, commits: 0 });
+      }).toStrictEqual({ attempts, captures, commits: 0 });
     },
   );
 
