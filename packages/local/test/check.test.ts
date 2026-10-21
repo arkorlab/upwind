@@ -3669,7 +3669,7 @@ describe('what the check makes of the middleware', () => {
       });
       const quantified: HeaderRule = {
         sourceRegex: '^/a[.]txt$',
-        has: [{ type: 'header', key: 'x-tenant', value: String.raw`\d{2}` }],
+        has: [{ type: 'header', key: 'x-site', value: String.raw`\d{2}` }],
         headers: { 'Content-Type': 'image/png' },
       };
       const unproved = await checkStack(stackOf([], files, { headerRules: [quantified] }));
