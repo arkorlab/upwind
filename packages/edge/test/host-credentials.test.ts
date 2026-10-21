@@ -1,4 +1,5 @@
 import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manifest';
+import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
@@ -37,7 +38,7 @@ async function answered(
           projectId: seeded.projectId,
           runId: seeded.runId,
           generatedAt: seeded.generatedAt,
-          originHost: seeded.originHost,
+          originHost: pointer.originHost,
           deployment: seeded.deployment,
           app: seeded.app,
           routes: Object.values(seeded.routes).map((route): RouteEntry => {
@@ -68,7 +69,14 @@ async function answered(
       privateDelivery: false,
       cspReportingPath: undefined,
     },
-    { manifestLookup: Promise.resolve({ kind: 'found', value: manifest }) },
+    {
+      manifestLookup: Promise.resolve({ kind: 'found', value: manifest }),
+      policyLookup: Promise.resolve({
+        kind: 'found',
+        source: 'exact',
+        policy: DEFAULT_DELIVERY_POLICY,
+      }),
+    },
   );
   await response.arrayBuffer();
   await waitOnExecutionContext(ctx);
