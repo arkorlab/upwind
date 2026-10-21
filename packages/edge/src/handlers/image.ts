@@ -25,7 +25,7 @@ import {
   withDeadline,
 } from '@stayingupwind/core/util';
 
-import type { TransformImage } from '../edge-runtime.ts';
+import { type TransformImage, transformMode } from '../edge-runtime.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import { validatorMatches } from '../strategies/asset-upstream.ts';
@@ -559,10 +559,6 @@ export function refuseImage(input: ImageAnswerInput, error: SourceError, reason:
   const startedAt = input.edge.runtime.now();
   record(input, { src: 'error', startedAt, bytes: 0, subrequests: error.requests });
   return refusal(input, error, reason);
-}
-
-function transformMode(transform: TransformImage | undefined): string {
-  return transform === undefined ? 'original' : 'transform';
 }
 
 export async function handleImage(input: ImageInput): Promise<Response> {
