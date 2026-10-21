@@ -14,7 +14,8 @@ import {
 import { type ProjectNames, projectNames } from './names.ts';
 
 /**
- * `upwind deployments`: the project's deployments, newest first, each as the edge's version for it
+ * `upwind deployments`: the project's deployments, the one first deployed most recently first (a
+ * deployment rolled back to is no newer for it), each as the edge's version for it
  * stands — taking the edge's traffic, held at none beside the one that does, one a rollback can go
  * back to, one whose Functions are gone, or one whose version is older than the hundred a deployment
  * of the edge can choose from. Read from the Workers API alone, and changing nothing.

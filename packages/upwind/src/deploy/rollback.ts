@@ -1,6 +1,6 @@
 import { type DeploymentBundle, deploymentBundleSchema } from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
-import { stageDeployment } from '@stayingupwind/deploy/deploy';
+import { DeployRefusalError, stageDeployment } from '@stayingupwind/deploy/deploy';
 import { recoveryScriptCspSource } from '@stayingupwind/host/splice';
 import { bundleObjectKey } from '@stayingupwind/host/storage';
 
@@ -20,6 +20,7 @@ import {
   functionsRemain,
   pointerOf,
   readHistory,
+  wayBackOrder,
 } from './history.ts';
 import { appRuntimeOf, type ProjectNames, projectNames } from './names.ts';
 import { publishPointer } from './pointer.ts';
@@ -48,9 +49,16 @@ import { type RemoteTarget, storedTarget } from './target.ts';
  * Where the bucket keeps no bundle of the deployment, its own version of the edge is switched to as
  * it stands — whose manifest carries none of the live deployment's files — and the run says so.
  *
- * Which deployment: the one named (`--to`), or the newest before the live one that can be rolled
- * back to — whose edge version a deployment of the edge can still choose, and whose Functions are
- * all on the account still.
+ * Which deployment: the one named (`--to`), or one first deployed before the live one that can be
+ * rolled back to — whose edge version a deployment of the edge can still choose, and whose
+ * Functions are all on the account still — the one the edge served most recently first
+ * (`wayBackOrder`). Before, not merely older in upload: a deployment rolled back to has a new
+ * version, and rolling back again from it goes further back, never forward to the one it replaced.
+ *
+ * A deployment whose cache scope is retired cannot be gone back to: a deploy's cleanup retires a
+ * scope before it deletes the deployment's Functions, and one stopped between leaves the Functions
+ * of a deployment it was taking away. Its staging is refused (`cache_scope_conflict`), nothing is
+ * switched to it, and a rollback that named none goes on to the one before it.
  */
 
 export interface RollbackIo {
@@ -95,37 +103,70 @@ async function targetOf(
   return { record, manifestId: pointer.manifestId };
 }
 
-/** The deployment to roll back to, or why there is none. */
-async function chosen(
-  scope: AccountScope,
+/** The deployments a rollback may go to, in the order it tries them; or why there are none. */
+interface Candidates {
+  readonly records: readonly DeploymentRecord[];
+  readonly refused?: string;
+}
+
+function candidatesOf(
   names: ProjectNames,
   history: EdgeHistory,
   to: string | undefined,
-): Promise<Target | string> {
+): Candidates {
   const liveVersion = liveVersionOf(history.current);
   if (to !== undefined) {
     const named = history.deployments.find((record) => record.deploymentId === to);
     if (named === undefined) {
-      return `no version of ${names.edge} serves ${to}`;
+      return { records: [], refused: `no version of ${names.edge} serves ${to}` };
     }
     return named.versionId === liveVersion
-      ? `${to} is the deployment the edge serves`
-      : targetOf(scope, names, history, named);
+      ? { records: [], refused: `${to} is the deployment the edge serves` }
+      : { records: [named] };
   }
-  const at = history.deployments.findIndex((record) => record.versionId === liveVersion);
-  if (at === -1) {
+  const live = history.deployments.find((record) => record.versionId === liveVersion);
+  if (live === undefined) {
     // Nothing says which deployments came before a version no deploy tagged.
-    return `${names.edge}'s live version ${liveVersion} is not one upwind deploy made, so which deployment came before it is not known; name one with --to`;
+    return {
+      records: [],
+      refused: `${names.edge}'s live version ${liveVersion} is not one upwind deploy made, so which deployment came before it is not known; name one with --to`,
+    };
   }
-  // Newest first, so what follows the live one is older than it.
-  const older = history.deployments.slice(at + 1);
-  for (const record of older) {
-    const target = await targetOf(scope, names, history, record);
+  const records = history.deployments
+    .filter((record) => record.firstDeployed < live.firstDeployed)
+    .toSorted(wayBackOrder);
+  return { records };
+}
+
+/** A candidate that can be rolled back to, from `start` on, and where to go on from; or why none can. */
+async function firstTarget(
+  input: {
+    readonly scope: AccountScope;
+    readonly names: ProjectNames;
+    readonly history: EdgeHistory;
+    readonly named: boolean;
+  },
+  candidates: readonly DeploymentRecord[],
+  start: number,
+): Promise<string | { readonly target: Target; readonly next: number }> {
+  for (const [index, record] of candidates.entries()) {
+    if (index < start) {
+      continue;
+    }
+    const target = await targetOf(input.scope, input.names, input.history, record);
     if (typeof target !== 'string') {
+      return { target, next: index + 1 };
+    }
+    if (input.named) {
       return target;
     }
   }
   return 'no deployment before the live one can be rolled back to';
+}
+
+/** Whether staging was refused for the deployment's cache scope: retired, by a stopped cleanup. */
+function scopeRetired(error: unknown): error is DeployRefusalError {
+  return error instanceof DeployRefusalError && error.code === 'cache_scope_conflict';
 }
 
 /** The deployment the edge serves now, as the deploy that made its version tagged it. */
@@ -238,6 +279,10 @@ async function restage(input: Restaging): Promise<Served | undefined> {
   return { versionId: edge.versionId, manifestId: staged.manifestId };
 }
 
+function messageOf(deploymentId: string): string {
+  return `upwind rollback to ${deploymentId}`;
+}
+
 /** Why the account cannot be rolled back on; nothing where it can. */
 function refusalOf(
   names: ProjectNames,
@@ -251,6 +296,62 @@ function refusalOf(
   return account.bucket !== undefined || settings.workersDev
     ? `the account has no workers.dev subdomain, where ${names.agent} and the edge are reached; choose one in Cloudflare's settings for Workers`
     : undefined;
+}
+
+/** What a rollback tries the candidates with, once it holds the agent. */
+interface Rolling {
+  readonly restaging: Omit<Restaging, 'deploymentId' | 'message'>;
+  readonly choosing: Parameters<typeof firstTarget>[0];
+  readonly candidates: readonly DeploymentRecord[];
+  readonly found: { readonly target: Target; readonly next: number };
+  readonly switchTo: (deploymentId: string, served: Served) => Promise<number>;
+}
+
+/** The deployment published again; or the refusal of a retired cache scope, which is no failure. */
+async function restageUnlessRetired(
+  restaging: Rolling['restaging'],
+  deploymentId: string,
+): Promise<Served | DeployRefusalError | undefined> {
+  try {
+    return await restage({ ...restaging, deploymentId, message: messageOf(deploymentId) });
+  } catch (error) {
+    if (scopeRetired(error)) {
+      return error;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Publish the first candidate again and switch to it — passing over one whose cache scope is
+ * retired, to the next, where none was named; what the command exits with.
+ */
+async function rollThrough(input: Rolling): Promise<number> {
+  const { restaging, choosing, candidates, switchTo } = input;
+  const { names } = restaging;
+  let found: string | { readonly target: Target; readonly next: number } = input.found;
+  while (typeof found !== 'string') {
+    const { record, manifestId } = found.target;
+    const { deploymentId } = record;
+    const restaged = await restageUnlessRetired(restaging, deploymentId);
+    if (!(restaged instanceof Error)) {
+      if (restaged === undefined) {
+        warn(
+          `${names.artifactsBucket} keeps no bundle of ${deploymentId}, so its version is switched to as it stands, without the live deployment's files; its pages still open may lose them`,
+        );
+      }
+      return switchTo(deploymentId, restaged ?? { versionId: record.versionId, manifestId });
+    }
+    const why = `${deploymentId}'s cache scope refuses it (${restaged.message}): a cleanup that retired the scope stopped before deleting the deployment's Functions, which the next deploy deletes, so it cannot be gone back to`;
+    if (choosing.named) {
+      console.error(`upwind: ${why}`);
+      return 1;
+    }
+    warn(`${why}; trying the deployment before it`);
+    found = await firstTarget(choosing, candidates, found.next);
+  }
+  console.error(`upwind: ${found}`);
+  return 1;
 }
 
 /** Roll the edge back; what the command exits with. */
@@ -277,9 +378,15 @@ export async function runRollback(
     console.error(`upwind: ${names.edge} serves no deployment, so there is nothing to roll back`);
     return 1;
   }
-  const target = await chosen(scope, names, history, options.to);
-  if (typeof target === 'string') {
-    console.error(`upwind: ${target}`);
+  const { records: candidates, refused: none } = candidatesOf(names, history, options.to);
+  if (none !== undefined) {
+    console.error(`upwind: ${none}`);
+    return 1;
+  }
+  const choosing = { scope, names, history, named: options.to !== undefined };
+  const found = await firstTarget(choosing, candidates, 0);
+  if (typeof found === 'string') {
+    console.error(`upwind: ${found}`);
     return 1;
   }
   const refused = refusalOf(names, settings, account);
@@ -288,10 +395,8 @@ export async function runRollback(
     return 1;
   }
   const site = siteOf(settings, names, account.subdomain ?? '');
-  const { deploymentId } = target.record;
-  const message = `upwind rollback to ${deploymentId}`;
   const reach: ScriptSubdomain = { enabled: settings.workersDev, previews_enabled: false };
-  const switchTo = async (served: Served): Promise<number> => {
+  const switchTo = async (deploymentId: string, served: Served): Promise<number> => {
     console.log(`upwind: checking ${names.edge} version ${served.versionId}, of ${deploymentId}`);
     const activation = await activate({
       scope,
@@ -300,7 +405,7 @@ export async function runRollback(
       expected: { deploymentId, ...served },
       first: false,
       checks: settings.checks,
-      message,
+      message: messageOf(deploymentId),
       fetch: io.fetch,
       sleep: io.sleep,
       now: io.now,
@@ -310,13 +415,13 @@ export async function runRollback(
     }
     return report(activation, deploymentId, site.origin);
   };
-  const asItStands: Served = { versionId: target.record.versionId, manifestId: target.manifestId };
   const { subdomain } = account;
   if (subdomain === undefined || account.bucket === undefined) {
+    const { record, manifestId } = found.target;
     warn(
-      `${names.artifactsBucket} is not on the account, so ${deploymentId}'s version is switched to as it stands, without the live deployment's files; its pages still open may lose them`,
+      `${names.artifactsBucket} is not on the account, so ${record.deploymentId}'s version is switched to as it stands, without the live deployment's files; its pages still open may lose them`,
     );
-    return switchTo(asItStands);
+    return switchTo(record.deploymentId, { versionId: record.versionId, manifestId });
   }
   const { stores, refused: unusable } = storesOf(names, account);
   if (stores === undefined) {
@@ -337,26 +442,24 @@ export async function runRollback(
     now: io.now,
   });
   try {
-    const restaged = await restage({
-      scope,
-      names,
-      settings,
-      account: { ...account, subdomain },
-      stores,
-      site,
-      target: storedTarget(session.client),
-      deploymentId,
-      live: liveDeploymentOf(history),
-      reach,
-      message,
-      io,
+    return await rollThrough({
+      restaging: {
+        scope,
+        names,
+        settings,
+        account: { ...account, subdomain },
+        stores,
+        site,
+        target: storedTarget(session.client),
+        live: liveDeploymentOf(history),
+        reach,
+        io,
+      },
+      choosing,
+      candidates,
+      found,
+      switchTo,
     });
-    if (restaged === undefined) {
-      warn(
-        `${names.artifactsBucket} keeps no bundle of ${deploymentId}, so its version is switched to as it stands, without the live deployment's files; its pages still open may lose them`,
-      );
-    }
-    return await switchTo(restaged ?? asItStands);
   } finally {
     await session.close();
   }

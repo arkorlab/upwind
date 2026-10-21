@@ -6,9 +6,11 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
 import { bundleObjectKey } from '@stayingupwind/host/storage';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { agentClient } from '../../src/deploy/agent-client.ts';
 import { runDeploy } from '../../src/deploy/command.ts';
 import { projectNames } from '../../src/deploy/names.ts';
 import { runRollback } from '../../src/deploy/rollback.ts';
+import { remoteTarget } from '../../src/deploy/target.ts';
 import { bundleOf, deployableFunction, moduleOf, writeBundle } from './bundle.ts';
 import { bindingText } from './fake-cloudflare.ts';
 import {
@@ -19,6 +21,7 @@ import {
   scriptOn,
   servedBy,
 } from './live-account.ts';
+import { AGENT_KEY } from './workers/stack.ts';
 
 /**
  * `upwind rollback` from end to end, on an account that answers as Cloudflare's does, with the
@@ -192,5 +195,64 @@ describe('`upwind rollback` on an account', () => {
         `keeps no bundle of ${first.deploymentId}, so its version is switched to as it stands`,
       ),
     ]);
+  });
+
+  /** Three deployments made, one after another, the third live. */
+  async function threeDeployed(dir: string): Promise<readonly DeploymentBundle[]> {
+    const builds: DeploymentBundle[] = [];
+    for (const chunk of ['one', 'two', 'three']) {
+      builds.push(buildWith(dir, chunk));
+
+      await expect(
+        runDeploy(deployOptions(dir), account().credentials, account().io),
+      ).resolves.toBe(0);
+    }
+    return builds;
+  }
+
+  /** A deployment's cache scope retired, as a cleanup that stopped before its Functions leaves it. */
+  async function retire(deploymentId: string): Promise<void> {
+    const agent = agentClient({ url: await account().stack.url('agent'), key: AGENT_KEY });
+    await remoteTarget(agent, '/nowhere').cache.retireScope({
+      scopeId: deploymentId,
+      reason: 'a cleanup that stopped',
+    });
+  }
+
+  it('goes further back with each rollback, publishing each again', async () => {
+    const dir = await deployableProject(PROJECT);
+    const [one, two] = await threeDeployed(dir);
+    const rollBack = () =>
+      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io);
+
+    await expect(rollBack()).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(two?.deploymentId);
+
+    // The second has the edge's newest version now; going back again goes to the first.
+    await expect(rollBack()).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(one?.deploymentId);
+    expect(held.errors).toStrictEqual([]);
+  });
+
+  it('passes over a deployment whose cache scope a stopped cleanup retired', async () => {
+    const dir = await deployableProject(PROJECT);
+    const [one, two, three] = await threeDeployed(dir);
+    await retire(String(two?.deploymentId));
+
+    await expect(
+      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io),
+    ).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(one?.deploymentId);
+    expect(held.warnings).toContainEqual(
+      expect.stringContaining(`${String(two?.deploymentId)}'s cache scope refuses it`),
+    );
+
+    // Named, it is refused, and nothing is switched.
+    await expect(
+      runRollback({ projectDir: dir, to: two?.deploymentId }, account().credentials, account().io),
+    ).resolves.toBe(1);
+    expect(servedBy(account(), NAMES.edge)).toBe(one?.deploymentId);
+    expect(held.errors).toContainEqual(expect.stringContaining('so it cannot be gone back to'));
+    expect(three).toBeDefined();
   });
 });

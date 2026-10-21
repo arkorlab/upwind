@@ -82,6 +82,70 @@ describe('`upwind rollback`', () => {
     );
   });
 
+  it('goes further back with each rollback, never forward to the one it went back from', async () => {
+    const { edge, first, second } = threeDeployed();
+    // A rollback to the second, as one that publishes it again leaves the edge: its newest version
+    // is the second's, and serves.
+    const again = edge.redeploy(second);
+    edge.serve([{ versionId: again.versionId, percentage: 100 }]);
+
+    await expect(
+      runRollback({ projectDir: await project(), to: undefined }, CREDENTIALS, {
+        fetch: edge.fetch(),
+        ...clock(),
+      }),
+    ).resolves.toBe(0);
+    expect(edge.script.deployments[0]?.versions).toStrictEqual([
+      { version_id: first.versionId, percentage: 100 },
+    ]);
+  });
+
+  it('goes back to the deployment that was live before, over a newer one that never was', async () => {
+    const fake = fakeCloudflare();
+    const edge = fakeEdge(fake);
+    const first = edge.deploy();
+    edge.serve([{ versionId: first.versionId, percentage: 100 }]);
+    // Deployed, and failing its checks: never given any of the traffic.
+    edge.deploy();
+    const third = edge.deploy();
+    edge.serve([{ versionId: third.versionId, percentage: 100 }]);
+
+    await expect(
+      runRollback({ projectDir: await project(), to: undefined }, CREDENTIALS, {
+        fetch: edge.fetch(),
+        ...clock(),
+      }),
+    ).resolves.toBe(0);
+    expect(edge.script.deployments[0]?.versions).toStrictEqual([
+      { version_id: first.versionId, percentage: 100 },
+    ]);
+  });
+
+  it('goes back from a deployment made after a rollback to the one rolled back to', async () => {
+    const fake = fakeCloudflare();
+    const edge = fakeEdge(fake);
+    const first = edge.deploy();
+    edge.serve([{ versionId: first.versionId, percentage: 100 }]);
+    const second = edge.deploy();
+    edge.serve([{ versionId: second.versionId, percentage: 100 }]);
+    // Gone back from the second to the first, published again; then a fourth deployed.
+    const again = edge.redeploy(first);
+    edge.serve([{ versionId: again.versionId, percentage: 100 }]);
+    const fourth = edge.deploy();
+    edge.serve([{ versionId: fourth.versionId, percentage: 100 }]);
+
+    await expect(
+      runRollback({ projectDir: await project(), to: undefined }, CREDENTIALS, {
+        fetch: edge.fetch(),
+        ...clock(),
+      }),
+    ).resolves.toBe(0);
+    // The first, live before the fourth — not the second, which was gone back from.
+    expect(edge.script.deployments[0]?.versions).toStrictEqual([
+      { version_id: again.versionId, percentage: 100 },
+    ]);
+  });
+
   it('goes back to the deployment named, and to none whose Functions are gone', async () => {
     const { fake, edge, first, second } = threeDeployed();
     const dir = await project();
