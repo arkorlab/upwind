@@ -61,6 +61,16 @@ export function asksForCapture(request: Request): boolean {
   return request.headers.get(CAPTURE_HEADER) === CAPTURE_ASKED;
 }
 
+/**
+ * `answer` to a capture, as every answer to one goes: for the edge that asked, and for no cache on
+ * the way to it — the `421` that hands a capture of another Function's route on among them
+ * (`misdirectedAhead`), which leaves before the capture is read.
+ */
+export function keptByNobody(answer: Response): Response {
+  answer.headers.set('cache-control', NOT_STORED);
+  return answer;
+}
+
 /** A capture that hands nothing over, and the line of text that says why. */
 function refused(reason: string, status = HTTP_UNPROCESSABLE): Response {
   return new Response(reason, {

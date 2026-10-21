@@ -14,7 +14,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 import { nowMs } from './cache/clock.ts';
 import { requestContextFor } from './cache/context.ts';
 import { catchUpWithScope } from './cache/pulls.ts';
-import { asksForCapture, handleCapture } from './capture-invoke.ts';
+import { asksForCapture, handleCapture, keptByNobody } from './capture-invoke.ts';
 import {
   crawlerWantsWholePage,
   documentFromBuild,
@@ -541,7 +541,7 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
   const store = getStore();
   const elsewhere = misdirectedAhead(store, request);
   if (elsewhere !== undefined) {
-    return elsewhere;
+    return asksForCapture(request) ? keptByNobody(elsewhere) : elsewhere;
   }
   // Ahead of every mode that may keep something: a capture keeps nothing, whatever else it says.
   if (asksForCapture(request)) {

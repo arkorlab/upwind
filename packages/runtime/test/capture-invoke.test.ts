@@ -585,6 +585,7 @@ describe('a capture', () => {
 
     expect(response.status).toBe(MISDIRECTED_STATUS);
     expect(response.headers.get(FUNCTION_HEADER)).toBe('app-2');
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
     expect(invokeNodeHandler).not.toHaveBeenCalled();
   });
 
