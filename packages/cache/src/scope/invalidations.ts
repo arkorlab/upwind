@@ -393,8 +393,11 @@ function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateRespon
   // before it said any, or nothing to be read — the moment is the authority's own clock, while a
   // value's timestamp is a Worker's: one whose clock runs a little ahead would stamp a value made
   // before the invalidation later than the authority's clock, and so out of its reach. There none is
-  // spared, and the tags alone reach, as they did before a moment was said.
-  const sparedAfter = isMoment(request.inForceAt) ? at : Infinity;
+  // spared, and the tags alone reach, as they did before a moment was said. And none is spared below
+  // the moment said, where that is ahead of the clock it was recorded at: a value stamped between the
+  // two, by the clock that said it, was made before the invalidation.
+  const said = request.inForceAt;
+  const sparedAfter = isMoment(said) ? Math.max(at, Math.ceil(said)) : Infinity;
   const events: EventInput[] = [];
   const persistentTargets = plan.targets.filter((target) => persistent.has(target.ref.tagId));
   const indices = new Map(persistentTargets.map((target, index) => [target.invalidationId, index]));

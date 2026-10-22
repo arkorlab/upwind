@@ -404,6 +404,35 @@ describe('a value written before the invalidation it was made after', () => {
     await expect(readOf(at, 'between-chunks')).resolves.not.toHaveProperty('invalidation');
   });
 
+  it('is condemned, made before a moment said ahead of the authority’s clock, though that moment is recorded at the clock', async () => {
+    const at = await scope();
+    // Stamped by a Worker whose clock runs ahead of the authority's, before the moment it then says.
+    const { entryId } = await write(at, 'before-a-moment-ahead', NOW + 1);
+
+    const recorded = await recordedAtNow(at, invalidationOf(NOW + 2));
+    const read = await readOf(at, 'before-a-moment-ahead');
+
+    expect(read.invalidation).toStrictEqual({
+      revision: recorded.revision,
+      staleAt: NOW,
+      hardExpireAt: NOW,
+    });
+    expect(recorded.affectedEntryIds).toContain(entryId);
+    await expect(tombstoneOf(at, entryId)).resolves.toBe(recorded.revision);
+  });
+
+  it('is kept, made after a moment said ahead of the authority’s clock', async () => {
+    const at = await scope();
+    const { entryId } = await write(at, 'after-a-moment-ahead', NOW + 3);
+
+    const recorded = await recordedAtNow(at, invalidationOf(NOW + 2));
+    const read = await readOf(at, 'after-a-moment-ahead');
+
+    expect(read.invalidation).toBeUndefined();
+    expect(recorded.affectedEntryIds).not.toContain(entryId);
+    await expect(tombstoneOf(at, entryId)).resolves.toBeNull();
+  });
+
   it.each([
     ['says no moment', undefined],
     ['says one that is no number', 'soon'],
