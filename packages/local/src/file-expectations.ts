@@ -48,9 +48,10 @@ type Holding =
 
 /** What the edge holds a file the build did not mark immutable as (`defaultCacheControl`). */
 const REVALIDATE_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
+const ACCEPT_RANGES = 'accept-ranges';
 /** What a rule of `next.config` cannot set on a file: the edge's to say (`ENTITY_HEADERS` there). */
 const ENTITY_HEADERS: ReadonlySet<string> = new Set([
-  'accept-ranges',
+  ACCEPT_RANGES,
   'content-length',
   'content-range',
   'etag',
@@ -79,7 +80,11 @@ export type Decided = KeptMiddlewareResult | typeof DID_NOT_RUN;
 /** What a file is expected to be served with, where `next.config` and the middleware have a say. */
 export interface FileExpectation {
   readonly status: number;
-  /** Range support belongs to the stored representation, before a rewrite changes its status. */
+  /**
+   * Range support belongs to the stored representation, before a rewrite changes its status: what
+   * the edge says of it (`Accept-Ranges`) where the middleware set nothing in its place
+   * (`advertisedRanges`).
+   */
   readonly ranges: 'bytes' | 'none';
   /** Only a captured rewrite of a base-200 file can remove the representation's body. */
   readonly bodylessRewrite: boolean;
@@ -313,6 +318,16 @@ export function fileHeadFailure(
 }
 
 /**
+ * What the answer says of ranges of the file (`Accept-Ranges`): what the middleware set where it set
+ * it, which the edge lays over its own account (`fileHeaders`, Codex) as it does the rest of the
+ * middleware's headers; the edge's account of the stored representation otherwise (`ranges`). A
+ * range of the file is served all the same, and asked for apart (`ranges.ts`).
+ */
+function advertisedRanges(expected: FileExpectation): string {
+  return expected.set.get(ACCEPT_RANGES) ?? expected.ranges;
+}
+
+/**
  * Why a file's answer does not say of it what it should, whatever its body: the type it is served
  * as — which an answer that the browser already holds the file (`unmodified`) may leave unsaid, as
  * it may its coding — what describes it (`descriptionFailure`), and how it is held.
@@ -327,9 +342,10 @@ export function describedFailure(
   if (type !== expected.type && !(unmodified && type === undefined)) {
     return `answered as ${type ?? 'no type'}, not ${expected.type}`;
   }
-  // Whether a range of it is asked for, as the edge says of a file it answers as itself.
-  const ranges = answer.headers['accept-ranges'];
-  const wanted = expected.ranges;
+  // Whether a range of it is asked for, as the edge says of a file it answers as itself — or as the
+  // middleware said it in the edge's place (`advertisedRanges`).
+  const ranges = answer.headers[ACCEPT_RANGES];
+  const wanted = advertisedRanges(expected);
   if (ranges !== wanted && !(unmodified && ranges === undefined)) {
     return `answered with Accept-Ranges ${ranges ?? 'unsaid'}, not ${wanted}`;
   }
