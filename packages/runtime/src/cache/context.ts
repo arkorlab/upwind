@@ -148,9 +148,10 @@ export class RequestWrites {
  * And every invalidation the request asked the host for (`invalidateOnce`, in `handlers.ts`), held
  * against its response, which is not answered — not its first byte either — before the host has
  * recorded them, for no longer than a bound (`handleRequest`). Whoever made the request moves on
- * once its headers come, and Next.js runs a route handler's revalidations behind them: a request
- * made then was answered, here or in any other isolate, before the host had recorded the
- * invalidation, and what it fetched meanwhile was written as made before it.
+ * once its headers come, Next.js runs a route handler's revalidations behind them, and a Server
+ * Action's page renders while the host records what the action invalidated: a request made then
+ * was answered, here or in any other isolate, before the host had recorded the invalidation, and
+ * what it fetched meanwhile was written as made before it.
  */
 export class InvalidatedTags {
   #revision: number | undefined;
