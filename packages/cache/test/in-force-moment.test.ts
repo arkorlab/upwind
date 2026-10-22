@@ -1,13 +1,19 @@
 import { DEPLOYMENT_ID_PREFIX } from '@stayingupwind/core/bundle';
 import { MAX_TAGS_PER_CALL } from '@stayingupwind/core/cache';
 import { createId } from '@stayingupwind/core/util';
-import type { DataGetResponse, InvalidateResponse } from '@stayingupwind/host/cache';
+import type {
+  DataGetResponse,
+  DataSetResponse,
+  InvalidateResponse,
+} from '@stayingupwind/host/cache';
 import type { FetchLike } from '@stayingupwind/runtime/cache-host';
-import { exports } from 'cloudflare:workers';
+import { runInDurableObject } from 'cloudflare:test';
+import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 
 import { cacheHostFor } from '../src/function/cache-host.ts';
 import { IN_FORCE_WITHIN_MS, inForceMoment } from '../src/scope/invalidations.ts';
+import { scopeStub } from '../src/scope/stub.ts';
 
 /**
  * The moment an invalidation takes effect at: when the Worker that asked put it in force
@@ -158,15 +164,19 @@ function invalidate(at: Scope, inForceAt: unknown): Promise<InvalidateResponse> 
   });
 }
 
-/** A fetch of `article` made at `timestamp`, written once the invalidation is in, and read back. */
-async function written(at: Scope, timestamp: number): Promise<DataGetResponse> {
-  const key = `fetched-at-${String(timestamp)}`;
-  await call(at, 'PUT', '/data', {
+/** A fetch's value of `key` under `tags`, made at `timestamp`, written to the scope. */
+function write(
+  at: Scope,
+  key: string,
+  timestamp: number,
+  tags: readonly string[] = ['article'],
+): Promise<DataSetResponse> {
+  return call(at, 'PUT', '/data', {
     key,
     valueBase64: btoa('fetched'),
     entry: {
       kind: 'data:fetch',
-      tags: ['article'],
+      tags,
       stale: 300,
       timestamp,
       expire: 900,
@@ -174,7 +184,50 @@ async function written(at: Scope, timestamp: number): Promise<DataGetResponse> {
       dependencyCoverage: 'complete',
     },
   });
+}
+
+/** What a read of the fetch's value of `key` is answered with. */
+function readOf(at: Scope, key: string): Promise<DataGetResponse> {
   return call(at, 'POST', '/data/get', { key, kind: 'data:fetch' });
+}
+
+/** A fetch of `article` made at `timestamp`, written once the invalidation is in, and read back. */
+async function written(at: Scope, timestamp: number): Promise<DataGetResponse> {
+  const key = `fetched-at-${String(timestamp)}`;
+  await write(at, key, timestamp);
+  return readOf(at, key);
+}
+
+/**
+ * What an immediate invalidation left on the entry, as the scope's object keeps it: the revision of
+ * the one that tombstoned it, or none.
+ */
+function tombstoneOf(at: Scope, entryId: string): Promise<number | null> {
+  return runInDurableObject(scopeStub(env, at.scopeId), (_instance, state) => {
+    const [row] = state.storage.sql
+      .exec<{ tombstone_revision: number | null }>(
+        `SELECT tombstone_revision FROM entries WHERE entry_id = ?`,
+        entryId,
+      )
+      .toArray();
+    return row?.tombstone_revision ?? null;
+  });
+}
+
+/** The Function's cache host, reaching the scope's gateway through `send`. */
+function hostOf(at: Scope, send: FetchLike) {
+  const binding = cacheHostFor(NAMING)({
+    env: {
+      ARKOR_CACHE_GATEWAY_URL: 'https://cache.invalid',
+      ARKOR_CACHE_TOKEN: at.token,
+      NEXT_DEPLOYMENT_ID: at.scopeId,
+    },
+    fetchImpl: send,
+  });
+  if (binding === undefined) {
+    throw new Error('the host reached no cache');
+  }
+  return binding.host;
 }
 
 /**
@@ -222,5 +275,67 @@ describe('an invalidation the authority is told the moment of', () => {
 
     expect(staleAt).toBeGreaterThanOrEqual(before + offset);
     expect(staleAt).toBeLessThanOrEqual(after + offset);
+  });
+});
+
+/**
+ * A value of the data cache that stands current at the authority before the invalidation does: a
+ * render's write, made after the invalidation was put in force in the Worker that asked, which the
+ * authority received first — say between two chunks of a large invalidation. Made after the moment,
+ * it is kept, as the same write arriving after the invalidation would be; made at it, condemned.
+ */
+describe('a value written before the invalidation it was made after', () => {
+  it('is kept, made after the moment, and is none of what the invalidation reached', async () => {
+    const at = await scope();
+    const moment = Date.now() - 400;
+    const { entryId } = await write(at, 'made-after', moment + 1);
+
+    const recorded = await invalidate(at, moment);
+    const read = await readOf(at, 'made-after');
+
+    expect(read.invalidation).toBeUndefined();
+    expect(recorded.affectedEntryIds).not.toContain(entryId);
+    await expect(tombstoneOf(at, entryId)).resolves.toBeNull();
+  });
+
+  it('is condemned, made at the moment, and is among what the invalidation reached', async () => {
+    const at = await scope();
+    const moment = Date.now() - 400;
+    const { entryId } = await write(at, 'made-at', moment);
+
+    const recorded = await invalidate(at, moment);
+    const read = await readOf(at, 'made-at');
+
+    expect(read.invalidation).toStrictEqual({
+      revision: recorded.revision,
+      staleAt: moment,
+      hardExpireAt: moment,
+    });
+    expect(recorded.affectedEntryIds).toContain(entryId);
+    await expect(tombstoneOf(at, entryId)).resolves.toBe(recorded.revision);
+  });
+
+  it('is kept, written between two chunks of a large invalidation and made after its moment', async () => {
+    const at = await scope();
+    const moment = Date.now() - 400;
+    // The second chunk's only tag: the value under it is written once the first has been recorded.
+    const late = `tag-${String(MAX_TAGS_PER_CALL)}`;
+    const tags = Array.from(
+      { length: MAX_TAGS_PER_CALL + 1 },
+      (_, index) => `tag-${String(index)}`,
+    );
+    const writes: Promise<DataSetResponse>[] = [];
+    const host = hostOf(at, async (request) => {
+      if (writes.length === 0 && (await request.clone().text()).includes(`"${late}"`)) {
+        writes.push(write(at, 'between-chunks', moment + 1, [late]));
+        await writes[0];
+      }
+      return exports.default.fetch(request);
+    });
+
+    await host.invalidate({ tags, api: 'updateTag', inForceAt: moment });
+
+    expect(writes).toHaveLength(1);
+    await expect(readOf(at, 'between-chunks')).resolves.not.toHaveProperty('invalidation');
   });
 });

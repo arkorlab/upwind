@@ -144,7 +144,27 @@ function insertInvalidation(sql: SqlStorage, row: InvalidationRow): void {
   );
 }
 
-/** Condemn the matching set in SQLite without allocating a generation/event per entry. */
+/**
+ * The entries whose current value of the data cache was made after the moment `?`, by its own
+ * timestamp: when the value began to be computed, which the value's write is fenced by too
+ * (`dataCondemnation`, in `data.ts`). An invalidation taking effect at that moment reaches none of
+ * them. A render goes on while the authority records what its request invalidated (`inForceMoment`),
+ * and what it computed after the moment can be written, and stand current, before the call — or a
+ * later chunk of a large one — is recorded: it is kept, as the same write arriving after it is.
+ *
+ * Only the data cache's. A page's or a route handler's generation is stamped when its regeneration
+ * built the commit, after its render had read what it is made of, so nothing of it says when that
+ * render read: it is reached by its tags alone, as it was.
+ */
+const MADE_AFTER_THE_MOMENT = `SELECT e.entry_id FROM entries e
+  JOIN generations g ON g.generation_id = e.current_generation_id
+  WHERE e.kind LIKE 'data:%' AND g.cache_timestamp > ?`;
+
+/**
+ * Condemn the matching set in SQLite without allocating a generation/event per entry: the current
+ * generations of the entries with the tags, and those entries — but the values made after the moment
+ * the invalidation takes effect at (`MADE_AFTER_THE_MOMENT`), which it does not reach.
+ */
 function condemnCurrent(
   input: TxInput,
   tagIds: readonly string[],
@@ -162,7 +182,7 @@ function condemnCurrent(
      ) WHERE generation_id IN (
        SELECT current_generation_id FROM entries WHERE entry_id IN (
          SELECT entry_id FROM entry_tags WHERE tag_id IN (SELECT value FROM json_each(?))
-       )
+       ) AND entry_id NOT IN (${MADE_AFTER_THE_MOMENT})
      )`,
     revision,
     staleAt,
@@ -170,6 +190,7 @@ function condemnCurrent(
     hardExpireAt,
     hardExpireAt,
     targets,
+    staleAt,
   );
   sql.exec(
     `UPDATE entries SET revision = ?, record_revision = ?,
@@ -178,12 +199,13 @@ function condemnCurrent(
        updated_at = ?
      WHERE entry_id IN (
        SELECT entry_id FROM entry_tags WHERE tag_id IN (SELECT value FROM json_each(?))
-     )`,
+     ) AND entry_id NOT IN (${MADE_AFTER_THE_MOMENT})`,
     revision,
     revision,
     immediate ? revision : null,
     now,
     targets,
+    staleAt,
   );
 }
 
@@ -195,8 +217,17 @@ interface AffectedRow extends Record<string, SqlStorageValue> {
   readonly mask3: number;
 }
 
-/** Four 32-bit masks encode up to 128 tag memberships once per affected entry. */
-function affectedEntries(sql: SqlStorage, tagIds: readonly string[]): AffectedRow[] {
+/**
+ * Four 32-bit masks encode up to 128 tag memberships once per affected entry: an entry with one of
+ * the tags whose current value was not made after `staleAt`, the moment the invalidation takes effect
+ * at (`MADE_AFTER_THE_MOMENT`). What the history is told the invalidation reached, as what it
+ * condemns (`condemnCurrent`).
+ */
+function affectedEntries(
+  sql: SqlStorage,
+  tagIds: readonly string[],
+  staleAt: number,
+): AffectedRow[] {
   return sql
     .exec<AffectedRow>(
       `SELECT et.entry_id,
@@ -205,8 +236,10 @@ function affectedEntries(sql: SqlStorage, tagIds: readonly string[]): AffectedRo
        SUM(CASE WHEN CAST(t.key AS INTEGER) BETWEEN 64 AND 95 THEN 1 << (CAST(t.key AS INTEGER) - 64) ELSE 0 END) AS mask2,
        SUM(CASE WHEN CAST(t.key AS INTEGER) BETWEEN 96 AND 127 THEN 1 << (CAST(t.key AS INTEGER) - 96) ELSE 0 END) AS mask3
      FROM entry_tags et JOIN json_each(?) t ON t.value = et.tag_id
+     WHERE et.entry_id NOT IN (${MADE_AFTER_THE_MOMENT})
      GROUP BY et.entry_id ORDER BY et.entry_id`,
       JSON.stringify(tagIds),
+      staleAt,
     )
     .toArray();
 }
@@ -289,6 +322,12 @@ function entryIdsFor(
     : affected.filter((entry) => includesTag(entry, index)).map((entry) => entry.entry_id);
 }
 
+/**
+ * An invalidation's transaction: refused before anything is written where the scope may hold no
+ * more of what it would keep; otherwise each tag recorded at the moment it takes effect at
+ * (`inForceMoment`), the entries it reaches condemned (`condemnCurrent`), and the history told what
+ * it reached (`affectedEntries`).
+ */
 function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateResponse | Refusal {
   const { sql, scopeId, now, revision, limits } = input;
   const scope = requireActiveScope(sql);
@@ -336,6 +375,7 @@ function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateRespon
   const affected = affectedEntries(
     sql,
     persistentTargets.map((target) => target.ref.tagId),
+    deadlines.staleAt,
   );
   const compact = affected.length > INVALIDATION_BATCH_SIZE;
   const invalidations: InvalidateResponse['invalidations'] = [];

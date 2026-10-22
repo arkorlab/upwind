@@ -335,6 +335,11 @@ class GatewayHost implements CacheHost {
     }
   }
 
+  /**
+   * One request of an invalidation to the authority: `tags`, as many as a request carries at the
+   * most, with the moment the runtime put the invalidation in force, which the authority records it
+   * at (`inForceAt`), and — where `more` of its chunks follow — a word that they do.
+   */
   #invalidateChunk(
     request: InvalidateRequest,
     tags: readonly string[],
