@@ -2368,6 +2368,72 @@ describe('what the check makes of the middleware', () => {
         { path: '/a.txt', reason: 'answered 7 bytes other than its own 10' },
       ]);
     });
+
+    /** A rewrite ahead of the filesystem of `/a.txt` for a request carrying `x-rewrite: 1`. */
+    const rewritesMarked: ReservedRoute = {
+      sourceRegex: String.raw`^/a\.txt$`,
+      beforeFiles: true,
+      has: [{ type: 'header', key: 'x-rewrite', value: '1' }],
+    };
+    /** What the middleware leaves on a request it marks for that rewrite, as `NextResponse.next` lists it. */
+    const marked = {
+      'x-middleware-next': '1',
+      'x-middleware-override-headers': 'x-rewrite',
+      'x-middleware-request-x-rewrite': '1',
+    };
+    const handedOnClaimed: Answer = {
+      headers: { 'content-type': TEXT, 'x-arkor-edge': 'passthrough;reason=reserved' },
+      body: 'rewritten',
+    };
+
+    it('is skipped where the middleware changed its headers into a request a rule claims', async () => {
+      decisions.set('/a.txt', marked);
+      answers.set('/a.txt', handedOnClaimed);
+      answers.set('/b.txt', asItself);
+      const result = await checkStack(stackOf([], files, { reservedRoutes: [rewritesMarked] }));
+
+      expect(result.failures).toStrictEqual([]);
+      expect(result.skipped).toContainEqual({
+        path: '/a.txt',
+        reason:
+          "the application's middleware changed the request into one a redirect or rewrite of next.config claims",
+      });
+    });
+
+    it('fails where it was handed on as claimed, though the middleware changed nothing a rule claims', async () => {
+      // The middleware lets it through as it came: no rule claims what it left.
+      decisions.set('/a.txt', { 'x-middleware-next': '1' });
+      answers.set('/a.txt', handedOnClaimed);
+      answers.set('/b.txt', asItself);
+      const result = await checkStack(stackOf([], files, { reservedRoutes: [rewritesMarked] }));
+
+      expect(result.failures).toStrictEqual([
+        {
+          path: '/a.txt',
+          reason:
+            'not answered by the edge from storage (x-arkor-edge: passthrough;reason=reserved)',
+        },
+      ]);
+    });
+
+    it('is judged no further on a range of it the middleware marks for a rule that claims it', async () => {
+      // The whole file let through; the range asked again marked, with its range kept.
+      decidedInPart.set('/a.txt', {
+        'x-middleware-next': '1',
+        'x-middleware-override-headers': 'range,x-rewrite',
+        'x-middleware-request-range': 'bytes=1-9',
+        'x-middleware-request-x-rewrite': '1',
+      });
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+        inPart: handedOnClaimed,
+      });
+      answers.set('/b.txt', asItself);
+      const result = await checkStack(stackOf([], files, { reservedRoutes: [rewritesMarked] }));
+
+      expect(result.failures).toStrictEqual([]);
+    });
   });
 
   describe('how an immutable file is held', () => {

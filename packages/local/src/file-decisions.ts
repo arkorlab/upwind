@@ -1,9 +1,11 @@
-import { type StaticFileEntry, staticFileKey } from '@stayingupwind/core/manifest';
+import { isReserved, type StaticFileEntry, staticFileKey } from '@stayingupwind/core/manifest';
 import type { MiddlewareResult } from '@stayingupwind/core/paas';
 
 import { type CheckedStack, keptFailure, keptOf, middlewareCovers, edgeReads } from './answers.ts';
 import { type Decided, DID_NOT_RUN } from './file-expectations.ts';
+import { headersLeftAlone } from './landings.ts';
 import type { Reading } from './reading.ts';
+import { handedReads } from './routing-reads.ts';
 
 /**
  * What the application's middleware decided for a request for a file, as the check reads it
@@ -45,6 +47,35 @@ export async function decisionOf(
   const { decided } = await keptOf(stack, asked.trace, asked.url, asked.sent);
   const failure = keptFailure(answer, decided, middlewareCovers(stack, asked.url, asked.sent));
   return failure === undefined ? { decided: decided ?? DID_NOT_RUN } : { failure };
+}
+
+/** What the edge says of a request it hands on as a rule ahead of the filesystem claims it. */
+export const CLAIMED_HANDOFF = /^passthrough;reason=reserved(?:;|$)/u;
+/** Why a file is judged no further where the request the middleware left is a rule's. */
+export const CLAIMED_AS_LEFT =
+  "the application's middleware changed the request into one a redirect or rewrite of next.config claims";
+
+/**
+ * Whether the middleware changed a request for a file — rewrote it, or handed it on with other
+ * headers — into one a rule ahead of the filesystem claims as it left it, which the edge hands on
+ * for the Function to follow (`claimedAsLeft` in the edge, greptile): Next.js's router runs its
+ * `beforeFiles` rewrites after the middleware, on what the middleware left. A request it left as it
+ * came was judged before it ran, and is no such request.
+ */
+export function claimedAsMoved(
+  stack: CheckedStack,
+  url: URL,
+  asked: { readonly sent: Readonly<Record<string, string>>; readonly decided: Decided },
+): boolean {
+  const middleware = continued(asked.decided);
+  if (
+    middleware === undefined ||
+    (!middleware.rewritten && headersLeftAlone(asked.sent, middleware.requestHeaders))
+  ) {
+    return false;
+  }
+  const routed = handedReads(url, asked.sent, middleware.requestHeaders);
+  return isReserved(stack.manifest, middleware.url, routed, true);
 }
 
 /** The middleware's decision where it let the request on, rewritten or not; none otherwise. */

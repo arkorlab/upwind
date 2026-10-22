@@ -34,6 +34,24 @@ export function routedReads(
   });
 }
 
+/**
+ * The headers the middleware left on a request as the edge hands them on, and routes them by behind
+ * it (`handedHeaders`): the shared forwarder's handling, under what the request as sent was
+ * forwarded with (`routedReads`) — not the front line's coding again, which the middleware was
+ * handed already.
+ */
+export function handedReads(
+  url: URL,
+  sent: Readonly<Record<string, string>> | Headers,
+  left: Headers,
+): Headers {
+  return sanitizePassthroughHeaders(left, {
+    previewDomain: 'invalid',
+    previewHost: url.hostname,
+    clientIp: edgeReads(sent).get('cf-connecting-ip') ?? undefined,
+  });
+}
+
 /** The middleware's matcher view, including the data marker Next.js sets before matching. */
 export function middlewareReads(
   manifest: Pick<ProjectManifest, 'pagesDataBasePath'>,

@@ -15,6 +15,8 @@ import {
   traced,
 } from './answers.ts';
 import {
+  CLAIMED_HANDOFF,
+  claimedAsMoved,
   decisionOf,
   ignoredRewrite,
   ontoAnotherFile,
@@ -54,8 +56,9 @@ export type AskedAgain =
 /**
  * A file asked for again with `sent` — a range of it, on a condition, for its headers alone — as a
  * request of its own to the application's routing: a rule that claims it for what it adds, and a
- * middleware that answers it, rewrites it onto no file — which the Function answers — or changes
- * what it selects, are the application's, and it is judged no further. Otherwise it has to be
+ * middleware that answers it, rewrites it onto no file — which the Function answers — changes what
+ * it selects, or changes it into a request a rule claims, are the application's, and it is judged
+ * no further. Otherwise it has to be
  * served from storage, as the whole file was — the file, or the other file of the build the
  * middleware rewrote this request onto, which the edge serves in its place: a Function's answer in
  * its place is the edge failing to serve it, and one from storage to a rewrite onto no file the
@@ -95,6 +98,11 @@ export async function askedAgain(
   }
   const middleware = decision.decided;
   const answered = answeredBy(answer);
+  // Changed by the middleware into a request a rule claims as it left it, it is the Function's to
+  // follow, as the edge hands it on (`claimedAsMoved`, greptile): the application's.
+  if (CLAIMED_HANDOFF.test(answered) && claimedAsMoved(stack, url, { sent, decided: middleware })) {
+    return { kind: 'theirs' };
+  }
   const fromStorage = answered.startsWith(FROM_STORAGE);
   // Rewritten onto no file of the build, it is the Function's to answer, as the edge hands it on —
   // which is the application's, whatever the whole file was (`middlewareAnswered`): served from
