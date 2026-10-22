@@ -447,7 +447,16 @@ function answeredInPart(
   // What the test gives a range bounded at both ends, asked for plainly as a resumed download asks
   // one: its own — as the middleware decides it apart (`decidedInPart`).
   if (asked.bounded && answer.inPart !== undefined && request.headers['if-range'] === undefined) {
-    response.writeHead(answer.inPart.status ?? 200, answer.inPart.headers).end(answer.inPart.body);
+    const { inPart } = answer;
+    response.writeHead(inPart.status ?? 200, inPart.headers);
+    if (inPart.endless === true) {
+      // Held open, as a stream the application keeps open is.
+      inPart.opened?.(response);
+      response.flushHeaders();
+      response.write(inPart.body);
+      return true;
+    }
+    response.end(inPart.body);
     return true;
   }
   // A file of an error's status answers no range: whole.
@@ -2433,6 +2442,106 @@ describe('what the check makes of the middleware', () => {
       const result = await checkStack(stackOf([], files, { reservedRoutes: [rewritesMarked] }));
 
       expect(result.failures).toStrictEqual([]);
+    });
+
+    /** The same handoff, its body held open, as a stream an external rewrite returns is (greptile). */
+    const handedOnOpen: Answer = { ...handedOnClaimed, endless: true };
+
+    it('is skipped at its headers where the rule the middleware chose answers with a stream left open', async () => {
+      decisions.set('/a.txt', marked);
+      answers.set('/a.txt', handedOnOpen);
+      answers.set('/b.txt', asItself);
+      const result = await checkStack(stackOf([], files, { reservedRoutes: [rewritesMarked] }));
+
+      expect(result.failures).toStrictEqual([]);
+      expect(result.skipped).toContainEqual({
+        path: '/a.txt',
+        reason:
+          "the application's middleware changed the request into one a redirect or rewrite of next.config claims",
+      });
+    });
+
+    it('fails at its headers where it was handed on as claimed, the middleware changing nothing, its body left open', async () => {
+      decisions.set('/a.txt', { 'x-middleware-next': '1' });
+      answers.set('/a.txt', handedOnOpen);
+      answers.set('/b.txt', asItself);
+      const result = await checkStack(stackOf([], files, { reservedRoutes: [rewritesMarked] }));
+
+      expect(result.failures).toStrictEqual([
+        {
+          path: '/a.txt',
+          reason:
+            'not answered by the edge from storage (x-arkor-edge: passthrough;reason=reserved)',
+        },
+      ]);
+    });
+
+    it('is judged no further on a range of it the rule the middleware chose answers left open', async () => {
+      decidedInPart.set('/a.txt', {
+        'x-middleware-next': '1',
+        'x-middleware-override-headers': 'range,x-rewrite',
+        'x-middleware-request-range': 'bytes=1-9',
+        'x-middleware-request-x-rewrite': '1',
+      });
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+        inPart: handedOnOpen,
+      });
+      answers.set('/b.txt', asItself);
+      const result = await checkStack(stackOf([], files, { reservedRoutes: [rewritesMarked] }));
+
+      expect(result.failures).toStrictEqual([]);
+    });
+
+    it('is skipped where the middleware rewrote it onto another file and changed the range it asks of it', async () => {
+      decisions.set('/a.txt', {
+        'x-middleware-rewrite': '/b.txt',
+        'x-middleware-override-headers': 'range',
+        'x-middleware-request-range': 'bytes=0-4',
+      });
+      // /b.txt's first five bytes, as the edge serves the file on the request the middleware left
+      // (`fileRequest`): its range, not the whole of it (Codex).
+      answers.set('/a.txt', {
+        status: 206,
+        headers: {
+          'content-type': TEXT,
+          'cache-control': GATED,
+          'content-range': 'bytes 0-4/11',
+          'accept-ranges': 'bytes',
+          'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+        },
+        body: 'other',
+      });
+      answers.set('/b.txt', asItself);
+      const result = await checkStack(stackOf([], files));
+
+      expect(result.failures).toStrictEqual([]);
+      expect(result.skipped).toContainEqual({
+        path: '/a.txt',
+        reason:
+          "the application's middleware rewrote it onto /b.txt, and changed what the request selects of it (a range, a condition)",
+      });
+    });
+
+    it('fails where a rewrite onto another file that changed no range is answered with a range of it', async () => {
+      decisions.set('/a.txt', { 'x-middleware-rewrite': '/b.txt' });
+      answers.set('/a.txt', {
+        status: 206,
+        headers: {
+          'content-type': TEXT,
+          'cache-control': GATED,
+          'content-range': 'bytes 0-4/11',
+          'accept-ranges': 'bytes',
+          'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+        },
+        body: 'other',
+      });
+      answers.set('/b.txt', asItself);
+      const result = await checkStack(stackOf([], files));
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toMatch(/^rewritten onto \/b\.txt, and answered 206/u);
     });
   });
 
@@ -6326,6 +6435,26 @@ describe('what the check makes of the middleware', () => {
 
       expect(deleted.failures).toStrictEqual([]);
       expect(broken.failures).toStrictEqual([{ path: '/', reason: 'answered 500' }]);
+    });
+
+    it('fails where the Function answers a server error behind a handoff for its record', async () => {
+      const routes = [await routeOf('/', FRONT)];
+      await readGenerations('/', [1, 2]);
+      const at = `dpl_site|${await entryOf('/', '/')}|2`;
+      // The record says 404; the Function answered 500 all the same (Codex).
+      generationStatuses.set(at, 404);
+      answers.set('/', {
+        status: 500,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'private, no-cache',
+          'x-arkor-edge': 'passthrough;reason=generation-status-404',
+        },
+        body: `${FRONT}<h1>Server error</h1>${REST}`,
+      });
+      const result = await checkStack(stackOf(routes, {}));
+
+      expect(result.failures).toStrictEqual([{ path: '/', reason: 'answered 500' }]);
     });
 
     it("is the application's where the edge hands it on for a record a render answered other than 200", async () => {

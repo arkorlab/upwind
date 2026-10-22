@@ -6,6 +6,7 @@ import {
   type CheckedStack,
   EDGE_HEADER,
   failed,
+  failureStatus,
   type Kept,
   keptFailure,
   middlewareCovers,
@@ -212,11 +213,17 @@ export async function recordStatusVerdict(
   const recorded =
     route !== undefined &&
     (await readOfStatus(withGenerationEvidence(stack, kept), route, { pathname, status }));
-  return recorded
+  if (!recorded) {
+    return failed(
+      `handed on for a record of status ${String(status)}, though this request read no generation of its record with it`,
+    );
+  }
+  // The Function's answer, and its to give: but not a failure of its own, whatever the record says
+  // (`failureStatus`, Codex), as a Pages handoff is held (`pagesHandoffVerdict`).
+  const unhealthy = failureStatus(read.answer);
+  return unhealthy === undefined
     ? skipped(
         `the application's: a render since the build answered it ${String(status)}, which the Function answers`,
       )
-    : failed(
-        `handed on for a record of status ${String(status)}, though this request read no generation of its record with it`,
-      );
+    : failed(unhealthy);
 }

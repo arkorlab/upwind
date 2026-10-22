@@ -12,7 +12,6 @@ import {
   failed,
   FROM_STORAGE,
   middlewareAnswered,
-  middlewareHeadersOnly,
   policyFailure,
   skipped,
   traced,
@@ -27,6 +26,7 @@ import {
   CLAIMED_HANDOFF,
   claimedAsMoved,
   decisionOf,
+  handedOnAtHeaders,
   ignoredRewrite,
   ontoAnotherFile,
   rewrittenOntoNoFile,
@@ -81,9 +81,17 @@ export function rewrittenOnto(
   if (target === undefined) {
     return failed(`rewritten onto ${onto}, which is no file of the build`);
   }
+  const middleware = read.middleware ?? DID_NOT_RUN;
+  // That file is served on the request as the middleware left it (`fileRequest` in the edge): a
+  // range or a condition it changed selects of that file as it would of the file asked for, and what
+  // comes back is the application's choosing (`selectionChanged`, Codex).
+  if (selectionChanged(read.headers, middleware)) {
+    return skipped(
+      `the application's middleware rewrote it onto ${onto}, and changed what the request selects of it (a range, a condition)`,
+    );
+  }
   // Served as that file — its bytes, its status, its type — under the rules the request it was
   // asked as selects, and held as the middleware chose, as the edge serves a rewrite onto a file.
-  const middleware = read.middleware ?? DID_NOT_RUN;
   const expected = expectationOf(stack, read.url, target, { ...read, middleware });
   const failure =
     read.head === true
@@ -203,7 +211,7 @@ async function fileSampleVerdict(
     via: stack.url,
     headers,
     headBytes: RANGE_BYTES + 1,
-    headersOnly: middlewareHeadersOnly,
+    headersOnly: handedOnAtHeaders,
   });
   if (typeof answer === 'string') {
     return failed(answer);
