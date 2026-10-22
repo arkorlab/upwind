@@ -1233,4 +1233,74 @@ describe('pnpm-linked types packages, as TypeScript finds them in a Function', (
       'node_modules/tapable/package.json',
     ]);
   });
+
+  it("keeps a package's own path where it sits in a workspace package's node_modules, not pnpm's store", async () => {
+    const root = await repository();
+    // `node_modules/foo` links a real package in `packages/shared/node_modules`, beside which pnpm
+    // links the workspace package's `bar`. `packages/shared/index.d.ts` reaches both from its path.
+    const shared = path.join(root, 'packages', 'shared');
+    const foo = path.join(shared, 'node_modules', 'foo');
+    await mkdir(foo, { recursive: true });
+    await writeFile(path.join(shared, 'package.json'), JSON.stringify({ name: 'shared' }));
+    await writeFile(
+      path.join(shared, 'index.d.ts'),
+      "export * from './node_modules/foo/index';\nexport type { Bar } from 'bar';\n",
+    );
+    await writeFile(path.join(foo, 'package.json'), JSON.stringify({ name: 'foo' }));
+    await writeFile(path.join(foo, 'index.d.ts'), 'export declare const foo: true;\n');
+    const bar = await storedPackage(
+      root,
+      'bar@1.0.0',
+      { name: 'bar', types: 'index.d.ts' },
+      { 'index.d.ts': 'export interface Bar {}\n' },
+    );
+    const assets = await pnpmTrace(root, [[path.join(shared, 'node_modules', 'bar'), bar]]);
+    const link = path.join(root, 'node_modules', 'foo');
+    await mkdir(path.dirname(link), { recursive: true });
+    await symlink(foo, link, 'dir');
+    assets['node_modules/foo'] = link;
+    assets['packages/shared/index.d.ts'] = path.join(shared, 'index.d.ts');
+    assets['packages/shared/node_modules/foo/index.d.ts'] = path.join(foo, 'index.d.ts');
+    assets['packages/shared/node_modules/foo/package.json'] = path.join(foo, 'package.json');
+    const files = tracedFiles([{ assets }], root, path.join(root, '.next'));
+    const system = await functionSystem(files);
+    const from = '/bundle/packages/shared/index.d.ts';
+    const resolved = (name: string) =>
+      resolveModuleName(name, from, RESOLUTION, system).resolvedModule?.resolvedFileName;
+
+    expect(resolved('./node_modules/foo/index')).toBe(
+      '/bundle/packages/shared/node_modules/foo/index.d.ts',
+    );
+    expect(resolved('bar')).toBe('/bundle/packages/shared/node_modules/bar/index.d.ts');
+    expect(system.fileExists('/bundle/node_modules/foo/index.d.ts')).toBe(true);
+  });
+
+  it('drops the store path of a package in pnpm store directories whatever their ids carry', async () => {
+    const root = await repository();
+    // A peer suffix, and an id pnpm shortened with a hash, as it does past its length limit.
+    const dom = await storedPackage(
+      root,
+      'react-dom@18.3.1_react@18.3.1',
+      { name: 'react-dom' },
+      { 'index.d.ts': 'export {};\n' },
+    );
+    const long = await storedPackage(
+      root,
+      '@scope+long-name@1.0.0_@babel+core@7.29.7_supports-color@10.2.2_530a2f5f521ab1b421cc7e2766c8b6c7',
+      { name: '@scope/long-name' },
+      { 'index.d.ts': 'export {};\n' },
+    );
+    const assets = await pnpmTrace(root, [
+      [path.join(root, 'node_modules', 'react-dom'), dom],
+      [path.join(root, 'node_modules', '@scope', 'long-name'), long],
+    ]);
+    const files = tracedFiles([{ assets }], root, path.join(root, '.next'));
+
+    expect(files.map((file) => file.name)).toStrictEqual([
+      'node_modules/@scope/long-name/index.d.ts',
+      'node_modules/@scope/long-name/package.json',
+      'node_modules/react-dom/index.d.ts',
+      'node_modules/react-dom/package.json',
+    ]);
+  });
 });

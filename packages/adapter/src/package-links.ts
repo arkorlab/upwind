@@ -218,22 +218,30 @@ function projectView(context: Context): Map<string, Seen> {
 }
 
 /**
- * The `node_modules` directory a package at `target` sits in, from the repository, where it is off
- * the project's chain: in pnpm's store, wherever its `virtualStoreDir` puts it
- * (`<store>/<id>/node_modules`), where only links lead to it.
+ * The `node_modules` directory a package at `target` sits in, from the repository, where that is
+ * the package's own in pnpm's store, which only links lead to: `<store>/<id>/node_modules/<name>`,
+ * wherever `virtualStoreDir` puts the store, `<id>` being pnpm's id for the package, its name with
+ * `+` for `/` and then `@` and its version, and what pnpm adds after (`@types+node@26.1.0`,
+ * `react-dom@18.3.1_react@18.3.1`). A package in any other `node_modules`, a real one in a
+ * workspace package's own say, is reached by its own path too.
  */
 export function storedIn(context: Context, target: string): string | undefined {
   const real = beneath(context.repository.real, target)?.split(path.sep).join('/');
-  const directory =
-    real === undefined ? undefined : PACKAGE_ENTRY.exec(real)?.groups?.['directory'];
-  return directory === undefined || context.chain.includes(directory) ? undefined : directory;
+  const entry = real === undefined ? undefined : PACKAGE_ENTRY.exec(real)?.groups;
+  const directory = entry?.['directory'];
+  const name = entry?.['name'];
+  if (directory === undefined || name === undefined || context.chain.includes(directory)) {
+    return undefined;
+  }
+  const id = path.posix.basename(path.posix.dirname(directory));
+  return id.startsWith(`${name.replace('/', '+')}@`) ? directory : undefined;
 }
 
 /**
  * The `node_modules` directories of pnpm's store, found from where the trace's links lead rather
- * than by its name, which `virtualStoreDir` sets: each one a linked package sits in off the
- * project's chain (`<store>/<id>/node_modules`, which holds it and pnpm's links to what it depends
- * on), and the store's own (`<store>/node_modules`), where pnpm hoists every package.
+ * than by its name, which `virtualStoreDir` sets: each one the store keeps a linked package in
+ * (`<store>/<id>/node_modules`, `storedIn`), which holds it and pnpm's links to what it depends on,
+ * and the store's own (`<store>/node_modules`), where pnpm hoists every package.
  */
 function storeDirectories(context: Context): Set<string> {
   const directories = new Set<string>();
