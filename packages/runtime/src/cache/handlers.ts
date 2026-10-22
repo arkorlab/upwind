@@ -28,6 +28,7 @@ import {
   writesIn,
 } from './held-writes.ts';
 import type { DataEntryMetadata, InvalidateOutcome } from './host.ts';
+import { markedIn, stampedAfterMarks, useCacheReadBegan, useCacheStamp } from './own-marks.ts';
 import {
   fetchedAgainBehind,
   holdForRevalidation,
@@ -104,12 +105,16 @@ async function invalidate(
     staleAt: now,
     hardExpireAt: expire > 0 ? now + expire * MS_PER_SECOND : now,
   });
+  // And what the request computes from here on is stamped past it (`own-marks.ts`).
+  markedIn(requestContext(), now);
   let outcome: InvalidateOutcome;
   try {
     outcome = await runtime.host.invalidate({
       tags,
       ...(expire > 0 && { expire }),
       api: durations === undefined ? 'updateTag' : 'revalidateTag',
+      // When it was put in force here: a host may record it then rather than once it has the call.
+      inForceAt: now,
     });
   } catch (error) {
     // In force here all the same, and known at no revision: the host may never have recorded it.
@@ -360,7 +365,8 @@ export class PlatformFetchCache {
     const now = nowMs();
     const context = requestContext();
     if (context !== undefined && !context.fetchStarts.has(cacheKey)) {
-      context.fetchStarts.set(cacheKey, now);
+      // Past the request's own invalidations put in force before it (`own-marks.ts`).
+      context.fetchStarts.set(cacheKey, stampedAfterMarks(context, now));
     }
     let held: HeldValue | undefined;
     try {
@@ -537,6 +543,7 @@ async function getUseCache(
   softTags: string[],
 ): Promise<UseCacheEntry | undefined> {
   const now = nowMs();
+  useCacheReadBegan(requestContext(), kind, cacheKey);
   // The soft tags — the route's own — are known before the entry is: they are brought up to date
   // while the value is read, and the entry's own tags once it has been.
   const [held] = await Promise.all([
@@ -669,7 +676,8 @@ async function setUseCache(
       handler: kind,
       tags: [...entry.tags],
       stale: entry.stale,
-      timestamp: entry.timestamp,
+      // Past the request's own invalidations put in force before its first read (`own-marks.ts`).
+      timestamp: useCacheStamp(context, kind, cacheKey, entry.timestamp),
       expire: entry.expire,
       revalidate: entry.revalidate,
     };
