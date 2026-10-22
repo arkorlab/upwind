@@ -331,9 +331,11 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
 ```
 
 - **`upwind deployments`** lists the project's deployments, the one deployed most recently first: the
-  live one, one held at none of the traffic while a run checks it, those a rollback can go back to,
-  those whose Functions are gone, and those deployed before the runtime cache's key was reset
-  (`key reset`). It reads the account and changes nothing on it.
+  live one, one held at none of the traffic while a run checks it, those kept — their edge version
+  and Functions still there, so a rollback tries them — those whose Functions are gone, and those
+  deployed before the runtime cache's key was reset (`key reset`). It reads the Workers API alone
+  and changes nothing on the account, so a deployment it lists as kept may still be refused by a
+  rollback, for a bundle the bucket no longer keeps or a cache scope a stopped cleanup retired.
 - **`upwind rollback`** gives the edge's traffic back to an older deployment — one first deployed
   before the live one, the one live most recently among those first, or the one `--to` names. Run
   again, it goes further back: a deployment gone back to is no newer for it. One that cannot be

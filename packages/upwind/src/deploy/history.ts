@@ -267,7 +267,13 @@ function uploadedAt(version: WorkerVersion | undefined): number | undefined {
  * When the key the runtime cache's Workers check a Function's token with now was made: when the
  * oldest version of the cache tagged with its id (`ensureInfra`) was uploaded. A key is put in the
  * cache before any Function holding a token signed under it is uploaded, in the run that made it.
- * Nothing for a project with no cache Worker, or one whose versions say nothing of a key.
+ *
+ * Only where that version is known to be the oldest with the key (Sentry): one before it is listed,
+ * under another key or none, or it is the cache's first. The listing stops at the newest thousand
+ * versions, and Cloudflare may keep fewer; where the oldest listed carries the key, the key may be
+ * older than it, and a later time would take deployments made under the key for ones made before
+ * it. Nothing then — a rollback refuses no deployment for the key — as for a project with no cache
+ * Worker, one whose newest version says nothing of a key, or one whose versions are not numbered.
  */
 export async function cacheKeyMadeAt(
   scope: AccountScope,
@@ -275,7 +281,7 @@ export async function cacheKeyMadeAt(
 ): Promise<number | undefined> {
   const versions = (await unlessMissing(listAllVersions(scope, names.cache))) ?? [];
   const keyId = keyIdOf(newestOf(versions)?.annotations?.['workers/tag']);
-  if (keyId === undefined) {
+  if (keyId === undefined || versions.some((version) => version.number === undefined)) {
     return undefined;
   }
   let first: WorkerVersion | undefined;
@@ -285,7 +291,9 @@ export async function cacheKeyMadeAt(
       first = version;
     }
   }
-  return uploadedAt(first);
+  const from = first?.number ?? 0;
+  const known = from === 1 || versions.some((version) => (version.number ?? 0) < from);
+  return known ? uploadedAt(first) : undefined;
 }
 
 /**

@@ -52,7 +52,7 @@ describe('`upwind deployments`', () => {
       'upwind: shop, 4 deployments on shop-edge',
       expect.stringContaining(`  ${checked.deploymentId}  waiting `),
       expect.stringContaining(`  ${live.deploymentId}  live `),
-      expect.stringContaining(`  ${older.deploymentId}  rollback `),
+      expect.stringContaining(`  ${older.deploymentId}  kept `),
       expect.stringContaining(`  ${gone.deploymentId}  cleaned up `),
     ]);
     expect(fake.requests.every((request) => request.method === 'GET')).toBe(true);
@@ -99,6 +99,42 @@ describe('`upwind deployments`', () => {
     );
     expect(printed).toContainEqual(expect.stringContaining(`  ${before.deploymentId}  key reset `));
     expect(fake.requests.every((request) => request.method === 'GET')).toBe(true);
+  });
+
+  it.each([
+    { listed: 'the version before it, under another key', status: 'key reset' },
+    { listed: 'no version before it', status: 'kept' },
+  ])("dates the cache key's reset only where it lists $listed", async ({ listed, status }) => {
+    const fake = fakeCloudflare();
+    const edge = fakeEdge(fake);
+    const before = edge.deploy();
+    const live = edge.deploy();
+    edge.serve([{ versionId: live.versionId, percentage: 100 }]);
+    uploadVersion(fake, NAMES.cache, {
+      tag: 'upwind:infra:0000000000000000:key-before',
+      createdOn: '2026-10-01T00:00:00.000Z',
+    });
+    uploadVersion(fake, before.scriptName, {
+      tag: before.deploymentId,
+      createdOn: '2026-10-02T00:00:00.000Z',
+    });
+    uploadVersion(fake, NAMES.cache, {
+      tag: 'upwind:infra:0000000000000000:key-reset',
+      createdOn: '2026-10-03T00:00:00.000Z',
+    });
+    uploadVersion(fake, live.scriptName, {
+      tag: live.deploymentId,
+      createdOn: '2026-10-04T00:00:00.000Z',
+    });
+    // Past the newest thousand, or older than Cloudflare keeps: the key may be older than every
+    // version listed with it, and the one before it is not known to be gone back to in vain.
+    const versions = fake.scripts.get(NAMES.cache)?.versions ?? [];
+    versions.splice(listed === 'no version before it' ? 1 : versions.length);
+
+    await expect(runDeployments({ projectDir: await project() }, CREDENTIALS, fake)).resolves.toBe(
+      0,
+    );
+    expect(printed).toContainEqual(expect.stringContaining(`  ${before.deploymentId}  ${status} `));
   });
 
   it('says so of a project never deployed, and needs the token to read the account', async () => {

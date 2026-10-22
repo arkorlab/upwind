@@ -18,10 +18,12 @@ import { type ProjectNames, projectNames } from './names.ts';
 /**
  * `upwind deployments`: the project's deployments, the one first deployed most recently first (a
  * deployment rolled back to is no newer for it), each as the edge's version for it
- * stands — taking the edge's traffic, held at none beside the one that does, one a rollback can go
- * back to, one whose Functions are gone, one deployed before the runtime cache's key was reset, or
- * one whose version is older than the hundred a deployment of the edge can choose from. Read from
- * the Workers API alone, and changing nothing.
+ * stands — taking the edge's traffic, held at none beside the one that does, kept (its edge version
+ * and Functions there, so a rollback tries it), one whose Functions are gone, one deployed before
+ * the runtime cache's key was reset, or one whose version is older than the hundred a deployment of
+ * the edge can choose from. Read from the Workers API alone, and changing nothing: what only the
+ * bucket and the cache know — its bundle kept, its cache scope not retired by a stopped cleanup,
+ * which a rollback still refuses one for — it does not say.
  */
 
 export interface DeploymentsIo {
@@ -63,7 +65,7 @@ async function statusOf(listing: Listing, record: DeploymentRecord): Promise<str
   // Its Functions hold a token of a key the cache no longer checks with: no way back.
   return keyMadeAt !== undefined && (await uploadedBefore(scope, pointer, keyMadeAt))
     ? 'key reset'
-    : 'rollback';
+    : 'kept';
 }
 
 function lineOf(record: DeploymentRecord, status: string): string {
