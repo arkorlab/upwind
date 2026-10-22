@@ -725,4 +725,167 @@ describe('pnpm-linked types packages, as TypeScript finds them in a Function', (
     expect(entry).toBe('/bundle/node_modules/@types/node/index.d.ts');
     expect(system.readFile(entry!)).toBe('declare var version: 26;\n');
   });
+
+  it("follows a held package's own dependencies, each version where its dependent finds it", async () => {
+    const root = await repository();
+    const react = await storedPackage(
+      root,
+      '@types+react@19.2.2',
+      { name: '@types/react' },
+      { 'index.d.ts': "export type { Property } from 'csstype';\n" },
+    );
+    const css = await storedPackage(
+      root,
+      'csstype@3.1.3',
+      { name: 'csstype' },
+      { 'index.d.ts': 'export declare const version: "3.1.3";\n' },
+    );
+    const dom = await storedPackage(
+      root,
+      '@types+react-dom@18.3.7_@types+react@18.3.26',
+      { name: '@types/react-dom' },
+      { 'index.d.ts': "export type { Property } from 'react';\n" },
+    );
+    const older = await storedPackage(
+      root,
+      '@types+react@18.3.26',
+      { name: '@types/react' },
+      {
+        'index.d.ts':
+          "export type { Property } from 'csstype';\nexport type * from 'prop-types';\n",
+      },
+    );
+    const olderCss = await storedPackage(
+      root,
+      'csstype@3.1.2',
+      { name: 'csstype' },
+      { 'index.d.ts': 'export declare const version: "3.1.2";\n' },
+    );
+    const props = await storedPackage(
+      root,
+      '@types+prop-types@15.7.15',
+      { name: '@types/prop-types' },
+      { 'index.d.ts': 'export declare const checked: true;\n' },
+    );
+    // `@types/react-dom` 18 has pnpm's `@types/react` 18 beside it, which has `csstype` 3.1.2 and
+    // `@types/prop-types` beside it in turn: what the project's own `@types/react` 19 has neither.
+    const assets = await pnpmTrace(root, [
+      [path.join(root, 'node_modules', '@types', 'react'), react],
+      [path.join(root, 'node_modules', '@types', 'react-dom'), dom],
+      [path.join(react, '..', '..', 'csstype'), css],
+      [path.join(dom, '..', 'react'), older],
+      [path.join(older, '..', '..', 'csstype'), olderCss],
+      [path.join(older, '..', 'prop-types'), props],
+    ]);
+    const files = tracedFiles([{ assets }], root, path.join(root, '.next'));
+    const system = await functionSystem(files);
+    const nested = '/bundle/node_modules/@types/react-dom/node_modules/@types/react/index.d.ts';
+    const resolved = (name: string, from: string) =>
+      resolveModuleName(name, from, RESOLUTION, system).resolvedModule?.resolvedFileName;
+
+    expect(resolved('react', '/bundle/node_modules/@types/react-dom/index.d.ts')).toBe(nested);
+    expect(resolved('csstype', nested)).toBe(
+      '/bundle/node_modules/@types/react-dom/node_modules/@types/react/node_modules/csstype/index.d.ts',
+    );
+    expect(resolved('prop-types', nested)).toBe(
+      '/bundle/node_modules/@types/react-dom/node_modules/@types/prop-types/index.d.ts',
+    );
+    expect(resolved('csstype', '/bundle/node_modules/@types/react/index.d.ts')).toBe(
+      '/bundle/node_modules/csstype/index.d.ts',
+    );
+  });
+
+  it("holds the project's own version of a package a types package depends on another of", async () => {
+    const root = await repository();
+    const node = await storedPackage(
+      root,
+      '@types+node@26.1.0',
+      { name: '@types/node' },
+      { 'index.d.ts': "export type { Dispatcher } from 'undici-types';\n" },
+    );
+    const undici = await storedPackage(
+      root,
+      'undici-types@7.16.0',
+      { name: 'undici-types' },
+      { 'index.d.ts': 'export interface Dispatcher { readonly version: 7 }\n' },
+    );
+    const own = await storedPackage(
+      root,
+      'undici-types@6.21.0',
+      { name: 'undici-types' },
+      { 'index.d.ts': 'export interface Dispatcher { readonly version: 6 }\n' },
+    );
+    // The project depends on `undici-types` 6 itself; `@types/node` has 7 beside it in the store.
+    const assets = await pnpmTrace(root, [
+      [path.join(root, 'node_modules', '@types', 'node'), node],
+      [path.join(root, 'node_modules', 'undici-types'), own],
+      [path.join(node, '..', '..', 'undici-types'), undici],
+    ]);
+    const files = tracedFiles([{ assets }], root, path.join(root, '.next'));
+    const system = await functionSystem(files);
+    const resolved = (from: string) =>
+      resolveModuleName('undici-types', from, RESOLUTION, system).resolvedModule?.resolvedFileName;
+
+    expect(resolved('/bundle/app/page.ts')).toBe('/bundle/node_modules/undici-types/index.d.ts');
+    expect(system.readFile('/bundle/node_modules/undici-types/index.d.ts')).toContain('version: 6');
+    expect(resolved('/bundle/node_modules/@types/node/index.d.ts')).toBe(
+      '/bundle/node_modules/@types/node/node_modules/undici-types/index.d.ts',
+    );
+  });
+
+  it('finds the types package an ancestor of a nested app links, from /bundle', async () => {
+    const root = await repository();
+    const project = path.join(root, 'apps', 'group', 'site');
+    await mkdir(project, { recursive: true });
+    const node = await storedPackage(
+      root,
+      '@types+node@26.1.0',
+      { name: '@types/node' },
+      { 'index.d.ts': 'declare var version: 26;\n' },
+    );
+    // `apps/group` is a workspace package of its own, and the app inherits its `@types/node`.
+    const assets = await pnpmTrace(root, [
+      [path.join(root, 'apps', 'group', 'node_modules', '@types', 'node'), node],
+    ]);
+    const files = tracedFiles([{ assets }], project, path.join(project, '.next'), root);
+    const system = await functionSystem(files);
+    const resolved = resolveTypeReferenceDirective('node', undefined, RESOLUTION, system);
+
+    expect(getAutomaticTypeDirectiveNames(WALKED, system)).toStrictEqual(['node']);
+    expect(resolved.resolvedTypeReferenceDirective?.resolvedFileName).toBe(
+      '/bundle/node_modules/@types/node/index.d.ts',
+    );
+  });
+
+  it("holds none of a workspace root's types package where a nested app links its own it cannot hold", async () => {
+    const root = await repository();
+    const project = path.join(root, 'apps', 'site');
+    await mkdir(project, { recursive: true });
+    // The app's `@types/react` is an npm alias (`"@types/react": "npm:types-react@…"`), which keeps
+    // its stored name; the workspace root's is a real `@types/react`, which the app never sees.
+    const alias = await storedPackage(
+      root,
+      'types-react@19.0.0',
+      { name: 'types-react' },
+      { 'index.d.ts': 'declare var version: 19;\n' },
+    );
+    const workspace = await storedPackage(
+      root,
+      '@types+react@18.3.26',
+      { name: '@types/react' },
+      { 'index.d.ts': 'declare var version: 18;\n' },
+    );
+    const assets = await pnpmTrace(root, [
+      [path.join(project, 'node_modules', '@types', 'react'), alias],
+      [path.join(root, 'node_modules', '@types', 'react'), workspace],
+    ]);
+    const files = tracedFiles([{ assets }], project, path.join(project, '.next'), root);
+    const system = await functionSystem(files);
+
+    expect(files.map((file) => file.name)).toStrictEqual([
+      'node_modules/.pnpm/@types+react@18.3.26/node_modules/@types/react/index.d.ts',
+      'node_modules/.pnpm/types-react@19.0.0/node_modules/types-react/index.d.ts',
+    ]);
+    expect(getAutomaticTypeDirectiveNames(WALKED, system)).toStrictEqual([]);
+  });
 });
