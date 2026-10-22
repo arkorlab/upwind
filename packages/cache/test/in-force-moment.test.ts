@@ -157,12 +157,15 @@ async function call<T>(at: Scope, method: string, path: string, body: unknown): 
   return envelope.result;
 }
 
-/** What an invalidation of `article`, said to have been put in force at `inForceAt`, asks. */
-function invalidationOf(inForceAt: unknown): InvalidateRequest {
+/**
+ * What an invalidation of `article`, said to have been put in force at `inForceAt`, asks — saying no
+ * moment without one, as a Function from before the field asks.
+ */
+function invalidationOf(inForceAt?: unknown): InvalidateRequest {
   return {
     tags: [{ value: 'article' }],
     cause: { source: 'app-worker', api: 'updateTag' },
-    inForceAt,
+    ...(inForceAt !== undefined && { inForceAt }),
   };
 }
 
@@ -341,7 +344,9 @@ describe('an invalidation the gateway is told the moment of', () => {
  * A value of the data cache that stands current at the authority before the invalidation does: a
  * render's write, made after the invalidation was put in force in the Worker that asked, which the
  * authority received first — say between two chunks of a large invalidation. Made after the moment,
- * it is kept, as the same write arriving after the invalidation would be; made at it, condemned.
+ * it is kept, as the same write arriving after the invalidation would be; made at it, condemned. Where
+ * the Worker said no moment, the authority's clock stands for it, which says nothing of a timestamp
+ * the Worker's clock stamped: the value is condemned by its tags, as it was before a moment was said.
  */
 describe('a value written before the invalidation it was made after', () => {
   const moment = NOW - 400;
@@ -398,4 +403,27 @@ describe('a value written before the invalidation it was made after', () => {
     expect(writes).toHaveLength(1);
     await expect(readOf(at, 'between-chunks')).resolves.not.toHaveProperty('invalidation');
   });
+
+  it.each([
+    ['says no moment', undefined],
+    ['says one that is no number', 'soon'],
+  ])(
+    'is condemned where the invalidation %s, made after the authority’s clock, and is among what it reached',
+    async (_said, inForceAt) => {
+      const at = await scope();
+      // Stamped by a Worker whose clock runs a millisecond ahead of the authority's.
+      const { entryId } = await write(at, 'ahead-of-the-clock', NOW + 1);
+
+      const recorded = await recordedAtNow(at, invalidationOf(inForceAt));
+      const read = await readOf(at, 'ahead-of-the-clock');
+
+      expect(read.invalidation).toStrictEqual({
+        revision: recorded.revision,
+        staleAt: NOW,
+        hardExpireAt: NOW,
+      });
+      expect(recorded.affectedEntryIds).toContain(entryId);
+      await expect(tombstoneOf(at, entryId)).resolves.toBe(recorded.revision);
+    },
+  );
 });

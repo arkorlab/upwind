@@ -67,14 +67,19 @@ export const IN_FORCE_WITHIN_MS = 2000;
  * The moment an invalidation takes effect at, by the authority's clock `now`: the one the Worker said
  * it put it in force at, no later than `now` and no earlier than `IN_FORCE_WITHIN_MS` before it — a
  * fraction of a millisecond taken to the next whole one, as a moment that reaches more — or `now`
- * where it said none, or nothing a moment can be read from.
+ * where it said none, or nothing a moment can be read from (`isMoment`).
  */
 export function inForceMoment(request: Pick<InvalidateRequest, 'inForceAt'>, now: number): number {
   const said = request.inForceAt;
-  if (typeof said !== 'number' || !Number.isFinite(said)) {
+  if (!isMoment(said)) {
     return now;
   }
   return Math.min(now, Math.max(now - IN_FORCE_WITHIN_MS, Math.ceil(said)));
+}
+
+/** Whether what the Worker said of an invalidation's moment is one: a number, and a finite one. */
+function isMoment(said: unknown): said is number {
+  return typeof said === 'number' && Number.isFinite(said);
 }
 
 interface InvalidatePlan {
@@ -155,9 +160,10 @@ function insertInvalidation(sql: SqlStorage, row: InvalidationRow): void {
  * the tags, by their index, and not among every entry of the scope, which has no index of kinds:
  * what an invalidation reads is what it reaches, as it was.
  *
- * Only the data cache's. A page's or a route handler's generation is stamped when its regeneration
- * built the commit, after its render had read what it is made of, so nothing of it says when that
- * render read: it is reached by its tags alone, as it was.
+ * Only by a moment the Worker said: where it said none, the moment `?` is past every timestamp, and
+ * none is found (`applyInvalidate`). And only the data cache's. A page's or a route handler's
+ * generation is stamped when its regeneration built the commit, after its render had read what it is
+ * made of, so nothing of it says when that render read: it is reached by its tags alone, as it was.
  */
 const MADE_AFTER_THE_MOMENT = `SELECT e.entry_id FROM entry_tags et
   JOIN entries e ON e.entry_id = et.entry_id
@@ -168,16 +174,20 @@ const MADE_AFTER_THE_MOMENT = `SELECT e.entry_id FROM entry_tags et
 /**
  * Condemn the matching set in SQLite without allocating a generation/event per entry: the current
  * generations of the entries with the tags, and those entries — but the values made after the moment
- * the invalidation takes effect at (`MADE_AFTER_THE_MOMENT`), which it does not reach.
+ * `sparedAfter` (`MADE_AFTER_THE_MOMENT`), which the invalidation does not reach.
  */
 function condemnCurrent(
   input: TxInput,
   tagIds: readonly string[],
   immediate: boolean,
-  deadlines: { readonly staleAt: number; readonly hardExpireAt: number },
+  moments: {
+    readonly staleAt: number;
+    readonly hardExpireAt: number;
+    readonly sparedAfter: number;
+  },
 ): void {
   const { sql, now, revision } = input;
-  const { staleAt, hardExpireAt } = deadlines;
+  const { staleAt, hardExpireAt, sparedAfter } = moments;
   const targets = JSON.stringify(tagIds);
   sql.exec(
     `UPDATE generations SET condemned = json_object(
@@ -196,7 +206,7 @@ function condemnCurrent(
     hardExpireAt,
     targets,
     targets,
-    staleAt,
+    sparedAfter,
   );
   sql.exec(
     `UPDATE entries SET revision = ?, record_revision = ?,
@@ -212,7 +222,7 @@ function condemnCurrent(
     now,
     targets,
     targets,
-    staleAt,
+    sparedAfter,
   );
 }
 
@@ -226,14 +236,14 @@ interface AffectedRow extends Record<string, SqlStorageValue> {
 
 /**
  * Four 32-bit masks encode up to 128 tag memberships once per affected entry: an entry with one of
- * the tags whose current value was not made after `staleAt`, the moment the invalidation takes effect
- * at (`MADE_AFTER_THE_MOMENT`). What the history is told the invalidation reached, as what it
- * condemns (`condemnCurrent`).
+ * the tags whose current value was not made after the moment `sparedAfter`
+ * (`MADE_AFTER_THE_MOMENT`). What the history is told the invalidation reached, as what it condemns
+ * (`condemnCurrent`).
  */
 function affectedEntries(
   sql: SqlStorage,
   tagIds: readonly string[],
-  staleAt: number,
+  sparedAfter: number,
 ): AffectedRow[] {
   const targets = JSON.stringify(tagIds);
   return sql
@@ -248,7 +258,7 @@ function affectedEntries(
      GROUP BY et.entry_id ORDER BY et.entry_id`,
       targets,
       targets,
-      staleAt,
+      sparedAfter,
     )
     .toArray();
 }
@@ -378,13 +388,20 @@ function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateRespon
     hardExpireAt: immediate ? at : at + windowMs,
     meaning: immediate ? ('immediate' as const) : ('swr' as const),
   };
+  // A value of the data cache made after the moment is spared only where the Worker said the moment,
+  // even one the window clamped (`MADE_AFTER_THE_MOMENT`). Where it said none — a Function from
+  // before it said any, or nothing to be read — the moment is the authority's own clock, while a
+  // value's timestamp is a Worker's: one whose clock runs a little ahead would stamp a value made
+  // before the invalidation later than the authority's clock, and so out of its reach. There none is
+  // spared, and the tags alone reach, as they did before a moment was said.
+  const sparedAfter = isMoment(request.inForceAt) ? at : Infinity;
   const events: EventInput[] = [];
   const persistentTargets = plan.targets.filter((target) => persistent.has(target.ref.tagId));
   const indices = new Map(persistentTargets.map((target, index) => [target.invalidationId, index]));
   const affected = affectedEntries(
     sql,
     persistentTargets.map((target) => target.ref.tagId),
-    deadlines.staleAt,
+    sparedAfter,
   );
   const compact = affected.length > INVALIDATION_BATCH_SIZE;
   const invalidations: InvalidateResponse['invalidations'] = [];
@@ -413,7 +430,7 @@ function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateRespon
     input,
     plan.targets.map((target) => target.ref.tagId),
     immediate,
-    deadlines,
+    { ...deadlines, sparedAfter },
   );
   if (compact) {
     const invalidationIds = persistentTargets.map((target) => target.invalidationId);
