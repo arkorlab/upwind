@@ -380,6 +380,19 @@ small bodies, reusable or postponed shells, error pages, Pages Router and edge-r
 stay shipped. The bundle still records and uploads every immutable blob, and a body shared with
 an output that needs it stays in that output's Function.
 
+`when: 'over-limit'` in the same option leaves those bodies out only of a build that could not be
+uploaded with them: `unshippedPrerenderBodies: { minBytes, maxBytes, when: 'over-limit' }`. The
+build lays its app Functions out with every body in them first, as if the option were unset, and a
+build within the 64 MiB limit is then exactly that build — the same modules, the same runtime, and
+no body left to the host's reader. Only when an app Function of that layout is over the limit does
+the build lay them out again, from the same `next build` output and with the range applied as the
+default `when: 'always'` applies it to every build, and audit them again: a build that is still over
+the limit fails as it would have without the option, and one with no body in the range fails without
+being laid out again. The build log says when this happened, and how many bodies and bytes were left
+out. A split (`functions.split`) that brings every Function within the limit leaves the bodies where
+they are. The host module requirement below applies to either setting, since which builds will need
+the reader is only known once each has been weighed.
+
 This option requires a nonempty `cacheHostModule` path whose module exports
 `createBundleBlobReader`. A missing or blank module path is rejected when the adapter is created,
 before a build writes output. The build requires a named runtime ESM export, including named or

@@ -31,7 +31,6 @@ import {
   bundleRouting,
   bypassTokenOf,
   collectEntrypoints,
-  collectPrerenders,
   deploymentId,
   edgeEntryOf,
   imagesConfig,
@@ -56,6 +55,7 @@ import { instrumentationOf, writeClientInstrumentation } from './instrumentation
 import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
 import { checkPageBodyHost, type UnshippedPrerenderBodies } from './page-bodies.ts';
+import { collectPageBodies } from './page-body-layout.ts';
 import { readProjectConfig } from './project-config.ts';
 import { projectDirOf } from './project-dir.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
@@ -198,7 +198,7 @@ async function onBuildComplete(
   const manifests = exported ? [] : await collectManifests(ctx.projectDir, ctx.distDir, id);
   const collected = collectEntrypoints(workflow.outputs);
   const { entrypoints, sourcePages, edgeEntries } = collected;
-  const { prerenders, shipped } = await collectPrerenders({
+  const { prerenders, ...pageBodies } = await collectPageBodies({
     outputs: ctx.outputs,
     blobs,
     basePath: ctx.config.basePath,
@@ -280,7 +280,6 @@ async function onBuildComplete(
     outDir,
     blobs,
     cacheHostModule: options.cacheHostModule,
-    requireBundleBlobReader: options.unshippedPrerenderBodies !== undefined,
     sourceMaps: options.sourceMaps,
     keptMaps,
     manifests,
@@ -289,7 +288,9 @@ async function onBuildComplete(
     cacheHandlers,
     middleware: { output: middleware, ...middlewareParts },
     ...collected,
-    shipped,
+    // What the app Functions carry of the prerendered bodies, and whether a body may be missing
+    // from them, as the host's `unshippedPrerenderBodies` says (`collectPageBodies`).
+    ...pageBodies,
     staticBlobs: await staticBlobsOf(shippedStatic, outDir),
     files,
     workflowSdk: workflow.flow !== undefined,
@@ -376,8 +377,9 @@ async function onBuildComplete(
   };
   await writeFile(path.join(outDir, DEPENDENCIES_FILE), JSON.stringify(dependencies, null, 2));
   await rm(path.join(outDir, 'work'), { recursive: true, force: true });
-  if (functions.built.length > 1) {
-    // The modules of the Function the build weighed before it split are blobs nothing names.
+  if (functions.built.length > 1 || functions.bodiesLeftOut !== undefined) {
+    // The modules of the Function the build weighed before it split, and of the Functions it laid
+    // out with every page body before leaving the large ones out, are blobs nothing names.
     await blobs.prune(new Set(bundleBlobs(bundle).keys()));
   }
   console.log(
@@ -585,6 +587,17 @@ export interface AdapterOptions {
    * unavailable.
    * Edge delivery and shipped bodies do not make that read. This trades fallback latency for
    * a smaller Function, and does not promise an improvement in request-time memory or TTFB.
+   *
+   * `when: 'over-limit'` makes that trade only where a build cannot be uploaded without it. The
+   * build lays its app Functions out with every body in them, as if the option were unset — and
+   * a build within the size limit (`MAX_FUNCTION_BYTES`) is then exactly that build: the same
+   * modules, the same runtime, no body left to the reader. Only when one of them is past the limit
+   * are they laid out again from the same `next build` output, with the range applied as the
+   * default `'always'` applies it to every build, and audited again: a build that is still past
+   * the limit fails as it would have without the option. The build log says how many bodies, and
+   * how many bytes, were left out. A split (`functions.split`) that brings every Function under
+   * the limit leaves the bodies where they are. The host module is required here as well, since
+   * which builds will need its reader is only known once each has been weighed.
    */
   readonly unshippedPrerenderBodies?: UnshippedPrerenderBodies | undefined;
   /**
