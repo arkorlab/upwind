@@ -195,7 +195,9 @@ describe('an invalidation a request asks for', () => {
 
     await expect(settledBeforeNextTask(invalidating)).resolves.toBe(true);
     // Asked once for every handler, and held for the response and in `waitUntil`.
-    expect(asked.map((call) => call.request)).toStrictEqual([{ tags: [TAG], api: 'updateTag' }]);
+    expect(asked.map((call) => call.request)).toStrictEqual([
+      { tags: [TAG], api: 'updateTag', inForceAt: NOW },
+    ]);
     expect(context.invalidated.pending).toBe(true);
     expect(kept).toHaveLength(1);
     // What the tag carried, made before it, is not served here while the host has yet to answer.

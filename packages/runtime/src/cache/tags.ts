@@ -675,7 +675,8 @@ export class TagState {
    * the update has to miss what the update was for. Next.js settles a tie the same way where it
    * holds an entry against the expiration a handler reports (`shouldDiscardCacheEntry`), which is
    * what `getExpiration` hands it from here; the price of the other kind of tie, a value made just
-   * after an invalidation, is one render more.
+   * after an invalidation, is one render more — save for what a request computes after one of its own
+   * invalidations, which it stamps a millisecond past it (`own-marks.ts`).
    *
    * Where the entry was made against a view brought up to a revision of the scope (`held`), an
    * invalidation the mark says was recorded at or before it was in that view, whatever its time

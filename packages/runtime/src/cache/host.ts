@@ -446,6 +446,17 @@ export interface InvalidateRequest {
   readonly expire?: number | undefined;
   /** Which of Next.js's APIs asked, for the record the host keeps. */
   readonly api: 'revalidateTag' | 'updateTag';
+  /**
+   * The moment the invalidation was put in force in the isolate that asked (unix ms, by the clock it
+   * stamps what it writes with): its reads miss what the invalidation made stale from then on, and
+   * what its request computes after that moment is stamped later than it (`own-marks.ts`). A host
+   * may record the invalidation at this moment rather than at its own — as for any moment, one made
+   * at or before it is condemned by it — though never later than its own clock, and no further back
+   * than it trusts: so that a value the request wrote after the invalidation, before the host had the
+   * call, is not condemned by it. A host that ignores it records the invalidation at its own clock, as
+   * before: such a value is condemned there, and the next read computes it again.
+   */
+  readonly inForceAt?: number | undefined;
 }
 
 export interface InvalidateOutcome {
