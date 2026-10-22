@@ -28,8 +28,8 @@ import {
   tableOf,
   writesIn,
 } from './held-writes.ts';
-import type { DataEntryMetadata, InvalidateOutcome } from './host.ts';
-import { markedIn, stampedAfterMarks, useCacheReadBegan, useCacheStamp } from './own-marks.ts';
+import type { DataEntryMetadata, InvalidateOutcome, InvalidateRequest } from './host.ts';
+import * as ownMarks from './own-marks.ts';
 import {
   fetchedAgainBehind,
   holdForRevalidation,
@@ -100,23 +100,26 @@ async function invalidate(
   const now = nowMs();
   // `updateTag`, and `revalidateTag` without a window, take effect at once.
   const expire = durations?.expire ?? 0;
+  // The moment the request puts it in force at: no earlier than what it stamped before, and before
+  // what it computes from here on (`own-marks.ts`).
+  const at = ownMarks.markIn(requestContext(), now);
   // In force here before the host has answered: a read in this isolate while the call is out must
-  // not be answered with what is being invalidated. What the host answers stands for it below.
+  // not be answered with what is being invalidated. What the host answers stands for it below. At
+  // once means by the clock, which the moment can be ahead of.
   const call = runtime.tags.applyLocal(tags, {
-    staleAt: now,
-    hardExpireAt: expire > 0 ? now + expire * MS_PER_SECOND : now,
+    staleAt: at,
+    hardExpireAt: expire > 0 ? at + expire * MS_PER_SECOND : now,
   });
-  // And what the request computes from here on is stamped past it (`own-marks.ts`).
-  markedIn(requestContext(), now);
+  const asked: InvalidateRequest = {
+    tags,
+    ...(expire > 0 && { expire }),
+    api: durations === undefined ? 'updateTag' : 'revalidateTag',
+    // When it was put in force here: a host may record it then rather than once it has the call.
+    inForceAt: at,
+  };
   let outcome: InvalidateOutcome;
   try {
-    outcome = await runtime.host.invalidate({
-      tags,
-      ...(expire > 0 && { expire }),
-      api: durations === undefined ? 'updateTag' : 'revalidateTag',
-      // When it was put in force here: a host may record it then rather than once it has the call.
-      inForceAt: now,
-    });
+    outcome = await ownMarks.onceClockPasses(at, now, () => runtime.host.invalidate(asked));
   } catch (error) {
     // In force here all the same, and known at no revision: the host may never have recorded it.
     runtime.tags.settleLocal(call);
@@ -370,7 +373,7 @@ export class PlatformFetchCache {
     const context = requestContext();
     if (context !== undefined && !context.fetchStarts.has(cacheKey)) {
       // Past the request's own invalidations put in force before it (`own-marks.ts`).
-      context.fetchStarts.set(cacheKey, stampedAfterMarks(context, now));
+      context.fetchStarts.set(cacheKey, ownMarks.stampedAfterMarks(context, now));
     }
     let held: HeldValue | undefined;
     try {
@@ -551,7 +554,7 @@ async function getUseCache(
   softTags: string[],
 ): Promise<UseCacheEntry | undefined> {
   const now = nowMs();
-  useCacheReadBegan(requestContext(), kind, cacheKey);
+  ownMarks.useCacheReadBegan(requestContext(), kind, cacheKey);
   // The soft tags — the route's own — are known before the entry is: they are brought up to date
   // while the value is read, and the entry's own tags once it has been.
   const [held] = await Promise.all([
@@ -686,7 +689,7 @@ async function setUseCache(
       tags: [...entry.tags],
       stale: entry.stale,
       // Past the request's own invalidations put in force before its first read (`own-marks.ts`).
-      timestamp: useCacheStamp(context, kind, cacheKey, entry.timestamp),
+      timestamp: ownMarks.useCacheStamp(context, kind, cacheKey, entry.timestamp),
       expire: entry.expire,
       revalidate: entry.revalidate,
     };

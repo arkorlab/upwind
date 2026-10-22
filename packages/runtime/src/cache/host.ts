@@ -455,6 +455,11 @@ export interface InvalidateRequest {
    * than it trusts: so that a value the request wrote after the invalidation, before the host had the
    * call, is not condemned by it. A host that ignores it records the invalidation at its own clock, as
    * before: such a value is condemned there, and the next read computes it again.
+   *
+   * The moment keeps the request's own order, which its clock alone may not: it is no earlier than
+   * anything the request stamped before it, and a moment that order puts ahead of the clock is asked
+   * for once the clock has passed it, so that a host which records none later than its own clock
+   * records it as it is.
    */
   readonly inForceAt?: number | undefined;
 }
