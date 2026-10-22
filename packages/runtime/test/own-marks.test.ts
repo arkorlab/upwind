@@ -32,10 +32,12 @@ const TAG = 'feed';
 const FETCHED = 'fetched';
 const CACHED = 'cached-function';
 
+/** The clock every request here acts at: one no I/O moves. */
 function frozen(): number {
   return NOW;
 }
 
+/** What the host answers a call no write or invalidation makes: a failure, which none asks for. */
 function unasked(): Promise<never> {
   return Promise.reject(new Error('not asked by a write'));
 }

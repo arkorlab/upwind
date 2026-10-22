@@ -53,10 +53,12 @@ const KEY = 'cached-function';
 /** The revision of the scope the host records each invalidation at. */
 const REVISION = 7;
 
+/** The clock every request here acts at: one no I/O moves. */
 function frozen(): number {
   return NOW;
 }
 
+/** What the host answers a call no invalidation makes: a failure, which none of these asks for. */
 function unasked(): Promise<never> {
   return Promise.reject(new Error('not asked by an invalidation'));
 }
@@ -316,12 +318,14 @@ function deployment(): Store {
   } as unknown as Store;
 }
 
+/** The route's own handler, which the bridge each test sets up answers for. */
 const route: NodeHandler = () => Promise.resolve();
 const app: AppModule = { entries: { [ACTION]: () => ({ handler: route }) } };
 
 /** What the requests of a test handed to `waitUntil`. */
 const pending: Promise<unknown>[] = [];
 
+/** Keep `work` going behind the response, as a Function's `waitUntil` does: in `pending`. */
 function keep(work: Promise<unknown>): void {
   pending.push(work);
 }

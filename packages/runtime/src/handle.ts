@@ -572,6 +572,13 @@ async function onceRecorded(context: RequestContext, routed: Promise<Response>):
   }
 }
 
+/**
+ * Answer a request a deployment's Function was handed: in the context it runs in (`run`) — its
+ * clock, its `waitUntil`, what it invalidates and writes — brought up to where its scope's tags
+ * stand first (`catchUpWithScope`), routed, and answered once what it invalidated is recorded
+ * (`onceRecorded`), telling the edge what it invalidated at once, with the end of its body held for
+ * the cache writes it handed over (`withWritesLanded`).
+ */
 export async function handleRequest(handled: HandleInput): Promise<Response> {
   const context = requestContextFor({
     tables: { app: handled.app, edge: handled.edge },
