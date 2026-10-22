@@ -150,6 +150,18 @@ describe('routing tables held beside static Pages without route bodies', () => {
     await expect(failures(stack)).resolves.toStrictEqual([]);
   });
 
+  it.each(examples)(
+    'accepts a build with a trailing slash, whose $name the writer publishes no table of',
+    async ({ bundle }) => {
+      const slashed = { ...bundle, config: { ...bundle.config, trailingSlash: true } };
+      const stack = await writtenBundle(slashed);
+
+      // Its aliases need an identity the table does not carry (greptile): no table, no union.
+      expect(stack.manifest.staticPages).toBeUndefined();
+      await expect(failures(stack)).resolves.toStrictEqual([]);
+    },
+  );
+
   it.each(examples)('detects a dropped $name exact key using the build', async ({ bundle }) => {
     const stack = await writtenBundle(bundle);
     const changed = { ...stack, manifest: { ...stack.manifest, exactPathnames: {} } };

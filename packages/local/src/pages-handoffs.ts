@@ -56,6 +56,11 @@ export function pagesHeadersOnly(
   };
 }
 
+/** The shared Pages class the edge handed the request on as; nothing where it handed none. */
+export function pagesHandoffOf(answer: Reading): string | undefined {
+  return PAGES_HANDOFF.exec(answeredBy(answer))?.[1];
+}
+
 /** Require the exact shared-classifier handoff; application rendering is no shell-byte proof. */
 export function pagesHandoffVerdict(
   stack: CheckedStack,
@@ -65,7 +70,7 @@ export function pagesHandoffVerdict(
 ): Verdict | undefined {
   const { answer, method = 'GET' } = read;
   const expected = expectedHandoff(stack, url, sent, method);
-  const actual = PAGES_HANDOFF.exec(answeredBy(answer))?.[1];
+  const actual = pagesHandoffOf(answer);
   if (expected === undefined) {
     return actual === undefined
       ? undefined

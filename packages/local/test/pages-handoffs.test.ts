@@ -355,6 +355,40 @@ describe('pages requests owned by the Function under the current shared classifi
     expect(failures[0]).toBe('its payload, redirected to /posts/first, answered 503');
   });
 
+  // A visitor the application's `htmlLimitedBots` names, and Next.js's bot list does not, is read
+  // at its headers for its blocking metadata. The edge serves a fallback's loading shell itself to
+  // it, handing nothing on: that answer is not a missing handoff (Sentry). A real handoff is still
+  // judged as one.
+  it.each([
+    { account: 'pages-fallback;src=r2;m=12345678', status: 200, failure: undefined },
+    {
+      account: 'passthrough;reason=pages-fallback',
+      status: 503,
+      failure: 'answered 503',
+    },
+  ])(
+    "judges an htmlLimitedBots visitor's $account answer to a fallback route by what it is",
+    async ({ account, status, failure }) => {
+      fixture.account = account;
+      fixture.status = status;
+      const own = { ...stackOf(), manifest: { ...MANIFEST, htmlLimitedBots: 'Listed' } };
+      const answered = await documentAnswerAt(
+        own,
+        64,
+        {
+          url: new URL('/posts/new', SITE),
+          headers: { ...NAVIGATION_REQUEST_HEADERS, 'user-agent': 'Listed/1.0' },
+        },
+        'gzip',
+      );
+      assert(typeof answered !== 'string', 'the crawler was answered');
+      await fixture.closed.promise;
+
+      await expect(answered.documentFailure?.()).resolves.toBe(failure);
+      expect(fixture.requests).toBe(1);
+    },
+  );
+
   it('uses the same Pages contract for a paired props HEAD', async () => {
     fixture.quiet = false;
     const result = await propsHeadVerdict(stackOf(), dataPart());
