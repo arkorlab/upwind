@@ -14863,6 +14863,44 @@ describe('what the check makes of the middleware', () => {
       expect(result.failures[0]?.reason).toContain('rewrite status');
     });
 
+    it('accepts a navigation the middleware made a request for Flight, handed to the Function', async () => {
+      const routes = [await routeOf('/', FRONT)];
+      // As `NextResponse.next({ request: { headers } })` lists them: the navigation made Flight.
+      decisions.set('/', {
+        'x-middleware-next': '1',
+        'x-middleware-override-headers': 'rsc',
+        'x-middleware-request-rsc': '1',
+      });
+      answers.set('/', handedOnAs('passthrough;reason=middleware-request-kind', RSC));
+      const result = await checkStack(
+        withMiddleware(stackOf(routes, {}), [{ sourceRegex: '^/$' }]),
+      );
+
+      expect(result.failures).toStrictEqual([]);
+      expect(result.skipped).toContainEqual({
+        path: '/',
+        reason:
+          "the application's middleware made the navigation a request for Flight, which the Function answers",
+      });
+    });
+
+    it('rejects a navigation handed on as made a request for Flight where the middleware asked for none', async () => {
+      const routes = [await routeOf('/', FRONT)];
+      decisions.set('/', { 'x-middleware-next': '1' });
+      answers.set('/', handedOnAs('passthrough;reason=middleware-request-kind', RSC));
+      const result = await checkStack(
+        withMiddleware(stackOf(routes, {}), [{ sourceRegex: '^/$' }]),
+      );
+
+      expect(result.failures).toStrictEqual([
+        {
+          path: '/',
+          reason:
+            'handed on as the middleware made it a request for Flight, though what the stack kept of the middleware asks for none',
+        },
+      ]);
+    });
+
     it('keeps an error file status when the middleware gives its rewrite another status', async () => {
       const routes = [await routeOf('/', FRONT)];
       const files = { '/404': { ...fileOf('not here', HTML), status: 404 } };
