@@ -42,6 +42,41 @@ const MILLISECONDS_PER_SECOND = 1000;
 const INVALIDATION_BATCH_SIZE = 200;
 const TAG_MASK_BITS = 32;
 
+/**
+ * How far before its own clock the authority lets an invalidation take effect, where the Worker that
+ * asked says when it put it in force there (`InvalidateRequest.inForceAt`, `inForceMoment`).
+ *
+ * The moment is the Worker's to say: a runtime puts an invalidation in force in its isolate before it
+ * calls, and renders on — a Server Action's page, while the authority records what the action
+ * invalidated — stamping what it computes after the invalidation later than it. Recorded at the
+ * authority's own clock, once the call had come, the invalidation condemned those values, made after
+ * it as they were. So it is recorded at the Worker's moment, but never later than the authority's
+ * clock, which no invalidation may reach past, and no further back than this: what another isolate
+ * made in between — by a clock that read later than the moment, from what its view still held of
+ * values from before — is kept, where it would have been condemned. That window is the one Next.js
+ * keeps itself, whose tags expire as of the moment `revalidateTag` ran on the server that ran it, and
+ * this bounds it. Two seconds is how long the runtime holds the response of a request that
+ * invalidated for the record of it, and the writes of its render behind it: a call that reaches the
+ * authority within that comes while the request still waits on it, beside what its render wrote. One
+ * that comes later — a call held up, a later chunk of a large one, a moment forged — is recorded as if
+ * put in force two seconds before it came.
+ */
+export const IN_FORCE_WITHIN_MS = 2000;
+
+/**
+ * The moment an invalidation takes effect at, by the authority's clock `now`: the one the Worker said
+ * it put it in force at, no later than `now` and no earlier than `IN_FORCE_WITHIN_MS` before it — a
+ * fraction of a millisecond taken to the next whole one, as a moment that reaches more — or `now`
+ * where it said none, or nothing a moment can be read from.
+ */
+export function inForceMoment(request: Pick<InvalidateRequest, 'inForceAt'>, now: number): number {
+  const said = request.inForceAt;
+  if (typeof said !== 'number' || !Number.isFinite(said)) {
+    return now;
+  }
+  return Math.min(now, Math.max(now - IN_FORCE_WITHIN_MS, Math.ceil(said)));
+}
+
 interface InvalidatePlan {
   readonly request: InvalidateRequest;
   readonly targets: readonly { readonly ref: TagRef; readonly invalidationId: string }[];
@@ -114,9 +149,10 @@ function condemnCurrent(
   input: TxInput,
   tagIds: readonly string[],
   immediate: boolean,
-  hardExpireAt: number,
+  deadlines: { readonly staleAt: number; readonly hardExpireAt: number },
 ): void {
   const { sql, now, revision } = input;
+  const { staleAt, hardExpireAt } = deadlines;
   const targets = JSON.stringify(tagIds);
   sql.exec(
     `UPDATE generations SET condemned = json_object(
@@ -129,8 +165,8 @@ function condemnCurrent(
        )
      )`,
     revision,
-    now,
-    now,
+    staleAt,
+    staleAt,
     hardExpireAt,
     hardExpireAt,
     targets,
@@ -285,11 +321,13 @@ function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateRespon
   const { request } = plan;
   const immediate = request.expire === undefined || request.expire === 0;
   // A window of a fraction of a second ends on the nearest whole millisecond, as every deadline is
-  // kept, and one past `now` at the least, so it is never none.
+  // kept, and one past the moment at the least, so it is never none.
   const windowMs = Math.max(1, Math.round((request.expire ?? 0) * MILLISECONDS_PER_SECOND));
+  // When the Worker put it in force, within the window the authority allows (`inForceMoment`).
+  const at = inForceMoment(request, now);
   const deadlines = {
-    staleAt: now,
-    hardExpireAt: immediate ? now : now + windowMs,
+    staleAt: at,
+    hardExpireAt: immediate ? at : at + windowMs,
     meaning: immediate ? ('immediate' as const) : ('swr' as const),
   };
   const events: EventInput[] = [];
@@ -326,7 +364,7 @@ function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateRespon
     input,
     plan.targets.map((target) => target.ref.tagId),
     immediate,
-    deadlines.hardExpireAt,
+    deadlines,
   );
   if (compact) {
     const invalidationIds = persistentTargets.map((target) => target.invalidationId);

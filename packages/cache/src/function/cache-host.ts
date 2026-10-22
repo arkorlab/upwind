@@ -344,6 +344,8 @@ class GatewayHost implements CacheHost {
       tags: tags.map((value) => ({ value })),
       ...(request.expire !== undefined && { expire: request.expire }),
       cause: { source: 'app-worker', api: request.api },
+      // When the runtime put it in force, which the authority records it at: each chunk the same.
+      ...(request.inForceAt !== undefined && { inForceAt: request.inForceAt }),
       ...(more && { more }),
     });
   }
