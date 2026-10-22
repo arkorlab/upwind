@@ -40,4 +40,27 @@ describe('completed page body adapter options', () => {
   it('keeps the existing prefetch-segments option independent of this guard', () => {
     expect(createAdapter({ unshippedOutputs: 'prefetch-segments' }).name).toBe('upwind');
   });
+
+  it('rejects a range left to the limit without a host module, as any range', () => {
+    expect(() =>
+      createAdapter({ unshippedPrerenderBodies: { ...RANGE, when: 'over-limit' } }),
+    ).toThrow(HOST_ERROR);
+  });
+
+  it.each(['always', 'over-limit'] as const)('accepts when: %s with its host module', (when) => {
+    expect(
+      createAdapter({
+        unshippedPrerenderBodies: { ...RANGE, when },
+        cacheHostModule: HOST_MODULE,
+      }).name,
+    ).toBe('upwind');
+  });
+
+  it.each(['', 'overLimit', 'never', null])('rejects an unknown when: %j', (when) => {
+    const range = { ...RANGE, when } as unknown as typeof RANGE;
+
+    expect(() =>
+      createAdapter({ unshippedPrerenderBodies: range, cacheHostModule: HOST_MODULE }),
+    ).toThrow("unshippedPrerenderBodies.when must be 'always' or 'over-limit'");
+  });
 });
