@@ -348,7 +348,14 @@ function acting(rendered: { done: boolean }): () => Promise<Response> {
   };
 }
 
-/** Real turns, until the response waits on the bound's timer: the render has answered by then. */
+/** A render's own time, `ms`, by the timers the test moves on. */
+function slept(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** Real turns, until a bound's timer runs: the request has asked the host for what it invalidated. */
 async function untilTheBoundRuns(): Promise<void> {
   for (let turn = 0; turn < 100 && vi.getTimerCount() === 0; turn += 1) {
     await setImmediate();
@@ -414,6 +421,56 @@ describe('a Server Action that invalidates, answered by the Function', () => {
     await Promise.all(pending);
 
     expect(runtime.tags.knownRevisionOf(TAG)).toBe(REVISION);
+  });
+
+  /**
+   * The bound is the call's own, from the moment the request asked for it: the render goes on while
+   * the host records, and the response waits for what is left of the bound once the render has
+   * answered — not for the bound again, after the render.
+   */
+  it('answers once the bound from the call has gone by, however long the render took', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { runtime } = cache();
+    vi.mocked(invokeNodeHandler).mockImplementation(async () => {
+      await everyHandler([TAG]);
+      await slept(1500);
+      return new Response('rendered');
+    });
+    const invalidated = new InvalidatedTags();
+
+    const answering = act(runtime, invalidated);
+    await untilTheBoundRuns();
+    await vi.advanceTimersByTimeAsync(INVALIDATIONS_RECORDED_WITHIN_MS - 1);
+
+    await expect(settledBeforeNextTask(answering)).resolves.toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(settledBeforeNextTask(answering)).resolves.toBe(true);
+    // Only the wait for it ends with its bound: the call is out still.
+    expect(invalidated.pending).toBe(true);
+  });
+
+  it('waits for a call the request asked for later in the render for its own bound', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { runtime } = cache();
+    vi.mocked(invokeNodeHandler).mockImplementation(async () => {
+      await everyHandler([TAG]);
+      await slept(1400);
+      await everyHandler(['posts']);
+      await slept(100);
+      return new Response('rendered');
+    });
+
+    const answering = act(runtime);
+    await untilTheBoundRuns();
+    await vi.advanceTimersByTimeAsync(1400 + INVALIDATIONS_RECORDED_WITHIN_MS - 1);
+
+    await expect(settledBeforeNextTask(answering)).resolves.toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(settledBeforeNextTask(answering)).resolves.toBe(true);
   });
 
   it('answers a failure once the host has recorded what the action invalidated, and with it', async () => {

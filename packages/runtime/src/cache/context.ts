@@ -37,24 +37,66 @@ export interface RequestContext {
 }
 
 /**
+ * How long a response waits, before it is answered at all, for the host to record an invalidation
+ * its request asked for (`InvalidatedTags`), counted from the moment the request asked for it: past
+ * this it is answered all the same, and the invalidation goes on in `waitUntil` as it did. A Server
+ * Action's page renders while the host records what the action invalidated (`invalidateOnce`), and
+ * its response waits for the later of the two — the record no longer than this from when it was asked
+ * for, however long the render took.
+ */
+export const INVALIDATIONS_RECORDED_WITHIN_MS = 2000;
+
+/**
+ * `call`, or `ms` from now, whichever comes first: what a response waits on of an invalidation its
+ * request asked for (`InvalidatedTags.hold`) — from the moment it was asked for, not from the moment
+ * the response is ready to be answered. Its failure is its caller's to report, as any held call's.
+ */
+async function settledWithin(call: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      call,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
  * Calls a request has out, each let go once it has settled, whichever way: what a moment of its
- * response waits for (`settled`).
+ * response waits for (`settled`) — each for no longer than its own bound from when it was held, where
+ * it was held with one.
  */
 class HeldCalls {
+  /** The calls held that are still out. */
   readonly #out = new Set<Promise<unknown>>();
+  /** What a wait for them waits on: each call, or the end of its own bound where it has one first. */
+  readonly #waits = new Set<Promise<unknown>>();
 
-  /** Let go of `call` once it has settled, whichever way. */
-  async #letGo(call: Promise<unknown>): Promise<void> {
+  /** Let go of `held`, out of `from`, once it has settled, whichever way. */
+  async #letGo(from: Set<Promise<unknown>>, held: Promise<unknown>): Promise<void> {
     try {
-      await call;
+      await held;
     } finally {
-      this.#out.delete(call);
+      from.delete(held);
     }
   }
 
+  /** Keep `held` in `from` until it settles. Whatever it settles as, it is let go then. */
+  #keep(from: Set<Promise<unknown>>, held: Promise<unknown>): void {
+    from.add(held);
+    void this.#letGo(from, held).catch(() => {
+      // A call that failed is let go as one that settled: its failure is its caller's to report.
+    });
+  }
+
+  /** Once every wait held has ended — those held while the others were waited for among them. */
   async #drained(): Promise<void> {
-    while (this.#out.size > 0) {
-      await Promise.allSettled(this.#out);
+    while (this.#waits.size > 0) {
+      await Promise.allSettled(this.#waits);
     }
   }
 
@@ -63,20 +105,21 @@ class HeldCalls {
     return this.#out.size > 0;
   }
 
-  /** Hold `call` until it settles. Whatever it settles as, it is let go then. */
-  add(call: Promise<unknown>): void {
-    this.#out.add(call);
-    void this.#letGo(call).catch(() => {
-      // A call that failed is let go as one that settled: its failure is its caller's to report.
-    });
+  /**
+   * Hold `call` until it settles, and have a wait for it (`settled`) wait no longer than `withinMs`
+   * from now, where that is given.
+   */
+  add(call: Promise<unknown>, withinMs?: number): void {
+    this.#keep(this.#out, call);
+    this.#keep(this.#waits, withinMs === undefined ? call : settledWithin(call, withinMs));
   }
 
   /**
-   * Once every call held has settled — those held while the others were waited for among them —
-   * or `ms` have gone by, whichever comes first.
+   * Once every call held has settled, or the bound it was held with has gone by — those held while
+   * the others were waited for among them — or `ms` have gone by, whichever comes first.
    */
   async settled(ms: number): Promise<void> {
-    if (this.#out.size === 0) {
+    if (this.#waits.size === 0) {
       return;
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -147,7 +190,8 @@ export class RequestWrites {
  *
  * And every invalidation the request asked the host for (`invalidateOnce`, in `handlers.ts`), held
  * against its response, which is not answered — not its first byte either — before the host has
- * recorded them, for no longer than a bound (`handleRequest`). Whoever made the request moves on
+ * recorded them, for no longer than a bound from when each was asked for
+ * (`INVALIDATIONS_RECORDED_WITHIN_MS`, `handleRequest`). Whoever made the request moves on
  * once its headers come, Next.js runs a route handler's revalidations behind them, and a Server
  * Action's page renders while the host records what the action invalidated: a request made then
  * was answered, here or in any other isolate, before the host had recorded the invalidation, and
@@ -176,9 +220,13 @@ export class InvalidatedTags {
     return this.#bounded ? this.#revision : undefined;
   }
 
-  /** Hold `call`, an invalidation the request asked the host for, against its response. */
+  /**
+   * Hold `call`, an invalidation the request asked the host for, against its response: until the
+   * host has answered it, or `INVALIDATIONS_RECORDED_WITHIN_MS` from now, the moment it was asked
+   * for — whenever the response is ready, and whatever else is held.
+   */
   hold(call: Promise<unknown>): void {
-    this.#calls.add(call);
+    this.#calls.add(call, INVALIDATIONS_RECORDED_WITHIN_MS);
   }
 
   /** Whether an invalidation the request asked for is still out. */
@@ -187,8 +235,9 @@ export class InvalidatedTags {
   }
 
   /**
-   * Once the host has answered every invalidation held — those asked for while the others were
-   * waited for among them — or `ms` have gone by, whichever comes first.
+   * Once the host has answered every invalidation held, or the bound of each from when it was asked
+   * for has gone by (`hold`): what is left of it, once the response is ready. One asked for while the
+   * others were waited for is waited for too, no longer than `ms` from now.
    */
   recorded(ms: number): Promise<void> {
     return this.#calls.settled(ms);

@@ -337,15 +337,9 @@ export function withoutBody(request: Request, response: Response): Response {
   return new Response(null, response);
 }
 
-/**
- * How long a response waits, before it is answered at all, for the host to record the
- * invalidations its request asked for (`InvalidatedTags.recorded`): past this it is answered all
- * the same, and they go on in `waitUntil` as they did. Counted from the moment the response would
- * be answered otherwise: a Server Action's page renders while the host records what the action
- * invalidated (`invalidateOnce`), and its response waits for the later of the two — the record for
- * no longer than this.
- */
-export const INVALIDATIONS_RECORDED_WITHIN_MS = 2000;
+// How long a response waits for the host to record what its request invalidated, from the moment the
+// request asked for it: kept beside what holds the response for it (`InvalidatedTags`).
+export { INVALIDATIONS_RECORDED_WITHIN_MS } from './cache/context.ts';
 
 /**
  * `response`, telling the edge the tags the request invalidated at once

@@ -548,12 +548,14 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
 }
 
 /**
- * What `routed` comes to, once the host has recorded what the request invalidated or
- * `INVALIDATIONS_RECORDED_WITHIN_MS` have gone by (`InvalidatedTags`) — its headers not before
- * then: whoever made the request moves on once they come. A Server Action's render goes on while
- * the host records what the action invalidated (`invalidateOnce`, in `cache/handlers.ts`), so a
- * render that failed waits too: its failure is answered with what the request invalidated as well
- * (`function.ts`), as the change the action made stands whatever became of its render.
+ * What `routed` comes to, once the host has recorded what the request invalidated, or the bound of
+ * each invalidation from when the request asked for it has gone by (`InvalidatedTags`,
+ * `INVALIDATIONS_RECORDED_WITHIN_MS`) — its headers not before then: whoever made the request moves
+ * on once they come. A Server Action's render goes on while the host records what the action
+ * invalidated (`invalidateOnce`, in `cache/handlers.ts`), so what is waited for here is what is left
+ * of that bound once the render has answered, not the bound again; and a render that failed waits
+ * too: its failure is answered with what the request invalidated as well (`function.ts`), as the
+ * change the action made stands whatever became of its render.
  */
 async function onceRecorded(context: RequestContext, routed: Promise<Response>): Promise<Response> {
   try {
