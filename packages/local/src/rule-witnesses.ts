@@ -2,7 +2,7 @@ import { headerRulesFor, type HeaderRule } from '@stayingupwind/core/manifest';
 import { classifyStaticFile } from '@stayingupwind/core/request';
 
 import type { CheckedStack } from './answers.ts';
-import { carryingEach, lackingEach, protocolCondition, type WitnessClass } from './escaping.ts';
+import { carryingEach, fixedAsRouted, lackingEach, type WitnessClass } from './escaping.ts';
 import { routedReads } from './routing-reads.ts';
 import { ruleOverlapFailure } from './rule-overlaps.ts';
 
@@ -17,7 +17,10 @@ export interface RuleRequests {
   readonly unproved?: string;
 }
 
-/** Rules of this pathname whose fixed protocol conditions permit this class of request. */
+/**
+ * Rules of this pathname whose fixed conditions — protocol ones, and ones over a header forwarding
+ * takes off (`fixedAsRouted`) — permit this class of request.
+ */
 function applies(
   stack: CheckedStack,
   url: URL,
@@ -30,10 +33,8 @@ function applies(
     headerRules: [
       {
         ...rule,
-        has: (rule.has ?? []).filter((condition) => protocolCondition(condition, requestClass)),
-        missing: (rule.missing ?? []).filter((condition) =>
-          protocolCondition(condition, requestClass),
-        ),
+        has: (rule.has ?? []).filter((condition) => fixedAsRouted(condition, requestClass)),
+        missing: (rule.missing ?? []).filter((condition) => fixedAsRouted(condition, requestClass)),
       },
     ],
   };
@@ -85,10 +86,10 @@ export function requestsForRules(
     // Fixed conditions already hold for this request class. Only movable fields need changing;
     // asking lackingEach to remove a protocol field would reject even one already absent.
     const movableHas = (rule.has ?? []).filter(
-      (condition) => !protocolCondition(condition, requestClass),
+      (condition) => !fixedAsRouted(condition, requestClass),
     );
     const movableMissing = (rule.missing ?? []).filter(
-      (condition) => !protocolCondition(condition, requestClass),
+      (condition) => !fixedAsRouted(condition, requestClass),
     );
     const carried = carryingEach(sent, url, movableHas, requestClass);
     const made =

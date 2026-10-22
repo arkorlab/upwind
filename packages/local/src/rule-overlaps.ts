@@ -2,7 +2,7 @@ import type { RouteHas } from '@stayingupwind/core/bundle';
 import type { HeaderRule } from '@stayingupwind/core/manifest';
 import { compareCodeUnits } from '@stayingupwind/core/util';
 
-import { protocolCondition, type WitnessClass } from './escaping.ts';
+import { fixedAsRouted, type WitnessClass } from './escaping.ts';
 
 interface Selector {
   readonly has: readonly string[];
@@ -17,8 +17,8 @@ function conditionKey(condition: RouteHas): string {
 
 /**
  * The tests of `conditions` a request of `requestClass` can be made to pass or fail and stay one of
- * that class (`protocolCondition`): a file's request among them by any `x-deployment-id` it carries,
- * which a document's cannot carry and stay one.
+ * that class, as routing reads it (`fixedAsRouted`): a file's request among them by any
+ * `x-deployment-id` it carries, which a document's cannot carry and stay one.
  */
 function testsOf(
   requestClass: WitnessClass,
@@ -27,7 +27,7 @@ function testsOf(
   return [
     ...new Set(
       conditions
-        .filter((condition) => !protocolCondition(condition, requestClass))
+        .filter((condition) => !fixedAsRouted(condition, requestClass))
         .map((condition) => conditionKey(condition)),
     ),
   ].toSorted(compareCodeUnits);
