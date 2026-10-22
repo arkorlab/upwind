@@ -12,6 +12,7 @@ import type {
   DataRead,
   DataWriteRequest,
   InvalidateOutcome,
+  InvalidateRequest,
 } from '../src/cache/host.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { TagState } from '../src/cache/tags.ts';
@@ -39,10 +40,14 @@ function unasked(): Promise<never> {
   return Promise.reject(new Error('not asked by a write'));
 }
 
-/** What the host answers an invalidation of `tags` with: recorded at `NOW`, as it was told. */
-function recorded(tags: readonly string[]): InvalidateOutcome {
-  const mark = { staleAt: NOW, hardExpireAt: NOW, revision: 2 };
-  return { revision: 2, invalidations: tags.map((value) => ({ value, ...mark })) };
+/**
+ * What a host whose clock reads `clock` answers `request` with, at `revision`: recorded at the moment
+ * it was told, no later than its clock.
+ */
+function recorded(request: InvalidateRequest, clock: number, revision: number): InvalidateOutcome {
+  const at = Math.min(request.inForceAt ?? NOW, clock);
+  const mark = { staleAt: at, hardExpireAt: at, revision };
+  return { revision, invalidations: request.tags.map((value) => ({ value, ...mark })) };
 }
 
 /** What the host answers a read of a value it was written with. */
@@ -56,9 +61,13 @@ function readOf(write: DataWriteRequest): DataRead {
   };
 }
 
-/** A host that holds nothing yet, records each invalidation at once, and keeps every write. */
-function cache() {
+/**
+ * A host that holds nothing yet, records each invalidation at once — at the moment it is told, no
+ * later than its clock, which reads `clock` — and keeps every write.
+ */
+function cache(clock = Infinity) {
   const stored = new Map<string, DataWriteRequest>();
+  let revision = 1;
   const host = {
     startAttempt: unasked,
     uploadArtifact: unasked,
@@ -77,9 +86,10 @@ function cache() {
     }),
     getTags: () => Promise.resolve({ tags: [] }),
     tagsDelta: () => Promise.resolve({ revision: 0, truncated: false, tags: [] }),
-    invalidate: vi.fn<CacheHost['invalidate']>((request) =>
-      Promise.resolve(recorded(request.tags)),
-    ),
+    invalidate: vi.fn<CacheHost['invalidate']>((request) => {
+      revision += 1;
+      return Promise.resolve(recorded(request, clock, revision));
+    }),
   } satisfies CacheHost;
   const runtime: CacheRuntime = {
     scopeId: 'own-marks',
@@ -129,25 +139,30 @@ function updateTag(): Promise<unknown> {
 
 const fetchCache = new PlatformFetchCache();
 
-/** A `fetch` read of `FETCHED` under `TAG`, as Next.js makes one before it fetches. */
-function readFetched(): Promise<unknown> {
-  return fetchCache.get(FETCHED, { kind: 'FETCH', tags: [TAG] });
+/** A `fetch` read of `key` under `TAG`, as Next.js makes one before it fetches. */
+function readFetched(key = FETCHED): Promise<unknown> {
+  return fetchCache.get(key, { kind: 'FETCH', tags: [TAG] });
 }
 
-/** What the `fetch` of `FETCHED` answered, handed to the fetch cache, as Next.js hands it. */
-function writeFetched(): Promise<void> {
+/** What the `fetch` of `key` answered, handed to the fetch cache, as Next.js hands it. */
+function writeFetched(key = FETCHED): Promise<void> {
   return fetchCache.set(
-    FETCHED,
-    { kind: 'FETCH', data: { body: 'fetched' }, tags: [TAG], revalidate: 60 },
+    key,
+    { kind: 'FETCH', data: { body: key }, tags: [TAG], revalidate: 60 },
     { fetchCache: true, tags: [TAG] },
   );
 }
 
-/** A `use cache` value of `CACHED` under `TAG`, as Next.js stamps one: at the clock's moment. */
-function writeCached(): Promise<void> {
-  const value = new Blob(['cached']).stream();
+/** A `use cache` read of `key`, as Next.js makes one before it computes the value. */
+function readCached(key = CACHED): Promise<unknown> {
+  return useCacheHandler('default').get(key, []);
+}
+
+/** A `use cache` value of `key` under `TAG`, as Next.js stamps one: at the clock's moment. */
+function writeCached(key = CACHED): Promise<void> {
+  const value = new Blob([key]).stream();
   const entry = { value, tags: [TAG], stale: 0, timestamp: NOW, expire: 3600, revalidate: 60 };
-  return useCacheHandler('default').set(CACHED, Promise.resolve(entry));
+  return useCacheHandler('default').set(key, Promise.resolve(entry));
 }
 
 /** The moments of what the host was asked to write, by key, once every write behind has landed. */
@@ -162,6 +177,7 @@ async function written(
 
 describe('what a request computes after its own invalidation', () => {
   afterEach(() => {
+    vi.useRealTimers();
     configureCacheHandlers(undefined);
   });
 
@@ -189,7 +205,7 @@ describe('what a request computes after its own invalidation', () => {
       await updateTag();
       await readFetched();
       await writeFetched();
-      await useCacheHandler('default').get(CACHED, []);
+      await readCached();
       await writeCached();
     });
 
@@ -224,12 +240,12 @@ describe('what a request computes after its own invalidation', () => {
 
     await context.run(async () => {
       await readFetched();
-      await useCacheHandler('default').get(CACHED, []);
+      await readCached();
       await updateTag();
       // Read again after it, which hands back what the first read began.
       await readFetched();
       await writeFetched();
-      await useCacheHandler('default').get(CACHED, []);
+      await readCached();
       await writeCached();
     });
 
@@ -247,10 +263,93 @@ describe('what a request computes after its own invalidation', () => {
     await other.run(async () => {
       await readFetched();
       await writeFetched();
-      await useCacheHandler('default').get(CACHED, []);
+      await readCached();
       await writeCached();
     });
 
     await expect(written(host, kept)).resolves.toStrictEqual({ [FETCHED]: NOW, [CACHED]: NOW });
+  });
+
+  /**
+   * A value read between two of the request's invalidations of one millisecond is stamped past the
+   * first, and computed before the change the second was asked for: the second is put in force no
+   * earlier than it, and what the request reads after the second is stamped past that.
+   */
+  it('puts a second invalidation of one millisecond no earlier than what the request stamped since the first', async () => {
+    const { host, runtime } = cache();
+    const kept: Promise<unknown>[] = [];
+    const context = requestOf(runtime, kept);
+
+    await context.run(async () => {
+      await updateTag();
+      await readFetched('between');
+      await readCached('computed-between');
+      await updateTag();
+      await readFetched('after');
+      await readCached('computed-after');
+      await writeFetched('between');
+      await writeCached('computed-between');
+      await writeFetched('after');
+      await writeCached('computed-after');
+    });
+    // What the request handed `waitUntil`: its writes, and both invalidations.
+    const stamps = await written(host, kept);
+
+    expect(host.invalidate.mock.calls.map(([request]) => request.inForceAt)).toStrictEqual([
+      NOW,
+      NOW + 1,
+    ]);
+    expect(stamps).toStrictEqual({
+      between: NOW + 1,
+      'computed-between': NOW + 1,
+      after: NOW + 2,
+      'computed-after': NOW + 2,
+    });
+  });
+
+  it('condemns here what the request read between them, though the host recorded the second earlier', async () => {
+    // A host whose clock reads `NOW` records the second at it, before what the request stamped.
+    const { runtime } = cache(NOW);
+    const kept: Promise<unknown>[] = [];
+    const context = requestOf(runtime, kept);
+    await context.run(async () => {
+      await updateTag();
+      await readFetched('between');
+      await writeFetched('between');
+      await updateTag();
+      await readFetched('after');
+      await writeFetched('after');
+    });
+    // What the request handed `waitUntil`: its writes, and both invalidations.
+    await Promise.all(kept);
+
+    const next = requestOf(runtime, []);
+
+    await expect(next.run(() => readFetched('between'))).resolves.toBeNull();
+    await expect(next.run(() => readFetched('after'))).resolves.toMatchObject({
+      value: { data: { body: 'after' } },
+    });
+  });
+
+  it('sends a moment ahead of the clock once the clock has passed it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { host, runtime } = cache();
+    const context = requestOf(runtime, []);
+
+    await context.run(async () => {
+      await updateTag();
+      await readFetched('between');
+      await updateTag();
+    });
+
+    // The first went at once; the second waits for the clock to pass its moment.
+    expect(host.invalidate).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ inForceAt: NOW }),
+    );
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(host.invalidate).toHaveBeenCalledTimes(2);
+    expect(host.invalidate.mock.calls[1]?.[0].inForceAt).toBe(NOW + 1);
   });
 });

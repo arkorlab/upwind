@@ -612,8 +612,10 @@ export class TagState {
         invalidation.value,
         {
           revision: invalidation.revision ?? outcome.revision,
-          // The request may have read cache data while the invalidation call was in flight.
-          staleAt: Math.max(now, invalidation.staleAt),
+          // The request may have read cache data while the invalidation call was in flight; and never
+          // earlier than the call put it in force at, though the host recorded it earlier: the call's
+          // request stamped what it computed before at no later (`own-marks.ts`).
+          staleAt: Math.max(now, call.mark.staleAt, invalidation.staleAt),
           // The deadline by this isolate's clock too, whichever comes first: a host whose clock
           // runs ahead must not leave an `updateTag` servable here, as stale, until this clock catches
           // up with it.
