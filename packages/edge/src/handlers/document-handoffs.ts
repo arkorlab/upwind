@@ -37,7 +37,11 @@ export function delegateCorruptDocument(
   return accounted.passthrough('shell-corrupt', input.middleware, input.entry.pathname);
 }
 
-/** A request whose final policy blocks recovery must ask the Worker for a whole document. */
+/**
+ * A request whose final policy blocks recovery must ask the Worker for a whole document. No resume
+ * goes out for its regeneration ask to ride beside, so the ask is given back before the handoff, as
+ * for unusable metadata (Sentry): the next request may ask again rather than wait out the cooldown.
+ */
 export function delegateSandboxedDocument(
   input: DocumentInput,
   complete: boolean,
@@ -53,6 +57,7 @@ export function delegateSandboxedDocument(
     middleware?.responseHeaders.get('content-security-policy') ??
     headers.get('content-security-policy');
   if (policy === null || sandboxBlocksRecovery(policy) === undefined) return undefined;
+  (input.generation?.onAbandoned ?? input.onBuildAbandoned)?.();
   if (input.generation !== undefined) {
     // generationShell is a synthetic view of metadata already read, not another backend lookup.
     edge.ctx.waitUntil(shellLookup);
