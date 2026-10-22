@@ -4,6 +4,7 @@ import { createId } from '@stayingupwind/core/util';
 import type {
   DataGetResponse,
   DataSetResponse,
+  InvalidateRequest,
   InvalidateResponse,
 } from '@stayingupwind/host/cache';
 import type { FetchLike } from '@stayingupwind/runtime/cache-host';
@@ -13,6 +14,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { cacheHostFor } from '../src/function/cache-host.ts';
 import { IN_FORCE_WITHIN_MS, inForceMoment } from '../src/scope/invalidations.ts';
+import { isRefusal } from '../src/scope/state.ts';
 import { scopeStub } from '../src/scope/stub.ts';
 
 /**
@@ -155,13 +157,36 @@ async function call<T>(at: Scope, method: string, path: string, body: unknown): 
   return envelope.result;
 }
 
-/** An invalidation of `article`, said to have been put in force at `inForceAt`. */
-function invalidate(at: Scope, inForceAt: unknown): Promise<InvalidateResponse> {
-  return call(at, 'POST', '/invalidations', {
+/** What an invalidation of `article`, said to have been put in force at `inForceAt`, asks. */
+function invalidationOf(inForceAt: unknown): InvalidateRequest {
+  return {
     tags: [{ value: 'article' }],
     cause: { source: 'app-worker', api: 'updateTag' },
     inForceAt,
-  });
+  };
+}
+
+/**
+ * An invalidation of `article` through the gateway, said to have been put in force at `inForceAt`:
+ * recorded by the gateway's own clock, which moves on while a test runs, so what it records is known
+ * only within the clock's readings around the call.
+ */
+function invalidate(at: Scope, inForceAt: unknown): Promise<InvalidateResponse> {
+  return call(at, 'POST', '/invalidations', invalidationOf(inForceAt));
+}
+
+/**
+ * `request`, asked of the scope's object itself at the authority's clock `NOW`: the clock the gateway
+ * would hand it (`CacheScope.invalidate`), which the object records the invalidation by and reads no
+ * other for — so what it records does not move with the time the test takes. `NOW` lies months from
+ * the clock the test runs at: an object that read a clock of its own would record another moment.
+ */
+async function recordedAtNow(at: Scope, request: InvalidateRequest): Promise<InvalidateResponse> {
+  const recorded = await scopeStub(env, at.scopeId).invalidate(request, NOW);
+  if (isRefusal(recorded)) {
+    throw new Error(`the scope refused the invalidation: ${recorded.code}`);
+  }
+  return recorded;
 }
 
 /** A fetch's value of `key` under `tags`, made at `timestamp`, written to the scope. */
@@ -214,7 +239,7 @@ function tombstoneOf(at: Scope, entryId: string): Promise<number | null> {
   });
 }
 
-/** The Function's cache host, reaching the scope's gateway through `send`. */
+/** The Function's cache host, reaching the scope's authority through `send`. */
 function hostOf(at: Scope, send: FetchLike) {
   const binding = cacheHostFor(NAMING)({
     env: {
@@ -231,15 +256,16 @@ function hostOf(at: Scope, send: FetchLike) {
 }
 
 /**
- * Through the gateway and the scope's object, by the authority's own clock: read before and after
- * each call, as no test clock is given here.
+ * Asked of the scope's object at the authority's clock `NOW` (`recordedAtNow`): the moment it records is
+ * the one it is told, exactly, however long the test takes.
  */
 describe('an invalidation the authority is told the moment of', () => {
+  const moment = NOW - 400;
+
   it('is recorded at that moment, and keeps what was made after it', async () => {
     const at = await scope();
-    const moment = Date.now() - 400;
 
-    const recorded = await invalidate(at, moment);
+    const recorded = await recordedAtNow(at, invalidationOf(moment));
     const read = await written(at, moment + 1);
 
     expect(recorded.invalidations[0]).toMatchObject({ staleAt: moment, hardExpireAt: moment });
@@ -248,9 +274,8 @@ describe('an invalidation the authority is told the moment of', () => {
 
   it('condemns what was made at that moment itself, as made before it', async () => {
     const at = await scope();
-    const moment = Date.now() - 400;
 
-    const recorded = await invalidate(at, moment);
+    const recorded = await recordedAtNow(at, invalidationOf(moment));
     const read = await written(at, moment);
 
     expect(read.invalidation).toStrictEqual({
@@ -258,6 +283,40 @@ describe('an invalidation the authority is told the moment of', () => {
       staleAt: moment,
       hardExpireAt: moment,
     });
+  });
+});
+
+/**
+ * Where a moment the gateway recorded stands, as the clock read `before` and `after` the call: at
+ * `moment`, the one it was told; at the edge of its window, where the call came later than the window
+ * reaches back to that moment; or elsewhere — at the gateway's clock, between `before` and `after`,
+ * for a call whose moment was dropped.
+ */
+function whereRecorded(staleAt: number, moment: number, before: number, after: number): string {
+  if (staleAt === moment) {
+    return 'the moment';
+  }
+  const edge = staleAt >= before - IN_FORCE_WITHIN_MS && staleAt <= after - IN_FORCE_WITHIN_MS;
+  return edge ? "the window's edge" : `elsewhere (${String(staleAt)})`;
+}
+
+/**
+ * Through the gateway, by the authority's own clock, which moves on while the test runs: what it
+ * records is asserted only as it holds whatever time the call took, from the clock read before and
+ * after it.
+ */
+describe('an invalidation the gateway is told the moment of', () => {
+  it('records it at that moment, or at the edge of its window, never at its clock', async () => {
+    const at = await scope();
+    const before = Date.now();
+    const moment = before - 400;
+
+    const recorded = await invalidate(at, moment);
+    const after = Date.now();
+
+    const where = whereRecorded(recorded.invalidations[0]?.staleAt ?? NaN, moment, before, after);
+
+    expect(['the moment', "the window's edge"]).toContain(where);
   });
 
   it.each([
@@ -285,12 +344,13 @@ describe('an invalidation the authority is told the moment of', () => {
  * it is kept, as the same write arriving after the invalidation would be; made at it, condemned.
  */
 describe('a value written before the invalidation it was made after', () => {
+  const moment = NOW - 400;
+
   it('is kept, made after the moment, and is none of what the invalidation reached', async () => {
     const at = await scope();
-    const moment = Date.now() - 400;
     const { entryId } = await write(at, 'made-after', moment + 1);
 
-    const recorded = await invalidate(at, moment);
+    const recorded = await recordedAtNow(at, invalidationOf(moment));
     const read = await readOf(at, 'made-after');
 
     expect(read.invalidation).toBeUndefined();
@@ -300,10 +360,9 @@ describe('a value written before the invalidation it was made after', () => {
 
   it('is condemned, made at the moment, and is among what the invalidation reached', async () => {
     const at = await scope();
-    const moment = Date.now() - 400;
     const { entryId } = await write(at, 'made-at', moment);
 
-    const recorded = await invalidate(at, moment);
+    const recorded = await recordedAtNow(at, invalidationOf(moment));
     const read = await readOf(at, 'made-at');
 
     expect(read.invalidation).toStrictEqual({
@@ -317,7 +376,6 @@ describe('a value written before the invalidation it was made after', () => {
 
   it('is kept, written between two chunks of a large invalidation and made after its moment', async () => {
     const at = await scope();
-    const moment = Date.now() - 400;
     // The second chunk's only tag: the value under it is written once the first has been recorded.
     const late = `tag-${String(MAX_TAGS_PER_CALL)}`;
     const tags = Array.from(
@@ -325,12 +383,14 @@ describe('a value written before the invalidation it was made after', () => {
       (_, index) => `tag-${String(index)}`,
     );
     const writes: Promise<DataSetResponse>[] = [];
+    // Each chunk the Function's host sends is asked of the scope's object at the authority's clock.
     const host = hostOf(at, async (request) => {
-      if (writes.length === 0 && (await request.clone().text()).includes(`"${late}"`)) {
+      const asked = await request.json<InvalidateRequest>();
+      if (writes.length === 0 && asked.tags.some(({ value }) => value === late)) {
         writes.push(write(at, 'between-chunks', moment + 1, [late]));
         await writes[0];
       }
-      return exports.default.fetch(request);
+      return Response.json({ ok: true, result: await recordedAtNow(at, asked) });
     });
 
     await host.invalidate({ tags, api: 'updateTag', inForceAt: moment });
