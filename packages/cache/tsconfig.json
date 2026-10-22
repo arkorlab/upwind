@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*", "test/**/*", "vitest.config.mts"],
+  "exclude": ["src/function/**/*"]
+}

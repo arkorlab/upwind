@@ -35,6 +35,8 @@ upwind/
 │   │              #   share: the delivery policy, the pointer, the cache's contracts, storage keys
 │   ├── deploy/    # @stayingupwind/deploy — what deploying a build assembles from it: the manifest,
 │   │              #   the shells, the cache's seed, the Functions' bindings, the pointer
+│   ├── cache/     # @stayingupwind/cache — a deployment's runtime cache: the authority that keeps
+│   │              #   its scope, the gateways in front of it, and the client a Function reaches it with
 │   ├── upwind/    # upwind — the CLI; `upwind dev` runs a Next.js dev server behind its own door
 │   └── create-upwind/
 │                   # create-upwind — `pnpm create upwind`, and the application it writes

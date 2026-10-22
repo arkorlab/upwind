@@ -1,0 +1,522 @@
+import { NEXT_ONE_YEAR_SECONDS, routeEntryKindSchema, tagIdFor } from '@stayingupwind/core/cache';
+import { createId, toHex } from '@stayingupwind/core/util';
+import {
+  type ApplyResourceChangeInput,
+  type ApplyResourceChangeResult,
+  type FinishResourceWarmJobInput,
+  type FinishResourceWarmJobResult,
+  type ListResourceWarmJobsInput,
+  type ListResourceWarmJobsResult,
+  type ResourceWarmJob,
+} from '@stayingupwind/host/cache';
+
+import { planInvalidate } from './invalidations.ts';
+import { reconcileTag, recordReconciliation } from './resource-reconciliation.ts';
+import {
+  type EntryRow,
+  type GenerationRow,
+  generationHeaders,
+  type ResourceHeadRow,
+  type WarmJobRow,
+} from './rows.ts';
+import { isRefusal, readScope, type Refusal, refuse, requireActiveScope } from './state.ts';
+import { findTag } from './tags.ts';
+import type { Apply, TxInput } from './tx.ts';
+
+/**
+ * Resource invalidations and their background work commit together. A dispatch job is independent
+ * of entry.regeneration: a render that began before this change can publish a condemned generation
+ * and become idle, but it has not satisfied the resource's required tag revision.
+ */
+
+const DISPATCH_LEASE_MS = 60_000;
+const MAX_RETRY_MS = 300_000;
+const MIN_RETRY_MS = 1000;
+const MILLISECONDS_PER_SECOND = 1000;
+const HTTP_OK = 200;
+const MAX_RETRY_EXPONENT = 9;
+const PRIVATE_CACHE_CONTROL = /\b(?:private|no-store)\b/iu;
+/**
+ * How many entries a warm-job statement selects or queues. A change may reach the whole scope;
+ * its jobs share its invalidation's transaction, using small pages rather than one unbounded JSON
+ * value or a statement for each route.
+ */
+const WARM_JOB_PAGE = 500;
+// Unicode mode excludes valid surrogate pairs; those remain ordinary four-byte UTF-8 routes.
+const BYTE_EXACT_ROUTE = /[\u{D800}-\u{DFFF}\u{FFFD}]/u;
+const LONE_SURROGATES = /[\u{D800}-\u{DFFF}]/gu;
+const SURROGATE_UTF8_LEAD = 0xed;
+const UTF8_CONTINUATION = 0x80;
+const UTF8_GROUP_WIDTH = 64;
+
+/** SQLite json_each preserves isolated UTF-16 units as three-byte UTF-8, not U+FFFD. */
+function sqliteRouteKey(route: string): string {
+  const encoder = new TextEncoder();
+  let hex = '';
+  let start = 0;
+  for (const match of route.matchAll(LONE_SURROGATES)) {
+    hex += toHex(encoder.encode(route.slice(start, match.index)));
+    const code = match[0].codePointAt(0) ?? 0;
+    hex += toHex(
+      new Uint8Array([
+        SURROGATE_UTF8_LEAD,
+        UTF8_CONTINUATION + (Math.floor(code / UTF8_GROUP_WIDTH) % UTF8_GROUP_WIDTH),
+        UTF8_CONTINUATION + (code % UTF8_GROUP_WIDTH),
+      ]),
+    );
+    start = match.index + 1;
+  }
+  return hex + toHex(encoder.encode(route.slice(start)));
+}
+
+function allowedRouteKeys(routes: readonly string[]) {
+  if (routes.some((route) => BYTE_EXACT_ROUTE.test(route))) {
+    // All candidates use bytes on this rare path: decoded SQL strings can lose lone surrogates.
+    return { allowed: undefined, byteExact: new Set(routes.map((route) => sqliteRouteKey(route))) };
+  }
+  return { allowed: new Set(routes), byteExact: undefined };
+}
+
+interface WarmRoute extends Record<string, SqlStorageValue> {
+  route?: EntryRow['route'];
+  route_bytes?: ArrayBuffer | null;
+}
+
+function routeIsAllowed(entry: WarmRoute, keys: ReturnType<typeof allowedRouteKeys>): boolean {
+  if (keys.byteExact !== undefined) {
+    if (entry.route_bytes === undefined || entry.route_bytes === null) return false;
+    const key = toHex(new Uint8Array(entry.route_bytes));
+    return keys.byteExact.has(key);
+  }
+  return entry.route !== undefined && entry.route !== null && keys.allowed.has(entry.route);
+}
+
+function headOf(sql: SqlStorage, resourceId: string): ResourceHeadRow | undefined {
+  return sql
+    .exec<ResourceHeadRow>(`SELECT * FROM resource_heads WHERE resource_id = ?`, resourceId)
+    .toArray()[0];
+}
+
+/**
+ * Whether the scope may keep a head for one resource more. A head is kept for good, to order its
+ * resource's changes, and a host may name resources without end: the scope keeps as many as it may
+ * keep tags, each resource's changes moving a tag of its own.
+ */
+function resourceHeadsFit(sql: SqlStorage, limit: number): boolean {
+  return (
+    sql.exec<{ count: number }>(`SELECT COUNT(*) AS count FROM resource_heads`).one().count < limit
+  );
+}
+
+function pendingCount(sql: SqlStorage, resourceId: string): number {
+  return sql
+    .exec<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM resource_warm_jobs
+       WHERE resource_id = ? AND status <> 'skipped'`,
+      resourceId,
+    )
+    .one().count;
+}
+
+/**
+ * No browser identity is invented for a route that is not in the trusted bundle's allowlist. Each
+ * entry is judged by its current generation's headers, read beside it in the same page, rather
+ * than by another read of that generation for each.
+ */
+function eligibleEntries(
+  sql: SqlStorage,
+  affectedEntryIds: readonly string[],
+  allowedRoutes: readonly string[],
+): string[] {
+  if (allowedRoutes.length === 0 || affectedEntryIds.length === 0) return [];
+  // A trusted route list can itself exceed one SQL value, so it is never bound as JSON here.
+  const keys = allowedRouteKeys(allowedRoutes);
+  // Both projections are fixed SQL. Ordinary allowlists add no column or byte encoding.
+  // Return each route once, at its original byte length; hex expansion stays in JavaScript.
+  const routeColumns =
+    keys.byteExact === undefined ? 'e.route' : 'CAST(e.route AS BLOB) AS route_bytes';
+  const eligible: string[] = [];
+  for (let offset = 0; offset < affectedEntryIds.length; offset += WARM_JOB_PAGE) {
+    const entries = sql.exec<Pick<GenerationRow, 'entry_id' | 'headers'> & WarmRoute>(
+      `SELECT e.entry_id, ${routeColumns}, g.headers FROM entries e
+       JOIN generations g ON g.generation_id = e.current_generation_id
+       WHERE e.entry_id IN (SELECT value FROM json_each(?))
+         AND e.kind IN ('app-page', 'pages', 'app-route')
+         AND e.pathname IS NOT NULL AND (e.pathname <> e.route OR instr(e.route, '[') = 0)
+         AND g.status = 200 AND g.storage = 'present'`,
+      JSON.stringify(affectedEntryIds.slice(offset, offset + WARM_JOB_PAGE)),
+    );
+    // Disallowed headers are not parsed or retained in a page-sized JavaScript array.
+    for (const entry of entries) {
+      if (!routeIsAllowed(entry, keys)) continue;
+      if (
+        Object.entries(generationHeaders(entry)).every(([name, value]) => {
+          const normalized = name.toLowerCase();
+          return (
+            normalized !== 'set-cookie' &&
+            (normalized !== 'cache-control' || !PRIVATE_CACHE_CONTROL.test(value))
+          );
+        })
+      ) {
+        eligible.push(entry.entry_id);
+      }
+    }
+  }
+  return eligible;
+}
+
+/**
+ * The tag a newer change of a resource takes the place of, where it names another: the entries
+ * still tagged with it show the resource as it was, and are condemned and warmed with those of the
+ * tag the change names.
+ */
+function replacedTags(
+  head: ResourceHeadRow | undefined,
+  request: ApplyResourceChangeInput,
+): string[] {
+  return head !== undefined && head.version < request.version && head.tag !== request.tag
+    ? [head.tag]
+    : [];
+}
+
+export async function planApplyResourceChange(
+  input: TxInput,
+  request: ApplyResourceChangeInput,
+): Promise<Apply<ApplyResourceChangeResult | Refusal>> {
+  // Read here, under the lock every head is written under, the head is the one the transaction
+  // that follows finds.
+  const head = headOf(input.sql, request.resourceId);
+  const tags = [request.tag, ...replacedTags(head, request)];
+  const [invalidate, tagId] = await Promise.all([
+    planInvalidate(input, {
+      tags: tags.map((value) => ({ kind: 'next-explicit' as const, value })),
+      expire: NEXT_ONE_YEAR_SECONDS,
+      cause: { source: 'platform', api: 'resourceChange', requestId: request.eventId },
+    }),
+    // What a reconciliation takes up is the change the head keeps (`reconcile`): the tag that
+    // change named, whatever tag the delivery names.
+    tagIdFor(input.scopeId, 'next-explicit', head?.tag ?? request.tag),
+  ]);
+  return () => {
+    const { sql, now } = input;
+    const scope = requireActiveScope(sql);
+    if (isRefusal(scope)) return scope;
+    const previous = headOf(sql, request.resourceId);
+    if (previous !== undefined && previous.version >= request.version) {
+      if (previous.version === request.version && request.reconcile === true) {
+        return reconcile(input, request, previous, tagId);
+      }
+      return {
+        kind: 'already-applied',
+        revision: previous.tag_revision,
+        affectedEntryIds: [],
+        queuedJobs: pendingCount(sql, request.resourceId),
+      };
+    }
+    // Before anything is written: a refusal leaves the transaction committed.
+    if (previous === undefined && !resourceHeadsFit(sql, input.limits.tagsPerScope)) {
+      return refuse('quota_exceeded', 'the scope keeps as many resources as it may');
+    }
+    const result = invalidate();
+    if (isRefusal(result)) return result;
+    sql.exec(
+      `INSERT INTO resource_heads (resource_id, event_id, version, tag, tag_revision, applied_at)
+       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (resource_id) DO UPDATE SET
+         event_id = excluded.event_id, version = excluded.version, tag = excluded.tag,
+         tag_revision = excluded.tag_revision, applied_at = excluded.applied_at`,
+      request.resourceId,
+      request.eventId,
+      request.version,
+      request.tag,
+      result.revision,
+      now,
+    );
+    const queuedJobs = queueEligible(input, request, {
+      requiredRevision: result.revision,
+      affectedEntryIds: result.affectedEntryIds,
+    });
+    // A newer change also withdraws a prior dispatch permission if the route ceased to qualify.
+    sql.exec(
+      `DELETE FROM resource_warm_jobs WHERE resource_id = ? AND version < ?`,
+      request.resourceId,
+      request.version,
+    );
+    return {
+      kind: 'applied',
+      revision: result.revision,
+      affectedEntryIds: result.affectedEntryIds,
+      queuedJobs,
+    };
+  };
+}
+
+function queueEligible(
+  input: TxInput,
+  request: ApplyResourceChangeInput,
+  queue: {
+    readonly requiredRevision: number;
+    readonly affectedEntryIds: readonly string[];
+    readonly onlyNew?: boolean;
+  },
+): number {
+  const { sql, now } = input;
+  const eligible = eligibleEntries(sql, queue.affectedEntryIds, request.allowedRoutes ?? []);
+  const queued = queue.onlyNew === true ? notYetQueued(sql, request, eligible) : eligible;
+  for (let offset = 0; offset < queued.length; offset += WARM_JOB_PAGE) {
+    const page = queued
+      .slice(offset, offset + WARM_JOB_PAGE)
+      .map((entryId) => [createId('rwj'), entryId]);
+    sql.exec(
+      `INSERT INTO resource_warm_jobs (job_id, resource_id, entry_id, event_id, version,
+         required_revision, status, attempt_count, retry_at, lease_token, lease_expires_at,
+         detail, updated_at)
+       SELECT json_extract(value, '$[0]'), ?, json_extract(value, '$[1]'), ?, ?, ?, 'pending', 0,
+         ?, NULL, NULL, NULL, ?
+       FROM json_each(?) WHERE true
+       ON CONFLICT (resource_id, entry_id) DO UPDATE SET
+         event_id = excluded.event_id, version = excluded.version,
+         required_revision = excluded.required_revision, status = 'pending', attempt_count = 0,
+         retry_at = excluded.retry_at, lease_token = NULL, lease_expires_at = NULL,
+         detail = NULL, updated_at = excluded.updated_at`,
+      request.resourceId,
+      request.eventId,
+      request.version,
+      queue.requiredRevision,
+      now,
+      now,
+      JSON.stringify(page),
+    );
+  }
+  return queued.length;
+}
+
+/** The entries a job of this change, or of a later one, does not already cover. */
+function notYetQueued(
+  sql: SqlStorage,
+  request: ApplyResourceChangeInput,
+  entryIds: readonly string[],
+): string[] {
+  const rows = sql.exec<{ entry_id: string }>(
+    `SELECT entry_id FROM resource_warm_jobs WHERE resource_id = ? AND version >= ?`,
+    request.resourceId,
+    request.version,
+  );
+  const covered = new Set<string>();
+  for (const row of rows) {
+    covered.add(row.entry_id);
+  }
+  return entryIds.filter((entryId) => !covered.has(entryId));
+}
+
+/**
+ * Every tag the head's change invalidated: the one it named (`tagId`), and those recorded at the
+ * revision the change committed at, which no other change commits at. Those are the tag it names
+ * and any it took the place of (`replacedTags`), whose entries seeded since show the resource as it
+ * was too. Retention folds none of the invalidations at a head's revision (`invalidation-fold.ts`):
+ * they are here however long ago the change was.
+ */
+function headTagIds(sql: SqlStorage, head: ResourceHeadRow, tagId: string): string[] {
+  const tagIds = [tagId];
+  const recorded = sql.exec<{ target_id: string }>(
+    `SELECT target_id FROM invalidations WHERE revision = ? AND target_kind = 'tag'`,
+    head.tag_revision,
+  );
+  for (const row of recorded) {
+    if (!tagIds.includes(row.target_id)) tagIds.push(row.target_id);
+  }
+  return tagIds;
+}
+
+/**
+ * Seeding may have committed after the first delivery of this event to an already-active scope,
+ * under any tag the head's change invalidated. Each tag's outdated entries are read after those of
+ * the tags before it were condemned, so an entry under two is condemned and counted once. A
+ * delivery of the head's version that names another tag is reconciled as the head's change all the
+ * same, and takes up nothing of the tag it names, which that change did not invalidate.
+ */
+function reconcile(
+  input: TxInput,
+  request: ApplyResourceChangeInput,
+  head: ResourceHeadRow,
+  tagId: string,
+): ApplyResourceChangeResult {
+  const { sql } = input;
+  const affected = new Set<string>();
+  const outdatedEntryIds = new Set<string>();
+  for (const id of headTagIds(sql, head, tagId)) {
+    reconcileTag(input, {
+      tagId: id,
+      tag: findTag(sql, id),
+      tagRevision: head.tag_revision,
+      affected,
+      outdated: outdatedEntryIds,
+    });
+  }
+  const affectedEntryIds = [...affected];
+  recordReconciliation(input, affectedEntryIds);
+  const queuedJobs = queueEligible(input, request, {
+    requiredRevision: head.tag_revision,
+    affectedEntryIds: [...outdatedEntryIds],
+    onlyNew: true,
+  });
+  return { kind: 'already-applied', revision: head.tag_revision, affectedEntryIds, queuedJobs };
+}
+
+function currentGeneration(sql: SqlStorage, entryId: string): GenerationRow | undefined {
+  return sql
+    .exec<GenerationRow>(
+      `SELECT g.* FROM entries e JOIN generations g ON g.generation_id = e.current_generation_id
+       WHERE e.entry_id = ?`,
+      entryId,
+    )
+    .toArray()[0];
+}
+
+/**
+ * A change is warmed once a fully published generation covers its revision. Natural time expiry
+ * does not undo that work: short or unknown lifetimes cannot stay fresh until every ACK arrives.
+ * Serving still judges freshness independently; a lost ACK can retire the same completed work.
+ */
+function satisfied(sql: SqlStorage, job: WarmJobRow): boolean {
+  const row = currentGeneration(sql, job.entry_id);
+  return (
+    row?.status === HTTP_OK &&
+    row.publication === 'published' &&
+    row.storage === 'present' &&
+    row.condemned === null &&
+    row.dependency_revision >= job.required_revision
+  );
+}
+
+function nextRetryAt(sql: SqlStorage): number | null {
+  return sql
+    .exec<{ at: number | null }>(
+      `SELECT MIN(at) AS at FROM (
+         SELECT MIN(retry_at) AS at FROM resource_warm_jobs
+         WHERE status = 'pending'
+         UNION ALL
+         SELECT MIN(lease_expires_at) AS at FROM resource_warm_jobs
+         WHERE status = 'leased'
+       )`,
+    )
+    .one().at;
+}
+
+/** Called inside the DO mutex and a synchronous transaction; claims never race each other. */
+export function claimResourceWarmJobs(
+  sql: SqlStorage,
+  input: ListResourceWarmJobsInput,
+  now: number,
+): ListResourceWarmJobsResult {
+  if (readScope(sql)?.status !== 'active') return { jobs: [], nextRetryAt: null };
+  // Entry retention may remove an unpublishable member while nothing was claiming the jobs.
+  sql.exec(`DELETE FROM resource_warm_jobs WHERE entry_id NOT IN (SELECT entry_id FROM entries)`);
+  // Taken up in the order they came due: a pending job at its retry, and one whose dispatch lease
+  // ran out with no answer once it ran out. By its first retry, a job whose answers keep being lost
+  // would be taken up again ahead of every job that came due since, each time.
+  // Each status need supply only its first limit rows to the merge. Orphan cleanup still scans jobs.
+  const limit = input.limit ?? 2;
+  const candidates = sql
+    .exec<WarmJobRow>(
+      `WITH pending AS (
+         SELECT * FROM resource_warm_jobs
+         WHERE status = 'pending' AND retry_at <= ? ORDER BY retry_at, job_id LIMIT ?
+       ), leased AS (
+         SELECT * FROM resource_warm_jobs
+         WHERE status = 'leased' AND lease_expires_at <= ?
+         ORDER BY lease_expires_at, job_id LIMIT ?
+       )
+       SELECT * FROM (SELECT * FROM pending UNION ALL SELECT * FROM leased)
+       ORDER BY CASE status WHEN 'leased' THEN lease_expires_at ELSE retry_at END, job_id
+       LIMIT ?`,
+      now,
+      limit,
+      now,
+      limit,
+      limit,
+    )
+    .toArray();
+  const jobs: ResourceWarmJob[] = [];
+  for (const job of candidates) {
+    if (satisfied(sql, job)) {
+      sql.exec(`DELETE FROM resource_warm_jobs WHERE job_id = ?`, job.job_id);
+      continue;
+    }
+    const entry = sql
+      .exec<EntryRow>(`SELECT * FROM entries WHERE entry_id = ?`, job.entry_id)
+      .one();
+    const leaseToken = createId('rwl');
+    const leaseExpiresAt = now + DISPATCH_LEASE_MS;
+    sql.exec(
+      `UPDATE resource_warm_jobs SET status = 'leased', attempt_count = attempt_count + 1,
+       lease_token = ?, lease_expires_at = ?, updated_at = ? WHERE job_id = ?`,
+      leaseToken,
+      leaseExpiresAt,
+      now,
+      job.job_id,
+    );
+    jobs.push({
+      jobId: job.job_id,
+      resourceId: job.resource_id,
+      eventId: job.event_id,
+      version: job.version,
+      requiredRevision: job.required_revision,
+      entryId: job.entry_id,
+      entryKind: routeEntryKindSchema.parse(entry.kind),
+      route: entry.route ?? '/',
+      pathname: entry.pathname ?? '/',
+      leaseToken,
+      leaseExpiresAt,
+    });
+  }
+  return { jobs, nextRetryAt: nextRetryAt(sql) };
+}
+
+/** An ACK from a replaced/expired dispatch lease cannot erase a newer resource change. */
+export function finishResourceWarmJob(
+  sql: SqlStorage,
+  input: FinishResourceWarmJobInput,
+  now: number,
+): FinishResourceWarmJobResult {
+  const job = sql
+    .exec<WarmJobRow>(`SELECT * FROM resource_warm_jobs WHERE job_id = ?`, input.jobId)
+    .toArray()[0];
+  if (job === undefined) return { kind: 'unknown', nextRetryAt: nextRetryAt(sql) };
+  if (
+    job.status !== 'leased' ||
+    job.lease_token !== input.leaseToken ||
+    (job.lease_expires_at ?? 0) <= now
+  ) {
+    return { kind: 'superseded', nextRetryAt: nextRetryAt(sql) };
+  }
+  if (satisfied(sql, job)) {
+    sql.exec(`DELETE FROM resource_warm_jobs WHERE job_id = ?`, job.job_id);
+    return { kind: 'completed', nextRetryAt: nextRetryAt(sql) };
+  }
+  if (input.outcome === 'skipped') {
+    sql.exec(
+      `UPDATE resource_warm_jobs SET status = 'skipped', lease_token = NULL,
+       lease_expires_at = NULL, detail = ?, updated_at = ? WHERE job_id = ?`,
+      input.detail ?? null,
+      now,
+      job.job_id,
+    );
+    return { kind: 'completed', nextRetryAt: nextRetryAt(sql) };
+  }
+  const backoffMs = Math.min(
+    2 ** Math.min(job.attempt_count, MAX_RETRY_EXPONENT) * MILLISECONDS_PER_SECOND,
+    MAX_RETRY_MS,
+  );
+  const retryAt =
+    now + Math.max(MIN_RETRY_MS, Math.min(input.retryAfterMs ?? backoffMs, MAX_RETRY_MS));
+  sql.exec(
+    `UPDATE resource_warm_jobs SET status = 'pending', retry_at = ?, lease_token = NULL,
+     lease_expires_at = NULL, detail = ?, updated_at = ? WHERE job_id = ?`,
+    retryAt,
+    input.detail ??
+      (input.outcome === 'published' ? 'no usable generation at required revision' : null),
+    now,
+    job.job_id,
+  );
+  return { kind: 'retry', nextRetryAt: nextRetryAt(sql) };
+}

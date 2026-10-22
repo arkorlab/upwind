@@ -76,6 +76,7 @@ export {
   ARTIFACT_ENCODING_HEADER,
   ARTIFACT_ROLE_HEADER,
   ARTIFACT_SHA256_HEADER,
+  artifactContentTypeSchema,
   CACHE_SCOPE_HEADER,
   type CommitArtifact,
   commitArtifactSchema,

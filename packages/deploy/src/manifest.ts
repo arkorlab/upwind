@@ -38,6 +38,7 @@ import {
   SUPPORTED_NEXT_RANGE,
 } from '@stayingupwind/host/next-support';
 
+import { routeBodiesOf } from './route-bodies.ts';
 import {
   documentHeaderRule,
   type ManifestContext,
@@ -319,6 +320,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     resumable,
   });
   const caches = cached ? await routeCachesOf(bundle, input.deploymentId, prerenders) : new Map();
+  const routeBodies = await routeBodiesOf(bundle, input.deploymentId, cached);
   const staticPages = await staticPagesOf(bundle, input.deploymentId, cached);
   const pagesFallbacks = pagesFallbacksOf(bundle, cached, input.encodings);
   const middlewareMatchers = middlewareMatchersOf(bundle);
@@ -368,6 +370,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     originHost: input.originHost,
     deployment: input.fingerprint,
     routes,
+    routeBodies,
     staticPages,
     pagesFallbacks,
     app: input.app,

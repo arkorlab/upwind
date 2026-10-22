@@ -1,0 +1,77 @@
+{
+  "name": "@stayingupwind/cache",
+  "version": "0.4.0",
+  "private": true,
+  "description": "A deployment's runtime cache: the authority that keeps each deployment's scope, the gateways and the control entrypoint in front of it, and the client a deployment's Functions reach it with.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git",
+    "directory": "packages/cache"
+  },
+  "files": [
+    "src",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "NOTICE"
+  ],
+  "type": "module",
+  "exports": {
+    "./adapter": "./src/function/adapter.ts",
+    "./authority": "./src/scope/cache-scope.ts",
+    "./authority/history": "./src/scope/history.ts",
+    "./authority/io": "./src/scope/io.ts",
+    "./authority/metering": "./src/scope/metering.ts",
+    "./authority/schema": "./src/scope/schema.ts",
+    "./authority/state": "./src/scope/state.ts",
+    "./authority/stub": "./src/scope/stub.ts",
+    "./bindings": "./src/bindings.ts",
+    "./control": "./src/entrypoints/control.ts",
+    "./signals": "./src/entrypoints/signals.ts",
+    "./env": "./src/env.ts",
+    "./function": "./src/function/cache-host.ts",
+    "./function/bundle-blobs": "./src/function/bundle-blobs.ts",
+    "./function/host": "./src/function/host.ts",
+    "./gateway": "./src/gateway/app.ts",
+    "./gateway/token": "./src/gateway/token.ts",
+    "./host": "./src/authority-host.ts",
+    "./internal/*": "./src/*",
+    "./logger": "./src/logger.ts",
+    "./prefetch-worker": "./src/prefetch/worker.ts",
+    "./read-gateway": "./src/read-gateway.ts",
+    "./standalone/naming": "./src/standalone/naming.ts",
+    "./standalone/read-worker": "./src/standalone/read-worker.ts",
+    "./standalone/worker": "./src/standalone/worker.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit && tsc --noEmit -p src/function",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/function"
+  },
+  "dependencies": {
+    "@stayingupwind/core": "workspace:*",
+    "@stayingupwind/host": "workspace:*",
+    "@stayingupwind/runtime": "workspace:*",
+    "hono": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "@stayingupwind/adapter": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@stayingupwind/adapter": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@stayingupwind/adapter": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

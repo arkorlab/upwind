@@ -3,7 +3,6 @@ import {
   type GenerationTag,
   policyFromCacheControl,
   type RouteEntryDescriptor,
-  tagKindOf,
 } from '@stayingupwind/core/cache';
 
 import type { NodeHandler } from '../app-module.ts';
@@ -18,7 +17,7 @@ import {
   publishedRecordOf,
   rememberRecord,
 } from './current.ts';
-import { generationTagValues } from './generation-tags.ts';
+import { generationTags, generationTagValues } from './generation-tags.ts';
 import { HeldTags } from './held-tags.ts';
 import {
   type AttemptOutcome,
@@ -38,7 +37,6 @@ import {
   giveUp,
   heartbeat,
   type Leased,
-  RegenerationError,
   supersededBy,
   within,
 } from './lease.ts';
@@ -59,7 +57,6 @@ import {
   staticPageRender,
 } from './static-pages.ts';
 import { renderStatically } from './static-render.ts';
-import { refusedTags } from './tag-bounds.ts';
 import { uploaderFor } from './uploads.ts';
 
 /**
@@ -228,30 +225,6 @@ async function renderStatic(
   }
   if (captured === undefined) return undefined;
   return staticPageRender(input, request, captured);
-}
-
-/**
- * The tags the render leaves on the entry, as the commit names them (`generationTagValues`).
- *
- * Refused here rather than at the gateway where a generation may not carry them (`refusedTags`): a
- * request past the contract's bounds is turned away by a schema whose message says nothing about
- * tags — so the entry would go on failing every regeneration with no way to read why. Said here,
- * before the outputs are uploaded, the attempt carries what was wrong and the pathname into the
- * inspector.
- */
-function tagsOf(
-  target: RegenerationTarget,
-  render: CapturedRender,
-  entryId: string,
-): GenerationTag[] {
-  const values = [...generationTagValues(target.descriptor, render, entryId, target.isClass)];
-  const refused = refusedTags(values);
-  if (refused !== undefined) {
-    throw new RegenerationError(`the render of ${target.descriptor.pathname} ${refused.message}`, {
-      code: refused.code,
-    });
-  }
-  return values.map((value) => ({ kind: tagKindOf(value), value }));
 }
 
 interface Uploads {
@@ -452,8 +425,8 @@ async function publish(
   let published: DecodedGenerationPack | undefined;
   try {
     // Ahead of the uploads: a render the contract will not take is one whose outputs are not
-    // worth sending, and what says so is `tagsOf`.
-    const tags = tagsOf(target, render, lease.entryId);
+    // worth sending, and what says so is `generationTags`.
+    const tags = generationTags(target.descriptor, render, lease.entryId, target.isClass);
     const uploads = await upload(input, lease, render);
     // What the render's view held of each of its tags (`HeldTags`), its reads over with it.
     const values = tags.map((tag) => tag.value);

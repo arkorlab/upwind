@@ -25,11 +25,13 @@
     "./fingerprint": "./src/fingerprint.ts",
     "./manifest": "./src/manifest.ts",
     "./pointer": "./src/pointer.ts",
+    "./prefetch": "./src/prefetch.ts",
     "./shells": "./src/shells.ts",
     "./static-files": "./src/static-files.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -37,6 +39,7 @@
     "@stayingupwind/host": "workspace:*"
   },
   "devDependencies": {
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }
