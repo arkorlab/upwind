@@ -132,7 +132,7 @@ describe('explicit declaration data traces', () => {
     ]);
   });
 
-  it('emits a pnpm-stored types package under the node_modules/@types link TypeScript walks', async () => {
+  it('emits a pnpm-stored types package, with its manifest, under the node_modules/@types link TypeScript walks', async () => {
     const types = await declarationPackage(project, '@types/node', '26.1.0', {
       'index.d.ts': '/// <reference lib="es2020" />\n/// <reference path="globals.d.ts" />\n',
       'globals.d.ts': 'declare var process: unknown;\n',
@@ -154,6 +154,10 @@ describe('explicit declaration data traces', () => {
     expect(files).toStrictEqual([
       { name: 'node_modules/@types/node/globals.d.ts', filePath: types.files['globals.d.ts'] },
       { name: 'node_modules/@types/node/index.d.ts', filePath: types.files['index.d.ts'] },
+      {
+        name: 'node_modules/@types/node/package.json',
+        filePath: path.join(types.root, 'package.json'),
+      },
       {
         name: 'node_modules/@types/node/ts5.6/index.d.ts',
         filePath: types.files['ts5.6/index.d.ts'],
