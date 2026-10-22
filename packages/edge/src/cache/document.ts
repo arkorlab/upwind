@@ -8,8 +8,10 @@ import type { PassthroughWait } from '../handlers/passthrough.ts';
 import { keptReadsOut } from '../preview/storage.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { loadShell, type ShellLoadResult } from '../strategies/shell-loader.ts';
+import { buildWasInvalidated } from './build-invalidated.ts';
 import { condemnedIn } from './condemned.ts';
 import { decideGeneration, type GenerationDecision } from './decision.ts';
+import { readAbsentRecordBehind } from './generation-current.ts';
 import { heldGeneration, readServedAgain } from './generation-hold.ts';
 import { type GenerationKey, type GenerationLoad, readGeneration } from './generation-loader.ts';
 import { memberInHand, type MemberLoad, type MemberRead } from './member.ts';
@@ -321,6 +323,35 @@ function regenerateInFront(
   return foregroundDocument(input.edge, dispatch, waited);
 }
 
+function buildRecordRefresh(input: CachedDocumentInput, reason: string): (() => void) | undefined {
+  if (reason !== 'no-record' || input.request.method !== 'GET') return undefined;
+  return () => {
+    readAbsentRecordBehind(input.edge, input.key, input.settings);
+  };
+}
+
+/** A missing record cannot make an immutable build eligible again after its exact invalidation. */
+function serveBuild(decided: Decided, read: RecordRead, reason: string): Promise<Response> {
+  const { input } = decided;
+  if (input.noBuild !== undefined) {
+    // The read that found nothing to serve was waited for all the same.
+    return input.noBuild(decided.recordMs);
+  }
+  if (buildWasInvalidated(input.edge.runtime.memory, input.key.scopeId, input.entry.cache)) {
+    abandonShell(input.edge, read);
+    return input.passthrough('build-invalidated', input.middleware, input.entry.pathname, {
+      recordLookupMs: decided.recordMs,
+    });
+  }
+  const recordRead = { lookupMs: decided.recordMs, description: reason };
+  return handleDocument({
+    ...decided.document,
+    recordRead,
+    shellRead: read.shell,
+    onBuildServed: buildRecordRefresh(input, reason),
+  });
+}
+
 export async function serveCachedDocument(incoming: CachedDocumentInput): Promise<Response> {
   const read =
     incoming.generationRead ??
@@ -377,13 +408,7 @@ export async function serveCachedDocument(incoming: CachedDocumentInput): Promis
       : { member: true, keyed: input.recordMember?.keyed ?? input.keyed };
   switch (decision.kind) {
     case 'build': {
-      if (input.noBuild !== undefined) {
-        // The read that found nothing to serve was waited for all the same.
-        return input.noBuild(decided.recordMs);
-      }
-      // What the read that found nothing to serve cost is reported as a served record's would be.
-      const recordRead = { lookupMs: decided.recordMs, description: decision.reason };
-      return handleDocument({ ...decided.document, recordRead, shellRead: read.shell });
+      return serveBuild(decided, read, decision.reason);
     }
     case 'passthrough': {
       return input.passthrough(decision.reason, input.middleware, input.entry.pathname, waited);

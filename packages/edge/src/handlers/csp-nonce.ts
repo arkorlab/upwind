@@ -18,6 +18,8 @@ const NONCE_ATTRIBUTE = 'nonce';
 const CSP_HEADER = 'content-security-policy';
 const REPORT_ONLY_HEADER = 'content-security-policy-report-only';
 const CSP_HEADERS: readonly string[] = [CSP_HEADER, REPORT_ONLY_HEADER];
+// One registration calls the stamp once even when a script or preload already has a nonce.
+const NONCE_ELEMENTS = ['script', '[nonce]', ...SCRIPT_PRELOAD_LINKS].join(',');
 
 export function mintCspNonce(): string {
   return toBase64(crypto.getRandomValues(new Uint8Array(NONCE_BYTES)));
@@ -170,9 +172,5 @@ export function rewriteDocumentNonces(response: Response, nonce: string): Respon
       element.setAttribute(NONCE_ATTRIBUTE, nonce);
     },
   };
-  const rewriter = new HTMLRewriter().on('script', stamp).on('[nonce]', stamp);
-  for (const selector of SCRIPT_PRELOAD_LINKS) {
-    rewriter.on(selector, stamp);
-  }
-  return rewriter.transform(response);
+  return new HTMLRewriter().on(NONCE_ELEMENTS, stamp).transform(response);
 }

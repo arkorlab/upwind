@@ -48,6 +48,7 @@ import { assertHostOnly, bundleWorker } from './bundle.ts';
 import { deploymentFunctions, type FunctionStores } from './functions.ts';
 import { type LocalWorker, runWorkers, type SignalHandling } from './miniflare.ts';
 import { type Loopback, loopbackFor } from './ports.ts';
+import { LOCAL_PORT_BINDING, requestedRuntimePort, runtimePortBinding } from './runtime-port.ts';
 import { agentTarget } from './target.ts';
 import { BACKSTAGE_ENTRYPOINT } from './workers/protocol.ts';
 
@@ -83,11 +84,11 @@ const HTTP_DEFAULT_PORT = 80;
  */
 const HOSTNAME = 'localhost';
 /**
- * Every name the host's contract gives a Function's environment, whether or not this stack binds
- * it: the runtime reads each as the host's own, so an application's variable of one of these names
- * is never handed to its Functions — as a deploy hands none of them on. A name a particular host
- * binds beyond the contract is that host's, not the runtime's, and stays the application's here,
- * as it would on any other host.
+ * Every name the host's contract gives a Function's environment, and the local listening PORT,
+ * whether or not this stack binds it: the runtime reads each as the host's own, so an application's
+ * variable of one of these names is never handed to its Functions — as a deploy hands none of them
+ * on. A name a particular host binds beyond this list stays the application's here, as it would
+ * on any other host.
  */
 const HOST_NAMES: readonly string[] = [
   CACHE_SERVICE_BINDING,
@@ -101,6 +102,7 @@ const HOST_NAMES: readonly string[] = [
   PREFETCH_SERVICE_BINDING,
   RESOURCE_CHANGES_SERVICE_BINDING,
   RESOURCES_MANIFEST_BINDING,
+  LOCAL_PORT_BINDING,
 ];
 /** Where the edge reads its pointer in `EDGE_STATE`. */
 const POINTER_KEY = 'pointer';
@@ -111,7 +113,7 @@ const OWNER = 'local';
 export interface StackOptions {
   /** Where the build left its bundle: `bundle.json`, and the blobs it names under `blobs/`. */
   readonly bundleDir: string;
-  /** The port the site is served on; a free one when this names none. */
+  /** The port the site is served on; otherwise env.PORT, or a free one when neither names one. */
   readonly port?: number | undefined;
   /**
    * The hostnames a check names the site by besides the edge's socket (`CheckOptions.hostname`):
@@ -119,7 +121,10 @@ export interface StackOptions {
    * the edge takes each for a name of its own, as one deployed does every name it is routed.
    */
   readonly hostnames?: readonly string[] | undefined;
-  /** The application's own environment, given its Functions beside a deploy's bindings. */
+  /**
+   * The application's own environment. PORT is a listening-port request, overridden by port;
+   * Functions always receive the actual allocated port beside the deployment's bindings.
+   */
   readonly env?: Readonly<Record<string, string>> | undefined;
   /**
    * The application's own stores, by the names its Functions bind them under: a host binds a
@@ -380,6 +385,7 @@ function policyOf(asked: DeliveryPolicy | undefined): DeliveryPolicy {
 /** Start a stack, and deploy the build in `options.bundleDir` to it. */
 export async function startStack(options: StackOptions): Promise<LocalStack> {
   const { bundleDir, cspNonce } = options;
+  const askedPort = requestedRuntimePort(options.port, options.env);
   const policy = policyOf(options.policy);
   const json = await readFile(path.join(bundleDir, 'bundle.json'), 'utf8');
   const bundle = deploymentBundleSchema.parse(JSON.parse(json));
@@ -427,16 +433,17 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
     named.add(name);
   }
   const { stores, manifest } = storesOf(options.storage, named);
+  const socket = await loopbackFor(askedPort);
   const functions = deploymentFunctions(bundleDir, bundle, {
     text: [
       ...own.map(([name, value]) => ({ name, value, secret: false })),
       ...bound.text,
+      runtimePortBinding(socket),
       ...(manifest === undefined ? [] : [manifest]),
     ],
     services,
     stores,
   });
-  const socket = await loopbackFor(options.port);
   const names = siteNamesOf(socket, options.hostnames ?? []);
   const workers: LocalWorker[] = [
     {

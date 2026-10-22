@@ -198,6 +198,11 @@ export interface PassthroughInput {
    * (`functionOfRequest`), or the first.
    */
   readonly function?: string | undefined;
+  /**
+   * The scope of an already validated regeneration target, where no manifest is needed. Trusted
+   * by its caller, never taken from client headers; used for both the request hint and its receipt.
+   */
+  readonly scopeId?: string | undefined;
   readonly manifest?: ProjectManifest | undefined;
   /** Take a mutation's invalidations when its routing manifest is still being read. */
   readonly observeInvalidation?:
@@ -435,11 +440,12 @@ function takeResponseInvalidation(input: PassthroughInput, response: Response): 
   if (value === null) {
     return;
   }
-  // A deployment's cache scope is its deployment id, as `fetchUpstream` already tells the
-  // Function (`withScopeRevision`). A cold manifest must not let an Action's next navigation
-  // serve an older generation while its lookup is still out. Prefer the manifest's scope where
-  // it is known, and let the deferred observer take it there too once that lookup lands.
-  const scopeId = input.manifest?.cache?.scopeId ?? input.app?.deploymentId;
+  // Without a target or manifest, the deployment id is the provisional scope, as `fetchUpstream`
+  // tells the Function (`withScopeRevision`). A cold manifest must not let an Action's next navigation
+  // serve an older generation while its lookup is still out. A validated target supplies its
+  // scope; otherwise prefer the manifest's, and let the deferred observer take a provisional
+  // deployment receipt there once that lookup lands.
+  const scopeId = input.scopeId ?? input.manifest?.cache?.scopeId ?? input.app?.deploymentId;
   const invalidated = { value, bound: response.headers.get(INVALIDATED_REVISION_HEADER) };
   if (scopeId !== undefined) {
     takeInvalidation(input.runtime.memory, scopeId, invalidated);
@@ -545,7 +551,10 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   // edge ran it, and the forwarding headers.
   const fn = input.function ?? functionOfRequest(input.app, input.manifest, originRequest);
   const startedAt = input.runtime.now();
-  const pending = fetchUpstream(input.runtime, input.app, originRequest, fn);
+  const pending = fetchUpstream(input.runtime, input.app, originRequest, {
+    function: fn,
+    scopeId: input.scopeId ?? input.manifest?.cache?.scopeId,
+  });
   input.onAsked?.(() => dispatchesMade(pending));
   observeDispatch(input.onDispatched, pending);
   let originResponse: Response;

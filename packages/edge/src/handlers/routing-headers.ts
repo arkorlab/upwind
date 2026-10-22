@@ -51,6 +51,16 @@ interface RoutingReads {
   readonly forwardedFields: readonly string[];
 }
 
+function rememberEntries(
+  entries:
+    | Readonly<Record<string, { readonly bypassFor?: readonly Condition[] | undefined }>>
+    | undefined,
+  remember: (conditions: readonly Condition[] | undefined) => void,
+): void {
+  if (entries === undefined) return;
+  for (const entry of Object.values(entries)) remember(entry.bypassFor);
+}
+
 const manifestReaders = new WeakMap<ProjectManifest, RoutingReads>();
 
 /** Credential readers and forwarding fields found together, once per manifest and host credentials. */
@@ -87,9 +97,9 @@ export function routingReadsFor(
     }
   }
   for (const entry of Object.values(manifest.routes)) remember(entry.bypassFor);
-  if (manifest.routeBodies !== undefined) {
-    for (const entry of Object.values(manifest.routeBodies)) remember(entry.bypassFor);
-  }
+  rememberEntries(manifest.routeBodies, remember);
+  rememberEntries(manifest.staticPages, remember);
+  rememberEntries(manifest.pagesFallbacks, remember);
   const found = { credentials, reads, forwardedFields: [...fields] };
   manifestReaders.set(manifest, found);
   return found;

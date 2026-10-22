@@ -266,16 +266,21 @@ async function dispatchSplit(
   return answered;
 }
 
+interface UpstreamTarget {
+  readonly function?: string | undefined;
+  readonly scopeId?: string | undefined;
+}
+
 /**
- * Send a request to the deployment's app Worker: `fn` names which, for a deployment split across
- * several, and the first is meant without it. A deployment that was not split is one property
- * read away from what it always was.
+ * Send a request to the deployment's app Worker: `target` names which, for a deployment split across
+ * several, and the first is meant without it, and its scope where the manifest names another.
+ * A deployment that was not split is one property read away from what it always was.
  */
 export function fetchUpstream(
   runtime: EdgeRuntime,
   app: AppRuntime | undefined,
   request: Request,
-  fn?: string,
+  target?: UpstreamTarget,
 ): Promise<Response> {
   if (app === undefined) {
     return unsent(new NoApplicationError());
@@ -284,8 +289,9 @@ export function fetchUpstream(
     return unsent(new NoDispatchError());
   }
   // Told where the deployment's scope stands, as this isolate last found it: a Function behind it
-  // catches up before it judges anything (`SCOPE_REVISION_HEADER`). A deployment's scope is its id.
-  const told = withScopeRevision(runtime, app.deploymentId, request);
+  // catches up before it judges anything (`SCOPE_REVISION_HEADER`). Its manifest can name a scope
+  // different from the deployment id used while the manifest is still being read.
+  const told = withScopeRevision(runtime, target?.scopeId ?? app.deploymentId, request);
   if (app.functions === undefined) {
     // Catch only the synchronous call; awaiting or observing it would wrap its normal promise.
     // eslint-disable-next-line sonarjs/no-try-promise
@@ -297,7 +303,7 @@ export function fetchUpstream(
       return Promise.reject(error);
     }
   }
-  const progress: Progress = { fn: fn ?? PRIMARY_FUNCTION, dispatched: undefined };
+  const progress: Progress = { fn: target?.function ?? PRIMARY_FUNCTION, dispatched: undefined };
   const answer = dispatchSplit(runtime.dispatchApp, app, told, progress);
   UNDER_WAY.set(answer, progress);
   return answer;

@@ -65,6 +65,8 @@ export interface HeldGeneration {
    */
   readonly readAt: number;
   readonly bytes: number;
+  /** Set only after authority bytes pass identity, digest, revision and invalidation fences. */
+  readonly authorityConfirmedAt?: number | undefined;
 }
 
 export interface LoadOptions {
@@ -86,6 +88,8 @@ interface RecordName {
 /** A read in flight, and what it is for. */
 export interface Read extends RecordName {
   readonly options: LoadOptions;
+  /** The loader supplies policy context for bounded negative-KV recovery. */
+  readonly settings?: RuntimeCacheSettings;
   readonly startedAt: number;
   /** The data center's copies are read and kept beside KV. */
   readonly copies: boolean;

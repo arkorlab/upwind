@@ -4,12 +4,14 @@ import {
   edgeServablePrerenders,
   prefetchSegments,
   type Prerender,
+  type RouteHas,
   routePagesData,
   routePathnameOf,
   routePayloads,
 } from '@stayingupwind/core/bundle';
 import { type RouteEntry, routeRequestPathOf } from '@stayingupwind/core/manifest';
 import {
+  anyConditionHolds,
   computeRscCacheBustingParam,
   DEPLOYMENT_ID_REQUEST_HEADER,
   NEXT_DATA_HEADER,
@@ -17,6 +19,7 @@ import {
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_URL_HEADER,
+  PatternBudgetExceededError,
   RSC_HEADER,
 } from '@stayingupwind/core/request';
 
@@ -155,12 +158,119 @@ export function originAt(stack: CheckedStack, url: URL, as: string): Origin {
 }
 
 /**
+ * How many other pages a page's parts are asked from by their place alone (`originsOf`): the first
+ * by pathname. Each is asked from by every browser's router, so a build whose every page were asked
+ * from every other would be asked a number of times that grows with the square of its pages — a
+ * build of a thousand pages, a million origins before the first part is counted.
+ */
+const ORIGINS_BY_PLACE = 8;
+
+/** The headers a request says the page it comes from by: the router's, and a browser's. */
+const ORIGIN_HEADERS: ReadonlySet<string> = new Set([
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_URL_HEADER,
+  REFERER,
+]);
+
+/** The pages of a build a router may be on, and what tells them apart (`otherPagesOf`). */
+interface OtherPages {
+  /** Each condition of the build's rules on the page a request comes from (`originConditions`). */
+  readonly conditions: readonly RouteHas[];
+  /** Each page, by pathname, with what those conditions say of a request from it (`answeredFrom`). */
+  readonly pages: readonly { readonly origin: Origin; readonly answered: string }[];
+}
+
+const otherPages = new WeakMap<CheckedStack, OtherPages>();
+
+/**
+ * Each condition of the build's rules — every phase of its routing, and its middleware's matchers —
+ * on the page a request comes from (`ORIGIN_HEADERS`).
+ */
+function originConditions(bundle: DeploymentBundle): RouteHas[] {
+  const { routing } = bundle;
+  const rules = [
+    ...routing.beforeMiddleware,
+    ...routing.middlewareMatchers,
+    ...routing.beforeFiles,
+    ...routing.afterFiles,
+    ...routing.dynamicRoutes,
+    ...routing.onMatch,
+    ...routing.fallback,
+    ...(bundle.middleware?.matchers ?? []),
+  ];
+  return rules.flatMap(({ has = [], missing = [] }) => {
+    return [...has, ...missing].filter((condition) => {
+      return (
+        condition.type === 'header' &&
+        condition.key !== undefined &&
+        ORIGIN_HEADERS.has(condition.key.toLowerCase())
+      );
+    });
+  });
+}
+
+/**
+ * What `conditions` say of a request from `origin`, as its parts are asked for from there
+ * (`partsOf`): whether each holds, or that it could not be judged.
+ */
+function answeredFrom(conditions: readonly RouteHas[], origin: Origin): string {
+  const headers = new Headers({
+    [NEXT_URL_HEADER]: origin.path,
+    [NEXT_ROUTER_STATE_TREE_HEADER]: stateTreeOf(origin.path),
+    [REFERER]: referrerOf(origin.url),
+  });
+  return conditions
+    .map((condition) => {
+      try {
+        return anyConditionHolds([condition], origin.url, headers) ? '1' : '0';
+      } catch (error) {
+        if (error instanceof PatternBudgetExceededError) {
+          return '?';
+        }
+        throw error;
+      }
+    })
+    .join('');
+}
+
+/**
+ * Each page of the build a router may be on — a route of the manifest's by the pathname it is
+ * deployed at, under the base path, which the router names it by without (`originAt`) — with what
+ * the build's conditions on the page a request comes from say of one from it. Once a stack.
+ */
+function otherPagesOf(stack: CheckedStack): OtherPages {
+  const known = otherPages.get(stack);
+  if (known !== undefined) {
+    return known;
+  }
+  const conditions = originConditions(stack.bundle);
+  const pages = Object.keys(stack.manifest.routes)
+    .toSorted(compareCodeUnits)
+    .filter((key) => !key.includes('['))
+    .flatMap((key) => {
+      // As the router names it: one no request reaches is no page a visitor came from.
+      const asked = routeRequestPathOf(stack.manifest, key);
+      return asked === undefined
+        ? []
+        : [originAt(stack, new URL(asked, stack.site), `, from ${key}`)];
+    })
+    .map((origin) => ({ origin, answered: answeredFrom(conditions, origin) }));
+  const found = { conditions, pages };
+  otherPages.set(stack, found);
+  return found;
+}
+
+/**
  * The pages the client router asks for a page's parts from: the front page, as a visitor who came
  * by it asks; the page itself, as a visitor on it asks for it again — a link to it, a refresh —
- * where it is another; and every other reachable page of the build, by pathname, as a
- * visitor who came by it asks: each a path a rule or a middleware that tells router requests
- * apart by the page they come from (`next-url`, `Referer`) is judged on — each at the URL it is
- * deployed at, under the base path, and named by the router without it (`originAt`).
+ * where it is another; the first other pages of the build by pathname (`ORIGINS_BY_PLACE`), as a
+ * visitor who came by each asks; and past them, each page the build's rules tell apart from every
+ * page before it by the page a request comes from (`answeredFrom`), the first of its kind: each a
+ * path a rule or a middleware that tells router requests apart by the page they come from
+ * (`next-url`, `Referer`) is judged on — each at the URL it is deployed at, under the base path, and
+ * named by the router without it (`originAt`). A middleware is code, which no reading of the build
+ * says which pages it tells apart: it is judged from the first pages, and from those the rules tell
+ * apart.
  */
 export function originsOf(stack: CheckedStack, page: URL): Origin[] {
   const { basePath, trailingSlash } = stack.bundle.config;
@@ -173,25 +283,22 @@ export function originsOf(stack: CheckedStack, page: URL): Origin[] {
     path === FRONT_PAGE
       ? [{ ...front, itself: true }]
       : [front, { path, url: page, itself: true, as: ', from the page itself' }];
-  // A route of the manifest's by the pathname it is deployed at, under the base path, which the
-  // router names it by without (`originAt`).
-  const others = Object.keys(stack.manifest.routes)
-    .toSorted(compareCodeUnits)
-    .filter((key) => !key.includes('['))
-    .flatMap((key) => {
-      // As the router names it: one no request reaches is no page a visitor came from.
-      const asked = routeRequestPathOf(stack.manifest, key);
-      return asked === undefined
-        ? []
-        : [originAt(stack, new URL(asked, stack.site), `, from ${key}`)];
-    })
-    .filter((at) => at.path !== FRONT_PAGE && at.path !== path);
+  const { conditions, pages } = otherPagesOf(stack);
   const seen = new Set(own.map((at) => at.url.href));
-  for (const other of others) {
-    if (!seen.has(other.url.href)) {
-      seen.add(other.url.href);
-      own.push(other);
+  const told = new Set(own.map((at) => answeredFrom(conditions, at)));
+  let placed = 0;
+  for (const { origin, answered } of pages) {
+    if (origin.path === FRONT_PAGE || origin.path === path || seen.has(origin.url.href)) {
+      continue;
     }
+    if (placed < ORIGINS_BY_PLACE) {
+      placed += 1;
+    } else if (told.has(answered)) {
+      continue;
+    }
+    seen.add(origin.url.href);
+    told.add(answered);
+    own.push(origin);
   }
   return own;
 }

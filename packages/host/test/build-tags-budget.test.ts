@@ -15,6 +15,7 @@ import {
 import { encodeUtf8 } from '@stayingupwind/core/util';
 import { describe, expect, it, vi } from 'vitest';
 
+/* eslint import-x/no-relative-packages: "off" -- Exercise the deploy's actual manifest assembly beside the host's budgets. */
 import {
   assembleManifest,
   type AssembledManifest,

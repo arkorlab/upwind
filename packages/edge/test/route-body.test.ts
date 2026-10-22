@@ -28,7 +28,7 @@ import { createExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-// Exercise the host's existing real seed fixture, without a production test export.
+/* eslint import-x/no-relative-packages: "off" -- Exercise the host's existing real seed fixture, without a production test export. */
 import { shellBundle } from '../../host/test/shared-shell-fixture.ts';
 import { triggerDetached } from '../src/cache/regenerate.ts';
 import { handlePassthrough } from '../src/handlers/passthrough.ts';
@@ -44,6 +44,23 @@ const SCOPE = 'dpl_icon';
 const BODY = new Uint8Array([137, 80, 78, 71, 0, 255, 128, 10]);
 const REPLACEMENT = new Uint8Array([137, 80, 78, 71, 1, 254, 127, 10]);
 const MIDDLEWARE_TOOK_MS = 240;
+const BUILD_PROTOCOL = [
+  'host',
+  'x-matched-path',
+  'x-prerender-revalidate',
+  'x-prerender-revalidate-if-generated',
+  'x-next-revalidated-tags',
+  'x-next-revalidate-tag-token',
+];
+const BODY_CONTROLS = [
+  ...BUILD_PROTOCOL.filter((name) => name !== 'host'),
+  'rsc',
+  'next-router-state-tree',
+  'next-router-prefetch',
+  'next-router-segment-prefetch',
+  'next-action',
+  'next-url',
+];
 
 /** Use the host's real app-route seed contract, including its route-body output and policy. */
 async function fixture(
@@ -61,6 +78,7 @@ async function fixture(
     readonly deferHeaderRules?: boolean;
     readonly split?: boolean;
     readonly withoutDispatcher?: boolean;
+    readonly allowHeader?: string[];
   } = {},
 ) {
   const sha256 = await sha256Hex(BODY);
@@ -79,6 +97,7 @@ async function fixture(
     initialHeaders: { 'content-type': 'image/png', ...options.initialHeaders },
     initialRevalidate: 1,
     initialExpiration: 2,
+    ...(options.allowHeader !== undefined && { allowHeader: options.allowHeader }),
   };
   const bundle = { ...shellBundle(prerender, 'app-route'), routeBodyPrivacy: 2 as const };
   const seed = await seedRouteFor(bundle, prerender, { scopeId: SCOPE, generatedAt: NOW });
@@ -405,6 +424,110 @@ function routed(
 describe('the host serves complete route-body generations', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('serves a body with only the fixed Next build protocol inputs without another request', async () => {
+    const test = await fixture({ allowHeader: BUILD_PROTOCOL });
+    const get = vi.spyOn(env.CACHE_STATE, 'get');
+    const response = await test.serve({ headers: { host: 'site.example' } });
+
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(BODY);
+    expect(response.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate');
+    expect(get).not.toHaveBeenCalled();
+    expect(test.fallback).not.toHaveBeenCalled();
+    expect(test.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each(BODY_CONTROLS)(
+    'rejects even an empty original body control before reading a record: %s',
+    async (name) => {
+      const test = await fixture();
+      const get = vi.spyOn(env.CACHE_STATE, 'get');
+      const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+      const response = await test.serve({ headers: { [name.toUpperCase()]: '' } });
+
+      await expect(response.text()).resolves.toBe('Function');
+      expect(get).not.toHaveBeenCalled();
+      expect(memory).not.toHaveBeenCalled();
+      expect(test.fallback).toHaveBeenCalledTimes(1);
+      expect(test.dispatch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('retains a classified-only control veto', async () => {
+    const test = await fixture();
+    const request = new Request('https://site.example/icon');
+    const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+    const response = await routeHostedBody({
+      request,
+      url: new URL(request.url),
+      edge: test.edge,
+      manifest: test.manifest,
+      entry: test.entry,
+      classifiedHeaders: new Headers({ 'x-next-revalidated-tags': '' }),
+      passthrough: test.fallback,
+    });
+
+    await expect(response.text()).resolves.toBe('Function');
+    expect(memory).not.toHaveBeenCalled();
+    expect(test.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each(['x-matched-path', 'x-next-revalidated-tags', 'x-next-revalidate-tag-token'])(
+    'keeps original control evidence when classification strips a host credential: %s',
+    async (name) => {
+      const test = await fixture({
+        credentials: { cookies: [], headers: [name, 'authorization'] },
+      });
+      const get = vi.spyOn(env.CACHE_STATE, 'get');
+      const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+      const response = await routed(test, test.manifest, { [name]: 'control' });
+
+      expect(response.headers.get('cache-control')).toContain('private');
+      expect(get).not.toHaveBeenCalled();
+      expect(memory).not.toHaveBeenCalled();
+      expect(test.dispatch).toHaveBeenCalledTimes(1);
+
+      await test.drain();
+    },
+  );
+
+  it.each(['x-matched-path', 'x-next-revalidated-tags', 'x-next-revalidate-tag-token'])(
+    'keeps a middleware control veto before credential forwarding removes it: %s',
+    async (name) => {
+      const test = await fixture({
+        credentials: { cookies: [], headers: [name] },
+        middlewareHeaders: {
+          'x-middleware-override-headers': name,
+          [`x-middleware-request-${name}`]: 'control',
+        },
+      });
+      const get = vi.spyOn(env.CACHE_STATE, 'get');
+      const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+      const response = await test.serve();
+
+      await expect(response.text()).resolves.toBe('Function');
+      expect(get).not.toHaveBeenCalled();
+      expect(memory).not.toHaveBeenCalled();
+      expect(test.fallback).toHaveBeenCalledTimes(1);
+      expect(test.dispatch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('rejects a middleware RSC segment request before reading the image record', async () => {
+    const test = await fixture({
+      middlewareHeaders: {
+        'x-middleware-override-headers': 'rsc,next-router-segment-prefetch',
+        'x-middleware-request-rsc': '1',
+        'x-middleware-request-next-router-segment-prefetch': '/segment',
+      },
+    });
+    const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+    const response = await test.serve();
+
+    await expect(response.text()).resolves.toBe('Function');
+    expect(memory).not.toHaveBeenCalled();
+    expect(test.dispatch).toHaveBeenCalledTimes(1);
   });
 
   it('preserves binary bytes and shares only the trusted seeded body', async () => {

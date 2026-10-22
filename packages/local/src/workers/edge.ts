@@ -27,6 +27,7 @@ import {
 import { cspNonceModeSchema, edgePointerSchema } from '@stayingupwind/host/delivery';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 
+import { frontLineCf } from '../front-line-cf.ts';
 import { GenerationEvidence, watchedGenerationMemory } from './generation-evidence.ts';
 import {
   BACKSTAGE_ROUTES,
@@ -326,7 +327,7 @@ function clientCodingsOf(
   cf: IncomingRequestCfProperties | undefined,
 ): IncomingRequestCfProperties {
   const clientAcceptEncoding = headers.get(ACCEPT_ENCODING) ?? '';
-  return { ...cf, clientAcceptEncoding } as IncomingRequestCfProperties;
+  return frontLineCf(cf, clientAcceptEncoding) as IncomingRequestCfProperties;
 }
 
 /**

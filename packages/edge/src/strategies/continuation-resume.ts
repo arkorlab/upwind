@@ -100,7 +100,10 @@ export const resumeContinuation = {
     const upstream = resumeRequest(input, controller.signal);
     return {
       // The Worker the shell's route is in, for a deployment split across several.
-      response: fetchUpstream(input.ctx.runtime, input.ctx.app, upstream, input.entry.function),
+      response: fetchUpstream(input.ctx.runtime, input.ctx.app, upstream, {
+        function: input.entry.function,
+        scopeId: input.manifest.cache?.scopeId,
+      }),
       abort: (reason) => {
         controller.abort(reason);
       },

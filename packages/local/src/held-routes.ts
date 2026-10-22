@@ -14,6 +14,7 @@ import {
   staticFallbackPagesOf,
   staticPagesMembersOf,
 } from '@stayingupwind/core/bundle';
+import type { GenerationTag } from '@stayingupwind/core/cache';
 import type {
   HeaderRule,
   RouteCache,
@@ -149,7 +150,7 @@ export async function unheldRoutes(stack: CheckedStack, tally: Tallies): Promise
   const { bundle, manifest } = stack;
   const recovery = await recoveryScriptCspSource();
   const parts = builtPartsOf(bundle);
-  const caches = await seededCaches(stack);
+  const { caches, tagFailures } = await seededCaches(stack);
   const placed = placedRoutes(bundle.entrypoints);
   const { named, leftOut } = routedOf(stack);
   const routeAt = (pathname: string): RouteEntry | undefined =>
@@ -162,6 +163,7 @@ export async function unheldRoutes(stack: CheckedStack, tally: Tallies): Promise
       (held === undefined
         ? undefined
         : (heldRouteFailure(held, deployedAs(stack, prerender, { pathname, recovery, caches })) ??
+          tagFailures.get(prerender.id) ??
           heldPartsFailure(held, parts, prerender.pathname)));
     if (failure !== undefined) {
       tally.add(pathname, failed(failure));
@@ -353,17 +355,47 @@ function deployedAs(
  * The entry of every page the stack seeded its cache with, by the page's id, as a deploy seeds it
  * (`seedRouteFor`): under the deployment's scope, its id, its kind, and whether the edge resumes it.
  */
-async function seededCaches(stack: CheckedStack): Promise<ReadonlyMap<string, RouteCache>> {
+interface SeededCaches {
+  readonly caches: ReadonlyMap<string, RouteCache>;
+  readonly tagFailures: ReadonlyMap<string, string>;
+}
+
+function tagKeys(tags: readonly GenerationTag[]): string[] {
+  return tags.map((tag) => `${tag.kind}:${tag.value}`).toSorted(compareCodeUnits);
+}
+
+/** Present metadata is the complete kind/value membership; its order has no serving meaning. */
+function membershipFailure(held: RouteCache | undefined, seeded: RouteCache): string | undefined {
+  if (held?.buildTags === undefined) return undefined;
+  const expected = seeded.buildTags;
+  if (held.buildTags.length === expected?.length) {
+    const actual = tagKeys(held.buildTags);
+    if (tagKeys(expected).every((tag, index) => tag === actual[index])) return undefined;
+  }
+  return "held by the manifest with build tag membership different from the build's seed";
+}
+
+async function seededCaches(stack: CheckedStack): Promise<SeededCaches> {
   const { bundle } = stack;
   const context = { scopeId: stack.deploymentId, generatedAt: bundleGeneratedAtMs(bundle) };
   const caches = new Map<string, RouteCache>();
+  const tagFailures = new Map<string, string>();
+  const included = new Map(
+    [...routedOf(stack).named].map(([pathname, prerender]) => [prerender.id, pathname]),
+  );
   for (const prerender of cachePrerendersOf(bundle)) {
+    const pathname = included.get(prerender.id);
+    if (pathname === undefined) continue;
     const seeded = await seedRouteFor(bundle, prerender, context);
-    if (seeded?.cache !== undefined) {
-      caches.set(prerender.id, seeded.cache);
-    }
+    if (seeded?.cache === undefined) continue;
+    const failure = membershipFailure(stack.manifest.routes[pathname]?.cache, seeded.cache);
+    if (failure !== undefined) tagFailures.set(prerender.id, failure);
+    // Compare one trusted list at a time; never retain every route's full expected tags.
+    const cache = { ...seeded.cache };
+    delete cache.buildTags;
+    caches.set(prerender.id, cache);
   }
-  return caches;
+  return { caches, tagFailures };
 }
 
 /**

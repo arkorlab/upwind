@@ -331,7 +331,10 @@ async function fetchLocal(
   const signalled = new Request(request, {
     signal: AbortSignal.any([signal, controller.signal]),
   });
-  const answer = fetchUpstream(edge.runtime, edge.app, signalled, fn);
+  const answer = fetchUpstream(edge.runtime, edge.app, signalled, {
+    function: fn,
+    scopeId: local.manifest.cache?.scopeId,
+  });
   let response: Response;
   try {
     response = await imageWithin(answer, signal, budgetMs, SOURCE_READ);

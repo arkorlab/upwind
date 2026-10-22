@@ -210,6 +210,9 @@ function seedOutputs(
       headers: output.headers,
       compute: output.compute,
       response: output.response,
+      ...(output.staticPagePrivacy !== undefined && {
+        staticPagePrivacy: output.staticPagePrivacy,
+      }),
       htmlSize: output.htmlSize,
       artifacts: output.artifacts.map((artifact) => {
         return {
@@ -227,10 +230,11 @@ function seedOutputs(
 }
 
 /** What the delivery record of an entry's build generation is made of. */
-function recordFields(scopeId: string, plan: SeedPlan): PackHeaderFields {
+function recordFields(scopeId: string, plan: SeedPlan, buildId: string): PackHeaderFields {
   const { generation } = plan.entry;
   return {
     scopeId,
+    buildId,
     entry: {
       entryId: plan.identity.entryId,
       kind: plan.identity.kind,
@@ -408,7 +412,7 @@ function applySeedEntries(
   for (const plan of fresh) {
     let reason =
       plan.tagsRefused ??
-      unwritableRecord(recordFields(input.scopeId, plan), limits.maxRecordBytes);
+      unwritableRecord(recordFields(input.scopeId, plan, scope.build_id), limits.maxRecordBytes);
     const generationId = plan.entry.generation.generationId;
     reason ??= reserveSeedPlan(plan, generationId, generationIds, artifactLengths);
     if (reason === undefined) {

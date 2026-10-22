@@ -21,8 +21,9 @@ import {
   type ShellDeliveryStrategy,
 } from '@stayingupwind/host/delivery';
 
+import { buildWasInvalidated } from '../cache/build-invalidated.ts';
 import { CacheBody } from '../cache/cache-body.ts';
-import { condemnedIn } from '../cache/condemned.ts';
+import { condemnedIn, transferInvalidations } from '../cache/condemned.ts';
 import { decideGeneration, type GenerationDecision } from '../cache/decision.ts';
 import { generationAsHeld, readServedAgain } from '../cache/generation-hold.ts';
 import type { GenerationLoad } from '../cache/generation-loader.ts';
@@ -76,7 +77,7 @@ interface MemberRecord {
 }
 
 type PartGeneration =
-  | { readonly kind: 'build' }
+  | { readonly kind: 'build'; readonly acceptedRecord?: DecodedGenerationPack | undefined }
   | {
       readonly kind: 'runtime';
       readonly pack: DecodedGenerationPack;
@@ -199,7 +200,7 @@ function partFrom(
   }
   if (decision.kind !== 'serve') return { kind: 'function' };
   if (decision.pack.header.source === 'build') {
-    if (decision.validity === 'fresh') return { kind: 'build' };
+    if (decision.validity === 'fresh') return { kind: 'build', acceptedRecord: decision.pack };
     readPartAgain(input, decision.pack, member);
     return { kind: 'function' };
   }
@@ -351,22 +352,43 @@ function refreshPart(
   });
 }
 
+/** The immutable router part is eligible only while its build generation remains eligible. */
+function answerBuildPart(
+  input: PartInput,
+  part: PartAnswer,
+  fallback: () => Promise<Response>,
+  generation: Extract<PartGeneration, { readonly kind: 'build' }>,
+): Promise<Response> {
+  if (part.buildPart === undefined) return fallback();
+  // A fresh accepted build record already proved its revision against every observed receipt.
+  const key =
+    generation.acceptedRecord === undefined ? generationKeyOf(input, part.entry) : undefined;
+  if (key !== undefined) {
+    transferInvalidations(input.edge.runtime.memory, input.edge.app?.deploymentId, key.scopeId);
+  }
+  if (
+    key !== undefined &&
+    buildWasInvalidated(input.edge.runtime.memory, key.scopeId, part.entry.cache)
+  ) {
+    return fallback();
+  }
+  return answer(input, {
+    entry: part.entry,
+    middleware: part.middleware,
+    kind: part.kind,
+    segment: part.buildPart,
+    startedAt: part.startedAt,
+  });
+}
+
 async function answerPart(input: PartInput, part: PartAnswer): Promise<Response> {
-  const { entry, middleware, kind, representationKey, buildPart, startedAt, reason } = part;
+  const { entry, middleware, kind, representationKey, startedAt, reason } = part;
   const fallback = (waited?: PassthroughWait) =>
     input.passthrough(reason, middleware, entry.pathname, waited);
   const generation = await partGeneration(input, part);
   if (generation.kind === 'function') return fallback();
   if (generation.kind === 'build') {
-    return buildPart === undefined
-      ? fallback()
-      : answer(input, {
-          entry,
-          middleware,
-          kind,
-          segment: buildPart,
-          startedAt,
-        });
+    return answerBuildPart(input, part, fallback, generation);
   }
   // Saved partial Flight is a static prefetch. Navigations and runtime prefetches need
   // the Function's visitor render, which resumes from its current generation's state.

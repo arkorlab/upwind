@@ -95,6 +95,8 @@ export interface DocumentInput {
   readonly buildRegeneration?: Readonly<Record<string, string>> | undefined;
   /** Return this build's regeneration ask if its resume is abandoned before the runtime answers. */
   readonly onBuildAbandoned?: (() => void) | undefined;
+  /** A build shell actually served after a missing record can refresh that record behind it. */
+  readonly onBuildServed?: (() => void) | undefined;
   /**
    * Proxy the request to the application's Worker, as every passthrough of the request goes: routed
    * again from the pointer when the Workers it names turned out to be gone
@@ -476,6 +478,7 @@ function composeDocument(input: DocumentInput, composition: Composition): Respon
     entries.push({ name: 'edge', durationMs: now - requestStartedAt });
   }
   response.headers.append('server-timing', serverTiming(entries));
+  input.onBuildServed?.();
   return response;
 }
 
@@ -564,11 +567,16 @@ function documentRules(input: DocumentInput): ConfiguredHeaders {
   );
 }
 
-/** A generation without resume state is complete, even when the build's shell was not. */
+/**
+ * A generation without resume state is complete, even when the build's shell was not. A signed
+ * Pages fallback probe proves its whole loading document: the concrete render belongs to a later
+ * data request, and is not a continuation of this response.
+ */
 function isCompleteDocument(input: DocumentInput): boolean {
-  return input.generation === undefined
-    ? input.entry.cache?.delivery === 'complete'
-    : input.generation.pack.postponed === undefined;
+  const { generation, entry, edge, manifest } = input;
+  if (generation !== undefined) return generation.pack.postponed === undefined;
+  if (entry.cache?.delivery === 'complete') return true;
+  return edge.validated && manifest.pagesFallbacks?.[entry.pathname] !== undefined;
 }
 
 /**
@@ -632,9 +640,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     return delegateCorruptDocument(input, shellLookup);
   }
   const delegated = delegateSandboxedDocument(input, complete, headers, shellLookup);
-  if (delegated !== undefined) {
-    return delegated;
-  }
+  if (delegated !== undefined) return delegated;
   const encoding = negotiateContentEncoding(clientAcceptEncoding(input.request), CONTENT_ENCODINGS);
   const layering = layeringFor(input, complete, encoding);
   const rendering = usableRendering(input, encoding);

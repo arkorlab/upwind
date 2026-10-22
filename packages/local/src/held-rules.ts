@@ -1,6 +1,8 @@
 import {
   type DeploymentBundle,
   dynamicRouting,
+  edgeServableRouteBodies,
+  edgeServableStaticPages,
   foldedHeaderRulesOf,
   headerRulesOf,
   spelledPrefixOf,
@@ -138,7 +140,19 @@ function namesOf(listed: Readonly<Record<string, true>> | undefined): string[] |
  */
 function routingFields(stack: CheckedStack): Held[] {
   const { manifest } = stack;
-  const routing = dynamicRouting(stack.bundle, routedPathnames(stack));
+  const routeKeys = routedPathnames(stack);
+  const routing = dynamicRouting(stack.bundle, routeKeys);
+  const bodies = edgeServableRouteBodies(stack.bundle);
+  const pages = edgeServableStaticPages(stack.bundle);
+  const hasTables = bodies.length > 0 || pages.length > 0;
+  // The body and static-Page table writers add all document keys to the shared filesystem table.
+  // Derive that union from the build: invented and dropped keys in the manifest still fail.
+  const exactPathnames = new Set(routing.exactPathnames);
+  if (hasTables) {
+    for (const pathname of routeKeys) exactPathnames.add(pathname);
+    for (const body of bodies) exactPathnames.add(body.pathname);
+    for (const page of pages) exactPathnames.add(page.pathname);
+  }
   return [
     {
       name: 'dynamicRoutes',
@@ -155,7 +169,7 @@ function routingFields(stack: CheckedStack): Held[] {
     {
       name: 'exactPathnames',
       held: namesOf(manifest.exactPathnames),
-      built: routing.exactPathnames,
+      built: hasTables ? [...exactPathnames] : routing.exactPathnames,
       ordered: false,
     },
     {

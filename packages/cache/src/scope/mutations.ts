@@ -59,6 +59,7 @@ export function scopeName(ctx: DurableObjectState): string {
 export interface ScopeMutationHost {
   readonly storage: DurableObjectStorage;
   readonly scopeId: string;
+  readonly buildId?: string | undefined;
   readonly kv: KVNamespace;
   readonly limits: ScopeLimits;
   /** What the host keeps of the scope's history: its tables, and each change as it commits. */
@@ -96,6 +97,7 @@ export async function commitMutation<T>(
   const input = {
     sql,
     scopeId: host.scopeId,
+    buildId: host.buildId,
     limits: host.limits,
     now: host.clock?.() ?? now,
     revision: readRevision(sql) + 1,

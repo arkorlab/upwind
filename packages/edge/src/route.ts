@@ -21,10 +21,12 @@ import {
   CLASSIFIED_HEADERS,
   STATIC_CLASSIFIED_HEADERS,
 } from './classification-credentials.ts';
+import { manifestForClassification, servedAtEdge } from './classification.ts';
 import type { EdgeHost } from './edge-host.ts';
 import type { EdgeRuntime } from './edge-runtime.ts';
 import { passthroughHeaders } from './forwarding.ts';
 import { answerAsset } from './handlers/asset-answer.ts';
+import { routeHostedFallbackPage } from './handlers/fallback-page.ts';
 import { routeHostedDocument } from './handlers/hosted-document.ts';
 import {
   dispatchedFor,
@@ -47,6 +49,7 @@ import {
 import { safeDiagnosticField, serviceUnavailableResponse } from './handlers/responses.ts';
 import { routeHostedBody } from './handlers/route-body.ts';
 import { routingReadsFor } from './handlers/routing-headers.ts';
+import { routeHostedStaticPage } from './handlers/static-page.ts';
 import { hostedFirst } from './hosted-first.ts';
 import { withPatternBudget } from './pattern-budget.ts';
 import {
@@ -72,9 +75,8 @@ export { type PointerReads, type PointerRequest, startReads } from './preview/po
 
 const ASSET_CLASS = 'immutable-asset-candidate';
 const ROUTE_BODY_CLASS = 'route-body';
-const STATIC_FILE_CLASS = 'static-file';
-/** A request that names no route of the build may still be served one after the middleware. */
-const ROUTE_NOT_PROVED = 'route-not-proved';
+const STATIC_PAGE_CLASS = 'static-page';
+const FALLBACK_PRIVACY = 3;
 /** A probe of one app Worker of a split deployment (`fn`, signed): that Worker's to answer. */
 const FUNCTION_PROBE = 'function-probe';
 const NOT_DEPLOYED = 'not-deployed';
@@ -293,56 +295,6 @@ function headersToClassify(
   return routed;
 }
 
-function servedAtEdge(classification: RequestClass): boolean {
-  switch (classification.kind) {
-    case 'document':
-    case ROUTE_BODY_CLASS:
-    case ASSET_CLASS: {
-      return true;
-    }
-    case STATIC_FILE_CLASS: {
-      // Never classified here: a file the build shipped is answered before the pointer's mode is
-      // looked at (`hostedFirst`), by the same reading of the request (`classifyStaticFile`), and
-      // a request with no Workers or no manifest leaves before it is classified.
-      return false;
-    }
-    case 'passthrough': {
-      // The middleware may still rewrite it onto a route the build prerendered.
-      return classification.reason === ROUTE_NOT_PROVED;
-    }
-    case 'segment-prefetch': {
-      // Taken in whatever this request's own route names, and left to `routeHostedDocument` to
-      // answer or hand on: the middleware is what decides the route, so what the client asked for
-      // says little about what holds the part. The root of a localised application is a rewrite to
-      // `/en` or `/ja` and names no route at all, and a route that names no parts may still be
-      // rewritten onto one that does.
-      //
-      // Refusing the ones that name no parts was tried, to spare a build with none the middleware.
-      // It spared nothing: where no matcher covers the path the middleware does not run either way
-      // (`middlewareMatches` decides that there), and where one does, that is the rewrite this
-      // exists to follow. What the coverage costs is one middleware subrequest on a prefetch of a
-      // matched path that turns out to hold no part — and the Function runs the middleware anyway.
-      return true;
-    }
-    case 'rsc-payload': {
-      // Taken by the route its own URL names, which holds a payload to answer with: the middleware
-      // may still put the request on another route, as it may a prefetch's (`routeHostedDocument`).
-      return true;
-    }
-    case 'pages-data': {
-      // Taken by the page whose props the build wrote, unless a middleware is to run for it, which
-      // `routeHostedDocument` leaves to the Function rather than run in a data request's way.
-      return true;
-    }
-    case 'static-page':
-    case 'pages-fallback':
-    case 'rsc':
-    case 'action': {
-      return false;
-    }
-  }
-}
-
 /** Serve the pointer's manifest as soon as the answer's required reads have arrived. */
 export function serveFromPointer(input: PointerRequest, reads?: PointerReads): Promise<Response> {
   return servePointerRequest(input, routeRequest, reads);
@@ -523,7 +475,7 @@ function routeWithManifest(
     method: request.method,
     url,
     headers: classifiedHeaders,
-    manifest: state.manifest,
+    manifest: manifestForClassification(state.manifest, state.validated),
     deployment: state.manifest.deployment,
   });
   if (!servedAtEdge(classification)) {
@@ -536,6 +488,9 @@ function routeWithManifest(
   }
   if (classification.kind === ROUTE_BODY_CLASS && request.method === 'HEAD') {
     return passthrough('route-body-head');
+  }
+  if (classification.kind === STATIC_PAGE_CLASS && request.method === 'HEAD') {
+    return passthrough('static-page-head');
   }
   const manifest = state.manifest;
   return afterPolicy(input, (ready) =>
@@ -563,8 +518,27 @@ async function routeClassified(
         passthroughFor(input, 'asset-unshareable', undefined, { waited: { assetDispatches } }),
     );
   }
-  if (classification.kind === ROUTE_BODY_CLASS) {
-    return routeHostedBody({
+  if (
+    classification.kind === 'pages-fallback' ||
+    (classification.kind === STATIC_PAGE_CLASS &&
+      classification.entry.staticPagePrivacy === FALLBACK_PRIVACY)
+  ) {
+    return routeHostedFallbackPage({
+      request,
+      url,
+      edge,
+      manifest,
+      classification,
+      classifiedHeaders,
+      resolved,
+      passthrough: (reason, middleware, waited) =>
+        passthroughFor(input, reason, middleware, { waited }),
+    });
+  }
+  if (classification.kind === ROUTE_BODY_CLASS || classification.kind === STATIC_PAGE_CLASS) {
+    const handler =
+      classification.kind === ROUTE_BODY_CLASS ? routeHostedBody : routeHostedStaticPage;
+    return handler({
       request,
       url,
       edge,
