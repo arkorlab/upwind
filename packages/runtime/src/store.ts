@@ -531,10 +531,29 @@ export function completedShell(shell: Prerender, pathname: string): string {
  * A built PPR fallback whose output varies on unresolved root parameters needs an entry completed
  * with those values. All other built shells keep their existing entry and manual-revalidation
  * behavior. An unrelated query key cannot be represented by any pathname and remains excluded.
+ *
+ * Never a shell Next.js classifies as the most specific of its class (`routeType: 'shell'`), whose
+ * open parameters cannot complete it into a more specific prerender; some of a `fallback`'s can
+ * (`remainingPrerenderableParams`, `build/index.ts`). Only those, and root parameters, may key a
+ * class's entries: one that can never be prerendered "would create a cache entry per param value",
+ * and a platform strips it before the render instead (`build/adapter/build-complete.ts`,
+ * `build/templates/app-page-runtime.ts`). A root parameter can always be — a build with Cache
+ * Components is given a value of each (`validateParams`, `build/static-paths/app.ts`) — so a root
+ * fallback is a `fallback`, as a partial one is, and both are completed here
+ * (`param-matching-root-params`, `prefetch-fallback-static`).
+ *
+ * A `shell`'s keys are none where it postponed something and every route key where it postponed
+ * nothing (`build-complete.ts`), which says nothing of what varies: Next.js answers each member
+ * with the shell (`next start`), and its own render of one defers what the shell left open
+ * (`getStagedFallbackParams`, `server/request/fallback-params.ts`). Completed by those keys, each
+ * member was an entry of its own, rendered in the foreground on its first request and served to
+ * everyone after: for a page that reads its parameters in the browser, markup left hidden beside
+ * the page React renders there (`client-params-shallow-routing`).
  */
 export function queryCompletedShell(shell: Prerender, pathname: string): string | undefined {
   if (
     shell.body === undefined ||
+    shell.routeType === 'shell' ||
     (shell.allowQuery?.length ?? 0) === 0 ||
     shell.renderingMode !== 'PARTIALLY_STATIC' ||
     shell.route.includes('[...') ||
