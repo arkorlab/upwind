@@ -6,7 +6,9 @@ import {
   runtimeCacheControlFromHeader,
 } from '@stayingupwind/core/cache';
 
+import { initUrlOf } from '../incoming.ts';
 import { readWithin } from './body.ts';
+import { requestContext, type RequestContext } from './context.ts';
 
 /**
  * What a static render produced, kept for the cache. An App Router page is taken off the
@@ -29,6 +31,145 @@ const NEXT_DATA_MARKER = 'id="__NEXT_DATA__"';
 const SCRIPT_END = '</script>';
 const HTTP_OK = 200;
 const EMPTY_SEGMENTS: ReadonlyMap<string, Uint8Array> = new Map();
+
+/** This diagnostic edition observes two existing branches; it changes no serving decision. */
+const PHASE_PREFIX = '[upwind-phase-v4] ';
+const PHASE_EDITION = 'capture-resume-context-v4';
+const PHASE_BOUND = 4;
+const PHASE_LINE_LIMIT = 512;
+type PhasePresence = 'unobserved' | 'absent' | 'present';
+type PhaseDisposition =
+  | 'unobserved'
+  | 'declined-nonpage'
+  | 'declined-dynamic'
+  | 'accepted'
+  | 'ambiguous';
+interface PhaseState {
+  callbackCount: number;
+  callbackDisposition: PhaseDisposition;
+  capturePostponed: PhasePresence;
+  terminalCount: number;
+  attemptCount: number;
+  invalid: boolean;
+}
+type PhaseFields =
+  | {
+      readonly event: 'capture-final';
+      readonly terminal: 'uncaptured' | 'accepted-state-absent' | 'accepted-state-present';
+      readonly terminalCount: number;
+    }
+  | {
+      readonly event: 'resume-attempt';
+      readonly resumePostponed: 'absent' | 'present';
+      readonly attemptCount: number;
+    };
+const phases = new WeakMap<RequestContext, PhaseState>();
+const phaseBudget = { emissions: 0, invalid: false };
+
+function phaseState(): PhaseState | undefined {
+  const context = requestContext();
+  if (context === undefined) return undefined;
+  const existing = phases.get(context);
+  if (existing !== undefined) return existing;
+  const { request } = context;
+  if (
+    request.method !== 'GET' ||
+    request.headers.get('sec-fetch-dest') !== 'document' ||
+    new URL(initUrlOf(request)).pathname !== '/page-params/1'
+  )
+    return undefined;
+  const state: PhaseState = {
+    callbackCount: 0,
+    callbackDisposition: 'unobserved',
+    capturePostponed: 'unobserved',
+    terminalCount: 0,
+    attemptCount: 0,
+    invalid: false,
+  };
+  phases.set(context, state);
+  return state;
+}
+
+function phaseFailed(state: PhaseState | undefined): void {
+  phaseBudget.invalid = true;
+  if (state !== undefined) state.invalid = true;
+}
+
+function emitPhase(state: PhaseState, fields: PhaseFields): void {
+  if (phaseBudget.emissions >= PHASE_BOUND) {
+    phaseFailed(state);
+    return;
+  }
+  phaseBudget.emissions += 1;
+  if (phaseBudget.emissions === PHASE_BOUND) phaseFailed(state);
+  const record = {
+    edition: PHASE_EDITION,
+    ...fields,
+    callbackCount: state.callbackCount,
+    callbackDisposition: state.callbackDisposition,
+    capturePostponed: state.capturePostponed,
+    invalid: state.invalid || phaseBudget.invalid,
+  };
+  const line = PHASE_PREFIX + JSON.stringify(record);
+  if (line.length > PHASE_LINE_LIMIT) {
+    phaseFailed(state);
+    return;
+  }
+  // Only fixed enums/counts. Delivery is not acknowledged; missing logs cannot prove a call was absent.
+  // eslint-disable-next-line no-console
+  console.log(line);
+}
+
+function noteCapture(disposition: PhaseDisposition, postponed: PhasePresence): void {
+  let state: PhaseState | undefined;
+  try {
+    state = phaseState();
+    if (state === undefined) return;
+    state.callbackCount = Math.min(PHASE_BOUND, state.callbackCount + 1);
+    const repeated = state.callbackCount !== 1;
+    state.callbackDisposition = repeated ? 'ambiguous' : disposition;
+    state.capturePostponed = repeated ? 'unobserved' : postponed;
+    state.invalid ||= repeated;
+  } catch {
+    phaseFailed(state);
+  }
+}
+
+function noteCaptureFinal(render: CapturedRender | undefined): void {
+  let state: PhaseState | undefined;
+  try {
+    state = phaseState();
+    if (state === undefined) return;
+    state.terminalCount = Math.min(PHASE_BOUND, state.terminalCount + 1);
+    state.invalid ||= state.terminalCount !== 1;
+    let terminal: 'uncaptured' | 'accepted-state-absent' | 'accepted-state-present' = 'uncaptured';
+    if (render !== undefined) {
+      terminal =
+        render.postponed === undefined ? 'accepted-state-absent' : 'accepted-state-present';
+    }
+    emitPhase(state, { event: 'capture-final', terminal, terminalCount: state.terminalCount });
+  } catch {
+    phaseFailed(state);
+  }
+}
+
+/** An attempted call only: prior capture facts belong to this exact request context. */
+export function noteResumeAttempt(requestMeta: Record<string, unknown>): void {
+  let state: PhaseState | undefined;
+  try {
+    state = phaseState();
+    if (state === undefined) return;
+    state.attemptCount = Math.min(PHASE_BOUND, state.attemptCount + 1);
+    state.invalid ||= state.attemptCount !== 1;
+    emitPhase(state, {
+      event: 'resume-attempt',
+      resumePostponed: requestMeta['postponed'] === undefined ? 'absent' : 'present',
+      attemptCount: state.attemptCount,
+    });
+  } catch {
+    phaseFailed(state);
+  }
+}
 
 /** The entry as `next/dist/server/response-cache` types it, reduced to what is read here. */
 interface CacheEntryLike {
@@ -119,9 +260,11 @@ function captureCallback(): {
   const onCacheEntry: OnCacheEntry = (cacheEntry) => {
     const { value, cacheControl } = cacheEntry;
     if (value?.kind !== APP_PAGE || value.html === undefined) {
+      noteCapture('declined-nonpage', 'unobserved');
       return false;
     }
     if (cacheControl === undefined || cacheControl.revalidate === 0) {
+      noteCapture('declined-dynamic', 'unobserved');
       return false;
     }
     render = {
@@ -134,6 +277,7 @@ function captureCallback(): {
       cacheControl: { revalidate: cacheControl.revalidate, expire: cacheControl.expire },
       data: undefined,
     };
+    noteCapture('accepted', render.postponed === undefined ? 'absent' : 'present');
     return true;
   };
   return { onCacheEntry, captured: () => render };
@@ -264,6 +408,7 @@ export async function renderAppPage(
     expectNoResponse: true,
   });
   const render = capture.captured();
+  noteCaptureFinal(render);
   if (render === undefined) {
     return response;
   }

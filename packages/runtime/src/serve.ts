@@ -10,6 +10,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 import type { NodeHandler } from './app-module.ts';
 import type { BundleBlobReader } from './bundle-blobs.ts';
+import { noteResumeAttempt } from './cache/capture.ts';
 import type { InvalidatedTags, RequestWrites } from './cache/context.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { isDraftRequest } from './draft.ts';
@@ -314,7 +315,7 @@ export function resume(r: ResumeInput): Promise<Response> {
   const request =
     r.request ??
     new Request(r.input.request, { headers: stripPlatformHeaders(r.input.request.headers) });
-  return invokeNodeHandler({
+  const invocation = {
     handler: r.handler,
     request,
     url: r.url,
@@ -324,7 +325,9 @@ export function resume(r: ResumeInput): Promise<Response> {
     },
     waitUntil: r.input.waitUntil,
     run: r.input.run,
-  });
+  };
+  noteResumeAttempt(invocation.requestMeta);
+  return invokeNodeHandler(invocation);
 }
 
 /** A `HEAD` is answered with the response's status and headers alone, whatever produced it. */
