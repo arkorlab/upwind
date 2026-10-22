@@ -10,6 +10,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 
 import type { StaticFileContext } from '../strategies/context.ts';
+import { withJudgedRules } from './configured-headers.ts';
 import {
   claimedAsLeft,
   type DeferredHostedGateInput,
@@ -189,12 +190,18 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
   };
   // The read of the file asked for is let go, and counted among the requests of the Worker's
   // answer, passed to the same background accounting as a discarded shell, without waiting for it.
-  function toWorker(reason: string, middleware: TimedContinue): Promise<Response> {
+  // Handed on under the rules the request as it came selected, which the Function would judge again
+  // on the request as the middleware left it (`withJudgedRules`, greptile).
+  function toWorker(
+    reason: string,
+    middleware: TimedContinue,
+    configured: ConfiguredHeaders,
+  ): Promise<Response> {
     const replaced = early;
     letGo();
     return input.passthrough(
       reason,
-      middleware,
+      withJudgedRules(middleware, configured, manifest),
       replaced === undefined
         ? undefined
         : { abandonedShells: { ctx: replaced.ctx, requests: requestsOf(replaced) } },
@@ -218,12 +225,12 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
     abandon: letGo,
     serve: (middleware, dispatches, configured) => {
       return middleware !== undefined && claimedAsLeft(servedInput, middleware)
-        ? toWorker('reserved', middleware)
+        ? toWorker('reserved', middleware, configured)
         : serveFile(servedInput, classified(configured), middleware, dispatches);
     },
     rewritten: (middleware, dispatches, configured) => {
       if (claimedAsLeft(servedInput, middleware)) {
-        return toWorker('rewritten', middleware);
+        return toWorker('rewritten', middleware, configured);
       }
       const kept =
         middleware.url.pathname === url.pathname ||
@@ -233,7 +240,7 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
       }
       const target = shippedFileAt(manifest, middleware.url);
       if (target === undefined) {
-        return toWorker('rewritten', middleware);
+        return toWorker('rewritten', middleware, configured);
       }
       // The read of the file asked for is let go, and counted among the requests of the file
       // served instead.

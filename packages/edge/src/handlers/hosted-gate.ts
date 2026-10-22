@@ -7,6 +7,7 @@ import type { MiddlewareResult } from '@stayingupwind/core/paas';
 import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
 import type { EdgeContext, StaticFileContext } from '../strategies/context.ts';
+import { withJudgedRules } from './configured-headers.ts';
 import { headersAfterMiddleware } from './hosted-route.ts';
 import {
   decideMiddleware,
@@ -245,7 +246,12 @@ async function actOnMiddleware(
         return answered;
       }
       gate.abandon?.();
-      return input.passthrough('rewritten', middleware);
+      // Under the rules the request as it came selected, which the Function would judge again on
+      // the request as the middleware left it (`withJudgedRules`, greptile).
+      return input.passthrough(
+        'rewritten',
+        withJudgedRules(middleware, configured, input.manifest),
+      );
     }
   }
 }

@@ -7,6 +7,7 @@ import type { ConfiguredHeaders } from '@stayingupwind/core/manifest';
 import { DEPLOYMENT_ID_QUERY, PatternBudgetExceededError } from '@stayingupwind/core/request';
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 
+import { withJudgedRules } from './configured-headers.ts';
 import {
   claimedAsLeft,
   type HostedGateInput,
@@ -157,7 +158,7 @@ function routeWithinBudget(input: HostedImageInput): Promise<Response> {
     // claims is the Worker's to route (`claimedAsLeft`), as it was before the middleware ran.
     serve: (middleware, dispatches, configured) => {
       return middleware !== undefined && claimedAsLeft(input, middleware)
-        ? input.passthrough('reserved', middleware)
+        ? input.passthrough('reserved', withJudgedRules(middleware, configured, manifest))
         : optimized(input, input.url, answering(input, middleware, dispatches, configured));
     },
     // A rewrite that stays on the optimizer's path — another source, width or quality — is the
