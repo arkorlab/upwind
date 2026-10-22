@@ -8,6 +8,7 @@ import { afterAll, assert, beforeAll, beforeEach, describe, expect, it } from 'v
 import type { CheckedStack } from '../src/answers.ts';
 import { documentAnswerAt } from '../src/document-adoption.ts';
 import { routeVerdict } from '../src/documents.ts';
+import { flowFailure, flowsOf, seedsOf } from '../src/part-flows.ts';
 import type { Part } from '../src/part-marks.ts';
 import { partFailure, propsHeadVerdict } from '../src/part-verdicts.ts';
 
@@ -77,6 +78,8 @@ const fixture = {
   closed: Promise.withResolvers<true>(),
   backstageGets: 0,
   requests: 0,
+  /** A path the application's middleware redirects, and where to: none where both are empty. */
+  redirect: { from: '', to: '' },
 };
 
 const server = createServer((request, response) => {
@@ -89,6 +92,14 @@ const server = createServer((request, response) => {
       return;
     }
     response.writeHead(204).end();
+    return;
+  }
+  if (pathname === fixture.redirect.from) {
+    response.writeHead(307, {
+      location: fixture.redirect.to,
+      'x-arkor-edge': 'passthrough;reason=middleware;mw=hit',
+    });
+    response.end();
     return;
   }
   fixture.requests += 1;
@@ -111,6 +122,8 @@ function stackOf(): CheckedStack {
     site: SITE,
     backstage: new URL('/_backstage/', fixture.origin),
     manifest: MANIFEST,
+    // No middleware: a redirect here is a stand-in's, which the flows read as the middleware's.
+    bundle: { config: {} },
     cspNonce: undefined,
   } as CheckedStack;
 }
@@ -126,6 +139,31 @@ function dataPart(): Part {
     builtOn: (route) => route.pagesData?.artifact,
     exact: true,
   };
+}
+
+/** A router's request for `/ordinary`'s payload, which the middleware redirects onto a member. */
+function payloadPart(): Part {
+  return {
+    kind: 'payload',
+    what: 'its payload',
+    url: new URL('/ordinary?_rsc=abc', SITE),
+    headers: { rsc: '1' },
+    route: ORDINARY_ROUTE,
+    built: undefined,
+    builtOn: (route) => route.pagesData?.artifact,
+    exact: true,
+  };
+}
+
+/** The flows a browser's router asks `part` in, from a page holding no cookies. */
+async function flowed(part: Part): Promise<readonly (string | undefined)[]> {
+  const answered = { judged: new Map(), followed: new Map() };
+  const { seeds } = seedsOf({ page: new URL('/ordinary', SITE), sent: undefined });
+  const failures: (string | undefined)[] = [];
+  for (const flow of flowsOf(seeds)) {
+    failures.push(await flowFailure(stackOf(), [part], flow, answered));
+  }
+  return failures;
 }
 
 describe('pages requests owned by the Function under the current shared classifier', () => {
@@ -144,6 +182,7 @@ describe('pages requests owned by the Function under the current shared classifi
     fixture.closed = Promise.withResolvers<true>();
     fixture.backstageGets = 0;
     fixture.requests = 0;
+    fixture.redirect = { from: '', to: '' };
   });
 
   afterAll(async () => {
@@ -273,6 +312,47 @@ describe('pages requests owned by the Function under the current shared classifi
     expect(failure).toBeUndefined();
     expect(fixture.requests).toBeGreaterThan(0);
     expect(fixture.backstageGets).toBe(0);
+  });
+
+  // A redirect a router's fetch follows onto a Pages answer the Function owns is read for its
+  // headers alone, as a direct request for it is: its body may stay open (greptile).
+  it.each([
+    {
+      label: 'a known part',
+      part: payloadPart,
+      from: '/ordinary',
+      to: MEMBER,
+      account: 'passthrough;reason=static-page-bypass',
+    },
+    {
+      label: 'a hop of no known part',
+      part: () => ({ ...dataPart(), url: new URL('/_next/data/build/ordinary.json', SITE) }),
+      from: '/_next/data/build/ordinary.json',
+      to: DATA,
+      account: 'passthrough;reason=static-page',
+    },
+  ])(
+    'follows a redirect onto an open Pages answer through $label without waiting for its body',
+    async (example) => {
+      fixture.redirect = { from: example.from, to: example.to };
+      fixture.account = example.account;
+      const failures = await flowed(example.part());
+      await fixture.closed.promise;
+
+      expect(failures.every((failure) => failure === undefined)).toBe(true);
+      expect(fixture.requests).toBeGreaterThan(0);
+    },
+    15_000,
+  );
+
+  it('still fails a server failure a redirect lands on, though the Function owns the answer', async () => {
+    fixture.redirect = { from: '/ordinary', to: MEMBER };
+    fixture.account = 'passthrough;reason=static-page-bypass';
+    fixture.status = 503;
+    fixture.quiet = false;
+    const failures = await flowed(payloadPart());
+
+    expect(failures[0]).toBe('its payload, redirected to /posts/first, answered 503');
   });
 
   it('uses the same Pages contract for a paired props HEAD', async () => {

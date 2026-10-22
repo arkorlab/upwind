@@ -6,7 +6,9 @@ import {
   BYPASS_QUERY_PREFIXES,
   DEPLOYMENT_ID_QUERY,
   DEPLOYMENT_ID_REQUEST_HEADER,
+  HOP_BY_HOP_HEADERS,
   INTERNAL_REQUEST_HEADER_PREFIXES,
+  INTERNAL_REQUEST_HEADERS,
   ROUTER_REQUEST_HEADERS,
   RSC_CACHE_BUSTING_QUERY,
 } from '@stayingupwind/core/request';
@@ -161,6 +163,28 @@ export function protocolCondition(
       return true;
     }
   }
+}
+
+/**
+ * Whether forwarding takes the header `name` off every request it hands on
+ * (`sanitizePassthroughHeaders`): a hop's own, or one of the runtime's internal ones. Routing reads a
+ * request as forwarding hands it on (`routedReads`), where none of them is, whatever the request
+ * was sent with.
+ */
+function forwardingRemoves(name: string): boolean {
+  return HOP_BY_HOP_HEADERS.includes(name) || INTERNAL_REQUEST_HEADERS.includes(name);
+}
+
+/**
+ * Whether what `condition` says of a request of `requestClass` is fixed as routing reads it
+ * (`routedReads`): a protocol condition (`protocolCondition`), or one over a header forwarding takes
+ * off (`forwardingRemoves`), which no request can be made to carry or lack there (greptile).
+ */
+export function fixedAsRouted(condition: RouteHas, requestClass: WitnessClass): boolean {
+  return (
+    protocolCondition(condition, requestClass) ||
+    (condition.type === 'header' && forwardingRemoves((condition.key ?? '').toLowerCase()))
+  );
 }
 
 /** What no header's value holds. */

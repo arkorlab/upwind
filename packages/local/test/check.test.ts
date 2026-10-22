@@ -2820,6 +2820,38 @@ describe('what the check makes of the middleware', () => {
       expect(result).toStrictEqual({ checked: 1, failures: example.failures, skipped: [] });
     });
 
+    it.each([
+      {
+        key: 'connection',
+        // No request carries a hop's own header past forwarding, so routing never selects the
+        // rule, and the build is not failed for a branch nothing can take (greptile).
+        failures: [],
+      },
+      {
+        key: 'x-feature',
+        failures: [
+          {
+            path: '/a.txt',
+            reason: `asked for as the request a rule of next.config types it for (x-feature: on), answered as ${TEXT}, not image/png`,
+          },
+        ],
+      },
+    ])('asks for a file type rule over $key only where forwarding hands it on', async (example) => {
+      const rule: HeaderRule = {
+        sourceRegex: '^/a[.]txt$',
+        has: [{ type: 'header', key: example.key, value: '^on$' }],
+        headers: { 'content-type': 'image/png' },
+      };
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+      });
+
+      const result = await checkStack(stackOf([], files, { headerRules: [rule] }));
+
+      expect(result).toStrictEqual({ checked: 1, failures: example.failures, skipped: [] });
+    });
+
     it('does not take a request for each of two overlapping deployment-header type rules as proof of both', async () => {
       // A type over `foo` and `bar`, and another over `foo` after it, whose witnesses both carry
       // `foo`: what `bar` is answered as no request would ask (greptile).

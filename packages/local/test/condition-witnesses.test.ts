@@ -179,3 +179,51 @@ describe('overlapping rules read as the class of request that selects them', () 
     expect(result).toStrictEqual({ requests: [] });
   });
 });
+
+// Routing reads a request as forwarding hands it on (`routedReads`), without a hop's own headers or
+// the runtime's internal ones: no request carries one there, so a rule over one is fixed (greptile).
+describe('rules over a header forwarding takes off', () => {
+  it.each(['Connection', 'Keep-Alive', 'TE', 'X-Real-IP'])(
+    'leaves a rule over %s unasked, rather than unproved',
+    (key) => {
+      const rule = ruleFor({ type: 'header', key, value: '1' });
+      const result = requestsForRules(stackFor(rule), URL_OF_DOCUMENT, NAVIGATION_REQUEST_HEADERS, [
+        rule,
+      ]);
+
+      expect(result).toStrictEqual({ requests: [] });
+    },
+  );
+
+  it("leaves a file's rule over Connection unasked", () => {
+    const rule: HeaderRule = {
+      sourceRegex: '^/a[.]txt$',
+      has: [{ type: 'header', key: 'connection', value: 'close' }],
+      headers: { 'content-type': 'image/png' },
+    };
+    const result = requestsForRules(fileStackFor([rule]), URL_OF_FILE, {}, [rule]);
+
+    expect(result).toStrictEqual({ requests: [] });
+  });
+
+  it('does not take two rules over Connection alone for an overlap to prove', () => {
+    const rules: readonly HeaderRule[] = [
+      ruleFor({ type: 'header', key: 'connection', value: 'a|b' }),
+      ruleFor({ type: 'header', key: 'connection', value: 'a' }),
+    ];
+    const stack = { manifest: { ...MANIFEST, headerRules: [...rules] } } as CheckedStack;
+    const result = requestsForRules(stack, URL_OF_DOCUMENT, NAVIGATION_REQUEST_HEADERS, rules);
+
+    expect(result).toStrictEqual({ requests: [] });
+  });
+
+  it('still asks for a rule over a header forwarding hands on', () => {
+    const rule = ruleFor({ type: 'header', key: 'x-feature', value: '1' });
+    const result = requestsForRules(stackFor(rule), URL_OF_DOCUMENT, NAVIGATION_REQUEST_HEADERS, [
+      rule,
+    ]);
+
+    expect(result.unproved).toBeUndefined();
+    expect(result.requests.map((request) => request.headers['x-feature'])).toStrictEqual(['1']);
+  });
+});
