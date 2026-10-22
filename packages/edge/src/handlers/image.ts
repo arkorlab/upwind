@@ -22,7 +22,6 @@ import {
   peekBody,
   readBoundedBody,
   releaseStream,
-  withDeadline,
 } from '@stayingupwind/core/util';
 
 import { type TransformImage, transformMode } from '../edge-runtime.ts';
@@ -31,6 +30,7 @@ import type { EdgeMetric } from '../observability/metrics.ts';
 import { validatorMatches } from '../strategies/asset-upstream.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { IMAGE_OPTIMIZER_HEADERS, layImageConfiguredUnder } from './configured-headers.ts';
+import { lookupCache, storeCache } from './image-cache.ts';
 import {
   fetchImageSource,
   type ImageSource,
@@ -41,7 +41,7 @@ import {
   type SourceError,
   sourceLimit,
 } from './image-source.ts';
-import { cuttable, releaseLateImage } from './image-stream.ts';
+import { cuttable } from './image-stream.ts';
 import { imageHrefForLog, transformWithin, withinBudget } from './image-transform.ts';
 import type { MiddlewareContinued } from './middleware.ts';
 import { observeMetric, observeTransformed } from './observer.ts';
@@ -97,8 +97,6 @@ export interface ImageInput extends ImageAnswerInput {
   readonly dpl: string | undefined;
 }
 
-/** Longest a request waits on the Cache API before optimizing instead. */
-const CACHE_READ_BUDGET_MS = 100;
 /** How long a source may take to yield its first bytes, and the service its result. */
 const IMAGE_BUDGET_MS = 20_000;
 const KIB = 1024;
@@ -201,31 +199,6 @@ async function cacheKey(
   return new Request(
     `${origin}/${fingerprint}/${sourceId}/${params.width}/${params.quality}/${format}`,
   );
-}
-
-async function lookupCache(cacheName: string, key: Request): Promise<Response | undefined> {
-  let lookup: Promise<Response | undefined> | undefined;
-  try {
-    const cache = await caches.open(cacheName);
-    lookup = cache.match(key);
-    return await withDeadline(lookup, CACHE_READ_BUDGET_MS, 'image cache');
-  } catch (error) {
-    // The deadline ends this wait, not the cache read. No response owns a hit that arrives later.
-    void releaseLateImage(lookup).catch(() => {
-      // A failed lookup has no body to release; its failure was logged below.
-    });
-    logWarn('image cache read failed', { detail: errorDetail(error) });
-    return undefined;
-  }
-}
-
-async function storeCache(cacheName: string, key: Request, response: Response): Promise<void> {
-  try {
-    const cache = await caches.open(cacheName);
-    await cache.put(key, response);
-  } catch (error) {
-    logWarn('image cache write failed', { detail: errorDetail(error) });
-  }
 }
 
 function invalidImage(message: string, requests: number): SourceError {
