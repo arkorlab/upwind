@@ -93,6 +93,7 @@ export async function onceClockPasses<T>(
  */
 const firstReads = new WeakMap<RequestContext, Map<string, number | undefined>>();
 
+/** One key for a `use cache` value of `kind`: the handler's kind and the value's key, apart. */
 function keyOf(kind: string, cacheKey: string): string {
   return `${kind}\u{0}${cacheKey}`;
 }

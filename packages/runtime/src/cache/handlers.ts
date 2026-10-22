@@ -88,6 +88,13 @@ function detail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Invalidate `tags` — at once, as `updateTag` and `revalidateTag` without a window do, or within the
+ * window `durations` names — in force in this isolate before the host is asked
+ * (`TagState.applyLocal`), at the moment the request puts it in force at (`own-marks.ts`), which the
+ * host is told (`InvalidateRequest.inForceAt`). What the host answers stands for the mark here once
+ * it comes; a call it fails leaves the mark in force all the same, and fails.
+ */
 async function invalidate(
   runtime: CacheRuntime,
   tags: readonly string[],
@@ -356,6 +363,12 @@ export class PlatformFetchCache {
   // Next.js constructs it with its own context (fs, dev, revalidatedTags, …); none of it applies
   // here, and none is taken.
 
+  /**
+   * What a read of `cacheKey` finds, judged against the tags it is asked under and the entry's own:
+   * a value to serve, fresh, or stale with a moment of zero for Next.js to fetch it again behind;
+   * `null` for a miss and for what may not be served. When the read began is kept for the write that
+   * may follow it (`fetchStarts`), past the request's own invalidations (`own-marks.ts`).
+   */
   async get(
     cacheKey: string,
     ctx: FetchGetContext,
@@ -539,6 +552,12 @@ export interface UseCacheHandler {
   updateTags(tags: string[], durations?: { expire?: number }): Promise<void>;
 }
 
+/**
+ * What a read of the `use cache` handler of `kind` finds of `cacheKey`, judged against the soft tags
+ * it is asked under and the entry's own: the entry as Next.js takes it, marked to be computed again
+ * where it is stale, or nothing for a miss and for what may not be served. The read is noted for the
+ * value it may begin (`useCacheReadBegan`).
+ */
 async function getUseCache(
   runtime: CacheRuntime,
   kind: string,
