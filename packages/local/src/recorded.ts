@@ -27,6 +27,7 @@ import {
   cookieScopeOf,
   cookiesSetFailure,
   EDGE_HEADER,
+  recordedGenerationsOf,
   recordedHeadersOf,
 } from './answers.ts';
 import { ROUTE_MARKER } from './landings.ts';
@@ -290,7 +291,14 @@ export async function recordedOf(
     /** The generation of its record the edge says it served the document from, if one. */
     readonly generation: ServedGeneration | undefined;
   },
-): Promise<{ readonly headers: Readonly<Record<string, string>> } | { readonly failure: string }> {
+): Promise<
+  | {
+      readonly headers: Readonly<Record<string, string>>;
+      /** Whether the generation it was served from holds a resume's state, where one was. */
+      readonly partial?: boolean | undefined;
+    }
+  | { readonly failure: string }
+> {
   const { route } = served;
   const { manifest } = stack;
   const { generation } = served;
@@ -313,12 +321,17 @@ export async function recordedOf(
       failure: `served from generation ${generation.seq} of its record, which the stack's edge never read`,
     };
   }
+  const { partial } =
+    (await recordedGenerationsOf(stack, { scopeId, entryId })).get(generation.seq) ?? {};
   if (manifest.foldedHeaderRules !== undefined) {
     const judged = generation.whole ? foldedAsSet(manifest) : manifest;
-    return { headers: { ...own, ...foldedHeadersFor(judged, route.pathname) } };
+    return { headers: { ...own, ...foldedHeadersFor(judged, route.pathname) }, partial };
   }
   // A manifest that publishes no dynamic routes has its rules only in its routes' headers.
-  return { headers: manifest.dynamicRoutes === undefined ? { ...route.headers, ...own } : own };
+  return {
+    headers: manifest.dynamicRoutes === undefined ? { ...route.headers, ...own } : own,
+    partial,
+  };
 }
 
 /**

@@ -132,6 +132,12 @@ export interface RecordedGeneration {
   /** Whether a build wrote it (`build`) — the edge serves such a one's parts as the build's — or a render since. */
   readonly source: string;
   /**
+   * The status its render answered with: 200, or another — a page a refresh found deleted renders
+   * 404 — which the edge hands on to the Function (`generation-status-<status>`). Unsaid by a
+   * backstage that does not say it.
+   */
+  readonly status?: number | undefined;
+  /**
    * What the edge judges its validity by when it reads it (`evaluateFreshness`): its policy, when it
    * was rendered, and what invalidated it since — which marks a part of it `STALE` or `HIT`.
    */

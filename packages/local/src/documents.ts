@@ -32,6 +32,7 @@ import {
   HEAD_HANDED_ON,
   headLandingHandoffFailure,
   headRecordHandoffFailure,
+  recordStatusVerdict,
   regeneratedFailure,
   wholeHeadFailure,
 } from './document-records.ts';
@@ -123,6 +124,8 @@ interface Judged {
   readonly coding?: Accepted | undefined;
   /** The agent it was asked by (`User-Agent`), where the request named one. */
   readonly agent?: string | undefined;
+  /** Whether the generation rendered since that it was served from holds a resume's state. */
+  readonly partial?: boolean | undefined;
 }
 
 /** Why a document the edge composed is not a route's shell, completed, and kept to its visitor. */
@@ -159,7 +162,7 @@ function shellFailure(route: RouteEntry, judged: Judged): string | undefined {
   // A document the edge composes is one visitor's, finished or not (`documentCacheControl`): kept
   // from shared caches, but for what the application set itself, which goes out as it set it.
   return (
-    finishedFailure(route, answer, { rendered, shell }) ??
+    finishedFailure(route, answer, { rendered, shell, partial: judged.partial }) ??
     incompleteness(answer) ??
     sharedCacheFailure(answer, judged.setByApplication)
   );
@@ -186,7 +189,7 @@ async function servedFailure(
   if ('failure' in recorded) {
     return recorded.failure;
   }
-  const { headers } = recorded;
+  const { headers, partial } = recorded;
   const { answer, application } = read;
   const setByApplication = (header: string): boolean => application.sets(header, headers);
   const laid = application.laid(headers);
@@ -201,9 +204,10 @@ async function servedFailure(
     built === undefined || nonced.kind === 'none'
       ? built
       : await stampedOf(stack, built, nonced.nonce);
+  const judged = { answer, setByApplication, shell, head, partial, ...codedOf(read) };
   // The rest of it as the shell: its every script named by the nonce, and the preloads of them.
   return (
-    shellFailure(served.route, { answer, setByApplication, shell, head, ...codedOf(read) }) ??
+    shellFailure(served.route, judged) ??
     (nonced.kind === 'minted' ? unstampedFailure(answer) : undefined) ??
     laidFailure(answer, nonced.kind === 'minted' ? nonced.laid : laid)
   );
@@ -577,6 +581,9 @@ export async function documentVerdict(
   if (REGENERATED.test(answered)) {
     return await regeneratedVerdict(stack, asked, { kept, answer });
   }
+  // A page a render since the build answered other than 200, which the edge leaves to the Function.
+  const byStatus = await recordStatusVerdict(stack, asked, { kept, answer, answered });
+  if (byStatus !== undefined) return byStatus;
   const policy = heldPolicyFailure(stack, answer, answered);
   if (policy !== undefined) {
     return failed(policy);

@@ -1,10 +1,24 @@
 import type { RouteEntry } from '@stayingupwind/core/manifest';
 import { isHtmlContentType } from '@stayingupwind/core/util';
 
-import { answeredBy, type CheckedStack, EDGE_HEADER, recordedGenerationsOf } from './answers.ts';
+import {
+  answeredBy,
+  type CheckedStack,
+  EDGE_HEADER,
+  failed,
+  type Kept,
+  keptFailure,
+  middlewareCovers,
+  recordedGenerationsOf,
+  skipped,
+  unrunFailure,
+  type Verdict,
+  withGenerationEvidence,
+} from './answers.ts';
 import { sharedCacheFailure } from './cache-control.ts';
 import { type Accepted, codingFailure } from './codings.ts';
 import { incompleteness } from './completeness.ts';
+import { landingOf } from './landings.ts';
 import type { Reading } from './reading.ts';
 import {
   recordEntriesOf,
@@ -16,6 +30,10 @@ import type { RecordedGeneration } from './workers/protocol.ts';
 
 /** The two document decisions that hand a `HEAD` to the Function. */
 export const HEAD_HANDED_ON = /^passthrough;reason=head-(resumed|expired)(?:;|$)/u;
+/** What the edge says of a page it hands on for its record's status (`decideRecord`): the status. */
+const RECORD_STATUS = /^passthrough;reason=generation-status-(\d+)(?:;|$)/u;
+/** What a render answers a page a refresh found deleted with (`notFound()`), and records it as. */
+const NOT_FOUND_STATUS = 404;
 
 /** Only records this `HEAD` observed, for its routed class or eligible member. */
 async function headGenerations(
@@ -111,15 +129,17 @@ export async function wholeHeadFailure(
 
 /**
  * Why a page the edge regenerated in the foreground is not the route's: the Function's render, not
- * the build's shell, so held to being a whole HTML document of the route's status — and kept from
- * shared caches whatever it said, as the edge hands any answer on (`privateCacheControl`).
+ * the build's shell, so held to being a whole HTML document of the route's status — or of a page the
+ * render found deleted (404), which the runtime records as the page's status from then on (greptile)
+ * — and kept from shared caches whatever it said, as the edge hands any answer on
+ * (`privateCacheControl`).
  */
 export function regeneratedFailure(
   route: RouteEntry,
   answer: Reading,
   coding: Accepted | undefined,
 ): string | undefined {
-  if (answer.status !== route.status) {
+  if (answer.status !== route.status && answer.status !== NOT_FOUND_STATUS) {
     return `answered ${answer.status}`;
   }
   const type = answer.headers['content-type'];
@@ -131,4 +151,72 @@ export function regeneratedFailure(
     incompleteness(answer) ??
     sharedCacheFailure(answer, () => false)
   );
+}
+
+/** Whether this request read a generation of the route's record, its own or its member's, of `status`. */
+async function readOfStatus(
+  stack: CheckedStack,
+  route: RouteEntry,
+  read: { readonly pathname: string; readonly status: number },
+): Promise<boolean> {
+  const scopeId = stack.manifest.cache?.scopeId;
+  if (scopeId === undefined) return false;
+  const entries = await recordEntriesOf(stack, route, read.pathname);
+  const records = await Promise.all(
+    entries.map((entryId) => recordedGenerationsOf(stack, { scopeId, entryId })),
+  );
+  for (const generations of records) {
+    for (const generation of generations.values()) {
+      if (generation.status === read.status) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A page the edge handed on for its record's status (`generation-status-<status>`): a render since the
+ * build answered other than 200 — a page a refresh found deleted, 404 — and the edge leaves the page to
+ * the Function, which answers it from the runtime's cache (`decideRecord`). Judged against the records
+ * this request read, not the build's 200 (greptile): the application's, where one of the route's
+ * record — the route asked for, or the one the middleware moved it onto — has that status. The record
+ * is read behind the middleware, as a regeneration is, so one the build's matchers cover is handed on
+ * with a decision kept. Nothing for any other answer.
+ */
+export async function recordStatusVerdict(
+  stack: CheckedStack,
+  asked: {
+    readonly requested: string;
+    readonly route: RouteEntry;
+    readonly headers: Readonly<Record<string, string>>;
+  },
+  read: { readonly kept: () => Promise<Kept>; readonly answer: Reading; readonly answered: string },
+): Promise<Verdict | undefined> {
+  const said = RECORD_STATUS.exec(read.answered)?.[1];
+  if (said === undefined) {
+    return undefined;
+  }
+  const status = Number(said);
+  const url = new URL(asked.requested, stack.site);
+  const kept = await read.kept();
+  const { decided } = kept;
+  const covered = middlewareCovers(stack, url, asked.headers);
+  const unkept =
+    keptFailure(read.answer, decided) ??
+    unrunFailure(decided, covered, "handed it on for its record's status");
+  if (unkept !== undefined) {
+    return failed(unkept);
+  }
+  const moved = decided?.kind === 'continue';
+  const route = moved ? landingOf(stack, decided.url, decided) : asked.route;
+  const pathname = moved ? decided.url.pathname : url.pathname;
+  const recorded =
+    route !== undefined &&
+    (await readOfStatus(withGenerationEvidence(stack, kept), route, { pathname, status }));
+  return recorded
+    ? skipped(
+        `the application's: a render since the build answered it ${String(status)}, which the Function answers`,
+      )
+    : failed(
+        `handed on for a record of status ${String(status)}, though this request read no generation of its record with it`,
+      );
 }

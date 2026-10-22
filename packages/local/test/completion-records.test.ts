@@ -242,7 +242,8 @@ describe('captured completions of an unseeded partial fallback', () => {
     expect(cacheablePrerenders(stack.bundle)).toStrictEqual([]);
     expect(route.cache).toBeUndefined();
     expect(runtimeCacheOf(stack.policy).concreteUpgrade).toBe(false);
-    expect(result).toStrictEqual({ headers: RECORDED });
+    // With what the generation's state says of a resume (`finishedFailure`).
+    expect(result).toStrictEqual({ headers: RECORDED, partial: false });
     expect(entries).toStrictEqual([entryId]);
   });
 
