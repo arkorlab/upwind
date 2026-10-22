@@ -857,6 +857,36 @@ describe('pnpm-linked types packages, as TypeScript finds them in a Function', (
     );
   });
 
+  it("finds a workspace package's own dependency from its declarations, in a nested app", async () => {
+    const root = await repository();
+    const project = path.join(root, 'apps', 'site');
+    // A workspace package inside the app, whose declarations import what pnpm linked into its own
+    // `node_modules`: the declarations go up under their path from the repository, as every one.
+    const ui = path.join(project, 'packages', 'ui');
+    await mkdir(ui, { recursive: true });
+    await writeFile(path.join(ui, 'index.d.ts'), "export type { Schema } from 'zod';\n");
+    const zod = await storedPackage(
+      root,
+      'zod@3.23.8',
+      { name: 'zod', types: 'index.d.ts' },
+      { 'index.d.ts': 'export type Schema = { version: 3 };\n' },
+    );
+    const assets = await pnpmTrace(root, [[path.join(ui, 'node_modules', 'zod'), zod]]);
+    assets['apps/site/packages/ui/index.d.ts'] = path.join(ui, 'index.d.ts');
+    const files = tracedFiles([{ assets }], project, path.join(project, '.next'), root);
+    const system = await functionSystem(files);
+    const resolved = resolveModuleName(
+      'zod',
+      '/bundle/apps/site/packages/ui/index.d.ts',
+      RESOLUTION,
+      system,
+    );
+
+    expect(resolved.resolvedModule?.resolvedFileName).toBe(
+      '/bundle/apps/site/packages/ui/node_modules/zod/index.d.ts',
+    );
+  });
+
   it("holds none of a workspace root's types package where a nested app links its own it cannot hold", async () => {
     const root = await repository();
     const project = path.join(root, 'apps', 'site');
