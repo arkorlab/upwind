@@ -457,7 +457,7 @@ describe('`upwind rollback` on an account', () => {
     expect(servedBy(account(), NAMES.edge)).toBe(first.deploymentId);
     expect(held.warnings).toContainEqual(
       expect.stringContaining(
-        `${NAMES.agent} may still take this rollback's key, until the next deploy or rollback replaces it`,
+        `${NAMES.agent} may still take this run's key, until the next deploy or rollback replaces it`,
       ),
     );
   });

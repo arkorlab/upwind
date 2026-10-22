@@ -164,6 +164,24 @@ describe('`upwind deploy` to an account', () => {
     expect(asked.status).toBe(401);
   });
 
+  it('keeps the deployment live where the agent cannot be given another key', async () => {
+    const dir = await deployableProject(PROJECT);
+    const { deploymentId } = buildIn(dir);
+    const warnings: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((text: string) => {
+      warnings.push(text);
+    });
+    account().fake.fail({ method: 'PUT', path: `/workers/scripts/${NAMES.agent}/secrets` }, 400);
+
+    await expect(deploy(account(), dir)).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(deploymentId);
+    expect(warnings).toContainEqual(
+      expect.stringContaining(
+        `${NAMES.agent} may still take this run's key, until the next deploy or rollback replaces it`,
+      ),
+    );
+  });
+
   it('checks the next deployment through its version before switching to it', async () => {
     const dir = await deployableProject(PROJECT);
     buildIn(dir);

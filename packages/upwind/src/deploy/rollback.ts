@@ -514,26 +514,6 @@ async function rollThrough(input: Rolling): Promise<number> {
   return 1;
 }
 
-/**
- * Give the agent a key nobody holds, as the session closes. A failure to is warned of, and leaves
- * what the command exits with as the rollback made it: the edge's traffic is where the rollback
- * left it either way, and the key the agent may still take was kept nowhere — the next deploy or
- * rollback replaces it.
- */
-async function closeAgent(
-  session: { readonly close: () => Promise<void> },
-  names: ProjectNames,
-): Promise<void> {
-  try {
-    await session.close();
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    warn(
-      `${names.agent} may still take this rollback's key, until the next deploy or rollback replaces it: ${detail}`,
-    );
-  }
-}
-
 /** Roll the edge back; what the command exits with. */
 export async function runRollback(
   options: RollbackOptions,
@@ -626,6 +606,6 @@ export async function runRollback(
       switchTo,
     });
   } finally {
-    await closeAgent(session, names);
+    await session.close();
   }
 }
