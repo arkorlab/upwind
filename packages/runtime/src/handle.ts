@@ -12,7 +12,7 @@ import {
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { nowMs } from './cache/clock.ts';
-import { requestContextFor } from './cache/context.ts';
+import { type RequestContext, requestContextFor } from './cache/context.ts';
 import { catchUpWithScope } from './cache/pulls.ts';
 import { asksForCapture, handleCapture, keptByNobody } from './capture-invoke.ts';
 import {
@@ -554,6 +554,22 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
   return handleFull(input, store);
 }
 
+/**
+ * What `routed` comes to, once the host has recorded what the request invalidated or
+ * `INVALIDATIONS_RECORDED_WITHIN_MS` have gone by (`InvalidatedTags`) — its headers not before
+ * then: whoever made the request moves on once they come. A Server Action's render goes on while
+ * the host records what the action invalidated (`invalidateOnce`, in `cache/handlers.ts`), so a
+ * render that failed waits too: its failure is answered with what the request invalidated as well
+ * (`function.ts`), as the change the action made stands whatever became of its render.
+ */
+async function onceRecorded(context: RequestContext, routed: Promise<Response>): Promise<Response> {
+  try {
+    return await routed;
+  } finally {
+    await context.invalidated.recorded(INVALIDATIONS_RECORDED_WITHIN_MS);
+  }
+}
+
 export async function handleRequest(handled: HandleInput): Promise<Response> {
   const context = requestContextFor({
     tables: { app: handled.app, edge: handled.edge },
@@ -569,10 +585,9 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
     if (handled.cache !== undefined) {
       await catchUpWithScope(handled.cache, handled.request, handled.waitUntil);
     }
-    const response = withoutPlacementHeaders(await routeRequest(input));
-    // Not answered before the host has recorded what the request invalidated — its headers neither:
-    // whoever made it moves on once they come (`InvalidatedTags`).
-    await context.invalidated.recorded(INVALIDATIONS_RECORDED_WITHIN_MS);
+    // Not answered before the host has recorded what the request invalidated — its headers neither,
+    // nor a failure's (`onceRecorded`).
+    const response = withoutPlacementHeaders(await onceRecorded(context, routeRequest(input)));
     const answered = withoutBody(
       handled.request,
       withInvalidatedTags(response, context.invalidated),
