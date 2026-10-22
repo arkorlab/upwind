@@ -46,10 +46,14 @@ vi.mock(import('../../src/deploy/shipped.ts'), async (importOriginal) => {
 const PROJECT = 'shop';
 const NAMES = projectNames(PROJECT);
 
-/** A build whose page loads a script of its own name, as each build's chunks are its own. */
-function buildWith(dir: string, chunk: string): DeploymentBundle {
+/**
+ * A build whose page loads a script of its own name, as each build's chunks are its own; and, where
+ * asked, a file of its `public/` beside it.
+ */
+function buildWith(dir: string, chunk: string, publicFile?: string): DeploymentBundle {
   const bundle = bundleOf(deployableFunction(dir));
   const script = moduleOf(dir, `${chunk}.js`, 'text', `console.log(${JSON.stringify(chunk)});\n`);
+  const shipped = publicFile === undefined ? undefined : moduleOf(dir, publicFile, 'text', chunk);
   const built = {
     ...bundle,
     staticFiles: [
@@ -58,6 +62,15 @@ function buildWith(dir: string, chunk: string): DeploymentBundle {
         blob: { ...script.blob, contentType: 'text/javascript; charset=utf-8' },
         immutable: true,
       },
+      ...(shipped === undefined
+        ? []
+        : [
+            {
+              pathname: `/${publicFile ?? ''}`,
+              blob: { ...shipped.blob, contentType: 'text/plain; charset=utf-8' },
+              immutable: false,
+            },
+          ]),
     ],
   };
   writeBundle(dir, built);
@@ -347,7 +360,7 @@ describe('`upwind rollback` on an account', () => {
     ]);
   });
 
-  it("goes back without the live deployment's files where the bucket lost one of them", async () => {
+  it("goes back without a file of the live deployment's the bucket lost", async () => {
     const dir = await deployableProject(PROJECT);
     const [, two, three] = await threeDeployed(dir);
     // Each deployment gone back to would serve the live one's files beside its own.
@@ -356,13 +369,97 @@ describe('`upwind rollback` on an account', () => {
     await expect(rollBack(dir)).resolves.toBe(0);
     expect(servedBy(account(), NAMES.edge)).toBe(two?.deploymentId);
     expect(held.warnings).toContainEqual(
-      `upwind: warning: the files of ${String(three?.deploymentId)}, the live deployment, are not carried over (${NAMES.artifactsBucket} no longer holds blob ${lost}); its pages still open may lose them`,
+      `upwind: warning: ${NAMES.artifactsBucket} no longer holds 1 of the files of ${String(three?.deploymentId)}, the live deployment (blob ${lost}): the rest are carried over, and its pages still open may lose those`,
     );
     expect(held.warnings).not.toContainEqual(expect.stringContaining('trying the deployment'));
 
     const manifest = await servedManifest(account());
 
     expect(Object.keys(manifest.staticFiles ?? {})).toStrictEqual(['/_next/static/chunks/two.js']);
+  });
+
+  it("carries over the live deployment's scripts where the bucket lost a file beside them", async () => {
+    const dir = await deployableProject(PROJECT);
+    const two = buildWith(dir, 'two');
+
+    await expect(runDeploy(deployOptions(dir), account().credentials, account().io)).resolves.toBe(
+      0,
+    );
+
+    const three = buildWith(dir, 'three', 'robots.txt');
+
+    await expect(runDeploy(deployOptions(dir), account().credentials, account().io)).resolves.toBe(
+      0,
+    );
+
+    // A file of its `public/`, which is not carried over, gone: its scripts still are.
+    const bucket = await account().stack.mf.getR2Bucket('ARTIFACTS', 'agent');
+    const robots = String(three.staticFiles[1]?.blob.sha256);
+    await bucket.delete(blobObjectKey(robots));
+
+    await expect(rollBack(dir)).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(two.deploymentId);
+    expect(held.warnings).toContainEqual(expect.stringContaining(`(blob ${robots})`));
+
+    const manifest = await servedManifest(account());
+
+    expect(Object.keys(manifest.staticFiles ?? {}).toSorted(compareCodeUnits)).toStrictEqual([
+      '/_next/static/chunks/three.js',
+      '/_next/static/chunks/two.js',
+    ]);
+  });
+
+  /** Three deployments made, the runtime cache given a new key as the second was. */
+  async function deployedAcrossAReset(dir: string): Promise<readonly DeploymentBundle[]> {
+    const builds: DeploymentBundle[] = [];
+    for (const chunk of ['one', 'two', 'three']) {
+      builds.push(buildWith(dir, chunk));
+      const options = deployOptions(dir, { resetCacheKey: chunk === 'two' });
+
+      await expect(runDeploy(options, account().credentials, account().io)).resolves.toBe(0);
+    }
+    return builds;
+  }
+
+  it('refuses a deployment named that was made before the cache key was reset', async () => {
+    const dir = await deployableProject(PROJECT);
+    const [one] = await deployedAcrossAReset(dir);
+    const live = liveVersion(account());
+
+    // Its Functions hold a token of the key before; nothing is switched.
+    await expect(rollBack(dir, one?.deploymentId)).resolves.toBe(1);
+    expect(liveVersion(account())).toBe(live);
+    expect(held.errors).toStrictEqual([
+      `upwind: ${String(one?.deploymentId)} was deployed before ${NAMES.cache}'s key was reset, and its Functions hold a token the cache no longer takes, so it cannot be gone back to; deploy its build again instead`,
+    ]);
+  });
+
+  it('passes over a deployment made before the cache key was reset', async () => {
+    const dir = await deployableProject(PROJECT);
+    const [, two] = await deployedAcrossAReset(dir);
+
+    // To the second, deployed under the key now — and no further.
+    await expect(rollBack(dir)).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(two?.deploymentId);
+    await expect(rollBack(dir)).resolves.toBe(1);
+    expect(servedBy(account(), NAMES.edge)).toBe(two?.deploymentId);
+    expect(held.errors).toStrictEqual([
+      'upwind: no deployment before the live one can be rolled back to',
+    ]);
+  });
+
+  it('keeps what it switched to where the agent cannot be given another key', async () => {
+    const dir = await deployableProject(PROJECT);
+    const { first } = await twoDeployed(dir);
+    account().fake.fail({ method: 'PUT', path: `/workers/scripts/${NAMES.agent}/secrets` }, 400);
+
+    await expect(rollBack(dir)).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(first.deploymentId);
+    expect(held.warnings).toContainEqual(
+      expect.stringContaining(
+        `${NAMES.agent} may still take this rollback's key, until the next deploy or rollback replaces it`,
+      ),
+    );
   });
 
   it("goes back without the live deployment's files where its kept bundle cannot be read", async () => {

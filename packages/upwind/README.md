@@ -332,18 +332,21 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
 
 - **`upwind deployments`** lists the project's deployments, the one deployed most recently first: the
   live one, one held at none of the traffic while a run checks it, those a rollback can go back to,
-  and those whose Functions are gone. It reads the account and changes nothing on it.
+  those whose Functions are gone, and those deployed before the runtime cache's key was reset
+  (`key reset`). It reads the account and changes nothing on it.
 - **`upwind rollback`** gives the edge's traffic back to an older deployment — one first deployed
   before the live one, the one live most recently among those first, or the one `--to` names. Run
   again, it goes further back: a deployment gone back to is no newer for it. One that cannot be
   published again — whose cache scope a stopped cleanup retired, whose bundle the bucket no longer
   keeps or this version cannot read, or whose staging or publishing is refused otherwise — is
   passed over, or, named, refused, saying why: deploy its build again instead. Where every one tried
-  is passed over, the rollback is refused, saying why of each. Nothing of it is built: its bundle,
-  kept in the bucket, is published again against the live deployment, as a new deployment is against
-  the one before it, so the live deployment's files stay served to its pages still open — unless the
-  bucket no longer holds them, or no bundle of the live deployment it can read, when the rollback
-  says so and goes on without them; and its Functions are the ones it has had since it was deployed.
+  is passed over, the rollback is refused, saying why of each. So is one deployed before
+  `--reset-cache-key` gave the runtime cache a new key: its Functions hold a token of the key before.
+  Nothing of it is built: its bundle, kept in the bucket, is published again against the live
+  deployment, as a new deployment is against the one before it, so the live deployment's files stay
+  served to its pages still open — but for one the bucket no longer holds, or all of them where no
+  bundle of the live deployment it can read is kept, which the rollback says and goes on without;
+  and its Functions are the ones it has had since it was deployed.
   It is checked first, as a new deployment is, and given the traffic only once it answers as itself
   and passes the project's checks; one that does not is given none.
 - **One at a time.** One deploy or rollback of a project runs at a time: each takes the deploy

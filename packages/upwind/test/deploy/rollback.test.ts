@@ -4,7 +4,7 @@ import { createCloudflareClient } from '../../src/deploy/cloudflare/client.ts';
 import { readHistory } from '../../src/deploy/history.ts';
 import { chooseTarget, runRollback } from '../../src/deploy/rollback.ts';
 import { ownVersion } from '../../src/manifest.ts';
-import { fakeEdge, NAMES } from './edge-history.ts';
+import { type Deployed, fakeEdge, NAMES, uploadVersion } from './edge-history.ts';
 import { type FakeCloudflare, fakeCloudflare } from './fake-cloudflare.ts';
 import { projectWith } from './project.ts';
 
@@ -160,6 +160,34 @@ describe('`upwind rollback`', () => {
     expect(errors).toStrictEqual([
       `upwind: ${second.deploymentId}'s Functions are no longer on the account`,
     ]);
+  });
+
+  it('passes over a deployment made before the cache key was reset, and refuses it named', async () => {
+    const { fake, first, second, third } = threeDeployed();
+    // The cache's key was reset as the third was deployed. The first's build was deployed again
+    // since, its Function uploaded after the key; the second's was not.
+    const cache = (key: string, createdOn: string) => {
+      uploadVersion(fake, NAMES.cache, {
+        tag: `upwind:infra:0000000000000000:key-${key}`,
+        createdOn,
+      });
+    };
+    const upload = (deployed: Deployed, createdOn: string) => {
+      uploadVersion(fake, deployed.scriptName, { tag: deployed.deploymentId, createdOn });
+    };
+    cache('before', '2026-10-01T00:00:00.000Z');
+    upload(first, '2026-10-02T00:00:00.000Z');
+    upload(second, '2026-10-03T00:00:00.000Z');
+    cache('reset', '2026-10-04T00:00:00.000Z');
+    upload(first, '2026-10-05T00:00:00.000Z');
+    // The cache's code changed since, its key kept: the key is as old as its first version with it.
+    cache('reset', '2026-10-06T00:00:00.000Z');
+    upload(third, '2026-10-07T00:00:00.000Z');
+
+    await expect(chosen(fake)).resolves.toBe(first.deploymentId);
+    await expect(chosen(fake, second.deploymentId)).resolves.toBe(
+      `${second.deploymentId} was deployed before shop-cache's key was reset, and its Functions hold a token the cache no longer takes, so it cannot be gone back to; deploy its build again instead`,
+    );
   });
 
   it('refuses a deployment no version of the edge a deployment can choose serves', async () => {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runDeployments } from '../../src/deploy/deployments.ts';
 import { ownVersion } from '../../src/manifest.ts';
-import { fakeEdge, NAMES } from './edge-history.ts';
+import { fakeEdge, NAMES, uploadVersion } from './edge-history.ts';
 import { fakeCloudflare } from './fake-cloudflare.ts';
 import { projectWith } from './project.ts';
 
@@ -72,6 +72,33 @@ describe('`upwind deployments`', () => {
       0,
     );
     expect(printed).toContainEqual(expect.stringContaining(`  ${old.deploymentId}  out of reach `));
+  });
+
+  it('marks a deployment made before the cache key was reset', async () => {
+    const fake = fakeCloudflare();
+    const edge = fakeEdge(fake);
+    const before = edge.deploy();
+    const live = edge.deploy();
+    edge.serve([{ versionId: live.versionId, percentage: 100 }]);
+    // The key was reset as the live one was deployed: the one before holds a token of the old key.
+    uploadVersion(fake, before.scriptName, {
+      tag: before.deploymentId,
+      createdOn: '2026-10-02T00:00:00.000Z',
+    });
+    uploadVersion(fake, NAMES.cache, {
+      tag: 'upwind:infra:0000000000000000:key-reset',
+      createdOn: '2026-10-03T00:00:00.000Z',
+    });
+    uploadVersion(fake, live.scriptName, {
+      tag: live.deploymentId,
+      createdOn: '2026-10-04T00:00:00.000Z',
+    });
+
+    await expect(runDeployments({ projectDir: await project() }, CREDENTIALS, fake)).resolves.toBe(
+      0,
+    );
+    expect(printed).toContainEqual(expect.stringContaining(`  ${before.deploymentId}  key reset `));
+    expect(fake.requests.every((request) => request.method === 'GET')).toBe(true);
   });
 
   it('says so of a project never deployed, and needs the token to read the account', async () => {

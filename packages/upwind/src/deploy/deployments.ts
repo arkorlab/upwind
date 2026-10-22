@@ -5,11 +5,13 @@ import type { AccountScope } from './cloudflare/workers.ts';
 import { readDeploySettings } from './config.ts';
 import type { CloudflareCredentials } from './credentials.ts';
 import {
+  cacheKeyMadeAt,
   type DeploymentRecord,
   type EdgeHistory,
   functionsRemain,
   pointerOf,
   readHistory,
+  uploadedBefore,
 } from './history.ts';
 import { type ProjectNames, projectNames } from './names.ts';
 
@@ -17,8 +19,9 @@ import { type ProjectNames, projectNames } from './names.ts';
  * `upwind deployments`: the project's deployments, the one first deployed most recently first (a
  * deployment rolled back to is no newer for it), each as the edge's version for it
  * stands — taking the edge's traffic, held at none beside the one that does, one a rollback can go
- * back to, one whose Functions are gone, or one whose version is older than the hundred a deployment
- * of the edge can choose from. Read from the Workers API alone, and changing nothing.
+ * back to, one whose Functions are gone, one deployed before the runtime cache's key was reset, or
+ * one whose version is older than the hundred a deployment of the edge can choose from. Read from
+ * the Workers API alone, and changing nothing.
  */
 
 export interface DeploymentsIo {
@@ -29,13 +32,18 @@ const FULL = 100;
 /** How wide a deployment's status is printed, the widest of them. */
 const STATUS_WIDTH = 12;
 
+/** What every deployment's status is read against. */
+interface Listing {
+  readonly scope: AccountScope;
+  readonly names: ProjectNames;
+  readonly history: EdgeHistory;
+  /** When the key the cache's Workers check a Function's token with now was made (`cacheKeyMadeAt`). */
+  readonly keyMadeAt: number | undefined;
+}
+
 /** Where the deployment stands, by its share, its edge version's reach, and its Functions. */
-async function statusOf(
-  scope: AccountScope,
-  names: ProjectNames,
-  history: EdgeHistory,
-  record: DeploymentRecord,
-): Promise<string> {
+async function statusOf(listing: Listing, record: DeploymentRecord): Promise<string> {
+  const { scope, names, history, keyMadeAt } = listing;
   if (record.share !== undefined) {
     if (record.share === 0) {
       return 'waiting';
@@ -49,7 +57,13 @@ async function statusOf(
     return 'cleaned up';
   }
   const pointer = await pointerOf(scope, names.edge, record.versionId);
-  return pointer !== undefined && functionsRemain(history, pointer) ? 'rollback' : 'cleaned up';
+  if (pointer === undefined || !functionsRemain(history, pointer)) {
+    return 'cleaned up';
+  }
+  // Its Functions hold a token of a key the cache no longer checks with: no way back.
+  return keyMadeAt !== undefined && (await uploadedBefore(scope, pointer, keyMadeAt))
+    ? 'key reset'
+    : 'rollback';
 }
 
 function lineOf(record: DeploymentRecord, status: string): string {
@@ -82,8 +96,9 @@ export async function runDeployments(
   console.log(
     `upwind: ${names.project}, ${String(history.deployments.length)} deployments on ${names.edge}`,
   );
+  const listing = { scope, names, history, keyMadeAt: await cacheKeyMadeAt(scope, names) };
   for (const record of history.deployments) {
-    console.log(lineOf(record, await statusOf(scope, names, history, record)));
+    console.log(lineOf(record, await statusOf(listing, record)));
   }
   return 0;
 }

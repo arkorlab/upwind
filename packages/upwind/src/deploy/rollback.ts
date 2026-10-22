@@ -16,11 +16,13 @@ import type { CloudflareCredentials } from './credentials.ts';
 import { narrowReach, report, siteOf } from './deploy-run.ts';
 import { uploadEdgeVersion } from './edge-version.ts';
 import {
+  cacheKeyMadeAt,
   type DeploymentRecord,
   type EdgeHistory,
   functionsRemain,
   pointerOf,
   readHistory,
+  uploadedBefore,
   wayBackOrder,
 } from './history.ts';
 import { appRuntimeOf, type ProjectNames, projectNames } from './names.ts';
@@ -39,11 +41,12 @@ import { blobsMissing, type RemoteTarget, storedTarget } from './target.ts';
  * scripts after the rollback. Its Functions are the ones it has had since it was deployed; nothing
  * of it is built or uploaded but a version of the edge, with the new pointer fixed in it.
  *
- * Where the live deployment's files cannot be carried over — no bundle of it kept, one this version
- * cannot read, or a file of it the bucket no longer holds — the rollback says so and goes on
- * without them, its pages still open losing them. That is asked once, before any deployment is
- * tried (`carriedOver`): what is wrong with the live deployment is no fault of the one gone back
- * to, and stops no rollback, which is often run because the live deployment is broken.
+ * Where the live deployment's files cannot be carried over — no bundle of it kept, or one this
+ * version cannot read — the rollback says so and goes on without them, its pages still open losing
+ * them; a file of it the bucket no longer holds is left out alone, and the rest carried over. That
+ * is asked once, before any deployment is tried (`carriedOver`): what is wrong with the live
+ * deployment is no fault of the one gone back to, and stops no rollback, which is often run because
+ * the live deployment is broken.
  *
  * It is staged through the deploy agent, uploaded with a key of the rollback's own as a deploy
  * uploads it: a deploy of the project running at the same time loses the agent, and stops. One
@@ -65,6 +68,12 @@ import { blobsMissing, type RemoteTarget, storedTarget } from './target.ts';
  * Functions are all on the account still — the one the edge served most recently first
  * (`wayBackOrder`). Before, not merely older in upload: a deployment rolled back to has a new
  * version, and rolling back again from it goes further back, never forward to the one it replaced.
+ *
+ * Nor can one deployed before the runtime cache's key was reset (`--reset-cache-key`): its
+ * Functions hold a token signed under the key before, which the cache refuses, and a rollback
+ * uploads no Function — so one named is refused, its build to be deployed again instead, and one
+ * not named is passed over. That is told by when Cloudflare says each was uploaded: a Function
+ * uploaded before the cache's key was made (`uploadedBefore`).
  *
  * A deployment whose cache scope is retired cannot be gone back to: a deploy's cleanup retires a
  * scope before it deletes the deployment's Functions, and one stopped between leaves the Functions
@@ -95,13 +104,23 @@ function warn(text: string): void {
   console.warn(`upwind: warning: ${text}`);
 }
 
+/** What a rollback chooses the deployment it goes back to by. */
+interface Choosing {
+  readonly scope: AccountScope;
+  readonly names: ProjectNames;
+  readonly history: EdgeHistory;
+  /** Whether the deployment was named (`--to`): one named is refused, never passed over. */
+  readonly named: boolean;
+  /** When the key the cache's Workers check a Function's token with now was made (`cacheKeyMadeAt`). */
+  readonly keyMadeAt: number | undefined;
+}
+
 /** Why the deployment cannot be rolled back to; nothing where it can, and the deployment. */
 async function targetOf(
-  scope: AccountScope,
-  names: ProjectNames,
-  history: EdgeHistory,
+  choosing: Choosing,
   record: DeploymentRecord,
 ): Promise<DeploymentRecord | string> {
+  const { scope, names, history, keyMadeAt } = choosing;
   if (!record.reachable) {
     return `${record.deploymentId}'s edge version is older than the 100 a deployment of the edge can choose from`;
   }
@@ -111,6 +130,9 @@ async function targetOf(
   }
   if (!functionsRemain(history, pointer)) {
     return `${record.deploymentId}'s Functions are no longer on the account`;
+  }
+  if (keyMadeAt !== undefined && (await uploadedBefore(scope, pointer, keyMadeAt))) {
+    return `${record.deploymentId} was deployed before ${names.cache}'s key was reset, and its Functions hold a token the cache no longer takes, so it cannot be gone back to; deploy its build again instead`;
   }
   return record;
 }
@@ -158,12 +180,7 @@ interface Found {
 
 /** A candidate that can be rolled back to, from `start` on, and where to go on from; or why none can. */
 async function firstTarget(
-  input: {
-    readonly scope: AccountScope;
-    readonly names: ProjectNames;
-    readonly history: EdgeHistory;
-    readonly named: boolean;
-  },
+  input: Choosing,
   candidates: readonly DeploymentRecord[],
   start: number,
 ): Promise<string | Found> {
@@ -171,7 +188,7 @@ async function firstTarget(
     if (index < start) {
       continue;
     }
-    const target = await targetOf(input.scope, input.names, input.history, record);
+    const target = await targetOf(input, record);
     if (typeof target !== 'string') {
       return { target, next: index + 1 };
     }
@@ -186,8 +203,8 @@ async function firstTarget(
 export interface Choice {
   readonly candidates: readonly DeploymentRecord[];
   readonly found: Found;
-  /** Whether the deployment was named (`--to`): one named is refused, never passed over. */
-  readonly named: boolean;
+  /** What the candidates are chosen by, the one found as those it goes on to. */
+  readonly choosing: Choosing;
 }
 
 /** Which deployment a rollback goes back to, by the edge's history; or why it goes to none. */
@@ -204,9 +221,15 @@ export async function chooseTarget(
   if (refused !== undefined) {
     return refused;
   }
-  const named = to !== undefined;
-  const found = await firstTarget({ scope, names, history, named }, candidates, 0);
-  return typeof found === 'string' ? found : { candidates, found, named };
+  const choosing = {
+    scope,
+    names,
+    history,
+    named: to !== undefined,
+    keyMadeAt: await cacheKeyMadeAt(scope, names),
+  };
+  const found = await firstTarget(choosing, candidates, 0);
+  return typeof found === 'string' ? found : { candidates, found, choosing };
 }
 
 /** Whether staging was refused for the deployment's cache scope: retired, by a stopped cleanup. */
@@ -263,8 +286,9 @@ async function bundleIn(
 /**
  * The live deployment's bundle, whose files a deployment gone back to serves beside its own
  * (`previous`); nothing, with a warning, where they cannot be carried over — no bundle of it kept,
- * one this version cannot read, or a file of it the bucket no longer holds, which publishing would
- * refuse. Every file of it is asked about, not only those carried over, and none is read.
+ * or one this version cannot read. A file of it the bucket no longer holds, which publishing would
+ * refuse, is left out of it, with a warning, and the rest carried over: the scripts its pages still
+ * open ask for are no less served for one lost beside them. Each file is asked about, none read.
  */
 async function carriedOver(
   agent: AgentClient,
@@ -294,17 +318,25 @@ async function carriedOver(
     notCarried(`${names.artifactsBucket} keeps no bundle of it`);
     return;
   }
-  const lost = await blobsMissing(
-    agent,
-    kept.bundle.staticFiles.map((file) => file.blob),
+  const lost = new Set(
+    await blobsMissing(
+      agent,
+      kept.bundle.staticFiles.map((file) => file.blob),
+    ),
   );
-  const [first] = lost;
-  if (first !== undefined) {
-    const more = lost.length > 1 ? ` and ${lost.length - 1} more` : '';
-    notCarried(`${names.artifactsBucket} no longer holds blob ${first}${more}`);
-    return;
+  const gone = kept.bundle.staticFiles.filter((file) => lost.has(file.blob.sha256));
+  const [first] = gone;
+  if (first === undefined) {
+    return kept.bundle;
   }
-  return kept.bundle;
+  const more = gone.length > 1 ? ` and ${String(gone.length - 1)} more` : '';
+  warn(
+    `${names.artifactsBucket} no longer holds ${String(gone.length)} of the files of ${live}, the live deployment (blob ${first.blob.sha256}${more}): the rest are carried over, and its pages still open may lose those`,
+  );
+  return {
+    ...kept.bundle,
+    staticFiles: kept.bundle.staticFiles.filter((file) => !lost.has(file.blob.sha256)),
+  };
 }
 
 /** The project's stores, as the owner mark records them; or why a rollback cannot use them. */
@@ -409,7 +441,6 @@ function refusalOf(names: ProjectNames, account: AccountView): string | undefine
 /** What a rollback tries the candidates with, once it holds the agent. */
 interface Rolling {
   readonly restaging: Omit<Restaging, 'deploymentId' | 'message'>;
-  readonly choosing: Parameters<typeof firstTarget>[0];
   readonly choice: Choice;
   readonly switchTo: (deploymentId: string, served: Served) => Promise<number>;
 }
@@ -455,8 +486,8 @@ function refusedBecause(
  * again, to the next, where none was named; what the command exits with.
  */
 async function rollThrough(input: Rolling): Promise<number> {
-  const { restaging, choosing, switchTo } = input;
-  const { candidates } = input.choice;
+  const { restaging, switchTo } = input;
+  const { candidates, choosing } = input.choice;
   const { names } = restaging;
   // Why each one tried was passed over, said again where none is left.
   const passedOver: string[] = [];
@@ -481,6 +512,26 @@ async function rollThrough(input: Rolling): Promise<number> {
     console.error(`  - ${why}`);
   }
   return 1;
+}
+
+/**
+ * Give the agent a key nobody holds, as the session closes. A failure to is warned of, and leaves
+ * what the command exits with as the rollback made it: the edge's traffic is where the rollback
+ * left it either way, and the key the agent may still take was kept nowhere — the next deploy or
+ * rollback replaces it.
+ */
+async function closeAgent(
+  session: { readonly close: () => Promise<void> },
+  names: ProjectNames,
+): Promise<void> {
+  try {
+    await session.close();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    warn(
+      `${names.agent} may still take this rollback's key, until the next deploy or rollback replaces it: ${detail}`,
+    );
+  }
 }
 
 /** Roll the edge back; what the command exits with. */
@@ -514,7 +565,6 @@ export async function runRollback(
     console.error(`upwind: ${refused ?? 'the account has no workers.dev subdomain'}`);
     return 1;
   }
-  const choosing = { scope, names, history, named: choice.named };
   const site = siteOf(settings, names, subdomain);
   const reach: ScriptSubdomain = { enabled: settings.workersDev, previews_enabled: false };
   const switchTo = async (deploymentId: string, served: Served): Promise<number> => {
@@ -572,11 +622,10 @@ export async function runRollback(
         reach,
         io,
       },
-      choosing,
       choice,
       switchTo,
     });
   } finally {
-    await session.close();
+    await closeAgent(session, names);
   }
 }

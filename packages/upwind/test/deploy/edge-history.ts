@@ -46,6 +46,27 @@ export interface FakeEdge {
   fetch(failing?: ReadonlySet<string>): typeof fetch;
 }
 
+/**
+ * A newer version of the Worker, tagged as said — as a deploy tags an upload — and uploaded when
+ * said; the Worker made where the account has none of that name.
+ */
+export function uploadVersion(
+  fake: FakeCloudflare,
+  name: string,
+  upload: { readonly tag: string; readonly createdOn: string },
+): void {
+  const script = fake.scripts.get(name) ?? scriptOf(name);
+  fake.scripts.set(name, script);
+  script.versions.unshift({
+    id: `version-${name}-${String(script.versions.length + 1)}`,
+    number: script.versions.length + 1,
+    metadata: { bindings: [] },
+    modules: ['index.mjs'],
+    annotations: { 'workers/tag': upload.tag },
+    createdOn: upload.createdOn,
+  });
+}
+
 export function scriptOf(name: string, createdOn?: string): FakeScript {
   return {
     name,
