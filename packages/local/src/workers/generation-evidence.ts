@@ -17,7 +17,7 @@ function outputOf(artifact: PackArtifactRef): RecordedOutput {
 
 /** Metadata alone, with the same recovery permission as the generation loader. */
 function generationMetadata(pack: DecodedGenerationPack): RecordedGeneration {
-  const { headers, artifacts, postponedSha256, source } = pack.header;
+  const { headers, artifacts, postponedSha256, source, status } = pack.header;
   const { policy, cacheTimestamp, invalidation } = pack.header;
   const permitted =
     headers['content-security-policy'] === undefined || pack.postponed === undefined
@@ -28,6 +28,7 @@ function generationMetadata(pack: DecodedGenerationPack): RecordedGeneration {
     artifacts: artifacts.map((artifact) => outputOf(artifact)),
     partial: postponedSha256 !== null,
     source,
+    status,
     freshness: { policy, cacheTimestamp, invalidation },
   };
 }

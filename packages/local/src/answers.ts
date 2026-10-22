@@ -548,13 +548,17 @@ function isRecordedGeneration(value: unknown): value is RecordedGeneration {
   if (typeof value !== 'object' || value === null) {
     return false;
   }
-  const { headers, artifacts, partial, source, freshness } = value as Record<string, unknown>;
+  const { headers, artifacts, partial, source, status, freshness } = value as Record<
+    string,
+    unknown
+  >;
   return (
     isHeaders(headers) &&
     Array.isArray(artifacts) &&
     artifacts.every(isRecordedOutput) &&
     typeof partial === 'boolean' &&
     typeof source === 'string' &&
+    (status === undefined || typeof status === 'number') &&
     (freshness === undefined || (typeof freshness === 'object' && freshness !== null))
   );
 }

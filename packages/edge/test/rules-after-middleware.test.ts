@@ -1,7 +1,16 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import type { ImagesConfig } from '@stayingupwind/core/images';
-import type { ProjectManifest, ReservedRoute, StaticFileEntry } from '@stayingupwind/core/manifest';
-import { MIDDLEWARE_DONE_HEADER } from '@stayingupwind/core/paas';
+import type {
+  HeaderRule,
+  ProjectManifest,
+  ReservedRoute,
+  StaticFileEntry,
+} from '@stayingupwind/core/manifest';
+import {
+  HEADER_RULES_JUDGED_HEADER,
+  HEADER_RULES_LEFT_HEADER,
+  MIDDLEWARE_DONE_HEADER,
+} from '@stayingupwind/core/paas';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { blobObjectKey } from '@stayingupwind/host/storage';
@@ -72,6 +81,8 @@ interface Case {
   readonly middleware: (paths: Paths) => Response;
   /** The rules ahead of the filesystem, given the same paths. */
   readonly reserved: (paths: Paths) => readonly ReservedRoute[];
+  /** The header rules of `next.config`, judged on the request as the client sent it. */
+  readonly headerRules?: readonly HeaderRule[];
 }
 
 function optimizerUrl(source: string): string {
@@ -108,16 +119,28 @@ async function answered(example: Case) {
     },
     staticFiles: { [paths.first]: first, [paths.second]: second },
     reservedRoutes: [...example.reserved(paths)],
+    ...(example.headerRules !== undefined && {
+      headerRules: [...example.headerRules],
+      // Every rule is in the manifest, so the edge judges them for the Worker it hands on to.
+      dynamicRoutes: [],
+    }),
   };
   const asked: { readonly script: string; readonly request: Request }[] = [];
   const runtime = standaloneRuntime(env, {
     memory: createEdgeMemory(() => Date.now()),
     dispatchApp: (script, request) => {
       asked.push({ script, request });
+      // As the runtime answers a request whose rules the edge judged: it leaves them to the edge.
+      const judged = request.headers.get(HEADER_RULES_JUDGED_HEADER) === '1';
       return Promise.resolve(
         script === 'site-middleware'
           ? example.middleware(paths)
-          : new Response(fromWorker, { headers: { 'content-type': 'text/plain' } }),
+          : new Response(fromWorker, {
+              headers: {
+                'content-type': 'text/plain',
+                ...(judged && { [HEADER_RULES_LEFT_HEADER]: '1' }),
+              },
+            }),
       );
     },
     transformImage: async (body) => {
@@ -326,4 +349,60 @@ describe('a shipped file the middleware changed, routed as it left it', () => {
     expect(result.body).toStrictEqual(result.stored.first);
     expect(result.worker).toStrictEqual([]);
   });
+});
+
+/** A CORS allowance `next.config` gives every request on the path the client asked for. */
+function allowing(sourceRegex: string): readonly HeaderRule[] {
+  return [{ sourceRegex, headers: { 'access-control-allow-origin': '*' } }];
+}
+
+describe('a request the middleware changed and a rule claims, handed on under its own rules', () => {
+  it.each([
+    {
+      label: 'a file whose headers it changed',
+      example: {
+        kind: 'file',
+        middleware: variant('b'),
+        reserved: (paths: Paths) => claimingVariantOf(paths.first),
+        headerRules: allowing('^/files/.*$'),
+      },
+    },
+    {
+      label: 'a file it rewrote onto another',
+      example: {
+        kind: 'file',
+        middleware: rewritingToSecond,
+        reserved: (paths: Paths) => claiming(paths.second),
+        headerRules: allowing('^/files/.*$'),
+      },
+    },
+    {
+      label: 'an optimizer request whose headers it changed',
+      example: {
+        kind: 'optimizer',
+        middleware: variant('b'),
+        reserved: () => claimingVariantOf('/_next/image'),
+        headerRules: allowing('^/_next/image$'),
+      },
+    },
+    {
+      label: 'an optimizer request it rewrote onto another',
+      example: {
+        kind: 'optimizer',
+        middleware: optimizingSecond,
+        reserved: (paths: Paths) => claimingOptimizerFor(paths.second),
+        headerRules: allowing('^/_next/image$'),
+      },
+    },
+  ] as const)(
+    'tells the Worker its rules were judged, and lays them: $label',
+    async ({ example }) => {
+      const result = await answered(example);
+
+      expect(result.body).toStrictEqual(result.fromWorker);
+      expect(result.worker).toHaveLength(1);
+      expect(result.worker[0]?.headers.get(HEADER_RULES_JUDGED_HEADER)).toBe('1');
+      expect(result.response.headers.get('access-control-allow-origin')).toBe('*');
+    },
+  );
 });

@@ -27,6 +27,7 @@ export type ImageRequestResult =
 
 const MAX_URL_LENGTH = 3072;
 const NOT_ALLOWED = '"url" parameter is not allowed';
+const INVALID_URL = '"url" parameter is invalid';
 const MAX_QUALITY = 100;
 /** Where the optimizer lives by default; Next.js refuses this as a source wherever it appears. */
 const RECURSIVE_IMAGE_PATH = /\/_next\/image(?:$|\/)/u;
@@ -100,8 +101,7 @@ function matchesLocalPattern(pattern: ImageLocalPattern, url: URL): boolean {
 /** A pathname parsed the way Next.js parses one: against a placeholder origin it never uses. */
 const LOCAL_BASE = 'https://n';
 
-function localAllowed(config: ImagesConfig, href: string): boolean {
-  const url = new URL(href, LOCAL_BASE);
+function localAllowed(config: ImagesConfig, url: URL): boolean {
   return config.localPatterns.some((pattern) => matchesLocalPattern(pattern, url));
 }
 
@@ -112,8 +112,7 @@ function remoteAllowed(config: ImagesConfig, url: URL): boolean {
   );
 }
 
-function decodedPathname(href: string): string {
-  const { pathname } = new URL(href, LOCAL_BASE);
+function decodedPathname({ pathname }: URL): string {
   try {
     return decodeURIComponent(pathname);
   } catch {
@@ -136,7 +135,7 @@ function withoutTrailingSlash(path: string): string {
  * does not look, and which would otherwise have the optimizer ask itself, once per level the
  * URL nests. The path is compared without the trailing slash `trailingSlash` gives it.
  */
-function isRecursive(config: ImagesConfig, url: string): boolean {
+function isRecursive(config: ImagesConfig, url: URL): boolean {
   const pathname = decodedPathname(url);
   if (RECURSIVE_IMAGE_PATH.test(pathname)) {
     return true;
@@ -157,10 +156,19 @@ function sourceOf(config: ImagesConfig, url: string): Source {
     return invalid('"url" parameter cannot be a protocol-relative URL (//)');
   }
   if (url.startsWith('/')) {
-    if (isRecursive(config, url)) {
+    // Parsed once, as both checks below read it and the source is fetched by it. A path the parser
+    // cannot read — `/\ [`, which it takes for a host after two slashes — is refused, as an absolute
+    // URL that does not parse is (Sentry), where Next.js's own check would throw and answer 500.
+    let local: URL;
+    try {
+      local = new URL(url, LOCAL_BASE);
+    } catch {
+      return invalid(INVALID_URL);
+    }
+    if (isRecursive(config, local)) {
       return invalid('"url" parameter cannot be recursive');
     }
-    if (!localAllowed(config, url)) {
+    if (!localAllowed(config, local)) {
       return invalid(NOT_ALLOWED);
     }
     return { kind: 'ok', href: url, isAbsolute: false };
@@ -169,10 +177,10 @@ function sourceOf(config: ImagesConfig, url: string): Source {
   try {
     parsed = new URL(url);
   } catch {
-    return invalid('"url" parameter is invalid');
+    return invalid(INVALID_URL);
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return invalid('"url" parameter is invalid');
+    return invalid(INVALID_URL);
   }
   // A local address is refused as the optimizer refuses one it resolved, in the same words.
   const local = !config.dangerouslyAllowLocalIP && isLocalAddress(parsed.hostname);

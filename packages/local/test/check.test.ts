@@ -330,6 +330,8 @@ const generationOutputs = new Map<string, Output[]>();
 const partialGenerations = new Set<string>();
 /** The generations the test names that a build wrote, by `<scope>|<entry>|<seq>`. */
 const builtGenerations = new Set<string>();
+/** The status each generation the test names was rendered with, where the test says. */
+const generationStatuses = new Map<string, number>();
 /** What the edge judged the validity of each generation the test names by, where the test says. */
 const generationFreshness = new Map<string, unknown>();
 /** Records whose metadata the fake backstage captures in the part's own trace reply. */
@@ -882,7 +884,8 @@ function generationsOf(record: string): Record<string, unknown> {
       const partial = partialGenerations.has(at);
       const source = builtGenerations.has(at) ? 'build' : 'runtime';
       const freshness = generationFreshness.get(at);
-      const generation = { headers, artifacts, partial, source, freshness };
+      const status = generationStatuses.get(at);
+      const generation = { headers, artifacts, partial, source, status, freshness };
       return [at.slice(record.length + 1), generation];
     }),
   );
@@ -2091,6 +2094,7 @@ describe('what the check makes of the middleware', () => {
     capturedHeadRecords.clear();
     afterPartTraces.clear();
     partialGenerations.clear();
+    generationStatuses.clear();
     builtGenerations.clear();
     modes.clear();
     queries.clear();
@@ -5643,6 +5647,39 @@ describe('what the check makes of the middleware', () => {
       expect(continued.failures[0]?.reason).toMatch(/^continued, though the build finished it/u);
     });
 
+    it("is resumed from a generation rendered since that holds a resume's state, though the build finished it", async () => {
+      const finished = `${FRONT}<main>finished</main></body></html>`;
+      const routes = [await routeOf('/', finished, { complete: true })];
+      await readGenerations('/', [1, 2]);
+      const rendered = '<!doctype html><html><head><title>Front, again</title></head><body>';
+      const entry = await entryOf('/', '/');
+      const later: RecordedGeneration = {
+        headers: { 'content-type': HTML },
+        artifacts: [],
+        partial: true,
+        source: 'runtime',
+      };
+      // Resumed from the later render, which reached a postponed boundary (greptile), as its HEAD
+      // is handed on for the resume.
+      answers.set('/', {
+        ...documentAnswer(rendered, 'mw=miss;route=/;cache=fresh;seq=2'),
+        onHead: { 'content-type': HTML, 'x-arkor-edge': 'passthrough;reason=head-resumed;mw=hit' },
+      });
+      partialGenerations.add(`dpl_site|${entry}|2`);
+      capturedHeadRecords.set('/', { [`${kvGenerationKey('dpl_site', entry)}|2`]: later });
+      const postponed = await checkStack(stackOf(routes, {}));
+      partialGenerations.clear();
+      capturedHeadRecords.set('/', {
+        [`${kvGenerationKey('dpl_site', entry)}|2`]: { ...later, partial: false },
+      });
+      const complete = await checkStack(stackOf(routes, {}));
+
+      expect(postponed).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(complete.failures[0]?.reason).toMatch(
+        /^continued, though the build finished it and the generation it was served from is complete/u,
+      );
+    });
+
     it("is the application's where the middleware has its headers alone bypass its prerender", async () => {
       const finished = `${FRONT}<main>finished</main></body></html>`;
       const preview = { type: 'header' as const, key: 'x-preview' };
@@ -6199,6 +6236,68 @@ describe('what the check makes of the middleware', () => {
 
       expect(result.failures).toStrictEqual([
         { path: '/', reason: `answered as ${TEXT}, not an HTML document` },
+      ]);
+    });
+
+    it('is the not-found page a refresh found the page deleted with, where the edge regenerated it in the foreground', async () => {
+      const routes = [await routeOf('/', FRONT, { complete: true })];
+      regenerations.set('/', { entry: await entryOf('/', '/'), route: '/', member: false });
+      const rendered = (status: number): Answer => {
+        return {
+          status,
+          headers: {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'private, no-cache',
+            'x-arkor-edge': 'passthrough;reason=regenerate;m=0000;policy=default;scope=dpl_site',
+          },
+          body: `${FRONT}<h1>Not found</h1>${REST}`,
+        };
+      };
+      answers.set('/', rendered(404));
+      const deleted = await checkStack(stackOf(routes, {}));
+      answers.set('/', rendered(500));
+      const broken = await checkStack(stackOf(routes, {}));
+
+      expect(deleted.failures).toStrictEqual([]);
+      expect(broken.failures).toStrictEqual([{ path: '/', reason: 'answered 500' }]);
+    });
+
+    it("is the application's where the edge hands it on for a record a render answered other than 200", async () => {
+      const routes = [await routeOf('/', FRONT)];
+      await readGenerations('/', [1, 2]);
+      const at = `dpl_site|${await entryOf('/', '/')}|2`;
+      answers.set('/', {
+        status: 404,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'private, no-cache',
+          'x-arkor-edge': 'passthrough;reason=generation-status-404',
+        },
+        body: `${FRONT}<h1>Not found</h1>${REST}`,
+      });
+      // The refresh found the page deleted, and the runtime recorded it so (greptile).
+      generationStatuses.set(at, 404);
+      const deleted = await checkStack(stackOf(routes, {}));
+      generationStatuses.set(at, 200);
+      const unread = await checkStack(stackOf(routes, {}));
+
+      expect(deleted).toStrictEqual({
+        checked: 0,
+        failures: [],
+        skipped: [
+          {
+            path: '/',
+            reason:
+              "the application's: a render since the build answered it 404, which the Function answers",
+          },
+        ],
+      });
+      expect(unread.failures).toStrictEqual([
+        {
+          path: '/',
+          reason:
+            'handed on for a record of status 404, though this request read no generation of its record with it',
+        },
       ]);
     });
 
