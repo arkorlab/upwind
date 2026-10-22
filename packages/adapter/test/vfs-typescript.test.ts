@@ -9,6 +9,7 @@ import {
   ModuleKind,
   type ModuleResolutionHost,
   ModuleResolutionKind,
+  resolveModuleName,
   resolveTypeReferenceDirective,
   versionMajorMinor,
 } from 'typescript';
@@ -552,6 +553,111 @@ describe('pnpm-linked types packages, as TypeScript finds them in a Function', (
     roots.push(root);
     return root;
   }
+
+  it("resolves a linked types package's dependency, which pnpm linked beside it in its store", async () => {
+    const root = await repository();
+    const node = await storedPackage(
+      root,
+      '@types+node@26.1.0',
+      { name: '@types/node' },
+      { 'index.d.ts': "export type { Dispatcher } from 'undici-types';\n" },
+    );
+    const undici = await storedPackage(
+      root,
+      'undici-types@7.16.0',
+      { name: 'undici-types' },
+      { 'index.d.ts': 'export interface Dispatcher {}\n' },
+    );
+    const ws = await storedPackage(
+      root,
+      '@types+ws@8.18.1',
+      { name: '@types/ws' },
+      { 'index.d.ts': '/// <reference types="node" />\n' },
+    );
+    const assets = await pnpmTrace(root, [
+      [path.join(root, 'node_modules', '@types', 'node'), node],
+      [path.join(root, 'node_modules', '@types', 'ws'), ws],
+      // Beside each package in its store: `@types/node`'s `undici-types`, and the `@types/node`
+      // `@types/ws` depends on, which is the project's own.
+      [path.join(node, '..', '..', 'undici-types'), undici],
+      [path.join(ws, '..', 'node'), node],
+    ]);
+    const files = tracedFiles([{ assets }], root, path.join(root, '.next'));
+
+    expect(files.map((file) => file.name)).toStrictEqual([
+      'node_modules/@types/node/index.d.ts',
+      'node_modules/@types/node/package.json',
+      'node_modules/@types/ws/index.d.ts',
+      'node_modules/@types/ws/package.json',
+      'node_modules/undici-types/index.d.ts',
+      'node_modules/undici-types/package.json',
+    ]);
+
+    const system = await functionSystem(files);
+    const resolved = resolveModuleName(
+      'undici-types',
+      '/bundle/node_modules/@types/node/index.d.ts',
+      RESOLUTION,
+      system,
+    );
+
+    expect(resolved.resolvedModule?.resolvedFileName).toBe(
+      '/bundle/node_modules/undici-types/index.d.ts',
+    );
+  });
+
+  it('holds a dependency in its dependent where the project holds another version of it', async () => {
+    const root = await repository();
+    const react = await storedPackage(
+      root,
+      '@types+react@19.2.2',
+      { name: '@types/react' },
+      { 'index.d.ts': 'export declare const version: 19;\n' },
+    );
+    const older = await storedPackage(
+      root,
+      '@types+react@18.3.26',
+      { name: '@types/react' },
+      { 'index.d.ts': 'export declare const version: 18;\n' },
+    );
+    const dom = await storedPackage(
+      root,
+      '@types+react-dom@18.3.7_@types+react@18.3.26',
+      { name: '@types/react-dom' },
+      { 'index.d.ts': "export { version } from 'react';\n" },
+    );
+    const assets = await pnpmTrace(root, [
+      [path.join(root, 'node_modules', '@types', 'react'), react],
+      [path.join(root, 'node_modules', '@types', 'react-dom'), dom],
+      [path.join(dom, '..', 'react'), older],
+    ]);
+    const files = tracedFiles([{ assets }], root, path.join(root, '.next'));
+
+    expect(files.map((file) => file.name)).toStrictEqual([
+      'node_modules/@types/react-dom/index.d.ts',
+      'node_modules/@types/react-dom/node_modules/@types/react/index.d.ts',
+      'node_modules/@types/react-dom/node_modules/@types/react/package.json',
+      'node_modules/@types/react-dom/package.json',
+      'node_modules/@types/react/index.d.ts',
+      'node_modules/@types/react/package.json',
+    ]);
+
+    const system = await functionSystem(files);
+    const fromDom = resolveModuleName(
+      'react',
+      '/bundle/node_modules/@types/react-dom/index.d.ts',
+      RESOLUTION,
+      system,
+    );
+    const fromProject = resolveModuleName('react', '/bundle/app/page.ts', RESOLUTION, system);
+
+    expect(fromDom.resolvedModule?.resolvedFileName).toBe(
+      '/bundle/node_modules/@types/react-dom/node_modules/@types/react/index.d.ts',
+    );
+    expect(fromProject.resolvedModule?.resolvedFileName).toBe(
+      '/bundle/node_modules/@types/react/index.d.ts',
+    );
+  });
 
   it("takes a linked types package's entry for the compiler in use from its traced manifest", async () => {
     const root = await repository();
