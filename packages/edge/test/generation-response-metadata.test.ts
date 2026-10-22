@@ -475,6 +475,75 @@ describe('replaying generation response metadata at its use boundary', () => {
     await waitOnExecutionContext(test.edge.ctx);
   });
 
+  it('gives back the generation reservation of a document its policy hands on whole', async () => {
+    const test = await fixture();
+    const saved = await record({ partial: true, headers: { [CSP]: 'sandbox' } });
+    const { input, passthrough } = documentInput(test);
+
+    expect(shouldAsk(test.edge, KEY.entryId, test.settings)).toBe(true);
+
+    const abandoned = vi.fn(allowAnotherAsk(test.edge, KEY.entryId));
+    const buildAbandoned = vi.fn();
+
+    const response = await handleDocument({
+      ...input,
+      generation: {
+        pack: saved.pack,
+        validity: 'stale',
+        source: 'memory',
+        readBytes: undefined,
+        lookupMs: 0,
+        member: false,
+        regeneration: regenerationHeaders(test.edge, 'background', {
+          pack: saved.pack,
+          entryId: KEY.entryId,
+        }),
+        onAbandoned: abandoned,
+        onServed: undefined,
+      },
+      onBuildAbandoned: buildAbandoned,
+    });
+
+    await expect(response.text()).resolves.toBe(FALLBACK);
+    expect(passthrough).toHaveBeenCalledExactlyOnceWith('csp-sandbox', undefined, '/');
+    expect(abandoned).toHaveBeenCalledTimes(1);
+    expect(buildAbandoned).not.toHaveBeenCalled();
+    // No resume carried the ask, so the next request may ask again.
+    expect(shouldAsk(test.edge, KEY.entryId, test.settings)).toBe(true);
+    expect(test.dispatch).not.toHaveBeenCalled();
+
+    await waitOnExecutionContext(test.edge.ctx);
+  });
+
+  it('gives back the build reservation of a document its policy hands on whole', async () => {
+    const test = await fixture();
+    const { input, passthrough } = documentInput(test);
+
+    expect(shouldAsk(test.edge, 'build-completion', test.settings)).toBe(true);
+
+    const abandoned = vi.fn(allowAnotherAsk(test.edge, 'build-completion'));
+    const shell = Promise.resolve({
+      kind: 'ok' as const,
+      read: { bytes: HTML, source: 'kv', latencyMs: 0 },
+    });
+
+    const response = await handleDocument({
+      ...input,
+      entry: { ...input.entry, headers: { [CSP]: 'sandbox' } },
+      shellRead: shell,
+      onBuildAbandoned: abandoned,
+    });
+
+    await expect(response.text()).resolves.toBe(FALLBACK);
+    expect(passthrough).toHaveBeenCalledTimes(1);
+    expect(passthrough.mock.calls[0]?.[0]).toBe('csp-sandbox');
+    expect(abandoned).toHaveBeenCalledTimes(1);
+    expect(shouldAsk(test.edge, 'build-completion', test.settings)).toBe(true);
+    expect(test.dispatch).not.toHaveBeenCalled();
+
+    await waitOnExecutionContext(test.edge.ctx);
+  });
+
   it('keeps the same fallback when a valid configured policy would override a malformed recorded policy', async () => {
     const test = await fixture(false, [
       { sourceRegex: '^/$', headers: { [CSP]: "default-src 'self'" } },

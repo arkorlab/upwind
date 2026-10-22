@@ -23,6 +23,9 @@ import { RANGE_BYTES } from './asked-again.ts';
 import { fileRequestsFor, type Sampled } from './browsers.ts';
 import {
   CHANGED_SELECTION,
+  CLAIMED_AS_LEFT,
+  CLAIMED_HANDOFF,
+  claimedAsMoved,
   decisionOf,
   ignoredRewrite,
   ontoAnotherFile,
@@ -212,6 +215,9 @@ async function fileSampleVerdict(
   // A file of the build the Function answered instead — the same bytes, even — is one the edge
   // failed to serve, and a Function run every request pays for.
   const answered = answeredBy(answer);
+  if (CLAIMED_HANDOFF.test(answered)) {
+    return await claimedVerdict(stack, answer, { trace, url, sent: sampled.headers });
+  }
   if (!answered.startsWith(FROM_STORAGE)) {
     return failed(`not answered by the edge from storage (${EDGE_HEADER}: ${answered})`);
   }
@@ -231,6 +237,30 @@ async function fileSampleVerdict(
     followUps: asking.followUps,
   };
   return await servedVerdict(stack, url, read);
+}
+
+/**
+ * A file the edge handed on as a rule ahead of the filesystem claims it (`passthrough;reason=reserved`)
+ * — the check asks no request a rule claims as it is sent (`escaping`), so behind the middleware:
+ * the application's where the middleware changed the request into one a rule claims as it left it
+ * (`claimedAsMoved`, greptile); a failure to serve the file where it did not.
+ */
+async function claimedVerdict(
+  stack: CheckedStack,
+  answer: Reading,
+  asked: {
+    readonly trace: string;
+    readonly url: URL;
+    readonly sent: Readonly<Record<string, string>>;
+  },
+): Promise<Verdict> {
+  const decision = await decisionOf(stack, answer, asked);
+  if ('failure' in decision) {
+    return failed(decision.failure);
+  }
+  return claimedAsMoved(stack, asked.url, { sent: asked.sent, decided: decision.decided })
+    ? skipped(CLAIMED_AS_LEFT)
+    : failed(`not answered by the edge from storage (${EDGE_HEADER}: ${answeredBy(answer)})`);
 }
 
 /**

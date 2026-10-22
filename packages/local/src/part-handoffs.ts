@@ -89,7 +89,9 @@ const HANDED_ON_PAST_MIDDLEWARE =
 const UNPROVED = /^passthrough;reason=route-not-proved(?:;|$)/u;
 /** Document handoffs that require a captured middleware decision before judging their reason. */
 export const DOCUMENT_HANDOFFS =
-  /^passthrough;reason=(?:route-not-proved|bypass-for|rewrite-status)(?:;|$)/u;
+  /^passthrough;reason=(?:route-not-proved|bypass-for|rewrite-status|middleware-request-kind)(?:;|$)/u;
+/** What the edge says of a navigation the middleware made a request for Flight. */
+const MIDDLEWARE_REQUEST_KIND = 'middleware-request-kind';
 /** What the edge says of a request it hands on as the middleware failed, before the cause. */
 const MIDDLEWARE_FAILED = 'middleware-failed';
 const BYPASS_FOR = 'bypass-for';
@@ -482,10 +484,33 @@ export function documentHandedOnVerdict(
       const unkept = keptFailure(answer, decided, covered);
       return unkept === undefined ? rewriteStatusVerdict(decided, covered) : failed(unkept);
     }
+    case MIDDLEWARE_REQUEST_KIND: {
+      return flightAskedVerdict(sent, decided);
+    }
     default: {
       return undefined;
     }
   }
+}
+
+/**
+ * A navigation the edge handed on as the middleware made it a request for Flight (`rsc: 1`), which
+ * the Function answers as Flight rather than the edge compose its HTML (`serveHostedDocument`,
+ * `serveMemberWithoutShell` in the edge, greptile): the application's, where what the stack kept of
+ * the middleware carries the header the navigation was sent without; a failure where it does not.
+ */
+function flightAskedVerdict(sent: SentRequest, decided: KeptMiddlewareResult | undefined): Verdict {
+  const made =
+    decided?.kind === 'continue' &&
+    decided.requestHeaders.get(RSC_HEADER) === '1' &&
+    edgeReads(sent.headers).get(RSC_HEADER) !== '1';
+  return made
+    ? skipped(
+        "the application's middleware made the navigation a request for Flight, which the Function answers",
+      )
+    : failed(
+        'handed on as the middleware made it a request for Flight, though what the stack kept of the middleware asks for none',
+      );
 }
 
 /** A document or part handed on under the non-200 status of a captured middleware rewrite. */
