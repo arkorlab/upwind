@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
+import { withDeadline } from '@stayingupwind/core/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { NodeHandler, WebHandler } from '../src/app-module.ts';
@@ -46,6 +47,12 @@ async function failureOf(promise: Promise<unknown>): Promise<string | undefined>
   } catch (error) {
     return error instanceof Error ? error.message : 'a failure other than an Error';
   }
+}
+
+/** A module whose top-level read, bounded by a deadline of the module's own, runs out of time. */
+async function outOfTime(): Promise<{ handler: NodeHandler }> {
+  await withDeadline(Promise.withResolvers<never>().promise, 0, 'a configuration read');
+  return { handler: () => Promise.resolve('rendered') };
 }
 
 /** A Node.js middleware's table, as the request looking it up with `waitUntil` hands it over. */
@@ -250,5 +257,54 @@ describe('a module evaluation one request begins and others join', () => {
 
     await expect(warm!(request, response, {})).resolves.toBe('rendered');
     expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails a request that joined it with what it failed with, a deadline of its own included', async () => {
+    // A bundle's registry evaluates a module once: asked again, it hands back the same promise.
+    const evaluation = outOfTime();
+    const load = vi.fn(() => evaluation);
+    const asked = tables(load);
+    const failures = await Promise.all([
+      failureOf(nodeHandlerOf(asked, PAGE)),
+      failureOf(nodeHandlerOf(asked, PAGE)),
+    ]);
+
+    expect(failures).toStrictEqual([
+      'a configuration read timed out',
+      'a configuration read timed out',
+    ]);
+    // Failed, and not given up on: the next request is answered with the failure, as an eager
+    // lookup retrying it always was.
+    await expect(nodeHandlerOf(asked, PAGE)).rejects.toThrow('a configuration read timed out');
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps no late module of an evaluation given up on once a later evaluation has begun', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const first = Promise.withResolvers<{ handler: NodeHandler }>();
+    const second = Promise.withResolvers<{ handler: NodeHandler }>();
+    const third = Promise.resolve({ handler: () => Promise.resolve('third') });
+    const load = vi.fn(() => [first.promise, second.promise, third][load.mock.calls.length - 1]!);
+    const asked = tables(load);
+    const begun = failureOf(nodeHandlerOf(asked, PAGE));
+    const joined = failureOf(nodeHandlerOf(asked, PAGE));
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await expect(joined).resolves.toContain(GIVEN_UP);
+
+    const retried = failureOf(nodeHandlerOf(asked, PAGE));
+    second.reject(new Error('the second evaluation failed'));
+
+    await expect(retried).resolves.toBe('the second evaluation failed');
+
+    first.resolve({ handler: () => Promise.resolve('first') });
+
+    // The request that began the first evaluation is answered with its module all the same.
+    await expect(begun).resolves.toBeUndefined();
+
+    const next = await nodeHandlerOf(asked, PAGE);
+
+    expect(load).toHaveBeenCalledTimes(3);
+    await expect(next!(request, response, {})).resolves.toBe('third');
   });
 });

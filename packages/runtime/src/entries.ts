@@ -1,5 +1,3 @@
-import { isDeadlineError, withDeadline } from '@stayingupwind/core/util';
-
 import type { AppModule, EdgeModule, NodeHandler, WebHandler } from './app-module.ts';
 import { admitting } from './cache/fetch-patch.ts';
 import { asMiddleware } from './middleware-scope.ts';
@@ -59,13 +57,20 @@ type Thunk<M> = () => M | Promise<M>;
 
 type WaitUntil = (promise: Promise<unknown>) => void;
 
-/** An evaluation under way: one request began it, and every request asking meanwhile waits on it. */
-interface Evaluating {
-  readonly kind: 'evaluating';
+/** An evaluation one request began, which every request asking while it is pending waits on. */
+interface Evaluation {
+  readonly kind: 'evaluation';
   /** What the thunk handed back, which settles as the module's top-level await does. */
   readonly module: Promise<unknown>;
   /** When it began, on the isolate's own clock. */
   readonly began: number;
+  /**
+   * Where it stands: `pending`, and waited on by every request that asks; `given-up` past
+   * `EVALUATION_WAIT_MS` with nothing settled; `settled`, either way. Past `pending` the next
+   * request calls the thunk afresh — and one handed back the very promise given up on fails at
+   * once, since a bundle's module registry evaluates a module once and has nothing fresh to give.
+   */
+  state: 'pending' | 'given-up' | 'settled';
 }
 
 /** A module whose top-level await has run to its end: what every later lookup is handed at once. */
@@ -75,19 +80,15 @@ interface Evaluated {
 }
 
 /**
- * What became of each thunk's module, by thunk: a generated thunk is immutable, and the same one is
- * reached by concurrent requests. A module its thunk hands over as it is — one that awaits nothing
- * at its top level — is never kept here, and its thunk is called at every lookup, as it always was.
+ * The latest evaluation of each thunk's module, or the module one settled with, by thunk: a
+ * generated thunk is immutable, and the same one is reached by concurrent requests. An evaluation
+ * stays here once it fails or is given up on, joined by no one, until another begins — so that one
+ * which settles with a module after all is kept only while no later evaluation has begun, whose
+ * outcome stands otherwise (`settle`). A module its thunk hands over as it is — one that awaits
+ * nothing at its top level — is never kept here, and its thunk is called at every lookup, as it
+ * always was.
  */
-const EVALUATIONS = new WeakMap<Thunk<unknown>, Evaluating | Evaluated>();
-
-/**
- * The evaluations given up on (`EVALUATION_WAIT_MS`) that have not settled since. A bundle's module
- * registry evaluates a module once, so a thunk asked again after its evaluation was given up on may
- * hand back the very promise that was: there is then nothing fresh to wait for, and the request
- * that asked fails at once rather than waiting out the same evaluation again.
- */
-const ABANDONED = new WeakSet<Promise<unknown>>();
+const EVALUATIONS = new WeakMap<Thunk<unknown>, Evaluation | Evaluated>();
 
 /**
  * How long after an evaluation began a request that joined it goes on waiting for it.
@@ -105,38 +106,40 @@ const ABANDONED = new WeakSet<Promise<unknown>>();
 const EVALUATION_WAIT_MS = 30_000;
 const MS_PER_SECOND = 1000;
 
+/** What the timer of a request waiting on an evaluation settles with: nothing a module can be. */
+const WAITED_OUT = Symbol('waited out');
+
 /** Whether the deployment has an entrypoint for `id`, without loading it. */
 export function hasEntry(tables: EntryTables, id: string): boolean {
   return tables.edge.entries[id] !== undefined || tables.app.entries[id] !== undefined;
 }
 
 /** What a request that waited out an evaluation, or found one given up on, fails with. */
-function givenUp(id: string, cause?: unknown): Error {
+function givenUp(id: string): Error {
   return new Error(
     `next-runtime: the module of ${id} was still evaluating ${EVALUATION_WAIT_MS / MS_PER_SECOND} s after a request began it, and is given up on`,
-    { cause },
   );
 }
 
 /**
- * Keep what an evaluation settled as: its module, handed to every later lookup at once — even when
- * the evaluation had been given up on, and no other has begun since — or, when it failed, nothing,
- * so that the next lookup calls the thunk again, as an eager lookup always has. Never rejects: a
- * failure is reported by whoever awaited the module, and this is what `waitUntil` holds.
+ * Keep what an evaluation settled as. Its module, handed to every later lookup at once, while it is
+ * still its thunk's latest evaluation — one given up on that settles after all among them — and
+ * not once another has begun: a later evaluation's outcome stands, its failure included, which the
+ * next lookup retries rather than being handed a module the thunk has handed over again since. A
+ * failure leaves the evaluation for no one to join, so that the next lookup calls the thunk again,
+ * as an eager lookup always has. Never rejects: a failure is reported by whoever awaited the
+ * module, and this is what `waitUntil` holds.
  */
-async function settle(load: Thunk<unknown>, evaluation: Evaluating): Promise<void> {
+async function settle(load: Thunk<unknown>, evaluation: Evaluation): Promise<void> {
   try {
     const module = await evaluation.module;
-    const current = EVALUATIONS.get(load);
-    if (current === undefined || current === evaluation) {
+    if (EVALUATIONS.get(load) === evaluation) {
       EVALUATIONS.set(load, { kind: 'evaluated', module });
     }
   } catch {
-    if (EVALUATIONS.get(load) === evaluation) {
-      EVALUATIONS.delete(load);
-    }
+    // Nothing to keep: the failure is the evaluation's, for whoever awaited it to report.
   } finally {
-    ABANDONED.delete(evaluation.module);
+    evaluation.state = 'settled';
   }
 }
 
@@ -149,7 +152,12 @@ function begun<M>(
   module: Promise<M>,
   waitUntil: WaitUntil | undefined,
 ): Promise<M> {
-  const evaluation: Evaluating = { kind: 'evaluating', module, began: performance.now() };
+  const evaluation: Evaluation = {
+    kind: 'evaluation',
+    module,
+    began: performance.now(),
+    state: 'pending',
+  };
   EVALUATIONS.set(load, evaluation);
   // Before anything awaits the module, so that what is kept of it is in place for them.
   const settled = settle(load, evaluation);
@@ -160,22 +168,35 @@ function begun<M>(
 /**
  * An evaluation another request began, waited on for what is left of `EVALUATION_WAIT_MS` since it
  * began. Given up on past that, which leaves the thunk to be called afresh by whoever asks next.
+ *
+ * Only this request's own timer says the wait is out. An evaluation that fails fails as itself for
+ * every request waiting on it, whatever it fails with — a module's own top-level read, bounded by a
+ * deadline of its own, may fail with the very error a deadline here would — and is no more given up
+ * on than it is for the request that began it.
  */
-async function joined<M>(load: Thunk<M>, evaluation: Evaluating, id: string): Promise<M> {
+async function joined<M>(evaluation: Evaluation, id: string): Promise<M> {
   const left = evaluation.began + EVALUATION_WAIT_MS - performance.now();
+  const waited = Promise.withResolvers<typeof WAITED_OUT>();
+  const timer = setTimeout(
+    () => {
+      waited.resolve(WAITED_OUT);
+    },
+    Math.max(left, 0),
+  );
   try {
-    // What is kept for `load` is what `load` handed back.
-    return (await withDeadline(evaluation.module, left, `the evaluation of ${id}`)) as M;
-  } catch (error) {
-    if (!isDeadlineError(error)) {
-      throw error;
+    const outcome = await Promise.race([evaluation.module, waited.promise]);
+    if (outcome !== WAITED_OUT) {
+      // What is kept for a thunk is what that thunk handed back.
+      return outcome as M;
     }
-    if (EVALUATIONS.get(load) === evaluation) {
-      EVALUATIONS.delete(load);
-    }
-    ABANDONED.add(evaluation.module);
-    throw givenUp(id, error);
+  } finally {
+    clearTimeout(timer);
   }
+  // Given up on only while nothing has settled it, which may have come about since the timer fired.
+  if (evaluation.state === 'pending') {
+    evaluation.state = 'given-up';
+  }
+  throw givenUp(id);
 }
 
 /**
@@ -195,14 +216,14 @@ async function evaluated<M>(
     // What is kept for `load` is what `load` handed back.
     return known.module as M;
   }
-  if (known !== undefined) {
-    return await joined(load, known, id);
+  if (known?.state === 'pending') {
+    return await joined(known, id);
   }
   const module = load();
   if (!(module instanceof Promise)) {
     return module;
   }
-  if (ABANDONED.has(module)) {
+  if (known?.state === 'given-up' && known.module === module) {
     throw givenUp(id);
   }
   return await begun(load, module, waitUntil);
