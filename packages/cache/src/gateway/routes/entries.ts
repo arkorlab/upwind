@@ -31,6 +31,7 @@ import { fail, HTTP, ok } from '../respond.ts';
 
 const OCTET_STREAM = 'application/octet-stream';
 const OTHER_BYTES = 'the stored artifact is not the bytes its authority names';
+const OTHER_LENGTH = 'the stored artifact length differs from its authority';
 
 const logger = createLogger({ component: 'gateway' });
 
@@ -71,21 +72,24 @@ function storedOtherBytes(object: R2ObjectBody, sha256: string): boolean {
 }
 
 /**
- * Tell the authority of an artifact storage holds other bytes for, so that the next upload of the
- * bytes repairs it (`rememberCorruptArtifact`). The read is refused whether or not it is told: a
- * failure to tell it is logged, and the next read that finds the same tries again. One the
- * authority has moved since its location was read is no longer the artifact's, and is said.
+ * Tell the authority of an artifact storage does not hold the bytes of — none, another length, or
+ * other bytes by the digest it keeps — so that the next upload of the bytes repairs it
+ * (`rememberCorruptArtifact`). Nothing else would: a data value large enough to be read by
+ * reference is projected without its blob being read (Codex). The read is refused whether or not
+ * the authority is told: a failure to tell it is logged, and the next read that finds the same
+ * tries again. One the authority has moved since its location was read is no longer the
+ * artifact's, and is said.
  */
-async function reportOtherBytes(c: GatewayContext, location: ArtifactLocation): Promise<void> {
+async function reportUnreadable(c: GatewayContext, location: ArtifactLocation): Promise<void> {
   try {
     if (!(await c.get('scope').rememberCorruptArtifact(location))) {
-      logger.warn('corrupt artifact moved before it was reported', {
+      logger.warn('unreadable artifact moved before it was reported', {
         scopeId: c.get('scopeId'),
         sha256: location.sha256,
       });
     }
   } catch (error) {
-    logger.error('corrupt artifact not reported', {
+    logger.error('unreadable artifact not reported', {
       scopeId: c.get('scopeId'),
       sha256: location.sha256,
       detail: detailOf(error),
@@ -106,17 +110,19 @@ async function artifactBytes(c: GatewayContext): Promise<Response> {
   }
   const object = await c.env.ARTIFACTS.get(location.storageRef);
   if (object === null) {
+    await reportUnreadable(c, location);
     return fail(c, 'artifact_missing', 'the artifact is not in storage');
   }
   if (object.size !== location.byteLength) {
-    releaseStream(object.body, 'the stored artifact length differs from its authority');
-    return fail(c, 'artifact_mismatch', 'the stored artifact length differs from its authority');
+    releaseStream(object.body, OTHER_LENGTH);
+    await reportUnreadable(c, location);
+    return fail(c, 'artifact_mismatch', OTHER_LENGTH);
   }
   // Refused before a byte of it goes out, rather than served and found out by a hash behind the
   // response, which a runtime holding the bytes meanwhile would never hear of.
   if (storedOtherBytes(object, location.sha256)) {
     releaseStream(object.body, OTHER_BYTES);
-    await reportOtherBytes(c, location);
+    await reportUnreadable(c, location);
     return fail(c, 'artifact_mismatch', OTHER_BYTES);
   }
   meterRead(c.get('host'), c.get('scopeId'), location.byteLength);

@@ -582,11 +582,12 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   /**
-   * Remember that storage holds other bytes at an artifact's location than the scope names, as a
-   * read found from the digest storage keeps of them (`artifactBytes`, Codex): the next upload of
-   * the bytes is then a repair, as it is after a projection that could not read them. Only where
-   * the location is still the artifact's (`rememberArtifactFailure`): one moved since the read was
-   * answered is left as it is, and the answer is whether the failure was remembered.
+   * Remember that storage does not hold the bytes the scope names at an artifact's location — none,
+   * another length, or other bytes by the digest it keeps — as a read found (`artifactBytes`,
+   * Codex): the next upload of the bytes is then a repair, as it is after a projection that could
+   * not read them. Only where the location is still the artifact's (`rememberArtifactFailure`): one
+   * moved since the read was answered is left as it is, and the answer is whether the failure was
+   * remembered.
    */
   async rememberCorruptArtifact(location: ArtifactLocation): Promise<boolean> {
     return this.#locked(false, () => rememberArtifactFailure(this.#sql, location));
