@@ -554,6 +554,12 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
   return handleFull(input, store);
 }
 
+/**
+ * Answer a request in a context of its own (`requestContextFor`): the entry tables it looks its
+ * modules up in, which carry its `waitUntil` for an evaluation it begins (`entries.ts`), and its
+ * cache, whose view of the scope is brought up to date first. Not answered before the host has
+ * recorded what the request invalidated, or the bound on that has gone by.
+ */
 export async function handleRequest(handled: HandleInput): Promise<Response> {
   const context = requestContextFor({
     tables: { app: handled.app, edge: handled.edge, waitUntil: handled.waitUntil },

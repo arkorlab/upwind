@@ -21,10 +21,12 @@ const response = {} as ServerResponse;
 
 type WaitUntil = NonNullable<EntryTables['waitUntil']>;
 
+/** Entry tables whose one page is `PAGE`, loaded by `load`. */
 function tables(load: EntryTables['app']['entries'][string]): EntryTables {
   return { app: { entries: { [PAGE]: load } }, edge: { entries: {} } };
 }
 
+/** The page's Node.js handler, as a deferred lookup hands it out (`deferredEntryFor`). */
 async function handlerOf(asked: EntryTables): Promise<NodeHandler> {
   const entry = await deferredEntryFor(asked, PAGE);
   if (entry?.kind !== 'node') throw new Error('the page has no Node.js entry');

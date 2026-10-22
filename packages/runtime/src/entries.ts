@@ -248,6 +248,11 @@ interface DeferredNode {
 /** A generated loader is immutable, and the same loader may be reached by concurrent requests. */
 const DEFERRED_NODES = new WeakMap<AppModule['entries'][string], DeferredNode>();
 
+/**
+ * The handler of a page whose Node.js module is loaded only once it is invoked (`deferredEntryFor`):
+ * the module evaluated on its first invocation, and held past the request that begins it
+ * (`evaluated`); once it has loaded, the module's own handler.
+ */
 function deferredNode(load: AppModule['entries'][string], id: string): NodeHandler {
   let state = DEFERRED_NODES.get(load);
   if (state === undefined) {
