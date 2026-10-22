@@ -3,6 +3,8 @@ import {
   buildProjectManifest,
   headerRulesFor,
   type HeaderRule,
+  type ProjectManifest,
+  type StaticFileEntry,
 } from '@stayingupwind/core/manifest';
 import { NAVIGATION_REQUEST_HEADERS } from '@stayingupwind/core/request';
 import { describe, expect, it } from 'vitest';
@@ -110,5 +112,70 @@ describe('condition witnesses preserve the shared routing contract', () => {
 
     expect(result.requests).toStrictEqual([]);
     expect(result.unproved).toBeUndefined();
+  });
+});
+
+const URL_OF_FILE = new URL('https://site.example/a.txt');
+
+/** A file's type set over `foo` and `bar` by its deployment header, and over `foo` again after. */
+const DEPLOYMENT_TYPED: readonly HeaderRule[] = [
+  {
+    sourceRegex: '^/a[.]txt$',
+    has: [{ type: 'header', key: 'x-deployment-id', value: 'foo|bar' }],
+    headers: { 'content-type': 'image/png' },
+  },
+  {
+    sourceRegex: '^/a[.]txt$',
+    has: [{ type: 'header', key: 'x-deployment-id', value: 'foo' }],
+    headers: { 'content-type': 'image/gif' },
+  },
+];
+
+/** A stack whose manifest ships `/a.txt`, which a request for is a file's, under `rules`. */
+function fileStackFor(rules: readonly HeaderRule[]): CheckedStack {
+  const file: StaticFileEntry = {
+    sha256: SHA,
+    byteLength: 1,
+    contentType: 'text/plain',
+    immutable: false,
+  };
+  const manifest: ProjectManifest = {
+    ...MANIFEST,
+    staticFiles: { '/a.txt': file },
+    headerRules: [...rules],
+  };
+  return { manifest } as CheckedStack;
+}
+
+// A file's request carries any deployment header, which a document's cannot (greptile).
+describe('overlapping rules read as the class of request that selects them', () => {
+  it("does not prove a file's rules over one deployment header by one request each", () => {
+    const stack = fileStackFor(DEPLOYMENT_TYPED);
+    const result = requestsForRules(stack, URL_OF_FILE, {}, DEPLOYMENT_TYPED);
+
+    expect(result).toStrictEqual({
+      requests: [],
+      unproved:
+        'distinct conditioned header rules are not proved disjoint, and the check does not cover every overlapping branch: no request proves them',
+    });
+  });
+
+  it("asks a file for a lone rule's branch by the deployment header", () => {
+    const rule = DEPLOYMENT_TYPED[0]!;
+    const result = requestsForRules(fileStackFor([rule]), URL_OF_FILE, {}, [rule]);
+
+    expect(result.unproved).toBeUndefined();
+    expect(result.requests.map((request) => request.headers['x-deployment-id'])).toStrictEqual([
+      'foo',
+    ]);
+  });
+
+  it("leaves a document's rules over its deployment header unasked", () => {
+    const stack = { manifest: { ...MANIFEST, headerRules: [...DEPLOYMENT_TYPED] } } as CheckedStack;
+    const result = requestsForRules(stack, URL_OF_DOCUMENT, NAVIGATION_REQUEST_HEADERS, [
+      ...DEPLOYMENT_TYPED,
+    ]);
+
+    expect(result).toStrictEqual({ requests: [] });
   });
 });

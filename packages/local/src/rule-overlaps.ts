@@ -2,7 +2,7 @@ import type { RouteHas } from '@stayingupwind/core/bundle';
 import type { HeaderRule } from '@stayingupwind/core/manifest';
 import { compareCodeUnits } from '@stayingupwind/core/util';
 
-import { protocolCondition } from './escaping.ts';
+import { protocolCondition, type WitnessClass } from './escaping.ts';
 
 interface Selector {
   readonly has: readonly string[];
@@ -15,11 +15,19 @@ function conditionKey(condition: RouteHas): string {
   return JSON.stringify([condition.type, key, condition.value]);
 }
 
-function testsOf(conditions: readonly RouteHas[] = []): readonly string[] {
+/**
+ * The tests of `conditions` a request of `requestClass` can be made to pass or fail and stay one of
+ * that class (`protocolCondition`): a file's request among them by any `x-deployment-id` it carries,
+ * which a document's cannot carry and stay one.
+ */
+function testsOf(
+  requestClass: WitnessClass,
+  conditions: readonly RouteHas[] = [],
+): readonly string[] {
   return [
     ...new Set(
       conditions
-        .filter((condition) => !protocolCondition(condition))
+        .filter((condition) => !protocolCondition(condition, requestClass))
         .map((condition) => conditionKey(condition)),
     ),
   ].toSorted(compareCodeUnits);
@@ -36,11 +44,20 @@ function disjoint(left: Selector, right: Selector): boolean {
 /**
  * One request per selector proves no partition of overlapping selectors. Treat only identical
  * tests or a direct has/missing contradiction as established here. In particular, different
- * regex spellings or literals are no proof of disjoint languages under the shared matcher.
+ * regex spellings or literals are no proof of disjoint languages under the shared matcher. Each
+ * rule is read as a request of `requestClass` selects it (`testsOf`).
  */
-export function ruleOverlapFailure(rules: readonly HeaderRule[]): string | undefined {
+export function ruleOverlapFailure(
+  rules: readonly HeaderRule[],
+  requestClass: WitnessClass,
+): string | undefined {
   const selectors = rules
-    .map((rule) => ({ has: testsOf(rule.has), missing: testsOf(rule.missing) }))
+    .map((rule) => {
+      return {
+        has: testsOf(requestClass, rule.has),
+        missing: testsOf(requestClass, rule.missing),
+      };
+    })
     .filter((selector) => selector.has.length > 0 || selector.missing.length > 0);
   for (const [index, left] of selectors.entries()) {
     const later = selectors.slice(index + 1);

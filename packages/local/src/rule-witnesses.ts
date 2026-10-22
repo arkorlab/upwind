@@ -65,10 +65,12 @@ export function requestsForRules(
   const requestClass = classified?.kind === 'static-file' ? 'file' : 'document';
   // Include rules already selected by an ordinary sample: they can conceal a new witness's
   // other branch too. No independent regex-language prover is implied by one matching request.
+  // Each read as a request of this class selects it, whose witnesses vary what it can carry.
   const unproved = ruleOverlapFailure(
     (stack.manifest.headerRules ?? []).filter((rule) =>
       applies(stack, url, sent, { rule, requestClass }),
     ),
+    requestClass,
   );
   if (unproved !== undefined) return { requests, unproved };
   for (const rule of rules) {

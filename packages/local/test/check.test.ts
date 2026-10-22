@@ -2820,6 +2820,43 @@ describe('what the check makes of the middleware', () => {
       expect(result).toStrictEqual({ checked: 1, failures: example.failures, skipped: [] });
     });
 
+    it('does not take a request for each of two overlapping deployment-header type rules as proof of both', async () => {
+      // A type over `foo` and `bar`, and another over `foo` after it, whose witnesses both carry
+      // `foo`: what `bar` is answered as no request would ask (greptile).
+      const broad: HeaderRule = {
+        sourceRegex: '^/a[.]txt$',
+        has: [{ type: 'header', key: 'x-deployment-id', value: 'foo|bar' }],
+        headers: { 'content-type': 'image/png' },
+      };
+      const narrow: HeaderRule = {
+        ...broad,
+        has: [{ type: 'header', key: 'x-deployment-id', value: 'foo' }],
+        headers: { 'content-type': 'image/gif' },
+      };
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+        when: {
+          test: (headers) => headers['x-deployment-id'] === 'foo',
+          headers: { 'content-type': 'image/gif', 'cache-control': GATED },
+        },
+      });
+
+      const result = await checkStack(stackOf([], files, { headerRules: [broad, narrow] }));
+
+      expect(result).toStrictEqual({
+        checked: 1,
+        failures: [
+          {
+            path: '/a.txt',
+            reason:
+              'distinct conditioned header rules are not proved disjoint, and the check does not cover every overlapping branch: no request proves them',
+          },
+        ],
+        skipped: [],
+      });
+    });
+
     it('is asked as the page a visitor goes to, where it is an HTML file a rule claims a fetch of', async () => {
       const page = { '/about': fileOf(FRONT + REST, HTML) };
       const fetchesOnly: ReservedRoute = {
