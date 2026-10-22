@@ -1,0 +1,154 @@
+import type { Prerender } from '@stayingupwind/core/bundle';
+
+import { collectPrerenders, type PrerenderCollection, type ShippedBlob } from './collect.ts';
+import { auditFunctionSize, type FunctionUpload, overLimit } from './dependencies.ts';
+import { checkPageBodyRange } from './page-bodies.ts';
+
+/**
+ * Which prerendered bodies a build's app Functions carry, as the host's `unshippedPrerenderBodies`
+ * says: every one, without it; every one but those in its range, by default (`when: 'always'`); or
+ * every one unless that takes an app Function past the size limit, and then every one but those in
+ * its range (`when: 'over-limit'`).
+ *
+ * The last is a build laid out twice at most, from the one `next build`. First as if the host had
+ * not set the option, which is what a build within the limit then is, byte for byte: the same
+ * bundle, the same modules, the same runtime, and no page body left to the host's reader for a
+ * request to wait on. Only when a Function of that layout is past the limit are they laid out
+ * again, with the range applied as `'always'` would apply it, and what that layout weighs is
+ * audited as any build's is: a build still past the limit fails as it would have without the
+ * option.
+ */
+
+const KIB = 1024;
+const MIB = KIB * KIB;
+
+function mib(bytes: number): string {
+  return `${(bytes / MIB).toFixed(1)} MiB`;
+}
+
+/** What the app Functions carry of the prerendered bodies, and whether a body may be missing. */
+export interface PageBodyLayout {
+  readonly shipped: readonly ShippedBlob[];
+  /**
+   * Whether a body the Functions do not carry is read through the host's `createBundleBlobReader`,
+   * which the runtime is then built to link (`generatedModulesPlugin`).
+   */
+  readonly requireBundleBlobReader?: boolean | undefined;
+}
+
+/** The layout a build starts from, and what it falls back to past the limit, where it may. */
+export interface PageBodyLayouts extends PageBodyLayout {
+  /**
+   * What the app Functions carry with the host's range applied, for a range left to the limit
+   * (`when: 'over-limit'`): collected only once a layout is past it, which most builds never are.
+   */
+  readonly shippedOverLimit?: (() => Promise<readonly ShippedBlob[]>) | undefined;
+}
+
+/** The bodies a layout past the limit left out of every app Function, each blob once. */
+export interface BodiesLeftOut {
+  readonly count: number;
+  readonly bytes: number;
+}
+
+/**
+ * The build's prerenders, and the layout its app Functions start from.
+ *
+ * `collectPrerenders` applies whatever range it is handed; which builds a range applies to is decided
+ * here. A range left to the limit is handed to it only by the fallback, which collects the same
+ * outputs again — the same records, the same blobs, with the bodies in the range no longer shipped —
+ * rather than every build holding a second layout that only a build past the limit would use.
+ */
+export async function collectPageBodies(
+  collection: PrerenderCollection,
+): Promise<PageBodyLayouts & { readonly prerenders: Prerender[] }> {
+  const range = collection.unshippedBodies;
+  checkPageBodyRange(range);
+  const pastTheLimitOnly = range?.when === 'over-limit';
+  const { prerenders, shipped } = await collectPrerenders(
+    pastTheLimitOnly ? { ...collection, unshippedBodies: undefined } : collection,
+  );
+  return {
+    prerenders,
+    shipped,
+    requireBundleBlobReader: range !== undefined && !pastTheLimitOnly,
+    shippedOverLimit: pastTheLimitOnly
+      ? async () => (await collectPrerenders(collection)).shipped
+      : undefined,
+  };
+}
+
+/** The app Functions of one layout, as `withinTheLimit` weighs them. */
+interface LaidOut {
+  readonly built: readonly {
+    readonly name: string;
+    readonly built: {
+      readonly spec: { readonly modules: FunctionUpload['modules'] };
+      readonly dependencies: { readonly size: FunctionUpload['size'] };
+    };
+  }[];
+  readonly bodiesLeftOut?: BodiesLeftOut | undefined;
+}
+
+/** The first Function of a layout past the limit, in the order they were built: the audit's order. */
+function firstOverLimit(
+  laidOut: LaidOut,
+): { readonly name: string; readonly upload: FunctionUpload; readonly over: string } | undefined {
+  for (const { name, built } of laidOut.built) {
+    const over = overLimit(built.dependencies.size);
+    if (over !== undefined) {
+      return { name, upload: { modules: built.spec.modules, size: built.dependencies.size }, over };
+    }
+  }
+  return undefined;
+}
+
+/** What one layout carries that another leaves out of every app Function, each blob once. */
+function leftOut(carried: readonly ShippedBlob[], kept: readonly ShippedBlob[]): BodiesLeftOut {
+  const still = new Set(kept.map((blob) => blob.sha256));
+  const left = carried.filter((blob) => !still.has(blob.sha256));
+  return {
+    count: left.length,
+    bytes: left.reduce((total, blob) => total + blob.bytes.byteLength, 0),
+  };
+}
+
+/**
+ * The app Functions `layOut` makes of the layout a build starts from — or, where the host left its
+ * range to the limit and a Function of that layout is past it, of the range applied.
+ *
+ * `weighOnly` has `layOut` leave every Function's size to this function rather than refuse the
+ * first past the limit, since that Function is what decides whether to lay them out again. The
+ * layout made then is not weighed here: it is what the build uploads, and `layOut` holds it to the
+ * limit as it would any build's, so a build the range does not bring under it fails as it always
+ * has, with the audit's own message about the Function it made.
+ */
+export async function withinTheLimit<T extends LaidOut>(
+  layouts: PageBodyLayouts,
+  layOut: (layout: PageBodyLayout, weighOnly: boolean) => Promise<T>,
+): Promise<T> {
+  const fallback = layouts.shippedOverLimit;
+  if (fallback === undefined) {
+    return layOut(layouts, false);
+  }
+  const first = await layOut(layouts, true);
+  const past = firstOverLimit(first);
+  if (past === undefined) {
+    return first;
+  }
+  const shipped = await fallback();
+  const left = leftOut(layouts.shipped, shipped);
+  if (left.count === 0) {
+    // Nothing in it is a body the host could serve instead, so a second layout would weigh the
+    // same: the Function is refused now, by the audit the first layout left to this function.
+    auditFunctionSize(past.name, past.upload);
+  }
+  const bodies = left.count === 1 ? 'body' : 'bodies';
+  console.log(
+    `@stayingupwind/adapter: with every page body in it, the ${past.name} server bundle is ${past.over}. Building the app Functions again with ${String(left.count)} completed page ${bodies} (${mib(left.bytes)}) left in bundle storage, as unshippedPrerenderBodies allows past the limit (when: 'over-limit'): a Function that answers one of those pages itself reads its body through the host's createBundleBlobReader.`,
+  );
+  return {
+    ...(await layOut({ shipped, requireBundleBlobReader: true }, false)),
+    bodiesLeftOut: left,
+  };
+}
