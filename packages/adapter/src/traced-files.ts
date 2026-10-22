@@ -33,7 +33,10 @@ import { AuditError } from './dependencies.ts';
  * link's path instead, with the package's traced `package.json` (`linkTypes`).
  */
 export interface TracedFile {
-  /** Its path under `/bundle`: project-relative data, or repository-relative declarations. */
+  /**
+   * Its path under `/bundle`: project-relative data, repository-relative declarations, or a linked
+   * package's file under the name the Function holds that package by (`PackageLink`).
+   */
   readonly name: string;
   readonly filePath: string;
 }
@@ -239,8 +242,13 @@ interface Repository {
 /** A trace's entry: a file's or a link's path from the repository, and where it is on disk. */
 type Asset = readonly [logical: string, filePath: string];
 
-/** A traced `node_modules/@types/<name>` link, and the package directory it really leads to. */
-interface TypesLink {
+/**
+ * A traced link to a package directory: the link's path in the trace, from which every file of the
+ * package is reached and so proved; the name the Function holds the package by; and the directory
+ * the link really leads to.
+ */
+interface PackageLink {
+  readonly logical: string;
   readonly name: string;
   readonly target: string;
 }
@@ -261,20 +269,16 @@ function typesPackageOf(logical: string): string | undefined {
 }
 
 /**
- * The package a traced types link leads to, when the link is what its name says: a symlink inside
- * the repository, which the same name reaches from the repository too, onto a directory inside the
- * real repository that holds the types package of that name. Any other link is left out, as every
- * link always was: an npm alias (`"@types/react": "npm:types-react@…"`) keeps its stored name.
+ * The directory a traced link really leads to, when the link is what its path says: a symlink
+ * inside the repository, which the same path reaches from the repository too, onto a directory
+ * inside the real repository that holds the package named `name`.
  */
-function typesLinkOf(
-  repository: Repository | undefined,
-  logical: string,
-  filePath: string,
-): TypesLink | undefined {
-  const name = typesPackageOf(logical);
-  if (repository === undefined || name === undefined || !path.isAbsolute(filePath)) {
-    return undefined;
-  }
+function linkTarget(
+  repository: Repository,
+  [logical, filePath]: Asset,
+  name: string,
+): string | undefined {
+  if (!path.isAbsolute(filePath)) return undefined;
   try {
     if (!lstatSync(filePath).isSymbolicLink() || beneath(repository.path, filePath) === undefined) {
       return undefined;
@@ -285,11 +289,52 @@ function typesLinkOf(
       realpathSync(path.join(repository.path, logical)) === target &&
       realpathSync(manifest) === manifest &&
       isPackageNamed(manifest, name)
-      ? { name: logical, target }
+      ? target
       : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The package a traced types link leads to, when the link is what its name says (`linkTarget`).
+ * Any other link is left out, as every link always was: an npm alias (`"@types/react":
+ * "npm:types-react@…"`) keeps its stored name. A link in the project is held at its path in the
+ * project, since the project is the Function's `/bundle` and its working directory, where
+ * TypeScript starts walking `node_modules/@types`: an app in a workspace has its own
+ * `apps/site/node_modules/@types/node`. Any other link is held at its path from the repository,
+ * as every declaration is.
+ */
+function typesLinkOf(
+  repository: Repository,
+  projectDir: string,
+  asset: Asset,
+): PackageLink | undefined {
+  const [logical] = asset;
+  const name = typesPackageOf(logical);
+  const target = name === undefined ? undefined : linkTarget(repository, asset, name);
+  if (target === undefined) return undefined;
+  const local = beneath(path.resolve(projectDir), path.join(repository.path, logical));
+  const held = local === undefined ? logical : local.split(path.sep).join('/');
+  return isVfsName(held) ? { logical, name: held, target } : undefined;
+}
+
+/** The traced links the Function holds packages under, by the name it holds each by. */
+function packageLinks(
+  repository: Repository,
+  projectDir: string,
+  assets: readonly Asset[],
+): Map<string, PackageLink> {
+  const links = new Map<string, PackageLink>();
+  for (const asset of assets) {
+    const link = typesLinkOf(repository, projectDir, asset);
+    // A link in the project takes the name over one beyond it, as from the project TypeScript
+    // finds the project's own first. Only a project nested in the repository has both.
+    if (link !== undefined && (link.name !== link.logical || !links.has(link.name))) {
+      links.set(link.name, link);
+    }
+  }
+  return links;
 }
 
 /** A file's `/`-separated path in the package at `root`, unless a package nested there owns it. */
@@ -300,14 +345,16 @@ function ownPath(root: string, file: string): string | undefined {
   return segments.includes(PACKAGES_DIR) ? undefined : segments.join('/');
 }
 
-/** The name a file takes under each traced types link whose package owns it. */
+/** The name a file takes under each traced link whose package owns it, and the path proving it. */
 function linkedNames(
-  links: ReadonlyMap<string, TypesLink>,
+  links: ReadonlyMap<string, PackageLink>,
   physical: string,
-): { link: TypesLink; name: string }[] {
+): { link: PackageLink; name: string; logical: string }[] {
   return [...links.values()].flatMap((link) => {
     const own = ownPath(link.target, physical);
-    return own === undefined ? [] : [{ link, name: `${link.name}/${own}` }];
+    return own === undefined
+      ? []
+      : [{ link, name: `${link.name}/${own}`, logical: `${link.logical}/${own}` }];
   });
 }
 
@@ -335,32 +382,34 @@ function isStoredName(name: string, physical: string, repository: Repository): b
 }
 
 /**
- * Each traced declaration of a package a types link leads to, under the link's own path, where
- * TypeScript looks for it (`node_modules/@types/node/index.d.ts`) and beside the files its relative
- * references name. With them goes the package's `package.json`, where the trace lists it:
- * TypeScript takes the package's entry from it, and from its `typesVersions` the declarations meant
- * for an older compiler (`@types/node` sends TypeScript 5.6 to `ts5.6/index.d.ts`). Its name in
- * pnpm's store is dropped, since nothing in the Function reaches the store: a store package is
- * reached only through links, and the Function has none; TypeScript resolves a reference beside
- * the file it loaded; and a types package has no code to name its own directory with. Kept, it
- * would only double the package. A declaration under any other name (a workspace package's own
- * directory, which the application may read) keeps that name too.
+ * Each traced declaration of a package a link leads to, under the name the Function holds the
+ * package by, where TypeScript looks for it (`node_modules/@types/node/index.d.ts`) and beside the
+ * files its relative references name; the link's own path in the trace proves each. With them goes
+ * the package's `package.json`, where the trace lists it: TypeScript takes the package's entry from
+ * it, and from its `typesVersions` the declarations meant for an older compiler (`@types/node`
+ * sends TypeScript 5.6 to `ts5.6/index.d.ts`). Its name in pnpm's store is dropped, since nothing
+ * in the Function reaches the store: a store package is reached only through links, and the
+ * Function has none; TypeScript resolves a reference beside the file it loaded; and a types package
+ * has no code to name its own directory with. Kept, it would only double the package. A
+ * declaration under any other name (a workspace package's own directory, which the application may
+ * read) keeps that name too.
  */
 function linkTypes(
   files: Map<string, TracedFile>,
-  links: ReadonlyMap<string, TypesLink>,
+  links: ReadonlyMap<string, PackageLink>,
   input: { projectDir: string; repoRoot: string; repository: Repository; assets: readonly Asset[] },
 ): void {
   if (links.size === 0) return;
   const linked: TracedFile[] = [];
   const stored: string[] = [];
-  const carried = new Set<TypesLink>();
+  const carried = new Set<PackageLink>();
   for (const file of files.values()) {
     if (!isDeclaration(file.name)) continue;
     const physical = realpathSync(file.filePath);
     const names = linkedNames(links, physical);
-    for (const { link, name } of names) {
-      linked.push(declarationFile(input.projectDir, input.repoRoot, name, file.filePath));
+    for (const { link, name, logical } of names) {
+      declarationFile(input.projectDir, input.repoRoot, logical, file.filePath);
+      linked.push({ name, filePath: file.filePath });
       carried.add(link);
     }
     if (names.length > 0 && isStoredName(file.name, physical, input.repository)) {
@@ -386,18 +435,16 @@ export function tracedFiles(
   repoRoot: string = projectDir,
 ): TracedFile[] {
   const paths = buildPaths(projectDir, distDir);
-  const repository = repositoryOf(repoRoot);
   const files = new Map<string, TracedFile>();
-  const links = new Map<string, TypesLink>();
   const assets: Asset[] = outputs.flatMap((output) =>
     output.runtime === 'edge' ? [] : Object.entries(output.assets),
   );
   for (const [logical, filePath] of assets) {
     collectFile(files, paths, { projectDir, distDir, repoRoot, logical, filePath });
-    const link = typesLinkOf(repository, logical, filePath);
-    if (link !== undefined) links.set(link.name, link);
   }
+  const repository = repositoryOf(repoRoot);
   if (repository !== undefined) {
+    const links = packageLinks(repository, projectDir, assets);
     linkTypes(files, links, { projectDir, repoRoot, repository, assets });
   }
   return [...files.values()].toSorted((a, b) => a.name.localeCompare(b.name));
