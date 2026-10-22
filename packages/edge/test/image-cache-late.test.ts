@@ -35,17 +35,29 @@ const PNG = concatBytes([
 const OUTPUT = encodeUtf8('optimized');
 const CACHED = encodeUtf8('cached');
 
-async function imageLookup() {
+/**
+ * An optimizer request whose cache lookup is held: its `match` until `lookup` settles, and — where
+ * `heldOpen` — opening the cache itself until `opening` settles. Returned once the held step began.
+ */
+async function imageLookup({ heldOpen = false }: { readonly heldOpen?: boolean } = {}) {
   const site = await seedSite({ document: pprDocument(), images: CONFIG });
   const host = standaloneHost(env);
   const cache = await caches.open(host.names.imageCache);
   const entered = Promise.withResolvers<undefined>();
   const lookup = Promise.withResolvers<Response | undefined>();
-  vi.spyOn(cache, 'match').mockImplementation(() => {
+  const match = vi.spyOn(cache, 'match').mockImplementation(() => {
     entered.resolve(undefined);
     return lookup.promise;
   });
-  vi.spyOn(caches, 'open').mockResolvedValue(cache);
+  const opening = Promise.withResolvers<Cache>();
+  if (heldOpen) {
+    vi.spyOn(caches, 'open').mockImplementation(() => {
+      entered.resolve(undefined);
+      return opening.promise;
+    });
+  } else {
+    vi.spyOn(caches, 'open').mockResolvedValue(cache);
+  }
   const fetchSource = vi.fn(() => Promise.resolve(new Response(PNG)));
   const transform = vi.fn(async (source: ReadableStream<Uint8Array>) => {
     await new Response(source).arrayBuffer();
@@ -88,7 +100,7 @@ async function imageLookup() {
     cspReportingPath: undefined,
   });
   await entered.promise;
-  return { lookup, response, ctx, fetchSource, transform };
+  return { lookup, opening, cache, match, response, ctx, fetchSource, transform };
 }
 
 function cacheHit(body: BodyInit): Response {
@@ -158,6 +170,52 @@ describe('an image cache lookup that outlives its deadline', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(run.fetchSource).toHaveBeenCalledTimes(1);
+    expect(run.transform).toHaveBeenCalledTimes(1);
+
+    await waitOnExecutionContext(run.ctx);
+  });
+
+  it('optimizes the miss within the deadline where the cache does not open', async () => {
+    const run = await imageLookup({ heldOpen: true });
+    await vi.advanceTimersByTimeAsync(100);
+    const response = await run.response;
+
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(OUTPUT);
+    expect(run.fetchSource).toHaveBeenCalledTimes(1);
+    expect(run.transform).toHaveBeenCalledTimes(1);
+
+    // Opened late, the cache is asked nothing: no hit can arrive with no reader for its body.
+    run.opening.resolve(run.cache);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(run.match).not.toHaveBeenCalled();
+    expect(run.fetchSource).toHaveBeenCalledTimes(1);
+
+    await waitOnExecutionContext(run.ctx);
+  });
+
+  it('counts the time the cache took to open toward the deadline', async () => {
+    const run = await imageLookup({ heldOpen: true });
+    await vi.advanceTimersByTimeAsync(60);
+    run.opening.resolve(run.cache);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(run.match).toHaveBeenCalledTimes(1);
+    expect(run.fetchSource).not.toHaveBeenCalled();
+
+    // Forty more, not a hundred from the match: the deadline is the lookup's, opening included.
+    await vi.advanceTimersByTimeAsync(40);
+    const response = await run.response;
+
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(OUTPUT);
+    expect(run.fetchSource).toHaveBeenCalledTimes(1);
+
+    // The match that answers after that has its hit let go.
+    const cancel = vi.fn(() => Promise.resolve());
+    run.lookup.resolve(cacheHit(new ReadableStream<Uint8Array>({ cancel })));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(cancel).toHaveBeenCalledTimes(1);
     expect(run.transform).toHaveBeenCalledTimes(1);
 
     await waitOnExecutionContext(run.ctx);
