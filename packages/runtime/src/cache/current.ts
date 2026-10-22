@@ -558,11 +558,12 @@ async function backgroundPack(
 }
 
 /**
- * The same verified lookup after a partial response has ended. Its primary read is shared with
- * the foreground lookup, but the visitor's 200ms budget no longer discards the upgrade. The
- * shared read's original monotonic lifetime bounds the complete lookup, including any newer
- * record read; this cannot give an old pending read another thirty seconds. Fresh memo hits
- * ask nothing, and a failed, lost or late read never authorizes regeneration.
+ * The same verified lookup behind a partial response, once its first bytes are on their way
+ * (`withPartialFallbackUpgrade`). Its primary read is shared with the foreground lookup, but the
+ * visitor's 200ms budget no longer discards the upgrade. The shared read's original monotonic
+ * lifetime bounds the complete lookup, including any newer record read; this cannot give an old
+ * pending read another thirty seconds. Fresh memo hits ask nothing, and a failed, lost or late read
+ * never authorizes regeneration.
  */
 export async function currentGenerationAfterResponse(
   runtime: CacheRuntime,
@@ -576,7 +577,7 @@ export async function currentGenerationAfterResponse(
   let pack = runtime.recordMemo.get(entryId);
   try {
     // Another request's verified fresh publication needs no upgrade, even if the original read
-    // was retired or ran out its lifetime while this response streamed.
+    // was retired or ran out its lifetime before this lookup began.
     const fresh = freshMemo(runtime, entryId, pack);
     if (fresh !== undefined) return fresh;
     if (pending !== undefined || pack === undefined) {
