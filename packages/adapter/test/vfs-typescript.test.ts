@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
 import {
+  getAutomaticTypeDirectiveNames,
   ModuleKind,
   type ModuleResolutionHost,
   ModuleResolutionKind,
@@ -113,6 +114,8 @@ async function fixture(owner = '@typescript/vfs', nested = false, noPeer = false
 }
 
 const RESOLUTION = { module: ModuleKind.ESNext, moduleResolution: ModuleResolutionKind.Bundler };
+/** TypeScript 5's default, which TypeScript 6 leaves out: every package in each `@types` walked. */
+const WALKED = { ...RESOLUTION, types: ['*'] };
 
 /** A package as pnpm's store keeps it under `root`, in a `node_modules` directory of its own. */
 async function storedPackage(
@@ -577,5 +580,43 @@ describe('pnpm-linked types packages, as TypeScript finds them in a Function', (
     expect(resolved.resolvedTypeReferenceDirective?.resolvedFileName).toBe(
       `/bundle/node_modules/@types/node/${compatible}/index.d.ts`,
     );
+  });
+
+  it('finds first the types package a nested app links in its own node_modules, from /bundle', async () => {
+    const root = await repository();
+    const project = path.join(root, 'apps', 'site');
+    await mkdir(project, { recursive: true });
+    const own = await storedPackage(
+      root,
+      '@types+node@26.1.0',
+      { name: '@types/node' },
+      { 'index.d.ts': 'declare var version: 26;\n' },
+    );
+    const workspace = await storedPackage(
+      root,
+      '@types+node@24.19.2',
+      { name: '@types/node' },
+      { 'index.d.ts': 'declare var version: 24;\n' },
+    );
+    // The app's own link, and the workspace root's, which the app would find only after its own.
+    const assets = await pnpmTrace(root, [
+      [path.join(project, 'node_modules', '@types', 'node'), own],
+      [path.join(root, 'node_modules', '@types', 'node'), workspace],
+    ]);
+    const files = tracedFiles([{ assets }], project, path.join(project, '.next'), root);
+
+    expect(files.map((file) => file.name)).toStrictEqual([
+      'node_modules/.pnpm/@types+node@24.19.2/node_modules/@types/node/index.d.ts',
+      'node_modules/@types/node/index.d.ts',
+      'node_modules/@types/node/package.json',
+    ]);
+
+    const system = await functionSystem(files);
+    const resolved = resolveTypeReferenceDirective('node', undefined, RESOLUTION, system);
+    const entry = resolved.resolvedTypeReferenceDirective?.resolvedFileName;
+
+    expect(getAutomaticTypeDirectiveNames(WALKED, system)).toStrictEqual(['node']);
+    expect(entry).toBe('/bundle/node_modules/@types/node/index.d.ts');
+    expect(system.readFile(entry!)).toBe('declare var version: 26;\n');
   });
 });
