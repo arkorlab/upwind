@@ -1,4 +1,5 @@
 import type { AssetRejection } from '@stayingupwind/core/assets';
+import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import type {
   AssetDeliveryStrategy,
   AssetHandleResult,
@@ -110,9 +111,20 @@ export async function handleAsset(input: AssetInput): Promise<AssetOutcome> {
   const originUrl = new URL(
     `https://${input.edge.forwarding.previewHost}${input.clientUrl.pathname}${input.clientUrl.search}`,
   );
+  const { headers } = input.request;
+  const { credentials } = input.edge.host;
+  // The strategy judges the request's validators, on a hit and on a miss, and a header the host
+  // keeps for itself asks nothing of the application's asset: a host-only `If-None-Match: *` was
+  // answered with a 304 and no body, to a client holding none (greptile). It is handed a copy
+  // without them, made only where one is present; the client's own request keeps them.
+  const request = credentials.headers.some((name) => headers.has(name))
+    ? new Request(input.request, {
+        headers: withoutHostCredentials(new Headers(headers), credentials),
+      })
+    : input.request;
   let result: AssetHandleResult;
   try {
-    result = await input.strategy.handle(input.request, originUrl, input.edge);
+    result = await input.strategy.handle(request, originUrl, input.edge);
   } catch (error) {
     // The same controlled answer the document and passthrough paths give. Letting this out would
     // end the request as an unhandled Worker exception instead.
