@@ -445,6 +445,11 @@ export interface PrerenderCollection {
   readonly rsc: BuildContext['routing']['rsc'];
   /** Outputs recorded without their bytes; `'none'` by default (`AdapterOptions`). */
   readonly unshipped?: 'none' | 'prefetch-segments' | undefined;
+  /**
+   * Applied as it is handed over, whatever its `when` says: which builds a range applies to is
+   * `collectPageBodies`'s to decide, and a range left to the limit reaches this only once a build
+   * is past it.
+   */
   readonly unshippedBodies?: UnshippedPrerenderBodies | undefined;
   /** Actual entries, required to prove that an omitted body belongs to a Node App page. */
   readonly entrypoints?: readonly Entrypoint[] | undefined;
