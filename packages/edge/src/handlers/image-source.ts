@@ -24,6 +24,7 @@ import { dnsSpelling, isUnderAnyDomain } from '@stayingupwind/host/domains';
 
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import { headersAfterMiddleware } from './hosted-route.ts';
 import { sourceUnder } from './image-source-identity.ts';
 import { imageWithin, releaseLateSource } from './image-stream.ts';
 import { decideMiddleware, type MiddlewareContinued, middlewareMatches } from './middleware.ts';
@@ -419,13 +420,35 @@ async function readBlob(
 }
 
 /**
+ * The shipped file a source the middleware let on is answered with: the file itself, or the one
+ * shipped where it rewrote the source to (`shippedSourceAt`). None where the Worker answers it —
+ * a path the rewrite names no file at, or a request the middleware changed, by its path or by its
+ * headers, that a rule ahead of the filesystem claims as it left it (greptile): Next.js's router
+ * runs its `beforeFiles` rewrites after the middleware, as a document's route is looked up after
+ * it (`hostedEntry`). A request it left as it came was judged by the gate already (`blobGate`).
+ */
+function shippedAfterMiddleware(
+  local: LocalContext,
+  source: Extract<ImageSource, { kind: 'blob' }>,
+  request: Request,
+  middleware: MiddlewareContinued,
+): StaticFileEntry | undefined {
+  const routed = headersAfterMiddleware({ request, edge: local.edge }, middleware);
+  if (routed !== undefined && isReserved(local.manifest, middleware.url, routed, true)) {
+    return undefined;
+  }
+  return middleware.rewritten ? shippedSourceAt(local.manifest, middleware.url) : source.file;
+}
+
+/**
  * A file the build shipped, from storage — once what Next.js runs ahead of its filesystem has had
  * its say on the file's own path, as it has on a request for the file. A rule of `next.config`
  * that claims the path before the filesystem makes the Worker's answer the source. The
  * middleware, when its matchers cover the path, sees it as an anonymous visitor asks for it: what
  * it lets through is the file; a path it rewrites to is the file shipped there, from storage as a
  * request rewritten to it is served — the Worker carries none of `_next/static` — and any other
- * path is asked of the Worker, which is told the middleware ran; a status the middleware gave its
+ * path is asked of the Worker, which is told the middleware ran, as is a request it changed that a
+ * rule ahead of the filesystem claims (`shippedAfterMiddleware`); a status the middleware gave its
  * rewrite is the answer's, whether a file's (`sourceUnder`) or the Worker's (`rewrittenRequest`);
  * what it answers itself is the source only if it is one, as under Next.js, and a redirect to a
  * login page is not. A middleware whose own Worker failed is asked of the application's
@@ -455,9 +478,7 @@ async function fetchBlob(
       return readBlob(local, source.file, dispatches, left());
     }
     case 'continue': {
-      const shipped = outcome.rewritten
-        ? shippedSourceAt(local.manifest, outcome.url)
-        : source.file;
+      const shipped = shippedAfterMiddleware(local, source, request, outcome);
       if (shipped === undefined) {
         return fetchLocal(local, rewrittenRequest(edge, request, outcome), {
           earlier: dispatches,

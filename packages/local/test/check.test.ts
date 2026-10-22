@@ -2316,6 +2316,29 @@ describe('what the check makes of the middleware', () => {
       expect(own.failures).toStrictEqual([]);
     });
 
+    it("says Accept-Ranges as the middleware set it in place of the edge's, and fails saying the edge's over it", async () => {
+      decisions.set('/a.txt', { 'x-middleware-next': '1', 'accept-ranges': 'none' });
+      const gated = {
+        'content-type': TEXT,
+        'cache-control': GATED,
+        'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+      };
+      answers.set('/b.txt', asItself);
+      // As the edge lays the middleware's headers over its own (`fileHeaders`), ranges still served.
+      answers.set('/a.txt', { headers: { ...gated, 'accept-ranges': 'none' }, body: 'kept bytes' });
+      const set = await checkStack(stackOf([], files));
+      answers.set('/a.txt', {
+        headers: { ...gated, 'accept-ranges': 'bytes' },
+        body: 'kept bytes',
+      });
+      const overridden = await checkStack(stackOf([], files));
+
+      expect(set.failures).toStrictEqual([]);
+      expect(overridden.failures).toStrictEqual([
+        { path: '/a.txt', reason: 'answered with Accept-Ranges bytes, not none' },
+      ]);
+    });
+
     it('fails where another file came back but the middleware rewrote nothing', async () => {
       answers.set('/a.txt', {
         headers: { 'content-type': TEXT, 'x-arkor-edge': `${FILE_EDGE};mw=hit` },
