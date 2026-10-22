@@ -63,6 +63,13 @@ import { type RemoteTarget, storedTarget } from './target.ts';
  * scope before it deletes the deployment's Functions, and one stopped between leaves the Functions
  * of a deployment it was taking away. Its staging is refused (`cache_scope_conflict`), nothing is
  * switched to it, and a rollback that named none goes on to the one before it.
+ *
+ * Nor can one whose staging or publishing is refused for any other reason (`DeployRefusalError`)
+ * — a blob of its build gone from the bucket, a pointer over what the edge's variable holds: a
+ * refusal is the deployment's own. One named is refused, saying why; a rollback that named none
+ * goes on to the one before it, and where none is left refuses, saying why of each one it tried.
+ * What is no refusal — the account, the agent or a store failing — is no fault of the
+ * deployment's, and stops the rollback.
  */
 
 export interface RollbackIo {
@@ -196,8 +203,8 @@ export async function chooseTarget(
 }
 
 /** Whether staging was refused for the deployment's cache scope: retired, by a stopped cleanup. */
-function scopeRetired(error: unknown): error is DeployRefusalError {
-  return error instanceof DeployRefusalError && error.code === 'cache_scope_conflict';
+function scopeRetired(refusal: DeployRefusalError): boolean {
+  return refusal.code === 'cache_scope_conflict';
 }
 
 /** The deployment the edge serves now, as the deploy that made its version tagged it. */
@@ -333,30 +340,40 @@ interface Rolling {
   readonly switchTo: (deploymentId: string, served: Served) => Promise<number>;
 }
 
-/** The deployment published again; or the refusal of a retired cache scope, which is no failure. */
-async function restageUnlessRetired(
+/**
+ * The deployment published again; or the refusal of staging or publishing it, which is the
+ * deployment's own and no failure of the rollback's. Anything else — the account, the agent or a
+ * store failing — is thrown.
+ */
+async function restageUnlessRefused(
   restaging: Rolling['restaging'],
   deploymentId: string,
 ): Promise<Served | DeployRefusalError | undefined> {
   try {
     return await restage({ ...restaging, deploymentId, message: messageOf(deploymentId) });
   } catch (error) {
-    if (scopeRetired(error)) {
+    if (error instanceof DeployRefusalError) {
       return error;
     }
     throw error;
   }
 }
 
-/** Why a deployment could not be published again: no bundle kept, or a retired cache scope. */
+/**
+ * Why a deployment could not be published again: no bundle kept, a retired cache scope, or any
+ * other refusal of staging or publishing it.
+ */
 function refusedBecause(
   names: ProjectNames,
   deploymentId: string,
   refusal: DeployRefusalError | undefined,
 ): string {
-  return refusal === undefined
-    ? `${names.artifactsBucket} keeps no bundle of ${deploymentId}, so it cannot be published again — with the live deployment's files beside its own, and its cache scope asked — and it cannot be gone back to; deploy its build again instead`
-    : `${deploymentId}'s cache scope refuses it (${refusal.message}): a cleanup that retired the scope stopped before deleting the deployment's Functions, which the next deploy deletes, so it cannot be gone back to`;
+  if (refusal === undefined) {
+    return `${names.artifactsBucket} keeps no bundle of ${deploymentId}, so it cannot be published again — with the live deployment's files beside its own, and its cache scope asked — and it cannot be gone back to; deploy its build again instead`;
+  }
+  return scopeRetired(refusal)
+    ? `${deploymentId}'s cache scope refuses it (${refusal.message}): a cleanup that retired the scope stopped before deleting the deployment's Functions, which the next deploy deletes, so it cannot be gone back to`
+    : `publishing ${deploymentId} again is refused (${refusal.message}), so it cannot be gone back to`;
 }
 
 /**
@@ -367,10 +384,12 @@ async function rollThrough(input: Rolling): Promise<number> {
   const { restaging, choosing, switchTo } = input;
   const { candidates } = input.choice;
   const { names } = restaging;
+  // Why each one tried was passed over, said again where none is left.
+  const passedOver: string[] = [];
   let found: string | Found = input.choice.found;
   while (typeof found !== 'string') {
     const { deploymentId } = found.target;
-    const restaged = await restageUnlessRetired(restaging, deploymentId);
+    const restaged = await restageUnlessRefused(restaging, deploymentId);
     if (restaged !== undefined && !(restaged instanceof Error)) {
       return switchTo(deploymentId, restaged);
     }
@@ -380,9 +399,13 @@ async function rollThrough(input: Rolling): Promise<number> {
       return 1;
     }
     warn(`${why}; trying the deployment before it`);
+    passedOver.push(why);
     found = await firstTarget(choosing, candidates, found.next);
   }
-  console.error(`upwind: ${found}`);
+  console.error(`upwind: ${found}; each one tried was passed over:`);
+  for (const why of passedOver) {
+    console.error(`  - ${why}`);
+  }
   return 1;
 }
 

@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import type { DeploymentBundle } from '@stayingupwind/core/bundle';
 import { compareCodeUnits } from '@stayingupwind/core/util';
-import { bundleObjectKey } from '@stayingupwind/host/storage';
+import { blobObjectKey, bundleObjectKey } from '@stayingupwind/host/storage';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { agentClient } from '../../src/deploy/agent-client.ts';
@@ -11,6 +11,7 @@ import { runDeploy } from '../../src/deploy/command.ts';
 import { projectNames } from '../../src/deploy/names.ts';
 import { runRollback } from '../../src/deploy/rollback.ts';
 import { remoteTarget } from '../../src/deploy/target.ts';
+import { AGENT_PATHS } from '../../src/deploy/workers/protocol.ts';
 import { bundleOf, deployableFunction, moduleOf, writeBundle } from './bundle.ts';
 import { bindingText } from './fake-cloudflare.ts';
 import {
@@ -288,5 +289,77 @@ describe('`upwind rollback` on an account', () => {
     expect(servedBy(account(), NAMES.edge)).toBe(one?.deploymentId);
     expect(held.errors).toContainEqual(expect.stringContaining('so it cannot be gone back to'));
     expect(three).toBeDefined();
+  });
+
+  /** The blob of a build's own script deleted from the bucket; its digest. */
+  async function loseScript(build: DeploymentBundle | undefined): Promise<string> {
+    const sha256 = String(build?.staticFiles[0]?.blob.sha256);
+    const bucket = await account().stack.mf.getR2Bucket('ARTIFACTS', 'agent');
+    await bucket.delete(blobObjectKey(sha256));
+    return sha256;
+  }
+
+  it('passes over a deployment whose staging is refused, and refuses it named', async () => {
+    const dir = await deployableProject(PROJECT);
+    const [one, two] = await threeDeployed(dir);
+    const lost = await loseScript(two);
+    const refused = `publishing ${String(two?.deploymentId)} again is refused (blob ${lost} was not uploaded), so it cannot be gone back to`;
+
+    await expect(
+      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io),
+    ).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(one?.deploymentId);
+    expect(held.warnings).toContainEqual(expect.stringContaining(refused));
+
+    // Named, it is refused, saying why, and nothing is switched.
+    const live = liveVersion(account());
+
+    await expect(
+      runRollback({ projectDir: dir, to: two?.deploymentId }, account().credentials, account().io),
+    ).resolves.toBe(1);
+    expect(liveVersion(account())).toBe(live);
+    expect(held.errors).toStrictEqual([`upwind: ${refused}`]);
+  });
+
+  it('refuses, saying why of each, where every deployment it tries is refused', async () => {
+    const dir = await deployableProject(PROJECT);
+    const [one, two, three] = await threeDeployed(dir);
+    const live = liveVersion(account());
+    // Each is published again beside the live deployment's files, one of which is gone.
+    const lost = await loseScript(three);
+
+    await expect(
+      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io),
+    ).resolves.toBe(1);
+    expect(liveVersion(account())).toBe(live);
+    expect(held.errors).toStrictEqual([
+      'upwind: no deployment before the live one can be rolled back to; each one tried was passed over:',
+      ...[two, one].map(
+        (build) =>
+          `  - publishing ${String(build?.deploymentId)} again is refused (blob ${lost} is no longer stored), so it cannot be gone back to`,
+      ),
+    ]);
+  });
+
+  it('stops where the agent fails as it stages, passing nothing over', async () => {
+    const dir = await deployableProject(PROJECT);
+    const [, two, three] = await threeDeployed(dir);
+    const live = liveVersion(account());
+    const route = `${AGENT_PATHS.blob}${encodeURIComponent(blobObjectKey(String(two?.staticFiles[0]?.blob.sha256)))}`;
+    const answer = account().fake.workersDev.get(NAMES.agent);
+    // The bucket failing as the second's script is read: no fault of the deployment's.
+    account().fake.workersDev.set(NAMES.agent, (request, version, script) => {
+      return answer === undefined ||
+        (request.method === 'GET' && new URL(request.url).pathname === route)
+        ? new Response('the bucket failed', { status: 500 })
+        : answer(request, version, script);
+    });
+
+    await expect(
+      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io),
+    ).rejects.toThrow('the deploy agent answered 500');
+    expect(liveVersion(account())).toBe(live);
+    expect(servedBy(account(), NAMES.edge)).toBe(three?.deploymentId);
+    expect(held.warnings).not.toContainEqual(expect.stringContaining('trying the deployment'));
   });
 });
