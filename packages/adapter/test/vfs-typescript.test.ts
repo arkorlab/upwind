@@ -300,6 +300,44 @@ describe('vfs TypeScript peer library resolution', () => {
     ).resolves.toBe(DIRECTORY);
   });
 
+  it('mounts one library directory from a pnpm trace that also links TypeScript and @types/node', async () => {
+    const setup = await fixture('@typescript/vfs', true);
+    roots.push(setup.root);
+    const modules = path.join(setup.root, 'node_modules');
+    const types = path.join(
+      modules,
+      '.pnpm',
+      '@types+node@26.1.0',
+      'node_modules',
+      '@types',
+      'node',
+    );
+    const typesFile = path.join(types, 'index.d.ts');
+    await mkdir(types, { recursive: true });
+    await writeFile(path.join(types, 'package.json'), '{"name":"@types/node"}');
+    await writeFile(typesFile, '/// <reference lib="es2020" />');
+    await mkdir(path.join(modules, '@types'));
+    await symlink(types, path.join(modules, '@types', 'node'), 'dir');
+    const stored = (file: string) => path.relative(setup.root, file).split(path.sep).join('/');
+    // `lib.*.d.ts` and `./node_modules/@types/node/**` traced through pnpm's links: each stored
+    // file, and each link on the way to one, the compiler's own among them.
+    const assets = {
+      [stored(setup.declaration)]: setup.declaration,
+      'node_modules/typescript': path.join(modules, 'typescript'),
+      [stored(typesFile)]: typesFile,
+      'node_modules/@types/node': path.join(modules, '@types', 'node'),
+    };
+    const files = tracedFiles([{ assets }], setup.projectDir, setup.distDir, setup.root);
+
+    expect(files).toStrictEqual([
+      { name: stored(setup.declaration), filePath: setup.declaration },
+      { name: 'node_modules/@types/node/index.d.ts', filePath: typesFile },
+    ]);
+    await expect(
+      typescriptLibDirectory(setup.importer, setup.projectDir, files, setup.root),
+    ).resolves.toBe(`/bundle/${stored(path.dirname(setup.declaration))}`);
+  });
+
   it('refuses a repository root that does not lexically contain the project', async () => {
     const setup = await fixture();
     roots.push(setup.root);
