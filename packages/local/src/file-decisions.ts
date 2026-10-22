@@ -1,7 +1,15 @@
 import { isReserved, type StaticFileEntry, staticFileKey } from '@stayingupwind/core/manifest';
 import type { MiddlewareResult } from '@stayingupwind/core/paas';
 
-import { type CheckedStack, keptFailure, keptOf, middlewareCovers, edgeReads } from './answers.ts';
+import {
+  answeredBy,
+  type CheckedStack,
+  edgeReads,
+  keptFailure,
+  keptOf,
+  middlewareCovers,
+  middlewareHeadersOnly,
+} from './answers.ts';
 import { type Decided, DID_NOT_RUN } from './file-expectations.ts';
 import { headersLeftAlone } from './landings.ts';
 import type { Reading } from './reading.ts';
@@ -54,6 +62,17 @@ export const CLAIMED_HANDOFF = /^passthrough;reason=reserved(?:;|$)/u;
 /** Why a file is judged no further where the request the middleware left is a rule's. */
 export const CLAIMED_AS_LEFT =
   "the application's middleware changed the request into one a redirect or rewrite of next.config claims";
+
+/**
+ * Whether an answer for a file is let go of at its headers, its body unread: one the middleware gave
+ * itself (`middlewareHeadersOnly`), or one the edge handed on as a rule claims it (`CLAIMED_HANDOFF`)
+ * — the Function's to answer, which may hold its body open, as a stream an external rewrite returns
+ * does (greptile). Which the handoff is, the application's or the edge's failing, is judged from what
+ * the stack kept of the middleware (`claimedAsMoved`), never from the body.
+ */
+export function handedOnAtHeaders(status: number, headers: Reading['headers']): boolean {
+  return middlewareHeadersOnly(status, headers) || CLAIMED_HANDOFF.test(answeredBy({ headers }));
+}
 
 /**
  * Whether the middleware changed a request for a file — rewrote it, or handed it on with other
