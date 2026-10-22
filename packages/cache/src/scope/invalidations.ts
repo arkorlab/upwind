@@ -145,20 +145,25 @@ function insertInvalidation(sql: SqlStorage, row: InvalidationRow): void {
 }
 
 /**
- * The entries whose current value of the data cache was made after the moment `?`, by its own
- * timestamp: when the value began to be computed, which the value's write is fenced by too
- * (`dataCondemnation`, in `data.ts`). An invalidation taking effect at that moment reaches none of
- * them. A render goes on while the authority records what its request invalidated (`inForceMoment`),
- * and what it computed after the moment can be written, and stand current, before the call — or a
- * later chunk of a large one — is recorded: it is kept, as the same write arriving after it is.
+ * Of the entries with one of the tags `?` (a JSON array of their ids), those whose current value of
+ * the data cache was made after the moment `?`, by its own timestamp: when the value began to be
+ * computed, which the value's write is fenced by too (`dataCondemnation`, in `data.ts`). An
+ * invalidation taking effect at that moment reaches none of them. A render goes on while the
+ * authority records what its request invalidated (`inForceMoment`), and what it computed after the
+ * moment can be written, and stand current, before the call — or a later chunk of a large one — is
+ * recorded: it is kept, as the same write arriving after it is. Looked for among the entries with
+ * the tags, by their index, and not among every entry of the scope, which has no index of kinds:
+ * what an invalidation reads is what it reaches, as it was.
  *
  * Only the data cache's. A page's or a route handler's generation is stamped when its regeneration
  * built the commit, after its render had read what it is made of, so nothing of it says when that
  * render read: it is reached by its tags alone, as it was.
  */
-const MADE_AFTER_THE_MOMENT = `SELECT e.entry_id FROM entries e
+const MADE_AFTER_THE_MOMENT = `SELECT e.entry_id FROM entry_tags et
+  JOIN entries e ON e.entry_id = et.entry_id
   JOIN generations g ON g.generation_id = e.current_generation_id
-  WHERE e.kind LIKE 'data:%' AND g.cache_timestamp > ?`;
+  WHERE et.tag_id IN (SELECT value FROM json_each(?))
+    AND e.kind LIKE 'data:%' AND g.cache_timestamp > ?`;
 
 /**
  * Condemn the matching set in SQLite without allocating a generation/event per entry: the current
@@ -190,6 +195,7 @@ function condemnCurrent(
     hardExpireAt,
     hardExpireAt,
     targets,
+    targets,
     staleAt,
   );
   sql.exec(
@@ -204,6 +210,7 @@ function condemnCurrent(
     revision,
     immediate ? revision : null,
     now,
+    targets,
     targets,
     staleAt,
   );
@@ -228,6 +235,7 @@ function affectedEntries(
   tagIds: readonly string[],
   staleAt: number,
 ): AffectedRow[] {
+  const targets = JSON.stringify(tagIds);
   return sql
     .exec<AffectedRow>(
       `SELECT et.entry_id,
@@ -238,7 +246,8 @@ function affectedEntries(
      FROM entry_tags et JOIN json_each(?) t ON t.value = et.tag_id
      WHERE et.entry_id NOT IN (${MADE_AFTER_THE_MOMENT})
      GROUP BY et.entry_id ORDER BY et.entry_id`,
-      JSON.stringify(tagIds),
+      targets,
+      targets,
       staleAt,
     )
     .toArray();
