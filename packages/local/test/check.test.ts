@@ -6437,6 +6437,26 @@ describe('what the check makes of the middleware', () => {
       expect(broken.failures).toStrictEqual([{ path: '/', reason: 'answered 500' }]);
     });
 
+    it('fails where the Function answers a server error behind a handoff for its record', async () => {
+      const routes = [await routeOf('/', FRONT)];
+      await readGenerations('/', [1, 2]);
+      const at = `dpl_site|${await entryOf('/', '/')}|2`;
+      // The record says 404; the Function answered 500 all the same (Codex).
+      generationStatuses.set(at, 404);
+      answers.set('/', {
+        status: 500,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'private, no-cache',
+          'x-arkor-edge': 'passthrough;reason=generation-status-404',
+        },
+        body: `${FRONT}<h1>Server error</h1>${REST}`,
+      });
+      const result = await checkStack(stackOf(routes, {}));
+
+      expect(result.failures).toStrictEqual([{ path: '/', reason: 'answered 500' }]);
+    });
+
     it("is the application's where the edge hands it on for a record a render answered other than 200", async () => {
       const routes = [await routeOf('/', FRONT)];
       await readGenerations('/', [1, 2]);
