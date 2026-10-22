@@ -22,7 +22,8 @@ import { STANDALONE_AUTHORITY } from '../src/standalone/host.ts';
 /**
  * An artifact read checks what storage keeps of the bytes against what the authority names, with
  * nothing of the body read (Codex): bytes storage says are other bytes are refused before any of
- * them goes out, and the authority is told, so that the next upload of the bytes repairs them.
+ * them goes out, and the authority is told, so that the next upload of the bytes repairs them. So
+ * are bytes storage holds none of, or another length of.
  */
 
 const NOW = 1_800_000_000_000;
@@ -105,6 +106,7 @@ async function scopeWithArtifact(stored: { readonly bytes: string; readonly dige
     stub,
     token,
     sha256,
+    storageRef,
     artifactId: await artifactIdFor(scopeId, sha256),
     descriptor,
   };
@@ -156,6 +158,27 @@ describe('an artifact read, against what storage keeps of the bytes', () => {
 
   it('refuses bytes storage says are others, and marks the artifact for its repair', async () => {
     const scope = await scopeWithArtifact({ bytes: OTHER, digest: true });
+    const response = await read(scope);
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'artifact_mismatch' },
+    });
+    await expect(failed(scope)).resolves.toBe(true);
+  });
+
+  it('refuses an artifact storage holds none of, and marks it for its repair', async () => {
+    const scope = await scopeWithArtifact({ bytes: BODY, digest: true });
+    await env.ARTIFACTS.delete(scope.storageRef);
+    const response = await read(scope);
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: 'artifact_missing' } });
+    await expect(failed(scope)).resolves.toBe(true);
+  });
+
+  it('refuses an artifact storage holds another length of, and marks it for its repair', async () => {
+    const scope = await scopeWithArtifact({ bytes: `${BODY} and more`, digest: true });
     const response = await read(scope);
 
     expect(response.status).toBe(422);
