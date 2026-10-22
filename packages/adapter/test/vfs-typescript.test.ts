@@ -1,4 +1,13 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runInNewContext } from 'node:vm';
@@ -855,6 +864,11 @@ describe('pnpm-linked types packages, as TypeScript finds them in a Function', (
     expect(resolved.resolvedTypeReferenceDirective?.resolvedFileName).toBe(
       '/bundle/node_modules/@types/node/index.d.ts',
     );
+    // No declaration beside the app resolves through `apps/group/node_modules`: none goes up there.
+    expect(files.map((file) => file.name)).toStrictEqual([
+      'node_modules/@types/node/index.d.ts',
+      'node_modules/@types/node/package.json',
+    ]);
   });
 
   it("finds a workspace package's own dependency from its declarations, in a nested app", async () => {
@@ -917,5 +931,170 @@ describe('pnpm-linked types packages, as TypeScript finds them in a Function', (
       'node_modules/.pnpm/types-react@19.0.0/node_modules/types-react/index.d.ts',
     ]);
     expect(getAutomaticTypeDirectiveNames(WALKED, system)).toStrictEqual([]);
+  });
+
+  it.each([path.join('node_modules', '.store'), '.pnpm'])(
+    "resolves a linked types package's dependency where pnpm's virtualStoreDir is %s",
+    async (store) => {
+      const root = await repository();
+      const stored = await storedPackage(
+        root,
+        '@types+node@26.1.0',
+        { name: '@types/node' },
+        { 'index.d.ts': "export type { Dispatcher } from 'undici-types';\n" },
+      );
+      await storedPackage(
+        root,
+        'undici-types@7.16.0',
+        { name: 'undici-types' },
+        { 'index.d.ts': 'export interface Dispatcher {}\n' },
+      );
+      // The store where `virtualStoreDir` puts it, rather than at `node_modules/.pnpm`.
+      const defaultStore = path.join(root, 'node_modules', '.pnpm');
+      await mkdir(path.dirname(path.join(root, store)), { recursive: true });
+      await rename(defaultStore, path.join(root, store));
+      const node = path.join(root, store, path.relative(defaultStore, stored));
+      const undici = path.join(root, store, 'undici-types@7.16.0', 'node_modules', 'undici-types');
+      const assets = await pnpmTrace(root, [
+        [path.join(root, 'node_modules', '@types', 'node'), node],
+        [path.join(node, '..', '..', 'undici-types'), undici],
+      ]);
+      const files = tracedFiles([{ assets }], root, path.join(root, '.next'));
+
+      expect(files.map((file) => file.name)).toStrictEqual([
+        'node_modules/@types/node/index.d.ts',
+        'node_modules/@types/node/package.json',
+        'node_modules/undici-types/index.d.ts',
+        'node_modules/undici-types/package.json',
+      ]);
+
+      const system = await functionSystem(files);
+      const resolved = resolveModuleName(
+        'undici-types',
+        '/bundle/node_modules/@types/node/index.d.ts',
+        RESOLUTION,
+        system,
+      );
+
+      expect(resolved.resolvedModule?.resolvedFileName).toBe(
+        '/bundle/node_modules/undici-types/index.d.ts',
+      );
+    },
+  );
+
+  it("resolves a linked workspace package's own dependency from the name the project links it by", async () => {
+    const root = await repository();
+    // `node_modules/@acme/ui` links the workspace package `packages/ui`, whose own dependency pnpm
+    // links into `packages/ui/node_modules`, beside none of the project's.
+    const ui = path.join(root, 'packages', 'ui');
+    await mkdir(ui, { recursive: true });
+    await writeFile(path.join(ui, 'package.json'), JSON.stringify({ name: '@acme/ui' }));
+    await writeFile(path.join(ui, 'index.d.ts'), "export type { Schema } from 'zod';\n");
+    const zod = await storedPackage(
+      root,
+      'zod@3.23.8',
+      { name: 'zod', types: 'index.d.ts' },
+      { 'index.d.ts': 'export type Schema = { version: 3 };\n' },
+    );
+    const link = path.join(root, 'node_modules', '@acme', 'ui');
+    const own = path.join(ui, 'node_modules', 'zod');
+    for (const [at, target] of [
+      [link, ui],
+      [own, zod],
+    ] as const) {
+      await mkdir(path.dirname(at), { recursive: true });
+      await symlink(target, at, 'dir');
+    }
+    const assets = {
+      'node_modules/@acme/ui': link,
+      'packages/ui/index.d.ts': path.join(ui, 'index.d.ts'),
+      'packages/ui/node_modules/zod': own,
+      'node_modules/.pnpm/zod@3.23.8/node_modules/zod/index.d.ts': path.join(zod, 'index.d.ts'),
+      'node_modules/.pnpm/zod@3.23.8/node_modules/zod/package.json': path.join(zod, 'package.json'),
+    };
+    const files = tracedFiles([{ assets }], root, path.join(root, '.next'));
+    const system = await functionSystem(files);
+    const resolved = (from: string) =>
+      resolveModuleName('zod', from, RESOLUTION, system).resolvedModule?.resolvedFileName;
+
+    expect(resolved('/bundle/node_modules/@acme/ui/index.d.ts')).toBe(
+      '/bundle/node_modules/zod/index.d.ts',
+    );
+    expect(resolved('/bundle/packages/ui/index.d.ts')).toBe(
+      '/bundle/packages/ui/node_modules/zod/index.d.ts',
+    );
+  });
+
+  it("resolves a dependency pnpm hoisted into its store's own node_modules, beside none", async () => {
+    const root = await repository();
+    // `@types/plugin` imports `tapable` without depending on it, and finds the one pnpm hoists into
+    // `node_modules/.pnpm/node_modules`, which the store's packages look in after their own.
+    const plugin = await storedPackage(
+      root,
+      '@types+plugin@1.0.0',
+      { name: '@types/plugin' },
+      { 'index.d.ts': "export type { Hook } from 'tapable';\n" },
+    );
+    const tapable = await storedPackage(
+      root,
+      'tapable@2.2.1',
+      { name: 'tapable', types: 'index.d.ts' },
+      { 'index.d.ts': 'export interface Hook {}\n' },
+    );
+    const assets = await pnpmTrace(root, [
+      [path.join(root, 'node_modules', '@types', 'plugin'), plugin],
+      [path.join(root, 'node_modules', '.pnpm', 'node_modules', 'tapable'), tapable],
+    ]);
+    const files = tracedFiles([{ assets }], root, path.join(root, '.next'));
+    const system = await functionSystem(files);
+    const resolved = resolveModuleName(
+      'tapable',
+      '/bundle/node_modules/@types/plugin/index.d.ts',
+      RESOLUTION,
+      system,
+    );
+
+    expect(resolved.resolvedModule?.resolvedFileName).toBe(
+      '/bundle/node_modules/tapable/index.d.ts',
+    );
+  });
+
+  it("resolves a workspace's shared declarations against its own links, beside a nested app's", async () => {
+    const root = await repository();
+    const project = path.join(root, 'apps', 'group', 'site');
+    await mkdir(project, { recursive: true });
+    // `apps/group` is a workspace package with `zod` 3; the app beside its shared declarations has
+    // `zod` 4 of its own. Each declaration resolves from where it is.
+    const shared = path.join(root, 'apps', 'group', 'shared', 'index.d.ts');
+    await mkdir(path.dirname(shared), { recursive: true });
+    await writeFile(shared, "export type { Schema } from 'zod';\n");
+    const older = await storedPackage(
+      root,
+      'zod@3.23.8',
+      { name: 'zod', types: 'index.d.ts' },
+      { 'index.d.ts': 'export type Schema = { version: 3 };\n' },
+    );
+    const own = await storedPackage(
+      root,
+      'zod@4.0.0',
+      { name: 'zod', types: 'index.d.ts' },
+      { 'index.d.ts': 'export type Schema = { version: 4 };\n' },
+    );
+    const assets = await pnpmTrace(root, [
+      [path.join(project, 'node_modules', 'zod'), own],
+      [path.join(root, 'apps', 'group', 'node_modules', 'zod'), older],
+    ]);
+    assets['apps/group/shared/index.d.ts'] = shared;
+    const files = tracedFiles([{ assets }], project, path.join(project, '.next'), root);
+    const system = await functionSystem(files);
+    const resolved = (from: string) =>
+      resolveModuleName('zod', from, RESOLUTION, system).resolvedModule?.resolvedFileName;
+
+    expect(resolved('/bundle/apps/group/shared/index.d.ts')).toBe(
+      '/bundle/apps/group/node_modules/zod/index.d.ts',
+    );
+    expect(system.readFile('/bundle/apps/group/node_modules/zod/index.d.ts')).toContain('3');
+    expect(resolved('/bundle/app/page.ts')).toBe('/bundle/node_modules/zod/index.d.ts');
+    expect(system.readFile('/bundle/node_modules/zod/index.d.ts')).toContain('4');
   });
 });
