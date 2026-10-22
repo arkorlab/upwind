@@ -424,6 +424,49 @@ describe('a data upload replacing a known broken canonical artifact', () => {
     },
   );
 
+  it.each([
+    {
+      found: 'missing',
+      code: 'artifact_missing',
+      lose: async (key: string) => {
+        await env.ARTIFACTS.delete(key);
+      },
+    },
+    {
+      found: 'of another length',
+      code: 'artifact_mismatch',
+      lose: async (key: string, length: number) => {
+        await env.ARTIFACTS.put(key, new Uint8Array(length + 1));
+      },
+    },
+  ])(
+    'repairs a referenced value a read found $found, though no projection reads its blob',
+    async ({ code, lose }) => {
+      const test = await fixture(MAX_INLINE_DATA_VALUE_BYTES + 1, false);
+
+      await test.client.setData(requestFor(test, 'value', NOW));
+
+      await test.drain();
+
+      const stored = await stateFor(test);
+      await lose(stored.artifact.storage_ref, test.bytes.length);
+
+      const refused = await test.artifactResponse();
+
+      expect(refused.status).toBe(422);
+      await expect(refused.json()).resolves.toMatchObject({ error: { code } });
+      await expect(stateFor(test)).resolves.toMatchObject({ failed: true });
+
+      await test.client.setData(requestFor(test, 'value', NOW + 1));
+
+      await test.drain();
+
+      await expect(stateFor(test)).resolves.toMatchObject({ failed: false });
+      await expect(valueOf(test, 'value')).resolves.toStrictEqual(test.bytes);
+    },
+    REPAIR_TEST_TIMEOUT_MS,
+  );
+
   it('keeps healthy deduplication and unchanged-generation replies', async () => {
     const test = await fixture(ABOVE_CARRIED_BYTES, false);
     const request = requestFor(test, 'value', NOW);

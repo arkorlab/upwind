@@ -213,6 +213,59 @@ describe.each(['passthrough', ...BACKENDS] as const)('host asset headers under %
   );
 });
 
+/** Each answer's status and body, in order. */
+function answered(
+  answers: readonly { readonly response: Response; readonly text: string }[],
+): (number | string)[][] {
+  return answers.map((answer) => [answer.response.status, answer.text]);
+}
+
+describe.each(BACKENDS)('host-owned validators on assets under %s', (backend) => {
+  const owned: HostCredentials = { cookies: [], headers: ['If-None-Match'] };
+  const conditional = { 'if-none-match': '*' };
+
+  it('answers a host-owned If-None-Match with the asset, cold and then from the cache', async () => {
+    const fixture = await assetFixture(backend, { credentials: owned });
+    const cold = await fixture.ask(conditional);
+    const hit = await fixture.ask(conditional);
+
+    expect(answered([cold, hit])).toStrictEqual([
+      [200, PUBLIC_ASSET],
+      [200, PUBLIC_ASSET],
+    ]);
+    expect(fixture.asked).toHaveLength(1);
+    expect(cold.request.headers.get('if-none-match')).toBe('*');
+  });
+
+  it('answers a host-owned If-None-Match with the asset from a warmed cache', async () => {
+    const fixture = await assetFixture(backend, { credentials: owned });
+    const warm = await fixture.ask();
+    const hit = await fixture.ask(conditional);
+
+    expect(answered([warm, hit])).toStrictEqual([
+      [200, PUBLIC_ASSET],
+      [200, PUBLIC_ASSET],
+    ]);
+    expect(fixture.asked).toHaveLength(1);
+  });
+
+  it('still answers an If-None-Match the host does not own with a 304', async () => {
+    const fixture = await assetFixture(backend, {
+      credentials: { cookies: [], headers: ['Authorization'] },
+    });
+    const cold = await fixture.ask(conditional);
+    const warm = await fixture.ask();
+    const hit = await fixture.ask(conditional);
+
+    expect(answered([cold, warm, hit])).toStrictEqual([
+      [304, ''],
+      [200, PUBLIC_ASSET],
+      [304, ''],
+    ]);
+    expect(fixture.asked).toHaveLength(2);
+  });
+});
+
 describe.each(BACKENDS)('credentialed assets under the %s policy', (backend) => {
   afterEach(() => vi.restoreAllMocks());
 
