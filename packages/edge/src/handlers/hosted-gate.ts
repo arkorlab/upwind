@@ -7,6 +7,7 @@ import type { MiddlewareResult } from '@stayingupwind/core/paas';
 import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
 import type { EdgeContext, StaticFileContext } from '../strategies/context.ts';
+import { headersAfterMiddleware } from './hosted-route.ts';
 import {
   decideMiddleware,
   followExternalRewrite,
@@ -169,6 +170,25 @@ export async function serveAfterMiddleware(
       input.passthrough(PATTERN_BUDGET, middleware)
     );
   }
+}
+
+/**
+ * Whether a rule ahead of the filesystem claims a request the middleware changed — rewrote, or
+ * handed on with other headers — as it left it (Codex). Next.js's router runs its `beforeFiles`
+ * rewrites after the middleware, on what the middleware left, and looks for a shipped file or the
+ * optimizer only after them; the request as it came was judged before the middleware ran
+ * (`serveAfterMiddleware`), and one the middleware left as it came is judged by that alone.
+ */
+export function claimedAsLeft(
+  input: {
+    readonly request: Request;
+    readonly edge: Pick<EdgeContext, 'host' | 'forwarding'>;
+    readonly manifest: ProjectManifest;
+  },
+  middleware: MiddlewareContinued,
+): boolean {
+  const routed = headersAfterMiddleware(input, middleware);
+  return routed !== undefined && isReserved(input.manifest, middleware.url, routed, true);
 }
 
 /** What the middleware decided for something the edge holds, acted on (`serveAfterMiddleware`). */

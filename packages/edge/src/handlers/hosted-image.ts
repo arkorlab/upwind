@@ -3,15 +3,19 @@ import {
   type ImagesConfig,
   parseImageRequest,
 } from '@stayingupwind/core/images';
-import { type ConfiguredHeaders, isReserved } from '@stayingupwind/core/manifest';
+import type { ConfiguredHeaders } from '@stayingupwind/core/manifest';
 import { DEPLOYMENT_ID_QUERY, PatternBudgetExceededError } from '@stayingupwind/core/request';
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 
-import { type HostedGateInput, serveAfterMiddleware, type TimedContinue } from './hosted-gate.ts';
+import {
+  claimedAsLeft,
+  type HostedGateInput,
+  serveAfterMiddleware,
+  type TimedContinue,
+} from './hosted-gate.ts';
 import { serveHostedFile } from './hosted-static-file.ts';
 import { handleImage, type ImageAnswerInput, refuseImage } from './image.ts';
 import {
-  handedHeaders,
   headerRulesAsRouted,
   type MiddlewareOutcome,
   type MiddlewareTiming,
@@ -149,31 +153,27 @@ function routeWithinBudget(input: HostedImageInput): Promise<Response> {
   return serveAfterMiddleware(input, {
     overBudget: (middleware, dispatches, configured) =>
       refused(input, middleware, dispatches, configured),
-    serve: (middleware, dispatches, configured) =>
-      optimized(input, input.url, answering(input, middleware, dispatches, configured)),
+    // A request whose headers the middleware changed into one a rule ahead of the filesystem
+    // claims is the Worker's to route (`claimedAsLeft`), as it was before the middleware ran.
+    serve: (middleware, dispatches, configured) => {
+      return middleware !== undefined && claimedAsLeft(input, middleware)
+        ? input.passthrough('reserved', middleware)
+        : optimized(input, input.url, answering(input, middleware, dispatches, configured));
+    },
     // A rewrite that stays on the optimizer's path — another source, width or quality — is the
     // optimizer's to answer, as Next.js's router hands it the rewritten parameters: no Worker of
-    // the application has one. Elsewhere, the target's routing runs before a shipped file can
-    // answer it; anything the edge cannot serve stays with the Worker.
+    // the application has one. Unless a rule ahead of the filesystem claims it as the middleware
+    // left it (`claimedAsLeft`), as it claims any other target the rewrite names before a shipped
+    // file can answer it; anything the edge cannot serve stays with the Worker.
     rewritten: (middleware, dispatches, configured) => {
       const still = classifyImageRequest({ method: request.method, url: middleware.url, manifest });
       if (still !== undefined) {
-        return optimized(
-          input,
-          middleware.url,
-          answering(input, middleware, dispatches, configured),
-        );
+        return claimedAsLeft(input, middleware)
+          ? undefined
+          : optimized(input, middleware.url, answering(input, middleware, dispatches, configured));
       }
       try {
-        if (
-          manifest.reservedRoutes !== undefined &&
-          isReserved(
-            manifest,
-            middleware.url,
-            handedHeaders(input.edge, middleware.requestHeaders),
-            true,
-          )
-        ) {
+        if (claimedAsLeft(input, middleware)) {
           return;
         }
       } catch (error) {

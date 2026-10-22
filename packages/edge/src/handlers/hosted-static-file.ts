@@ -11,6 +11,7 @@ import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 
 import type { StaticFileContext } from '../strategies/context.ts';
 import {
+  claimedAsLeft,
   type DeferredHostedGateInput,
   type HostedGate,
   serveAfterMiddleware,
@@ -160,10 +161,11 @@ export function serveHostedFile(
 
 /**
  * A file of a hosted application, served from storage once what runs ahead of the filesystem has
- * had its say. A middleware rewrite that keeps the file — a query it adds, or the default locale
- * Next.js puts in front of the path it rewrites to (`staticFileKey`) — keeps the build the
- * classification chose; one to another shipped file is served as that file; to anything else,
- * the Worker's.
+ * had its say — on the request as the middleware left it as well, where it changed it
+ * (`claimedAsLeft`): a rule that claims that is the Worker's to follow. A middleware rewrite that
+ * keeps the file — a query it adds, or the default locale Next.js puts in front of the path it
+ * rewrites to (`staticFileKey`) — keeps the build the classification chose; one to another shipped
+ * file is served as that file; to anything else, the Worker's.
  *
  * The file is read while the middleware runs rather than after it: the answer the middleware lets
  * through takes the read, and one it answers itself or sends elsewhere lets it go. What that costs
@@ -185,6 +187,19 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
     early = undefined;
     return counted && abandoned !== undefined ? requestsOf(abandoned) : undefined;
   };
+  // The read of the file asked for is let go, and counted among the requests of the Worker's
+  // answer, passed to the same background accounting as a discarded shell, without waiting for it.
+  function toWorker(reason: string, middleware: TimedContinue): Promise<Response> {
+    const replaced = early;
+    letGo();
+    return input.passthrough(
+      reason,
+      middleware,
+      replaced === undefined
+        ? undefined
+        : { abandonedShells: { ctx: replaced.ctx, requests: requestsOf(replaced) } },
+    );
+  }
   return serveAfterMiddleware(input, {
     ready: (edge) => {
       servedInput = { ...input, edge };
@@ -201,30 +216,29 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
       });
     },
     abandon: letGo,
-    serve: (middleware, dispatches, configured) =>
-      serveFile(servedInput, classified(configured), middleware, dispatches),
+    serve: (middleware, dispatches, configured) => {
+      return middleware !== undefined && claimedAsLeft(servedInput, middleware)
+        ? toWorker('reserved', middleware)
+        : serveFile(servedInput, classified(configured), middleware, dispatches);
+    },
     rewritten: (middleware, dispatches, configured) => {
+      if (claimedAsLeft(servedInput, middleware)) {
+        return toWorker('rewritten', middleware);
+      }
       const kept =
         middleware.url.pathname === url.pathname ||
         staticFileKey(manifest, middleware.url.pathname) === staticFileKey(manifest, url.pathname);
       if (kept) {
         return serveFile(servedInput, classified(configured), middleware, dispatches);
       }
-      // The read of the file asked for is let go, and counted among the requests of the file
-      // served instead. A rewrite to a path the Worker answers passes the discarded read to the
-      // same background accounting as a discarded shell, without waiting for it before the answer.
-      const replaced = early;
-      letGo();
       const target = shippedFileAt(manifest, middleware.url);
       if (target === undefined) {
-        return input.passthrough(
-          'rewritten',
-          middleware,
-          replaced === undefined
-            ? undefined
-            : { abandonedShells: { ctx: replaced.ctx, requests: requestsOf(replaced) } },
-        );
+        return toWorker('rewritten', middleware);
       }
+      // The read of the file asked for is let go, and counted among the requests of the file
+      // served instead.
+      const replaced = early;
+      letGo();
       return serveFile(servedInput, { ...target, replaced, configured }, middleware, dispatches);
     },
   });
