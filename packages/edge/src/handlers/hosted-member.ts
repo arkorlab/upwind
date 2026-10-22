@@ -169,7 +169,10 @@ async function serveOwnRecord(
     return composePayload(
       {
         ...input,
-        passthrough: () => unserved({ recordLookupMs: loaded.load.lookupMs }),
+        // Handed on as the member is, with what the part's fallback carries — the reads it made, a
+        // regeneration it asked — beside how long the record took to find (Sentry).
+        passthrough: (_reason, _middleware, _route, waited) =>
+          unserved({ ...waited, recordLookupMs: loaded.load.lookupMs }),
       },
       ownRecordEntry(member, loaded.key.entryId),
       middleware,
