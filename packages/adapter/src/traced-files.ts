@@ -25,13 +25,14 @@ import { AuditError } from './dependencies.ts';
  * Turbopack runtime resolves it to (`patches/turbopack-root.ts`). It is the application's file
  * under a name the build gave it, so it travels as the others do, under its path in the project.
  *
- * A types package pnpm installed travels under the name TypeScript looks for it by. pnpm keeps its
- * files in its store (`node_modules/.pnpm/@types+node@…/node_modules/@types/node`) and links
+ * A package pnpm installed travels under the name TypeScript looks for it by. pnpm keeps its files
+ * in its store (`node_modules/.pnpm/@types+node@…/node_modules/@types/node`) and links
  * `node_modules/@types/node` to them, and a trace through that link lists the stored files and the
- * link itself. The Function's file system has no links, and TypeScript finds an `@types` package
- * only by walking `node_modules/@types` directories, so the stored declarations go up under the
- * link's path instead, with the package's traced `package.json` (`linkTypes`), and so do the
- * packages pnpm linked beside it in its store, which its own imports name (`linkDependencies`).
+ * link itself. The Function's file system has no links, and TypeScript finds a package only by
+ * walking `node_modules` directories upward, so the stored declarations go up, with the package's
+ * traced `package.json` (`linkTypes`), where TypeScript in the Function finds the package from
+ * `/bundle` as TypeScript finds it from the project (`packageLinks`), and so do the packages pnpm
+ * linked beside each in its store, from where that package is held (`linkDependencies`).
  */
 export interface TracedFile {
   /**
@@ -59,9 +60,10 @@ const NOT_DATA = new Set([
 const PACKAGES_DIR = 'node_modules';
 /** What TypeScript reads a package's entry and its `typesVersions` from. */
 const MANIFEST = 'package.json';
-const TYPES_SCOPE = '@types';
-/** Where a types package is linked: `node_modules/@types/<name>`, at any depth. */
-const TYPES_LINK = /(?:^|\/)node_modules\/@types\/(?<name>[^./][^/]*)$/u;
+/** TypeScript's own package, whose library `@typescript/vfs` reads where the trace names it. */
+const COMPILER = 'typescript';
+/** A package's name at the start of a path in a `node_modules` directory. */
+const PACKAGE_NAME = /^(?:@[^./][^/]*\/)?[^./@][^/]*/u;
 /** A package in a `node_modules` directory: `<directory>/<name>` or `<directory>/@scope/<name>`. */
 const PACKAGE_ENTRY =
   /^(?<directory>(?:.+\/)?node_modules)\/(?<name>(?:@[^./][^/]*\/)?[^./@][^/]*)$/u;
@@ -277,18 +279,6 @@ function isInStore(name: string): boolean {
 }
 
 /**
- * `@types/<name>` for a trace's `…/node_modules/@types/<name>`: a directory TypeScript walks. One
- * in pnpm's store is not: pnpm links a stored package's dependencies there, beside it, and they are
- * held beside the package the Function holds instead (`linkDependencies`).
- */
-function typesPackageOf(logical: string): string | undefined {
-  const name = TYPES_LINK.exec(logical)?.groups?.['name'];
-  return name !== undefined && isVfsName(logical) && !isInStore(logical)
-    ? `${TYPES_SCOPE}/${name}`
-    : undefined;
-}
-
-/**
  * The directory a traced link really leads to, when the link is what its path says: a symlink
  * inside the repository, which the same path reaches from the repository too, onto a directory
  * inside the real repository that holds the package named `name`.
@@ -316,107 +306,234 @@ function linkTarget(
   }
 }
 
+/** What a resolver from the project meets first at a package name. */
+interface Seen {
+  /** Its path in the trace, from the repository. */
+  readonly logical: string;
+  /** The directory it leads to, where it is a link that is what its path says (`linkTarget`). */
+  readonly target: string | undefined;
+}
+
 /**
- * The package a traced types link leads to, when the link is what its name says (`linkTarget`).
- * Any other link is left out, as every link always was: an npm alias (`"@types/react":
- * "npm:types-react@…"`) keeps its stored name. A link in the project is held at its path in the
- * project, since the project is the Function's `/bundle` and its working directory, where
- * TypeScript starts walking `node_modules/@types`: an app in a workspace has its own
- * `apps/site/node_modules/@types/node`. Any other link is held at its path from the repository,
- * as every declaration is.
+ * The `node_modules` directories a resolver looks in from the project, nearest first, up to the
+ * repository's own: `apps/site/node_modules`, `apps/node_modules`, `node_modules`. None for a
+ * project outside the repository, whose declarations are refused.
  */
-function typesLinkOf(
+function projectChain(repository: Repository, projectDir: string): string[] {
+  const project = beneath(repository.path, path.resolve(projectDir));
+  if (project === undefined) return [];
+  const segments = project === '' ? [] : project.split(path.sep);
+  return [
+    ...segments.map((_, at) =>
+      [...segments.slice(0, segments.length - at), PACKAGES_DIR].join('/'),
+    ),
+    PACKAGES_DIR,
+  ];
+}
+
+/**
+ * What a resolver walking from the project up to the repository root meets first at each package
+ * name, among what the trace lists: each link, and each package directory a traced file is in. A
+ * link that is what its path says leads to a package the Function can hold; anything else (a
+ * package's own directory, an npm alias, a link out of the repository) is nothing the Function can
+ * hold, and hides what is farther all the same, as it does from the project.
+ */
+function projectView(
   repository: Repository,
-  projectDir: string,
-  asset: Asset,
+  chain: readonly string[],
+  assets: readonly Asset[],
+): Map<string, Seen> {
+  const nearest = new Map<string, { readonly distance: number; readonly logical: string }>();
+  for (const [logical] of assets) {
+    for (const [distance, directory] of chain.entries()) {
+      const name = logical.startsWith(`${directory}/`)
+        ? PACKAGE_NAME.exec(logical.slice(directory.length + 1))?.[0]
+        : undefined;
+      if (name !== undefined && distance < (nearest.get(name)?.distance ?? chain.length)) {
+        nearest.set(name, { distance, logical: `${directory}/${name}` });
+      }
+    }
+  }
+  const listed = new Map(assets);
+  return new Map(
+    [...nearest].map(([name, { logical }]) => {
+      const filePath = listed.get(logical) ?? path.join(repository.path, logical);
+      return [name, { logical, target: linkTarget(repository, [logical, filePath], name) }];
+    }),
+  );
+}
+
+/**
+ * A traced link off the project's chain and outside pnpm's store (a workspace package's own
+ * `packages/lib/node_modules/zod`), held at its own path, where TypeScript looks for it from the
+ * files beside it: its path in the project when it is in the project, and otherwise its path from
+ * the repository, as every declaration's.
+ */
+function linkElsewhere(
+  repository: Repository,
+  input: { readonly projectDir: string; readonly chain: readonly string[]; readonly asset: Asset },
 ): PackageLink | undefined {
-  const [logical] = asset;
-  const name = typesPackageOf(logical);
-  const target = name === undefined ? undefined : linkTarget(repository, asset, name);
+  const [logical] = input.asset;
+  const entry = PACKAGE_ENTRY.exec(logical)?.groups;
+  const name = entry?.['name'];
+  if (
+    name === undefined ||
+    name === COMPILER ||
+    input.chain.includes(entry?.['directory'] ?? '') ||
+    isInStore(logical)
+  ) {
+    return undefined;
+  }
+  const target = linkTarget(repository, input.asset, name);
   if (target === undefined) return undefined;
-  const local = beneath(path.resolve(projectDir), path.join(repository.path, logical));
+  const local = beneath(path.resolve(input.projectDir), path.join(repository.path, logical));
   const held = local === undefined ? logical : local.split(path.sep).join('/');
   return isVfsName(held) ? { logical, name: held, target } : undefined;
 }
 
-/** The `node_modules` directory pnpm's store keeps a link's package in, from the repository. */
+/** The `node_modules` directory pnpm's store keeps a held package in, from the repository. */
 function storeOf(repository: Repository, link: PackageLink): string | undefined {
-  const store = beneath(repository.real, path.dirname(path.dirname(link.target)));
-  const name = store?.split(path.sep).join('/');
-  return name !== undefined && PNPM_PACKAGES.test(name) ? name : undefined;
+  const stored = beneath(repository.real, link.target)?.split(path.sep).join('/');
+  const directory =
+    stored === undefined ? undefined : PACKAGE_ENTRY.exec(stored)?.groups?.['directory'];
+  return directory !== undefined && PNPM_PACKAGES.test(directory) ? directory : undefined;
+}
+
+/** The `node_modules` directories TypeScript looks in from inside a package held at `name`. */
+function upward(name: string): string[] {
+  const segments = name.split('/');
+  return [
+    ...segments
+      .map((_, at) => segments.slice(0, segments.length - at))
+      .filter((directory) => directory.at(-1) !== PACKAGES_DIR)
+      .map((directory) => [...directory, PACKAGES_DIR].join('/')),
+    PACKAGES_DIR,
+  ];
+}
+
+/** Whether the package held at `name`, or a package it is held inside, is `target`. */
+function isWithin(links: ReadonlyMap<string, PackageLink>, name: string, target: string): boolean {
+  const segments = name.split('/');
+  return segments.some(
+    (_, at) => links.get(segments.slice(0, at + 1).join('/'))?.target === target,
+  );
 }
 
 /**
- * Where the Function holds the dependency `name` of the package held at `owner`: beside it, unless
- * another package holds that name already, and then in its own `node_modules`.
+ * Where the Function holds a dependency `name` of the package held at `owner`, really `target`,
+ * for TypeScript to find from the package as the package finds it in pnpm's store, looking in each
+ * `node_modules` upward from inside it. Where the first package it meets by that name is this one,
+ * nothing more is held. Where it meets another first, the dependency is held in the owner's own
+ * `node_modules`, unless the owner is held inside this package already: a cycle. Where it meets
+ * none, the dependency is held beside the owner, where an npm install places it.
  */
 function dependencyName(
-  links: ReadonlyMap<string, PackageLink>,
+  held: {
+    readonly links: ReadonlyMap<string, PackageLink>;
+    readonly view: ReadonlyMap<string, Seen>;
+  },
   owner: PackageLink,
   name: string,
   target: string,
-): string {
-  const beside = `${path.posix.dirname(path.posix.dirname(owner.name))}/${name}`;
-  const held = links.get(beside)?.target;
-  return held === undefined || held === target ? beside : `${owner.name}/${PACKAGES_DIR}/${name}`;
+): string | undefined {
+  for (const directory of upward(owner.name)) {
+    const at = `${directory}/${name}`;
+    const met =
+      held.links.get(at) ?? (directory === PACKAGES_DIR ? held.view.get(name) : undefined);
+    if (met === undefined) continue;
+    if (met.target === target) return undefined;
+    const inside = `${owner.name}/${PACKAGES_DIR}/${name}`;
+    return at === inside || isWithin(held.links, owner.name, target) ? undefined : inside;
+  }
+  return `${PACKAGE_ENTRY.exec(owner.name)?.groups?.['directory'] ?? PACKAGES_DIR}/${name}`;
 }
 
 /**
- * The packages pnpm linked beside each types package in its store, where the trace lists the
- * links. pnpm keeps a package's dependencies as links in the `node_modules` directory it stores the
- * package in (`…/.pnpm/@types+node@…/node_modules/undici-types`), and TypeScript, loading the
- * package from there, finds them by looking upward. Held under its link's name, the package looks
- * upward from there, so each dependency is held beside it, in the `node_modules` directory that
- * name is in, as an npm install places it (`node_modules/undici-types`); or, where another package
- * holds that name already, in the types package's own `node_modules`, where TypeScript looks
- * first. A dependency's own dependencies are not followed.
+ * The traced links pnpm made in each `node_modules` directory of its store, in a stable order, but
+ * TypeScript's own, whose library keeps its names (`packageLinks`).
+ */
+function storeLinks(assets: readonly Asset[]): Map<string, { asset: Asset; name: string }[]> {
+  const stores = new Map<string, { asset: Asset; name: string }[]>();
+  const sorted = assets.toSorted(([a], [b]) => a.localeCompare(b));
+  for (const asset of sorted) {
+    const entry = PACKAGE_ENTRY.exec(asset[0])?.groups;
+    const directory = entry?.['directory'];
+    const name = entry?.['name'];
+    if (
+      directory !== undefined &&
+      name !== undefined &&
+      name !== COMPILER &&
+      PNPM_PACKAGES.test(directory)
+    ) {
+      stores.set(directory, [...(stores.get(directory) ?? []), { asset, name }]);
+    }
+  }
+  return stores;
+}
+
+/**
+ * The packages pnpm linked beside each package the Function holds, in the `node_modules` directory
+ * it stores that package in (`…/.pnpm/@types+node@…/node_modules/undici-types`), where the trace
+ * lists the links, and then the packages linked beside those: TypeScript, loading a package from
+ * the store, finds them by looking upward from it, and the Function holds each where TypeScript
+ * finds it from where the package is held (`dependencyName`). A package is placed only after the
+ * package it is held inside has placed all it depends on, so what is above it is settled. Each
+ * traced link is followed once from each place its package is held, and no package is held inside
+ * itself, so this ends with what the trace lists.
  */
 function linkDependencies(
   links: Map<string, PackageLink>,
+  view: ReadonlyMap<string, Seen>,
   assets: readonly Asset[],
   repository: Repository,
 ): void {
-  const stores = new Map<string, PackageLink[]>();
-  for (const link of links.values()) {
-    const store = storeOf(repository, link);
-    if (store !== undefined) stores.set(store, [...(stores.get(store) ?? []), link]);
-  }
-  const dependencies = assets
-    .flatMap((asset) => {
-      const entry = PACKAGE_ENTRY.exec(asset[0])?.groups;
-      const owners = stores.get(entry?.['directory'] ?? '');
-      const name = entry?.['name'];
-      return owners === undefined || name === undefined ? [] : [{ asset, name, owners }];
-    })
-    .toSorted((a, b) => a.asset[0].localeCompare(b.asset[0]));
-  for (const { asset, name, owners } of dependencies) {
-    const target = linkTarget(repository, asset, name);
-    if (target === undefined) continue;
-    for (const owner of owners) {
-      const held = dependencyName(links, owner, name, target);
-      if (!links.has(held) && isVfsName(held)) {
-        links.set(held, { logical: asset[0], name: held, target });
+  const stores = storeLinks(assets);
+  const queue = [...links.values()].toSorted((a, b) => a.name.localeCompare(b.name));
+  for (let owner = queue.shift(); owner !== undefined; owner = queue.shift()) {
+    const store = storeOf(repository, owner);
+    const dependencies = store === undefined ? undefined : stores.get(store);
+    if (dependencies === undefined) continue;
+    for (const { asset, name } of dependencies) {
+      const target = linkTarget(repository, asset, name);
+      const at =
+        target === undefined ? undefined : dependencyName({ links, view }, owner, name, target);
+      if (target !== undefined && at !== undefined && isVfsName(at) && !links.has(at)) {
+        const link = { logical: asset[0], name: at, target };
+        links.set(at, link);
+        queue.push(link);
       }
     }
   }
 }
 
-/** The traced links the Function holds packages under, by the name it holds each by. */
+/**
+ * The packages the Function holds, by the name it holds each by: each package the project's
+ * resolver finds by a link (`projectView`), at `node_modules/<name>`, which is where the Function
+ * finds it from `/bundle`, whichever level of the repository the link is at; each other traced
+ * link outside pnpm's store, at its own path (`linkElsewhere`); and what each depends on
+ * (`linkDependencies`). TypeScript's own package keeps the names the trace gives it:
+ * `@typescript/vfs` reads its library from the one directory the build checked by that name
+ * (`vfs-typescript.ts`).
+ */
 function packageLinks(
   repository: Repository,
   projectDir: string,
   assets: readonly Asset[],
 ): Map<string, PackageLink> {
+  const chain = projectChain(repository, projectDir);
+  const view = projectView(repository, chain, assets);
   const links = new Map<string, PackageLink>();
-  for (const asset of assets) {
-    const link = typesLinkOf(repository, projectDir, asset);
-    // A link in the project takes the name over one beyond it, as from the project TypeScript
-    // finds the project's own first. Only a project nested in the repository has both.
-    if (link !== undefined && (link.name !== link.logical || !links.has(link.name))) {
-      links.set(link.name, link);
+  for (const [name, seen] of view) {
+    const held = `${PACKAGES_DIR}/${name}`;
+    if (name !== COMPILER && seen.target !== undefined) {
+      links.set(held, { logical: seen.logical, name: held, target: seen.target });
     }
   }
-  linkDependencies(links, assets, repository);
+  for (const asset of assets) {
+    const link = linkElsewhere(repository, { projectDir, chain, asset });
+    if (link !== undefined && !links.has(link.name)) links.set(link.name, link);
+  }
+  linkDependencies(links, view, assets, repository);
   return links;
 }
 
@@ -469,9 +586,9 @@ function isStoredName(name: string, physical: string, repository: Repository): b
  * sends TypeScript 5.6 to `ts5.6/index.d.ts`). Its name in pnpm's store is dropped, since nothing
  * in the Function reaches the store: a store package is reached only through links, and the
  * Function has none; TypeScript resolves a reference beside the file it loaded, and a dependency
- * upward from it (`linkDependencies`); and a types package has no code to name its own directory
- * with. Kept, it would only double the package. A declaration under any other name (a workspace
- * package's own directory, which the application may read) keeps that name too.
+ * upward from it (`linkDependencies`); and a package's code is bundled, so no code names the
+ * store's directories. Kept, it would only double the package. A declaration under any other name
+ * (a workspace package's own directory, which the application may read) keeps that name too.
  */
 function linkTypes(
   files: Map<string, TracedFile>,
