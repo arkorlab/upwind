@@ -65,7 +65,7 @@ export function headersLeftAlone(
 
 /** The shared forwarded view for a changed middleware request and a shell-less member lookup. */
 export function headersAfterMiddleware(
-  input: { readonly request: Request; readonly edge: EdgeContext },
+  input: { readonly request: Request; readonly edge: Pick<EdgeContext, 'host' | 'forwarding'> },
   middleware: MiddlewareOutcome,
 ): Headers | undefined {
   return middleware.kind === 'continue' &&
