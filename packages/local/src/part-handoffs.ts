@@ -328,15 +328,17 @@ function failedMiddlewareFailure(read: HandedOn): string | undefined {
 
 /**
  * Whether the edge may answer a part of `route` from a generation the runtime rendered since: where
- * the deployment has a runtime cache the route has a record in, and the stack's policy serves from
- * records (`generationKeyOf` in the edge). Else it answers one from what the build wrote alone.
+ * the deployment has a runtime cache and the stack's policy serves from records, and the route has a
+ * record in it (`generationKeyOf` in the edge) — or leaves a partial fallback, whose completions the
+ * edge serves from records of their own once it holds them, with no record of the route's seeded
+ * (`partialFallbackInHand`). Else it answers one from what the build wrote alone.
  */
 export function generationsServed(stack: CheckedStack, route: RouteEntry): boolean {
-  return (
-    stack.manifest.cache !== undefined &&
-    route.cache !== undefined &&
-    runtimeCacheOf(stack.policy).generations === 'on'
-  );
+  const settings = runtimeCacheOf(stack.policy);
+  if (stack.manifest.cache === undefined || settings.generations !== 'on') {
+    return false;
+  }
+  return route.cache !== undefined || (route.partialFallback !== undefined && settings.holdMs > 0);
 }
 
 /**

@@ -48,6 +48,7 @@ import {
 import {
   DEFAULT_DELIVERY_POLICY,
   DEFAULT_RUNTIME_CACHE_SETTINGS,
+  runtimeCacheOf,
 } from '@stayingupwind/host/delivery';
 import { scanPreloadLinks } from '@stayingupwind/host/preloads';
 import { recoveryScriptCspSource } from '@stayingupwind/host/splice';
@@ -1336,11 +1337,17 @@ async function routeOf(
     readonly brShell?: boolean;
     /** Whether the deployment holds each part in brotli and gzip as well, compressed ahead. */
     readonly codedParts?: boolean;
+    /**
+     * Whether the build left the page a partial fallback, which a deploy seeds no record of: the
+     * edge completes each member's shell behind it, into a record of the member's own.
+     */
+    readonly partialFallback?: boolean;
   } = {},
 ): Promise<RouteEntry> {
   await writeFile(path.join(blobsOf(), sha256Of(shell)), shell);
   const kind = options.pages === true ? 'pages' : 'app-page';
   const segments = Object.entries(options.segments ?? {});
+  const delivery = options.complete === true ? 'complete' : 'resume';
   return {
     pathname,
     status: 200,
@@ -1374,11 +1381,11 @@ async function routeOf(
     }),
     // As the page the build prerendered it as (`prerenderOf`), which a resume names it by.
     prerenderId: `prerender${pathname}`,
-    // Under the entry a deploy seeds the stack's cache with for every page it routes.
-    cache: {
-      ...(await cacheOf(pathname, kind)),
-      delivery: options.complete === true ? 'complete' : 'resume',
-    },
+    // Under the entry a deploy seeds the stack's cache with for every page it routes, but a
+    // partial fallback's.
+    ...(options.partialFallback === true
+      ? { partialFallback: { route: pathname } }
+      : { cache: { ...(await cacheOf(pathname, kind)), delivery } }),
   };
 }
 
@@ -1458,10 +1465,16 @@ function routeOnto(dynamic: DynamicRoute): DeploymentBundle['routing']['dynamicR
   };
 }
 
+/** The query Next.js keys a partial fallback's completions by: each parameter of its class's path. */
+function keyedQueryOf(pathname: string): string[] {
+  return [...pathname.matchAll(/\[(\w+)\]/gu)].map(([, name]) => `nxtP${String(name)}`);
+}
+
 /**
  * The pages a build prerendered for the edge that a deploy makes `routes` of: each with the headers
  * its route holds, which a deploy takes from the shell's own, the requests it is bypassed for, and
- * left to be resumed but where its record is whole.
+ * left to be resumed but where its record is whole — or left a partial fallback, keyed by the
+ * class's parameters, which a deploy seeds no record of (`cacheablePrerenders`).
  */
 function prerenderedAs(routes: readonly RouteEntry[]): Prerender[] {
   return routes.flatMap((route) => {
@@ -1477,6 +1490,11 @@ function prerenderedAs(routes: readonly RouteEntry[]): Prerender[] {
       initialHeaders: { ...route.headers },
       ...(route.cache?.delivery !== 'complete' && { postponed: POSTPONED_STATE }),
       ...(route.bypassFor !== undefined && { bypassFor: [...route.bypassFor] }),
+      ...(route.partialFallback !== undefined && {
+        renderingMode: 'PARTIALLY_STATIC',
+        partialFallback: true,
+        allowQuery: keyedQueryOf(route.pathname),
+      }),
     };
     return [document, ...partsPrerenderedAs(route)];
   });
@@ -12979,6 +12997,107 @@ describe('what the check makes of the middleware', () => {
             "its prefetch segment /_tree, answered 11 bytes no generation of its route's record the stack's edge read holds for it",
         },
       ]);
+    });
+
+    // The edge answers a member's parts from its completion's record once it holds one, though the
+    // route holds no record of its own (greptile).
+    describe("of a partial fallback's member, whose route holds no record of its own", () => {
+      const ITEM = '<!doctype html><html><head><title>Item</title></head><body>';
+      const dynamicRoutes: DynamicRoute[] = [
+        { sourceRegex: '^/items/([^/]+?)(?:/)?$', route: '/items/[id]' },
+      ];
+      const member = validationPathnameFor('/items/[id]') ?? '';
+      const rendered = { 'x-nextjs-prerender': '1', 'cache-control': 'private, no-store' };
+
+      /**
+       * The stack of a class the build left a partial fallback, its fallback's segment written, with
+       * the member's completion the edge read holding `outputs` (`partialFallbackInHand`).
+       */
+      async function completedAs(outputs: readonly Output[]): Promise<LocalStack> {
+        const routes = [
+          await routeOf('/items/[id]', ITEM, {
+            segments: { '/_tree': 'item tree' },
+            partialFallback: true,
+          }),
+        ];
+        answers.set(member, documentAnswer(ITEM, 'mw=miss;route=/items/[id]'));
+        const completed = `dpl_site|${await entryOf(member)}|1`;
+        generationHeaders.set(completed, { 'content-type': HTML });
+        generationOutputs.set(completed, [...outputs]);
+        return stackOf(routes, {}, { dynamicRoutes });
+      }
+
+      it("is answered from the completion the edge holds, not the fallback's own parts", async () => {
+        const stack = await completedAs([
+          outputOf('segment', 'segment:/_tree', 'member tree'),
+          outputOf('rsc', 'rsc', 'member payload'),
+        ]);
+        const since = segmentAnswer('member tree');
+        partAnswers.set(`${member}|/_tree`, {
+          ...since,
+          headers: { ...since.headers, ...rendered },
+        });
+        // A whole payload, which the build wrote none of for a page a resume completes.
+        partAnswers.set(
+          `${member}|rsc-prefetch`,
+          partAnswer('payload', 'member payload', { 'x-nextjs-cache': 'HIT', ...rendered }),
+        );
+        const result = await checkStack(stack);
+
+        expect(result.failures).toStrictEqual([]);
+      });
+
+      it('is held to the completion the edge read', async () => {
+        const stack = await completedAs([outputOf('segment', 'segment:/_tree', 'other tree')]);
+        const since = segmentAnswer('member tree');
+        partAnswers.set(`${member}|/_tree`, {
+          ...since,
+          headers: { ...since.headers, ...rendered },
+        });
+        const result = await checkStack(stack);
+
+        expect(result.failures).toStrictEqual([
+          {
+            path: member,
+            reason:
+              "its prefetch segment /_tree, answered 11 bytes no generation of its route's record the stack's edge read holds for it",
+          },
+        ]);
+      });
+
+      it('is held to the bytes the build wrote where the policy holds no record it read', async () => {
+        const stack = await completedAs([outputOf('segment', 'segment:/_tree', 'member tree')]);
+        const since = segmentAnswer('member tree');
+        partAnswers.set(`${member}|/_tree`, {
+          ...since,
+          headers: { ...since.headers, ...rendered },
+        });
+        // A completion is served only from a record an isolate holds, never waited on.
+        const unheld = {
+          ...stack.policy,
+          runtimeCache: { ...runtimeCacheOf(stack.policy), holdMs: 0 },
+        };
+        const result = await checkStack({ ...stack, policy: unheld });
+
+        expect(result.failures).toStrictEqual([
+          {
+            path: member,
+            reason:
+              'its prefetch segment /_tree, answered 11 bytes other than the 9 the build wrote',
+          },
+        ]);
+      });
+
+      it('is handed on where no completion the edge holds has it', async () => {
+        const stack = await completedAs([]);
+        partAnswers.set(
+          `${member}|/_tree`,
+          handedOnAs('passthrough;reason=segment-prefetch;mw=miss', RSC),
+        );
+        const result = await checkStack(stack);
+
+        expect(result.failures).toStrictEqual([]);
+      });
     });
 
     it("fails where it is handed on for a reason the edge gives no request of the router's", async () => {
