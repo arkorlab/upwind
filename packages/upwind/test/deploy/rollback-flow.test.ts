@@ -299,6 +299,15 @@ describe('`upwind rollback` on an account', () => {
     return sha256;
   }
 
+  /** The bundle the bucket keeps of a deployment, written over with other bytes. */
+  async function spoilBundle(deploymentId: string | undefined, bytes: string): Promise<void> {
+    const bucket = await account().stack.mf.getR2Bucket('ARTIFACTS', 'agent');
+    await bucket.put(bundleObjectKey(PROJECT, String(deploymentId)), bytes);
+  }
+
+  const rollBack = (dir: string, to?: string) =>
+    runRollback({ projectDir: dir, to }, account().credentials, account().io);
+
   it('passes over a deployment whose staging is refused, and refuses it named', async () => {
     const dir = await deployableProject(PROJECT);
     const [one, two] = await threeDeployed(dir);
@@ -323,23 +332,82 @@ describe('`upwind rollback` on an account', () => {
 
   it('refuses, saying why of each, where every deployment it tries is refused', async () => {
     const dir = await deployableProject(PROJECT);
-    const [one, two, three] = await threeDeployed(dir);
+    const [one, two] = await threeDeployed(dir);
     const live = liveVersion(account());
-    // Each is published again beside the live deployment's files, one of which is gone.
-    const lost = await loseScript(three);
+    const lost = [await loseScript(two), await loseScript(one)];
 
-    await expect(
-      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io),
-    ).resolves.toBe(1);
+    await expect(rollBack(dir)).resolves.toBe(1);
     expect(liveVersion(account())).toBe(live);
     expect(held.errors).toStrictEqual([
       'upwind: no deployment before the live one can be rolled back to; each one tried was passed over:',
       ...[two, one].map(
-        (build) =>
-          `  - publishing ${String(build?.deploymentId)} again is refused (blob ${lost} is no longer stored), so it cannot be gone back to`,
+        (build, index) =>
+          `  - publishing ${String(build?.deploymentId)} again is refused (blob ${String(lost[index])} was not uploaded), so it cannot be gone back to`,
       ),
     ]);
   });
+
+  it("goes back without the live deployment's files where the bucket lost one of them", async () => {
+    const dir = await deployableProject(PROJECT);
+    const [, two, three] = await threeDeployed(dir);
+    // Each deployment gone back to would serve the live one's files beside its own.
+    const lost = await loseScript(three);
+
+    await expect(rollBack(dir)).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(two?.deploymentId);
+    expect(held.warnings).toContainEqual(
+      `upwind: warning: the files of ${String(three?.deploymentId)}, the live deployment, are not carried over (${NAMES.artifactsBucket} no longer holds blob ${lost}); its pages still open may lose them`,
+    );
+    expect(held.warnings).not.toContainEqual(expect.stringContaining('trying the deployment'));
+
+    const manifest = await servedManifest(account());
+
+    expect(Object.keys(manifest.staticFiles ?? {})).toStrictEqual(['/_next/static/chunks/two.js']);
+  });
+
+  it("goes back without the live deployment's files where its kept bundle cannot be read", async () => {
+    const dir = await deployableProject(PROJECT);
+    const { first, second } = await twoDeployed(dir);
+    await spoilBundle(second.deploymentId, '{ "not": json');
+
+    await expect(rollBack(dir)).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(first.deploymentId);
+    expect(held.warnings).toContainEqual(
+      `upwind: warning: the files of ${second.deploymentId}, the live deployment, are not carried over (its kept bundle is not JSON); its pages still open may lose them`,
+    );
+
+    const manifest = await servedManifest(account());
+
+    expect(Object.keys(manifest.staticFiles ?? {})).toStrictEqual(['/_next/static/chunks/one.js']);
+  });
+
+  it.each([
+    { kept: 'not JSON', bytes: '{ "not": json', why: 'its kept bundle is not JSON' },
+    {
+      kept: 'no bundle by its schema',
+      bytes: JSON.stringify({ v: 999 }),
+      why: 'its kept bundle is not a deployment bundle this version reads',
+    },
+  ])(
+    'passes over a deployment whose kept bundle is $kept, and refuses it named',
+    async ({ bytes, why }) => {
+      const dir = await deployableProject(PROJECT);
+      const [one, two] = await threeDeployed(dir);
+      await spoilBundle(two?.deploymentId, bytes);
+      const refused = `publishing ${String(two?.deploymentId)} again is refused (${why}), so it cannot be gone back to`;
+
+      await expect(rollBack(dir)).resolves.toBe(0);
+      expect(servedBy(account(), NAMES.edge)).toBe(one?.deploymentId);
+      expect(held.warnings).toContainEqual(expect.stringContaining(refused));
+
+      // Named, it is refused, saying why, and nothing is switched.
+      const live = liveVersion(account());
+
+      await expect(rollBack(dir, two?.deploymentId)).resolves.toBe(1);
+      expect(liveVersion(account())).toBe(live);
+      expect(held.errors).toStrictEqual([`upwind: ${refused}`]);
+    },
+  );
 
   it('stops where the agent fails as it stages, passing nothing over', async () => {
     const dir = await deployableProject(PROJECT);

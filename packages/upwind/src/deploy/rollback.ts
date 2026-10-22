@@ -6,6 +6,7 @@ import { bundleObjectKey } from '@stayingupwind/host/storage';
 
 import { type AccountView, bucketRefusal, readAccount, resolveAccount } from './account.ts';
 import { activate, liveVersionOf } from './activate.ts';
+import type { AgentClient } from './agent-client.ts';
 import { openAgent } from './agent-session.ts';
 import type { RollbackOptions } from './args.ts';
 import { createCloudflareClient } from './cloudflare/client.ts';
@@ -26,7 +27,7 @@ import { appRuntimeOf, type ProjectNames, projectNames } from './names.ts';
 import { publishPointer } from './pointer.ts';
 import { shippedWorkers } from './shipped.ts';
 import type { ProjectStores } from './stores.ts';
-import { type RemoteTarget, storedTarget } from './target.ts';
+import { blobsMissing, type RemoteTarget, storedTarget } from './target.ts';
 
 /**
  * `upwind rollback`: the edge's traffic given back to an older deployment.
@@ -37,6 +38,12 @@ import { type RemoteTarget, storedTarget } from './target.ts';
  * stay served beside it — a page of the live deployment open in a browser keeps loading its own
  * scripts after the rollback. Its Functions are the ones it has had since it was deployed; nothing
  * of it is built or uploaded but a version of the edge, with the new pointer fixed in it.
+ *
+ * Where the live deployment's files cannot be carried over — no bundle of it kept, one this version
+ * cannot read, or a file of it the bucket no longer holds — the rollback says so and goes on
+ * without them, its pages still open losing them. That is asked once, before any deployment is
+ * tried (`carriedOver`): what is wrong with the live deployment is no fault of the one gone back
+ * to, and stops no rollback, which is often run because the live deployment is broken.
  *
  * It is staged through the deploy agent, uploaded with a key of the rollback's own as a deploy
  * uploads it: a deploy of the project running at the same time loses the agent, and stops. One
@@ -65,11 +72,11 @@ import { type RemoteTarget, storedTarget } from './target.ts';
  * switched to it, and a rollback that named none goes on to the one before it.
  *
  * Nor can one whose staging or publishing is refused for any other reason (`DeployRefusalError`)
- * — a blob of its build gone from the bucket, a pointer over what the edge's variable holds: a
- * refusal is the deployment's own. One named is refused, saying why; a rollback that named none
- * goes on to the one before it, and where none is left refuses, saying why of each one it tried.
- * What is no refusal — the account, the agent or a store failing — is no fault of the
- * deployment's, and stops the rollback.
+ * — a blob of its build gone from the bucket, a kept bundle this version cannot read, a pointer
+ * over what the edge's variable holds: a refusal is the deployment's own. One named is refused,
+ * saying why; a rollback that named none goes on to the one before it, and where none is left
+ * refuses, saying why of each one it tried. What is no refusal — the account, the agent or a store
+ * failing — is no fault of the deployment's, and stops the rollback.
  */
 
 export interface RollbackIo {
@@ -214,17 +221,90 @@ function liveDeploymentOf(history: EdgeHistory): string | undefined {
 }
 
 /** A deployment's bundle as the bucket keeps it, and the bytes it was kept as. */
+interface KeptBundle {
+  readonly bundle: DeploymentBundle;
+  readonly json: string;
+}
+
+/**
+ * A deployment's bundle as the bucket keeps it; nothing where it keeps none. One this version
+ * cannot read — not JSON, or no bundle by the schema — is refused (`bundle_invalid`): like any
+ * refusal of publishing a deployment again, the deployment's own.
+ */
 async function bundleIn(
   target: RemoteTarget,
   project: string,
   deploymentId: string,
-): Promise<{ readonly bundle: DeploymentBundle; readonly json: string } | undefined> {
+): Promise<KeptBundle | undefined> {
   const bytes = await target.bucket.get(bundleObjectKey(project, deploymentId));
   if (bytes === undefined) {
     return undefined;
   }
   const json = new TextDecoder().decode(bytes);
-  return { bundle: deploymentBundleSchema.parse(JSON.parse(json)), json };
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch (error) {
+    throw new DeployRefusalError('its kept bundle is not JSON', {
+      code: 'bundle_invalid',
+      cause: error,
+    });
+  }
+  const parsed = deploymentBundleSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new DeployRefusalError('its kept bundle is not a deployment bundle this version reads', {
+      code: 'bundle_invalid',
+      cause: parsed.error,
+    });
+  }
+  return { bundle: parsed.data, json };
+}
+
+/**
+ * The live deployment's bundle, whose files a deployment gone back to serves beside its own
+ * (`previous`); nothing, with a warning, where they cannot be carried over — no bundle of it kept,
+ * one this version cannot read, or a file of it the bucket no longer holds, which publishing would
+ * refuse. Every file of it is asked about, not only those carried over, and none is read.
+ */
+async function carriedOver(
+  agent: AgentClient,
+  target: RemoteTarget,
+  names: ProjectNames,
+  live: string | undefined,
+): Promise<DeploymentBundle | undefined> {
+  if (live === undefined) {
+    return undefined;
+  }
+  const notCarried = (why: string): undefined => {
+    warn(
+      `the files of ${live}, the live deployment, are not carried over (${why}); its pages still open may lose them`,
+    );
+  };
+  let kept: KeptBundle | undefined;
+  try {
+    kept = await bundleIn(target, names.project, live);
+  } catch (error) {
+    if (error instanceof DeployRefusalError) {
+      notCarried(error.message);
+      return;
+    }
+    throw error;
+  }
+  if (kept === undefined) {
+    notCarried(`${names.artifactsBucket} keeps no bundle of it`);
+    return;
+  }
+  const lost = await blobsMissing(
+    agent,
+    kept.bundle.staticFiles.map((file) => file.blob),
+  );
+  const [first] = lost;
+  if (first !== undefined) {
+    const more = lost.length > 1 ? ` and ${lost.length - 1} more` : '';
+    notCarried(`${names.artifactsBucket} no longer holds blob ${first}${more}`);
+    return;
+  }
+  return kept.bundle;
 }
 
 /** The project's stores, as the owner mark records them; or why a rollback cannot use them. */
@@ -255,8 +335,8 @@ interface Restaging {
   readonly site: { readonly hostnames: readonly string[] };
   readonly target: RemoteTarget;
   readonly deploymentId: string;
-  /** The deployment live now, whose files stay served; nothing where no deploy tagged it. */
-  readonly live: string | undefined;
+  /** The live deployment's bundle, whose files stay served; nothing where none is carried over. */
+  readonly previous: DeploymentBundle | undefined;
   readonly reach: ScriptSubdomain;
   readonly message: string;
   readonly io: RollbackIo;
@@ -265,25 +345,19 @@ interface Restaging {
 /**
  * The deployment staged and published again, against the live one, and a version of the edge for
  * it uploaded; nothing where the bucket keeps no bundle of it, which is no deployment to go back to.
+ * One kept that this version cannot read is refused (`bundleIn`).
  */
 async function restage(input: Restaging): Promise<Served | undefined> {
-  const { scope, names, settings, account, target, deploymentId } = input;
+  const { scope, names, settings, account, target, deploymentId, previous } = input;
   const kept = await bundleIn(target, names.project, deploymentId);
   if (kept === undefined) {
     return undefined;
-  }
-  const previous =
-    input.live === undefined ? undefined : await bundleIn(target, names.project, input.live);
-  if (previous === undefined && input.live !== undefined) {
-    warn(
-      `${names.artifactsBucket} keeps no bundle of ${input.live}, so its files are not carried over; its pages still open may lose them`,
-    );
   }
   const app = appRuntimeOf(names.project, kept.bundle);
   const staged = await stageDeployment(target, {
     bundle: kept.bundle,
     json: kept.json,
-    ...(previous !== undefined && { previous: previous.bundle }),
+    ...(previous !== undefined && { previous }),
     projectId: names.project,
     runId: createId('run'),
     originHost: settings.hostnames[0] ?? `${names.edge}.${account.subdomain}.workers.dev`,
@@ -481,6 +555,10 @@ export async function runRollback(
     now: io.now,
   });
   try {
+    const target = storedTarget(session.client);
+    // Asked once, before any deployment is tried: what is wrong with the live deployment is no
+    // fault of one gone back to.
+    const previous = await carriedOver(session.client, target, names, liveDeploymentOf(history));
     return await rollThrough({
       restaging: {
         scope,
@@ -489,8 +567,8 @@ export async function runRollback(
         account: { ...account, subdomain },
         stores,
         site,
-        target: storedTarget(session.client),
-        live: liveDeploymentOf(history),
+        target,
+        previous,
         reach,
         io,
       },

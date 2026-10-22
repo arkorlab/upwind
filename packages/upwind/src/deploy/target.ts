@@ -125,6 +125,19 @@ async function missingOf(agent: AgentClient, keys: readonly string[]): Promise<S
   return missing;
 }
 
+/** Of these blobs, the digests of those the bucket does not hold: asked of the agent, none read. */
+export async function blobsMissing(
+  agent: AgentClient,
+  refs: readonly BlobRef[],
+): Promise<readonly string[]> {
+  const digests = [...new Set(refs.map((ref) => ref.sha256))];
+  const missing = await missingOf(
+    agent,
+    digests.map((sha256) => blobObjectKey(sha256)),
+  );
+  return digests.filter((sha256) => missing.has(blobObjectKey(sha256)));
+}
+
 /**
  * Put every blob staging will read in the bucket, where it is not already: the digest of each
  * checked against the build's own, so what goes up is what the build named.

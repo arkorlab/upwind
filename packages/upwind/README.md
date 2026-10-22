@@ -337,14 +337,15 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
   before the live one, the one live most recently among those first, or the one `--to` names. Run
   again, it goes further back: a deployment gone back to is no newer for it. One that cannot be
   published again — whose cache scope a stopped cleanup retired, whose bundle the bucket no longer
-  keeps, or whose staging or publishing is refused otherwise — is passed over, or, named, refused,
-  saying why: deploy its build again instead. Where every one tried is passed over, the rollback is
-  refused, saying why of each. Nothing of it is built: its bundle,
+  keeps or this version cannot read, or whose staging or publishing is refused otherwise — is
+  passed over, or, named, refused, saying why: deploy its build again instead. Where every one tried
+  is passed over, the rollback is refused, saying why of each. Nothing of it is built: its bundle,
   kept in the bucket, is published again against the live deployment, as a new deployment is against
-  the one before it, so the live deployment's files stay served to its pages still open; and its
-  Functions are the ones it has had since it was deployed. It is checked first, as a new deployment
-  is, and given the traffic only once it answers as itself and passes the project's checks; one that
-  does not is given none.
+  the one before it, so the live deployment's files stay served to its pages still open — unless the
+  bucket no longer holds them, or no bundle of the live deployment it can read, when the rollback
+  says so and goes on without them; and its Functions are the ones it has had since it was deployed.
+  It is checked first, as a new deployment is, and given the traffic only once it answers as itself
+  and passes the project's checks; one that does not is given none.
 - **One at a time.** One deploy or rollback of a project runs at a time: each takes the deploy
   agent with a key of its own, and one that another has taken it from stops. Run them from one
   place — one CI job at a time, say.
