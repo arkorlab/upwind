@@ -1,15 +1,22 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runInNewContext } from 'node:vm';
 
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
+import {
+  ModuleKind,
+  type ModuleResolutionHost,
+  ModuleResolutionKind,
+  resolveTypeReferenceDirective,
+  versionMajorMinor,
+} from 'typescript';
 import { afterEach, assert, describe, expect, it } from 'vitest';
 
 import { AuditError } from '../src/dependencies.ts';
 import { FUNCTION_COMPATIBILITY_DATE, FUNCTION_COMPATIBILITY_FLAGS } from '../src/function.ts';
 import { bundleLinkedExternals } from '../src/linked-externals.ts';
-import { tracedFiles } from '../src/traced-files.ts';
+import { type TracedFile, tracedFiles } from '../src/traced-files.ts';
 import { replaceTypescriptLibDirectory, typescriptLibDirectory } from '../src/vfs-typescript.ts';
 
 const DIRECTORY = '/bundle/node_modules/typescript/lib';
@@ -103,6 +110,72 @@ async function fixture(owner = '@typescript/vfs', nested = false, noPeer = false
   );
   if (noPeer) await rm(typescript, { recursive: true });
   return { root, projectDir, distDir, importer, declaration, files };
+}
+
+const RESOLUTION = { module: ModuleKind.ESNext, moduleResolution: ModuleResolutionKind.Bundler };
+
+/** A package as pnpm's store keeps it under `root`, in a `node_modules` directory of its own. */
+async function storedPackage(
+  root: string,
+  id: string,
+  manifest: Readonly<Record<string, unknown>> & { readonly name: string },
+  files: Readonly<Record<string, string>>,
+): Promise<string> {
+  const directory = path.join(root, 'node_modules', '.pnpm', id, 'node_modules', manifest.name);
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, 'package.json'), JSON.stringify(manifest));
+  for (const [name, contents] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(directory, name)), { recursive: true });
+    await writeFile(path.join(directory, name), contents);
+  }
+  return directory;
+}
+
+/**
+ * Each link made at its path, and a trace through them: every link an entry of its own, and every
+ * file of the stored package it leads to under its path in the store.
+ */
+async function pnpmTrace(
+  root: string,
+  links: readonly (readonly [link: string, target: string])[],
+): Promise<Record<string, string>> {
+  const assets: Record<string, string> = {};
+  const name = (file: string) => path.relative(root, file).split(path.sep).join('/');
+  for (const [link, target] of links) {
+    await mkdir(path.dirname(link), { recursive: true });
+    await symlink(target, link, 'dir');
+    assets[name(link)] = link;
+    const entries = await readdir(target, { recursive: true, withFileTypes: true });
+    for (const entry of entries) {
+      const file = path.join(entry.parentPath, entry.name);
+      if (entry.isFile()) assets[name(file)] = file;
+    }
+  }
+  return assets;
+}
+
+/** TypeScript's view of what a Function holds: each file at `/bundle/<name>`, its cwd, no links. */
+async function functionSystem(files: readonly TracedFile[]): Promise<ModuleResolutionHost> {
+  const contents = new Map<string, string>();
+  const directories = new Set<string>();
+  for (const file of files) {
+    const name = `/bundle/${file.name}`;
+    contents.set(name, await readFile(file.filePath, 'utf8'));
+    for (let at = path.posix.dirname(name); at !== '/'; at = path.posix.dirname(at)) {
+      directories.add(at);
+    }
+  }
+  return {
+    fileExists: (file) => contents.has(file),
+    readFile: (file) => contents.get(file),
+    directoryExists: (directory) => directories.has(directory),
+    getDirectories: (directory) => {
+      const children = [...directories].filter((each) => path.posix.dirname(each) === directory);
+      return children.map((each) => path.posix.basename(each));
+    },
+    realpath: (file) => file,
+    getCurrentDirectory: () => '/bundle',
+  };
 }
 
 describe('vfs TypeScript peer library resolution', () => {
@@ -462,4 +535,47 @@ describe('vfs TypeScript peer library resolution', () => {
     },
     20_000,
   );
+});
+
+describe('pnpm-linked types packages, as TypeScript finds them in a Function', () => {
+  const roots: string[] = [];
+
+  afterEach(async () => {
+    for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  });
+
+  async function repository(): Promise<string> {
+    const root = await mkdtemp(path.join(tmpdir(), 'upwind-linked-types-'));
+    roots.push(root);
+    return root;
+  }
+
+  it("takes a linked types package's entry for the compiler in use from its traced manifest", async () => {
+    const root = await repository();
+    // As `@types/node` sends TypeScript 5.6 to `ts5.6/index.d.ts`, for the compiler running this.
+    const compatible = `ts${versionMajorMinor}`;
+    const node = await storedPackage(
+      root,
+      '@types+node@26.1.0',
+      {
+        name: '@types/node',
+        types: 'index.d.ts',
+        typesVersions: { [`<=${versionMajorMinor}`]: { '*': [`${compatible}/*`] } },
+      },
+      {
+        'index.d.ts': 'declare var entry: "latest";\n',
+        [`${compatible}/index.d.ts`]: 'declare var entry: "compatible";\n',
+      },
+    );
+    const assets = await pnpmTrace(root, [
+      [path.join(root, 'node_modules', '@types', 'node'), node],
+    ]);
+    const files = tracedFiles([{ assets }], root, path.join(root, '.next'));
+    const system = await functionSystem(files);
+    const resolved = resolveTypeReferenceDirective('node', undefined, RESOLUTION, system);
+
+    expect(resolved.resolvedTypeReferenceDirective?.resolvedFileName).toBe(
+      `/bundle/node_modules/@types/node/${compatible}/index.d.ts`,
+    );
+  });
 });
