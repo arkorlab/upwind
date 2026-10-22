@@ -12,6 +12,10 @@ import type { CacheRuntime } from './runtime.ts';
  */
 
 export interface RequestContext {
+  /**
+   * The entrypoints, as this request looks them up: with its `waitUntil`, which holds what a hook's
+   * lookup begins evaluating (`EntryTables`).
+   */
   readonly tables: EntryTables;
   readonly runtime: CacheRuntime | undefined;
   readonly request: Request;

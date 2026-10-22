@@ -549,7 +549,7 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
 
 export async function handleRequest(handled: HandleInput): Promise<Response> {
   const context = requestContextFor({
-    tables: { app: handled.app, edge: handled.edge },
+    tables: { app: handled.app, edge: handled.edge, waitUntil: handled.waitUntil },
     runtime: handled.cache,
     request: handled.request,
     startedAt: handled.clock ?? nowMs(),
