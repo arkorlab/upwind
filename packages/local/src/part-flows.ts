@@ -23,6 +23,7 @@ import {
 } from './cookie-jar.ts';
 import { carriedScopesOf, type Scoped, scopesOf } from './cookie-scopes.ts';
 import { claimedBy, escaping } from './escaping.ts';
+import { pagesHeadersOnly } from './pages-handoffs.ts';
 import { partLandedAt, routeAskedAt } from './part-landings.ts';
 import type { Part } from './part-marks.ts';
 import {
@@ -217,7 +218,11 @@ async function judgedAnswer(
   return own;
 }
 
-/** Read a real redirect hop, retaining its own facts until the router adopts the final response. */
+/**
+ * Read a real redirect hop, retaining its own facts until the router adopts the final response: for
+ * its headers alone where the Function owns a Pages answer, as a part asked directly is
+ * (`pagesHeadersOnly`), whose body may stay open (greptile).
+ */
 async function partHopAnswer(
   stack: CheckedStack,
   part: Part,
@@ -232,8 +237,13 @@ async function partHopAnswer(
   const answer = await answerTo(sent.url, {
     via: stack.url,
     headers: tracing.headers,
-    headersOnly: (status, headers) =>
-      redirectHeaders(status, headers) || middlewareHeadersOnly(status, headers),
+    headersOnly: pagesHeadersOnly(
+      stack,
+      sent.url,
+      sent.headers,
+      (status, headers) =>
+        redirectHeaders(status, headers) || middlewareHeadersOnly(status, headers),
+    ),
     decode: undoneUnlessStored(true),
   });
   if (typeof answer === 'string') {

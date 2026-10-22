@@ -17,6 +17,7 @@ import {
   storedAfter,
   unprovedHolding,
 } from './cookie-jar.ts';
+import { pagesHeadersOnly } from './pages-handoffs.ts';
 import type { Reading } from './reading.ts';
 import { stateTreeUnproved } from './router-state.ts';
 
@@ -362,8 +363,9 @@ function followedTo(
 
 /**
  * What the answer to `sent`, read for its headers alone — or whole, undone of its coding as a part
- * is read (`whole`) — did that a fetch goes on from — as it was answered before (`known`) — or why
- * it could not be read.
+ * is read (`whole`), but for headers alone where the Function owns a Pages answer, as a part asked
+ * directly is (`pagesHeadersOnly`) — did that a fetch goes on from — as it was answered before
+ * (`known`) — or why it could not be read.
  */
 async function hopAnswered(
   stack: CheckedStack,
@@ -395,8 +397,14 @@ async function hopAnswered(
   const reading =
     sent.whole === true
       ? {
-          headersOnly: (status: number, replyHeaders: Reading['headers']) =>
-            redirectHeaders(status, replyHeaders) || middlewareHeadersOnly(status, replyHeaders),
+          // Its body may stay open, and is the application's (greptile).
+          headersOnly: pagesHeadersOnly(
+            stack,
+            url,
+            headers,
+            (status, replyHeaders) =>
+              redirectHeaders(status, replyHeaders) || middlewareHeadersOnly(status, replyHeaders),
+          ),
           decode: undoneUnlessStored(true),
         }
       : { headersOnly: true };
