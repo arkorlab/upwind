@@ -365,13 +365,14 @@ function projectView(
 
 /**
  * A traced link off the project's chain and outside pnpm's store (a workspace package's own
- * `packages/lib/node_modules/zod`), held at its own path, where TypeScript looks for it from the
- * files beside it: its path in the project when it is in the project, and otherwise its path from
- * the repository, as every declaration's.
+ * `packages/lib/node_modules/zod`), held at its own path from the repository, where TypeScript looks
+ * for it from the files beside it: those travel under their paths from the repository too, as every
+ * declaration does (`declarationFile`), a workspace package in a nested project's directory among
+ * them.
  */
 function linkElsewhere(
   repository: Repository,
-  input: { readonly projectDir: string; readonly chain: readonly string[]; readonly asset: Asset },
+  input: { readonly chain: readonly string[]; readonly asset: Asset },
 ): PackageLink | undefined {
   const [logical] = input.asset;
   const entry = PACKAGE_ENTRY.exec(logical)?.groups;
@@ -386,9 +387,7 @@ function linkElsewhere(
   }
   const target = linkTarget(repository, input.asset, name);
   if (target === undefined) return undefined;
-  const local = beneath(path.resolve(input.projectDir), path.join(repository.path, logical));
-  const held = local === undefined ? logical : local.split(path.sep).join('/');
-  return isVfsName(held) ? { logical, name: held, target } : undefined;
+  return isVfsName(logical) ? { logical, name: logical, target } : undefined;
 }
 
 /** The `node_modules` directory pnpm's store keeps a held package in, from the repository. */
@@ -530,7 +529,7 @@ function packageLinks(
     }
   }
   for (const asset of assets) {
-    const link = linkElsewhere(repository, { projectDir, chain, asset });
+    const link = linkElsewhere(repository, { chain, asset });
     if (link !== undefined && !links.has(link.name)) links.set(link.name, link);
   }
   linkDependencies(links, view, assets, repository);
