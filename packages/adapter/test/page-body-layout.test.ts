@@ -394,4 +394,25 @@ describe('app Functions laid out within the size limit', () => {
 
     log.mockRestore();
   });
+
+  it('refuses at once a build whose bodies the range leaves out are files every Function carries', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(vi.fn());
+    const { calls, layOut } = appFunctions([62 * MIB]);
+    const laidOut = withinTheLimit(
+      {
+        ...leftToTheLimit(() => Promise.resolve([SMALL])),
+        // The large bodies have the bytes of files the Functions answer themselves.
+        staticBlobs: LARGE.map(({ sha256 }) => ({ sha256 })),
+      },
+      layOut,
+    );
+
+    await expect(laidOut).rejects.toThrow(
+      /^@stayingupwind\/adapter: the app server bundle is 66\.5 MiB, over the 64\.0 MiB limit/u,
+    );
+    expect(calls.map((call) => call.weighOnly)).toStrictEqual([true]);
+    expect(log).not.toHaveBeenCalled();
+
+    log.mockRestore();
+  });
 });

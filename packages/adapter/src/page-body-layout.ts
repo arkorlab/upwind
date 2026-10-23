@@ -43,6 +43,11 @@ export interface PageBodyLayouts extends PageBodyLayout {
    * (`when: 'over-limit'`): collected only once a layout is past it, which most builds never are.
    */
   readonly shippedOverLimit?: (() => Promise<readonly ShippedBlob[]>) | undefined;
+  /**
+   * The files every app Function carries however its bodies are laid out, which it answers itself
+   * (`travelsWithFunction`): a body with the same bytes as one of them is left out of none.
+   */
+  readonly staticBlobs?: readonly { readonly sha256: string }[] | undefined;
 }
 
 /**
@@ -110,11 +115,19 @@ function firstOverLimit(
  * What one layout carries that another leaves out for a route, each blob once. A blob is read by the
  * Functions holding a route that names it (`carriesBlob`), and two routes can name the same bytes,
  * of which the range may leave out one and not the other: the blob is still shipped, and a Function
- * of a split build that holds only the route left out carries it no more.
+ * of a split build that holds only the route left out carries it no more. Not a body with the bytes
+ * of a file every Function carries anyway (`everywhere`), which no layout leaves out of any.
  */
-function leftOut(carried: readonly ShippedBlob[], kept: readonly ShippedBlob[]): BodiesLeftOut {
+function leftOut(
+  carried: readonly ShippedBlob[],
+  kept: readonly ShippedBlob[],
+  everywhere: ReadonlySet<string>,
+): BodiesLeftOut {
   const still = new Map(kept.map((blob) => [blob.sha256, new Set(blob.routes)]));
   const left = carried.filter((blob) => {
+    if (everywhere.has(blob.sha256)) {
+      return false;
+    }
     const routes = still.get(blob.sha256);
     return routes === undefined || blob.routes.some((route) => !routes.has(route));
   });
@@ -148,7 +161,8 @@ export async function withinTheLimit<T extends LaidOut>(
     return first;
   }
   const shipped = await fallback();
-  const left = leftOut(layouts.shipped, shipped);
+  const everywhere = new Set(layouts.staticBlobs?.map((blob) => blob.sha256));
+  const left = leftOut(layouts.shipped, shipped, everywhere);
   if (left.count === 0) {
     // Nothing in it is a body the host could serve instead, for any route, so a second layout would
     // weigh the same: the Function is refused now, by the audit the first layout left to this
