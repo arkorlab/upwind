@@ -115,13 +115,15 @@ function firstOverLimit(
  * What one layout carries that another leaves out for a route, each blob once. A blob is read by the
  * Functions holding a route that names it (`carriesBlob`), and two routes can name the same bytes,
  * of which the range may leave out one and not the other: the blob is still shipped, and a Function
- * of a split build that holds only the route left out carries it no more. Not a body with the bytes
- * of a file every Function carries anyway (`everywhere`), which no layout leaves out of any.
+ * of a split build that holds only the route left out carries it no more. A build of one Function
+ * holds every route, and still carries it (`split`): there, only a blob no route ships is left out.
+ * Nor is a body with the bytes of a file every Function carries anyway (`everywhere`), which no
+ * layout leaves out of any.
  */
 function leftOut(
   carried: readonly ShippedBlob[],
   kept: readonly ShippedBlob[],
-  everywhere: ReadonlySet<string>,
+  { everywhere, split }: { readonly everywhere: ReadonlySet<string>; readonly split: boolean },
 ): BodiesLeftOut {
   const still = new Map(kept.map((blob) => [blob.sha256, new Set(blob.routes)]));
   const left = carried.filter((blob) => {
@@ -129,7 +131,7 @@ function leftOut(
       return false;
     }
     const routes = still.get(blob.sha256);
-    return routes === undefined || blob.routes.some((route) => !routes.has(route));
+    return routes === undefined || (split && blob.routes.some((route) => !routes.has(route)));
   });
   return {
     count: left.length,
@@ -161,8 +163,12 @@ export async function withinTheLimit<T extends LaidOut>(
     return first;
   }
   const shipped = await fallback();
-  const everywhere = new Set(layouts.staticBlobs?.map((blob) => blob.sha256));
-  const left = leftOut(layouts.shipped, shipped, everywhere);
+  const left = leftOut(layouts.shipped, shipped, {
+    everywhere: new Set(layouts.staticBlobs?.map((blob) => blob.sha256)),
+    // A first layout of one Function had no budget, was within it, or had routes that could not be
+    // split any further; the second, lighter, is then one Function holding every route too.
+    split: first.built.length > 1,
+  });
   if (left.count === 0) {
     // Nothing in it is a body the host could serve instead, for any route, so a second layout would
     // weigh the same: the Function is refused now, by the audit the first layout left to this
