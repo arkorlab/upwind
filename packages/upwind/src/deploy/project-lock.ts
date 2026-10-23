@@ -100,10 +100,11 @@ function guardedProject(
     }
   };
   const client: CloudflareClient = {
-    request: <T>(method: string, path: string, options?: RequestOptions) =>
-      guard(method, path, () =>
+    request: <T>(method: string, path: string, options?: RequestOptions) => {
+      return guard(method, path, () =>
         scope.client.request<T>(method, path, writeOptions(method, options)),
-      ),
+      );
+    },
     raw: (method, path, options) =>
       guard(method, path, () => scope.client.raw(method, path, writeOptions(method, options))),
   };

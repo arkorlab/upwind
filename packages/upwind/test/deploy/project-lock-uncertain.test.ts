@@ -68,7 +68,11 @@ describe('uncertain writes keep project exclusion', () => {
             repeatable: true,
           });
         }),
-      ).rejects.toThrow(/write answer was lost|Cloudflare answered PUT .* with (?:200|503)/u);
+      ).rejects.toThrow(
+        outcome === 'network'
+          ? 'write answer was lost'
+          : `Cloudflare answered PUT ${WRITE} with ${outcome === 'server' ? 503 : 200}`,
+      );
       expect(attempts).toBe(1);
       expect(sleep).not.toHaveBeenCalled();
       expect(fake.buckets.has(BUCKET)).toBe(true);
@@ -102,7 +106,11 @@ describe('uncertain writes keep project exclusion', () => {
         withProjectLock(scope(send, sleep), NAMES, ({ scope: locked }) =>
           locked.client.raw('PUT', WRITE, { body: 'object bytes', repeatable: true }),
         ),
-      ).rejects.toThrow(/object answer was lost|Cloudflare answered PUT .* with 503/u);
+      ).rejects.toThrow(
+        outcome === 'network'
+          ? 'object answer was lost'
+          : `Cloudflare answered PUT ${WRITE} with 503`,
+      );
       expect(attempts).toBe(1);
       expect(sleep).not.toHaveBeenCalled();
       expect(fake.buckets.has(BUCKET)).toBe(true);
@@ -193,7 +201,7 @@ describe('uncertain writes keep project exclusion', () => {
       withProjectLock(scope(send, sleep), NAMES, ({ scope: locked }) =>
         locked.client.request('GET', WRITE),
       ),
-    ).rejects.toThrow(/Cloudflare answered GET .* with 503/u);
+    ).rejects.toThrow(`Cloudflare answered GET ${WRITE} with 503`);
     expect(fake.buckets.has(BUCKET)).toBe(false);
     expect(deletes(fake)).toHaveLength(1);
     expect(warning).not.toHaveBeenCalled();
