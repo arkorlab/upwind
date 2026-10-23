@@ -43,3 +43,13 @@ export function terminalShellPathname(prerender: Prerender): string | undefined 
     ? prerender.pathname
     : undefined;
 }
+
+/** The terminal shells among `prerenders` a generation may be served from (`eligible`), in order. */
+export function terminalShellsOf(
+  prerenders: readonly Prerender[],
+  eligible: (prerender: Prerender) => boolean,
+): Prerender[] {
+  return prerenders.filter(
+    (prerender) => terminalShellPathname(prerender) !== undefined && eligible(prerender),
+  );
+}
