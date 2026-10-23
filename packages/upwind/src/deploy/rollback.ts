@@ -27,6 +27,7 @@ import {
 } from './history.ts';
 import { appRuntimeOf, type ProjectNames, projectNames } from './names.ts';
 import { publishPointer } from './pointer.ts';
+import { withProjectLock } from './project-lock.ts';
 import { shippedWorkers } from './shipped.ts';
 import type { ProjectStores } from './stores.ts';
 import { blobsMissing, type RemoteTarget, storedTarget } from './target.ts';
@@ -529,83 +530,99 @@ export async function runRollback(
   const settings = await readDeploySettings(options.projectDir);
   const names = projectNames(settings.project);
   const client = createCloudflareClient({ apiToken: credentials.apiToken, fetch: io.fetch });
-  const scope = { client, accountId: await resolveAccount(client, credentials.accountId) };
-  const [account, history] = await Promise.all([
-    readAccount(scope, names),
-    readHistory(scope, names),
-  ]);
-  const choice = await chooseTarget(scope, names, history, options.to);
-  if (typeof choice === 'string') {
-    console.error(`upwind: ${choice}`);
-    return 1;
-  }
-  const refused = refusalOf(names, account);
-  const { subdomain } = account;
-  if (refused !== undefined || subdomain === undefined) {
-    console.error(`upwind: ${refused ?? 'the account has no workers.dev subdomain'}`);
-    return 1;
-  }
-  const site = siteOf(settings, names, subdomain);
-  const reach: ScriptSubdomain = { enabled: settings.workersDev, previews_enabled: false };
-  const switchTo = async (deploymentId: string, served: Served): Promise<number> => {
-    console.log(`upwind: checking ${names.edge} version ${served.versionId}, of ${deploymentId}`);
-    const activation = await activate({
-      scope,
-      edge: names.edge,
-      origin: site.origin,
-      expected: { deploymentId, ...served },
-      first: false,
-      checks: settings.checks,
-      message: messageOf(deploymentId),
-      fetch: io.fetch,
-      sleep: io.sleep,
-      now: io.now,
-    });
-    if (activation.kind === 'live' || activation.kind === 'unconfirmed') {
-      await narrowReach(scope, names.edge, reach);
-    }
-    return report(activation, deploymentId, site.origin);
-  };
-  const { stores, refused: unusable } = storesOf(names, account);
-  if (stores === undefined) {
-    console.error(`upwind: ${String(unusable)}`);
-    return 1;
-  }
-  const session = await openAgent({
-    scope,
+  const accountScope = { client, accountId: await resolveAccount(client, credentials.accountId) };
+  return withProjectLock(
+    accountScope,
     names,
-    stores,
-    script: (await shippedWorkers()).agent,
-    subdomain,
-    mode: 'deploy',
-    existing: new Set(account.projectWorkers),
-    withCache: true,
-    fetch: io.fetch,
-    sleep: io.sleep,
-    now: io.now,
-  });
-  try {
-    const target = storedTarget(session.client);
-    // Asked once, before any deployment is tried: what is wrong with the live deployment is no
-    // fault of one gone back to.
-    const previous = await carriedOver(session.client, target, names, liveDeploymentOf(history));
-    return await rollThrough({
-      restaging: {
+    async (held) => {
+      const { scope } = held;
+      const lockedIo = { ...io, fetch: held.fetch };
+      const [account, history] = await Promise.all([
+        readAccount(scope, names),
+        readHistory(scope, names),
+      ]);
+      const choice = await chooseTarget(scope, names, history, options.to);
+      if (typeof choice === 'string') {
+        console.error(`upwind: ${choice}`);
+        return 1;
+      }
+      const refused = refusalOf(names, account);
+      const { subdomain } = account;
+      if (refused !== undefined || subdomain === undefined) {
+        console.error(`upwind: ${refused ?? 'the account has no workers.dev subdomain'}`);
+        return 1;
+      }
+      const site = siteOf(settings, names, subdomain);
+      const reach: ScriptSubdomain = { enabled: settings.workersDev, previews_enabled: false };
+      const switchTo = async (deploymentId: string, served: Served): Promise<number> => {
+        console.log(
+          `upwind: checking ${names.edge} version ${served.versionId}, of ${deploymentId}`,
+        );
+        const activation = await activate({
+          scope,
+          edge: names.edge,
+          origin: site.origin,
+          expected: { deploymentId, ...served },
+          first: false,
+          checks: settings.checks,
+          message: messageOf(deploymentId),
+          fetch: lockedIo.fetch,
+          sleep: lockedIo.sleep,
+          now: lockedIo.now,
+        });
+        if (activation.kind === 'live' || activation.kind === 'unconfirmed') {
+          await narrowReach(scope, names.edge, reach);
+        }
+        return report(activation, deploymentId, site.origin);
+      };
+      const { stores, refused: unusable } = storesOf(names, account);
+      if (stores === undefined) {
+        console.error(`upwind: ${String(unusable)}`);
+        return 1;
+      }
+      const session = await openAgent({
         scope,
         names,
-        settings,
-        account: { ...account, subdomain },
         stores,
-        site,
-        target,
-        previous,
-        reach,
-        io,
-      },
-      choice,
-      switchTo,
-    });
-  } finally {
-    await session.close();
-  }
+        script: (await shippedWorkers()).agent,
+        subdomain,
+        mode: 'deploy',
+        existing: new Set(account.projectWorkers),
+        withCache: true,
+        fetch: lockedIo.fetch,
+        sleep: lockedIo.sleep,
+        now: lockedIo.now,
+      });
+      try {
+        const target = storedTarget(session.client);
+        // Asked once, before any deployment is tried: what is wrong with the live deployment is no
+        // fault of one gone back to.
+        const previous = await carriedOver(
+          session.client,
+          target,
+          names,
+          liveDeploymentOf(history),
+        );
+        return await rollThrough({
+          restaging: {
+            scope,
+            names,
+            settings,
+            account: { ...account, subdomain },
+            stores,
+            site,
+            target,
+            previous,
+            reach,
+            io: lockedIo,
+          },
+          choice,
+          switchTo,
+        });
+      } finally {
+        await session.close();
+      }
+    },
+    { fetch: io.fetch },
+  );
 }

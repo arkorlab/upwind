@@ -121,6 +121,7 @@ function describePlan(input: {
   readonly settings: DeploySettings;
   readonly secrets: ReadonlyMap<string, string>;
   readonly account: AccountView | undefined;
+  readonly accountNotRead?: string;
 }): void {
   const { plan, settings, secrets, account } = input;
   console.log(`upwind: ${settings.project}, deployment ${plan.bundle.deploymentId}`);
@@ -140,10 +141,18 @@ function describePlan(input: {
   }
   line(`reached at: ${reachedAt(settings, account).join(', ')}`);
   if (account === undefined) {
-    line('account: not read, since CLOUDFLARE_API_TOKEN is not set');
+    line(input.accountNotRead ?? 'account: not read, since CLOUDFLARE_API_TOKEN is not set');
     return;
   }
   describeAccount(plan, settings, account);
+}
+
+function reportProblems(problems: readonly string[]): void {
+  const things = plural(problems.length, 'one thing stops', `${problems.length} things stop`);
+  console.error(`upwind: ${things} this deployment:`);
+  for (const problem of problems) {
+    console.error(`  - ${problem}`);
+  }
 }
 
 /**
@@ -190,17 +199,15 @@ export interface DeployIo {
   readonly now?: (() => number) | undefined;
 }
 
-async function accountOf(
+async function scopeOf(
   credentials: CloudflareCredentials | undefined,
-  settings: DeploySettings,
   io: DeployIo,
-): Promise<{ readonly scope: AccountScope; readonly view: AccountView } | undefined> {
+): Promise<AccountScope | undefined> {
   if (credentials === undefined) {
     return undefined;
   }
   const client = createCloudflareClient({ apiToken: credentials.apiToken, fetch: io.fetch });
-  const scope = { client, accountId: await resolveAccount(client, credentials.accountId) };
-  return { scope, view: await readAccount(scope, projectNames(settings.project)) };
+  return { client, accountId: await resolveAccount(client, credentials.accountId) };
 }
 
 /** What `upwind deploy` exits with. */
@@ -224,43 +231,64 @@ export async function runDeploy(
   if (!(await isNotedBuild(options, plan))) {
     return 1;
   }
-  const reached = await accountOf(credentials, settings, io);
-  const account = reached?.view;
-  describePlan({ plan, settings, secrets, account });
-  for (const warning of plan.warnings) {
-    console.warn(`upwind: warning: ${warning}`);
-  }
-  const problems = [
-    ...plan.problems,
-    ...(account === undefined
-      ? []
-      : [...account.problems, ...capacityProblems(plan, settings, account)]),
-  ];
-  if (problems.length > 0) {
-    const things = plural(problems.length, 'one thing stops', `${problems.length} things stop`);
-    console.error(`upwind: ${things} this deployment:`);
-    for (const problem of problems) {
-      console.error(`  - ${problem}`);
+  if (plan.problems.length > 0) {
+    describePlan({
+      plan,
+      settings,
+      secrets,
+      account: undefined,
+      accountNotRead: 'account: not read, since local build checks failed',
+    });
+    for (const warning of plan.warnings) {
+      console.warn(`upwind: warning: ${warning}`);
     }
+    reportProblems(plan.problems);
     return 1;
   }
-  if (options.dryRun) {
-    return 0;
+  const names = projectNames(settings.project);
+  const scope = await scopeOf(credentials, io);
+  const inspect = (account: AccountView | undefined): number | undefined => {
+    describePlan({ plan, settings, secrets, account });
+    for (const warning of plan.warnings) {
+      console.warn(`upwind: warning: ${warning}`);
+    }
+    const problems = [
+      ...plan.problems,
+      ...(account === undefined
+        ? []
+        : [...account.problems, ...capacityProblems(plan, settings, account)]),
+    ];
+    if (problems.length > 0) {
+      reportProblems(problems);
+      return 1;
+    }
+    if (options.dryRun) {
+      return 0;
+    }
+    if (scope === undefined || account === undefined) {
+      console.error(
+        'upwind: a deploy reaches the account with CLOUDFLARE_API_TOKEN, which is not set',
+      );
+      return 1;
+    }
+    return undefined;
+  };
+  if (scope === undefined || options.dryRun) {
+    const account = scope === undefined ? undefined : await readAccount(scope, names);
+    return inspect(account) ?? 0;
   }
-  if (reached === undefined) {
-    console.error(
-      'upwind: a deploy reaches the account with CLOUDFLARE_API_TOKEN, which is not set',
-    );
-    return 1;
-  }
-  return deployToAccount({
-    scope: reached.scope,
-    account: reached.view,
-    settings,
-    plan,
-    secrets,
-    message: options.message,
-    resetCacheKey: options.resetCacheKey,
-    ...io,
-  });
+  // The deploy acquires exclusion before reading the view checked above, and keeps it through
+  // provisioning, activation and retention, including the agent's cleanup.
+  return deployToAccount(
+    {
+      scope,
+      settings,
+      plan,
+      secrets,
+      message: options.message,
+      resetCacheKey: options.resetCacheKey,
+      ...io,
+    },
+    inspect,
+  );
 }

@@ -155,20 +155,30 @@ export async function uploadBuildBlobs(
   const queue = refs.filter((ref) => missing.has(blobObjectKey(ref.sha256)));
   const send = async (): Promise<void> => {
     for (let ref = queue.shift(); ref !== undefined; ref = queue.shift()) {
-      const bytes = await localBlob(bundleDir, ref.sha256);
-      const digest =
-        bytes === undefined ? undefined : createHash('sha256').update(bytes).digest('hex');
-      if (bytes === undefined || digest !== ref.sha256 || bytes.byteLength !== ref.byteLength) {
-        throw new Error(`the build's blob ${ref.sha256} is missing or not the bytes it names`);
+      try {
+        const bytes = await localBlob(bundleDir, ref.sha256);
+        const digest =
+          bytes === undefined ? undefined : createHash('sha256').update(bytes).digest('hex');
+        if (bytes === undefined || digest !== ref.sha256 || bytes.byteLength !== ref.byteLength) {
+          throw new Error(`the build's blob ${ref.sha256} is missing or not the bytes it names`);
+        }
+        await agent.call('PUT', blob(blobObjectKey(ref.sha256)), {
+          headers: { 'content-type': ref.contentType },
+          body: bodyOf(bytes),
+        });
+      } catch (error) {
+        queue.length = 0;
+        throw error;
       }
-      await agent.call('PUT', blob(blobObjectKey(ref.sha256)), {
-        headers: { 'content-type': ref.contentType },
-        body: bodyOf(bytes),
-      });
     }
   };
   const uploaded = missing.size;
-  await Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, send));
+  // A rejected upload must not leave sibling writes running after the project lock is released.
+  const settled = await Promise.allSettled(Array.from({ length: UPLOAD_CONCURRENCY }, send));
+  const failed = settled.find((result) => result.status === 'rejected');
+  if (failed !== undefined) {
+    throw failed.reason;
+  }
   return { uploaded, held: refs.length - uploaded };
 }
 

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { AccountView } from './account.ts';
+import { type AccountView, readAccount } from './account.ts';
 import { type Activation, activate, confirmLive } from './activate.ts';
 import { openAgent } from './agent-session.ts';
 import { type AccountScope, getVersion, type ScriptSubdomain } from './cloudflare/workers.ts';
@@ -13,6 +13,7 @@ import { ensureInfra } from './infra.ts';
 import { appRuntimeOf, type ProjectNames, projectNames } from './names.ts';
 import { publishPointer } from './pointer.ts';
 import type { Preflight } from './preflight.ts';
+import { withProjectLock } from './project-lock.ts';
 import { retainDeployments } from './retention.ts';
 import { shippedWorkers } from './shipped.ts';
 import { stageBuild } from './stage.ts';
@@ -274,8 +275,38 @@ async function finishLive(
   return 0;
 }
 
-/** Make the deployment on the account; what the command exits with. */
-export async function deployToAccount(run: DeployRun): Promise<number> {
+/**
+ * Make the deployment under project exclusion. A caller's earlier account view is never used:
+ * the account is read again only after acquisition, and the command checks that same view.
+ */
+export async function deployToAccount(
+  input: Omit<DeployRun, 'account'> & { readonly account?: AccountView },
+  inspect?: (account: AccountView) => number | undefined,
+): Promise<number> {
+  if (input.plan.problems.length > 0) {
+    throw new Error(input.plan.problems.join('; '));
+  }
+  const names = projectNames(input.settings.project);
+  return withProjectLock(
+    input.scope,
+    names,
+    async (held) => {
+      const account = await readAccount(held.scope, names);
+      const stopped = inspect?.(account);
+      if (stopped !== undefined) {
+        return stopped;
+      }
+      if (account.problems.length > 0) {
+        throw new Error(account.problems.join('; '));
+      }
+      return deployWhileLocked({ ...input, account, scope: held.scope, fetch: held.fetch });
+    },
+    { fetch: input.fetch },
+  );
+}
+
+/** Provision, activate and retain, with the fresh account view held by `deployToAccount`. */
+async function deployWhileLocked(run: DeployRun): Promise<number> {
   const { scope, account, settings, plan } = run;
   const { bundle, bundleDir } = plan;
   const names = projectNames(settings.project);

@@ -351,9 +351,23 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
   and its Functions are the ones it has had since it was deployed.
   It is checked first, as a new deployment is, and given the traffic only once it answers as itself
   and passes the project's checks; one that does not is given none.
-- **One at a time.** One deploy or rollback of a project runs at a time: each takes the deploy
-  agent with a key of its own, and one that another has taken it from stops. Run them from one
-  place — one CI job at a time, say.
+- **One at a time.** Deploy, rollback and destroy acquire the same project lock before reading
+  the account, and hold it through provisioning, activation and cleanup. Another command, even on
+  another host, is refused while the lock exists. Dry runs and deployment listings remain read-only.
+  Every host must use a version with this lock; older clients do not honor it.
+  The lock is an empty, private R2 bucket named `upwind--<project>--deploy-lock`, made once and deleted
+  once per command with the existing API token. It is never bound to a Worker or used by a visitor
+  request. It uses one bucket slot while held and two additional management API requests, subject to
+  [R2's account and management limits](https://developers.cloudflare.com/r2/platform/limits/).
+  There is no expiry or automatic takeover: a crashed command, a lost create answer or a failed
+  release can leave the bucket. An unknown outcome of any mutating API or agent request also keeps
+  the lock, stops further writes and disables retries of that write: a timed-out request can still
+  commit after its caller stops waiting. A caught cleanup error cannot silently release this lock.
+  First stop every deploy, rollback and destroy of this project on every host, including CI jobs
+  that may resume. For an uncertain write, confirm its provider-side outcome has settled; a negative
+  read alone does not prove an old operation finished. Then confirm the named bucket is empty and delete
+  it by hand in Cloudflare before running another command. Never delete it while a command may
+  still be running. A failed release is reported without changing the deployment's result.
 
 ## Options
 
