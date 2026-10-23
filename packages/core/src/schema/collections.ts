@@ -1,9 +1,40 @@
-import { type Check, checkLength, type ParseContext, type Payload } from './checks.ts';
+import { type Check, type ParseContext, type Payload, runChecks } from './checks.ts';
 import { aborted, finalizeIssue, prefixIssues } from './issues.ts';
 import { isPlainObject } from './plain.ts';
 import { messageOf, type RefineParams, Schema } from './schema.ts';
 import type { StringSchema } from './strings.ts';
 import type { Input, Output, Typed } from './types.ts';
+
+/** Only bounds before the first other check may reject the raw collection. */
+function leadingMaximum(checks: readonly Check[]): number {
+  let maximum = Infinity;
+  for (const check of checks) {
+    if (check.kind === 'max_length' || check.kind === 'length_equals') {
+      if (check.value >= 0) maximum = Math.min(maximum, check.value);
+    } else if (check.kind !== 'min_length') {
+      break;
+    }
+  }
+  return maximum;
+}
+
+/** Report the first exceeded upper bound without exposing unparsed elements to later checks. */
+function rejectOversized(payload: Payload, checks: readonly Check[], length: number): Payload {
+  for (const check of checks) {
+    if (
+      (check.kind === 'max_length' || check.kind === 'length_equals') &&
+      check.value >= 0 &&
+      length > check.value
+    ) {
+      const start = payload.issues.length;
+      runChecks(payload, [check]);
+      const issue = payload.issues[start];
+      if (issue !== undefined) issue.continue = false;
+      break;
+    }
+  }
+  return payload;
+}
 
 /** A list, each element parsed by `element`; what is returned is a new array. */
 export class ArraySchema<E extends Typed = Typed> extends Schema<
@@ -12,51 +43,19 @@ export class ArraySchema<E extends Typed = Typed> extends Schema<
   undefined,
   undefined
 > {
-  private upperCap: number | undefined;
+  private maximum: number;
   readonly element: E;
 
   constructor(element: E) {
     super();
     this.element = element;
-    this.upperCap = undefined;
+    this.maximum = Infinity;
   }
 
-  /** Leading bounds may reject the raw list before any element or output is visited. */
-  private exceedsUpperBound(payload: Payload, length: number): boolean {
-    if (this.upperCap === undefined || length <= this.upperCap) {
-      return false;
-    }
-    for (const check of this.checks) {
-      if (check.kind === 'min_length') {
-        continue;
-      }
-      if (check.kind !== 'max_length' && check.kind !== 'length_equals') {
-        break;
-      }
-      if (check.value >= 0 && length > check.value) {
-        // Only the first violated bound is reported. No later check may read the raw input.
-        checkLength(check, payload, false);
-        return true;
-      }
-    }
-    return false;
-  }
-
+  /** Cache the leading bound when a schema is chained, leaving its element loop unchanged. */
   protected override withChecks(checks: readonly Check[]): this {
     const copy = super.withChecks(checks);
-    let upperCap: number | undefined;
-    for (const check of checks) {
-      if (check.kind === 'min_length') {
-        continue;
-      }
-      if (check.kind !== 'max_length' && check.kind !== 'length_equals') {
-        break;
-      }
-      if (check.value >= 0 && (upperCap === undefined || check.value < upperCap)) {
-        upperCap = check.value;
-      }
-    }
-    copy.upperCap = upperCap;
+    copy.maximum = leadingMaximum(checks);
     return copy;
   }
 
@@ -66,9 +65,7 @@ export class ArraySchema<E extends Typed = Typed> extends Schema<
       payload.issues.push({ expected: 'array', code: 'invalid_type', input });
       return payload;
     }
-    if (this.exceedsUpperBound(payload, input.length)) {
-      return payload;
-    }
+    if (input.length > this.maximum) return rejectOversized(payload, this.checks, input.length);
     const elements = input as readonly unknown[];
     const element = this.element as unknown as Schema;
     const output: unknown[] = [];
