@@ -39,7 +39,7 @@ export type AgentMode = 'deploy' | typeof DESTROY_MODE;
 
 export interface AgentSession {
   readonly client: AgentClient;
-  /** Give the agent a key nobody holds, where it still takes this run's. */
+  /** Give the agent a key nobody holds, where it still takes this run's: warned of, never thrown. */
   close(): Promise<void>;
 }
 
@@ -113,17 +113,27 @@ export async function openAgent(input: AgentInput): Promise<AgentSession> {
     fetch: input.fetch,
     sleep,
   });
+  // A failure to is warned of, and leaves what the command exits with as the run made it: the
+  // edge's traffic is where the run left it either way, and the key the agent may still take was
+  // kept nowhere — the next deploy or rollback replaces it (Sentry).
   const close = async (): Promise<void> => {
-    // Between this question and the write, a newer run could still set its key: the window two
-    // deploys of the same project at once have anyway, which a project's deploys are run one at a
-    // time to close.
-    if (await agentTakesKey(client)) {
-      await putSecret(scope, names.agent, { name: 'AGENT_KEY', text: freshKey() });
-      return;
+    try {
+      // Between this question and the write, a newer run could still set its key: the window two
+      // deploys of the same project at once have anyway, which a project's deploys are run one at
+      // a time to close.
+      if (await agentTakesKey(client)) {
+        await putSecret(scope, names.agent, { name: 'AGENT_KEY', text: freshKey() });
+        return;
+      }
+      console.warn(
+        `upwind: ${names.agent} does not take this run's key — a newer run set its own, or the agent was not reached — so its key was left as it is`,
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `upwind: warning: ${names.agent} may still take this run's key, until the next deploy or rollback replaces it: ${detail}`,
+      );
     }
-    console.warn(
-      `upwind: ${names.agent} does not take this run's key — a newer run set its own, or the agent was not reached — so its key was left as it is`,
-    );
   };
   const now = input.now ?? Date.now;
   const until = now() + AGENT_WAIT_MS;
