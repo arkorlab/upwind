@@ -38,6 +38,7 @@ import {
   toPublicGeneration,
 } from './rows.ts';
 import { isRefusal, type Refusal, refuse, requireActiveScope } from './state.ts';
+import { runtimeStaticPageOutputsOf } from './static-page-privacy.ts';
 import {
   condemnationOf,
   replaceEntryTags,
@@ -141,12 +142,14 @@ async function dependencyTagIdsFor(
 function recordFields(
   input: TxInput,
   plan: CommitPlan,
-  entry: EntryRow,
+  identity: { readonly entry: EntryRow; readonly buildId: string },
   outputs: readonly OutputSnapshot[],
 ): PackHeaderFields {
   const { generation } = plan.request;
+  const { entry, buildId } = identity;
   return {
     scopeId: input.scopeId,
+    buildId,
     entry: {
       entryId: entry.entry_id,
       kind: entry.kind,
@@ -168,6 +171,8 @@ function recordFields(
   };
 }
 
+const FALLBACK_PRIVACY = 3;
+
 function snapshots(plan: CommitPlan, storageRefs: ReadonlyMap<string, string>): OutputSnapshot[] {
   return plan.request.generation.outputs.map((output) => {
     return {
@@ -178,6 +183,9 @@ function snapshots(plan: CommitPlan, storageRefs: ReadonlyMap<string, string>): 
       headers: output.headers,
       compute: output.compute,
       response: output.response,
+      ...((output.staticPagePrivacy === 2 || output.staticPagePrivacy === FALLBACK_PRIVACY) && {
+        staticPagePrivacy: output.staticPagePrivacy,
+      }),
       htmlSize: output.htmlSize,
       artifacts: output.artifacts.map((artifact) => {
         return {
@@ -426,9 +434,16 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
   if (isRefusal(storageRefs)) {
     return storageRefs;
   }
-  const outputs = snapshots(plan, storageRefs.refs);
+  const outputs = runtimeStaticPageOutputsOf(
+    recordFields(
+      input,
+      plan,
+      { entry, buildId: scope.build_id },
+      snapshots(plan, storageRefs.refs),
+    ),
+  );
   const unwritable = unwritableRecord(
-    recordFields(input, plan, entry, outputs),
+    recordFields(input, plan, { entry, buildId: scope.build_id }, outputs),
     input.limits.maxRecordBytes,
   );
   if (unwritable !== undefined) {

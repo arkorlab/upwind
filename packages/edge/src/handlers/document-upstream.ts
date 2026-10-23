@@ -2,6 +2,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 import type { ContinuationHandle } from '@stayingupwind/host/delivery';
 import type { SpliceOutcome } from '@stayingupwind/host/splice';
 
+import { regenerationAccepted } from '../cache/regenerate.ts';
 import type { ContinuationFailureKind } from '../reports.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
@@ -22,6 +23,42 @@ export type Upstream =
 /** What lets an ask be made again until the runtime answers and owns its background job. */
 export interface PendingRegeneration {
   onAbandoned: (() => void) | undefined;
+  /**
+   * What the regeneration asked beside the resume sets off once begun (the served generation's
+   * `onRegenerating`): only where its answer says the runtime accepted it, once the resume ended.
+   */
+  readonly onRegenerating?: (() => void) | undefined;
+  /**
+   * What stands in for that where it will not begin (the served generation's `onDeclined`): the
+   * resume answered without the runtime accepting it, or never answered.
+   */
+  readonly onDeclined?: (() => void) | undefined;
+  /** The answer said the runtime accepted the regeneration (`regenerationAccepted`). */
+  accepted?: boolean;
+  /** The resume's body is done with: the splice has ended, or it was let go unread. */
+  done?: boolean;
+  /** Which of the two has been set off, once: each is, at the most, and never both. */
+  settled?: 'followed' | 'declined';
+}
+
+/**
+ * Follow the regeneration once both are known, whichever comes last: the runtime accepted it, and
+ * the resume's body is done with, where the runtime begins it (`afterBody`). The answer can come
+ * after the splice has ended — a client that left, a deadline that ran out — as well as before.
+ */
+function followOnce(regeneration: PendingRegeneration): void {
+  if (regeneration.accepted === true && regeneration.done === true && !regeneration.settled) {
+    regeneration.settled = 'followed';
+    regeneration.onRegenerating?.();
+  }
+}
+
+/** The regeneration asked will not begin here: what stands in for its follow-up, once. */
+function declineOnce(regeneration: PendingRegeneration): void {
+  if (regeneration.onRegenerating !== undefined && !regeneration.settled) {
+    regeneration.settled = 'declined';
+    regeneration.onDeclined?.();
+  }
 }
 
 /**
@@ -36,10 +73,20 @@ export async function settle(
     const response = await promise;
     if (regeneration !== undefined) {
       regeneration.onAbandoned = undefined;
+      // Read only where something waits on it: a header of the edge's protocol, taken off with the
+      // rest of it before anything reaches the client.
+      regeneration.accepted =
+        regeneration.onRegenerating !== undefined && regenerationAccepted(response);
+      if (regeneration.accepted) {
+        followOnce(regeneration);
+      } else {
+        declineOnce(regeneration);
+      }
     }
     return { ok: true, response };
   } catch (error) {
     regeneration?.onAbandoned?.();
+    if (regeneration !== undefined) declineOnce(regeneration);
     return { ok: false, error };
   }
 }
@@ -118,7 +165,13 @@ export function followClient(
 interface FollowedResume {
   readonly upstream: Promise<Upstream> | undefined;
   readonly clientLeft: () => boolean;
-  readonly cancelled: (outcome: SpliceOutcome) => void;
+  /** The splice has ended, and with it the resume, however it ended. */
+  readonly ended: (outcome: SpliceOutcome) => void;
+  /**
+   * Let the resume go unread, no splice holding it: its body released, which the runtime takes for
+   * done with, beginning a regeneration it accepted (`afterBody`) — followed then, as `ended` does.
+   */
+  readonly release: () => Promise<void>;
 }
 
 /** Follow a resume through both the shell lookup and the splice, until its answer owns the job. */
@@ -128,13 +181,36 @@ export function followResume(
 ): FollowedResume {
   const onAbandoned = input.generation?.onAbandoned ?? input.onBuildAbandoned;
   const regeneration: PendingRegeneration | undefined =
-    onAbandoned === undefined ? undefined : { onAbandoned };
+    onAbandoned === undefined
+      ? undefined
+      : {
+          onAbandoned,
+          onRegenerating: input.generation?.onRegenerating,
+          onDeclined: input.generation?.onDeclined,
+        };
+  // The runtime begins a regeneration it accepted once the resume's body is done with — read to its
+  // end, cancelled or failed (`afterBody`) — which is where whatever let it go has; followed then,
+  // or once the answer says it accepted it, where that comes later (`followOnce`).
+  const begun = (): void => {
+    if (regeneration !== undefined) {
+      regeneration.done = true;
+      followOnce(regeneration);
+    }
+  };
+  const upstream = handle === undefined ? undefined : settle(handle.response, regeneration);
   return {
-    upstream: handle === undefined ? undefined : settle(handle.response, regeneration),
+    upstream,
     clientLeft: followClient(input.request.signal, handle, regeneration),
-    cancelled: (outcome) => {
+    ended: (outcome) => {
       if (outcome.kind === 'client-cancelled') {
         regeneration?.onAbandoned?.();
+      }
+      begun();
+    },
+    release: async () => {
+      if (upstream !== undefined) {
+        await releaseUpstream(upstream);
+        begun();
       }
     },
   };

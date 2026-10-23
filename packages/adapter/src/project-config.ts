@@ -74,6 +74,12 @@ export interface ProjectConfig {
   readonly crons: readonly CronJob[];
   /** Read from this adapter's own files and a host's, never from `vercel.json`. */
   readonly split?: ProjectSplit | undefined;
+  /**
+   * How `upwind deploy` puts the project on a Cloudflare account of its own (`deploySchema`). The
+   * build reads none of it: it is here so that the one file a project configures upwind in, read
+   * the one way this reads it, says both.
+   */
+  readonly deploy?: DeployConfig | undefined;
 }
 
 const EMPTY_PROJECT_CONFIG: ProjectConfig = { file: undefined, crons: [] };
@@ -105,7 +111,90 @@ const splitBudgetSchema = z
   })
   .strict();
 const functionsSchema = z.object({ split: z.union([z.boolean(), splitBudgetSchema]).optional() });
-const upwindConfigSchema = projectConfigSchema.extend({ functions: functionsSchema.optional() });
+
+/**
+ * A project's name on its Cloudflare account: the prefix of every Worker, namespace and bucket
+ * `upwind deploy` makes for it. Short enough that a Function's Worker — this, the deployment's
+ * 25-character label and a role — is still one DNS label of 63 characters, which is what a
+ * `workers.dev` hostname needs a Worker's name to be; lowercase, since a hostname is.
+ */
+const DEPLOY_NAME = /^[a-z](?:[a-z\d]|-(?!-)){0,22}[a-z\d]$/u;
+/** A hostname as the edge is reached on it: lowercase labels, at least two of them. */
+const HOSTNAME =
+  /^(?=.{1,253}$)(?:[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?\.)+[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?$/u;
+/** A binding an application reads, as a Function's environment names it. */
+const BINDING_NAME = /^[A-Za-z_$][\w$]{0,63}$/u;
+/** A variable's name, as an environment carries one. */
+const VARIABLE_NAME = /^[A-Za-z_]\w{0,127}$/u;
+/** How many old deployments a project may keep to roll back to; each costs its Functions' Workers. */
+const MAX_KEPT_DEPLOYMENTS = 50;
+/** How many hostnames, secrets and checks a project may list: far past any one project's. */
+const MAX_HOSTNAMES = 100;
+const MAX_SECRETS = 100;
+const MAX_CHECKS = 20;
+/** A path long enough for any route with its parameters filled in, as a cron's may be. */
+const MAX_CHECK_PATH_LENGTH = 512;
+
+const hostnameSchema = z.string().regex(HOSTNAME);
+const bindingNameSchema = z.string().regex(BINDING_NAME);
+const variableNameSchema = z.string().regex(VARIABLE_NAME);
+const storageKindSchema = z.union([z.literal('d1'), z.literal('kv'), z.literal('r2')]);
+const nonceModeSchema = z.union([z.literal('enforce'), z.literal('report-only')]);
+
+/**
+ * A path a check requests: from `/`, printable ASCII, and never `//`, which a URL reads as a host
+ * — the same rule a cron job's path is held to, for the same reason.
+ */
+const checkPathSchema = z
+  .string()
+  .max(MAX_CHECK_PATH_LENGTH)
+  .regex(/^\/[\u{21}-\u{7E}]*$/u, 'expected a path beginning with "/"')
+  .refine((checked) => !checked.startsWith('//'), 'expected a path, not a protocol-relative URL');
+
+/**
+ * `deploy`: how `upwind deploy` puts the project on a Cloudflare account of its own. Only this
+ * adapter's own files carry it, and every key is held to exactly what is written here: a misspelled
+ * one would be a setting a deployment silently went without.
+ *
+ * The storage an application is given is named here, never guessed from its code. A binding listed
+ * is made on the account, under the project's name, and bound to every Function of every
+ * deployment; one that is not listed is not there, whatever the code reads.
+ */
+const deploySchema = z
+  .object({
+    /** The project's name on the account; the package's own name, made to fit, when absent. */
+    name: z.string().regex(DEPLOY_NAME).optional(),
+    /** Whether the edge answers on its `workers.dev` name; it does unless this says no. */
+    workersDev: z.boolean().optional(),
+    /** Every other hostname a route or a custom domain sends to the edge, attached by hand. */
+    hostnames: z.array(hostnameSchema).max(MAX_HOSTNAMES).optional(),
+    /** How many deployments before the live one stay ready to roll back to. */
+    keep: z.number().int().min(0).max(MAX_KEPT_DEPLOYMENTS).optional(),
+    /** The storage every Function is bound to, by binding name: a database, a namespace, a bucket. */
+    storage: z.record(bindingNameSchema, storageKindSchema).optional(),
+    /** Variables read from the environment on every deploy and given to every Function, as secrets. */
+    secrets: z.array(variableNameSchema).max(MAX_SECRETS).optional(),
+    /** Whether `next/image` is given Cloudflare Images; it is not unless this says so. */
+    images: z.boolean().optional(),
+    /** What a new deployment is asked for before it is made the live one; `/` when absent. */
+    checks: z.array(checkPathSchema).min(1).max(MAX_CHECKS).optional(),
+    /** A nonce the edge mints for each document, as a deployment's policy would carry one. */
+    cspNonce: z
+      .object({ mode: nonceModeSchema.optional(), strictDynamic: z.boolean().optional() })
+      .strict()
+      .optional(),
+    /** Whether Cloudflare keeps the Functions' logs; it does not unless this says so. */
+    logs: z.boolean().optional(),
+  })
+  .strict();
+
+/** What `upwind deploy` reads of a project's configuration, as `deploySchema` reads it. */
+export type DeployConfig = z.infer<typeof deploySchema>;
+
+const upwindConfigSchema = projectConfigSchema.extend({
+  functions: functionsSchema.optional(),
+  deploy: deploySchema.optional(),
+});
 
 /**
  * The shape a project's own configuration is written in — `upwind.config.ts`, `upwind.jsonc`,
@@ -247,5 +336,11 @@ export async function readProjectConfig(
     throw configError(file, describeIssues(parsed.error));
   }
   const split = parsed.data.functions?.split;
-  return { file, crons: parsed.data.crons ?? [], ...(split !== undefined && { split }) };
+  const { deploy } = parsed.data;
+  return {
+    file,
+    crons: parsed.data.crons ?? [],
+    ...(split !== undefined && { split }),
+    ...(deploy !== undefined && { deploy }),
+  };
 }

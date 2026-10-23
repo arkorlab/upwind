@@ -80,7 +80,7 @@ export function retargetedRecordsFailure(
       const generation = findGeneration(input.sql, id.generation_id);
       if (generation === undefined) throw new Error('the current repair snapshot disappeared');
       const fields = headerFieldsOf(
-        input.scopeId,
+        input,
         requireEntry(input.sql, generation.entry_id),
         generation,
         repairedOutputs(generation, bySha),

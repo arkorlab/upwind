@@ -63,10 +63,10 @@ import {
   functionReadBudget,
   projectedLength,
   readArtifactWhole,
-  readWithin,
   saidLength,
   type ReadBudget,
 } from './read-budget.ts';
+import { readWithin } from './read-deadline.ts';
 
 /**
  * The cache gateway as this Worker speaks to it: every route under the deployment's own scope,
@@ -101,23 +101,37 @@ const HTTP_NOT_FOUND = 404;
 const JSON_TYPE = 'application/json';
 /**
  * How long a render waits for a value of the data cache, or for the invalidations of its tags,
- * before it goes on without them.
+ * before it goes on without them, wherever it reads them. A read the gateway is still on past this
+ * is one the render stops waiting for and fails, which the runtime takes for a miss that is not
+ * remembered: the render makes the value itself, as it would with no cache at all, rather than wait
+ * on a read that may not come.
  *
- * Both are one read of KV in the render's own data center, through a Worker that runs where its
- * caller does: a few milliseconds when KV holds the key there, and on the order of a hundred when
- * it reads it from further up — Cloudflare reported 250 ms at p99 for reads that reach its storage
- * (changelog, 2025-08-22). A read the gateway is still on past this is one the render stops waiting
- * for and fails, which the runtime takes for a miss that is not remembered: the render makes the
- * value itself, as it would with no cache at all, rather than wait on a read that may not come.
- */
-const READ_DEADLINE_MS = 300;
-/**
- * The same wait where there is no read gateway and reads go to the authority itself
+ * Through a read gateway, each is one read of KV in the render's own data center, through a Worker
+ * that runs where its caller does: a few milliseconds when KV holds the key there, and on the order
+ * of a hundred when it reads it from further up — Cloudflare reported 250 ms at p99 for reads that
+ * reach its storage (changelog, 2025-08-22). Where there is none, reads go to the authority itself
  * (`readGatewayUrl` left out): a placed Worker answering from its own region, so a read from across
  * the world spends a round trip of up to a few hundred milliseconds before the authority reads
- * anything. Held to the local read's 300 ms, every such read there would be a miss.
+ * anything.
+ *
+ * A read through a read gateway was given up at 300 ms until 2026-10-22 (`SLOW_READ_MS`), and under
+ * load such reads went past it. A value's first read of its own tags, cold in KV, was given up, and
+ * the render made the value again in front of its response and wrote it over the one the cache
+ * held; a fetch that had a stale value to answer with went to its origin in front of the first byte
+ * instead. Such a read is now waited for up to the second a read of the authority itself was
+ * already given, rather than have the render compute again what the cache holds and replace it; one
+ * still out then is a miss as before, and one answered within 300 ms, as every hit was, waits no
+ * longer than it did.
  */
-const AUTHORITY_READ_DEADLINE_MS = 1000;
+const READ_DEADLINE_MS = 1000;
+/**
+ * How long a read through a read gateway takes before it is told of in the Function's log as slow
+ * (`readWithin`): what it was given up at until 2026-10-22, past the 250 ms at p99 of a read that
+ * reaches KV's storage. A read that the runtime would then have logged as failed still shows in the
+ * log, though it is now waited for and answered. A read of the authority itself is not told of: a
+ * round trip from across the world is its ordinary cost.
+ */
+const SLOW_READ_MS = 300;
 /**
  * How long an artifact read from the authority takes at the most, from the request to its last
  * byte: what a copy of one is read for (`COPY_READ_LIMIT_MS`, `artifacts.ts`). An artifact can be
@@ -154,8 +168,11 @@ export class Gateway {
   readonly #scopeId: string;
   readonly #fetch: FetchLike;
   readonly #readFetch: FetchLike;
-  /** How long a read waits: on a read gateway beside the render, or on the authority itself. */
-  readonly #readDeadlineMs: number;
+  /**
+   * Past how long a read of a value or of tags is told of as slow (`SLOW_READ_MS`): only where it
+   * goes to a read gateway beside the render, and never where it goes to the authority itself.
+   */
+  readonly #slowReadMs: number | undefined;
   readonly #artifacts: ArtifactCopies;
   /**
    * What this isolate reads of artifacts at once, from the authority and from its data center's
@@ -175,8 +192,7 @@ export class Gateway {
     this.#scopeId = options.scopeId;
     this.#fetch = options.fetchImpl ?? ((request) => nativeFetch(request));
     this.#readFetch = options.readFetchImpl ?? this.#fetch;
-    this.#readDeadlineMs =
-      options.readGatewayUrl === undefined ? AUTHORITY_READ_DEADLINE_MS : READ_DEADLINE_MS;
+    this.#slowReadMs = options.readGatewayUrl === undefined ? undefined : SLOW_READ_MS;
     this.#artifacts = new ArtifactCopies(
       options.scopeId,
       (artifactId, signal, room) => this.#artifactFromAuthority(artifactId, signal, room),
@@ -246,6 +262,15 @@ export class Gateway {
           withEnvelope(response, this.#reading, limit, asked, parse),
         )
       : withEnvelope(response, this.#reading, limit, signal, parse);
+  }
+
+  /**
+   * A read of a value or of the invalidations of its tags (`getData`, `getTags`): given up past
+   * `READ_DEADLINE_MS`, wherever it goes, and told of as slow past `SLOW_READ_MS` where it goes to
+   * a read gateway (`#slowReadMs`).
+   */
+  #readValue<T>(what: string, read: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    return readWithin(what, READ_DEADLINE_MS, read, this.#slowReadMs);
   }
 
   /**
@@ -376,7 +401,7 @@ export class Gateway {
     path: string,
     read: (response: Response, signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
-    return readWithin('tag authority read', AUTHORITY_READ_DEADLINE_MS, async (signal) => {
+    return readWithin('tag authority read', READ_DEADLINE_MS, async (signal) => {
       const response = await this.#send(path, {
         method: 'GET',
         headers: this.#headers(),
@@ -542,45 +567,38 @@ export class Gateway {
     });
   }
 
-  /**
-   * A value of the data cache, or `undefined` for none; given up past `READ_DEADLINE_MS`, or past
-   * `AUTHORITY_READ_DEADLINE_MS` where reads go to the authority itself.
-   */
+  /** A value of the data cache, or `undefined` for none (`#readValue`). */
   getData(request: DataGetRequest): Promise<DataGetResponse | undefined> {
-    return readWithin(
-      'data read',
-      this.#readDeadlineMs,
-      async (signal): Promise<DataGetResponse | undefined> => {
-        const response = await this.#send(
-          '/data/get',
-          {
-            method: 'POST',
-            headers: this.#headers({ 'content-type': JSON_TYPE }),
-            body: JSON.stringify(request),
-            signal,
-          },
-          true,
-        );
-        if (response.status === HTTP_NOT_FOUND) {
-          await response.body?.cancel();
-          return undefined;
-        }
-        return this.#valueOf(response, request, signal);
-      },
-    );
+    return this.#readValue('data read', async (signal): Promise<DataGetResponse | undefined> => {
+      const response = await this.#send(
+        '/data/get',
+        {
+          method: 'POST',
+          headers: this.#headers({ 'content-type': JSON_TYPE }),
+          body: JSON.stringify(request),
+          signal,
+        },
+        true,
+      );
+      if (response.status === HTTP_NOT_FOUND) {
+        await response.body?.cancel();
+        return undefined;
+      }
+      return this.#valueOf(response, request, signal);
+    });
   }
 
   /**
    * The value the key holds now, asked of the authority itself rather than of KV (`/data/current`);
    * `undefined` for none, for none later than `than` where it is given, and for an authority from
    * before it answered the route. An authority from before `than` answers with the value whatever
-   * its revision. Given up past `AUTHORITY_READ_DEADLINE_MS`, however near a read gateway is: this
-   * read always crosses to the authority.
+   * its revision. Given up past `READ_DEADLINE_MS`, and never told of as slow, however near a read
+   * gateway is: this read always crosses to the authority.
    */
   currentData(request: CurrentDataRequest): Promise<DataGetResponse | undefined> {
     return readWithin(
       'current data read',
-      AUTHORITY_READ_DEADLINE_MS,
+      READ_DEADLINE_MS,
       async (signal): Promise<DataGetResponse | undefined> => {
         const response = await this.#send('/data/current', {
           method: 'POST',
@@ -602,11 +620,11 @@ export class Gateway {
   }
 
   /**
-   * The invalidations recorded against these tags; given up past `READ_DEADLINE_MS`. A failure,
-   * and never an empty answer: an empty one would say none of them was invalidated.
+   * The invalidations recorded against these tags (`#readValue`). A failure, and never an empty
+   * answer, where the read is given up: an empty one would say none of them was invalidated.
    */
   getTags(tags: readonly string[]): Promise<TagsGetResponse> {
-    return readWithin('tag read', this.#readDeadlineMs, async (signal) => {
+    return this.#readValue('tag read', async (signal) => {
       const response = await this.#send(
         '/tags/get',
         {

@@ -132,6 +132,12 @@ export interface RecordedGeneration {
   /** Whether a build wrote it (`build`) — the edge serves such a one's parts as the build's — or a render since. */
   readonly source: string;
   /**
+   * The SHA-256, in hex, and the length of the page it holds (`htmlSha256`, `htmlLength` of its
+   * header): what the edge serves a page from it with. Unsaid by a backstage that does not say it.
+   */
+  readonly htmlSha256?: string | undefined;
+  readonly htmlLength?: number | undefined;
+  /**
    * The status its render answered with: 200, or another — a page a refresh found deleted renders
    * 404 — which the edge hands on to the Function (`generation-status-<status>`). Unsaid by a
    * backstage that does not say it.

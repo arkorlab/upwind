@@ -48,6 +48,7 @@ import {
 } from './edge-instrumentation.ts';
 import type { EdgeEntry } from './edge.ts';
 import { ensureStaticRoutes } from './ensure-static.ts';
+import { environmentOptions } from './environment-options.ts';
 import { exists } from './fs.ts';
 import { type BuiltFunction, type EntryModule, middlewareManifest } from './function.ts';
 import { declaredGates } from './gates.ts';
@@ -850,9 +851,10 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
 }
 
 // `NEXT_ADAPTER_PATH` and `adapterPath` name a module whose default export is the adapter; this
-// one is configured with nothing, and its bundle has no runtime cache.
+// one is configured with what the environment says, which is nothing outside `upwind deploy`.
 // eslint-disable-next-line import-x/no-default-export, unicorn/no-top-level-side-effects
-export default createAdapter();
+export default createAdapter(environmentOptions());
 
 export { bundleDurableObjects, type BundledDurableObject } from './durable-objects.ts';
-export type { UpwindConfig } from './project-config.ts';
+// What `upwind deploy` reads the project's configuration with: the reader its build uses.
+export { type DeployConfig, readProjectConfig, type UpwindConfig } from './project-config.ts';

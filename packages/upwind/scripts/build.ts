@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import { rolldown } from 'rolldown';
 
+import { writeShipped } from './shipped.ts';
+
 /**
  * The CLI as a published package reads: one JavaScript module with a hashbang.
  *
@@ -33,7 +35,16 @@ async function main(): Promise<void> {
       'resources-entry': path.join(ROOT, 'src/resources/entry.ts'),
     },
     platform: 'node',
-    external: [/^next(\/|$)/u, /^node:/u, /^miniflare$/u, /^wrangler$/u],
+    // The bundler and the Workers' sources are reached only by a run from this repository's sources
+    // (`src/deploy/shipped.ts`); the published command reads `dist/shipped/` instead.
+    external: [
+      /^next(\/|$)/u,
+      /^node:/u,
+      /^miniflare$/u,
+      /^wrangler$/u,
+      /^@stayingupwind\/local$/u,
+      /^esbuild$/u,
+    ],
   });
   // No `banner`: the hashbang is `src/cli.ts`'s own and Rolldown carries it to the top of the
   // bundle. Adding one as well makes two, which is a syntax error — and Rolldown answers that by
@@ -53,6 +64,9 @@ async function main(): Promise<void> {
   }
   const bytes = Buffer.byteLength(entry.code);
   console.log(`dist/cli.js: ${String(bytes)} bytes, ${String(output.length)} chunk(s)`);
+  // What `upwind deploy` builds with, bundled once here rather than on every machine it runs on.
+  const shipped = await writeShipped(path.join(OUT_DIR, 'shipped'));
+  console.log(`dist/shipped: ${Object.keys(shipped.workers).join(', ')} and the cache host`);
 }
 
 await main();

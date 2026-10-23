@@ -86,11 +86,11 @@ flowchart TB
   end
 
   build --> bundle
-  bundle -- "uploaded by the host" --> serve
+  bundle -- "uploaded by upwind deploy, or by a host" --> serve
 ```
 
 > [!NOTE]
-> **upwind stops at the directory.** Uploading `.arkor/` and running the edge in front of its Functions is the job of a host, the platform that runs the deployment; the edge serves files from storage and passes everything else to the Functions. Nothing in this repository does either. What a host implements — the bundle's schema, the manifest an edge reads, and the `x-arkor-*` headers an edge and a Function exchange — is specified in [`@stayingupwind/core`](packages/core).
+> **upwind deploys the directory, too — to a Cloudflare account of your own.** `upwind deploy` builds the app, uploads `.arkor/`, puts the edge in front of its Functions and the runtime cache behind them, and switches the site to the new deployment once it answers. `upwind deployments` lists what is deployed, `upwind rollback` goes back to an earlier deployment, and `upwind destroy` deletes everything `deploy` made. [upwind's readme](packages/upwind/README.md#upwind-deploy) has the details. A host of another kind can take the directory instead: what it implements — the bundle's schema, the manifest an edge reads, and the `x-arkor-*` headers an edge and a Function exchange — is specified in [`@stayingupwind/core`](packages/core).
 
 ## 🎯 Who it's for
 
@@ -102,7 +102,7 @@ flowchart TB
 <summary><b>Not a fit yet if…</b></summary>
 
 - **you build with webpack.** It is not supported; see [what it serves](#-what-it-serves).
-- **you want one command that builds and deploys your app.** upwind stops at the bundle; see the note above.
+- **you deploy somewhere other than a Cloudflare account of your own.** That is the one place `upwind deploy` deploys to — with custom domains attached by hand, and no cron jobs yet; anywhere else needs a host that takes the bundle. See the note above.
 - **you need 1.0 guarantees.** See [the status note](#status).
 
 </details>

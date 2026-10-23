@@ -149,6 +149,14 @@ export default {
       const answer = await fetch(target, { headers: { host: target.host } });
       return Response.json({ status: answer.status, echoed: await answer.json() });
     }
+    if (url.pathname === '/self-port') {
+      const own = new URL('/echo-port', 'http://localhost:' + env.PORT);
+      const answer = await fetch(own, { method: 'POST', body: 'runtime-port-body' });
+      return Response.json({ port: env.PORT, vercel: env.VERCEL_URL ?? null, status: answer.status, echoed: await answer.json() });
+    }
+    if (url.pathname === '/echo-port') {
+      return Response.json({ url: request.url, method: request.method, body: await request.text() });
+    }
     if (url.pathname.startsWith('/_upwind-local-check/') && url.hostname !== 'localhost') {
       return new Response('asked under ' + url.host, { status: 500 });
     }
@@ -194,7 +202,8 @@ export default {
 /** The build's second app Function, which holds none of the routes the first does. */
 const SECOND = `
 export default {
-  fetch(request) {
+  fetch(request, env) {
+    if (new URL(request.url).pathname === '/port') return Response.json({ port: env.PORT });
     return Response.json({
       function: 'app-2',
       done: request.headers.get('x-arkor-middleware-done'),
@@ -390,6 +399,7 @@ describe('a local stack', () => {
       bundleDir: path.join(state.dir, OUT_DIR_NAME),
       // A name the deploy binds itself yields to it, as it does deployed.
       env: {
+        PORT: '0',
         TEST_VALUE: 'the application’s',
         ARKOR_CACHE: 'the application’s too',
         // A name of the host's contract the stack binds nothing under: still never the application's.
@@ -711,6 +721,26 @@ describe('a local stack', () => {
     });
   });
 
+  it('binds the actual allocated port to every app Function and keeps a PORT-derived POST on the local edge', async () => {
+    const stack = started();
+    const response = await fetch(new URL('/self-port', stack.url));
+    const split = await fetch(new URL('function/app-2?path=%2Fport', stack.backstage));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toStrictEqual({
+      port: stack.url.port,
+      vercel: null,
+      status: 200,
+      echoed: {
+        url: new URL('/echo-port', stack.url).href,
+        method: 'POST',
+        body: 'runtime-port-body',
+      },
+    });
+    await expect(split.json()).resolves.toStrictEqual({ port: stack.url.port });
+    expect(Number(stack.url.port)).toBeGreaterThan(0);
+  });
+
   it('traces a request only under an id a check registered, which no Function sees', async () => {
     const stack = started();
     const echoed = async (trace: string): Promise<unknown> => {
@@ -857,16 +887,23 @@ describe('a local stack', () => {
 
   it('binds the stores the application asks for, listed as a deploy lists them, and no store under a name a deploy binds', async () => {
     const stored = await fetch(new URL('/kv', started().url));
-    const refused = startStack({
-      bundleDir: path.join(state.dir ?? '', OUT_DIR_NAME),
-      storage: { kv: ['ARKOR_CACHE'] },
-    });
 
     await expect(stored.json()).resolves.toStrictEqual({
       stored: 'stored',
       listed: '[{"name":"APP_KV","type":"kv_namespace"}]',
     });
-    await expect(refused).rejects.toThrow('ARKOR_CACHE cannot be bound to a store');
+    await expect(
+      startStack({
+        bundleDir: path.join(state.dir ?? '', OUT_DIR_NAME),
+        storage: { kv: ['ARKOR_CACHE'] },
+      }),
+    ).rejects.toThrow('ARKOR_CACHE cannot be bound to a store');
+    await expect(
+      startStack({
+        bundleDir: path.join(state.dir ?? '', OUT_DIR_NAME),
+        storage: { kv: ['PORT'] },
+      }),
+    ).rejects.toThrow('PORT cannot be bound to a store');
   });
 
   it('stamps a nonce and puts it in policies on the backstage, by the edge’s own code', async () => {

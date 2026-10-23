@@ -521,7 +521,7 @@ async function regeneratedVerdict(
     return failed(
       canRegenerate(asked.route)
         ? ((await regenerationFailure(captured, asked.route, { regenerated, pathname })) ??
-            regeneratedFailure(asked.route, read.answer, asked.coding) ??
+            regeneratedFailure(asked.route, read.answer, asked) ??
             laid)
         : 'regenerated in the foreground, though the route has no record to regenerate',
     );
@@ -532,7 +532,7 @@ async function regeneratedVerdict(
   }
   const failure =
     (await regenerationFailure(captured, landed, { regenerated, pathname })) ??
-    regeneratedFailure(landed, read.answer, asked.coding) ??
+    regeneratedFailure(landed, read.answer, asked) ??
     laid;
   return failure === undefined
     ? skipped(`the application's middleware ${did} the route ${landed.pathname}, regenerated`)
@@ -574,7 +574,7 @@ export async function documentVerdict(
     return skipped(middleware);
   }
   const answered = answeredBy(answer);
-  const pages = pagesHandoffVerdict(stack, url, asked.headers, { answer });
+  const pages = await pagesHandoffVerdict(stack, url, asked.headers, { answer, kept });
   if (pages !== undefined) return pages;
   // A page regenerated in the foreground is the Function's render, not the build's shell: judged
   // first for what was kept of the middleware, then for its policy (`regeneratedVerdict`).

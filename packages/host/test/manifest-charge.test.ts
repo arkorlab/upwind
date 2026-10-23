@@ -267,6 +267,7 @@ describe('the request-key static file format', () => {
     const parsed = parseProjectManifest(stored);
     const extraBytes = encodeUtf8(stored).byteLength - encodeUtf8(plainStored).byteLength;
 
+    expect(parsed.schemaVersion).toBe(7);
     expect(parsed.staticFileRequestKeys).toBe(true);
     expect(extraBytes).toBeGreaterThan(0);
     expect(

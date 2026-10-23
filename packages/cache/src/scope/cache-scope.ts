@@ -1,28 +1,4 @@
-import {
-  type ApplyResourceChangeInput,
-  type ApplyResourceChangeResult,
-  type CommitRequest,
-  type CurrentDataRequest,
-  type FailRequest,
-  type FailResponse,
-  type FinishResourceWarmJobInput,
-  type FinishResourceWarmJobResult,
-  type InvalidateRequest,
-  type ListResourceWarmJobsInput,
-  type ListResourceWarmJobsResult,
-  type PublicCacheGeneration,
-  type ReadArtifactLocationResult,
-  type ReadEntryResult,
-  type ReadGenerationResult,
-  type ReadHeadResult,
-  type ResolveResponse,
-  type SeedEntriesInput,
-  type SeedEntriesResult,
-  type SeedScopeInput,
-  type SeedScopeResult,
-  type StartAttemptRequest,
-  type TagsDeltaResponse,
-} from '@stayingupwind/host/cache';
+import type * as Contract from '@stayingupwind/host/cache';
 import { DurableObject } from 'cloudflare:workers';
 
 import type { CacheBindings } from '../bindings.ts';
@@ -47,7 +23,7 @@ import type { DataSetInput, DataSetOutcome } from './data.ts';
 import * as history from './history.ts';
 import { type InvalidateResult, planInvalidate } from './invalidations.ts';
 import { type BlobStore, blobStore, checkFault, kvSink, type TestFaults } from './io.ts';
-import { Alarm, commitMutation, initializeScope, scopeName, ScopeQueue } from './mutations.ts';
+import { Alarm, commitMutation, ScopeQueue } from './mutations.ts';
 import {
   type ArtifactLocation,
   locateArtifact,
@@ -71,6 +47,7 @@ import {
   runRetention,
   type TickOptions,
 } from './retention-run.ts';
+import { ScopeContext } from './scope-context.ts';
 import * as seed from './seed.ts';
 import { countSettleFailures, retryDelayMs, settleRetryMs } from './settle-retry.ts';
 import {
@@ -146,22 +123,17 @@ export class CacheScope extends DurableObject<CacheBindings> {
   #faults: TestFaults = {};
   #testLimits: Partial<ScopeLimits> = {};
   #logger: Logger | undefined;
-  /** Whether this object holds its scope's tables (`holdsScopeTables`). */
-  #tables: boolean;
+  readonly #scope: ScopeContext;
   readonly #history: history.ScopeHistory;
 
   constructor(ctx: DurableObjectState, env: CacheBindings) {
     super(ctx, env);
     this.#history = new.target.historyOf(env, () => this.#faults);
-    this.#tables = initializeScope(ctx.storage.sql, Date.now(), this.#history);
+    this.#scope = new ScopeContext(ctx, this.#history);
   }
 
   get #sql(): SqlStorage {
     return this.ctx.storage.sql;
-  }
-
-  get #scopeId(): string {
-    return scopeName(this.ctx);
   }
 
   get #vars(): Vars {
@@ -173,7 +145,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   get #log(): Logger {
-    this.#logger ??= createLogger({ scopeId: this.#scopeId });
+    this.#logger ??= createLogger({ scopeId: this.#scope.scopeId });
     return this.#logger;
   }
 
@@ -181,7 +153,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
     const faults = (): TestFaults => this.#faults;
     return {
       sql: this.#sql,
-      scopeId: this.#scopeId,
+      scopeId: this.#scope.scopeId,
+      buildId: this.#scope.buildId,
       kv: kvSink(this.env.CACHE_STATE, faults),
       blobs: blobStore(this.env.ARTIFACTS, faults),
       history: this.#history,
@@ -230,13 +203,14 @@ export class CacheScope extends DurableObject<CacheBindings> {
       const committed = await commitMutation(
         {
           storage: this.ctx.storage,
-          scopeId: this.#scopeId,
+          scopeId: this.#scope.scopeId,
+          buildId: this.#scope.buildId,
           kv: this.env.CACHE_STATE,
           limits: this.#limits,
           history: this.#history,
-          tables: this.#tables,
+          tables: this.#scope.tables,
           createdTables: () => {
-            this.#tables = true;
+            this.#scope.tables = true;
           },
           ...(clock !== undefined && { clock }),
         },
@@ -244,7 +218,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
         plan,
         answers,
       );
-      this.#tables = committed.tables;
+      this.#scope.committed(committed.tables);
       return committed;
     });
     timing?.lap('commit');
@@ -258,7 +232,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     // what the host's history owes for it — is owed to this alarm, or to an earlier one, should the
     // object be reset before the run is over. Erasure may have come between: what is gone is not
     // asked for. An answer read from its own transaction is not taken back for it (`#armOrLog`).
-    if (this.#tables && readScope(this.#sql) !== undefined) {
+    if (this.#scope.tables && readScope(this.#sql) !== undefined) {
       const at = now + RETENTION_INTERVAL_MS;
       await (answers.atOnce === true ? this.#armOrLog(at) : this.#armAlarm(at));
     }
@@ -314,7 +288,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     from: OwnRecords | null | undefined,
     timing: Timing | undefined,
   ): Promise<SettleOutcome> {
-    if (!this.#tables) {
+    if (!this.#scope.tables) {
       // Erased while the run waited its turn: nothing of the scope is left to settle.
       return { pending: false, failed: false, continued: false };
     }
@@ -370,7 +344,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   async #rearm(now: number): Promise<void> {
-    if (!this.#tables || readScope(this.#sql) === undefined) {
+    if (!this.#scope.tables || readScope(this.#sql) === undefined) {
       // Nothing is seeded here: an object that holds no tables, or tables but no scope row. It has
       // nothing to prune and nothing to settle, and an alarm would only wake it again.
       return;
@@ -390,7 +364,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
    */
   #locked<T>(empty: T, body: () => T): Promise<T> {
     const { storage } = this.ctx;
-    return this.#mutations.run(() => (this.#tables ? storage.transactionSync(body) : empty));
+    return this.#mutations.run(() => (this.#scope.tables ? storage.transactionSync(body) : empty));
   }
 
   #requireTestHooks(): void {
@@ -399,9 +373,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
 
   // ---- what a deploy calls ---------------------------------------------------------------------
 
-  async seedScope(input: SeedScopeInput, now: number): Promise<SeedScopeResult> {
+  async seedScope(input: Contract.SeedScopeInput, now: number): Promise<Contract.SeedScopeResult> {
     const outcome = await this.#mutate(now, (tx) => () => seed.applySeedScope(tx, input), SEED);
-    if (this.#tables && readScope(this.#sql)?.status === 'active') {
+    if (this.#scope.tables && readScope(this.#sql)?.status === 'active') {
       // An upload may never reach setData at all. Seeding must arm its eventual orphan sweep.
       await this.#armAlarm(now + RETENTION_INTERVAL_MS);
     }
@@ -426,7 +400,10 @@ export class CacheScope extends DurableObject<CacheBindings> {
     });
   }
 
-  async seedEntries(input: SeedEntriesInput, now: number): Promise<SeedEntriesResult | Refusal> {
+  async seedEntries(
+    input: Contract.SeedEntriesInput,
+    now: number,
+  ): Promise<Contract.SeedEntriesResult | Refusal> {
     let result = await this.#mutate(now, (tx) => seed.planSeedEntries(tx, input), REFUSED);
     if (seed.needsSeedVerification(result)) {
       result = await seed.finishSeedRepair(result, {
@@ -447,30 +424,30 @@ export class CacheScope extends DurableObject<CacheBindings> {
       await this.#armAlarm(now);
     }
     // Answered once its marker is out, the run before the answer having written it or failed to.
-    if (outcome.kind !== 'unknown' && this.#tables) requireScopeMarker(this.#sql);
+    if (outcome.kind !== 'unknown' && this.#scope.tables) requireScopeMarker(this.#sql);
     return outcome;
   }
 
   applyResourceChange(
-    input: ApplyResourceChangeInput,
+    input: Contract.ApplyResourceChangeInput,
     now: number,
-  ): Promise<ApplyResourceChangeResult | Refusal> {
+  ): Promise<Contract.ApplyResourceChangeResult | Refusal> {
     return this.#mutate(now, (tx) => planApplyResourceChange(tx, input), REFUSED);
   }
 
   async listResourceWarmJobs(
-    input: ListResourceWarmJobsInput,
+    input: Contract.ListResourceWarmJobsInput,
     now: number,
-  ): Promise<ListResourceWarmJobsResult> {
-    const none: ListResourceWarmJobsResult = { jobs: [], nextRetryAt: null };
+  ): Promise<Contract.ListResourceWarmJobsResult> {
+    const none: Contract.ListResourceWarmJobsResult = { jobs: [], nextRetryAt: null };
     return this.#locked(none, () => claimResourceWarmJobs(this.#sql, input, now));
   }
 
   async finishResourceWarmJob(
-    input: FinishResourceWarmJobInput,
+    input: Contract.FinishResourceWarmJobInput,
     now: number,
-  ): Promise<FinishResourceWarmJobResult> {
-    const none: FinishResourceWarmJobResult = { kind: 'unknown', nextRetryAt: null };
+  ): Promise<Contract.FinishResourceWarmJobResult> {
+    const none: Contract.FinishResourceWarmJobResult = { kind: 'unknown', nextRetryAt: null };
     return this.#locked(none, () => finishResourceWarmJob(this.#sql, input, now));
   }
 
@@ -478,7 +455,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
 
   /** Take an entry's lease, answered with the record of a later generation (`withCurrentRecord`). */
   async startAttempt(
-    request: StartAttemptRequest,
+    request: Contract.StartAttemptRequest,
     now: number,
   ): ReturnType<typeof recordAnswers.withCurrentRecord> {
     const result = await this.#mutate(now, (tx) => planStartAttempt(tx, request), AT_ONCE, {
@@ -511,7 +488,11 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   /** Publish an attempt's generation, answered with the record its run wrote (`answerCommit`). */
-  commit(attemptId: string, request: CommitRequest, now: number): Promise<CommitOutcome | Refusal> {
+  commit(
+    attemptId: string,
+    request: Contract.CommitRequest,
+    now: number,
+  ): Promise<CommitOutcome | Refusal> {
     // A retired scope's commit is refused before its planning asks storage anything.
     const plan = async (tx: TxInput): Promise<Apply<CommitOutcome | Refusal>> => {
       const scope = requireActiveScope(tx.sql);
@@ -523,7 +504,11 @@ export class CacheScope extends DurableObject<CacheBindings> {
     return recordAnswers.answerCommit(committed, wanted, entryOf, this.#deps());
   }
 
-  fail(attemptId: string, request: FailRequest, now: number): Promise<FailResponse | Refusal> {
+  fail(
+    attemptId: string,
+    request: Contract.FailRequest,
+    now: number,
+  ): Promise<Contract.FailResponse | Refusal> {
     return this.#mutate(now, (tx) => () => applyFail(tx, attemptId, request), AT_ONCE, {
       leaseClock: true,
     });
@@ -533,7 +518,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
 
   async setData(input: DataSetInput, now: number): Promise<DataSetOutcome | Refusal> {
     const timing = new Timing();
-    const deps = { sql: this.#sql, scopeId: this.#scopeId, blobs: () => this.#blobs() };
+    const deps = { sql: this.#sql, scopeId: this.#scope.scopeId, blobs: () => this.#blobs() };
     const authorityNow = () => (this.#vars.ARKOR_TEST_HOOKS ? now : Date.now());
     const adopt = (tx: TxInput) => adoptDataUpload({ ...deps, now: authorityNow }, tx, input);
     const carried = carriedValueOf(input);
@@ -552,7 +537,11 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   /** Only the private control entrypoint selects absent-tag fanout; the gateway uses the default. */
-  invalidate(request: InvalidateRequest, now: number, mode?: 'control'): Promise<InvalidateResult> {
+  invalidate(
+    request: Contract.InvalidateRequest,
+    now: number,
+    mode?: 'control',
+  ): Promise<InvalidateResult> {
     return this.#mutate(now, (tx) => planInvalidate(tx, request, mode), REFUSED);
   }
 
@@ -560,25 +549,25 @@ export class CacheScope extends DurableObject<CacheBindings> {
 
   // An object that holds no tables answers each as for a scope never seeded.
 
-  tagsDelta(since: number, limit: number, from?: number): TagsDeltaResponse {
-    return this.#tables
+  tagsDelta(since: number, limit: number, from?: number): Contract.TagsDeltaResponse {
+    return this.#scope.tables
       ? tagsDelta(this.#sql, { since, limit, from, revision: readRevision(this.#sql) })
       : { revision: 0, floor: 0, truncated: false, tags: [] };
   }
 
-  resolve(entryId: string): ResolveResponse {
-    return this.#tables
-      ? resolveEntry(this.#sql, this.#scopeId, entryId)
+  resolve(entryId: string): Contract.ResolveResponse {
+    return this.#scope.tables
+      ? resolveEntry(this.#sql, this.#scope.scopeId, entryId)
       : { entryId, state: null, current: null, revision: 0 };
   }
 
-  generation(generationId: string): PublicCacheGeneration | undefined {
+  generation(generationId: string): Contract.PublicCacheGeneration | undefined {
     const result = this.readGeneration(generationId);
     return result.kind === 'found' ? result.generation : undefined;
   }
 
   artifact(artifactId: string): ArtifactLocation | undefined {
-    return this.#tables ? locateArtifact(this.#sql, artifactId) : undefined;
+    return this.#scope.tables ? locateArtifact(this.#sql, artifactId) : undefined;
   }
 
   /**
@@ -593,39 +582,46 @@ export class CacheScope extends DurableObject<CacheBindings> {
     return this.#locked(false, () => rememberArtifactFailure(this.#sql, location));
   }
 
-  readArtifactLocation(generationId: string, artifactId: string): ReadArtifactLocationResult {
-    return this.#tables
-      ? readArtifactLocation(this.#sql, this.#scopeId, generationId, artifactId)
+  readArtifactLocation(
+    generationId: string,
+    artifactId: string,
+  ): Contract.ReadArtifactLocationResult {
+    return this.#scope.tables
+      ? readArtifactLocation(this.#sql, this.#scope.scopeId, generationId, artifactId)
       : NOT_RECORDED;
   }
 
-  readHead(): ReadHeadResult {
-    return this.#tables ? readHead(this.#sql, this.#history) : NOT_RECORDED;
+  readHead(): Contract.ReadHeadResult {
+    return this.#scope.tables ? readHead(this.#sql, this.#history) : NOT_RECORDED;
   }
 
   /** The data-cache value the key holds now, read from the scope rather than from KV. */
-  currentData(request: CurrentDataRequest): ReturnType<typeof readCurrentData> {
-    return this.#tables ? readCurrentData(this.#deps(), request) : Promise.resolve(undefined);
+  currentData(request: Contract.CurrentDataRequest): ReturnType<typeof readCurrentData> {
+    return this.#scope.tables ? readCurrentData(this.#deps(), request) : Promise.resolve(undefined);
   }
 
   /** A newer route record from the authority's current state, without leasing or writing it. */
   async currentRecord(entry: string, after: number): Promise<ArrayBuffer | undefined> {
-    return this.#tables ? recordAnswers.readCurrentRecord(this.#deps(), entry, after) : undefined;
+    return this.#scope.tables
+      ? recordAnswers.readCurrentRecord(this.#deps(), entry, after)
+      : undefined;
   }
 
-  readEntry(entryId: string, now: number): ReadEntryResult {
-    return this.#tables ? readEntry(this.#sql, this.#scopeId, entryId, now) : NOT_RECORDED;
+  readEntry(entryId: string, now: number): Contract.ReadEntryResult {
+    const { tables, scopeId } = this.#scope;
+    return tables ? readEntry(this.#sql, scopeId, entryId, now) : NOT_RECORDED;
   }
 
-  readGeneration(generationId: string): ReadGenerationResult {
-    return this.#tables ? readGeneration(this.#sql, this.#scopeId, generationId) : NOT_RECORDED;
+  readGeneration(generationId: string): Contract.ReadGenerationResult {
+    const { tables, scopeId } = this.#scope;
+    return tables ? readGeneration(this.#sql, scopeId, generationId) : NOT_RECORDED;
   }
 
   // ---- housekeeping -----------------------------------------------------------------------------
 
   /** What the alarm does, at the clock it is handed: sweep leases, settle, keep, come back. */
   async tick(now: number, options: TickOptions = {}): Promise<void> {
-    if (!this.#tables) {
+    if (!this.#scope.tables) {
       return;
     }
     const scanDue = retentionDue(this.#sql, now, options.retention === true, RETENTION_INTERVAL_MS);
@@ -634,7 +630,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
       this.ctx.storage.transactionSync(() => {
         expireLeases({
           sql: this.#sql,
-          scopeId: this.#scopeId,
+          scopeId: this.#scope.scopeId,
           limits: this.#limits,
           now,
           revision: readRevision(this.#sql) + 1,
@@ -650,20 +646,22 @@ export class CacheScope extends DurableObject<CacheBindings> {
     // history owes — would go with the storage. A run that owes anything has armed its retry, and
     // the next retention looks again.
     const owed = await this.#settleOwes();
+    const { scopeId } = this.#scope;
     // Everything of the scope left in storage once its history is over — whatever the host's
     // history wrote under the scope's prefix, and any blob a failed write left behind — erased
     // first: its tables are about to go, and after that nothing could name them.
-    if (deleteAll && !owed && (await eraseScopeStorage(this.#scopeId, this.#blobs(), this.#log))) {
+    if (deleteAll && !owed && (await eraseScopeStorage(scopeId, this.#blobs(), this.#log))) {
       // Under the lock, so that no change is planned against tables that go meanwhile; the tables
       // are given up first, so that no settle run begins against them, and those under way end.
       await this.#mutations.run(async () => {
-        this.#tables = false;
+        this.#scope.tables = false;
         try {
           await Promise.allSettled([this.#settling]);
           await this.ctx.storage.deleteAlarm();
           await this.ctx.storage.deleteAll();
+          this.#scope.erased();
         } catch (error) {
-          this.#tables = true;
+          this.#scope.tables = true;
           throw error;
         }
       });

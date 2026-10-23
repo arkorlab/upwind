@@ -55,7 +55,8 @@ async function throughMiddleware(
   const site = await seedSite({
     document: pprDocument(),
     files: { [FILE]: 'User-agent: *' },
-    headerRules: answering.headerRules,
+    // `headers()` of `next.config`, which Next.js puts ahead of the middleware, unless one says.
+    headerRules: answering.headerRules?.map((rule) => ({ phase: 'beforeMiddleware', ...rule })),
     ...(answering.completeRouting === true && { dynamicRoutes: [] }),
   });
   const manifest: ProjectManifest = {
@@ -863,5 +864,114 @@ describe('middleware deadline cleanup', () => {
 
     await expect(response.text()).resolves.toBe('timely middleware');
     expect(cancelled).toBe(false);
+  });
+});
+
+/**
+ * A `Cache-Control` saying `public` on what the middleware answers itself, or on what an origin it
+ * rewrites to answers, is the application's word, and goes out as it said, `s-maxage` and all
+ * (decided 2026-10-22). A cookie beside it takes it back: such an answer is one visitor's, as is
+ * any the edge hands on (`unsharedUnlessPublic`). So does a cookie or an `Authorization` the
+ * middleware hands the request on with, which the visitor never sent.
+ */
+describe('a public answer the middleware hands on', () => {
+  const PUBLIC = 'public, max-age=60, s-maxage=600';
+
+  it.each([
+    ['sets no cookie', false, PUBLIC],
+    ['sets a cookie', true, 'private, max-age=60'],
+  ] as const)('keeps its own public answer that %s as it said', async (_case, cookie, expected) => {
+    const response = await throughMiddleware('/', {
+      middleware: () => {
+        return new Response('kept', {
+          headers: {
+            'cache-control': PUBLIC,
+            ...(cookie && { 'set-cookie': 'mw=1; Path=/' }),
+          },
+        });
+      },
+    });
+
+    expect({
+      edge: response.headers.get('x-arkor-edge'),
+      cacheControl: response.headers.get('cache-control'),
+    }).toStrictEqual({ edge: 'passthrough;reason=middleware', cacheControl: expected });
+  });
+
+  it('keeps from shared caches a public answer the middleware put a cookie on', async () => {
+    const response = await throughMiddleware('/api/hello', {
+      middleware: () => {
+        return new Response(null, {
+          headers: { 'x-middleware-next': '1', 'set-cookie': 'mw=1; Path=/' },
+        });
+      },
+      application: () => new Response('{}', { headers: { 'cache-control': PUBLIC } }),
+    });
+
+    expect(response.headers.getSetCookie()).toStrictEqual(['mw=1; Path=/']);
+    expect(response.headers.get('cache-control')).toBe('private, max-age=60');
+  });
+
+  it('keeps public what an origin it rewrites to says is public', async () => {
+    const response = await throughMiddleware('/', {
+      middleware: () => {
+        return new Response(null, {
+          headers: { 'x-middleware-rewrite': 'https://elsewhere.example/feed' },
+        });
+      },
+      origin: () => new Response('<rss/>', { headers: { 'cache-control': PUBLIC } }),
+    });
+
+    expect({
+      edge: response.headers.get('x-arkor-edge'),
+      cacheControl: response.headers.get('cache-control'),
+    }).toStrictEqual({
+      edge: 'passthrough;reason=external-rewrite',
+      cacheControl: PUBLIC,
+    });
+  });
+
+  it('keeps from shared caches a public answer to a request the middleware handed on with a cookie', async () => {
+    const response = await throughMiddleware('/api/hello', {
+      middleware: () => {
+        return new Response(null, {
+          headers: {
+            'x-middleware-next': '1',
+            'x-middleware-override-headers': 'cookie',
+            'x-middleware-request-cookie': 'session=1',
+          },
+        });
+      },
+      application: (request) => {
+        return new Response(request.headers.get('cookie'), {
+          headers: { 'cache-control': PUBLIC },
+        });
+      },
+    });
+
+    await expect(response.text()).resolves.toBe('session=1');
+    expect(response.headers.get('cache-control')).toBe('private, max-age=60');
+  });
+
+  it('keeps from shared caches what an origin answers a request the middleware gave an Authorization', async () => {
+    let sent: string | null = null;
+    const response = await throughMiddleware('/', {
+      middleware: () => {
+        return new Response(null, {
+          headers: {
+            'x-middleware-rewrite': 'https://elsewhere.example/feed',
+            'x-middleware-override-headers': 'authorization',
+            'x-middleware-request-authorization': 'Bearer token',
+          },
+        });
+      },
+      origin: (request) => {
+        sent = request.headers.get('authorization');
+        return new Response('<rss/>', { headers: { 'cache-control': PUBLIC } });
+      },
+    });
+
+    expect(sent).toBe('Bearer token');
+    expect(response.headers.get('cache-control')).toBe('private, max-age=60');
   });
 });

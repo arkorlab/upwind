@@ -551,15 +551,17 @@ export function cacheablePrerenders(bundle: DeploymentBundle): Prerender[] {
  * alone (`priority`): the `Service-Worker-Allowed` a service worker registers under, whose pattern
  * names the whole path, base path included, and no locale. Without it the service worker of such
  * an application was refused registration, and never controlled a page (`service-worker`).
+ *
+ * Each says the phase it came from (`HeaderRule.phase`): Next.js judges a rule ahead of the
+ * middleware on the request as the client sent it, and one that runs on a match on the request as
+ * it is finally matched, so the edge hands a Function only the first as judged (`aheadOfMiddleware`).
  */
 export function headerRulesOf(bundle: DeploymentBundle): HeaderRule[] {
-  const phases = reproducesDynamicRouting(bundle)
-    ? headerPhases(bundle)
-    : headerPhases(bundle).filter((rule) => rule.priority === true);
-  return phases.flatMap((rule) => {
-    return rule.headers === undefined
+  const reproduced = reproducesDynamicRouting(bundle);
+  return phasedHeaderRoutes(bundle).flatMap(({ route, phase }) => {
+    return route.headers === undefined || (!reproduced && route.priority !== true)
       ? []
-      : [{ sourceRegex: rule.sourceRegex, ...conditionsOf(rule), headers: rule.headers }];
+      : [{ sourceRegex: route.sourceRegex, ...conditionsOf(route), headers: route.headers, phase }];
   });
 }
 
@@ -811,11 +813,17 @@ function headerValue(value: string | readonly string[]): string {
 
 /** The routing phases whose header rules apply to a document, in the order Next.js applies them. */
 export function headerPhases(bundle: ServingBundle): Route[] {
-  return [
-    ...bundle.routing.beforeMiddleware,
-    ...bundle.routing.afterFiles,
-    ...bundle.routing.onMatch,
-  ];
+  return phasedHeaderRoutes(bundle).map(({ route }) => route);
+}
+
+/** The phases `headerPhases` reads, each named as the manifest records a rule's (`HeaderRule.phase`). */
+const HEADER_PHASES = ['beforeMiddleware', 'afterFiles', 'onMatch'] as const;
+
+/** `headerPhases`, each rule with the phase it came from. */
+function phasedHeaderRoutes(
+  bundle: ServingBundle,
+): { readonly route: Route; readonly phase: NonNullable<HeaderRule['phase']> }[] {
+  return HEADER_PHASES.flatMap((phase) => bundle.routing[phase].map((route) => ({ route, phase })));
 }
 
 /**

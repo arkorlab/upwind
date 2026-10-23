@@ -240,15 +240,158 @@ export default {
 And `NEXT_ADAPTER_PATH` still wins, for the build that means it: a job that runs on Vercel to produce
 a bundle rather than a Vercel deployment names the adapter in the environment and gets one.
 
+## `upwind deploy`
+
+```bash
+CLOUDFLARE_API_TOKEN=… pnpm upwind deploy
+```
+
+The project, deployed to a Cloudflare account of your own: the edge in front, the runtime cache
+behind it, and each deployment's Functions as Workers of their own, the edge switched to a new
+deployment only once the new one answers. `--dry-run` builds the project, checks the build and the
+account, and says what a deploy would make there, changing nothing.
+
+- **The build is a deploy's own.** It is `upwind build` with the deployment's id chosen first, so
+  that every asset carries it; with the runtime cache's host in every Function, named to the
+  adapter through the environment, so that the project's `next.config` needs no change; and with no
+  storage published while pages prerender: a deployment's pages are never rendered from a
+  development database. `--build-only` builds and stops, for a job that holds no credentials;
+  `--prebuilt` deploys what that build left, in a job that does.
+- **Credentials come from the environment, never a flag.** `CLOUDFLARE_API_TOKEN`, and
+  `CLOUDFLARE_ACCOUNT_ID` where the token reaches more than one account. They are taken out of the
+  environment before the project's configuration or its build runs, so neither is handed them.
+- **The project says what it is given.** Its `deploy` section, in `upwind.config.ts` (or
+  `upwind.jsonc`, `upwind.json`), names the project on the account, the hostnames the edge is
+  reached on beside `workers.dev`, how many deployments to keep for rolling back to, the storage
+  every Function is bound to, and the secrets read from the environment on every deploy.
+  `--env-file` adds a file's variables to those secrets. Nothing is guessed from the code: storage
+  a project does not name is not made.
+- **What would be wrong is refused before the account is changed**: a Function built without the
+  runtime cache, a cron nobody would fire, more Workers than the account can hold beside the ones
+  it has, an account with no `workers.dev` subdomain to reach. Each is said, and the run ends. A
+  project that signs users in with no secret among its secrets is warned of, since its auth
+  configuration may name one itself.
+- **The account is on Workers Paid.** Its limits are the ones held to — 500 Workers an account,
+  128 variables a Worker — and a deployment of a Next.js application needs them; on Workers Free,
+  Cloudflare refuses at upload what goes past its lower ones.
+
+```ts
+import type { UpwindConfig } from '@stayingupwind/adapter';
+
+export default {
+  deploy: {
+    name: 'shop',
+    hostnames: ['shop.example.com'],
+    storage: { UPWIND_D1: 'd1' },
+    secrets: ['AUTH_SECRET'],
+  },
+} satisfies UpwindConfig;
+```
+
+### What a deploy makes, and how it goes live
+
+For a project named `shop`, the account holds:
+
+|                                                     | What it is                                                                                                                                                                                                                                 |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `shop-edge`                                         | The edge. Each deployment is a version of it, with that deployment's pointer fixed in it, so nothing is read before a visitor's first byte that the version could have been given. On `workers.dev` unless `deploy.workersDev` is `false`. |
+| `shop-<deployment>-app`, `-app-2`…, `-mw`           | Each deployment's Functions. On neither `workers.dev` nor a preview URL: only the edge reaches them.                                                                                                                                       |
+| `shop-cache`, `shop-cache-read`, `shop-prefetch`    | The runtime cache's authority and read gateway, and the Worker a Function reads the files its build left out of it from. Reached by service bindings alone.                                                                                |
+| `shop-agent`                                        | What a deploy writes the stores through, on `workers.dev`, answering only a key the running deploy set and discards when it ends. It writes only what a deployment's files are named by: their digests.                                    |
+| `upwind:shop:edge-state`, `upwind:shop:cache-state` | KV namespaces: what the edge serves by, and the runtime cache's state.                                                                                                                                                                     |
+| `shop-artifacts`                                    | The R2 bucket of every deployment's files, with a mark saying it is the project's. A deploy uses nothing of that name it did not make.                                                                                                     |
+
+A deploy uploads the new deployment's Functions and a version of the edge that takes no traffic,
+then asks that version, by name, which deployment it serves, and asks it for each of
+`deploy.checks` (`/` by default). Only when it answers as itself, and no check answers with a 5xx,
+is it given all the edge's traffic. Otherwise the version that was live stays live, and the run
+says what failed. A deploy stopped part way can be run again: what it wrote is found again, under
+its digest or the deployment's id. A deployment is what it was built as: deploying the live one
+again changes nothing, so a new secret's value reaches the Functions with a new build.
+
+Once a deployment is live, a deploy keeps it, every deployment the edge's traffic is with, and the
+newest `deploy.keep` others (`--keep`, for one run) whose version of the edge can still be given
+the traffic again; the rest lose their Functions, and their scope of the runtime cache. Cloudflare
+keeps the newest hundred versions of the edge for a deployment to choose among, so nothing older can
+be gone back to, whatever is kept. Every deployment's files stay in the bucket. One deploy of a
+project runs at a time.
+
+The token needs, on the account: **Workers Scripts: Edit**, **Workers KV Storage: Edit**, **Workers
+R2 Storage: Edit**, and **D1: Edit** where `deploy.storage` names a database. A custom domain is
+attached to `shop-edge` by hand, in Cloudflare, and named in `deploy.hostnames`.
+
+`upwind destroy --yes` deletes everything a deploy made for the project, its edge first. The storage
+`deploy.storage` names holds the application's data, and is deleted only with `--include-storage`.
+
+### Deployments, and going back to one
+
+```bash
+CLOUDFLARE_API_TOKEN=… pnpm upwind deployments
+CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
+```
+
+- **`upwind deployments`** lists the project's deployments, the one deployed most recently first: the
+  live one, one held at none of the traffic while a run checks it, those kept — their edge version
+  and Functions still there, so a rollback tries them — those whose Functions are gone, and those
+  deployed before the runtime cache's key was reset (`key reset`). It reads the Workers API alone
+  and changes nothing on the account, so a deployment it lists as kept may still be refused by a
+  rollback, for a bundle the bucket no longer keeps or a cache scope a stopped cleanup retired.
+- **`upwind rollback`** gives the edge's traffic back to an older deployment — one first deployed
+  before the live one, the one live most recently among those first, or the one `--to` names. Run
+  again, it goes further back: a deployment gone back to is no newer for it. One that cannot be
+  published again — whose cache scope a stopped cleanup retired, whose bundle the bucket no longer
+  keeps or this version cannot read, or whose staging or publishing is refused otherwise — is
+  passed over, or, named, refused, saying why: deploy its build again instead. Where every one tried
+  is passed over, the rollback is refused, saying why of each. So is one deployed before
+  `--reset-cache-key` gave the runtime cache a new key: its Functions hold a token of the key before.
+  Nothing of it is built: its bundle, kept in the bucket, is published again against the live
+  deployment, as a new deployment is against the one before it, so the live deployment's files stay
+  served to its pages still open — but for one the bucket no longer holds, or all of them where no
+  bundle of the live deployment it can read is kept, which the rollback says and goes on without;
+  and its Functions are the ones it has had since it was deployed.
+  It is checked first, as a new deployment is, and given the traffic only once it answers as itself
+  and passes the project's checks; one that does not is given none.
+- **One at a time.** Deploy, rollback and destroy acquire the same project lock before reading
+  the account, and hold it through provisioning, activation and cleanup. Another command, even on
+  another host, is refused while the lock exists. Dry runs and deployment listings remain read-only.
+  Every host must use a version with this lock; older clients do not honor it.
+  The lock is an empty, private R2 bucket named `upwind--<project>--deploy-lock`, made once and deleted
+  once per command with the existing API token. It is never bound to a Worker or used by a visitor
+  request. It uses one bucket slot while held and two additional management API requests, subject to
+  [R2's account and management limits](https://developers.cloudflare.com/r2/platform/limits/).
+  There is no expiry or automatic takeover: a crashed command, a lost create answer or a failed
+  release can leave the bucket. An unknown outcome of any mutating API or agent request also keeps
+  the lock, stops further writes and disables retries of that write: a timed-out request can still
+  commit after its caller stops waiting. A caught cleanup error cannot silently release this lock.
+  First stop every deploy, rollback and destroy of this project on every host, including CI jobs
+  that may resume. For an uncertain write, confirm its provider-side outcome has settled; a negative
+  read alone does not prove an old operation finished. Then confirm the named bucket is empty and delete
+  it by hand in Cloudflare before running another command. Never delete it while a command may
+  still be running. A failed release is reported without changing the deployment's result.
+
 ## Options
 
 ```
 upwind dev [directory]
 upwind build [directory]
+upwind deploy [directory]
+upwind deployments [directory]
+upwind rollback [directory] [--to <deployment>]
+upwind destroy [directory] --yes
 
   -p, --port <port>      Port to listen on, `dev` only (default: $PORT, else 3000)
   -H, --hostname <host>  Hostname to bind, `dev` only (default: every interface)
       --remote-ai        Enable declared Workers AI bindings, `dev` only
+      --dry-run          Say what a deploy would do and change nothing, `deploy` only
+      --build-only       Build for a deploy and stop, `deploy` only
+      --prebuilt         Deploy what --build-only built, `deploy` only
+      --env-file <file>  Secrets for the deployment's Functions, `deploy` only; may repeat
+      --keep <n>         Deployments kept to roll back to, `deploy` only (default: 5)
+      --message <text>   What the deployment is noted as, `deploy` only
+      --reset-cache-key  Give the runtime cache a new key, `deploy` only
+      --yes              Delete everything a deploy made, `destroy` only
+      --include-storage  And the storage deploy.storage names, with its data, `destroy` only
+      --to <deployment>  The deployment to go back to, `rollback` only (default: the one before)
   -v, --version          Print upwind's version
   -h, --help             Print the usage
       --                 Everything after this is the directory, even `--help`

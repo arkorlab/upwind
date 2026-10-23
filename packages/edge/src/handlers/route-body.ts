@@ -8,10 +8,10 @@ import {
   classifyRequest,
   EDGE_DEBUG_HEADER,
   filterStoredResponseHeaders,
+  hasRouteBodyControlHeader,
   manifestIdPrefix,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
-import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { runtimeCacheOf, type RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
 import { condemnedIn } from '../cache/condemned.ts';
@@ -26,7 +26,11 @@ import { serveHostedFile } from './hosted-static-file.ts';
 import { handedHeaders } from './middleware.ts';
 import { observeMetric, observeServed } from './observer.ts';
 import { PATTERN_BUDGET, type PassthroughWait } from './passthrough.ts';
-import { mergeScopedMiddlewareHeaders, removeSharedCacheOverrides } from './responses.ts';
+import {
+  carriesApplicationCredentials,
+  mergeScopedMiddlewareHeaders,
+  removeSharedCacheOverrides,
+} from './responses.ts';
 import { policyRefusesSharing } from './route-body-policy.ts';
 
 /** Only the host's manifest and authority record permit sharing; a Function's answer never does. */
@@ -51,6 +55,7 @@ const CONTENT_ENCODING = 'content-encoding';
 const CONTENT_RANGE = 'content-range';
 const SET_COOKIE = 'set-cookie';
 const ROUTE_BODY = 'route-body';
+const BODY_UNSHAREABLE = 'route-body-unshareable';
 const ENTITY_HEADERS: ReadonlySet<string> = new Set([
   'accept-ranges',
   'content-length',
@@ -184,9 +189,7 @@ function bodyHeaders(pack: DecodedGenerationPack, entry: RouteBodyEntry): Header
 }
 
 function applicationCredentials(input: RouteBodyInput, headers: Headers): boolean {
-  if (!headers.has('cookie') && !headers.has('authorization')) return false;
-  const application = withoutHostCredentials(new Headers(headers), input.edge.host.credentials);
-  return application.has('cookie') || application.has('authorization');
+  return carriesApplicationCredentials(headers, input.edge.host.credentials);
 }
 
 function visitorSpecific(input: RouteBodyInput, headers: Headers): boolean {
@@ -206,6 +209,14 @@ function middlewareRefusesSharing(middleware: TimedContinue | undefined): boolea
     middleware?.routeBodyPrivate === true ||
     (middleware !== undefined && policyRefusesSharing(middleware.responseHeaders)) ||
     (middleware?.rewriteStatus !== undefined && middleware.rewriteStatus !== HTTP_OK)
+  );
+}
+
+/** Middleware protocol inputs remain decisive before and after forwarding removes credentials. */
+function controlledMiddleware(middleware: TimedContinue | undefined, headers: Headers): boolean {
+  return (
+    middleware !== undefined &&
+    (hasRouteBodyControlHeader(middleware.requestHeaders) || hasRouteBodyControlHeader(headers))
   );
 }
 
@@ -283,6 +294,10 @@ async function serveBody(
     middleware === undefined
       ? input.classifiedHeaders
       : handedHeaders(edge, middleware.requestHeaders);
+  // Judge middleware controls before forwarding can hide them, and before a rewrite reads a file.
+  if (controlledMiddleware(middleware, headers)) {
+    return input.passthrough(BODY_UNSHAREABLE, middleware);
+  }
   if (middleware?.rewritten === true) {
     if (isReserved(manifest, url, headers, true)) {
       return input.passthrough('reserved', middleware);
@@ -302,7 +317,7 @@ async function serveBody(
     classification.kind !== 'route-body' ||
     needsFunction(input, headers, configured, middleware)
   ) {
-    return input.passthrough('route-body-unshareable', middleware);
+    return input.passthrough(BODY_UNSHAREABLE, middleware);
   }
   const { entry } = classification;
   const withheld = offTheEdge(edge, entry);
@@ -449,6 +464,13 @@ function serveCurrentBody(
 export function routeHostedBody(input: RouteBodyInput): Promise<Response> {
   // The build proves a GET body, not that an explicit HEAD handler has identical semantics.
   if (input.request.method === 'HEAD') return input.passthrough('route-body-head');
+  // Classification may have removed host credentials; original control evidence still vetoes sharing.
+  if (
+    hasRouteBodyControlHeader(input.request.headers) ||
+    hasRouteBodyControlHeader(input.classifiedHeaders)
+  ) {
+    return input.passthrough(BODY_UNSHAREABLE);
+  }
   return serveAfterMiddleware(input, {
     overBudget: (middleware, _dispatches, configured) => {
       return input.passthrough(

@@ -14,7 +14,12 @@ import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { keepCopyAhead, readCopy, recordCopyUrl } from '../src/cache/generation-copy.ts';
+import {
+  dropCopyIf,
+  keepCopyAhead,
+  readCopy,
+  recordCopyUrl,
+} from '../src/cache/generation-copy.ts';
 import { readGeneration } from '../src/cache/generation-loader.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
@@ -133,6 +138,62 @@ describe('giving up a record copy after its existing read deadline', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it.each([
+    ['high surrogate in scope', 'scope-\u{D800}', 'entry'],
+    ['low surrogate in entry', 'scope', 'entry-\u{DC00}'],
+    ['another high surrogate', 'scope-\u{D801}', 'entry'],
+  ])('keeps, reads and deletes a copy with %s', async (_what, scopeId, entryId) => {
+    const { edge, match } = await fixture();
+    match.mockRestore();
+    const key = kvGenerationKey(scopeId, entryId);
+    await keepCopyAhead(
+      edge,
+      key,
+      { bytes: new Uint8Array(BYTES), revision: 3 },
+      { maxAgeMs: MAX_AGE_MS, wanted: () => true },
+    );
+    const found = await readCopy(edge, key, MAX_AGE_MS);
+
+    expect(found?.revision).toBe(3);
+    expect(byteView(found?.bytes)).toStrictEqual(BYTES);
+
+    await dropCopyIf(edge, key, MAX_AGE_MS, () => true);
+
+    await expect(readCopy(edge, key, MAX_AGE_MS)).resolves.toBeUndefined();
+  });
+
+  it('keeps existing copy URLs and distinguishes surrogate spellings from escaped text', () => {
+    const host = 'records.example.test';
+    const ordinary = [
+      'record',
+      'scope/entry',
+      'utf16/value',
+      String.raw`scope-\ud800`,
+      'scope-\u{FFFD}',
+      '日本語-😀',
+    ];
+    for (const key of ordinary) {
+      expect(recordCopyUrl(host, key)).toBe(`https://${host}/${encodeURIComponent(key)}`);
+    }
+    const keys = ['scope-\u{D800}', 'scope-\u{D801}', 'scope-\u{DC00}'];
+    const urls = keys.map((key) => recordCopyUrl(host, key));
+    const ordinaryUrls = ordinary.map((key) => recordCopyUrl(host, key));
+    const uniqueUrls = new Set(urls);
+    for (const url of ordinaryUrls) {
+      uniqueUrls.add(url);
+    }
+
+    expect(uniqueUrls.size).toBe(urls.length + ordinary.length);
+
+    for (const [index, url] of urls.entries()) {
+      const path = new URL(url).pathname;
+      const decodedKey: unknown = JSON.parse(decodeURIComponent(path.slice('/utf16/'.length)));
+
+      expect(path.startsWith('/utf16/')).toBe(true);
+      expect(decodedKey).toBe(keys[index]);
+    }
   });
 
   it.each(['resolved', 'pending', 'rejected'] as const)(

@@ -1,4 +1,8 @@
-import { SHARED_CACHE_CONTROL_HEADERS } from '@stayingupwind/core/request';
+import {
+  EDGE_VALIDATED_HEADER,
+  hasRouteBodyControlHeader,
+  SHARED_CACHE_CONTROL_HEADERS,
+} from '@stayingupwind/core/request';
 
 import type { Reading } from './reading.ts';
 
@@ -55,6 +59,70 @@ export function sharedCacheFailure(
   if (!unshared(directivesOf(answer.headers['cache-control']))) {
     return "answered for shared caches to keep, though the answer is one visitor's";
   }
+  return overridingFailure(answer, setByApplication);
+}
+
+/**
+ * Why an answer the edge hands on as the application gave it could be kept by a shared cache it is
+ * not for, if it could (`unsharedUnlessPublic`, `oss/edge/src/handlers/responses.ts`): as
+ * `sharedCacheFailure`, but for an answer that says of itself a shared cache may keep all of it
+ * (`saidPublic`), to a request `sent` with nothing of a visitor's (`anonymous`) — the application
+ * said shared caches may keep it, and the edge hands it on so (decided 2026-10-22). What a CDN
+ * reads ahead of `Cache-Control` goes either way.
+ */
+export function handedOnFailure(
+  answer: Reading,
+  sent: Readonly<Record<string, string>>,
+): string | undefined {
+  return anonymous(answer, sent) && saidPublic(answer)
+    ? overridingFailure(answer, () => false)
+    : sharedCacheFailure(answer, () => false);
+}
+
+/**
+ * Whether an answer says of itself that a shared cache may keep all of it, as the edge reads it: a
+ * bare `public` — one given a value is none the grammar has — with no `private` naming fields,
+ * which says a shared cache is to keep none of those, and no cookie, which makes an answer one
+ * visitor's.
+ */
+function saidPublic(answer: Reading): boolean {
+  const directives = directivesOf(answer.headers['cache-control']);
+  return (
+    answer.headers['set-cookie'] === undefined &&
+    directives.some((directive) => directive.toLowerCase() === 'public') &&
+    directives.every((directive) => !namesFields(directive))
+  );
+}
+
+/** Whether a directive is a `private` that names fields: one with a value, as the edge reads it. */
+function namesFields(directive: string): boolean {
+  const name = directive.split('=', 1)[0]?.trim().toLowerCase();
+  return name === 'private' && directive.toLowerCase() !== 'private';
+}
+
+/**
+ * Whether a request carried nothing the application could have told one visitor by, as the edge
+ * judges one (`anonymousRequest`): no cookie or `Authorization` — the stack's edge takes no
+ * credentials of its own off a request — none of the Next.js control or router-protocol headers
+ * (`hasRouteBodyControlHeader`), and no validation the edge took (`EDGE_VALIDATED_HEADER`). As it
+ * was sent: the edge judges what the middleware handed on as well, and an answer it kept from
+ * shared caches for that says no `public` here, which passes either way.
+ */
+function anonymous(answer: Reading, sent: Readonly<Record<string, string>>): boolean {
+  const headers = new Headers(sent);
+  return (
+    !headers.has('cookie') &&
+    !headers.has('authorization') &&
+    !hasRouteBodyControlHeader(headers) &&
+    answer.headers[EDGE_VALIDATED_HEADER] !== '1'
+  );
+}
+
+/** What a shared cache reads ahead of `Cache-Control`, where the application did not set it. */
+function overridingFailure(
+  answer: Reading,
+  setByApplication: (header: string) => boolean,
+): string | undefined {
   const overriding = SHARED_CACHE_CONTROL_HEADERS.find(
     (name) => answer.headers[name] !== undefined && !setByApplication(name),
   );

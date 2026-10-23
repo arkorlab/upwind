@@ -32,14 +32,15 @@ import { layConfiguredUnder } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeRequestMetric } from './observer.ts';
 import {
+  anonymousRequest,
   badGatewayResponse,
   forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
   middlewareProtocolHeader,
   nominatedBy,
-  privateCacheControl,
   readMiddlewareAnswer,
+  unsharedUnlessPublic,
 } from './responses.ts';
 import { connectionRefusesSharing } from './route-body-policy.ts';
 import { readsCredentials, readsForwarding } from './routing-headers.ts';
@@ -98,12 +99,13 @@ export interface MiddlewareContinued extends Extract<
    */
   readonly rewriteStatus?: number | undefined;
   /**
-   * The headers the rules of `next.config` set on the request as the client sent it, judged before
-   * the middleware ran (`withJudgedRules`): what Next.js's router lays on whatever answers the
-   * request. A Function the request is handed on to is told the edge holds them
+   * The headers the rules ahead of the middleware set on the request as the client sent it, judged
+   * before the middleware ran (`withJudgedRules`): what Next.js's router lays on whatever answers
+   * the request. A Function the request is handed on to is told the edge holds them
    * (`HEADER_RULES_JUDGED_HEADER`), and leaves them for the edge to lay where it says it did
    * (`HEADER_RULES_LEFT_HEADER`): judged there, on the request as the middleware left it, the rules
-   * of the path the client asked for were lost and those of the path it was rewritten to added.
+   * of the path the client asked for were lost and those of the path it was rewritten to added. The
+   * rules that run on a match it judges itself, on the request as it is finally matched.
    */
   readonly judgedRules?: ConfiguredHeaders | undefined;
   /** A deny-only local signal retained before transport filtering removes privacy fields. */
@@ -717,7 +719,7 @@ export async function followExternalRewrite(
   const answer = forwardedResponse(upstream, edge.forwarding, request.method);
   const responseHeaders = answer.headers;
   layRouted(edge, responseHeaders, rewrite, answered.configured);
-  privateCacheControl(responseHeaders);
+  unsharedUnlessPublic(responseHeaders, anonymousTo(edge, request, rewrite.requestHeaders));
   if (edge.privateDelivery) {
     keptByNobody(responseHeaders);
   }
@@ -725,6 +727,19 @@ export async function followExternalRewrite(
   applyCspReporting(responseHeaders, edge.cspReportingPath);
   recordMiddlewareAnswer(edge, 'external-rewrite', { ...answered, fetched });
   return answer;
+}
+
+/**
+ * Whether a request the middleware answered, or sent elsewhere as `handed`, carried nothing of a
+ * visitor's: as the visitor sent it, and as the middleware handed it on, which may carry what the
+ * visitor did not send.
+ */
+function anonymousTo(edge: EdgeContext, request: Request, handed?: Headers): boolean {
+  const { credentials } = edge.host;
+  return (
+    anonymousRequest(request.headers, credentials, edge.validated) &&
+    (handed === undefined || anonymousRequest(handed, credentials, edge.validated))
+  );
 }
 
 /** Take what is the middleware protocol's off its own answer. */
@@ -751,7 +766,7 @@ export function middlewareResponse(
   const headers = answer.headers;
   withoutMiddlewareProtocol(headers);
   layConfiguredUnder(headers, answered.configured, edge.forwarding, response.headers);
-  privateCacheControl(headers);
+  unsharedUnlessPublic(headers, anonymousTo(edge, request));
   if (edge.privateDelivery) {
     keptByNobody(headers);
   }

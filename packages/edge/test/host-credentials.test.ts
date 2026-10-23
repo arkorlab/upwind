@@ -94,9 +94,9 @@ describe("the headers an application's rules are judged on", () => {
         host,
       );
 
-      // This Edge version forwards static-page classes; this verifies classification, not a cache hit.
+      // Classified as a page that may be shared, and handed on for want of a record: no cache hit.
       expect(response.headers.get('x-arkor-edge')).toMatch(
-        /^passthrough;reason=static-page(?:;|$)/u,
+        /^passthrough;reason=static-page-not-fresh(?:;|$)/u,
       );
     },
   );

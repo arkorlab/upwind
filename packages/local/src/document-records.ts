@@ -16,7 +16,7 @@ import {
   type Verdict,
   withGenerationEvidence,
 } from './answers.ts';
-import { sharedCacheFailure } from './cache-control.ts';
+import { handedOnFailure } from './cache-control.ts';
 import { type Accepted, codingFailure } from './codings.ts';
 import { incompleteness } from './completeness.ts';
 import { landingOf } from './landings.ts';
@@ -132,13 +132,16 @@ export async function wholeHeadFailure(
  * Why a page the edge regenerated in the foreground is not the route's: the Function's render, not
  * the build's shell, so held to being a whole HTML document of the route's status — or of a page the
  * render found deleted (404), which the runtime records as the page's status from then on (greptile)
- * — and kept from shared caches whatever it said, as the edge hands any answer on
- * (`privateCacheControl`).
+ * — and kept from shared caches unless it said `public` to a request asked with nothing of a
+ * visitor's, as the edge hands any answer on (`unsharedUnlessPublic`).
  */
 export function regeneratedFailure(
   route: RouteEntry,
   answer: Reading,
-  coding: Accepted | undefined,
+  asked: {
+    readonly coding?: Accepted | undefined;
+    readonly headers: Readonly<Record<string, string>>;
+  },
 ): string | undefined {
   if (answer.status !== route.status && answer.status !== NOT_FOUND_STATUS) {
     return `answered ${answer.status}`;
@@ -148,9 +151,9 @@ export function regeneratedFailure(
     return `answered as ${type ?? 'no type'}, not an HTML document`;
   }
   return (
-    codingFailure(answer, { coding, agent: undefined }, false) ??
+    codingFailure(answer, { coding: asked.coding, agent: undefined }, false) ??
     incompleteness(answer) ??
-    sharedCacheFailure(answer, () => false)
+    handedOnFailure(answer, asked.headers)
   );
 }
 

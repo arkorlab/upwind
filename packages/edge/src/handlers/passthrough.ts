@@ -1,5 +1,7 @@
 import type { AppRuntime, ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
 import {
+  HEADER_RULES_AFTER_COOKIE_COUNT_HEADER,
+  HEADER_RULES_AFTER_HEADER,
   HEADER_RULES_JUDGED_HEADER,
   HEADER_RULES_LEFT_HEADER,
   INVALIDATED_REVISION_HEADER,
@@ -32,12 +34,14 @@ import { layConfiguredOver } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { type AbandonedShellReads, observeMetric, observeRequestMetric } from './observer.ts';
 import {
+  anonymousRequest,
   badGatewayResponse,
   forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
-  privateCacheControl,
+  nominatedBy,
   safeDiagnosticField,
+  unsharedUnlessPublic,
 } from './responses.ts';
 import {
   type Dispatched,
@@ -198,6 +202,11 @@ export interface PassthroughInput {
    * (`functionOfRequest`), or the first.
    */
   readonly function?: string | undefined;
+  /**
+   * The scope of an already validated regeneration target, where no manifest is needed. Trusted
+   * by its caller, never taken from client headers; used for both the request hint and its receipt.
+   */
+  readonly scopeId?: string | undefined;
   readonly manifest?: ProjectManifest | undefined;
   /** Take a mutation's invalidations when its routing manifest is still being read. */
   readonly observeInvalidation?:
@@ -242,6 +251,11 @@ export interface PassthroughInput {
   readonly onAsked?: ((soFar: () => number) => void) | undefined;
   /** An optional observer of the actual split dispatch, without inspecting the application body. */
   readonly onDispatched?: ((read: () => Dispatched | undefined) => void) | undefined;
+  /**
+   * Handed the Worker's answer before the edge's protocol is taken off it: what the runtime says on
+   * it of the regeneration the request asked for (`CACHE_OUTCOME_HEADER`, `triggerDetached`).
+   */
+  readonly onAnswered?: ((answer: Response) => void) | undefined;
 }
 
 /** The router prefetches Next.js's client sends (`next-router-prefetch`), by the number it uses. */
@@ -435,11 +449,12 @@ function takeResponseInvalidation(input: PassthroughInput, response: Response): 
   if (value === null) {
     return;
   }
-  // A deployment's cache scope is its deployment id, as `fetchUpstream` already tells the
-  // Function (`withScopeRevision`). A cold manifest must not let an Action's next navigation
-  // serve an older generation while its lookup is still out. Prefer the manifest's scope where
-  // it is known, and let the deferred observer take it there too once that lookup lands.
-  const scopeId = input.manifest?.cache?.scopeId ?? input.app?.deploymentId;
+  // Without a target or manifest, the deployment id is the provisional scope, as `fetchUpstream`
+  // tells the Function (`withScopeRevision`). A cold manifest must not let an Action's next navigation
+  // serve an older generation while its lookup is still out. A validated target supplies its
+  // scope; otherwise prefer the manifest's, and let the deferred observer take a provisional
+  // deployment receipt there once that lookup lands.
+  const scopeId = input.scopeId ?? input.manifest?.cache?.scopeId ?? input.app?.deploymentId;
   const invalidated = { value, bound: response.headers.get(INVALIDATED_REVISION_HEADER) };
   if (scopeId !== undefined) {
     takeInvalidation(input.runtime.memory, scopeId, invalidated);
@@ -449,12 +464,74 @@ function takeResponseInvalidation(input: PassthroughInput, response: Response): 
   }
 }
 
+/** A later routing phase owns these fields; absent on runtimes from before it says so. */
+function laterHeaderRules(answer: Response): Set<string> | undefined {
+  const value = answer.headers.get(HEADER_RULES_AFTER_HEADER);
+  if (value === null || value === '') return undefined;
+  const names = value.split(',');
+  // Native Headers validates each name without accepting whitespace or a malformed name list.
+  try {
+    for (const name of names) {
+      if (name === '' || name !== name.toLowerCase()) return undefined;
+      answer.headers.has(name);
+    }
+  } catch {
+    return undefined;
+  }
+  const later = new Set(names);
+  // A later Connection replaces the earlier routing and middleware Connection before forwarding.
+  // Its nominations must not be restored by either of those earlier layers.
+  if (!later.has('connection')) return later;
+  const nominated = nominatedBy(answer.headers);
+  if (nominated === undefined) return later;
+  for (const name of nominated) later.add(name);
+  return later;
+}
+
+/**
+ * Take only the Function's final routing-cookie block off the already-forwarded answer. Earlier
+ * rules still follow handler cookies, then middleware, then these later rules: none loses a
+ * distinct cookie, and the last same-name cookie keeps its phase's precedence. Legacy or invalid
+ * counts keep the old non-destructive merge. Never restore a cookie forwarding or Connection
+ * removed, nor let an earlier Connection's nominations be undone by reattaching this block.
+ */
+function takeLaterRuleCookies(
+  headers: Headers,
+  answer: Response,
+  configured: ConfiguredHeaders,
+  later: Set<string> | undefined,
+): readonly string[] | undefined {
+  const cookie = 'set-cookie';
+  if (later?.has(cookie) !== true) return undefined;
+  const laterConnection = later.has('connection');
+  if (laterConnection && nominatedBy(answer.headers)?.has(cookie) === true) {
+    // This is the final Connection's exclusion, not a cookie field's replacement policy.
+    return undefined;
+  }
+  later.delete(cookie);
+  const connection = laterConnection ? undefined : configured.headers['connection'];
+  if (nominatedBy(answer.headers, connection)?.has(cookie) === true) return undefined;
+  const value = answer.headers.get(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER);
+  if (value === null || !/^[1-9]\d*$/u.test(value)) return undefined;
+  const count = Number(value);
+  const cookies = headers.getSetCookie();
+  if (!Number.isSafeInteger(count) || count > cookies.length) return undefined;
+  const firstLater = cookies.length - count;
+  headers.delete(cookie);
+  for (let index = 0; index < firstLater; index += 1) {
+    const earlier = cookies[index];
+    if (earlier !== undefined) headers.append(cookie, earlier);
+  }
+  return cookies.slice(firstLater);
+}
+
 /**
  * What the edge lays on the Worker's answer to a request it ran the middleware for, over the
  * Worker's own: the header rules the runtime left to the edge (`HEADER_RULES_LEFT_HEADER`), read off
  * the answer as it came, before the edge's protocol is taken off it — a runtime from before it lays
  * the rules itself and says nothing, and none is laid twice — and the middleware's headers over
- * them, as Next.js's router collects the two ahead of the route.
+ * them, as Next.js's router collects the two ahead of the route. Fields the Function's later
+ * routing phases set keep their precedence over both (`HEADER_RULES_AFTER_HEADER`).
  */
 function layAfterMiddleware(
   headers: Headers,
@@ -468,8 +545,18 @@ function layAfterMiddleware(
   let rewrittenPath =
     middleware.requestHeaders.get(RSC_HEADER) === '1' ? headers.get(REWRITTEN_PATH_HEADER) : null;
   const { judgedRules } = middleware;
-  if (judgedRules !== undefined && answer.headers.get(HEADER_RULES_LEFT_HEADER) === '1') {
-    layConfiguredOver(headers, judgedRules, answer, input);
+  const deferred =
+    judgedRules !== undefined && answer.headers.get(HEADER_RULES_LEFT_HEADER) === '1';
+  const later = deferred ? laterHeaderRules(answer) : undefined;
+  const laterCookies = deferred
+    ? takeLaterRuleCookies(headers, answer, judgedRules, later)
+    : undefined;
+  if (deferred) {
+    layConfiguredOver(headers, judgedRules, answer, {
+      forwarding: input.forwarding,
+      request: input.request,
+      later,
+    });
     // A missing path here means the configured Connection options removed it. Keep that
     // removal rather than restoring a value the forwarding rules rejected.
     if (!headers.has(REWRITTEN_PATH_HEADER)) rewrittenPath = null;
@@ -477,7 +564,10 @@ function layAfterMiddleware(
   // After the Worker's own, which may repeat the middleware's cookies as Next.js writes them back
   // (`splice/cookies.ts`): a browser keeps the last of a cookie set twice, and the middleware's is
   // the one it meant — a `Max-Age=0` that the copy before it lost, say.
-  mergeScopedMiddlewareHeaders(headers, middleware.responseHeaders, scope);
+  mergeScopedMiddlewareHeaders(headers, middleware.responseHeaders, scope, later);
+  if (laterCookies !== undefined) {
+    for (const cookie of laterCookies) headers.append('set-cookie', cookie);
+  }
   if (rewrittenPath !== null) headers.set(REWRITTEN_PATH_HEADER, rewrittenPath);
 }
 
@@ -518,6 +608,21 @@ function observeDispatch(
   }
 }
 
+/**
+ * Whether the request carried nothing the application could have told one visitor by: as the
+ * visitor sent it, and as the middleware handed it on (`requestHeaders`), which may carry what the
+ * visitor did not send.
+ */
+function anonymous(input: PassthroughInput): boolean {
+  const { credentials } = input.host;
+  const validated = input.validated === true;
+  return (
+    anonymousRequest(input.request.headers, credentials, validated) &&
+    (input.middleware === undefined ||
+      anonymousRequest(input.middleware.requestHeaders, credentials, validated))
+  );
+}
+
 export async function handlePassthrough(input: PassthroughInput): Promise<Response> {
   const client = new Request(input.request, {
     headers: stripEdgeHeaders(input.request.headers),
@@ -545,7 +650,10 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   // edge ran it, and the forwarding headers.
   const fn = input.function ?? functionOfRequest(input.app, input.manifest, originRequest);
   const startedAt = input.runtime.now();
-  const pending = fetchUpstream(input.runtime, input.app, originRequest, fn);
+  const pending = fetchUpstream(input.runtime, input.app, originRequest, {
+    function: fn,
+    scopeId: input.scopeId ?? input.manifest?.cache?.scopeId,
+  });
   input.onAsked?.(() => dispatchesMade(pending));
   observeDispatch(input.onDispatched, pending);
   let originResponse: Response;
@@ -567,12 +675,13 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   }
   // Read before the header goes with every other the edge's protocol reserves, below.
   takeResponseInvalidation(input, originResponse);
+  input.onAnswered?.(originResponse);
   const response = forwardedResponse(originResponse, input.forwarding, input.request.method);
   const headers = response.headers;
   if (input.middleware !== undefined) {
     layAfterMiddleware(headers, originResponse, input.middleware, input);
   }
-  privateCacheControl(headers);
+  unsharedUnlessPublic(headers, anonymous(input));
   if (input.privateDelivery === true) {
     keptByNobody(headers);
   }

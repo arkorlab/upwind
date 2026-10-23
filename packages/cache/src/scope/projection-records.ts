@@ -20,6 +20,7 @@ export interface ProjectingEntry {
 export function verifyingRecords(deps: SettleDeps, entry: ProjectingEntry): RecordDeps {
   return {
     scopeId: deps.scopeId,
+    buildId: deps.buildId,
     blobs: deps.blobs,
     verifying(artifact) {
       const proof = artifactVerification(deps.sql, artifact);

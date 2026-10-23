@@ -1,6 +1,12 @@
 import type { ImagesConfig } from '@stayingupwind/core/images';
 import type { ProjectManifest } from '@stayingupwind/core/manifest';
-import { FUNCTION_HEADER, MISDIRECTED_STATUS } from '@stayingupwind/core/paas';
+import {
+  FUNCTION_HEADER,
+  MISDIRECTED_STATUS,
+  parseScopeRevision,
+  SCOPE_REVISION_HEADER,
+  scopeRevisionValue,
+} from '@stayingupwind/core/paas';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { DEFAULT_DELIVERY_POLICY, type EdgePointer } from '@stayingupwind/host/delivery';
 import { blobObjectKey } from '@stayingupwind/host/storage';
@@ -8,6 +14,7 @@ import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { takeInvalidation } from '../src/cache/condemned.ts';
 import type { EdgeHost } from '../src/edge-host.ts';
 import type { EdgeRuntime, FetchImpl, TransformImage } from '../src/edge-runtime.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
@@ -65,12 +72,17 @@ async function serving(
   return { site, pointer, runtime, manifest, host: standaloneHost(site) };
 }
 
-function begin(served: Serving, source: string, signal: AbortSignal) {
+function begin(
+  served: Serving,
+  source: string,
+  signal: AbortSignal,
+  headers?: Readonly<Record<string, string>>,
+) {
   const query = new URLSearchParams({ url: source, w: '64', q: '75' });
   const request = new Request<unknown, IncomingRequestCfProperties>(
     `https://site.example/_next/image?${query.toString()}`,
     {
-      headers: { accept: 'image/webp', 'sec-fetch-dest': 'image' },
+      headers: { accept: 'image/webp', 'sec-fetch-dest': 'image', ...headers },
       signal,
     },
   );
@@ -130,6 +142,58 @@ describe('an image request whose client leaves', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it('dispatches a local image with its known scope receipt and preserves the image bytes', async () => {
+    const scopeId = 'local-image-scope';
+    const fetchSource = vi.fn<FetchImpl>(() => Promise.resolve(new Response(PNG)));
+    const sourceBytes: Uint8Array[] = [];
+    const transform = vi.fn(async (source: ReadableStream<Uint8Array>) => {
+      sourceBytes.push(new Uint8Array(await new Response(source).arrayBuffer()));
+      return { contentType: 'image/webp', body: new Blob([OPTIMIZED]).stream() };
+    });
+    const served = await serving(fetchSource, transform);
+    const manifest: ProjectManifest = {
+      ...served.manifest,
+      cache: { keySchemaVersion: 1, scopeId },
+    };
+    takeInvalidation(served.runtime.memory, scopeId, { value: 'image', bound: '7' });
+    const receipt = served.runtime.memory.invalidations.responseRevisionOf(scopeId);
+    const forged = scopeRevisionValue({ revision: 999, invalidatedAt: Date.now() });
+    const run = begin(
+      {
+        ...served,
+        reads: {
+          manifestLookup: Promise.resolve({ kind: 'found', value: manifest }),
+          policyLookup: Promise.resolve({
+            kind: 'found',
+            source: 'exact',
+            policy: DEFAULT_DELIVERY_POLICY,
+          }),
+        },
+      },
+      `/draw/${crypto.randomUUID()}.png`,
+      new AbortController().signal,
+      { [SCOPE_REVISION_HEADER]: forged },
+    );
+    try {
+      const response = await run.response;
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('optimized');
+      expect(fetchSource).toHaveBeenCalledTimes(1);
+      expect(transform).toHaveBeenCalledTimes(1);
+      expect(sourceBytes).toStrictEqual([PNG]);
+      expect(fetchSource.mock.calls[0]?.[0].headers.get(SCOPE_REVISION_HEADER)).not.toBe(forged);
+      expect(
+        parseScopeRevision(
+          fetchSource.mock.calls[0]?.[0].headers.get(SCOPE_REVISION_HEADER) ?? null,
+        ),
+      ).toStrictEqual({ revision: 7, invalidatedAt: receipt?.observedAt });
+      expect(served.runtime.memory.scopes.get(scopeId)).toBeUndefined();
+    } finally {
+      await waitOnExecutionContext(run.ctx);
+    }
   });
 
   it.each([

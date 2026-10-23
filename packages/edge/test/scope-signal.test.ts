@@ -12,7 +12,7 @@ import {
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { condemnationOf } from '../src/cache/condemned.ts';
+import { condemnationOf, takeInvalidation } from '../src/cache/condemned.ts';
 import { decideGeneration } from '../src/cache/decision.ts';
 import { lookAtScope, withScopeRevision } from '../src/cache/scope-signal.ts';
 import type { EdgeHost, ScopeSignalSource } from '../src/edge-host.ts';
@@ -941,5 +941,90 @@ describe('what the authority says moved in a scope', () => {
       revision: 7,
       invalidatedAt: at,
     });
+  });
+
+  it('takes the complete authority view at the same revision as an Action response', async () => {
+    const scopeId = scopeOfItsOwn();
+    const runtime = runtimeOf();
+    takeInvalidation(runtime.memory, scopeId, { value: 'posts', bound: '7' });
+    const receipt = runtime.memory.invalidations.responseRevisionOf(scopeId);
+
+    expect(runtime.memory.scopes.get(scopeId)).toBeUndefined();
+
+    const at = Date.now();
+    const answered = authority(() => {
+      return {
+        revision: 7,
+        invalidatedAt: at,
+        tags: [tagged('products', 6, at), tagged('feed', 7, null)],
+        truncated: false,
+        announced: true,
+      };
+    });
+    const behind: Promise<unknown>[] = [];
+
+    await look(runtime, hostOf(`signals-${crypto.randomUUID()}`, answered.source), scopeId, behind);
+    await Promise.all(behind);
+
+    expect(runtime.memory.invalidations.of(scopeId)?.tags.get('products')).toBe(6);
+    expect(runtime.memory.invalidations.of(scopeId)?.stale.get('feed')).toBe(7);
+    expect(runtime.memory.invalidations.responseRevisionOf(scopeId)).toStrictEqual(receipt);
+    expect(runtime.memory.scopes.get(scopeId)?.revision).toBe(7);
+  });
+
+  it('does not lower an Action response bound when an older authority answer arrives', async () => {
+    const scopeId = scopeOfItsOwn();
+    const runtime = runtimeOf();
+    takeInvalidation(runtime.memory, scopeId, { value: 'posts', bound: '7' });
+    const receipt = runtime.memory.invalidations.responseRevisionOf(scopeId);
+    const answered = authority(() => {
+      return {
+        // The authority has not yet seen the Action's revision.
+        revision: 0,
+        invalidatedAt: null,
+        tags: [],
+        truncated: false,
+        announced: true,
+      };
+    });
+    const behind: Promise<unknown>[] = [];
+
+    await look(runtime, hostOf(`signals-${crypto.randomUUID()}`, answered.source), scopeId, behind);
+    await Promise.all(behind);
+    const told = withScopeRevision(runtime, scopeId, new Request('https://app.test/'));
+
+    expect(parseScopeRevision(told.headers.get(SCOPE_REVISION_HEADER))).toStrictEqual({
+      revision: 7,
+      invalidatedAt: receipt?.observedAt,
+    });
+    expect(runtime.memory.scopes.get(scopeId)?.revision).toBe(0);
+  });
+
+  it('keeps a higher authority revision recent when a lower response confirms an invalidation', () => {
+    const scopeId = scopeOfItsOwn();
+    const runtime = runtimeOf();
+    runtime.memory.scopes.set(scopeId, { revision: 9, invalidatedAt: null, checkedAt: Date.now() });
+    takeInvalidation(runtime.memory, scopeId, { value: 'posts', bound: '7' });
+    const receipt = runtime.memory.invalidations.responseRevisionOf(scopeId);
+
+    const told = withScopeRevision(runtime, scopeId, new Request('https://app.test/'));
+
+    expect(parseScopeRevision(told.headers.get(SCOPE_REVISION_HEADER))).toStrictEqual({
+      revision: 9,
+      invalidatedAt: receipt?.observedAt,
+    });
+    expect(runtime.memory.scopes.get(scopeId)?.invalidatedAt).toBeNull();
+  });
+
+  it('leaves an unhinted request alone once its response receipt is past the catch-up window', () => {
+    let clock = 1_800_000_000_000;
+    const scopeId = scopeOfItsOwn();
+    const runtime = { ...runtimeOf(), memory: createEdgeMemory(() => clock) };
+    takeInvalidation(runtime.memory, scopeId, { value: 'posts', bound: '7' });
+    clock += 10 * 60_000 + 1;
+    const request = new Request('https://app.test/');
+
+    expect(withScopeRevision(runtime, scopeId, request)).toBe(request);
+    expect(request.headers.has(SCOPE_REVISION_HEADER)).toBe(false);
   });
 });

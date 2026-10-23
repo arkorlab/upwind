@@ -1,6 +1,8 @@
 import type { Route } from '@stayingupwind/core/bundle';
 import {
   FUNCTION_HEADER,
+  HEADER_RULES_AFTER_COOKIE_COUNT_HEADER,
+  HEADER_RULES_AFTER_HEADER,
   HEADER_RULES_JUDGED_HEADER,
   HEADER_RULES_LEFT_HEADER,
   MIDDLEWARE_DONE_HEADER,
@@ -13,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppModule, NodeHandler, WebHandler } from '../src/app-module.ts';
 import { handleRequest } from '../src/handle.ts';
 import { decodeHandOff, encodeHandOff } from '../src/handoff.ts';
+import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { withRoutingOf } from '../src/resolve-request.ts';
 import type { RoutedInput } from '../src/serve.ts';
 import { getStore, type Store } from '../src/store.ts';
@@ -189,6 +192,62 @@ describe('the header rules ahead of the middleware, where the edge ran it', () =
     expect(runs()).toBe(0);
   });
 
+  it.each(['afterFiles', 'onMatch'] as const)(
+    'names the fields the %s rules actually set after the deferred rules',
+    async (phase) => {
+      const store = deployment();
+      const headers = {
+        'cache-control': 'public,max-age=31536000,immutable',
+        'x-later': phase,
+        'set-cookie': 'later=1; Path=/',
+      };
+      const to = phase === 'afterFiles' ? '/intermediate' : TARGET;
+      store.manifest.routing[phase] = [
+        {
+          sourceRegex: `^${to}$`,
+          headers,
+          ...(phase === 'afterFiles' && { destination: TARGET }),
+        },
+      ];
+      vi.mocked(getStore).mockReturnValue(store);
+      const { app, runs } = passing();
+
+      const response = await handle(app, fromTheEdge(RAN_AND_JUDGED, to));
+
+      expect(response.headers.get('cache-control')).toBe(headers['cache-control']);
+      expect(response.headers.get('x-later')).toBe(phase);
+      expect(response.headers.getSetCookie()).toStrictEqual([headers['set-cookie']]);
+      expect(response.headers.get(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER)).toBe('1');
+      expect(response.headers.get(HEADER_RULES_AFTER_HEADER)?.split(',')).toStrictEqual([
+        'cache-control',
+        'set-cookie',
+        'x-later',
+      ]);
+      expect(response.headers.get(HEADER_RULES_LEFT_HEADER)).toBe('1');
+      expect(runs()).toBe(0);
+    },
+  );
+
+  it('replaces an application marker even when no later rule set a header', async () => {
+    vi.mocked(invokeNodeHandler).mockResolvedValueOnce(
+      new Response('page', {
+        headers: {
+          [HEADER_RULES_AFTER_HEADER]: 'x-handler',
+          [HEADER_RULES_AFTER_COOKIE_COUNT_HEADER]: '999',
+          'x-handler': 'own',
+        },
+      }),
+    );
+    const { app } = passing();
+
+    const response = await handle(app, fromTheEdge(RAN_AND_JUDGED));
+
+    expect(response.headers.get('x-handler')).toBe('own');
+    expect(response.headers.get(HEADER_RULES_AFTER_HEADER)).toBe('');
+    expect(response.headers.get(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER)).toBe('0');
+    expect(response.headers.get(HEADER_RULES_LEFT_HEADER)).toBe('1');
+  });
+
   /** What an edge from before it sends: the rules are laid here, as they always were. */
   it('lays them, and says nothing, where the edge judged none', async () => {
     const { app } = passing();
@@ -239,7 +298,11 @@ describe('the header rules ahead of the middleware, where the edge ran it', () =
       route: TARGET,
       pathname: TARGET,
       url: TARGET,
-      headers: [['x-collected', 'routing']],
+      headers: [
+        ['x-collected', 'routing'],
+        [HEADER_RULES_AFTER_HEADER, 'x-collected'],
+        [HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, '0'],
+      ],
     });
 
     const judged = await handle(app, fromTheEdge({ ...RAN_AND_JUDGED, [ROUTED_HEADER]: handOff }));
@@ -249,6 +312,8 @@ describe('the header rules ahead of the middleware, where the edge ran it', () =
     );
 
     expect(judged.headers.get('x-collected')).toBe('routing');
+    expect(judged.headers.get(HEADER_RULES_AFTER_HEADER)).toBe('x-collected');
+    expect(judged.headers.get(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER)).toBe('0');
     expect(judged.headers.get(HEADER_RULES_LEFT_HEADER)).toBe('1');
     expect(unjudged.headers.has(HEADER_RULES_LEFT_HEADER)).toBe(false);
   });

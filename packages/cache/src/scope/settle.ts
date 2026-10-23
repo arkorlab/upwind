@@ -52,6 +52,7 @@ const DATA_KIND_PREFIX = 'data:';
 export interface SettleDeps {
   readonly sql: SqlStorage;
   readonly scopeId: string;
+  readonly buildId?: string | undefined;
   readonly kv: KvSink;
   readonly blobs: BlobStore;
   /** What the host keeps of the scope's history, told each change and published after it. */
@@ -183,7 +184,7 @@ function projectionChunk(
         : findGeneration(deps.sql, entry.current_generation_id);
     if (current !== undefined) {
       try {
-        bytes = projectionMemoryOf(deps.scopeId, entry, current);
+        bytes = projectionMemoryOf(deps.scopeId, entry, current, deps.buildId);
       } catch {
         // A malformed record is still tried, and its failure logged, without losing the page.
         bytes = PROJECTION_MEMORY_BYTES;

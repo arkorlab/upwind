@@ -4,9 +4,8 @@ import { buildProjectManifest, staticFileStatus } from '@stayingupwind/core/mani
 import { classifyRequest } from '@stayingupwind/core/request';
 import { describe, expect, it } from 'vitest';
 
-// Exercise the host writer's pure assembly without adding a cyclic production or test package dependency.
+/* eslint import-x/no-relative-packages: "off" -- Exercise the writer's pure assembly and internal helpers without a cyclic package dependency. */
 import { assembleManifest } from '../../deploy/src/manifest.ts';
-// Validate the writer's internal identity helper without exporting it as a production API.
 import { routeBodiesOf } from '../../deploy/src/route-bodies.ts';
 import { staticFilesOf } from '../../deploy/src/static-files.ts';
 import { seedRouteFor } from '../src/bundle/cache-seed.ts';
