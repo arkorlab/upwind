@@ -133,6 +133,7 @@ interface ConstantFacts {
 }
 
 type Facts = ReadonlyMap<Node, ConstantFacts>;
+const BIGINT_ZERO = 0n;
 const TRUTHY: ConstantFacts = { truthy: true, nullish: false };
 const FALSY: ConstantFacts = { truthy: false, nullish: false };
 const NULLISH: ConstantFacts = { truthy: false, nullish: true };
@@ -141,9 +142,9 @@ const NONNULL: ConstantFacts = { truthy: undefined, nullish: false };
 /** Read literal metadata only: RegExp's serialized value may be null, but its result is truthy. */
 function literalFacts(node: Extract<Node, { type: 'Literal' }>): ConstantFacts {
   if ('regex' in node) return TRUTHY;
-  if ('bigint' in node) return BigInt(node.bigint) === 0n ? FALSY : TRUTHY;
+  if ('bigint' in node) return BigInt(node.bigint) === BIGINT_ZERO ? FALSY : TRUTHY;
   if (node.value === null) return NULLISH;
-  return node.value ? TRUTHY : FALSY;
+  return Boolean(node.value) ? TRUTHY : FALSY;
 }
 
 function takesLogicalRight(
@@ -152,12 +153,15 @@ function takesLogicalRight(
 ): boolean | undefined {
   if (left === undefined) return undefined;
   switch (node.operator) {
-    case '??':
+    case '??': {
       return left.nullish;
-    case '&&':
+    }
+    case '&&': {
       return left.truthy;
-    case '||':
+    }
+    case '||': {
       return left.truthy === undefined ? undefined : !left.truthy;
+    }
   }
 }
 
@@ -184,7 +188,7 @@ function numericUnaryFacts(node: Extract<Node, { type: 'UnaryExpression' }>): Co
   if (argument.type !== 'Literal' || 'regex' in argument) return NONNULL;
   if ('bigint' in argument) {
     if (node.operator !== '-') return NONNULL;
-    return BigInt(argument.bigint) === 0n ? FALSY : TRUTHY;
+    return BigInt(argument.bigint) === BIGINT_ZERO ? FALSY : TRUTHY;
   }
   const value = Number(argument.value);
   return value ? TRUTHY : FALSY;
@@ -195,7 +199,7 @@ function unaryFacts(node: Extract<Node, { type: 'UnaryExpression' }>, facts: Fac
   if (node.operator === 'typeof') return TRUTHY;
   if (node.operator === '+' || node.operator === '-') return numericUnaryFacts(node);
   const truthy = facts.get(node.argument)?.truthy;
-  if (node.operator === '!' && truthy !== undefined) return truthy ? FALSY : TRUTHY;
+  if (truthy !== undefined && node.operator === '!') return truthy ? FALSY : TRUTHY;
   return NONNULL;
 }
 
@@ -210,7 +214,8 @@ function constantFacts(node: Node, facts: Facts): ConstantFacts | undefined {
   }
   if (node.type === 'ConditionalExpression') {
     const truthy = facts.get(node.test)?.truthy;
-    return truthy === undefined ? undefined : facts.get(truthy ? node.consequent : node.alternate);
+    if (truthy === undefined) return undefined;
+    return facts.get(truthy ? node.consequent : node.alternate);
   }
   if (node.type === 'LogicalExpression') return logicalFacts(node, facts);
   return [
