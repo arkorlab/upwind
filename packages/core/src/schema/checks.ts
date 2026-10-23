@@ -128,10 +128,9 @@ function withinLength(
   return kind === 'min_length' ? counted >= bound : counted === bound;
 }
 
-export function checkLength(
+function checkLength(
   check: Extract<Check, { readonly kind: 'max_length' | 'min_length' | 'length_equals' }>,
   payload: Payload,
-  continuable = true,
 ): void {
   const input = payload.value as { readonly length: number };
   const counted = typeof input === 'string' ? codePointLength(input) : input.length;
@@ -148,7 +147,7 @@ export function checkLength(
     issue['exact'] = true;
   }
   issue.input = input;
-  issue.continue = continuable;
+  issue.continue = true;
   payload.issues.push(withMessage(issue, check.message));
 }
 

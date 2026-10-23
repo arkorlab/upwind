@@ -22,7 +22,7 @@ catalog:
   # IDs are on, which a bundler does not compose through until they are one list (`flattened`).
   '@jridgewell/sourcemap-codec': 1.6.0
   '@jridgewell/trace-mapping': 0.3.31
-  '@next/routing': 16.4.2
+  '@next/routing': 16.4.3
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
   '@oxc-project/types': 0.154.0
   '@types/node': 24.19.2
@@ -55,7 +55,7 @@ catalog:
   # than the compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
   # `@stayingupwind/adapter`). Keep this aligned with the version Wrangler uses.
   miniflare: 5.20261012.1-beta
-  next: 16.4.2
+  next: 16.4.3
   oxfmt: 0.73.0
   rolldown: 1.2.14
   # The Public Suffix List, by which `local:check` refuses a cookie for a domain no site holds.
@@ -71,7 +71,7 @@ catalog:
   # where something takes zod's alone (`./zod`). What the runtime and the edge read — the gateway's
   # contract, the cache's records — is written with core's own validator instead, which is cheap to
   # build in an isolate that builds it before its first request.
-  zod: 4.6.6
+  zod: 4.6.7
   # What `@stayingupwind/cache`'s gateway routes a Function's requests with.
   hono: 4.13.13
   # Runs `@stayingupwind/cache`'s suites inside workerd, with its own pinned Wrangler and
@@ -96,12 +96,12 @@ strictPeerDependencies: true
 # undici's HTTP client advisories (7.29.1), sharp's librsvg CVE-2026-96889 (0.35.5), and
 # source-map-js's indexed-map denial of service CVE-2026-93749 (1.2.2). Keep the parent releases
 # pinned; these dependencies do not run on a deployed Function's request path.
+# Zod v4's bounded collection validation is patched for CVE-2023-54404 in 4.6.6.
 overrides:
-  # GHSA-mrhx-c7xc-m3w5: keep affected transitive copies on the fixed v4 release.
-  'zod@>=4.0.0 <4.6.6': 4.6.6
   'undici@>=7.0.0 <7.29.1': 7.29.1
   'sharp@>=0.35.0 <0.35.5': 0.35.5
   'source-map-js@>=1.0.0 <1.2.2': 1.2.2
+  'zod@>=4.0.0 <4.6.6': 4.6.7
 
 # pnpm runs an implicit install before every `pnpm run` by default, and that install takes no lock
 # (pnpm/pnpm#14551), so a second checkout running a script at the same time races it over
