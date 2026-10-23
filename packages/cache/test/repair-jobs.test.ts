@@ -763,32 +763,30 @@ describe('bounded durable artifact repair continuations', () => {
 
   it('continues successful bounded history progress without treating idle history as progress', async () => {
     await inScope(async (tx, storage) => {
-      const outcomes: SettleOutcome[] = [];
-      for (const progress of [false, true]) {
-        outcomes.push(
-          await settlePending(
-            {
-              sql: tx.sql,
-              scopeId: tx.scopeId,
-              blobs: blobStore(env.ARTIFACTS, () => ({})),
-              kv: kvSink(env.CACHE_STATE, () => ({})),
-              history: {
-                ...NO_HISTORY,
-                owes: () => true,
-                publish: () => Promise.resolve([...NOTHING_PUBLISHED, progress] as const),
-              },
-              log: createLogger({ component: 'repair-history-progress' }),
-              now: () => NOW,
-              transaction: (body) => storage.transactionSync(body),
-              sliceMs: 1,
-              othersWaiting: () => false,
-              continueSoon: () => Promise.resolve(),
+      const settleFor = (progress: boolean): Promise<SettleOutcome> => {
+        return settlePending(
+          {
+            sql: tx.sql,
+            scopeId: tx.scopeId,
+            blobs: blobStore(env.ARTIFACTS, () => ({})),
+            kv: kvSink(env.CACHE_STATE, () => ({})),
+            history: {
+              ...NO_HISTORY,
+              owes: () => true,
+              publish: () => Promise.resolve([...NOTHING_PUBLISHED, progress] as const),
             },
-            undefined,
-            null,
-          ),
+            log: createLogger({ component: 'repair-history-progress' }),
+            now: () => NOW,
+            transaction: (body) => storage.transactionSync(body),
+            sliceMs: 1,
+            othersWaiting: () => false,
+            continueSoon: () => Promise.resolve(),
+          },
+          undefined,
+          null,
         );
-      }
+      };
+      const outcomes = [await settleFor(false), await settleFor(true)];
 
       expect(
         outcomes.map(({ pending, failed, continued }) => ({ pending, failed, continued })),

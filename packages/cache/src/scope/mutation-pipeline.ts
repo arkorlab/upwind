@@ -31,7 +31,7 @@ export type OwnRun = Pick<OwnRecords, 'wanted' | 'carried'> &
   };
 
 type PipelineValue<T> = T | RepairPending | RepairStart<T>;
-type MutationPlan<T> = (
+export type MutationPlan<T> = (
   input: TxInput,
 ) => Apply<PipelineValue<T>> | Promise<Apply<PipelineValue<T>>>;
 
@@ -55,6 +55,33 @@ export class MutationPipeline {
 
   constructor(host: PipelineHost) {
     this.#host = host;
+  }
+
+  async #startDeferred<T>(
+    committed: MutationResult<PipelineValue<T>>,
+    deferred: RepairStart<T>,
+    now: number,
+    clock: (() => number) | undefined,
+  ): Promise<MutationResult<PipelineValue<T>>> {
+    await this.prepare();
+    await deferred.prepare?.();
+    const input = this.input(clock?.() ?? now);
+    const start: Apply<T | RepairPending> = Object.assign(() => deferred.start(input), {
+      preflight:
+        deferred.preflight === undefined
+          ? undefined
+          : () => {
+              deferred.preflight?.(input);
+            },
+    });
+    runMutationPreflight(this.#host.storage, start);
+    const value = this.#host.storage.transactionSync(start);
+    return {
+      ...committed,
+      value,
+      own:
+        readRevision(input.sql) >= input.revision ? ownRecordsOf(input.sql, input.revision) : null,
+    };
   }
 
   input(now: number): TxInput {
@@ -145,33 +172,6 @@ export class MutationPipeline {
     }
     timing?.lap('alarm');
     return result.value;
-  }
-
-  async #startDeferred<T>(
-    committed: MutationResult<PipelineValue<T>>,
-    deferred: RepairStart<T>,
-    now: number,
-    clock: (() => number) | undefined,
-  ): Promise<MutationResult<PipelineValue<T>>> {
-    await this.prepare();
-    await deferred.prepare?.();
-    const input = this.input(clock?.() ?? now);
-    const start: Apply<T | RepairPending> = Object.assign(() => deferred.start(input), {
-      preflight:
-        deferred.preflight === undefined
-          ? undefined
-          : () => {
-              deferred.preflight?.(input);
-            },
-    });
-    runMutationPreflight(this.#host.storage, start);
-    const value = this.#host.storage.transactionSync(start);
-    return {
-      ...committed,
-      value,
-      own:
-        readRevision(input.sql) >= input.revision ? ownRecordsOf(input.sql, input.revision) : null,
-    };
   }
 
   /** Rare repair preparation only: no new reads, awaits or alarm I/O on healthy writes. */

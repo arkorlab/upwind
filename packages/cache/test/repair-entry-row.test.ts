@@ -243,8 +243,8 @@ describe('exact repair entry row preflight', () => {
       });
 
       expect({
-        shared: shared.map(revisionsOf),
-        publisher: publisher.map(revisionsOf),
+        shared: shared.map((entry) => revisionsOf(entry)),
+        publisher: publisher.map((entry) => revisionsOf(entry)),
       }).toStrictEqual({
         shared: [
           [127, 127, 126],

@@ -6,9 +6,9 @@ export function deferSeedRepair(
   input: TxInput,
   apply: (next: TxInput, probe: boolean) => unknown,
 ): never {
-  const accepted = (next: TxInput): TxInput => {
+  function accepted(next: TxInput): TxInput {
     return { ...next, now: input.now, limits: input.limits };
-  };
+  }
   throw new RepairPreparationRequiredError({
     kind: 'repair-start',
     preflight: (next) => {

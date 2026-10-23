@@ -1,6 +1,5 @@
 import {
   generationTagSchema,
-  isRepairStorageRef,
   MAX_TAG_LENGTH,
   MAX_TAGS_PER_ENTRY,
   type OutputSnapshot,
@@ -15,12 +14,7 @@ import {
 } from '@stayingupwind/host/cache';
 
 import type { Logger } from '../logger.ts';
-import {
-  artifactFailed,
-  artifactIdsFor,
-  findArtifactBySha,
-  referenceBuildArtifacts,
-} from './artifacts.ts';
+import { artifactIdsFor, referenceBuildArtifacts } from './artifacts.ts';
 import {
   type EntryIdentity,
   findEntry,
@@ -40,6 +34,7 @@ import {
   existingSeedArtifactLengths,
   reserveSeedArtifactLengths,
 } from './seed-artifact-lengths.ts';
+import { canonicalSeedOutputs } from './seed-canonical.ts';
 import { deferSeedRepair } from './seed-preparation.ts';
 import { prepareSeedPublication } from './seed-repair-job.ts';
 import {
@@ -299,29 +294,6 @@ function recordFields(
     },
     outputs: plan.outputs,
   };
-}
-
-/** V2 seeds reuse this scope's repaired canonical copy, preserving existing borrowed accounting. */
-function canonicalSeedOutputs(
-  input: TxInput,
-  outputs: readonly OutputSnapshot[],
-): readonly OutputSnapshot[] {
-  if (input.packSchemaVersion !== 2 || input.repairNamespace === undefined) return outputs;
-  const prefix = `r/${input.repairNamespace}/`;
-  return outputs.map((output) => {
-    return {
-      ...output,
-      artifacts: output.artifacts.map((artifact) => {
-        const canonical = findArtifactBySha(input.sql, artifact.sha256);
-        return canonical?.byte_length === artifact.byteLength &&
-          isRepairStorageRef(canonical.storage_ref) &&
-          canonical.storage_ref.startsWith(prefix) &&
-          !artifactFailed(input.sql, canonical)
-          ? { ...artifact, storageRef: canonical.storage_ref }
-          : artifact;
-      }),
-    };
-  });
 }
 
 function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {

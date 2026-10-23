@@ -280,9 +280,9 @@ describe('the clock at the lease mutation', () => {
       storage.sql.exec('UPDATE scope SET revision = ?', acknowledged);
     });
     const state = await stateOf(subject);
-    const revision = await runInDurableObject(subject.stub, (_instance, state) => {
-      return readRevision(state.storage.sql);
-    });
+    const revision = await runInDurableObject(subject.stub, (_instance, objectState) =>
+      readRevision(objectState.storage.sql),
+    );
 
     expect(answer).toMatchObject({ kind: 'published', revision: acknowledged + 1 });
     expect(state).toMatchObject({ generations: 1, attempt: { status: 'committed' } });

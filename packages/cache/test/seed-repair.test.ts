@@ -56,12 +56,17 @@ import { withRepairAlarms } from './support/repair-alarm.ts';
 const NOW = 1_800_000_000_000;
 const HTML_TYPE = 'text/html; charset=utf-8';
 const BODY = '<html>the build</html>';
-function verifiedReader(name: string) {
+interface VerifiedReader {
+  readonly versionId: string;
+  readonly moduleSha256: string;
+}
+
+function verifiedReader(name: string): readonly [string, VerifiedReader] {
   return [name, { versionId: 'reviewed', moduleSha256: 'a'.repeat(64) }];
 }
 
 const VERIFIED_READERS = Object.fromEntries(
-  ['edge', 'authority', 'gateway', 'readGateway'].map(verifiedReader),
+  ['edge', 'authority', 'gateway', 'readGateway'].map((name) => verifiedReader(name)),
 );
 
 async function scopeForTest(compact = false) {
@@ -141,6 +146,11 @@ const SEED_CURSOR_HISTORY = {
     );
   },
 };
+
+function requireSeedResult(result: SeedEntriesResult | Refusal): SeedEntriesResult {
+  if (isRefusal(result)) throw new Error('the seed repair was refused');
+  return result;
+}
 
 async function planFor(scope: Scope, pathname = '/', body = BODY) {
   const descriptor = { kind: 'app-page' as const, route: pathname, pathname };
@@ -476,7 +486,7 @@ async function observedSeedRepair(scope: Scope, plans: readonly Plan[], revision
         'SELECT revision, payload FROM seed_test_history ORDER BY ordinal',
       )
       .toArray();
-    const history: RecordedEvent[] = rows.map(recordedEventOf);
+    const history: RecordedEvent[] = rows.map((row) => recordedEventOf(row));
     sql.exec('DROP TABLE seed_test_history');
     return { result, history, states };
   });
@@ -814,8 +824,7 @@ describe('a seed whose artifact projection could not read', () => {
         artifact: { owned: 0, refs: 2, storage_ref: badLocation },
       });
 
-      const retried = await seedBatch(scope, [first.seed, second.seed]);
-      if (isRefusal(retried)) throw new Error('the seed repair was refused');
+      const retried = requireSeedResult(await seedBatch(scope, [first.seed, second.seed]));
       const repaired = await rowsFor(scope, first);
       const record = await recordFor(scope, first.entryId);
 
@@ -1335,13 +1344,16 @@ describe('a seed whose artifact projection could not read', () => {
         };
       };
       const before = snapshot();
+      const padding = rejectedHistoryPadding(state.storage);
+      let appended = 0;
       const history = {
         ...NO_HISTORY,
         append(context: { readonly sql: SqlStorage }, event: EventInput): void {
-          // Ask the provider's own row limit; this is not a protocol admission ceiling.
+          appended += 1;
+          // The same provider has rejected even the padding alone in a rollback-only probe.
           context.sql.exec(
             'INSERT INTO seed_initial_history_test (payload) VALUES (?)',
-            JSON.stringify({ event, padding: 'x'.repeat(3 * 1024 * 1024) }),
+            JSON.stringify({ event, padding }),
           );
         },
       };
@@ -1375,9 +1387,10 @@ describe('a seed whose artifact projection could not read', () => {
 
       await expect(mutation).rejects.toThrow(/SQLITE_TOOBIG/u);
 
-      return { before, after: snapshot() };
+      return { before, after: snapshot(), appended };
     });
 
+    expect(result.appended).toBeGreaterThan(0);
     expect(result.after).toStrictEqual(result.before);
     expect(result.after.events).toStrictEqual([]);
     expect(result.after.job).toBeUndefined();
@@ -1395,12 +1408,15 @@ describe('a seed whose artifact projection could not read', () => {
       const observed = await runInDurableObject(scope.stub, async (_instance, state) => {
         const { sql } = state.storage;
         sql.exec('CREATE TABLE seed_late_history_test (payload TEXT)');
+        const padding = oversized ? rejectedHistoryPadding(state.storage) : undefined;
+        let appended = 0;
         const history = {
           ...NO_HISTORY,
           append(context: { readonly sql: SqlStorage }, event: EventInput): void {
+            appended += 1;
             context.sql.exec(
               'INSERT INTO seed_late_history_test (payload) VALUES (?)',
-              JSON.stringify({ event, ...(oversized && { padding: 'x'.repeat(3 * 1024 * 1024) }) }),
+              JSON.stringify({ event, ...(padding !== undefined && { padding }) }),
             );
           },
         };
@@ -1509,12 +1525,14 @@ describe('a seed whose artifact projection could not read', () => {
           before,
           firstPreparation: snapshots[0],
           initiallyProbed,
+          appended,
           answer,
           after: snapshot(),
         };
       });
 
       expect(observed.initiallyProbed).toBe(false);
+      expect(observed.appended).toBeGreaterThan(0);
       expect(observed.firstPreparation).toStrictEqual({
         fresh: false,
         job: false,
@@ -1658,10 +1676,12 @@ describe('a seed whose artifact projection could not read', () => {
           'SELECT revision, payload FROM seed_cursor_history ORDER BY ordinal',
         )
         .toArray();
-      return rows.map(recordedEventOf).filter(({ event }) => {
-        const sameEntry = event.entityId === consumer.entryId;
-        return sameEntry && event.kind === 'entry.state.changed';
-      });
+      return rows
+        .map((row) => recordedEventOf(row))
+        .filter(({ event }) => {
+          const sameEntry = event.entityId === consumer.entryId;
+          return sameEntry && event.kind === 'entry.state.changed';
+        });
     });
 
     const expectedDelivery = { refs: expected, recordRefs: expected, revision: accepted.revision };
@@ -1772,6 +1792,39 @@ describe('a seed whose artifact projection could not read', () => {
     expect(decodeUtf8(record.html)).toBe('<html>the render</html>');
   });
 });
+
+class HistoryLimitProbePassedError extends Error {
+  override name = 'HistoryLimitProbePassedError';
+}
+
+/** A failing value is discovered in this runtime; no successful probe leaves a row behind. */
+function rejectedHistoryPadding(storage: DurableObjectStorage): string {
+  const { sql } = storage;
+  sql.exec('CREATE TABLE seed_history_limit_probe (payload TEXT)');
+  const mib = 1024 * 1024;
+  try {
+    for (const size of [1, 2, 4, 8, 12]) {
+      const padding = 'x'.repeat(size * mib);
+      try {
+        storage.transactionSync(() => {
+          const cursor = sql.exec(
+            'INSERT INTO seed_history_limit_probe (payload) VALUES (?)',
+            padding,
+          );
+          cursor.toArray();
+          throw new HistoryLimitProbePassedError('the history limit probe passed');
+        });
+      } catch (error) {
+        if (error instanceof HistoryLimitProbePassedError) continue;
+        if (error instanceof Error && error.message.includes('SQLITE_TOOBIG')) return padding;
+        throw error;
+      }
+    }
+    throw new Error('the configured SQL row limit exceeds the fixture search window');
+  } finally {
+    sql.exec('DROP TABLE seed_history_limit_probe');
+  }
+}
 
 /** Discover the provider row boundary without adding a new admission ceiling. */
 function padGenerationToSqlLimit(

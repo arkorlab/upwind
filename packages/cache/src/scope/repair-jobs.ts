@@ -77,8 +77,8 @@ export class RepairPreparationRequiredError<T = unknown> extends Error {
   override name = 'RepairPreparationRequiredError';
   readonly preparation: RepairStart<T>;
 
-  constructor(preparation: RepairStart<T>) {
-    super('the repair needs a prepared continuation');
+  constructor(preparation: RepairStart<T>, options?: ErrorOptions) {
+    super('the repair needs a prepared continuation', options);
     this.preparation = preparation;
   }
 }

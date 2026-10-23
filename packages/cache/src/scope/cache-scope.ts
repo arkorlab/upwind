@@ -25,6 +25,7 @@ import {
   LEASE_SWEEP_GRACE_MS,
   RETENTION_INTERVAL_MS,
   type OwnRun,
+  type MutationPlan,
 } from './mutation-pipeline.ts';
 import { Alarm, ScopeQueue } from './mutations.ts';
 import {
@@ -37,7 +38,7 @@ import {
   readHead,
   resolveEntry,
 } from './reads.ts';
-import { isRepairPending, type RepairPending, type RepairStart } from './repair-jobs.ts';
+import { isRepairPending, type RepairPending } from './repair-jobs.ts';
 import { RepairRunner } from './repair-runner.ts';
 import {
   claimResourceWarmJobs,
@@ -222,11 +223,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
    */
   #mutate<T>(
     now: number,
-    plan: (
-      input: TxInput,
-    ) =>
-      | Apply<T | RepairPending | RepairStart<T>>
-      | Promise<Apply<T | RepairPending | RepairStart<T>>>,
+    plan: MutationPlan<T>,
     answers: { readonly atOnce?: boolean } & ({ readonly empty: T } | { readonly seed: T }),
     own: OwnRun = {},
   ): Promise<T> {

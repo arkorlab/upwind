@@ -14,8 +14,8 @@ export class RepairPublicationProbedError extends Error {
   override name = 'RepairPublicationProbedError';
   readonly next: RepairJob;
 
-  constructor(next: RepairJob) {
-    super('the repair publication fits');
+  constructor(next: RepairJob, options?: ErrorOptions) {
+    super('the repair publication fits', options);
     this.next = next;
   }
 }
