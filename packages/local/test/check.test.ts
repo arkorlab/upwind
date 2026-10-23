@@ -4108,6 +4108,45 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
+    it('is asked for as a request a rule of next.config sets other headers for, and held to them', async () => {
+      // A download's disposition, on a cookie alone: no type of its own, but a header all the same.
+      const download: HeaderRule = {
+        sourceRegex: String.raw`^/a\.txt$`,
+        has: [{ type: 'cookie', key: 'download' }],
+        headers: { 'Content-Disposition': 'attachment' },
+      };
+      const asFile = {
+        'content-type': TEXT,
+        'cache-control': REVALIDATE,
+        'x-arkor-edge': FILE_EDGE,
+      };
+      answers.set('/a.txt', {
+        headers: asFile,
+        body: 'kept bytes',
+        // As the edge holds an answer a rule judged a cookie for: the visitor's alone.
+        withCookie: {
+          name: 'download',
+          headers: { 'content-disposition': 'attachment', 'cache-control': GATED },
+        },
+      });
+      const laid = await checkStack(stackOf([], files, { headerRules: [download] }));
+      answers.set('/a.txt', {
+        headers: asFile,
+        body: 'kept bytes',
+        withCookie: { name: 'download', headers: { 'cache-control': GATED } },
+      });
+      const omitted = await checkStack(stackOf([], files, { headerRules: [download] }));
+
+      expect(laid).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(omitted.failures).toStrictEqual([
+        {
+          path: '/a.txt',
+          reason:
+            'asked for as the request a rule of next.config sets headers on it for (the cookie download=1), answered with content-disposition none, not the attachment the application set',
+        },
+      ]);
+    });
+
     it('reports an unwitnessed quantified type condition instead of passing it over', async () => {
       answers.set('/a.txt', {
         headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },

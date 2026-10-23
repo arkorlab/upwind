@@ -178,8 +178,8 @@ function selectedBy(
 }
 
 /**
- * Why a file asked for by a request a rule of `next.config` types it for is not answered as the edge
- * answers that request: by the conditions the request carries — which a rule conditioned on one has
+ * Why a file asked for by a request a rule of `next.config` sets headers on it for is not answered as
+ * the edge answers that request: by the conditions the request carries — which a rule conditioned on one has
  * it carry (Codex) — `412` for a precondition the file fails and `304` for a validator the client
  * holds, and the file, whole, otherwise (`selectedBy`).
  */
@@ -240,41 +240,46 @@ function typeSetIn(headers: Readonly<Record<string, string>>): string | undefine
   return Object.entries(headers).find(([name]) => name.toLowerCase() === CONTENT_TYPE)?.[1];
 }
 
+/** What a rule of `next.config` is said to do of a file, by what it sets: its type, or other headers. */
+function whatRuleDoes(headers: Readonly<Record<string, string>>): string {
+  return typeSetIn(headers) === undefined ? 'sets headers on it for' : 'types it for';
+}
+
 /**
  * The requests a file at `url` is asked for again by, one for each rule of `next.config` that sets
- * its type on some requests alone — those carrying a cookie, a header or a query parameter the
- * request it was asked by does not, or lacking one it does — that does not hold for that request:
- * the request that carries what the rule asks for (`carryingEach`) and lacks what it says is
- * missing (`lackingEach`), where the check can make one it holds for. A browser that carries that
- * cookie, or a client that sends no `Accept`, is served the file under the rule's type.
+ * headers on it for some requests alone — its type, or any other header (Codex): a download's
+ * `Content-Disposition` on a query parameter, say — those carrying a cookie, a header or a query
+ * parameter the request it was asked by does not, or lacking one it does — that does not hold for
+ * that request: the request that carries what the rule asks for (`carryingEach`) and lacks what it
+ * says is missing (`lackingEach`), where the check can make one it holds for. A browser that
+ * carries that cookie, or a client that sends no `Accept`, is served the file under what the rule
+ * sets — as many as the rules that apply to it, no more.
  */
-function typedRequestsOf(
+function ruleRequestsOf(
   stack: CheckedStack,
   url: URL,
   sent: Readonly<Record<string, string>>,
 ): RuleRequests {
-  const rules = (stack.manifest.headerRules ?? []).filter(
-    (rule) => typeSetIn(rule.headers) !== undefined,
-  );
-  const result = requestsForRules(stack, url, sent, rules);
+  const result = requestsForRules(stack, url, sent, stack.manifest.headerRules ?? []);
   return {
     ...result,
     requests: result.requests.map((request) => {
       return {
         ...request,
-        what: `the request a rule of next.config types it for (${request.what})`,
+        what: `the request a rule of next.config ${whatRuleDoes(request.rule.headers)} (${request.what})`,
       };
     }),
   };
 }
 
 /**
- * Why a file the edge answers as itself, asked for by a request a rule of `next.config` sets its
- * type for alone (`typedRequestsOf`), is not answered as the edge answers that request: the file,
- * whole, under the type the rules give it for that request — the rule's, or a later one's — or what
- * the conditions that request carries select of it (`selectedFailure`).
+ * Why a file the edge answers as itself, asked for by a request a rule of `next.config` sets headers
+ * on it for alone (`ruleRequestsOf`), is not answered as the edge answers that request: the file,
+ * whole, under the type and the headers the rules give it for that request — the rule's, or a later
+ * one's (`expectationOf`) — or what the conditions that request carries select of it
+ * (`selectedFailure`).
  */
-async function typedFailure(
+async function ruleFailure(
   stack: CheckedStack,
   url: URL,
   asked: {
@@ -283,9 +288,9 @@ async function typedFailure(
     readonly head: Buffer;
   },
 ): Promise<string | undefined> {
-  const { requests: typedRequests, unproved } = typedRequestsOf(stack, url, asked.headers);
+  const { requests: ruleRequests, unproved } = ruleRequestsOf(stack, url, asked.headers);
   if (unproved !== undefined) return unproved;
-  for (const typed of typedRequests) {
+  for (const typed of ruleRequests) {
     const again = await askedAgain(stack, typed.url, { sent: typed.headers, what: typed.what });
     if (again.kind === 'failed') {
       return again.reason;
@@ -313,7 +318,7 @@ async function typedFailure(
  * Why a file the edge answered from storage, as itself, is not answered as the edge answers each
  * request a browser makes of it again: a range of it, and one on its own tag and on a stale one
  * (`If-Range`), on its entity tag, for its headers alone —
- * and as each rule of `next.config` that sets its type for some requests alone serves it to them.
+ * and as each rule of `next.config` that sets headers on it for some requests alone serves it to them.
  */
 export async function followUpFailure(
   stack: CheckedStack,
@@ -336,6 +341,6 @@ export async function followUpFailure(
     (await rangeFormsFailure(stack, url, { file, headers, answer })) ??
     (await conditionalFailure(stack, url, { ...again, etag })) ??
     (await headFailure(stack, url, again)) ??
-    (await typedFailure(stack, url, again))
+    (await ruleFailure(stack, url, again))
   );
 }
