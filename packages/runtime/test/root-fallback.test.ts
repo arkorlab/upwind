@@ -1,5 +1,11 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
-import { deriveEntry, packBodyDigests, policyFromBuild } from '@stayingupwind/core/cache';
+import {
+  type CachePolicy,
+  deriveEntry,
+  packBodyDigests,
+  policyFromBuild,
+  policyFromCacheControl,
+} from '@stayingupwind/core/cache';
 import { CACHE_ROUTE_HEADER } from '@stayingupwind/core/paas';
 import { TtlCache } from '@stayingupwind/core/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -74,6 +80,19 @@ const CLIENT_PARAMS: Built = {
   shell: { routeType: 'shell', response: 'initial', compute: 'static' },
   payload: UNBUILT_PAYLOAD,
 };
+/** The one entry every member of that shell is answered from: the shell's own. */
+const SHELL_ENTRY = { kind: 'app-page', route: SHELL, pathname: SHELL } as const;
+/** A generation's lifetime, as its render gave it, and how long before now it was made. */
+interface Lifetime {
+  readonly policy: CachePolicy;
+  readonly age: number;
+}
+/** Kept for a minute and served stale for an hour, as a shell's `cacheLife` would have it. */
+const MINUTE_SHELL = policyFromCacheControl({ revalidate: 60, expire: 3600 });
+/** Past its minute: answered, and regenerated behind the answer. */
+const STALE: Lifetime = { policy: MINUTE_SHELL, age: 120_000 };
+/** Past its hour: regenerated in front of the answer. */
+const EXPIRED: Lifetime = { policy: MINUTE_SHELL, age: 7_200_000 };
 /** `param-matching-root-params`: `lang`, a root parameter, can still be prerendered; reads postpone. */
 const ROOT_PARAMS: Built = {
   shell: { routeType: 'fallback', response: 'initial', compute: 'resuming', postponed: STATE },
@@ -251,17 +270,25 @@ function scenario(
   return { store, runtime, ask, context, tables, waitUntil, readRecord };
 }
 
-/** A complete runtime generation with both representations, keyed by the pathname it was made for. */
+/**
+ * A complete runtime generation with both representations, keyed by the pathname it was made for:
+ * made a moment ago and kept until an invalidation, unless its `lifetime` says otherwise.
+ */
 async function remember(
   runtime: CacheRuntime,
   route: string,
   pathname: string,
-  { text, postponed }: { readonly text: string; readonly postponed?: string },
+  {
+    text,
+    postponed,
+    lifetime,
+  }: { readonly text: string; readonly postponed?: string; readonly lifetime?: Lifetime },
 ) {
   const descriptor = { kind: 'app-page' as const, route, pathname };
   const { entryId } = await deriveEntry(SCOPE, descriptor);
   const html = encoder.encode(text);
   const artifactId = `rsc:${pathname}`;
+  const madeAt = NOW - (lifetime?.age ?? 1);
   runtime.artifactMemo.set(artifactId, encoder.encode(`RSC:${text}`));
   runtime.recordMemo.set(entryId, {
     header: {
@@ -272,9 +299,9 @@ async function remember(
       seq: 1,
       source: 'runtime',
       ...descriptor,
-      cacheTimestamp: NOW - 1,
-      producedAt: NOW - 1,
-      policy: policyFromBuild({ initialRevalidate: false }),
+      cacheTimestamp: madeAt,
+      producedAt: madeAt,
+      policy: lifetime?.policy ?? policyFromBuild({ initialRevalidate: false }),
       status: 200,
       headers: {},
       tags: [{ kind: 'next-explicit', value: pathname }],
@@ -481,24 +508,74 @@ describe('the classes Next.js 16.4.2 builds for three of its own fixtures', () =
 
   it("answers every member of client-params-shallow-routing's shell with the build body", async () => {
     const { ask, readRecord } = scenario(['nxtPid'], SHELL, 'app-page', CLIENT_PARAMS);
+    const { entryId } = await deriveEntry(SCOPE, SHELL_ENTRY);
 
     await expect(ask('/page-params/1')).resolves.toBe('BUILD');
     await expect(ask('/page-params/2')).resolves.toBe('BUILD');
-    expect(readRecord).not.toHaveBeenCalled();
+    // The record of the shell both are answered from, which holds no generation yet, and none of
+    // a member's own.
+    expect(readRecord).toHaveBeenCalledExactlyOnceWith(entryId, expect.any(AbortSignal));
     expect(regenerate).not.toHaveBeenCalled();
     expect(invokeNodeHandler).not.toHaveBeenCalled();
   });
 
   it("renders a payload of that shell's member for the request, regenerating nothing", async () => {
     const { ask, readRecord } = scenario(['nxtPid'], SHELL, 'app-page', CLIENT_PARAMS);
+    const { entryId } = await deriveEntry(SCOPE, SHELL_ENTRY);
 
     // Nothing postponed to resume and no payload of the class's own: the request is rendered as it
     // came, as Next.js renders a navigation's payload of a member it did not build.
     await expect(ask('/page-params/1', { rsc: '1' })).resolves.toBe('DYNAMIC');
     expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+    expect(readRecord).toHaveBeenCalledExactlyOnceWith(entryId, expect.any(AbortSignal));
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { rsc: '1' }])(
+    "answers that shell's members from its stale generation, regenerated behind, for headers %j",
+    async (headers) => {
+      const { runtime, ask } = scenario(['nxtPid'], SHELL, 'app-page', CLIENT_PARAMS);
+      await remember(runtime, SHELL, SHELL, { text: 'SHELL', lifetime: STALE });
+      const prefix = 'rsc' in headers ? 'RSC:' : '';
+
+      await expect(ask('/page-params/1', headers)).resolves.toBe(`${prefix}SHELL`);
+      await expect(ask('/page-params/2', headers)).resolves.toBe(`${prefix}SHELL`);
+      // Once, for the generation both were answered from, as the shell: `next start` regenerates a
+      // stale fallback shell behind its answer, with its open parameters deferred.
+      expect(vi.mocked(regenerate).mock.calls.map(([call]) => call.target)).toMatchObject([
+        { descriptor: SHELL_ENTRY, isClass: true, reason: 'stale' },
+      ]);
+    },
+  );
+
+  it('keeps that shell on the build path where it varies on a query besides its parameters', async () => {
+    const { runtime, ask, readRecord } = scenario(
+      ['nxtPid', 'preview'],
+      SHELL,
+      'app-page',
+      CLIENT_PARAMS,
+    );
+    await remember(runtime, SHELL, SHELL, { text: 'SHELL' });
+
+    // The build's body answered one value of the query, and no one generation stands for them all.
+    await expect(ask('/page-params/1')).resolves.toBe('BUILD');
     expect(readRecord).not.toHaveBeenCalled();
     expect(regenerate).not.toHaveBeenCalled();
   });
+
+  it.each([{}, { rsc: '1' }])(
+    "regenerates that shell in front of a member's answer once it has expired, for headers %j",
+    async (headers) => {
+      const { runtime, ask } = scenario(['nxtPid'], SHELL, 'app-page', CLIENT_PARAMS);
+      await remember(runtime, SHELL, SHELL, { text: 'SHELL', lifetime: EXPIRED });
+      const prefix = 'rsc' in headers ? 'RSC:' : '';
+
+      await expect(ask('/page-params/1', headers)).resolves.toBe(`${prefix}RENDERED`);
+      expect(vi.mocked(regenerate).mock.calls.map(([call]) => call.target)).toMatchObject([
+        { descriptor: SHELL_ENTRY, isClass: true, reason: 'expired' },
+      ]);
+    },
+  );
 
   it.each([{}, { rsc: '1' }])(
     "renders param-matching-root-params' roots for themselves for headers %j",
@@ -537,7 +614,7 @@ describe('the classes Next.js 16.4.2 builds for three of its own fixtures', () =
     },
   );
 
-  it("declines a foreground regeneration of client-params-shallow-routing's member", async () => {
+  it('regenerates that shell, never the member, for a foreground regeneration of a member', async () => {
     const { runtime, context, store, tables, waitUntil } = scenario(
       ['nxtPid'],
       SHELL,
@@ -560,7 +637,9 @@ describe('the classes Next.js 16.4.2 builds for three of its own fixtures', () =
       );
     });
 
-    expect(answer.outcome).toBe('skipped');
-    expect(regenerate).not.toHaveBeenCalled();
+    expect(answer.outcome).toBe('accepted');
+    expect(vi.mocked(regenerate).mock.calls.map(([call]) => call.target)).toMatchObject([
+      { descriptor: SHELL_ENTRY, isClass: true },
+    ]);
   });
 });
