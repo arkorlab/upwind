@@ -39,6 +39,7 @@ export {
   MANIFEST_ID_PREFIX_LENGTH,
   manifestIdPrefix,
   respondedUnderPolicy,
+  routeDebugValue,
 } from './edge-response.ts';
 export {
   type CookieHostContext,
@@ -66,3 +67,4 @@ export {
   quietensASameOriginFetch,
 } from './referrer.ts';
 export { computeRscCacheBustingParam, type RscCacheBustingInput } from './rsc.ts';
+export { STATIC_PAGE_PRIVATE_HEADERS } from './static-pages.ts';

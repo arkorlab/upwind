@@ -1,6 +1,6 @@
 import { NEXT_DATA_HEADER, ROUTER_PROTOCOL_HEADERS } from './constants.ts';
 
-const PRIVATE_HEADERS = [
+export const STATIC_PAGE_PRIVATE_HEADERS: readonly string[] = [
   'authorization',
   'cookie',
   'if-match',
@@ -18,7 +18,7 @@ const PRIVATE_HEADERS = [
 export function staticPageRequestPrivate(url: URL, headers: Headers, pagesData = false): boolean {
   return (
     url.search !== '' ||
-    PRIVATE_HEADERS.some((name) => headers.has(name)) ||
+    STATIC_PAGE_PRIVATE_HEADERS.some((name) => headers.has(name)) ||
     [...ROUTER_PROTOCOL_HEADERS, NEXT_DATA_HEADER].some(
       (name) => (!pagesData || name !== NEXT_DATA_HEADER) && headers.has(name),
     )

@@ -1,0 +1,7 @@
+/** The native Workers async context API used by routing; no Node globals are required. */
+declare module 'node:async_hooks' {
+  export class AsyncLocalStorage<T> {
+    getStore(): T | undefined;
+    run<R>(store: T, callback: () => R): R;
+  }
+}
