@@ -22,7 +22,7 @@ catalog:
   # IDs are on, which a bundler does not compose through until they are one list (`flattened`).
   '@jridgewell/sourcemap-codec': 1.6.0
   '@jridgewell/trace-mapping': 0.3.31
-  '@next/routing': 16.4.2
+  '@next/routing': 16.4.3
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
   '@oxc-project/types': 0.154.0
   '@types/node': 24.19.2
@@ -57,7 +57,7 @@ catalog:
   # than the compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
   # `@stayingupwind/adapter`). Keep this aligned with the version Wrangler uses.
   miniflare: 5.20261012.1-beta
-  next: 16.4.2
+  next: 16.4.3
   oxfmt: 0.73.0
   rolldown: 1.2.14
   # The Public Suffix List, by which `local:check` refuses a cookie for a domain no site holds.
