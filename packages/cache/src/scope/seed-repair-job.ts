@@ -1,7 +1,8 @@
 import type { SeedEntriesResult } from '@stayingupwind/host/cache';
 
-import { repairSnapshotStep } from './artifact-repair.ts';
+import { probeRepairGeneration, repairSnapshotStep } from './artifact-repair.ts';
 import { findArtifactBySha } from './artifacts.ts';
+import { findGeneration } from './generations.ts';
 import type { EventInput } from './history.ts';
 import {
   advanceRepairJob,
@@ -15,6 +16,7 @@ import {
   type RepairStep,
   writeRepairValue,
 } from './repair-jobs.ts';
+import { probeRepairPublication, repairPreflightInput } from './repair-probes.ts';
 import {
   eligibleSeedRepairs,
   potentialSeedRepairGroup,
@@ -28,6 +30,7 @@ import {
   type SeedProofLookup,
 } from './seed-repair.ts';
 import type { Refusal } from './state.ts';
+import { encodeStoredOutputs } from './stored-outputs.ts';
 import { record, type TxInput } from './tx.ts';
 
 /** Initial fresh admissions are durable before ordered retries begin; success still waits for all. */
@@ -122,6 +125,7 @@ function nextSeedRetry(input: TxInput, job: RepairJob): void {
     group: job.group + 1,
     phase: 'preflight',
     after: '',
+    matched: 0,
   });
 }
 
@@ -142,10 +146,16 @@ export function advancePreparedSeed(
     if (prepared === undefined) {
       nextSeedRetry(input, job);
     } else {
+      const generation = findGeneration(input.sql, prepared.generationId);
+      if (generation === undefined) throw new Error('the prepared seed generation disappeared');
+      // The owner is excluded from the shared scan. Probe it before any shared snapshot changes,
+      // so an actual provider row-limit refusal skips only this retry while still in preflight.
+      probeRepairGeneration(
+        input.sql,
+        generation,
+        encodeStoredOutputs(prepared.outputs, input.packSchemaVersion === 2),
+      );
       writeRepairValue(input.sql, job.id, name, prepared);
-      if (prepared.repairs.length === 0) {
-        advanceRepairJob(input.sql, { ...job, phase: 'publish' });
-      }
     }
     return { kind: 'pending' };
   }
@@ -164,8 +174,11 @@ export function advancePreparedSeed(
     nextSeedRetry(input, job);
     return { kind: 'pending' };
   }
+  const candidate = repairPreflightInput(input, job);
+  if (job.phase === 'preflight' && prepared.repairs.length === 0)
+    probeSeedPublication(candidate, { ...job, phase: 'publish' }, prepared);
   const step = repairSnapshotStep(
-    input,
+    candidate,
     new Map(prepared.repairs.map((repair) => [repair.sha256, repair])),
     { after: job.after, excluding: new Set([prepared.entryId]), apply: job.phase === 'apply' },
   );
@@ -175,12 +188,33 @@ export function advancePreparedSeed(
     return { kind: 'pending' };
   }
   if (job.phase === 'apply' && step.changed) record(input, []);
-  advanceRepairJob(input.sql, {
+  const next: RepairJob = {
     ...job,
     after: step.done ? '' : step.after,
     phase: step.done ? (job.phase === 'preflight' ? 'apply' : 'publish') : job.phase,
-  });
+    matched: (job.matched ?? 0) + (job.phase === 'preflight' && step.changed ? 1 : 0),
+  };
+  if (step.done && job.phase === 'preflight') probeSeedPublication(candidate, next, prepared);
+  advanceRepairJob(input.sql, next);
   return { kind: 'pending' };
+}
+
+/** The same publishing generation, entry, scope counters and event are probed before apply. */
+function probeSeedPublication(
+  input: TxInput,
+  next: RepairJob,
+  prepared: PreparedSeedRepair,
+): never {
+  return probeRepairPublication(
+    input,
+    next,
+    () => {
+      const events: EventInput[] = [];
+      publishSeedRepair(input, prepared, events);
+      record(input, events);
+    },
+    prepared.entryId,
+  );
 }
 
 /** All snapshots and each retry's publication are complete before bounded final fence cleanup. */

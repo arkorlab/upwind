@@ -115,6 +115,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     storage: this.ctx.storage,
     queue: this.#mutations,
     arm: (at) => this.#armAlarm(at),
+    defer: (at) => this.#alarm.postpone(at),
     input: (now) => this.#pipeline.input(now),
   });
   #settling: Promise<void> = Promise.resolve();
@@ -146,6 +147,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
           this.#scope.tables = true;
         },
       }),
+      tables: () => this.#scope.tables,
       committed: (tables) => this.#scope.committed(tables),
       testHooks: () => this.#vars.ARKOR_TEST_HOOKS,
       settling: () => this.#settling,

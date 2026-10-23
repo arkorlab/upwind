@@ -18,14 +18,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
 import { type EventInput, NO_HISTORY } from '../src/scope/history.ts';
+import { ScopeQueue } from '../src/scope/mutations.ts';
 import { headerFieldsOf, recordBytesOf, unwritableRecord } from '../src/scope/records.ts';
 import {
+  advanceRepairJob,
   completeRepairJob,
   isRepairPending,
   hasRepairValue,
   readRepairJob,
   readRepairValue,
+  type RepairJob,
 } from '../src/scope/repair-jobs.ts';
+import { RepairPublicationProbed } from '../src/scope/repair-probes.ts';
+import { RepairRunner } from '../src/scope/repair-runner.ts';
 import {
   type EntryRow,
   type EntryStateRow,
@@ -33,6 +38,7 @@ import {
   generationOutputs,
   toEntryState,
 } from '../src/scope/rows.ts';
+import { prepareSeedPublication } from '../src/scope/seed-repair-job.ts';
 import { seedLocationKey, verifySeedLocations } from '../src/scope/seed-repair.ts';
 import { advancePreparedSeed, planSeedEntries } from '../src/scope/seed.ts';
 import { readRevision } from '../src/scope/state.ts';
@@ -43,6 +49,11 @@ import { withRepairAlarms } from './support/repair-alarm.ts';
 const NOW = 1_800_000_000_000;
 const HTML_TYPE = 'text/html; charset=utf-8';
 const BODY = '<html>the build</html>';
+const VERIFIED_READERS = Object.fromEntries(
+  ['edge', 'authority', 'gateway', 'readGateway'].map((name) => {
+    return [name, { versionId: 'reviewed', moduleSha256: 'a'.repeat(64) }];
+  }),
+);
 
 async function scopeForTest(compact = false) {
   const scopeId = createId('dpl');
@@ -64,12 +75,7 @@ async function scopeForTest(compact = false) {
           rolloutId: 'verified-seed-test',
           deploymentId: scopeId,
           buildId: 'build-site',
-          platform: Object.fromEntries(
-            ['edge', 'authority', 'gateway', 'readGateway'].map((name) => [
-              name,
-              { versionId: 'reviewed', moduleSha256: 'a'.repeat(64) },
-            ]),
-          ),
+          platform: VERIFIED_READERS,
           consumers: [
             {
               name: 'app',
@@ -279,26 +285,46 @@ function byEntity(left: RecordedEvent, right: RecordedEvent): number {
   return left.event.entityId.localeCompare(right.event.entityId);
 }
 
+/** Probe success must leave the outer transaction before its durable phase can advance. */
+function advanceSeedStep(
+  storage: DurableObjectStorage,
+  tx: Omit<TxInput, 'revision'>,
+  job: RepairJob,
+) {
+  try {
+    return storage.transactionSync(() => {
+      return advancePreparedSeed(
+        {
+          ...tx,
+          now: job.preparedAt,
+          limits: job.limits,
+          revision: readRevision(storage.sql) + 1,
+        },
+        job,
+      );
+    });
+  } catch (error) {
+    if (!(error instanceof RepairPublicationProbed)) throw error;
+    const current = readRepairJob(storage.sql);
+    if (current?.id !== job.id || current.phase !== 'preflight') throw error;
+    storage.transactionSync(() => {
+      advanceRepairJob(storage.sql, error.next);
+    });
+    return { kind: 'pending' } as const;
+  }
+}
+
 /** Reconstruct every step from SQLite, just as a new alarm invocation does after a reset. */
 function drainSeedJob(storage: DurableObjectStorage, tx: Omit<TxInput, 'revision'>) {
   const { sql } = storage;
   for (let index = 0; index < 500; index += 1) {
     const job = readRepairJob(sql);
     if (job === undefined) throw new Error('the expected seed continuation disappeared');
-    const step = storage.transactionSync(() =>
-      advancePreparedSeed(
-        {
-          ...tx,
-          limits: job.limits,
-          revision: readRevision(sql) + 1,
-        },
-        job,
-      ),
-    );
+    const step = advanceSeedStep(storage, tx, job);
     if (step.kind === 'completed') {
-      storage.transactionSync(() =>
-        completeRepairJob(sql, job, { value: step.value, own: null }, tx.now),
-      );
+      storage.transactionSync(() => {
+        completeRepairJob(sql, job, { value: step.value, own: null }, tx.now);
+      });
       return step.value;
     }
   }
@@ -706,14 +732,18 @@ describe('a seed whose artifact projection could not read', () => {
       const record = await recordFor(scope, first.entryId);
 
       expect({ reply: retried, ...repaired }).toMatchObject({
-        reply: { inserted: 0, skipped: 2, refused: [], revision: repaired.revision },
+        reply: { inserted: 0, skipped: 2, refused: [] },
         entry: {
           kv_revision: repaired.entry.record_revision,
           current_generation_id: first.generationId,
         },
         artifact: { owned: 0, refs: 2, storage_ref: first.artifact.storageRef },
       });
-      expect(repaired.entry.record_revision).toBeGreaterThan(before.entry.record_revision);
+      expect({
+        newer: repaired.entry.record_revision > before.entry.record_revision,
+        committed: retried.revision >= repaired.entry.record_revision,
+        projected: retried.revision <= repaired.revision,
+      }).toStrictEqual({ newer: true, committed: true, projected: true });
       expect({
         generationId: record.header.generationId,
         html: decodeUtf8(record.html),
@@ -734,6 +764,7 @@ describe('a seed whose artifact projection could not read', () => {
     const scope = await scopeForTest();
     const first = await planFor(scope, '/first');
     const second = await planFor(scope, '/second');
+
     const outside = await planFor(scope, '/outside');
     const badLocation = await badLocationFor(scope, 'missing');
     await seedBatch(scope, [
@@ -758,6 +789,7 @@ describe('a seed whose artifact projection could not read', () => {
       refused: [],
       revision: repaired.revision,
     });
+
     const finalStates = new Map(states.map((state) => [state.event.entityId, state]));
 
     expect([...finalStates.values()].toSorted(byEntity)).toStrictEqual(
@@ -771,16 +803,18 @@ describe('a seed whose artifact projection could not read', () => {
         .map(({ event }) => event.entityId)
         .toSorted((left, right) => left.localeCompare(right)),
     ).toStrictEqual(
-      [first.generationId, second.generationId].toSorted((left, right) =>
-        left.localeCompare(right),
-      ),
+      [first.generationId, second.generationId].toSorted((left, right) => {
+        return left.localeCompare(right);
+      }),
     );
     expect(states.length).toBeGreaterThanOrEqual(3);
-    expect(generations).toHaveLength(2);
-    expect(repaired.artifact).toStrictEqual({
-      storage_ref: first.artifact.storageRef,
-      owned: 0,
-      refs: 3,
+    expect({ count: generations.length, artifact: repaired.artifact }).toStrictEqual({
+      count: 2,
+      artifact: {
+        storage_ref: first.artifact.storageRef,
+        owned: 0,
+        refs: 3,
+      },
     });
     expect(generationOutputs(repaired.generation)[0]?.artifacts[0]?.storageRef).toBe(
       first.artifact.storageRef,
@@ -797,11 +831,12 @@ describe('a seed whose artifact projection could not read', () => {
 
     expect(location).toMatch(/^r\/[a-f0-9]{32}\/[a-f0-9]{32}$/u);
     expect(repaired.artifact).toMatchObject({ owned: 0, refs: 1 });
+
     const copied = await env.ARTIFACTS.get(location);
     const borrowed = await env.ARTIFACTS.get(failed.artifact.storageRef);
 
-    expect(await copied?.text()).toBe(BODY);
-    expect(await borrowed?.text()).toBe(BODY);
+    await expect(copied?.text()).resolves.toBe(BODY);
+    await expect(borrowed?.text()).resolves.toBe(BODY);
 
     const fresh = await planFor(scope, '/fresh');
     await seedBatch(scope, [atLocation(fresh, 'x')]);
@@ -816,6 +851,36 @@ describe('a seed whose artifact projection could not read', () => {
     ).toBe(true);
     expect(decodeUtf8((await recordFor(scope, fresh.entryId)).html)).toBe(BODY);
   });
+
+  it.each(['missing', 'corrupt'])(
+    'preserves a healthy fresh seed location after its canonical copy becomes %s',
+    async (fault) => {
+      const scope = await scopeForTest(true);
+      const first = await planFor(scope, '/first');
+      await seedBatch(scope, [atLocation(first, 'x')]);
+      await seedBatch(scope, [first.seed]);
+      const repaired = await rowsFor(scope, first);
+      const copy = repaired.artifact.storage_ref;
+      if (fault === 'missing') await env.ARTIFACTS.delete(copy);
+      else await env.ARTIFACTS.put(copy, new Uint8Array(first.artifact.byteLength) as BufferSource);
+      // The next projection supplies the existing checksum-verified failure observation.
+      const probe = await planFor(scope, '/probe');
+      await seedBatch(scope, [probe.seed]);
+
+      await expect(failureFor(scope, probe)).resolves.toBe(probe.generationId);
+
+      const fresh = await planFor(scope, '/fresh');
+      await seedBatch(scope, [fresh.seed]);
+      const rows = await rowsFor(scope, fresh);
+      const record = await recordFor(scope, fresh.entryId);
+
+      expect(generationOutputs(rows.generation)[0]?.artifacts[0]?.storageRef).toBe(
+        fresh.artifact.storageRef,
+      );
+      expect(decodeUtf8(record.html)).toBe(BODY);
+      expect(rows.artifact).toMatchObject({ storage_ref: copy, owned: 0, refs: 3 });
+    },
+  );
 
   it('resumes a shared seed repair from durable cursors and keeps fences until all publications finish', async () => {
     const scope = await scopeForTest();
@@ -847,9 +912,7 @@ describe('a seed whose artifact projection could not read', () => {
       for (let index = 0; index < 20; index += 1) {
         const job = readRepairJob(sql);
         if (job === undefined) throw new Error('expected the active repair');
-        state.storage.transactionSync(() =>
-          advancePreparedSeed({ ...tx, limits: job.limits, revision: readRevision(sql) + 1 }, job),
-        );
+        advanceSeedStep(state.storage, tx, job);
         const latest = readRepairJob(sql);
         if (latest?.group === 0 && latest.phase === 'publish') break;
       }
@@ -873,7 +936,7 @@ describe('a seed whose artifact projection could not read', () => {
 
     expect(prepared.job).toMatchObject({ group: 0, phase: 'publish' });
     expect(prepared.pin).toBe(prepared.id);
-    expect(prepared.failure).toBeTruthy();
+    expect(prepared.failure.length).toBeGreaterThan(0);
 
     const resumed = await runInDurableObject(scope.stub, (_instance, state) => {
       const sql = state.storage.sql;
@@ -904,6 +967,7 @@ describe('a seed whose artifact projection could not read', () => {
     await expect(rowsFor(scope, first)).resolves.toMatchObject({
       artifact: { storage_ref: first.artifact.storageRef, owned: 0 },
     });
+
     const outside = await rowsFor(scope, second);
 
     expect(generationOutputs(outside.generation)[0]?.artifacts[0]?.storageRef).toBe(
@@ -937,29 +1001,139 @@ describe('a seed whose artifact projection could not read', () => {
     });
 
     expect(pending).toMatchObject({ groupCount: 1 });
+
+    vi.mocked(Date.now).mockReturnValue(started.leaseExpiresAt + 1);
+
     await expect(
       scope.stub.heartbeat(started.attemptId, started.fencingToken, started.leaseExpiresAt + 1),
     ).resolves.toMatchObject({ kind: 'refused', code: 'lease_expired' });
 
-    const result = await runInDurableObject(scope.stub, (_instance, state) =>
-      drainSeedJob(state.storage, {
+    const result = await runInDurableObject(scope.stub, (_instance, state) => {
+      return drainSeedJob(state.storage, {
         sql: state.storage.sql,
         scopeId: scope.scopeId,
         now: started.leaseExpiresAt + 2,
         limits: limitsOf(parseVars({})),
         history: NO_HISTORY,
-      }),
-    );
+      });
+    });
 
     expect(result).toMatchObject({ inserted: 0, skipped: 2, refused: [] });
     await expect(failureFor(scope, leased)).resolves.toBe(leased.generationId);
     await expect(failureFor(scope, first)).resolves.toBeNull();
+
     const healed = await rowsFor(scope, leased);
 
-    expect(healed.entry.regeneration_attempt_id).toBeNull();
-    expect(generationOutputs(healed.generation)[0]?.artifacts[0]?.storageRef).toBe(
-      first.artifact.storageRef,
-    );
+    expect({
+      deferredAttempt: healed.entry.regeneration_attempt_id,
+      storageRef: generationOutputs(healed.generation)[0]?.artifacts[0]?.storageRef,
+    }).toStrictEqual({
+      deferredAttempt: started.attemptId,
+      storageRef: first.artifact.storageRef,
+    });
+    await expect(
+      scope.stub.heartbeat(started.attemptId, started.fencingToken, started.leaseExpiresAt + 2),
+    ).resolves.toMatchObject({ kind: 'refused', code: 'lease_expired' });
+    await expect(rowsFor(scope, leased)).resolves.toMatchObject({
+      entry: { regeneration_attempt_id: null },
+    });
+  });
+
+  it('skips an oversized publishing row before shared writes and finishes a later seed repair', async () => {
+    const scope = await scopeForTest();
+    const first = await planFor(scope, '/first');
+    const later = await planFor(scope, '/later', 'independent bytes');
+    await seedBatch(scope, [atLocation(first, 'x'), atLocation(later, 'y')]);
+    const result = await runInDurableObject(scope.stub, async (_instance, state) => {
+      const sql = state.storage.sql;
+      const original = sql
+        .exec<GenerationRow>(
+          'SELECT * FROM generations WHERE generation_id = ?',
+          first.generationId,
+        )
+        .one();
+      const padded = padGenerationToSqlLimit(state.storage, original);
+      const tx = {
+        sql,
+        scopeId: scope.scopeId,
+        now: NOW + 1,
+        limits: limitsOf(parseVars({})),
+        revision: readRevision(sql) + 1,
+        history: NO_HISTORY,
+      };
+      const proposed = relocatedArtifact(
+        generationOutputs(padded),
+        first.artifact.sha256,
+        'longer',
+      );
+      const entry = sql
+        .exec<EntryRow>('SELECT * FROM entries WHERE entry_id = ?', first.entryId)
+        .one();
+      const headerFailure = unwritableRecord(
+        headerFieldsOf(tx, entry, padded, proposed),
+        tx.limits.maxRecordBytes,
+      );
+      const laterGeneration = sql
+        .exec<GenerationRow>(
+          'SELECT * FROM generations WHERE generation_id = ?',
+          later.generationId,
+        )
+        .one();
+      const laterOutputs = relocatedArtifact(
+        generationOutputs(laterGeneration),
+        later.artifact.sha256,
+        later.artifact.storageRef,
+      );
+      const pending = state.storage.transactionSync(() => {
+        return prepareSeedPublication(
+          tx,
+          [
+            { entry: first.seed, identity: { entryId: first.entryId }, outputs: proposed },
+            {
+              entry: later.seed,
+              identity: { entryId: later.entryId },
+              outputs: laterOutputs,
+            },
+          ],
+          new Map([[seedLocationKey(later.artifact), true]]),
+          { inserted: 0, skipped: 2, refused: [], revision: tx.revision },
+        );
+      });
+      const runner = new RepairRunner({
+        storage: state.storage,
+        queue: new ScopeQueue(),
+        input: () => ({ ...tx, revision: readRevision(sql) + 1 }),
+        arm: () => Promise.resolve(),
+      });
+      for (let index = 0; index < 50 && readRepairJob(sql) !== undefined; index += 1) {
+        await runner.advance(NOW + 1);
+      }
+      return {
+        headerFailure,
+        active: readRepairJob(sql),
+        skipped: !hasRepairValue(sql, pending.jobId, 'seed-moved-0'),
+        laterMoved: readRepairValue<boolean>(sql, pending.jobId, 'seed-moved-1'),
+        outputs:
+          sql
+            .exec<GenerationRow>(
+              'SELECT * FROM generations WHERE generation_id = ?',
+              first.generationId,
+            )
+            .one().outputs === padded.outputs,
+      };
+    });
+
+    expect(result).toStrictEqual({
+      headerFailure: undefined,
+      active: undefined,
+      skipped: true,
+      laterMoved: true,
+      outputs: true,
+    });
+    await expect(failureFor(scope, first)).resolves.toBe(first.generationId);
+    await expect(rowsFor(scope, later)).resolves.toMatchObject({
+      artifact: { storage_ref: later.artifact.storageRef },
+    });
   });
 
   it('keeps a fresh near-limit entry and skips only the oversized retry before a later shared repair', async () => {
@@ -969,11 +1143,11 @@ describe('a seed whose artifact projection could not read', () => {
     const fresh = await planFor(scope, '/fresh');
     await seedBatch(scope, [atLocation(first, 'x'), atLocation(second, 'x')]);
     const before = await rowsFor(scope, first);
-    const owner = await runInDurableObject(scope.stub, (_instance, state) =>
-      state.storage.sql
+    const owner = await runInDurableObject(scope.stub, (_instance, state) => {
+      return state.storage.sql
         .exec<EntryRow>('SELECT * FROM entries WHERE entry_id = ?', first.entryId)
-        .one(),
-    );
+        .one();
+    });
     const padding =
       MAX_PACK_HEADER_BYTES - recordBytesOf(scope.scopeId, owner, before.generation) - 400;
     fresh.seed.generation.headers['x-padding'] = 'a'.repeat(padding);
@@ -1044,6 +1218,7 @@ describe('a seed whose artifact projection could not read', () => {
     expect(outcome.result).toMatchObject({ inserted: 1, skipped: 2, refused: [] });
     expect(outcome.firstMoved).toBe(false);
     expect(outcome.secondMoved).toBe(true);
+
     const final = await rowsFor(scope, fresh);
 
     expect(final.artifact).toMatchObject({ storage_ref: short, refs: 3, owned: 0 });
@@ -1140,3 +1315,50 @@ describe('a seed whose artifact projection could not read', () => {
     expect(decodeUtf8(record.html)).toBe('<html>the render</html>');
   });
 });
+
+/** Discover the provider row boundary without adding a new admission ceiling. */
+function padGenerationToSqlLimit(
+  storage: DurableObjectStorage,
+  generation: GenerationRow,
+): GenerationRow {
+  const outputs = generationOutputs(generation);
+  const padded = (length: number): string => {
+    return JSON.stringify(
+      outputs.map((output) => {
+        return { ...output, headers: { 'x-output-only-padding': 'x'.repeat(length) } };
+      }),
+    );
+  };
+  const fits = (length: number): boolean => {
+    try {
+      storage.transactionSync(() => {
+        return storage.sql.exec(
+          'UPDATE generations SET outputs = ? WHERE generation_id = ?',
+          padded(length),
+          generation.generation_id,
+        );
+      });
+      return true;
+    } catch (error) {
+      if (!(error instanceof Error) || !/\bSQLITE_TOOBIG\b/u.test(error.message)) throw error;
+      return false;
+    }
+  };
+  const maximumFixturePadding = 12 * 1024 * 1024;
+  if (fits(maximumFixturePadding))
+    throw new Error('the configured SQL row limit exceeds the fixture search window');
+  let low = 0;
+  let high = maximumFixturePadding;
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (fits(middle)) low = middle;
+    else high = middle;
+  }
+  const encoded = padded(low);
+  storage.sql.exec(
+    'UPDATE generations SET outputs = ? WHERE generation_id = ?',
+    encoded,
+    generation.generation_id,
+  );
+  return { ...generation, outputs: encoded };
+}

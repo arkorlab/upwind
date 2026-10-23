@@ -62,7 +62,7 @@ export async function listDataUploads(input: ListInput): Promise<DataUploadPage>
   const namespace = phase === 'repairs' ? readScope(input.sql)?.repair_namespace : undefined;
   // Immutable v2 namespaces are the only repair keyspace this scope is allowed to sweep. The
   // BlobStore additionally checks server-owned provenance while keeping the provider's cursor.
-  if (phase === 'repairs' && namespace == null) {
+  if (phase === 'repairs' && typeof namespace !== 'string') {
     return { objects: [], phase, before, after: undefined };
   }
   const page = await input.blobs.listPage({
@@ -95,7 +95,7 @@ function advanceScan(sql: SqlStorage, page: DataUploadPage): void {
   }
   deleteMeta(sql, META_SCAN_CURSOR);
   if (page.phase === 'data') writeMeta(sql, META_SCAN_PHASE, 'blobs');
-  else if (page.phase === 'blobs' && readScope(sql)?.repair_namespace != null) {
+  else if (page.phase === 'blobs' && typeof readScope(sql)?.repair_namespace === 'string') {
     writeMeta(sql, META_SCAN_PHASE, 'repairs');
   } else deleteMeta(sql, META_SCAN_PHASE);
 }

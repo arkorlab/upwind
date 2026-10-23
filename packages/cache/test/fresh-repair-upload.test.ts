@@ -92,7 +92,7 @@ async function freshScope() {
     fencingToken: started.fencingToken,
   };
   const recorded = await stub.recordArtifact(started.attemptId, upload, NOW);
-  if (!('fresh' in recorded) || recorded.fresh !== true || recorded.storageRef === undefined)
+  if (!('fresh' in recorded) || recorded.storageRef === undefined)
     throw new Error('expected a fresh reservation');
   const token = await signCacheToken(
     env.CACHE_TOKEN_KEY ?? '',
@@ -111,21 +111,32 @@ async function freshScope() {
 }
 
 async function reservedRefs(scope: Awaited<ReturnType<typeof freshScope>>) {
-  return runInDurableObject(scope.stub, (_instance, state) =>
-    state.storage.sql
+  return runInDurableObject(scope.stub, (_instance, state) => {
+    const rows = state.storage.sql
       .exec<{ storage_ref: string }>(
         'SELECT storage_ref FROM attempt_artifacts WHERE attempt_id = ? ORDER BY role',
         scope.started.attemptId,
       )
-      .toArray()
-      .map((row) => row.storage_ref),
-  );
+      .toArray();
+    return rows.map((row) => row.storage_ref);
+  });
+}
+
+function required<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('expected a repair value');
+  return value;
+}
+
+async function artifactText(key: string): Promise<string | undefined> {
+  const object = await env.ARTIFACTS.get(key);
+  return object?.text();
 }
 
 describe('fresh repair upload ownership and provider receipts', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
   it.each(['single', 'batch'] as const)(
     'leaves an unrelated object intact through %s collision retries',
     async (mode) => {
@@ -138,21 +149,26 @@ describe('fresh repair upload ownership and provider receipts', () => {
         contentType: TYPE,
         bytes: BYTES,
       };
-      const send = () =>
-        mode === 'single'
+      const send = () => {
+        return mode === 'single'
           ? scope.client.uploadArtifact(artifact)
           : scope.client.uploadArtifacts([artifact, { ...artifact, role: 'rsc' }]);
+      };
       await send();
       const refs = await reservedRefs(scope);
-      const key = refs[0];
-      if (key === undefined) throw new Error('no reservation');
+      const key = required(refs[0]);
+
       expect(key).not.toBe(scope.reserved);
-      expect(key.length).toBe(67);
+
+      expect(key).toHaveLength(67);
+
       expect(new Set(refs).size).toBe(1);
-      expect(await (await env.ARTIFACTS.get(scope.reserved))?.text()).toBe('unrelated object');
-      expect(await (await env.ARTIFACTS.get(key))?.text()).toBe('verified fresh replacement');
-      const namespace = key.split('/')[1];
-      if (namespace === undefined) throw new Error('no namespace');
+
+      await expect(artifactText(scope.reserved)).resolves.toBe('unrelated object');
+
+      await expect(artifactText(key)).resolves.toBe('verified fresh replacement');
+
+      const namespace = required(key.split('/', 2)[1]);
       const proof = {
         namespace,
         scopeOwner: scope.stub.id.toString(),
@@ -161,13 +177,18 @@ describe('fresh repair upload ownership and provider receipts', () => {
         byteLength: BYTES.byteLength,
       };
       const blobs = blobStore(env.ARTIFACTS, () => ({}), { repairOwner: scope.stub.id.toString() });
-      expect(await blobs.verifiedRepair?.(key, proof)).toBe(true);
-      expect(await blobs.verifiedRepair?.(key, { ...proof, attemptId: 'another-attempt' })).toBe(
-        false,
-      );
-      expect(await blobs.verifiedRepair?.(key, { ...proof, sha256: '0'.repeat(64) })).toBe(false);
+
+      await expect(
+        Promise.all([
+          blobs.verifiedRepair?.(key, proof),
+          blobs.verifiedRepair?.(key, { ...proof, attemptId: 'another-attempt' }),
+          blobs.verifiedRepair?.(key, { ...proof, sha256: '0'.repeat(64) }),
+        ]),
+      ).resolves.toStrictEqual([true, false, false]);
+
       await send();
-      expect(await reservedRefs(scope)).toStrictEqual(refs);
+
+      await expect(reservedRefs(scope)).resolves.toStrictEqual(refs);
     },
   );
 
@@ -187,17 +208,21 @@ describe('fresh repair upload ownership and provider receipts', () => {
     const put = vi
       .spyOn(env.ARTIFACTS, 'put')
       .mockRejectedValue(new Error('put: TooManyRequests (10058)'));
+
     await expect(scope.client.uploadArtifact(artifact)).resolves.toMatchObject({
       byteLength: BYTES.byteLength,
     });
+
     expect(put).toHaveBeenCalledTimes(1);
-    expect(await reservedRefs(scope)).toStrictEqual(refs);
+
+    await expect(reservedRefs(scope)).resolves.toStrictEqual(refs);
   });
 
   it('does not rotate or accept an unrelated key after a rate-limit error', async () => {
     const scope = await freshScope();
     await env.ARTIFACTS.put(scope.reserved, 'unrelated bytes');
     vi.spyOn(env.ARTIFACTS, 'put').mockRejectedValue(new Error('put: TooManyRequests (10058)'));
+
     await expect(
       scope.client.uploadArtifact({
         attemptId: scope.started.attemptId,
@@ -207,8 +232,10 @@ describe('fresh repair upload ownership and provider receipts', () => {
         bytes: BYTES,
       }),
     ).rejects.toMatchObject({ status: 500 });
-    expect(await reservedRefs(scope)).toStrictEqual([scope.reserved]);
-    expect(await (await env.ARTIFACTS.get(scope.reserved))?.text()).toBe('unrelated bytes');
+
+    await expect(reservedRefs(scope)).resolves.toStrictEqual([scope.reserved]);
+
+    await expect(artifactText(scope.reserved)).resolves.toBe('unrelated bytes');
   });
 
   it('streams a borrowed source into a fixed-width location without changing its source', async () => {
@@ -222,12 +249,16 @@ describe('fresh repair upload ownership and provider receipts', () => {
       contentType: TYPE,
     };
     await env.ARTIFACTS.put(source, BYTES as BufferSource);
-    const copied = await copyRepairBlob(env.ARTIFACTS, location, owner);
-    if (copied === undefined) throw new Error('no copied artifact');
-    expect(copied.length).toBe(67);
+    const copied = required(await copyRepairBlob(env.ARTIFACTS, location, owner));
+
+    expect(copied).toHaveLength(67);
+
     expect(copied.startsWith(`r/${namespace}/`)).toBe(true);
-    expect(await (await env.ARTIFACTS.get(copied))?.text()).toBe('verified fresh replacement');
-    expect(await (await env.ARTIFACTS.get(source))?.text()).toBe('verified fresh replacement');
+
+    await expect(artifactText(copied)).resolves.toBe('verified fresh replacement');
+
+    await expect(artifactText(source)).resolves.toBe('verified fresh replacement');
+
     expect(
       repairUploadMatches(await env.ARTIFACTS.head(copied), {
         ...owner,
@@ -235,16 +266,15 @@ describe('fresh repair upload ownership and provider receipts', () => {
         byteLength: location.byteLength,
       }),
     ).toBe(true);
-    expect(
-      await copyRepairBlob(
-        env.ARTIFACTS,
-        { ...location, byteLength: location.byteLength + 1 },
-        owner,
-      ),
-    ).toBeUndefined();
-    expect(
-      await copyRepairBlob(env.ARTIFACTS, { ...location, storageRef: 'missing/source' }, owner),
-    ).toBeUndefined();
+
+    await expect(
+      copyRepairBlob(env.ARTIFACTS, { ...location, byteLength: location.byteLength + 1 }, owner),
+    ).resolves.toBeUndefined();
+
+    await expect(
+      copyRepairBlob(env.ARTIFACTS, { ...location, storageRef: 'missing/source' }, owner),
+    ).resolves.toBeUndefined();
+
     await expect(
       copyRepairBlob(env.ARTIFACTS, { ...location, sha256: '0'.repeat(64) }, owner),
     ).resolves.toBeUndefined();
@@ -263,12 +293,16 @@ describe('fresh repair upload ownership and provider receipts', () => {
     await env.ARTIFACTS.put(key, BYTES as BufferSource, {
       customMetadata: repairUploadMetadata(proof),
     });
+
     expect(repairUploadMatches(await env.ARTIFACTS.head(key), proof)).toBe(false);
+
     const object = await env.ARTIFACTS.put(key, BYTES as BufferSource, {
       sha256: proof.sha256,
       customMetadata: repairUploadMetadata(proof),
     });
+
     expect(repairUploadMatches(object, proof)).toBe(true);
+
     expect(repairUploadMatches(object, { ...proof, byteLength: proof.byteLength + 1 })).toBe(false);
   });
 
@@ -299,11 +333,17 @@ describe('fresh repair upload ownership and provider receipts', () => {
     });
     const blobs = blobStore(env.ARTIFACTS, () => ({}), { repairOwner: proof.scopeOwner });
     const page = await blobs.listPage({ prefix, cursor: undefined, limit: 1000 });
+
     expect(page.objects.map((object) => object.key)).toStrictEqual([owned]);
+
     await blobs.deletePrefix(prefix);
-    expect(await env.ARTIFACTS.head(owned)).toBeNull();
-    expect(await env.ARTIFACTS.head(unknown)).not.toBeNull();
-    expect(await env.ARTIFACTS.head(wrongOwner)).not.toBeNull();
-    expect(await env.ARTIFACTS.head(sameNamespaceOtherScope)).not.toBeNull();
+
+    await expect(env.ARTIFACTS.head(owned)).resolves.toBeNull();
+
+    await expect(env.ARTIFACTS.head(unknown)).resolves.not.toBeNull();
+
+    await expect(env.ARTIFACTS.head(wrongOwner)).resolves.not.toBeNull();
+
+    await expect(env.ARTIFACTS.head(sameNamespaceOtherScope)).resolves.not.toBeNull();
   });
 });

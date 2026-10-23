@@ -46,6 +46,10 @@ export class Alarm {
       }
     });
   }
+  /** A caught repair failure supersedes its speculative continuation; other work is pinned. */
+  postpone(at: number): Promise<void> {
+    return this.#turns.run(() => this.#storage.setAlarm(at));
+  }
 }
 
 export function scopeName(ctx: DurableObjectState): string {

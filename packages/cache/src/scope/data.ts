@@ -424,7 +424,7 @@ function applySetData(
     readonly blobs?: BlobStore | undefined;
   } = {},
 ): DataSetOutcome | Refusal | RepairStart<DataSetOutcome | Refusal> | RepairPending {
-  const { sql, scopeId, now, revision } = input;
+  const { sql, now } = input;
   const scope = requireActiveScope(sql);
   if (isRefusal(scope)) {
     return scope;
@@ -435,13 +435,11 @@ function applySetData(
   });
   if (floor.length > 0)
     return refuse('lease_expired', 'the data value predates reclaimed control fences');
-  const events: EventInput[] = [];
-  const { value, entry: metadata } = plan.input;
   // Uploads have unique keys. Reuse a healthy canonical object; a known failed location adopts
   // this upload. The gateway removes only its own unadopted upload after the transaction answers.
   const location = dataLocation(sql, plan);
-  const { storageRef, repair, reference } = location;
-  let { entry } = location;
+  const { storageRef, repair } = location;
+  const { entry } = location;
   const unwritten = writesNothing(sql, entry, plan, { storageRef, now });
   if (unwritten?.superseded === true) return unwritten;
   if (unwritten !== undefined && repair === undefined) {
@@ -470,6 +468,21 @@ function applySetData(
     record(input, []);
     return unwritten;
   }
+  return publishDataGeneration(input, plan, location, repaired);
+}
+
+/** Only new-generation publication remains after ordering, quota and repair decisions. */
+function publishDataGeneration(
+  input: TxInput,
+  plan: DataPlan,
+  location: ReturnType<typeof dataLocation>,
+  repaired: number,
+): DataSetOutcome {
+  const { sql, scopeId, now, revision } = input;
+  const { storageRef, reference } = location;
+  let { entry } = location;
+  const { value, entry: metadata } = plan.input;
+  const events: EventInput[] = [];
   if (entry === undefined) {
     entry = insertEntry(sql, { identity: plan.identity, groupInstanceId: null, revision, now });
     events.push({

@@ -5,11 +5,11 @@ import { readRepairJob } from '../../src/scope/repair-jobs.ts';
 const MAX_POLLS = 10_000;
 
 /** Run only an active repair's alarms; unrelated retention alarms must keep their own clock. */
-export async function withRepairAlarms<T>(
+export async function withRepairAlarms<P extends PromiseLike<unknown>>(
   stub: DurableObjectStub,
-  pending: PromiseLike<T>,
-): Promise<T> {
-  const state: { answer?: { value: T } | { error: unknown } } = {};
+  pending: P,
+): Promise<Awaited<P>> {
+  const state: { answer?: { value: Awaited<P> } | { error: unknown } } = {};
   const receiving = (async () => {
     try {
       state.answer = { value: await pending };

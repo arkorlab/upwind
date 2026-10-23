@@ -81,11 +81,13 @@ no old immutable consumer is sent a format that would cause a miss or fallback.
 
 ## Fresh writes and cleanup
 
-The repair writer must reserve a candidate location durably, retain attempt/job pins, verify the
-replacement bytes, and obtain the successful conditional/checksummed PUT receipt before publishing
-it. An existing object or a negative HEAD is insufficient. Conditional-create collisions choose a
-new nonce instead of overwriting an unknown object. Ambiguous writes retain their reservation
-until reconciled; a negative read cannot settle an earlier unknown PUT.
+Route repair uploads reserve a candidate durably and retain their attempt/job pins. Publication
+requires a matching positive conditional/checksummed PUT receipt; an existing object or a negative
+HEAD is insufficient. Conditional-create collisions choose a new nonce instead of overwriting an
+unknown object. Ambiguous route uploads keep their reservation for a conditional retry; a negative
+read cannot settle an earlier unknown PUT. Seed/data repairs instead stage an unreferenced streamed
+copy and accept a job only after its positive receipt. Failed or uncertain copies are not published
+and use the orphan-sweep lifecycle, as detailed in [repair-continuations.md](repair-continuations.md).
 
 The scope's `r/<namespace32>/` prefix makes late/orphan repair uploads discoverable. Cleanup must
 select actual owner metadata and preserve reservations, referenced objects and newer attempts;
@@ -93,8 +95,8 @@ key shape alone never authorizes deletion. Retirement must drain/pin older proje
 this owned prefix as well as the legacy scope prefix. Namespace collisions do not authorize
 removing another scope's objects.
 
-These changes define and implement the reader/approval boundary. Enabling an actual producer also
-requires the bounded repair job, fresh-write receipt and owned cleanup implementation. No production
+The bounded continuation writer uses this reader/approval boundary to select its format consistently
+for sizing and serialization. Version one stays the default without a trusted approval. No production
 approval, deployment or migration is performed by these changes.
 
 ## Source evidence

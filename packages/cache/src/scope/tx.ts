@@ -18,6 +18,8 @@ export interface TxInput {
   readonly repairNamespace?: string | undefined;
   /** Rare repair preparation supplied by the authority; never stored with a publication. */
   readonly prepareRepair?: (() => Promise<void>) | undefined;
+  /** Active repair bypass: an expired heartbeat answers now; normal lease sweeping cleans up later. */
+  readonly deferExpiredLease?: true;
   readonly limits: ScopeLimits;
   /** The clock the caller acts at (unix ms). */
   readonly now: number;

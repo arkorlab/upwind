@@ -11,6 +11,7 @@ import {
   type RepairPending,
   type RepairStep,
 } from './repair-jobs.ts';
+import { probeRepairPublication, repairPreflightInput } from './repair-probes.ts';
 import { type Refusal, refuse } from './state.ts';
 import { record, type TxInput } from './tx.ts';
 
@@ -67,8 +68,9 @@ export function advanceCommitRepair(
     releaseRepairGroup(input.sql, job.id, group, true);
     return { kind: 'completed', value };
   }
+  const candidate = repairPreflightInput(input, job);
   const step = repairSnapshotStep(
-    input,
+    candidate,
     new Map(group.repairs.map((repair) => [repair.sha256, repair])),
     { after: job.after, excluding: new Set([group.entryId]), apply: job.phase === 'apply' },
   );
@@ -78,10 +80,21 @@ export function advanceCommitRepair(
     return { kind: 'completed', value: refuse('too_large', step.failure) };
   }
   if (job.phase === 'apply' && step.changed) record(input, []);
-  const next = { ...job, after: step.after };
+  const next = {
+    ...job,
+    after: step.after,
+    matched: (job.matched ?? 0) + (job.phase === 'preflight' && step.changed ? 1 : 0),
+  };
   if (step.done) {
     next.after = '';
     next.phase = job.phase === 'preflight' ? 'apply' : 'publish';
+    if (job.phase === 'preflight')
+      probeRepairPublication(
+        candidate,
+        next,
+        () => publishPreparedCommit(candidate, job, publish),
+        group.entryId,
+      );
   }
   advanceRepairJob(input.sql, next);
   return { kind: 'pending' };

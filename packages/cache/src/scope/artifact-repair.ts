@@ -3,7 +3,8 @@ import { isRepairStorageRef, r2BlobKey } from '@stayingupwind/core/cache';
 import { requireEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import { headerFieldsOf, unwritableRecord } from './records.ts';
-import { type EntryRow, generationOutputs, toEntryState } from './rows.ts';
+import { type EntryRow, generationOutputs, type GenerationRow, toEntryState } from './rows.ts';
+import { readRevision } from './state.ts';
 import { encodeStoredOutputs } from './stored-outputs.ts';
 import type { TxInput } from './tx.ts';
 
@@ -115,22 +116,9 @@ export function repairSnapshotStep(
       // Both writes are synchronous in this preflight transaction; no observer sees the probe.
       // A provider limit exception escapes and rolls the entire step back before the coordinator
       // records the refusal in a fresh transaction. Other storage errors remain retryable errors.
-      try {
-        input.sql.exec(
-          `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
-          encoded,
-          generation.generation_id,
-        );
-      } catch (error) {
-        if (rowLimitError(error)) throw new RepairRowTooLargeError(error);
-        throw error;
-      }
-      input.sql.exec(
-        `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
-        generation.outputs,
-        generation.generation_id,
-      );
+      probeRepairGeneration(input.sql, generation, encoded);
     }
+    probeRepairEntry(input, entry);
     return { done: false, after: entry.entry_id, changed };
   }
   input.sql.exec(
@@ -157,6 +145,60 @@ export function repairSnapshotStep(
     },
   );
   return { done: false, after: entry.entry_id, changed: true };
+}
+
+/** Check the exact future shared update and its mandatory KV acknowledgment, then restore both. */
+function probeRepairEntry(input: TxInput, entry: EntryRow): void {
+  const { sql } = input;
+  const revision = readRevision(sql);
+  try {
+    sql.exec(
+      `UPDATE entries SET revision = ?, record_revision = ?, kv_revision = ?, updated_at = ?
+       WHERE entry_id = ?`,
+      input.revision,
+      input.revision,
+      input.revision,
+      input.now,
+      entry.entry_id,
+    );
+    sql.exec('UPDATE scope SET revision = ?', input.revision);
+  } catch (error) {
+    if (rowLimitError(error)) throw new RepairRowTooLargeError(error);
+    throw error;
+  }
+  sql.exec(
+    `UPDATE entries SET revision = ?, record_revision = ?, kv_revision = ?, updated_at = ?
+     WHERE entry_id = ?`,
+    entry.revision,
+    entry.record_revision,
+    entry.kv_revision,
+    entry.updated_at,
+    entry.entry_id,
+  );
+  sql.exec('UPDATE scope SET revision = ?', revision);
+}
+
+/** Probe the publishing row too: output-specific fields are absent from delivery headers. */
+export function probeRepairGeneration(
+  sql: SqlStorage,
+  generation: GenerationRow,
+  encoded: string,
+): void {
+  try {
+    sql.exec(
+      `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
+      encoded,
+      generation.generation_id,
+    );
+  } catch (error) {
+    if (rowLimitError(error)) throw new RepairRowTooLargeError(error);
+    throw error;
+  }
+  sql.exec(
+    `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
+    generation.outputs,
+    generation.generation_id,
+  );
 }
 
 /** A verified attempt-specific upload replaces the failed canonical location atomically. */

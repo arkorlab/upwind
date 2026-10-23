@@ -259,10 +259,10 @@ function ownedRepairObject(
     /^r\/[0-9a-f]{32}\/[0-9a-f]{32}$/u.test(object.key) &&
     object.key.startsWith(`r/${namespace}/`) &&
     repairOwner !== undefined &&
-    object.customMetadata?.upwindRepair === '1' &&
-    object.customMetadata.upwindRepairOwner === repairOwner &&
-    object.customMetadata.upwindRepairNamespace === namespace &&
-    typeof object.customMetadata.upwindRepairAttempt === 'string'
+    object.customMetadata?.['upwindRepair'] === '1' &&
+    object.customMetadata['upwindRepairOwner'] === repairOwner &&
+    object.customMetadata['upwindRepairNamespace'] === namespace &&
+    typeof object.customMetadata['upwindRepairAttempt'] === 'string'
   );
 }
 

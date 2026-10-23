@@ -98,20 +98,24 @@ describe('repair namespace retention', () => {
       for (let index = 0; index < 3; index += 1) {
         const page = await listDataUploads({ sql, scopeId, blobs });
         phases.push(page.phase);
-        state.storage.transactionSync(() => queueDataUploads({ sql, scopeId, now, page }));
+        state.storage.transactionSync(() => {
+          queueDataUploads({ sql, scopeId, now, page });
+        });
         pending.push(dataUploadScanPending(sql));
       }
       const deletions = sql
         .exec<{ storage_ref: string }>(
           'SELECT storage_ref FROM pending_deletions ORDER BY storage_ref',
         )
-        .toArray()
-        .map((row) => row.storage_ref);
+        .map((row) => row.storage_ref)
+        .toArray();
       await blobs.delete(deletions);
       const afterSweep = (await env.ARTIFACTS.list({ prefix: `r/${namespace}/` })).objects.map(
         (object) => object.key,
       );
-      state.storage.transactionSync(() => forgetDeletions(sql, deletions));
+      state.storage.transactionSync(() => {
+        forgetDeletions(sql, deletions);
+      });
       // A failed request can finish a fresh physical PUT after a previous sweep's last page.
       const late = createRepairStorageRef(namespace);
       await env.ARTIFACTS.put(late, BYTES as BufferSource, {
@@ -126,16 +130,18 @@ describe('repair namespace retention', () => {
       });
       for (let index = 0; index < 3; index += 1) {
         const page = await listDataUploads({ sql, scopeId, blobs });
-        state.storage.transactionSync(() =>
-          queueDataUploads({ sql, scopeId, now: now + HOUR, page }),
-        );
+        state.storage.transactionSync(() => {
+          queueDataUploads({ sql, scopeId, now: now + HOUR, page });
+        });
       }
       const lateDeletions = sql
         .exec<{ storage_ref: string }>('SELECT storage_ref FROM pending_deletions')
-        .toArray()
-        .map((row) => row.storage_ref);
+        .map((row) => row.storage_ref)
+        .toArray();
       await blobs.delete(lateDeletions);
-      state.storage.transactionSync(() => forgetDeletions(sql, lateDeletions));
+      state.storage.transactionSync(() => {
+        forgetDeletions(sql, lateDeletions);
+      });
 
       const ordinary = `${r2CachePrefix(scopeId)}leftover`;
       await env.ARTIFACTS.put(ordinary, 'leftover');
@@ -160,8 +166,10 @@ describe('repair namespace retention', () => {
     expect(result.phases).toStrictEqual(['data', 'blobs', 'repairs']);
     expect(result.pending).toStrictEqual([true, true, false]);
     expect(result.deletions).toStrictEqual([keys.orphan]);
-    expect(result.afterSweep.toSorted()).toStrictEqual(
-      [keys.borrowed, keys.pinned, keys.foreign].toSorted(),
+    expect(result.afterSweep.toSorted((left, right) => left.localeCompare(right))).toStrictEqual(
+      [keys.borrowed, keys.pinned, keys.foreign].toSorted((left, right) => {
+        return left.localeCompare(right);
+      }),
     );
     expect(result.lateDeletions).toStrictEqual([result.late]);
     expect(result.erased).toBe(true);

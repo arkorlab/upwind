@@ -132,7 +132,7 @@ const REPAIR_VERIFICATION_MS = 10_000;
 export async function verifySeedLocations(
   open: Parameters<typeof verifyBlob>[0],
   locations: readonly SeedLocationCheck[],
-  proofs: Pick<Map<string, boolean>, 'set'>,
+  proofs: { set(key: string, value: boolean): void },
   deadlineMs = REPAIR_VERIFICATION_MS,
 ): Promise<void> {
   const controller = new AbortController();
@@ -178,9 +178,9 @@ export function seedRepairVerification(
   sql: SqlStorage,
   plans: readonly SeedLocations[],
   proofs: SeedLocationProofs,
-  addedRefs: ReadonlyMap<string, number>,
-  copy = false,
+  options: { readonly addedRefs: ReadonlyMap<string, number>; readonly copy?: boolean },
 ): SeedRepairVerification | undefined {
+  const { addedRefs, copy = false } = options;
   const locations = new Map<string, SeedLocationCheck>();
   for (const plan of plans) {
     const generation = repairableGeneration(sql, plan);
@@ -232,9 +232,9 @@ function protectedOutputs(
   sql: SqlStorage,
   previous: readonly OutputSnapshot[],
   proposed: readonly OutputSnapshot[],
-  proofs: SeedProofLookup,
-  copy: boolean,
+  options: { readonly proofs: SeedProofLookup; readonly copy: boolean },
 ): OutputSnapshot[] {
+  const { proofs, copy } = options;
   const locations = new Map<string, string>();
   const selected = new Set<string>();
   for (const [index, output] of proposed.entries()) {
@@ -401,7 +401,7 @@ export function prepareSeedRepair(
   const outputs =
     proposed === undefined
       ? undefined
-      : protectedOutputs(sql, previous, proposed, proofs, input.packSchemaVersion === 2);
+      : protectedOutputs(sql, previous, proposed, { proofs, copy: input.packSchemaVersion === 2 });
   const entry = findEntry(sql, generation.entry_id);
   if (
     outputs === undefined ||
@@ -495,7 +495,7 @@ export function repairSeedEntries(
   for (const plan of plans) {
     const prepared = prepareSeedRepair(input, plan, proofs);
     if (prepared === undefined) continue;
-    if (prepared.repairs.length !== 0) throw new Error('a seed relocation needs a durable job');
+    if (prepared.repairs.length > 0) throw new Error('a seed relocation needs a durable job');
     publishSeedRepair(input, prepared, events);
     repaired += 1;
   }

@@ -35,10 +35,10 @@ export function repairUploadMatches(
   const metadata = object.customMetadata;
   if (
     proof.scopeOwner === undefined ||
-    metadata?.upwindRepair !== '1' ||
-    metadata.upwindRepairOwner !== proof.scopeOwner ||
-    metadata.upwindRepairNamespace !== proof.namespace ||
-    metadata.upwindRepairAttempt !== proof.attemptId
+    metadata?.['upwindRepair'] !== '1' ||
+    metadata['upwindRepairOwner'] !== proof.scopeOwner ||
+    metadata['upwindRepairNamespace'] !== proof.namespace ||
+    metadata['upwindRepairAttempt'] !== proof.attemptId
   )
     return false;
   const hex = [...new Uint8Array(digest)]

@@ -15,9 +15,11 @@ const TIME_KEY_WIDTH = 16;
 export const REPAIR_PIN_PREFIX = 'artifact_repair_pin:';
 /** Even four UTF-8 bytes per code unit keep an individual metadata value below SQLite's limit. */
 const CHUNK_CODE_UNITS = 65_536;
-const HIGH_SURROGATE_MIN = 0xd800;
-const HIGH_SURROGATE_MAX = 0xdbff;
+const LAST_SINGLE_CODE_UNIT = 0xff_ff;
 const JOB_VERSION = 1;
+const OWNER_CHANGED = 'the repair owner changed';
+// JSON.stringify can return undefined for runtime values despite its standard-library overload.
+const repairJson: (value: unknown) => string | undefined = JSON.stringify;
 
 export type RepairPhase = 'preflight' | 'apply' | 'publish';
 
@@ -28,6 +30,10 @@ export interface RepairJob {
   readonly preparedAt: number;
   readonly fromRevision: number;
   readonly limits: ScopeLimits;
+  readonly failures?: number;
+  readonly retryAt?: number;
+  /** Matching shared snapshots already preflighted in this group; their apply revisions are exact. */
+  readonly matched?: number;
   readonly attemptId: string | null;
   readonly phase: RepairPhase;
   readonly group: number;
@@ -90,12 +96,12 @@ export function isRepairPending(value: unknown): value is RepairPending {
 export function readRepairJob(sql: SqlStorage): RepairJob | undefined {
   const text = readMeta(sql, ACTIVE_JOB);
   if (text === undefined) return undefined;
-  const job = JSON.parse(text) as RepairJob;
+  const job = JSON.parse(text) as Omit<RepairJob, 'version'> & { readonly version: unknown };
   if (
     job.version !== JOB_VERSION ||
     typeof job.id !== 'string' ||
-    !['commit', 'seed', 'data'].includes(job.operation) ||
-    !['preflight', 'apply', 'publish'].includes(job.phase) ||
+    !['commit', 'data', 'seed'].includes(job.operation) ||
+    !['apply', 'preflight', 'publish'].includes(job.phase) ||
     !Number.isSafeInteger(job.group) ||
     !Number.isSafeInteger(job.groupCount) ||
     job.group < 0 ||
@@ -104,7 +110,7 @@ export function readRepairJob(sql: SqlStorage): RepairJob | undefined {
     typeof job.after !== 'string'
   )
     throw new Error('the durable repair continuation is invalid');
-  return job;
+  return job as RepairJob;
 }
 
 function keyOf(jobId: string, name: string): string {
@@ -122,39 +128,44 @@ export function writeRepairValue(
   name: string,
   value: unknown,
 ): void {
-  const json = JSON.stringify(value);
+  const json = repairJson(value);
   if (json === undefined) throw new Error('a durable repair value is missing');
   const prefix = keyOf(jobId, name);
   let count = 0;
   for (let start = 0; start < json.length;) {
     let end = Math.min(start + CHUNK_CODE_UNITS, json.length);
-    const last = json.charCodeAt(end - 1);
-    if (end < json.length && last >= HIGH_SURROGATE_MIN && last <= HIGH_SURROGATE_MAX) end -= 1;
-    writeMeta(sql, prefix + String(count), json.slice(start, end));
+    // A character beginning just before the cut must remain with its low surrogate.
+    if ((json.codePointAt(end - 1) ?? 0) > LAST_SINGLE_CODE_UNIT) end -= 1;
+    writeMeta(sql, `${prefix}${count}`, json.slice(start, end));
     start = end;
     count += 1;
   }
-  writeMeta(sql, prefix + 'count', String(count));
+  writeMeta(sql, `${prefix}count`, String(count));
 }
 
 export function hasRepairValue(sql: SqlStorage, jobId: string, name: string): boolean {
-  return readMeta(sql, keyOf(jobId, name) + 'count') !== undefined;
+  return readMeta(sql, `${keyOf(jobId, name)}count`) !== undefined;
 }
 
 /** Only a bounded group, or the original operation at its final publication, is reconstructed. */
-export function readRepairValue<T>(sql: SqlStorage, jobId: string, name: string): T {
+export function readRepairValue<T>(
+  sql: SqlStorage,
+  jobId: string,
+  name: string,
+  decode: (value: unknown) => T = (value) => value as T,
+): T {
   const prefix = keyOf(jobId, name);
-  const count = Number(readMeta(sql, prefix + 'count'));
+  const count = Number(readMeta(sql, `${prefix}count`));
   if (!Number.isSafeInteger(count) || count <= 0) {
     throw new Error('the durable repair payload is missing');
   }
   const chunks: string[] = [];
   for (let index = 0; index < count; index += 1) {
-    const chunk = readMeta(sql, prefix + String(index));
+    const chunk = readMeta(sql, `${prefix}${index}`);
     if (chunk === undefined) throw new Error('the durable repair payload is incomplete');
     chunks.push(chunk);
   }
-  return JSON.parse(chunks.join('')) as T;
+  return decode(JSON.parse(chunks.join('')));
 }
 
 /** Called in the same protected SQLite transaction as the private accepted publication. */
@@ -191,6 +202,7 @@ export function beginRepairJob(
     group: 0,
     groupCount,
     after: '',
+    matched: 0,
   };
   for (const group of input.groups) pinRepairGroup(sql, id, group);
   writeMeta(sql, ACTIVE_JOB, JSON.stringify(job));
@@ -230,8 +242,18 @@ export function releaseRepairGroup(
 
 /** Cursor movement and its snapshot update must be committed by one transactionSync body. */
 export function advanceRepairJob(sql: SqlStorage, job: RepairJob): void {
-  if (readRepairJob(sql)?.id !== job.id) throw new Error('the repair owner changed');
-  writeMeta(sql, ACTIVE_JOB, JSON.stringify(job));
+  if (readRepairJob(sql)?.id !== job.id) throw new Error(OWNER_CHANGED);
+  writeMeta(sql, ACTIVE_JOB, JSON.stringify({ ...job, failures: 0, retryAt: undefined }));
+}
+
+/** A caught transient failure retains its cursor and its pins, with a durable retry time. */
+export function retryRepairJob(sql: SqlStorage, job: RepairJob, retryAt: number): void {
+  if (readRepairJob(sql)?.id !== job.id) throw new Error(OWNER_CHANGED);
+  writeMeta(
+    sql,
+    ACTIVE_JOB,
+    JSON.stringify({ ...job, failures: (job.failures ?? 0) + 1, retryAt }),
+  );
 }
 
 /** The public result becomes available only after every live SQL snapshot has been retargeted. */
@@ -241,9 +263,9 @@ export function completeRepairJob(
   result: RepairCompletion<unknown>,
   now: number,
 ): void {
-  if (readRepairJob(sql)?.id !== job.id) throw new Error('the repair owner changed');
+  if (readRepairJob(sql)?.id !== job.id) throw new Error(OWNER_CHANGED);
   writeRepairValue(sql, job.id, 'result', result);
-  writeMeta(sql, RESULT_PREFIX + job.id, 'complete');
+  writeMeta(sql, `${RESULT_PREFIX}${job.id}`, 'complete');
   deleteMeta(sql, ACTIVE_JOB);
   writeMeta(
     sql,
@@ -261,7 +283,7 @@ export function repairJobResult<T>(
   sql: SqlStorage,
   jobId: string,
 ): RepairCompletion<T> | undefined {
-  return readMeta(sql, RESULT_PREFIX + jobId) === 'complete'
+  return readMeta(sql, `${RESULT_PREFIX}${jobId}`) === 'complete'
     ? readRepairValue<RepairCompletion<T>>(sql, jobId, 'result')
     : undefined;
 }
@@ -283,10 +305,12 @@ export function nextRepairGarbageAt(sql: SqlStorage): number | undefined {
     .exec<{ key: string }>(
       `SELECT key FROM meta WHERE key >= ? AND key < ? ORDER BY key LIMIT 1`,
       GARBAGE_PREFIX,
-      GARBAGE_PREFIX + '\uffff',
+      `${GARBAGE_PREFIX}\u{FFFF}`,
     )
     .toArray()[0];
-  return row === undefined ? undefined : Number(row.key.slice(GARBAGE_PREFIX.length).split(':')[0]);
+  return row === undefined
+    ? undefined
+    : Number(row.key.slice(GARBAGE_PREFIX.length).split(':', 1)[0]);
 }
 
 /** At most one bounded primary-key page, even for an unusually large admitted seed batch. */
@@ -295,7 +319,7 @@ export function collectRepairGarbage(sql: SqlStorage, now: number): boolean {
     .exec<{ key: string; value: string }>(
       `SELECT key, value FROM meta WHERE key >= ? AND key < ? ORDER BY key LIMIT 1`,
       GARBAGE_PREFIX,
-      garbageKey(now, '\uffff'),
+      garbageKey(now, '\u{FFFF}'),
     )
     .toArray()[0];
   if (saved === undefined) return false;
@@ -305,7 +329,7 @@ export function collectRepairGarbage(sql: SqlStorage, now: number): boolean {
     .exec<{ key: string }>(
       `SELECT key FROM meta WHERE key > ? AND key < ? ORDER BY key LIMIT ?`,
       work.after,
-      prefix + '\uffff',
+      `${prefix}\u{FFFF}`,
       GARBAGE_ROWS_AT_ONCE,
     )
     .toArray();
@@ -330,7 +354,7 @@ export function collectRepairGarbage(sql: SqlStorage, now: number): boolean {
       }),
     );
   } else {
-    deleteMeta(sql, RESULT_PREFIX + work.id);
+    deleteMeta(sql, `${RESULT_PREFIX}${work.id}`);
   }
   return (nextRepairGarbageAt(sql) ?? Infinity) <= now;
 }

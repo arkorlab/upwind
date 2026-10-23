@@ -75,8 +75,9 @@ export async function tickScope(host: TickHost, now: number, options: TickOption
   // to storage after `deleteAll`, and what it could not deliver or write — whatever the host's
   // history owes — would go with the storage. A run that owes anything has armed its retry, and
   // the next retention looks again.
-  if (readRepairJob(host.storage.sql) !== undefined) {
-    await host.arm(Date.now() + REPAIR_CONTINUE_MS);
+  const job = readRepairJob(host.storage.sql);
+  if (job !== undefined) {
+    await host.arm(Math.max(Date.now() + REPAIR_CONTINUE_MS, job.retryAt ?? 0));
     return;
   }
   const owed = await host.settleOwes();

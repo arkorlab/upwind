@@ -15,7 +15,12 @@ import {
 } from '@stayingupwind/host/cache';
 
 import type { Logger } from '../logger.ts';
-import { artifactIdsFor, findArtifactBySha, referenceBuildArtifacts } from './artifacts.ts';
+import {
+  artifactFailed,
+  artifactIdsFor,
+  findArtifactBySha,
+  referenceBuildArtifacts,
+} from './artifacts.ts';
 import {
   type EntryIdentity,
   findEntry,
@@ -289,7 +294,8 @@ function canonicalSeedOutputs(
       return canonical !== undefined &&
         canonical.byte_length === artifact.byteLength &&
         isRepairStorageRef(canonical.storage_ref) &&
-        canonical.storage_ref.startsWith(prefix)
+        canonical.storage_ref.startsWith(prefix) &&
+        !artifactFailed(input.sql, canonical)
         ? { ...artifact, storageRef: canonical.storage_ref }
         : artifact;
     }),
@@ -473,13 +479,10 @@ function applySeedEntries(
     return refuse('quota_exceeded', 'the scope holds as many entries as it may');
   }
   const addedRefs = addedSeedReferences(retries.length > 0 ? seedable : []);
-  const verification = seedRepairVerification(
-    sql,
-    retries,
-    proofs,
+  const verification = seedRepairVerification(sql, retries, proofs, {
     addedRefs,
-    input.packSchemaVersion === 2,
-  );
+    copy: input.packSchemaVersion === 2,
+  });
   if (verification !== undefined) return verification;
   const inserted = seedable.length;
   const skipped = plans.length - fresh.length;

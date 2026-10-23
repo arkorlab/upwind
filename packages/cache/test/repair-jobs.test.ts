@@ -17,7 +17,7 @@ import {
   forgetVerifiedArtifactFailures,
   rememberArtifactFailure,
 } from '../src/scope/artifacts.ts';
-import { advancePreparedCommit } from '../src/scope/commit.ts';
+import { advanceCommitRepair } from '../src/scope/commit-repair.ts';
 import { planSetData } from '../src/scope/data.ts';
 import { requireEntry } from '../src/scope/entries.ts';
 import { findGeneration } from '../src/scope/generations.ts';
@@ -26,6 +26,7 @@ import { MutationPipeline } from '../src/scope/mutation-pipeline.ts';
 import { ScopeQueue } from '../src/scope/mutations.ts';
 import { headerFieldsOf, unwritableRecord } from '../src/scope/records.ts';
 import {
+  advanceRepairJob,
   beginRepairJob,
   isRepairStart,
   collectRepairGarbage,
@@ -38,6 +39,7 @@ import {
   type RepairJob,
   writeRepairValue,
 } from '../src/scope/repair-jobs.ts';
+import { RepairPublicationProbed } from '../src/scope/repair-probes.ts';
 import { RepairRunner } from '../src/scope/repair-runner.ts';
 import { generationOutputs, type GenerationRow } from '../src/scope/rows.ts';
 import { planSeedEntries } from '../src/scope/seed.ts';
@@ -107,8 +109,8 @@ async function inScope<T>(action: (tx: TxInput, storage: DurableObjectStorage) =
     },
     NOW,
   );
-  return runInDurableObject(stub, (_instance, state) =>
-    action(
+  return runInDurableObject(stub, (_instance, state) => {
+    return action(
       {
         sql: state.storage.sql,
         scopeId,
@@ -119,8 +121,8 @@ async function inScope<T>(action: (tx: TxInput, storage: DurableObjectStorage) =
         history: NO_HISTORY,
       },
       state.storage,
-    ),
-  );
+    );
+  });
 }
 
 async function seed(tx: TxInput, storage: DurableObjectStorage, count: number) {
@@ -155,8 +157,8 @@ function repair(): ArtifactRepair {
   };
 }
 
-function group(entryId = 'not-current'): RepairGroup {
-  return { entryId, repairs: [repair()], failureMarkers: [] };
+function group(): RepairGroup {
+  return { entryId: 'not-current', repairs: [repair()], failureMarkers: [] };
 }
 
 function begin(tx: TxInput, selected = group()): RepairJob {
@@ -166,12 +168,26 @@ function begin(tx: TxInput, selected = group()): RepairJob {
     fromRevision: readRevision(tx.sql) + 1,
     limits: tx.limits,
     attemptId: 'accepted-attempt',
-    publication: {},
+    publication: {
+      plan: { dependencyTagIds: [], artifactIds: [], missingUploads: [], checkedUploads: [] },
+      publication: { repairs: [] },
+    },
     groups: [selected],
   });
   const job = readRepairJob(tx.sql);
   if (job === undefined) throw new Error('the fixture job was not persisted');
   return job;
+}
+
+/** This fixture isolates shared-row repair from the accepted owner's SQL publication. */
+function advanceFixtureCommit(input: TxInput, job: RepairJob) {
+  return advanceCommitRepair(input, job, () => ({
+    kind: 'published',
+    generationId: 'fixture-owner',
+    seq: 1,
+    revision: input.revision,
+    condemned: null,
+  }));
 }
 
 function refs(row: GenerationRow) {
@@ -222,21 +238,24 @@ describe('bounded durable artifact repair continuations', () => {
         repairs: runner,
         arm,
         armAnswered: arm,
-        mutationHost: () => ({
-          storage,
-          scopeId: tx.scopeId,
-          buildId: tx.buildId,
-          kv: env.CACHE_STATE,
-          limits: tx.limits,
-          history: NO_HISTORY,
-          tables: true,
-          createdTables: () => {
-            throw new Error('unexpected table creation');
-          },
-        }),
+        mutationHost: () => {
+          return {
+            storage,
+            scopeId: tx.scopeId,
+            buildId: tx.buildId,
+            kv: env.CACHE_STATE,
+            limits: tx.limits,
+            history: NO_HISTORY,
+            tables: true,
+            createdTables: () => {
+              throw new Error('unexpected table creation');
+            },
+          };
+        },
         committed: () => {
           throw new Error('the locked mutation does not publish');
         },
+        tables: () => true,
         testHooks: () => true,
         settling: () => Promise.resolve(),
         settle: () => {
@@ -252,19 +271,90 @@ describe('bounded durable artifact repair continuations', () => {
       const more = await runner.advance(NOW);
       const cursor = readRepairJob(tx.sql);
 
-      expect(outside).toBe('a read can still run');
-      expect(written).toBe(false);
-      expect(more).toBe(true);
+      expect({ outside, written, more }).toStrictEqual({
+        outside: 'a read can still run',
+        written: false,
+        more: true,
+      });
       expect(cursor).toMatchObject({ phase: 'preflight', after: rows[7]?.entry_id });
       expect(rows.every((row) => refs(current(tx, row.entry_id))[0] === 'x')).toBe(true);
 
       while (readRepairJob(tx.sql) !== undefined) await runner.advance(NOW);
       const result = await later;
 
-      expect(result).toBe(7);
-      expect(written).toBe(true);
-      expect(armed.length).toBeGreaterThan(0);
+      expect({ result, written }).toStrictEqual({ result: 7, written: true });
+      expect(armed).not.toHaveLength(0);
       expect(rows.every((row) => refs(current(tx, row.entry_id))[0] === NEXT)).toBe(true);
+    });
+  });
+
+  it('persists retry backoff instead of repeatedly executing the speculative immediate alarm', async () => {
+    await inScope(async (tx, storage) => {
+      await seed(tx, storage, 1);
+      rememberArtifactFailure(tx.sql, { sha256: SHA, byteLength: 1, storageRef: 'x' });
+      const prepare = await planSetData(
+        { ...tx, revision: readRevision(tx.sql) + 1 },
+        {
+          key: 'retry-data-entry',
+          entry: {
+            kind: 'data:fetch',
+            tags: [],
+            stale: 60,
+            timestamp: NOW,
+            expire: 600,
+            revalidate: 60,
+            dependencyCoverage: 'complete',
+          },
+          value: { sha256: SHA, byteLength: 1, contentType: 'text/plain', storageRef: NEXT },
+        },
+      );
+      const start = storage.transactionSync(prepare);
+      if (!isRepairStart(start)) throw new Error('the fixture data repair did not prepare');
+      storage.transactionSync(() => start.start({ ...tx, revision: readRevision(tx.sql) + 1 }));
+      tx.sql.exec(`CREATE TRIGGER interrupt_repair BEFORE UPDATE OF outputs ON generations
+        BEGIN SELECT RAISE(ABORT, 'temporary repair storage failure'); END`);
+      const armed: number[] = [];
+      const deferred: number[] = [];
+      const runner = new RepairRunner({
+        storage,
+        queue: new ScopeQueue(),
+        input: (now) => ({ ...tx, now, revision: readRevision(tx.sql) + 1 }),
+        arm: (at) => {
+          armed.push(at);
+          return Promise.resolve();
+        },
+        defer: (at) => {
+          deferred.push(at);
+          return Promise.resolve();
+        },
+      });
+
+      await expect(runner.advance(NOW)).rejects.toThrow('temporary repair storage failure');
+
+      const pending = readRepairJob(tx.sql);
+      if (pending?.retryAt === undefined) throw new Error('the durable retry time is missing');
+      tx.sql.exec(`DROP TRIGGER interrupt_repair`);
+      const beforeDue = await runner.advance(NOW);
+
+      expect(pending).toMatchObject({ phase: 'preflight', after: '', failures: 1 });
+      expect(pending.retryAt).toBeGreaterThan(NOW);
+      expect(deferred).toStrictEqual([pending.retryAt]);
+      expect({
+        beforeDue,
+        after: readRepairJob(tx.sql)?.after,
+        armedAt: armed.at(-1),
+      }).toStrictEqual({
+        beforeDue: true,
+        after: '',
+        armedAt: pending.retryAt,
+      });
+
+      const finished = await runner.advance(pending.retryAt);
+
+      expect({ finished, job: readRepairJob(tx.sql) }).toStrictEqual({
+        finished: false,
+        job: undefined,
+      });
     });
   });
 
@@ -283,10 +373,12 @@ describe('bounded durable artifact repair continuations', () => {
         `UPDATE generations SET outputs = 'not-json' WHERE generation_id = ?`,
         retired.current_generation_id,
       );
-      const outputs = generationOutputs(current(tx, different.entry_id)).map((output) => ({
-        ...output,
-        artifacts: output.artifacts.map((artifact) => ({ ...artifact, sha256: OTHER_SHA })),
-      }));
+      const outputs = generationOutputs(current(tx, different.entry_id)).map((output) => {
+        return {
+          ...output,
+          artifacts: output.artifacts.map((artifact) => ({ ...artifact, sha256: OTHER_SHA })),
+        };
+      });
       tx.sql.exec(
         `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
         JSON.stringify(outputs),
@@ -323,40 +415,55 @@ describe('bounded durable artifact repair continuations', () => {
       const rows = await seed(tx, storage, 2);
       const firstId = rows[0]?.entry_id;
       if (firstId === undefined) throw new Error('missing fixture entry');
-      let job = begin(tx);
-      storage.transactionSync(() =>
-        advancePreparedCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job),
-      );
+      const job = begin(tx);
+      storage.transactionSync(() => {
+        return advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job);
+      });
       const resumed = readRepairJob(tx.sql);
       if (resumed === undefined) throw new Error('missing durable cursor');
 
-      expect(resumed.after).toBe(firstId);
-      expect(resumed.phase).toBe('preflight');
+      expect(resumed).toMatchObject({ after: firstId, phase: 'preflight' });
       expect(refs(current(tx, firstId))).toStrictEqual(['x']);
 
       // Recreate every next step from the saved row, as an alarm on another instance must.
       while (readRepairJob(tx.sql)?.phase === 'preflight') {
-        job = readRepairJob(tx.sql) as RepairJob;
-        storage.transactionSync(() =>
-          advancePreparedCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job),
-        );
+        const saved = readRepairJob(tx.sql)!;
+        try {
+          storage.transactionSync(() => {
+            return advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, saved);
+          });
+        } catch (error) {
+          if (!(error instanceof RepairPublicationProbed)) throw error;
+          storage.transactionSync(() => {
+            advanceRepairJob(tx.sql, error.next);
+          });
+        }
       }
-      job = readRepairJob(tx.sql) as RepairJob;
-      expect(() =>
-        storage.transactionSync(() => {
-          advancePreparedCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job);
-          throw new Error('injected interruption after the snapshot update');
-        }),
-      ).toThrow('injected interruption after the snapshot update');
-      expect(readRepairJob(tx.sql)?.after).toBe('');
-      expect(refs(current(tx, firstId))).toStrictEqual(['x']);
+      const applying = readRepairJob(tx.sql)!;
 
-      storage.transactionSync(() =>
-        advancePreparedCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job),
-      );
-      expect(readRepairJob(tx.sql)?.after).toBe(firstId);
-      expect(refs(current(tx, firstId))).toStrictEqual([NEXT]);
-      expect(refs(current(tx, rows[1]?.entry_id ?? 'missing'))).toStrictEqual(['x']);
+      expect(() => {
+        return storage.transactionSync(() => {
+          advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, applying);
+          throw new Error('injected interruption after the snapshot update');
+        });
+      }).toThrow('injected interruption after the snapshot update');
+      expect({
+        after: readRepairJob(tx.sql)?.after,
+        refs: refs(current(tx, firstId)),
+      }).toStrictEqual({
+        after: '',
+        refs: ['x'],
+      });
+
+      storage.transactionSync(() => {
+        return advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, applying);
+      });
+
+      expect({
+        after: readRepairJob(tx.sql)?.after,
+        changed: refs(current(tx, firstId)),
+        untouched: refs(current(tx, rows[1]?.entry_id ?? 'missing')),
+      }).toStrictEqual({ after: firstId, changed: [NEXT], untouched: ['x'] });
     });
   });
 
@@ -394,9 +501,9 @@ describe('bounded durable artifact repair continuations', () => {
         failureMarkers: marker === undefined ? [] : [[SHA, marker] as [string, string]],
       };
       const job = begin(tx, selected);
-      const outcome = storage.transactionSync(() =>
-        advancePreparedCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job),
-      );
+      const outcome = storage.transactionSync(() => {
+        return advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job);
+      });
 
       expect(outcome).toMatchObject({
         kind: 'completed',
@@ -416,75 +523,66 @@ describe('bounded durable artifact repair continuations', () => {
         throw new Error('missing fixture entries');
       const before = current(tx, target);
       const outputs = generationOutputs(before);
-      const padded = (length: number): string =>
-        JSON.stringify(
-          outputs.map((output) => ({
-            ...output,
-            headers: { 'x-output-only-padding': 'x'.repeat(length) },
-          })),
+      const padded = (length: number): string => {
+        return JSON.stringify(
+          outputs.map((output) => {
+            return { ...output, headers: { 'x-output-only-padding': 'x'.repeat(length) } };
+          }),
         );
+      };
       // The provider's actual configured row limit is the contract. Discover its boundary rather
       // than introducing a new protocol ceiling or assuming that a local runtime uses production's.
       const maximumFixturePadding = 12 * 1024 * 1024;
-      let low = 0;
-      let high = maximumFixturePadding;
       const fits = (length: number): boolean => {
         try {
-          storage.transactionSync(() =>
-            tx.sql.exec(
+          storage.transactionSync(() => {
+            return tx.sql.exec(
               `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
               padded(length),
               before.generation_id,
-            ),
-          );
+            );
+          });
           return true;
         } catch (error) {
           if (!(error instanceof Error) || !/\bSQLITE_TOOBIG\b/u.test(error.message)) throw error;
           return false;
         }
       };
-      if (fits(high))
+      if (fits(maximumFixturePadding))
         throw new Error('the configured SQL row limit exceeds the fixture search window');
+      let low = 0;
+      let high = maximumFixturePadding;
       while (low + 1 < high) {
         const middle = Math.floor((low + high) / 2);
         if (fits(middle)) low = middle;
         else high = middle;
       }
-      storage.transactionSync(() =>
-        tx.sql.exec(
+      storage.transactionSync(() => {
+        return tx.sql.exec(
           `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
           padded(low),
           before.generation_id,
-        ),
-      );
+        );
+      });
       const originalLength = current(tx, target).outputs.length;
       rememberArtifactFailure(tx.sql, { sha256: SHA, byteLength: 1, storageRef: 'x' });
       const marker = artifactRepairMarker(tx.sql, SHA);
       const job = begin(tx);
+      const original = current(tx, target);
+      const originalOutputs = generationOutputs(original);
       const headerFits = unwritableRecord(
-        headerFieldsOf(
-          tx,
-          requireEntry(tx.sql, target),
-          current(tx, target),
-          generationOutputs(current(tx, target)),
-        ),
+        headerFieldsOf(tx, requireEntry(tx.sql, target), original, originalOutputs),
         tx.limits.maxRecordBytes,
       );
 
       expect(headerFits).toBeUndefined();
-      expect(() =>
-        storage.transactionSync(() =>
-          advancePreparedCommit(
-            {
-              ...tx,
-              revision: readRevision(tx.sql) + 1,
-            },
-            job,
-          ),
-        ),
-      ).toThrow(RepairRowTooLargeError);
+      expect(() => {
+        return storage.transactionSync(() => {
+          return advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job);
+        });
+      }).toThrow(RepairRowTooLargeError);
       expect(readRepairJob(tx.sql)?.after).toBe('');
-      expect(current(tx, target).outputs.length).toBe(originalLength);
+      expect(current(tx, target).outputs).toHaveLength(originalLength);
       expect(refs(current(tx, target))).toStrictEqual(['x']);
       expect(refs(current(tx, untouched))).toStrictEqual(['x']);
       expect(artifactRepairMarker(tx.sql, SHA)).toBe(marker);
@@ -525,7 +623,7 @@ describe('bounded durable artifact repair continuations', () => {
         .exec<{ value: string }>(
           `SELECT value FROM meta WHERE key >= ? AND key < ?`,
           `artifact_repair_data:${job.id}:unicode:`,
-          `artifact_repair_data:${job.id}:unicode:\uffff`,
+          `artifact_repair_data:${job.id}:unicode:\u{FFFF}`,
         )
         .toArray();
 
@@ -552,7 +650,7 @@ describe('bounded durable artifact repair continuations', () => {
         .exec<{ total: number }>(
           `SELECT COUNT(*) AS total FROM meta WHERE key >= ? AND key < ?`,
           `artifact_repair_data:${job.id}:`,
-          `artifact_repair_data:${job.id}:\uffff`,
+          `artifact_repair_data:${job.id}:\u{FFFF}`,
         )
         .one().total;
       const more = collectRepairGarbage(tx.sql, NOW);
@@ -560,7 +658,7 @@ describe('bounded durable artifact repair continuations', () => {
         .exec<{ total: number }>(
           `SELECT COUNT(*) AS total FROM meta WHERE key >= ? AND key < ?`,
           `artifact_repair_data:${job.id}:`,
-          `artifact_repair_data:${job.id}:\uffff`,
+          `artifact_repair_data:${job.id}:\u{FFFF}`,
         )
         .one().total;
 

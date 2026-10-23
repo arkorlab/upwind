@@ -33,6 +33,7 @@ interface PipelineHost {
   readonly queue: ScopeQueue;
   readonly repairs: RepairRunner;
   readonly mutationHost: () => ScopeMutationHost;
+  readonly tables: () => boolean;
   readonly committed: (tables: boolean) => void;
   readonly testHooks: () => boolean;
   readonly settling: () => Promise<void>;
@@ -78,9 +79,8 @@ export class MutationPipeline {
     let result: MutationResult<T>;
     for (;;) {
       const attempted = await this.#host.queue.run(async () => {
-        const job = this.#host.mutationHost().tables
-          ? readRepairJob(this.#host.storage.sql)
-          : undefined;
+        const host = this.#host.mutationHost();
+        const job = host.tables ? readRepairJob(this.#host.storage.sql) : undefined;
         // A healthy heartbeat cannot change generation outputs/canonical locations. Keep other
         // live render leases alive while writers wait; the accepted committing attempt is pinned.
         if (
@@ -90,9 +90,11 @@ export class MutationPipeline {
           return { blockedBy: job.id } as const;
         }
         let committed = await commitMutation(
-          { ...this.#host.mutationHost(), ...(clock !== undefined && { clock }) },
+          { ...host, ...(clock !== undefined && { clock }) },
           now,
-          plan,
+          job === undefined
+            ? plan
+            : (input) => plan(Object.assign(input, { deferExpiredLease: true as const })),
           answers,
         );
         this.#host.committed(committed.tables);
@@ -140,7 +142,7 @@ export class MutationPipeline {
     // what the host's history owes for it — is owed to this alarm, or to an earlier one, should the
     // object be reset before the run is over. Erasure may have come between: what is gone is not
     // asked for. An answer read from its own transaction is not taken back for it (`#armOrLog`).
-    if (this.#host.mutationHost().tables && readScope(this.#host.storage.sql) !== undefined) {
+    if (this.#host.tables() && readScope(this.#host.storage.sql) !== undefined) {
       const at = now + RETENTION_INTERVAL_MS;
       await this.#host.armAnswered(at, answers.atOnce === true);
     }
@@ -179,7 +181,7 @@ export class MutationPipeline {
 
   locked<T>(empty: T, body: () => T): Promise<T> {
     return this.unblocked(() =>
-      this.#host.mutationHost().tables ? this.#host.storage.transactionSync(body) : empty,
+      this.#host.tables() ? this.#host.storage.transactionSync(body) : empty,
     );
   }
 
@@ -188,8 +190,9 @@ export class MutationPipeline {
     const host = this.#host.mutationHost();
     const sql = host.storage.sql;
     if (!host.tables || readScope(sql) === undefined) return;
-    if (readRepairJob(sql) !== undefined) {
-      await this.#host.arm(Date.now() + REPAIR_CONTINUE_MS);
+    const job = readRepairJob(sql);
+    if (job !== undefined) {
+      await this.#host.arm(Math.max(Date.now() + REPAIR_CONTINUE_MS, job.retryAt ?? 0));
       return;
     }
     const garbageAt = nextRepairGarbageAt(sql);

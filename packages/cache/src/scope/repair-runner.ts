@@ -9,11 +9,14 @@ import {
   readRepairValue,
   releaseRepairGroup,
   repairJobResult,
+  retryRepairJob,
   type RepairCompletion,
   type RepairGroup,
   type RepairStep,
 } from './repair-jobs.ts';
+import { RepairPublicationProbed } from './repair-probes.ts';
 import { advancePreparedSeed } from './seed-repair-job.ts';
+import { retryDelayMs } from './settle-retry.ts';
 import { ownRepairRecordsOf } from './settle.ts';
 import { readRevision, refuse } from './state.ts';
 import type { TxInput } from './tx.ts';
@@ -27,6 +30,7 @@ interface RepairRunnerHost {
   readonly queue: ScopeQueue;
   readonly input: (now: number) => TxInput;
   readonly arm: (at: number) => Promise<void>;
+  readonly defer?: (at: number) => Promise<void>;
 }
 
 /** Only writes and alarms use this coordinator; ordinary serving reads never consult a job. */
@@ -51,7 +55,8 @@ export class RepairRunner {
       waiting = Promise.withResolvers<undefined>();
       this.#repairWaiters.set(id, waiting);
     }
-    await this.#host.arm(Date.now() + REPAIR_CONTINUE_MS);
+    const job = readRepairJob(this.#sql);
+    await this.#host.arm(Math.max(Date.now() + REPAIR_CONTINUE_MS, job?.retryAt ?? 0));
     await waiting.promise;
     const result = repairJobResult<T>(this.#sql, id);
     if (result === undefined) throw new Error('a completed repair has no durable result');
@@ -59,28 +64,36 @@ export class RepairRunner {
   }
 
   async advance(now: number): Promise<boolean> {
-    if (readRepairJob(this.#sql) === undefined) return false;
-    // Explicit continuation survives more failures than the platform's finite automatic retries.
+    const initial = readRepairJob(this.#sql);
+    if (initial === undefined) return false;
+    if ((initial.retryAt ?? 0) > now) {
+      await this.#host.arm(initial.retryAt ?? now);
+      return true;
+    }
+    // Explicit continuation survives more failures than the host's finite automatic retries.
     await this.#host.arm(Date.now() + REPAIR_CONTINUE_MS);
     for (let index = 0; index < REPAIR_STEPS_PER_ALARM; index += 1) {
-      const advance = (): string | undefined =>
-        this.#host.storage.transactionSync(() => {
+      const advance = (): string | undefined => {
+        return this.#host.storage.transactionSync(() => {
           const job = readRepairJob(this.#sql);
-          if (job === undefined) return undefined;
-          const input = { ...this.#host.input(now), limits: job.limits };
+          if (job === undefined) return;
+          const input = { ...this.#host.input(job.preparedAt), limits: job.limits };
           let step: RepairStep<unknown>;
           switch (job.operation) {
-            case 'commit':
+            case 'commit': {
               step = advancePreparedCommit(input, job);
               break;
-            case 'data':
+            }
+            case 'data': {
               step = advancePreparedData(input, job);
               break;
-            case 'seed':
+            }
+            case 'seed': {
               step = advancePreparedSeed(input, job);
               break;
+            }
           }
-          if (step.kind !== 'completed') return undefined;
+          if (step.kind !== 'completed') return;
           const revision = readRevision(this.#sql);
           completeRepairJob(
             this.#sql,
@@ -96,24 +109,50 @@ export class RepairRunner {
           );
           return job.id;
         });
-      const finished = await this.#host.queue.run(() => {
+      };
+      const finished = await this.#host.queue.run(async () => {
         try {
           return advance();
         } catch (error) {
-          if (!(error instanceof RepairRowTooLargeError)) throw error;
+          if (error instanceof RepairPublicationProbed) {
+            this.#host.storage.transactionSync(() => {
+              const owner = readRepairJob(this.#sql);
+              if (owner?.id !== error.next.id || owner.phase !== 'preflight')
+                throw new Error('the repair probe owner changed');
+              advanceRepairJob(this.#sql, error.next);
+            });
+            return;
+          }
+          if (!(error instanceof RepairRowTooLargeError)) {
+            const job = readRepairJob(this.#sql);
+            if (job !== undefined) {
+              const retryAt = now + retryDelayMs((job.failures ?? 0) + 1);
+              try {
+                this.#host.storage.transactionSync(() => {
+                  retryRepairJob(this.#sql, job, retryAt);
+                });
+              } finally {
+                // Replace the speculative 1ms alarm, rather than asking an earliest-only arm to
+                // move it later. While this job is active, its pinned maintenance cannot run.
+                await (this.#host.defer ?? this.#host.arm)(retryAt);
+              }
+            }
+            throw error;
+          }
           // The failed probe's transaction has fully rolled back. Refuse this group only now,
           // using another transaction; no partial SQL update or cursor movement can escape it.
           return this.#host.storage.transactionSync(() => {
             const job = readRepairJob(this.#sql);
-            if (job === undefined || job.phase !== 'preflight') throw error;
+            if (job?.phase !== 'preflight') throw error;
             if (job.operation === 'seed') {
               advanceRepairJob(this.#sql, {
                 ...job,
                 group: job.group + 1,
                 phase: 'preflight',
                 after: '',
+                matched: 0,
               });
-              return undefined;
+              return;
             }
             releaseRepairGroup(
               this.#sql,

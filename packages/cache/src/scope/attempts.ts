@@ -1,4 +1,3 @@
-import { createRepairStorageRef, isRepairStorageRef } from '@stayingupwind/core/cache';
 import { createId } from '@stayingupwind/core/util';
 import {
   ATTEMPT_ID_PREFIX,
@@ -10,6 +9,7 @@ import {
 
 import { repairStorageRef } from './artifact-repair.ts';
 import { HELD_WITHOUT_CHARGE, ownedUploadOf } from './artifacts.ts';
+import { freshUploadStorageRef } from './attempt-upload.ts';
 import {
   type EntryIdentity,
   findEntry,
@@ -385,6 +385,7 @@ function checkLease(input: TxInput, attemptId: string, fencingToken: number): Le
     );
   }
   if (attempt.lease_expires_at <= input.now) {
+    if (input.deferExpiredLease === true) return refuse('lease_expired', 'the lease has expired');
     const events: EventInput[] = [];
     endAttempt(input, attempt, { status: 'expired', regeneration: 'idle' }, events);
     record(input, events);
@@ -453,42 +454,6 @@ export function reservedBytes(sql: SqlStorage, sha256: string): number {
       sha256,
     )
     .one().bytes;
-}
-
-/** Reuse one fresh reservation per attempt and SHA, across roles and idempotent retries. */
-function freshUploadStorageRef(
-  sql: SqlStorage,
-  attemptId: string,
-  upload: UploadedArtifact,
-  namespace: string,
-): string {
-  const previous = sql
-    .exec<{ storage_ref: string }>(
-      `SELECT aa.storage_ref FROM attempt_artifacts aa
-     WHERE aa.attempt_id = ? AND aa.sha256 = ?
-       AND NOT EXISTS (SELECT 1 FROM artifacts a
-         WHERE a.sha256 = aa.sha256 AND a.storage_ref = aa.storage_ref)
-     ORDER BY aa.role LIMIT 1`,
-      attemptId,
-      upload.sha256,
-    )
-    .toArray()[0]?.storage_ref;
-  if (
-    previous !== undefined &&
-    previous !== upload.avoidStorageRef &&
-    isRepairStorageRef(previous) &&
-    previous.startsWith(`r/${namespace}/`)
-  )
-    return previous;
-  const storageRef = createRepairStorageRef(namespace);
-  // A collision retry rotates every role together; an older concurrent retry reuses the new key.
-  sql.exec(
-    `UPDATE attempt_artifacts SET storage_ref = ? WHERE attempt_id = ? AND sha256 = ?`,
-    storageRef,
-    attemptId,
-    upload.sha256,
-  );
-  return storageRef;
 }
 
 /** An artifact the gateway is about to store for the attempt: counted against the scope first. */
