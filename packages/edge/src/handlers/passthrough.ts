@@ -250,6 +250,11 @@ export interface PassthroughInput {
   readonly onAsked?: ((soFar: () => number) => void) | undefined;
   /** An optional observer of the actual split dispatch, without inspecting the application body. */
   readonly onDispatched?: ((read: () => Dispatched | undefined) => void) | undefined;
+  /**
+   * Handed the Worker's answer before the edge's protocol is taken off it: what the runtime says on
+   * it of the regeneration the request asked for (`CACHE_OUTCOME_HEADER`, `triggerDetached`).
+   */
+  readonly onAnswered?: ((answer: Response) => void) | undefined;
 }
 
 /** The router prefetches Next.js's client sends (`next-router-prefetch`), by the number it uses. */
@@ -625,6 +630,7 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   }
   // Read before the header goes with every other the edge's protocol reserves, below.
   takeResponseInvalidation(input, originResponse);
+  input.onAnswered?.(originResponse);
   const response = forwardedResponse(originResponse, input.forwarding, input.request.method);
   const headers = response.headers;
   if (input.middleware !== undefined) {

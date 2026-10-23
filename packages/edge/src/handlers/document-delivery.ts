@@ -82,6 +82,17 @@ export interface ServedGeneration {
   /** Give its ask back when the visitor takes the resume away before it answers. */
   readonly onAbandoned?: (() => void) | undefined;
   /**
+   * The regeneration asked beside the resume has begun: its answer said the runtime accepted it
+   * (`regenerationAccepted`), and the resume has ended, which is where the runtime begins it. Not
+   * for an ask it skipped, nor for one whose resume was let go before it answered.
+   */
+  readonly onRegenerating?: (() => void) | undefined;
+  /**
+   * The regeneration asked beside the resume will not begin: the resume answered without the
+   * runtime accepting it, or never answered. Called once, and never beside `onRegenerating`.
+   */
+  readonly onDeclined?: (() => void) | undefined;
+  /**
    * The regeneration asked behind a document complete in itself as a request of its own, there being
    * no resume to ask beside (`triggerDetached`): the document's point counts its dispatches.
    */

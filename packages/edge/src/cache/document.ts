@@ -11,7 +11,7 @@ import { loadShell, type ShellLoadResult } from '../strategies/shell-loader.ts';
 import { buildWasInvalidated } from './build-invalidated.ts';
 import { condemnedIn } from './condemned.ts';
 import { decideGeneration, type GenerationDecision } from './decision.ts';
-import { readAbsentRecordBehind } from './generation-current.ts';
+import { followRegeneration, readAbsentRecordBehind } from './generation-current.ts';
 import { heldGeneration, readServedAgain } from './generation-hold.ts';
 import { type GenerationKey, type GenerationLoad, readGeneration } from './generation-loader.ts';
 import { memberInHand, type MemberLoad, type MemberRead } from './member.ts';
@@ -176,8 +176,8 @@ function wantedRegeneration(
 
 /**
  * The record `target` names is served asking for its regeneration: read again behind the response
- * a second on rather than a hold on (`readServedAgain`). A member's own is read as it was, its
- * absence held (`startMemberRead`).
+ * a second on rather than a hold on (`readServedAgain`), and served stale, at the authority as well
+ * (`servedStale`). A member's own is read as it was, its absence held (`startMemberRead`).
  */
 function readTargetAgain(
   input: CachedDocumentInput,
@@ -190,6 +190,31 @@ function readTargetAgain(
   }
   const options = { holdAbsence: target.member === true, servedStale };
   readServedAgain(input.edge, target.pack, input.settings, options);
+}
+
+/**
+ * What follows the regeneration a request asked for of the stale record it served, once the runtime
+ * has begun it: the record read for what it publishes (`followRegeneration`). And where it will not
+ * begin — the runtime answered without accepting it, or never answered — the read of the authority
+ * the request left to that follow-up, made now, as it would have been had the request asked for
+ * nothing (`readTargetAgain`). Not for a partial fallback's target, which is read through its own
+ * cadence (`refreshRecord`).
+ */
+function followAsked(
+  input: CachedDocumentInput,
+  target: RegenerationTarget,
+): { readonly begun: () => void; readonly declined: () => void } | undefined {
+  if (input.refreshRecord !== undefined) {
+    return undefined;
+  }
+  return {
+    begun: () => {
+      followRegeneration(input.edge, target.pack, input.settings);
+    },
+    declined: () => {
+      readTargetAgain(input, target, true);
+    },
+  };
 }
 
 /** Serve a record fresh or stale; stale, regenerated behind the response. */
@@ -208,6 +233,9 @@ function serveRecord(
     wanted !== undefined && shouldAsk(edge, input.regenerationKey ?? wanted.entryId, settings)
       ? wanted
       : undefined;
+  // The stale record's own regeneration, asked for by this request, is followed once the runtime
+  // has begun it: beside a resume, once that has ended; asked on its own, as it is answered.
+  const followed = asked === target ? followAsked(input, target) : undefined;
   // A document nothing resumes has no request to ask beside: the regeneration is its own, counted
   // in the document's point.
   const detached =
@@ -217,6 +245,8 @@ function serveRecord(
           middleware: middlewareOf(input),
           target: asked,
           function: input.entry.function,
+          onAccepted: followed?.begun,
+          onDeclined: followed?.declined,
         })
       : undefined;
   return handleDocument({
@@ -237,15 +267,19 @@ function serveRecord(
         asked === undefined || complete
           ? undefined
           : allowAnotherAsk(edge, input.regenerationKey ?? asked.entryId),
+      onRegenerating: complete ? undefined : followed?.begun,
+      onDeclined: complete ? undefined : followed?.declined,
       // Served stale with its own regeneration wanted — asked for by this request, or by one before
       // it within the cooldown — the record is read again a second on, for what that regeneration
       // publishes: once the document is certain to go out from it, and not where it is handed to the
-      // application whole instead (`delegateSandboxedDocument`). A member's upgrade, asked beside a
-      // fresh record, replaces nothing served here.
+      // application whole instead (`delegateSandboxedDocument`). The authority is read now only for
+      // a regeneration asked before: one this request asked for has not begun, and a read now would
+      // find nothing of it, where its follow-up reads once it has (`followed`). A member's upgrade,
+      // asked beside a fresh record, replaces nothing served here.
       onServed:
         wanted === target
           ? () => {
-              readTargetAgain(input, target, true);
+              readTargetAgain(input, target, asked !== target);
             }
           : undefined,
     },

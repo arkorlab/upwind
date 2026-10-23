@@ -247,7 +247,10 @@ export function heldGeneration(
  * Asked once the request is known to serve the record — a document certain to go out from it
  * (`onServed`), or the foreground regeneration that replaces it (`cache/document.ts`) — and not by
  * what reads it. Nothing where this isolate no longer holds that record — one a read put in place
- * since, or none — nor under a hold of zero, which holds nothing.
+ * since, or none — nor under a hold of zero, which holds nothing. Served stale (`servedStale`), the
+ * authority is read for it as well, a second on (`readCurrentBehind`): not by the request that asked
+ * for its regeneration, which the authority is read for once the runtime has begun it
+ * (`followRegeneration`).
  */
 export function readServedAgain(
   edge: EdgeContext,
