@@ -46,6 +46,13 @@ export const HEADER_RULES_LEFT_HEADER = 'x-arkor-header-rules-left';
  * Only names travel, not another copy of their values. Stripped before the answer reaches a client.
  */
 export const HEADER_RULES_AFTER_HEADER = 'x-arkor-header-rules-after';
+/**
+ * How many cookies the later routing fields append to the Function's own cookies, beside
+ * `HEADER_RULES_AFTER_HEADER`. The edge inserts the earlier rule and middleware cookies before
+ * that final block, so distinct cookies survive and a later cookie of the same name wins. Values
+ * are not copied into the protocol; the runtime owns even a zero count. Stripped before delivery.
+ */
+export const HEADER_RULES_AFTER_COOKIE_COUNT_HEADER = 'x-arkor-header-rules-after-cookies';
 /** Resume this prerender: render only what its postponed state left out. */
 export const RESUME_PRERENDER_HEADER = 'x-arkor-prerender';
 /** The same, escaped where a header cannot carry it as it is (`pathHeaders`). */
