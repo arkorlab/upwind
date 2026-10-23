@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 
-import { deriveEntry } from '@stayingupwind/core/cache';
+import { deriveEntry, kvGenerationKey } from '@stayingupwind/core/cache';
 import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manifest';
 import { NAVIGATION_REQUEST_HEADERS } from '@stayingupwind/core/request';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -37,6 +37,8 @@ const PROPS = '{"pageProps":{"slug":"first"}}';
 const LAZY_PROPS = '{"pageProps":{"slug":"new"}}';
 const LAZY_PAGE = '<!doctype html><html><body>new</body></html>';
 const JSON_TYPE = 'application/json';
+const REFRESHED_PAGE = '<!doctype html><html><body>refreshed</body></html>';
+const REFRESHED_PROPS = '{"pageProps":{"slug":"refreshed"}}';
 
 function shellOf(text: string) {
   return {
@@ -100,12 +102,29 @@ const MANIFEST = buildProjectManifest({
   dynamicRoutes: [{ sourceRegex: '^/posts/([^/]+?)(?:/)?$', route: CLASS }],
 });
 
-/** What the stand-in edge answers each path with, and the generations of each record it read. */
+/**
+ * What the stand-in edge answers each path with, and the generations of each record it read in
+ * answering, as the stack keeps them of the traced request — and, by record, those the cache holds
+ * now (`now`), where a refresh or the cache's own room changed them since.
+ */
 const fixture = {
   origin: new URL('http://127.0.0.1'),
   answers: new Map<string, { account: string; body: string; headers?: Record<string, string> }>(),
   generations: new Map<string, Readonly<Record<string, RecordedGeneration>>>(),
+  now: new Map<string, Readonly<Record<string, RecordedGeneration>>>(),
 };
+
+/** The generations the edge read in answering, as the stack keeps them of a traced request. */
+function readInAnswering(): Record<string, RecordedGeneration> {
+  return Object.fromEntries(
+    [...fixture.generations].flatMap(([entry, held]) => {
+      const key = kvGenerationKey(SCOPE, entry);
+      return Object.entries(held).map(
+        ([seq, generation]) => [`${key}|${seq}`, generation] as const,
+      );
+    }),
+  );
+}
 
 /** A generation of a page's record, holding `props` as its props. */
 function generationHolding(props: string, page?: string): RecordedGeneration {
@@ -138,13 +157,14 @@ const server = createServer((request, response) => {
   if (pathname.startsWith('/_backstage/generation/')) {
     const entry = decodeURIComponent(pathname.split('/').at(-1) ?? '');
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify(fixture.generations.get(entry) ?? {}));
+    response.end(JSON.stringify(fixture.now.get(entry) ?? fixture.generations.get(entry) ?? {}));
     return;
   }
   if (pathname.startsWith('/_backstage/')) {
     if (request.method === 'GET') {
+      const generations = readInAnswering();
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ decision: null, regenerated: null, generations: {} }));
+      response.end(JSON.stringify({ decision: null, regenerated: null, generations }));
       return;
     }
     response.writeHead(204).end();
@@ -218,6 +238,7 @@ describe('pages the edge serves itself', () => {
   beforeEach(() => {
     fixture.answers.clear();
     fixture.generations.clear();
+    fixture.now.clear();
   });
 
   afterAll(async () => {
@@ -398,5 +419,94 @@ describe('pages the edge serves itself', () => {
       kind: 'failed',
       reason: expect.stringContaining('its loading shell was due') as unknown,
     });
+  });
+
+  // A stale record's page or props, whose refresh replaced — or whose cache let go of — the
+  // generation the edge answered from before the check read the record (Codex, greptile): held to
+  // that generation, as the edge read it in answering, not to what the record holds now.
+  it.each([
+    {
+      label: 'replaced by a refresh',
+      requested: MEMBER,
+      route: MEMBER_ROUTE,
+      entry: () => 'first-entry',
+      read: { 2: generationHolding(PROPS, LAZY_PAGE) },
+      now: { 3: generationHolding(REFRESHED_PROPS, REFRESHED_PAGE) },
+    },
+    {
+      label: 'let go of',
+      requested: LAZY,
+      route: FALLBACK_ROUTE,
+      entry: lazyEntry,
+      read: { 1: generationHolding(LAZY_PROPS, LAZY_PAGE) },
+      now: {},
+    },
+  ])(
+    'accepts a page served from the generation it was answered from, $label since',
+    async (example) => {
+      fixture.answers.set(example.requested, {
+        account: 'static-page;src=kv;m=12345678',
+        body: LAZY_PAGE,
+      });
+      const entry = await example.entry();
+      fixture.generations.set(entry, example.read);
+      fixture.now.set(entry, example.now);
+
+      await expect(verdictAt(example.requested, example.route)).resolves.toStrictEqual({
+        kind: 'ok',
+      });
+    },
+  );
+
+  it.each([
+    {
+      label: 'replaced by a refresh',
+      url: DATA,
+      route: MEMBER_ROUTE,
+      props: PROPS,
+      entry: () => 'first-entry',
+      now: { 2: generationHolding(REFRESHED_PROPS) },
+    },
+    {
+      label: 'let go of',
+      url: LAZY_DATA,
+      route: FALLBACK_ROUTE,
+      props: LAZY_PROPS,
+      entry: lazyEntry,
+      now: {},
+    },
+  ])(
+    'accepts props served from the generation they were answered from, $label since',
+    async (example) => {
+      fixture.answers.set(example.url, propsAnswer(example.props));
+      const entry = await example.entry();
+      fixture.generations.set(entry, { 1: generationHolding(example.props) });
+      fixture.now.set(entry, example.now);
+
+      await expect(
+        partFailure(stackOf(), propsOf(example.url, example.route)),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  it('still rejects a page served with bytes neither the generation it was answered from nor the one since holds', async () => {
+    fixture.answers.set(MEMBER, { account: 'static-page;src=kv;m=12345678', body: ABOUT });
+    fixture.generations.set('first-entry', { 2: generationHolding(PROPS, LAZY_PAGE) });
+    fixture.now.set('first-entry', { 3: generationHolding(REFRESHED_PROPS, REFRESHED_PAGE) });
+
+    await expect(verdictAt(MEMBER, MEMBER_ROUTE)).resolves.toMatchObject({
+      kind: 'failed',
+      reason: expect.stringContaining('nor those of a generation its record holds') as unknown,
+    });
+  });
+
+  it('still rejects props served with bytes neither the generation they were answered from nor the one since holds', async () => {
+    fixture.answers.set(DATA, propsAnswer(LAZY_PROPS));
+    fixture.generations.set('first-entry', { 1: generationHolding(PROPS) });
+    fixture.now.set('first-entry', { 2: generationHolding(REFRESHED_PROPS) });
+
+    await expect(partFailure(stackOf(), propsOf(DATA, MEMBER_ROUTE))).resolves.toContain(
+      'not those of a generation',
+    );
   });
 });

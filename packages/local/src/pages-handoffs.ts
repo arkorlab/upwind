@@ -8,9 +8,11 @@ import {
   EDGE_HEADER,
   failed,
   failureStatus,
+  type Kept,
   recordedGenerationsOf,
   skipped,
   type Verdict,
+  withGenerationEvidence,
 } from './answers.ts';
 import type { ReadOptions, Reading } from './reading.ts';
 import { classifiedReads } from './routing-reads.ts';
@@ -307,6 +309,19 @@ function loadingVerdict(
 }
 
 /**
+ * The stack as a request's answer is judged by the generations it was answered from: those the edge
+ * read in answering it, as the stack kept them of the request (`withGenerationEvidence`), where it
+ * is handed them — not those its record holds by the time they are asked for, which a refresh may
+ * have replaced and the cache let go of since (Codex, greptile).
+ */
+async function answeredFrom(
+  stack: CheckedStack,
+  kept: (() => Promise<Kept>) | undefined,
+): Promise<CheckedStack> {
+  return kept === undefined ? stack : withGenerationEvidence(stack, await kept());
+}
+
+/**
  * A Pages answer the edge served itself, held to what makes it shareable and to what it stands for
  * (`pageVerdict`, `loadingVerdict`, `dataVerdict`): read at its headers alone, what they say is all
  * there is to judge of its bytes.
@@ -315,7 +330,12 @@ async function servedVerdict(
   stack: CheckedStack,
   url: URL,
   sent: Readonly<Record<string, string>>,
-  read: { readonly answer: Reading; readonly served: string; readonly asked: PagesAsked },
+  read: {
+    readonly answer: Reading;
+    readonly served: string;
+    readonly asked: PagesAsked;
+    readonly kept: (() => Promise<Kept>) | undefined;
+  },
 ): Promise<Verdict> {
   const { answer, served, asked } = read;
   const unhealthy = failureStatus(answer);
@@ -326,7 +346,7 @@ async function servedVerdict(
   const shared = sharedFailure(answer, served);
   if (shared !== undefined) return failed(shared);
   if (served === PAGES_FALLBACK) return loadingVerdict(stack, url, { answer, sent });
-  const generations = await generationsOf(stack, asked);
+  const generations = await generationsOf(await answeredFrom(stack, read.kept), asked);
   return served === PAGES_DATA
     ? dataVerdict(answer, generations)
     : pageVerdict(stack, url, { answer, asked, generations });
@@ -335,16 +355,21 @@ async function servedVerdict(
 /**
  * A request of a Pages class judged as the edge answers it: by its class, its representation and
  * its method (`pagesAskedOf`), a handoff the edge gives it — the Function's to answer, and no shell
- * proof — or an answer the edge served itself (`servedVerdict`). Nothing for a request of no Pages
- * class answered as none.
+ * proof — or an answer the edge served itself (`servedVerdict`), by the generations the edge
+ * answered it from where what the stack kept of the request is handed in (`kept`): read once, and
+ * only for a verdict given by them. Nothing for a request of no Pages class answered as none.
  */
 export async function pagesHandoffVerdict(
   stack: CheckedStack,
   url: URL,
   sent: Readonly<Record<string, string>>,
-  read: { readonly answer: Reading; readonly method?: 'GET' | 'HEAD' },
+  read: {
+    readonly answer: Reading;
+    readonly method?: 'GET' | 'HEAD';
+    readonly kept?: (() => Promise<Kept>) | undefined;
+  },
 ): Promise<Verdict | undefined> {
-  const { answer, method = 'GET' } = read;
+  const { answer, method = 'GET', kept } = read;
   const asked = pagesAskedOf(stack, url, sent, method);
   const account = answeredBy(answer);
   const served = SERVED.exec(account)?.[1];
@@ -360,7 +385,7 @@ export async function pagesHandoffVerdict(
   const classification = `${asked.kind}${asked.data ? ' props' : ''}${asked.head ? ' HEAD' : ''}`;
   if (served !== undefined) {
     return servesAs(asked, served)
-      ? await servedVerdict(stack, url, sent, { answer, served, asked })
+      ? await servedVerdict(stack, url, sent, { answer, served, asked, kept })
       : failed(
           `Pages answer ${served} does not match the shared request classification ${classification}`,
         );

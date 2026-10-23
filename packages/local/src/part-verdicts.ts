@@ -421,16 +421,17 @@ async function askedVerdict(
   if (middlewareAnswered(answer) !== undefined) {
     return skipped(APPLICATIONS);
   }
-  const pages = await pagesHandoffVerdict(stack, part.url, asked, { answer });
+  // What the middleware decided, which the edge answers a part it covers behind, and the generations
+  // the edge answered it from: read once — by a Pages answer the edge served, which it then judges.
+  const kept = () => keptOf(stack, trace, part.url, asked);
+  const pages = await pagesHandoffVerdict(stack, part.url, asked, { answer, kept });
   if (pages !== undefined) return pages;
-  // What the middleware decided, which the edge answers a part it covers behind.
-  const kept = await keptOf(stack, trace, part.url, asked);
-  const { decided } = kept;
-  const captured = withGenerationEvidence(stack, kept);
+  const evidence = await kept();
+  const captured = withGenerationEvidence(stack, evidence);
   const covered = middlewareCovers(stack, part.url, asked);
   return await partAnswerVerdict(captured, part, {
     answer,
-    decided,
+    decided: evidence.decided,
     covered,
     coding,
     asked,
