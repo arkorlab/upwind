@@ -29,12 +29,13 @@ export function edgeReads(headers: Readonly<Record<string, string>> | Headers): 
 }
 
 /**
- * The standalone application's pre-middleware routing view: the front line's coding, then the
- * shared forwarder's Via, internal-header and recovery-cookie handling. The standalone host owns
- * no credentials. Only request headers supply clientIp here; runtime.cf country is not fabricated.
- * Keep this apart from raw classification and a middleware's already-modified requestHeaders.
+ * What the edge hands on of a request, exactly (`passthroughHeaders`): the front line's coding, then
+ * the shared forwarder's Via, internal-header and recovery-cookie handling — which takes `Host` off
+ * with the rest it does not hand on. The standalone host owns no credentials. Only request headers
+ * supply clientIp here; runtime.cf country is not fabricated. What the middleware is handed, as the
+ * edge reads its answer against (`readMiddlewareAnswer`).
  */
-export function routedReads(
+export function forwardedReads(
   url: URL,
   headers: Readonly<Record<string, string>> | Headers,
 ): Headers {
@@ -44,6 +45,32 @@ export function routedReads(
     previewHost: url.hostname,
     clientIp: handed.get('cf-connecting-ip') ?? undefined,
   });
+}
+
+/**
+ * `headers` with the `Host` the Function's runtime gives a request that reaches it without one —
+ * the host of the URL it is asked under (`edge-invoke.ts`, `node-bridge.ts` in the runtime) — before
+ * Next.js routes it: forwarding takes it off, and a rule asking of it is answered there as every
+ * request carries it (greptile).
+ */
+function withHostRestored(url: URL, headers: Headers): Headers {
+  if (!headers.has('host')) {
+    headers.set('host', url.host);
+  }
+  return headers;
+}
+
+/**
+ * The standalone application's pre-middleware routing view, as Next.js routes a request: what the
+ * edge hands on (`forwardedReads`), with the `Host` the Function's runtime gives it back
+ * (`withHostRestored`). Keep this apart from raw classification and a middleware's
+ * already-modified requestHeaders.
+ */
+export function routedReads(
+  url: URL,
+  headers: Readonly<Record<string, string>> | Headers,
+): Headers {
+  return withHostRestored(url, forwardedReads(url, headers));
 }
 
 /** The credentials the stack's standalone host keeps for itself: none. */
@@ -107,18 +134,22 @@ export function classifiedReads(
  * The headers the middleware left on a request as the edge hands them on, and routes them by behind
  * it (`handedHeaders`): the shared forwarder's handling, under what the request as sent was
  * forwarded with (`routedReads`) — not the front line's coding again, which the middleware was
- * handed already.
+ * handed already — and the `Host` the Function's runtime gives it back, as Next.js routes it
+ * (`withHostRestored`).
  */
 export function handedReads(
   url: URL,
   sent: Readonly<Record<string, string>> | Headers,
   left: Headers,
 ): Headers {
-  return sanitizePassthroughHeaders(left, {
-    previewDomain: 'invalid',
-    previewHost: url.hostname,
-    clientIp: edgeReads(sent).get('cf-connecting-ip') ?? undefined,
-  });
+  return withHostRestored(
+    url,
+    sanitizePassthroughHeaders(left, {
+      previewDomain: 'invalid',
+      previewHost: url.hostname,
+      clientIp: edgeReads(sent).get('cf-connecting-ip') ?? undefined,
+    }),
+  );
 }
 
 /** The middleware's matcher view, including the data marker Next.js sets before matching. */

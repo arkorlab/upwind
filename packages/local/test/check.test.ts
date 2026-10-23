@@ -4108,6 +4108,45 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
+    it('is asked for as a request a rule of next.config sets other headers for, and held to them', async () => {
+      // A download's disposition, on a cookie alone: no type of its own, but a header all the same.
+      const download: HeaderRule = {
+        sourceRegex: String.raw`^/a\.txt$`,
+        has: [{ type: 'cookie', key: 'download' }],
+        headers: { 'Content-Disposition': 'attachment' },
+      };
+      const asFile = {
+        'content-type': TEXT,
+        'cache-control': REVALIDATE,
+        'x-arkor-edge': FILE_EDGE,
+      };
+      answers.set('/a.txt', {
+        headers: asFile,
+        body: 'kept bytes',
+        // As the edge holds an answer a rule judged a cookie for: the visitor's alone.
+        withCookie: {
+          name: 'download',
+          headers: { 'content-disposition': 'attachment', 'cache-control': GATED },
+        },
+      });
+      const laid = await checkStack(stackOf([], files, { headerRules: [download] }));
+      answers.set('/a.txt', {
+        headers: asFile,
+        body: 'kept bytes',
+        withCookie: { name: 'download', headers: { 'cache-control': GATED } },
+      });
+      const omitted = await checkStack(stackOf([], files, { headerRules: [download] }));
+
+      expect(laid).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(omitted.failures).toStrictEqual([
+        {
+          path: '/a.txt',
+          reason:
+            'asked for as the request a rule of next.config sets headers on it for (the cookie download=1), answered with content-disposition none, not the attachment the application set',
+        },
+      ]);
+    });
+
     it('reports an unwitnessed quantified type condition instead of passing it over', async () => {
       answers.set('/a.txt', {
         headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
@@ -7891,6 +7930,34 @@ describe('what the check makes of the middleware', () => {
       // The Function, handed the probe as the edge forwards it, rewrites it onto the front page.
       expect(forwardedOnly).toStrictEqual({ checked: 2, failures: [], skipped: [] });
       expect(neverSent.failures).toStrictEqual([
+        { path: 'app', reason: 'answered 200 for a pathname no file is held for, not 404' },
+      ]);
+    });
+
+    it('is claimed where a rule asks of the Host the Function routes it under', async () => {
+      answers.set('/404', notFoundFile);
+      answers.set(MISS, { headers: { 'content-type': HTML }, body: FRONT + REST });
+      // Forwarding takes `Host` off, and the Function's runtime gives it back from the URL before
+      // Next.js routes the miss: a rule on it claims every miss there, and one on its absence none.
+      const hosted = await checkStack(
+        stackOf([], files, {
+          exported: true,
+          catchAll: true,
+          catchAllWhen: [{ type: 'header', key: 'host' }],
+          functions: ['app'],
+        }),
+      );
+      const hostless = await checkStack(
+        stackOf([], files, {
+          exported: true,
+          catchAll: true,
+          catchAllUnless: [{ type: 'header', key: 'host' }],
+          functions: ['app'],
+        }),
+      );
+
+      expect(hosted).toStrictEqual({ checked: 2, failures: [], skipped: [] });
+      expect(hostless.failures).toStrictEqual([
         { path: 'app', reason: 'answered 200 for a pathname no file is held for, not 404' },
       ]);
     });

@@ -10,6 +10,8 @@ interface RuleRequest {
   readonly headers: Readonly<Record<string, string>>;
   readonly url: URL;
   readonly what: string;
+  /** The rule the request selects. */
+  readonly rule: HeaderRule;
 }
 
 export interface RuleRequests {
@@ -107,6 +109,7 @@ export function requestsForRules(
       what:
         [carried.carried, made.lacked].filter((part) => part !== '').join(', ') ||
         'as it was asked',
+      rule,
     });
   }
   return { requests };

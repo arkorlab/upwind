@@ -105,9 +105,9 @@ export function missOf(stack: CheckedStack, prover: string): Miss {
     const url = new URL(pathname, stack.site);
     // As it is sent (`probeVerdict`): as the check's own agent, under the site's origin — the `Host`
     // its URL names and the forwarding headers beside it — each of which a rule may ask of. And as
-    // it is routed (`routedReads`, Codex): the edge judges its rules on what the forwarder hands on,
-    // and the Function, which an export's rules run in, is handed that — the edge's own `Via` among
-    // it — so a rule asking of one claims the miss there as here.
+    // the Function routes it (`routedReads`), which answers the probe whatever the edge made of it:
+    // handed what the forwarder hands on (Codex) — the edge's own `Via` among it — and given its
+    // `Host` back by its runtime (greptile), so a rule asking of either claims the miss there as here.
     const headers = routedReads(url, forwarded(stack.site, proverNavigation(prover)));
     const claimed =
       Object.hasOwn(manifest.routes, pathname) ||
