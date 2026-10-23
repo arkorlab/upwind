@@ -99,8 +99,9 @@ describe('the route the edge says it served a document as', () => {
 
 describe('whether a rule claims a request as the middleware left it', () => {
   // A rule behind the filesystem, which claims a member of a class carrying a header.
-  const manifest: Pick<ProjectManifest, 'reservedRoutes'> = {
+  const manifest: Pick<ProjectManifest, 'reservedRoutes' | 'routes'> = {
     reservedRoutes: [{ sourceRegex: '^/items/(.+)$', has: [{ type: 'header', key: 'x-tag' }] }],
+    routes: {},
   };
   const stack = { manifest } as unknown as CheckedStack;
   const url = new URL('https://site.example/items/1');

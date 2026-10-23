@@ -14,7 +14,7 @@ import {
 } from '@stayingupwind/core/request';
 import { compareCodeUnits } from '@stayingupwind/core/util';
 
-import { edgeReads, routedReads } from './routing-reads.ts';
+import { classifiedReads, routedReads } from './routing-reads.ts';
 
 /**
  * A request past the rules of `next.config` that claim every request the check makes of something
@@ -45,13 +45,19 @@ export interface Target {
 /** The document gates do not apply to a file classified ahead of them. */
 export type WitnessClass = 'document' | 'file';
 
-/** File reservations run at the hosted gate; document classification precedes that gate. */
+/**
+ * File reservations run at the hosted gate, on what forwarding hands on (`routedReads`); a
+ * document's run in its classification, which precedes that gate and reads a forwarding field a
+ * rule names as it is handed on as well (`classifiedReads`, Codex).
+ */
 export function reservedReads(
   target: Target,
   url: URL,
   headers: Readonly<Record<string, string>>,
 ): Headers {
-  return target.requestClass === 'file' ? routedReads(url, headers) : edgeReads(headers);
+  return target.requestClass === 'file'
+    ? routedReads(url, headers)
+    : classifiedReads(target.manifest, url, headers);
 }
 
 /** Whether the rules `keep` keeps alone claim the target asked with `headers`, at `url`. */

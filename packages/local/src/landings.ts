@@ -21,6 +21,7 @@ import {
   type Verdict,
   edgeReads,
 } from './answers.ts';
+import { classifiedReads, handedReads } from './routing-reads.ts';
 
 /**
  * Where a document landed, as the check reads it (`documents.ts`): the route the edge's account of
@@ -79,7 +80,8 @@ export function exactRouteAt(manifest: ProjectManifest, pathname: string, key: s
 /**
  * The route of the manifest a document request at `url` asks for, by its key, as the edge routes
  * one before any middleware runs: the pathname's own, or — but for one Next.js resolves exactly — a
- * class's member (`matchDynamicRoute`); none where no route of the build's is it.
+ * class's member (`matchDynamicRoute`), judged on the headers the edge classifies it on
+ * (`classifiedReads`, Codex); none where no route of the build's is it.
  */
 export function documentRouteAt(
   manifest: ProjectManifest,
@@ -90,7 +92,7 @@ export function documentRouteAt(
     findRouteEntry(manifest, url.pathname) ??
     (isExactPathname(manifest, url.pathname)
       ? undefined
-      : matchDynamicRoute(manifest, url, edgeReads(headers)));
+      : matchDynamicRoute(manifest, url, classifiedReads(manifest, url, headers)));
   return route?.pathname;
 }
 
@@ -283,16 +285,19 @@ export function claimedAsLeft(
   decided: MiddlewareResult | undefined,
 ): boolean {
   // Moved — rewritten, or its headers changed — the edge routes it again behind the rules ahead of
-  // the filesystem alone, as the path a client asked for (`hostedEntry`); left as it was, a pathname
-  // of the manifest so too, and a member of a class behind every rule ahead of the class
-  // (`dynamicRouteFor`).
+  // the filesystem alone, as the path a client asked for, on the headers the middleware left as
+  // forwarding hands them on (`hostedEntry`, `handedReads`); left as it was, a pathname of the
+  // manifest so too, and a member of a class behind every rule ahead of the class
+  // (`dynamicRouteFor`), on the headers it was classified on (`classifiedReads`, Codex).
   const moved =
     decided?.kind === 'continue' &&
     (decided.rewritten || !headersLeftAlone(sent.headers, decided.requestHeaders));
   if (moved) {
-    return isReserved(stack.manifest, decided.url, decided.requestHeaders, true);
+    const routed = handedReads(decided.url, sent.headers, decided.requestHeaders);
+    return isReserved(stack.manifest, decided.url, routed, true);
   }
-  return isReserved(stack.manifest, sent.url, edgeReads(sent.headers), sent.exact ?? true);
+  const classified = classifiedReads(stack.manifest, sent.url, sent.headers);
+  return isReserved(stack.manifest, sent.url, classified, sent.exact ?? true);
 }
 
 /**
@@ -325,8 +330,9 @@ function bypassHolds(
   stack: CheckedStack,
   sent: Pick<SentRequest, 'route' | 'url'>,
   headers: Headers,
+  routed: Headers = headers,
 ): boolean {
-  return hasBypassCookie(headers) || bypassForHolds(sent.route, sent.url, headers, stack.manifest);
+  return hasBypassCookie(headers) || bypassForHolds(sent.route, sent.url, routed, stack.manifest);
 }
 
 /**
@@ -346,11 +352,18 @@ export function shellBypassFailure(
   if (claimedAsLeft(stack, sent, decided)) {
     return 'answered from its shell, though a rule of next.config claims the request';
   }
+  // As the edge judges it (`bypassed`): the recovery cookie on what the middleware left, the route's
+  // `bypassFor` on that as forwarding hands it on; where none ran, both on the headers the request
+  // was classified on (`classifiedReads`, Codex).
   const left =
     decided?.kind === 'continue'
-      ? { at: { ...sent, url: decided.url }, headers: decided.requestHeaders }
-      : { at: sent, headers: edgeReads(sent.headers) };
-  return bypassHolds(stack, left.at, left.headers)
+      ? {
+          at: { ...sent, url: decided.url },
+          headers: decided.requestHeaders,
+          routed: handedReads(decided.url, sent.headers, decided.requestHeaders),
+        }
+      : { at: sent, headers: classifiedReads(stack.manifest, sent.url, sent.headers) };
+  return bypassHolds(stack, left.at, left.headers, left.routed)
     ? "answered from its shell, though its route's bypassFor holds for the request, which Next.js renders itself"
     : undefined;
 }
@@ -380,7 +393,7 @@ export function bypassedVerdict(
     }
     // No middleware ran: Next.js's where the route's bypassFor holds for the request as it was
     // sent, as for a coding the check asks for a page in as a browser does.
-    return bypassHolds(stack, sent, edgeReads(sent.headers))
+    return bypassHolds(stack, sent, classifiedReads(stack.manifest, sent.url, sent.headers))
       ? skipped(
           `left for Next.js to render as the route ${sent.route.pathname} itself, as its bypassFor holds for the request`,
         )
@@ -388,9 +401,12 @@ export function bypassedVerdict(
   }
   const landed = landingOf(stack, decided.url, decided);
   const left = decided.requestHeaders;
+  // The route's `bypassFor` on what the middleware left as forwarding hands it on (`bypassed` in the
+  // edge, Codex); the recovery cookie on what it left, which forwarding takes off.
+  const routed = handedReads(decided.url, sent?.headers ?? {}, left);
   if (
     landed === undefined ||
-    !(hasBypassCookie(left) || bypassForHolds(landed, decided.url, left, stack.manifest))
+    !(hasBypassCookie(left) || bypassForHolds(landed, decided.url, routed, stack.manifest))
   ) {
     return undefined;
   }

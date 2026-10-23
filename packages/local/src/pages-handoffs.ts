@@ -6,7 +6,6 @@ import {
   answeredBy,
   type CheckedStack,
   EDGE_HEADER,
-  edgeReads,
   failed,
   failureStatus,
   recordedGenerationsOf,
@@ -14,6 +13,7 @@ import {
   type Verdict,
 } from './answers.ts';
 import type { ReadOptions, Reading } from './reading.ts';
+import { classifiedReads } from './routing-reads.ts';
 import type { RecordedGeneration } from './workers/protocol.ts';
 
 /** A request the edge handed on, by the reason it gives. */
@@ -91,7 +91,7 @@ function pagesAskedOf(
   const classified = classifyRequest({
     method,
     url,
-    headers: edgeReads(headers),
+    headers: classifiedReads(manifest, url, headers),
     manifest,
     deployment: manifest.deployment,
   });
@@ -290,7 +290,11 @@ function loadingVerdict(
   read: { readonly answer: Reading; readonly sent: Readonly<Record<string, string>> },
 ): Verdict {
   const { answer, sent } = read;
-  const fallback = findPagesFallback(stack.manifest, url, edgeReads(sent));
+  const fallback = findPagesFallback(
+    stack.manifest,
+    url,
+    classifiedReads(stack.manifest, url, sent),
+  );
   if (fallback === undefined) {
     return failed(`answered as a pages-fallback the manifest holds none of at ${url.pathname}`);
   }

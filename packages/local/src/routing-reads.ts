@@ -1,6 +1,18 @@
 import { isPagesDataRequestPath } from '@stayingupwind/core/bundle';
 import type { ProjectManifest } from '@stayingupwind/core/manifest';
-import { dataRequestHeaders, sanitizePassthroughHeaders } from '@stayingupwind/core/request';
+import {
+  dataRequestHeaders,
+  EDGE_BYPASS_COOKIE,
+  getCookieValue,
+  sanitizePassthroughHeaders,
+} from '@stayingupwind/core/request';
+import {
+  CLASSIFIED_HEADER_PREFIXES,
+  CLASSIFIED_HEADERS,
+  STATIC_CLASSIFIED_HEADERS,
+} from '@stayingupwind/edge/internal/classification-credentials.ts';
+import { routingReadsFor } from '@stayingupwind/edge/internal/handlers/routing-headers.ts';
+import type { HostCredentials } from '@stayingupwind/host/credentials';
 
 import { FRONT_LINE_CODINGS } from './workers/protocol.ts';
 
@@ -32,6 +44,63 @@ export function routedReads(
     previewHost: url.hostname,
     clientIp: handed.get('cf-connecting-ip') ?? undefined,
   });
+}
+
+/** The credentials the stack's standalone host keeps for itself: none. */
+const NO_CREDENTIALS: HostCredentials = { cookies: [], headers: [] };
+
+/**
+ * Whether the edge's classification reads the header `name` as the visitor sent it, whatever
+ * forwarding hands on (`keptForClassification` in the edge): one it reads by name itself — a
+ * router's, a navigation's, an internal one it turns a request away for — but `x-real-ip`; and the
+ * `cookie` header where it carries the edge's own recovery cookie.
+ *
+ * And `host`, which the check holds as sent where the edge's classification takes it off with the
+ * rest of what forwarding does not hand on: the Function's runtime gives a request its `Host` back
+ * from its URL before Next.js routes it (`edge-invoke.ts`, `node-bridge.ts` in the runtime), so a
+ * rule asking of it is answered there as every request carries it.
+ */
+function keptForClassification(name: string, headers: Headers): boolean {
+  if (name === 'cookie') {
+    return getCookieValue(headers.get('cookie'), EDGE_BYPASS_COOKIE) !== undefined;
+  }
+  return (
+    name === 'host' ||
+    (name !== 'x-real-ip' &&
+      (CLASSIFIED_HEADERS.has(name) || STATIC_CLASSIFIED_HEADERS.has(name))) ||
+    CLASSIFIED_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix))
+  );
+}
+
+/**
+ * A request's headers as the edge classifies it before any middleware runs (`headersToClassify`):
+ * which route it is, whether a rule ahead of the filesystem claims it, whether a route's `bypassFor`
+ * holds. As the visitor sent them (`edgeReads`), but for each forwarding field a routing condition
+ * of the manifest reads (`routingReadsFor`), which takes the value forwarding hands on
+ * (`routedReads`, Codex) — the edge's own `Via` among them — unless the classification reads that
+ * field by name for itself (`keptForClassification`).
+ */
+export function classifiedReads(
+  manifest: ProjectManifest,
+  url: URL,
+  headers: Readonly<Record<string, string>> | Headers,
+): Headers {
+  const sent = edgeReads(headers);
+  const { forwardedFields } = routingReadsFor(manifest, NO_CREDENTIALS);
+  const moved = forwardedFields.filter((name) => !keptForClassification(name, sent));
+  if (moved.length === 0) {
+    return sent;
+  }
+  const forwarded = routedReads(url, headers);
+  for (const name of moved) {
+    const value = forwarded.get(name);
+    if (value === null) {
+      sent.delete(name);
+    } else {
+      sent.set(name, value);
+    }
+  }
+  return sent;
 }
 
 /**

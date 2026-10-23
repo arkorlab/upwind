@@ -42,6 +42,7 @@ import {
 } from './landings.ts';
 import type { Part, PartKind } from './part-marks.ts';
 import type { Reading } from './reading.ts';
+import { classifiedReads, handedReads } from './routing-reads.ts';
 
 /**
  * A part of a route the edge handed on to the Function rather than answer it (`part-verdicts.ts`):
@@ -63,13 +64,20 @@ export function bypassedFor(
   },
 ): boolean {
   const { decided } = read;
+  // As the edge judges it (`bypassed`): the recovery cookie on what the middleware left, the
+  // route's `bypassFor` on that as forwarding hands it on; where none ran, both on the headers the
+  // request was classified on (`classifiedReads`, Codex).
   const left =
     decided?.kind === 'continue'
-      ? { url: decided.url, headers: decided.requestHeaders }
-      : { url: part.url, headers: edgeReads(read.asked) };
+      ? {
+          url: decided.url,
+          headers: decided.requestHeaders,
+          routed: handedReads(decided.url, read.asked, decided.requestHeaders),
+        }
+      : { url: part.url, headers: classifiedReads(stack.manifest, part.url, read.asked) };
   return (
     hasBypassCookie(left.headers) ||
-    bypassForHolds(part.route, left.url, left.headers, stack.manifest)
+    bypassForHolds(part.route, left.url, left.routed ?? left.headers, stack.manifest)
   );
 }
 
@@ -269,7 +277,8 @@ function generalHandoffFailure(
 ): string | undefined {
   const { manifest } = stack;
   const { route, url } = part;
-  const asked = edgeReads(read.asked);
+  // On the headers the edge classifies the request on (`classifiedReads`, Codex).
+  const asked = classifiedReads(manifest, url, read.asked);
   switch (read.reason) {
     case BYPASS_FOR: {
       return bypassHandoffFailure(stack, part, read);

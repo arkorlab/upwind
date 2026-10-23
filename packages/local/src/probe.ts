@@ -16,10 +16,10 @@ import {
   failureStatus,
   forwarded,
   type Verdict,
-  edgeReads,
 } from './answers.ts';
 import { proverNavigation } from './browsers.ts';
 import type { Reading } from './reading.ts';
+import { routedReads } from './routing-reads.ts';
 import { BACKSTAGE_ROUTES } from './workers/protocol.ts';
 
 /**
@@ -104,8 +104,11 @@ export function missOf(stack: CheckedStack, prover: string): Miss {
     const pathname = `${bundle.config.basePath}${missSpelling(attempt)}`;
     const url = new URL(pathname, stack.site);
     // As it is sent (`probeVerdict`): as the check's own agent, under the site's origin — the `Host`
-    // its URL names and the forwarding headers beside it — each of which a rule may ask of.
-    const headers = edgeReads(forwarded(stack.site, proverNavigation(prover)));
+    // its URL names and the forwarding headers beside it — each of which a rule may ask of. And as
+    // it is routed (`routedReads`, Codex): the edge judges its rules on what the forwarder hands on,
+    // and the Function, which an export's rules run in, is handed that — the edge's own `Via` among
+    // it — so a rule asking of one claims the miss there as here.
+    const headers = routedReads(url, forwarded(stack.site, proverNavigation(prover)));
     const claimed =
       Object.hasOwn(manifest.routes, pathname) ||
       Object.hasOwn(manifest.staticFiles ?? {}, pathname) ||
