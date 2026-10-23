@@ -353,9 +353,9 @@ describe('gateway JSON envelopes share the Function read room', () => {
   });
 
   it.each([
-    { method: 'getData', deadline: 300 },
+    { method: 'getData', deadline: 1000 },
     { method: 'currentData', deadline: 1000 },
-    { method: 'getTags', deadline: 300 },
+    { method: 'getTags', deadline: 1000 },
   ] as const)(
     'keeps the existing $method deadline while waiting for room',
     async ({ method, deadline }) => {

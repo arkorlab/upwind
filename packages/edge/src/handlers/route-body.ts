@@ -12,7 +12,6 @@ import {
   manifestIdPrefix,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
-import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { runtimeCacheOf, type RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
 import { condemnedIn } from '../cache/condemned.ts';
@@ -27,7 +26,11 @@ import { serveHostedFile } from './hosted-static-file.ts';
 import { handedHeaders } from './middleware.ts';
 import { observeMetric, observeServed } from './observer.ts';
 import { PATTERN_BUDGET, type PassthroughWait } from './passthrough.ts';
-import { mergeScopedMiddlewareHeaders, removeSharedCacheOverrides } from './responses.ts';
+import {
+  carriesApplicationCredentials,
+  mergeScopedMiddlewareHeaders,
+  removeSharedCacheOverrides,
+} from './responses.ts';
 import { policyRefusesSharing } from './route-body-policy.ts';
 
 /** Only the host's manifest and authority record permit sharing; a Function's answer never does. */
@@ -186,9 +189,7 @@ function bodyHeaders(pack: DecodedGenerationPack, entry: RouteBodyEntry): Header
 }
 
 function applicationCredentials(input: RouteBodyInput, headers: Headers): boolean {
-  if (!headers.has('cookie') && !headers.has('authorization')) return false;
-  const application = withoutHostCredentials(new Headers(headers), input.edge.host.credentials);
-  return application.has('cookie') || application.has('authorization');
+  return carriesApplicationCredentials(headers, input.edge.host.credentials);
 }
 
 function visitorSpecific(input: RouteBodyInput, headers: Headers): boolean {

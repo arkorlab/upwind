@@ -44,6 +44,11 @@ const SCOPE = 'dpl_icon';
 const BODY = new Uint8Array([137, 80, 78, 71, 0, 255, 128, 10]);
 const REPLACEMENT = new Uint8Array([137, 80, 78, 71, 1, 254, 127, 10]);
 const MIDDLEWARE_TOOK_MS = 240;
+/**
+ * What the application's Function answers a body with, and what an anonymous request is handed on
+ * when the edge passes it through: the application's own `public` stands (decided 2026-10-22).
+ */
+const PUBLIC_ANSWER = 'public, max-age=99999';
 const BUILD_PROTOCOL = [
   'host',
   'x-matched-path',
@@ -202,7 +207,7 @@ async function fixture(
     return new Response(REPLACEMENT, {
       headers: {
         'content-type': 'image/png',
-        'cache-control': 'public, max-age=99999',
+        'cache-control': PUBLIC_ANSWER,
         ...(options.deferHeaderRules === true &&
           request.headers.get(HEADER_RULES_JUDGED_HEADER) === '1' && {
             [HEADER_RULES_LEFT_HEADER]: '1',
@@ -622,7 +627,7 @@ describe('the host serves complete route-body generations', () => {
     const response = await routed(test, test.manifest, { 'x-before': 'matched' });
 
     expect(response.headers.get('x-original-rule')).toBe('retained');
-    expect(response.headers.get('cache-control')).toContain('private');
+    expect(response.headers.get('cache-control')).toBe(PUBLIC_ANSWER);
     expect(test.dispatch).toHaveBeenCalledTimes(2);
 
     await test.drain();
@@ -642,7 +647,7 @@ describe('the host serves complete route-body generations', () => {
 
     expect(response.headers.get('x-original-rule')).toBe('retained');
     expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(REPLACEMENT);
-    expect(response.headers.get('cache-control')).toContain('private');
+    expect(response.headers.get('cache-control')).toBe(PUBLIC_ANSWER);
     expect(test.dispatch).toHaveBeenCalledTimes(2);
 
     await test.drain();
@@ -701,7 +706,10 @@ describe('the host serves complete route-body generations', () => {
       expect(actual.byteLength).toBe(expected.byteLength);
       await expect(sha256Hex(actual)).resolves.toBe(await sha256Hex(expected));
       expect(test.dispatch).toHaveBeenCalledTimes(reserved ? 2 : 1);
-      expect(response.headers.get('cache-control')).toContain('private');
+      // The shipped file is the edge's own answer behind middleware; the body is the application's.
+      expect(response.headers.get('cache-control')).toBe(
+        reserved ? PUBLIC_ANSWER : 'private, max-age=0, must-revalidate',
+      );
 
       await test.drain();
     },
@@ -1079,8 +1087,7 @@ describe('the host serves complete route-body generations', () => {
     });
 
     expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(REPLACEMENT);
-    expect(response.headers.get('cache-control')).toContain('private');
-    expect(response.headers.get('cache-control')).not.toContain('public');
+    expect(response.headers.get('cache-control')).toBe(PUBLIC_ANSWER);
     expect(response.headers.get('x-arkor-edge')).toContain('route-body-bypass');
     expect(test.dispatch).toHaveBeenCalledTimes(1);
     expect(html).not.toHaveBeenCalled();
@@ -1169,8 +1176,7 @@ describe('the host serves complete route-body generations', () => {
 
     expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(REPLACEMENT);
     expect(response.headers.get('content-type')).toBe('image/png');
-    expect(response.headers.get('cache-control')).toContain('private');
-    expect(response.headers.get('cache-control')).not.toContain('public');
+    expect(response.headers.get('cache-control')).toBe(PUBLIC_ANSWER);
     expect(test.dispatch).toHaveBeenCalledTimes(1);
 
     await test.drain();
@@ -1187,7 +1193,7 @@ describe('the host serves complete route-body generations', () => {
     const rendered = await test.serve();
 
     expect(new Uint8Array(await rendered.arrayBuffer())).toStrictEqual(REPLACEMENT);
-    expect(rendered.headers.get('cache-control')).toContain('private');
+    expect(rendered.headers.get('cache-control')).toBe(PUBLIC_ANSWER);
 
     const current = await test.serve();
 
@@ -1233,7 +1239,7 @@ describe('the host serves complete route-body generations', () => {
     const response = await test.serve();
 
     expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(REPLACEMENT);
-    expect(response.headers.get('cache-control')).toContain('private');
+    expect(response.headers.get('cache-control')).toBe(PUBLIC_ANSWER);
     expect(test.dispatch).toHaveBeenCalledTimes(1);
     expect(test.edge.runtime.memory.generations.get(unrelated)?.pack).toBe(untouched);
 

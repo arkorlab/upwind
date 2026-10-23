@@ -32,14 +32,15 @@ import { layConfiguredUnder } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeRequestMetric } from './observer.ts';
 import {
+  anonymousRequest,
   badGatewayResponse,
   forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
   middlewareProtocolHeader,
   nominatedBy,
-  privateCacheControl,
   readMiddlewareAnswer,
+  unsharedUnlessPublic,
 } from './responses.ts';
 import { connectionRefusesSharing } from './route-body-policy.ts';
 import { readsCredentials, readsForwarding } from './routing-headers.ts';
@@ -717,7 +718,7 @@ export async function followExternalRewrite(
   const answer = forwardedResponse(upstream, edge.forwarding, request.method);
   const responseHeaders = answer.headers;
   layRouted(edge, responseHeaders, rewrite, answered.configured);
-  privateCacheControl(responseHeaders);
+  unsharedUnlessPublic(responseHeaders, anonymousTo(edge, request, rewrite.requestHeaders));
   if (edge.privateDelivery) {
     keptByNobody(responseHeaders);
   }
@@ -725,6 +726,19 @@ export async function followExternalRewrite(
   applyCspReporting(responseHeaders, edge.cspReportingPath);
   recordMiddlewareAnswer(edge, 'external-rewrite', { ...answered, fetched });
   return answer;
+}
+
+/**
+ * Whether a request the middleware answered, or sent elsewhere as `handed`, carried nothing of a
+ * visitor's: as the visitor sent it, and as the middleware handed it on, which may carry what the
+ * visitor did not send.
+ */
+function anonymousTo(edge: EdgeContext, request: Request, handed?: Headers): boolean {
+  const { credentials } = edge.host;
+  return (
+    anonymousRequest(request.headers, credentials, edge.validated) &&
+    (handed === undefined || anonymousRequest(handed, credentials, edge.validated))
+  );
 }
 
 /** Take what is the middleware protocol's off its own answer. */
@@ -751,7 +765,7 @@ export function middlewareResponse(
   const headers = answer.headers;
   withoutMiddlewareProtocol(headers);
   layConfiguredUnder(headers, answered.configured, edge.forwarding, response.headers);
-  privateCacheControl(headers);
+  unsharedUnlessPublic(headers, anonymousTo(edge, request));
   if (edge.privateDelivery) {
     keptByNobody(headers);
   }

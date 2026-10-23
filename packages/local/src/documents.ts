@@ -521,7 +521,7 @@ async function regeneratedVerdict(
     return failed(
       canRegenerate(asked.route)
         ? ((await regenerationFailure(captured, asked.route, { regenerated, pathname })) ??
-            regeneratedFailure(asked.route, read.answer, asked.coding) ??
+            regeneratedFailure(asked.route, read.answer, asked) ??
             laid)
         : 'regenerated in the foreground, though the route has no record to regenerate',
     );
@@ -532,7 +532,7 @@ async function regeneratedVerdict(
   }
   const failure =
     (await regenerationFailure(captured, landed, { regenerated, pathname })) ??
-    regeneratedFailure(landed, read.answer, asked.coding) ??
+    regeneratedFailure(landed, read.answer, asked) ??
     laid;
   return failure === undefined
     ? skipped(`the application's middleware ${did} the route ${landed.pathname}, regenerated`)

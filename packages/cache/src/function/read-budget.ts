@@ -8,36 +8,9 @@
  * isolate serves would otherwise all be read at once, however many there were and however long.
  */
 
-import {
-  concatBytes,
-  isDeadlineError,
-  releaseStream,
-  withDeadline,
-} from '@stayingupwind/core/util';
+import { concatBytes, releaseStream } from '@stayingupwind/core/util';
 
 import { type GiveBack, IsolateRoom } from '../isolate-room.ts';
-
-/**
- * `read`, given up once it has taken `deadlineMs`, and the request under it with it: it rejects
- * with the deadline's error, and the signal it was handed is aborted, so a gateway that has not
- * answered holds no connection of the render's. The race is what bounds the wait, whatever the
- * transport makes of the signal.
- */
-export async function readWithin<T>(
-  what: string,
-  deadlineMs: number,
-  read: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
-  const controller = new AbortController();
-  try {
-    return await withDeadline(read(controller.signal), deadlineMs, what);
-  } catch (error) {
-    if (isDeadlineError(error)) {
-      controller.abort(error);
-    }
-    throw error;
-  }
-}
 
 /** What `promise` comes to, or `signal`'s reason where it aborts first. */
 async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

@@ -32,12 +32,13 @@ import { layConfiguredOver } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { type AbandonedShellReads, observeMetric, observeRequestMetric } from './observer.ts';
 import {
+  anonymousRequest,
   badGatewayResponse,
   forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
-  privateCacheControl,
   safeDiagnosticField,
+  unsharedUnlessPublic,
 } from './responses.ts';
 import {
   type Dispatched,
@@ -524,6 +525,21 @@ function observeDispatch(
   }
 }
 
+/**
+ * Whether the request carried nothing the application could have told one visitor by: as the
+ * visitor sent it, and as the middleware handed it on (`requestHeaders`), which may carry what the
+ * visitor did not send.
+ */
+function anonymous(input: PassthroughInput): boolean {
+  const { credentials } = input.host;
+  const validated = input.validated === true;
+  return (
+    anonymousRequest(input.request.headers, credentials, validated) &&
+    (input.middleware === undefined ||
+      anonymousRequest(input.middleware.requestHeaders, credentials, validated))
+  );
+}
+
 export async function handlePassthrough(input: PassthroughInput): Promise<Response> {
   const client = new Request(input.request, {
     headers: stripEdgeHeaders(input.request.headers),
@@ -581,7 +597,7 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   if (input.middleware !== undefined) {
     layAfterMiddleware(headers, originResponse, input.middleware, input);
   }
-  privateCacheControl(headers);
+  unsharedUnlessPublic(headers, anonymous(input));
   if (input.privateDelivery === true) {
     keptByNobody(headers);
   }
