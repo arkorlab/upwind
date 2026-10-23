@@ -147,11 +147,34 @@ export interface RecordedGeneration {
 /**
  * What the deployment's middleware made of a request it was asked about past its matchers
  * (`BACKSTAGE_ROUTES.middleware`): what it decided, as the edge reads it (`readMiddlewareResponse`),
- * under the status its answer had; or that it failed, and why.
+ * under the status its answer had; or that it failed, and why (`probeReason`).
  */
 export type MiddlewareProbe =
   | { readonly kind: 'responded' | 'continue' | 'external-rewrite'; readonly status: number }
   | { readonly kind: 'failed'; readonly reason: string };
+
+/** As much of the backstage's account of the middleware (`MiddlewareProbe`) as the check reads. */
+export const MIDDLEWARE_ACCOUNT_BYTES = 4096;
+/**
+ * The most characters of a failure's reason the account carries: each takes six bytes of JSON at
+ * most (`\u001f`), so the account stays whole within what the check reads of it (Sentry).
+ */
+const PROBE_REASON_CHARACTERS = 512;
+
+/** A failure's reason as the account carries it: whole, or cut to its first characters, and said so. */
+export function probeReason(reason: string): string {
+  let kept = '';
+  let characters = 0;
+  // By code point, so that an astral character at the cut is kept whole.
+  for (const character of reason) {
+    if (characters === PROBE_REASON_CHARACTERS) {
+      return `${kept}…`;
+    }
+    kept += character;
+    characters += 1;
+  }
+  return reason;
+}
 
 /** What the stack kept of a traced request: `null` for what did not happen. */
 export interface TraceRecord {

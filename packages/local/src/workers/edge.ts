@@ -34,6 +34,7 @@ import {
   type MiddlewareProbe,
   NONCE_PARAMS,
   type NoncedPolicies,
+  probeReason,
   type Regeneration,
   type StampedDigest,
   TRACE_HEADER,
@@ -566,7 +567,9 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
         probe = { kind, status: response.status };
       }
     } catch (error) {
-      probe = { kind: 'failed', reason: error instanceof Error ? error.message : String(error) };
+      // Cut to what the check reads of the account whole (Sentry): an error's message has no bound.
+      const reason = error instanceof Error ? error.message : String(error);
+      probe = { kind: 'failed', reason: probeReason(reason) };
     }
     return Response.json(probe);
   }

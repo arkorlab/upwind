@@ -17,7 +17,11 @@ import {
 } from './answers.ts';
 import { proverNavigation } from './browsers.ts';
 import { middlewareReads } from './routing-reads.ts';
-import { BACKSTAGE_ROUTES, type MiddlewareProbe } from './workers/protocol.ts';
+import {
+  BACKSTAGE_ROUTES,
+  MIDDLEWARE_ACCOUNT_BYTES,
+  type MiddlewareProbe,
+} from './workers/protocol.ts';
 
 /**
  * The deployment's middleware, asked once on its own (`check.ts`), as each app Function is: so that
@@ -27,8 +31,6 @@ import { BACKSTAGE_ROUTES, type MiddlewareProbe } from './workers/protocol.ts';
  * application's; that it decides at all is the deployment's.
  */
 
-/** As much of the backstage's account as is read: a few words of JSON. */
-const ACCOUNT_BYTES = 4096;
 const SERVER_ERROR = 500;
 
 /** Why the middleware is not asked about anything: a request its matchers cover is not to be had. */
@@ -185,8 +187,9 @@ function probeOf(text: string): MiddlewareProbe | undefined {
  * Why the deployment's middleware fails to answer a request its matchers cover, asked as the edge
  * asks it (`pathnameFor`): it threw, could not be reached, or answered a server error of its own.
  * None where it decided anything — to let the request on, to rewrite it, to answer it itself —
- * which is the application's to decide. Not asked where no such request is to be had. Rejects where
- * the backstage itself cannot say, as for a traced request (`checkStack`).
+ * which is the application's to decide. Not asked where no such request is to be had. An account the
+ * backstage gives that cannot be read — none, or one cut short — fails the check as the middleware's
+ * would, rather than stopping every other check with it (Sentry).
  */
 export async function middlewareProbeVerdict(
   stack: CheckedStack,
@@ -200,12 +203,14 @@ export async function middlewareProbeVerdict(
   asked.searchParams.set('path', pathname);
   const answer = await answerTo(asked, {
     headers: forwarded(stack.site, proverNavigation(prover)),
-    headBytes: ACCOUNT_BYTES,
+    headBytes: MIDDLEWARE_ACCOUNT_BYTES,
   });
   const probe = typeof answer === 'string' ? undefined : probeOf(answer.head.toString());
   if (probe === undefined) {
     const said = typeof answer === 'string' ? answer : `answered ${answer.status}`;
-    throw new Error(`the stack's backstage said nothing of its middleware: ${said}`);
+    return failed(
+      `asked about ${pathname} as the edge asks it, the stack's backstage gave no account of it that could be read: ${said}`,
+    );
   }
   if (probe.kind === 'failed') {
     return failed(`asked about ${pathname} as the edge asks it, failed: ${probe.reason}`);

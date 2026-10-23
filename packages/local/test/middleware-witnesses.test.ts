@@ -5,14 +5,19 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { CheckedStack } from '../src/answers.ts';
 import { middlewareProbeVerdict } from '../src/middleware-probe.ts';
+import { MIDDLEWARE_ACCOUNT_BYTES, probeReason } from '../src/workers/protocol.ts';
 
 /** The real probe reader reaches this backstage only after its compiled matcher accepts a path. */
 const observed: string[] = [];
+/** What the backstage answers next: a broken middleware's account, but where a test says otherwise. */
+const BROKEN = JSON.stringify({ kind: 'responded', status: 500 });
+const replies: { next: string } = { next: BROKEN };
 const server = createServer((request, response) => {
   const asked = new URL(request.url ?? '/', 'http://backstage.invalid');
   observed.push(asked.searchParams.get('path') ?? '');
   response.writeHead(200, { 'content-type': 'application/json' });
-  response.end(JSON.stringify({ kind: 'responded', status: 500 }));
+  response.end(replies.next);
+  replies.next = BROKEN;
 });
 
 function stackFor(backstage: URL, source: string, sourceRegex: string): CheckedStack {
@@ -76,6 +81,49 @@ describe('finite parameter witnesses for middleware probes', () => {
       kind: 'failed',
       reason: expect.stringContaining('500') as unknown,
     });
+  });
+
+  it('fails, rather than stopping the check, where the account cannot be read whole', async () => {
+    const backstage = backstageOf(state);
+    // An error's message the backstage put whole in its account, past what the check reads of it
+    // (Sentry): the account is cut short, and no JSON.
+    replies.next = JSON.stringify({ kind: 'failed', reason: 'x'.repeat(MIDDLEWARE_ACCOUNT_BYTES) });
+    const verdict = await middlewareProbeVerdict(
+      stackFor(backstage, '/api/:id(a{2})', '^/api/a{2}$'),
+      'checker',
+    );
+
+    expect(verdict).toMatchObject({
+      kind: 'failed',
+      reason: expect.stringContaining('gave no account of it that could be read') as unknown,
+    });
+  });
+
+  it('reads a failure whose reason the backstage cut to what the account carries', async () => {
+    const backstage = backstageOf(state);
+    // A control character takes the most JSON of any, six bytes: the longest reason the backstage
+    // sends still fits what the check reads of its account (Sentry).
+    const reason = probeReason('\u{1}'.repeat(MIDDLEWARE_ACCOUNT_BYTES));
+    const account = JSON.stringify({ kind: 'failed', reason });
+    replies.next = account;
+    const verdict = await middlewareProbeVerdict(
+      stackFor(backstage, '/api/:id(a{2})', '^/api/a{2}$'),
+      'checker',
+    );
+
+    expect(Buffer.byteLength(account)).toBeLessThan(MIDDLEWARE_ACCOUNT_BYTES);
+    expect(verdict).toMatchObject({
+      kind: 'failed',
+      reason: expect.stringContaining(`failed: ${reason}`) as unknown,
+    });
+  });
+
+  it('cuts a reason between characters, and says it was cut', () => {
+    const short = 'the Function threw';
+
+    expect(probeReason(short)).toBe(short);
+    // An astral character at the cut is kept whole, not left half a surrogate pair.
+    expect(probeReason(`${'a'.repeat(511)}🙂🙂`)).toBe(`${'a'.repeat(511)}🙂…`);
   });
 
   it.each([
