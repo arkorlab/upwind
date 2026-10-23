@@ -400,11 +400,25 @@ describe('app Functions laid out within the size limit', () => {
     log.mockRestore();
   });
 
-  it('refuses at once a build of one Function whose body left out is still shipped for another route', async () => {
+  it('lays a build of one Function out again when a body it leaves out is still shipped for another route', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(vi.fn());
-    // The one Function holds both routes, so it carries the body for `OTHER` either way.
-    const { calls, layOut } = appFunctions([62 * MIB]);
-    const laidOut = withinTheLimit(
+    const weighed: boolean[] = [];
+    // Each route was past the plan's budget with the body, so the plan set the budget aside and
+    // laid them out in one Function; with the body left out for `ROUTE`, it splits them within the
+    // limit.
+    function layOut(layout: PageBodyLayout, weighOnly: boolean): Promise<LaidOutFunctions> {
+      weighed.push(weighOnly);
+      const both = layout.shipped.some((blob) => blob.routes.includes(ROUTE));
+      const built = (both ? [65 * MIB] : [31 * MIB, 34 * MIB]).map((bytes, index) => {
+        const name = index === 0 ? 'app' : `app-${String(index + 1)}`;
+        const modules = [dataModule(`${name}.cjs`, bytes)];
+        const size = { bytes, gzipBytes: 0 };
+        auditFunctionSize(name, { modules, size }, weighOnly);
+        return { name, built: { spec: { modules }, dependencies: { size } } };
+      });
+      return Promise.resolve({ built });
+    }
+    const laidOut = await withinTheLimit(
       {
         shipped: [SHARED],
         requireBundleBlobReader: false,
@@ -413,11 +427,13 @@ describe('app Functions laid out within the size limit', () => {
       layOut,
     );
 
-    await expect(laidOut).rejects.toThrow(
-      /^@stayingupwind\/adapter: the app server bundle is 65\.0 MiB, over the 64\.0 MiB limit/u,
-    );
-    expect(calls.map((call) => call.weighOnly)).toStrictEqual([true]);
-    expect(log).not.toHaveBeenCalled();
+    expect(weighed).toStrictEqual([true, false]);
+    expect(laidOut.built.map(({ built }) => built.dependencies.size.bytes)).toStrictEqual([
+      31 * MIB,
+      34 * MIB,
+    ]);
+    expect(laidOut.bodiesLeftOut).toStrictEqual({ count: 1, bytes: 3 * MIB });
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('left in bundle storage'));
 
     log.mockRestore();
   });
