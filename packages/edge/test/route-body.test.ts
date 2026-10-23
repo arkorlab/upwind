@@ -1364,7 +1364,7 @@ describe('the host serves complete route-body generations', () => {
 
       expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(REPLACEMENT);
       expect(response.headers.get('content-type')).toBe('image/png');
-      expect(response.headers.get('cache-control')).toContain('private');
+      expect(response.headers.get('cache-control')).toBe(PUBLIC_ANSWER);
       expect(test.dispatch).toHaveBeenCalledTimes(1);
       expect(test.edge.runtime.memory.generations.get(test.key)?.pack.header.source).toBe(
         'runtime',
