@@ -230,6 +230,51 @@ describe('`upwind deploy --dry-run`', () => {
     ]);
   });
 
+  it('reports local build problems without reaching the account or creating a lock', async () => {
+    const { dir } = await builtProject({ deployable: false });
+    const fake = fakeCloudflare();
+    fake.buckets.set(projectLockBucket(projectNames('shop')), new Map());
+
+    await expect(
+      runDeploy(
+        optionsFor(dir, { dryRun: false }),
+        { apiToken: 'token', accountId: undefined },
+        fake,
+      ),
+    ).resolves.toBe(1);
+    expect(errors).toStrictEqual([
+      'upwind: one thing stops this deployment:',
+      expect.stringMatching(/built without the runtime cache's host/u),
+    ]);
+    expect(printed).toContain('  account: not read, since local build checks failed');
+    expect(fake.requests).toStrictEqual([]);
+  });
+
+  it('rejects a direct deploy with local plan problems before acquiring a lock', async () => {
+    const { dir } = await builtProject({ deployable: false });
+    const fake = fakeCloudflare();
+    const scope = {
+      client: createCloudflareClient({ apiToken: 'token', fetch: fake.fetch }),
+      accountId: 'account-1',
+    };
+    const settings = await readDeploySettings(dir);
+    const secrets = new Map<string, string>();
+    const plan = await preflight({ projectDir: dir, settings, secrets });
+
+    await expect(
+      deployToAccount({
+        scope,
+        settings,
+        plan,
+        secrets,
+        message: undefined,
+        resetCacheKey: false,
+        fetch: fake.fetch,
+      }),
+    ).rejects.toThrow(/built without the runtime cache's host/u);
+    expect(fake.requests).toStrictEqual([]);
+  });
+
   it('deploys with --prebuilt only what a deploy built', async () => {
     const { dir } = await builtProject({ noted: false });
 

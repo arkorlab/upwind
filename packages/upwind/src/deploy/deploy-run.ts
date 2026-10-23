@@ -283,6 +283,9 @@ export async function deployToAccount(
   input: Omit<DeployRun, 'account'> & { readonly account?: AccountView },
   inspect?: (account: AccountView) => number | undefined,
 ): Promise<number> {
+  if (input.plan.problems.length > 0) {
+    throw new Error(input.plan.problems.join('; '));
+  }
   const names = projectNames(input.settings.project);
   return withProjectLock(
     input.scope,

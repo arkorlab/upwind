@@ -121,6 +121,7 @@ function describePlan(input: {
   readonly settings: DeploySettings;
   readonly secrets: ReadonlyMap<string, string>;
   readonly account: AccountView | undefined;
+  readonly accountNotRead?: string;
 }): void {
   const { plan, settings, secrets, account } = input;
   console.log(`upwind: ${settings.project}, deployment ${plan.bundle.deploymentId}`);
@@ -140,10 +141,18 @@ function describePlan(input: {
   }
   line(`reached at: ${reachedAt(settings, account).join(', ')}`);
   if (account === undefined) {
-    line('account: not read, since CLOUDFLARE_API_TOKEN is not set');
+    line(input.accountNotRead ?? 'account: not read, since CLOUDFLARE_API_TOKEN is not set');
     return;
   }
   describeAccount(plan, settings, account);
+}
+
+function reportProblems(problems: readonly string[]): void {
+  const things = plural(problems.length, 'one thing stops', `${problems.length} things stop`);
+  console.error(`upwind: ${things} this deployment:`);
+  for (const problem of problems) {
+    console.error(`  - ${problem}`);
+  }
 }
 
 /**
@@ -222,6 +231,20 @@ export async function runDeploy(
   if (!(await isNotedBuild(options, plan))) {
     return 1;
   }
+  if (plan.problems.length > 0) {
+    describePlan({
+      plan,
+      settings,
+      secrets,
+      account: undefined,
+      accountNotRead: 'account: not read, since local build checks failed',
+    });
+    for (const warning of plan.warnings) {
+      console.warn(`upwind: warning: ${warning}`);
+    }
+    reportProblems(plan.problems);
+    return 1;
+  }
   const names = projectNames(settings.project);
   const scope = await scopeOf(credentials, io);
   const inspect = (account: AccountView | undefined): number | undefined => {
@@ -236,11 +259,7 @@ export async function runDeploy(
         : [...account.problems, ...capacityProblems(plan, settings, account)]),
     ];
     if (problems.length > 0) {
-      const things = plural(problems.length, 'one thing stops', `${problems.length} things stop`);
-      console.error(`upwind: ${things} this deployment:`);
-      for (const problem of problems) {
-        console.error(`  - ${problem}`);
-      }
+      reportProblems(problems);
       return 1;
     }
     if (options.dryRun) {

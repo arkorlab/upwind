@@ -19,7 +19,7 @@ import { type DESTROY_MODE } from './workers/protocol.ts';
  * that key on `workers.dev`, and given a key nobody holds when the run is over.
  *
  * Uploaded every run, the key with it, rather than given a new key alone: one upload is the code
- * and the key at once, so a run never reaches an agent of another version with its key. The key is
+ * and the key at once, so a run never reaches an agent of another version with its key. The key
  * also rejects a superseded client that does not honor the project's separate account lock: a
  * second run uploads its own, and the first one's calls are refused from then on (`agent-client.ts`).
  *
