@@ -84,6 +84,8 @@ strictPeerDependencies: true
 # source-map-js's indexed-map denial of service CVE-2026-93749 (1.2.2). Keep the parent releases
 # pinned; these dependencies do not run on a deployed Function's request path.
 overrides:
+  # GHSA-mrhx-c7xc-m3w5: keep transitive Zod copies on the fixed v4 release.
+  'zod@>=4.0.0 <4.6.6': 4.6.6
   'undici@>=7.0.0 <7.29.1': 7.29.1
   'sharp@>=0.35.0 <0.35.5': 0.35.5
   'source-map-js@>=1.0.0 <1.2.2': 1.2.2
