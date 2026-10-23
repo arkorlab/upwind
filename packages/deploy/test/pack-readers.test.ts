@@ -93,6 +93,7 @@ describe('a trusted pack-reader rollout applied to an immutable bundle', () => {
   it('requires approval of every actual main module and records the complete inventory', () => {
     const value = bundle();
     const proof = scopePackReadersOf(value, approval());
+
     expect(proof).toMatchObject({
       schemaVersion: 2,
       deploymentId: value.deploymentId,
@@ -135,15 +136,19 @@ describe('a trusted pack-reader rollout applied to an immutable bundle', () => {
 
   it('leaves an unknown or self-declaring host on the legacy contract', () => {
     const value = Object.assign(bundle(), { cachePackReaderVersion: 2 });
+
     expect(scopePackReadersOf(value, undefined)).toBeUndefined();
+
     const incomplete = approval();
     incomplete.functions = incomplete.functions.slice(0, -1);
+
     expect(scopePackReadersOf(value, incomplete)).toBeUndefined();
   });
 
   it('does not carry an old approval over a changed Function module', () => {
     const value = bundle();
     value.functions.app = spec('f');
+
     expect(scopePackReadersOf(value, approval())).toBeUndefined();
   });
 
@@ -156,15 +161,19 @@ describe('a trusted pack-reader rollout applied to an immutable bundle', () => {
   ])('declines approval for a module override or noncanonical identity %s', (name) => {
     const value = bundle();
     value.functions.app.modules.push({ ...value.functions.app.modules[0]!, name });
+
     expect(scopePackReadersOf(value, approval())).toBeUndefined();
   });
 
   it('refuses ambiguous module identity and conflicting approval entries without refusing deployment', () => {
     const value = bundle();
     value.functions.app.modules.push(...value.functions.app.modules);
+
     expect(scopePackReadersOf(value, approval())).toBeUndefined();
+
     const duplicate = approval();
     duplicate.functions.push(duplicate.functions[0]!);
+
     expect(scopePackReadersOf(bundle(), duplicate)).toBeUndefined();
   });
 });
