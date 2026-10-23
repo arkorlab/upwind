@@ -1,6 +1,7 @@
 import type { Route } from '@stayingupwind/core/bundle';
 import {
   FUNCTION_HEADER,
+  HEADER_RULES_AFTER_COOKIE_COUNT_HEADER,
   HEADER_RULES_AFTER_HEADER,
   HEADER_RULES_JUDGED_HEADER,
   HEADER_RULES_LEFT_HEADER,
@@ -216,6 +217,7 @@ describe('the header rules ahead of the middleware, where the edge ran it', () =
       expect(response.headers.get('cache-control')).toBe(headers['cache-control']);
       expect(response.headers.get('x-later')).toBe(phase);
       expect(response.headers.getSetCookie()).toStrictEqual([headers['set-cookie']]);
+      expect(response.headers.get(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER)).toBe('1');
       expect(response.headers.get(HEADER_RULES_AFTER_HEADER)?.split(',')).toStrictEqual([
         'cache-control',
         'set-cookie',
@@ -229,7 +231,11 @@ describe('the header rules ahead of the middleware, where the edge ran it', () =
   it('replaces an application marker even when no later rule set a header', async () => {
     vi.mocked(invokeNodeHandler).mockResolvedValueOnce(
       new Response('page', {
-        headers: { [HEADER_RULES_AFTER_HEADER]: 'x-handler', 'x-handler': 'own' },
+        headers: {
+          [HEADER_RULES_AFTER_HEADER]: 'x-handler',
+          [HEADER_RULES_AFTER_COOKIE_COUNT_HEADER]: '999',
+          'x-handler': 'own',
+        },
       }),
     );
     const { app } = passing();
@@ -238,6 +244,7 @@ describe('the header rules ahead of the middleware, where the edge ran it', () =
 
     expect(response.headers.get('x-handler')).toBe('own');
     expect(response.headers.get(HEADER_RULES_AFTER_HEADER)).toBe('');
+    expect(response.headers.get(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER)).toBe('0');
     expect(response.headers.get(HEADER_RULES_LEFT_HEADER)).toBe('1');
   });
 
@@ -294,6 +301,7 @@ describe('the header rules ahead of the middleware, where the edge ran it', () =
       headers: [
         ['x-collected', 'routing'],
         [HEADER_RULES_AFTER_HEADER, 'x-collected'],
+        [HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, '0'],
       ],
     });
 
@@ -305,6 +313,7 @@ describe('the header rules ahead of the middleware, where the edge ran it', () =
 
     expect(judged.headers.get('x-collected')).toBe('routing');
     expect(judged.headers.get(HEADER_RULES_AFTER_HEADER)).toBe('x-collected');
+    expect(judged.headers.get(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER)).toBe('0');
     expect(judged.headers.get(HEADER_RULES_LEFT_HEADER)).toBe('1');
     expect(unjudged.headers.has(HEADER_RULES_LEFT_HEADER)).toBe(false);
   });
