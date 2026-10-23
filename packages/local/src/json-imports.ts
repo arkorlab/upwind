@@ -80,9 +80,9 @@ function isNode(value: unknown): value is Node {
 
 function isModuleRequest(node: Node): node is ModuleRequest {
   return [
-    'ImportDeclaration',
-    'ExportNamedDeclaration',
     'ExportAllDeclaration',
+    'ExportNamedDeclaration',
+    'ImportDeclaration',
     'ImportExpression',
   ].includes(node.type);
 }
