@@ -478,8 +478,9 @@ them again is answered by this list.
 14. **Relative references out of a relocated package.** A declaration inside a held package that
     names a file outside the package by a relative path (`../shared/types.d.ts`) points at nothing
     from its relocated copy. The original path, where it is kept, still resolves.
-15. **Untraced nearer packages.** The project's view looks only at what the trace lists. A package
-    that is on disk nearer to the project, but untraced, does not hide a farther traced one.
+15. **Untraced nearer packages.** The project's view, and a held package's dependencies, look only
+    at what the trace lists. A package that is on disk nearer, but untraced, does not hide a farther
+    traced one, which can then be held at that name, or inside the package that depends on it.
 
 ## The edge runtime
 
