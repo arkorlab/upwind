@@ -161,7 +161,16 @@ function begun<M>(
   EVALUATIONS.set(load, evaluation);
   // Before anything awaits the module, so that what is kept of it is in place for them.
   const settled = settle(load, evaluation);
-  waitUntil?.(settled);
+  try {
+    waitUntil?.(settled);
+  } catch {
+    // A host that will not hold it — a `waitUntil` past the end of the invocation it belongs to —
+    // leaves it this request's alone: no later request joins what nothing holds, but begins its
+    // own, and this one awaits its module as an eager lookup does, with nothing of it kept.
+    if (EVALUATIONS.get(load) === evaluation) {
+      EVALUATIONS.delete(load);
+    }
+  }
   return module;
 }
 
@@ -221,6 +230,10 @@ async function evaluated<M>(
   }
   const module = load();
   if (!(module instanceof Promise)) {
+    // What its thunk hands over as it is stands for it from now on (`standsFor`), over an
+    // evaluation given up on or failed before, whose module, should it settle after all, is then
+    // kept for no one (`settle`).
+    EVALUATIONS.delete(load);
     return module;
   }
   if (known?.state === 'given-up' && known.module === module) {
