@@ -43,6 +43,7 @@ import {
   NO_STORE_CACHE_CONTROL,
   NULL_BODY_STATUSES,
   RSC_VARY,
+  sanitizePassthroughHeaders,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
 import {
@@ -1611,13 +1612,18 @@ function partsPrerenderedAs(route: RouteEntry): Prerender[] {
 /**
  * The bundle a stack holds, as far as the check reads it: a build with a page — or, `exported`, a
  * static export, which has neither a page nor a prerender — and, `catchAll`, a fallback rewrite of
- * every pathname onto the front page, of a request that lacks what `unless` names.
+ * every pathname onto the front page, of a request that lacks what `unless` names and carries what
+ * `when` names.
  */
 function bundleOf(
   exported: boolean,
   catchAll: boolean,
-  unless?: readonly { readonly type: 'header'; readonly key: string }[],
+  conditions: {
+    readonly unless?: readonly { readonly type: 'header'; readonly key: string }[] | undefined;
+    readonly when?: readonly CatchAllHas[] | undefined;
+  } = {},
 ): DeploymentBundle {
+  const { unless, when } = conditions;
   return {
     v: 1,
     deploymentId: 'dpl_site',
@@ -1644,6 +1650,7 @@ function bundleOf(
               sourceRegex: '^(?:/(.*))$',
               destination: '/',
               ...(unless !== undefined && { missing: [...unless] }),
+              ...(when !== undefined && { has: [...when] }),
             },
           ]
         : [],
@@ -1674,12 +1681,21 @@ function bundleOf(
   };
 }
 
+/** A header a catch-all asks a request for, with the value it asks it to carry, if any. */
+interface CatchAllHas {
+  readonly type: 'header';
+  readonly key: string;
+  readonly value?: string;
+}
+
 /** How a test's stack is made: what its build holds, and how the manifest holds it. */
 interface StackOptions {
   readonly exported?: boolean;
   readonly catchAll?: boolean;
   /** What the catch-all claims a request without. */
   readonly catchAllUnless?: readonly { readonly type: 'header'; readonly key: string }[];
+  /** What the catch-all claims a request with. */
+  readonly catchAllWhen?: readonly CatchAllHas[];
   /** The app Functions the build names, which the check asks for a miss. */
   readonly functions?: readonly string[];
   /**
@@ -1772,11 +1788,10 @@ function builtFor(
   staticFiles: Readonly<Record<string, StaticFileEntry>>,
   options: StackOptions,
 ): DeploymentBundle {
-  const built = bundleOf(
-    options.exported === true,
-    options.catchAll === true,
-    options.catchAllUnless,
-  );
+  const built = bundleOf(options.exported === true, options.catchAll === true, {
+    unless: options.catchAllUnless,
+    when: options.catchAllWhen,
+  });
   return {
     ...built,
     deploymentId: options.dplId ?? built.deploymentId,
@@ -7840,6 +7855,43 @@ describe('what the check makes of the middleware', () => {
           path: 'app',
           reason: 'answered a miss with other than the not-found document the build wrote',
         },
+      ]);
+    });
+
+    it('is claimed where a rule asks of what the edge forwards, as the Function routes it', async () => {
+      // The edge's own `Via`, as the forwarder hands every request on with it.
+      const via =
+        sanitizePassthroughHeaders(new Headers(), {
+          previewDomain: 'invalid',
+          previewHost: 'site.example',
+          clientIp: undefined,
+        }).get('via') ?? '';
+      answers.set('/404', notFoundFile);
+      answers.set(MISS, { headers: { 'content-type': HTML }, body: FRONT + REST });
+      const forwardedOnly = await checkStack(
+        stackOf([], files, {
+          exported: true,
+          catchAll: true,
+          catchAllWhen: [
+            { type: 'header', key: 'via', value: via.replaceAll('.', String.raw`\.`) },
+          ],
+          functions: ['app'],
+        }),
+      );
+      // A header neither the check sends nor the forwarder adds: the rule claims no miss.
+      const neverSent = await checkStack(
+        stackOf([], files, {
+          exported: true,
+          catchAll: true,
+          catchAllWhen: [{ type: 'header', key: 'x-never-forwarded' }],
+          functions: ['app'],
+        }),
+      );
+
+      // The Function, handed the probe as the edge forwards it, rewrites it onto the front page.
+      expect(forwardedOnly).toStrictEqual({ checked: 2, failures: [], skipped: [] });
+      expect(neverSent.failures).toStrictEqual([
+        { path: 'app', reason: 'answered 200 for a pathname no file is held for, not 404' },
       ]);
     });
 
