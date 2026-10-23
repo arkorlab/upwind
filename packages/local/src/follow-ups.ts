@@ -1,13 +1,16 @@
 import type { StaticFileEntry } from '@stayingupwind/core/manifest';
+import { listsTag } from '@stayingupwind/edge/internal/strategies/entity-tags.ts';
 
 import { type CheckedStack, HTTP_OK } from './answers.ts';
 import { askedAgain, opaqueTag, said, subjectOf } from './asked-again.ts';
 import {
   describedFailure,
   expectationOf,
+  type FileExpectation,
   fileFailure,
   fileHeadFailure,
 } from './file-expectations.ts';
+import { httpDateMs } from './http-dates.ts';
 import {
   rangeFailure,
   rangeFormsFailure,
@@ -19,6 +22,8 @@ import { requestsForRules, type RuleRequests } from './rule-witnesses.ts';
 
 /** The status of an answer to a request on a validator its holder already has. */
 const NOT_MODIFIED_STATUS = 304;
+/** The status of an answer to a request on a precondition the file fails. */
+const PRECONDITION_FAILED_STATUS = 412;
 
 /**
  * A file the edge answered from storage, asked for again as a browser asks for one it already has
@@ -69,23 +74,132 @@ async function conditionalFailure(
     const whole = fileFailure(subject.file, answer, expected);
     return said(subject, whole === undefined ? undefined : `asked for on ${condition}, ${whole}`);
   }
+  return said(subject, notModifiedFailure(answer, expected, condition));
+}
+
+/**
+ * Why a file's answer to a request on a validator it holds (`condition`) is not one the browser
+ * already has the file by: `304`, under the same tag, with no body — and what the whole file says
+ * of itself, but for what describes the bytes it does not send (`describedFailure`).
+ */
+function notModifiedFailure(
+  answer: Reading,
+  expected: FileExpectation,
+  condition: string,
+): string | undefined {
   if (answer.status !== NOT_MODIFIED_STATUS) {
-    return said(subject, `answered ${condition} with ${answer.status}, not ${NOT_MODIFIED_STATUS}`);
+    return `answered ${condition} with ${answer.status}, not ${NOT_MODIFIED_STATUS}`;
   }
   if (answer.headers.etag !== expected.etag) {
-    return said(
-      subject,
-      `answered ${condition} under the entity tag ${answer.headers.etag ?? 'none'}`,
-    );
+    return `answered ${condition} under the entity tag ${answer.headers.etag ?? 'none'}`;
   }
   if (answer.length > 0) {
-    return said(subject, `answered ${condition} with a body`);
+    return `answered ${condition} with a body`;
   }
   const described = describedFailure(answer, expected, true);
-  return said(
-    subject,
-    described === undefined ? undefined : `asked for on ${condition}, ${described}`,
-  );
+  return described === undefined ? undefined : `asked for on ${condition}, ${described}`;
+}
+
+/**
+ * Why a file's answer to a request on a precondition it fails is not the edge's
+ * (`preconditionFailure`): `412`, with no body, under what the whole file says of itself — kept by
+ * nobody, as the edge keeps a refusal no cache keyed on the URL alone may hand on.
+ */
+function preconditionFailedFailure(answer: Reading, expected: FileExpectation): string | undefined {
+  if (answer.status !== PRECONDITION_FAILED_STATUS) {
+    return `answered ${answer.status}, not ${PRECONDITION_FAILED_STATUS}`;
+  }
+  if (answer.length > 0) {
+    return `answered ${PRECONDITION_FAILED_STATUS} with a body`;
+  }
+  return describedFailure(answer, { ...expected, holding: { kind: 'nobody' } }, false);
+}
+
+/** What a request's conditions select of a file (`selectedBy`). */
+type Selection =
+  | { readonly kind: 'whole' | 'precondition-failed' }
+  | { readonly kind: 'not-modified'; readonly condition: string };
+const WHOLE: Selection = { kind: 'whole' };
+const PRECONDITION_FAILED: Selection = { kind: 'precondition-failed' };
+
+/** The file the client holds, as `condition` says. */
+function notModified(condition: string): Selection {
+  return { kind: 'not-modified', condition };
+}
+
+/** An HTTP-date's instant, read as the edge reads one (`httpDateMs`); none for no such date. */
+function instantOf(value: string | null): number | undefined {
+  return value === null ? undefined : httpDateMs(value);
+}
+
+/**
+ * What the edge answers a request for a file with by the conditions it carries, judged against the
+ * answer the file would be given — the tag it carries, and the `Last-Modified` a rule or the
+ * middleware gave it, storage keeping no date of a file's own — in the order the edge judges them
+ * (`metadataResponse` in its handler for files): a precondition the file fails first — an `If-Match`
+ * naming another entity, or, asked without one, an `If-Unmodified-Since` earlier than its date —
+ * answered `412`; then a validator the client holds — an `If-None-Match` naming its tag, or, asked
+ * without one, an `If-Modified-Since` no earlier than its date — answered `304` (`condition` says
+ * which); the file, whole, otherwise. A file of another status than 200 is judged by none of them
+ * (`answersAsItself`). The edge's judgement is mirrored here, not called, and so is its reading of a
+ * date (`httpDateMs`); a list of tags is read with the edge's own reader (`listsTag`), a leaf of no
+ * import.
+ */
+function selectedBy(
+  file: StaticFileEntry,
+  sent: Readonly<Record<string, string>>,
+  expected: FileExpectation,
+): Selection {
+  if ((file.status ?? HTTP_OK) !== HTTP_OK) {
+    return WHOLE;
+  }
+  const headers = new Headers(sent);
+  const modified = instantOf(expected.set.get('last-modified'));
+  const ifMatch = headers.get('if-match');
+  const unmodifiedSince = instantOf(headers.get('if-unmodified-since'));
+  const fails =
+    ifMatch === null || ifMatch === ''
+      ? unmodifiedSince !== undefined && modified !== undefined && modified > unmodifiedSince
+      : !listsTag(ifMatch, expected.etag);
+  if (fails) {
+    return PRECONDITION_FAILED;
+  }
+  const ifNoneMatch = headers.get('if-none-match');
+  if (ifNoneMatch !== null) {
+    return listsTag(ifNoneMatch, expected.etag)
+      ? notModified(`If-None-Match ${ifNoneMatch}`)
+      : WHOLE;
+  }
+  const ifModifiedSince = headers.get('if-modified-since');
+  const since = instantOf(ifModifiedSince);
+  return since !== undefined && modified !== undefined && modified <= since
+    ? notModified(`If-Modified-Since ${String(ifModifiedSince)}`)
+    : WHOLE;
+}
+
+/**
+ * Why a file asked for by a request a rule of `next.config` types it for is not answered as the edge
+ * answers that request: by the conditions the request carries — which a rule conditioned on one has
+ * it carry (Codex) — `412` for a precondition the file fails and `304` for a validator the client
+ * holds, and the file, whole, otherwise (`selectedBy`).
+ */
+function selectedFailure(
+  file: StaticFileEntry,
+  answer: Reading,
+  read: { readonly sent: Readonly<Record<string, string>>; readonly expected: FileExpectation },
+): string | undefined {
+  const selected = selectedBy(file, read.sent, read.expected);
+  switch (selected.kind) {
+    case 'precondition-failed': {
+      return preconditionFailedFailure(answer, read.expected);
+    }
+    case 'not-modified': {
+      return notModifiedFailure(answer, read.expected, selected.condition);
+    }
+    case 'whole': {
+      return fileFailure(file, answer, read.expected);
+    }
+  }
 }
 
 /**
@@ -157,7 +271,8 @@ function typedRequestsOf(
 /**
  * Why a file the edge answers as itself, asked for by a request a rule of `next.config` sets its
  * type for alone (`typedRequestsOf`), is not answered as the edge answers that request: the file,
- * whole, under the type the rules give it for that request — the rule's, or a later one's.
+ * whole, under the type the rules give it for that request — the rule's, or a later one's — or what
+ * the conditions that request carries select of it (`selectedFailure`).
  */
 async function typedFailure(
   stack: CheckedStack,
@@ -183,7 +298,10 @@ async function typedFailure(
       ...again,
       headers: typed.headers,
     });
-    const failure = fileFailure(subject.file, again.answer, expected);
+    const failure = selectedFailure(subject.file, again.answer, {
+      sent: typed.headers,
+      expected,
+    });
     if (failure !== undefined) {
       return said(subject, `asked for as ${typed.what}, ${failure}`);
     }
