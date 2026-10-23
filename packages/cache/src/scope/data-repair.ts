@@ -115,6 +115,21 @@ export function prepareDataRepair(
   };
 }
 
+function publishPreparedData(
+  input: TxInput,
+  job: RepairJob,
+  apply: DataRepairApply,
+): RepairStep<DataSetOutcome | Refusal> {
+  const prepared = readRepairValue<PreparedData>(input.sql, job.id, 'publication');
+  const value = stageRepairPublication(input, prepared.plan.identity.entryId, () =>
+    apply({ ...input, now: prepared.acceptedAt, limits: prepared.limits }, prepared.plan),
+  );
+  if (isRepairStart(value) || isRepairPending(value))
+    throw new Error('a prepared data repair recurred');
+  if (isRefusal(value)) throw new Error('an admitted data repair was refused during publication');
+  return { kind: 'completed', value };
+}
+
 /** The data upload stays pinned by the writer barrier until its final adoption answers. */
 export function advanceDataRepair(
   input: TxInput,
@@ -122,16 +137,7 @@ export function advanceDataRepair(
   apply: DataRepairApply,
 ): RepairStep<DataSetOutcome | Refusal> {
   const group = readRepairValue<RepairGroup>(input.sql, job.id, 'group-0');
-  if (job.phase === 'publish') {
-    const prepared = readRepairValue<PreparedData>(input.sql, job.id, 'publication');
-    const value = stageRepairPublication(input, prepared.plan.identity.entryId, () => {
-      return apply({ ...input, now: prepared.acceptedAt, limits: prepared.limits }, prepared.plan);
-    });
-    if (isRepairStart(value) || isRepairPending(value))
-      throw new Error('a prepared data repair recurred');
-    if (isRefusal(value)) throw new Error('an admitted data repair was refused during publication');
-    return { kind: 'completed', value };
-  }
+  if (job.phase === 'publish') return publishPreparedData(input, job, apply);
   const candidate = repairPreflightInput(input, job);
   const repairs = new Map(group.repairs.map((repair) => [repair.sha256, repair]));
   const cursor = {
@@ -157,12 +163,7 @@ export function advanceDataRepair(
     next.phase = job.phase === 'preflight' ? 'apply' : 'publish';
     if (job.phase === 'preflight') {
       const prepared = readRepairValue<PreparedData>(input.sql, job.id, 'publication');
-      probeRepairPublication(
-        candidate,
-        next,
-        () => apply(candidate, prepared.plan),
-        prepared.plan.identity.entryId,
-      );
+      probeRepairPublication(candidate, next, () => apply(candidate, prepared.plan));
     }
   }
   advanceRepairJob(input.sql, next);

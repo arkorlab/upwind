@@ -47,7 +47,7 @@ import {
   type RepairJob,
   writeRepairValue,
 } from '../src/scope/repair-jobs.ts';
-import { RepairPublicationProbed } from '../src/scope/repair-probes.ts';
+import { RepairPublicationProbedError } from '../src/scope/repair-probes.ts';
 import { RepairRunner } from '../src/scope/repair-runner.ts';
 import { generationOutputs, type GenerationRow } from '../src/scope/rows.ts';
 import { planSeedEntries } from '../src/scope/seed.ts';
@@ -189,13 +189,15 @@ function begin(tx: TxInput, selected = group()): RepairJob {
 
 /** This fixture isolates shared-row repair from the accepted owner's SQL publication. */
 function advanceFixtureCommit(input: TxInput, job: RepairJob) {
-  return advanceCommitRepair(input, job, () => ({
-    kind: 'published',
-    generationId: 'fixture-owner',
-    seq: 1,
-    revision: input.revision,
-    condemned: null,
-  }));
+  return advanceCommitRepair(input, job, () => {
+    return {
+      kind: 'published',
+      generationId: 'fixture-owner',
+      seq: 1,
+      revision: input.revision,
+      condemned: null,
+    };
+  });
 }
 
 function refs(row: GenerationRow) {
@@ -425,9 +427,9 @@ describe('bounded durable artifact repair continuations', () => {
       const firstId = rows[0]?.entry_id;
       if (firstId === undefined) throw new Error('missing fixture entry');
       const job = begin(tx);
-      storage.transactionSync(() => {
-        return advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job);
-      });
+      storage.transactionSync(() =>
+        advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job),
+      );
       const resumed = readRepairJob(tx.sql);
       if (resumed === undefined) throw new Error('missing durable cursor');
 
@@ -438,11 +440,11 @@ describe('bounded durable artifact repair continuations', () => {
       while (readRepairJob(tx.sql)?.phase === 'preflight') {
         const saved = readRepairJob(tx.sql)!;
         try {
-          storage.transactionSync(() => {
-            return advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, saved);
-          });
+          storage.transactionSync(() =>
+            advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, saved),
+          );
         } catch (error) {
-          if (!(error instanceof RepairPublicationProbed)) throw error;
+          if (!(error instanceof RepairPublicationProbedError)) throw error;
           storage.transactionSync(() => {
             advanceRepairJob(tx.sql, error.next);
           });
@@ -464,9 +466,9 @@ describe('bounded durable artifact repair continuations', () => {
         refs: ['x'],
       });
 
-      storage.transactionSync(() => {
-        return advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, applying);
-      });
+      storage.transactionSync(() =>
+        advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, applying),
+      );
 
       expect({
         after: readRepairJob(tx.sql)?.after,
@@ -510,9 +512,9 @@ describe('bounded durable artifact repair continuations', () => {
         failureMarkers: marker === undefined ? [] : [[SHA, marker] as [string, string]],
       };
       const job = begin(tx, selected);
-      const outcome = storage.transactionSync(() => {
-        return advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job);
-      });
+      const outcome = storage.transactionSync(() =>
+        advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job),
+      );
 
       expect(outcome).toMatchObject({
         kind: 'completed',
@@ -533,11 +535,8 @@ describe('bounded durable artifact repair continuations', () => {
       const before = current(tx, target);
       const outputs = generationOutputs(before);
       const padded = (length: number): string => {
-        return JSON.stringify(
-          outputs.map((output) => {
-            return { ...output, headers: { 'x-output-only-padding': 'x'.repeat(length) } };
-          }),
-        );
+        const headers = { 'x-output-only-padding': 'x'.repeat(length) };
+        return JSON.stringify(outputs.map((output) => ({ ...output, headers })));
       };
       // The provider's actual configured row limit is the contract. Discover its boundary rather
       // than introducing a new protocol ceiling or assuming that a local runtime uses production's.
@@ -586,9 +585,9 @@ describe('bounded durable artifact repair continuations', () => {
 
       expect(headerFits).toBeUndefined();
       expect(() => {
-        return storage.transactionSync(() => {
-          return advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job);
-        });
+        return storage.transactionSync(() =>
+          advanceFixtureCommit({ ...tx, revision: readRevision(tx.sql) + 1 }, job),
+        );
       }).toThrow(RepairRowTooLargeError);
       expect(readRepairJob(tx.sql)?.after).toBe('');
       expect(current(tx, target).outputs).toHaveLength(originalLength);
@@ -724,10 +723,10 @@ describe('bounded durable artifact repair continuations', () => {
       storage.transactionSync(() => flushRepairEvent(input, resumed, 0));
       storage.transactionSync(() => flushRepairEvent(input, resumed, 1));
       const done = storage.transactionSync(() => flushRepairEvent(input, resumed, 2));
-      const events = tx.sql
+      const eventRows = tx.sql
         .exec<{ payload: string }>('SELECT payload FROM repaired_history_test ORDER BY ordinal')
-        .toArray()
-        .map((row) => JSON.parse(row.payload) as EventInput);
+        .toArray();
+      const events = eventRows.map((row) => JSON.parse(row.payload) as EventInput);
 
       expect(before).toBe(0);
       expect(events).toStrictEqual([{ ...first, payload: { version: 3 } }, second]);
@@ -753,7 +752,7 @@ describe('bounded durable artifact repair continuations', () => {
         .exec<{ total: number }>(
           'SELECT COUNT(*) AS total FROM meta WHERE key >= ? AND key < ?',
           repairDataKey(job.id, 'event-'),
-          repairDataKey(job.id, 'event-') + '\u{FFFF}',
+          `${repairDataKey(job.id, 'event-')}\u{FFFF}`,
         )
         .one().total;
 

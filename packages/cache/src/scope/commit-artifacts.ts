@@ -63,8 +63,8 @@ export async function missingUploads(
   for (const output of outputs) {
     for (const artifact of output.artifacts) {
       const upload = findUpload(sql, attemptId, artifact);
-      const stored = findArtifactBySha(sql, artifact.sha256);
       if (upload === undefined) continue;
+      const stored = findArtifactBySha(sql, artifact.sha256);
       const failed = stored !== undefined && artifactFailed(sql, stored);
       repairCandidate ||= failed;
       if (stored === undefined || failed) keys.add(upload.storage_ref);

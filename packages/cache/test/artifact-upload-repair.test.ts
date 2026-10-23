@@ -86,12 +86,8 @@ async function scopeForTest() {
 
 type Scope = Awaited<ReturnType<typeof scopeForTest>>;
 
-function seedEntriesWithAlarms(
-  scope: Scope,
-  input: Parameters<Scope['stub']['seedEntries']>[0],
-  now: number,
-) {
-  return withRepairAlarms(scope.stub, scope.stub.seedEntries(input, now));
+function seedEntriesWithAlarms(scope: Scope, input: Parameters<Scope['stub']['seedEntries']>[0]) {
+  return withRepairAlarms(scope.stub, scope.stub.seedEntries(input, NOW));
 }
 
 function commitWithAlarms(scope: Scope, attemptId: string, request: CommitRequest, now: number) {
@@ -146,11 +142,11 @@ type Plan = Awaited<ReturnType<typeof planFor>>;
 type Mode = 'single' | 'batch';
 
 async function seedBatch(scope: Scope, plan: Plan) {
-  return seedEntriesWithAlarms(
-    scope,
-    { scopeId: scope.scopeId, batchIndex: 0, entries: [plan.seed] },
-    NOW,
-  );
+  return seedEntriesWithAlarms(scope, {
+    scopeId: scope.scopeId,
+    batchIndex: 0,
+    entries: [plan.seed],
+  });
 }
 
 async function lease(scope: Scope, plan: Plan) {
@@ -801,15 +797,11 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       Array.from({ length: 51 }, (_value, index) => planFor(scope, `/shared/${String(index)}`)),
     );
     await damage(first.artifact.storageRef, 'missing', first.bytes.byteLength);
-    await seedEntriesWithAlarms(
-      scope,
-      {
-        scopeId: scope.scopeId,
-        batchIndex: 0,
-        entries: [first.seed, ...others.map((plan) => plan.seed)],
-      },
-      NOW,
-    );
+    await seedEntriesWithAlarms(scope, {
+      scopeId: scope.scopeId,
+      batchIndex: 0,
+      entries: [first.seed, ...others.map((plan) => plan.seed)],
+    });
     const before = await Promise.all(others.map((plan) => liveSnapshot(scope, plan)));
     const original = await stateFor(scope, first);
     const started = await lease(scope, first);

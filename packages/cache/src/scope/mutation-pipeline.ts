@@ -30,6 +30,11 @@ export type OwnRun = Pick<OwnRecords, 'wanted' | 'carried'> &
     readonly repairHeartbeat?: string;
   };
 
+type PipelineValue<T> = T | RepairPending | RepairStart<T>;
+type MutationPlan<T> = (
+  input: TxInput,
+) => Apply<PipelineValue<T>> | Promise<Apply<PipelineValue<T>>>;
+
 interface PipelineHost {
   readonly storage: DurableObjectStorage;
   readonly queue: ScopeQueue;
@@ -69,11 +74,7 @@ export class MutationPipeline {
 
   async run<T>(
     now: number,
-    plan: (
-      input: TxInput,
-    ) =>
-      | Apply<T | RepairPending | RepairStart<T>>
-      | Promise<Apply<T | RepairPending | RepairStart<T>>>,
+    plan: MutationPlan<T>,
     answers: { readonly atOnce?: boolean } & ({ readonly empty: T } | { readonly seed: T }),
     { wanted, timing, carried, leaseClock, repairHeartbeat }: OwnRun = {},
   ): Promise<T> {
@@ -91,7 +92,7 @@ export class MutationPipeline {
         ) {
           return { blockedBy: job.id } as const;
         }
-        let committed: MutationResult<T | RepairPending | RepairStart<T>>;
+        let committed: MutationResult<PipelineValue<T>>;
         try {
           committed = await commitMutation(
             { ...host, ...(clock !== undefined && { clock }) },
@@ -107,27 +108,7 @@ export class MutationPipeline {
         }
         this.#host.committed(committed.tables);
         if (isRepairStart<T>(committed.value)) {
-          const deferred = committed.value;
-          await this.prepare();
-          await deferred.prepare?.();
-          const input = this.input(clock?.() ?? now);
-          const start: Apply<T | RepairPending> = Object.assign(() => deferred.start(input), {
-            ...(deferred.preflight !== undefined && {
-              preflight: () => {
-                deferred.preflight?.(input);
-              },
-            }),
-          });
-          runMutationPreflight(this.#host.storage, start);
-          const value = this.#host.storage.transactionSync(start);
-          committed = {
-            ...committed,
-            value,
-            own:
-              readRevision(input.sql) >= input.revision
-                ? ownRecordsOf(input.sql, input.revision)
-                : null,
-          };
+          committed = await this.#startDeferred(committed, committed.value, now, clock);
         }
         // A bypassed healthy heartbeat owns no record. Avoid starting a history/tag settle
         // during the job; the already-armed continuation keeps maintenance scheduled.
@@ -166,6 +147,33 @@ export class MutationPipeline {
     return result.value;
   }
 
+  async #startDeferred<T>(
+    committed: MutationResult<PipelineValue<T>>,
+    deferred: RepairStart<T>,
+    now: number,
+    clock: (() => number) | undefined,
+  ): Promise<MutationResult<PipelineValue<T>>> {
+    await this.prepare();
+    await deferred.prepare?.();
+    const input = this.input(clock?.() ?? now);
+    const start: Apply<T | RepairPending> = Object.assign(() => deferred.start(input), {
+      preflight:
+        deferred.preflight === undefined
+          ? undefined
+          : () => {
+              deferred.preflight?.(input);
+            },
+    });
+    runMutationPreflight(this.#host.storage, start);
+    const value = this.#host.storage.transactionSync(start);
+    return {
+      ...committed,
+      value,
+      own:
+        readRevision(input.sql) >= input.revision ? ownRecordsOf(input.sql, input.revision) : null,
+    };
+  }
+
   /** Rare repair preparation only: no new reads, awaits or alarm I/O on healthy writes. */
   async prepare(): Promise<void> {
     // Earlier mutations schedule their settles after releasing the writer queue. Drain the
@@ -187,10 +195,10 @@ export class MutationPipeline {
         const job = host.tables ? readRepairJob(host.storage.sql) : undefined;
         return job === undefined ? { value: await body() } : { blockedBy: job.id };
       });
-      if ('blockedBy' in result && result.blockedBy !== undefined) {
+      if ('blockedBy' in result) {
         await this.#host.repairs.wait(result.blockedBy);
       } else {
-        return result.value as T;
+        return result.value;
       }
     }
   }

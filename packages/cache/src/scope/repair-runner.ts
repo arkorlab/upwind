@@ -16,7 +16,7 @@ import {
   type RepairGroup,
   type RepairStep,
 } from './repair-jobs.ts';
-import { RepairPublicationProbed } from './repair-probes.ts';
+import { RepairPublicationProbedError } from './repair-probes.ts';
 import { advancePreparedSeed } from './seed-repair-job.ts';
 import { retryDelayMs } from './settle-retry.ts';
 import { ownRepairRecordsOf } from './settle.ts';
@@ -90,9 +90,7 @@ export class RepairRunner {
               ? raw
               : { ...raw, history: repairEventHistory(raw, job.id) };
           let step: RepairStep<unknown>;
-          if (job.finalizing !== undefined) {
-            step = advanceRepairFinalization(raw, job);
-          } else {
+          if (job.finalizing === undefined) {
             switch (job.operation) {
               case 'commit': {
                 step = advancePreparedCommit(input, job);
@@ -107,6 +105,8 @@ export class RepairRunner {
                 break;
               }
             }
+          } else {
+            step = advanceRepairFinalization(raw, job);
           }
           if (step.kind !== 'completed') return;
           if (job.finalizing === undefined && !isRefusal(step.value)) {
@@ -133,11 +133,11 @@ export class RepairRunner {
         try {
           return advance();
         } catch (error) {
-          if (error instanceof RepairPublicationProbed) {
+          if (error instanceof RepairPublicationProbedError) {
             this.#host.storage.transactionSync(() => {
               const owner = readRepairJob(this.#sql);
               if (owner?.id !== error.next.id || owner.phase !== 'preflight')
-                throw new Error('the repair probe owner changed');
+                throw new Error('the repair probe owner changed', { cause: error });
               advanceRepairJob(this.#sql, error.next);
             });
             return;

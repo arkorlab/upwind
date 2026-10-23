@@ -438,8 +438,7 @@ function applySetData(
   // Uploads have unique keys. Reuse a healthy canonical object; a known failed location adopts
   // this upload. The gateway removes only its own unadopted upload after the transaction answers.
   const location = dataLocation(sql, plan);
-  const { storageRef, repair } = location;
-  const { entry } = location;
+  const { storageRef, repair, entry } = location;
   const unwritten = writesNothing(sql, entry, plan, { storageRef, now });
   if (unwritten?.superseded === true) return unwritten;
   if (unwritten !== undefined && repair === undefined) {

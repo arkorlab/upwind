@@ -10,8 +10,8 @@ import { record, type TxInput } from './tx.ts';
 export { stageRepairPublication } from './repair-staging.ts';
 
 /** Success deliberately escapes transactionSync so every candidate publication write rolls back. */
-export class RepairPublicationProbed extends Error {
-  override name = 'RepairPublicationProbed';
+export class RepairPublicationProbedError extends Error {
+  override name = 'RepairPublicationProbedError';
   readonly next: RepairJob;
 
   constructor(next: RepairJob) {
@@ -30,7 +30,6 @@ export function probeRepairPublication(
   _input: TxInput,
   next: RepairJob,
   publish: () => unknown,
-  _entryId: string,
 ): never {
   try {
     publish();
@@ -39,7 +38,7 @@ export function probeRepairPublication(
       throw new RepairRowTooLargeError(error);
     throw error;
   }
-  throw new RepairPublicationProbed(next);
+  throw new RepairPublicationProbedError(next);
 }
 
 /** Every continuation belongs to the original accepted transaction revision. */
@@ -55,15 +54,10 @@ export function probeRepairSnapshot(
   cursor: { readonly after: string; readonly excluding: ReadonlySet<string> },
 ): void {
   if (input.history === NO_HISTORY) return;
-  probeRepairPublication(
-    input,
-    next,
-    () => {
-      const step = repairSnapshotStep(input, repairs, { ...cursor, apply: true });
-      if (!step.changed || step.failure !== undefined)
-        throw new Error('the preflighted shared repair changed');
-      record(input, []);
-    },
-    next.after,
-  );
+  probeRepairPublication(input, next, () => {
+    const step = repairSnapshotStep(input, repairs, { ...cursor, apply: true });
+    if (!step.changed || step.failure !== undefined)
+      throw new Error('the preflighted shared repair changed');
+    record(input, []);
+  });
 }

@@ -56,6 +56,35 @@ export interface RepairBlobLocation {
 
 export type RepairCopyOwner = Pick<RepairUploadProof, 'namespace' | 'attemptId' | 'scopeOwner'>;
 
+interface RepairCopyWrite {
+  readonly proof: RepairUploadProof;
+  readonly metadata: Record<string, string>;
+  readonly location: RepairBlobLocation;
+  readonly signal: AbortSignal | undefined;
+}
+
+/** The same conditional write and positive-receipt checks for one fresh copy candidate. */
+async function writeRepairCopy(
+  bucket: Pick<R2Bucket, 'put' | 'head'>,
+  storageRef: string,
+  body: ReadableStream,
+  write: RepairCopyWrite,
+): Promise<boolean> {
+  const { proof, metadata, location, signal } = write;
+  const written = await bucket.put(storageRef, body, {
+    sha256: proof.sha256,
+    onlyIf: new Headers({ 'If-None-Match': '*' }),
+    customMetadata: metadata,
+    httpMetadata: { contentType: location.contentType ?? 'application/octet-stream' },
+  });
+  signal?.throwIfAborted();
+  if (written !== null) {
+    if (!repairUploadMatches(written, proof)) throw new Error('unverified repair copy receipt');
+    return true;
+  }
+  return repairUploadMatches(await bucket.head(storageRef), proof);
+}
+
 /**
  * Only a failed location's repair pays for this streamed copy. R2 validates the expected checksum
  * while writing, so an untrusted or concurrently replaced source cannot become a healthy repair.
@@ -70,6 +99,7 @@ export async function copyRepairBlob(
 ): Promise<string | undefined> {
   const proof = { ...owner, sha256: location.sha256, byteLength: location.byteLength };
   const metadata = repairUploadMetadata(proof);
+  const write: RepairCopyWrite = { proof, metadata, location, signal };
   for (;;) {
     signal?.throwIfAborted();
     const storageRef = createRepairStorageRef(owner.namespace);
@@ -85,18 +115,8 @@ export async function copyRepairBlob(
     };
     signal?.addEventListener('abort', abort, { once: true });
     try {
-      const written = await bucket.put(storageRef, object.body, {
-        sha256: proof.sha256,
-        onlyIf: new Headers({ 'If-None-Match': '*' }),
-        customMetadata: metadata,
-        httpMetadata: { contentType: location.contentType ?? 'application/octet-stream' },
-      });
-      signal?.throwIfAborted();
-      if (written !== null) {
-        if (!repairUploadMatches(written, proof)) throw new Error('unverified repair copy receipt');
-        return storageRef;
-      }
-      if (repairUploadMatches(await bucket.head(storageRef), proof)) return storageRef;
+      const copied = await writeRepairCopy(bucket, storageRef, object.body, write);
+      if (copied) return storageRef;
       // A definitive failed precondition found someone else's object. Keep it and choose a nonce.
     } catch (error) {
       // Workers exposes the provider code at the end of the message. Only a definitive content

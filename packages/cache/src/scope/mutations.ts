@@ -83,8 +83,8 @@ export interface MutationResult<T> {
 }
 
 /** Only this private success escapes the speculative transaction without failing admission. */
-class MutationPreflightPassed extends Error {
-  override name = 'MutationPreflightPassed';
+class MutationPreflightPassedError extends Error {
+  override name = 'MutationPreflightPassedError';
 }
 
 /** A failed host append rolls back every candidate row before the actual mutation is accepted. */
@@ -94,10 +94,10 @@ export function runMutationPreflight(storage: DurableObjectStorage, apply: Apply
   try {
     storage.transactionSync(() => {
       preflight();
-      throw new MutationPreflightPassed('the mutation preflight passed');
+      throw new MutationPreflightPassedError('the mutation preflight passed');
     });
   } catch (error) {
-    if (!(error instanceof MutationPreflightPassed)) throw error;
+    if (!(error instanceof MutationPreflightPassedError)) throw error;
   }
 }
 

@@ -424,7 +424,7 @@ export function prepareSeedRepair(
     failureMarkers: repairs.flatMap((repair) => {
       const row = findArtifactBySha(sql, repair.sha256);
       const marker = artifactRepairMarker(sql, repair.sha256);
-      return row !== undefined && artifactFailed(sql, row) && marker !== undefined
+      return row !== undefined && marker !== undefined && artifactFailed(sql, row)
         ? [[repair.sha256, marker] as [string, string]]
         : [];
     }),

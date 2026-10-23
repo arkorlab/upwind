@@ -58,41 +58,47 @@ async function seed(tx: TxInput, storage: DurableObjectStorage, count: number) {
   const apply = await planSeedEntries(tx, {
     scopeId: tx.scopeId,
     batchIndex: 0,
-    entries: Array.from({ length: count }, (_, index) => ({
-      descriptor: { kind: 'app-page' as const, route: `/row-${index}`, pathname: `/row-${index}` },
-      groupInstanceId: null,
-      generation: {
-        generationId: `row-generation-${index}`,
-        cacheTimestamp: NOW,
-        producedAt: NOW,
-        policy: policyFromBuild({ initialRevalidate: 60, initialExpiration: 600 }),
-        status: 200,
-        headers: {},
-        tags: [],
-        dependencyCoverage: 'complete' as const,
-        outputs: [
-          {
-            representationKey: 'rsc',
-            pathname: `/row-${index}`,
-            status: 200,
-            headers: {},
-            compute: 'static' as const,
-            response: 'complete' as const,
-            htmlSize: null,
-            artifacts: [
-              {
-                role: 'rsc' as const,
-                sha256: SHA,
-                byteLength: 1,
-                contentType: 'text/x-component',
-                encoding: 'identity' as const,
-                storageRef: 'x',
-              },
-            ],
-          },
-        ],
-      },
-    })),
+    entries: Array.from({ length: count }, (_, index) => {
+      return {
+        descriptor: {
+          kind: 'app-page' as const,
+          route: `/row-${index}`,
+          pathname: `/row-${index}`,
+        },
+        groupInstanceId: null,
+        generation: {
+          generationId: `row-generation-${index}`,
+          cacheTimestamp: NOW,
+          producedAt: NOW,
+          policy: policyFromBuild({ initialRevalidate: 60, initialExpiration: 600 }),
+          status: 200,
+          headers: {},
+          tags: [],
+          dependencyCoverage: 'complete' as const,
+          outputs: [
+            {
+              representationKey: 'rsc',
+              pathname: `/row-${index}`,
+              status: 200,
+              headers: {},
+              compute: 'static' as const,
+              response: 'complete' as const,
+              htmlSize: null,
+              artifacts: [
+                {
+                  role: 'rsc' as const,
+                  sha256: SHA,
+                  byteLength: 1,
+                  contentType: 'text/x-component',
+                  encoding: 'identity' as const,
+                  storageRef: 'x',
+                },
+              ],
+            },
+          ],
+        },
+      };
+    }),
   });
   storage.transactionSync(apply);
   return tx.sql.exec<EntryRow>('SELECT * FROM entries ORDER BY entry_id').toArray();
@@ -129,6 +135,10 @@ function padEntry(storage: DurableObjectStorage, entryId: string): string {
   return value;
 }
 
+function revisionsOf(entry: EntryRow): number[] {
+  return [entry.revision, entry.record_revision, entry.kv_revision];
+}
+
 async function beginDataRepair(tx: TxInput, storage: DurableObjectStorage): Promise<string> {
   rememberArtifactFailure(tx.sql, { sha256: SHA, byteLength: 1, storageRef: 'x' });
   const prepare = await planSetData(
@@ -149,9 +159,7 @@ async function beginDataRepair(tx: TxInput, storage: DurableObjectStorage): Prom
   );
   const start = storage.transactionSync(prepare);
   if (!isRepairStart(start)) throw new Error('the fixture repair did not prepare');
-  storage.transactionSync(() => {
-    return start.start({ ...tx, revision: readRevision(tx.sql) + 1 });
-  });
+  storage.transactionSync(() => start.start({ ...tx, revision: readRevision(tx.sql) + 1 }));
   const job = readRepairJob(tx.sql);
   if (job === undefined) throw new Error('the repair did not persist');
   return job.id;
@@ -221,6 +229,10 @@ describe('exact repair entry row preflight', () => {
         .exec<{ storage_ref: string }>('SELECT storage_ref FROM artifacts WHERE sha256 = ?', SHA)
         .one();
 
+      const sharedIds = new Set(rows.map((entry) => entry.entry_id));
+      const shared = entries.filter((entry) => sharedIds.has(entry.entry_id));
+      const publisher = entries.filter((entry) => !sharedIds.has(entry.entry_id));
+
       expect({ active, job: readRepairJob(tx.sql), revision: readRevision(tx.sql) }).toStrictEqual({
         active: false,
         job: undefined,
@@ -229,13 +241,18 @@ describe('exact repair entry row preflight', () => {
       expect(repairJobResult(tx.sql, jobId)?.value).toMatchObject({
         retainedStorageRef: 'replacement',
       });
-      expect(
-        entries.map((entry) => [entry.revision, entry.record_revision, entry.kv_revision]),
-      ).toStrictEqual([
-        [127, 127, 126],
-        [127, 127, 126],
-      ]);
-      expect(entries[1]?.group_instance_id).toBe(original);
+
+      expect({
+        shared: shared.map(revisionsOf),
+        publisher: publisher.map(revisionsOf),
+      }).toStrictEqual({
+        shared: [
+          [127, 127, 126],
+          [127, 127, 126],
+        ],
+        publisher: [[127, 127, 0]],
+      });
+      expect(entries.find((entry) => entry.entry_id === target)?.group_instance_id).toBe(original);
       expect(canonical.storage_ref).toBe('replacement');
       expect(artifactRepairMarker(tx.sql, SHA)).toBeUndefined();
     });

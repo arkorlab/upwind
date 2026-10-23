@@ -136,19 +136,23 @@ export class CacheScope extends DurableObject<CacheBindings> {
       storage: this.ctx.storage,
       queue: this.#mutations,
       repairs: this.#repairs,
-      mutationHost: () => ({
-        storage: this.ctx.storage,
-        ...this.#scope.identity,
-        kv: this.env.CACHE_STATE,
-        limits: this.#limits,
-        history: this.#history,
-        tables: this.#scope.tables,
-        createdTables: () => {
-          this.#scope.tables = true;
-        },
-      }),
+      mutationHost: () => {
+        return {
+          storage: this.ctx.storage,
+          ...this.#scope.identity,
+          kv: this.env.CACHE_STATE,
+          limits: this.#limits,
+          history: this.#history,
+          tables: this.#scope.tables,
+          createdTables: () => {
+            this.#scope.tables = true;
+          },
+        };
+      },
       tables: () => this.#scope.tables,
-      committed: (tables) => this.#scope.committed(tables),
+      committed: (tables) => {
+        this.#scope.committed(tables);
+      },
       testHooks: () => this.#vars.ARKOR_TEST_HOOKS,
       settling: () => this.#settling,
       settle: (own, timing) => this.#settle(own, undefined, timing),
@@ -392,12 +396,13 @@ export class CacheScope extends DurableObject<CacheBindings> {
     if (seed.needsSeedVerification(result)) {
       result = await seed.finishSeedRepair(result, {
         bucket: this.env.ARTIFACTS,
-        retry: (seen) =>
-          this.#mutate(
+        retry: (seen) => {
+          return this.#mutate(
             now,
             (tx) => seed.planSeedEntries(tx, input, seen, () => this.#pipeline.prepare()),
             REFUSED,
-          ),
+          );
+        },
         faults: () => this.#faults,
         copyRepair: seedRepairCopier(this.env.ARTIFACTS, {
           namespace: this.#scope.repairNamespace,
@@ -494,7 +499,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
       return isRefusal(scope)
         ? () => scope
         : planCommit(
-            { ...tx, prepareRepair: () => this.#pipeline.prepare() },
+            Object.assign(tx, { prepareRepair: () => this.#pipeline.prepare() }),
             attemptId,
             request,
             this.#blobs(),

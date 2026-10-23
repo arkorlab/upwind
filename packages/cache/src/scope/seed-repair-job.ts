@@ -10,7 +10,6 @@ import {
   beginRepairJob,
   hasRepairValue,
   readRepairValue,
-  type RepairGroup,
   type RepairJob,
   type RepairPending,
   type RepairStep,
@@ -135,6 +134,54 @@ function nextSeedRetry(input: TxInput, job: RepairJob): void {
   });
 }
 
+function prepareSeedRetry(input: TxInput, job: RepairJob, name: string): void {
+  const plan = readRepairValue<SeedLocations>(input.sql, job.id, `seed-plan-${job.group}`);
+  const prepared = prepareSeedRepair(input, plan, preparedProofs(input.sql, job, plan));
+  if (prepared === undefined) {
+    nextSeedRetry(input, job);
+  } else {
+    const generation = findGeneration(input.sql, prepared.generationId);
+    if (generation === undefined) throw new Error('the prepared seed generation disappeared');
+    // The owner is excluded from the shared scan. Probe it before any shared snapshot changes,
+    // so an actual provider row-limit refusal skips only this retry while still in preflight.
+    probeRepairGeneration(
+      input.sql,
+      generation,
+      encodeStoredOutputs(prepared.outputs, input.packSchemaVersion === 2),
+    );
+    writeRepairValue(input.sql, job.id, name, prepared);
+  }
+}
+
+function publishPreparedSeed(
+  input: TxInput,
+  job: RepairJob,
+  prepared: PreparedSeedRepair,
+): RepairStep<SeedEntriesResult | Refusal> {
+  stageRepairPublication(input, prepared.entryId, () => {
+    const events: EventInput[] = [];
+    publishSeedRepair(input, prepared, events);
+    record(input, events);
+  });
+  for (const location of prepared.verifiedLocations) {
+    writeRepairValue(input.sql, job.id, `seed-canonical-${location.sha256}`, location);
+  }
+  const result = readRepairValue<SeedEntriesResult>(input.sql, job.id, 'publication');
+  writeRepairValue(input.sql, job.id, 'publication', { ...result, revision: input.revision });
+  // Only a published group's actual relocations may clear its captured failure observations.
+  writeRepairValue(input.sql, job.id, `seed-moved-${job.group}`, prepared.repairs.length > 0);
+  nextSeedRetry(input, job);
+  return { kind: 'pending' };
+}
+
+function seedStepCursor(
+  job: RepairJob,
+  step: { readonly done: boolean; readonly after: string },
+): RepairJob {
+  if (!step.done) return { ...job, after: step.after };
+  return { ...job, after: '', phase: job.phase === 'preflight' ? 'apply' : 'publish' };
+}
+
 /**
  * One retry or one primary-key snapshot per step. Each retry completes its own preflight before
  * any of its shared snapshots change: refusing it preserves fresh entries and earlier retries.
@@ -147,41 +194,11 @@ export function advancePreparedSeed(
   if (job.group === job.groupCount) return finishPreparedSeed(input, job);
   const name = `seed-active-${job.group}`;
   if (!hasRepairValue(input.sql, job.id, name)) {
-    const plan = readRepairValue<SeedLocations>(input.sql, job.id, `seed-plan-${job.group}`);
-    const prepared = prepareSeedRepair(input, plan, preparedProofs(input.sql, job, plan));
-    if (prepared === undefined) {
-      nextSeedRetry(input, job);
-    } else {
-      const generation = findGeneration(input.sql, prepared.generationId);
-      if (generation === undefined) throw new Error('the prepared seed generation disappeared');
-      // The owner is excluded from the shared scan. Probe it before any shared snapshot changes,
-      // so an actual provider row-limit refusal skips only this retry while still in preflight.
-      probeRepairGeneration(
-        input.sql,
-        generation,
-        encodeStoredOutputs(prepared.outputs, input.packSchemaVersion === 2),
-      );
-      writeRepairValue(input.sql, job.id, name, prepared);
-    }
+    prepareSeedRetry(input, job, name);
     return { kind: 'pending' };
   }
   const prepared = readRepairValue<PreparedSeedRepair>(input.sql, job.id, name);
-  if (job.phase === 'publish') {
-    stageRepairPublication(input, prepared.entryId, () => {
-      const events: EventInput[] = [];
-      publishSeedRepair(input, prepared, events);
-      record(input, events);
-    });
-    for (const location of prepared.verifiedLocations) {
-      writeRepairValue(input.sql, job.id, `seed-canonical-${location.sha256}`, location);
-    }
-    const result = readRepairValue<SeedEntriesResult>(input.sql, job.id, 'publication');
-    writeRepairValue(input.sql, job.id, 'publication', { ...result, revision: input.revision });
-    // Only a published group's actual relocations may clear its captured failure observations.
-    writeRepairValue(input.sql, job.id, `seed-moved-${job.group}`, prepared.repairs.length > 0);
-    nextSeedRetry(input, job);
-    return { kind: 'pending' };
-  }
+  if (job.phase === 'publish') return publishPreparedSeed(input, job, prepared);
   const candidate = repairPreflightInput(input, job);
   if (job.phase === 'preflight' && prepared.repairs.length === 0)
     probeSeedPublication(candidate, { ...job, phase: 'publish' }, prepared);
@@ -196,11 +213,7 @@ export function advancePreparedSeed(
     return { kind: 'pending' };
   }
   if (job.phase === 'apply' && step.changed) record(input, []);
-  const next: RepairJob = {
-    ...job,
-    after: step.done ? '' : step.after,
-    phase: step.done ? (job.phase === 'preflight' ? 'apply' : 'publish') : job.phase,
-  };
+  const next = seedStepCursor(job, step);
   if (job.phase === 'preflight' && step.changed)
     probeRepairSnapshot(
       candidate,
@@ -219,16 +232,11 @@ function probeSeedPublication(
   next: RepairJob,
   prepared: PreparedSeedRepair,
 ): never {
-  return probeRepairPublication(
-    input,
-    next,
-    () => {
-      const events: EventInput[] = [];
-      publishSeedRepair(input, prepared, events);
-      record(input, events);
-    },
-    prepared.entryId,
-  );
+  return probeRepairPublication(input, next, () => {
+    const events: EventInput[] = [];
+    publishSeedRepair(input, prepared, events);
+    record(input, events);
+  });
 }
 
 /** The shared coordinator releases record cursors, final-state events and pins in bounded steps. */

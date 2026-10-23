@@ -1,17 +1,15 @@
-import { RepairPreparationRequired } from './repair-jobs.ts';
+import { RepairPreparationRequiredError } from './repair-jobs.ts';
 import type { TxInput } from './tx.ts';
 
 /** The outer candidate rolls back before draining projection, arming and probing its retry. */
-export function deferSeedRepair<T>(
+export function deferSeedRepair(
   input: TxInput,
-  apply: (next: TxInput, probe: boolean) => T,
+  apply: (next: TxInput, probe: boolean) => unknown,
 ): never {
-  const accepted = (next: TxInput): TxInput => ({
-    ...next,
-    now: input.now,
-    limits: input.limits,
-  });
-  throw new RepairPreparationRequired({
+  const accepted = (next: TxInput): TxInput => {
+    return { ...next, now: input.now, limits: input.limits };
+  };
+  throw new RepairPreparationRequiredError({
     kind: 'repair-start',
     preflight: (next) => {
       apply(accepted(next), true);

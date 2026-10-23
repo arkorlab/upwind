@@ -58,13 +58,14 @@ export async function projectRepairWindow(
   let more = own.first.length === PROJECTION_BATCH;
   let failed = 0;
   let written = 0;
-  const next = (): EntryRow[] =>
-    recordsInRepairWindow(deps.sql, {
+  const next = (): EntryRow[] => {
+    return recordsInRepairWindow(deps.sql, {
       fromRevision: window.fromRevision,
       throughRevision: own.revision,
       after,
       limit: PROJECTION_BATCH,
     });
+  };
   for (;;) {
     if (entries.length > 0) {
       const page = await projectPage(

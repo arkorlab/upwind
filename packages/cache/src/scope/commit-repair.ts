@@ -69,9 +69,9 @@ export function advanceCommitRepair(
 ): RepairStep<CommitOutcome | Refusal> {
   const group = readRepairValue<RepairGroup>(input.sql, job.id, 'group-0');
   if (job.phase === 'publish') {
-    const value = stageRepairPublication(input, group.entryId, () => {
-      return publishPreparedCommit(input, job, publish);
-    });
+    const value = stageRepairPublication(input, group.entryId, () =>
+      publishPreparedCommit(input, job, publish),
+    );
     return { kind: 'completed', value };
   }
   const candidate = repairPreflightInput(input, job);
@@ -98,12 +98,7 @@ export function advanceCommitRepair(
     next.after = '';
     next.phase = job.phase === 'preflight' ? 'apply' : 'publish';
     if (job.phase === 'preflight')
-      probeRepairPublication(
-        candidate,
-        next,
-        () => publishPreparedCommit(candidate, job, publish),
-        group.entryId,
-      );
+      probeRepairPublication(candidate, next, () => publishPreparedCommit(candidate, job, publish));
   }
   advanceRepairJob(input.sql, next);
   return { kind: 'pending' };

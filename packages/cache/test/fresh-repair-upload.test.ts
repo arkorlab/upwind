@@ -178,11 +178,13 @@ describe('fresh repair upload ownership and provider receipts', () => {
       };
       const blobs = blobStore(env.ARTIFACTS, () => ({}), { repairOwner: scope.stub.id.toString() });
 
+      const mismatchedSha = '0'.repeat(64);
+
       await expect(
         Promise.all([
           blobs.verifiedRepair?.(key, proof),
           blobs.verifiedRepair?.(key, { ...proof, attemptId: 'another-attempt' }),
-          blobs.verifiedRepair?.(key, { ...proof, sha256: '0'.repeat(64) }),
+          blobs.verifiedRepair?.(key, { ...proof, sha256: mismatchedSha }),
         ]),
       ).resolves.toStrictEqual([true, false, false]);
 

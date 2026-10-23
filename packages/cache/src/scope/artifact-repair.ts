@@ -44,6 +44,16 @@ export interface RepairSnapshotStep {
   readonly failure?: string;
 }
 
+function nonGrowingRepairs(input: TxInput, repairs: ReadonlyMap<string, ArtifactRepair>): boolean {
+  if (input.packSchemaVersion !== 2 || input.repairNamespace === undefined) return false;
+  const prefix = `r/${input.repairNamespace}/`;
+  for (const repair of repairs.values()) {
+    if (!isRepairStorageRef(repair.storageRef) || !repair.storageRef.startsWith(prefix))
+      return false;
+  }
+  return true;
+}
+
 /**
  * Select the ID window before examining publication, JSON or artifact matches. A LIMIT after a
  * matching EXISTS can still visit every generation in the scope during a single invocation.
@@ -77,22 +87,24 @@ export function repairSnapshotStep(
   const generation = findGeneration(input.sql, entry.current_generation_id);
   if (generation === undefined) throw new Error('the current repair snapshot disappeared');
   const before = generationOutputs(generation);
-  let changed = false;
-  const outputs = before.map((output) => ({
-    ...output,
-    artifacts: output.artifacts.map((artifact) => {
-      const repair = repairs.get(artifact.sha256);
-      if (
-        repair === undefined ||
-        repair.byteLength !== artifact.byteLength ||
-        artifact.storageRef !== repair.previousStorageRef ||
-        artifact.storageRef === repair.storageRef
-      )
-        return artifact;
-      changed = true;
-      return { ...artifact, storageRef: repair.storageRef };
-    }),
-  }));
+  const result = { changed: false };
+  const outputs = before.map((output) => {
+    return {
+      ...output,
+      artifacts: output.artifacts.map((artifact) => {
+        const repair = repairs.get(artifact.sha256);
+        if (
+          repair?.byteLength !== artifact.byteLength ||
+          artifact.storageRef !== repair.previousStorageRef ||
+          artifact.storageRef === repair.storageRef
+        )
+          return artifact;
+        result.changed = true;
+        return { ...artifact, storageRef: repair.storageRef };
+      }),
+    };
+  });
+  const { changed } = result;
   if (!changed) return skipped;
   const failure = unwritableRecord(
     headerFieldsOf(input, entry, generation, outputs),
@@ -103,14 +115,7 @@ export function repairSnapshotStep(
   }
   const encoded = encodeStoredOutputs(outputs, input.packSchemaVersion === 2);
   if (!cursor.apply) {
-    const nonGrowing =
-      input.packSchemaVersion === 2 &&
-      input.repairNamespace !== undefined &&
-      [...repairs.values()].every(
-        (repair) =>
-          isRepairStorageRef(repair.storageRef) &&
-          repair.storageRef.startsWith(`r/${input.repairNamespace}/`),
-      );
+    const nonGrowing = nonGrowingRepairs(input, repairs);
     if (!nonGrowing) {
       // The pack does not contain every output-specific field. Its header can fit while this
       // generation's SQL row is near the provider limit. Ask that same limit, with no new cap.

@@ -626,6 +626,10 @@ export function chainSettle(
   return { answered: answer.promise, done, answerNow };
 }
 
+function projectionContinued(projection: PromiseSettledResult<Projection>): boolean {
+  return projection.status === 'fulfilled' && projection.value.cut && projection.value.written > 0;
+}
+
 /**
  * Do what is owed, as far as it goes; never throws. `from` is what the change this run answers
  * left behind as it committed (`ownRecordsOf`), whose delivery records it rewrites — `null` for a
@@ -689,9 +693,7 @@ export async function settlePending(
   return {
     pending,
     failed,
-    continued:
-      historyContinued === true ||
-      (projection.status === 'fulfilled' && projection.value.cut && projection.value.written > 0),
+    continued: historyContinued === true || projectionContinued(projection),
     ...(tags.status === 'rejected' &&
       tags.reason instanceof ControlTagProjectionError && { controlTagsFailed: true }),
     ...(pending && !failed && waitOf(deps)),

@@ -189,12 +189,18 @@ function tagsRefusal(tags: SeedEntryInput['generation']['tags']): string | undef
     : `the build left a cache tag longer than a tag may be on the entry; a tag may have ${MAX_TAG_LENGTH} characters`;
 }
 
+type SeedEntriesOutcome = SeedEntriesResult | Refusal | SeedRepairVerification | RepairPending;
+interface SeedRepairOptions {
+  readonly probeInitialHistory?: true;
+  readonly repairPrepared?: boolean;
+}
+
 export async function planSeedEntries(
   input: TxInput,
   batch: SeedEntriesInput,
   proofs: SeedLocationProofs = new Map(),
   prepareRepair?: () => Promise<void>,
-): Promise<Apply<SeedEntriesResult | Refusal | SeedRepairVerification | RepairPending>> {
+): Promise<Apply<SeedEntriesOutcome>> {
   const plans = await inChunks(batch.entries, SEED_PLANS_AT_ONCE, async (entry) => {
     // Judged before a tag of it is named: an entry that may not carry its tags keeps none.
     const tagsRefused = tagsRefusal(entry.generation.tags);
@@ -214,7 +220,7 @@ export async function planSeedEntries(
   // The transaction below rechecks repairability after that drain, before publishing fresh rows.
   const repairing = hasSeedRelocations(input, plans, proofs);
   if (repairing) await prepareRepair?.();
-  const apply: Apply<SeedEntriesResult | Refusal | SeedRepairVerification | RepairPending> = () =>
+  const apply: Apply<SeedEntriesOutcome> = () =>
     applySeedEntries(input, plans, proofs, { repairPrepared: repairing });
   // The caller rolls this complete SQL-only preparation back before accepting its durable job.
   // A host's initial fresh-event row limit must fail before any fresh row or repair is accepted.
@@ -302,19 +308,20 @@ function canonicalSeedOutputs(
 ): readonly OutputSnapshot[] {
   if (input.packSchemaVersion !== 2 || input.repairNamespace === undefined) return outputs;
   const prefix = `r/${input.repairNamespace}/`;
-  return outputs.map((output) => ({
-    ...output,
-    artifacts: output.artifacts.map((artifact) => {
-      const canonical = findArtifactBySha(input.sql, artifact.sha256);
-      return canonical !== undefined &&
-        canonical.byte_length === artifact.byteLength &&
-        isRepairStorageRef(canonical.storage_ref) &&
-        canonical.storage_ref.startsWith(prefix) &&
-        !artifactFailed(input.sql, canonical)
-        ? { ...artifact, storageRef: canonical.storage_ref }
-        : artifact;
-    }),
-  }));
+  return outputs.map((output) => {
+    return {
+      ...output,
+      artifacts: output.artifacts.map((artifact) => {
+        const canonical = findArtifactBySha(input.sql, artifact.sha256);
+        return canonical?.byte_length === artifact.byteLength &&
+          isRepairStorageRef(canonical.storage_ref) &&
+          canonical.storage_ref.startsWith(prefix) &&
+          !artifactFailed(input.sql, canonical)
+          ? { ...artifact, storageRef: canonical.storage_ref }
+          : artifact;
+      }),
+    };
+  });
 }
 
 function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
@@ -433,12 +440,46 @@ function reserveSeedPlan(
     : 'the build gives different byte lengths for the same artifact SHA';
 }
 
+function prepareRelocatedSeeds(
+  input: TxInput,
+  plans: readonly SeedPlan[],
+  proofs: SeedLocationProofs,
+  context: {
+    readonly retries: readonly SeedPlan[];
+    readonly seedable: readonly SeedPlan[];
+    readonly events: EventInput[];
+    readonly options: SeedRepairOptions;
+    readonly result: SeedEntriesResult;
+  },
+): SeedEntriesResult | RepairPending {
+  const { retries, seedable, events, options, result } = context;
+  const { sql } = input;
+  if (options.repairPrepared !== true)
+    deferSeedRepair(input, (next, probe) => {
+      return applySeedEntries(next, plans, proofs, {
+        repairPrepared: true,
+        ...(probe && { probeInitialHistory: true as const }),
+      });
+    });
+  if (options.probeInitialHistory === true) {
+    if (result.inserted > 0) record(input, events);
+    return result;
+  }
+  // No record at the accepted revision may escape while later retry groups can still repair
+  // its references. Fresh entries have no earlier record; existing readers keep their cursor.
+  for (const plan of seedable) {
+    sql.exec('UPDATE entries SET record_revision = 0 WHERE entry_id = ?', plan.identity.entryId);
+  }
+  if (result.inserted > 0) record(input, []);
+  return prepareSeedPublication(input, retries, proofs, { ...result, initialEvents: events });
+}
+
 function applySeedEntries(
   input: TxInput,
   plans: readonly SeedPlan[],
   proofs: SeedLocationProofs,
-  options: { readonly probeInitialHistory?: true; readonly repairPrepared?: boolean } = {},
-): SeedEntriesResult | Refusal | SeedRepairVerification | RepairPending {
+  options: SeedRepairOptions = {},
+): SeedEntriesOutcome {
   const { sql, limits, revision } = input;
   const scope = requireActiveScope(sql);
   if (isRefusal(scope)) {
@@ -506,29 +547,12 @@ function applySeedEntries(
     seedOne(input, plan, events);
   }
   if (hasSeedRelocations(input, retries, proofs)) {
-    if (options.repairPrepared !== true)
-      deferSeedRepair(input, (next, probe) =>
-        applySeedEntries(next, plans, proofs, {
-          repairPrepared: true,
-          ...(probe && { probeInitialHistory: true as const }),
-        }),
-      );
-    if (options.probeInitialHistory === true) {
-      if (inserted > 0) record(input, events);
-      return { inserted, skipped, refused, revision: inserted > 0 ? revision : revision - 1 };
-    }
-    // No record at the accepted revision may escape while later retry groups can still repair
-    // its references. Fresh entries have no earlier record; existing readers keep their cursor.
-    for (const plan of seedable) {
-      sql.exec('UPDATE entries SET record_revision = 0 WHERE entry_id = ?', plan.identity.entryId);
-    }
-    if (inserted > 0) record(input, []);
-    return prepareSeedPublication(input, retries, proofs, {
-      inserted,
-      skipped,
-      refused,
-      revision: inserted > 0 ? revision : revision - 1,
-      initialEvents: events,
+    return prepareRelocatedSeeds(input, plans, proofs, {
+      retries,
+      seedable,
+      events,
+      options,
+      result: { inserted, skipped, refused, revision: inserted > 0 ? revision : revision - 1 },
     });
   }
   const repaired = repairSeedEntries(input, retries, events, proofs);

@@ -103,12 +103,12 @@ describe('repair namespace retention', () => {
         });
         pending.push(dataUploadScanPending(sql));
       }
-      const deletions = sql
+      const deletionRows = sql
         .exec<{ storage_ref: string }>(
           'SELECT storage_ref FROM pending_deletions ORDER BY storage_ref',
         )
-        .map((row) => row.storage_ref)
         .toArray();
+      const deletions = deletionRows.map((row) => row.storage_ref);
       await blobs.delete(deletions);
       const afterSweep = (await env.ARTIFACTS.list({ prefix: `r/${namespace}/` })).objects.map(
         (object) => object.key,
@@ -134,10 +134,10 @@ describe('repair namespace retention', () => {
           queueDataUploads({ sql, scopeId, now: now + HOUR, page });
         });
       }
-      const lateDeletions = sql
+      const lateDeletionRows = sql
         .exec<{ storage_ref: string }>('SELECT storage_ref FROM pending_deletions')
-        .map((row) => row.storage_ref)
         .toArray();
+      const lateDeletions = lateDeletionRows.map((row) => row.storage_ref);
       await blobs.delete(lateDeletions);
       state.storage.transactionSync(() => {
         forgetDeletions(sql, lateDeletions);
@@ -167,9 +167,9 @@ describe('repair namespace retention', () => {
     expect(result.pending).toStrictEqual([true, true, false]);
     expect(result.deletions).toStrictEqual([keys.orphan]);
     expect(result.afterSweep.toSorted((left, right) => left.localeCompare(right))).toStrictEqual(
-      [keys.borrowed, keys.pinned, keys.foreign].toSorted((left, right) => {
-        return left.localeCompare(right);
-      }),
+      [keys.borrowed, keys.pinned, keys.foreign].toSorted((left, right) =>
+        left.localeCompare(right),
+      ),
     );
     expect(result.lateDeletions).toStrictEqual([result.late]);
     expect(result.erased).toBe(true);

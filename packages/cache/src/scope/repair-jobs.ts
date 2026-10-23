@@ -73,8 +73,8 @@ export interface RepairStart<T = never> {
 }
 
 /** Discovery after asynchronous planning must first roll back its entire candidate transaction. */
-export class RepairPreparationRequired<T = unknown> extends Error {
-  override name = 'RepairPreparationRequired';
+export class RepairPreparationRequiredError<T = unknown> extends Error {
+  override name = 'RepairPreparationRequiredError';
   readonly preparation: RepairStart<T>;
 
   constructor(preparation: RepairStart<T>) {
@@ -85,8 +85,8 @@ export class RepairPreparationRequired<T = unknown> extends Error {
 
 export function isRepairPreparationRequired<T>(
   value: unknown,
-): value is RepairPreparationRequired<T> {
-  return value instanceof RepairPreparationRequired;
+): value is RepairPreparationRequiredError<T> {
+  return value instanceof RepairPreparationRequiredError;
 }
 
 export function isRepairStart<T>(value: unknown): value is RepairStart<T> {

@@ -16,6 +16,7 @@ import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { CacheBindings } from '../src/bindings.ts';
 import { limitsOf, parseVars } from '../src/env.ts';
 import { type EventInput, NO_HISTORY } from '../src/scope/history.ts';
 import { MutationPipeline } from '../src/scope/mutation-pipeline.ts';
@@ -35,7 +36,7 @@ import {
   readRepairValue,
   type RepairJob,
 } from '../src/scope/repair-jobs.ts';
-import { RepairPublicationProbed } from '../src/scope/repair-probes.ts';
+import { RepairPublicationProbedError } from '../src/scope/repair-probes.ts';
 import { RepairRunner } from '../src/scope/repair-runner.ts';
 import {
   type EntryRow,
@@ -55,10 +56,12 @@ import { withRepairAlarms } from './support/repair-alarm.ts';
 const NOW = 1_800_000_000_000;
 const HTML_TYPE = 'text/html; charset=utf-8';
 const BODY = '<html>the build</html>';
+function verifiedReader(name: string) {
+  return [name, { versionId: 'reviewed', moduleSha256: 'a'.repeat(64) }];
+}
+
 const VERIFIED_READERS = Object.fromEntries(
-  ['edge', 'authority', 'gateway', 'readGateway'].map((name) => {
-    return [name, { versionId: 'reviewed', moduleSha256: 'a'.repeat(64) }];
-  }),
+  ['edge', 'authority', 'gateway', 'readGateway'].map(verifiedReader),
 );
 
 async function scopeForTest(compact = false) {
@@ -100,6 +103,44 @@ async function scopeForTest(compact = false) {
 }
 
 type Scope = Awaited<ReturnType<typeof scopeForTest>>;
+
+/** Enable the clock/settle hook only for this object's wait, leaving normal suite bindings alone. */
+async function settledForTest(scope: Scope): Promise<void> {
+  await runInDurableObject(scope.stub, async (instance) => {
+    const bindings = Reflect.get(instance, 'env') as CacheBindings;
+    Reflect.set(instance, 'env', { ...bindings, ARKOR_TEST_HOOKS: '1' });
+    try {
+      await instance.testSettled();
+    } finally {
+      Reflect.set(instance, 'env', bindings);
+    }
+  });
+}
+
+async function damageCopy(location: string, byteLength: number, fault: string): Promise<void> {
+  if (fault === 'missing') await env.ARTIFACTS.delete(location);
+  else await env.ARTIFACTS.put(location, new Uint8Array(byteLength) as BufferSource);
+}
+
+function firstSeedOutput(seed: SeedEntryInput) {
+  const output = seed.generation.outputs[0];
+  if (output === undefined) throw new Error('the consumer output is missing');
+  return output;
+}
+
+const SEED_CURSOR_HISTORY = {
+  ...NO_HISTORY,
+  append(
+    context: { readonly sql: SqlStorage; readonly revision: number },
+    event: EventInput,
+  ): void {
+    context.sql.exec(
+      'INSERT INTO seed_cursor_history (revision, payload) VALUES (?, ?)',
+      context.revision,
+      JSON.stringify(event),
+    );
+  },
+};
 
 async function planFor(scope: Scope, pathname = '/', body = BODY) {
   const descriptor = { kind: 'app-page' as const, route: pathname, pathname };
@@ -327,7 +368,7 @@ function advanceSeedStep(
       );
     });
   } catch (error) {
-    if (!(error instanceof RepairPublicationProbed)) throw error;
+    if (!(error instanceof RepairPublicationProbedError)) throw error;
     const current = readRepairJob(storage.sql);
     if (current?.id !== job.id || current.phase !== 'preflight') throw error;
     storage.transactionSync(() => {
@@ -358,6 +399,13 @@ function drainSeedJob(storage: DurableObjectStorage, tx: Omit<TxInput, 'revision
     }
   }
   throw new Error('the bounded seed continuation did not finish');
+}
+
+function recordedEventOf(row: {
+  readonly revision: number;
+  readonly payload: string;
+}): RecordedEvent {
+  return { revision: row.revision, event: JSON.parse(row.payload) as EventInput };
 }
 
 async function observedSeedRepair(scope: Scope, plans: readonly Plan[], revision: number) {
@@ -428,10 +476,7 @@ async function observedSeedRepair(scope: Scope, plans: readonly Plan[], revision
         'SELECT revision, payload FROM seed_test_history ORDER BY ordinal',
       )
       .toArray();
-    const history: RecordedEvent[] = rows.map((row) => ({
-      revision: row.revision,
-      event: JSON.parse(row.payload) as EventInput,
-    }));
+    const history: RecordedEvent[] = rows.map(recordedEventOf);
     sql.exec('DROP TABLE seed_test_history');
     return { result, history, states };
   });
@@ -770,6 +815,7 @@ describe('a seed whose artifact projection could not read', () => {
       });
 
       const retried = await seedBatch(scope, [first.seed, second.seed]);
+      if (isRefusal(retried)) throw new Error('the seed repair was refused');
       const repaired = await rowsFor(scope, first);
       const record = await recordFor(scope, first.entryId);
 
@@ -845,9 +891,9 @@ describe('a seed whose artifact projection could not read', () => {
         .map(({ event }) => event.entityId)
         .toSorted((left, right) => left.localeCompare(right)),
     ).toStrictEqual(
-      [first.generationId, second.generationId].toSorted((left, right) => {
-        return left.localeCompare(right);
-      }),
+      [first.generationId, second.generationId].toSorted((left, right) =>
+        left.localeCompare(right),
+      ),
     );
     expect(states.length).toBeGreaterThanOrEqual(3);
     expect({ count: generations.length, artifact: repaired.artifact }).toStrictEqual({
@@ -903,8 +949,7 @@ describe('a seed whose artifact projection could not read', () => {
       await seedBatch(scope, [first.seed]);
       const repaired = await rowsFor(scope, first);
       const copy = repaired.artifact.storage_ref;
-      if (fault === 'missing') await env.ARTIFACTS.delete(copy);
-      else await env.ARTIFACTS.put(copy, new Uint8Array(first.artifact.byteLength) as BufferSource);
+      await damageCopy(copy, first.artifact.byteLength, fault);
       // The next projection supplies the existing checksum-verified failure observation.
       const probe = await planFor(scope, '/probe');
       await seedBatch(scope, [probe.seed]);
@@ -1274,19 +1319,21 @@ describe('a seed whose artifact projection could not read', () => {
     const retry = await planFor(scope, '/retry');
     const fresh = await planFor(scope, '/fresh', '<html>fresh independent bytes</html>');
     await seedBatch(scope, [atLocation(retry, 'missing/initial-history')]);
-    await scope.stub.testSettled();
+    await settledForTest(scope);
     const proofs = new Map([[seedLocationKey(retry.artifact), true]]);
     const result = await runInDurableObject(scope.stub, async (_instance, state) => {
       const { sql } = state.storage;
       sql.exec('CREATE TABLE seed_initial_history_test (payload TEXT)');
-      const snapshot = () => ({
-        scope: sql.exec('SELECT revision, entry_count, body_bytes FROM scope').toArray(),
-        entries: sql.exec('SELECT * FROM entries ORDER BY entry_id').toArray(),
-        generations: sql.exec('SELECT * FROM generations ORDER BY generation_id').toArray(),
-        artifacts: sql.exec('SELECT * FROM artifacts ORDER BY sha256').toArray(),
-        events: sql.exec('SELECT * FROM seed_initial_history_test').toArray(),
-        job: readRepairJob(sql),
-      });
+      const snapshot = () => {
+        return {
+          scope: sql.exec('SELECT revision, entry_count, body_bytes FROM scope').toArray(),
+          entries: sql.exec('SELECT * FROM entries ORDER BY entry_id').toArray(),
+          generations: sql.exec('SELECT * FROM generations ORDER BY generation_id').toArray(),
+          artifacts: sql.exec('SELECT * FROM artifacts ORDER BY sha256').toArray(),
+          events: sql.exec('SELECT * FROM seed_initial_history_test').toArray(),
+          job: readRepairJob(sql),
+        };
+      };
       const before = snapshot();
       const history = {
         ...NO_HISTORY,
@@ -1312,8 +1359,8 @@ describe('a seed whose artifact projection could not read', () => {
           },
         },
         NOW + 1,
-        (input) =>
-          planSeedEntries(
+        (input) => {
+          return planSeedEntries(
             input,
             {
               scopeId: scope.scopeId,
@@ -1321,7 +1368,8 @@ describe('a seed whose artifact projection could not read', () => {
               entries: [fresh.seed, retry.seed],
             },
             proofs,
-          ),
+          );
+        },
         { empty: { inserted: 0, skipped: 0, refused: [], revision: 0 } },
       );
 
@@ -1343,7 +1391,7 @@ describe('a seed whose artifact projection could not read', () => {
       const retry = await planFor(scope, '/late-retry');
       const fresh = await planFor(scope, '/late-fresh', '<html>late fresh</html>');
       await seedBatch(scope, [atLocation(retry, 'missing/late-seed')]);
-      await scope.stub.testSettled();
+      await settledForTest(scope);
       const observed = await runInDurableObject(scope.stub, async (_instance, state) => {
         const { sql } = state.storage;
         sql.exec('CREATE TABLE seed_late_history_test (payload TEXT)');
@@ -1358,13 +1406,15 @@ describe('a seed whose artifact projection could not read', () => {
         };
         const before = readRevision(sql);
         const snapshots: { fresh: boolean; job: boolean; revision: number }[] = [];
-        const snapshot = () => ({
-          fresh:
-            sql.exec('SELECT 1 FROM entries WHERE entry_id = ?', fresh.entryId).toArray().length >
-            0,
-          job: readRepairJob(sql) !== undefined,
-          revision: readRevision(sql),
-        });
+        const snapshot = () => {
+          return {
+            fresh:
+              sql.exec('SELECT 1 FROM entries WHERE entry_id = ?', fresh.entryId).toArray().length >
+              0,
+            job: readRepairJob(sql) !== undefined,
+            revision: readRevision(sql),
+          };
+        };
         const arm = (): Promise<void> => {
           snapshots.push(snapshot());
           return Promise.resolve();
@@ -1375,14 +1425,16 @@ describe('a seed whose artifact projection could not read', () => {
           storage: state.storage,
           queue,
           arm,
-          input: (now) => ({
-            sql,
-            scopeId: scope.scopeId,
-            now,
-            history,
-            limits: limitsOf(parseVars({})),
-            revision: readRevision(sql) + 1,
-          }),
+          input: (now) => {
+            return {
+              sql,
+              scopeId: scope.scopeId,
+              now,
+              history,
+              limits: limitsOf(parseVars({})),
+              revision: readRevision(sql) + 1,
+            };
+          },
         });
         const pipeline = new MutationPipeline({
           storage: state.storage,
@@ -1390,30 +1442,34 @@ describe('a seed whose artifact projection could not read', () => {
           repairs: runner,
           arm,
           armAnswered: () => Promise.resolve(),
-          mutationHost: () => ({
-            storage: state.storage,
-            scopeId: scope.scopeId,
-            kv: env.CACHE_STATE,
-            limits: limitsOf(parseVars({})),
-            history,
-            tables: true,
-            createdTables: () => {
-              throw new Error('unexpected table creation');
-            },
-          }),
+          mutationHost: () => {
+            return {
+              storage: state.storage,
+              scopeId: scope.scopeId,
+              kv: env.CACHE_STATE,
+              limits: limitsOf(parseVars({})),
+              history,
+              tables: true,
+              createdTables: () => {
+                throw new Error('unexpected table creation');
+              },
+            };
+          },
           tables: () => true,
           committed: () => {
             /* The fixture already owns its tables. */
           },
           testHooks: () => true,
           settling: () => settled,
-          settle: () => ({
-            answered: Promise.resolve(),
-            done: Promise.resolve(),
-            answerNow() {
-              /* No KV projection in this boundary fixture. */
-            },
-          }),
+          settle: () => {
+            return {
+              answered: Promise.resolve(),
+              done: Promise.resolve(),
+              answerNow() {
+                /* No KV projection in this boundary fixture. */
+              },
+            };
+          },
         });
         let initiallyProbed = true;
         const pending = pipeline.run(
@@ -1436,13 +1492,16 @@ describe('a seed whose artifact projection could not read', () => {
           },
           { empty: { inserted: 0, skipped: 0, refused: [], revision: 0 } },
         );
-        const receiving = pending.then(
-          (value) => ({ value, failed: false }),
-          (error: unknown) => ({
-            failed: error instanceof Error && /SQLITE_TOOBIG/u.test(error.message),
-          }),
-        );
-        await queue.run(() => undefined);
+        const receiving = (async () => {
+          try {
+            return { value: await pending, failed: false };
+          } catch (error) {
+            return { failed: error instanceof Error && error.message.includes('SQLITE_TOOBIG') };
+          }
+        })();
+        await queue.run(() => {
+          /* Wait until the planned mutation has entered the serialized queue. */
+        });
         for (let index = 0; index < 100 && readRepairJob(sql) !== undefined; index += 1)
           await runner.advance(NOW + 1);
         const answer = await receiving;
@@ -1477,8 +1536,7 @@ describe('a seed whose artifact projection could not read', () => {
     const consumer = await planFor(scope, '/both-shas', '<html>both SHA references</html>');
     const oldFirst = `missing/${scope.scopeId}/first`;
     const oldSecond = `missing/${scope.scopeId}/second`;
-    const output = consumer.seed.generation.outputs[0];
-    if (output === undefined) throw new Error('the consumer output is missing');
+    const output = firstSeedOutput(consumer.seed);
     output.artifacts.push({ ...first.artifact, role: 'rsc', storageRef: oldFirst });
     consumer.seed.generation.outputs.push({
       ...output,
@@ -1491,21 +1549,8 @@ describe('a seed whose artifact projection could not read', () => {
       atLocation(second, oldSecond),
       consumer.seed,
     ]);
-    await scope.stub.testSettled();
+    await settledForTest(scope);
     const before = await rowsFor(scope, consumer);
-    const historyHost = (sql: SqlStorage) => ({
-      ...NO_HISTORY,
-      append(
-        context: { readonly sql: SqlStorage; readonly revision: number },
-        event: EventInput,
-      ): void {
-        sql.exec(
-          'INSERT INTO seed_cursor_history (revision, payload) VALUES (?, ?)',
-          context.revision,
-          JSON.stringify(event),
-        );
-      },
-    });
     const accepted = await runInDurableObject(scope.stub, async (_instance, state) => {
       const { sql } = state.storage;
       sql.exec(
@@ -1518,7 +1563,7 @@ describe('a seed whose artifact projection could not read', () => {
         limits: limitsOf(parseVars({})),
         now: NOW + 1,
         revision: readRevision(sql) + 1,
-        history: historyHost(sql),
+        history: SEED_CURSOR_HISTORY,
       };
       const apply = await planSeedEntries(
         input,
@@ -1543,7 +1588,7 @@ describe('a seed whose artifact projection could not read', () => {
       readonly revision?: number;
     }[] = [];
     let active = true;
-    for (let index = 0; index < 200 && active; index += 1) {
+    for (let index = 0; active && index < 200; index += 1) {
       const snapshot = await runInDurableObject(scope.stub, (_instance, state) => {
         const { sql } = state.storage;
         const tx = {
@@ -1551,7 +1596,7 @@ describe('a seed whose artifact projection could not read', () => {
           scopeId: scope.scopeId,
           limits: limitsOf(parseVars({})),
           now: NOW + 1,
-          history: historyHost(sql),
+          history: SEED_CURSOR_HISTORY,
         };
         const job = readRepairJob(sql);
         if (job === undefined) throw new Error('the ordered SHA repair disappeared');
@@ -1573,11 +1618,12 @@ describe('a seed whose artifact projection could not read', () => {
           active: readRepairJob(sql) !== undefined,
           refs: generationOutputs(generation)
             .flatMap((item) => item.artifacts)
-            .filter(
-              (artifact) =>
+            .filter((artifact) => {
+              return (
                 artifact.sha256 === first.artifact.sha256 ||
-                artifact.sha256 === second.artifact.sha256,
-            )
+                artifact.sha256 === second.artifact.sha256
+              );
+            })
             .map((artifact) => artifact.storageRef),
         };
       });
@@ -1591,11 +1637,12 @@ describe('a seed whose artifact projection could not read', () => {
           refs: snapshot.refs,
           revision: record.pack.header.revision,
           recordRefs: record.pack.header.artifacts
-            .filter(
-              (artifact) =>
+            .filter((artifact) => {
+              return (
                 artifact.sha256 === first.artifact.sha256 ||
-                artifact.sha256 === second.artifact.sha256,
-            )
+                artifact.sha256 === second.artifact.sha256
+              );
+            })
             .map((artifact) => artifact.storageRef ?? ''),
         });
       }
@@ -1606,29 +1653,24 @@ describe('a seed whose artifact projection could not read', () => {
     );
     const delivered = observations.filter(({ recordRefs }) => recordRefs !== undefined);
     const events = await runInDurableObject(scope.stub, (_instance, state) => {
-      return state.storage.sql
+      const rows = state.storage.sql
         .exec<{ revision: number; payload: string }>(
           'SELECT revision, payload FROM seed_cursor_history ORDER BY ordinal',
         )
-        .toArray()
-        .map((row) => ({ revision: row.revision, event: JSON.parse(row.payload) as EventInput }))
-        .filter(
-          ({ event }) =>
-            event.entityId === consumer.entryId && event.kind === 'entry.state.changed',
-        );
+        .toArray();
+      return rows.map(recordedEventOf).filter(({ event }) => {
+        const sameEntry = event.entityId === consumer.entryId;
+        return sameEntry && event.kind === 'entry.state.changed';
+      });
     });
+
+    const expectedDelivery = { refs: expected, recordRefs: expected, revision: accepted.revision };
 
     expect(active).toBe(false);
     expect(mixed.length).toBeGreaterThan(0);
     expect(mixed.every(({ recordRefs }) => recordRefs === undefined)).toBe(true);
     expect(delivered.length).toBeGreaterThan(0);
-    expect(delivered).toStrictEqual(
-      delivered.map(() => ({
-        refs: expected,
-        recordRefs: expected,
-        revision: accepted.revision,
-      })),
-    );
+    expect(delivered).toStrictEqual(delivered.map(() => expectedDelivery));
     expect(events).toMatchObject([
       {
         revision: accepted.revision,
@@ -1738,11 +1780,8 @@ function padGenerationToSqlLimit(
 ): GenerationRow {
   const outputs = generationOutputs(generation);
   const padded = (length: number): string => {
-    return JSON.stringify(
-      outputs.map((output) => {
-        return { ...output, headers: { 'x-output-only-padding': 'x'.repeat(length) } };
-      }),
-    );
+    const headers = { 'x-output-only-padding': 'x'.repeat(length) };
+    return JSON.stringify(outputs.map((output) => ({ ...output, headers })));
   };
   const fits = (length: number): boolean => {
     try {
