@@ -1098,9 +1098,6 @@ describe('pnpm-linked types packages, as TypeScript finds them in a Function', (
     expect(system.readFile('/bundle/node_modules/zod/index.d.ts')).toContain('4');
   });
 
-
-
-
   it("keeps a package's own path where it sits in a workspace package's node_modules, not pnpm's store", async () => {
     const root = await repository();
     // `node_modules/foo` links a real package in `packages/shared/node_modules`, beside which pnpm
