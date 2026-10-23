@@ -4,13 +4,13 @@ import {
   answeredBy,
   type CheckedStack,
   EDGE_HEADER,
-  edgeReads,
   failed,
   failureStatus,
   skipped,
   type Verdict,
 } from './answers.ts';
 import type { ReadOptions, Reading } from './reading.ts';
+import { classifiedReads } from './routing-reads.ts';
 
 const PAGES_HANDOFF = /^passthrough;reason=(static-page|pages-fallback|static-page-bypass)(?:;|$)/u;
 
@@ -26,7 +26,7 @@ function expectedHandoff(
   const classified = classifyRequest({
     method,
     url,
-    headers: edgeReads(headers),
+    headers: classifiedReads(manifest, url, headers),
     manifest,
     deployment: manifest.deployment,
   });

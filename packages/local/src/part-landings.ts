@@ -6,9 +6,10 @@ import {
   type RouteEntry,
 } from '@stayingupwind/core/manifest';
 
-import { type CheckedStack, edgeReads } from './answers.ts';
+import type { CheckedStack } from './answers.ts';
 import type { Part, PartKind } from './part-marks.ts';
 import type { Sent } from './redirects.ts';
+import { classifiedReads } from './routing-reads.ts';
 
 /**
  * The route of the build a router's request at `sent` asks a part of, as the edge finds it
@@ -41,7 +42,8 @@ export function routeAskedAt(
   }
   const member = isExactPathname(manifest, pathname)
     ? undefined
-    : matchDynamicRoute(manifest, sent.url, edgeReads(sent.headers));
+    : // On the headers the edge classifies the request on (`classifiedReads`, Codex).
+      matchDynamicRoute(manifest, sent.url, classifiedReads(manifest, sent.url, sent.headers));
   return member === undefined ? undefined : { route: member, exact: false };
 }
 

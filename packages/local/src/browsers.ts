@@ -13,7 +13,7 @@ import {
 } from '@stayingupwind/core/request';
 import { isHtmlContentType } from '@stayingupwind/core/util';
 
-import { forwarded, edgeReads } from './answers.ts';
+import { forwarded } from './answers.ts';
 import {
   type Browser,
   BROWSERS,
@@ -21,6 +21,7 @@ import {
   USER_AGENT,
 } from './browser-samples.ts';
 import { claimedBy, escaping, reservedReads, type Target } from './escaping.ts';
+import { classifiedReads } from './routing-reads.ts';
 
 /**
  * The agents a check asks a page or a file as, in the order it tries them, as a deployment's
@@ -723,13 +724,13 @@ export function navigationFor(page: Page): Navigation {
   ];
   const served = navigations
     .map((headers) => sentTo(page, headers))
-    .filter((headers) => !passedOn(manifest, route, url, edgeReads(headers)));
+    .filter((headers) => !passedOn(manifest, route, url, classifiedReads(manifest, url, headers)));
   const anonymous = served.length === 0;
   // One that names no agent sends no `User-Agent` at all, rather than one that says nothing.
   const asked = anonymous ? [sentTo(page, navigationWith({}))] : served;
   // A request carrying what a rule claims the samples without is one the edge serves the shell to.
   const shellServed = (headers: Readonly<Record<string, string>>, at: URL): boolean =>
-    !passedOn(manifest, route, at, edgeReads(headers));
+    !passedOn(manifest, route, at, classifiedReads(manifest, at, headers));
   // No request names no agent for a list of crawlers to name: one passed on is passed on for the
   // route's `bypassFor`, which holds then for every request the check could make.
   if (anonymous && asked.every((headers) => !shellServed(headers, url))) {
