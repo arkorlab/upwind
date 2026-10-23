@@ -28,7 +28,12 @@ function scope(send: typeof fetch, sleep = vi.fn(() => Promise.resolve())) {
 
 function signal() {
   const { promise, resolve } = Promise.withResolvers<undefined>();
-  return { promise, open: () => resolve(undefined) };
+  return {
+    promise,
+    open: () => {
+      resolve(undefined);
+    },
+  };
 }
 
 describe('project exclusion through the R2 management API', () => {

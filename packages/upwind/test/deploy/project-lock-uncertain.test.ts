@@ -60,6 +60,8 @@ describe('uncertain writes keep project exclusion', () => {
         // Keep the expected warning out of the test output.
       });
 
+      const status = outcome === 'server' ? 503 : 200;
+
       await expect(
         withProjectLock(scope(send, sleep), NAMES, ({ scope: locked }) => {
           return locked.client.request('PUT', WRITE, {
@@ -71,7 +73,7 @@ describe('uncertain writes keep project exclusion', () => {
       ).rejects.toThrow(
         outcome === 'network'
           ? 'write answer was lost'
-          : `Cloudflare answered PUT ${WRITE} with ${outcome === 'server' ? 503 : 200}`,
+          : `Cloudflare answered PUT ${WRITE} with ${status}`,
       );
       expect(attempts).toBe(1);
       expect(sleep).not.toHaveBeenCalled();
