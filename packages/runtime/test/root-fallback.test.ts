@@ -1,5 +1,12 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
-import { deriveEntry, packBodyDigests, policyFromBuild } from '@stayingupwind/core/cache';
+import {
+  type CachePolicy,
+  deriveEntry,
+  IMPLICIT_TAG_PREFIX,
+  packBodyDigests,
+  policyFromBuild,
+  policyFromCacheControl,
+} from '@stayingupwind/core/cache';
 import { CACHE_ROUTE_HEADER } from '@stayingupwind/core/paas';
 import { TtlCache } from '@stayingupwind/core/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,6 +36,75 @@ const ENTRIES = 64;
 const ROUTE = '/[lang]/nested';
 const SUBSET = '/[lang]/posts/[id]';
 const CATCH_ALL = '/[lang]/posts/[...slug]';
+/** `client-params-shallow-routing`'s client page, which reads its `id` with `use(params)`. */
+const SHELL = '/page-params/[id]';
+/** `prefetch-fallback-static`'s page, whose `generateStaticParams` gives two of its slugs. */
+const PARTIAL = '/static-for-some-params/[slug]';
+/** Each route's members, as its shell's pattern matches them, and the keys its route forwards. */
+const MEMBERS = {
+  [ROUTE]: { pattern: /^\/[^/]+\/nested\/?$/u, query: 'nxtPlang=$nxtPlang' },
+  [SUBSET]: { pattern: /^\/[^/]+\/posts\/[^/]+\/?$/u, query: 'nxtPlang=$nxtPlang&nxtPid=$nxtPid' },
+  [CATCH_ALL]: {
+    pattern: /^\/[^/]+\/posts\/.+$/u,
+    query: 'nxtPlang=$nxtPlang&nxtPslug=$nxtPslug',
+  },
+  [SHELL]: { pattern: /^\/page-params\/[^/]+\/?$/u, query: 'nxtPid=$nxtPid' },
+  [PARTIAL]: { pattern: /^\/static-for-some-params\/[^/]+\/?$/u, query: 'nxtPslug=$nxtPslug' },
+} as const;
+/** What a build wrote of a class beyond this file's generic shell and payload. */
+interface Built {
+  readonly shell?: Partial<Prerender>;
+  readonly payload?: Partial<Prerender>;
+  readonly partialPrefetching?: boolean;
+}
+const STATE = { sha256: 'build-state', byteLength: 5, contentType: 'text/plain; charset=utf-8' };
+/** The bundle's blobs by digest: the build's document, its payload and the state beside them. */
+const BLOBS: Readonly<Record<string, string>> = {
+  'build-html': 'BUILD',
+  'build-rsc': 'BUILD-RSC',
+  'build-state': 'STATE',
+};
+/** A payload as Next.js writes one beside a dynamic route's fallback: unclassified, no body. */
+const UNBUILT_PAYLOAD = {
+  routeType: undefined,
+  response: undefined,
+  compute: undefined,
+  partialFallback: undefined,
+  body: undefined,
+};
+/**
+ * The classes Next.js 16.4.2 builds for three of its own fixtures, as its `onBuildComplete` hands
+ * them over, sizes aside. `client-params-shallow-routing`: nothing can prerender `id`, and nothing
+ * was postponed, so the shell is the last of its class and keeps every route key.
+ */
+const CLIENT_PARAMS: Built = {
+  shell: { routeType: 'shell', response: 'initial', compute: 'static' },
+  payload: UNBUILT_PAYLOAD,
+};
+/** The one entry every member of that shell is answered from: the shell's own. */
+const SHELL_ENTRY = { kind: 'app-page', route: SHELL, pathname: SHELL } as const;
+/** A generation's lifetime, as its render gave it, and how long before now it was made. */
+interface Lifetime {
+  readonly policy: CachePolicy;
+  readonly age: number;
+}
+/** Kept for a minute and served stale for an hour, as a shell's `cacheLife` would have it. */
+const MINUTE_SHELL = policyFromCacheControl({ revalidate: 60, expire: 3600 });
+/** Past its minute: answered, and regenerated behind the answer. */
+const STALE: Lifetime = { policy: MINUTE_SHELL, age: 120_000 };
+/** Past its hour: regenerated in front of the answer. */
+const EXPIRED: Lifetime = { policy: MINUTE_SHELL, age: 7_200_000 };
+/** `param-matching-root-params`: `lang`, a root parameter, can still be prerendered; reads postpone. */
+const ROOT_PARAMS: Built = {
+  shell: { routeType: 'fallback', response: 'initial', compute: 'resuming', postponed: STATE },
+  payload: { ...UNBUILT_PAYLOAD, postponed: STATE },
+};
+/** `prefetch-fallback-static`: a partial fallback, which each member's own entry upgrades. */
+const PREFETCH_FALLBACK: Built = {
+  shell: { ...ROOT_PARAMS.shell, partialFallback: true },
+  payload: { ...UNBUILT_PAYLOAD, postponed: STATE },
+  partialPrefetching: true,
+};
 const HOST = 'https://app.test';
 const SCOPE = 'root-fallback';
 const encoder = new TextEncoder();
@@ -43,7 +119,12 @@ function unasked(): Promise<never> {
 }
 
 /** Only the cache host and the Next.js bridge are replaced; routing and generation reads run. */
-function scenario(allowQuery = ['nxtPlang'], route = ROUTE, kind = 'app-page') {
+function scenario(
+  allowQuery = ['nxtPlang'],
+  route: keyof typeof MEMBERS = ROUTE,
+  kind = 'app-page',
+  built: Built = {},
+) {
   const template: Prerender = {
     id: route,
     pathname: route,
@@ -54,30 +135,33 @@ function scenario(allowQuery = ['nxtPlang'], route = ROUTE, kind = 'app-page') {
     renderingMode: kind === 'app-page' ? 'PARTIALLY_STATIC' : 'STATIC',
     allowQuery,
     body: { sha256: 'build-html', byteLength: 5, contentType: 'text/html' },
+    ...built.shell,
   };
   const payload: Prerender = {
     ...template,
     id: `${route}.rsc`,
     pathname: `${route}.rsc`,
     body: { sha256: 'build-rsc', byteLength: 9, contentType: 'text/x-component' },
+    ...built.payload,
   };
   const sourceRegex = `^${route
     .replace('[lang]', '(?<nxtPlang>[^/]+?)')
     .replace('[id]', '(?<nxtPid>[^/]+?)')
-    .replace('[...slug]', '(?<nxtPslug>.+?)')}(?:/)?$`;
-  const ordinaryPattern =
-    route === SUBSET ? /^\/[^/]+\/posts\/[^/]+\/?$/u : /^\/[^/]+\/nested\/?$/u;
-  const pattern = route === CATCH_ALL ? /^\/[^/]+\/posts\/.+$/u : ordinaryPattern;
-  const dynamic = {
-    sourceRegex,
-    destination: `${route}?nxtPlang=$nxtPlang${route === SUBSET ? '&nxtPid=$nxtPid' : ''}${route === CATCH_ALL ? '&nxtPslug=$nxtPslug' : ''}`,
-  };
+    .replace('[...slug]', '(?<nxtPslug>.+?)')
+    .replace('[slug]', '(?<nxtPslug>[^/]+?)')}(?:/)?$`;
+  const { pattern, query } = MEMBERS[route];
+  const dynamic = { sourceRegex, destination: `${route}?${query}` };
   const prerenders = [template, payload];
   const store = {
     manifest: {
       buildId: 'build',
       deploymentId: SCOPE,
-      config: { basePath: '', i18n: null, cacheComponents: true },
+      config: {
+        basePath: '',
+        i18n: null,
+        cacheComponents: true,
+        partialPrefetching: built.partialPrefetching === true,
+      },
       entrypoints: [{ id: route, pathname: route, kind }],
       prerenders,
       routing: {
@@ -116,7 +200,7 @@ function scenario(allowQuery = ['nxtPlang'], route = ROUTE, kind = 'app-page') {
     prerendersById: new Map(prerenders.map((each) => [each.id, each])),
     prerendersByPathname: new Map(prerenders.map((each) => [each.pathname, each])),
     renderedPages: new Set(),
-    readBlob: (sha256: string) => encoder.encode(sha256 === 'build-html' ? 'BUILD' : 'BUILD-RSC'),
+    readBlob: (sha256: string) => encoder.encode(BLOBS[sha256] ?? ''),
   } as unknown as Store;
   vi.mocked(getStore).mockReturnValue(store);
   const readRecord = vi.fn<CacheHost['readRecord']>().mockResolvedValue(undefined);
@@ -168,7 +252,10 @@ function scenario(allowQuery = ['nxtPlang'], route = ROUTE, kind = 'app-page') {
       clock: NOW,
     });
     const body = await response.text();
-    await Promise.all(pending.splice(0));
+    // What a response's end begins can begin more: a partial fallback's upgrade is one.
+    while (pending.length > 0) {
+      await Promise.all(pending.splice(0));
+    }
     return body;
   };
   const context = (path: string, headers: Record<string, string> = {}) => {
@@ -181,20 +268,28 @@ function scenario(allowQuery = ['nxtPlang'], route = ROUTE, kind = 'app-page') {
       waitUntil,
     });
   };
-  return { store, runtime, ask, context, tables, waitUntil, readRecord };
+  return { store, runtime, host, ask, context, tables, waitUntil, readRecord };
 }
 
-/** A complete runtime generation with both representations, keyed by the pathname it was made for. */
+/**
+ * A complete runtime generation with both representations, keyed by the pathname it was made for:
+ * made a moment ago and kept until an invalidation, unless its `lifetime` says otherwise.
+ */
 async function remember(
   runtime: CacheRuntime,
   route: string,
   pathname: string,
-  { text, postponed }: { readonly text: string; readonly postponed?: string },
+  {
+    text,
+    postponed,
+    lifetime,
+  }: { readonly text: string; readonly postponed?: string; readonly lifetime?: Lifetime },
 ) {
   const descriptor = { kind: 'app-page' as const, route, pathname };
   const { entryId } = await deriveEntry(SCOPE, descriptor);
   const html = encoder.encode(text);
   const artifactId = `rsc:${pathname}`;
+  const madeAt = NOW - (lifetime?.age ?? 1);
   runtime.artifactMemo.set(artifactId, encoder.encode(`RSC:${text}`));
   runtime.recordMemo.set(entryId, {
     header: {
@@ -205,9 +300,9 @@ async function remember(
       seq: 1,
       source: 'runtime',
       ...descriptor,
-      cacheTimestamp: NOW - 1,
-      producedAt: NOW - 1,
-      policy: policyFromBuild({ initialRevalidate: false }),
+      cacheTimestamp: madeAt,
+      producedAt: madeAt,
+      policy: lifetime?.policy ?? policyFromBuild({ initialRevalidate: false }),
       status: 200,
       headers: {},
       tags: [{ kind: 'next-explicit', value: pathname }],
@@ -397,5 +492,182 @@ describe('a built root fallback keyed by route parameters', () => {
     await expect(ask('/it/posts/one/two')).resolves.toBe('BUILD');
     expect(readRecord).not.toHaveBeenCalled();
     expect(regenerate).not.toHaveBeenCalled();
+  });
+});
+
+describe('the classes Next.js 16.4.2 builds for three of its own fixtures', () => {
+  beforeEach(() => {
+    vi.stubGlobal('__ARKOR_FUNCTION_KIND__', 'app');
+    vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('DYNAMIC'));
+    vi.mocked(regenerate).mockImplementation(() => accepted('RENDERED'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("answers every member of client-params-shallow-routing's shell with the build body", async () => {
+    const { ask, readRecord } = scenario(['nxtPid'], SHELL, 'app-page', CLIENT_PARAMS);
+    const { entryId } = await deriveEntry(SCOPE, SHELL_ENTRY);
+
+    await expect(ask('/page-params/1')).resolves.toBe('BUILD');
+    await expect(ask('/page-params/2')).resolves.toBe('BUILD');
+    // The record of the shell both are answered from, which holds no generation yet, and none of
+    // a member's own.
+    expect(readRecord).toHaveBeenCalledExactlyOnceWith(entryId, expect.any(AbortSignal));
+    expect(regenerate).not.toHaveBeenCalled();
+    expect(invokeNodeHandler).not.toHaveBeenCalled();
+  });
+
+  it("renders a payload of that shell's member for the request, regenerating nothing", async () => {
+    const { ask, readRecord } = scenario(['nxtPid'], SHELL, 'app-page', CLIENT_PARAMS);
+    const { entryId } = await deriveEntry(SCOPE, SHELL_ENTRY);
+
+    // Nothing postponed to resume and no payload of the class's own: the request is rendered as it
+    // came, as Next.js renders a navigation's payload of a member it did not build.
+    await expect(ask('/page-params/1', { rsc: '1' })).resolves.toBe('DYNAMIC');
+    expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+    expect(readRecord).toHaveBeenCalledExactlyOnceWith(entryId, expect.any(AbortSignal));
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { rsc: '1' }])(
+    "answers that shell's members from its stale generation, regenerated behind, for headers %j",
+    async (headers) => {
+      const { runtime, ask } = scenario(['nxtPid'], SHELL, 'app-page', CLIENT_PARAMS);
+      await remember(runtime, SHELL, SHELL, { text: 'SHELL', lifetime: STALE });
+      const prefix = 'rsc' in headers ? 'RSC:' : '';
+
+      await expect(ask('/page-params/1', headers)).resolves.toBe(`${prefix}SHELL`);
+      await expect(ask('/page-params/2', headers)).resolves.toBe(`${prefix}SHELL`);
+      // Once, for the generation both were answered from, as the shell: `next start` regenerates a
+      // stale fallback shell behind its answer, with its open parameters deferred.
+      expect(vi.mocked(regenerate).mock.calls.map(([call]) => call.target)).toMatchObject([
+        { descriptor: SHELL_ENTRY, isClass: true, reason: 'stale' },
+      ]);
+    },
+  );
+
+  it('keeps that shell on the build path where it varies on a query besides its parameters', async () => {
+    const { runtime, ask, readRecord } = scenario(
+      ['nxtPid', 'preview'],
+      SHELL,
+      'app-page',
+      CLIENT_PARAMS,
+    );
+    await remember(runtime, SHELL, SHELL, { text: 'SHELL' });
+
+    // The build's body answered one value of the query, and no one generation stands for them all.
+    await expect(ask('/page-params/1')).resolves.toBe('BUILD');
+    expect(readRecord).not.toHaveBeenCalled();
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { rsc: '1' }])(
+    "regenerates that shell in front of a member's answer once it has expired, for headers %j",
+    async (headers) => {
+      const { runtime, ask } = scenario(['nxtPid'], SHELL, 'app-page', CLIENT_PARAMS);
+      await remember(runtime, SHELL, SHELL, { text: 'SHELL', lifetime: EXPIRED });
+      const prefix = 'rsc' in headers ? 'RSC:' : '';
+
+      await expect(ask('/page-params/1', headers)).resolves.toBe(`${prefix}RENDERED`);
+      expect(vi.mocked(regenerate).mock.calls.map(([call]) => call.target)).toMatchObject([
+        { descriptor: SHELL_ENTRY, isClass: true, reason: 'expired' },
+      ]);
+    },
+  );
+
+  it.each([{}, { rsc: '1' }])(
+    "renders param-matching-root-params' roots for themselves for headers %j",
+    async (headers) => {
+      const { runtime, ask } = scenario(['nxtPlang'], ROUTE, 'app-page', ROOT_PARAMS);
+      await remember(runtime, ROUTE, '/fr/nested', { text: 'CURRENT-FR' });
+      await remember(runtime, ROUTE, '/it/nested', { text: 'OLD-IT' });
+      runtime.tags.applyLocal(['/it/nested'], { staleAt: NOW, hardExpireAt: NOW });
+      const prefix = 'rsc' in headers ? 'RSC:' : '';
+
+      await expect(ask('/fr/nested', headers)).resolves.toBe(`${prefix}CURRENT-FR`);
+      // Neither a root an invalidation expired nor one never asked for is answered with the shell
+      // the build rendered before either: each is rendered for its own root.
+      await expect(ask('/it/nested', headers)).resolves.toBe(`${prefix}RENDERED`);
+      await expect(ask('/nl/nested', headers)).resolves.toBe(`${prefix}RENDERED`);
+      expect(
+        vi.mocked(regenerate).mock.calls.map(([call]) => call.target.descriptor.pathname),
+      ).toStrictEqual(['/it/nested', '/nl/nested']);
+    },
+  );
+
+  it.each([{}, { rsc: '1' }])(
+    "upgrades prefetch-fallback-static's unbuilt member behind its fallback for headers %j",
+    async (headers) => {
+      const { ask } = scenario(['nxtPslug'], PARTIAL, 'app-page', PREFETCH_FALLBACK);
+      const member = '/static-for-some-params/not-prerendered_no-cookies_prefetch-auto';
+
+      // The partial fallback first, resumed for the member, and the member's own entry rendered
+      // behind it: what the client's retry of its static request is answered from.
+      await expect(ask(member, headers)).resolves.toBe(
+        'rsc' in headers ? 'DYNAMIC' : 'BUILDDYNAMIC',
+      );
+      expect(
+        vi.mocked(regenerate).mock.calls.map(([call]) => call.target.descriptor),
+      ).toStrictEqual([{ kind: 'app-page', route: PARTIAL, pathname: member }]);
+    },
+  );
+
+  it('regenerates that shell, never the member, for a foreground regeneration of a member', async () => {
+    const { runtime, context, store, tables, waitUntil } = scenario(
+      ['nxtPid'],
+      SHELL,
+      'app-page',
+      CLIENT_PARAMS,
+    );
+    const foreground = context('/page-params/1', { [CACHE_ROUTE_HEADER]: SHELL });
+
+    const answer = await foreground.run(() => {
+      return handleForeground(
+        {
+          ...tables,
+          request: foreground.request,
+          initURL: foreground.request.url,
+          cache: runtime,
+          waitUntil,
+          run: foreground.run,
+        },
+        store,
+      );
+    });
+
+    expect(answer.outcome).toBe('accepted');
+    expect(vi.mocked(regenerate).mock.calls.map(([call]) => call.target)).toMatchObject([
+      { descriptor: SHELL_ENTRY, isClass: true },
+    ]);
+  });
+
+  it('revalidates a member as that shell, whose new generation every member is answered from', async () => {
+    const { runtime, host, ask, context } = scenario(['nxtPid'], SHELL, 'app-page', CLIENT_PARAMS);
+    const invalidate = vi.spyOn(host, 'invalidate').mockResolvedValue({ invalidations: [] });
+    // What the host holds once the regeneration is published: a generation of the entry it named.
+    vi.mocked(regenerate).mockImplementation(async ({ target }) => {
+      const { route, pathname } = target.descriptor;
+      await remember(runtime, route, pathname, { text: 'REVALIDATED' });
+      return accepted('REVALIDATED');
+    });
+
+    const manual = context('/api/revalidate');
+    await manual.run(() => platformRevalidate({ urlPath: '/page-params/1' }));
+
+    // As `next start` writes a member's explicit revalidation to the shell's own entry, its open
+    // parameters deferred, and not to one of the member's that nothing reads.
+    expect(vi.mocked(regenerate).mock.calls.map(([call]) => call.target)).toMatchObject([
+      { descriptor: SHELL_ENTRY, isClass: true, reason: 'manual' },
+    ]);
+    await expect(ask('/page-params/1')).resolves.toBe('REVALIDATED');
+    await expect(ask('/page-params/2')).resolves.toBe('REVALIDATED');
+    // Once it is published, a member's own entry is invalidated by the member's tag, as under any
+    // shell a class shares, and the shell's new generation by nothing.
+    expect(invalidate).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ tags: [`${IMPLICIT_TAG_PREFIX}/page-params/1`] }),
+    );
   });
 });

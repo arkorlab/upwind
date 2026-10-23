@@ -1,4 +1,4 @@
-import { pagesDataPathnameUnder, queryDependent } from '@stayingupwind/core/bundle';
+import { pagesDataPathnameUnder } from '@stayingupwind/core/bundle';
 import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import {
   type ResourceWarmProps,
@@ -15,7 +15,7 @@ import { type EntryTables, nodeHandlerOf } from './entries.ts';
 import { descriptorFor } from './generations.ts';
 import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender } from './serve.ts';
-import { findShell, getStore, isClassShell } from './store.ts';
+import { findShell, getStore, isClassShell, variesOnQuery } from './store.ts';
 
 function fields(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -74,7 +74,7 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
   const shell =
     store.prerendersByPathname.get(entry.pathname) ?? findShell(store, entry.route, entry.pathname);
   if (
-    queryDependent(shell, entry.route, entry.pathname) ||
+    variesOnQuery(shell, entry.route, entry.pathname) ||
     bypassesPrerender(store, request, shell)
   ) {
     return { v: 1, kind: 'skipped' };
