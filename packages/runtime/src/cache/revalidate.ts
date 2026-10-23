@@ -2,6 +2,7 @@ import {
   pagesDataPathnameUnder,
   type Prerender,
   sharedShellPathname,
+  terminalShellPathname,
 } from '@stayingupwind/core/bundle';
 import {
   appPathFor,
@@ -26,7 +27,6 @@ import {
   getStore,
   queryCompletedShell,
   type Store,
-  terminalShellPathname,
 } from '../store.ts';
 import { requestContext } from './context.ts';
 import { generationClassShell } from './generation-tags.ts';
