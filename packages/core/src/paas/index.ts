@@ -61,6 +61,7 @@ export {
   parseResourcesManifest,
   publishedD1BindingCount,
   type PublishedResource,
+  type PublishedResourceType,
   type PublishedResources,
   RESOURCE_TYPES,
   type ResourceManifestEntry,

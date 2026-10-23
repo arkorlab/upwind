@@ -1,6 +1,6 @@
 # @stayingupwind/sdk
 
-An application's own storage, with nothing to configure.
+An application's own resource and service bindings, with nothing to configure in the SDK.
 
 ```ts
 import db from '@stayingupwind/sdk/db';
@@ -24,6 +24,7 @@ it the same way in both places.
 | `import kv from '@stayingupwind/sdk/kv'`     | the project's KV namespace, likewise                      |
 | `import blob from '@stayingupwind/sdk/blob'` | the project's R2 bucket, likewise                         |
 | `d1(name)`, `kv(name)`, `blob(name)`         | storage by the name it was bound under                    |
+| `service(name)`                              | a private service by its published binding name           |
 | `published()`                                | everything published, and the names it is published under |
 
 The default exports are lazy: nothing is resolved until the first time one is used, because a
@@ -167,3 +168,31 @@ For hosted placement, choose a `locationHint` on `get()` or `getByName()` only w
 otherwise the first actual access places the object near its caller. See Cloudflare's
 [namespace API](https://developers.cloudflare.com/durable-objects/api/namespace/) and
 [data location](https://developers.cloudflare.com/durable-objects/reference/data-location/).
+
+## Private services
+
+A host can publish a private service binding under a name. Read it with `service(name)` from
+`@stayingupwind/sdk` or `@stayingupwind/sdk/service`. There is no default service: select the
+binding the application intends to call.
+
+```ts
+// app/api/orders/route.ts
+import { service } from '@stayingupwind/sdk/service';
+
+export async function GET(request: Request) {
+  const orders = service('ORDERS');
+  if (orders === undefined) return new Response('Service unavailable', { status: 503 });
+  const url = new URL('/orders', request.url);
+  return orders.fetch(url.href);
+}
+```
+
+The accessor returns Cloudflare's native `Fetcher` object without making a request or wrapping
+its methods. Responses and their streams pass through unchanged. The URL supplied to `fetch`
+must be fully qualified; the binding selects the service, so its hostname is not resolved over
+the public Internet. See Cloudflare's [service binding HTTP API](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/http/).
+
+A missing name or a binding published as another kind returns `undefined`. `published()` includes
+service bindings with `type: 'service'`. Only services explicitly published by the host are
+reachable through this accessor; registration, permissions, deployment versions and local
+service configuration belong to the host. Unconfigured local runs publish no services.
