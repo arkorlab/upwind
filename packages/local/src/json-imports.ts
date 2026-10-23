@@ -1,48 +1,14 @@
-import type { Expression, Node, PropertyKey, TemplateLiteral } from '@oxc-project/types';
+import type { Expression, Node, PropertyKey } from '@oxc-project/types';
 import { parseSync } from 'rolldown/utils';
 
-type StringPart = Expression | string | undefined | null;
+import { constantStringOf as stringOf } from './json-strings.ts';
+
 type ModuleRequestKind =
   | 'ImportDeclaration'
   | 'ExportNamedDeclaration'
   | 'ExportAllDeclaration'
   | 'ImportExpression';
 type ModuleRequest = Extract<Node, { type: ModuleRequestKind }>;
-
-/** Push a template's pieces in reverse so the next piece is read in source order. */
-function templateParts(node: TemplateLiteral): StringPart[] {
-  const parts: StringPart[] = [];
-  for (let index = node.quasis.length - 1; index >= 0; index -= 1) {
-    parts.push(node.quasis[index]?.value.cooked);
-    if (index > 0) {
-      parts.push(node.expressions[index - 1]);
-    }
-  }
-  return parts;
-}
-
-/** Constant string specifiers, including templates and concatenations the old bundler folded. */
-function stringOf(expression: Expression | undefined | null): string | undefined {
-  const parts: string[] = [];
-  const pending: StringPart[] = [expression];
-  while (pending.length > 0) {
-    const node = pending.pop();
-    if (typeof node === 'string') {
-      parts.push(node);
-    } else if (node?.type === 'Literal' && typeof node.value === 'string') {
-      parts.push(node.value);
-    } else if (node?.type === 'BinaryExpression' && node.operator === '+') {
-      pending.push(node.right, node.left);
-    } else if (node?.type === 'TemplateLiteral') {
-      for (const part of templateParts(node)) {
-        pending.push(part);
-      }
-    } else {
-      return undefined;
-    }
-  }
-  return parts.join('');
-}
 
 function nameOf(key: PropertyKey, computed: boolean): string | undefined {
   if (!computed && key.type === 'Identifier') {
@@ -144,7 +110,8 @@ function literalFacts(node: Extract<Node, { type: 'Literal' }>): ConstantFacts {
   if ('regex' in node) return TRUTHY;
   if ('bigint' in node) return BigInt(node.bigint) === BIGINT_ZERO ? FALSY : TRUTHY;
   if (node.value === null) return NULLISH;
-  return Boolean(node.value) ? TRUTHY : FALSY;
+  const truthy = Boolean(node.value);
+  return truthy ? TRUTHY : FALSY;
 }
 
 function takesLogicalRight(

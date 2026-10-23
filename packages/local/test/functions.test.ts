@@ -198,6 +198,62 @@ describe('the Functions of a deployment, on a local stack', () => {
   });
 
   it.each([
+    ["'./data-' + 1 + '.json'", 'data-1.json'],
+    ['`./data-${1}.json`', 'data-1.json'],
+    ['`./data-${true}.json`', 'data-true.json'],
+    ['`./data-${null}.json`', 'data-null.json'],
+    ['`./data-${1n}.json`', 'data-1.json'],
+    ['`./data-${-0}.json`', 'data-0.json'],
+    ['`./data-${void 0}.json`', 'data-undefined.json'],
+    ["'./data-' + false + '.json'", 'data-false.json'],
+    ["'./data-' + -1 + '.json'", 'data--1.json'],
+    ["'./data-' + 1 + 2 + '.json'", 'data-12.json'],
+    ["'./data-' + (+'1') + '.json'", 'data-1.json'],
+    ["'./data-' + (+'') + '.json'", 'data-0.json'],
+  ])('refuses a primitive-folded JSON specifier %s', (specifier, name) => {
+    const dir = buildDir();
+    const source = `export default () => import(${specifier}, { with: { type: 'json' } });`;
+    const app = spec([
+      module(dir, 'index.mjs', 'esm', source),
+      module(dir, name, 'json', '{"value":1}'),
+    ]);
+
+    expect(() => {
+      deploymentFunctions(dir, { deploymentId: DEPLOYMENT_ID, functions: { app } }, BINDINGS);
+    }).toThrow(`index.mjs imports ./${name} by the JSON type`);
+  });
+
+  it.each([
+    "1 + 2 + '.json'",
+    "'./data-' + (1 + 2) + '.json'",
+    "'./data-' + 1.5 + '.json'",
+    "'./data-' + (+'x') + '.json'",
+    "'./data-' + (+'01') + '.json'",
+    "'./data-' + unknown + '.json'",
+    "'./data-' + { toString() { throw new Error('must not execute'); } } + '.json'",
+  ])('keeps an unresolved or non-string addition unresolved: %s', (specifier) => {
+    const dir = buildDir();
+    const source = `export default () => import(${specifier}, { with: { type: 'json' } });`;
+    const app = spec([
+      module(dir, 'index.mjs', 'esm', source),
+      ...[
+        '3.json',
+        '12.json',
+        'data-3.json',
+        'data-12.json',
+        'data-1.5.json',
+        'data-NaN.json',
+        'data-1.json',
+      ].map((name) => module(dir, name, 'json', '{"value":1}')),
+    ]);
+
+    expect(
+      deploymentFunctions(dir, { deploymentId: DEPLOYMENT_ID, functions: { app } }, BINDINGS)
+        .workers,
+    ).toHaveLength(1);
+  });
+
+  it.each([
     "if (false) return IMPORT; return 'ok';",
     "if (true) return 'ok'; else return IMPORT;",
     "return false ? IMPORT : 'ok';",
