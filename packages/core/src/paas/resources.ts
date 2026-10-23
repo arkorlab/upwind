@@ -21,6 +21,7 @@ export const RESOURCE_TYPES = [
   'durable_object_namespace',
   'ai',
 ] as const;
+/** Resource kinds that can be provisioned, excluding published private service capabilities. */
 export type ResourceType = (typeof RESOURCE_TYPES)[number];
 
 /** Published capabilities include private services; those are not provisionable storage. */
@@ -62,6 +63,7 @@ export type FunctionEnv = Readonly<Record<string, unknown>>;
 
 const KNOWN_TYPES: ReadonlySet<string> = new Set([...RESOURCE_TYPES, 'service']);
 
+/** Serialize only the public name and kind of each capability, never its native binding. */
 export function formatResourcesManifest(entries: readonly ResourceManifestEntry[]): string {
   return JSON.stringify(entries.map((entry) => ({ name: entry.name, type: entry.type })));
 }
