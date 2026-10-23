@@ -230,23 +230,30 @@ function judgesEveryHeaderRule(manifest: ProjectManifest): boolean {
 }
 
 /**
- * What the middleware decided, with the headers the rules of `next.config` set on the request as
- * the client sent it (`configured`, judged before the middleware ran) beside a decision to let the
- * request on (`MiddlewareContinued.judgedRules`), for the Function it may be handed to. Not where the
- * manifest holds only some of the rules (`judgesEveryHeaderRule`): the Function judges them all, as
- * it did, and the edge lays none. A matched `Location` is left to the Function too: the manifest
- * cannot tell a header rule's from a redirect's. Telling the Function to leave it off, then dropping
- * it here as a possible redirect, would lose a header that the Function used to answer with.
+ * What the middleware decided, with the headers the rules ahead of the middleware set on the request
+ * as the client sent it (`aheadOfMiddleware` of `configured`, judged before the middleware ran)
+ * beside a decision to let the request on (`MiddlewareContinued.judgedRules`), for the Function it
+ * may be handed to: what Next.js lays on whatever answers it. The Function judges the rest itself on
+ * the request as it is finally matched, as Next.js judges a rule that runs on a match: one judged
+ * here — the year-long `Cache-Control` of a build's own assets — went on whatever answered a request
+ * the middleware moved off such a file. Not where a rule says no phase (a manifest from before they
+ * did), of which nothing can be told ahead, nor where the manifest holds only some of the rules
+ * (`judgesEveryHeaderRule`): the Function judges them all, as it did, and the edge lays none. A
+ * matched `Location` is left to the Function too: the manifest cannot tell a header rule's from a
+ * redirect's. Telling the Function to leave it off, then dropping it here as a possible redirect,
+ * would lose a header that the Function used to answer with.
  */
 export function withJudgedRules<Outcome extends { readonly kind: string }>(
   outcome: Outcome,
   configured: ConfiguredHeaders,
   manifest: ProjectManifest,
 ): Outcome {
-  return outcome.kind === 'continue' &&
-    !Object.hasOwn(configured.headers, LOCATION_HEADER) &&
+  const judged = configured.aheadOfMiddleware;
+  return judged !== undefined &&
+    outcome.kind === 'continue' &&
+    !Object.hasOwn(judged.headers, LOCATION_HEADER) &&
     judgesEveryHeaderRule(manifest)
-    ? { ...outcome, judgedRules: configured }
+    ? { ...outcome, judgedRules: judged }
     : outcome;
 }
 

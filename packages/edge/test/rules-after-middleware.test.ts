@@ -120,7 +120,8 @@ async function answered(example: Case) {
     staticFiles: { [paths.first]: first, [paths.second]: second },
     reservedRoutes: [...example.reserved(paths)],
     ...(example.headerRules !== undefined && {
-      headerRules: [...example.headerRules],
+      // `headers()` of `next.config`, which Next.js puts ahead of the middleware, unless one says.
+      headerRules: example.headerRules.map((rule) => ({ phase: 'beforeMiddleware', ...rule })),
       // Every rule is in the manifest, so the edge judges them for the Worker it hands on to.
       dynamicRoutes: [],
     }),
@@ -200,6 +201,13 @@ async function answered(example: Case) {
 /** The optimizer's request for the second file in place of the first. */
 function optimizingSecond(paths: Paths): Response {
   return new Response(null, { headers: { 'x-middleware-rewrite': optimizerUrl(paths.second) } });
+}
+
+/** The request for a path no file of the build is at, in place of the first. */
+function rewritingAway(): Response {
+  return new Response(null, {
+    headers: { 'x-middleware-rewrite': `https://${HOST}/elsewhere` },
+  });
 }
 
 /** The request for the second file in place of the first. */
@@ -405,4 +413,50 @@ describe('a request the middleware changed and a rule claims, handed on under it
       expect(result.response.headers.get('access-control-allow-origin')).toBe('*');
     },
   );
+});
+
+/**
+ * A rule that runs on a match (`onMatch`) — `next build` gives its own assets the year-long
+ * `Cache-Control` so — judged by Next.js on the request as it is finally matched: never on what a
+ * Function answers in place of the file asked for.
+ */
+const ON_MATCH_IMMUTABLE: HeaderRule = {
+  sourceRegex: '^/files/.*$',
+  headers: { 'cache-control': 'public,max-age=31536000,immutable' },
+  phase: 'onMatch',
+};
+
+describe('the rules handed on beside a request the middleware moved', () => {
+  it('carries the rules ahead of the middleware, and none that runs on a match', async () => {
+    const result = await answered({
+      kind: 'file',
+      middleware: rewritingAway,
+      reserved: () => [],
+      headerRules: [...allowing('^/files/.*$'), ON_MATCH_IMMUTABLE],
+    });
+
+    expect(result.body).toStrictEqual(result.fromWorker);
+    expect(result.worker).toHaveLength(1);
+    expect(result.worker[0]?.headers.get(HEADER_RULES_JUDGED_HEADER)).toBe('1');
+    expect(result.response.headers.get('access-control-allow-origin')).toBe('*');
+    expect(result.response.headers.get('cache-control')).not.toContain('immutable');
+  });
+
+  it('judges nothing for the Function where a rule says no phase', async () => {
+    const result = await answered({
+      kind: 'file',
+      middleware: rewritingAway,
+      reserved: () => [],
+      headerRules: [
+        { ...allowing('^/files/.*$')[0], phase: undefined } as HeaderRule,
+        { ...ON_MATCH_IMMUTABLE, phase: undefined },
+      ],
+    });
+
+    // The Function judges every rule itself, as it did before rules said their phase.
+    expect(result.body).toStrictEqual(result.fromWorker);
+    expect(result.worker).toHaveLength(1);
+    expect(result.worker[0]?.headers.get(HEADER_RULES_JUDGED_HEADER)).toBeNull();
+    expect(result.response.headers.get('cache-control')).not.toContain('immutable');
+  });
 });
