@@ -7,7 +7,11 @@ import {
   MAX_TAGS_PER_ENTRY,
   ROUTE_ENTRY_KINDS,
 } from './keys.ts';
-import { GENERATION_SOURCE_KINDS, PACK_SCHEMA_VERSION } from './pack-header.ts';
+import {
+  COMPACT_PACK_SCHEMA_VERSION,
+  GENERATION_SOURCE_KINDS,
+  PACK_SCHEMA_VERSION,
+} from './pack-header.ts';
 import { STATIC_PAGES_FALLBACK_PRIVACY } from './static-page-version.ts';
 import { generationTagSchema } from './tag-schema.ts';
 import { CACHE_POLICY_SOURCES } from './timing.ts';
@@ -197,9 +201,9 @@ export const packArtifactRefSchema = publicArtifactRefSchema.extend({
 });
 export type PackArtifactRef = z.infer<typeof packArtifactRefSchema>;
 
-/** The header of a delivery record (`pack.ts`). */
+/** A decoded delivery header; version-two repair tuples expand to these ordinary artifact objects. */
 export const generationPackHeaderSchema = z.object({
-  schemaVersion: z.literal(PACK_SCHEMA_VERSION),
+  schemaVersion: z.literal([PACK_SCHEMA_VERSION, COMPACT_PACK_SCHEMA_VERSION]),
   scopeId: z.string().min(1),
   entryId: z.string().min(1),
   generationId: z.string().min(1),

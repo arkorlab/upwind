@@ -1,9 +1,14 @@
 import { sha256Hex } from '../artifact/hash.ts';
 import { concatBytes, decodeUtf8, encodeUtf8 } from '../util/bytes.ts';
-import { PACK_SCHEMA_VERSION, packHeaderOf } from './pack-header.ts';
+import { compactPackArtifact } from './artifact-locator.ts';
+import { isSupportedPackSchemaVersion, PACK_SCHEMA_VERSION, packHeaderOf } from './pack-header.ts';
 import type { GenerationPackHeader } from './schema.ts';
 
-export { PACK_SCHEMA_VERSION } from './pack-header.ts';
+export {
+  COMPACT_PACK_SCHEMA_VERSION,
+  isSupportedPackSchemaVersion,
+  PACK_SCHEMA_VERSION,
+} from './pack-header.ts';
 export type { GenerationPackHeader, GenerationSourceKind, PackArtifactRef } from './schema.ts';
 
 /**
@@ -71,7 +76,10 @@ function startsWithMagic(bytes: Uint8Array): boolean {
 
 /** The header as a record lays it out. */
 function encodePackHeader(header: GenerationPackHeader): Uint8Array {
-  return encodeUtf8(JSON.stringify(header));
+  if (header.schemaVersion === PACK_SCHEMA_VERSION) return encodeUtf8(JSON.stringify(header));
+  return encodeUtf8(
+    JSON.stringify({ ...header, artifacts: header.artifacts.map(compactPackArtifact) }),
+  );
 }
 
 /** How many bytes a record lays this header out in: what `MAX_PACK_HEADER_BYTES` bounds. */
@@ -98,7 +106,7 @@ export function encodeGenerationPack(
   }
   const prefix = new Uint8Array(PREFIX_LENGTH);
   prefix.set(MAGIC, 0);
-  prefix[MAGIC_LENGTH] = PACK_SCHEMA_VERSION;
+  prefix[MAGIC_LENGTH] = header.schemaVersion;
   new DataView(prefix.buffer).setUint32(
     MAGIC_LENGTH + VERSION_LENGTH,
     headerBytes.byteLength,
@@ -129,7 +137,7 @@ export function decodeGenerationPack(bytes: Uint8Array): DecodeGenerationPackRes
     return { kind: 'corrupt', reason: 'not a generation pack' };
   }
   const version = bytes[MAGIC_LENGTH] ?? 0;
-  if (version !== PACK_SCHEMA_VERSION) {
+  if (!isSupportedPackSchemaVersion(version)) {
     return { kind: 'unsupported', version };
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -143,6 +151,9 @@ export function decodeGenerationPack(bytes: Uint8Array): DecodeGenerationPackRes
     return { kind: 'corrupt', reason: parsed.reason };
   }
   const { header } = parsed;
+  if (header.schemaVersion !== version) {
+    return { kind: 'corrupt', reason: 'prefix and header versions differ' };
+  }
   const htmlEnd = headerEnd + header.htmlLength;
   const postponedEnd = htmlEnd + header.postponedLength;
   if (postponedEnd !== bytes.byteLength) {
