@@ -217,14 +217,30 @@ describe('deferred configured headers', () => {
     ]);
   });
 
-  it.each([undefined, '0', '-1', '1.5', '3', '9007199254740992', 'not-a-count'])(
-    'retains every cookie with a legacy or invalid later-cookie count: %s',
+  it('retains every cookie when a legacy runtime sends no later-cookie count', async () => {
+    const laterCookie = 'later=1; Path=/';
+    const origin = functionAnswer(true);
+    origin.headers.append('set-cookie', laterCookie);
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'set-cookie');
+    const response = await handedOn(origin, new Headers({ 'set-cookie': MIDDLEWARE_COOKIE }));
+
+    expect(response.headers.getSetCookie()).toStrictEqual([
+      ORIGINAL_COOKIE,
+      laterCookie,
+      RULE_COOKIE,
+      MIDDLEWARE_COOKIE,
+    ]);
+    expect(response.headers.has(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER)).toBe(false);
+  });
+
+  it.each(['0', '-1', '1.5', '3', '9007199254740992', 'not-a-count'])(
+    'retains every cookie with an invalid later-cookie count: %s',
     async (count) => {
       const laterCookie = 'later=1; Path=/';
       const origin = functionAnswer(true);
       origin.headers.append('set-cookie', laterCookie);
       origin.headers.set(HEADER_RULES_AFTER_HEADER, 'set-cookie');
-      if (count !== undefined) origin.headers.set(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, count);
+      origin.headers.set(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, count);
       const response = await handedOn(origin, new Headers({ 'set-cookie': MIDDLEWARE_COOKIE }));
 
       expect(response.headers.getSetCookie()).toStrictEqual([
