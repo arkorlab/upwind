@@ -11,6 +11,7 @@ import { memberRoutesOf } from './member-routes.ts';
 import { pageRoutes } from './page-routes.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
+import { terminalShellsOf } from './shared-shell.ts';
 import { isTemplate, keepsTrailingSlash, requestedPathname, routerSpellings } from './spelling.ts';
 import { assetPrefixRewrite, travelsWithFunction } from './static-files.ts';
 
@@ -458,7 +459,9 @@ export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
 /**
  * The prerenders a runtime cache holds a generation of, and a deployment seeds it with:
  * every document the edge or the deployment's Function may answer from one, resumable or complete,
- * whose key is its pathname alone, and every route handler the build rendered.
+ * whose key is its pathname alone; every terminal shell keyed by the parameters it leaves open,
+ * whose own pathname is the one entry its members are answered from (`terminalShellPathname`);
+ * and every route handler the build rendered.
  *
  * Not only what the edge serves. What keeps a page off the edge — a rule of `next.config` that
  * claims its path before the filesystem, while a rewrite or a middleware still leads to the page; a
@@ -466,6 +469,11 @@ export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
  * and the Function answers the page from its generation all the same. Left unseeded, it had none to
  * answer from: it served the build's document for as long as the deployment lived, and neither
  * `revalidate` nor `revalidatePath` ever reached it.
+ *
+ * So was a terminal shell, which its keys kept out of the documents above: its entry held nothing
+ * until a regeneration made it, the lifetime the build gave the shell (`fallbackRevalidate`) never
+ * began, and neither `revalidateTag` nor `revalidatePath` reached the build's document every member
+ * was answered with. `next start` counts that lifetime from the build, and keeps the shell's tags.
  */
 /**
  * Has this output the classification that answers for it, whole?
@@ -532,6 +540,7 @@ export function cacheablePrerenders(bundle: DeploymentBundle): Prerender[] {
       (prerender) => prerender.allowQuery === undefined || prerender.allowQuery.length === 0,
     ),
     ...completeBy(bundle, generation),
+    ...terminalShellsOf(bundle.prerenders, generation),
     ...routeHandlerPrerenders(bundle),
   ];
 }

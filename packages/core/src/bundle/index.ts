@@ -76,7 +76,7 @@ export {
 export { queryDependent } from './query.ts';
 export { completeAppPageBody } from './page-bodies.ts';
 export { partialFallbackUpgradeOf } from './partial-fallback.ts';
-export { sharedShellPathname } from './shared-shell.ts';
+export { sharedShellPathname, terminalShellPathname } from './shared-shell.ts';
 export {
   namesSpelledBy,
   type RouterNamed,

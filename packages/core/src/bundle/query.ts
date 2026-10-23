@@ -43,3 +43,17 @@ export function queryDependent(
   );
   return allowed.some((key) => !identified.has(key));
 }
+
+/**
+ * Whether every key a prerender's entries vary on (`allowQuery`) names one of its route's
+ * parameters, as the build names them (`id`, `nxtPid`): a key that names none is a query of its own.
+ */
+export function keyedByParameters(prerender: Prerender): boolean {
+  const keys = new Set(
+    prerender.route.split('/').flatMap((segment) => {
+      const parameter = PARAMETER.exec(segment)?.[1];
+      return parameter === undefined ? [] : [parameter, `nxtP${parameter}`];
+    }),
+  );
+  return (prerender.allowQuery ?? []).every((key) => keys.has(key));
+}

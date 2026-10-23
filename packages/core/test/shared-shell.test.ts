@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { sharedShellPathname } from '../src/bundle/index.ts';
+import { sharedShellPathname, terminalShellPathname } from '../src/bundle/index.ts';
 import type { Prerender } from '../src/bundle/schema.ts';
 import { deriveEntry, MAX_TAG_LENGTH, sharedShellTagOf } from '../src/cache/index.ts';
 
@@ -55,5 +55,51 @@ describe('a shared resumable terminal shell', () => {
     expect(new Set(tags).size).toBe(entries.length);
     expect(tags.every((tag) => tag.length <= MAX_TAG_LENGTH)).toBe(true);
     expect(tags.every((tag) => tag.startsWith('_N_T_upwind:shared-shell:ent_'))).toBe(true);
+  });
+});
+
+/** A client page's shell that reads `id` in the browser, as Next.js 16.4.2 builds it. */
+const terminal: Prerender = {
+  id: 'terminal',
+  route: '/page-params/[id]',
+  pathname: '/page-params/[id]',
+  parentOutputId: 'page',
+  groupId: 1,
+  routeType: 'shell',
+  response: 'initial',
+  compute: 'static',
+  renderingMode: 'PARTIALLY_STATIC',
+  allowQuery: ['nxtPid'],
+  body: { sha256: 'a'.repeat(64), byteLength: 10, contentType: 'text/html' },
+};
+
+describe('a terminal shell keyed by the parameters it leaves open', () => {
+  it.each<Partial<Prerender>>([
+    {},
+    { allowQuery: ['id'] },
+    { response: 'complete' },
+    {
+      route: '/prefix/[one]/[two]',
+      pathname: '/prefix/b/[two]',
+      allowQuery: ['nxtPone', 'nxtPtwo'],
+    },
+    { route: '/docs/[...slug]', pathname: '/docs/[...slug]', allowQuery: ['nxtPslug'] },
+  ])('names the one entry every member is answered from: %j', (overrides) => {
+    const prerender = { ...terminal, ...overrides };
+
+    expect(terminalShellPathname(prerender)).toBe(prerender.pathname);
+  });
+
+  it.each<Partial<Prerender>>([
+    { routeType: 'fallback' },
+    { routeType: 'page' },
+    { body: undefined },
+    { renderingMode: 'STATIC' },
+    { allowQuery: undefined },
+    { allowQuery: [] },
+    { allowQuery: ['nxtPid', 'preview'] },
+    { pathname: '/page-params/1' },
+  ])('names none for anything else: %j', (overrides) => {
+    expect(terminalShellPathname({ ...terminal, ...overrides })).toBeUndefined();
   });
 });

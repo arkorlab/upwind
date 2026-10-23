@@ -8,6 +8,7 @@ import {
   staticPagesPrivacyOf,
   staticPagesMembersOf,
   standsForClass,
+  terminalShellPathname,
 } from '@stayingupwind/core/bundle';
 import {
   appPathFor,
@@ -42,6 +43,10 @@ import { blobObjectKey } from '@stayingupwind/host/storage';
  * deployment and cache scope. Never replace that runtime inside an existing deployment or reuse
  * another deployment's scope. The identity counts with every existing tag toward the authority's
  * per-entry quota; none is dropped to make room for it.
+ *
+ * A terminal shell keyed by the parameters it leaves open is one of them, and is seeded as its
+ * regeneration makes its entry: under the shell's own pathname, without the keys, which say
+ * nothing of what varies (`terminalShellPathname`), and with the identity beside its tags.
  */
 
 const CACHE_TAGS_HEADER = 'x-next-cache-tags';
@@ -142,6 +147,15 @@ export function buildTagsOf(kind: RouteEntryKind, prerender: Prerender): Generat
   return [...values].map((value) => ({ kind: tagKindOf(value), value }));
 }
 
+/**
+ * The class a regeneration names the prerender's entry by, where its members share that entry: a
+ * shared resumable shell (`sharedShellPathname`), or a terminal shell keyed by the parameters it
+ * leaves open (`terminalShellPathname`). `undefined` for any other prerender.
+ */
+function sharedClassOf(prerender: Prerender): string | undefined {
+  return sharedShellPathname(prerender) ?? terminalShellPathname(prerender);
+}
+
 function seededTagsOf(
   bundle: DeploymentBundle,
   prerender: Prerender,
@@ -152,7 +166,7 @@ function seededTagsOf(
   if (
     bundle.config.cacheComponents === true &&
     indexOf(bundle).kinds.get(prerender.route) === 'app-page' &&
-    sharedShellPathname(prerender) !== undefined
+    sharedClassOf(prerender) !== undefined
   ) {
     // The identity counts toward the existing per-entry quota; the per-call invalidation bound
     // does not permit dropping existing tags or bypassing the generation quota.
@@ -334,8 +348,10 @@ export async function seedRouteFor(
   }
   const input: SeedEntryInput = {
     descriptor,
+    // Never a terminal shell's, whose regeneration names none: they say nothing of what varies.
     ...(prerender.allowQuery !== undefined &&
-      prerender.allowQuery.length > 0 && { allowQuery: prerender.allowQuery }),
+      prerender.allowQuery.length > 0 &&
+      terminalShellPathname(prerender) === undefined && { allowQuery: prerender.allowQuery }),
     groupInstanceId: String(prerender.groupId),
     generation: {
       generationId,
