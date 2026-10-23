@@ -176,6 +176,27 @@ describe('the Functions of a deployment, on a local stack', () => {
     }).toThrow("upwind-app's main module gone.mjs is none of its modules");
   });
 
+  it.each([
+    "export default () => import(`./data.json`, { with: { type: 'json' } });",
+    "export default () => import('./' + 'data.json', { with: { type: 'json' } });",
+    "export default () => import(`./${'data'}.json`, { with: { type: 'json' } });",
+    "import data from './data.json' assert { type: 'json' };",
+    "export { default as data } from './data.json' with { type: 'json' };",
+    "export * from './data.json' assert { type: 'json' };",
+    "export default () => import('./data.json', { assert: { type: 'json' } });",
+    "export default () => import('./data.json', { 'with': { 'type': 'json' } });",
+  ])('refuses attributed JSON imports and re-exports: %s', (source) => {
+    const dir = buildDir();
+    const app = spec([
+      module(dir, 'index.mjs', 'esm', source),
+      module(dir, 'data.json', 'json', '{"value":1}'),
+    ]);
+
+    expect(() =>
+      deploymentFunctions(dir, { deploymentId: DEPLOYMENT_ID, functions: { app } }, BINDINGS),
+    ).toThrow('index.mjs imports ./data.json by the JSON type');
+  });
+
   it('runs a JSON module as CommonJS that exports what it parses to, and refuses one that is not JSON', () => {
     const dir = buildDir();
     const app = spec([module(dir, 'index.mjs', 'esm', 'export default { fetch() {} };')]);

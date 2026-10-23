@@ -155,7 +155,7 @@ export async function bundleWorkers(): Promise<Record<WorkerRole, WorkerScript>>
   const bundled = await Promise.all(
     WORKER_ROLES.map(async (role): Promise<readonly [WorkerRole, WorkerScript]> => {
       const worker = await bundleWorker(entries[role]);
-      assertUpwindOnly(worker.entry, Object.keys(worker.metafile.inputs), worker.root);
+      assertUpwindOnly(worker.entry, worker.inputs, worker.root);
       return [role, { role, script: worker.script, sha256: sha256Of(worker.script) }];
     }),
   );

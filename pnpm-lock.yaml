@@ -194,9 +194,6 @@ catalogs:
     better-auth:
       specifier: 1.7.10
       version: 1.7.10
-    esbuild:
-      specifier: 0.28.2
-      version: 0.28.2
     eslint:
       specifier: 10.13.0
       version: 10.13.0
@@ -549,12 +546,12 @@ importers:
       '@stayingupwind/host':
         specifier: workspace:*
         version: link:../host
-      esbuild:
-        specifier: 'catalog:'
-        version: 0.28.2
       miniflare:
         specifier: 'catalog:'
         version: 5.20261012.1-beta(@types/node@24.19.2)
+      rolldown:
+        specifier: 'catalog:'
+        version: 1.2.14
       tldts:
         specifier: 'catalog:'
         version: 7.4.18
@@ -562,6 +559,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 5.20261016.1
+      '@oxc-project/types':
+        specifier: 'catalog:'
+        version: 0.154.0
       '@types/node':
         specifier: 'catalog:'
         version: 24.19.2
@@ -643,9 +643,6 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 24.19.2
-      esbuild:
-        specifier: 'catalog:'
-        version: 0.28.2
       next:
         specifier: 'catalog:'
         version: 16.4.2(@types/node@24.19.2)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)

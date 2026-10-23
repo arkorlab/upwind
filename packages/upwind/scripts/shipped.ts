@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { build } from 'esbuild';
+import { bundleWorker } from '@stayingupwind/local';
 
 import {
   assertUpwindOnly,
@@ -26,37 +26,15 @@ import {
 const CACHE_HOST_FILE = 'cache-host.mjs';
 
 /** What the host leaves for the build that bundles it to resolve. */
-const HOST_EXTERNALS = [
-  '@stayingupwind/core',
-  '@stayingupwind/core/*',
-  '@stayingupwind/runtime',
-  '@stayingupwind/runtime/*',
-  'cloudflare:*',
-  'node:*',
-];
+const HOST_EXTERNALS = [/^@stayingupwind\/(?:core|runtime)(?:\/|$)/u];
 
 async function bundleCacheHost(): Promise<string> {
-  const entry = cacheHostEntry();
-  const root = path.dirname(entry);
-  const result = await build({
-    absWorkingDir: root,
-    entryPoints: [entry],
-    bundle: true,
-    write: false,
-    metafile: true,
-    format: 'esm',
+  const worker = await bundleWorker(cacheHostEntry(), {
     platform: 'neutral',
-    target: 'es2024',
-    conditions: ['workerd', 'worker', 'browser'],
     external: HOST_EXTERNALS,
-    logLevel: 'silent',
   });
-  const [output] = result.outputFiles;
-  if (output === undefined) {
-    throw new Error(`esbuild produced no output for ${entry}`);
-  }
-  assertUpwindOnly(entry, Object.keys(result.metafile.inputs), root);
-  return output.text;
+  assertUpwindOnly(worker.entry, worker.inputs, worker.root);
+  return worker.script;
 }
 
 /** Bundle everything into `dir`, and say what was written. */

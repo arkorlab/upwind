@@ -2,7 +2,7 @@
  * How the adapter writes a value into the JavaScript it generates.
  *
  * The entry tables the bundlers are fed, the rewrites the patches apply and the `define` values
- * esbuild substitutes are all source, and a value that goes into one has to be escaped for source.
+ * Rolldown substitutes are all source, and a value that goes into one has to be escaped for source.
  */
 
 /**
