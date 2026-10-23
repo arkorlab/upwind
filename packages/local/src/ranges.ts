@@ -11,8 +11,14 @@ import {
   type Subject,
   subjectOf,
 } from './asked-again.ts';
-import { describedFailure, expectationOf, fileFailure } from './file-expectations.ts';
-import { rangeDigestOf } from './range-digests.ts';
+import { type ByteRange, requestedRange } from './byte-ranges.ts';
+import {
+  describedFailure,
+  expectationOf,
+  type FileExpectation,
+  fileFailure,
+} from './file-expectations.ts';
+import { rangeDigestOf, spanDigestOf } from './range-digests.ts';
 import type { Reading } from './reading.ts';
 
 /**
@@ -33,7 +39,7 @@ const RANGE_NOT_SATISFIABLE_STATUS = 416;
  * the application set and its cookies — kept by nobody, whatever the file is kept for: a cache
  * keyed on the URL alone would hand the 416 to every request for the file.
  */
-function unsatisfiedFailure(
+export function unsatisfiedFailure(
   range: string,
   read: {
     readonly file: StaticFileEntry;
@@ -58,11 +64,29 @@ function unsatisfiedFailure(
 }
 
 /**
+ * What a request asked again selects of the file it is answered as — the one the middleware rewrote
+ * it onto, where it did — read as the edge reads it (`requestedRange`): the part it names; `null`
+ * for one no byte of that file satisfies, answered `416`; none for one the edge answers whole, on a
+ * validator other than the file's own tag (`If-Range`), or of a file of an error's status, which
+ * answers no range. The file's own length decides where the range falls (Codex): a range a longer
+ * file asked for holds may start past the end of a shorter one it was rewritten onto.
+ */
+function selectionOf(
+  file: StaticFileEntry,
+  sent: Readonly<Record<string, string>>,
+  tag: string,
+): ByteRange | null | undefined {
+  return (file.status ?? HTTP_OK) === HTTP_OK
+    ? requestedRange(new Headers(sent), tag, file.byteLength)
+    : undefined;
+}
+
+/**
  * Why a range of a file the edge answers as itself (`bytes=1-<end>`), as a resumed download or a
- * media player asks for one, is not answered as the edge answers it of the file it serves: its
- * bytes, served as a range (`206`, `Content-Range`, the range's own `Content-Length`) with the whole
- * file's headers; a file no byte past its first satisfies the range of, `416`; and one of an
- * error's status, which answers no range, whole.
+ * media player asks for one, is not answered as the edge answers it of the file it serves
+ * (`selectionOf`): its bytes, served as a range (`206`, `Content-Range`, the range's own
+ * `Content-Length`) with the whole file's headers; a file no byte past its first satisfies the range
+ * of, `416`; and one of an error's status, or asked on a validator it is not served under, whole.
  */
 function partFailure(
   stack: CheckedStack,
@@ -71,7 +95,6 @@ function partFailure(
     readonly subject: Subject;
     readonly again: Extract<AskedAgain, { kind: 'answered' }>;
     readonly sent: Readonly<Record<string, string>>;
-    readonly end: number;
     /** The range asked for, and the validator it was asked on, in a verdict's words. */
     readonly what: string;
   },
@@ -82,32 +105,37 @@ function partFailure(
   const range = read.what;
   // As the request for the range selects the rules, as the edge applies them to it.
   const expected = expectationOf(stack, url, file, { ...again, headers: sent });
-  if ((file.status ?? HTTP_OK) !== HTTP_OK || !resumesOn(sent, expected.etag)) {
+  const selected = selectionOf(file, sent, expected.etag);
+  if (selected === undefined) {
     const whole = fileFailure(file, answer, expected);
     return whole === undefined ? undefined : `asked for ${range}, ${whole}`;
   }
-  if (file.byteLength < 2) {
+  if (selected === null) {
     return unsatisfiedFailure(range, { file, answer, expected });
   }
   if (answer.status !== PARTIAL_CONTENT_STATUS) {
     return `answered ${range} with ${answer.status}, not ${PARTIAL_CONTENT_STATUS}`;
   }
-  const end = Math.min(read.end, file.byteLength - 1);
-  const named = `bytes 1-${end}/${file.byteLength}`;
+  const { start, end } = selected;
+  const named = `bytes ${start}-${end}/${file.byteLength}`;
   const contentRange = answer.headers['content-range'];
   if (contentRange !== named) {
     return `answered ${range} under Content-Range ${contentRange ?? 'none'}, not ${named}`;
   }
   // The range's own length, which a player or a resumed download frames the part by.
+  const size = end - start + 1;
   const length = answer.headers['content-length'];
-  if (length !== String(end)) {
-    return `answered ${range} with Content-Length ${length ?? 'none'}, not the range's ${end}`;
+  if (length !== String(size)) {
+    return `answered ${range} with Content-Length ${length ?? 'none'}, not the range's ${size}`;
   }
   const { head } = subject;
   if (head === undefined) {
     return `answered ${range} of a file the build holds no bytes of`;
   }
-  if (answer.length !== end || !answer.head.subarray(0, end).equals(head.subarray(1, end + 1))) {
+  if (
+    answer.length !== size ||
+    !answer.head.subarray(0, size).equals(head.subarray(start, start + size))
+  ) {
     return `answered ${range} with other bytes than the file's`;
   }
   // Whatever its bytes, the part of the file a player or a resumed download is given is the file:
@@ -144,16 +172,76 @@ export async function rangeFailure(
     return again.kind === 'failed' ? again.reason : undefined;
   }
   const subject = subjectOf(stack, again, { file, head: asked.answer.head });
-  return said(subject, partFailure(stack, url, { subject, again, sent, end, what }));
+  return said(subject, partFailure(stack, url, { subject, again, sent, what }));
 }
 
-/** An If-Range tag must strongly name the representation selected by this follow-up. */
-function resumesOn(headers: Readonly<Record<string, string>>, etag: string): boolean {
-  const validator = headers['if-range'];
-  return (
-    validator === undefined ||
-    (!validator.startsWith('W/') && !etag.startsWith('W/') && validator === etag)
-  );
+/**
+ * Why a file asked for by a request that carries a range of it (`what`) — one a rule of `next.config`
+ * conditioned on a range has it carry (Codex) — is not answered as the edge answers the range it names
+ * (`requestedRange`): `206` under the `Content-Range` those bytes are, their length, every one of those
+ * bytes of the file, and the whole file's headers — the rule's among them.
+ */
+export async function selectedRangeFailure(
+  stack: CheckedStack,
+  subject: Subject,
+  read: {
+    readonly answer: Reading;
+    readonly what: string;
+    readonly range: ByteRange;
+    readonly expected: FileExpectation;
+    /** The whole file asked for, as answered: what it kept of the file's bytes. */
+    readonly whole: Reading;
+  },
+): Promise<string | undefined> {
+  const { file } = subject;
+  const { answer, what, range, expected } = read;
+  if (answer.status !== PARTIAL_CONTENT_STATUS) {
+    return `answered ${what} with ${answer.status}, not ${PARTIAL_CONTENT_STATUS}`;
+  }
+  const named = `bytes ${range.start}-${range.end}/${file.byteLength}`;
+  const contentRange = answer.headers['content-range'];
+  if (contentRange !== named) {
+    return `answered ${what} under Content-Range ${contentRange ?? 'none'}, not ${named}`;
+  }
+  const size = range.end - range.start + 1;
+  if (answer.headers['content-length'] !== String(size) || answer.length !== size) {
+    return `answered ${what} with ${answer.length} bytes, not the range's ${size}`;
+  }
+  // As many of its bytes as were read, against the file's own from where the range starts: its first
+  // bytes as the whole file was answered, by their digest the file's own, where they reach that far;
+  // its blob otherwise.
+  const seen = answer.head.subarray(0, Math.min(size, answer.head.length));
+  const { head } = subject;
+  const held =
+    head !== undefined && head.length >= range.start + seen.length
+      ? head.subarray(range.start, range.start + seen.length)
+      : blobBytesAt(stack, file, range.start, seen.length);
+  if (held === undefined) {
+    return `answered ${what} of a file the build holds no bytes of`;
+  }
+  if (!seen.equals(held)) {
+    return `answered ${what} with other bytes than the file's`;
+  }
+  // And past them, by their digest (greptile, Codex): a part a rule selects runs as long as its range
+  // does, and a byte past those read first is as much the file's as they — held to those bytes of the
+  // file by what its whole answer kept of them where it kept them all, by its blob otherwise
+  // (`spanDigestOf`), as a range by its end or from a byte on is (`formBytesFailure`).
+  if (size > seen.length) {
+    const expectedDigest = await spanDigestOf(
+      stack,
+      file,
+      { start: range.start, stop: range.end + 1 },
+      subject.onto === undefined ? read.whole : undefined,
+    );
+    if (expectedDigest === undefined) {
+      return `answered ${what} of a file the build holds no bytes of`;
+    }
+    if (answer.sha256 !== expectedDigest) {
+      return `answered ${what} with other bytes than the file's`;
+    }
+  }
+  const described = describedFailure(answer, expected, false);
+  return described === undefined ? undefined : `asked for ${what}, ${described}`;
 }
 
 /**
@@ -213,9 +301,10 @@ export async function staleRangeFailure(
  * Why a range of a file the edge answers as itself, asked for by its end (`bytes=-<n>`, as a media
  * player asks for an index kept there) or from a byte on (`bytes=1-`, as a resumed download asks), is
  * not answered as the edge answers one (`requestedRange`): `206` under the `Content-Range` those
- * bytes are, their length, those bytes of the file, and the whole file's headers — and an empty
- * file, which has no last byte, `416`. A file of an error's status answers no range: its bounded
- * range holds it to that already (`rangeFailure`).
+ * bytes are, their length, those bytes of the file, and the whole file's headers — and a file no
+ * byte of which is where the range starts, `416`: an empty one, or one the middleware rewrote the
+ * request onto that is shorter than the file asked for (`formFailure`). A file of an error's status
+ * answers no range: its bounded range holds it to that already (`rangeFailure`).
  */
 export async function rangeFormsFailure(
   stack: CheckedStack,
@@ -233,14 +322,8 @@ export async function rangeFormsFailure(
   const suffix = Math.max(1, Math.min(asked.file.byteLength, RANGE_BYTES));
   // From a byte on, only where the file has one past its first: a tiny file's range is asked by
   // its bounded form already (`rangeFailure`), which no byte of it satisfies.
-  const forms =
-    asked.file.byteLength < 2
-      ? [{ range: `bytes=-${suffix}`, startOf: (length: number) => Math.max(0, length - suffix) }]
-      : [
-          { range: `bytes=-${suffix}`, startOf: (length: number) => Math.max(0, length - suffix) },
-          { range: 'bytes=1-', startOf: () => 1 },
-        ];
-  for (const { range, startOf } of forms) {
+  const forms = asked.file.byteLength < 2 ? [`bytes=-${suffix}`] : [`bytes=-${suffix}`, 'bytes=1-'];
+  for (const range of forms) {
     const sent = { ...asked.headers, range };
     const again = await askedAgain(stack, url, { sent, what: range });
     if (again.kind === 'failed') {
@@ -252,7 +335,6 @@ export async function rangeFormsFailure(
     const subject = subjectOf(stack, again, { file: asked.file, head: asked.answer.head });
     const failure = await formFailure(stack, url, {
       range,
-      startOf,
       subject,
       again,
       sent,
@@ -265,13 +347,16 @@ export async function rangeFormsFailure(
   return undefined;
 }
 
-/** Why a range by its end or from a byte on is not those bytes of the file it serves (`rangeFormsFailure`). */
+/**
+ * Why a range by its end or from a byte on is not those bytes of the file it serves
+ * (`rangeFormsFailure`), as the edge selects them of that file (`selectionOf`, Codex): `416` where no
+ * byte of it is where the range starts — an empty file, or one byte long asked from its second.
+ */
 async function formFailure(
   stack: CheckedStack,
   url: URL,
   read: {
     readonly range: string;
-    readonly startOf: (length: number) => number;
     readonly subject: Subject;
     readonly again: Extract<AskedAgain, { kind: 'answered' }>;
     readonly sent: Readonly<Record<string, string>>;
@@ -283,24 +368,25 @@ async function formFailure(
   const { file } = subject;
   const { answer } = again;
   const expected = expectationOf(stack, url, file, { ...again, headers: sent });
-  if ((file.status ?? HTTP_OK) !== HTTP_OK) {
+  const selected = selectionOf(file, sent, expected.etag);
+  if (selected === undefined) {
     const whole = fileFailure(file, answer, expected);
     return whole === undefined ? undefined : `asked for ${range}, ${whole}`;
   }
-  const length = file.byteLength;
-  if (length === 0) {
+  if (selected === null) {
     return unsatisfiedFailure(range, { file, answer, expected });
   }
   if (answer.status !== PARTIAL_CONTENT_STATUS) {
     return `answered ${range} with ${answer.status}, not ${PARTIAL_CONTENT_STATUS}`;
   }
-  const start = read.startOf(length);
-  const named = `bytes ${start}-${length - 1}/${length}`;
+  // Each form runs to the file's last byte, which `formBytesFailure` proves them to.
+  const { start, end } = selected;
+  const named = `bytes ${start}-${end}/${file.byteLength}`;
   const contentRange = answer.headers['content-range'];
   if (contentRange !== named) {
     return `answered ${range} under Content-Range ${contentRange ?? 'none'}, not ${named}`;
   }
-  const size = length - start;
+  const size = end - start + 1;
   if (answer.headers['content-length'] !== String(size) || answer.length !== size) {
     return `answered ${range} with ${answer.length} bytes, not the range's ${size}`;
   }

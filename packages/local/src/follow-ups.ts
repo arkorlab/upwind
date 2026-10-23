@@ -2,7 +2,8 @@ import type { StaticFileEntry } from '@stayingupwind/core/manifest';
 import { listsTag } from '@stayingupwind/edge/internal/strategies/entity-tags.ts';
 
 import { type CheckedStack, HTTP_OK } from './answers.ts';
-import { askedAgain, opaqueTag, said, subjectOf } from './asked-again.ts';
+import { askedAgain, opaqueTag, said, type Subject, subjectOf } from './asked-again.ts';
+import { type ByteRange, requestedRange } from './byte-ranges.ts';
 import {
   describedFailure,
   expectationOf,
@@ -15,7 +16,9 @@ import {
   rangeFailure,
   rangeFormsFailure,
   resumedRangeFailure,
+  selectedRangeFailure,
   staleRangeFailure,
+  unsatisfiedFailure,
 } from './ranges.ts';
 import type { Reading } from './reading.ts';
 import { requestsForRules, type RuleRequests } from './rule-witnesses.ts';
@@ -118,7 +121,9 @@ function preconditionFailedFailure(answer: Reading, expected: FileExpectation): 
 /** What a request's conditions select of a file (`selectedBy`). */
 type Selection =
   | { readonly kind: 'whole' | 'precondition-failed' }
-  | { readonly kind: 'not-modified'; readonly condition: string };
+  | { readonly kind: 'not-modified'; readonly condition: string }
+  | { readonly kind: 'range'; readonly what: string; readonly range: ByteRange }
+  | { readonly kind: 'unsatisfied'; readonly what: string };
 const WHOLE: Selection = { kind: 'whole' };
 const PRECONDITION_FAILED: Selection = { kind: 'precondition-failed' };
 
@@ -140,7 +145,8 @@ function instantOf(value: string | null): number | undefined {
  * naming another entity, or, asked without one, an `If-Unmodified-Since` earlier than its date —
  * answered `412`; then a validator the client holds — an `If-None-Match` naming its tag, or, asked
  * without one, an `If-Modified-Since` no earlier than its date — answered `304` (`condition` says
- * which); the file, whole, otherwise. A file of another status than 200 is judged by none of them
+ * which); then a range it asks (`rangeSelected`); the file, whole, otherwise. A file of another
+ * status than 200 is judged by none of them
  * (`answersAsItself`). The edge's judgement is mirrored here, not called, and so is its reading of a
  * date (`httpDateMs`); a list of tags is read with the edge's own reader (`listsTag`), a leaf of no
  * import.
@@ -165,29 +171,56 @@ function selectedBy(
     return PRECONDITION_FAILED;
   }
   const ifNoneMatch = headers.get('if-none-match');
-  if (ifNoneMatch !== null) {
-    return listsTag(ifNoneMatch, expected.etag)
-      ? notModified(`If-None-Match ${ifNoneMatch}`)
-      : WHOLE;
+  if (ifNoneMatch === null) {
+    const ifModifiedSince = headers.get('if-modified-since');
+    const since = instantOf(ifModifiedSince);
+    if (since !== undefined && modified !== undefined && modified <= since) {
+      return notModified(`If-Modified-Since ${String(ifModifiedSince)}`);
+    }
+  } else if (listsTag(ifNoneMatch, expected.etag)) {
+    return notModified(`If-None-Match ${ifNoneMatch}`);
   }
-  const ifModifiedSince = headers.get('if-modified-since');
-  const since = instantOf(ifModifiedSince);
-  return since !== undefined && modified !== undefined && modified <= since
-    ? notModified(`If-Modified-Since ${String(ifModifiedSince)}`)
-    : WHOLE;
+  return rangeSelected(file, headers, expected);
+}
+
+/**
+ * What a range the request carries selects of the file, as the edge reads one (`requestedRange`):
+ * the part it names, `416` for one no byte of the file satisfies, and the whole file for none it can
+ * answer as one range (Codex).
+ */
+function rangeSelected(
+  file: StaticFileEntry,
+  headers: Headers,
+  expected: FileExpectation,
+): Selection {
+  const value = headers.get('range');
+  const range = requestedRange(headers, expected.etag, file.byteLength);
+  if (value === null || range === undefined) {
+    return WHOLE;
+  }
+  const what = `Range ${value}`;
+  return range === null ? { kind: 'unsatisfied', what } : { kind: 'range', what, range };
 }
 
 /**
  * Why a file asked for by a request a rule of `next.config` sets headers on it for is not answered as
  * the edge answers that request: by the conditions the request carries — which a rule conditioned on one has
- * it carry (Codex) — `412` for a precondition the file fails and `304` for a validator the client
- * holds, and the file, whole, otherwise (`selectedBy`).
+ * it carry (Codex) — `412` for a precondition the file fails, `304` for a validator the client
+ * holds, `206` for a range it names and `416` for one no byte satisfies, and the file, whole,
+ * otherwise (`selectedBy`).
  */
-function selectedFailure(
-  file: StaticFileEntry,
+async function selectedFailure(
+  stack: CheckedStack,
+  subject: Subject,
   answer: Reading,
-  read: { readonly sent: Readonly<Record<string, string>>; readonly expected: FileExpectation },
-): string | undefined {
+  read: {
+    readonly sent: Readonly<Record<string, string>>;
+    readonly expected: FileExpectation;
+    /** The whole file asked for, as answered: what it kept of the file's bytes. */
+    readonly whole: Reading;
+  },
+): Promise<string | undefined> {
+  const { file } = subject;
   const selected = selectedBy(file, read.sent, read.expected);
   switch (selected.kind) {
     case 'precondition-failed': {
@@ -195,6 +228,19 @@ function selectedFailure(
     }
     case 'not-modified': {
       return notModifiedFailure(answer, read.expected, selected.condition);
+    }
+    case 'range': {
+      const { what, range } = selected;
+      return await selectedRangeFailure(stack, subject, {
+        answer,
+        what,
+        range,
+        expected: read.expected,
+        whole: read.whole,
+      });
+    }
+    case 'unsatisfied': {
+      return unsatisfiedFailure(selected.what, { file, answer, expected: read.expected });
     }
     case 'whole': {
       return fileFailure(file, answer, read.expected);
@@ -286,6 +332,8 @@ async function ruleFailure(
     readonly file: StaticFileEntry;
     readonly headers: Readonly<Record<string, string>>;
     readonly head: Buffer;
+    /** The whole file, as answered: what it kept of the file's bytes. */
+    readonly whole: Reading;
   },
 ): Promise<string | undefined> {
   const { requests: ruleRequests, unproved } = ruleRequestsOf(stack, url, asked.headers);
@@ -303,9 +351,10 @@ async function ruleFailure(
       ...again,
       headers: typed.headers,
     });
-    const failure = selectedFailure(subject.file, again.answer, {
+    const failure = await selectedFailure(stack, subject, again.answer, {
       sent: typed.headers,
       expected,
+      whole: asked.whole,
     });
     if (failure !== undefined) {
       return said(subject, `asked for as ${typed.what}, ${failure}`);
@@ -341,6 +390,6 @@ export async function followUpFailure(
     (await rangeFormsFailure(stack, url, { file, headers, answer })) ??
     (await conditionalFailure(stack, url, { ...again, etag })) ??
     (await headFailure(stack, url, again)) ??
-    (await ruleFailure(stack, url, again))
+    (await ruleFailure(stack, url, { ...again, whole: answer }))
   );
 }

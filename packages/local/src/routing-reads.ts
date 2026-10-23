@@ -29,13 +29,15 @@ export function edgeReads(headers: Readonly<Record<string, string>> | Headers): 
 }
 
 /**
- * What the edge hands on of a request, exactly (`passthroughHeaders`): the front line's coding, then
- * the shared forwarder's Via, internal-header and recovery-cookie handling — which takes `Host` off
- * with the rest it does not hand on. The standalone host owns no credentials. Only request headers
- * supply clientIp here; runtime.cf country is not fabricated. What the middleware is handed, as the
- * edge reads its answer against (`readMiddlewareAnswer`).
+ * What the edge hands on of a request, and judges what it decides itself on (`passthroughHeaders`,
+ * `routedHeaders`): the front line's coding, then the shared forwarder's Via, internal-header and
+ * recovery-cookie handling — which takes `Host` off with the rest it does not hand on, so that a rule
+ * of `next.config` laid on a stored file, a middleware's matcher, a reservation at the edge reads
+ * none (greptile). The standalone host owns no credentials. Only request headers supply clientIp
+ * here; runtime.cf country is not fabricated. Keep this apart from raw classification and a
+ * middleware's already-modified requestHeaders.
  */
-export function forwardedReads(
+export function routedReads(
   url: URL,
   headers: Readonly<Record<string, string>> | Headers,
 ): Headers {
@@ -51,7 +53,7 @@ export function forwardedReads(
  * `headers` with the `Host` the Function's runtime gives a request that reaches it without one —
  * the host of the URL it is asked under (`edge-invoke.ts`, `node-bridge.ts` in the runtime) — before
  * Next.js routes it: forwarding takes it off, and a rule asking of it is answered there as every
- * request carries it (greptile).
+ * request carries it.
  */
 function withHostRestored(url: URL, headers: Headers): Headers {
   if (!headers.has('host')) {
@@ -61,16 +63,16 @@ function withHostRestored(url: URL, headers: Headers): Headers {
 }
 
 /**
- * The standalone application's pre-middleware routing view, as Next.js routes a request: what the
- * edge hands on (`forwardedReads`), with the `Host` the Function's runtime gives it back
- * (`withHostRestored`). Keep this apart from raw classification and a middleware's
- * already-modified requestHeaders.
+ * What the Function routes a request it is handed by: what the edge hands on (`routedReads`), with
+ * the `Host` its runtime gives it back (`withHostRestored`). For what the Function decides alone — an
+ * export's rules on a miss handed to it (`missOf`) — never for what the edge decides itself, which
+ * reads no `Host` (greptile).
  */
-export function routedReads(
+export function functionReads(
   url: URL,
   headers: Readonly<Record<string, string>> | Headers,
 ): Headers {
-  return withHostRestored(url, forwardedReads(url, headers));
+  return withHostRestored(url, routedReads(url, headers));
 }
 
 /** The credentials the stack's standalone host keeps for itself: none. */
@@ -134,22 +136,18 @@ export function classifiedReads(
  * The headers the middleware left on a request as the edge hands them on, and routes them by behind
  * it (`handedHeaders`): the shared forwarder's handling, under what the request as sent was
  * forwarded with (`routedReads`) — not the front line's coding again, which the middleware was
- * handed already — and the `Host` the Function's runtime gives it back, as Next.js routes it
- * (`withHostRestored`).
+ * handed already — and no `Host`, as the edge judges a rule on what it left (greptile).
  */
 export function handedReads(
   url: URL,
   sent: Readonly<Record<string, string>> | Headers,
   left: Headers,
 ): Headers {
-  return withHostRestored(
-    url,
-    sanitizePassthroughHeaders(left, {
-      previewDomain: 'invalid',
-      previewHost: url.hostname,
-      clientIp: edgeReads(sent).get('cf-connecting-ip') ?? undefined,
-    }),
-  );
+  return sanitizePassthroughHeaders(left, {
+    previewDomain: 'invalid',
+    previewHost: url.hostname,
+    clientIp: edgeReads(sent).get('cf-connecting-ip') ?? undefined,
+  });
 }
 
 /** The middleware's matcher view, including the data marker Next.js sets before matching. */

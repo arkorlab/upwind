@@ -42,8 +42,13 @@ export interface Target {
   readonly requestClass?: WitnessClass;
 }
 
-/** The document gates do not apply to a file classified ahead of them. */
-export type WitnessClass = 'document' | 'file';
+/**
+ * The document gates do not apply to a file classified ahead of them. A file asked for by a header
+ * rule's witness (`file-selection`) is held to what the conditions it carries select of the file
+ * (`selectedBy`): a range among them, which a file's other requests, held to the whole file, carry
+ * none of.
+ */
+export type WitnessClass = 'document' | 'file' | 'file-selection';
 
 /**
  * File reservations run at the hosted gate, on what forwarding hands on (`routedReads`); a
@@ -146,7 +151,10 @@ function protocolCondition(condition: RouteHas, requestClass: WitnessClass = 'do
   const name = key.toLowerCase();
   switch (condition.type) {
     case 'header': {
-      if (requestClass === 'file' && name === DEPLOYMENT_ID_REQUEST_HEADER) return false;
+      if (requestClass !== 'document' && name === DEPLOYMENT_ID_REQUEST_HEADER) return false;
+      // A range a header rule's witness of a file carries is its own to choose: the edge answers
+      // the part it names under the rule's headers, and the witness is held to that (Codex).
+      if (requestClass === 'file-selection' && name === 'range') return false;
       return (
         PROTOCOL_HEADER_KEYS.has(name) ||
         ROUTER_REQUEST_HEADERS.includes(name) ||
@@ -172,8 +180,7 @@ function protocolCondition(condition: RouteHas, requestClass: WitnessClass = 'do
  * Whether forwarding takes the header `name` off every request it hands on
  * (`sanitizePassthroughHeaders`): a hop's own, or one of the runtime's internal ones. Routing reads a
  * request as forwarding hands it on (`routedReads`), where none of them is, whatever the request
- * was sent with — but `Host`, which the Function's runtime gives back from the URL, the same for
- * every request to it.
+ * was sent with.
  */
 function forwardingRemoves(name: string): boolean {
   return HOP_BY_HOP_HEADERS.includes(name) || INTERNAL_REQUEST_HEADERS.includes(name);

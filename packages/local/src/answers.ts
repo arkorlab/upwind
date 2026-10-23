@@ -8,7 +8,7 @@ import { type CookieHostContext, rewriteSetCookieForPreview } from '@stayingupwi
 import { readMiddlewareAnswer } from '@stayingupwind/edge/handlers/responses';
 
 import { read, type ReadOptions, type Reading } from './reading.ts';
-import { edgeReads, forwardedReads, middlewareReads } from './routing-reads.ts';
+import { edgeReads, middlewareReads, routedReads } from './routing-reads.ts';
 import type { CspNonceSetting, LocalStack } from './stack.ts';
 import {
   BACKSTAGE_ROUTES,
@@ -475,7 +475,7 @@ export async function keptOf(
   }
   const answered = new Response(null, { status: decision.status, headers: answeredWith });
   const client = edgeReads(headers);
-  const handed = forwardedReads(url, headers);
+  const handed = routedReads(url, headers);
   handed.set(MIDDLEWARE_ONLY_HEADER, '1');
   const decided = readMiddlewareAnswer(answered, url, client, handed);
   return {
