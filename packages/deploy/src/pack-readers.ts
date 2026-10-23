@@ -17,6 +17,24 @@ function consumersOf(bundle: DeploymentBundle): readonly (readonly [string, Func
   ];
 }
 
+/** An uploaded module cannot alias or override the audited main module or one of its imports. */
+function unambiguousModules(spec: FunctionSpec): boolean {
+  const seen = new Set<string>();
+  for (const module of spec.modules) {
+    const parts = module.name.split('/');
+    if (
+      module.name.includes('\\') ||
+      module.name.includes(':') ||
+      /[\u0000-\u001f\u007f]/u.test(module.name) ||
+      parts.some((part) => part === '' || part === '.' || part === '..') ||
+      seen.has(module.name)
+    )
+      return false;
+    seen.add(module.name);
+  }
+  return true;
+}
+
 /**
  * Bind a trusted all-reader approval to the actual immutable Function inventory. All hashes already
  * belong to the collected module blobs; this performs no hashing, storage read or capability
@@ -33,6 +51,7 @@ export function scopePackReadersOf(
   if (byDigest.size !== approved.functions.length) return undefined;
   const consumers: ScopePackReaders['consumers'] = [];
   for (const [name, spec] of consumersOf(bundle)) {
+    if (!unambiguousModules(spec)) return undefined;
     const modules = spec.modules.filter((module) => module.name === spec.mainModule);
     const main = modules[0];
     if (modules.length !== 1 || main?.type !== 'esm') return undefined;

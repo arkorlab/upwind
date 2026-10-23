@@ -41,6 +41,13 @@ the same version before a producer can be enabled.
    digests, host identity and host-source digest. The adapter bundles the runtime and cache host
    into the main module; `app.cjs` and `runtime.json` remain separate modules. The approval must
    cover every actual app, split, middleware, workflow and Durable Object Function in the bundle.
+   Verify the audited main module contains the decoder and cache host rather than a wrapper that
+   imports an unapproved separate reader chunk. The first-party adapter's runtime bundler has
+   `codeSplitting: false`, only Node/Cloudflare built-ins external, and bundles `cacheHostModule`
+   internally; its generated app/edge/wasm modules are the explicit exceptions. `function.ts`
+   hashes that complete runtime file, and `auditTracedFiles` rejects reserved-name collisions.
+   The approval helper also declines duplicate/noncanonical module names in uploaded bundles so
+   another module cannot alias an audited main module or its imports.
    A bundle's own capability flag, package version or module path is insufficient. Unknown or
    custom hosts continue on version one.
 3. Retain trusted rollout evidence that every traffic-serving platform reader runs an approved
