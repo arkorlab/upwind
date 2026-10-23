@@ -1,7 +1,13 @@
-import { RepairRowTooLargeError } from './artifact-repair.ts';
-import { markRecordWritten } from './entries.ts';
+import {
+  type ArtifactRepair,
+  RepairRowTooLargeError,
+  repairSnapshotStep,
+} from './artifact-repair.ts';
+import { NO_HISTORY } from './history.ts';
 import type { RepairJob } from './repair-jobs.ts';
-import type { TxInput } from './tx.ts';
+import { record, type TxInput } from './tx.ts';
+
+export { stageRepairPublication } from './repair-staging.ts';
 
 /** Success deliberately escapes transactionSync so every candidate publication write rolls back. */
 export class RepairPublicationProbed extends Error {
@@ -21,20 +27,13 @@ export class RepairPublicationProbed extends Error {
  * The coordinator, outside that transaction, persists the next phase in a fresh transaction.
  */
 export function probeRepairPublication(
-  input: TxInput,
+  _input: TxInput,
   next: RepairJob,
   publish: () => unknown,
-  entryId: string,
+  _entryId: string,
 ): never {
   try {
     publish();
-    const entry = input.sql
-      .exec<{ record_revision: number }>(
-        'SELECT record_revision FROM entries WHERE entry_id = ?',
-        entryId,
-      )
-      .toArray()[0];
-    if (entry !== undefined) markRecordWritten(input.sql, entryId, entry.record_revision);
   } catch (error) {
     if (error instanceof Error && /\bSQLITE_TOOBIG\b/u.test(error.message))
       throw new RepairRowTooLargeError(error);
@@ -43,9 +42,28 @@ export function probeRepairPublication(
   throw new RepairPublicationProbed(next);
 }
 
-/** Other writers cannot consume a revision; bypassed heartbeats only extend a lease. */
+/** Every continuation belongs to the original accepted transaction revision. */
 export function repairPreflightInput(input: TxInput, job: RepairJob): TxInput {
-  return job.phase === 'preflight'
-    ? { ...input, revision: input.revision + (job.matched ?? 0) }
-    : input;
+  return { ...input, revision: job.fromRevision };
+}
+
+/** A custom host's exact shared-row event must fit before any of the group is applied. */
+export function probeRepairSnapshot(
+  input: TxInput,
+  next: RepairJob,
+  repairs: ReadonlyMap<string, ArtifactRepair>,
+  cursor: { readonly after: string; readonly excluding: ReadonlySet<string> },
+): void {
+  if (input.history === NO_HISTORY) return;
+  probeRepairPublication(
+    input,
+    next,
+    () => {
+      const step = repairSnapshotStep(input, repairs, { ...cursor, apply: true });
+      if (!step.changed || step.failure !== undefined)
+        throw new Error('the preflighted shared repair changed');
+      record(input, []);
+    },
+    next.after,
+  );
 }

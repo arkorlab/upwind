@@ -17,25 +17,52 @@ previous successful retries intact.
 
 The write queue protects the prepared operation, canonical location, failed-location incarnation
 and reservations. Unrelated healthy render heartbeats can continue without advancing the scope
-revision. An expired heartbeat keeps its existing refusal response; its expiry cleanup waits until after repair. This
-keeps the future revision of each changed row predictable. A seed retry's initial eligibility is
-frozen before those leases can expire; canonical choices and record-fit decisions still follow the
-original retry order. Serving reads do not consult or wait for the job.
+revision. An expired heartbeat keeps its existing refusal response; its expiry cleanup waits until
+after repair. A seed retry's initial eligibility is frozen before those leases can expire;
+canonical choices and record-fit decisions still follow the original retry order. Serving reads do
+not consult or wait for the job.
 
-Preflight probes the actual provider row limit for both generation and entry metadata, including
-the publishing rows. It uses the exact future revision for each matching row rather than a
-conservative maximum integer. Repair timestamps retain the accepted operation time. A refused
-group changes no shared snapshot; other fresh admissions and earlier seed retries remain intact.
+Every continuation uses the original operation revision and accepted operation time. It does not
+consume another revision for each matching entry or retry. This preserves the original integer
+widths even when an accepted row lies exactly at the provider limit. Preflight probes the actual
+publishing SQL transaction and host history append, including new generations, superseded rows,
+entry metadata and scope counters. A success sentinel leaves the outer transaction to roll every
+candidate write back before the next phase is persisted separately. Initial fresh seed events are
+probed before any fresh row or durable job is accepted. No nested transaction or savepoint is used.
+A refused group changes no shared snapshot; other fresh admissions and earlier seed retries remain
+intact.
 
-During apply, current SQL snapshots progressively name the verified replacement. Public success
-waits until every affected SQL snapshot and the final publishing generation are complete. This is
-physical healing within an operation, with no serving-read epoch or shadow lookup. Normal bounded
-KV projection follows publication; existing projection failure/retry behavior is retained.
+The preflight does not reject an otherwise accepted publication because a later KV acknowledgment
+might exceed a SQL row limit. The existing protocol can accept the publication while its delivery
+projection fails; that failure remains owed to the existing projection retry path. The change adds
+no speculative acknowledgment admission condition.
 
-An alarm is armed before durable job acceptance. Each step updates its cursor and snapshot in one
-transaction. The durable result is available only after final publication. Failure-incarnation pins
-keep an earlier projection from clearing a newer observation. Interrupted jobs resume from SQLite;
-there is no timeout that silently drops an accepted repair.
+During apply, current SQL snapshots progressively name the verified replacement. Each existing
+entry retains its earlier delivery `record_revision`, and a fresh entry retains zero, until all
+repair groups and their own publications finish. A bounded primary-key pass then releases affected
+delivery revisions to the one original revision. No later group can rewrite an already released
+snapshot. In particular, a direct `currentRecord(afterRevision)` reader cannot receive an
+intermediate replacement at the final revision and then miss a later same-revision repair. Reads
+keep using their existing generation/revision check, with no serving epoch or shadow lookup.
+
+The job keeps the last history event for each entity type, entity ID and event kind, preserving its
+first-occurrence order just as the original transaction's final-state deduplication does. Event
+identities and payloads use bounded durable metadata chunks; a custom host that does not keep
+regeneration records still receives its events. `NO_HISTORY` stores no event identities or payloads.
+After physical healing and delivery-revision release, one final event is appended to the actual
+host history per step. History export and its consumers also use bounded parts/pages rather than
+materializing every event at this shared revision in one call. A host reports successful partial
+export progress so the alarm continues immediately.
+
+Public success waits until every affected SQL snapshot, publishing generation, final delivery
+revision and final history append are complete. Normal bounded KV projection follows publication;
+existing projection failure/retry behavior is retained. An alarm is armed before durable job
+acceptance. A failure discovered after asynchronous seed planning first rolls the complete candidate
+transaction back. Only then does its rare continuation drain older projection, arm an alarm and
+probe the initial host events before retrying acceptance; healthy seeds gain no extra storage lookup.
+Each step updates its cursor and snapshot in one transaction. Failure-incarnation pins
+remain until the bounded finalization has finished, so an earlier projection cannot clear a newer
+observation. Interrupted jobs resume from SQLite; no timeout silently drops an accepted repair.
 
 ## Fixed-width replacements and ownership
 
@@ -65,6 +92,7 @@ capability probe, hash or metadata lookup is added to healthy serving reads.
 ## Verification
 
 Regression cases cover skipped primary-key rows, transaction rollback, persisted-cursor restart,
-near-limit refusals, failure-marker ABA, initial seed eligibility, ordered shared-SHA retries,
+near-limit acceptance and refusals, initial-history rollback, same-entry multi-SHA delivery cursors,
+failure-marker ABA, initial seed eligibility, ordered shared-SHA retries,
 positive R2 receipts, unknown-object collisions and ownership-aware namespace cleanup. They run in
 CI; local project test, lint, typecheck, build and benchmark gates are not run for this change.

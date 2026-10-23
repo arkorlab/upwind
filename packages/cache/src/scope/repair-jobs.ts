@@ -32,8 +32,12 @@ export interface RepairJob {
   readonly limits: ScopeLimits;
   readonly failures?: number;
   readonly retryAt?: number;
-  /** Matching shared snapshots already preflighted in this group; their apply revisions are exact. */
-  readonly matched?: number;
+  /** Publication remains private until every physical group has finished. */
+  readonly finalizing?: {
+    readonly phase: 'records' | 'events' | 'pins';
+    readonly after: string;
+    readonly index: number;
+  };
   readonly attemptId: string | null;
   readonly phase: RepairPhase;
   readonly group: number;
@@ -63,7 +67,26 @@ export type RepairStep<T> =
 export interface RepairStart<T = never> {
   readonly kind: 'repair-start';
   readonly prepare?: (() => Promise<void>) | undefined;
+  /** SQL-only initial publication probe; the caller rolls it back before start. */
+  readonly preflight?: ((input: TxInput) => void) | undefined;
   readonly start: (input: TxInput) => T | RepairPending;
+}
+
+/** Discovery after asynchronous planning must first roll back its entire candidate transaction. */
+export class RepairPreparationRequired<T = unknown> extends Error {
+  override name = 'RepairPreparationRequired';
+  readonly preparation: RepairStart<T>;
+
+  constructor(preparation: RepairStart<T>) {
+    super('the repair needs a prepared continuation');
+    this.preparation = preparation;
+  }
+}
+
+export function isRepairPreparationRequired<T>(
+  value: unknown,
+): value is RepairPreparationRequired<T> {
+  return value instanceof RepairPreparationRequired;
 }
 
 export function isRepairStart<T>(value: unknown): value is RepairStart<T> {
@@ -111,6 +134,10 @@ export function readRepairJob(sql: SqlStorage): RepairJob | undefined {
   )
     throw new Error('the durable repair continuation is invalid');
   return job as RepairJob;
+}
+
+export function repairDataKey(jobId: string, name: string): string {
+  return `${DATA_PREFIX}${jobId}:${name}`;
 }
 
 function keyOf(jobId: string, name: string): string {
@@ -202,7 +229,6 @@ export function beginRepairJob(
     group: 0,
     groupCount,
     after: '',
-    matched: 0,
   };
   for (const group of input.groups) pinRepairGroup(sql, id, group);
   writeMeta(sql, ACTIVE_JOB, JSON.stringify(job));

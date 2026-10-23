@@ -1,12 +1,14 @@
 import { nextLeaseExpiry } from './attempts.ts';
 import {
   commitMutation,
+  runMutationPreflight,
   type MutationResult,
   type ScopeMutationHost,
   type ScopeQueue,
 } from './mutations.ts';
 import {
   isRepairPending,
+  isRepairPreparationRequired,
   isRepairStart,
   readRepairJob,
   nextRepairGarbageAt,
@@ -89,21 +91,35 @@ export class MutationPipeline {
         ) {
           return { blockedBy: job.id } as const;
         }
-        let committed = await commitMutation(
-          { ...host, ...(clock !== undefined && { clock }) },
-          now,
-          job === undefined
-            ? plan
-            : (input) => plan(Object.assign(input, { deferExpiredLease: true as const })),
-          answers,
-        );
+        let committed: MutationResult<T | RepairPending | RepairStart<T>>;
+        try {
+          committed = await commitMutation(
+            { ...host, ...(clock !== undefined && { clock }) },
+            now,
+            job === undefined
+              ? plan
+              : (input) => plan(Object.assign(input, { deferExpiredLease: true as const })),
+            answers,
+          );
+        } catch (error) {
+          if (!isRepairPreparationRequired<T>(error)) throw error;
+          committed = { value: error.preparation, own: null, tables: this.#host.tables() };
+        }
         this.#host.committed(committed.tables);
         if (isRepairStart<T>(committed.value)) {
           const deferred = committed.value;
           await this.prepare();
           await deferred.prepare?.();
           const input = this.input(clock?.() ?? now);
-          const value = this.#host.storage.transactionSync(() => deferred.start(input));
+          const start: Apply<T | RepairPending> = Object.assign(() => deferred.start(input), {
+            ...(deferred.preflight !== undefined && {
+              preflight: () => {
+                deferred.preflight?.(input);
+              },
+            }),
+          });
+          runMutationPreflight(this.#host.storage, start);
+          const value = this.#host.storage.transactionSync(start);
           committed = {
             ...committed,
             value,

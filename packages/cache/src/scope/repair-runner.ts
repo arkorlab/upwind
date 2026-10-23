@@ -2,6 +2,8 @@ import { RepairRowTooLargeError } from './artifact-repair.ts';
 import { advancePreparedCommit } from './commit.ts';
 import { advancePreparedData } from './data.ts';
 import type { ScopeQueue } from './mutations.ts';
+import { repairEventHistory } from './repair-events.ts';
+import { advanceRepairFinalization, beginRepairFinalization } from './repair-finalize.ts';
 import {
   advanceRepairJob,
   completeRepairJob,
@@ -18,7 +20,7 @@ import { RepairPublicationProbed } from './repair-probes.ts';
 import { advancePreparedSeed } from './seed-repair-job.ts';
 import { retryDelayMs } from './settle-retry.ts';
 import { ownRepairRecordsOf } from './settle.ts';
-import { readRevision, refuse } from './state.ts';
+import { isRefusal, readRevision, refuse } from './state.ts';
 import type { TxInput } from './tx.ts';
 
 /** Fixed selected-row work, independent of the number of matching or skipped scope entries. */
@@ -77,23 +79,40 @@ export class RepairRunner {
         return this.#host.storage.transactionSync(() => {
           const job = readRepairJob(this.#sql);
           if (job === undefined) return;
-          const input = { ...this.#host.input(job.preparedAt), limits: job.limits };
+          const raw = {
+            ...this.#host.input(job.preparedAt),
+            revision: job.fromRevision,
+            limits: job.limits,
+            stageRepairRecords: true as const,
+          };
+          const input =
+            job.phase === 'preflight' || job.finalizing !== undefined
+              ? raw
+              : { ...raw, history: repairEventHistory(raw, job.id) };
           let step: RepairStep<unknown>;
-          switch (job.operation) {
-            case 'commit': {
-              step = advancePreparedCommit(input, job);
-              break;
-            }
-            case 'data': {
-              step = advancePreparedData(input, job);
-              break;
-            }
-            case 'seed': {
-              step = advancePreparedSeed(input, job);
-              break;
+          if (job.finalizing !== undefined) {
+            step = advanceRepairFinalization(raw, job);
+          } else {
+            switch (job.operation) {
+              case 'commit': {
+                step = advancePreparedCommit(input, job);
+                break;
+              }
+              case 'data': {
+                step = advancePreparedData(input, job);
+                break;
+              }
+              case 'seed': {
+                step = advancePreparedSeed(input, job);
+                break;
+              }
             }
           }
           if (step.kind !== 'completed') return;
+          if (job.finalizing === undefined && !isRefusal(step.value)) {
+            beginRepairFinalization(raw, job, step.value);
+            return;
+          }
           const revision = readRevision(this.#sql);
           completeRepairJob(
             this.#sql,
@@ -150,7 +169,6 @@ export class RepairRunner {
                 group: job.group + 1,
                 phase: 'preflight',
                 after: '',
-                matched: 0,
               });
               return;
             }

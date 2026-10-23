@@ -4,19 +4,24 @@ import { probeRepairGeneration, repairSnapshotStep } from './artifact-repair.ts'
 import { findArtifactBySha } from './artifacts.ts';
 import { findGeneration } from './generations.ts';
 import type { EventInput } from './history.ts';
+import { stageRepairEvents } from './repair-events.ts';
 import {
   advanceRepairJob,
   beginRepairJob,
   hasRepairValue,
   readRepairValue,
-  releaseRepairGroup,
   type RepairGroup,
   type RepairJob,
   type RepairPending,
   type RepairStep,
   writeRepairValue,
 } from './repair-jobs.ts';
-import { probeRepairPublication, repairPreflightInput } from './repair-probes.ts';
+import {
+  probeRepairPublication,
+  probeRepairSnapshot,
+  repairPreflightInput,
+  stageRepairPublication,
+} from './repair-probes.ts';
 import {
   eligibleSeedRepairs,
   potentialSeedRepairGroup,
@@ -38,8 +43,9 @@ export function prepareSeedPublication(
   input: TxInput,
   plans: readonly SeedLocations[],
   proofs: SeedLocationProofs,
-  result: SeedEntriesResult,
+  publication: SeedEntriesResult & { readonly initialEvents?: readonly EventInput[] },
 ): RepairPending {
+  const { initialEvents = [], ...result } = publication;
   // Pin every possible later retry before an older projection can acknowledge its failed key.
   // These conservative pins do not imply that an unverified or oversized retry will be accepted.
   const eligible = eligibleSeedRepairs(input, plans);
@@ -53,6 +59,7 @@ export function prepareSeedPublication(
     publication: result,
     groups,
   });
+  stageRepairEvents(input, pending.jobId, initialEvents);
   for (const [index, plan] of eligible.entries()) {
     writeRepairValue(
       input.sql,
@@ -125,7 +132,6 @@ function nextSeedRetry(input: TxInput, job: RepairJob): void {
     group: job.group + 1,
     phase: 'preflight',
     after: '',
-    matched: 0,
   });
 }
 
@@ -161,12 +167,14 @@ export function advancePreparedSeed(
   }
   const prepared = readRepairValue<PreparedSeedRepair>(input.sql, job.id, name);
   if (job.phase === 'publish') {
-    const events: EventInput[] = [];
-    publishSeedRepair(input, prepared, events);
+    stageRepairPublication(input, prepared.entryId, () => {
+      const events: EventInput[] = [];
+      publishSeedRepair(input, prepared, events);
+      record(input, events);
+    });
     for (const location of prepared.verifiedLocations) {
       writeRepairValue(input.sql, job.id, `seed-canonical-${location.sha256}`, location);
     }
-    record(input, events);
     const result = readRepairValue<SeedEntriesResult>(input.sql, job.id, 'publication');
     writeRepairValue(input.sql, job.id, 'publication', { ...result, revision: input.revision });
     // Only a published group's actual relocations may clear its captured failure observations.
@@ -192,8 +200,14 @@ export function advancePreparedSeed(
     ...job,
     after: step.done ? '' : step.after,
     phase: step.done ? (job.phase === 'preflight' ? 'apply' : 'publish') : job.phase,
-    matched: (job.matched ?? 0) + (job.phase === 'preflight' && step.changed ? 1 : 0),
   };
+  if (job.phase === 'preflight' && step.changed)
+    probeRepairSnapshot(
+      candidate,
+      next,
+      new Map(prepared.repairs.map((repair) => [repair.sha256, repair])),
+      { after: job.after, excluding: new Set([prepared.entryId]) },
+    );
   if (step.done && job.phase === 'preflight') probeSeedPublication(candidate, next, prepared);
   advanceRepairJob(input.sql, next);
   return { kind: 'pending' };
@@ -217,26 +231,11 @@ function probeSeedPublication(
   );
 }
 
-/** All snapshots and each retry's publication are complete before bounded final fence cleanup. */
+/** The shared coordinator releases record cursors, final-state events and pins in bounded steps. */
 function finishPreparedSeed(
   input: TxInput,
   job: RepairJob,
 ): RepairStep<SeedEntriesResult | Refusal> {
-  const index = job.after === '' ? 0 : Number(job.after);
-  if (index < job.groupCount) {
-    const potential = readRepairValue<RepairGroup>(input.sql, job.id, `group-${index}`);
-    releaseRepairGroup(input.sql, job.id, potential);
-    const movedName = `seed-moved-${index}`;
-    if (
-      hasRepairValue(input.sql, job.id, movedName) &&
-      readRepairValue<boolean>(input.sql, job.id, movedName)
-    ) {
-      const moved = readRepairValue<PreparedSeedRepair>(input.sql, job.id, `seed-active-${index}`);
-      releaseRepairGroup(input.sql, job.id, moved, true);
-    }
-    advanceRepairJob(input.sql, { ...job, phase: 'publish', after: String(index + 1) });
-    return { kind: 'pending' };
-  }
   return {
     kind: 'completed',
     value: readRepairValue<SeedEntriesResult>(input.sql, job.id, 'publication'),

@@ -299,7 +299,7 @@ const NO_RECORDS: Projection = { failed: 0, written: 0, cut: false };
 export interface OwnRecords {
   readonly revision: number;
   readonly first: readonly string[];
-  /** A durable repair records bounded physical healing at several revisions. */
+  /** A durable repair captures its final bounded pending-record window. */
   readonly repairWindow?: {
     readonly fromRevision: number;
     readonly firstAfter: { readonly revision: number; readonly entryId: string };
@@ -673,7 +673,7 @@ export async function settlePending(
   if (early) {
     answered?.();
   }
-  const [records, delivery] = await deps.history.publish(early ? deps : waited);
+  const [records, delivery, historyContinued] = await deps.history.publish(early ? deps : waited);
   // Every outcome is asked, not the first that answers: an outage fails several of these at once,
   // and the ones `||` would have skipped are the ones nothing else would ever say.
   const rejected = [
@@ -690,7 +690,8 @@ export async function settlePending(
     pending,
     failed,
     continued:
-      projection.status === 'fulfilled' && projection.value.cut && projection.value.written > 0,
+      historyContinued === true ||
+      (projection.status === 'fulfilled' && projection.value.cut && projection.value.written > 0),
     ...(tags.status === 'rejected' &&
       tags.reason instanceof ControlTagProjectionError && { controlTagsFailed: true }),
     ...(pending && !failed && waitOf(deps)),

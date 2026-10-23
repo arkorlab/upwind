@@ -11,7 +11,12 @@ import {
   type RepairPending,
   type RepairStep,
 } from './repair-jobs.ts';
-import { probeRepairPublication, repairPreflightInput } from './repair-probes.ts';
+import {
+  probeRepairPublication,
+  probeRepairSnapshot,
+  repairPreflightInput,
+  stageRepairPublication,
+} from './repair-probes.ts';
 import { type Refusal, refuse } from './state.ts';
 import { record, type TxInput } from './tx.ts';
 
@@ -64,16 +69,19 @@ export function advanceCommitRepair(
 ): RepairStep<CommitOutcome | Refusal> {
   const group = readRepairValue<RepairGroup>(input.sql, job.id, 'group-0');
   if (job.phase === 'publish') {
-    const value = publishPreparedCommit(input, job, publish);
-    releaseRepairGroup(input.sql, job.id, group, true);
+    const value = stageRepairPublication(input, group.entryId, () => {
+      return publishPreparedCommit(input, job, publish);
+    });
     return { kind: 'completed', value };
   }
   const candidate = repairPreflightInput(input, job);
-  const step = repairSnapshotStep(
-    candidate,
-    new Map(group.repairs.map((repair) => [repair.sha256, repair])),
-    { after: job.after, excluding: new Set([group.entryId]), apply: job.phase === 'apply' },
-  );
+  const repairs = new Map(group.repairs.map((repair) => [repair.sha256, repair]));
+  const cursor = {
+    after: job.after,
+    excluding: new Set([group.entryId]),
+    apply: job.phase === 'apply',
+  };
+  const step = repairSnapshotStep(candidate, repairs, cursor);
   if (step.failure !== undefined) {
     if (job.phase === 'apply') throw new Error('a preflighted repair snapshot changed');
     releaseRepairGroup(input.sql, job.id, group);
@@ -83,8 +91,9 @@ export function advanceCommitRepair(
   const next = {
     ...job,
     after: step.after,
-    matched: (job.matched ?? 0) + (job.phase === 'preflight' && step.changed ? 1 : 0),
   };
+  if (job.phase === 'preflight' && step.changed)
+    probeRepairSnapshot(candidate, next, repairs, cursor);
   if (step.done) {
     next.after = '';
     next.phase = job.phase === 'preflight' ? 'apply' : 'publish';

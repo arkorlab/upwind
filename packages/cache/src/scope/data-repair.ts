@@ -15,7 +15,12 @@ import {
   type RepairStart,
   type RepairStep,
 } from './repair-jobs.ts';
-import { probeRepairPublication, repairPreflightInput } from './repair-probes.ts';
+import {
+  probeRepairPublication,
+  probeRepairSnapshot,
+  repairPreflightInput,
+  stageRepairPublication,
+} from './repair-probes.ts';
 import { type Refusal, isRefusal, refuse } from './state.ts';
 import { record, type TxInput } from './tx.ts';
 
@@ -119,26 +124,22 @@ export function advanceDataRepair(
   const group = readRepairValue<RepairGroup>(input.sql, job.id, 'group-0');
   if (job.phase === 'publish') {
     const prepared = readRepairValue<PreparedData>(input.sql, job.id, 'publication');
-    const value = apply(
-      { ...input, now: prepared.acceptedAt, limits: prepared.limits },
-      prepared.plan,
-    );
+    const value = stageRepairPublication(input, prepared.plan.identity.entryId, () => {
+      return apply({ ...input, now: prepared.acceptedAt, limits: prepared.limits }, prepared.plan);
+    });
     if (isRepairStart(value) || isRepairPending(value))
       throw new Error('a prepared data repair recurred');
     if (isRefusal(value)) throw new Error('an admitted data repair was refused during publication');
-    releaseRepairGroup(input.sql, job.id, group, true);
     return { kind: 'completed', value };
   }
   const candidate = repairPreflightInput(input, job);
-  const step = repairSnapshotStep(
-    candidate,
-    new Map(group.repairs.map((repair) => [repair.sha256, repair])),
-    {
-      after: job.after,
-      excluding: new Set([group.entryId]),
-      apply: job.phase === 'apply',
-    },
-  );
+  const repairs = new Map(group.repairs.map((repair) => [repair.sha256, repair]));
+  const cursor = {
+    after: job.after,
+    excluding: new Set([group.entryId]),
+    apply: job.phase === 'apply',
+  };
+  const step = repairSnapshotStep(candidate, repairs, cursor);
   if (step.failure !== undefined) {
     if (job.phase === 'apply') throw new Error('a preflighted data repair snapshot changed');
     releaseRepairGroup(input.sql, job.id, group);
@@ -148,8 +149,9 @@ export function advanceDataRepair(
   const next = {
     ...job,
     after: step.after,
-    matched: (job.matched ?? 0) + (job.phase === 'preflight' && step.changed ? 1 : 0),
   };
+  if (job.phase === 'preflight' && step.changed)
+    probeRepairSnapshot(candidate, next, repairs, cursor);
   if (step.done) {
     next.after = '';
     next.phase = job.phase === 'preflight' ? 'apply' : 'publish';

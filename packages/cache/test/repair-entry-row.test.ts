@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { limitsOf, parseVars } from '../src/env.ts';
 import { artifactRepairMarker, rememberArtifactFailure } from '../src/scope/artifacts.ts';
 import { planSetData } from '../src/scope/data.ts';
+import { markRecordWritten } from '../src/scope/entries.ts';
 import { NO_HISTORY } from '../src/scope/history.ts';
 import { ScopeQueue } from '../src/scope/mutations.ts';
 import { isRepairStart, readRepairJob, repairJobResult } from '../src/scope/repair-jobs.ts';
@@ -165,6 +166,12 @@ function runnerFor(tx: TxInput, storage: DurableObjectStorage) {
   });
 }
 
+async function finishRepair(tx: TxInput, runner: RepairRunner, now: number): Promise<boolean> {
+  let active = await runner.advance(now);
+  while (readRepairJob(tx.sql) !== undefined) active = await runner.advance(now);
+  return active;
+}
+
 describe('exact repair entry row preflight', () => {
   it('accepts a full row when its exact future widths fit and preserves the accepted clock', async () => {
     await inScope(async (tx, storage) => {
@@ -176,7 +183,7 @@ describe('exact repair entry row preflight', () => {
       const original = padEntry(storage, target);
       const jobId = await beginDataRepair(tx, storage);
       const runner = runnerFor(tx, storage);
-      const active = await runner.advance(NOW + 10_000);
+      const active = await finishRepair(tx, runner, NOW + 10_000);
       const after = tx.sql.exec<EntryRow>('SELECT * FROM entries WHERE entry_id = ?', target).one();
       const canonical = tx.sql
         .exec<{ storage_ref: string }>('SELECT storage_ref FROM artifacts WHERE sha256 = ?', SHA)
@@ -194,11 +201,11 @@ describe('exact repair entry row preflight', () => {
       ]).toStrictEqual([127, 127, 126, NOW]);
       expect(after.group_instance_id).toBe(original);
       expect(canonical.storage_ref).toBe('replacement');
-      expect(readRevision(tx.sql)).toBe(128);
+      expect(readRevision(tx.sql)).toBe(127);
     });
   });
 
-  it('counts preceding matches so a later revision-width growth refuses before any apply', async () => {
+  it('keeps the original revision width for every shared row instead of refusing a later match', async () => {
     await inScope(async (tx, storage) => {
       const rows = await seed(tx, storage, 2);
       const target = rows[1]?.entry_id;
@@ -207,9 +214,8 @@ describe('exact repair entry row preflight', () => {
       tx.sql.exec('UPDATE entries SET revision = 126, record_revision = 126, kv_revision = 126');
       const original = padEntry(storage, target);
       const jobId = await beginDataRepair(tx, storage);
-      const marker = artifactRepairMarker(tx.sql, SHA);
       const runner = runnerFor(tx, storage);
-      const active = await runner.advance(NOW + 10_000);
+      const active = await finishRepair(tx, runner, NOW + 10_000);
       const entries = tx.sql.exec<EntryRow>('SELECT * FROM entries ORDER BY entry_id').toArray();
       const canonical = tx.sql
         .exec<{ storage_ref: string }>('SELECT storage_ref FROM artifacts WHERE sha256 = ?', SHA)
@@ -218,25 +224,24 @@ describe('exact repair entry row preflight', () => {
       expect({ active, job: readRepairJob(tx.sql), revision: readRevision(tx.sql) }).toStrictEqual({
         active: false,
         job: undefined,
-        revision: 126,
+        revision: 127,
       });
       expect(repairJobResult(tx.sql, jobId)?.value).toMatchObject({
-        kind: 'refused',
-        code: 'too_large',
+        retainedStorageRef: 'replacement',
       });
       expect(
         entries.map((entry) => [entry.revision, entry.record_revision, entry.kv_revision]),
       ).toStrictEqual([
-        [126, 126, 126],
-        [126, 126, 126],
+        [127, 127, 126],
+        [127, 127, 126],
       ]);
       expect(entries[1]?.group_instance_id).toBe(original);
-      expect(canonical.storage_ref).toBe('x');
-      expect(artifactRepairMarker(tx.sql, SHA)).toBe(marker);
+      expect(canonical.storage_ref).toBe('replacement');
+      expect(artifactRepairMarker(tx.sql, SHA)).toBeUndefined();
     });
   });
 
-  it('checks the eventual KV acknowledgment width even when the physical update itself fits', async () => {
+  it('preserves accepted publication when a later KV acknowledgment alone exceeds the row limit', async () => {
     await inScope(async (tx, storage) => {
       const rows = await seed(tx, storage, 1);
       const target = rows[0]?.entry_id;
@@ -246,19 +251,21 @@ describe('exact repair entry row preflight', () => {
       const original = padEntry(storage, target);
       const jobId = await beginDataRepair(tx, storage);
       const runner = runnerFor(tx, storage);
-      const active = await runner.advance(NOW);
+      const active = await finishRepair(tx, runner, NOW);
       const after = tx.sql.exec<EntryRow>('SELECT * FROM entries WHERE entry_id = ?', target).one();
 
       expect(active).toBe(false);
       expect(repairJobResult(tx.sql, jobId)?.value).toMatchObject({
-        kind: 'refused',
-        code: 'too_large',
+        retainedStorageRef: 'replacement',
       });
       expect([after.revision, after.record_revision, after.kv_revision]).toStrictEqual([
-        128, 128, 127,
+        129, 129, 127,
       ]);
       expect(after.group_instance_id).toBe(original);
-      expect(readRevision(tx.sql)).toBe(128);
+      expect(readRevision(tx.sql)).toBe(129);
+      expect(() => {
+        storage.transactionSync(() => markRecordWritten(tx.sql, target, 129));
+      }).toThrow(/SQLITE_TOOBIG/u);
     });
   });
 });

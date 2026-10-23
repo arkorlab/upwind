@@ -82,6 +82,25 @@ export interface MutationResult<T> {
   readonly tables: boolean;
 }
 
+/** Only this private success escapes the speculative transaction without failing admission. */
+class MutationPreflightPassed extends Error {
+  override name = 'MutationPreflightPassed';
+}
+
+/** A failed host append rolls back every candidate row before the actual mutation is accepted. */
+export function runMutationPreflight(storage: DurableObjectStorage, apply: Apply<unknown>): void {
+  const preflight = apply.preflight;
+  if (preflight === undefined) return;
+  try {
+    storage.transactionSync(() => {
+      preflight();
+      throw new MutationPreflightPassed('the mutation preflight passed');
+    });
+  } catch (error) {
+    if (!(error instanceof MutationPreflightPassed)) throw error;
+  }
+}
+
 /** Preserve the same transaction, revision fence and unknown/retired seed behavior for every RPC. */
 export async function commitMutation<T>(
   host: ScopeMutationHost,
@@ -118,6 +137,7 @@ export async function commitMutation<T>(
   input.now = host.clock?.() ?? now;
   // Projection acknowledgments may commit while asynchronous ID planning yields.
   input.revision = readRevision(sql) + 1;
+  runMutationPreflight(host.storage, apply);
   const value = host.storage.transactionSync(apply);
   const committed = readRevision(sql) >= input.revision;
   return {

@@ -40,6 +40,7 @@ import {
   existingSeedArtifactLengths,
   reserveSeedArtifactLengths,
 } from './seed-artifact-lengths.ts';
+import { deferSeedRepair } from './seed-preparation.ts';
 import { prepareSeedPublication } from './seed-repair-job.ts';
 import {
   hasSeedRelocations,
@@ -211,8 +212,22 @@ export async function planSeedEntries(
   });
   // Existing failed build retries alone pay for draining projection and arming continuation.
   // The transaction below rechecks repairability after that drain, before publishing fresh rows.
-  if (hasSeedRelocations(input, plans, proofs)) await prepareRepair?.();
-  return () => applySeedEntries(input, plans, proofs);
+  const repairing = hasSeedRelocations(input, plans, proofs);
+  if (repairing) await prepareRepair?.();
+  const apply: Apply<SeedEntriesResult | Refusal | SeedRepairVerification | RepairPending> = () =>
+    applySeedEntries(input, plans, proofs, { repairPrepared: repairing });
+  // The caller rolls this complete SQL-only preparation back before accepting its durable job.
+  // A host's initial fresh-event row limit must fail before any fresh row or repair is accepted.
+  return repairing
+    ? Object.assign(apply, {
+        preflight: () => {
+          applySeedEntries(input, plans, proofs, {
+            probeInitialHistory: true,
+            repairPrepared: true,
+          });
+        },
+      })
+    : apply;
 }
 
 function seedOutputs(
@@ -422,6 +437,7 @@ function applySeedEntries(
   input: TxInput,
   plans: readonly SeedPlan[],
   proofs: SeedLocationProofs,
+  options: { readonly probeInitialHistory?: true; readonly repairPrepared?: boolean } = {},
 ): SeedEntriesResult | Refusal | SeedRepairVerification | RepairPending {
   const { sql, limits, revision } = input;
   const scope = requireActiveScope(sql);
@@ -490,12 +506,29 @@ function applySeedEntries(
     seedOne(input, plan, events);
   }
   if (hasSeedRelocations(input, retries, proofs)) {
-    if (inserted > 0) record(input, events);
+    if (options.repairPrepared !== true)
+      deferSeedRepair(input, (next, probe) =>
+        applySeedEntries(next, plans, proofs, {
+          repairPrepared: true,
+          ...(probe && { probeInitialHistory: true as const }),
+        }),
+      );
+    if (options.probeInitialHistory === true) {
+      if (inserted > 0) record(input, events);
+      return { inserted, skipped, refused, revision: inserted > 0 ? revision : revision - 1 };
+    }
+    // No record at the accepted revision may escape while later retry groups can still repair
+    // its references. Fresh entries have no earlier record; existing readers keep their cursor.
+    for (const plan of seedable) {
+      sql.exec('UPDATE entries SET record_revision = 0 WHERE entry_id = ?', plan.identity.entryId);
+    }
+    if (inserted > 0) record(input, []);
     return prepareSeedPublication(input, retries, proofs, {
       inserted,
       skipped,
       refused,
       revision: inserted > 0 ? revision : revision - 1,
+      initialEvents: events,
     });
   }
   const repaired = repairSeedEntries(input, retries, events, proofs);

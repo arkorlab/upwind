@@ -6,6 +6,7 @@ import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
+import { createLogger } from '../src/logger.ts';
 import {
   RepairRowTooLargeError,
   repairSnapshotStep,
@@ -21,10 +22,16 @@ import { advanceCommitRepair } from '../src/scope/commit-repair.ts';
 import { planSetData } from '../src/scope/data.ts';
 import { requireEntry } from '../src/scope/entries.ts';
 import { findGeneration } from '../src/scope/generations.ts';
-import { NO_HISTORY } from '../src/scope/history.ts';
+import { type EventInput, NO_HISTORY, NOTHING_PUBLISHED } from '../src/scope/history.ts';
+import { blobStore, kvSink } from '../src/scope/io.ts';
 import { MutationPipeline } from '../src/scope/mutation-pipeline.ts';
 import { ScopeQueue } from '../src/scope/mutations.ts';
 import { headerFieldsOf, unwritableRecord } from '../src/scope/records.ts';
+import {
+  flushRepairEvent,
+  repairEventHistory,
+  stageRepairEvents,
+} from '../src/scope/repair-events.ts';
 import {
   advanceRepairJob,
   beginRepairJob,
@@ -33,6 +40,7 @@ import {
   completeRepairJob,
   readRepairJob,
   readRepairValue,
+  repairDataKey,
   releaseRepairGroup,
   repairJobResult,
   type RepairGroup,
@@ -43,8 +51,8 @@ import { RepairPublicationProbed } from '../src/scope/repair-probes.ts';
 import { RepairRunner } from '../src/scope/repair-runner.ts';
 import { generationOutputs, type GenerationRow } from '../src/scope/rows.ts';
 import { planSeedEntries } from '../src/scope/seed.ts';
-import { ownRepairRecordsOf } from '../src/scope/settle.ts';
-import { readRevision } from '../src/scope/state.ts';
+import { ownRepairRecordsOf, settlePending, type SettleOutcome } from '../src/scope/settle.ts';
+import { readMeta, readRevision } from '../src/scope/state.ts';
 import { scopeStub } from '../src/scope/stub.ts';
 import type { TxInput } from '../src/scope/tx.ts';
 
@@ -349,7 +357,8 @@ describe('bounded durable artifact repair continuations', () => {
         armedAt: pending.retryAt,
       });
 
-      const finished = await runner.advance(pending.retryAt);
+      let finished = await runner.advance(pending.retryAt);
+      while (readRepairJob(tx.sql) !== undefined) finished = await runner.advance(pending.retryAt);
 
       expect({ finished, job: readRepairJob(tx.sql) }).toStrictEqual({
         finished: false,
@@ -670,6 +679,124 @@ describe('bounded durable artifact repair continuations', () => {
         own: null,
       });
       expect(readRepairJob(tx.sql)).toBeUndefined();
+    });
+  });
+
+  it('keeps only each entity final state across resets and flushes in original first-event order', async () => {
+    await inScope((tx, storage) => {
+      tx.sql.exec('CREATE TABLE repaired_history_test (ordinal INTEGER PRIMARY KEY, payload TEXT)');
+      const job = begin(tx);
+      const input = {
+        ...tx,
+        history: {
+          ...NO_HISTORY,
+          append(context: { sql: SqlStorage }, event: EventInput): void {
+            context.sql.exec(
+              'INSERT INTO repaired_history_test (payload) VALUES (?)',
+              JSON.stringify(event),
+            );
+          },
+        },
+      };
+      // Custom histories with records=false still receive changes; only NO_HISTORY is a no-op.
+      const first: EventInput = {
+        entityType: 'generation',
+        entityId: '\u{1F9ED}'.repeat(100_000),
+        kind: 'generation.committed',
+        payload: { version: 1 },
+      };
+      const second: EventInput = { ...first, entityId: 'second', payload: { version: 2 } };
+      storage.transactionSync(() => {
+        stageRepairEvents(input, job.id, [first, second]);
+      });
+      const resumed = readRepairJob(tx.sql);
+      if (resumed === undefined) throw new Error('the staged history job disappeared');
+      const buffered = repairEventHistory(input, resumed.id);
+      storage.transactionSync(() => {
+        buffered.append(
+          { sql: tx.sql, revision: job.fromRevision, now: NOW },
+          { ...first, payload: { version: 3 } },
+        );
+      });
+      const before = tx.sql
+        .exec<{ total: number }>('SELECT COUNT(*) AS total FROM repaired_history_test')
+        .one().total;
+      storage.transactionSync(() => flushRepairEvent(input, resumed, 0));
+      storage.transactionSync(() => flushRepairEvent(input, resumed, 1));
+      const done = storage.transactionSync(() => flushRepairEvent(input, resumed, 2));
+      const events = tx.sql
+        .exec<{ payload: string }>('SELECT payload FROM repaired_history_test ORDER BY ordinal')
+        .toArray()
+        .map((row) => JSON.parse(row.payload) as EventInput);
+
+      expect(before).toBe(0);
+      expect(events).toStrictEqual([{ ...first, payload: { version: 3 } }, second]);
+      expect(readMeta(tx.sql, repairDataKey(job.id, 'event-count'))).toBe('2');
+      expect(done).toBe(true);
+    });
+  });
+
+  it('does not persist event identities or payloads for NO_HISTORY', async () => {
+    await inScope((tx, storage) => {
+      const job = begin(tx);
+      storage.transactionSync(() => {
+        stageRepairEvents(tx, job.id, [
+          {
+            entityType: 'generation',
+            entityId: 'ignored',
+            kind: 'generation.committed',
+            payload: { ignored: true },
+          },
+        ]);
+      });
+      const count = tx.sql
+        .exec<{ total: number }>(
+          'SELECT COUNT(*) AS total FROM meta WHERE key >= ? AND key < ?',
+          repairDataKey(job.id, 'event-'),
+          repairDataKey(job.id, 'event-') + '\u{FFFF}',
+        )
+        .one().total;
+
+      expect(repairEventHistory(tx, job.id)).toBe(NO_HISTORY);
+      expect(count).toBe(0);
+    });
+  });
+
+  it('continues successful bounded history progress without treating idle history as progress', async () => {
+    await inScope(async (tx, storage) => {
+      const outcomes: SettleOutcome[] = [];
+      for (const progress of [false, true]) {
+        outcomes.push(
+          await settlePending(
+            {
+              sql: tx.sql,
+              scopeId: tx.scopeId,
+              blobs: blobStore(env.ARTIFACTS, () => ({})),
+              kv: kvSink(env.CACHE_STATE, () => ({})),
+              history: {
+                ...NO_HISTORY,
+                owes: () => true,
+                publish: () => Promise.resolve([...NOTHING_PUBLISHED, progress] as const),
+              },
+              log: createLogger({ component: 'repair-history-progress' }),
+              now: () => NOW,
+              transaction: (body) => storage.transactionSync(body),
+              sliceMs: 1,
+              othersWaiting: () => false,
+              continueSoon: () => Promise.resolve(),
+            },
+            undefined,
+            null,
+          ),
+        );
+      }
+
+      expect(
+        outcomes.map(({ pending, failed, continued }) => ({ pending, failed, continued })),
+      ).toStrictEqual([
+        { pending: true, failed: false, continued: false },
+        { pending: true, failed: false, continued: true },
+      ]);
     });
   });
 

@@ -3,6 +3,7 @@ import { isRepairStorageRef, r2BlobKey } from '@stayingupwind/core/cache';
 import { requireEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import { headerFieldsOf, unwritableRecord } from './records.ts';
+import { stageRepairPublication } from './repair-staging.ts';
 import { type EntryRow, generationOutputs, type GenerationRow, toEntryState } from './rows.ts';
 import { readRevision } from './state.ts';
 import { encodeStoredOutputs } from './stored-outputs.ts';
@@ -121,41 +122,44 @@ export function repairSnapshotStep(
     probeRepairEntry(input, entry);
     return { done: false, after: entry.entry_id, changed };
   }
-  input.sql.exec(
-    `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
-    encoded,
-    generation.generation_id,
-  );
-  input.sql.exec(
-    `UPDATE entries SET revision = ?, record_revision = ?, updated_at = ?
-     WHERE entry_id = ? AND current_generation_id = ?`,
-    input.revision,
-    input.revision,
-    input.now,
-    entry.entry_id,
-    generation.generation_id,
-  );
-  input.history.append(
-    { sql: input.sql, revision: input.revision, now: input.now },
-    {
-      entityType: 'entry',
-      entityId: entry.entry_id,
-      kind: 'entry.state.changed',
-      payload: { entryState: toEntryState(requireEntry(input.sql, entry.entry_id)) },
-    },
-  );
+  const apply = (): void => {
+    input.sql.exec(
+      `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
+      encoded,
+      generation.generation_id,
+    );
+    input.sql.exec(
+      `UPDATE entries SET revision = ?, record_revision = ?, updated_at = ?
+       WHERE entry_id = ? AND current_generation_id = ?`,
+      input.revision,
+      input.revision,
+      input.now,
+      entry.entry_id,
+      generation.generation_id,
+    );
+    input.history.append(
+      { sql: input.sql, revision: input.revision, now: input.now },
+      {
+        entityType: 'entry',
+        entityId: entry.entry_id,
+        kind: 'entry.state.changed',
+        payload: { entryState: toEntryState(requireEntry(input.sql, entry.entry_id)) },
+      },
+    );
+  };
+  if (input.stageRepairRecords) stageRepairPublication(input, entry.entry_id, apply);
+  else apply();
   return { done: false, after: entry.entry_id, changed: true };
 }
 
-/** Check the exact future shared update and its mandatory KV acknowledgment, then restore both. */
+/** Probe the original transaction's entry and scope writes; projection failures retain old semantics. */
 function probeRepairEntry(input: TxInput, entry: EntryRow): void {
   const { sql } = input;
   const revision = readRevision(sql);
   try {
     sql.exec(
-      `UPDATE entries SET revision = ?, record_revision = ?, kv_revision = ?, updated_at = ?
+      `UPDATE entries SET revision = ?, record_revision = ?, updated_at = ?
        WHERE entry_id = ?`,
-      input.revision,
       input.revision,
       input.revision,
       input.now,
@@ -167,11 +171,10 @@ function probeRepairEntry(input: TxInput, entry: EntryRow): void {
     throw error;
   }
   sql.exec(
-    `UPDATE entries SET revision = ?, record_revision = ?, kv_revision = ?, updated_at = ?
+    `UPDATE entries SET revision = ?, record_revision = ?, updated_at = ?
      WHERE entry_id = ?`,
     entry.revision,
     entry.record_revision,
-    entry.kv_revision,
     entry.updated_at,
     entry.entry_id,
   );

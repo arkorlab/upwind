@@ -20,6 +20,8 @@ export interface TxInput {
   readonly prepareRepair?: (() => Promise<void>) | undefined;
   /** Active repair bypass: an expired heartbeat answers now; normal lease sweeping cleans up later. */
   readonly deferExpiredLease?: true;
+  /** Durable physical healing keeps delivery revisions private until every group has finished. */
+  readonly stageRepairRecords?: true;
   readonly limits: ScopeLimits;
   /** The clock the caller acts at (unix ms). */
   readonly now: number;
@@ -36,7 +38,10 @@ export interface TxInput {
   readonly invalidatedTagIds?: string[];
 }
 
-export type Apply<T> = () => T;
+export type Apply<T> = (() => T) & {
+  /** Rare accepted publication probe, rolled back before its real transaction can begin. */
+  readonly preflight?: (() => void) | undefined;
+};
 
 /**
  * `each` of `items`, `size` at a time, answered in their order: what a plan derives or asks ahead of
