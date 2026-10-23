@@ -49,12 +49,14 @@ describe('one judgement of a request’s response and document header rules', ()
     current = undefined;
   });
 
-  it('sets nothing when the manifest has no rules', () => {
+  it('sets nothing when the manifest has no rules, ahead of the middleware either', () => {
+    const none = { headers: {}, conditioned: false };
+
     expect(
       requestHeaderRulesFor(manifestFor(), new URL('https://app.example/'), new Headers()),
     ).toStrictEqual({
-      response: { headers: {}, conditioned: false },
-      document: { headers: {}, conditioned: false },
+      response: { ...none, aheadOfMiddleware: none },
+      document: { ...none, aheadOfMiddleware: none },
     });
   });
 
