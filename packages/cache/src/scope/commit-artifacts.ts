@@ -1,3 +1,4 @@
+import { isRepairStorageRef } from '@stayingupwind/core/cache';
 import type { CommitArtifact, CommitOutput } from '@stayingupwind/host/cache';
 
 import { type ArtifactRepair, repairStorageRef } from './artifact-repair.ts';
@@ -43,26 +44,50 @@ export function findUpload(
 export async function missingUploads(
   sql: SqlStorage,
   attemptId: string,
-  outputs: readonly CommitOutput[],
+  {
+    outputs,
+    repairNamespace,
+  }: { readonly outputs: readonly CommitOutput[]; readonly repairNamespace?: string | undefined },
   blobs: BlobStore,
-): Promise<{ readonly missing: ReadonlySet<string>; readonly checked: ReadonlySet<string> }> {
+): Promise<{
+  readonly missing: ReadonlySet<string>;
+  readonly checked: ReadonlySet<string>;
+  readonly repairCandidate: boolean;
+}> {
   const keys = new Set<string>();
+  let repairCandidate = false;
+  const fresh = new Map<
+    string,
+    { namespace: string; attemptId: string; sha256: string; byteLength: number }
+  >();
   for (const output of outputs) {
     for (const artifact of output.artifacts) {
       const upload = findUpload(sql, attemptId, artifact);
+      if (upload === undefined) continue;
       const stored = findArtifactBySha(sql, artifact.sha256);
-      if (upload !== undefined && (stored === undefined || artifactFailed(sql, stored))) {
-        keys.add(upload.storage_ref);
+      const failed = stored !== undefined && artifactFailed(sql, stored);
+      repairCandidate ||= failed;
+      if (stored === undefined || failed) keys.add(upload.storage_ref);
+      if (failed && repairNamespace !== undefined) {
+        fresh.set(upload.storage_ref, {
+          namespace: repairNamespace,
+          attemptId,
+          sha256: artifact.sha256,
+          byteLength: upload.byte_length,
+        });
       }
     }
   }
   const missing = new Set<string>();
   await inChunks([...keys], UPLOAD_CHECKS_AT_ONCE, async (key) => {
-    if (!(await blobs.exists(key))) {
-      missing.add(key);
-    }
+    const proof = fresh.get(key);
+    const exists =
+      proof === undefined
+        ? await blobs.exists(key)
+        : (await blobs.verifiedRepair?.(key, proof)) === true;
+    if (!exists) missing.add(key);
   });
-  return { missing, checked: keys };
+  return { missing, checked: keys, repairCandidate };
 }
 
 /**
@@ -92,6 +117,7 @@ export function mismatchOf(
 interface ArtifactLocationsPlan {
   readonly scopeId: string;
   readonly attemptId: string;
+  readonly repairNamespace?: string | undefined;
   readonly request: { readonly generation: { readonly outputs: readonly CommitOutput[] } };
   readonly missingUploads: ReadonlySet<string>;
   readonly checkedUploads: ReadonlySet<string>;
@@ -124,7 +150,11 @@ function locateArtifact(
     }
     if (!artifactFailed(sql, stored)) return { storageRef: stored.storage_ref };
     if (
-      upload?.storage_ref !== repairStorageRef(plan.scopeId, artifact.sha256, plan.attemptId) ||
+      upload === undefined ||
+      (plan.repairNamespace === undefined
+        ? upload.storage_ref !== repairStorageRef(plan.scopeId, artifact.sha256, plan.attemptId)
+        : !isRepairStorageRef(upload.storage_ref) ||
+          !upload.storage_ref.startsWith(`r/${plan.repairNamespace}/`)) ||
       !plan.checkedUploads.has(upload.storage_ref) ||
       plan.missingUploads.has(upload.storage_ref)
     ) {

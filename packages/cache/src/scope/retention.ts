@@ -12,6 +12,7 @@ import {
 import type { ScopeHistory } from './history.ts';
 import { foldInvalidations } from './invalidation-fold.ts';
 import { pruneQuotaWindows } from './quotas.ts';
+import { REPAIR_PIN_PREFIX } from './repair-jobs.ts';
 import {
   type AttemptArtifactRow,
   type EntryRow,
@@ -120,10 +121,15 @@ function forgetReferenced(sql: SqlStorage): void {
           WHERE artifacts.storage_ref = pending_deletions.storage_ref AND refs > 0
         )
         OR EXISTS (
+          SELECT 1 FROM artifacts a JOIN meta pin ON pin.key = ? || a.sha256
+          WHERE a.storage_ref = pending_deletions.storage_ref
+        )
+        OR EXISTS (
           SELECT 1 FROM attempt_artifacts aa
           JOIN attempts a ON a.attempt_id = aa.attempt_id
           WHERE aa.storage_ref = pending_deletions.storage_ref AND a.status <> 'committed'
         )`,
+    REPAIR_PIN_PREFIX,
   );
 }
 

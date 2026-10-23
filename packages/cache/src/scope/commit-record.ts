@@ -144,7 +144,10 @@ async function builtRecord(
   try {
     // Measured and built alike behind the catch: what cannot be laid out is answered without a
     // record.
-    const bytes = recordBytesOf(deps.scopeId, entry, generation, deps.buildId);
+    const bytes = recordBytesOf(deps.scopeId, entry, generation, {
+      buildId: deps.buildId,
+      packSchemaVersion: deps.packSchemaVersion,
+    });
     if (bytes > MAX_RETURNED_RECORD_BYTES) {
       return undefined;
     }

@@ -11,12 +11,7 @@ import {
 import { createId } from '@stayingupwind/core/util';
 import { type DataEntryMetadata } from '@stayingupwind/host/cache';
 
-import {
-  type ArtifactRepair,
-  finishArtifactRepairs,
-  repairArtifact,
-  retargetedRecordsFailure,
-} from './artifact-repair.ts';
+import { type ArtifactRepair, repairArtifact } from './artifact-repair.ts';
 import {
   addedBytesOf,
   artifactFailed,
@@ -26,6 +21,7 @@ import {
 } from './artifacts.ts';
 import { reservedBytes } from './attempts.ts';
 import { controlFenceFloorInvalidations, controlFenceInvalidations } from './control-fences.ts';
+import { advanceDataRepair, prepareDataRepair } from './data-repair.ts';
 import {
   type EntryIdentity,
   findEntry,
@@ -42,7 +38,9 @@ import {
   supersedeGeneration,
 } from './generations.ts';
 import type { EventInput } from './history.ts';
+import type { BlobStore } from './io.ts';
 import { type IsrWrite, isrWriteOf, sameOutputs } from './metering.ts';
+import type { RepairJob, RepairPending, RepairStart, RepairStep } from './repair-jobs.ts';
 import {
   type EntryRow,
   generationOutputs,
@@ -65,7 +63,6 @@ import { type Apply, record, type TxInput } from './tx.ts';
 
 const OUTPUT_ID_PREFIX = 'out';
 const DATA_VALUE = 'data-value';
-const NO_DATA_REPAIR = { addedBytes: 0 };
 
 interface DataValueUpload {
   readonly sha256: string;
@@ -122,7 +119,7 @@ export interface DataSetOutcome {
   readonly timing?: readonly TimedPart[] | undefined;
 }
 
-interface DataPlan {
+export interface DataPlan {
   readonly input: DataSetInput;
   readonly identity: EntryIdentity;
   readonly tagRefs: readonly TagRef[];
@@ -147,7 +144,10 @@ function dataPolicy(entry: DataEntryMetadata): CachePolicy {
 export async function planSetData(
   input: TxInput,
   data: DataSetInput,
-): Promise<Apply<DataSetOutcome | Refusal>> {
+  blobs?: BlobStore,
+): Promise<
+  Apply<DataSetOutcome | Refusal | RepairStart<DataSetOutcome | Refusal> | RepairPending>
+> {
   const descriptor = {
     kind: data.entry.kind,
     ...(data.entry.handler !== undefined && { handler: data.entry.handler }),
@@ -159,13 +159,17 @@ export async function planSetData(
     artifactIdFor(input.scopeId, data.value.sha256),
   ]);
   return () => {
-    return applySetData(input, {
-      input: data,
-      identity,
-      tagRefs,
-      artifactId,
-      generationId: createId(GENERATION_ID_PREFIX),
-    });
+    return applySetData(
+      input,
+      {
+        input: data,
+        identity,
+        tagRefs,
+        artifactId,
+        generationId: createId(GENERATION_ID_PREFIX),
+      },
+      { blobs },
+    );
   };
 }
 
@@ -397,25 +401,30 @@ function dataQuota(
     : undefined;
 }
 
-/** Quotas were checked before this; a refusal must still precede every repair mutation. */
-function restoreDataArtifact(
+/** Continue the accepted data publication after the shared snapshots have been healed. */
+export function advancePreparedData(
   input: TxInput,
-  repair: ArtifactRepair | undefined,
-  entryId: string,
-  unchanged: boolean,
-): Refusal | { readonly addedBytes: number } {
-  if (repair === undefined) return NO_DATA_REPAIR;
-  const publishingEntry = unchanged ? '' : entryId;
-  const repairs = new Map([[repair.sha256, repair]]);
-  const unwritable = retargetedRecordsFailure(input, repairs.values(), publishingEntry);
-  if (unwritable !== undefined) return refuse('too_large', unwritable);
-  const added = repairArtifact(input, repair);
-  finishArtifactRepairs(input, repairs, publishingEntry);
-  return { addedBytes: added };
+  job: RepairJob,
+): RepairStep<DataSetOutcome | Refusal> {
+  return advanceDataRepair(input, job, (tx, prepared) =>
+    applySetData(tx, prepared, { preflighted: true }),
+  );
 }
 
-function applySetData(input: TxInput, plan: DataPlan): DataSetOutcome | Refusal {
-  const { sql, scopeId, now, revision } = input;
+function applySetData(
+  input: TxInput,
+  plan: DataPlan,
+  {
+    preflighted = false,
+    alarmPrepared = false,
+    blobs,
+  }: {
+    readonly preflighted?: boolean;
+    readonly alarmPrepared?: boolean;
+    readonly blobs?: BlobStore | undefined;
+  } = {},
+): DataSetOutcome | Refusal | RepairStart<DataSetOutcome | Refusal> | RepairPending {
+  const { sql, now } = input;
   const scope = requireActiveScope(sql);
   if (isRefusal(scope)) {
     return scope;
@@ -426,13 +435,10 @@ function applySetData(input: TxInput, plan: DataPlan): DataSetOutcome | Refusal 
   });
   if (floor.length > 0)
     return refuse('lease_expired', 'the data value predates reclaimed control fences');
-  const events: EventInput[] = [];
-  const { value, entry: metadata } = plan.input;
   // Uploads have unique keys. Reuse a healthy canonical object; a known failed location adopts
   // this upload. The gateway removes only its own unadopted upload after the transaction answers.
   const location = dataLocation(sql, plan);
-  const { storageRef, repair, reference } = location;
-  let { entry } = location;
+  const { storageRef, repair, entry } = location;
   const unwritten = writesNothing(sql, entry, plan, { storageRef, now });
   if (unwritten?.superseded === true) return unwritten;
   if (unwritten !== undefined && repair === undefined) {
@@ -445,20 +451,37 @@ function applySetData(input: TxInput, plan: DataPlan): DataSetOutcome | Refusal 
   // commits would add them after this write had taken the room.
   const quota = dataQuota(input, scope, location);
   if (quota !== undefined) return quota;
-  const restored = restoreDataArtifact(
-    input,
-    repair,
-    plan.identity.entryId,
-    unwritten !== undefined,
-  );
-  if (isRefusal(restored)) return restored;
-  const repaired = restored.addedBytes;
+  if (repair !== undefined && !preflighted)
+    return prepareDataRepair(input, plan, {
+      repair,
+      unchanged: unwritten !== undefined,
+      alarmPrepared,
+      blobs,
+      needsRepair: () => dataLocation(input.sql, plan).repair !== undefined,
+      restart: (tx, selected) => applySetData(tx, selected, { alarmPrepared: true, blobs }),
+    });
+  const repaired = repair === undefined ? 0 : repairArtifact(input, repair);
   if (unwritten !== undefined) {
     markWriter(sql, plan.input.order, unwritten, now);
     sql.exec(`UPDATE scope SET body_bytes = body_bytes + ?`, repaired);
     record(input, []);
     return unwritten;
   }
+  return publishDataGeneration(input, plan, location, repaired);
+}
+
+/** Only new-generation publication remains after ordering, quota and repair decisions. */
+function publishDataGeneration(
+  input: TxInput,
+  plan: DataPlan,
+  location: ReturnType<typeof dataLocation>,
+  repaired: number,
+): DataSetOutcome {
+  const { sql, scopeId, now, revision } = input;
+  const { storageRef, reference } = location;
+  let { entry } = location;
+  const { value, entry: metadata } = plan.input;
+  const events: EventInput[] = [];
   if (entry === undefined) {
     entry = insertEntry(sql, { identity: plan.identity, groupInstanceId: null, revision, now });
     events.push({
@@ -522,6 +545,7 @@ function applySetData(input: TxInput, plan: DataPlan): DataSetOutcome | Refusal 
     producer: { kind: 'attempt', reason: 'data-set' },
     outputs,
     committedAt: now,
+    compactRepairLocators: input.packSchemaVersion === 2,
   });
   if (entry.current_generation_id !== null) {
     supersedeGeneration(sql, entry.current_generation_id, revision);

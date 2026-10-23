@@ -21,6 +21,7 @@ export function verifyingRecords(deps: SettleDeps, entry: ProjectingEntry): Reco
   return {
     scopeId: deps.scopeId,
     buildId: deps.buildId,
+    packSchemaVersion: deps.packSchemaVersion,
     blobs: deps.blobs,
     verifying(artifact) {
       const proof = artifactVerification(deps.sql, artifact);

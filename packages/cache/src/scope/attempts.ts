@@ -9,6 +9,7 @@ import {
 
 import { repairStorageRef } from './artifact-repair.ts';
 import { HELD_WITHOUT_CHARGE, ownedUploadOf } from './artifacts.ts';
+import { freshUploadStorageRef } from './attempt-upload.ts';
 import {
   type EntryIdentity,
   findEntry,
@@ -384,6 +385,7 @@ function checkLease(input: TxInput, attemptId: string, fencingToken: number): Le
     );
   }
   if (attempt.lease_expires_at <= input.now) {
+    if (input.deferExpiredLease === true) return refuse('lease_expired', 'the lease has expired');
     const events: EventInput[] = [];
     endAttempt(input, attempt, { status: 'expired', regeneration: 'idle' }, events);
     record(input, events);
@@ -417,12 +419,15 @@ export interface UploadedArtifact {
   readonly encoding: 'identity' | 'gzip' | 'br';
   readonly role: string;
   readonly storageRef: string;
+  /** A conditional create found an unrelated object; rotate only this current reservation. */
+  readonly avoidStorageRef?: string;
 }
 
 /** A known broken canonical location needs the already verified upload stored again. */
 export interface RecordedArtifact {
   readonly ok: true;
   readonly replace?: true;
+  readonly fresh?: true;
   readonly storageRef?: string;
 }
 
@@ -477,9 +482,11 @@ export function applyRecordArtifact(
   ) {
     return refuse('quota_exceeded', 'the scope holds as many bytes as it may');
   }
-  const storageRef = replace
-    ? repairStorageRef(input.scopeId, upload.sha256, attemptId)
-    : (held ?? upload.storageRef);
+  const namespace = scope.repair_namespace;
+  const fresh = replace && scope.pack_schema_version === 2 && typeof namespace === 'string';
+  let storageRef = held ?? upload.storageRef;
+  if (fresh) storageRef = freshUploadStorageRef(sql, attemptId, upload, namespace);
+  else if (replace) storageRef = repairStorageRef(input.scopeId, upload.sha256, attemptId);
   sql.exec(
     `INSERT OR REPLACE INTO attempt_artifacts (attempt_id, sha256, role, byte_length, content_type, encoding, storage_ref, uploaded_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -494,6 +501,7 @@ export function applyRecordArtifact(
   );
   sql.exec(`DELETE FROM pending_deletions WHERE storage_ref = ?`, storageRef);
   sql.exec(`UPDATE attempts SET status = 'uploading' WHERE attempt_id = ?`, attemptId);
+  if (fresh) return { ok: true, replace: true, fresh: true, storageRef };
   if (replace) return { ok: true, replace: true, storageRef };
   return storageRef === upload.storageRef ? { ok: true } : { ok: true, storageRef };
 }

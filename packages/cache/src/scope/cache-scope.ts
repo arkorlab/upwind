@@ -9,21 +9,25 @@ import {
   applyFail,
   applyHeartbeat,
   applyRecordArtifact,
-  expireLeases,
   findAttempt,
-  nextLeaseExpiry,
   planStartAttempt,
   type UploadedArtifact,
 } from './attempts.ts';
 import * as recordAnswers from './commit-record.ts';
 import { type CommitOutcome, planCommit } from './commit.ts';
 import { adoptDataUpload, carriedValueOf } from './data-adopt.ts';
-import { tryListDataUploads } from './data-uploads.ts';
 import type { DataSetInput, DataSetOutcome } from './data.ts';
 import * as history from './history.ts';
 import { type InvalidateResult, planInvalidate } from './invalidations.ts';
 import { type BlobStore, blobStore, checkFault, kvSink, type TestFaults } from './io.ts';
-import { Alarm, commitMutation, ScopeQueue } from './mutations.ts';
+import {
+  MutationPipeline,
+  LEASE_SWEEP_GRACE_MS,
+  RETENTION_INTERVAL_MS,
+  type OwnRun,
+  type MutationPlan,
+} from './mutation-pipeline.ts';
+import { Alarm, ScopeQueue } from './mutations.ts';
 import {
   type ArtifactLocation,
   locateArtifact,
@@ -34,20 +38,18 @@ import {
   readHead,
   resolveEntry,
 } from './reads.ts';
+import { isRepairPending, type RepairPending } from './repair-jobs.ts';
+import { RepairRunner } from './repair-runner.ts';
 import {
   claimResourceWarmJobs,
   finishResourceWarmJob,
   planApplyResourceChange,
 } from './resource-changes.ts';
-import {
-  eraseScopeStorage,
-  letGoOfRetired,
-  nextRetentionAt,
-  retentionDue,
-  runRetention,
-  type TickOptions,
-} from './retention-run.ts';
+import type { TickOptions } from './retention-run.ts';
 import { ScopeContext } from './scope-context.ts';
+import { tickScope } from './scope-tick.ts';
+import { seedRepairCopier } from './seed-repair-copy.ts';
+import type { SeedRepairVerification } from './seed-repair.ts';
 import * as seed from './seed.ts';
 import { countSettleFailures, retryDelayMs, settleRetryMs } from './settle-retry.ts';
 import {
@@ -90,9 +92,6 @@ import type { Apply, TxInput } from './tx.ts';
  * to a scope retention erased leaves no object behind.
  */
 
-const LEASE_SWEEP_GRACE_MS = 1000;
-const MILLISECONDS_PER_HOUR = 3_600_000;
-const RETENTION_INTERVAL_MS = MILLISECONDS_PER_HOUR;
 const NOT_SEEDED = refuse('not_found', 'the scope has not been seeded');
 const NOT_RECORDED = { kind: 'not-recorded' } as const;
 /** What a change to an object that holds no tables is answered with (`#mutate`). */
@@ -108,15 +107,18 @@ const UNKNOWN = { empty: { kind: 'unknown' } } as const;
  * of its own either, and is answered as it commits (`AT_ONCE`).
  */
 const SEED = { seed: { kind: 'conflict', reason: 'the scope is retired' }, atOnce: true } as const;
-/** What a change hands its own run (`#mutate`): the records it wants and carries, and its timing. */
-type OwnRun = Pick<OwnRecords, 'wanted' | 'carried'> &
-  Pick<SettleDeps, 'timing'> & { readonly leaseClock?: true };
-
 export class CacheScope extends DurableObject<CacheBindings> {
   /** The history a host keeps of each scope, made as each object is (`history.ScopeHistory`): none here. */
   static readonly historyOf: history.HistoryFactory = () => history.NO_HISTORY;
   readonly #mutations = new ScopeQueue();
   readonly #alarm = new Alarm(this.ctx.storage);
+  readonly #repairs = new RepairRunner({
+    storage: this.ctx.storage,
+    queue: this.#mutations,
+    arm: (at) => this.#armAlarm(at),
+    defer: (at) => this.#alarm.postpone(at),
+    input: (now) => this.#pipeline.input(now),
+  });
   #settling: Promise<void> = Promise.resolve();
   /** Settle runs asked for and not begun: a run's slice gives way to them (`othersWaiting`). */
   #waiting = 0;
@@ -124,12 +126,40 @@ export class CacheScope extends DurableObject<CacheBindings> {
   #testLimits: Partial<ScopeLimits> = {};
   #logger: Logger | undefined;
   readonly #scope: ScopeContext;
+  readonly #pipeline: MutationPipeline;
   readonly #history: history.ScopeHistory;
 
   constructor(ctx: DurableObjectState, env: CacheBindings) {
     super(ctx, env);
     this.#history = new.target.historyOf(env, () => this.#faults);
     this.#scope = new ScopeContext(ctx, this.#history);
+    this.#pipeline = new MutationPipeline({
+      storage: this.ctx.storage,
+      queue: this.#mutations,
+      repairs: this.#repairs,
+      mutationHost: () => {
+        return {
+          storage: this.ctx.storage,
+          ...this.#scope.identity,
+          kv: this.env.CACHE_STATE,
+          limits: this.#limits,
+          history: this.#history,
+          tables: this.#scope.tables,
+          createdTables: () => {
+            this.#scope.tables = true;
+          },
+        };
+      },
+      tables: () => this.#scope.tables,
+      committed: (tables) => {
+        this.#scope.committed(tables);
+      },
+      testHooks: () => this.#vars.ARKOR_TEST_HOOKS,
+      settling: () => this.#settling,
+      settle: (own, timing) => this.#settle(own, undefined, timing),
+      arm: (at) => this.#armAlarm(at),
+      armAnswered: (at, atOnce) => (atOnce ? this.#armOrLog(at) : this.#armAlarm(at)),
+    });
   }
 
   get #sql(): SqlStorage {
@@ -153,10 +183,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
     const faults = (): TestFaults => this.#faults;
     return {
       sql: this.#sql,
-      scopeId: this.#scope.scopeId,
-      buildId: this.#scope.buildId,
+      ...this.#scope.identity,
       kv: kvSink(this.env.CACHE_STATE, faults),
-      blobs: blobStore(this.env.ARTIFACTS, faults),
+      blobs: this.#blobs(),
       history: this.#history,
       log: this.#log,
       now: Date.now,
@@ -192,52 +221,13 @@ export class CacheScope extends DurableObject<CacheBindings> {
    * runs before its own may still be writing. A commit made again carries the record of its
    * generation only once that is written (`withWrittenRecord`).
    */
-  async #mutate<T>(
+  #mutate<T>(
     now: number,
-    plan: (input: TxInput) => Apply<T> | Promise<Apply<T>>,
+    plan: MutationPlan<T>,
     answers: { readonly atOnce?: boolean } & ({ readonly empty: T } | { readonly seed: T }),
-    { wanted, timing, carried, leaseClock }: OwnRun = {},
+    own: OwnRun = {},
   ): Promise<T> {
-    const clock = leaseClock === true && !this.#vars.ARKOR_TEST_HOOKS ? Date.now : undefined;
-    const result = await this.#mutations.run(async () => {
-      const committed = await commitMutation(
-        {
-          storage: this.ctx.storage,
-          scopeId: this.#scope.scopeId,
-          buildId: this.#scope.buildId,
-          kv: this.env.CACHE_STATE,
-          limits: this.#limits,
-          history: this.#history,
-          tables: this.#scope.tables,
-          createdTables: () => {
-            this.#scope.tables = true;
-          },
-          ...(clock !== undefined && { clock }),
-        },
-        now,
-        plan,
-        answers,
-      );
-      this.#scope.committed(committed.tables);
-      return committed;
-    });
-    timing?.lap('commit');
-    if (result.own === undefined) return result.value;
-    const own = result.own === null ? null : { ...result.own, wanted, carried };
-    const run = this.#settle(own, undefined, timing);
-    if (answers.atOnce === true) run.answerNow();
-    await run.answered;
-    timing?.lap('settle');
-    // Armed before the answer, not after it: what the run still does once the change is answered —
-    // what the host's history owes for it — is owed to this alarm, or to an earlier one, should the
-    // object be reset before the run is over. Erasure may have come between: what is gone is not
-    // asked for. An answer read from its own transaction is not taken back for it (`#armOrLog`).
-    if (this.#scope.tables && readScope(this.#sql) !== undefined) {
-      const at = now + RETENTION_INTERVAL_MS;
-      await (answers.atOnce === true ? this.#armOrLog(at) : this.#armAlarm(at));
-    }
-    timing?.lap('alarm');
-    return result.value;
+    return this.#pipeline.run(now, plan, answers, own);
   }
 
   /**
@@ -343,19 +333,10 @@ export class CacheScope extends DurableObject<CacheBindings> {
     await this.#alarm.arm(at);
   }
 
-  async #rearm(now: number): Promise<void> {
-    if (!this.#scope.tables || readScope(this.#sql) === undefined) {
-      // Nothing is seeded here: an object that holds no tables, or tables but no scope row. It has
-      // nothing to prune and nothing to settle, and an alarm would only wake it again.
-      return;
-    }
-    const lease = nextLeaseExpiry(this.#sql);
-    if (lease !== undefined) await this.#armAlarm(Math.max(now, lease) + LEASE_SWEEP_GRACE_MS);
-    await this.#armAlarm(nextRetentionAt(this.#sql, now, RETENTION_INTERVAL_MS));
-  }
-
   #blobs(): BlobStore {
-    return blobStore(this.env.ARTIFACTS, () => this.#faults);
+    return blobStore(this.env.ARTIFACTS, () => this.#faults, {
+      repairOwner: this.ctx.id.toString(),
+    });
   }
 
   /**
@@ -363,8 +344,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
    * for no run. Answered with `empty` where the object holds no tables, and nothing is written.
    */
   #locked<T>(empty: T, body: () => T): Promise<T> {
-    const { storage } = this.ctx;
-    return this.#mutations.run(() => (this.#scope.tables ? storage.transactionSync(body) : empty));
+    return this.#pipeline.locked(empty, body);
   }
 
   #requireTestHooks(): void {
@@ -393,9 +373,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
     stop = false,
     epoch?: number,
   ): Promise<history.HistoryFields | null> {
-    return this.#mutations.run(async () => {
+    return this.#pipeline.unblocked(async () => {
       const stopped = stop ? this.#history.stop(this.ctx.storage, now, epoch) : null;
-      await this.#rearm(now);
+      await this.#pipeline.rearm(now);
       return stopped;
     });
   }
@@ -404,14 +384,30 @@ export class CacheScope extends DurableObject<CacheBindings> {
     input: Contract.SeedEntriesInput,
     now: number,
   ): Promise<Contract.SeedEntriesResult | Refusal> {
-    let result = await this.#mutate(now, (tx) => seed.planSeedEntries(tx, input), REFUSED);
+    let result: Contract.SeedEntriesResult | Refusal | SeedRepairVerification | RepairPending =
+      await this.#mutate(
+        now,
+        (tx) => seed.planSeedEntries(tx, input, undefined, () => this.#pipeline.prepare()),
+        REFUSED,
+      );
     if (seed.needsSeedVerification(result)) {
       result = await seed.finishSeedRepair(result, {
         bucket: this.env.ARTIFACTS,
-        retry: (seen) => this.#mutate(now, (tx) => seed.planSeedEntries(tx, input, seen), REFUSED),
+        retry: (seen) => {
+          return this.#mutate(
+            now,
+            (tx) => seed.planSeedEntries(tx, input, seen, () => this.#pipeline.prepare()),
+            REFUSED,
+          );
+        },
         faults: () => this.#faults,
+        copyRepair: seedRepairCopier(this.env.ARTIFACTS, {
+          namespace: this.#scope.repairNamespace,
+          scopeOwner: this.ctx.id.toString(),
+        }),
       });
     }
+    if (isRepairPending(result)) throw new Error('a private seed continuation escaped the writer');
     seed.logSeedRefusals(this.#log, result);
     return result;
   }
@@ -474,6 +470,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   ): Promise<Refusal | { readonly leaseExpiresAt: number }> {
     return this.#mutate(now, (tx) => () => applyHeartbeat(tx, attemptId, fencingToken), AT_ONCE, {
       leaseClock: true,
+      repairHeartbeat: attemptId,
     });
   }
 
@@ -494,13 +491,23 @@ export class CacheScope extends DurableObject<CacheBindings> {
     now: number,
   ): Promise<CommitOutcome | Refusal> {
     // A retired scope's commit is refused before its planning asks storage anything.
-    const plan = async (tx: TxInput): Promise<Apply<CommitOutcome | Refusal>> => {
+    const plan = async (tx: TxInput): Promise<Apply<CommitOutcome | Refusal | RepairPending>> => {
       const scope = requireActiveScope(tx.sql);
-      return isRefusal(scope) ? () => scope : planCommit(tx, attemptId, request, this.#blobs());
+      return isRefusal(scope)
+        ? () => scope
+        : planCommit(
+            Object.assign(tx, { prepareRepair: () => this.#pipeline.prepare() }),
+            attemptId,
+            request,
+            this.#blobs(),
+          );
     };
     const entryOf = (): string | undefined => findAttempt(this.#sql, attemptId)?.entry_id;
     const wanted = recordAnswers.wantedRecords(entryOf);
-    const committed = this.#mutate(now, plan, REFUSED, { wanted, leaseClock: true });
+    const committed = this.#mutate<CommitOutcome | Refusal>(now, plan, REFUSED, {
+      wanted,
+      leaseClock: true,
+    });
     return recordAnswers.answerCommit(committed, wanted, entryOf, this.#deps());
   }
 
@@ -522,7 +529,10 @@ export class CacheScope extends DurableObject<CacheBindings> {
     const authorityNow = () => (this.#vars.ARKOR_TEST_HOOKS ? now : Date.now());
     const adopt = (tx: TxInput) => adoptDataUpload({ ...deps, now: authorityNow }, tx, input);
     const carried = carriedValueOf(input);
-    const outcome = await this.#mutate(now, adopt, REFUSED, { timing, carried });
+    const outcome = await this.#mutate<DataSetOutcome | Refusal>(now, adopt, REFUSED, {
+      timing,
+      carried,
+    });
     const needsCleanup =
       !isRefusal(outcome) ||
       (outcome.code === 'quota_exceeded' && (readScope(this.#sql)?.body_bytes ?? 0) > 0);
@@ -620,56 +630,25 @@ export class CacheScope extends DurableObject<CacheBindings> {
   // ---- housekeeping -----------------------------------------------------------------------------
 
   /** What the alarm does, at the clock it is handed: sweep leases, settle, keep, come back. */
-  async tick(now: number, options: TickOptions = {}): Promise<void> {
-    if (!this.#scope.tables) {
-      return;
-    }
-    const scanDue = retentionDue(this.#sql, now, options.retention === true, RETENTION_INTERVAL_MS);
-    const page = scanDue ? await tryListDataUploads(this.#deps()) : undefined;
-    const deleteAll = await this.#mutations.run(async () => {
-      this.ctx.storage.transactionSync(() => {
-        expireLeases({
-          sql: this.#sql,
-          scopeId: this.#scope.scopeId,
-          limits: this.#limits,
-          now,
-          revision: readRevision(this.#sql) + 1,
-          history: this.#history,
-        });
-      });
-      const run = { ...this.#deps(), limits: this.#limits };
-      const due = retentionDue(this.#sql, now, options.retention === true, RETENTION_INTERVAL_MS);
-      return due && runRetention(run, now, page);
-    });
-    // Erasing waits for the whole run, and for one that left nothing owed: nothing of it may write
-    // to storage after `deleteAll`, and what it could not deliver or write — whatever the host's
-    // history owes — would go with the storage. A run that owes anything has armed its retry, and
-    // the next retention looks again.
-    const owed = await this.#settleOwes();
-    const { scopeId } = this.#scope;
-    // Everything of the scope left in storage once its history is over — whatever the host's
-    // history wrote under the scope's prefix, and any blob a failed write left behind — erased
-    // first: its tables are about to go, and after that nothing could name them.
-    if (deleteAll && !owed && (await eraseScopeStorage(scopeId, this.#blobs(), this.#log))) {
-      // Under the lock, so that no change is planned against tables that go meanwhile; the tables
-      // are given up first, so that no settle run begins against them, and those under way end.
-      await this.#mutations.run(async () => {
-        this.#scope.tables = false;
-        try {
-          await Promise.allSettled([this.#settling]);
-          await this.ctx.storage.deleteAlarm();
-          await this.ctx.storage.deleteAll();
-          this.#scope.erased();
-        } catch (error) {
-          this.#scope.tables = true;
-          throw error;
-        }
-      });
-      return;
-    }
-    // What the settle withdrew of the values a run retired goes now (`letGoOfRetired`).
-    await letGoOfRetired(this.#deps(), this.#mutations);
-    await this.#rearm(now);
+  tick(now: number, options: TickOptions = {}): Promise<void> {
+    return tickScope(
+      {
+        scope: this.#scope,
+        storage: this.ctx.storage,
+        queue: this.#mutations,
+        repairs: this.#repairs,
+        deps: () => this.#deps(),
+        limits: () => this.#limits,
+        blobs: () => this.#blobs(),
+        log: this.#log,
+        arm: (at) => this.#armAlarm(at),
+        rearm: (at) => this.#pipeline.rearm(at),
+        settleOwes: () => this.#settleOwes(),
+        settling: () => this.#settling,
+      },
+      now,
+      options,
+    );
   }
 
   override async alarm(): Promise<void> {

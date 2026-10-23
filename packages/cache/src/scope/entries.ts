@@ -161,6 +161,31 @@ export function recordsBehindAt(
     .toArray();
 }
 
+/** A repair job spans revisions. Seek its partial pending-record index before the LIMIT. */
+export function recordsInRepairWindow(
+  sql: SqlStorage,
+  input: {
+    readonly fromRevision: number;
+    readonly throughRevision: number;
+    readonly after: { readonly revision: number; readonly entryId: string };
+    readonly limit: number;
+  },
+): EntryRow[] {
+  return sql
+    .exec<EntryRow>(
+      `SELECT * FROM entries WHERE kv_revision < record_revision
+       AND record_revision >= ? AND record_revision <= ?
+       AND (record_revision, entry_id) > (?, ?)
+     ORDER BY record_revision, entry_id LIMIT ?`,
+      input.fromRevision,
+      input.throughRevision,
+      input.after.revision,
+      input.after.entryId,
+      input.limit,
+    )
+    .toArray();
+}
+
 /** Of the entries named, those whose records are behind, whatever revision they are at now. */
 export function recordsBehindAmong(sql: SqlStorage, entryIds: readonly string[]): EntryRow[] {
   return sql

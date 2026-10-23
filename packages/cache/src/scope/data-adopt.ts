@@ -1,6 +1,7 @@
 import { dataUploadExpired, dataUploadStartedAt } from './data-uploads.ts';
 import { type DataSetInput, type DataSetOutcome, planSetData } from './data.ts';
 import type { BlobStore, CarriedValue } from './io.ts';
+import type { RepairPending, RepairStart } from './repair-jobs.ts';
 import { isRefusal, type Refusal, refuse, requireActiveScope } from './state.ts';
 import type { Apply, TxInput } from './tx.ts';
 
@@ -24,7 +25,9 @@ export async function adoptDataUpload(
   deps: AdoptDeps,
   tx: TxInput,
   input: DataSetInput,
-): Promise<Apply<DataSetOutcome | Refusal>> {
+): Promise<
+  Apply<DataSetOutcome | Refusal | RepairStart<DataSetOutcome | Refusal> | RepairPending>
+> {
   const scope = requireActiveScope(deps.sql);
   if (isRefusal(scope)) return () => scope;
   const startedAt = dataUploadStartedAt(deps.scopeId, input.value.storageRef);
@@ -34,7 +37,7 @@ export async function adoptDataUpload(
   if (startedAt === undefined && !(await deps.blobs().exists(input.value.storageRef))) {
     return () => refuse('artifact_missing', 'the data upload is no longer present');
   }
-  return planSetData(tx, input);
+  return planSetData(tx, input, deps.blobs());
 }
 
 /**

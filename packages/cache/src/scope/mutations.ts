@@ -46,6 +46,10 @@ export class Alarm {
       }
     });
   }
+  /** A caught repair failure supersedes its speculative continuation; other work is pinned. */
+  postpone(at: number): Promise<void> {
+    return this.#turns.run(() => this.#storage.setAlarm(at));
+  }
 }
 
 export function scopeName(ctx: DurableObjectState): string {
@@ -60,6 +64,8 @@ export interface ScopeMutationHost {
   readonly storage: DurableObjectStorage;
   readonly scopeId: string;
   readonly buildId?: string | undefined;
+  readonly packSchemaVersion?: 1 | 2 | undefined;
+  readonly repairNamespace?: string | undefined;
   readonly kv: KVNamespace;
   readonly limits: ScopeLimits;
   /** What the host keeps of the scope's history: its tables, and each change as it commits. */
@@ -70,10 +76,29 @@ export interface ScopeMutationHost {
   readonly clock?: () => number;
 }
 
-interface MutationResult<T> {
+export interface MutationResult<T> {
   readonly value: T;
   readonly own: OwnRecords | null | undefined;
   readonly tables: boolean;
+}
+
+/** Only this private success escapes the speculative transaction without failing admission. */
+class MutationPreflightPassedError extends Error {
+  override name = 'MutationPreflightPassedError';
+}
+
+/** A failed host append rolls back every candidate row before the actual mutation is accepted. */
+export function runMutationPreflight(storage: DurableObjectStorage, apply: Apply<unknown>): void {
+  const preflight = apply.preflight;
+  if (preflight === undefined) return;
+  try {
+    storage.transactionSync(() => {
+      preflight();
+      throw new MutationPreflightPassedError('the mutation preflight passed');
+    });
+  } catch (error) {
+    if (!(error instanceof MutationPreflightPassedError)) throw error;
+  }
 }
 
 /** Preserve the same transaction, revision fence and unknown/retired seed behavior for every RPC. */
@@ -98,6 +123,8 @@ export async function commitMutation<T>(
     sql,
     scopeId: host.scopeId,
     buildId: host.buildId,
+    packSchemaVersion: host.packSchemaVersion,
+    repairNamespace: host.repairNamespace,
     limits: host.limits,
     now: host.clock?.() ?? now,
     revision: readRevision(sql) + 1,
@@ -110,6 +137,7 @@ export async function commitMutation<T>(
   input.now = host.clock?.() ?? now;
   // Projection acknowledgments may commit while asynchronous ID planning yields.
   input.revision = readRevision(sql) + 1;
+  runMutationPreflight(host.storage, apply);
   const value = host.storage.transactionSync(apply);
   const committed = readRevision(sql) >= input.revision;
   return {
