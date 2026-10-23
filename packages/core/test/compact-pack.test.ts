@@ -66,7 +66,9 @@ function rawPack(header: unknown, version: number): Uint8Array {
 describe('reader-first fixed-width repair locators', () => {
   it('keeps the default producer and retained literal records at version one', () => {
     expect(PACK_SCHEMA_VERSION).toBe(1);
+
     const encoded = encodeGenerationPack(HEADER, EMPTY, undefined);
+
     expect(encoded).toStrictEqual(rawPack(HEADER, 1));
     expect(decodeGenerationPack(encoded)).toMatchObject({ kind: 'ok', pack: { header: HEADER } });
   });
@@ -76,6 +78,7 @@ describe('reader-first fixed-width repair locators', () => {
     const header = { ...HEADER, schemaVersion: 2 as const, artifacts: [artifact] };
     const wire = { ...header, artifacts: [compactPackArtifact(artifact)] };
     const decoded = decodeGenerationPack(rawPack(wire, 2));
+
     expect(decoded).toMatchObject({ kind: 'ok', pack: { header } });
     expect(packHeaderOf(wire)).toStrictEqual(generationPackHeaderSchema.parse(header));
     expect(encodeGenerationPack(header, EMPTY, undefined)).toStrictEqual(rawPack(wire, 2));
@@ -86,6 +89,7 @@ describe('reader-first fixed-width repair locators', () => {
     const withoutLocation = { ...ARTIFACT };
     Reflect.deleteProperty(withoutLocation, 'storageRef');
     const header = { ...HEADER, schemaVersion: 2 as const, artifacts: [ARTIFACT, withoutLocation] };
+
     expect(encodeGenerationPack(header, EMPTY, undefined)).toStrictEqual(rawPack(header, 2));
     expect(decodeGenerationPack(rawPack(header, 2))).toMatchObject({
       kind: 'ok',
@@ -107,6 +111,7 @@ describe('reader-first fixed-width repair locators', () => {
         ARTIFACT.representationKey,
       ];
       const header = { ...HEADER, schemaVersion: 2, artifacts: [tuple] };
+
       expect(isRepairStorageRef(storageRef)).toBe(false);
       expect(packHeaderOf(header)).toBeUndefined();
       expect(decodeGenerationPack(rawPack(header, 2)).kind).toBe('corrupt');
@@ -118,6 +123,7 @@ describe('reader-first fixed-width repair locators', () => {
       ...HEADER,
       artifacts: [compactPackArtifact({ ...ARTIFACT, storageRef: REPAIR })],
     };
+
     expect(packHeaderOf(header)).toBeUndefined();
     expect(decodeGenerationPack(rawPack(header, 1)).kind).toBe('corrupt');
   });
@@ -137,16 +143,23 @@ describe('reader-first fixed-width repair locators', () => {
     const withPadding = { ...HEADER, scopeId: 's'.repeat(2000), headers: { padding: '' } };
     const padding = 'p'.repeat(MAX_PACK_HEADER_BYTES - packHeaderBytes(withPadding));
     const previous = { ...withPadding, headers: { padding } };
+
     expect(packHeaderBytes(previous)).toBe(MAX_PACK_HEADER_BYTES);
+
     const repaired = {
       ...previous,
       schemaVersion: 2 as const,
       artifacts: [{ ...ARTIFACT, storageRef: REPAIR }],
     };
+
     expect(packHeaderBytes(repaired)).toBe(MAX_PACK_HEADER_BYTES - 34);
+
     const bytes = encodeGenerationPack(repaired, EMPTY, undefined);
+
     expect(decodeGenerationPack(bytes)).toMatchObject({ kind: 'ok', pack: { header: repaired } });
+
     const repairedAgain = { ...repaired, artifacts: [{ ...ARTIFACT, storageRef: NEXT_REPAIR }] };
+
     expect(packHeaderBytes(repairedAgain)).toBe(packHeaderBytes(repaired));
   });
 });
