@@ -148,8 +148,33 @@ function isVercelsOwnBuild(): boolean {
   return vercel !== undefined && vercel !== '';
 }
 
+/**
+ * How a build is run, where it is not `upwind build`'s own: `upwind deploy` builds the same way,
+ * with three differences it asks for here.
+ */
+export interface BuildRun {
+  /** The environment the build inherits; this process's own when absent. */
+  readonly env?: NodeJS.ProcessEnv | undefined;
+  /** Variables set for this build alone, over everything else it is given. */
+  readonly extraEnv?: Readonly<Record<string, string>> | undefined;
+  /**
+   * A build for `upwind deploy`: the adapter always, even on Vercel, since the bundle is the whole
+   * point; and no storage while prerendering, so that no page of a deployment is rendered from a
+   * development database.
+   */
+  readonly forDeploy?: boolean | undefined;
+}
+
+/**
+ * `upwind build`: the build, and then this process ends as the build did.
+ */
 export async function runBuild(options: BuildOptions): Promise<never> {
-  const vercel = isVercelsOwnBuild();
+  process.exit(await spawnBuild(options));
+}
+
+/** The project's own `next build`, with the adapter named; what it exits with. */
+export async function spawnBuild(options: BuildOptions, run: BuildRun = {}): Promise<number> {
+  const vercel = run.forDeploy !== true && isVercelsOwnBuild();
   if (vercel) {
     // Said rather than done quietly: what makes this command different from `next build` is the
     // adapter, and a run that names none has to be a run that says why. It says what *this* does and
@@ -186,7 +211,10 @@ export async function runBuild(options: BuildOptions): Promise<never> {
   const adapterEnv =
     adapter === undefined
       ? { [ADAPTER_PATH_ENV]: '' }
-      : { [ADAPTER_PATH_ENV]: adapter, ...storageEnv(options.projectDir) };
+      : {
+          [ADAPTER_PATH_ENV]: adapter,
+          ...(run.forDeploy !== true && storageEnv(options.projectDir)),
+        };
   // Before the child, because the route it mounts has to be on disk when Next.js reads `app`. This
   // runs for a Vercel build too: what that build must not have is upwind's adapter and upwind's
   // storage, and a route the project would need either way is neither of those — leaving it out
@@ -200,7 +228,7 @@ export async function runBuild(options: BuildOptions): Promise<never> {
   // a shell.
   const child = spawn(process.execPath, [command, 'build', options.projectDir], {
     cwd: options.projectDir,
-    env: { ...process.env, ...adapterEnv, ...authEnv },
+    env: { ...(run.env ?? process.env), ...adapterEnv, ...authEnv, ...run.extraEnv },
     stdio: 'inherit',
   });
   // A signal this process is sent is the build's too. Without this, a `kill` on `upwind build` would
@@ -222,7 +250,7 @@ export async function runBuild(options: BuildOptions): Promise<never> {
     // failure of this one.
     await once(child, 'exit');
     // A build that ended on a signal chose no code of its own, and produced nothing: a failure.
-    process.exit(child.exitCode ?? 1);
+    return child.exitCode ?? 1;
   } finally {
     process.off('SIGINT', onInterrupt);
     process.off('SIGTERM', onTerminate);

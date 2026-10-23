@@ -33,6 +33,7 @@ import {
   type ShellPlacement,
   shellPlacementsOf,
   unimplementedBackend,
+  unplaceable,
 } from './delivery.ts';
 import { deploymentFingerprintOf } from './fingerprint.ts';
 import {
@@ -178,10 +179,6 @@ export interface StagedDeployment {
 /** Entries per call: within `MAX_SEED_BATCH`, and as many as a failed call has to send again. */
 const SEED_BATCH = 100;
 const KIB = 1024;
-const MIB = KIB * KIB;
-const MAX_KV_VALUE_MIB = 25;
-/** The largest value Workers KV holds under one key. */
-const MAX_KV_VALUE_BYTES = MAX_KV_VALUE_MIB * MIB;
 /** The most of a key's metadata Workers KV keeps, as JSON. */
 const MAX_KV_METADATA_BYTES = KIB;
 const MAX_BUCKET_METADATA_KIB = 8;
@@ -505,27 +502,6 @@ async function placeShell(
     await target.edgeState.put(key, bytes, kvMetadataOf(unit, shell.sourcePath));
     await readBack((written) => target.edgeState.get(written), key, unit);
   }
-}
-
-/**
- * Why the policy's shell backend cannot hold what the manifest places, or `undefined` where it can:
- * under `kv`, an artifact past the largest value KV holds (`MAX_KV_VALUE_BYTES`), whose write would
- * fail once the manifest and the shells before it were written. Judged on the sizes the manifest
- * names, before anything is. Under `r2` the artifact staging stored is the placement, whatever its
- * size.
- */
-function unplaceable(
-  backend: ShellBackendId,
-  placements: readonly ShellPlacement[],
-): string | undefined {
-  if (backend !== 'kv') {
-    return undefined;
-  }
-  const units = placements.flatMap((shell) => [shell, ...shell.renderings]);
-  const past = units.find((unit) => unit.byteLength > MAX_KV_VALUE_BYTES);
-  return past === undefined
-    ? undefined
-    : `artifact ${past.sha256} is ${past.byteLength} bytes, past the ${MAX_KV_VALUE_BYTES} a KV shell backend holds, so a policy that reads shells from the bucket`;
 }
 
 /**
