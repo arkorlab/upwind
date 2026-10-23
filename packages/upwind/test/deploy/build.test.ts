@@ -102,6 +102,7 @@ describe("a deploy's build", () => {
       keep: undefined,
       message: undefined,
       dryRun: true,
+      resetCacheKey: false,
     };
 
     await expect(runDeploy(options, undefined)).resolves.toBe(0);

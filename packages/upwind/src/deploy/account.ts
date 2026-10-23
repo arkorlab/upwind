@@ -4,6 +4,7 @@ import {
   getObject,
   type KvNamespace,
   listKvNamespaces,
+  putObject,
   type R2Bucket,
 } from './cloudflare/storage.ts';
 import {
@@ -14,6 +15,7 @@ import {
   type WorkerDeployment,
 } from './cloudflare/workers.ts';
 import { deploymentOfScript, type ProjectNames } from './names.ts';
+import { OWNER_KEY } from './workers/protocol.ts';
 
 /**
  * What a deploy reads of the account before it changes anything on it: which account it is, where
@@ -27,8 +29,8 @@ import { deploymentOfScript, type ProjectNames } from './names.ts';
  * project, and everything else is trusted only alongside that mark.
  */
 
-/** The object in the artifacts bucket that says whose the bucket is, and what else was made with it. */
-export const OWNER_KEY = 'upwind/owner.json';
+// The object in the artifacts bucket that says whose the bucket is, and what else was made with it.
+export { OWNER_KEY } from './workers/protocol.ts';
 const OWNER_VERSION = 1;
 
 /** What the owner mark says. */
@@ -37,6 +39,12 @@ export interface OwnerMark {
   readonly project: string;
   /** KV namespace ids, by title, and the ids of the storage made for the application. */
   readonly made: Readonly<Record<string, string>>;
+  /**
+   * What a deploy was about to make when it wrote the mark, named as `made` names it: written down
+   * before each is made, so that one a run made and could not record is known as the project's
+   * still, and is taken up by the next run rather than refused as somebody else's.
+   */
+  readonly pending: readonly string[];
 }
 
 export interface AccountView {
@@ -82,6 +90,13 @@ export async function resolveAccount(
   return only.id;
 }
 
+/** The strings of a list; none for anything else. */
+function stringsOf(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+}
+
 function ownerOf(bytes: Uint8Array | undefined): OwnerMark | undefined {
   if (bytes === undefined) {
     return undefined;
@@ -105,12 +120,51 @@ function ownerOf(bytes: Uint8Array | undefined): OwnerMark | undefined {
           made[key] = value;
         }
       }
-      return { v: OWNER_VERSION, project: parsed.project, made };
+      const pending = 'pending' in parsed ? stringsOf(parsed.pending) : [];
+      return { v: OWNER_VERSION, project: parsed.project, made, pending };
     }
     return undefined;
   } catch {
     return undefined;
   }
+}
+
+/** Write the owner mark, whole. */
+export async function writeOwnerMark(
+  scope: AccountScope,
+  bucket: string,
+  mark: OwnerMark,
+): Promise<void> {
+  await putObject(scope, bucket, {
+    key: OWNER_KEY,
+    body: new TextEncoder().encode(`${JSON.stringify(mark, undefined, 2)}\n`),
+    contentType: 'application/json',
+  });
+}
+
+/**
+ * Why the bucket of the project's name is not the project's, or nothing where it is.
+ *
+ * A bucket with no mark in it was not made by a deploy of the project — or was, by one that stopped
+ * between making it and marking it, which leaves it empty. Either way it is not taken up: whether it
+ * is that empty bucket is the person's to say, and deleting it is theirs to do.
+ */
+export function bucketRefusal(
+  names: ProjectNames,
+  owner: OwnerMark | undefined,
+): string | undefined {
+  const refused = `the bucket ${names.artifactsBucket} is already on the account, and was not made by upwind deploy for ${names.project}`;
+  if (owner === undefined) {
+    return `${refused}: it holds no owner mark. If a deploy of ${names.project} stopped as it made the bucket, the bucket holds nothing; delete it, and run again. Otherwise, choose another deploy.name`;
+  }
+  return owner.project === names.project
+    ? undefined
+    : `${refused} but for ${owner.project}; choose another deploy.name`;
+}
+
+/** Whether the mark says the project made, or was making, what it calls by that name and id. */
+export function markOwns(mark: OwnerMark | undefined, name: string, id: string): boolean {
+  return mark !== undefined && (mark.made[name] === id || mark.pending.includes(name));
 }
 
 /** Read the account, changing nothing on it. */
@@ -142,10 +196,9 @@ export async function readAccount(scope: AccountScope, names: ProjectNames): Pro
       "the account has no workers.dev subdomain, where a deploy reaches the Worker it stages a build through; choose one in Cloudflare's settings for Workers",
     );
   }
-  if (bucket !== undefined && owner?.project !== names.project) {
-    problems.push(
-      `the bucket ${names.artifactsBucket} is already on the account, and was not made by upwind deploy for ${names.project}; choose another deploy.name`,
-    );
+  const refused = bucket === undefined ? undefined : bucketRefusal(names, owner);
+  if (refused !== undefined) {
+    problems.push(refused);
   }
   for (const [title, found] of [
     [names.edgeStateTitle, edgeState],
@@ -157,7 +210,7 @@ export async function readAccount(scope: AccountScope, names: ProjectNames): Pro
       );
     }
     const [namespace] = found;
-    if (namespace !== undefined && owner?.made[title] !== namespace.id) {
+    if (namespace !== undefined && !markOwns(owner, title, namespace.id)) {
       problems.push(
         `the KV namespace ${title} is already on the account, and was not made by upwind deploy for ${names.project}`,
       );

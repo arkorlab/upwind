@@ -2,19 +2,21 @@ import { type AccountView, readAccount, resolveAccount } from './account.ts';
 import type { DeployOptions } from './args.ts';
 import { buildForDeploy, readBuildNote } from './build.ts';
 import { createCloudflareClient } from './cloudflare/client.ts';
+import type { AccountScope } from './cloudflare/workers.ts';
 import { type DeploySettings, readDeploySettings } from './config.ts';
 import type { CloudflareCredentials } from './credentials.ts';
+import { deployToAccount } from './deploy-run.ts';
 import { readSecrets, reservedNames } from './env.ts';
 import { projectNames } from './names.ts';
 import { MAX_ACCOUNT_WORKERS, type Preflight, preflight } from './preflight.ts';
 
 /**
- * `upwind deploy`, as far as this version goes: build for a deploy, check the build and the account,
- * and say what a deploy would do.
+ * `upwind deploy`: build for a deploy, check the build and the account and say what a deploy will
+ * do — and then, unless `--dry-run` says to stop there, do it (`deploy-run.ts`).
  *
- * The order is the one a deploy keeps when it goes further. Nothing that reaches the account comes
- * before everything that can be refused without it, and the project's own code — its configuration
- * and its build — runs only after the credentials were taken out of the environment (`cli.ts`).
+ * Nothing that reaches the account comes before everything that can be refused without it, and the
+ * project's own code — its configuration and its build — runs only after the credentials were taken
+ * out of the environment (`cli.ts`).
  */
 
 function line(text: string): void {
@@ -181,22 +183,24 @@ async function isNotedBuild(options: DeployOptions, plan: Preflight): Promise<bo
   return false;
 }
 
-/** What a run reaches Cloudflare with; a test gives it a fake. */
+/** What a run reaches Cloudflare with, and waits with; a test gives it fakes. */
 export interface DeployIo {
   readonly fetch?: typeof fetch | undefined;
+  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
+  readonly now?: (() => number) | undefined;
 }
 
 async function accountOf(
   credentials: CloudflareCredentials | undefined,
   settings: DeploySettings,
   io: DeployIo,
-): Promise<AccountView | undefined> {
+): Promise<{ readonly scope: AccountScope; readonly view: AccountView } | undefined> {
   if (credentials === undefined) {
     return undefined;
   }
   const client = createCloudflareClient({ apiToken: credentials.apiToken, fetch: io.fetch });
-  const accountId = await resolveAccount(client, credentials.accountId);
-  return readAccount({ client, accountId }, projectNames(settings.project));
+  const scope = { client, accountId: await resolveAccount(client, credentials.accountId) };
+  return { scope, view: await readAccount(scope, projectNames(settings.project)) };
 }
 
 /** What `upwind deploy` exits with. */
@@ -220,7 +224,8 @@ export async function runDeploy(
   if (!(await isNotedBuild(options, plan))) {
     return 1;
   }
-  const account = await accountOf(credentials, settings, io);
+  const reached = await accountOf(credentials, settings, io);
+  const account = reached?.view;
   describePlan({ plan, settings, secrets, account });
   for (const warning of plan.warnings) {
     console.warn(`upwind: warning: ${warning}`);
@@ -239,11 +244,23 @@ export async function runDeploy(
     }
     return 1;
   }
-  if (!options.dryRun) {
+  if (options.dryRun) {
+    return 0;
+  }
+  if (reached === undefined) {
     console.error(
-      'upwind: this version of `upwind deploy` plans a deployment and stops there; run it with --dry-run',
+      'upwind: a deploy reaches the account with CLOUDFLARE_API_TOKEN, which is not set',
     );
     return 1;
   }
-  return 0;
+  return deployToAccount({
+    scope: reached.scope,
+    account: reached.view,
+    settings,
+    plan,
+    secrets,
+    message: options.message,
+    resetCacheKey: options.resetCacheKey,
+    ...io,
+  });
 }

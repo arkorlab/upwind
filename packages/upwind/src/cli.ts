@@ -11,9 +11,10 @@ import { ownVersion } from './manifest.ts';
  * `upwind` — the command in front of a Next.js application.
  *
  * `dev` runs the project's development server behind upwind's own front door; `build` runs the
- * project's build with the adapter named; `deploy` builds it for, and checks it against, a
- * Cloudflare account of the developer's own. All three are the project's own Next.js: this CLI
- * decides nothing about an application beyond where its platform is.
+ * project's build with the adapter named; `deploy` builds it for, and deploys it to, a Cloudflare
+ * account of the developer's own, and `destroy` deletes what `deploy` made there. Each runs the
+ * project's own Next.js: this CLI decides nothing about an application beyond where its platform
+ * is.
  *
  * `dev` is one binary with two jobs. Run by a developer it is the supervisor: it forks itself and
  * starts the child again whenever the child asks to be restarted. Run by that supervisor —
@@ -30,7 +31,8 @@ const USAGE = `upwind — the front door of a Next.js application
 Usage
   upwind dev [directory]
   upwind build [directory]
-  upwind deploy [directory] --dry-run
+  upwind deploy [directory]
+  upwind destroy [directory] --yes
 
 Options
   -p, --port <port>      Port to listen on, \`dev\` only (default: $PORT, else 3000)
@@ -42,6 +44,9 @@ Options
       --env-file <file>  Secrets for the deployment's Functions, \`deploy\` only; may repeat
       --keep <n>         Deployments kept to roll back to, \`deploy\` only (default: 5)
       --message <text>   What the deployment is noted as, \`deploy\` only
+      --reset-cache-key  Give the runtime cache a new key, \`deploy\` only
+      --yes              Delete everything a deploy made, \`destroy\` only
+      --include-storage  And the storage deploy.storage names, with its data, \`destroy\` only
   -v, --version          Print upwind's version
   -h, --help             Print this
       --                 Everything after this is the directory, even \`--help\`
@@ -53,10 +58,11 @@ Options
 writes the deployment bundle under .arkor/. On Vercel (VERCEL set, NEXT_ADAPTER_PATH not) it
 names no adapter and writes no bundle: the build there is Vercel's.
 
-\`upwind deploy\` builds the project for a deployment on a Cloudflare account of your own and
-checks the build and the account; this version stops there, so run it with --dry-run. It reads
-CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the environment, and the project's \`deploy\`
-settings from upwind.config.ts.
+\`upwind deploy\` builds the project and deploys it to a Cloudflare account of your own: the
+edge in front, the runtime cache behind it, each deployment's Functions as Workers of their own,
+and the edge switched to the new deployment once it answers. It reads CLOUDFLARE_API_TOKEN and
+CLOUDFLARE_ACCOUNT_ID from the environment, and the project's \`deploy\` settings from
+upwind.config.ts. \`upwind destroy\` deletes everything it made.
 `;
 
 function fail(message: string): never {
@@ -109,6 +115,20 @@ async function deploy(rest: readonly string[]): Promise<void> {
   process.exitCode = await runDeploy(request.options, credentials);
 }
 
+/** `upwind destroy`, with the credentials taken out of the environment as `deploy` takes them. */
+async function destroy(rest: readonly string[]): Promise<void> {
+  const { takeCredentials } = await import('./deploy/credentials.ts');
+  const credentials = takeCredentials();
+  const { parseDestroyRequest } = await import('./deploy/args.ts');
+  const request = orFail(() => parseDestroyRequest(rest));
+  if (request.answer !== undefined) {
+    await answer(request.answer);
+    return;
+  }
+  const { runDestroy } = await import('./deploy/destroy.ts');
+  process.exitCode = await runDestroy(request.options, credentials);
+}
+
 async function dev(rest: readonly string[], argv: readonly string[]): Promise<void> {
   const request: DevRequest = orFail(() => parseDevRequest(rest));
   if (request.answer !== undefined) {
@@ -151,8 +171,14 @@ async function main(): Promise<void> {
     await deploy(rest);
     return;
   }
+  if (command === 'destroy') {
+    await destroy(rest);
+    return;
+  }
   if (command !== 'dev') {
-    fail(`unknown command \`${command}\`; the commands are \`dev\`, \`build\` and \`deploy\``);
+    fail(
+      `unknown command \`${command}\`; the commands are \`dev\`, \`build\`, \`deploy\` and \`destroy\``,
+    );
   }
   await dev(rest, argv);
 }

@@ -113,6 +113,17 @@ export async function putObject(
   await response?.body?.cancel();
 }
 
+/** Delete an object; nothing to do for one the bucket does not hold. */
+export async function deleteObject(
+  scope: AccountScope,
+  bucket: string,
+  key: string,
+): Promise<void> {
+  await unlessMissing(
+    scope.client.request('DELETE', objectPath(scope, bucket, key), { repeatable: true }),
+  );
+}
+
 export interface D1Database {
   readonly uuid: string;
   readonly name: string;
