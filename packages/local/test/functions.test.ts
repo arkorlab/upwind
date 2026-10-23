@@ -199,12 +199,12 @@ describe('the Functions of a deployment, on a local stack', () => {
 
   it.each([
     ["'./data-' + 1 + '.json'", 'data-1.json'],
-    ['`./data-${1}.json`', 'data-1.json'],
-    ['`./data-${true}.json`', 'data-true.json'],
-    ['`./data-${null}.json`', 'data-null.json'],
-    ['`./data-${1n}.json`', 'data-1.json'],
-    ['`./data-${-0}.json`', 'data-0.json'],
-    ['`./data-${void 0}.json`', 'data-undefined.json'],
+    [`\`./data-\${1}.json\``, 'data-1.json'],
+    [`\`./data-\${true}.json\``, 'data-true.json'],
+    [`\`./data-\${null}.json\``, 'data-null.json'],
+    [`\`./data-\${1n}.json\``, 'data-1.json'],
+    [`\`./data-\${-0}.json\``, 'data-0.json'],
+    [`\`./data-\${void 0}.json\``, 'data-undefined.json'],
     ["'./data-' + false + '.json'", 'data-false.json'],
     ["'./data-' + -1 + '.json'", 'data--1.json'],
     ["'./data-' + 1 + 2 + '.json'", 'data-12.json'],

@@ -5,15 +5,15 @@ interface KnownPrimitive {
   readonly value: Primitive;
 }
 type Values = ReadonlyMap<Expression, KnownPrimitive>;
-const MIN_INT32 = -2147483648;
-const MAX_INT32 = 2147483647;
+const MIN_INT32 = -2_147_483_648;
+const MAX_INT32 = 2_147_483_647;
 
 /** Match the old parser's conservative number-to-string folding without application coercion. */
 function primitiveString(value: Primitive): string | undefined {
   if (
     typeof value === 'number' &&
     Number.isFinite(value) &&
-    (!Number.isInteger(value) || value < MIN_INT32 || value > MAX_INT32)
+    (!Number.isSafeInteger(value) || value < MIN_INT32 || value > MAX_INT32)
   ) {
     return undefined;
   }
@@ -34,7 +34,7 @@ function primitiveNumber(value: Primitive): number | undefined {
   if (
     typeof value === 'string' &&
     value !== '' &&
-    (!Number.isInteger(number) ||
+    (!Number.isSafeInteger(number) ||
       number < MIN_INT32 ||
       number > MAX_INT32 ||
       String(number) !== value)
@@ -80,16 +80,15 @@ function templateValue(node: TemplateLiteral, values: Values): KnownPrimitive | 
   const parts: string[] = [];
   for (const [index, quasi] of node.quasis.entries()) {
     const cooked = quasi.value.cooked;
-    if (cooked === null || cooked === undefined) return undefined;
+    if (cooked === null) return undefined;
     parts.push(cooked);
     const expression = node.expressions[index];
-    if (expression !== undefined) {
-      const known = values.get(expression);
-      if (known === undefined) return undefined;
-      const value = primitiveString(known.value);
-      if (value === undefined) return undefined;
-      parts.push(value);
-    }
+    if (expression === undefined) continue;
+    const known = values.get(expression);
+    if (known === undefined) return undefined;
+    const value = primitiveString(known.value);
+    if (value === undefined) return undefined;
+    parts.push(value);
   }
   return { value: parts.join('') };
 }
