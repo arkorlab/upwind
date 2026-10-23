@@ -1,4 +1,3 @@
-import { queryDependent } from '@stayingupwind/core/bundle';
 import { generationResponseHeaders } from '@stayingupwind/core/cache';
 import {
   CACHE_ROUTE_ESCAPED_HEADER,
@@ -22,7 +21,7 @@ import { renderStatically } from './cache/static-render.ts';
 import { nodeHandlerOf } from './entries.ts';
 import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender, type RoutedInput } from './serve.ts';
-import { entrypointKindOf, findShell, type Store } from './store.ts';
+import { entrypointKindOf, findShell, type Store, variesOnQuery } from './store.ts';
 
 /**
  * A capture (`CAPTURE_HEADER`): the edge asks for the page a request names, rendered as a
@@ -99,7 +98,7 @@ function succeeded(status: number): boolean {
  * evaluated for it. A refusal where it names no page this Function renders on Node.js, or one a
  * regeneration would not make: of a request its prerender is bypassed for — a draft, a condition
  * the build bypasses it on — or a prerender that varies on a query its pathname does not name
- * (`queryDependent`), as `generations.ts` judges the regeneration of an entry.
+ * (`variesOnQuery`), as `generations.ts` judges the regeneration of an entry.
  */
 async function pageOf(input: RoutedInput, store: Store): Promise<Page | Response> {
   const { request } = input;
@@ -113,7 +112,7 @@ async function pageOf(input: RoutedInput, store: Store): Promise<Page | Response
   }
   const { pathname } = new URL(request.url);
   const shell = store.prerendersByPathname.get(pathname) ?? findShell(store, route, pathname);
-  if (bypassesPrerender(store, request, shell) || queryDependent(shell, route, pathname)) {
+  if (bypassesPrerender(store, request, shell) || variesOnQuery(shell, route, pathname)) {
     return refused(`${pathname} is rendered for each request here, as no regeneration renders it`);
   }
   const handler =

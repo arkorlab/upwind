@@ -1,4 +1,4 @@
-import { pagesDataPathnameUnder, queryDependent } from '@stayingupwind/core/bundle';
+import { pagesDataPathnameUnder } from '@stayingupwind/core/bundle';
 import {
   type DecodedGenerationPack,
   type InvalidationState,
@@ -59,7 +59,7 @@ import {
 import { PAGES_DATA, ROUTE_BODY, SEGMENT_PREFIX } from './representations.ts';
 import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
-import { entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
+import { entrypointKindOf, findShell, isClassShell, type Store, variesOnQuery } from './store.ts';
 
 /**
  * The runtime cache's part in answering a request: a regeneration the edge asked for beside a
@@ -124,7 +124,7 @@ async function targetOf(input: RoutedInput, store: Store): Promise<Target | unde
     ? upgradePathname(store, route, asked)
     : entryPathnameFor(store, route, asked);
   const shell = store.prerendersByPathname.get(pathname) ?? findShell(store, route, pathname);
-  if (bypassesPrerender(store, input.request, shell) || queryDependent(shell, route, pathname)) {
+  if (bypassesPrerender(store, input.request, shell) || variesOnQuery(shell, route, pathname)) {
     return undefined;
   }
   const descriptor = descriptorFor(store, route, pathname);
@@ -445,7 +445,7 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
     runtime === undefined ||
     shell === undefined ||
     bypassesPrerender(store, input.request, shell, source.url) ||
-    queryDependent(shell, source.route, source.pathname)
+    variesOnQuery(shell, source.route, source.pathname)
   ) {
     return;
   }
