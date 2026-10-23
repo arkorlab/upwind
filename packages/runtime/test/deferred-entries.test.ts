@@ -309,4 +309,25 @@ describe('a module evaluation one request begins and others join', () => {
     expect(load).toHaveBeenCalledTimes(3);
     await expect(next!(request, response, {})).resolves.toBe('third');
   });
+
+  it('keeps for a deferred page the handler of the evaluation that stands, not of one given up on that settles late', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const first = Promise.withResolvers<{ handler: NodeHandler }>();
+    const second = Promise.resolve({ handler: () => Promise.resolve('second') });
+    const load = vi.fn(() => (load.mock.calls.length === 1 ? first.promise : second));
+    const asked = tables(load);
+    const begun = (await handlerOf(asked))(request, response, {});
+    const joined = failureOf((await handlerOf(asked))(request, response, {}));
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await expect(joined).resolves.toContain(GIVEN_UP);
+    await expect((await handlerOf(asked))(request, response, {})).resolves.toBe('second');
+
+    first.resolve({ handler: () => Promise.resolve('first') });
+
+    // The render that began the first evaluation is answered with its module all the same.
+    await expect(begun).resolves.toBe('first');
+    await expect((await handlerOf(asked))(request, response, {})).resolves.toBe('second');
+    expect(load).toHaveBeenCalledTimes(2);
+  });
 });
