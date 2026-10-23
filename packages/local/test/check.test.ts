@@ -3813,6 +3813,29 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
+    it('takes a matcher on the Host as the edge does, which matches without it', async () => {
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+      });
+      // The edge matches a matcher that reads a header on what forwarding hands on, which carries no
+      // Host (greptile): one asking for it covers no request there, and the middleware is not run.
+      const hosted = withMiddleware(stackOf([], files), [
+        { sourceRegex: String.raw`^/a\.txt$`, has: [{ type: 'header', key: 'host' }] },
+      ]);
+      const agent = withMiddleware(stackOf([], files), [
+        { sourceRegex: String.raw`^/a\.txt$`, has: [{ type: 'header', key: 'user-agent' }] },
+      ]);
+
+      expect((await checkStack(hosted)).failures).toStrictEqual([]);
+      expect((await checkStack(agent)).failures).toStrictEqual([
+        {
+          path: '/a.txt',
+          reason: "the application's middleware covers it, and the edge says it did not run",
+        },
+      ]);
+    });
+
     it('is answered in part to a range by its end and from a byte on, as the bytes those name', async () => {
       const asFile = {
         'content-type': TEXT,
@@ -4144,6 +4167,31 @@ describe('what the check makes of the middleware', () => {
           reason:
             'asked for as the request a rule of next.config sets headers on it for (the cookie download=1), answered with content-disposition none, not the attachment the application set',
         },
+      ]);
+    });
+
+    it('lays no rule on the Host on a file, as the edge judges its rules without it', async () => {
+      const asFile = {
+        'content-type': TEXT,
+        'cache-control': REVALIDATE,
+        'x-arkor-edge': FILE_EDGE,
+      };
+      // The edge judges a rule on what forwarding hands on, which carries no Host (greptile): one
+      // asking for it is laid on no file the edge serves, though the visitor sent one.
+      const hosted: HeaderRule = {
+        sourceRegex: String.raw`^/a\.txt$`,
+        has: [{ type: 'header', key: 'host' }],
+        headers: { 'Content-Type': 'image/png' },
+      };
+      // One asking for what every request the check sends carries is laid, and held to.
+      const agent: HeaderRule = { ...hosted, has: [{ type: 'header', key: 'user-agent' }] };
+      answers.set('/a.txt', { headers: asFile, body: 'kept bytes' });
+      const unlaid = await checkStack(stackOf([], files, { headerRules: [hosted] }));
+      const omitted = await checkStack(stackOf([], files, { headerRules: [agent] }));
+
+      expect(unlaid).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(omitted.failures).toStrictEqual([
+        { path: '/a.txt', reason: `answered as ${TEXT}, not image/png` },
       ]);
     });
 

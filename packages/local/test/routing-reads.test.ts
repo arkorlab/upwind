@@ -6,9 +6,8 @@ import { assert, describe, expect, it } from 'vitest';
 import { fileRequestsFor } from '../src/browsers.ts';
 import { claimedBy, escaping, type Target } from '../src/escaping.ts';
 import {
-  classifiedReads,
   edgeReads,
-  forwardedReads,
+  functionReads,
   handedReads,
   middlewareReads,
   routedReads,
@@ -121,16 +120,16 @@ describe('the headers used for pre-middleware rule and matcher checks', () => {
       expected: true,
     },
     {
-      label: 'Host the runtime gives back present',
+      label: 'Host the edge reserves without, asked for',
       has: [{ type: 'header' as const, key: 'host' }],
       missing: [],
-      expected: true,
+      expected: false,
     },
     {
-      label: 'Host the runtime gives back absent',
+      label: 'Host the edge reserves without, asked to be absent',
       has: [],
       missing: [{ type: 'header' as const, key: 'host' }],
-      expected: false,
+      expected: true,
     },
   ])('uses $label for both reservation and escape selection', (example) => {
     const rule: ReservedRoute = {
@@ -154,16 +153,20 @@ describe('the headers used for pre-middleware rule and matcher checks', () => {
     expect(sent['cookie']).toContain(EDGE_BYPASS_COOKIE);
   });
 
-  it('reads the Host the Function routes by on every routing view, and hands on none', () => {
-    // As the check sends a request: under the site's own Host, which forwarding takes off and the
-    // Function's runtime gives back from the URL before Next.js routes it (greptile).
+  it('routes what the edge decides without the Host, and what the Function decides with it', () => {
+    // As the check sends a request: under the site's own Host, which forwarding takes off before the
+    // edge judges a rule, a matcher or a reservation on it (greptile), and which the Function's
+    // runtime gives back from the URL before Next.js routes it.
     const sent = { ...clientHeaders(), host: URL_OF_FILE.host };
     const left = new Headers(clientHeaders());
 
-    expect(forwardedReads(URL_OF_FILE, sent).has('host')).toBe(false);
-    expect(routedReads(URL_OF_FILE, sent).get('host')).toBe(URL_OF_FILE.host);
-    expect(handedReads(URL_OF_FILE, sent, left).get('host')).toBe(URL_OF_FILE.host);
-    expect(classifiedReads(MANIFEST, URL_OF_FILE, sent).get('host')).toBe(URL_OF_FILE.host);
+    expect(routedReads(URL_OF_FILE, sent).has('host')).toBe(false);
+    expect(handedReads(URL_OF_FILE, sent, left).has('host')).toBe(false);
+    expect(middlewareReads({}, URL_OF_FILE, sent).has('host')).toBe(false);
+    expect(functionReads(URL_OF_FILE, sent).get('host')).toBe(URL_OF_FILE.host);
+    expect(functionReads(URL_OF_FILE, sent).get('via')).toBe(
+      routedReads(URL_OF_FILE, sent).get('via'),
+    );
   });
 
   it('can escape a file reservation through a deployment header without changing the file class', () => {
