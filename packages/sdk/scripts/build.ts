@@ -47,17 +47,17 @@ async function modules(): Promise<number> {
   return output.length;
 }
 
-function declarations(): void {
+function compile(config: string): void {
   // The `tsc` this package was installed beside, rather than one from a PATH that may hold another.
   const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc');
-  const emit = spawnSync(process.execPath, [tsc, '-p', path.join(ROOT, 'tsconfig.build.json')], {
+  const emit = spawnSync(process.execPath, [tsc, '-p', path.join(ROOT, config)], {
     stdio: 'inherit',
   });
   if (emit.status !== 0) {
     // `status` is `null` for a `tsc` that never started or that a signal ended, and then what went
     // wrong is on the result rather than on the terminal.
     const why = emit.error?.message ?? emit.signal ?? `exit ${String(emit.status)}`;
-    throw new Error(`the declarations did not build (${why})`);
+    throw new Error(`${config} did not compile (${why})`);
   }
 }
 
@@ -110,8 +110,10 @@ async function pointAtJavaScript(): Promise<void> {
 async function main(): Promise<void> {
   await rm(OUT_DIR, { recursive: true, force: true });
   const chunks = await modules();
-  declarations();
+  compile('tsconfig.build.json');
   await pointAtJavaScript();
+  // Self-references resolve the actual package exports, including each public types condition.
+  compile('test/consumer-types/tsconfig.json');
   console.log(`dist/: ${String(ENTRIES.length)} entry point(s), ${String(chunks)} chunk(s)`);
 }
 

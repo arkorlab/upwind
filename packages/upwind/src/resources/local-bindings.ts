@@ -1,16 +1,18 @@
-import type { ResourceManifestEntry } from '@stayingupwind/core/paas';
+import type { ResourceManifestEntry, ResourceType } from '@stayingupwind/core/paas';
 
 /** The native persistence name stays fixed when a customer binding takes the visible name. */
 export interface LocalStorageEntry extends ResourceManifestEntry {
+  /** Only provisionable resources have a local runtime; private services are supplied separately. */
+  readonly type: ResourceType;
   readonly storageName?: string;
 }
 
-const DEFAULTS: readonly ResourceManifestEntry[] = [
+const DEFAULTS: readonly LocalStorageEntry[] = [
   { name: 'UPWIND_D1', type: 'd1' },
   { name: 'UPWIND_KV', type: 'kv_namespace' },
   { name: 'UPWIND_R2', type: 'r2_bucket' },
 ];
-const TRIAL_SECOND_D1: ResourceManifestEntry = { name: 'UPWIND_D1_2', type: 'd1' };
+const TRIAL_SECOND_D1: LocalStorageEntry = { name: 'UPWIND_D1_2', type: 'd1' };
 
 /** Keep native customer names and SDK defaults, with the original storage identifiers. */
 function localBindings(customerNames: readonly string[]): LocalStorageEntry[] {

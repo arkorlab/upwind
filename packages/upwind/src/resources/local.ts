@@ -7,7 +7,6 @@ import {
   formatResourcesManifest,
   type FunctionEnv,
   RESOURCES_MANIFEST_BINDING,
-  type ResourceManifestEntry,
   type ResourceType,
 } from '@stayingupwind/core/paas';
 import type { Miniflare, MiniflareOptions } from 'miniflare';
@@ -293,7 +292,7 @@ async function startRuntime(options: MiniflareOptions): Promise<Miniflare> {
 }
 
 /** The Node-side object for one binding, of whichever kind the manifest says it is. */
-async function bindingOf(runtime: Miniflare, entry: ResourceManifestEntry): Promise<unknown> {
+async function bindingOf(runtime: Miniflare, entry: LocalStorageEntry): Promise<unknown> {
   switch (entry.type) {
     case 'd1': {
       return runtime.getD1Database(entry.name);
@@ -322,7 +321,7 @@ class LocalStorageError extends Error {
 }
 
 /** The cheapest read there is of one binding: nothing is stored, and nothing is written. */
-async function probe(entry: ResourceManifestEntry, binding: unknown): Promise<void> {
+async function probe(entry: LocalStorageEntry, binding: unknown): Promise<void> {
   switch (entry.type) {
     case 'ai':
     case DURABLE_OBJECT_TYPE: {
@@ -456,7 +455,7 @@ async function afterDeadline(ms: number, said: string): Promise<never> {
  */
 async function proveReadable(
   env: FunctionEnv,
-  entries: readonly ResourceManifestEntry[],
+  entries: readonly LocalStorageEntry[],
 ): Promise<void> {
   await Promise.all(entries.map(async (entry) => probe(entry, env[entry.name])));
 }
@@ -472,7 +471,7 @@ async function proveReadable(
  */
 async function localEnv(
   runtime: Miniflare,
-  entries: readonly ResourceManifestEntry[],
+  entries: readonly LocalStorageEntry[],
 ): Promise<FunctionEnv> {
   const env = Object.create(null) as Record<string, unknown>;
   env[RESOURCES_MANIFEST_BINDING] = formatResourcesManifest(entries);
