@@ -330,4 +330,53 @@ describe('a module evaluation one request begins and others join', () => {
     await expect((await handlerOf(asked))(request, response, {})).resolves.toBe('second');
     expect(load).toHaveBeenCalledTimes(2);
   });
+
+  it('keeps no late module of an evaluation given up on once its thunk hands one over as it is', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const first = Promise.withResolvers<{ handler: NodeHandler }>();
+    const ready = { handler: () => Promise.resolve('ready') };
+    const load = vi.fn(() => (load.mock.calls.length === 1 ? first.promise : ready));
+    const asked = tables(load);
+    const begun = failureOf(nodeHandlerOf(asked, PAGE));
+    const joined = failureOf(nodeHandlerOf(asked, PAGE));
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await expect(joined).resolves.toContain(GIVEN_UP);
+
+    const retried = await nodeHandlerOf(asked, PAGE);
+
+    await expect(retried!(request, response, {})).resolves.toBe('ready');
+
+    first.resolve({ handler: () => Promise.resolve('first') });
+
+    // The request that began the first evaluation is answered with its module all the same.
+    await expect(begun).resolves.toBeUndefined();
+
+    const next = await nodeHandlerOf(asked, PAGE);
+
+    await expect(next!(request, response, {})).resolves.toBe('ready');
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
+  it('publishes no evaluation the host will not hold, and lets the request that began it await its module', async () => {
+    const module = Promise.withResolvers<{ handler: NodeHandler }>();
+    // A bundle's registry evaluates a module once: asked again, it hands back the same promise.
+    const load = vi.fn(() => module.promise);
+    const refused = vi.fn<WaitUntil>(() => {
+      throw new Error('waitUntil() called after the invocation ended');
+    });
+    const holding = vi.fn<WaitUntil>();
+    const begun = nodeHandlerOf({ ...tables(load), waitUntil: refused }, PAGE);
+    const next = nodeHandlerOf({ ...tables(load), waitUntil: holding }, PAGE);
+
+    // Joined to nothing the host holds: the next request begins it again, and holds it.
+    expect(refused).toHaveBeenCalledExactlyOnceWith(expect.any(Promise));
+    expect(holding).toHaveBeenCalledExactlyOnceWith(expect.any(Promise));
+
+    module.resolve({ handler: () => Promise.resolve('rendered') });
+
+    await expect(begun).resolves.toBeTypeOf('function');
+    await expect(next).resolves.toBeTypeOf('function');
+    expect(load).toHaveBeenCalledTimes(2);
+  });
 });
