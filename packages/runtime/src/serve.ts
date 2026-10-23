@@ -337,21 +337,17 @@ export function withoutBody(request: Request, response: Response): Response {
   return new Response(null, response);
 }
 
-/**
- * How long a response waits, before it is answered at all, for the host to record the
- * invalidations its request asked for (`InvalidatedTags.recorded`): past this it is answered all
- * the same, and they go on in `waitUntil` as they did.
- */
-export const INVALIDATIONS_RECORDED_WITHIN_MS = 2000;
+// How long a response waits for the host to record what its request invalidated, from the moment the
+// request asked for it: kept beside what holds the response for it (`InvalidatedTags`).
+export { INVALIDATIONS_RECORDED_WITHIN_MS } from './cache/context.ts';
 
 /**
  * `response`, telling the edge the tags the request invalidated at once
- * (`INVALIDATED_TAGS_HEADER`): those invalidated before its headers were written, which for a
- * Server Action that answers with the page it changed is every one — Next.js applies what the
- * action invalidated before it renders — and for a route handler, whose revalidations Next.js runs
- * behind its response, every one the host recorded while its headers waited
- * (`INVALIDATIONS_RECORDED_WITHIN_MS`). Never what the application said under that name, which is
- * the platform's to say.
+ * (`INVALIDATED_TAGS_HEADER`): every one the host recorded before its headers were written — those
+ * it recorded while they waited (`INVALIDATIONS_RECORDED_WITHIN_MS`), a Server Action's as a route
+ * handler's: Next.js runs a route handler's revalidations behind its response, and an action's page
+ * renders while the host records what the action invalidated (`invalidateOnce`). Never what the
+ * application said under that name, which is the platform's to say.
  */
 export function withInvalidatedTags(response: Response, invalidated: InvalidatedTags): Response {
   const { tags, revision } = invalidated;

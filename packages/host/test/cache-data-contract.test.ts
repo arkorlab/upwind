@@ -396,6 +396,25 @@ function invalidationOf(expire: number) {
   return { tags: [{ value: 'posts' }], expire, cause: REVALIDATED };
 }
 
+/**
+ * When the Worker that asked put the invalidation in force (`inForceAt`): carried as it came, and read
+ * by the authority alone, which records the invalidation at its own clock where it can read no
+ * moment (`inForceMoment`, in the cache) — so no value of it fails the invalidation itself.
+ */
+describe("an invalidation's moment", () => {
+  it('is carried as the Worker said it, a number or anything else', () => {
+    const at = { ...invalidationOf(0), inForceAt: 1_800_000_000_000 };
+    const odd = { ...invalidationOf(0), inForceAt: 'soon' };
+
+    expect(invalidateRequestSchema.parse(at).inForceAt).toBe(1_800_000_000_000);
+    expect(invalidateRequestSchema.parse(odd).inForceAt).toBe('soon');
+  });
+
+  it('may be left out, as by a Worker from before it was said', () => {
+    expect(invalidateRequestSchema.parse(invalidationOf(0))).not.toHaveProperty('inForceAt');
+  });
+});
+
 describe("an invalidation's window", () => {
   /** A `cacheLife` profile's `expire`, which Next.js takes in seconds, whole or not. */
   it('is any number of seconds a profile can give, and none below zero', () => {
