@@ -26,6 +26,7 @@ import {
   getStore,
   queryCompletedShell,
   type Store,
+  terminalShellPathname,
 } from '../store.ts';
 import { requestContext } from './context.ts';
 import { generationClassShell } from './generation-tags.ts';
@@ -119,11 +120,20 @@ function orderedRoutes(store: Store): readonly string[] {
   return routes;
 }
 
-/** Only a built, resumable class leaves the visitor's dynamic tail unresolved during regeneration. */
+/**
+ * The class a page's manual revalidation regenerates in its place, where its members share the
+ * class's entry: a built, resumable class, which leaves the visitor's dynamic tail unresolved
+ * during regeneration (`sharedShellPathname`), or a terminal shell keyed by the parameters it
+ * leaves open, whose entry answers every member as it is (`terminalShellPathname`). `next start`
+ * regenerates that shell's entry for a member's `res.revalidate` too: "explicit revalidation skips
+ * that path, so it must write the source key here" (`build/templates/app-page-runtime.ts`).
+ * Regenerated as the member instead, it was published under a pathname no request reads, and the
+ * call said the page had been revalidated.
+ */
 function sharedPathname(store: Store, shell: Prerender): string | undefined {
   return store.manifest.config.cacheComponents === true &&
     entrypointKindOf(store, shell.route) === 'app-page'
-    ? sharedShellPathname(shell)
+    ? (sharedShellPathname(shell) ?? terminalShellPathname(shell))
     : undefined;
 }
 
