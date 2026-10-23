@@ -154,6 +154,7 @@ const LOCATION_HEADER = 'location';
 interface ConfiguredAnswerContext {
   readonly forwarding: PassthroughResponseContext;
   readonly request: Pick<Request, 'method'>;
+  readonly later?: ReadonlySet<string> | undefined;
 }
 
 /** Remove actual field names, never malformed Connection options, from a stable list. */
@@ -172,7 +173,9 @@ function removeNominatedFields(headers: Headers, nominated: ReadonlySet<string> 
  * (`forwardedResponse`) is not a rule's to put back, and a name no header can have is left off.
  * The Function's and the rules' `Connection` options apply before middleware is merged: the
  * runtime would have laid the rules before forwarding removed the one hop's fields. A HEAD's
- * configured length is kept under the same status policy as an ordinary forwarded answer.
+ * configured length is kept under the same status policy as an ordinary forwarded answer. A
+ * field routing set later (`context.later`) keeps its value above these earlier rules; a later
+ * Connection replaces the earlier Connection before its nominations are considered.
  *
  * The Function leaves off only the rules that set headers. Its redirects ahead of the middleware
  * stay, each with its `Location`, so none is laid here: on any other answer — a path a redirect
@@ -186,13 +189,16 @@ export function layConfiguredOver(
   answer: Response,
   context: ConfiguredAnswerContext,
 ): void {
-  const connection = configured.headers[CONNECTION_HEADER];
+  const { later } = context;
+  const connection =
+    later?.has(CONNECTION_HEADER) === true ? undefined : configured.headers[CONNECTION_HEADER];
   const nominated = nominatedBy(answer.headers, connection);
   if (connection !== undefined) {
     removeNominatedFields(headers, nominated);
   }
   const scope = context.forwarding;
   for (const [name, value] of Object.entries(configured.headers)) {
+    if (later?.has(name) === true) continue;
     const length =
       name === CONTENT_LENGTH_HEADER &&
       context.request.method === 'HEAD' &&

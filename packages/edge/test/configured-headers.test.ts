@@ -1,5 +1,5 @@
 import { buildProjectManifest, requestHeaderRulesFor } from '@stayingupwind/core/manifest';
-import { HEADER_RULES_LEFT_HEADER } from '@stayingupwind/core/paas';
+import { HEADER_RULES_AFTER_HEADER, HEADER_RULES_LEFT_HEADER } from '@stayingupwind/core/paas';
 import type { ForwardingContext } from '@stayingupwind/core/request';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
@@ -121,6 +121,80 @@ describe('deferred configured headers', () => {
     expect(response.headers.has(HEADER_RULES_LEFT_HEADER)).toBe(false);
   });
 
+  it('keeps later routing fields above earlier rules and middleware, but rules above handler fields', async () => {
+    const origin = functionAnswer(true);
+    origin.headers.set('cache-control', 'public,max-age=31536000,immutable');
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'cache-control,x-precedence');
+    origin.headers.set('x-precedence', 'later-rule');
+    const response = await handedOn(
+      origin,
+      new Headers({ 'cache-control': 'no-store', 'x-precedence': 'middleware' }),
+      { headers: { 'cache-control': 'no-store' } },
+    );
+
+    expect(response.headers.get('cache-control')).toContain('max-age=31536000');
+    expect(response.headers.get('cache-control')).toContain('immutable');
+    expect(response.headers.get('x-precedence')).toBe('later-rule');
+    expect(response.headers.get('x-rule')).toBe('configured');
+    expect(response.headers.has(HEADER_RULES_AFTER_HEADER)).toBe(false);
+    expect(response.headers.has(HEADER_RULES_LEFT_HEADER)).toBe(false);
+  });
+
+  it('keeps a later rule cookie instead of appending earlier rule and middleware cookies', async () => {
+    const laterCookie = 'later=1; Path=/';
+    const origin = functionAnswer(true);
+    origin.headers.append('set-cookie', laterCookie);
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'set-cookie');
+    const response = await handedOn(origin, new Headers({ 'set-cookie': MIDDLEWARE_COOKIE }));
+
+    expect(response.headers.getSetCookie()).toStrictEqual([ORIGINAL_COOKIE, laterCookie]);
+    expect(response.headers.get('x-rule')).toBe('configured');
+  });
+
+  it('lets a later Connection replace the earlier rule Connection without restoring its nominations', async () => {
+    const origin = functionAnswer(true, 'X-Precedence');
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'connection,x-rule,x-precedence');
+    const response = await handedOn(origin, new Headers(), {
+      headers: { connection: 'X-Rule' },
+    });
+
+    expect(response.headers.get('x-rule')).toBe('origin');
+    expect(response.headers.get('x-precedence')).toBeNull();
+    expect(response.headers.get('connection')).toBeNull();
+  });
+
+  it('does not restore a later field nominated by the surviving earlier Connection', async () => {
+    const origin = functionAnswer(true);
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'x-rule');
+    const response = await handedOn(origin, new Headers(), {
+      headers: { connection: 'X-Rule' },
+    });
+
+    expect(response.headers.get('x-rule')).toBeNull();
+  });
+
+  it.each(['x-rule,', 'not a name', 'X-Rule'])(
+    'keeps the existing ordering for a malformed later-field marker: %s',
+    async (marker) => {
+      const origin = functionAnswer(true);
+      origin.headers.set(HEADER_RULES_AFTER_HEADER, marker);
+      const response = await handedOn(origin);
+
+      expect(response.headers.get('x-rule')).toBe('configured');
+      expect(response.headers.has(HEADER_RULES_AFTER_HEADER)).toBe(false);
+    },
+  );
+
+  it('does not accept later-field claims without the Function deferring the early rules', async () => {
+    const origin = functionAnswer(false);
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'x-precedence');
+    const response = await handedOn(origin, new Headers({ 'x-precedence': 'middleware' }));
+
+    expect(response.headers.get('x-rule')).toBe('origin');
+    expect(response.headers.get('x-precedence')).toBe('middleware');
+    expect(response.headers.has(HEADER_RULES_AFTER_HEADER)).toBe(false);
+  });
+
   it('leaves rules to a Function that did not defer them', async () => {
     const response = await handedOn(functionAnswer(false, 'X-Rule'));
 
@@ -225,6 +299,19 @@ describe('transport fields in deferred configured headers', () => {
 
     expect(response.headers.get('x-rule')).toBeNull();
     expect(response.headers.get('x-precedence')).toBeNull();
+  });
+
+  it('keeps a later HEAD length above an earlier rule without changing GET framing', async () => {
+    for (const method of ['HEAD', 'GET']) {
+      const origin = lengthAnswer(200, '11');
+      origin.headers.set(HEADER_RULES_AFTER_HEADER, 'content-length');
+      const response = await handedOn(origin, new Headers(), {
+        method,
+        headers: { 'content-length': '17' },
+      });
+
+      expect(response.headers.get('content-length')).toBe(method === 'HEAD' ? '11' : null);
+    }
   });
 
   it.each([

@@ -8,6 +8,7 @@ import { edgeJudgesHeaderRules } from './incoming.ts';
 import { middlewareInvoker, type MiddlewareTrace } from './middleware-invoke.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
 import {
+  noteLaterHeaderRules,
   parametersDecode,
   pathnamesFor,
   redirectedBeforeRouting,
@@ -152,6 +153,7 @@ export async function withRoutingOf(
     trace: untraced(),
   });
   settleRewrittenPath(routed.resolvedHeaders, headers, url, undefined);
+  noteLaterHeaderRules(routed, edgeJudgesHeaderRules(input.request.headers));
   const exit = routingExitOf(routed);
   if (exit instanceof URL) {
     const proxied = await exitAnswer(input, answer, async () => {
