@@ -405,6 +405,82 @@ renamed with it (above): its functions and classes keep their names, and its var
 parameters are renamed short. A cache module that reads its own functions' parameter names, through
 `Function.prototype.toString()`, would read renamed ones and not work.
 
+## Type declarations a Function carries
+
+A server module that runs TypeScript while it answers, such as Twoslash or a documentation renderer,
+reads the `.d.ts` files the build traced for it (`outputFileTracingIncludes`). The Function holds
+them in its in-memory file system under `/bundle`, the project's directory, where TypeScript runs
+(`tracedFiles` in `src/traced-files.ts`, `packageLinks` in `src/package-links.ts`). Code is bundled
+and does not travel this way. Only the declarations a trace lists do, with the `package.json` of a
+package held under a link.
+
+The Function's file system has no links. pnpm keeps each package in its store and links it into
+`node_modules`, so a declaration goes up under the name TypeScript finds its package by from
+`/bundle`:
+
+- **A package the project reaches through a link** is held at `node_modules/<name>`, whichever level
+  of the repository the link is at, the nearest from the project deciding. A link is held only when
+  it is what its path says: inside the repository, leading to a directory inside the real
+  repository, onto the package its name says. A link that fails that, such as an npm alias or one
+  out of the repository, holds nothing, and still hides farther packages of that name.
+- **Its traced `package.json` goes with it,** so TypeScript reads the package's entry and its
+  `typesVersions` (`@types/node` sends TypeScript 5.6 to `ts5.6/index.d.ts`).
+- **What it depends on** is held where TypeScript's upward walk from the held package finds it. That
+  means pnpm's links beside it in the store, under any `virtualStoreDir`, the store's own hoisted
+  `node_modules`, and a workspace package's own `node_modules`, up to the project's chain of
+  `node_modules` directories. A version other than the one the project's view holds goes inside the
+  package that depends on it. Only what the trace lists is followed, so this ends.
+- **A package in pnpm's store** drops its store path once it is held under a link. It is recognised
+  by pnpm's layout, `<store>/<id>/node_modules/<name>`, where `<id>` is pnpm's id for the package
+  (`@types+node@26.1.0`, `react-dom@18.3.1_react@18.3.1`). Any other package keeps its own path
+  beside the one under the link.
+- **Other traced links** keep their path from the repository, beside the declarations that name
+  them: a workspace package's own `node_modules`, and an intermediate ancestor's that a traced
+  declaration outside the project resolves through.
+- **TypeScript's own package** keeps the names the trace gives it: `@typescript/vfs` reads its
+  library from the one directory the build checked.
+
+What this does not do, by decision. Each case is left as described; a review that raises one of
+them again is answered by this list.
+
+1. **npm installs.** A package an npm install keeps in a real directory travels under its own path,
+   so a nested npm app's own `node_modules` is not reached from `/bundle`.
+2. **Aliases and links out of the repository** are never held. A `virtualStoreDir` outside the
+   repository is such a case.
+3. **TypeScript as a dependency.** A held package that imports `typescript` does not find it.
+   `lib/typescript.d.ts` is in the library directory `@typescript/vfs` requires to be the only one,
+   and a second mount of it is refused.
+4. **Dependencies are found up to the project's chain.** Past it, the project's view decides. A
+   linked workspace package, or a store package, that takes a root-level version the app shadows
+   with its own finds the app's version.
+5. **The repository root's `node_modules`** is the Function's `/bundle/node_modules`, which also
+   holds what the project finds. A declaration that travels under its own path elsewhere in the
+   repository and resolves through the root finds what the project finds there, even where the
+   root holds another version.
+6. **Intermediate ancestors.** An ancestor's `node_modules` goes up at its own path only when a
+   traced declaration outside the project lies under that ancestor. A package found both there and
+   by the project then goes up twice.
+7. **Type references.** `/// <reference types>` resolves from the project's type roots, in the
+   Function as on the build machine; only module imports resolve from a declaration's own place.
+8. **Store detection** follows pnpm's ids. A store whose directories don't, such as a hand-made
+   symlink farm, keeps both names.
+9. **Hoisting.** A dependency placed beside a top-level package, or found in the store's hoisted
+   `node_modules`, becomes visible to the project, as in an npm install.
+10. **Cycles.** A cycle of alternating versions is cut; the innermost copy resolves the version
+    above it.
+11. **Workspace links to large directories.** A link to a directory holding other traced
+    declarations, such as the repository root, names them again under the link.
+12. **Shadowed and mixed layouts.** A workspace root's package the project shadows still ships under
+    its store names, unreachable. A project link and a root real directory that claim one name fail
+    the build with "one logical name identifies different physical files".
+13. **`preserveSymlinks`.** Resolution from a link's own location, which the compiler option asks
+    for, is not modelled: placement follows where each package really is.
+14. **Relative references out of a relocated package.** A declaration inside a held package that
+    names a file outside the package by a relative path (`../shared/types.d.ts`) points at nothing
+    from its relocated copy. The original path, where it is kept, still resolves.
+15. **Untraced nearer packages.** The project's view looks only at what the trace lists. A package
+    that is on disk nearer to the project, but untraced, does not hide a farther traced one.
+
 ## The edge runtime
 
 A route with `export const runtime = 'edge'`, and the deprecated `middleware.ts`, are not modules
