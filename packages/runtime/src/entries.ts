@@ -229,6 +229,17 @@ async function evaluated<M>(
   return await begun(load, module, waitUntil);
 }
 
+/**
+ * Whether `module` is what a later lookup of `load` is handed: the module its latest evaluation
+ * settled with, or one its thunk hands over as it is, which no evaluation keeps. Not a module that
+ * an evaluation given up on settles with once a later one has begun, though the request that
+ * awaited it is handed it all the same (`settle`).
+ */
+function standsFor(load: Thunk<unknown>, module: unknown): boolean {
+  const kept = EVALUATIONS.get(load);
+  return kept === undefined || (kept.kind === 'evaluated' && kept.module === module);
+}
+
 /** The entrypoint for `id`, loaded: its module is evaluated here, on the first request for it. */
 export async function entryFor(tables: EntryTables, id: string): Promise<Entry | undefined> {
   const edge = tables.edge.entries[id];
@@ -260,8 +271,13 @@ function deferredNode(load: AppModule['entries'][string], id: string): NodeHandl
         // Held with the `waitUntil` of the render that begins it. A failed load is retried as an
         // eager lookup would retry it; only successful modules stay.
         const module = await evaluated(load, id, context.waitUntil);
-        deferred.handler = module.handler as NodeHandler;
-        return admitting('app', deferred.handler)(request, response, context);
+        const handler = module.handler as NodeHandler;
+        // Kept for later renders only while it is what a lookup is handed: the module of an
+        // evaluation a later one superseded serves the render that awaited it, and no other.
+        if (standsFor(load, module)) {
+          deferred.handler = handler;
+        }
+        return admitting('app', handler)(request, response, context);
       },
     };
     DEFERRED_NODES.set(load, deferred);
