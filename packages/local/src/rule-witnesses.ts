@@ -65,7 +65,9 @@ export function requestsForRules(
     manifest: stack.manifest,
     deployment: stack.manifest.deployment,
   });
-  const requestClass = classified?.kind === 'static-file' ? 'file' : 'document';
+  // A file's witnesses are held to what their conditions select of it (`selectedBy`), a range
+  // among them (Codex).
+  const requestClass = classified?.kind === 'static-file' ? 'file-selection' : 'document';
   // Include rules already selected by an ordinary sample: they can conceal a new witness's
   // other branch too. No independent regex-language prover is implied by one matching request.
   // Each read as a request of this class selects it, whose witnesses vary what it can carry.

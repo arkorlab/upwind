@@ -4170,6 +4170,39 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
+    it('is asked for as the range a rule of next.config sets headers on it for, and held to the part', async () => {
+      // A rule on the range a request asks, which the edge answers with that part, under the rule's
+      // headers as under the whole file's (Codex).
+      const part: HeaderRule = {
+        sourceRegex: String.raw`^/a\.txt$`,
+        has: [{ type: 'header', key: 'range', value: 'bytes=4-7' }],
+        headers: { 'X-Part': 'yes' },
+      };
+      const asFile = {
+        'content-type': TEXT,
+        'cache-control': REVALIDATE,
+        'x-arkor-edge': FILE_EDGE,
+      };
+      // Held as the visitor's alone, as the edge holds an answer a rule judged a request header for.
+      const ranged = {
+        test: (headers: IncomingMessage['headers']) => headers.range === 'bytes=4-7',
+        headers: { 'x-part': 'yes', 'cache-control': GATED },
+      };
+      answers.set('/a.txt', { headers: asFile, body: 'kept bytes', when: ranged });
+      const laid = await checkStack(stackOf([], files, { headerRules: [part] }));
+      answers.set('/a.txt', { headers: asFile, body: 'kept bytes' });
+      const omitted = await checkStack(stackOf([], files, { headerRules: [part] }));
+
+      expect(laid).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(omitted.failures).toStrictEqual([
+        {
+          path: '/a.txt',
+          reason:
+            'asked for as the request a rule of next.config sets headers on it for (range: bytes=4-7), asked for Range bytes=4-7, answered with x-part none, not the yes the application set',
+        },
+      ]);
+    });
+
     it('lays no rule on the Host on a file, as the edge judges its rules without it', async () => {
       const asFile = {
         'content-type': TEXT,

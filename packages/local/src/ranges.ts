@@ -11,7 +11,13 @@ import {
   type Subject,
   subjectOf,
 } from './asked-again.ts';
-import { describedFailure, expectationOf, fileFailure } from './file-expectations.ts';
+import type { ByteRange } from './byte-ranges.ts';
+import {
+  describedFailure,
+  expectationOf,
+  type FileExpectation,
+  fileFailure,
+} from './file-expectations.ts';
 import { rangeDigestOf } from './range-digests.ts';
 import type { Reading } from './reading.ts';
 
@@ -33,7 +39,7 @@ const RANGE_NOT_SATISFIABLE_STATUS = 416;
  * the application set and its cookies — kept by nobody, whatever the file is kept for: a cache
  * keyed on the URL alone would hand the 416 to every request for the file.
  */
-function unsatisfiedFailure(
+export function unsatisfiedFailure(
   range: string,
   read: {
     readonly file: StaticFileEntry;
@@ -145,6 +151,55 @@ export async function rangeFailure(
   }
   const subject = subjectOf(stack, again, { file, head: asked.answer.head });
   return said(subject, partFailure(stack, url, { subject, again, sent, end, what }));
+}
+
+/**
+ * Why a file asked for by a request that carries a range of it (`what`) — one a rule of `next.config`
+ * conditioned on a range has it carry (Codex) — is not answered as the edge answers the range it names
+ * (`requestedRange`): `206` under the `Content-Range` those bytes are, their length, those bytes of the
+ * file as far as they were read, and the whole file's headers — the rule's among them.
+ */
+export function selectedRangeFailure(
+  stack: CheckedStack,
+  subject: Subject,
+  read: {
+    readonly answer: Reading;
+    readonly what: string;
+    readonly range: ByteRange;
+    readonly expected: FileExpectation;
+  },
+): string | undefined {
+  const { file } = subject;
+  const { answer, what, range, expected } = read;
+  if (answer.status !== PARTIAL_CONTENT_STATUS) {
+    return `answered ${what} with ${answer.status}, not ${PARTIAL_CONTENT_STATUS}`;
+  }
+  const named = `bytes ${range.start}-${range.end}/${file.byteLength}`;
+  const contentRange = answer.headers['content-range'];
+  if (contentRange !== named) {
+    return `answered ${what} under Content-Range ${contentRange ?? 'none'}, not ${named}`;
+  }
+  const size = range.end - range.start + 1;
+  if (answer.headers['content-length'] !== String(size) || answer.length !== size) {
+    return `answered ${what} with ${answer.length} bytes, not the range's ${size}`;
+  }
+  // As many of its bytes as were read, against the file's own from where the range starts: its first
+  // bytes as the whole file was answered, by their digest the file's own, where they reach that far;
+  // its blob otherwise.
+  const seen = answer.head.subarray(0, Math.min(size, answer.head.length));
+  const { head } = subject;
+  const held =
+    head !== undefined && head.length >= range.start + seen.length
+      ? head.subarray(range.start, range.start + seen.length)
+      : blobBytesAt(stack, file, range.start, seen.length);
+  if (held === undefined) {
+    return `answered ${what} of a file the build holds no bytes of`;
+  }
+  if (!seen.equals(held)) {
+    return `answered ${what} with other bytes than the file's`;
+  }
+  const described = describedFailure(answer, expected, false);
+  return described === undefined ? undefined : `asked for ${what}, ${described}`;
 }
 
 /** An If-Range tag must strongly name the representation selected by this follow-up. */
