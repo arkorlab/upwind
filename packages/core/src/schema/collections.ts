@@ -12,8 +12,8 @@ export class ArraySchema<E extends Typed = Typed> extends Schema<
   undefined,
   undefined
 > {
-  readonly element: E;
   private upperCap: number | undefined;
+  readonly element: E;
 
   constructor(element: E) {
     super();
