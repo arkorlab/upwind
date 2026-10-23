@@ -5,7 +5,14 @@ import { assert, describe, expect, it } from 'vitest';
 
 import { fileRequestsFor } from '../src/browsers.ts';
 import { claimedBy, escaping, type Target } from '../src/escaping.ts';
-import { edgeReads, middlewareReads, routedReads } from '../src/routing-reads.ts';
+import {
+  classifiedReads,
+  edgeReads,
+  forwardedReads,
+  handedReads,
+  middlewareReads,
+  routedReads,
+} from '../src/routing-reads.ts';
 
 const URL_OF_FILE = new URL('https://site.example/a.txt');
 const AT = '2026-10-21T00:00:00.000Z';
@@ -113,6 +120,18 @@ describe('the headers used for pre-middleware rule and matcher checks', () => {
       missing: [{ type: 'cookie' as const, key: EDGE_BYPASS_COOKIE }],
       expected: true,
     },
+    {
+      label: 'Host the runtime gives back present',
+      has: [{ type: 'header' as const, key: 'host' }],
+      missing: [],
+      expected: true,
+    },
+    {
+      label: 'Host the runtime gives back absent',
+      has: [],
+      missing: [{ type: 'header' as const, key: 'host' }],
+      expected: false,
+    },
   ])('uses $label for both reservation and escape selection', (example) => {
     const rule: ReservedRoute = {
       sourceRegex: '^/a[.]txt$',
@@ -133,6 +152,18 @@ describe('the headers used for pre-middleware rule and matcher checks', () => {
     expect(escaping(target, sent, () => true).kind).toBe(example.expected ? 'claimed' : 'escaped');
     expect(sent['via']).toBe('the visitor');
     expect(sent['cookie']).toContain(EDGE_BYPASS_COOKIE);
+  });
+
+  it('reads the Host the Function routes by on every routing view, and hands on none', () => {
+    // As the check sends a request: under the site's own Host, which forwarding takes off and the
+    // Function's runtime gives back from the URL before Next.js routes it (greptile).
+    const sent = { ...clientHeaders(), host: URL_OF_FILE.host };
+    const left = new Headers(clientHeaders());
+
+    expect(forwardedReads(URL_OF_FILE, sent).has('host')).toBe(false);
+    expect(routedReads(URL_OF_FILE, sent).get('host')).toBe(URL_OF_FILE.host);
+    expect(handedReads(URL_OF_FILE, sent, left).get('host')).toBe(URL_OF_FILE.host);
+    expect(classifiedReads(MANIFEST, URL_OF_FILE, sent).get('host')).toBe(URL_OF_FILE.host);
   });
 
   it('can escape a file reservation through a deployment header without changing the file class', () => {

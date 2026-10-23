@@ -7934,6 +7934,34 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
+    it('is claimed where a rule asks of the Host the Function routes it under', async () => {
+      answers.set('/404', notFoundFile);
+      answers.set(MISS, { headers: { 'content-type': HTML }, body: FRONT + REST });
+      // Forwarding takes `Host` off, and the Function's runtime gives it back from the URL before
+      // Next.js routes the miss: a rule on it claims every miss there, and one on its absence none.
+      const hosted = await checkStack(
+        stackOf([], files, {
+          exported: true,
+          catchAll: true,
+          catchAllWhen: [{ type: 'header', key: 'host' }],
+          functions: ['app'],
+        }),
+      );
+      const hostless = await checkStack(
+        stackOf([], files, {
+          exported: true,
+          catchAll: true,
+          catchAllUnless: [{ type: 'header', key: 'host' }],
+          functions: ['app'],
+        }),
+      );
+
+      expect(hosted).toStrictEqual({ checked: 2, failures: [], skipped: [] });
+      expect(hostless.failures).toStrictEqual([
+        { path: 'app', reason: 'answered 200 for a pathname no file is held for, not 404' },
+      ]);
+    });
+
     it('is asked all the same where a rule claims every pathname, and held to not failing', async () => {
       answers.set('/404', notFoundFile);
       answers.set(MISS, { headers: { 'content-type': HTML }, body: FRONT + REST });

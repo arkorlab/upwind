@@ -175,7 +175,8 @@ export function protocolCondition(
  * Whether forwarding takes the header `name` off every request it hands on
  * (`sanitizePassthroughHeaders`): a hop's own, or one of the runtime's internal ones. Routing reads a
  * request as forwarding hands it on (`routedReads`), where none of them is, whatever the request
- * was sent with.
+ * was sent with — but `Host`, which the Function's runtime gives back from the URL, the same for
+ * every request to it.
  */
 function forwardingRemoves(name: string): boolean {
   return HOP_BY_HOP_HEADERS.includes(name) || INTERNAL_REQUEST_HEADERS.includes(name);
