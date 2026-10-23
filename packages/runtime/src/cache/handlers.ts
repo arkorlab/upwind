@@ -28,7 +28,8 @@ import {
   tableOf,
   writesIn,
 } from './held-writes.ts';
-import type { DataEntryMetadata, InvalidateOutcome } from './host.ts';
+import type { DataEntryMetadata, InvalidateOutcome, InvalidateRequest } from './host.ts';
+import * as ownMarks from './own-marks.ts';
 import {
   fetchedAgainBehind,
   holdForRevalidation,
@@ -88,6 +89,13 @@ function detail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Invalidate `tags` — at once, as `updateTag` and `revalidateTag` without a window do, or within the
+ * window `durations` names — in force in this isolate before the host is asked
+ * (`TagState.applyLocal`), at the moment the request puts it in force at (`own-marks.ts`), which the
+ * host is told (`InvalidateRequest.inForceAt`). What the host answers stands for the mark here once
+ * it comes; a call it fails leaves the mark in force all the same, and fails.
+ */
 async function invalidate(
   runtime: CacheRuntime,
   tags: readonly string[],
@@ -99,19 +107,26 @@ async function invalidate(
   const now = nowMs();
   // `updateTag`, and `revalidateTag` without a window, take effect at once.
   const expire = durations?.expire ?? 0;
+  // The moment the request puts it in force at: no earlier than what it stamped before, and before
+  // what it computes from here on (`own-marks.ts`).
+  const at = ownMarks.markIn(requestContext(), now);
   // In force here before the host has answered: a read in this isolate while the call is out must
-  // not be answered with what is being invalidated. What the host answers stands for it below.
+  // not be answered with what is being invalidated. What the host answers stands for it below. At
+  // once means by the clock, which the moment can be ahead of.
   const call = runtime.tags.applyLocal(tags, {
-    staleAt: now,
-    hardExpireAt: expire > 0 ? now + expire * MS_PER_SECOND : now,
+    staleAt: at,
+    hardExpireAt: expire > 0 ? at + expire * MS_PER_SECOND : now,
   });
+  const asked: InvalidateRequest = {
+    tags,
+    ...(expire > 0 && { expire }),
+    api: durations === undefined ? 'updateTag' : 'revalidateTag',
+    // When it was put in force here: a host may record it then rather than once it has the call.
+    inForceAt: at,
+  };
   let outcome: InvalidateOutcome;
   try {
-    outcome = await runtime.host.invalidate({
-      tags,
-      ...(expire > 0 && { expire }),
-      api: durations === undefined ? 'updateTag' : 'revalidateTag',
-    });
+    outcome = await ownMarks.onceClockPasses(at, now, () => runtime.host.invalidate(asked));
   } catch (error) {
     // In force here all the same, and known at no revision: the host may never have recorded it.
     runtime.tags.settleLocal(call);
@@ -132,24 +147,26 @@ export function invalidateNow(runtime: CacheRuntime, tags: readonly string[]): P
 }
 
 /**
- * The invalidations each request has out with the host, by what they invalidate.
+ * The invalidations each request has asked for in the turn under way, by what they invalidate.
  *
  * Next.js hands every `updateTag` and `revalidateTag` to each cache handler it has, in one turn —
  * the `default` and `remote` `use cache` handlers and the fetch cache (`revalidateTags`, in
  * `server/revalidation-utils.ts`) — and all three are this module's, over one host. Each made its
- * own call for the same invalidation: three calls to the host where one does. The first now goes,
- * and the others asked for while it is out are handed what it comes to — whether Next.js asks them
- * in the same turn, as it does, or a turn later.
+ * own call for the same invalidation: three calls to the host where one does. The first of a turn
+ * now goes, and the others asked for in that turn are handed what it comes to.
  *
- * Only within a request, and only while the call is out. A request's response tells the edge what
- * that request invalidated (`RequestContext.invalidated`), which only its own call puts there; and
- * the same tags invalidated again once the call has been answered are invalidated at a later moment.
+ * Only within a request, and only within the turn. A request's response tells the edge what that
+ * request invalidated (`RequestContext.invalidated`), which only its own call puts there. And the
+ * same tags asked for in a later turn are invalidated at a later moment, whether or not the call
+ * before is still out: the request goes on while it is (`invalidateOnce`) — a Server Action's
+ * render, and what Next.js runs behind it (`after`) — and an invalidation joined to a call the host
+ * may have recorded already would stand at that call's moment, before the change it was asked for.
  */
-const invalidationsOut = new WeakMap<RequestContext, Map<string, Promise<void>>>();
+const invalidationsAsked = new WeakMap<RequestContext, Map<string, Promise<void>>>();
 
 /**
- * Invalidate `tags`, as Next.js asks a handler to, once however many of the handlers it asks while
- * the call is out (`invalidationsOut`), and never as a failure of the request that asked.
+ * Invalidate `tags`, as Next.js asks a handler to, once however many of the handlers it asks in the
+ * turn (`invalidationsAsked`), and never as a failure of the request that asked.
  *
  * The request has already done what the invalidation is for — a Server Action has written what it
  * changed — and an invalidation the host could not record failed the action with it: an error over
@@ -158,13 +175,30 @@ const invalidationsOut = new WeakMap<RequestContext, Map<string, Promise<void>>>
  * elsewhere as it was before the call: until the host records another invalidation of its tags, or
  * the entries expire.
  *
- * The request's response is not answered before the host has recorded the call — not its first
- * byte either, for no longer than `INVALIDATIONS_RECORDED_WITHIN_MS` (`InvalidatedTags`). Next.js
- * runs a route handler's revalidations behind its response (`pendingWaitUntil`, in
- * `app-route/module.ts`), and whoever made the request moves on once its headers come: a request
- * made then was answered — here or in any other isolate — before the host had recorded the
- * invalidation, and what it fetched meanwhile was written as made before it, which the host
- * condemned by that invalidation and the next read fetched again.
+ * Within a request, a handler answers once the invalidation is in force in this isolate, not once
+ * the host has recorded it. Next.js renders a Server Action's page only once every handler has
+ * answered (`executeActionAndPrepareForRender`, in `app-render/action-handler.ts`), and a host's
+ * record can take a while — the changes queued ahead of it, the records it rewrites before it
+ * answers — all of which the action's response waited for before its render began. The render runs
+ * in this isolate, whose reads judge what they find against the mark the call put in force at once
+ * (`TagState.applyLocal`), so it misses what the invalidation made stale however far the host has
+ * got; what the host says stands for the mark once it answers.
+ *
+ * The request's response is not answered before the host has recorded the call all the same — not
+ * its first byte either, for no longer than `INVALIDATIONS_RECORDED_WITHIN_MS` (`InvalidatedTags`):
+ * the render and the record go on side by side, and the response waits for the later of the two.
+ * Whoever made the request moves on once its headers come: a request made then was answered — here
+ * or in any other isolate — before the host had recorded the invalidation, and what it fetched
+ * meanwhile was written as made before it, which the host condemned by that invalidation and the
+ * next read fetched again. Next.js runs a route handler's revalidations behind its response
+ * (`pendingWaitUntil`, in `app-route/module.ts`), which waits for them the same way. Recorded
+ * within the bound, the invalidation is told to the edge on the response, at the revision the host
+ * recorded it at (`withInvalidatedTags`); past it, the response goes without it, and the call goes
+ * on in `waitUntil`.
+ *
+ * A regeneration's handler still answers once the host has, as no response is held for its call
+ * (`answeredFor`); so does one asked outside any request, with neither a response to hold nor a
+ * `waitUntil` to keep the call going.
  *
  * Nothing at all for a capture's render (`asCapture`), which keeps nothing: what it would
  * invalidate stands as it was, here and at the host.
@@ -190,14 +224,19 @@ function invalidateOnce(
     durations?.expire ?? 0,
     [...new Set(effectiveTags)].toSorted((a, b) => a.localeCompare(b)),
   ]);
-  const out = invalidationsOut.get(context) ?? new Map<string, Promise<void>>();
-  invalidationsOut.set(context, out);
-  const pending = out.get(asked);
-  if (pending !== undefined) {
-    return pending;
+  const turn = invalidationsAsked.get(context) ?? new Map<string, Promise<void>>();
+  invalidationsAsked.set(context, turn);
+  const joined = turn.get(asked);
+  if (joined !== undefined) {
+    return answeredFor(context, joined);
   }
-  const call = whileOut(out, asked, invalidateLogged(runtime, effectiveTags, durations));
-  out.set(asked, call);
+  // In force here before this returns: `invalidate` applies the mark before it first waits.
+  const call = invalidateLogged(runtime, effectiveTags, durations);
+  turn.set(asked, call);
+  // Gone with the turn: every handler Next.js asks for one invalidation is asked within it.
+  queueMicrotask(() => {
+    turn.delete(asked);
+  });
   // Kept going past the response, as a write is (`PlatformFetchCache.set`): one the host has not
   // answered by the time the response is (`INVALIDATIONS_RECORDED_WITHIN_MS`) is still recorded.
   try {
@@ -205,24 +244,20 @@ function invalidateOnce(
   } catch {
     // A host whose invocation has ended takes nothing more on; the call goes on as far as it can.
   }
-  // Not a regeneration's: its response served what was there before, as for its writes.
-  if (!isRegeneration()) {
-    context.invalidated.hold(call);
-  }
-  return call;
+  return answeredFor(context, call);
 }
 
-/** `call`, kept under `asked` until it has been answered. */
-async function whileOut(
-  out: Map<string, Promise<void>>,
-  asked: string,
-  call: Promise<void>,
-): Promise<void> {
-  try {
-    await call;
-  } finally {
-    out.delete(asked);
+/**
+ * What a handler handed `call` answers with (`invalidateOnce`): at once, with the request's response
+ * held for the call instead (`InvalidatedTags.hold`). A regeneration's is the call itself: its
+ * response served what was there before, as for its writes, and is held for nothing.
+ */
+function answeredFor(context: RequestContext, call: Promise<void>): Promise<void> {
+  if (isRegeneration()) {
+    return call;
   }
+  context.invalidated.hold(call);
+  return Promise.resolve();
 }
 
 async function invalidateLogged(
@@ -332,6 +367,12 @@ export class PlatformFetchCache {
   // Next.js constructs it with its own context (fs, dev, revalidatedTags, …); none of it applies
   // here, and none is taken.
 
+  /**
+   * What a read of `cacheKey` finds, judged against the tags it is asked under and the entry's own:
+   * a value to serve, fresh, or stale with a moment of zero for Next.js to fetch it again behind;
+   * `null` for a miss and for what may not be served. When the read began is kept for the write that
+   * may follow it (`fetchStarts`), past the request's own invalidations (`own-marks.ts`).
+   */
   async get(
     cacheKey: string,
     ctx: FetchGetContext,
@@ -344,7 +385,8 @@ export class PlatformFetchCache {
     const now = nowMs();
     const context = requestContext();
     if (context !== undefined && !context.fetchStarts.has(cacheKey)) {
-      context.fetchStarts.set(cacheKey, now);
+      // Past the request's own invalidations put in force before it (`own-marks.ts`).
+      context.fetchStarts.set(cacheKey, ownMarks.stampedAfterMarks(context, now));
     }
     let held: HeldValue | undefined;
     try {
@@ -518,6 +560,12 @@ export interface UseCacheHandler {
   updateTags(tags: string[], durations?: { expire?: number }): Promise<void>;
 }
 
+/**
+ * What a read of the `use cache` handler of `kind` finds of `cacheKey`, judged against the soft tags
+ * it is asked under and the entry's own: the entry as Next.js takes it, marked to be computed again
+ * where it is stale, or nothing for a miss and for what may not be served. The read is noted for the
+ * value it may begin (`useCacheReadBegan`).
+ */
 async function getUseCache(
   runtime: CacheRuntime,
   kind: string,
@@ -525,6 +573,7 @@ async function getUseCache(
   softTags: string[],
 ): Promise<UseCacheEntry | undefined> {
   const now = nowMs();
+  ownMarks.useCacheReadBegan(requestContext(), kind, cacheKey);
   // The soft tags — the route's own — are known before the entry is: they are brought up to date
   // while the value is read, and the entry's own tags once it has been.
   const [held] = await Promise.all([
@@ -658,7 +707,8 @@ async function setUseCache(
       handler: kind,
       tags: [...entry.tags],
       stale: entry.stale,
-      timestamp: entry.timestamp,
+      // Past the request's own invalidations put in force before its first read (`own-marks.ts`).
+      timestamp: ownMarks.useCacheStamp(context, kind, cacheKey, entry.timestamp),
       expire: entry.expire,
       revalidate: entry.revalidate,
     };

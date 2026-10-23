@@ -42,6 +42,46 @@ const MILLISECONDS_PER_SECOND = 1000;
 const INVALIDATION_BATCH_SIZE = 200;
 const TAG_MASK_BITS = 32;
 
+/**
+ * How far before its own clock the authority lets an invalidation take effect, where the Worker that
+ * asked says when it put it in force there (`InvalidateRequest.inForceAt`, `inForceMoment`).
+ *
+ * The moment is the Worker's to say: a runtime puts an invalidation in force in its isolate before it
+ * calls, and renders on — a Server Action's page, while the authority records what the action
+ * invalidated — stamping what it computes after the invalidation later than it. Recorded at the
+ * authority's own clock, once the call had come, the invalidation condemned those values, made after
+ * it as they were. So it is recorded at the Worker's moment, but never later than the authority's
+ * clock, which no invalidation may reach past, and no further back than this: what another isolate
+ * made in between — by a clock that read later than the moment, from what its view still held of
+ * values from before — is kept, where it would have been condemned. That window is the one Next.js
+ * keeps itself, whose tags expire as of the moment `revalidateTag` ran on the server that ran it, and
+ * this bounds it. Two seconds is how long the runtime holds the response of a request that
+ * invalidated for the record of it, and the writes of its render behind it: a call that reaches the
+ * authority within that comes while the request still waits on it, beside what its render wrote. One
+ * that comes later — a call held up, a later chunk of a large one, a moment forged — is recorded as if
+ * put in force two seconds before it came.
+ */
+export const IN_FORCE_WITHIN_MS = 2000;
+
+/**
+ * The moment an invalidation takes effect at, by the authority's clock `now`: the one the Worker said
+ * it put it in force at, no later than `now` and no earlier than `IN_FORCE_WITHIN_MS` before it — a
+ * fraction of a millisecond taken to the next whole one, as a moment that reaches more — or `now`
+ * where it said none, or nothing a moment can be read from (`isMoment`).
+ */
+export function inForceMoment(request: Pick<InvalidateRequest, 'inForceAt'>, now: number): number {
+  const said = request.inForceAt;
+  if (!isMoment(said)) {
+    return now;
+  }
+  return Math.min(now, Math.max(now - IN_FORCE_WITHIN_MS, Math.ceil(said)));
+}
+
+/** Whether what the Worker said of an invalidation's moment is one: a number, and a finite one. */
+function isMoment(said: unknown): said is number {
+  return typeof said === 'number' && Number.isFinite(said);
+}
+
 interface InvalidatePlan {
   readonly request: InvalidateRequest;
   readonly targets: readonly { readonly ref: TagRef; readonly invalidationId: string }[];
@@ -109,14 +149,45 @@ function insertInvalidation(sql: SqlStorage, row: InvalidationRow): void {
   );
 }
 
-/** Condemn the matching set in SQLite without allocating a generation/event per entry. */
+/**
+ * Of the entries with one of the tags `?` (a JSON array of their ids), those whose current value of
+ * the data cache was made after the moment `?`, by its own timestamp: when the value began to be
+ * computed, which the value's write is fenced by too (`dataCondemnation`, in `data.ts`). An
+ * invalidation taking effect at that moment reaches none of them. A render goes on while the
+ * authority records what its request invalidated (`inForceMoment`), and what it computed after the
+ * moment can be written, and stand current, before the call — or a later chunk of a large one — is
+ * recorded: it is kept, as the same write arriving after it is. Looked for among the entries with
+ * the tags, by their index, and not among every entry of the scope, which has no index of kinds:
+ * what an invalidation reads is what it reaches, as it was.
+ *
+ * Only by a moment the Worker said: where it said none, the moment `?` is past every timestamp, and
+ * none is found (`applyInvalidate`). And only the data cache's. A page's or a route handler's
+ * generation is stamped when its regeneration built the commit, after its render had read what it is
+ * made of, so nothing of it says when that render read: it is reached by its tags alone, as it was.
+ */
+const MADE_AFTER_THE_MOMENT = `SELECT e.entry_id FROM entry_tags et
+  JOIN entries e ON e.entry_id = et.entry_id
+  JOIN generations g ON g.generation_id = e.current_generation_id
+  WHERE et.tag_id IN (SELECT value FROM json_each(?))
+    AND e.kind LIKE 'data:%' AND g.cache_timestamp > ?`;
+
+/**
+ * Condemn the matching set in SQLite without allocating a generation/event per entry: the current
+ * generations of the entries with the tags, and those entries — but the values made after the moment
+ * `sparedAfter` (`MADE_AFTER_THE_MOMENT`), which the invalidation does not reach.
+ */
 function condemnCurrent(
   input: TxInput,
   tagIds: readonly string[],
   immediate: boolean,
-  hardExpireAt: number,
+  moments: {
+    readonly staleAt: number;
+    readonly hardExpireAt: number;
+    readonly sparedAfter: number;
+  },
 ): void {
   const { sql, now, revision } = input;
+  const { staleAt, hardExpireAt, sparedAfter } = moments;
   const targets = JSON.stringify(tagIds);
   sql.exec(
     `UPDATE generations SET condemned = json_object(
@@ -126,14 +197,16 @@ function condemnCurrent(
      ) WHERE generation_id IN (
        SELECT current_generation_id FROM entries WHERE entry_id IN (
          SELECT entry_id FROM entry_tags WHERE tag_id IN (SELECT value FROM json_each(?))
-       )
+       ) AND entry_id NOT IN (${MADE_AFTER_THE_MOMENT})
      )`,
     revision,
-    now,
-    now,
+    staleAt,
+    staleAt,
     hardExpireAt,
     hardExpireAt,
     targets,
+    targets,
+    sparedAfter,
   );
   sql.exec(
     `UPDATE entries SET revision = ?, record_revision = ?,
@@ -142,12 +215,14 @@ function condemnCurrent(
        updated_at = ?
      WHERE entry_id IN (
        SELECT entry_id FROM entry_tags WHERE tag_id IN (SELECT value FROM json_each(?))
-     )`,
+     ) AND entry_id NOT IN (${MADE_AFTER_THE_MOMENT})`,
     revision,
     revision,
     immediate ? revision : null,
     now,
     targets,
+    targets,
+    sparedAfter,
   );
 }
 
@@ -159,8 +234,18 @@ interface AffectedRow extends Record<string, SqlStorageValue> {
   readonly mask3: number;
 }
 
-/** Four 32-bit masks encode up to 128 tag memberships once per affected entry. */
-function affectedEntries(sql: SqlStorage, tagIds: readonly string[]): AffectedRow[] {
+/**
+ * Four 32-bit masks encode up to 128 tag memberships once per affected entry: an entry with one of
+ * the tags whose current value was not made after the moment `sparedAfter`
+ * (`MADE_AFTER_THE_MOMENT`). What the history is told the invalidation reached, as what it condemns
+ * (`condemnCurrent`).
+ */
+function affectedEntries(
+  sql: SqlStorage,
+  tagIds: readonly string[],
+  sparedAfter: number,
+): AffectedRow[] {
+  const targets = JSON.stringify(tagIds);
   return sql
     .exec<AffectedRow>(
       `SELECT et.entry_id,
@@ -169,8 +254,11 @@ function affectedEntries(sql: SqlStorage, tagIds: readonly string[]): AffectedRo
        SUM(CASE WHEN CAST(t.key AS INTEGER) BETWEEN 64 AND 95 THEN 1 << (CAST(t.key AS INTEGER) - 64) ELSE 0 END) AS mask2,
        SUM(CASE WHEN CAST(t.key AS INTEGER) BETWEEN 96 AND 127 THEN 1 << (CAST(t.key AS INTEGER) - 96) ELSE 0 END) AS mask3
      FROM entry_tags et JOIN json_each(?) t ON t.value = et.tag_id
+     WHERE et.entry_id NOT IN (${MADE_AFTER_THE_MOMENT})
      GROUP BY et.entry_id ORDER BY et.entry_id`,
-      JSON.stringify(tagIds),
+      targets,
+      targets,
+      sparedAfter,
     )
     .toArray();
 }
@@ -253,6 +341,12 @@ function entryIdsFor(
     : affected.filter((entry) => includesTag(entry, index)).map((entry) => entry.entry_id);
 }
 
+/**
+ * An invalidation's transaction: refused before anything is written where the scope may hold no
+ * more of what it would keep; otherwise each tag recorded at the moment it takes effect at
+ * (`inForceMoment`), the entries it reaches condemned (`condemnCurrent`), and the history told what
+ * it reached (`affectedEntries`).
+ */
 function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateResponse | Refusal {
   const { sql, scopeId, now, revision, limits } = input;
   const scope = requireActiveScope(sql);
@@ -285,19 +379,32 @@ function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateRespon
   const { request } = plan;
   const immediate = request.expire === undefined || request.expire === 0;
   // A window of a fraction of a second ends on the nearest whole millisecond, as every deadline is
-  // kept, and one past `now` at the least, so it is never none.
+  // kept, and one past the moment at the least, so it is never none.
   const windowMs = Math.max(1, Math.round((request.expire ?? 0) * MILLISECONDS_PER_SECOND));
+  // When the Worker put it in force, within the window the authority allows (`inForceMoment`).
+  const at = inForceMoment(request, now);
   const deadlines = {
-    staleAt: now,
-    hardExpireAt: immediate ? now : now + windowMs,
+    staleAt: at,
+    hardExpireAt: immediate ? at : at + windowMs,
     meaning: immediate ? ('immediate' as const) : ('swr' as const),
   };
+  // A value of the data cache made after the moment is spared only where the Worker said the moment,
+  // even one the window clamped (`MADE_AFTER_THE_MOMENT`). Where it said none — a Function from
+  // before it said any, or nothing to be read — the moment is the authority's own clock, while a
+  // value's timestamp is a Worker's: one whose clock runs a little ahead would stamp a value made
+  // before the invalidation later than the authority's clock, and so out of its reach. There none is
+  // spared, and the tags alone reach, as they did before a moment was said. And none is spared below
+  // the moment said, where that is ahead of the clock it was recorded at: a value stamped between the
+  // two, by the clock that said it, was made before the invalidation.
+  const said = request.inForceAt;
+  const sparedAfter = isMoment(said) ? Math.max(at, Math.ceil(said)) : Infinity;
   const events: EventInput[] = [];
   const persistentTargets = plan.targets.filter((target) => persistent.has(target.ref.tagId));
   const indices = new Map(persistentTargets.map((target, index) => [target.invalidationId, index]));
   const affected = affectedEntries(
     sql,
     persistentTargets.map((target) => target.ref.tagId),
+    sparedAfter,
   );
   const compact = affected.length > INVALIDATION_BATCH_SIZE;
   const invalidations: InvalidateResponse['invalidations'] = [];
@@ -326,7 +433,7 @@ function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateRespon
     input,
     plan.targets.map((target) => target.ref.tagId),
     immediate,
-    deadlines.hardExpireAt,
+    { ...deadlines, sparedAfter },
   );
   if (compact) {
     const invalidationIds = persistentTargets.map((target) => target.invalidationId);
