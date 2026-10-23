@@ -20,15 +20,9 @@ const repairTuple = z
     fields.role,
     fields.storageRef.refine(isRepairStorageRef),
   ])
-  .transform(([artifactId, sha256, byteLength, contentType, encoding, role, storageRef]) => ({
-    artifactId,
-    sha256,
-    byteLength,
-    contentType,
-    encoding,
-    role,
-    storageRef,
-  }));
+  .transform(([artifactId, sha256, byteLength, contentType, encoding, role, storageRef]) => {
+    return { artifactId, sha256, byteLength, contentType, encoding, role, storageRef };
+  });
 // The ordinary shape is first: legacy rows take the same artifact parser without an extra walk.
 const storedArtifact = z.union([ordinaryArtifact, repairTuple]);
 const storedOutputs = z.array(ordinaryOutput.extend({ artifacts: z.array(storedArtifact) }));
@@ -46,9 +40,11 @@ export function decodeStoredOutputs(text: string): OutputSnapshot[] {
 export function encodeStoredOutputs(outputs: readonly OutputSnapshot[], compact = false): string {
   if (!compact) return JSON.stringify(outputs);
   return JSON.stringify(
-    outputs.map((output) => ({
-      ...output,
-      artifacts: output.artifacts.map(compactCacheArtifact),
-    })),
+    outputs.map((output) => {
+      return {
+        ...output,
+        artifacts: output.artifacts.map((artifact) => compactCacheArtifact(artifact)),
+      };
+    }),
   );
 }

@@ -17,6 +17,18 @@ function consumersOf(bundle: DeploymentBundle): readonly (readonly [string, Func
   ];
 }
 
+const ASCII_CONTROL_END = 32;
+const ASCII_DELETE = 127;
+
+/** Module identities cannot contain ASCII controls, even when an uploader accepts their bytes. */
+function hasControlCharacter(name: string): boolean {
+  for (let at = 0; at < name.length; at += 1) {
+    const code = name.codePointAt(at);
+    if (code !== undefined && (code < ASCII_CONTROL_END || code === ASCII_DELETE)) return true;
+  }
+  return false;
+}
+
 /** An uploaded module cannot alias or override the audited main module or one of its imports. */
 function unambiguousModules(spec: FunctionSpec): boolean {
   const seen = new Set<string>();
@@ -25,7 +37,7 @@ function unambiguousModules(spec: FunctionSpec): boolean {
     if (
       module.name.includes('\\') ||
       module.name.includes(':') ||
-      /[\u0000-\u001f\u007f]/u.test(module.name) ||
+      hasControlCharacter(module.name) ||
       parts.some((part) => part === '' || part === '.' || part === '..') ||
       seen.has(module.name)
     )

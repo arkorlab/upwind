@@ -36,19 +36,17 @@ export const approvedPackReaderRolloutSchema = z.object({
 });
 export type ApprovedPackReaderRollout = z.infer<typeof approvedPackReaderRolloutSchema>;
 
+const scopePackConsumerSchema = approvedFunctionPackReaderSchema.extend({
+  name: z.string().min(1),
+  mainModule: z.string().min(1),
+});
+
 export const scopePackReadersSchema = z.object({
   schemaVersion: z.literal(2),
   rolloutId: z.string().min(1),
   deploymentId: z.string().min(1),
   buildId: z.string().min(1),
   platform: platformPackReadersSchema,
-  consumers: z
-    .array(
-      approvedFunctionPackReaderSchema.extend({
-        name: z.string().min(1),
-        mainModule: z.string().min(1),
-      }),
-    )
-    .min(1),
+  consumers: z.array(scopePackConsumerSchema).min(1),
 });
 export type ScopePackReaders = z.infer<typeof scopePackReadersSchema>;

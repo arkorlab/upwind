@@ -122,14 +122,17 @@ describe('a trusted pack-reader rollout applied to an immutable bundle', () => {
     expect(scopePackReadersOf(value, approval())).toBeUndefined();
   });
 
-  it.each(['./index.mjs', 'part/../index.mjs', 'part\\index.mjs', '/index.mjs', 'node:fs'])(
-    'declines approval for a module override or noncanonical identity %s',
-    (name) => {
-      const value = bundle();
-      value.functions.app.modules.push({ ...value.functions.app.modules[0]!, name });
-      expect(scopePackReadersOf(value, approval())).toBeUndefined();
-    },
-  );
+  it.each([
+    './index.mjs',
+    'part/../index.mjs',
+    String.raw`part\index.mjs`,
+    '/index.mjs',
+    'node:fs',
+  ])('declines approval for a module override or noncanonical identity %s', (name) => {
+    const value = bundle();
+    value.functions.app.modules.push({ ...value.functions.app.modules[0]!, name });
+    expect(scopePackReadersOf(value, approval())).toBeUndefined();
+  });
 
   it('refuses ambiguous module identity and conflicting approval entries without refusing deployment', () => {
     const value = bundle();

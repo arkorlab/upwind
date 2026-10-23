@@ -72,9 +72,12 @@ describe('immutable scope pack capability', () => {
         limits: limitsOf(parseVars({})),
         history: NO_HISTORY,
       };
+
       expect(applySeedScope(tx, approvedSeed(scopeId)).kind).toBe('seeded');
       expect(compactRepairLocatorsEnabled(sql)).toBe(true);
+
       const context = new ScopeContext(state, NO_HISTORY);
+
       expect(context.buildId).toBe('build');
       expect(context.packSchemaVersion).toBe(2);
       expect(context.repairNamespace).toMatch(/^[0-9a-f]{32}$/u);
@@ -100,6 +103,7 @@ describe('immutable scope pack capability', () => {
       applySeedScope(tx, seed(scopeId));
       sql.exec('ALTER TABLE scope DROP COLUMN pack_schema_version');
       sql.exec('ALTER TABLE scope DROP COLUMN repair_namespace');
+
       expect(applySeedScope({ ...tx, revision: 2 }, approvedSeed(scopeId)).kind).toBe(
         'already-seeded',
       );
@@ -123,6 +127,7 @@ describe('immutable scope pack capability', () => {
         limits: limitsOf(parseVars({})),
         history: NO_HISTORY,
       };
+
       expect(applySeedScope(tx, approvedSeed(scopeId)).kind).toBe('seeded');
       expect(compactRepairLocatorsEnabled(sql)).toBe(true);
     });

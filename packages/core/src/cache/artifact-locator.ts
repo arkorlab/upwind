@@ -2,6 +2,7 @@ import type { CacheArtifactRef, PackArtifactRef } from './schema.ts';
 
 /** Fresh repair locations have a fixed ASCII width, independent of scope and attempt names. */
 export const REPAIR_STORAGE_REF_LENGTH = 67;
+const PACK_ARTIFACT_TUPLE_LENGTH = 8;
 const REPAIR_STORAGE_REF = /^r\/[0-9a-f]{32}\/[0-9a-f]{32}$/u;
 
 /** A shape, never evidence that a scope owns an object or that a replacement was written. */
@@ -30,7 +31,10 @@ export type RepairArtifactTuple = readonly [
   role: CacheArtifactRef['role'],
   storageRef: string,
 ];
-export type RepairPackArtifactTuple = readonly [...RepairArtifactTuple, representationKey: string];
+export type RepairPackArtifactTuple = readonly [
+  ...artifact: RepairArtifactTuple,
+  representationKey: string,
+];
 
 /**
  * Ordinary references remain objects, including arbitrarily short borrowed literals. Removing the
@@ -73,7 +77,8 @@ export function compactPackArtifact(
 export function repairPackArtifactFields(
   value: readonly unknown[],
 ): Record<string, unknown> | undefined {
-  if (value.length !== 8 || !isRepairStorageRef(value[6])) return undefined;
+  if (value.length !== PACK_ARTIFACT_TUPLE_LENGTH || !isRepairStorageRef(value[6]))
+    return undefined;
   const [
     artifactId,
     sha256,

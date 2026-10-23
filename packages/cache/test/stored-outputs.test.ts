@@ -45,24 +45,34 @@ describe('stored output reader compatibility', () => {
   it('keeps repaired rows smaller than a shortest accepted borrowed reference', () => {
     const repaired = withStorageRef(REPAIR);
     const stored = encodeStoredOutputs(repaired, true);
-    expect(stored.length).toBe(JSON.stringify([OUTPUT]).length - 14);
-    expect(JSON.parse(stored)[0].artifacts[0]).toStrictEqual([
-      OUTPUT.artifacts[0]!.artifactId,
-      OUTPUT.artifacts[0]!.sha256,
-      1,
-      'text/x-component',
-      'identity',
-      'rsc',
-      REPAIR,
+    expect(stored).toHaveLength(JSON.stringify([OUTPUT]).length - 14);
+
+    const parsed: unknown = JSON.parse(stored);
+
+    expect(parsed).toStrictEqual([
+      {
+        ...OUTPUT,
+        artifacts: [
+          [
+            OUTPUT.artifacts[0]!.artifactId,
+            OUTPUT.artifacts[0]!.sha256,
+            1,
+            'text/x-component',
+            'identity',
+            'rsc',
+            REPAIR,
+          ],
+        ],
+      },
     ]);
     expect(decodeStoredOutputs(stored)).toStrictEqual(repaired);
     expect(encodeStoredOutputs(decodeStoredOutputs(stored), true)).toBe(stored);
-    expect(encodeStoredOutputs(withStorageRef(NEXT_REPAIR), true).length).toBe(stored.length);
+    expect(encodeStoredOutputs(withStorageRef(NEXT_REPAIR), true)).toHaveLength(stored.length);
   });
 
   it.each([-1, 1, 0, null, false, ''])('rejects malformed stored locator %j', (storageRef) => {
     const stored = [{ ...OUTPUT, artifacts: [{ ...OUTPUT.artifacts[0], storageRef }] }];
-    expect(() => decodeStoredOutputs(JSON.stringify(stored))).toThrow();
+    expect(() => decodeStoredOutputs(JSON.stringify(stored))).toThrow(/Invalid/u);
   });
 
   it('rejects a short reference in a tuple instead of admitting growth on its next repair', () => {
@@ -83,11 +93,11 @@ describe('stored output reader compatibility', () => {
         ],
       },
     ];
-    expect(() => decodeStoredOutputs(JSON.stringify(stored))).toThrow();
+    expect(() => decodeStoredOutputs(JSON.stringify(stored))).toThrow(/Invalid/u);
   });
 
   it('does not expand numbers in response headers into valid strings', () => {
     const stored = [{ ...OUTPUT, headers: { artifactId: 'header', storageRef: 0 } }];
-    expect(() => decodeStoredOutputs(JSON.stringify(stored))).toThrow();
+    expect(() => decodeStoredOutputs(JSON.stringify(stored))).toThrow(/Invalid/u);
   });
 });

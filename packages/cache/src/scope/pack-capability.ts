@@ -54,7 +54,8 @@ export function prepareFirstPackSchema(
   if (!columns.has('repair_namespace'))
     sql.exec('ALTER TABLE scope ADD COLUMN repair_namespace TEXT');
   const version = firstPackSchemaVersion(seed);
-  if (version === 2) writeMeta(sql, READER_PROOF_META, String(seed['generationPackReaders']));
+  const encoded = seed['generationPackReaders'];
+  if (version === 2 && typeof encoded === 'string') writeMeta(sql, READER_PROOF_META, encoded);
   return {
     packSchemaVersion: version,
     repairNamespace: version === 2 ? createRepairStorageNamespace() : null,
