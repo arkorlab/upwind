@@ -1,5 +1,5 @@
 import { sha256HexSchema } from '@stayingupwind/core/artifact';
-import { z } from 'zod';
+import * as z from 'zod';
 
 import { toZod } from '../zod/index.ts';
 

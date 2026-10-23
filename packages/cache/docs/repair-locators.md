@@ -48,6 +48,10 @@ the same version before a producer can be enabled.
    hashes that complete runtime file, and `auditTracedFiles` rejects reserved-name collisions.
    The approval helper also declines duplicate/noncanonical module names in uploaded bundles so
    another module cannot alias an audited main module or its imports.
+   `hostModuleSha256` records the reviewed host source used to produce the inlined main module;
+   it is not an uploaded sibling-module digest. Separate application bytes may change without
+   changing that reader. An audited wrapper importing a decoder from an unapproved sibling must
+   never enter the trusted allowlist, even if its module name looks like the first-party runtime.
    A bundle's own capability flag, package version or module path is insufficient. Unknown or
    custom hosts continue on version one.
 3. Retain trusted rollout evidence that every traffic-serving platform reader runs an approved
@@ -95,6 +99,8 @@ approval, deployment or migration is performed by these changes.
 
 ## Source evidence
 
+- [Rolldown single-bundle code splitting contract](https://rolldown.rs/reference/OutputOptions.codeSplitting)
+- [Worker module upload and main-module identity](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/update/)
 - [R2 conditional writes, checksums and metadata](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)
 - [R2 consistency and unknown in-flight writes](https://developers.cloudflare.com/r2/reference/consistency/)
 - [Workers gradual deployments](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/)

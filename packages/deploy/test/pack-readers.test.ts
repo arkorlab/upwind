@@ -79,11 +79,13 @@ function approval(): ApprovedPackReaderRollout {
       gateway: platformReader,
       readGateway: platformReader,
     },
-    functions: ['a', 'b', 'c', 'd', 'e'].map((digit) => ({
-      mainModuleSha256: digit.repeat(64),
-      hostIdentity: 'reviewed-first-party-host',
-      hostModuleSha256: 'f'.repeat(64),
-    })),
+    functions: ['a', 'b', 'c', 'd', 'e'].map((digit) => {
+      return {
+        mainModuleSha256: digit.repeat(64),
+        hostIdentity: 'reviewed-first-party-host',
+        hostModuleSha256: 'f'.repeat(64),
+      };
+    }),
   };
 }
 
@@ -106,6 +108,29 @@ describe('a trusted pack-reader rollout applied to an immutable bundle', () => {
     expect(proof?.consumers.map((consumer) => consumer.mainModuleSha256)).toStrictEqual(
       ['a', 'b', 'c', 'd', 'e'].map((digit) => digit.repeat(64)),
     );
+  });
+
+  it('binds the inlined reader while allowing separate application bytes to change', () => {
+    const value = bundle();
+    value.functions.app.modules.push({
+      name: 'app.cjs',
+      type: 'commonjs',
+      blob: { sha256: '9'.repeat(64), byteLength: 1, contentType: 'text/javascript' },
+    });
+    const proof = scopePackReadersOf(value, approval());
+
+    expect(proof?.consumers[0]).toMatchObject({
+      mainModule: 'index.mjs',
+      mainModuleSha256: 'a'.repeat(64),
+      hostModuleSha256: 'f'.repeat(64),
+    });
+
+    value.functions.app.modules[1]!.blob = {
+      ...value.functions.app.modules[1]!.blob,
+      sha256: '0'.repeat(64),
+    };
+
+    expect(scopePackReadersOf(value, approval())).toStrictEqual(proof);
   });
 
   it('leaves an unknown or self-declaring host on the legacy contract', () => {

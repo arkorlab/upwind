@@ -133,7 +133,7 @@ describe('immutable scope pack capability', () => {
     });
   });
 
-  it.each([undefined, '', 'not JSON', '{}', 'true'])(
+  it.each([undefined, '', 'not JSON', '{}', 'true', 0, false, null, { schemaVersion: 2 }])(
     'keeps legacy seeds for unverified metadata %j',
     (generationPackReaders) => {
       expect(firstPackSchemaVersion({ ...seed('deployment'), generationPackReaders })).toBe(1);
@@ -142,22 +142,27 @@ describe('immutable scope pack capability', () => {
 
   it('requires the same deployment/build and an unambiguous consumer inventory', () => {
     const value = approval('other-deployment');
+
     expect(
       firstPackSchemaVersion({
         ...seed('deployment'),
         generationPackReaders: JSON.stringify(value),
       }),
     ).toBe(1);
+
     value.deploymentId = 'deployment';
     value.buildId = 'other-build';
+
     expect(
       firstPackSchemaVersion({
         ...seed('deployment'),
         generationPackReaders: JSON.stringify(value),
       }),
     ).toBe(1);
+
     value.buildId = 'build';
     value.consumers.push(value.consumers[0]!);
+
     expect(
       firstPackSchemaVersion({
         ...seed('deployment'),
