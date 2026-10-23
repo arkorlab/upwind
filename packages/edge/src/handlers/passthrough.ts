@@ -1,5 +1,6 @@
 import type { AppRuntime, ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
 import {
+  HEADER_RULES_AFTER_COOKIE_COUNT_HEADER,
   HEADER_RULES_AFTER_HEADER,
   HEADER_RULES_JUDGED_HEADER,
   HEADER_RULES_LEFT_HEADER,
@@ -464,7 +465,7 @@ function takeResponseInvalidation(input: PassthroughInput, response: Response): 
 }
 
 /** A later routing phase owns these fields; absent on runtimes from before it says so. */
-function laterHeaderRules(answer: Response): ReadonlySet<string> | undefined {
+function laterHeaderRules(answer: Response): Set<string> | undefined {
   const value = answer.headers.get(HEADER_RULES_AFTER_HEADER);
   if (value === null || value === '') return undefined;
   const names = value.split(',');
@@ -480,10 +481,48 @@ function laterHeaderRules(answer: Response): ReadonlySet<string> | undefined {
   const later = new Set(names);
   // A later Connection replaces the earlier routing and middleware Connection before forwarding.
   // Its nominations must not be restored by either of those earlier layers.
-  if (later.has('connection')) {
-    for (const name of nominatedBy(answer.headers) ?? []) later.add(name);
-  }
+  if (!later.has('connection')) return later;
+  const nominated = nominatedBy(answer.headers);
+  if (nominated === undefined) return later;
+  for (const name of nominated) later.add(name);
   return later;
+}
+
+/**
+ * Take only the Function's final routing-cookie block off the already-forwarded answer. Earlier
+ * rules still follow handler cookies, then middleware, then these later rules: none loses a
+ * distinct cookie, and the last same-name cookie keeps its phase's precedence. Legacy or invalid
+ * counts keep the old non-destructive merge. Never restore a cookie forwarding or Connection
+ * removed, nor let an earlier Connection's nominations be undone by reattaching this block.
+ */
+function takeLaterRuleCookies(
+  headers: Headers,
+  answer: Response,
+  configured: ConfiguredHeaders,
+  later: Set<string> | undefined,
+): readonly string[] | undefined {
+  const cookie = 'set-cookie';
+  if (later?.has(cookie) !== true) return undefined;
+  const laterConnection = later.has('connection');
+  if (laterConnection && nominatedBy(answer.headers)?.has(cookie) === true) {
+    // This is the final Connection's exclusion, not a cookie field's replacement policy.
+    return undefined;
+  }
+  later.delete(cookie);
+  const connection = laterConnection ? undefined : configured.headers['connection'];
+  if (nominatedBy(answer.headers, connection)?.has(cookie) === true) return undefined;
+  const value = answer.headers.get(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER);
+  if (value === null || !/^[1-9]\d*$/u.test(value)) return undefined;
+  const count = Number(value);
+  const cookies = headers.getSetCookie();
+  if (!Number.isSafeInteger(count) || count > cookies.length) return undefined;
+  const firstLater = cookies.length - count;
+  headers.delete(cookie);
+  for (let index = 0; index < firstLater; index += 1) {
+    const earlier = cookies[index];
+    if (earlier !== undefined) headers.append(cookie, earlier);
+  }
+  return cookies.slice(firstLater);
 }
 
 /**
@@ -509,6 +548,9 @@ function layAfterMiddleware(
   const deferred =
     judgedRules !== undefined && answer.headers.get(HEADER_RULES_LEFT_HEADER) === '1';
   const later = deferred ? laterHeaderRules(answer) : undefined;
+  const laterCookies = deferred
+    ? takeLaterRuleCookies(headers, answer, judgedRules, later)
+    : undefined;
   if (deferred) {
     layConfiguredOver(headers, judgedRules, answer, {
       forwarding: input.forwarding,
@@ -523,6 +565,9 @@ function layAfterMiddleware(
   // (`splice/cookies.ts`): a browser keeps the last of a cookie set twice, and the middleware's is
   // the one it meant — a `Max-Age=0` that the copy before it lost, say.
   mergeScopedMiddlewareHeaders(headers, middleware.responseHeaders, scope, later);
+  if (laterCookies !== undefined) {
+    for (const cookie of laterCookies) headers.append('set-cookie', cookie);
+  }
   if (rewrittenPath !== null) headers.set(REWRITTEN_PATH_HEADER, rewrittenPath);
 }
 
