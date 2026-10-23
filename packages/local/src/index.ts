@@ -3,7 +3,12 @@
  * edge has to answer of it (`checkStack`), and the pieces a stack is made of, for a harness that
  * composes one otherwise.
  */
-export { assertHostOnly, type BundledWorker, bundleWorker } from './bundle.ts';
+export {
+  assertHostOnly,
+  type BundledWorker,
+  bundleWorker,
+  type BundleWorkerOptions,
+} from './bundle.ts';
 export { type CheckFailure, type CheckOptions, type CheckResult, checkStack } from './check.ts';
 export {
   deploymentFunctions,

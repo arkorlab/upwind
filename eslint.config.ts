@@ -416,7 +416,7 @@ export default defineConfig([
   },
 
   // The modules of the adapter that write JavaScript: the entry tables it feeds the bundlers, the
-  // rewrites the patches apply, and the `define` values esbuild substitutes as source.
+  // rewrites the patches apply, and the `define` values Rolldown substitutes as source.
   //
   // `JSON.stringify` is an escape for JSON, and JSON is not JavaScript: it leaves `<`, `>` and the
   // two line separators U+2028 and U+2029 as themselves, so a value that carries one ends the

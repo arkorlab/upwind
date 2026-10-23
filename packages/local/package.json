@@ -31,12 +31,13 @@
     "@stayingupwind/deploy": "workspace:*",
     "@stayingupwind/edge": "workspace:*",
     "@stayingupwind/host": "workspace:*",
-    "esbuild": "catalog:",
     "miniflare": "catalog:",
+    "rolldown": "catalog:",
     "tldts": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
+    "@oxc-project/types": "catalog:",
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
