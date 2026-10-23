@@ -73,7 +73,7 @@ describe('array upper bounds before element parsing', () => {
   it('skips all child and later refinement callbacks after the upper bound fails', () => {
     const child = vi.fn(() => true);
     const refine = vi.fn(() => true);
-    const superRefine = vi.fn(() => {});
+    const superRefine = vi.fn();
     const element = z.number().refine(child);
     const schema = z.array(element).max(2).refine(refine).superRefine(superRefine);
 
@@ -166,7 +166,7 @@ describe('array upper bounds before element parsing', () => {
     const input = [' a ', ' b ', ' c '];
 
     expect(schema.parse(input)).toStrictEqual(['a', 'b']);
-    expect(refine).toHaveBeenCalledOnce();
+    expect(refine).toHaveBeenCalledExactlyOnceWith(['a', 'b']);
     expect(input).toStrictEqual([' a ', ' b ', ' c ']);
   });
 
@@ -209,7 +209,7 @@ describe('array upper bounds before element parsing', () => {
   });
 
   it('does not let an ineligible NaN or negative upper bound hide a later cap', () => {
-    const nan = z.array(z.number()).max(Number.NaN).max(2);
+    const nan = z.array(z.number()).max(NaN).max(2);
     const negative = z.array(z.number()).max(-1).max(2);
 
     expect(issuesFor(nan, [1, 2, 3])).toStrictEqual([TOO_BIG_TWO]);
@@ -218,7 +218,7 @@ describe('array upper bounds before element parsing', () => {
 
   it('keeps zero as an upper cap and infinity as an unbounded maximum', () => {
     const zero = z.array(z.number()).max(0);
-    const infinite = z.array(z.number()).max(Number.POSITIVE_INFINITY);
+    const infinite = z.array(z.number()).max(Infinity);
 
     expect(issuesFor(zero, [1])).toStrictEqual([
       {
