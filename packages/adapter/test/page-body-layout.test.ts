@@ -203,6 +203,14 @@ function shippedBlob(digit: string, byteLength: number): ShippedBlob {
 /** A body every layout ships, and two the range leaves out of a layout past the limit. */
 const SMALL = shippedBlob('a', MIB / 2);
 const LARGE = [shippedBlob('b', 2 * MIB), shippedBlob('c', 2 * MIB)];
+
+/**
+ * A body two routes name, as two prerenders with the same bytes do, and what a layout past the
+ * limit ships of it once the range has left it out for `ROUTE`: the blob, for `OTHER` alone.
+ */
+const OTHER = '/docs/[slug]';
+const SHARED: ShippedBlob = { ...shippedBlob('d', 3 * MIB), routes: [OTHER, ROUTE] };
+const SHARED_FOR_OTHER: ShippedBlob = { ...SHARED, routes: [OTHER] };
 const EVERY = [SMALL, ...LARGE];
 
 function dataModule(name: string, byteLength: number): FunctionModule {
@@ -362,20 +370,17 @@ describe('app Functions laid out within the size limit', () => {
 
   it('lays a split build out again when a body it leaves out is still shipped for another route', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(vi.fn());
-    // Two routes name the same bytes, each held by a Function of its own; the range leaves the body
-    // out for the route of the Function past the limit, and keeps it for the other.
-    const other = '/docs/[slug]';
-    const shared: ShippedBlob = { ...shippedBlob('d', 3 * MIB), routes: [other, ROUTE] };
-    const held = [new Set([other]), new Set([ROUTE])];
-    const known = new Set([other, ROUTE]);
+    // Each route is held by a Function of its own, and the one past the limit holds `ROUTE`.
+    const held = [new Set([OTHER]), new Set([ROUTE])];
+    const known = new Set([OTHER, ROUTE]);
     const { calls, layOut } = appFunctions([MIB, 62 * MIB], (index, blob) =>
       carriesBlob(blob, held[index] ?? new Set(), known),
     );
     const laidOut = await withinTheLimit(
       {
-        shipped: [shared],
+        shipped: [SHARED],
         requireBundleBlobReader: false,
-        shippedOverLimit: () => Promise.resolve([{ ...shared, routes: [other] }]),
+        shippedOverLimit: () => Promise.resolve([SHARED_FOR_OTHER]),
       },
       layOut,
     );
@@ -391,6 +396,28 @@ describe('app Functions laid out within the size limit', () => {
         'the app-2 server bundle is 65.0 MiB, over the 64.0 MiB limit. Building the app Functions again with 1 completed page body (3.0 MiB) left in bundle storage',
       ),
     );
+
+    log.mockRestore();
+  });
+
+  it('refuses at once a build of one Function whose body left out is still shipped for another route', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(vi.fn());
+    // The one Function holds both routes, so it carries the body for `OTHER` either way.
+    const { calls, layOut } = appFunctions([62 * MIB]);
+    const laidOut = withinTheLimit(
+      {
+        shipped: [SHARED],
+        requireBundleBlobReader: false,
+        shippedOverLimit: () => Promise.resolve([SHARED_FOR_OTHER]),
+      },
+      layOut,
+    );
+
+    await expect(laidOut).rejects.toThrow(
+      /^@stayingupwind\/adapter: the app server bundle is 65\.0 MiB, over the 64\.0 MiB limit/u,
+    );
+    expect(calls.map((call) => call.weighOnly)).toStrictEqual([true]);
+    expect(log).not.toHaveBeenCalled();
 
     log.mockRestore();
   });
