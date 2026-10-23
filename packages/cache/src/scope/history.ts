@@ -81,7 +81,8 @@ export interface ScopeHistory {
    * Publish what was told, after the change is answered: what is owed in storage, then what is owed
    * beyond it — or leave both to the run waiting behind this one.
    */
-  publish(deps: HistoryDeps): Promise<readonly [Settled, Settled]>;
+  /** A third true value reports durable progress with more work, so the next alarm continues now. */
+  publish(deps: HistoryDeps): Promise<readonly [Settled, Settled, boolean?]>;
   /** Let go of what is past `before`; the storage keys only it named, for the caller to delete. */
   ageOut(sql: SqlStorage, before: number): string[];
   /** Stop keeping it, for good, as the host asks (`ensureRetention`); what came of that. */

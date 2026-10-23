@@ -1,5 +1,13 @@
 import { releaseStream, withDeadline } from '@stayingupwind/core/util';
 
+import {
+  copyRepairBlob,
+  type RepairBlobLocation,
+  type RepairCopyOwner,
+  repairUploadMatches,
+  type RepairUploadProof,
+} from './repair-upload.ts';
+
 /**
  * What the authority writes to after a commit, behind interfaces narrow enough to fake, and the
  * faults a test may inject into them — into a host's history's own as well (`history`), and into
@@ -30,6 +38,10 @@ export interface BlobStore {
   read(key: string, byteLength: number): Promise<Uint8Array | undefined>;
   /** Whether anything is stored under the key, without reading it. */
   exists(key: string): Promise<boolean>;
+  /** Fresh version-two repairs replace that same HEAD with a checksum and ownership check. */
+  verifiedRepair?(key: string, proof: RepairUploadProof): Promise<boolean>;
+  /** Rare seed/data repairs copy to fixed-width locations without buffering a large body. */
+  copyRepair?(location: RepairBlobLocation, owner: RepairCopyOwner): Promise<string | undefined>;
   write(key: string, value: string | Uint8Array, contentType: string): Promise<void>;
   delete(keys: readonly string[]): Promise<void>;
   /** Delete a retired scope's remaining keys without retaining its whole keyspace in memory. */
@@ -232,10 +244,32 @@ async function bodyWithin(
   }
 }
 
+/** A repair prefix is scoped independently from legacy user-controlled literal keys. */
+function repairPrefixNamespace(prefix: string): string | undefined {
+  return /^r\/([0-9a-f]{32})\/$/u.exec(prefix)?.[1];
+}
+
+/** A matching prefix alone never authorizes deletion of an unrelated object. */
+function ownedRepairObject(
+  object: R2Object,
+  namespace: string,
+  repairOwner: string | undefined,
+): boolean {
+  return (
+    /^r\/[0-9a-f]{32}\/[0-9a-f]{32}$/u.test(object.key) &&
+    object.key.startsWith(`r/${namespace}/`) &&
+    repairOwner !== undefined &&
+    object.customMetadata?.['upwindRepair'] === '1' &&
+    object.customMetadata['upwindRepairOwner'] === repairOwner &&
+    object.customMetadata['upwindRepairNamespace'] === namespace &&
+    typeof object.customMetadata['upwindRepairAttempt'] === 'string'
+  );
+}
+
 export function blobStore(
   bucket: R2Bucket,
   faults: () => TestFaults,
-  options: { readonly readMs?: number } = {},
+  options: { readonly readMs?: number; readonly repairOwner?: string | undefined } = {},
 ): BlobStore {
   const readMs = options.readMs ?? BLOB_READ_MS;
   return {
@@ -253,6 +287,32 @@ export function blobStore(
       checkFault(faults, 'r2');
       return (await bucket.head(key)) !== null;
     },
+    verifiedRepair: async (key, proof) => {
+      if (!key.startsWith(`r/${proof.namespace}/`)) return false;
+      checkFault(faults, 'r2');
+      return repairUploadMatches(await bucket.head(key), {
+        ...proof,
+        scopeOwner: options.repairOwner,
+      });
+    },
+    copyRepair: async (location, owner) => {
+      checkFault(faults, 'r2');
+      const controller = new AbortController();
+      try {
+        return await withDeadline(
+          copyRepairBlob(
+            bucket,
+            location,
+            { ...owner, scopeOwner: options.repairOwner },
+            controller.signal,
+          ),
+          readMs,
+          'a repair blob copy',
+        );
+      } finally {
+        controller.abort();
+      }
+    },
     write: async (key, value, contentType) => {
       checkFault(faults, 'r2');
       await bucket.put(key, typeof value === 'string' ? value : (value as BufferSource), {
@@ -269,23 +329,43 @@ export function blobStore(
     deletePrefix: async (prefix) => {
       checkFault(faults, 'r2');
       let cursor: string | undefined;
+      const namespace = repairPrefixNamespace(prefix);
       do {
         const page = await bucket.list({
           prefix,
           limit: 1000,
+          ...(namespace !== undefined && { include: ['customMetadata' as const] }),
           ...(cursor !== undefined && { cursor }),
         });
-        if (page.objects.length > 0) {
-          await bucket.delete(page.objects.map((object) => object.key));
+        const objects =
+          namespace === undefined
+            ? page.objects
+            : page.objects.filter((object) =>
+                ownedRepairObject(object, namespace, options.repairOwner),
+              );
+        if (objects.length > 0) {
+          await bucket.delete(objects.map((object) => object.key));
         }
         cursor = page.truncated ? page.cursor : undefined;
       } while (cursor !== undefined);
     },
     listPage: async ({ prefix, cursor, limit }) => {
       checkFault(faults, 'r2');
-      const page = await bucket.list({ prefix, limit, ...(cursor !== undefined && { cursor }) });
+      const namespace = repairPrefixNamespace(prefix);
+      const page = await bucket.list({
+        prefix,
+        limit,
+        ...(namespace !== undefined && { include: ['customMetadata' as const] }),
+        ...(cursor !== undefined && { cursor }),
+      });
+      const objects =
+        namespace === undefined
+          ? page.objects
+          : page.objects.filter((object) =>
+              ownedRepairObject(object, namespace, options.repairOwner),
+            );
       return {
-        objects: page.objects.map((object) => {
+        objects: objects.map((object) => {
           return {
             key: object.key,
             uploadedAt: object.uploaded.getTime(),

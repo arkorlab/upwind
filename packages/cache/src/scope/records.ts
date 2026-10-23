@@ -1,5 +1,6 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import {
+  COMPACT_PACK_SCHEMA_VERSION,
   type Duration,
   encodeGenerationPack,
   type GenerationPackHeader,
@@ -94,6 +95,7 @@ export interface RecordDeps {
     | undefined;
   /** Immutable scope identity, retained by the authority rather than read for each projection. */
   readonly buildId?: string | undefined;
+  readonly packSchemaVersion?: 1 | 2 | undefined;
 }
 
 type RecordArtifact = OutputSnapshot['artifacts'][number];
@@ -200,7 +202,10 @@ function packHeaderOf(
   const { entry, generation } = fields;
   const staticPagePrivacy = staticPagePrivacyOf(fields, digests);
   return {
-    schemaVersion: PACK_SCHEMA_VERSION,
+    schemaVersion:
+      fields.packSchemaVersion === COMPACT_PACK_SCHEMA_VERSION
+        ? COMPACT_PACK_SCHEMA_VERSION
+        : PACK_SCHEMA_VERSION,
     scopeId: fields.scopeId,
     entryId: entry.entryId,
     generationId: generation.generationId,
@@ -269,7 +274,11 @@ function packBytesOf(outputs: readonly OutputSnapshot[]): number {
 
 /** What the entry's record says of its generation, laid out as a pack's header holds it. */
 export function headerFieldsOf(
-  { scopeId, buildId }: Pick<RecordDeps, 'scopeId' | 'buildId'>,
+  {
+    scopeId,
+    buildId,
+    packSchemaVersion,
+  }: Pick<RecordDeps, 'scopeId' | 'buildId' | 'packSchemaVersion'>,
   entry: EntryRow,
   generation: GenerationRow,
   outputs: readonly OutputSnapshot[],
@@ -278,6 +287,7 @@ export function headerFieldsOf(
   return {
     scopeId,
     buildId,
+    packSchemaVersion,
     entry: {
       entryId: entry.entry_id,
       kind: entry.kind,
@@ -308,14 +318,19 @@ export function recordBytesOf(
   scopeId: string,
   entry: EntryRow,
   generation: GenerationRow,
-  buildId?: string,
+  identity: Pick<RecordDeps, 'buildId' | 'packSchemaVersion'> | string = {},
 ): number {
   const outputs = generationOutputs(generation);
   const { primary, postponed } = recordBodies(outputs);
   const htmlLength = primary?.byteLength ?? 0;
   const postponedLength = postponed?.byteLength ?? 0;
   const header = packHeaderOf(
-    headerFieldsOf({ scopeId, buildId }, entry, generation, outputs),
+    headerFieldsOf(
+      { scopeId, ...(typeof identity === 'string' ? { buildId: identity } : identity) },
+      entry,
+      generation,
+      outputs,
+    ),
     { revision: entry.record_revision, condemned: condemnedOf(generation) },
     {
       htmlSha256: primary?.sha256 ?? ANY_DIGEST,
@@ -351,10 +366,10 @@ export function projectionMemoryOf(
   scopeId: string,
   entry: EntryRow,
   generation: GenerationRow,
-  buildId?: string,
+  identity: Pick<RecordDeps, 'buildId' | 'packSchemaVersion'> | string = {},
 ): number {
   if (!entry.kind.startsWith('data:')) {
-    return packMemoryOf(recordBytesOf(scopeId, entry, generation, buildId));
+    return packMemoryOf(recordBytesOf(scopeId, entry, generation, identity));
   }
   const artifact = generationOutputs(generation)[0]?.artifacts[0];
   if (artifact === undefined) {

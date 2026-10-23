@@ -30,6 +30,7 @@ import { markPruned } from '../src/scope/generations.ts';
 import { requireActiveScope, writeMeta } from '../src/scope/state.ts';
 import { scopeStub } from '../src/scope/stub.ts';
 import { STANDALONE_AUTHORITY } from '../src/standalone/host.ts';
+import { withRepairAlarms } from './support/repair-alarm.ts';
 
 const NOW = 1_800_000_000_000;
 const ABOVE_CARRIED_BYTES = 65 * 1024;
@@ -119,7 +120,7 @@ async function fixture(length: number, borrowed: boolean) {
     const ctx = createExecutionContext();
     contexts.push(ctx);
     const response = app.fetch(request, env, ctx);
-    return Promise.resolve(response);
+    return withRepairAlarms(stub, Promise.resolve(response));
   };
   const client = new Gateway({
     scopeId,

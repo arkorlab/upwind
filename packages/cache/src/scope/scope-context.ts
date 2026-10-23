@@ -43,6 +43,21 @@ export class ScopeContext {
     return this.#repairNamespace;
   }
 
+  /** The immutable identity already hydrated by the existing scope-row read. */
+  get identity(): {
+    readonly scopeId: string;
+    readonly buildId: string | undefined;
+    readonly packSchemaVersion: 1 | 2;
+    readonly repairNamespace: string | undefined;
+  } {
+    return {
+      scopeId: this.scopeId,
+      buildId: this.buildId,
+      packSchemaVersion: this.packSchemaVersion,
+      repairNamespace: this.repairNamespace,
+    };
+  }
+
   /** A first seed persisted its scope row before any settle can project its generations. */
   committed(tables: boolean): void {
     this.tables = tables;

@@ -28,12 +28,17 @@ import { findGeneration, insertGeneration, retireGenerations } from './generatio
 import type { EventInput } from './history.ts';
 import { prepareFirstPackSchema } from './pack-capability.ts';
 import { type PackHeaderFields, unwritableRecord } from './records.ts';
+import type { RepairPending } from './repair-jobs.ts';
 import { toEntry, toEntryState, toPublicGeneration, toScope } from './rows.ts';
 import {
   existingSeedArtifactLengths,
   reserveSeedArtifactLengths,
 } from './seed-artifact-lengths.ts';
+import { canonicalSeedOutputs } from './seed-canonical.ts';
+import { deferSeedRepair } from './seed-preparation.ts';
+import { prepareSeedPublication } from './seed-repair-job.ts';
 import {
+  hasSeedRelocations,
   repairSeedEntries,
   seedRepairVerification,
   type SeedLocationProofs,
@@ -49,6 +54,7 @@ import {
 } from './tags.ts';
 import { type Apply, inChunks, record, type TxInput } from './tx.ts';
 
+export { advancePreparedSeed } from './seed-repair-job.ts';
 export { finishSeedRepair, needsSeedVerification } from './seed-repair.ts';
 
 /**
@@ -178,11 +184,18 @@ function tagsRefusal(tags: SeedEntryInput['generation']['tags']): string | undef
     : `the build left a cache tag longer than a tag may be on the entry; a tag may have ${MAX_TAG_LENGTH} characters`;
 }
 
+type SeedEntriesOutcome = SeedEntriesResult | Refusal | SeedRepairVerification | RepairPending;
+interface SeedRepairOptions {
+  readonly probeInitialHistory?: true;
+  readonly repairPrepared?: boolean;
+}
+
 export async function planSeedEntries(
   input: TxInput,
   batch: SeedEntriesInput,
   proofs: SeedLocationProofs = new Map(),
-): Promise<Apply<SeedEntriesResult | Refusal | SeedRepairVerification>> {
+  prepareRepair?: () => Promise<void>,
+): Promise<Apply<SeedEntriesOutcome>> {
   const plans = await inChunks(batch.entries, SEED_PLANS_AT_ONCE, async (entry) => {
     // Judged before a tag of it is named: an entry that may not carry its tags keeps none.
     const tagsRefused = tagsRefusal(entry.generation.tags);
@@ -198,7 +211,24 @@ export async function planSeedEntries(
     ]);
     return { entry, identity, tagRefs, outputs: seedOutputs(entry, artifactIds), tagsRefused };
   });
-  return () => applySeedEntries(input, plans, proofs);
+  // Existing failed build retries alone pay for draining projection and arming continuation.
+  // The transaction below rechecks repairability after that drain, before publishing fresh rows.
+  const repairing = hasSeedRelocations(input, plans, proofs);
+  if (repairing) await prepareRepair?.();
+  const apply: Apply<SeedEntriesOutcome> = () =>
+    applySeedEntries(input, plans, proofs, { repairPrepared: repairing });
+  // The caller rolls this complete SQL-only preparation back before accepting its durable job.
+  // A host's initial fresh-event row limit must fail before any fresh row or repair is accepted.
+  return repairing
+    ? Object.assign(apply, {
+        preflight: () => {
+          applySeedEntries(input, plans, proofs, {
+            probeInitialHistory: true,
+            repairPrepared: true,
+          });
+        },
+      })
+    : apply;
 }
 
 function seedOutputs(
@@ -234,11 +264,17 @@ function seedOutputs(
 }
 
 /** What the delivery record of an entry's build generation is made of. */
-function recordFields(scopeId: string, plan: SeedPlan, buildId: string): PackHeaderFields {
+function recordFields(
+  scopeId: string,
+  plan: SeedPlan,
+  buildId: string,
+  packSchemaVersion?: 1 | 2,
+): PackHeaderFields {
   const { generation } = plan.entry;
   return {
     scopeId,
     buildId,
+    packSchemaVersion,
     entry: {
       entryId: plan.identity.entryId,
       kind: plan.identity.kind,
@@ -275,7 +311,7 @@ function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
     kind: 'entry.created',
     payload: { entry: toEntry(scopeId, entry) },
   });
-  const { outputs } = plan;
+  const outputs = canonicalSeedOutputs(input, plan.outputs);
   let bodyBytes = 0;
   for (const output of outputs) {
     for (const artifact of output.artifacts) {
@@ -319,6 +355,7 @@ function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
     bodyBytes,
     producer: { kind: 'build' },
     outputs,
+    compactRepairLocators: input.packSchemaVersion === 2,
     committedAt: now,
   });
   replaceEntryTags(sql, entry.entry_id, plan.tagRefs);
@@ -375,11 +412,46 @@ function reserveSeedPlan(
     : 'the build gives different byte lengths for the same artifact SHA';
 }
 
+function prepareRelocatedSeeds(
+  input: TxInput,
+  plans: readonly SeedPlan[],
+  proofs: SeedLocationProofs,
+  context: {
+    readonly retries: readonly SeedPlan[];
+    readonly seedable: readonly SeedPlan[];
+    readonly events: EventInput[];
+    readonly options: SeedRepairOptions;
+    readonly result: SeedEntriesResult;
+  },
+): SeedEntriesResult | RepairPending {
+  const { retries, seedable, events, options, result } = context;
+  const { sql } = input;
+  if (options.repairPrepared !== true)
+    deferSeedRepair(input, (next, probe) => {
+      return applySeedEntries(next, plans, proofs, {
+        repairPrepared: true,
+        ...(probe && { probeInitialHistory: true as const }),
+      });
+    });
+  if (options.probeInitialHistory === true) {
+    if (result.inserted > 0) record(input, events);
+    return result;
+  }
+  // No record at the accepted revision may escape while later retry groups can still repair
+  // its references. Fresh entries have no earlier record; existing readers keep their cursor.
+  for (const plan of seedable) {
+    sql.exec('UPDATE entries SET record_revision = 0 WHERE entry_id = ?', plan.identity.entryId);
+  }
+  if (result.inserted > 0) record(input, []);
+  return prepareSeedPublication(input, retries, proofs, { ...result, initialEvents: events });
+}
+
 function applySeedEntries(
   input: TxInput,
   plans: readonly SeedPlan[],
   proofs: SeedLocationProofs,
-): SeedEntriesResult | Refusal | SeedRepairVerification {
+  options: SeedRepairOptions = {},
+): SeedEntriesOutcome {
   const { sql, limits, revision } = input;
   const scope = requireActiveScope(sql);
   if (isRefusal(scope)) {
@@ -416,7 +488,10 @@ function applySeedEntries(
   for (const plan of fresh) {
     let reason =
       plan.tagsRefused ??
-      unwritableRecord(recordFields(input.scopeId, plan, scope.build_id), limits.maxRecordBytes);
+      unwritableRecord(
+        recordFields(input.scopeId, plan, scope.build_id, input.packSchemaVersion),
+        limits.maxRecordBytes,
+      );
     const generationId = plan.entry.generation.generationId;
     reason ??= reserveSeedPlan(plan, generationId, generationIds, artifactLengths);
     if (reason === undefined) {
@@ -433,12 +508,24 @@ function applySeedEntries(
     return refuse('quota_exceeded', 'the scope holds as many entries as it may');
   }
   const addedRefs = addedSeedReferences(retries.length > 0 ? seedable : []);
-  const verification = seedRepairVerification(sql, retries, proofs, addedRefs);
+  const verification = seedRepairVerification(sql, retries, proofs, {
+    addedRefs,
+    copy: input.packSchemaVersion === 2,
+  });
   if (verification !== undefined) return verification;
   const inserted = seedable.length;
   const skipped = plans.length - fresh.length;
   for (const plan of seedable) {
     seedOne(input, plan, events);
+  }
+  if (hasSeedRelocations(input, retries, proofs)) {
+    return prepareRelocatedSeeds(input, plans, proofs, {
+      retries,
+      seedable,
+      events,
+      options,
+      result: { inserted, skipped, refused, revision: inserted > 0 ? revision : revision - 1 },
+    });
   }
   const repaired = repairSeedEntries(input, retries, events, proofs);
   if (inserted === 0 && repaired === 0) {

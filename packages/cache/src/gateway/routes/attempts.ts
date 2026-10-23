@@ -1,5 +1,10 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
-import { artifactEncodingSchema, artifactRoleSchema, r2BlobKey } from '@stayingupwind/core/cache';
+import {
+  artifactEncodingSchema,
+  artifactRoleSchema,
+  isRepairStorageRef,
+  r2BlobKey,
+} from '@stayingupwind/core/cache';
 import { fromBase64, toBase64 } from '@stayingupwind/core/util';
 import {
   ARTIFACT_ENCODING_HEADER,
@@ -19,6 +24,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 
 import type { RecordedArtifact, UploadedArtifact } from '../../scope/attempts.ts';
+import { repairUploadMatches, repairUploadMetadata } from '../../scope/repair-upload.ts';
 import { isRefusal, type Refusal } from '../../scope/state.ts';
 import { answerScope, type GatewayContext, type GatewayEnv, meterWrite } from '../auth.ts';
 import { ENTRY_BODY_BYTES, inBodyRoom, readBody, readRequest } from '../body.ts';
@@ -113,6 +119,94 @@ async function uploadArtifact(c: GatewayContext): Promise<Response> {
   );
 }
 
+/** Publish one create-once reservation, or report an occupied key for the caller to rotate. */
+async function storeFreshArtifact(
+  c: GatewayContext,
+  artifact: DecodedArtifact,
+  target: string,
+  attemptId: string,
+): Promise<boolean> {
+  const { upload, bytes } = artifact;
+  if (!isRepairStorageRef(target)) throw new Error('invalid fresh repair reservation');
+  const namespace = target.split('/', 2)[1];
+  if (namespace === undefined) throw new Error('missing repair namespace');
+  const proof = {
+    namespace,
+    scopeOwner: c.get('scope').id.toString(),
+    attemptId,
+    sha256: upload.sha256,
+    byteLength: bytes.byteLength,
+  };
+  // Avoid another write to our own completed reservation (R2 limits same-key writes). Only a
+  // matching positive receipt can skip it; absence still requires the atomic create below.
+  if (repairUploadMatches(await c.env.ARTIFACTS.head(target), proof)) return true;
+  let object: R2Object | null;
+  try {
+    // R2 validates this already-computed SHA and evaluates If-None-Match atomically at commit.
+    object = await c.env.ARTIFACTS.put(target, bytes as BufferSource, {
+      sha256: upload.sha256,
+      onlyIf: new Headers({ 'If-None-Match': '*' }),
+      customMetadata: repairUploadMetadata(proof),
+      httpMetadata: { contentType: upload.contentType },
+    });
+  } catch (error) {
+    // A competing identical upload may have completed after our HEAD. A rate-limit error is
+    // rescued only by its positive receipt, never by an absent or unrelated object.
+    if (
+      error instanceof Error &&
+      error.message.endsWith('(10058)') &&
+      repairUploadMatches(await c.env.ARTIFACTS.head(target), proof)
+    )
+      return true;
+    throw error;
+  }
+  if (object !== null) {
+    if (!repairUploadMatches(object, proof)) throw new Error('unverified repair write receipt');
+    return true;
+  }
+  return repairUploadMatches(await c.env.ARTIFACTS.head(target), proof);
+}
+
+/**
+ * A version-two replacement is create-once. A nonce, an earlier negative HEAD, and caller metadata
+ * are not proof that a key is safe to overwrite. Retry our own positive receipt idempotently;
+ * leave an unrelated object alone and ask the authority to rotate the exact reservation.
+ * https://developers.cloudflare.com/r2/reference/consistency/#conditional-writes
+ */
+async function storeAdmittedArtifact(
+  c: GatewayContext,
+  artifact: DecodedArtifact,
+  recorded: RecordedArtifact,
+  fencingToken: number,
+): Promise<Refusal | undefined> {
+  const { upload, bytes } = artifact;
+  const attemptId = c.req.param('attemptId') ?? '';
+  let answer = recorded;
+  for (;;) {
+    const target = answer.storageRef ?? upload.storageRef;
+    if (answer.fresh !== true) {
+      if (answer.replace === true || (await c.env.ARTIFACTS.head(target)) === null) {
+        await c.env.ARTIFACTS.put(target, bytes as BufferSource, {
+          sha256: upload.sha256,
+          httpMetadata: { contentType: upload.contentType },
+        });
+      }
+      return;
+    }
+    if (await storeFreshArtifact(c, artifact, target, attemptId)) return;
+    // A definitive failed precondition found someone else's object. Keep it and choose a nonce.
+    const next = await c
+      .get('scope')
+      .recordArtifact(
+        attemptId,
+        { ...upload, fencingToken, avoidStorageRef: target },
+        c.get('now'),
+      );
+    if (isRefusal(next)) return next;
+    answer = next;
+  }
+}
+
 /** The upload's bytes, read whole, checked against the digest `claimed` for them, and stored. */
 async function storeArtifact(
   c: GatewayContext,
@@ -149,14 +243,23 @@ async function storeArtifact(
   if (isRefusal(recorded)) {
     return answerScope(c, recorded);
   }
-  const target = recorded.storageRef ?? storageRef;
-  if (recorded.replace === true || (await c.env.ARTIFACTS.head(target)) === null) {
-    // With the digest already taken, for storage to keep: a read compares it, unread (`entries.ts`).
-    await c.env.ARTIFACTS.put(target, bytes as BufferSource, {
-      sha256,
-      httpMetadata: { contentType: headers.contentType },
-    });
-  }
+  const refused = await storeAdmittedArtifact(
+    c,
+    {
+      bytes,
+      upload: {
+        sha256,
+        byteLength: bytes.byteLength,
+        contentType: headers.contentType,
+        encoding: headers.encoding,
+        role: headers.role,
+        storageRef,
+      },
+    },
+    recorded,
+    headers.fencingToken,
+  );
+  if (refused !== undefined) return answerScope(c, refused);
   return ok(c, { sha256, byteLength: bytes.byteLength });
 }
 
@@ -175,6 +278,7 @@ interface DecodedArtifact {
   readonly upload: UploadedArtifact;
   readonly bytes: Uint8Array;
   readonly replace?: true;
+  readonly fresh?: true;
 }
 
 function decodedBase64(value: string): Uint8Array | undefined {
@@ -202,7 +306,12 @@ function admittedBlobs(
       selected.upload.storageRef === storageRef
         ? selected
         : { ...selected, upload: { ...selected.upload, storageRef } };
-    blobs.set(storageRef, answer.replace === true ? { ...located, replace: true } : located);
+    blobs.set(
+      storageRef,
+      answer.replace === true
+        ? { ...located, replace: true, ...(answer.fresh === true && { fresh: true }) }
+        : located,
+    );
   }
   return blobs;
 }
@@ -267,17 +376,30 @@ async function uploadArtifacts(c: GatewayContext): Promise<Response> {
   // bytes are once it is recorded; each blob once, as the first of the batch's artifacts that are
   // its bytes types it, as the first upload of them does.
   const blobs = admittedBlobs(decoded, recorded);
-  await Promise.all(
-    [...blobs.values()].map(async ({ upload, bytes, replace }) => {
-      if (replace === true || (await c.env.ARTIFACTS.head(upload.storageRef)) === null) {
-        await c.env.ARTIFACTS.put(upload.storageRef, bytes as BufferSource, {
-          sha256: upload.sha256,
-          httpMetadata: { contentType: upload.contentType },
-        });
-      }
+  const stored = await Promise.allSettled(
+    [...blobs.values()].map((artifact) => {
+      return storeAdmittedArtifact(
+        c,
+        artifact,
+        {
+          ok: true,
+          ...(artifact.replace === true && { replace: true }),
+          ...(artifact.fresh === true && { fresh: true }),
+        },
+        request.fencingToken,
+      );
     }),
   );
-  const refused = recorded.find(isRefusal);
+  // Drain started writes before releasing the request; preserve the first failure in input order.
+  for (const result of stored) {
+    if (result.status === 'rejected') throw result.reason;
+  }
+  const storedRefusal = stored.find(
+    (result) => result.status === 'fulfilled' && result.value !== undefined,
+  );
+  const refused =
+    recorded.find(isRefusal) ??
+    (storedRefusal?.status === 'fulfilled' ? storedRefusal.value : undefined);
   if (refused !== undefined) {
     return answerScope(c, refused);
   }
