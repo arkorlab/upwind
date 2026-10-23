@@ -24,6 +24,8 @@ const STATEMENTS: readonly string[] = [
     deployment_id TEXT NOT NULL,
     key_schema_version INTEGER NOT NULL,
     build_id TEXT NOT NULL,
+    pack_schema_version INTEGER NOT NULL DEFAULT 1,
+    repair_namespace TEXT,
     status TEXT NOT NULL,
     seeded_at INTEGER NOT NULL,
     retired_at INTEGER,

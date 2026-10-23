@@ -26,6 +26,7 @@ import {
 } from './entries.ts';
 import { findGeneration, insertGeneration, retireGenerations } from './generations.ts';
 import type { EventInput } from './history.ts';
+import { prepareFirstPackSchema } from './pack-capability.ts';
 import { type PackHeaderFields, unwritableRecord } from './records.ts';
 import { toEntry, toEntryState, toPublicGeneration, toScope } from './rows.ts';
 import {
@@ -90,11 +91,12 @@ export function applySeedScope(input: TxInput, seed: SeedScopeInput): SeedScopeR
       reason: `the scope is seeded for deployment ${existing.deployment_id} (build ${existing.build_id})`,
     };
   }
+  const { packSchemaVersion, repairNamespace } = prepareFirstPackSchema(sql, seed);
   sql.exec(
     `INSERT INTO scope (
        scope_id, organization_id, project_id, environment_id, deployment_id, key_schema_version,
-       build_id, status, seeded_at, retired_at, revision, entry_count, body_bytes
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, 0, 0, 0)`,
+       build_id, pack_schema_version, repair_namespace, status, seeded_at, retired_at, revision, entry_count, body_bytes
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, 0, 0, 0)`,
     scope.scopeId,
     scope.organizationId,
     scope.projectId,
@@ -102,6 +104,8 @@ export function applySeedScope(input: TxInput, seed: SeedScopeInput): SeedScopeR
     scope.deploymentId,
     scope.keySchemaVersion,
     scope.buildId,
+    packSchemaVersion,
+    repairNamespace,
     now,
   );
   // Decided before the seed's own event, which is the scope's first when it records at all.

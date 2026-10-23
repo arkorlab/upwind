@@ -79,10 +79,11 @@ async function currentBytes(
   scopeId = 'scope',
   body = TAIL,
   headers: Readonly<Record<string, string>> = {},
+  schemaVersion: 1 | 2 = 1,
 ): Promise<Uint8Array> {
   return encodeGenerationPack(
     {
-      schemaVersion: 1,
+      schemaVersion,
       scopeId,
       entryId: 'entry',
       generationId: 'generation',
@@ -260,22 +261,25 @@ describe('room for unrecognized delivery record bytes', () => {
     },
   );
 
-  it('keeps recognized current streaming independent of occupied body room', async () => {
-    const bytes = await currentBytes();
-    await env.CACHE_STATE.put('current', bytes);
-    vi.useFakeTimers();
-    const write = await holdingWrite();
-    try {
-      const answer = await readRecordAnswer(env.CACHE_STATE, 'current', 'scope', 'entry');
+  it.each([1, 2] as const)(
+    'keeps version-%i streaming independent of occupied body room',
+    async (version) => {
+      const bytes = await currentBytes('scope', TAIL, {}, version);
+      await env.CACHE_STATE.put('current', bytes);
+      vi.useFakeTimers();
+      const write = await holdingWrite();
+      try {
+        const answer = await readRecordAnswer(env.CACHE_STATE, 'current', 'scope', 'entry');
 
-      expect(answer?.body).toBeInstanceOf(ReadableStream);
+        expect(answer?.body).toBeInstanceOf(ReadableStream);
 
-      expect(new Uint8Array(await responseOf(answer).arrayBuffer())).toStrictEqual(bytes);
-    } finally {
-      write.done.resolve(undefined);
-      await write.writing;
-    }
-  });
+        expect(new Uint8Array(await responseOf(answer).arrayBuffer())).toStrictEqual(bytes);
+      } finally {
+        write.done.resolve(undefined);
+        await write.writing;
+      }
+    },
+  );
 
   it('bounds the first response chunk when one producer chunk contains a large current record', async () => {
     const bytes = await currentBytes('scope', new Uint8Array(1024 * 1024).fill(97));

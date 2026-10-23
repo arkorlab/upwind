@@ -233,3 +233,12 @@ export {
   RECENT_INVALIDATIONS_MS,
   type ScopeSignals,
 } from './signals.ts';
+
+export {
+  approvedFunctionPackReaderSchema,
+  approvedPackReaderRolloutSchema,
+  platformPackReadersSchema,
+  scopePackReadersSchema,
+  type ApprovedPackReaderRollout,
+  type ScopePackReaders,
+} from './pack-readers.ts';
