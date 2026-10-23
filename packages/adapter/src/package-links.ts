@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
 import { beneath } from './build-paths.ts';
@@ -48,9 +48,8 @@ interface Seen {
 
 /**
  * What placing the traced packages reads: the repository; the project's chain (`projectChain`);
- * the entries the trace lists in each `node_modules` directory, by package name (`entriesOf`);
- * where each traced path is on disk; and, read once each, what is traced at a path (`seenAt`) and
- * what a `node_modules` directory holds on disk (`present`).
+ * the entries the trace lists in each `node_modules` directory, by package name (`entriesOf`); and
+ * where each traced path is on disk.
  */
 export interface Context {
   readonly repository: Repository;
@@ -58,7 +57,6 @@ export interface Context {
   readonly entries: ReadonlyMap<string, ReadonlyMap<string, string>>;
   readonly listed: ReadonlyMap<string, string>;
   readonly seen: Map<string, Seen>;
-  readonly present: Map<string, ReadonlySet<string>>;
 }
 
 /** A declaration is data only when this output explicitly traced its logical name. */
@@ -194,7 +192,6 @@ export function contextOf(
     entries: entriesOf(assets),
     listed: new Map(assets),
     seen: new Map(),
-    present: new Map(),
   };
 }
 
@@ -361,39 +358,13 @@ function dependencyName(
   return `${PACKAGE_ENTRY.exec(owner.name)?.groups?.['directory'] ?? PACKAGES_DIR}/${name}`;
 }
 
-/** The names in a directory, or none where it is not there. */
-function listing(directory: string): string[] {
-  try {
-    return readdirSync(directory);
-  } catch {
-    return [];
-  }
-}
-
-/** The package names a `node_modules` directory holds on disk, traced or not. */
-function present(context: Context, directory: string): ReadonlySet<string> {
-  const known = context.present.get(directory);
-  if (known !== undefined) return known;
-  const at = path.join(context.repository.path, directory);
-  const names = new Set(
-    listing(at).flatMap((name) => {
-      if (!name.startsWith('@')) return [name];
-      return listing(path.join(at, name)).map((scoped) => `${name}/${scoped}`);
-    }),
-  );
-  context.present.set(directory, names);
-  return names;
-}
-
 /**
- * What the package at `target` depends on, as TypeScript finds it from there: by each name the
- * trace lists, the entry in the first `node_modules` directory that holds one by that name on disk,
- * looking upward from inside the package to the repository root's. Where the trace does not list
- * that entry, nothing farther stands in for it, as it would not where the package really is. For a
- * package in pnpm's store, wherever `virtualStoreDir` puts it, those directories are pnpm's links
- * beside it, the store's own hoisted `node_modules`, and then the repository's; for a workspace
- * package, its own `node_modules`, its parents', and the repository's. TypeScript's own package is
- * none of them, as its library keeps its names (`packageLinks`).
+ * What the package at `target` depends on, as TypeScript finds it from there: the first entry by
+ * each name the trace lists in each `node_modules` directory it looks in, upward from inside the
+ * package, up to the project's chain, which `projectView` decides. For a package in pnpm's store,
+ * wherever `virtualStoreDir` puts it, those are pnpm's links beside it and then the store's own
+ * hoisted `node_modules`; for a workspace package, its own `node_modules` and its parents'.
+ * TypeScript's own package is none of them, as its library keeps its names (`packageLinks`).
  */
 function dependenciesOf(
   context: Context,
@@ -401,19 +372,19 @@ function dependenciesOf(
 ): { readonly name: string; readonly seen: Seen }[] {
   const real = beneath(context.repository.real, target)?.split(path.sep).join('/');
   if (real === undefined || real === '') return [];
-  const directories = upward(real);
-  const traced = new Set(directories.flatMap((d) => [...(context.entries.get(d)?.keys() ?? [])]));
-  const found: { readonly name: string; readonly logical: string }[] = [];
-  for (const name of traced) {
-    const first = directories.find((directory) => present(context, directory).has(name));
-    const logical = first === undefined ? undefined : context.entries.get(first)?.get(name);
-    if (name !== COMPILER && logical !== undefined && logical !== real) {
-      found.push({ name, logical });
+  const first = new Map<string, string>();
+  for (const directory of upward(real)) {
+    if (context.chain.includes(directory)) break;
+    const names = context.entries.get(directory);
+    if (names === undefined) continue;
+    for (const [name, logical] of names) {
+      if (!first.has(name)) first.set(name, logical);
     }
   }
-  return found
-    .toSorted((a, b) => a.logical.localeCompare(b.logical))
-    .map(({ name, logical }) => ({ name, seen: seenAt(context, logical, name) }));
+  return [...first]
+    .filter(([name, logical]) => name !== COMPILER && logical !== real)
+    .toSorted(([, a], [, b]) => a.localeCompare(b))
+    .map(([name, logical]) => ({ name, seen: seenAt(context, logical, name) }));
 }
 
 /**
