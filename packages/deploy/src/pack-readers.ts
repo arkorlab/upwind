@@ -19,7 +19,7 @@ function consumersOf(bundle: DeploymentBundle): readonly (readonly [string, Func
 
 const ASCII_CONTROL_END = 32;
 const ASCII_DELETE = 127;
-const INVALID_MODULE_PARTS = ['', '.', '..'];
+const INVALID_MODULE_PARTS = new Set(['', '.', '..']);
 
 /** Module identities cannot contain ASCII controls, even when an uploader accepts their bytes. */
 function hasControlCharacter(name: string): boolean {
@@ -39,7 +39,7 @@ function unambiguousModules(spec: FunctionSpec): boolean {
       module.name.includes('\\') ||
       module.name.includes(':') ||
       hasControlCharacter(module.name) ||
-      parts.some((part) => INVALID_MODULE_PARTS.includes(part)) ||
+      parts.some((part) => INVALID_MODULE_PARTS.has(part)) ||
       seen.has(module.name)
     )
       return false;
