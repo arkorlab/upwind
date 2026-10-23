@@ -30,7 +30,7 @@ export async function bundleWorker(
 ): Promise<BundledWorker> {
   const root = path.dirname(entry);
   const inputs = new Set<string>();
-  const bundle = await rolldown({
+  await using bundle = await rolldown({
     cwd: root,
     input: entry,
     platform: options.platform ?? 'browser',
@@ -58,16 +58,11 @@ export async function bundleWorker(
       }
     },
   });
-  try {
-    const { output } = await bundle.generate({ format: 'esm', codeSplitting: false });
-    const [chunk] = output;
-    if (output.length !== 1 || chunk?.type !== 'chunk') {
-      throw new Error(`Rolldown did not produce one ES module for ${entry}`);
-    }
-    return { entry, script: chunk.code, inputs: [...inputs], root };
-  } finally {
-    await bundle.close();
+  const { output } = await bundle.generate({ format: 'esm', codeSplitting: false });
+  if (output.length !== 1) {
+    throw new Error(`Rolldown did not produce one ES module for ${entry}`);
   }
+  return { entry, script: output[0].code, inputs: [...inputs], root };
 }
 
 /** The name in the nearest `package.json` above `file` that has one, read once per directory. */

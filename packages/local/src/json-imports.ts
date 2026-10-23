@@ -1,5 +1,17 @@
-import type { Expression, Node, PropertyKey } from '@oxc-project/types';
+import type { Expression, Node, PropertyKey, TemplateLiteral } from '@oxc-project/types';
 import { parseSync } from 'rolldown/utils';
+
+/** Push a template's pieces in reverse so the next piece is read in source order. */
+function templateParts(node: TemplateLiteral): (Expression | string | undefined | null)[] {
+  const parts: (Expression | string | undefined | null)[] = [];
+  for (let index = node.quasis.length - 1; index >= 0; index -= 1) {
+    parts.push(node.quasis[index]?.value.cooked);
+    if (index > 0) {
+      parts.push(node.expressions[index - 1]);
+    }
+  }
+  return parts;
+}
 
 /** Constant string specifiers, including templates and concatenations the old bundler folded. */
 function stringOf(expression: Expression | undefined | null): string | undefined {
@@ -14,11 +26,8 @@ function stringOf(expression: Expression | undefined | null): string | undefined
     } else if (node?.type === 'BinaryExpression' && node.operator === '+') {
       pending.push(node.right, node.left);
     } else if (node?.type === 'TemplateLiteral') {
-      for (let index = node.quasis.length - 1; index >= 0; index -= 1) {
-        pending.push(node.quasis[index]?.value.cooked);
-        if (index > 0) {
-          pending.push(node.expressions[index - 1]);
-        }
+      for (const part of templateParts(node)) {
+        pending.push(part);
       }
     } else {
       return undefined;
@@ -61,6 +70,45 @@ function isNode(value: unknown): value is Node {
   );
 }
 
+/** One module request, where this syntax node carries the JSON type. */
+function jsonImportOf(node: Node): string | undefined {
+  switch (node.type) {
+    case 'ImportDeclaration':
+    case 'ExportNamedDeclaration':
+    case 'ExportAllDeclaration': {
+      const json = node.attributes.some(
+        (attribute) => nameOf(attribute.key, false) === 'type' && attribute.value.value === 'json',
+      );
+      return json ? node.source?.value : undefined;
+    }
+    case 'ImportExpression': {
+      const attributes = propertyOf(node.options, 'with') ?? propertyOf(node.options, 'assert');
+      return stringOf(propertyOf(attributes, 'type')) === 'json'
+        ? stringOf(node.source)
+        : undefined;
+    }
+    default: {
+      return undefined;
+    }
+  }
+}
+
+function childrenOf(node: Node): Node[] {
+  const children: Node[] = [];
+  for (const [key, child] of Object.entries(node)) {
+    if (key === 'parent') {
+      continue;
+    }
+    const candidates: unknown[] = Array.isArray(child) ? child : [child];
+    for (const candidate of candidates) {
+      if (isNode(candidate)) {
+        children.push(candidate);
+      }
+    }
+  }
+  return children;
+}
+
 /**
  * Only real imports and re-exports carrying the JSON type, including the older `assert` spelling.
  * Invalid JavaScript is left to the runtime to judge, as it was by the previous bundler.
@@ -76,41 +124,18 @@ export function jsonImportsOf(name: string, source: string): string[] {
       return [];
     }
     const imports: string[] = [];
-    const pending: unknown[] = [parsed.program];
+    const pending: Node[] = [parsed.program];
     while (pending.length > 0) {
       const node = pending.pop();
-      if (!isNode(node)) {
-        continue;
+      if (node === undefined) {
+        break;
       }
-      if (
-        node.type === 'ImportDeclaration' ||
-        node.type === 'ExportNamedDeclaration' ||
-        node.type === 'ExportAllDeclaration'
-      ) {
-        const json = node.attributes.some(
-          (attribute) =>
-            nameOf(attribute.key, false) === 'type' && attribute.value.value === 'json',
-        );
-        if (json && node.source !== null) {
-          imports.push(node.source.value);
-        }
-      } else if (node.type === 'ImportExpression') {
-        const specifier = stringOf(node.source);
-        const attributes = propertyOf(node.options, 'with') ?? propertyOf(node.options, 'assert');
-        if (specifier !== undefined && stringOf(propertyOf(attributes, 'type')) === 'json') {
-          imports.push(specifier);
-        }
+      const specifier = jsonImportOf(node);
+      if (specifier !== undefined) {
+        imports.push(specifier);
       }
-      for (const [key, child] of Object.entries(node)) {
-        if (key !== 'parent') {
-          if (Array.isArray(child)) {
-            for (let index = child.length - 1; index >= 0; index -= 1) {
-              pending.push(child[index]);
-            }
-          } else if (isNode(child)) {
-            pending.push(child);
-          }
-        }
+      for (const child of childrenOf(node).toReversed()) {
+        pending.push(child);
       }
     }
     return imports;

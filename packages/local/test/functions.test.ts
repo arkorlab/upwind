@@ -179,7 +179,7 @@ describe('the Functions of a deployment, on a local stack', () => {
   it.each([
     "export default () => import(`./data.json`, { with: { type: 'json' } });",
     "export default () => import('./' + 'data.json', { with: { type: 'json' } });",
-    "export default () => import(`./${'data'}.json`, { with: { type: 'json' } });",
+    `export default () => import(\`./\${'data'}.json\`, { with: { type: 'json' } });`,
     "import data from './data.json' assert { type: 'json' };",
     "export { default as data } from './data.json' with { type: 'json' };",
     "export * from './data.json' assert { type: 'json' };",

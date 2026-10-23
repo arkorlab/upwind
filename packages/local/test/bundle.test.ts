@@ -73,7 +73,9 @@ describe('a Worker of a local stack', () => {
     expect(worker.script).toContain('node:crypto');
     expect(worker.script).toContain('lazy-worker-module');
     expect(worker.script).not.toContain("import('./lazy.js')");
-    expect(() => assertHostOnly(worker)).not.toThrow();
+    expect(() => {
+      assertHostOnly(worker);
+    }).not.toThrow();
   });
 
   it('loads a bundled dynamic module only when imported', async () => {
@@ -127,7 +129,9 @@ describe('a Worker of a local stack', () => {
 
     expect(worker.inputs).toContain(foreign);
     expect(worker.script).not.toContain('foreign-unused-module');
-    expect(() => assertHostOnly(worker)).toThrow('@example/foreign');
+    expect(() => {
+      assertHostOnly(worker);
+    }).toThrow('@example/foreign');
   });
 
   it('is refused for a module of another package, or of none, and not for a dependency’s', () => {
