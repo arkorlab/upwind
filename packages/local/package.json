@@ -1,0 +1,47 @@
+{
+  "name": "@stayingupwind/local",
+  "version": "0.4.0",
+  "private": true,
+  "description": "A build served on one machine as it is served deployed: the edge, the runtime cache, the prefetch Worker and the build's Functions under Miniflare, deployed by the same assembly whatever deploys it uses.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git",
+    "directory": "packages/local"
+  },
+  "files": [
+    "src",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "NOTICE"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit && tsc --noEmit -p src/workers",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/workers"
+  },
+  "dependencies": {
+    "@stayingupwind/adapter": "workspace:*",
+    "@stayingupwind/cache": "workspace:*",
+    "@stayingupwind/core": "workspace:*",
+    "@stayingupwind/deploy": "workspace:*",
+    "@stayingupwind/edge": "workspace:*",
+    "@stayingupwind/host": "workspace:*",
+    "esbuild": "catalog:",
+    "miniflare": "catalog:",
+    "tldts": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=24.10"
+  }
+}
