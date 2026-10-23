@@ -244,11 +244,11 @@ function recordedPage(answer: Reading, generations: readonly RecordedGeneration[
 }
 
 /**
- * A page the edge served itself, held to the bytes it stands for: the build's, where the build
- * wrote it, or those of a generation of its record, which a render since left (`recordedPage`) —
- * for a fallback route's member the build did not write, those alone: without a generation, its
- * loading shell was due. Other bytes are left unjudged only where the stack's backstage says no
- * page's digest of a record a regeneration may have replaced.
+ * A page the edge served itself, held to the bytes of a generation its request read
+ * (`recordedPage`), or the build's only where no generation says a page's digest. For a fallback
+ * route's member the build did not write, a generation alone: without one, its loading shell was
+ * due. Other bytes are left unjudged only where the stack's backstage says no page's digest of a
+ * record a regeneration may have replaced.
  */
 function pageVerdict(
   stack: CheckedStack,
@@ -266,6 +266,11 @@ function pageVerdict(
     );
   }
   if (answer.truncated || recordedPage(answer, generations)) return failed(undefined);
+  if (generations.some((generation) => generation.htmlSha256 !== undefined)) {
+    return failed(
+      `answered a static-page with ${String(answer.length)} bytes, not those of a generation its record holds`,
+    );
+  }
   const entry = findStaticPage(stack.manifest, url.pathname);
   const route = entry === undefined ? undefined : stack.manifest.routes[entry.pathname];
   const built = route?.shell;
@@ -275,8 +280,7 @@ function pageVerdict(
   // A page the build did not leave static — or a member it did not write at all — a render may
   // have replaced; one the build did is its bytes alone.
   const regenerable = entry === undefined || entry.staticPagePrivacy !== undefined;
-  const digested = generations.some((generation) => generation.htmlSha256 !== undefined);
-  return regenerable && !digested
+  return regenerable
     ? skipped(
         'a static-page the edge serves from a record a regeneration may have replaced since the build, of which the stack says no digest',
       )
