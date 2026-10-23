@@ -94,7 +94,7 @@ export function documentGenerationSource(
   };
 }
 
-/** First bytes of the build-owned loading shell precede the member's first background render. */
+/** A HEAD needs only the loading headers; a GET starts its member after the loading shell. */
 export async function loadingFallbackResponse(
   {
     input,
@@ -115,7 +115,7 @@ export async function loadingFallbackResponse(
     { route: source.route, pathname: source.pathname, url: source.url },
     { entry: { kind: 'node', handler }, status: 200 },
   );
-  return afterBody(response, schedule);
+  return input.request.method === 'HEAD' ? response : afterBody(response, schedule);
 }
 
 /** Foreground data waits only for an owned publication; the host must still verify its record. */
