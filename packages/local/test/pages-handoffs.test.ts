@@ -389,11 +389,23 @@ describe('pages requests owned by the Function under the current shared classifi
     },
   );
 
+  // The edge hands every HEAD of a page on before anything else, as `static-page-head` (Sentry).
   it('uses the same Pages contract for a paired props HEAD', async () => {
     fixture.quiet = false;
+    fixture.account = 'passthrough;reason=static-page-head';
     const result = await propsHeadVerdict(stackOf(), dataPart());
 
     expect(result.verdict.kind).toBe('skipped');
     expect(fixture.backstageGets).toBe(0);
+  });
+
+  it('still rejects a props HEAD handed on as a GET of the page is', async () => {
+    fixture.quiet = false;
+    const result = await propsHeadVerdict(stackOf(), dataPart());
+
+    expect(result.verdict).toMatchObject({
+      kind: 'failed',
+      reason: expect.stringContaining('classification static-page props HEAD') as unknown,
+    });
   });
 });

@@ -61,7 +61,7 @@ export async function documentAnswerAt(
   // itself (a fallback's loading shell, Sentry) is no handoff missing, and is the route's below.
   const pages =
     read.kind === 'headers' && (!blockingOf(key) || pagesHandoffOf(read.answer) !== undefined)
-      ? pagesHandoffVerdict(stack, url, headers, { answer: read.answer })
+      ? await pagesHandoffVerdict(stack, url, headers, { answer: read.answer })
       : undefined;
   if (pages !== undefined) {
     return {

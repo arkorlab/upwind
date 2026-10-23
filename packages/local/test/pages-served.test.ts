@@ -2,12 +2,16 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 
+import { deriveEntry } from '@stayingupwind/core/cache';
 import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manifest';
 import { NAVIGATION_REQUEST_HEADERS } from '@stayingupwind/core/request';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { CheckedStack } from '../src/answers.ts';
 import { routeVerdict } from '../src/documents.ts';
+import type { Part } from '../src/part-marks.ts';
+import { partFailure } from '../src/part-verdicts.ts';
+import type { RecordedGeneration } from '../src/workers/protocol.ts';
 
 /**
  * The edge serves a static page, and a fallback route's loading shell, itself: from the record the
@@ -26,6 +30,13 @@ const LOADING = '<!doctype html><html><body>loading</body></html>';
 const CLASS = '/posts/[slug]';
 const MEMBER = '/posts/first';
 const DATA = '/_next/data/build/posts/first.json';
+const LAZY = '/posts/new';
+const LAZY_DATA = '/_next/data/build/posts/new.json';
+const SCOPE = 'dpl_site';
+const PROPS = '{"pageProps":{"slug":"first"}}';
+const LAZY_PROPS = '{"pageProps":{"slug":"new"}}';
+const LAZY_PAGE = '<!doctype html><html><body>new</body></html>';
+const JSON_TYPE = 'application/json';
 
 function shellOf(text: string) {
   return {
@@ -64,7 +75,7 @@ const MANIFEST = buildProjectManifest({
   deployment: { assetSetHash: 'a'.repeat(64), observedAt: AT, dplId: 'dpl_site' },
   app: { deploymentId: 'dpl_site', scriptName: 'app' },
   routes: [ABOUT_ROUTE, MEMBER_ROUTE, FALLBACK_ROUTE],
-  cache: { keySchemaVersion: 1, scopeId: 'dpl_site' },
+  cache: { keySchemaVersion: 1, scopeId: SCOPE },
   pagesDataUnder: { basePath: '', buildId: 'build' },
   staticPages: [
     { pathname: '/about', route: '/about', entryId: 'about-entry' },
@@ -89,14 +100,45 @@ const MANIFEST = buildProjectManifest({
   dynamicRoutes: [{ sourceRegex: '^/posts/([^/]+?)(?:/)?$', route: CLASS }],
 });
 
-/** What the stand-in edge answers each path with. */
+/** What the stand-in edge answers each path with, and the generations of each record it read. */
 const fixture = {
   origin: new URL('http://127.0.0.1'),
   answers: new Map<string, { account: string; body: string; headers?: Record<string, string> }>(),
+  generations: new Map<string, Readonly<Record<string, RecordedGeneration>>>(),
 };
+
+/** A generation of a page's record, holding `props` as its props. */
+function generationHolding(props: string): RecordedGeneration {
+  const { sha256, byteLength } = shellOf(props);
+  return {
+    headers: {},
+    artifacts: [
+      {
+        role: 'pages-data',
+        representationKey: 'pages-data',
+        encoding: 'identity',
+        sha256,
+        byteLength,
+      },
+    ],
+    partial: false,
+    source: 'render',
+  };
+}
+
+/** The record of a fallback route's member the build did not write, as the edge derives it. */
+async function lazyEntry(): Promise<string> {
+  return (await deriveEntry(SCOPE, { kind: 'pages', route: CLASS, pathname: LAZY })).entryId;
+}
 
 const server = createServer((request, response) => {
   const pathname = new URL(request.url ?? '/', fixture.origin).pathname;
+  if (pathname.startsWith('/_backstage/generation/')) {
+    const entry = decodeURIComponent(pathname.split('/').at(-1) ?? '');
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(fixture.generations.get(entry) ?? {}));
+    return;
+  }
   if (pathname.startsWith('/_backstage/')) {
     if (request.method === 'GET') {
       response.writeHead(200, { 'content-type': 'application/json' });
@@ -140,6 +182,28 @@ function verdictAt(requested: string, route: RouteEntry) {
   });
 }
 
+/** A router's request for a page's props, as the Pages Router fetches them. */
+function propsOf(url: string, route: RouteEntry): Part {
+  return {
+    kind: 'data',
+    what: 'page props',
+    url: new URL(url, SITE),
+    headers: { 'x-nextjs-data': '1' },
+    route,
+    built: undefined,
+    builtOn: (on) => on.pagesData?.artifact,
+    exact: true,
+  };
+}
+
+function propsAnswer(body: string) {
+  return {
+    account: 'pages-data;src=r2;m=12345678',
+    body,
+    headers: { 'content-type': JSON_TYPE, 'x-nextjs-cache': 'HIT' },
+  };
+}
+
 describe('pages the edge serves itself', () => {
   beforeAll(async () => {
     server.listen(0, '127.0.0.1');
@@ -151,6 +215,7 @@ describe('pages the edge serves itself', () => {
 
   beforeEach(() => {
     fixture.answers.clear();
+    fixture.generations.clear();
   });
 
   afterAll(async () => {
@@ -221,7 +286,7 @@ describe('pages the edge serves itself', () => {
       requested: '/posts/new',
       route: FALLBACK_ROUTE,
       answer: { account: 'pages-fallback;src=r2;m=12345678', body: ABOUT },
-      reason: 'not the bytes',
+      reason: 'not the loading shell',
     },
     {
       label: 'another class than the request is',
@@ -238,6 +303,66 @@ describe('pages the edge serves itself', () => {
     expect(verdict).toMatchObject({
       kind: 'failed',
       reason: expect.stringContaining(example.reason) as unknown,
+    });
+  });
+
+  // A member's props the edge serves itself from its record (`servePairedPageData`), judged as
+  // props rather than as a page or a handoff missing (Codex, greptile).
+  it.each([
+    {
+      label: "a member's",
+      url: DATA,
+      route: MEMBER_ROUTE,
+      props: PROPS,
+      entry: () => 'first-entry',
+    },
+    {
+      label: "a fallback route member's",
+      url: LAZY_DATA,
+      route: FALLBACK_ROUTE,
+      props: LAZY_PROPS,
+      entry: lazyEntry,
+    },
+  ])('accepts $label props the edge serves from its record', async (example) => {
+    fixture.answers.set(example.url, propsAnswer(example.props));
+    fixture.generations.set(await example.entry(), { 1: generationHolding(example.props) });
+
+    await expect(
+      partFailure(stackOf(), propsOf(example.url, example.route)),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    {
+      label: 'bytes no generation of its record holds',
+      held: { 1: generationHolding(PROPS) },
+      reason: 'not those of a generation',
+    },
+    { label: 'a record holding no generation', held: {}, reason: 'holds no generation' },
+  ])("still rejects a member's props served with $label", async (example) => {
+    fixture.answers.set(DATA, propsAnswer(LAZY_PROPS));
+    fixture.generations.set('first-entry', example.held);
+
+    await expect(partFailure(stackOf(), propsOf(DATA, MEMBER_ROUTE))).resolves.toContain(
+      example.reason,
+    );
+  });
+
+  // A fallback route's member a render completed after the build is served as a page of its own,
+  // though its request still classifies as the fallback (greptile): its record says so.
+  it('accepts a completed fallback route member served as a page from its record', async () => {
+    fixture.answers.set(LAZY, { account: 'static-page;src=kv;m=12345678', body: LAZY_PAGE });
+    fixture.generations.set(await lazyEntry(), { 1: generationHolding(LAZY_PROPS) });
+
+    await expect(verdictAt(LAZY, FALLBACK_ROUTE)).resolves.toStrictEqual({ kind: 'ok' });
+  });
+
+  it('still rejects a fallback route member served as a page its record holds nothing of', async () => {
+    fixture.answers.set(LAZY, { account: 'static-page;src=kv;m=12345678', body: LAZY_PAGE });
+
+    await expect(verdictAt(LAZY, FALLBACK_ROUTE)).resolves.toMatchObject({
+      kind: 'failed',
+      reason: expect.stringContaining('its loading shell was due') as unknown,
     });
   });
 });
