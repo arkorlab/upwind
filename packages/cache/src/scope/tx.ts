@@ -12,6 +12,8 @@ import { commitRevision } from './state.ts';
 export interface TxInput {
   readonly sql: SqlStorage;
   readonly scopeId: string;
+  /** Already verified immutable build identity; absent before the first scope seed. */
+  readonly buildId?: string | undefined;
   readonly limits: ScopeLimits;
   /** The clock the caller acts at (unix ms). */
   readonly now: number;

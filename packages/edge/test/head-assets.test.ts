@@ -14,10 +14,23 @@ import { pprDocument, seedSite } from './helpers/site.ts';
 
 const ASSET = 'https://site.example/_next/static/chunks/main-abc123.js';
 const CACHE_CONTROL = 'public, max-age=31536000, immutable';
-const CLIENTS: readonly { readonly label: string; readonly headers: Record<string, string> }[] = [
-  { label: 'anonymous', headers: {} },
-  { label: 'cookie', headers: { cookie: 'session=secret' } },
-  { label: 'authorization', headers: { authorization: 'Bearer secret' } },
+/** Each client, and the `Cache-Control` the asset passed through to it goes out with. */
+const CLIENTS: readonly {
+  readonly label: string;
+  readonly headers: Record<string, string>;
+  readonly cacheControl: string;
+}[] = [
+  { label: 'anonymous', headers: {}, cacheControl: CACHE_CONTROL },
+  {
+    label: 'cookie',
+    headers: { cookie: 'session=secret' },
+    cacheControl: 'private, max-age=31536000, immutable',
+  },
+  {
+    label: 'authorization',
+    headers: { authorization: 'Bearer secret' },
+    cacheControl: 'private, max-age=31536000, immutable',
+  },
 ];
 
 describe.each(['r2-mirror', 'cache-api-readthrough', 'passthrough'] as const)(
@@ -94,8 +107,9 @@ describe.each(['r2-mirror', 'cache-api-readthrough', 'passthrough'] as const)(
         ]);
         expect(response.body).toBeNull();
         expect(response.headers.get('x-arkor-edge')).toBe('passthrough;reason=head');
-        // Passthroughs preserve browser caching and prohibit a shared cache's independent copy.
-        expect(response.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
+        // A passthrough keeps browser caching, and what the application said of shared caches only
+        // for an anonymous request (decided 2026-10-22).
+        expect(response.headers.get('cache-control')).toBe(client.cacheControl);
         expect(response.headers.get('content-length')).toBe('42');
         expect(response.headers.get('etag')).toBe('"asset-v1"');
       },

@@ -47,7 +47,6 @@ import {
   continuationRequest,
   fallbackToApp,
   followResume,
-  releaseUpstream,
   settle,
   shellFailure,
   unsettle,
@@ -95,6 +94,8 @@ export interface DocumentInput {
   readonly buildRegeneration?: Readonly<Record<string, string>> | undefined;
   /** Return this build's regeneration ask if its resume is abandoned before the runtime answers. */
   readonly onBuildAbandoned?: (() => void) | undefined;
+  /** A build shell actually served after a missing record can refresh that record behind it. */
+  readonly onBuildServed?: (() => void) | undefined;
   /**
    * Proxy the request to the application's Worker, as every passthrough of the request goes: routed
    * again from the pointer when the Workers it names turned out to be gone
@@ -476,6 +477,7 @@ function composeDocument(input: DocumentInput, composition: Composition): Respon
     entries.push({ name: 'edge', durationMs: now - requestStartedAt });
   }
   response.headers.append('server-timing', serverTiming(entries));
+  input.onBuildServed?.();
   return response;
 }
 
@@ -564,11 +566,16 @@ function documentRules(input: DocumentInput): ConfiguredHeaders {
   );
 }
 
-/** A generation without resume state is complete, even when the build's shell was not. */
+/**
+ * A generation without resume state is complete, even when the build's shell was not. A signed
+ * Pages fallback probe proves its whole loading document: the concrete render belongs to a later
+ * data request, and is not a continuation of this response.
+ */
 function isCompleteDocument(input: DocumentInput): boolean {
-  return input.generation === undefined
-    ? input.entry.cache?.delivery === 'complete'
-    : input.generation.pack.postponed === undefined;
+  const { generation, entry, edge, manifest } = input;
+  if (generation !== undefined) return generation.pack.postponed === undefined;
+  if (entry.cache?.delivery === 'complete') return true;
+  return edge.validated && manifest.pagesFallbacks?.[entry.pathname] !== undefined;
 }
 
 /**
@@ -632,9 +639,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     return delegateCorruptDocument(input, shellLookup);
   }
   const delegated = delegateSandboxedDocument(input, complete, headers, shellLookup);
-  if (delegated !== undefined) {
-    return delegated;
-  }
+  if (delegated !== undefined) return delegated;
   const encoding = negotiateContentEncoding(clientAcceptEncoding(input.request), CONTENT_ENCODINGS);
   const layering = layeringFor(input, complete, encoding);
   const rendering = usableRendering(input, encoding);
@@ -658,7 +663,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
           headers: toldBesideResume(input, generation),
         });
   // The resume goes with a client that leaves before a splice holds it (`followClient`).
-  const { upstream, clientLeft, cancelled } = followResume(input, handle);
+  const { upstream, clientLeft, ended, release } = followResume(input, handle);
   servedFromRecord(edge, generation);
   const shell = await shellLookup;
   if (shell.kind !== 'ok') {
@@ -714,7 +719,8 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
   if (clientLeft()) {
     // The resume went with the client: nothing is spliced for nobody, and what became of the
     // document is the client's cancel, not a resume that failed, which the route's reports count.
-    edge.ctx.waitUntil(releaseUpstream(upstream));
+    // A regeneration it accepted begins all the same, and is followed (`release`).
+    edge.ctx.waitUntil(release());
     const outcome: SpliceOutcome = { kind: 'client-cancelled', forwarded: 0 };
     const dispatched = dispatchedSoFar(handle.response);
     edge.ctx.waitUntil(reportOutcome({ input, outcome, ...read, subrequests, dispatched }));
@@ -745,7 +751,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
   edge.ctx.waitUntil(
     (async (): Promise<void> => {
       const outcome = await splice.outcome;
-      cancelled(outcome);
+      ended(outcome);
       // Where the resume went, as far as it got: the Worker that answered or failed, or the one it
       // was still out to when the first-byte timeout ended it — the report waits for none of them.
       const dispatched = dispatchedSoFar(handle.response);

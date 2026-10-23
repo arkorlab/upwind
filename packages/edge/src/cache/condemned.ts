@@ -144,7 +144,7 @@ export function takeInvalidation(
   const { value, bound } = invalidated;
   // Without a revision it bounds no record, and is taken in for when it came all the same: an
   // absence held from before it is not held past it (`generation-hold.ts`).
-  memory.invalidations.take(scopeId, namedTags(value), revisionOf(bound));
+  memory.invalidations.takeResponse(scopeId, namedTags(value), revisionOf(bound));
   const touches = invalidatedTagsMatcher(value, bound);
   const held = [...memory.generations.values()]
     .map(({ pack }) => pack)

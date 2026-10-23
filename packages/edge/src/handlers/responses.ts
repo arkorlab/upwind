@@ -6,6 +6,7 @@ import {
 } from '@stayingupwind/core/paas';
 import {
   EDGE_DEBUG_HEADER,
+  hasRouteBodyControlHeader,
   HOP_BY_HOP_HEADERS,
   NO_STORE_CACHE_CONTROL,
   NULL_BODY_STATUS,
@@ -15,6 +16,7 @@ import {
   rewriteSetCookieForPreview,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
+import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
 
 const HTTP_OK_STATUS = 200;
 const NOT_FOUND_STATUS = 404;
@@ -228,7 +230,7 @@ export function mergeScopedMiddlewareHeaders(
   scope: PassthroughResponseContext,
   excluded?: ReadonlySet<string>,
 ): void {
-  const nominated = nominatedBy(added);
+  const nominated = excluded?.has(CONNECTION_HEADER) === true ? undefined : nominatedBy(added);
   const scoped = new Headers();
   for (const [name, value] of added) {
     if (
@@ -265,26 +267,47 @@ export function keptByNobody(headers: Headers): void {
 }
 
 /**
- * Make a proxied response unstorable by a shared cache, leaving the browser's own caching intact.
+ * Keep a proxied response from shared caches — unless the application said they may keep it —
+ * leaving the browser's own caching intact.
  *
- * Passthrough responses have not passed immutable asset admission, so no shared cache may hold an
- * independent copy of one. `private` applies that decision to every shared cache. Upstream
- * CDN-specific headers have higher precedence than Cache-Control and are removed first, along
- * with `s-maxage` and `public`. The browser's own caching directives survive intact.
+ * Passthrough responses have not passed immutable asset admission, so the edge keeps no copy of
+ * one, and by default no shared cache may hold one either: `private` applies that to every shared
+ * cache. Upstream CDN-specific headers have higher precedence than Cache-Control and are removed
+ * first, and `s-maxage` goes with the shared caches it would have let keep the answer. The
+ * browser's own caching directives survive intact.
+ *
+ * An answer whose own `Cache-Control` says `public` keeps it, as Next.js hands it on (decided
+ * 2026-10-22): a `getServerSideProps` page's `public, max-age=3600`, an image route's
+ * `public, max-age=0, must-revalidate`. A cache between the edge and the browser may then hold a
+ * copy that no invalidation reaches, which is what the application asked for — for as long as it
+ * said: its `s-maxage` stays, the lifetime it gave shared caches, which past the edge are those.
+ * Only where it says so of itself, though (`saidPublic`), and only to a request that is `anonymous`
+ * (`anonymousRequest`): one that carried nothing of a visitor's the application could have
+ * answered by — no cookie or `Authorization` of its own, none of the Next.js control or
+ * router-protocol headers — and was no validation. Nor anything a project whose delivery is
+ * private serves (`privateDelivery`), which the callers keep from every cache after this
+ * (`keptByNobody`).
  *
  * Admitted immutable assets do not come through here. They are content-addressed and vary on
  * nothing, which is what makes the edge's own named cache safe to hold them in.
  */
-export function privateCacheControl(headers: Headers): void {
+export function unsharedUnlessPublic(headers: Headers, anonymous: boolean): void {
   removeSharedCacheOverrides(headers);
   const raw = headers.get(CACHE_CONTROL_HEADER);
   if (raw === null) {
     headers.set(CACHE_CONTROL_HEADER, NO_STORE_CACHE_CONTROL);
     return;
   }
-  // `s-maxage` is for the shared caches that are to keep nothing of this, and a `private` naming
-  // fields would let them keep the rest: both go, the latter for a bare `private`.
-  const kept = cacheDirectives(raw).filter((part) => {
+  const directives = cacheDirectives(raw);
+  // The application's own word that shared caches may keep it goes out as it said it, `s-maxage`
+  // and all: past the edge, which keeps nothing of this, the shared caches are the ones it names.
+  if (anonymous && saidPublic(headers, directives)) {
+    headers.set(CACHE_CONTROL_HEADER, directives.join(', '));
+    return;
+  }
+  // Anything else is no shared cache's: `s-maxage` goes, and a `private` naming fields, which would
+  // let one keep the rest, for a bare `private`.
+  const kept = directives.filter((part) => {
     const name = directiveName(part);
     return name !== S_MAXAGE_DIRECTIVE && (name !== PRIVATE_DIRECTIVE || isBarePrivate(part));
   });
@@ -297,6 +320,53 @@ export function privateCacheControl(headers: Headers): void {
   }
   const shareable = kept.filter((part) => directiveName(part) !== PUBLIC_DIRECTIVE);
   headers.set(CACHE_CONTROL_HEADER, [PRIVATE_DIRECTIVE, ...shareable].join(', '));
+}
+
+/**
+ * Whether an answer says of itself that a shared cache may keep all of it: a bare `public` — a
+ * `public=…` is no directive a cache has to heed — with no `private` naming fields, which says a
+ * shared cache is to keep none of those, and no cookie, which makes an answer one visitor's
+ * whatever else it says.
+ */
+function saidPublic(headers: Headers, directives: readonly string[]): boolean {
+  return (
+    !headers.has(SET_COOKIE_HEADER) &&
+    directives.some((part) => part.toLowerCase() === PUBLIC_DIRECTIVE) &&
+    directives.every((part) => directiveName(part) !== PRIVATE_DIRECTIVE || isBarePrivate(part))
+  );
+}
+
+/**
+ * Whether a request carried nothing the application could have answered one visitor by, so that
+ * what it said of the answer may stand (`unsharedUnlessPublic`): no validation, no cookie or
+ * `Authorization` of its own (`carriesApplicationCredentials`), and none of the Next.js control or
+ * router-protocol headers an answer is told apart by (`hasRouteBodyControlHeader`) — a navigation's
+ * payload is one URL's answer as much as its document is, and a cache that keys by the URL alone
+ * would hand either for the other.
+ */
+export function anonymousRequest(
+  headers: Headers,
+  credentials: HostCredentials,
+  validated: boolean,
+): boolean {
+  return (
+    !validated &&
+    !carriesApplicationCredentials(headers, credentials) &&
+    !hasRouteBodyControlHeader(headers)
+  );
+}
+
+/**
+ * Whether a request carries what an application could tell one visitor by: a cookie or an
+ * `Authorization` of its own, once the host's credentials are taken off (`withoutHostCredentials`).
+ */
+export function carriesApplicationCredentials(
+  headers: Headers,
+  credentials: HostCredentials,
+): boolean {
+  if (!headers.has('cookie') && !headers.has('authorization')) return false;
+  const application = withoutHostCredentials(new Headers(headers), credentials);
+  return application.has('cookie') || application.has('authorization');
 }
 
 export function notFoundResponse(reason: string): Response {

@@ -149,8 +149,9 @@ const GATED_CACHE_CONTROL = 'private, max-age=0, must-revalidate';
  * stored, so negotiating on the rewritten header would send brotli to a client that never offered
  * it (`document.ts` reads it the same way, for the same reason).
  */
-function clientAcceptEncoding(request: SegmentInput['request']): string | null {
-  return request.cf?.clientAcceptEncoding ?? request.headers.get(ACCEPT_ENCODING_HEADER);
+function clientAcceptEncoding(request: Request): string | null {
+  const original = request.cf?.clientAcceptEncoding;
+  return typeof original === 'string' ? original : request.headers.get(ACCEPT_ENCODING_HEADER);
 }
 
 /**
@@ -163,7 +164,10 @@ function clientAcceptEncoding(request: SegmentInput['request']): string | null {
  * should verify its own output with. Served without that the client is handed a truncated stream
  * and decodes nothing at all.
  */
-function chosenRendering(input: SegmentInput): Rendering {
+export function chosenRendering(input: {
+  readonly request: Request;
+  readonly segment: RouteSegment;
+}): Rendering {
   const { artifact, encodings } = input.segment;
   const identity = { ref: artifact, encoding: IDENTITY_ENCODING, close: undefined } as const;
   const offered = new Set(SEGMENT_ENCODINGS.filter((coding) => encodings?.[coding] !== undefined));
@@ -384,7 +388,7 @@ function recordDelivery(input: SegmentInput, delivered: SegmentDelivery): void {
 }
 
 /** The stored rendering, then the bytes that close its stream: two chunks, no second buffer. */
-function closedStream(
+export function closedStream(
   bytes: Uint8Array,
   close: Uint8Array | undefined,
 ): ReadableStream<Uint8Array> {

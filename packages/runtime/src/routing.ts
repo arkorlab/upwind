@@ -11,7 +11,12 @@ import {
   isPagesDataRequestPath,
   type Route,
 } from '@stayingupwind/core/bundle';
-import { HEADER_RULES_LEFT_HEADER, ORIGINAL_URL_HEADER } from '@stayingupwind/core/paas';
+import {
+  HEADER_RULES_AFTER_COOKIE_COUNT_HEADER,
+  HEADER_RULES_AFTER_HEADER,
+  HEADER_RULES_LEFT_HEADER,
+  ORIGINAL_URL_HEADER,
+} from '@stayingupwind/core/paas';
 import { NEXT_DATA_HEADER, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
@@ -206,6 +211,23 @@ export function routingTables(
     fallback: markedRewrites(routingRoutes(routing.fallback), FALLBACK),
     shouldNormalizeNextData: routing.shouldNormalizeNextData,
   };
+}
+
+/**
+ * Record which fields routing set after the rules the edge judged. Called after the existing
+ * routing await, before any handler answers or a route is handed to another Function. Even an
+ * empty routing result owns the marker, so a handler cannot claim its own fields came later.
+ * Only the names and cookie count of fields routing already collected are visited; no rules
+ * are judged again, and no header values are copied into the protocol.
+ */
+export function noteLaterHeaderRules(routed: ResolveRoutesResult, judged: boolean): void {
+  if (!judged) return;
+  const headers = routed.resolvedHeaders ?? new Headers();
+  routed.resolvedHeaders = headers;
+  headers.delete(HEADER_RULES_AFTER_HEADER);
+  headers.delete(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER);
+  headers.set(HEADER_RULES_AFTER_HEADER, [...headers.keys()].join(','));
+  headers.set(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, String(headers.getSetCookie().length));
 }
 
 /**

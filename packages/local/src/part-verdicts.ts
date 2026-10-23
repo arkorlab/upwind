@@ -421,16 +421,17 @@ async function askedVerdict(
   if (middlewareAnswered(answer) !== undefined) {
     return skipped(APPLICATIONS);
   }
-  const pages = pagesHandoffVerdict(stack, part.url, asked, { answer });
+  // What the middleware decided, which the edge answers a part it covers behind, and the generations
+  // the edge answered it from: read once — by a Pages answer the edge served, which it then judges.
+  const kept = () => keptOf(stack, trace, part.url, asked);
+  const pages = await pagesHandoffVerdict(stack, part.url, asked, { answer, kept });
   if (pages !== undefined) return pages;
-  // What the middleware decided, which the edge answers a part it covers behind.
-  const kept = await keptOf(stack, trace, part.url, asked);
-  const { decided } = kept;
-  const captured = withGenerationEvidence(stack, kept);
+  const evidence = await kept();
+  const captured = withGenerationEvidence(stack, evidence);
   const covered = middlewareCovers(stack, part.url, asked);
   return await partAnswerVerdict(captured, part, {
     answer,
-    decided,
+    decided: evidence.decided,
     covered,
     coding,
     asked,
@@ -452,7 +453,7 @@ export async function partAnswerVerdict(
   },
 ): Promise<Verdict> {
   const { answer, decided, covered, coding, asked, within } = read;
-  const pages = pagesHandoffVerdict(stack, part.url, asked, { answer });
+  const pages = await pagesHandoffVerdict(stack, part.url, asked, { answer });
   if (pages !== undefined) return pages;
   const answered = answeredBy(answer);
   if (answered.startsWith('passthrough;')) {
@@ -513,7 +514,8 @@ export async function propsHeadVerdict(
   if (typeof answer === 'string') {
     return { verdict: failed(answer) };
   }
-  const pages = pagesHandoffVerdict(stack, part.url, part.headers, { answer, method: 'HEAD' });
+  const head = { answer, method: 'HEAD' } as const;
+  const pages = await pagesHandoffVerdict(stack, part.url, part.headers, head);
   if (pages !== undefined) return { verdict: pages, answer };
   const answered = answeredBy(answer);
   if (middlewareAnswered(answer) !== undefined || PROPS_HEAD.test(answered)) {

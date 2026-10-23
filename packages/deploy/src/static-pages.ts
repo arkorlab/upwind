@@ -22,6 +22,7 @@ export async function staticPagesOf(
   scopeId: string,
   enabled = true,
 ): Promise<StaticPageEntry[]> {
+  // Trailing-slash aliases need a separate canonical-path and raw-seed identity contract.
   if (!enabled || bundle.config.trailingSlash) return [];
   const placed = placedRoutes(bundle.entrypoints);
   const pages: StaticPageEntry[] = [];

@@ -154,6 +154,7 @@ const LOCATION_HEADER = 'location';
 interface ConfiguredAnswerContext {
   readonly forwarding: PassthroughResponseContext;
   readonly request: Pick<Request, 'method'>;
+  readonly later?: ReadonlySet<string> | undefined;
 }
 
 /** Remove actual field names, never malformed Connection options, from a stable list. */
@@ -161,6 +162,24 @@ function removeNominatedFields(headers: Headers, nominated: ReadonlySet<string> 
   const names = [...headers.keys()];
   for (const name of names) {
     if (nominated?.has(name) === true) headers.delete(name);
+  }
+}
+
+/** Set an already-filtered deferred field; cookies accumulate beside the answer's own. */
+function layDeferredField(
+  headers: Headers,
+  name: string,
+  value: string,
+  scope: PassthroughResponseContext,
+): void {
+  if (name !== SET_COOKIE_HEADER) {
+    setConfigured(headers, name, value, scope);
+    return;
+  }
+  try {
+    headers.append(name, scopedValue(name, value, scope));
+  } catch {
+    // Not a header value, on this request: left off.
   }
 }
 
@@ -172,7 +191,9 @@ function removeNominatedFields(headers: Headers, nominated: ReadonlySet<string> 
  * (`forwardedResponse`) is not a rule's to put back, and a name no header can have is left off.
  * The Function's and the rules' `Connection` options apply before middleware is merged: the
  * runtime would have laid the rules before forwarding removed the one hop's fields. A HEAD's
- * configured length is kept under the same status policy as an ordinary forwarded answer.
+ * configured length is kept under the same status policy as an ordinary forwarded answer. A
+ * field routing set later (`context.later`) keeps its value above these earlier rules; a later
+ * Connection replaces the earlier Connection before its nominations are considered.
  *
  * The Function leaves off only the rules that set headers. Its redirects ahead of the middleware
  * stay, each with its `Location`, so none is laid here: on any other answer — a path a redirect
@@ -186,13 +207,16 @@ export function layConfiguredOver(
   answer: Response,
   context: ConfiguredAnswerContext,
 ): void {
-  const connection = configured.headers[CONNECTION_HEADER];
+  const { later } = context;
+  const connection =
+    later?.has(CONNECTION_HEADER) === true ? undefined : configured.headers[CONNECTION_HEADER];
   const nominated = nominatedBy(answer.headers, connection);
   if (connection !== undefined) {
     removeNominatedFields(headers, nominated);
   }
   const scope = context.forwarding;
   for (const [name, value] of Object.entries(configured.headers)) {
+    if (later?.has(name) === true) continue;
     const length =
       name === CONTENT_LENGTH_HEADER &&
       context.request.method === 'HEAD' &&
@@ -207,15 +231,7 @@ export function layConfiguredOver(
     ) {
       continue;
     }
-    if (name === SET_COOKIE_HEADER) {
-      try {
-        headers.append(name, scopedValue(name, value, scope));
-      } catch {
-        // Not a header value, on this request: left off.
-      }
-    } else {
-      setConfigured(headers, name, value, scope);
-    }
+    layDeferredField(headers, name, value, scope);
   }
 }
 
@@ -230,23 +246,30 @@ function judgesEveryHeaderRule(manifest: ProjectManifest): boolean {
 }
 
 /**
- * What the middleware decided, with the headers the rules of `next.config` set on the request as
- * the client sent it (`configured`, judged before the middleware ran) beside a decision to let the
- * request on (`MiddlewareContinued.judgedRules`), for the Function it may be handed to. Not where the
- * manifest holds only some of the rules (`judgesEveryHeaderRule`): the Function judges them all, as
- * it did, and the edge lays none. A matched `Location` is left to the Function too: the manifest
- * cannot tell a header rule's from a redirect's. Telling the Function to leave it off, then dropping
- * it here as a possible redirect, would lose a header that the Function used to answer with.
+ * What the middleware decided, with the headers the rules ahead of the middleware set on the request
+ * as the client sent it (`aheadOfMiddleware` of `configured`, judged before the middleware ran)
+ * beside a decision to let the request on (`MiddlewareContinued.judgedRules`), for the Function it
+ * may be handed to: what Next.js lays on whatever answers it. The Function judges the rest itself on
+ * the request as it is finally matched, as Next.js judges a rule that runs on a match: one judged
+ * here — the year-long `Cache-Control` of a build's own assets — went on whatever answered a request
+ * the middleware moved off such a file. Not where a rule says no phase (a manifest from before they
+ * did), of which nothing can be told ahead, nor where the manifest holds only some of the rules
+ * (`judgesEveryHeaderRule`): the Function judges them all, as it did, and the edge lays none. A
+ * matched `Location` is left to the Function too: the manifest cannot tell a header rule's from a
+ * redirect's. Telling the Function to leave it off, then dropping it here as a possible redirect,
+ * would lose a header that the Function used to answer with.
  */
 export function withJudgedRules<Outcome extends { readonly kind: string }>(
   outcome: Outcome,
   configured: ConfiguredHeaders,
   manifest: ProjectManifest,
 ): Outcome {
-  return outcome.kind === 'continue' &&
-    !Object.hasOwn(configured.headers, LOCATION_HEADER) &&
+  const judged = configured.aheadOfMiddleware;
+  return judged !== undefined &&
+    outcome.kind === 'continue' &&
+    !Object.hasOwn(judged.headers, LOCATION_HEADER) &&
     judgesEveryHeaderRule(manifest)
-    ? { ...outcome, judgedRules: configured }
+    ? { ...outcome, judgedRules: judged }
     : outcome;
 }
 

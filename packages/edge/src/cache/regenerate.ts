@@ -2,6 +2,7 @@ import { PRIMARY_FUNCTION } from '@stayingupwind/core/bundle';
 import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
 import {
   CACHE_ENTRY_HEADER,
+  CACHE_OUTCOME_HEADER,
   CACHE_ROUTE_ESCAPED_HEADER,
   CACHE_ROUTE_HEADER,
   CACHE_UPGRADE_HEADER,
@@ -95,6 +96,18 @@ export function regenerationHeaders(
   };
 }
 
+/**
+ * What the runtime says on its answer of a regeneration it took on (`CACHE_OUTCOME_HEADER`): one it
+ * begins once the resume it rides has ended, or as it answers a detached ask. `skipped` is one it
+ * found nothing to regenerate for.
+ */
+const ACCEPTED = 'accepted';
+
+/** Whether the runtime's answer says it accepted the regeneration the request asked for. */
+export function regenerationAccepted(answer: Response): boolean {
+  return answer.headers.get(CACHE_OUTCOME_HEADER) === ACCEPTED;
+}
+
 /** Either id may contain a colon; the manifest's length keeps the pair distinct. */
 function regenerationKey(manifestId: string, entryId: string): string {
   return `${String(manifestId.length)}:${manifestId}:${entryId}`;
@@ -139,6 +152,16 @@ export interface DispatchInput {
   readonly target: RegenerationTarget;
   /** The app Worker the entry's route is in, for a deployment split across several. */
   readonly function: string | undefined;
+  /**
+   * For a detached ask (`triggerDetached`): told once the runtime's answer says it accepted the
+   * regeneration, which it begins as it answers.
+   */
+  readonly onAccepted?: (() => void) | undefined;
+  /**
+   * For a detached ask: told once it will not begin here — answered without the runtime accepting
+   * it, or not answered at all — never beside `onAccepted`.
+   */
+  readonly onDeclined?: (() => void) | undefined;
 }
 
 /**
@@ -170,6 +193,7 @@ export function foregroundDocument(
     app: edge.app,
     cspReportingPath: edge.cspReportingPath,
     function: input.function ?? PRIMARY_FUNCTION,
+    scopeId: input.target.pack.header.scopeId,
     reason: 'regenerate',
     privateDelivery: edge.privateDelivery,
     middleware: input.middleware,
@@ -229,6 +253,9 @@ async function askDetached(
   asked: (soFar: () => number) => void,
   onDispatched?: (read: () => Dispatched | undefined) => void,
 ): Promise<void> {
+  const { onAccepted, onDeclined } = input;
+  // Set where the Worker's answer comes back; read once the passthrough returns, or has thrown.
+  const heard = { answered: false };
   try {
     const response = await handlePassthrough({
       request: keptPastTheVisitor(input.request),
@@ -237,14 +264,29 @@ async function askDetached(
       host: edge.host,
       app: edge.app,
       function: input.function ?? PRIMARY_FUNCTION,
+      scopeId: input.target.pack.header.scopeId,
       reason: 'regenerate-detached',
       middleware: input.middleware,
       headers: regenerationHeaders(edge, 'detached', input.target),
       onAsked: asked,
       onDispatched,
+      onAnswered:
+        onAccepted === undefined && onDeclined === undefined
+          ? undefined
+          : (answer) => {
+              heard.answered = true;
+              if (regenerationAccepted(answer)) {
+                onAccepted?.();
+              } else {
+                onDeclined?.();
+              }
+            },
     });
+    // An answer the edge composed itself (the Worker unreachable, gone) is none of the runtime's.
+    if (!heard.answered) onDeclined?.();
     releaseStream(response.body, 'detached regeneration answered');
   } catch (error) {
+    if (!heard.answered) onDeclined?.();
     logWarn('detached regeneration not asked', {
       entryId: input.target.entryId,
       detail: error instanceof Error ? error.message : String(error),

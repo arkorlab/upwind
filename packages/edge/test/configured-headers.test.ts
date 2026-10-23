@@ -1,5 +1,9 @@
 import { buildProjectManifest, requestHeaderRulesFor } from '@stayingupwind/core/manifest';
-import { HEADER_RULES_LEFT_HEADER } from '@stayingupwind/core/paas';
+import {
+  HEADER_RULES_AFTER_COOKIE_COUNT_HEADER,
+  HEADER_RULES_AFTER_HEADER,
+  HEADER_RULES_LEFT_HEADER,
+} from '@stayingupwind/core/paas';
 import type { ForwardingContext } from '@stayingupwind/core/request';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
@@ -121,6 +125,217 @@ describe('deferred configured headers', () => {
     expect(response.headers.has(HEADER_RULES_LEFT_HEADER)).toBe(false);
   });
 
+  it('keeps later routing fields above earlier rules and middleware, but rules above handler fields', async () => {
+    const origin = functionAnswer(true);
+    origin.headers.set('cache-control', 'public,max-age=31536000,immutable');
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'cache-control,x-precedence');
+    origin.headers.set('x-precedence', 'later-rule');
+    const response = await handedOn(
+      origin,
+      new Headers({ 'cache-control': 'no-store', 'x-precedence': 'middleware' }),
+      { headers: { 'cache-control': 'no-store' } },
+    );
+
+    expect(response.headers.get('cache-control')).toContain('max-age=31536000');
+    expect(response.headers.get('cache-control')).toContain('immutable');
+    expect(response.headers.get('x-precedence')).toBe('later-rule');
+    expect(response.headers.get('x-rule')).toBe('configured');
+    expect(response.headers.has(HEADER_RULES_AFTER_HEADER)).toBe(false);
+    expect(response.headers.has(HEADER_RULES_LEFT_HEADER)).toBe(false);
+  });
+
+  it('retains distinct cookies from every phase, with the later routing block last', async () => {
+    const laterCookie = 'later=1; Path=/';
+    const origin = functionAnswer(true);
+    origin.headers.append('set-cookie', laterCookie);
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'set-cookie');
+    origin.headers.set(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, '1');
+    const response = await handedOn(origin, new Headers({ 'set-cookie': MIDDLEWARE_COOKIE }));
+
+    expect(response.headers.getSetCookie()).toStrictEqual([
+      ORIGINAL_COOKIE,
+      RULE_COOKIE,
+      MIDDLEWARE_COOKIE,
+      laterCookie,
+    ]);
+    expect(response.headers.get('x-rule')).toBe('configured');
+    expect(response.headers.has(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER)).toBe(false);
+  });
+
+  it('keeps the last same-name cookie in routing phase order', async () => {
+    const origin = functionAnswer(true);
+    origin.headers.set('set-cookie', 'choice=handler; Path=/');
+    origin.headers.append('set-cookie', 'choice=later; Path=/');
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'set-cookie');
+    origin.headers.set(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, '1');
+    const response = await handedOn(
+      origin,
+      new Headers({ 'set-cookie': 'choice=middleware; Path=/' }),
+      { headers: { 'set-cookie': 'choice=earlier; Path=/' } },
+    );
+
+    expect(response.headers.getSetCookie()).toStrictEqual([
+      'choice=handler; Path=/',
+      'choice=earlier; Path=/',
+      'choice=middleware; Path=/',
+      'choice=later; Path=/',
+    ]);
+  });
+
+  it('keeps earlier rules above a handler cookie when the later rule sets another cookie', async () => {
+    const origin = functionAnswer(true);
+    origin.headers.set('set-cookie', 'choice=handler; Path=/');
+    origin.headers.append('set-cookie', 'later=1; Path=/');
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'set-cookie');
+    origin.headers.set(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, '1');
+    const response = await handedOn(origin, new Headers({ 'set-cookie': MIDDLEWARE_COOKIE }), {
+      headers: { 'set-cookie': 'choice=earlier; Path=/' },
+    });
+
+    expect(response.headers.getSetCookie()).toStrictEqual([
+      'choice=handler; Path=/',
+      'choice=earlier; Path=/',
+      MIDDLEWARE_COOKIE,
+      'later=1; Path=/',
+    ]);
+  });
+
+  it('moves only the counted routing cookies and keeps their forwarded scopes', async () => {
+    const origin = functionAnswer(true);
+    origin.headers.append('set-cookie', 'late-a=1; Path=/; Domain=example.test');
+    origin.headers.append('set-cookie', 'late-b=1; Path=/');
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'set-cookie');
+    origin.headers.set(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, '2');
+    const response = await handedOn(origin, new Headers({ 'set-cookie': MIDDLEWARE_COOKIE }));
+
+    expect(response.headers.getSetCookie()).toStrictEqual([
+      ORIGINAL_COOKIE,
+      RULE_COOKIE,
+      MIDDLEWARE_COOKIE,
+      'late-a=1; Path=/',
+      'late-b=1; Path=/',
+    ]);
+  });
+
+  it('retains every cookie when a legacy runtime sends no later-cookie count', async () => {
+    const laterCookie = 'later=1; Path=/';
+    const origin = functionAnswer(true);
+    origin.headers.append('set-cookie', laterCookie);
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'set-cookie');
+    const response = await handedOn(origin, new Headers({ 'set-cookie': MIDDLEWARE_COOKIE }));
+
+    expect(response.headers.getSetCookie()).toStrictEqual([
+      ORIGINAL_COOKIE,
+      laterCookie,
+      RULE_COOKIE,
+      MIDDLEWARE_COOKIE,
+    ]);
+    expect(response.headers.has(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER)).toBe(false);
+  });
+
+  it.each(['0', '-1', '1.5', '3', '9007199254740992', 'not-a-count'])(
+    'retains every cookie with an invalid later-cookie count: %s',
+    async (count) => {
+      const laterCookie = 'later=1; Path=/';
+      const origin = functionAnswer(true);
+      origin.headers.append('set-cookie', laterCookie);
+      origin.headers.set(HEADER_RULES_AFTER_HEADER, 'set-cookie');
+      origin.headers.set(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, count);
+      const response = await handedOn(origin, new Headers({ 'set-cookie': MIDDLEWARE_COOKIE }));
+
+      expect(response.headers.getSetCookie()).toStrictEqual([
+        ORIGINAL_COOKIE,
+        laterCookie,
+        RULE_COOKIE,
+        MIDDLEWARE_COOKIE,
+      ]);
+      expect(response.headers.has(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER)).toBe(false);
+    },
+  );
+
+  it('never reattaches counted cookies excluded by the surviving earlier Connection', async () => {
+    const origin = functionAnswer(true);
+    origin.headers.append('set-cookie', 'later=1; Path=/');
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'set-cookie');
+    origin.headers.set(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, '1');
+    const response = await handedOn(origin, new Headers({ 'set-cookie': MIDDLEWARE_COOKIE }), {
+      headers: { connection: 'Set-Cookie' },
+    });
+
+    expect(response.headers.getSetCookie()).toStrictEqual([MIDDLEWARE_COOKIE]);
+  });
+
+  it('never restores cookies excluded by the final routing Connection', async () => {
+    const origin = functionAnswer(true, 'Set-Cookie');
+    origin.headers.append('set-cookie', 'later=1; Path=/');
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'connection,set-cookie');
+    origin.headers.set(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, '1');
+    const response = await handedOn(origin, new Headers({ 'set-cookie': MIDDLEWARE_COOKIE }));
+
+    expect(response.headers.getSetCookie()).toStrictEqual([]);
+  });
+
+  it('lets a later Connection replace the earlier rule Connection without restoring its nominations', async () => {
+    const origin = functionAnswer(true, 'X-Precedence');
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'connection,x-rule,x-precedence');
+    const response = await handedOn(origin, new Headers(), {
+      headers: { connection: 'X-Rule' },
+    });
+
+    expect(response.headers.get('x-rule')).toBe('origin');
+    expect(response.headers.get('x-precedence')).toBeNull();
+    expect(response.headers.get('connection')).toBeNull();
+  });
+
+  it('uses a later Connection for middleware additions instead of the superseded middleware Connection', async () => {
+    const origin = functionAnswer(true, 'X-Precedence');
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'connection');
+    const response = await handedOn(
+      origin,
+      new Headers({
+        connection: 'X-Kept',
+        'x-kept': 'middleware',
+        'x-precedence': 'middleware',
+      }),
+    );
+
+    expect(response.headers.get('x-kept')).toBe('middleware');
+    expect(response.headers.get('x-precedence')).toBeNull();
+    expect(response.headers.get('connection')).toBeNull();
+  });
+
+  it('does not restore a later field nominated by the surviving earlier Connection', async () => {
+    const origin = functionAnswer(true);
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'x-rule');
+    const response = await handedOn(origin, new Headers(), {
+      headers: { connection: 'X-Rule' },
+    });
+
+    expect(response.headers.get('x-rule')).toBeNull();
+  });
+
+  it.each(['x-rule,', 'not a name', 'X-Rule'])(
+    'keeps the existing ordering for a malformed later-field marker: %s',
+    async (marker) => {
+      const origin = functionAnswer(true);
+      origin.headers.set(HEADER_RULES_AFTER_HEADER, marker);
+      const response = await handedOn(origin);
+
+      expect(response.headers.get('x-rule')).toBe('configured');
+      expect(response.headers.has(HEADER_RULES_AFTER_HEADER)).toBe(false);
+    },
+  );
+
+  it('does not accept later-field claims without the Function deferring the early rules', async () => {
+    const origin = functionAnswer(false);
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'x-precedence');
+    const response = await handedOn(origin, new Headers({ 'x-precedence': 'middleware' }));
+
+    expect(response.headers.get('x-rule')).toBe('origin');
+    expect(response.headers.get('x-precedence')).toBe('middleware');
+    expect(response.headers.has(HEADER_RULES_AFTER_HEADER)).toBe(false);
+  });
+
   it('leaves rules to a Function that did not defer them', async () => {
     const response = await handedOn(functionAnswer(false, 'X-Rule'));
 
@@ -225,6 +440,19 @@ describe('transport fields in deferred configured headers', () => {
 
     expect(response.headers.get('x-rule')).toBeNull();
     expect(response.headers.get('x-precedence')).toBeNull();
+  });
+
+  it('keeps a later HEAD length above an earlier rule without changing GET framing', async () => {
+    for (const method of ['HEAD', 'GET']) {
+      const origin = lengthAnswer(200, '11');
+      origin.headers.set(HEADER_RULES_AFTER_HEADER, 'content-length');
+      const response = await handedOn(origin, new Headers(), {
+        method,
+        headers: { 'content-length': '17' },
+      });
+
+      expect(response.headers.get('content-length')).toBe(method === 'HEAD' ? '11' : null);
+    }
   });
 
   it.each([

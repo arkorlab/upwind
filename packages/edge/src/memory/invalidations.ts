@@ -59,6 +59,17 @@ const MAX_BYTES = KIB * KIB;
 /** What a scope is charged on its own, and each tag besides its characters. */
 const SCOPE_BYTES = 64;
 const TAG_BYTES = 16;
+/** The two numbers and object of a response's revision, held within the scope's own budget. */
+const RESPONSE_REVISION_BYTES = 48;
+/** The Function catches up only with a recent invalidation (`cache/pulls.ts` in the runtime). */
+const RESPONSE_REVISION_MINUTES = 10;
+const RESPONSE_REVISION_MS = RESPONSE_REVISION_MINUTES * MINUTE_MS;
+
+interface ResponseRevision {
+  readonly revision: number;
+  /** When this isolate first received this revision, not when an authority copy was read. */
+  readonly observedAt: number;
+}
 
 interface Kept {
   readonly invalidations: ScopeInvalidations;
@@ -67,6 +78,14 @@ interface Kept {
   readonly at: number;
   /** A legacy response named no revision, so a transfer must drop held records conservatively. */
   readonly unbounded: boolean;
+  /** A response's acknowledged revision, separate from the authority's complete tag view. */
+  readonly responseRevision: ResponseRevision | undefined;
+}
+
+interface KeepOptions {
+  readonly at?: number | undefined;
+  readonly unbounded?: boolean | undefined;
+  readonly responseRevision?: ResponseRevision | undefined;
 }
 
 /** What the tags of a bound charge, besides their scope's own. */
@@ -78,8 +97,24 @@ function tagBytes(tags: Iterable<string>): number {
   return bytes;
 }
 
-function bytesOf(invalidations: ScopeInvalidations): number {
-  return SCOPE_BYTES + tagBytes(invalidations.tags.keys()) + tagBytes(invalidations.stale.keys());
+function bytesOf(invalidations: ScopeInvalidations, responseRevision?: ResponseRevision): number {
+  return (
+    SCOPE_BYTES +
+    tagBytes(invalidations.tags.keys()) +
+    tagBytes(invalidations.stale.keys()) +
+    (responseRevision === undefined ? 0 : RESPONSE_REVISION_BYTES)
+  );
+}
+
+/** Keep a revision and its first observation together, including across a scope transfer. */
+function laterResponse(
+  before: ResponseRevision | undefined,
+  after: ResponseRevision | undefined,
+): ResponseRevision | undefined {
+  if (before === undefined) return after;
+  if (after === undefined || after.revision < before.revision) return before;
+  if (after.revision > before.revision) return after;
+  return before.observedAt <= after.observedAt ? before : after;
 }
 
 /**
@@ -187,7 +222,7 @@ export class InvalidationMemory {
         return;
       }
       const smaller = folded(kept.invalidations);
-      const bytes = bytesOf(smaller);
+      const bytes = bytesOf(smaller, kept.responseRevision);
       this.#bytes += bytes - kept.bytes;
       this.#scopes.set(scopeId, { ...kept, invalidations: smaller, bytes });
     }
@@ -220,15 +255,27 @@ export class InvalidationMemory {
   }
 
   /** Keep `after` as the scope's, folded past the bound, and make room for it. */
-  #keep(scopeId: string, after: ScopeInvalidations, at?: number, unbounded = false): void {
+  #keep(
+    scopeId: string,
+    after: ScopeInvalidations,
+    {
+      at,
+      unbounded = false,
+      responseRevision = this.#kept(scopeId)?.responseRevision,
+    }: KeepOptions = {},
+  ): void {
     const kept: Kept = {
       invalidations:
         after.tags.size + after.stale.size > MAX_TAGS_PER_SCOPE ? folded(after) : after,
       bytes: 0,
       at: at ?? this.#now(),
       unbounded: unbounded || this.#kept(scopeId)?.unbounded === true,
+      responseRevision,
     };
-    const sized: Kept = { ...kept, bytes: bytesOf(kept.invalidations) };
+    const sized: Kept = {
+      ...kept,
+      bytes: bytesOf(kept.invalidations, kept.responseRevision),
+    };
     this.#drop(scopeId);
     if (at === undefined) {
       this.#scopes.set(scopeId, sized);
@@ -249,6 +296,18 @@ export class InvalidationMemory {
     return this.#kept(scopeId)?.invalidations;
   }
 
+  /**
+   * A response's recent acknowledged revision: a lower bound the next Function must catch up to,
+   * not a claim that this edge holds the complete invalidation view through it. Past the runtime's
+   * catch-up window, send no hint: it would suppress the Function's own nearby revision lookup.
+   */
+  responseRevisionOf(scopeId: string): ResponseRevision | undefined {
+    const response = this.#kept(scopeId)?.responseRevision;
+    return response !== undefined && this.#now() - response.observedAt <= RESPONSE_REVISION_MS
+      ? response
+      : undefined;
+  }
+
   /** Move provisional bounds to the manifest's scope, without renewing their lifetime. */
   move(from: string, to: string): 'none' | 'bounded' | 'unbounded' {
     if (from === to) return 'none';
@@ -263,7 +322,11 @@ export class InvalidationMemory {
       every: every === undefined ? into.every : latest(every, into.every),
     };
     this.#drop(from);
-    this.#keep(to, after, Math.max(source.at, destination?.at ?? source.at), source.unbounded);
+    this.#keep(to, after, {
+      at: Math.max(source.at, destination?.at ?? source.at),
+      unbounded: source.unbounded,
+      responseRevision: laterResponse(destination?.responseRevision, source.responseRevision),
+    });
     return source.unbounded ? 'unbounded' : 'bounded';
   }
 
@@ -284,12 +347,27 @@ export class InvalidationMemory {
    */
   take(scopeId: string, tags: readonly string[] | undefined, revision: number | undefined): void {
     const before = this.#before(scopeId);
-    this.#keep(
-      scopeId,
-      revision === undefined ? before : bound(before, tags, revision),
-      undefined,
-      revision === undefined,
-    );
+    this.#keep(scopeId, revision === undefined ? before : bound(before, tags, revision), {
+      unbounded: revision === undefined,
+    });
+  }
+
+  /**
+   * What a Function's response confirms the authority recorded. Reads, legacy notifications and
+   * equal or older acknowledgements never renew the first observation of a revision.
+   */
+  takeResponse(
+    scopeId: string,
+    tags: readonly string[] | undefined,
+    revision: number | undefined,
+  ): void {
+    const before = this.#before(scopeId);
+    const response =
+      revision === undefined || revision === 0 ? undefined : { revision, observedAt: this.#now() };
+    this.#keep(scopeId, revision === undefined ? before : bound(before, tags, revision), {
+      unbounded: revision === undefined,
+      responseRevision: laterResponse(this.#kept(scopeId)?.responseRevision, response),
+    });
   }
 
   /**

@@ -1,10 +1,15 @@
 import {
   type DeploymentBundle,
   dynamicRouting,
+  edgeServableRouteBodies,
+  edgeServableStaticPages,
   foldedHeaderRulesOf,
   headerRulesOf,
+  type Prerender,
   spelledPrefixOf,
+  staticFallbackPagesOf,
   staticFileLocalesOf,
+  staticPagesMembersOf,
 } from '@stayingupwind/core/bundle';
 import { KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
 import type { HeaderRule, ProjectManifest } from '@stayingupwind/core/manifest';
@@ -131,6 +136,17 @@ function namesOf(listed: Readonly<Record<string, true>> | undefined): string[] |
 }
 
 /**
+ * The static Pages pages a deploy publishes a table of (`staticPagesOf` in the deploy): the build's
+ * own and the members of its fallback routes — none for a build with a trailing slash, whose
+ * aliases the table does not carry (greptile).
+ */
+function staticPagesTabled(bundle: DeploymentBundle): Prerender[] {
+  return bundle.config.trailingSlash
+    ? []
+    : [...edgeServableStaticPages(bundle), ...staticPagesMembersOf(bundle).keys()];
+}
+
+/**
  * The tables a deploy derives from the build's routing (`dynamicRouting`), for the pages it routes
  * (`routedPathnames`): the classes and their members, the rules reserved for the Function — a set,
  * as whichever matches claims a request — the pathnames resolved exactly, the pages of their own a
@@ -138,7 +154,21 @@ function namesOf(listed: Readonly<Record<string, true>> | undefined): string[] |
  */
 function routingFields(stack: CheckedStack): Held[] {
   const { manifest } = stack;
-  const routing = dynamicRouting(stack.bundle, routedPathnames(stack));
+  const routeKeys = routedPathnames(stack);
+  const routing = dynamicRouting(stack.bundle, routeKeys);
+  const bodies = edgeServableRouteBodies(stack.bundle);
+  const pages = staticPagesTabled(stack.bundle);
+  // A fallback route's loading shell is tabled whatever the slash (`pagesFallbacksOf`).
+  const fallbacks = staticFallbackPagesOf(stack.bundle).filter((page) => page.body !== undefined);
+  const hasTables = bodies.length > 0 || pages.length > 0 || fallbacks.length > 0;
+  // The body and static-Page table writers add all document keys to the shared filesystem table.
+  // Derive that union from the build: invented and dropped keys in the manifest still fail.
+  const exactPathnames = new Set(routing.exactPathnames);
+  if (hasTables) {
+    for (const pathname of routeKeys) exactPathnames.add(pathname);
+    for (const body of bodies) exactPathnames.add(body.pathname);
+    for (const page of pages) exactPathnames.add(page.pathname);
+  }
   return [
     {
       name: 'dynamicRoutes',
@@ -155,7 +185,7 @@ function routingFields(stack: CheckedStack): Held[] {
     {
       name: 'exactPathnames',
       held: namesOf(manifest.exactPathnames),
-      built: routing.exactPathnames,
+      built: hasTables ? [...exactPathnames] : routing.exactPathnames,
       ordered: false,
     },
     {

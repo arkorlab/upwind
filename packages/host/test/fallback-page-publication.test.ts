@@ -3,6 +3,7 @@ import type { DeploymentBundle } from '@stayingupwind/core/bundle';
 import { deriveEntry } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
+/* eslint import-x/no-relative-packages: "off" -- Verify the deploy's own publication selectors, writers and projection. */
 import { cacheEntryIdsOf } from '../../deploy/src/cache-seed.ts';
 import { shellPlacementsOf } from '../../deploy/src/delivery.ts';
 import { assembleManifest } from '../../deploy/src/manifest.ts';
@@ -58,6 +59,7 @@ describe('version-three Pages build publication', () => {
 
     assertAssembled(manifest);
 
+    expect(manifest.manifest.schemaVersion).toBe(8);
     expect(manifest.manifest.staticPages?.[BUILT_PATH]?.staticPagePrivacy).toBe(3);
     expect(manifest.manifest.pagesFallbacks?.[FALLBACK_ROUTE]?.staticPagePrivacy).toBe(3);
     expect(manifest.manifest.routes[FALLBACK_ROUTE]?.cache).toBeUndefined();
@@ -253,6 +255,7 @@ describe('version-three Pages build publication', () => {
         route: '/news',
         pathname: '/news',
       });
+      expect(manifest.manifest.schemaVersion).toBe(6);
       expect(manifest.manifest.staticPages).toBeUndefined();
       expect(manifest.manifest.routes['/news/']?.cache?.entryId).toBe(entryId);
       expect(manifest.manifest.pagesFallbacks).toBeUndefined();
@@ -290,6 +293,30 @@ describe('version-three Pages build publication', () => {
 
     await expect(staticPagesOf(bundle, 'deployment')).resolves.toStrictEqual([]);
     expect(pagesFallbacksOf(bundle)).toStrictEqual([]);
+  });
+
+  it('publishes no parameter sharing proof for a nonempty basePath', async () => {
+    const fixture = await fallbackPageFixture();
+    const bundle = {
+      ...fixture.bundle,
+      config: { ...fixture.bundle.config, basePath: '/docs' },
+    };
+    const manifest = await assemble(bundle);
+    const seeded = await seedRouteFor(bundle, fixture.page, {
+      scopeId: bundle.deploymentId,
+      generatedAt: FALLBACK_NOW,
+    });
+
+    assertAssembled(manifest);
+
+    await expect(staticPagesOf(bundle, bundle.deploymentId)).resolves.toStrictEqual([]);
+    expect(pagesFallbacksOf(bundle)).toStrictEqual([]);
+    expect(manifest.manifest.staticPages).toBeUndefined();
+    expect(manifest.manifest.pagesFallbacks).toBeUndefined();
+    expect(seeded).toBeDefined();
+    expect(
+      seeded?.input.generation.outputs.every((output) => output.staticPagePrivacy === undefined),
+    ).toBe(true);
   });
 
   it('keeps a missing or private props twin outside concrete sharing authority', async () => {

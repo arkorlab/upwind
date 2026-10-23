@@ -342,7 +342,7 @@ function repairOne(
     outputs === undefined ||
     entry === undefined ||
     unwritableRecord(
-      headerFieldsOf(scopeId, entry, generation, outputs),
+      headerFieldsOf(input, entry, generation, outputs),
       input.limits.maxRecordBytes,
     ) !== undefined
   ) {

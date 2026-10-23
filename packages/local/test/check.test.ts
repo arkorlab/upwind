@@ -8671,7 +8671,11 @@ describe('what the check makes of the middleware', () => {
         stackOf([], files, { headerRules: [named], held: { headerRules: undefined } }),
       );
       const rules = JSON.stringify([
-        { headers: { 'x-named': 'yes' }, sourceRegex: named.sourceRegex },
+        {
+          headers: { 'x-named': 'yes' },
+          phase: 'beforeMiddleware',
+          sourceRegex: named.sourceRegex,
+        },
       ]);
 
       expect(held).toStrictEqual({ checked: 1, failures: [], skipped: [] });

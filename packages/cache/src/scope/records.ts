@@ -1,11 +1,8 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import {
-  type CachePolicy,
   type Duration,
   encodeGenerationPack,
   type GenerationPackHeader,
-  type GenerationSourceKind,
-  type GenerationTag,
   type InvalidationState,
   invalidationStateSchema,
   MAX_PACK_HEADER_BYTES,
@@ -30,6 +27,7 @@ import { z } from 'zod';
 
 import { condemnedOf } from './generations.ts';
 import { BlobLengthError, type BlobStore, type CarriedValue } from './io.ts';
+import type { PackHeaderFields } from './pack-header-fields.ts';
 import {
   type EntryRow,
   generationHeaders,
@@ -37,6 +35,9 @@ import {
   type GenerationRow,
   toGeneration,
 } from './rows.ts';
+import { staticPageHeadersOf, staticPagePrivacyOf } from './static-page-privacy.ts';
+
+export type { PackHeaderFields } from './pack-header-fields.ts';
 
 /**
  * The records the authority projects out of its tables: the delivery record of an entry (the pack
@@ -53,7 +54,7 @@ const ROLE_ROUTE_BODY = 'route-body';
 const ROLE_POSTPONED = RECORD_STATE_ROLE;
 const EMPTY = new Uint8Array(0);
 const SHA256_HEX_LENGTH = 64;
-/** Every SHA-256 prints at one length, so a digest not yet taken measures as any other. */
+/** An absent body has no digest to project; any SHA-256 occupies the same JSON width. */
 const ANY_DIGEST = '0'.repeat(SHA256_HEX_LENGTH);
 /** No number prints wider in JSON than this one does: `-1.7976931348623157e+308`. */
 const WIDEST_NUMBER = -Number.MAX_VALUE;
@@ -91,6 +92,8 @@ export interface RecordDeps {
         artifact: Pick<RecordArtifact, 'sha256' | 'storageRef' | 'byteLength'>,
       ) => (() => void) | undefined)
     | undefined;
+  /** Immutable scope identity, retained by the authority rather than read for each projection. */
+  readonly buildId?: string | undefined;
 }
 
 type RecordArtifact = OutputSnapshot['artifacts'][number];
@@ -173,29 +176,6 @@ function recordBodies(outputs: readonly OutputSnapshot[]): RecordBodies {
   };
 }
 
-/** What a delivery record's header is made of, all of it known before the record is written. */
-export interface PackHeaderFields {
-  readonly scopeId: string;
-  readonly entry: {
-    readonly entryId: string;
-    readonly kind: string;
-    readonly route: string | null;
-    readonly pathname: string | null;
-  };
-  readonly generation: {
-    readonly generationId: string;
-    readonly seq: number;
-    readonly source: GenerationSourceKind;
-    readonly cacheTimestamp: number | null;
-    readonly producedAt: number | null;
-    readonly policy: CachePolicy;
-    readonly status: number;
-    readonly headers: Record<string, string>;
-    readonly tags: readonly GenerationTag[];
-  };
-  readonly outputs: readonly OutputSnapshot[];
-}
-
 /** What of a header an invalidation rewrites once it is written. */
 interface PackHeaderState {
   readonly revision: number;
@@ -218,6 +198,7 @@ function packHeaderOf(
   digests: PackBodyDigests,
 ): GenerationPackHeader {
   const { entry, generation } = fields;
+  const staticPagePrivacy = staticPagePrivacyOf(fields, digests);
   return {
     schemaVersion: PACK_SCHEMA_VERSION,
     scopeId: fields.scopeId,
@@ -232,9 +213,10 @@ function packHeaderOf(
     producedAt: generation.producedAt,
     policy: generation.policy,
     status: generation.status,
-    headers: generation.headers,
+    headers: staticPagePrivacy === undefined ? generation.headers : staticPageHeadersOf(fields),
     tags: [...generation.tags],
     ...digests,
+    ...(staticPagePrivacy !== undefined && { staticPagePrivacy }),
     artifacts: fields.outputs.flatMap((output) => {
       return output.artifacts.map((artifact) => {
         return {
@@ -257,9 +239,9 @@ function oversizedHeader(fields: PackHeaderFields): string | undefined {
   const { primary, postponed } = recordBodies(fields.outputs);
   const bytes = packHeaderBytes(
     packHeaderOf(fields, WIDEST_STATE, {
-      htmlSha256: ANY_DIGEST,
+      htmlSha256: primary?.sha256 ?? ANY_DIGEST,
       htmlLength: primary?.byteLength ?? 0,
-      postponedSha256: postponed === undefined ? null : ANY_DIGEST,
+      postponedSha256: postponed?.sha256 ?? null,
       postponedLength: postponed?.byteLength ?? 0,
     }),
   );
@@ -287,7 +269,7 @@ function packBytesOf(outputs: readonly OutputSnapshot[]): number {
 
 /** What the entry's record says of its generation, laid out as a pack's header holds it. */
 export function headerFieldsOf(
-  scopeId: string,
+  { scopeId, buildId }: Pick<RecordDeps, 'scopeId' | 'buildId'>,
   entry: EntryRow,
   generation: GenerationRow,
   outputs: readonly OutputSnapshot[],
@@ -295,6 +277,7 @@ export function headerFieldsOf(
   const parsed = toGeneration(scopeId, generation);
   return {
     scopeId,
+    buildId,
     entry: {
       entryId: entry.entry_id,
       kind: entry.kind,
@@ -319,20 +302,25 @@ export function headerFieldsOf(
 /**
  * How many bytes the generation's delivery record takes, told before anything of it is read: its
  * document's and its state's lengths, as their artifacts say, and its header as it would be laid
- * out, with digests as long as theirs.
+ * out, using the recorded digests to retain any digest-dependent header fields.
  */
-export function recordBytesOf(scopeId: string, entry: EntryRow, generation: GenerationRow): number {
+export function recordBytesOf(
+  scopeId: string,
+  entry: EntryRow,
+  generation: GenerationRow,
+  buildId?: string,
+): number {
   const outputs = generationOutputs(generation);
   const { primary, postponed } = recordBodies(outputs);
   const htmlLength = primary?.byteLength ?? 0;
   const postponedLength = postponed?.byteLength ?? 0;
   const header = packHeaderOf(
-    headerFieldsOf(scopeId, entry, generation, outputs),
+    headerFieldsOf({ scopeId, buildId }, entry, generation, outputs),
     { revision: entry.record_revision, condemned: condemnedOf(generation) },
     {
-      htmlSha256: ANY_DIGEST,
+      htmlSha256: primary?.sha256 ?? ANY_DIGEST,
       htmlLength,
-      postponedSha256: postponed === undefined ? null : ANY_DIGEST,
+      postponedSha256: postponed?.sha256 ?? null,
       postponedLength,
     },
   );
@@ -363,9 +351,10 @@ export function projectionMemoryOf(
   scopeId: string,
   entry: EntryRow,
   generation: GenerationRow,
+  buildId?: string,
 ): number {
   if (!entry.kind.startsWith('data:')) {
-    return packMemoryOf(recordBytesOf(scopeId, entry, generation));
+    return packMemoryOf(recordBytesOf(scopeId, entry, generation, buildId));
   }
   const artifact = generationOutputs(generation)[0]?.artifacts[0];
   if (artifact === undefined) {
@@ -421,7 +410,7 @@ export async function generationRecordBytes(
   try {
     const [html, state] = await Promise.all([readingHtml, readingState]);
     const header = packHeaderOf(
-      headerFieldsOf(deps.scopeId, entry, generation, outputs),
+      headerFieldsOf(deps, entry, generation, outputs),
       { revision: entry.record_revision, condemned: condemnedOf(generation) },
       await packBodyDigests(html, state),
     );

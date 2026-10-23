@@ -502,6 +502,7 @@ class GatewayHost implements CacheHost {
       outcome: request.outcome,
       // The gateway records whatever word the runtime gave the failure; it enumerates none.
       ...(request.error !== undefined && { error: request.error }),
+      ...(request.retryAfterMs !== undefined && { retryAfterMs: request.retryAfterMs }),
     });
   }
 

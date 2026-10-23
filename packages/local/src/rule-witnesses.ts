@@ -6,7 +6,7 @@ import { carryingEach, fixedAsRouted, lackingEach, type WitnessClass } from './e
 import { routedReads } from './routing-reads.ts';
 import { ruleOverlapFailure } from './rule-overlaps.ts';
 
-export interface RuleRequest {
+interface RuleRequest {
   readonly headers: Readonly<Record<string, string>>;
   readonly url: URL;
   readonly what: string;
