@@ -17,6 +17,7 @@ import {
   type PageBodyLayouts,
   withinTheLimit,
 } from '../src/page-body-layout.ts';
+import { carriesBlob } from '../src/split.ts';
 
 type Output = PrerenderCollection['outputs']['prerenders'][number];
 const BASE_PATH = '/docs';
@@ -226,10 +227,15 @@ interface LaidOutFunctions {
 
 /**
  * App Functions laid out as `layOutAppFunctions` lays them out, each with code of the size given and
- * the last with every body the layout ships; held to the limit as they are made, unless the layout
- * is only to be weighed, as `buildFunction` holds them (`deferSizeAudit`).
+ * the bodies of the layout `carries` gives it — by default, the last with every body the layout
+ * ships; held to the limit as they are made, unless the layout is only to be weighed, as
+ * `buildFunction` holds them (`deferSizeAudit`).
  */
-function appFunctions(codeBytes: readonly number[]) {
+function appFunctions(
+  codeBytes: readonly number[],
+  carries: (index: number, blob: ShippedBlob) => boolean = (index) =>
+    index === codeBytes.length - 1,
+) {
   const calls: { shipped: string[]; reader: boolean | undefined; weighOnly: boolean }[] = [];
   function layOut(layout: PageBodyLayout, weighOnly: boolean): Promise<LaidOutFunctions> {
     calls.push({
@@ -239,7 +245,7 @@ function appFunctions(codeBytes: readonly number[]) {
     });
     const built = codeBytes.map((code, index) => {
       const name = index === 0 ? 'app' : `app-${String(index + 1)}`;
-      const carried = index === codeBytes.length - 1 ? layout.shipped : [];
+      const carried = layout.shipped.filter((blob) => carries(index, blob));
       const modules = [
         dataModule(`${name}.cjs`, code),
         ...carried.map((blob) => dataModule(`blobs/${blob.sha256}`, blob.bytes.byteLength)),
@@ -350,6 +356,41 @@ describe('app Functions laid out within the size limit', () => {
     );
     expect(calls.map((call) => call.weighOnly)).toStrictEqual([true]);
     expect(log).not.toHaveBeenCalled();
+
+    log.mockRestore();
+  });
+
+  it('lays a split build out again when a body it leaves out is still shipped for another route', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(vi.fn());
+    // Two routes name the same bytes, each held by a Function of its own; the range leaves the body
+    // out for the route of the Function past the limit, and keeps it for the other.
+    const other = '/docs/[slug]';
+    const shared: ShippedBlob = { ...shippedBlob('d', 3 * MIB), routes: [other, ROUTE] };
+    const held = [new Set([other]), new Set([ROUTE])];
+    const known = new Set([other, ROUTE]);
+    const { calls, layOut } = appFunctions([MIB, 62 * MIB], (index, blob) =>
+      carriesBlob(blob, held[index] ?? new Set(), known),
+    );
+    const laidOut = await withinTheLimit(
+      {
+        shipped: [shared],
+        requireBundleBlobReader: false,
+        shippedOverLimit: () => Promise.resolve([{ ...shared, routes: [other] }]),
+      },
+      layOut,
+    );
+
+    expect(calls.map((call) => call.weighOnly)).toStrictEqual([true, false]);
+    expect(laidOut.built.map(({ built }) => built.dependencies.size.bytes)).toStrictEqual([
+      4 * MIB,
+      62 * MIB,
+    ]);
+    expect(laidOut.bodiesLeftOut).toStrictEqual({ count: 1, bytes: 3 * MIB });
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining(
+        'the app-2 server bundle is 65.0 MiB, over the 64.0 MiB limit. Building the app Functions again with 1 completed page body (3.0 MiB) left in bundle storage',
+      ),
+    );
 
     log.mockRestore();
   });

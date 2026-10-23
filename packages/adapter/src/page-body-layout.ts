@@ -45,7 +45,10 @@ export interface PageBodyLayouts extends PageBodyLayout {
   readonly shippedOverLimit?: (() => Promise<readonly ShippedBlob[]>) | undefined;
 }
 
-/** The bodies a layout past the limit left out of every app Function, each blob once. */
+/**
+ * The bodies a layout past the limit left out of the app Functions of a route it shipped them for,
+ * each blob once: whether it shipped them for no route then, or still for another.
+ */
 export interface BodiesLeftOut {
   readonly count: number;
   readonly bytes: number;
@@ -103,10 +106,18 @@ function firstOverLimit(
   return undefined;
 }
 
-/** What one layout carries that another leaves out of every app Function, each blob once. */
+/**
+ * What one layout carries that another leaves out for a route, each blob once. A blob is read by the
+ * Functions holding a route that names it (`carriesBlob`), and two routes can name the same bytes,
+ * of which the range may leave out one and not the other: the blob is still shipped, and a Function
+ * of a split build that holds only the route left out carries it no more.
+ */
 function leftOut(carried: readonly ShippedBlob[], kept: readonly ShippedBlob[]): BodiesLeftOut {
-  const still = new Set(kept.map((blob) => blob.sha256));
-  const left = carried.filter((blob) => !still.has(blob.sha256));
+  const still = new Map(kept.map((blob) => [blob.sha256, new Set(blob.routes)]));
+  const left = carried.filter((blob) => {
+    const routes = still.get(blob.sha256);
+    return routes === undefined || blob.routes.some((route) => !routes.has(route));
+  });
   return {
     count: left.length,
     bytes: left.reduce((total, blob) => total + blob.bytes.byteLength, 0),
@@ -139,8 +150,9 @@ export async function withinTheLimit<T extends LaidOut>(
   const shipped = await fallback();
   const left = leftOut(layouts.shipped, shipped);
   if (left.count === 0) {
-    // Nothing in it is a body the host could serve instead, so a second layout would weigh the
-    // same: the Function is refused now, by the audit the first layout left to this function.
+    // Nothing in it is a body the host could serve instead, for any route, so a second layout would
+    // weigh the same: the Function is refused now, by the audit the first layout left to this
+    // function.
     auditFunctionSize(past.name, past.upload);
   }
   const bodies = left.count === 1 ? 'body' : 'bodies';
