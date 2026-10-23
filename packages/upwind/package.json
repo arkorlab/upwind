@@ -27,7 +27,7 @@
   "scripts": {
     "build": "node scripts/build.ts",
     "prepack": "node scripts/build.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/deploy/workers",
     "test": "vitest run"
   },
   "dependencies": {
@@ -36,8 +36,12 @@
     "wrangler": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
     "@stayingupwind/cache": "workspace:*",
+    "@stayingupwind/deploy": "workspace:*",
+    "@stayingupwind/edge": "workspace:*",
     "@stayingupwind/host": "workspace:*",
+    "@stayingupwind/local": "workspace:*",
     "@types/node": "catalog:",
     "esbuild": "catalog:",
     "next": "catalog:",
