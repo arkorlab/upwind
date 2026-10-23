@@ -142,22 +142,27 @@ describe('immutable scope pack capability', () => {
 
   it('requires the same deployment/build and an unambiguous consumer inventory', () => {
     const value = approval('other-deployment');
+
     expect(
       firstPackSchemaVersion({
         ...seed('deployment'),
         generationPackReaders: JSON.stringify(value),
       }),
     ).toBe(1);
+
     value.deploymentId = 'deployment';
     value.buildId = 'other-build';
+
     expect(
       firstPackSchemaVersion({
         ...seed('deployment'),
         generationPackReaders: JSON.stringify(value),
       }),
     ).toBe(1);
+
     value.buildId = 'build';
     value.consumers.push(value.consumers[0]!);
+
     expect(
       firstPackSchemaVersion({
         ...seed('deployment'),

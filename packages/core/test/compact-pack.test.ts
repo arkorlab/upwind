@@ -79,11 +79,12 @@ describe('reader-first fixed-width repair locators', () => {
     expect(decoded).toMatchObject({ kind: 'ok', pack: { header } });
     expect(packHeaderOf(wire)).toStrictEqual(generationPackHeaderSchema.parse(header));
     expect(encodeGenerationPack(header, EMPTY, undefined)).toStrictEqual(rawPack(wire, 2));
-    expect(REPAIR.length).toBe(REPAIR_STORAGE_REF_LENGTH);
+    expect(REPAIR).toHaveLength(REPAIR_STORAGE_REF_LENGTH);
   });
 
   it('keeps short literals and absent locations as ordinary objects in the new format', () => {
-    const { storageRef: _storageRef, ...withoutLocation } = ARTIFACT;
+    const withoutLocation = { ...ARTIFACT };
+    Reflect.deleteProperty(withoutLocation, 'storageRef');
     const header = { ...HEADER, schemaVersion: 2 as const, artifacts: [ARTIFACT, withoutLocation] };
     expect(encodeGenerationPack(header, EMPTY, undefined)).toStrictEqual(rawPack(header, 2));
     expect(decodeGenerationPack(rawPack(header, 2))).toMatchObject({

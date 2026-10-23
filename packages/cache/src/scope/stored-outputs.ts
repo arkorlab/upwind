@@ -20,7 +20,8 @@ const repairTuple = z
     fields.role,
     fields.storageRef.refine(isRepairStorageRef),
   ])
-  .transform(([artifactId, sha256, byteLength, contentType, encoding, role, storageRef]) => {
+  .transform((tuple) => {
+    const [artifactId, sha256, byteLength, contentType, encoding, role, storageRef] = tuple;
     return { artifactId, sha256, byteLength, contentType, encoding, role, storageRef };
   });
 // The ordinary shape is first: legacy rows take the same artifact parser without an extra walk.

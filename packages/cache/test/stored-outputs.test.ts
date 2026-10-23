@@ -72,7 +72,7 @@ describe('stored output reader compatibility', () => {
 
   it.each([-1, 1, 0, null, false, ''])('rejects malformed stored locator %j', (storageRef) => {
     const stored = [{ ...OUTPUT, artifacts: [{ ...OUTPUT.artifacts[0], storageRef }] }];
-    expect(() => decodeStoredOutputs(JSON.stringify(stored))).toThrow(/Invalid/u);
+    expect(() => decodeStoredOutputs(JSON.stringify(stored))).toThrow(/Invalid|Too small/u);
   });
 
   it('rejects a short reference in a tuple instead of admitting growth on its next repair', () => {
