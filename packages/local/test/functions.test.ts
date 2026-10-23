@@ -197,6 +197,89 @@ describe('the Functions of a deployment, on a local stack', () => {
     ).toThrow('index.mjs imports ./data.json by the JSON type');
   });
 
+  it.each([
+    "if (false) return IMPORT; return 'ok';",
+    "if (true) return 'ok'; else return IMPORT;",
+    "return false ? IMPORT : 'ok';",
+    "return true ? 'ok' : IMPORT;",
+    'return false && IMPORT;',
+    'return true || IMPORT;',
+    "return 'ready' ?? IMPORT;",
+    'return !true && IMPORT;',
+    'return (effect(), false) && IMPORT;',
+    "if (flag && false) return IMPORT; return 'ok';",
+    "if (flag || true) return 'ok'; else return IMPORT;",
+    "if (void effect()) return IMPORT; return 'ok';",
+    "if (typeof effect()) return 'ok'; else return IMPORT;",
+    "if (0n) return IMPORT; return 'ok';",
+    "if (-0) return IMPORT; return 'ok';",
+    "if (+0) return IMPORT; return 'ok';",
+    "if (/pattern/) return 'ok'; else return IMPORT;",
+  ])('keeps provably dead dynamic JSON imports out of the local refusal: %s', (body) => {
+    const dir = buildDir();
+    const source = `export default function () { ${body.replace('IMPORT', "import('./data.json', { with: { type: 'json' } })")} }`;
+    const app = spec([
+      module(dir, 'index.mjs', 'esm', source),
+      module(dir, 'data.json', 'json', '{"value":1}'),
+    ]);
+
+    expect(
+      deploymentFunctions(dir, { deploymentId: DEPLOYMENT_ID, functions: { app } }, BINDINGS)
+        .workers,
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    "if (true) return IMPORT; return 'ok';",
+    "if (flag) return IMPORT; return 'ok';",
+    "return flag ? IMPORT : 'ok';",
+    'return flag && IMPORT;',
+    'return flag || IMPORT;',
+    'return flag ?? IMPORT;',
+    'return true && IMPORT;',
+    'return false || IMPORT;',
+    'return null ?? IMPORT;',
+    "if (1n) return IMPORT; return 'ok';",
+    "if (-1) return IMPORT; return 'ok';",
+    "if (/pattern/) return IMPORT; return 'ok';",
+    "if (void IMPORT) return 'dead'; return 'ok';",
+    "if (typeof IMPORT) return 'ok'; return 'other';",
+    "return (IMPORT, false) && 'dead';",
+    "return 'ok'; IMPORT;",
+    "function unused() { return IMPORT; } return 'ok';",
+    'function local(undefined) { return undefined ?? IMPORT; } return local(flag);',
+    'function local(NaN) { return NaN && IMPORT; } return local(flag);',
+    'function local(Infinity) { return Infinity || IMPORT; } return local(flag);',
+  ])('retains reachable and unknown dynamic JSON import refusals: %s', (body) => {
+    const dir = buildDir();
+    const source = `export default function () { ${body.replace('IMPORT', "import('./data.json', { with: { type: 'json' } })")} }`;
+    const app = spec([
+      module(dir, 'index.mjs', 'esm', source),
+      module(dir, 'data.json', 'json', '{"value":1}'),
+    ]);
+
+    expect(() => {
+      deploymentFunctions(dir, { deploymentId: DEPLOYMENT_ID, functions: { app } }, BINDINGS);
+    }).toThrow('index.mjs imports ./data.json by the JSON type');
+  });
+
+  it.each([
+    "export default () => import(flag ? './data.json' : './other.js', { with: { type: 'json' } });",
+    "export default () => import(false ? './data.json' : './other.js', { with: { type: 'json' } });",
+    "import unused from './data.json' with { type: 'json' }; export default {};",
+    "export { default as unused } from './data.json' with { type: 'json' }; export default {};",
+  ])('keeps static links and conditional import argument leaves in the refusal: %s', (source) => {
+    const dir = buildDir();
+    const app = spec([
+      module(dir, 'index.mjs', 'esm', source),
+      module(dir, 'data.json', 'json', '{"value":1}'),
+    ]);
+
+    expect(() => {
+      deploymentFunctions(dir, { deploymentId: DEPLOYMENT_ID, functions: { app } }, BINDINGS);
+    }).toThrow('index.mjs imports ./data.json by the JSON type');
+  });
+
   it('runs a JSON module as CommonJS that exports what it parses to, and refuses one that is not JSON', () => {
     const dir = buildDir();
     const app = spec([module(dir, 'index.mjs', 'esm', 'export default { fetch() {} };')]);
