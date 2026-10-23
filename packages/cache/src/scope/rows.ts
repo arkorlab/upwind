@@ -54,6 +54,9 @@ export interface ScopeRow extends Record<string, SqlStorageValue> {
   deployment_id: string;
   key_schema_version: number;
   build_id: string;
+  /** Absent in a retained legacy table; interpreted as version one without a schema probe. */
+  pack_schema_version: number;
+  repair_namespace: string | null;
   status: string;
   seeded_at: number;
   retired_at: number | null;

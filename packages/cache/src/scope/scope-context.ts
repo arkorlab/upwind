@@ -6,6 +6,8 @@ import { readScope } from './state.ts';
 export class ScopeContext {
   readonly #ctx: DurableObjectState;
   #buildId: string | undefined;
+  #packSchemaVersion: 1 | 2 = 1;
+  #repairNamespace: string | undefined;
   tables: boolean;
 
   constructor(ctx: DurableObjectState, history: ScopeHistory) {
@@ -17,7 +19,12 @@ export class ScopeContext {
   #hydrateBuildId(): void {
     if (!this.tables || this.#buildId !== undefined) return;
     const scope = readScope(this.#ctx.storage.sql);
-    if (scope?.scope_id === this.scopeId) this.#buildId = scope.build_id;
+    if (scope?.scope_id === this.scopeId) {
+      this.#buildId = scope.build_id;
+      this.#packSchemaVersion = scope.pack_schema_version === 2 ? 2 : 1;
+      this.#repairNamespace =
+        typeof scope.repair_namespace === 'string' ? scope.repair_namespace : undefined;
+    }
   }
 
   get scopeId(): string {
@@ -26,6 +33,14 @@ export class ScopeContext {
 
   get buildId(): string | undefined {
     return this.#buildId;
+  }
+
+  get packSchemaVersion(): 1 | 2 {
+    return this.#packSchemaVersion;
+  }
+
+  get repairNamespace(): string | undefined {
+    return this.#repairNamespace;
   }
 
   /** A first seed persisted its scope row before any settle can project its generations. */
@@ -37,5 +52,7 @@ export class ScopeContext {
   /** Only successful storage erasure gives up the immutable identity. */
   erased(): void {
     this.#buildId = undefined;
+    this.#packSchemaVersion = 1;
+    this.#repairNamespace = undefined;
   }
 }

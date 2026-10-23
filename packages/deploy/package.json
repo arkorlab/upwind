@@ -27,7 +27,8 @@
     "./pointer": "./src/pointer.ts",
     "./prefetch": "./src/prefetch.ts",
     "./shells": "./src/shells.ts",
-    "./static-files": "./src/static-files.ts"
+    "./static-files": "./src/static-files.ts",
+    "./pack-readers": "./src/pack-readers.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",
