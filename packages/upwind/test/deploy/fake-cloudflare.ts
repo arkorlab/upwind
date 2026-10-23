@@ -21,6 +21,8 @@ export interface FakeVersion {
   readonly metadata: Record<string, unknown>;
   readonly modules: readonly string[];
   readonly annotations: Readonly<Record<string, string>>;
+  /** When it was uploaded, as a listing of versions dates it; none for one a test made undated. */
+  readonly createdOn?: string;
 }
 
 interface Share {
@@ -161,8 +163,17 @@ export function bindingText(version: FakeVersion, name: string): string | undefi
 
 /** A version as a listing of versions shows it. */
 function summaryOf(version: FakeVersion): Record<string, unknown> {
-  return { id: version.id, number: version.number, annotations: version.annotations };
+  return {
+    id: version.id,
+    number: version.number,
+    annotations: version.annotations,
+    ...(version.createdOn !== undefined && { metadata: { created_on: version.createdOn } }),
+  };
 }
+
+/** Where the fake's clock starts: every upload is dated a second after the one before. */
+const UPLOADS_FROM = Date.parse('2026-10-01T00:00:00.000Z');
+const SECOND_MS = 1000;
 
 function emptyScript(name: string): FakeScript {
   return {
@@ -216,6 +227,11 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
   const nextId = (prefix: string): string => {
     ids += 1;
     return `${prefix}-${ids}`;
+  };
+  let uploads = 0;
+  const uploadedOn = (): string => {
+    uploads += 1;
+    return new Date(UPLOADS_FROM + uploads * SECOND_MS).toISOString();
   };
   const scripts = new Map<string, FakeScript>();
   const kv = new Map<string, { id: string; title: string }>();
@@ -273,6 +289,7 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
       metadata,
       modules: [...form.keys()].filter((key) => key !== 'metadata'),
       annotations: (metadata['annotations'] as Record<string, string> | undefined) ?? {},
+      createdOn: uploadedOn(),
     };
     target.versions.unshift(version);
     const migrations = metadata['migrations'] as { new_tag?: string } | undefined;

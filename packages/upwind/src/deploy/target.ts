@@ -125,6 +125,19 @@ async function missingOf(agent: AgentClient, keys: readonly string[]): Promise<S
   return missing;
 }
 
+/** Of these blobs, the digests of those the bucket does not hold: asked of the agent, none read. */
+export async function blobsMissing(
+  agent: AgentClient,
+  refs: readonly BlobRef[],
+): Promise<readonly string[]> {
+  const digests = [...new Set(refs.map((ref) => ref.sha256))];
+  const missing = await missingOf(
+    agent,
+    digests.map((sha256) => blobObjectKey(sha256)),
+  );
+  return digests.filter((sha256) => missing.has(blobObjectKey(sha256)));
+}
+
 /**
  * Put every blob staging will read in the bucket, where it is not already: the digest of each
  * checked against the build's own, so what goes up is what the build named.
@@ -159,15 +172,33 @@ export async function uploadBuildBlobs(
   return { uploaded, held: refs.length - uploaded };
 }
 
-/** The deploy target a build is staged and published through, once its blobs are up. */
-export function remoteTarget(
-  agent: AgentClient,
-  bundleDir: string,
-): DeployTarget & {
+/** A deploy target through the agent, with its cache's retirement as well. */
+export type RemoteTarget = DeployTarget & {
   readonly cache: DeployTarget['cache'] & {
     retireScope(input: RetireScopeInput): Promise<RetireScopeResult>;
   };
-} {
+};
+
+/** The deploy target a build is staged and published through, once its blobs are up. */
+export function remoteTarget(agent: AgentClient, bundleDir: string): RemoteTarget {
+  return targetThrough(agent, (sha256) => localBlob(bundleDir, sha256));
+}
+
+/**
+ * The deploy target a deployment is staged through again, with no build of it here — a rollback's:
+ * its blobs are read back from the bucket a deploy put them in, and checked all the same.
+ */
+export function storedTarget(agent: AgentClient): RemoteTarget {
+  return targetThrough(agent, async (sha256) => {
+    const stored = await agent.call('GET', blob(blobObjectKey(sha256)));
+    return bytesOf(stored);
+  });
+}
+
+function targetThrough(
+  agent: AgentClient,
+  read: (sha256: string) => Promise<Uint8Array | undefined>,
+): RemoteTarget {
   const call = async <T>(route: string, input: unknown): Promise<T> => {
     const response = await agent.call('POST', route, {
       headers: { 'content-type': 'application/json' },
@@ -179,8 +210,8 @@ export function remoteTarget(
     return (await response.json()) as T;
   };
   return {
-    // Uploaded by `uploadBuildBlobs`; staging reads each from the build all the same, to check it.
-    blobs: { uploaded: true, read: (sha256) => localBlob(bundleDir, sha256) },
+    // In the bucket already; staging reads each all the same, to check it.
+    blobs: { uploaded: true, read },
     bucket: {
       get: async (key) => bytesOf(await agent.call('GET', blob(key))),
       put: async (key, value, options) => {

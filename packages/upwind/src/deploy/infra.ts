@@ -60,7 +60,8 @@ export interface InfraResult {
   readonly freshKey: boolean;
 }
 
-function keyIdOf(tag: string | undefined): string | undefined {
+/** The id of the cache key a Worker's tag says its upload carries; nothing where it says none. */
+export function keyIdOf(tag: string | undefined): string | undefined {
   const at = tag?.indexOf(KEY_TAG) ?? -1;
   return tag === undefined || at === -1 ? undefined : tag.slice(at + KEY_TAG.length);
 }

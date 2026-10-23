@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
+import { deploymentIdSchema } from '@stayingupwind/core/bundle';
+
 /**
  * What `upwind deploy` understands.
  *
@@ -153,5 +155,81 @@ export function parseDestroyRequest(args: readonly string[]): DestroyRequest {
       yes: values.yes === true,
       includeStorage: values['include-storage'] === true,
     },
+  };
+}
+
+export interface DeploymentsOptions {
+  readonly projectDir: string;
+}
+
+export interface RollbackOptions {
+  readonly projectDir: string;
+  /** The deployment to go back to; the newest one before the live one that can be, when absent. */
+  readonly to: string | undefined;
+}
+
+export type DeploymentsRequest =
+  | { readonly answer: 'help' | 'version' }
+  | { readonly answer: undefined; readonly options: DeploymentsOptions };
+
+export type RollbackRequest =
+  | { readonly answer: 'help' | 'version' }
+  | { readonly answer: undefined; readonly options: RollbackOptions };
+
+/** The one directory a command takes, resolved; the current one where none is given. */
+function directoryOf(command: string, positionals: readonly string[]): string {
+  if (positionals.length > 1) {
+    throw new Error(
+      `\`upwind ${command}\` takes at most one directory, and was given ${positionals.length}`,
+    );
+  }
+  return path.resolve(positionals[0] ?? '.');
+}
+
+/** What `upwind deployments` understands: a directory. */
+export function parseDeploymentsRequest(args: readonly string[]): DeploymentsRequest {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    options: {
+      help: { type: 'boolean', short: 'h' },
+      version: { type: 'boolean', short: 'v' },
+    },
+    allowPositionals: true,
+    strict: true,
+  });
+  if (values.help === true) {
+    return { answer: 'help' };
+  }
+  if (values.version === true) {
+    return { answer: 'version' };
+  }
+  return { answer: undefined, options: { projectDir: directoryOf('deployments', positionals) } };
+}
+
+/** What `upwind rollback` understands: a directory, and the deployment to go back to. */
+export function parseRollbackRequest(args: readonly string[]): RollbackRequest {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    options: {
+      help: { type: 'boolean', short: 'h' },
+      version: { type: 'boolean', short: 'v' },
+      to: { type: 'string' },
+    },
+    allowPositionals: true,
+    strict: true,
+  });
+  if (values.help === true) {
+    return { answer: 'help' };
+  }
+  if (values.version === true) {
+    return { answer: 'version' };
+  }
+  const { to } = values;
+  if (to !== undefined && !deploymentIdSchema.safeParse(to).success) {
+    throw new Error(`--to takes a deployment's id, dpl_ and 21 more, and was given ${to}`);
+  }
+  return {
+    answer: undefined,
+    options: { projectDir: directoryOf('rollback', positionals), to },
   };
 }

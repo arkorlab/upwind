@@ -323,12 +323,46 @@ attached to `shop-edge` by hand, in Cloudflare, and named in `deploy.hostnames`.
 `upwind destroy --yes` deletes everything a deploy made for the project, its edge first. The storage
 `deploy.storage` names holds the application's data, and is deleted only with `--include-storage`.
 
+### Deployments, and going back to one
+
+```bash
+CLOUDFLARE_API_TOKEN=… pnpm upwind deployments
+CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
+```
+
+- **`upwind deployments`** lists the project's deployments, the one deployed most recently first: the
+  live one, one held at none of the traffic while a run checks it, those kept — their edge version
+  and Functions still there, so a rollback tries them — those whose Functions are gone, and those
+  deployed before the runtime cache's key was reset (`key reset`). It reads the Workers API alone
+  and changes nothing on the account, so a deployment it lists as kept may still be refused by a
+  rollback, for a bundle the bucket no longer keeps or a cache scope a stopped cleanup retired.
+- **`upwind rollback`** gives the edge's traffic back to an older deployment — one first deployed
+  before the live one, the one live most recently among those first, or the one `--to` names. Run
+  again, it goes further back: a deployment gone back to is no newer for it. One that cannot be
+  published again — whose cache scope a stopped cleanup retired, whose bundle the bucket no longer
+  keeps or this version cannot read, or whose staging or publishing is refused otherwise — is
+  passed over, or, named, refused, saying why: deploy its build again instead. Where every one tried
+  is passed over, the rollback is refused, saying why of each. So is one deployed before
+  `--reset-cache-key` gave the runtime cache a new key: its Functions hold a token of the key before.
+  Nothing of it is built: its bundle, kept in the bucket, is published again against the live
+  deployment, as a new deployment is against the one before it, so the live deployment's files stay
+  served to its pages still open — but for one the bucket no longer holds, or all of them where no
+  bundle of the live deployment it can read is kept, which the rollback says and goes on without;
+  and its Functions are the ones it has had since it was deployed.
+  It is checked first, as a new deployment is, and given the traffic only once it answers as itself
+  and passes the project's checks; one that does not is given none.
+- **One at a time.** One deploy or rollback of a project runs at a time: each takes the deploy
+  agent with a key of its own, and one that another has taken it from stops. Run them from one
+  place — one CI job at a time, say.
+
 ## Options
 
 ```
 upwind dev [directory]
 upwind build [directory]
 upwind deploy [directory]
+upwind deployments [directory]
+upwind rollback [directory] [--to <deployment>]
 upwind destroy [directory] --yes
 
   -p, --port <port>      Port to listen on, `dev` only (default: $PORT, else 3000)
@@ -343,6 +377,7 @@ upwind destroy [directory] --yes
       --reset-cache-key  Give the runtime cache a new key, `deploy` only
       --yes              Delete everything a deploy made, `destroy` only
       --include-storage  And the storage deploy.storage names, with its data, `destroy` only
+      --to <deployment>  The deployment to go back to, `rollback` only (default: the one before)
   -v, --version          Print upwind's version
   -h, --help             Print the usage
       --                 Everything after this is the directory, even `--help`

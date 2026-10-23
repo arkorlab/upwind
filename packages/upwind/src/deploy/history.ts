@@ -1,5 +1,6 @@
 import { type EdgePointer, edgePointerSchema } from '@stayingupwind/host/delivery';
 
+import { unlessMissing } from './cloudflare/client.ts';
 import {
   type AccountScope,
   getVersion,
@@ -12,6 +13,7 @@ import {
   type WorkerVersion,
 } from './cloudflare/workers.ts';
 import { deploymentOfTag } from './edge-version.ts';
+import { keyIdOf } from './infra.ts';
 import { deploymentOfScript, type ProjectNames } from './names.ts';
 
 /**
@@ -242,6 +244,77 @@ export function scriptsOf(pointer: EdgePointer): readonly string[] {
       ...Object.values(app.functions ?? {}),
     ]),
   ];
+}
+
+/** A listing's newest version: the one numbered highest, whatever order the listing is in. */
+function newestOf(versions: readonly WorkerVersion[]): WorkerVersion | undefined {
+  let newest: WorkerVersion | undefined;
+  for (const version of versions) {
+    if (newest === undefined || (version.number ?? 0) > (newest.number ?? 0)) {
+      newest = version;
+    }
+  }
+  return newest;
+}
+
+/** When a version was uploaded, as Cloudflare dates it; nothing where it does not. */
+function uploadedAt(version: WorkerVersion | undefined): number | undefined {
+  const at = Date.parse(version?.metadata?.created_on ?? '');
+  return Number.isNaN(at) ? undefined : at;
+}
+
+/**
+ * When the key the runtime cache's Workers check a Function's token with now was made: when the
+ * oldest version of the cache tagged with its id (`ensureInfra`) was uploaded. A key is put in the
+ * cache before any Function holding a token signed under it is uploaded, in the run that made it.
+ *
+ * Only where that version is known to be the oldest with the key (Sentry): one before it is listed,
+ * under another key or none, or it is the cache's first. The listing stops at the newest thousand
+ * versions, and Cloudflare may keep fewer; where the oldest listed carries the key, the key may be
+ * older than it, and a later time would take deployments made under the key for ones made before
+ * it. Nothing then — a rollback refuses no deployment for the key — as for a project with no cache
+ * Worker, one whose newest version says nothing of a key, or one whose versions are not numbered.
+ */
+export async function cacheKeyMadeAt(
+  scope: AccountScope,
+  names: ProjectNames,
+): Promise<number | undefined> {
+  const versions = (await unlessMissing(listAllVersions(scope, names.cache))) ?? [];
+  const keyId = keyIdOf(newestOf(versions)?.annotations?.['workers/tag']);
+  if (keyId === undefined || versions.some((version) => version.number === undefined)) {
+    return undefined;
+  }
+  let first: WorkerVersion | undefined;
+  for (const version of versions) {
+    const keyed = keyIdOf(version.annotations?.['workers/tag']) === keyId;
+    if (keyed && (first === undefined || (version.number ?? 0) < (first.number ?? 0))) {
+      first = version;
+    }
+  }
+  const from = first?.number ?? 0;
+  const known = from === 1 || versions.some((version) => (version.number ?? 0) < from);
+  return known ? uploadedAt(first) : undefined;
+}
+
+/**
+ * Whether a Function the pointer names was last uploaded before `madeAt`, when the runtime cache's
+ * key was made (`cacheKeyMadeAt`): its token was signed under the key before — reset since
+ * (`--reset-cache-key`) — which the cache no longer takes, and nothing but uploading the Function
+ * again gives it another. A Function Cloudflare dates no upload of, or one no longer there, is not
+ * known to.
+ */
+export async function uploadedBefore(
+  scope: AccountScope,
+  pointer: EdgePointer,
+  madeAt: number,
+): Promise<boolean> {
+  const listed = await Promise.all(
+    scriptsOf(pointer).map((script) => unlessMissing(listVersions(scope, script))),
+  );
+  return listed.some((versions) => {
+    const at = uploadedAt(newestOf(versions ?? []));
+    return at !== undefined && at < madeAt;
+  });
 }
 
 /** Whether every Function the pointer names is on the account. */

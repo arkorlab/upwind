@@ -32,6 +32,8 @@ Usage
   upwind dev [directory]
   upwind build [directory]
   upwind deploy [directory]
+  upwind deployments [directory]
+  upwind rollback [directory] [--to <deployment>]
   upwind destroy [directory] --yes
 
 Options
@@ -45,6 +47,7 @@ Options
       --keep <n>         Deployments kept to roll back to, \`deploy\` only (default: 5)
       --message <text>   What the deployment is noted as, \`deploy\` only
       --reset-cache-key  Give the runtime cache a new key, \`deploy\` only
+      --to <deployment>  The deployment to go back to, \`rollback\` only (default: the one before)
       --yes              Delete everything a deploy made, \`destroy\` only
       --include-storage  And the storage deploy.storage names, with its data, \`destroy\` only
   -v, --version          Print upwind's version
@@ -62,7 +65,9 @@ names no adapter and writes no bundle: the build there is Vercel's.
 edge in front, the runtime cache behind it, each deployment's Functions as Workers of their own,
 and the edge switched to the new deployment once it answers. It reads CLOUDFLARE_API_TOKEN and
 CLOUDFLARE_ACCOUNT_ID from the environment, and the project's \`deploy\` settings from
-upwind.config.ts. \`upwind destroy\` deletes everything it made.
+upwind.config.ts. \`upwind deployments\` lists the deployments it made, \`upwind rollback\` gives
+the edge back to one of them, and \`upwind destroy\` deletes everything it made. One deploy or
+rollback of a project runs at a time.
 `;
 
 function fail(message: string): never {
@@ -113,6 +118,34 @@ async function deploy(rest: readonly string[]): Promise<void> {
   }
   const { runDeploy } = await import('./deploy/command.ts');
   process.exitCode = await runDeploy(request.options, credentials);
+}
+
+/** `upwind deployments`, with the credentials taken out of the environment as `deploy` takes them. */
+async function deployments(rest: readonly string[]): Promise<void> {
+  const { takeCredentials } = await import('./deploy/credentials.ts');
+  const credentials = takeCredentials();
+  const { parseDeploymentsRequest } = await import('./deploy/args.ts');
+  const request = orFail(() => parseDeploymentsRequest(rest));
+  if (request.answer !== undefined) {
+    await answer(request.answer);
+    return;
+  }
+  const { runDeployments } = await import('./deploy/deployments.ts');
+  process.exitCode = await runDeployments(request.options, credentials);
+}
+
+/** `upwind rollback`, with the credentials taken out of the environment as `deploy` takes them. */
+async function rollback(rest: readonly string[]): Promise<void> {
+  const { takeCredentials } = await import('./deploy/credentials.ts');
+  const credentials = takeCredentials();
+  const { parseRollbackRequest } = await import('./deploy/args.ts');
+  const request = orFail(() => parseRollbackRequest(rest));
+  if (request.answer !== undefined) {
+    await answer(request.answer);
+    return;
+  }
+  const { runRollback } = await import('./deploy/rollback.ts');
+  process.exitCode = await runRollback(request.options, credentials);
 }
 
 /** `upwind destroy`, with the credentials taken out of the environment as `deploy` takes them. */
@@ -171,13 +204,21 @@ async function main(): Promise<void> {
     await deploy(rest);
     return;
   }
+  if (command === 'deployments') {
+    await deployments(rest);
+    return;
+  }
+  if (command === 'rollback') {
+    await rollback(rest);
+    return;
+  }
   if (command === 'destroy') {
     await destroy(rest);
     return;
   }
   if (command !== 'dev') {
     fail(
-      `unknown command \`${command}\`; the commands are \`dev\`, \`build\`, \`deploy\` and \`destroy\``,
+      `unknown command \`${command}\`; the commands are \`dev\`, \`build\`, \`deploy\`, \`deployments\`, \`rollback\` and \`destroy\``,
     );
   }
   await dev(rest, argv);
