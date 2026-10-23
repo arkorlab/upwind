@@ -11,6 +11,7 @@ import {
 } from '../src/request/pattern-budget.ts';
 
 const ROUTE = '^/(?<locale>en|ja)/(?<team>[^/]+)/catalog$';
+const SUFFIX_ROUTE = String.raw`^/(?<locale>en|ja)/(?<slug>[^/]+)\.rsc(?:/)?$`;
 
 function compiled(source = ROUTE, flags = ''): RegExp {
   // eslint-disable-next-line security/detect-non-literal-regexp -- deliberately exercise routing patterns and their flags
@@ -86,6 +87,83 @@ describe('proven short routing non-matches', () => {
     expect(current.remaining).toBe(0);
     expect(() => testWithin(pattern, '/')).toThrow(PatternBudgetExceededError);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(['', 'i'])('keeps one-step prefix proofs before nested groups with flags %s', (flags) => {
+    const nested = `${'(?:'.repeat(24)}alpha|beta${')'.repeat(24)}`;
+    const pattern = compiled(`^/catalog${nested}$`, flags);
+    const execute = vi.spyOn(pattern, 'exec');
+    current = { remaining: 1 };
+
+    expect(testWithin(pattern, '/')).toBe(false);
+    expect(current.remaining).toBe(0);
+    expect(() => execWithin(pattern, '/')).toThrow(PatternBudgetExceededError);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(['', 'i'])(
+    'reuses a suffix proof across replacement tiny budgets with flags %s',
+    (flags) => {
+      const pattern = compiled(SUFFIX_ROUTE, flags);
+      const source = vi.spyOn(pattern, 'source', 'get');
+      const execute = vi.spyOn(pattern, 'exec');
+      current = { remaining: 1 };
+
+      expect(testWithin(pattern, '/')).toBe(false);
+      expect(current.remaining).toBe(0);
+
+      current = { remaining: 1 };
+
+      expect(execWithin(pattern, '/')).toBeNull();
+      expect(current.remaining).toBe(0);
+      expect(source).toHaveBeenCalledTimes(1);
+      expect(execute).not.toHaveBeenCalled();
+      expect(() => execWithin(pattern, '/')).toThrow(PatternBudgetExceededError);
+    },
+  );
+
+  it.each(['^/catalog(?:(?:alpha|beta))$', SUFFIX_ROUTE])(
+    'does not grant a proof to a fresh exhausted request: %s',
+    (source) => {
+      const pattern = compiled(source);
+      const execute = vi.spyOn(pattern, 'exec');
+      current = { remaining: 0 };
+
+      expect(() => testWithin(pattern, '/')).toThrow(PatternBudgetExceededError);
+      expect(current.remaining).toBe(0);
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([String.raw`^/catalog\1$`, String.raw`^(?:alpha|beta)\.rsc\1$`])(
+    'does not turn an unsupported non-group suffix into a one-step budget shortcut: %s',
+    (source) => {
+      const pattern = compiled(source);
+      const execute = vi.spyOn(pattern, 'exec');
+      current = { remaining: 1 };
+
+      expect(() => testWithin(pattern, '/')).toThrow(PatternBudgetExceededError);
+      expect(current.remaining).toBe(1);
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves actual suffix matches and captures after a proven short miss', () => {
+    const pattern = compiled(SUFFIX_ROUTE, 'i');
+    const value = '/JA/article.RSC/';
+
+    expect(execWithin(pattern, '/')).toBeNull();
+    expect(execWithin(pattern, value)).toStrictEqual(pattern.exec(value));
+    expect(execWithin(pattern, value)?.groups?.['locale']).toBe('JA');
+    expect(execWithin(pattern, value)?.groups?.['slug']).toBe('article');
+  });
+
+  it.each(['g', 'y', 'u'])('does not shortcut suffix patterns with flags %s', (flags) => {
+    const pattern = compiled(SUFFIX_ROUTE, flags);
+    const execute = vi.spyOn(pattern, 'exec');
+
+    expect(execWithin(pattern, '/')).toBeNull();
+    expect(execute).toHaveBeenCalledExactlyOnceWith('/');
   });
 
   it('preserves the public affordability check even when a wrapper can prove a miss', () => {

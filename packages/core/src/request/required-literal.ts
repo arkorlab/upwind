@@ -95,7 +95,12 @@ function unitAt(pattern: string, index: number): Omit<Token, 'spells'> | undefin
   return undefined;
 }
 
-function tokenAt(pattern: string, index: number, literal: string): Token | undefined {
+function tokenAt(
+  pattern: string,
+  index: number,
+  literal: string,
+  skipGroupProof: boolean,
+): Token | undefined {
   if (pattern[index] !== '(') {
     const unit = unitAt(pattern, index);
     if (unit === undefined) {
@@ -113,6 +118,7 @@ function tokenAt(pattern: string, index: number, literal: string): Token | undef
   const quantifier = quantifierAt(pattern, close);
   const contents = groupContents(pattern, index);
   const spells =
+    !skipGroupProof &&
     quantifier === undefined &&
     contents !== undefined &&
     everyAlternativeSpells(pattern, contents, close - 1, literal);
@@ -123,12 +129,43 @@ function sequenceSpells(pattern: string, start: number, end: number, literal: st
   let run = '';
   let index = start;
   while (index < end) {
-    const token = tokenAt(pattern, index, literal);
+    // A preceding run already proves the sequence, once this group's token and end are checked.
+    const isGroup = pattern[index] === '(';
+    const alreadySpelled = isGroup && run.includes(literal);
+    const token = tokenAt(pattern, index, literal, alreadySpelled);
     if (token === undefined || token.end > end) {
       return false;
     }
     if (token.spells) {
       return true;
+    }
+    if (token.char === undefined) {
+      if (alreadySpelled || (!isGroup && run.includes(literal))) {
+        return true;
+      }
+      run = '';
+    } else {
+      run += token.char;
+    }
+    index = token.end;
+  }
+  return run.includes(literal);
+}
+
+/** A positive proof outside groups; an unread suffix must still reach the ordinary reader. */
+function outsideSequenceSpells(
+  pattern: string,
+  start: number,
+  end: number,
+  literal: string,
+): boolean {
+  let run = '';
+  let index = start;
+  while (index < end) {
+    // Skip only the recursive proof, retaining the group's closing token and quantifier checks.
+    const token = tokenAt(pattern, index, literal, true);
+    if (token === undefined || token.end > end) {
+      return false;
     }
     if (token.char === undefined) {
       if (run.includes(literal)) {
@@ -155,5 +192,20 @@ function everyAlternativeSpells(
 
 /** Whether every string `pattern` matches contains `literal`; see above for what it reads. */
 export function requiresLiteral(pattern: string, literal: string): boolean {
-  return literal !== '' && everyAlternativeSpells(pattern, 0, pattern.length, literal);
+  if (literal === '') {
+    return false;
+  }
+  const alternatives = alternativesBetween(pattern, 0, pattern.length);
+  if (alternatives === undefined) {
+    return false;
+  }
+  // Raw spelling only selects the attempt; without it the ordinary reader runs once. A parenthesis
+  // inside an escape or class can also select it. Neither presence nor absence is a proof.
+  const outsideGroups = pattern.includes('(') && pattern.includes(literal);
+  return alternatives.every(([from, to]) => {
+    return (
+      (outsideGroups && outsideSequenceSpells(pattern, from, to, literal)) ||
+      sequenceSpells(pattern, from, to, literal)
+    );
+  });
 }
