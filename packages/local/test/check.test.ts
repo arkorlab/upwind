@@ -133,6 +133,12 @@ interface Answer {
   readonly inPart?: Answer;
   /** The byte at `at` of the part a request asking `range` is answered with, other than the file's. */
   readonly corruptedRange?: { readonly range: string; readonly at: number };
+  /**
+   * What a request asking exactly the range named is answered with, as the edge serves it of the
+   * file the middleware rewrote that request onto (`decidedForRange`): that file's answer, which the
+   * range is cut from as the edge cuts one — `416` where none of its bytes is where the range starts.
+   */
+  readonly rangedOnto?: Readonly<Record<string, Answer>>;
   /** Whether a file is answered whole to a request on the entity tag it is served under. */
   readonly unconditional?: boolean;
   /** Whether a file is answered whole to a request on a precondition it fails, not `412`. */
@@ -283,6 +289,12 @@ const decisionStatuses = new Map<string, number>();
  */
 const decidedInPart = new Map<string, OutgoingHttpHeaders>();
 const rangeTraces = new Set<string>();
+/**
+ * What the middleware decided for a pathname asked for exactly one range of it, of any form, by
+ * `<pathname>|<range>`, ahead of every other decision; and the range each traced request asked.
+ */
+const decidedForRange = new Map<string, OutgoingHttpHeaders>();
+const traceRanges = new Map<string, string>();
 /** The same, for a request on a file's entity tag (`If-None-Match`), and for its headers alone. */
 const decidedOnCondition = new Map<string, OutgoingHttpHeaders>();
 const conditionTraces = new Set<string>();
@@ -388,6 +400,24 @@ const state: {
   middlewareAsked?: string | null | undefined;
 } = {};
 
+/**
+ * The range a traced request asked for (`traceRanges`), and whether it is one bounded at both ends,
+ * asked for plainly (`rangeTraces`): one on a validator (`If-Range`) is decided as the whole file,
+ * and one by its end or from a byte on as the file itself — but where the test decides that very
+ * range apart (`decidedForRange`).
+ */
+function recordRange(request: IncomingMessage, trace: string): void {
+  const { range } = request.headers;
+  if (range === undefined) {
+    return;
+  }
+  traceRanges.set(trace, range);
+  const bounded = /^bytes=\d+-\d+$/u.test(range);
+  if (bounded && request.headers['if-range'] === undefined) {
+    rangeTraces.add(trace);
+  }
+}
+
 /** What a request for `pathname` asked, as the tests read it back. */
 function recordAsked(
   request: IncomingMessage,
@@ -405,12 +435,7 @@ function recordAsked(
     if (typeof site === 'string' && request.headers['sec-fetch-mode'] === 'navigate') {
       traceSites.set(trace, site);
     }
-    // A range of it bounded at both ends, asked for plainly: one on a validator (`If-Range`) is
-    // decided as the whole file, and one by its end or from a byte on as the file itself.
-    const bounded = /^bytes=\d+-\d+$/u.test(request.headers.range ?? '');
-    if (bounded && request.headers['if-range'] === undefined) {
-      rangeTraces.add(trace);
-    }
+    recordRange(request, trace);
     if (request.headers['if-none-match'] !== undefined) {
       conditionTraces.add(trace);
     }
@@ -448,6 +473,16 @@ function answeredInPart(
   headers: OutgoingHttpHeaders,
   response: ServerResponse,
 ): boolean {
+  // A range the middleware rewrote onto another file, cut from that file as the edge serves it —
+  // and that file whole, where it cuts none of it (a stale `If-Range`).
+  const onto = answer.rangedOnto?.[request.headers.range ?? ''];
+  if (onto !== undefined) {
+    const ontoHeaders = servedFileHeaders(onto);
+    if (!answeredInPart(onto, request, ontoHeaders, response)) {
+      response.writeHead(onto.status ?? 200, ontoHeaders).end(onto.body);
+    }
+    return true;
+  }
   const asked = rangeAsked(answer, request, headers);
   if (asked === undefined) {
     return false;
@@ -783,6 +818,7 @@ function answeredNonce(asked: URL, request: IncomingMessage, response: ServerRes
  * those apart — else for the pathname, or to let it on.
  */
 function decisionOf(trace: string, tracedPath: string): OutgoingHttpHeaders {
+  const forRange = decidedForRange.get(`${tracedPath}|${traceRanges.get(trace) ?? ''}`);
   const inPart = rangeTraces.has(trace) ? decidedInPart.get(tracedPath) : undefined;
   const onCondition = conditionTraces.has(trace) ? decidedOnCondition.get(tracedPath) : undefined;
   const onHead = headTraces.has(trace) ? decidedOnHead.get(tracedPath) : undefined;
@@ -790,6 +826,7 @@ function decisionOf(trace: string, tracedPath: string): OutgoingHttpHeaders {
   const forSegment = decidedForSegment.get(`${tracedPath}|${traceSegments.get(trace) ?? ''}`);
   const fromSite = decidedFromSite.get(`${tracedPath}|${traceSites.get(trace) ?? ''}`);
   return (
+    forRange ??
     forSegment ??
     fromSite ??
     inPart ??
@@ -1260,18 +1297,7 @@ const server = createServer((request, response) => {
   }
   // A file the edge served from storage goes out under its digest's tag, as `fileHeaders` has it.
   const served = String(answer.headers['x-arkor-edge'] ?? '').startsWith('static;');
-  // As `fileHeaders` has it: under its digest's tag, its length said, and whether a range of it is
-  // asked for — all where the test gives none of its own.
-  const tagged = served
-    ? {
-        etag: `"${sha256Of(answer.body)}"`,
-        ...(answer.lengthless !== true && {
-          'content-length': String(Buffer.byteLength(answer.body)),
-        }),
-        'accept-ranges': (answer.status ?? 200) === 200 ? 'bytes' : 'none',
-        ...answer.headers,
-      }
-    : {};
+  const tagged = served ? servedFileHeaders(answer) : {};
   const fileHeaders = { ...answer.headers, ...tagged };
   if (answeredApart(request, { answer, served, headers: fileHeaders }, response)) {
     return;
@@ -1288,6 +1314,34 @@ const server = createServer((request, response) => {
   }
   response.end(answer.body);
 });
+
+/** A file the test's edge served from storage, the middleware having run ahead of it. */
+function storedBehindMiddleware(body: string): Answer {
+  return {
+    headers: {
+      'content-type': TEXT,
+      'cache-control': GATED,
+      'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+    },
+    body,
+  };
+}
+
+/**
+ * The headers the test's edge serves a file from storage under, as `fileHeaders` has it: its
+ * digest's tag, its length said, and whether a range of it is asked for — all where the test gives
+ * none of its own.
+ */
+function servedFileHeaders(answer: Answer): OutgoingHttpHeaders {
+  return {
+    etag: `"${sha256Of(answer.body)}"`,
+    ...(answer.lengthless !== true && {
+      'content-length': String(Buffer.byteLength(answer.body)),
+    }),
+    'accept-ranges': (answer.status ?? 200) === 200 ? 'bytes' : 'none',
+    ...answer.headers,
+  };
+}
 
 /** A redirect with flushed headers and an invalid gzip prefix whose body never ends. */
 function streamingRedirect(location: string) {
@@ -2206,6 +2260,8 @@ describe('what the check makes of the middleware', () => {
     decisionStatuses.clear();
     decidedInPart.clear();
     rangeTraces.clear();
+    decidedForRange.clear();
+    traceRanges.clear();
     decidedOnCondition.clear();
     conditionTraces.clear();
     decidedOnHead.clear();
@@ -4853,16 +4909,7 @@ describe('what the check makes of the middleware', () => {
       const other = 'other bytes!';
       await writeFile(path.join(blobsOf(), sha256Of(other)), other);
       const held = { ...files, '/b.txt': fileOf(other, TEXT) };
-      const asItself = (body: string): Answer => {
-        return {
-          headers: {
-            'content-type': TEXT,
-            'cache-control': GATED,
-            'x-arkor-edge': `${FILE_EDGE};mw=hit`,
-          },
-          body,
-        };
-      };
+      const asItself = storedBehindMiddleware;
       answers.set('/b.txt', asItself(other));
       // The range alone is rewritten onto `/b.txt`.
       decidedInPart.set('/a.txt', { 'x-middleware-rewrite': '/b.txt' });
@@ -4891,6 +4938,62 @@ describe('what the check makes of the middleware', () => {
             'rewritten onto /b.txt, answered bytes=1-9 under Content-Range bytes 1-9/10, not bytes 1-9/12',
         },
       ]);
+    });
+
+    describe('a range the middleware rewrote onto another file, by that file', () => {
+      const asItself = storedBehindMiddleware;
+
+      /** The manifest's files with `pathname` holding `body`, its blob written. */
+      async function heldWith(pathname: string, body: string) {
+        await writeFile(path.join(blobsOf(), sha256Of(body)), body);
+        answers.set(pathname, asItself(body));
+        return { ...files, [pathname]: fileOf(body, TEXT) };
+      }
+
+      /** `/a.txt` asked for `range`, which alone the middleware rewrites onto `pathname`, as `onto`. */
+      function rewrittenAlone(range: string, pathname: string, onto: Answer): void {
+        decidedForRange.clear();
+        decidedForRange.set(`/a.txt|${range}`, { 'x-middleware-rewrite': pathname });
+        answers.set('/a.txt', { ...asItself('kept bytes'), rangedOnto: { [range]: onto } });
+      }
+
+      it('takes the 416 of a file too short to hold a byte where a range from a byte on starts', async () => {
+        const held = await heldWith('/b.txt', 'x');
+        // A byte past its first: the second byte `bytes=1-` asks of it is none of a one-byte file's.
+        rewrittenAlone('bytes=1-', '/b.txt', asItself('x'));
+        const result = await checkStack(stackOf([], held));
+
+        expect(result).toStrictEqual({ checked: 2, failures: [], skipped: [] });
+      });
+
+      it("holds a range from a byte on, rewritten onto a longer file, to that file's part", async () => {
+        const longer = 'longer other bytes!';
+        const held = await heldWith('/c.txt', longer);
+        rewrittenAlone('bytes=1-', '/c.txt', asItself(longer));
+        const served = await checkStack(stackOf([], held));
+        // Answered as though no byte of it were where the range starts.
+        rewrittenAlone('bytes=1-', '/c.txt', asItself('x'));
+        const refused = await checkStack(stackOf([], held));
+
+        expect(served).toStrictEqual({ checked: 2, failures: [], skipped: [] });
+        expect(refused.failures).toStrictEqual([
+          { path: '/a.txt', reason: 'rewritten onto /c.txt, answered bytes=1- with 416, not 206' },
+        ]);
+      });
+
+      it('holds a range by its end, and a bounded one, rewritten onto a one-byte file, to what it selects of that file', async () => {
+        const held = await heldWith('/b.txt', 'x');
+        // By its end: the one byte there is, `bytes 0-0/1`.
+        rewrittenAlone('bytes=-10', '/b.txt', asItself('x'));
+        const byEnd = await checkStack(stackOf([], held));
+        // From its second byte to its tenth: none of a one-byte file's, `416`; and whole on a
+        // validator that file is not served under, as a resumed download asks.
+        rewrittenAlone('bytes=1-9', '/b.txt', asItself('x'));
+        const bounded = await checkStack(stackOf([], held));
+
+        expect(byEnd).toStrictEqual({ checked: 2, failures: [], skipped: [] });
+        expect(bounded).toStrictEqual({ checked: 2, failures: [], skipped: [] });
+      });
     });
 
     it('fails where it is answered without its length, or saying no range of it is asked for', async () => {
