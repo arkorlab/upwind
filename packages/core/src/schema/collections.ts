@@ -21,24 +21,6 @@ export class ArraySchema<E extends Typed = Typed> extends Schema<
     this.upperCap = undefined;
   }
 
-  protected override withChecks(checks: readonly Check[]): this {
-    const copy = super.withChecks(checks);
-    let upperCap: number | undefined;
-    for (const check of checks) {
-      if (check.kind === 'min_length') {
-        continue;
-      }
-      if (check.kind !== 'max_length' && check.kind !== 'length_equals') {
-        break;
-      }
-      if (check.value >= 0 && (upperCap === undefined || check.value < upperCap)) {
-        upperCap = check.value;
-      }
-    }
-    copy.upperCap = upperCap;
-    return copy;
-  }
-
   /** Leading bounds may reject the raw list before any element or output is visited. */
   private exceedsUpperBound(payload: Payload, length: number): boolean {
     if (this.upperCap === undefined || length <= this.upperCap) {
@@ -58,6 +40,24 @@ export class ArraySchema<E extends Typed = Typed> extends Schema<
       }
     }
     return false;
+  }
+
+  protected override withChecks(checks: readonly Check[]): this {
+    const copy = super.withChecks(checks);
+    let upperCap: number | undefined;
+    for (const check of checks) {
+      if (check.kind === 'min_length') {
+        continue;
+      }
+      if (check.kind !== 'max_length' && check.kind !== 'length_equals') {
+        break;
+      }
+      if (check.value >= 0 && (upperCap === undefined || check.value < upperCap)) {
+        upperCap = check.value;
+      }
+    }
+    copy.upperCap = upperCap;
+    return copy;
   }
 
   parseType(payload: Payload, ctx: ParseContext): Payload {
