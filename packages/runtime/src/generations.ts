@@ -27,6 +27,7 @@ import {
   resumeRsc,
   type Target,
   type Want,
+  withOutcome,
 } from './answers.ts';
 import type { NodeHandler } from './app-module.ts';
 import { nowMs } from './cache/clock.ts';
@@ -38,7 +39,6 @@ import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { servable } from './cache/servable.ts';
-import { documentFromBuild, rscFromBuild } from './documents.ts';
 import { foundDynamic, rememberingDynamic } from './dynamic-misses.ts';
 import { nodeHandlerOf } from './entries.ts';
 import type { GenerationSource } from './generation-source.ts';
@@ -51,6 +51,7 @@ import {
   loadingFallbackResponse,
 } from './pages-fallback.ts';
 import {
+  answerPartialMiss,
   type PartialFallbackJob as Job,
   partialUpgrade,
   upgradePathname,
@@ -213,12 +214,6 @@ function afterPartialFallback(job: Job, response: Response): Response {
   return withPartialFallbackUpgrade(job, response, (reason, base) =>
     scheduleJob(job, reason, base),
   );
-}
-
-function withOutcome(response: Response, outcome: string): Response {
-  const headers = new Headers(response.headers);
-  headers.set(CACHE_OUTCOME_HEADER, outcome);
-  return new Response(response.body, { status: response.status, headers });
 }
 
 /** Answer at once; the regeneration runs after, on its own. */
@@ -543,17 +538,7 @@ async function answerMiss(
   once: boolean,
 ): Promise<Response | undefined> {
   if (once && partialUpgrade(job)) {
-    const { input, store, target } = job;
-    const resolved = {
-      route: source.route,
-      pathname: new URL(source.url, input.request.url).pathname,
-      url: source.url,
-    };
-    const entry = { kind: 'node' as const, handler: target.handler };
-    const response = await (source.representation === 'html'
-      ? documentFromBuild(input, store, resolved, { entry, status: 200 })
-      : rscFromBuild(input, store, entry, resolved));
-    return input.request.method === 'HEAD' ? response : afterPartialFallback(job, response);
+    return answerPartialMiss(job, source, want, (reason, base) => scheduleJob(job, reason, base));
   }
   const onMiss = foundDynamic(job.runtime, job.target.descriptor) ? 'build' : source.onMiss;
   if (once && onMiss === 'behind' && source.pagesFallback === true) {
