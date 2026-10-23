@@ -1,9 +1,8 @@
 import type { CacheArtifactRef, PackArtifactRef } from './schema.ts';
 
 /** Fresh repair locations have a fixed ASCII width, independent of scope and attempt names. */
-export const REPAIR_STORAGE_REF_LENGTH = 43;
-const REPAIR_STORAGE_REF =
-  /^repair\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+export const REPAIR_STORAGE_REF_LENGTH = 67;
+const REPAIR_STORAGE_REF = /^r\/[0-9a-f]{32}\/[0-9a-f]{32}$/u;
 
 /** A shape, never evidence that a scope owns an object or that a replacement was written. */
 export function isRepairStorageRef(value: unknown): value is string {
@@ -11,8 +10,14 @@ export function isRepairStorageRef(value: unknown): value is string {
 }
 
 /** The rare repair writer still needs a successful conditional PUT receipt for this location. */
-export function createRepairStorageRef(): string {
-  return `repair/${crypto.randomUUID()}`;
+export function createRepairStorageNamespace(): string {
+  return crypto.randomUUID().replaceAll('-', '');
+}
+
+/** The scope retains its namespace for orphan/retirement cleanup; only the nonce changes. */
+export function createRepairStorageRef(namespace: string): string {
+  if (!/^[0-9a-f]{32}$/u.test(namespace)) throw new Error('invalid repair storage namespace');
+  return `r/${namespace}/${crypto.randomUUID().replaceAll('-', '')}`;
 }
 
 /** Fixed order in SQL, retaining every mandatory artifact value and its meaning. */
@@ -29,7 +34,7 @@ export type RepairPackArtifactTuple = readonly [...RepairArtifactTuple, represen
 
 /**
  * Ordinary references remain objects, including arbitrarily short borrowed literals. Removing the
- * seven property names saves 80 bytes, more than the 42-byte maximum growth from a shortest
+ * seven property names saves 80 bytes, more than the 66-byte maximum growth from a shortest
  * literal to a fresh repair key. A tuple's next repair key has the same fixed JSON width.
  */
 export function compactCacheArtifact(

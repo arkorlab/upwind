@@ -1,6 +1,7 @@
 export {
   compactCacheArtifact,
   compactPackArtifact,
+  createRepairStorageNamespace,
   createRepairStorageRef,
   isRepairStorageRef,
   REPAIR_STORAGE_REF_LENGTH,

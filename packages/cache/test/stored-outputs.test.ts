@@ -25,8 +25,8 @@ const OUTPUT: OutputSnapshot = {
   ],
 };
 
-const REPAIR = 'repair/00000000-0000-4000-8000-000000000001';
-const NEXT_REPAIR = 'repair/00000000-0000-4000-8000-000000000002';
+const REPAIR = 'r/00000000000040008000000000000000/00000000000040008000000000000001';
+const NEXT_REPAIR = 'r/00000000000040008000000000000000/00000000000040008000000000000002';
 
 function withStorageRef(storageRef: string): OutputSnapshot[] {
   return [
@@ -45,7 +45,7 @@ describe('stored output reader compatibility', () => {
   it('keeps repaired rows smaller than a shortest accepted borrowed reference', () => {
     const repaired = withStorageRef(REPAIR);
     const stored = encodeStoredOutputs(repaired, true);
-    expect(stored.length).toBe(JSON.stringify([OUTPUT]).length - 38);
+    expect(stored.length).toBe(JSON.stringify([OUTPUT]).length - 14);
     expect(JSON.parse(stored)[0].artifacts[0]).toStrictEqual([
       OUTPUT.artifacts[0]!.artifactId,
       OUTPUT.artifacts[0]!.sha256,

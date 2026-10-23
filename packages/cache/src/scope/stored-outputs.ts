@@ -40,7 +40,7 @@ export function decodeStoredOutputs(text: string): OutputSnapshot[] {
 
 /**
  * Enable only for a scope whose immutable consumers have been verified. Ordinary artifacts remain
- * objects. First repair saves at least 38 JSON bytes; a tuple's next repair replaces a fixed-width
+ * objects. First repair saves at least 14 JSON bytes; a tuple's next repair replaces a fixed-width
  * ASCII key with another of the same width. Shape alone never proves ownership or a fresh PUT.
  */
 export function encodeStoredOutputs(outputs: readonly OutputSnapshot[], compact = false): string {

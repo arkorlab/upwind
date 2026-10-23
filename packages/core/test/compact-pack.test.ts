@@ -51,8 +51,8 @@ const HEADER: GenerationPackHeader = {
   revision: 1,
 };
 const EMPTY = new Uint8Array(0);
-const REPAIR = 'repair/00000000-0000-4000-8000-000000000001';
-const NEXT_REPAIR = 'repair/00000000-0000-4000-8000-000000000002';
+const REPAIR = 'r/00000000000040008000000000000000/00000000000040008000000000000001';
+const NEXT_REPAIR = 'r/00000000000040008000000000000000/00000000000040008000000000000002';
 
 function rawPack(header: unknown, version: number): Uint8Array {
   const body = encodeUtf8(JSON.stringify(header));
@@ -142,7 +142,7 @@ describe('reader-first fixed-width repair locators', () => {
       schemaVersion: 2 as const,
       artifacts: [{ ...ARTIFACT, storageRef: REPAIR }],
     };
-    expect(packHeaderBytes(repaired)).toBe(MAX_PACK_HEADER_BYTES - 58);
+    expect(packHeaderBytes(repaired)).toBe(MAX_PACK_HEADER_BYTES - 34);
     const bytes = encodeGenerationPack(repaired, EMPTY, undefined);
     expect(decodeGenerationPack(bytes)).toMatchObject({ kind: 'ok', pack: { header: repaired } });
     const repairedAgain = { ...repaired, artifacts: [{ ...ARTIFACT, storageRef: NEXT_REPAIR }] };
