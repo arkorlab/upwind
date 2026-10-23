@@ -37,6 +37,8 @@ upwind/
 │   │              #   the shells, the cache's seed, the Functions' bindings, the pointer
 │   ├── cache/     # @stayingupwind/cache — a deployment's runtime cache: the authority that keeps
 │   │              #   its scope, the gateways in front of it, and the client a Function reaches it with
+│   ├── edge/      # @stayingupwind/edge — the edge in front of a deployment: shell-first documents,
+│   │              #   the build's files and images, prefetch segments, middleware, the cache's reads
 │   ├── upwind/    # upwind — the CLI; `upwind dev` runs a Next.js dev server behind its own door
 │   └── create-upwind/
 │                   # create-upwind — `pnpm create upwind`, and the application it writes
