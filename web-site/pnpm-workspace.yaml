@@ -9,8 +9,8 @@
 # them.
 packages: []
 
-# Only these dependencies may run install scripts. esbuild's puts its platform binary in place, and
-# the adapter runs esbuild during `next build` — without the script there is no binary to run.
+# Only these dependencies may run install scripts. esbuild's puts its platform binary in place for
+# the official tools that still use it transitively; the adapter's own bundles use Rolldown.
 allowBuilds:
   esbuild: true
   # `false`, the same answer and for the same reason as the root workspace, which says it at length:

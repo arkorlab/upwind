@@ -25,7 +25,7 @@ build with the cache's preset, which bundles the cache's client into the Functio
 `NEXT_ADAPTER_PATH` set to `@stayingupwind/cache`'s `./adapter`. Set `NEXT_DEPLOYMENT_ID` as a
 deployment would.
 
-The package runs under Node.js 24.10 or later. Each stack bundles its own Workers with esbuild and
+The package runs under Node.js 24.10 or later. Each stack bundles its own Workers with Rolldown and
 runs them in the workerd that Miniflare installs. The published package is TypeScript sources:
 `exports` names `.ts` files, and there is no build step.
 
