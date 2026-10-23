@@ -1,4 +1,4 @@
-import type { ParseContext, Payload } from './checks.ts';
+import { type Check, checkLength, type ParseContext, type Payload } from './checks.ts';
 import { aborted, finalizeIssue, prefixIssues } from './issues.ts';
 import { isPlainObject } from './plain.ts';
 import { messageOf, type RefineParams, Schema } from './schema.ts';
@@ -13,16 +13,60 @@ export class ArraySchema<E extends Typed = Typed> extends Schema<
   undefined
 > {
   readonly element: E;
+  private upperCap: number | undefined;
 
   constructor(element: E) {
     super();
     this.element = element;
+    this.upperCap = undefined;
+  }
+
+  protected override withChecks(checks: readonly Check[]): this {
+    const copy = super.withChecks(checks);
+    let upperCap: number | undefined;
+    for (const check of checks) {
+      if (check.kind === 'min_length') {
+        continue;
+      }
+      if (check.kind !== 'max_length' && check.kind !== 'length_equals') {
+        break;
+      }
+      if (check.value >= 0 && (upperCap === undefined || check.value < upperCap)) {
+        upperCap = check.value;
+      }
+    }
+    copy.upperCap = upperCap;
+    return copy;
+  }
+
+  /** Leading bounds may reject the raw list before any element or output is visited. */
+  private exceedsUpperBound(payload: Payload, length: number): boolean {
+    if (this.upperCap === undefined || length <= this.upperCap) {
+      return false;
+    }
+    for (const check of this.checks) {
+      if (check.kind === 'min_length') {
+        continue;
+      }
+      if (check.kind !== 'max_length' && check.kind !== 'length_equals') {
+        break;
+      }
+      if (check.value >= 0 && length > check.value) {
+        // Only the first violated bound is reported. No later check may read the raw input.
+        checkLength(check, payload, false);
+        return true;
+      }
+    }
+    return false;
   }
 
   parseType(payload: Payload, ctx: ParseContext): Payload {
     const input = payload.value;
     if (!Array.isArray(input)) {
       payload.issues.push({ expected: 'array', code: 'invalid_type', input });
+      return payload;
+    }
+    if (this.exceedsUpperBound(payload, input.length)) {
       return payload;
     }
     const elements = input as readonly unknown[];
