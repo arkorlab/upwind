@@ -16,9 +16,33 @@ export interface CandidateTarget {
 
 /** How much of the manifest id `x-arkor-edge` names, so a reader can tell which one answered. */
 export const MANIFEST_ID_PREFIX_LENGTH = 8;
+/** Non-space visible ASCII except the field separator and percent escape marker. */
+const UNSAFE_IN_PREFIX = /[^\u{21}-\u{24}\u{26}-\u{3A}\u{3C}-\u{7E}]/gu;
 
 export function manifestIdPrefix(manifestId: string): string {
-  return manifestId.slice(0, MANIFEST_ID_PREFIX_LENGTH);
+  // Slice the identity first. JSON also represents a surrogate split at that boundary.
+  return manifestId
+    .slice(0, MANIFEST_ID_PREFIX_LENGTH)
+    .replaceAll(UNSAFE_IN_PREFIX, (character) =>
+      encodeURIComponent(JSON.stringify(character).slice(1, -1)),
+    );
+}
+
+/** Visible ASCII without the diagnostic field separator. */
+const UNSAFE_IN_ROUTE = /[^\u{21}-\u{3A}\u{3C}-\u{7E}]/u;
+
+/**
+ * A route's opaque diagnostic value, shared by the writer and readers that compare it whole.
+ * Safe route names retain their spelling, including literal percent signs and templates. An
+ * escaped value starts with `~`, which a route name cannot start with, so `/a;b` cannot alias
+ * `/a%3Bb`. JSON represents lone surrogates before URI encoding, which also protects field
+ * boundaries and whitespace at the end of a header.
+ */
+export function routeDebugValue(pathname: string): string {
+  if (pathname.startsWith('/') && !UNSAFE_IN_ROUTE.test(pathname)) {
+    return pathname;
+  }
+  return `~${encodeURIComponent(JSON.stringify(pathname).slice(1, -1))}`;
 }
 
 /**
