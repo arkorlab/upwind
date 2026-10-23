@@ -11,8 +11,8 @@ import {
 } from '@stayingupwind/core/bundle';
 import type { AppRuntime } from '@stayingupwind/core/manifest';
 import type { ServiceBinding, TextBinding } from '@stayingupwind/deploy/bindings';
-import { buildSync } from 'esbuild';
 
+import { jsonImportsOf } from './json-imports.ts';
 import type { LocalModule, LocalWorker, ModuleType } from './miniflare.ts';
 
 /**
@@ -94,34 +94,6 @@ function moduleOf(blobs: string, module: FunctionSpec['modules'][number]): Local
     contents:
       type === 'Data' || type === 'CompiledWasm' ? new Uint8Array(bytes) : bytes.toString('utf8'),
   };
-}
-
-/**
- * The specifiers a module imports by the JSON type (an import attribute: `with`, or the older
- * `assert`), static or dynamic, as esbuild parses the module: its imports, and nothing that only
- * reads like one in a string or a comment. None where esbuild cannot read the module, which is no
- * reason to refuse what the runtime may run.
- */
-function jsonImportsOf(name: string, source: string): string[] {
-  try {
-    const { metafile } = buildSync({
-      stdin: { contents: source, loader: 'js', sourcefile: name },
-      bundle: true,
-      external: ['*'],
-      format: 'esm',
-      platform: 'neutral',
-      write: false,
-      metafile: true,
-      logLevel: 'silent',
-    });
-    return Object.values(metafile.inputs).flatMap((input) => {
-      return input.imports
-        .filter((imported) => imported.with?.['type'] === 'json')
-        .map((imported) => imported.path);
-    });
-  } catch {
-    return [];
-  }
 }
 
 /**

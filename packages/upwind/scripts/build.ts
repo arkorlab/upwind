@@ -43,7 +43,7 @@ async function main(): Promise<void> {
       /^miniflare$/u,
       /^wrangler$/u,
       /^@stayingupwind\/local$/u,
-      /^esbuild$/u,
+      /^rolldown(\/|$)/u,
     ],
   });
   // No `banner`: the hashbang is `src/cli.ts`'s own and Rolldown carries it to the top of the
