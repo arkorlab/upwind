@@ -2,6 +2,7 @@ import type { Prerender } from '@stayingupwind/core/bundle';
 import {
   type CachePolicy,
   deriveEntry,
+  IMPLICIT_TAG_PREFIX,
   packBodyDigests,
   policyFromBuild,
   policyFromCacheControl,
@@ -267,7 +268,7 @@ function scenario(
       waitUntil,
     });
   };
-  return { store, runtime, ask, context, tables, waitUntil, readRecord };
+  return { store, runtime, host, ask, context, tables, waitUntil, readRecord };
 }
 
 /**
@@ -641,5 +642,32 @@ describe('the classes Next.js 16.4.2 builds for three of its own fixtures', () =
     expect(vi.mocked(regenerate).mock.calls.map(([call]) => call.target)).toMatchObject([
       { descriptor: SHELL_ENTRY, isClass: true },
     ]);
+  });
+
+  it('revalidates a member as that shell, whose new generation every member is answered from', async () => {
+    const { runtime, host, ask, context } = scenario(['nxtPid'], SHELL, 'app-page', CLIENT_PARAMS);
+    const invalidate = vi.spyOn(host, 'invalidate').mockResolvedValue({ invalidations: [] });
+    // What the host holds once the regeneration is published: a generation of the entry it named.
+    vi.mocked(regenerate).mockImplementation(async ({ target }) => {
+      const { route, pathname } = target.descriptor;
+      await remember(runtime, route, pathname, { text: 'REVALIDATED' });
+      return accepted('REVALIDATED');
+    });
+
+    const manual = context('/api/revalidate');
+    await manual.run(() => platformRevalidate({ urlPath: '/page-params/1' }));
+
+    // As `next start` writes a member's explicit revalidation to the shell's own entry, its open
+    // parameters deferred, and not to one of the member's that nothing reads.
+    expect(vi.mocked(regenerate).mock.calls.map(([call]) => call.target)).toMatchObject([
+      { descriptor: SHELL_ENTRY, isClass: true, reason: 'manual' },
+    ]);
+    await expect(ask('/page-params/1')).resolves.toBe('REVALIDATED');
+    await expect(ask('/page-params/2')).resolves.toBe('REVALIDATED');
+    // Once it is published, a member's own entry is invalidated by the member's tag, as under any
+    // shell a class shares, and the shell's new generation by nothing.
+    expect(invalidate).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ tags: [`${IMPLICIT_TAG_PREFIX}/page-params/1`] }),
+    );
   });
 });

@@ -333,6 +333,22 @@ function terminalDeployment(
   } as unknown as Store;
 }
 
+/**
+ * A terminal shell as Next.js 16.4.2 writes one that postponed nothing: keyed by every route key,
+ * `two` among them, which the shell leaves open.
+ */
+const KEYED_BY_PARAMETERS: Partial<Prerender> = {
+  compute: 'static',
+  postponed: undefined,
+  allowQuery: ['nxtPone', 'nxtPtwo'],
+};
+/** The entry every page under `/prefix/b` shares, the shell's own. */
+const CLASS_OF_B = {
+  kind: 'app-page' as const,
+  route: '/prefix/[one]/[two]',
+  pathname: '/prefix/b/[two]',
+};
+
 describe('manual revalidation of a shared terminal shell', () => {
   afterEach(() => {
     vi.clearAllMocks();
@@ -366,6 +382,32 @@ describe('manual revalidation of a shared terminal shell', () => {
     await revalidate(store, '/prefix/b/foo', true);
 
     expect(invalidateNow).toHaveBeenCalledWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+      sharedShellTagOf(entryId),
+    ]);
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it('regenerates a terminal shell keyed by the parameters it leaves open as that shell', async () => {
+    await revalidate(terminalDeployment(KEYED_BY_PARAMETERS), '/prefix/b/foo');
+
+    expect(vi.mocked(regenerate).mock.calls.map(([call]) => call.target.descriptor)).toStrictEqual([
+      CLASS_OF_B,
+    ]);
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+    ]);
+  });
+
+  it('invalidates that shell by the identity it carries when its page belongs to another Function', async () => {
+    vi.mocked(elsewhere).mockReturnValue('app-other');
+    const { entryId } = await deriveEntry(SCOPE, CLASS_OF_B);
+
+    await revalidate(terminalDeployment(KEYED_BY_PARAMETERS), '/prefix/b/foo', true);
+
+    // The page's own tag reaches no generation of the shell, which carries none of a member's: the
+    // identity a regeneration of the shell carries does.
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
       `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
       sharedShellTagOf(entryId),
     ]);
