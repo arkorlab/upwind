@@ -118,7 +118,7 @@ pnpm dev
 ```
 
 ```console
-  upwind 0.4.0 dev
+  upwind 0.5.0 dev
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
