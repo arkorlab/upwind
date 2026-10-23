@@ -1,4 +1,5 @@
 import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
+import { CACHE_OUTCOME_HEADER } from '@stayingupwind/core/paas';
 import { NULL_BODY_STATUSES, ROUTER_PROTOCOL_HEADERS } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
@@ -79,6 +80,13 @@ export function answerWith(input: RoutedInput, handler: NodeHandler, answer: Ans
   }
   const rest = resume({ input, handler, postponed: answer.postponed, url: answer.url });
   return new Response(concatShell(answer.body, rest), { status, headers });
+}
+
+/** `response`, saying what came of the regeneration behind it (`CACHE_OUTCOME_HEADER`). */
+export function withOutcome(response: Response, outcome: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set(CACHE_OUTCOME_HEADER, outcome);
+  return new Response(response.body, { status: response.status, headers });
 }
 
 /** The output of a render a want names, as the render captured it. */

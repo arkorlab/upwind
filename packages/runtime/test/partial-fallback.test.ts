@@ -21,6 +21,7 @@ import {
 import { TtlCache } from '@stayingupwind/core/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { afterFirstBytes } from '../src/after-body.ts';
 import type { NodeHandler } from '../src/app-module.ts';
 import { withClock } from '../src/cache/clock.ts';
 import { currentGenerationAfterResponse, entryIdOf, rememberRecord } from '../src/cache/current.ts';
@@ -292,6 +293,17 @@ function readerOf(response: Response): ReadableStreamDefaultReader<Uint8Array> {
   return reader;
 }
 
+/** A body that gives `chunks` and stays open, as a resume still waiting on its data does. */
+function streaming(...chunks: string[]): Response {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      },
+    }),
+  );
+}
+
 type CacheCallback = (entry: unknown, meta: { url: string }) => boolean | Promise<boolean>;
 
 async function capture(input: InvokeInput, postponed?: string): Promise<Response> {
@@ -433,7 +445,7 @@ describe('partial fallback shell promotion', () => {
     },
   );
 
-  it('serves the first fallback before publishing the route shell used by the next HTML and Flight requests', async () => {
+  it('serves the first fallback and publishes the route shell used by the next HTML and Flight requests while it streams', async () => {
     const { runtime, startAttempt, commits, fail } = cache();
     const { ask, drain } = requests(runtime);
     const suffix = Promise.withResolvers<undefined>();
@@ -446,19 +458,14 @@ describe('partial fallback shell promotion', () => {
     try {
       const first = await ask();
       const reader = readerOf(first);
-      const chunk = await reader.read();
 
-      expect({
-        body: new TextDecoder().decode(chunk.value),
-        attempts: startAttempt.mock.calls.length,
-        commits: commits.length,
-      }).toStrictEqual({ body: FALLBACK, attempts: 0, commits: 0 });
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe(FALLBACK);
 
-      suffix.resolve(undefined);
-      while (!(await reader.read()).done) {
-        // Consume the continuation before allowing a background prerender to begin.
-      }
-      await drain();
+      // The dynamic part has not come, so the body has not ended: its first bytes began the upgrade,
+      // as Next.js begins it on the tick after it has the fallback.
+      await vi.waitFor(() => {
+        expect(commits).toHaveLength(1);
+      });
 
       expect(startAttempt).toHaveBeenCalledExactlyOnceWith({
         entry: { kind: 'app-page', route: ROUTE, pathname: '/two' },
@@ -473,6 +480,12 @@ describe('partial fallback shell promotion', () => {
           },
         },
       ]);
+
+      suffix.resolve(undefined);
+      while (!(await reader.read()).done) {
+        // The visitor's own resume still goes on to its end.
+      }
+      await drain();
 
       await expect((await ask()).text()).resolves.toBe(UPGRADED);
       await expect((await ask({ rsc: '1', 'next-router-prefetch': '1' })).text()).resolves.toBe(
@@ -587,7 +600,7 @@ describe('partial fallback shell promotion', () => {
   );
 
   it.each(['/two', '/three'])(
-    'does not renew a streaming response deadline when request %s replaces or evicts its still-pending read',
+    'does not renew the pending read of a fallback whose first bytes come after request %s replaced or evicted it',
     async (pathname) => {
       const { runtime, startAttempt } = cache();
       await entryIdOf(runtime, { kind: 'app-page', route: ROUTE, pathname: '/two' });
@@ -595,8 +608,7 @@ describe('partial fallback shell promotion', () => {
       const replacement = Promise.withResolvers<Uint8Array | undefined>();
       const firstStarted = Promise.withResolvers<undefined>();
       const secondStarted = Promise.withResolvers<undefined>();
-      const firstSuffix = Promise.withResolvers<undefined>();
-      const secondSuffix = Promise.withResolvers<undefined>();
+      const suffix = Promise.withResolvers<undefined>();
       const read = vi
         .spyOn(runtime.host, 'readRecord')
         .mockImplementationOnce(() => {
@@ -607,74 +619,67 @@ describe('partial fallback shell promotion', () => {
           secondStarted.resolve(undefined);
           return replacement.promise;
         });
-      let rendered = 0;
       vi.mocked(invokeNodeHandler).mockImplementation(async (input) => {
         if (input.requestMeta['onCacheEntryV2'] !== undefined) return capture(input);
-        const suffix = rendered === 0 ? firstSuffix : secondSuffix;
-        rendered += 1;
         await suffix.promise;
         return new Response('tail');
       });
-      const { ask, drain } = requests(runtime, ROUTE, '/two', null);
+      const a = requests(runtime, ROUTE, '/two', null);
+      const b = requests(runtime, ROUTE, pathname, null);
       vi.useFakeTimers();
       try {
-        const first = ask();
+        // A navigation's Flight fallback is the visitor's resume alone: its first bytes, and the
+        // upgrade begun behind them, wait for that resume — here past the hold and A's read.
+        const first = a.ask({ rsc: '1' });
         await firstStarted.promise;
         await vi.advanceTimersByTimeAsync(201);
-        const firstReader = readerOf(await first);
-        await firstReader.read();
         await vi.advanceTimersByTimeAsync(5800);
-        const second = requests(runtime, ROUTE, pathname, null).ask();
+        // B reads the entry, which replaces or evicts A's read, and as a `HEAD` begins nothing.
+        const second = b.ask({}, 'HEAD');
         await secondStarted.promise;
         await vi.advanceTimersByTimeAsync(201);
-        const secondReader = readerOf(await second);
-        await secondReader.read();
+        await second;
         await vi.advanceTimersByTimeAsync(25_000);
-        firstSuffix.resolve(undefined);
-        while (!(await firstReader.read()).done) {
-          /* Only A's original body has ended. */
-        }
+        suffix.resolve(undefined);
+        await (await first).text();
         await vi.advanceTimersByTimeAsync(0);
         replacement.resolve(undefined);
         await vi.advanceTimersByTimeAsync(0);
 
         expect(read).toHaveBeenCalledTimes(2);
         expect(startAttempt).not.toHaveBeenCalled();
-
-        await vi.advanceTimersByTimeAsync(6000);
-        secondSuffix.resolve(undefined);
-        while (!(await secondReader.read()).done) {
-          /* B may use its own later read and deadline. */
-        }
       } finally {
         original.resolve(undefined);
         replacement.resolve(undefined);
-        firstSuffix.resolve(undefined);
-        secondSuffix.resolve(undefined);
-        await drain();
+        suffix.resolve(undefined);
+        await a.drain();
+        await b.drain();
       }
     },
   );
 
-  it('waits behind an already-sent partial body when its completed-key read was evicted during streaming', async () => {
+  it('reads again behind a fallback whose first bytes come after its completed-key read was evicted', async () => {
     const { runtime, startAttempt, commits } = cache();
     const descriptor = { kind: 'app-page' as const, route: ROUTE, pathname: '/two' };
     const entryId = await entryIdOf(runtime, descriptor);
+    const resumed = Promise.withResolvers<undefined>();
     const suffix = Promise.withResolvers<undefined>();
     const pending = Promise.withResolvers<Uint8Array | undefined>();
     const started = Promise.withResolvers<undefined>();
     const { ask, drain } = requests(runtime);
     vi.mocked(invokeNodeHandler).mockImplementation(async (input) => {
       if (input.requestMeta['onCacheEntryV2'] !== undefined) return capture(input);
+      resumed.resolve(undefined);
       await suffix.promise;
-      return new Response('<div id="slug">two</div></main>');
+      return new Response(FLIGHT);
     });
     try {
-      const first = await ask();
-      const reader = readerOf(first);
+      // A navigation's Flight fallback is the visitor's resume alone: its first bytes, and the
+      // upgrade begun behind them, wait for that resume.
+      const responding = ask({ rsc: '1' });
+      await resumed.promise;
 
-      expect(new TextDecoder().decode((await reader.read()).value)).toBe(FALLBACK);
-      expect(startAttempt).not.toHaveBeenCalled();
+      expect(runtime.recordMemo.get(entryId)).toBeNull();
 
       runtime.recordMemo.delete(entryId);
       vi.spyOn(runtime.host, 'readRecord').mockImplementation(() => {
@@ -683,9 +688,7 @@ describe('partial fallback shell promotion', () => {
       });
       vi.useFakeTimers();
       suffix.resolve(undefined);
-      while (!(await reader.read()).done) {
-        // Only consuming the already-available body starts the after-body upgrade.
-      }
+      await (await responding).text();
       await started.promise;
       await vi.advanceTimersByTimeAsync(201);
 
@@ -1168,7 +1171,7 @@ describe('partial fallback shell promotion', () => {
     expect(invokeNodeHandler).not.toHaveBeenCalled();
   });
 
-  it('publishes the completed subset key after an Edge resume is cancelled', async () => {
+  it('publishes the completed subset key while an Edge resume streams, and keeps it when the resume is cancelled', async () => {
     const route = '/[slug]/[id]';
     vi.mocked(getStore).mockReturnValue(deployment(route));
     const { runtime, startAttempt, commits } = cache();
@@ -1192,13 +1195,12 @@ describe('partial fallback shell promotion', () => {
 
     const reader = readerOf(response);
     await reader.read();
-
-    expect(startAttempt).not.toHaveBeenCalled();
-
-    await reader.cancel();
+    // The resume never ends by itself: its first bytes began the upgrade, and the visitor going away
+    // after them calls nothing off.
     await vi.waitFor(() => {
-      expect(startAttempt).toHaveBeenCalledTimes(1);
+      expect(commits).toHaveLength(1);
     });
+    await reader.cancel();
     await drain();
 
     expect(startAttempt).toHaveBeenCalledExactlyOnceWith({
@@ -1209,4 +1211,149 @@ describe('partial fallback shell promotion', () => {
     expect(commits).toHaveLength(1);
     expect(vi.mocked(invokeNodeHandler).mock.calls[1]?.[0].url).toBe('/two/[id]');
   });
+
+  it('begins the upgrade when an Edge resume is cancelled before its first bytes', async () => {
+    const route = '/[slug]/[id]';
+    vi.mocked(getStore).mockReturnValue(deployment(route));
+    const { runtime, startAttempt, commits } = cache();
+    const { ask, drain } = requests(runtime, route, '/two/first');
+    vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+      if (input.requestMeta['onCacheEntryV2'] !== undefined) return capture(input);
+      // A resume that has sent nothing yet.
+      return Promise.resolve(new Response(new ReadableStream<Uint8Array>()));
+    });
+
+    const reader = readerOf(await ask(upgradeHeaders(route)));
+    await drain();
+
+    expect(startAttempt).not.toHaveBeenCalled();
+
+    await reader.cancel();
+    await vi.waitFor(() => {
+      expect(startAttempt).toHaveBeenCalledTimes(1);
+    });
+    await drain();
+
+    expect(commits).toHaveLength(1);
+  });
+
+  it('answers the member from the completed shell this isolate is still publishing', async () => {
+    const { runtime, startAttempt, commits } = cache();
+    const { ask, drain } = requests(runtime);
+    const commit = runtime.host.commit.bind(runtime.host);
+    const committing = Promise.withResolvers<undefined>();
+    const landing = Promise.withResolvers<undefined>();
+    vi.spyOn(runtime.host, 'commit').mockImplementation(async (attemptId, request) => {
+      committing.resolve(undefined);
+      await landing.promise;
+      return commit(attemptId, request);
+    });
+    vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+      return input.requestMeta['onCacheEntryV2'] === undefined
+        ? Promise.resolve(new Response('<div id="slug">two</div></main>'))
+        : capture(input);
+    });
+    try {
+      await expect((await ask()).text()).resolves.toBe(
+        `${FALLBACK}<div id="slug">two</div></main>`,
+      );
+
+      // The completed shell is rendered behind that fallback, and its commit is out.
+      await committing.promise;
+      const html = await ask();
+
+      expect({
+        outcome: html.headers.get(CACHE_OUTCOME_HEADER),
+        body: await html.text(),
+      }).toStrictEqual({ outcome: 'publishing', body: UPGRADED });
+      await expect((await ask({ rsc: '1', 'next-router-prefetch': '1' })).text()).resolves.toBe(
+        FLIGHT,
+      );
+      expect(commits).toHaveLength(0);
+
+      landing.resolve(undefined);
+      await drain();
+
+      expect(commits).toHaveLength(1);
+      await expect((await ask()).text()).resolves.toBe(UPGRADED);
+      expect(startAttempt).toHaveBeenCalledTimes(1);
+    } finally {
+      landing.resolve(undefined);
+      await drain();
+    }
+  });
+});
+
+describe('work begun behind the first bytes of a response', () => {
+  it('is begun once a reader has taken the first bytes, not before, and only once', async () => {
+    const then = vi.fn<() => void>();
+    const response = afterFirstBytes(streaming('shell', 'rest'), then);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    // Nothing is read ahead of a reader: no bytes are on their way yet.
+    expect(then).not.toHaveBeenCalled();
+
+    const reader = readerOf(response);
+
+    await expect(reader.read()).resolves.toStrictEqual({
+      done: false,
+      value: encoder.encode('shell'),
+    });
+    // The body stays open: what is begun does not wait for its end.
+    expect(then).toHaveBeenCalledTimes(1);
+
+    await reader.read();
+    await reader.cancel();
+
+    expect(then).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not take an empty chunk for the first bytes', async () => {
+    const then = vi.fn<() => void>();
+    const reader = readerOf(afterFirstBytes(streaming('', 'shell'), then));
+    await reader.read();
+
+    expect(then).not.toHaveBeenCalled();
+
+    await reader.read();
+
+    expect(then).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['cancelled', 'failed', 'ended'] as const)(
+    'is begun when the body is %s before it gave any bytes',
+    async (ending) => {
+      const then = vi.fn<() => void>();
+      const body = {
+        cancelled: () => streaming(),
+        failed: () => {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.error(new Error('the render failed'));
+              },
+            }),
+          );
+        },
+        ended: () => {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.close();
+              },
+            }),
+          );
+        },
+      }[ending];
+      const reader = readerOf(afterFirstBytes(body(), then));
+      const settled = await Promise.allSettled([
+        ending === 'cancelled' ? reader.cancel() : reader.read(),
+      ]);
+
+      expect(settled[0].status).toBe(ending === 'failed' ? 'rejected' : 'fulfilled');
+      expect(then).toHaveBeenCalledTimes(1);
+    },
+  );
 });

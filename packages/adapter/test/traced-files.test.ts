@@ -44,6 +44,13 @@ async function aliasPackage(project: string, name: string, directory: string): P
   await symlink(directory, alias, 'dir');
 }
 
+/** Each stored file under the name Turbopack's trace gives it: its own path in the project. */
+function storedAssets(project: string, files: readonly string[]): Record<string, string> {
+  return Object.fromEntries(
+    files.map((file) => [path.relative(project, file).split(path.sep).join('/'), file]),
+  );
+}
+
 describe('explicit declaration data traces', () => {
   let root: string;
   let project: string;
@@ -122,6 +129,94 @@ describe('explicit declaration data traces', () => {
     expect(tracedFiles([{ assets: secondAssets }], project, dist)).toStrictEqual([
       { name: secondName, filePath: second.files['lib/lib.d.ts'] },
       { name: 'node_modules/@types/node/index.d.ts', filePath: scoped.files['index.d.ts'] },
+    ]);
+  });
+
+  it('emits a pnpm-stored types package, with its manifest, under the node_modules/@types link TypeScript walks', async () => {
+    const types = await declarationPackage(project, '@types/node', '26.1.0', {
+      'index.d.ts': '/// <reference lib="es2020" />\n/// <reference path="globals.d.ts" />\n',
+      'globals.d.ts': 'declare var process: unknown;\n',
+      'ts5.6/index.d.ts': '/// <reference path="../globals.d.ts" />\n',
+    });
+    await aliasPackage(project, '@types/node', types.root);
+    const link = path.join(project, 'node_modules', '@types', 'node');
+    // A trace through the link lists each stored file, and the link as an entry of its own.
+    const stored = storedAssets(project, [
+      ...Object.values(types.files),
+      path.join(types.root, 'package.json'),
+    ]);
+    const files = tracedFiles(
+      [{ assets: { 'node_modules/@types/node': link } }, { assets: stored }],
+      project,
+      dist,
+    );
+
+    expect(files).toStrictEqual([
+      { name: 'node_modules/@types/node/globals.d.ts', filePath: types.files['globals.d.ts'] },
+      { name: 'node_modules/@types/node/index.d.ts', filePath: types.files['index.d.ts'] },
+      {
+        name: 'node_modules/@types/node/package.json',
+        filePath: path.join(types.root, 'package.json'),
+      },
+      {
+        name: 'node_modules/@types/node/ts5.6/index.d.ts',
+        filePath: types.files['ts5.6/index.d.ts'],
+      },
+    ]);
+  });
+
+  it('aliases no types link that leaves the repository, renames its package or is listed under another name', async () => {
+    const links = path.join(project, 'node_modules', '@types');
+    const outside = await declarationPackage(root, '@types/node', '26.1.0', {
+      'index.d.ts': 'outside the repository',
+    });
+    await aliasPackage(project, '@types/node', outside.root);
+    // An npm alias (`"@types/react": "npm:types-react@…"`): the link does not name the package.
+    const renamed = await declarationPackage(project, 'types-react', '19.0.0', {
+      'index.d.ts': 'renamed',
+    });
+    await aliasPackage(project, '@types/react', renamed.root);
+    const linked = await declarationPackage(project, '@types/shared', '1.0.0', {
+      'index.d.ts': 'the one the name leads to',
+    });
+    const listed = await declarationPackage(project, '@types/shared', '2.0.0', {
+      'index.d.ts': 'the one the entry leads to',
+    });
+    await aliasPackage(project, '@types/shared', linked.root);
+    await aliasPackage(path.join(project, 'apps', 'site'), '@types/shared', listed.root);
+    const stored = storedAssets(project, [
+      renamed.files['index.d.ts']!,
+      listed.files['index.d.ts']!,
+    ]);
+    const assets = {
+      ...stored,
+      'node_modules/@types/node': path.join(links, 'node'),
+      'node_modules/@types/react': path.join(links, 'react'),
+      'node_modules/@types/shared': path.join(project, 'apps/site/node_modules/@types/shared'),
+    };
+
+    expect(tracedFiles([{ assets }], project, dist)).toStrictEqual(
+      Object.entries(stored)
+        .map(([name, filePath]) => ({ name, filePath }))
+        .toSorted((a, b) => a.name.localeCompare(b.name)),
+    );
+  });
+
+  it("keeps a linked workspace types package under its own path as well as the link's", async () => {
+    const workspace = path.join(project, 'packages', 'types-local');
+    const file = path.join(workspace, 'index.d.ts');
+    await mkdir(workspace, { recursive: true });
+    await writeFile(path.join(workspace, 'package.json'), JSON.stringify({ name: '@types/local' }));
+    await writeFile(file, 'declare const local: string;');
+    await aliasPackage(project, '@types/local', workspace);
+    const assets = {
+      'packages/types-local/index.d.ts': file,
+      'node_modules/@types/local': path.join(project, 'node_modules', '@types', 'local'),
+    };
+
+    expect(tracedFiles([{ assets }], project, dist)).toStrictEqual([
+      { name: 'node_modules/@types/local/index.d.ts', filePath: file },
+      { name: 'packages/types-local/index.d.ts', filePath: file },
     ]);
   });
 

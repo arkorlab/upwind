@@ -15,6 +15,7 @@ import type { EdgeEntry } from './edge.ts';
 import { buildFunction, type BuiltFunction, type EntryModule } from './function.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import type { TextModule } from './manifests.ts';
+import { type BodiesLeftOut, withinTheLimit } from './page-body-layout.ts';
 import type { PatchContext } from './patches/index.ts';
 import type { PlanBudget } from './plan.ts';
 import { sameChunks } from './same-chunks.ts';
@@ -87,6 +88,13 @@ export interface FunctionsContext {
   readonly routes: readonly RouteCode[];
   /** The prerendered bodies the Function carries, then the files it answers itself (`travelsWithFunction`). */
   readonly shipped: readonly ShippedBlob[];
+  /**
+   * The prerendered bodies the app Functions carry instead where the host leaves its large page
+   * bodies out only of a build past the size limit (`when: 'over-limit'`), collected only once a
+   * layout is past it (`withinTheLimit`). Neither the middleware's Function nor the Workflow SDK's
+   * carries a prerendered body, so only the app Functions are ever laid out again.
+   */
+  readonly shippedOverLimit?: (() => Promise<readonly ShippedBlob[]>) | undefined;
   readonly staticBlobs: readonly { readonly sha256: string; readonly bytes: Uint8Array }[];
   /** What the entries read through `node:fs`, for the Function holding every route and the middleware's. */
   readonly files: {
@@ -315,6 +323,11 @@ export interface AppFunctions<M> {
   readonly built: readonly { readonly name: string; readonly built: BuiltFunction }[];
   /** The plan, as the build's record keeps it, when the routes were split. */
   readonly plan: Record<string, unknown> | undefined;
+  /**
+   * The page bodies left out of them because, with every body in, a Function was past the size
+   * limit (`withinTheLimit`). The Functions of that first layout are then blobs nothing names.
+   */
+  readonly bodiesLeftOut?: BodiesLeftOut | undefined;
 }
 
 /**
@@ -338,6 +351,10 @@ function finalSize(name: string, built: BuiltFunction): void {
  *
  * The one Function is built first either way. Within the budgets it is the build; past them, what it
  * measured is what the plan is weighed with, and it is set aside for the Functions the plan makes.
+ *
+ * And laid out again, the same way, with the host's large page bodies left out, where the host left
+ * that to the limit and a Function of the first layout is past it (`withinTheLimit`). A split that
+ * brings every Function under the limit is not past it: the bodies stay where they are.
  */
 export async function appFunctionsOf<
   M extends {
@@ -350,11 +367,33 @@ export async function appFunctionsOf<
   runtimeManifest: M,
   budget: PlanBudget | undefined,
 ): Promise<AppFunctions<M>> {
+  return withinTheLimit(context, (layout, weighOnly) =>
+    layOutAppFunctions({ ...context, ...layout }, runtimeManifest, budget, weighOnly),
+  );
+}
+
+/**
+ * One layout of the app Functions (`appFunctionsOf`). `weighOnly` leaves every size to the caller,
+ * as `deferSizeAudit` leaves the one Function's to the plan: what is past the limit is then a reason
+ * to lay them out again rather than a failure, and what is finally uploaded is held to the limit.
+ */
+async function layOutAppFunctions<
+  M extends {
+    readonly v: number;
+    readonly entrypoints: readonly Entrypoint[];
+    readonly prerenders: readonly Prerender[];
+  },
+>(
+  context: FunctionsContext,
+  runtimeManifest: M,
+  budget: PlanBudget | undefined,
+  weighOnly: boolean,
+): Promise<AppFunctions<M>> {
   const single = await buildAppFunction(
     context,
     runtimeManifestJson(runtimeManifest),
     undefined,
-    budget !== undefined,
+    budget !== undefined || weighOnly,
   );
   const whole: AppFunctions<M> = {
     runtimeManifest,
@@ -392,7 +431,9 @@ export async function appFunctionsOf<
     console.warn(
       '@stayingupwind/adapter: this application is past the budgets for one Function, and its routes cannot be split any further: they stay in one',
     );
-    finalSize(PRIMARY_FUNCTION, single);
+    if (!weighOnly) {
+      finalSize(PRIMARY_FUNCTION, single);
+    }
     return whole;
   }
   const placements = placementsOf(plan);
@@ -407,7 +448,7 @@ export async function appFunctionsOf<
     const routes = routesOf(planned, context.routes, placements, every);
     built.push({
       name: planned.name,
-      built: await buildAppFunction(context, json, { name: planned.name, routes }, false),
+      built: await buildAppFunction(context, json, { name: planned.name, routes }, weighOnly),
     });
   }
   return { runtimeManifest: split, built, plan: planRecord(plan, budget) };

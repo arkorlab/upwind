@@ -197,7 +197,7 @@ async function answered(
           }
           const result = await warmResourceRoute({
             props: warm,
-            tables: { app: app as AppModule, edge: edge as EdgeModule },
+            tables: { app: app as AppModule, edge: edge as EdgeModule, waitUntil },
             request,
             runtime,
             waitUntil,
