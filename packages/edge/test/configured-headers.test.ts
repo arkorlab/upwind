@@ -163,6 +163,23 @@ describe('deferred configured headers', () => {
     expect(response.headers.get('connection')).toBeNull();
   });
 
+  it('uses a later Connection for middleware additions instead of the superseded middleware Connection', async () => {
+    const origin = functionAnswer(true, 'X-Precedence');
+    origin.headers.set(HEADER_RULES_AFTER_HEADER, 'connection');
+    const response = await handedOn(
+      origin,
+      new Headers({
+        connection: 'X-Kept',
+        'x-kept': 'middleware',
+        'x-precedence': 'middleware',
+      }),
+    );
+
+    expect(response.headers.get('x-kept')).toBe('middleware');
+    expect(response.headers.get('x-precedence')).toBeNull();
+    expect(response.headers.get('connection')).toBeNull();
+  });
+
   it('does not restore a later field nominated by the surviving earlier Connection', async () => {
     const origin = functionAnswer(true);
     origin.headers.set(HEADER_RULES_AFTER_HEADER, 'x-rule');

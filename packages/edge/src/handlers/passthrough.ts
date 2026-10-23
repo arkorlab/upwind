@@ -37,6 +37,7 @@ import {
   forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
+  nominatedBy,
   privateCacheControl,
   safeDiagnosticField,
 } from './responses.ts';
@@ -464,7 +465,13 @@ function laterHeaderRules(answer: Response): ReadonlySet<string> | undefined {
   } catch {
     return undefined;
   }
-  return new Set(names);
+  const later = new Set(names);
+  // A later Connection replaces the earlier routing and middleware Connection before forwarding.
+  // Its nominations must not be restored by either of those earlier layers.
+  if (later.has('connection')) {
+    for (const name of nominatedBy(answer.headers) ?? []) later.add(name);
+  }
+  return later;
 }
 
 /**

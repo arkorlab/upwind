@@ -228,7 +228,7 @@ export function mergeScopedMiddlewareHeaders(
   scope: PassthroughResponseContext,
   excluded?: ReadonlySet<string>,
 ): void {
-  const nominated = nominatedBy(added);
+  const nominated = excluded?.has(CONNECTION_HEADER) === true ? undefined : nominatedBy(added);
   const scoped = new Headers();
   for (const [name, value] of added) {
     if (
