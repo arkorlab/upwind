@@ -1,9 +1,17 @@
 import type { Expression, Node, PropertyKey, TemplateLiteral } from '@oxc-project/types';
 import { parseSync } from 'rolldown/utils';
 
+type StringPart = Expression | string | undefined | null;
+type ModuleRequestKind =
+  | 'ImportDeclaration'
+  | 'ExportNamedDeclaration'
+  | 'ExportAllDeclaration'
+  | 'ImportExpression';
+type ModuleRequest = Extract<Node, { type: ModuleRequestKind }>;
+
 /** Push a template's pieces in reverse so the next piece is read in source order. */
-function templateParts(node: TemplateLiteral): (Expression | string | undefined | null)[] {
-  const parts: (Expression | string | undefined | null)[] = [];
+function templateParts(node: TemplateLiteral): StringPart[] {
+  const parts: StringPart[] = [];
   for (let index = node.quasis.length - 1; index >= 0; index -= 1) {
     parts.push(node.quasis[index]?.value.cooked);
     if (index > 0) {
@@ -16,7 +24,7 @@ function templateParts(node: TemplateLiteral): (Expression | string | undefined 
 /** Constant string specifiers, including templates and concatenations the old bundler folded. */
 function stringOf(expression: Expression | undefined | null): string | undefined {
   const parts: string[] = [];
-  const pending: (Expression | string | undefined | null)[] = [expression];
+  const pending: StringPart[] = [expression];
   while (pending.length > 0) {
     const node = pending.pop();
     if (typeof node === 'string') {
@@ -70,8 +78,20 @@ function isNode(value: unknown): value is Node {
   );
 }
 
+function isModuleRequest(node: Node): node is ModuleRequest {
+  return [
+    'ImportDeclaration',
+    'ExportNamedDeclaration',
+    'ExportAllDeclaration',
+    'ImportExpression',
+  ].includes(node.type);
+}
+
 /** One module request, where this syntax node carries the JSON type. */
 function jsonImportOf(node: Node): string | undefined {
+  if (!isModuleRequest(node)) {
+    return undefined;
+  }
   switch (node.type) {
     case 'ImportDeclaration':
     case 'ExportNamedDeclaration':
@@ -86,9 +106,6 @@ function jsonImportOf(node: Node): string | undefined {
       return stringOf(propertyOf(attributes, 'type')) === 'json'
         ? stringOf(node.source)
         : undefined;
-    }
-    default: {
-      return undefined;
     }
   }
 }
