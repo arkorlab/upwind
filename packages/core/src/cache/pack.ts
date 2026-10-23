@@ -78,7 +78,10 @@ function startsWithMagic(bytes: Uint8Array): boolean {
 function encodePackHeader(header: GenerationPackHeader): Uint8Array {
   if (header.schemaVersion === PACK_SCHEMA_VERSION) return encodeUtf8(JSON.stringify(header));
   return encodeUtf8(
-    JSON.stringify({ ...header, artifacts: header.artifacts.map(compactPackArtifact) }),
+    JSON.stringify({
+      ...header,
+      artifacts: header.artifacts.map((artifact) => compactPackArtifact(artifact)),
+    }),
   );
 }
 
