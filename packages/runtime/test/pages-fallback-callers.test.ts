@@ -198,6 +198,75 @@ describe('version3 Pages fallback generation callers', () => {
     });
   });
 
+  it('answers a cold HEAD with loading headers without starting its member', async () => {
+    const { input, pending } = inputOf();
+    const waitUntil = vi.spyOn(input, 'waitUntil');
+    const blobs = vi.fn<NonNullable<RoutedInput['blobs']>>(() =>
+      Promise.resolve(encoder.encode(LOADING)),
+    );
+    const request = new Request(input.request, { method: 'HEAD' });
+    const response = await serveFromGeneration(
+      { ...input, request, blobs },
+      storeOf(),
+      {
+        route: FALLBACK_ROUTE,
+        pathname: '/fallback-true/second',
+        url: '/fallback-true/second',
+        representation: 'html',
+        onMiss: 'behind',
+        pagesFallback: true,
+      },
+      handler,
+    );
+    await Promise.all(pending);
+
+    expect({
+      status: response?.status,
+      body: response?.body,
+      contentType: response?.headers.get('content-type'),
+      cache: response?.headers.get('x-nextjs-cache'),
+      blobReads: blobs.mock.calls,
+    }).toStrictEqual({
+      status: 200,
+      body: null,
+      contentType: 'text/html; charset=utf-8',
+      cache: 'HIT',
+      blobReads: [],
+    });
+    expect(regenerate).not.toHaveBeenCalled();
+    expect(invokeNodeHandler).not.toHaveBeenCalled();
+    expect(waitUntil).not.toHaveBeenCalled();
+  });
+
+  it('still starts the member once when its GET loading response is cancelled', async () => {
+    const { input, pending } = inputOf();
+    const response = await serveFromGeneration(
+      input,
+      storeOf(),
+      {
+        route: FALLBACK_ROUTE,
+        pathname: '/fallback-true/second',
+        url: '/fallback-true/second',
+        representation: 'html',
+        onMiss: 'behind',
+        pagesFallback: true,
+      },
+      handler,
+    );
+
+    expect(regenerate).not.toHaveBeenCalled();
+
+    await response?.body?.cancel();
+    await Promise.all(pending);
+
+    expect(regenerate).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(regenerate).mock.calls[0]?.[0].target).toMatchObject({
+      descriptor: { kind: 'pages', route: FALLBACK_ROUTE, pathname: '/fallback-true/second' },
+      reason: 'miss',
+      replaces: null,
+    });
+  });
+
   it('a trusted detached first render uses a concrete miss without inventing a class generation', async () => {
     const { input, pending } = inputOf();
     const response = await handleDetached(input, storeOf());
