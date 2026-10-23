@@ -9,6 +9,14 @@ import { conditionsHold } from '../request/conditions.ts';
 import { allowRecoveryScript } from '../request/csp.ts';
 import { execWithin, testWithin } from '../request/pattern-budget.ts';
 import { requiresLiteral } from '../request/required-literal.ts';
+import {
+  type ConfiguredHeaders,
+  configuredOf,
+  everyRulePhased,
+  gathered,
+  NO_HEADER_RULES,
+  type RequestHeaderRules,
+} from './configured-headers.ts';
 import { findRouteEntry, namesNoFile, withoutAssetPrefix } from './manifest.ts';
 import { pageKeyOf } from './page-keys.ts';
 import type {
@@ -445,25 +453,7 @@ export function isExactPathname(manifest: ProjectManifest, pathname: string): bo
   return pageKeyOf(manifest.exactPathnames, pathname, manifest) !== undefined;
 }
 
-/** What `next.config` sets on one request, and whether the request itself chose any of it. */
-export interface ConfiguredHeaders {
-  readonly headers: Record<string, string>;
-  /**
-   * A matched rule carried `has` or `missing`, so these headers are this visitor's.
-   *
-   * The same pathname answers differently to the next visitor, which is what makes the response
-   * unshareable: a `Set-Cookie`, a CORS allowance or a disposition chosen for one request must not
-   * be replayed to another out of a shared cache. Recorded here rather than asked for again,
-   * because the loop below already knows it.
-   */
-  readonly conditioned: boolean;
-}
-
-/** One judgement of a request's header rules, retained for whichever answer is served. */
-export interface RequestHeaderRules {
-  readonly response: ConfiguredHeaders;
-  readonly document: ConfiguredHeaders;
-}
+export type { ConfiguredHeaders, RequestHeaderRules } from './configured-headers.ts';
 
 // eslint-disable-next-line max-params -- optional mirroring and policy sources reuse the same interpolation loop
 function applyHeaderSet(
@@ -500,29 +490,32 @@ function configuredHeaders(
   headers: Headers,
   forDocument: boolean,
 ): ConfiguredHeaders {
-  const out: Record<string, string> = {};
-  let conditioned = false;
-  if (manifest.headerRules === undefined) {
-    return { headers: out, conditioned };
-  }
-  for (const compiled of compiledRules(manifest.headerRules, 'i')) {
+  const rules = manifest.headerRules ?? NO_HEADER_RULES;
+  const all = gathered();
+  const ahead = everyRulePhased(rules) ? gathered() : undefined;
+  for (const compiled of compiledRules(rules, 'i')) {
     const { rule } = compiled;
     const match = patternMatch(compiled, url.pathname);
     if (match === null || !conditionsHold(rule, url, headers)) {
       continue;
     }
-    conditioned ||= rule.has !== undefined || rule.missing !== undefined;
+    const conditioned = rule.has !== undefined || rule.missing !== undefined;
     const set = forDocument ? (rule.documentHeaders ?? rule.headers) : rule.headers;
-    applyHeaderSet(
-      out,
-      set,
-      match,
-      manifest.routerReferences,
-      undefined,
-      forDocument ? rule.documentRecoverySources : undefined,
-    );
+    const recoverySources = forDocument ? rule.documentRecoverySources : undefined;
+    const forms = ahead !== undefined && rule.phase === 'beforeMiddleware' ? [all, ahead] : [all];
+    for (const form of forms) {
+      form.conditioned ||= conditioned;
+      applyHeaderSet(
+        form.headers,
+        set,
+        match,
+        manifest.routerReferences,
+        undefined,
+        recoverySources,
+      );
+    }
   }
-  return { headers: out, conditioned };
+  return configuredOf(all, ahead);
 }
 
 /**
@@ -550,30 +543,38 @@ export function requestHeaderRulesFor(
   url: URL,
   headers: Headers,
 ): RequestHeaderRules {
-  const response: Record<string, string> = {};
-  const document: Record<string, string> = {};
-  let conditioned = false;
-  if (manifest.headerRules !== undefined) {
-    for (const compiled of compiledRules(manifest.headerRules, 'i')) {
-      const { rule } = compiled;
-      const match = patternMatch(compiled, url.pathname);
-      if (match === null || !conditionsHold(rule, url, headers)) {
-        continue;
-      }
-      conditioned ||= rule.has !== undefined || rule.missing !== undefined;
+  const rules = manifest.headerRules ?? NO_HEADER_RULES;
+  const response = gathered();
+  const document = gathered();
+  const phased = everyRulePhased(rules);
+  const ahead = phased ? { response: gathered(), document: gathered() } : undefined;
+  for (const compiled of compiledRules(rules, 'i')) {
+    const { rule } = compiled;
+    const match = patternMatch(compiled, url.pathname);
+    if (match === null || !conditionsHold(rule, url, headers)) {
+      continue;
+    }
+    const conditioned = rule.has !== undefined || rule.missing !== undefined;
+    const forms =
+      ahead !== undefined && rule.phase === 'beforeMiddleware'
+        ? [{ response, document }, ahead]
+        : [{ response, document }];
+    for (const form of forms) {
+      form.response.conditioned ||= conditioned;
+      form.document.conditioned ||= conditioned;
       if (rule.documentHeaders === undefined) {
         applyHeaderSet(
-          response,
+          form.response.headers,
           rule.headers,
           match,
           manifest.routerReferences,
-          document,
+          form.document.headers,
           rule.documentRecoverySources,
         );
       } else {
-        applyHeaderSet(response, rule.headers, match, manifest.routerReferences);
+        applyHeaderSet(form.response.headers, rule.headers, match, manifest.routerReferences);
         applyHeaderSet(
-          document,
+          form.document.headers,
           rule.documentHeaders,
           match,
           manifest.routerReferences,
@@ -584,8 +585,8 @@ export function requestHeaderRulesFor(
     }
   }
   return {
-    response: { headers: response, conditioned },
-    document: { headers: document, conditioned },
+    response: configuredOf(response, ahead?.response),
+    document: configuredOf(document, ahead?.document),
   };
 }
 

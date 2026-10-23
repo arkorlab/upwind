@@ -70,6 +70,7 @@ import { resumeUrlOf } from './route-parameters.ts';
 import {
   askedOf,
   landedRoute,
+  noteLaterHeaderRules,
   parametersDecode,
   redirectedBeforeRouting,
   redirectResponse,
@@ -303,6 +304,7 @@ async function routeAndServe(
     trace,
   });
   settleRewrittenPath(routed.resolvedHeaders, requestHeaders, url, trace.rewrite);
+  noteLaterHeaderRules(routed, edgeJudgesHeaderRules(input.request.headers));
   if (routed.middlewareResponded === true && trace.response !== undefined) {
     // The middleware's own answer may be streaming its side of the body back: that side stays.
     dropHandlerBody();

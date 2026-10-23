@@ -38,6 +38,14 @@ export const HEADER_RULES_JUDGED_HEADER = 'x-arkor-header-rules-judged';
  * every header of the platform's is.
  */
 export const HEADER_RULES_LEFT_HEADER = 'x-arkor-header-rules-left';
+/**
+ * Names of the response fields routing set after the rules the edge judged, beside
+ * `HEADER_RULES_LEFT_HEADER`. The edge keeps those fields above its earlier rules and middleware;
+ * a handler's own fields still take the earlier rules. The runtime replaces this marker with the
+ * actual routing result, including an empty value, so an application's response cannot supply it.
+ * Only names travel, not another copy of their values. Stripped before the answer reaches a client.
+ */
+export const HEADER_RULES_AFTER_HEADER = 'x-arkor-header-rules-after';
 /** Resume this prerender: render only what its postponed state left out. */
 export const RESUME_PRERENDER_HEADER = 'x-arkor-prerender';
 /** The same, escaped where a header cannot carry it as it is (`pathHeaders`). */
