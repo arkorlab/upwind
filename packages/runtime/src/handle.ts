@@ -12,7 +12,7 @@ import {
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { nowMs } from './cache/clock.ts';
-import { requestContextFor } from './cache/context.ts';
+import { type RequestContext, requestContextFor } from './cache/context.ts';
 import { catchUpWithScope } from './cache/pulls.ts';
 import { asksForCapture, handleCapture, keptByNobody } from './capture-invoke.ts';
 import {
@@ -71,6 +71,7 @@ import { resumeUrlOf } from './route-parameters.ts';
 import {
   askedOf,
   landedRoute,
+  noteLaterHeaderRules,
   parametersDecode,
   redirectedBeforeRouting,
   redirectResponse,
@@ -306,6 +307,7 @@ async function routeAndServe(
     trace,
   });
   settleRewrittenPath(routed.resolvedHeaders, requestHeaders, url, trace.rewrite);
+  noteLaterHeaderRules(routed, edgeJudgesHeaderRules(input.request.headers));
   if (routed.middlewareResponded === true && trace.response !== undefined) {
     // The middleware's own answer may be streaming its side of the body back: that side stays.
     dropHandlerBody();
@@ -554,9 +556,34 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
   return handleFull(input, store);
 }
 
+/**
+ * What `routed` comes to, once the host has recorded what the request invalidated, or the bound of
+ * each invalidation from when the request asked for it has gone by (`InvalidatedTags`,
+ * `INVALIDATIONS_RECORDED_WITHIN_MS`) — its headers not before then: whoever made the request moves
+ * on once they come. A Server Action's render goes on while the host records what the action
+ * invalidated (`invalidateOnce`, in `cache/handlers.ts`), so what is waited for here is what is left
+ * of that bound once the render has answered, not the bound again; and a render that failed waits
+ * too: its failure is answered with what the request invalidated as well (`function.ts`), as the
+ * change the action made stands whatever became of its render.
+ */
+async function onceRecorded(context: RequestContext, routed: Promise<Response>): Promise<Response> {
+  try {
+    return await routed;
+  } finally {
+    await context.invalidated.recorded(INVALIDATIONS_RECORDED_WITHIN_MS);
+  }
+}
+
+/**
+ * Answer a request a deployment's Function was handed: in the context it runs in (`run`) — its
+ * clock, its `waitUntil`, what it invalidates and writes — brought up to where its scope's tags
+ * stand first (`catchUpWithScope`), routed, and answered once what it invalidated is recorded
+ * (`onceRecorded`), telling the edge what it invalidated at once, with the end of its body held for
+ * the cache writes it handed over (`withWritesLanded`).
+ */
 export async function handleRequest(handled: HandleInput): Promise<Response> {
   const context = requestContextFor({
-    tables: { app: handled.app, edge: handled.edge },
+    tables: { app: handled.app, edge: handled.edge, waitUntil: handled.waitUntil },
     runtime: handled.cache,
     request: handled.request,
     startedAt: handled.clock ?? nowMs(),
@@ -569,10 +596,9 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
     if (handled.cache !== undefined) {
       await catchUpWithScope(handled.cache, handled.request, handled.waitUntil);
     }
-    const response = withoutPlacementHeaders(await routeRequest(input));
-    // Not answered before the host has recorded what the request invalidated — its headers neither:
-    // whoever made it moves on once they come (`InvalidatedTags`).
-    await context.invalidated.recorded(INVALIDATIONS_RECORDED_WITHIN_MS);
+    // Not answered before the host has recorded what the request invalidated — its headers neither,
+    // nor a failure's (`onceRecorded`).
+    const response = withoutPlacementHeaders(await onceRecorded(context, routeRequest(input)));
     const answered = withoutBody(
       handled.request,
       withInvalidatedTags(response, context.invalidated),

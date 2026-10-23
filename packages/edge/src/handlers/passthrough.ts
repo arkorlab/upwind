@@ -1,5 +1,6 @@
 import type { AppRuntime, ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
 import {
+  HEADER_RULES_AFTER_HEADER,
   HEADER_RULES_JUDGED_HEADER,
   HEADER_RULES_LEFT_HEADER,
   INVALIDATED_REVISION_HEADER,
@@ -37,6 +38,7 @@ import {
   forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
+  nominatedBy,
   safeDiagnosticField,
   unsharedUnlessPublic,
 } from './responses.ts';
@@ -456,12 +458,36 @@ function takeResponseInvalidation(input: PassthroughInput, response: Response): 
   }
 }
 
+/** A later routing phase owns these fields; absent on runtimes from before it says so. */
+function laterHeaderRules(answer: Response): ReadonlySet<string> | undefined {
+  const value = answer.headers.get(HEADER_RULES_AFTER_HEADER);
+  if (value === null || value === '') return undefined;
+  const names = value.split(',');
+  // Native Headers validates each name without accepting whitespace or a malformed name list.
+  try {
+    for (const name of names) {
+      if (name === '' || name !== name.toLowerCase()) return undefined;
+      answer.headers.has(name);
+    }
+  } catch {
+    return undefined;
+  }
+  const later = new Set(names);
+  // A later Connection replaces the earlier routing and middleware Connection before forwarding.
+  // Its nominations must not be restored by either of those earlier layers.
+  if (later.has('connection')) {
+    for (const name of nominatedBy(answer.headers) ?? []) later.add(name);
+  }
+  return later;
+}
+
 /**
  * What the edge lays on the Worker's answer to a request it ran the middleware for, over the
  * Worker's own: the header rules the runtime left to the edge (`HEADER_RULES_LEFT_HEADER`), read off
  * the answer as it came, before the edge's protocol is taken off it — a runtime from before it lays
  * the rules itself and says nothing, and none is laid twice — and the middleware's headers over
- * them, as Next.js's router collects the two ahead of the route.
+ * them, as Next.js's router collects the two ahead of the route. Fields the Function's later
+ * routing phases set keep their precedence over both (`HEADER_RULES_AFTER_HEADER`).
  */
 function layAfterMiddleware(
   headers: Headers,
@@ -475,8 +501,15 @@ function layAfterMiddleware(
   let rewrittenPath =
     middleware.requestHeaders.get(RSC_HEADER) === '1' ? headers.get(REWRITTEN_PATH_HEADER) : null;
   const { judgedRules } = middleware;
-  if (judgedRules !== undefined && answer.headers.get(HEADER_RULES_LEFT_HEADER) === '1') {
-    layConfiguredOver(headers, judgedRules, answer, input);
+  const deferred =
+    judgedRules !== undefined && answer.headers.get(HEADER_RULES_LEFT_HEADER) === '1';
+  const later = deferred ? laterHeaderRules(answer) : undefined;
+  if (deferred) {
+    layConfiguredOver(headers, judgedRules, answer, {
+      forwarding: input.forwarding,
+      request: input.request,
+      later,
+    });
     // A missing path here means the configured Connection options removed it. Keep that
     // removal rather than restoring a value the forwarding rules rejected.
     if (!headers.has(REWRITTEN_PATH_HEADER)) rewrittenPath = null;
@@ -484,7 +517,7 @@ function layAfterMiddleware(
   // After the Worker's own, which may repeat the middleware's cookies as Next.js writes them back
   // (`splice/cookies.ts`): a browser keeps the last of a cookie set twice, and the middleware's is
   // the one it meant — a `Max-Age=0` that the copy before it lost, say.
-  mergeScopedMiddlewareHeaders(headers, middleware.responseHeaders, scope);
+  mergeScopedMiddlewareHeaders(headers, middleware.responseHeaders, scope, later);
   if (rewrittenPath !== null) headers.set(REWRITTEN_PATH_HEADER, rewrittenPath);
 }
 

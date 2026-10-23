@@ -1,4 +1,4 @@
-import { pagesDataPathnameUnder, queryDependent } from '@stayingupwind/core/bundle';
+import { pagesDataPathnameUnder } from '@stayingupwind/core/bundle';
 import {
   type DecodedGenerationPack,
   type InvalidationState,
@@ -22,10 +22,12 @@ import {
   answerFromRender,
   answerWith,
   documentWant,
+  renderCompletedRscForVisitor,
   renderForVisitor,
   resumeRsc,
   type Target,
   type Want,
+  withOutcome,
 } from './answers.ts';
 import type { NodeHandler } from './app-module.ts';
 import { nowMs } from './cache/clock.ts';
@@ -37,7 +39,6 @@ import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { servable } from './cache/servable.ts';
-import { documentFromBuild, rscFromBuild } from './documents.ts';
 import { foundDynamic, rememberingDynamic } from './dynamic-misses.ts';
 import { nodeHandlerOf } from './entries.ts';
 import type { GenerationSource } from './generation-source.ts';
@@ -50,6 +51,7 @@ import {
   loadingFallbackResponse,
 } from './pages-fallback.ts';
 import {
+  answerPartialMiss,
   type PartialFallbackJob as Job,
   partialUpgrade,
   upgradePathname,
@@ -58,7 +60,7 @@ import {
 import { PAGES_DATA, ROUTE_BODY, SEGMENT_PREFIX } from './representations.ts';
 import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
-import { entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
+import { entrypointKindOf, findShell, isClassShell, type Store, variesOnQuery } from './store.ts';
 
 /**
  * The runtime cache's part in answering a request: a regeneration the edge asked for beside a
@@ -123,7 +125,7 @@ async function targetOf(input: RoutedInput, store: Store): Promise<Target | unde
     ? upgradePathname(store, route, asked)
     : entryPathnameFor(store, route, asked);
   const shell = store.prerendersByPathname.get(pathname) ?? findShell(store, route, pathname);
-  if (bypassesPrerender(store, input.request, shell) || queryDependent(shell, route, pathname)) {
+  if (bypassesPrerender(store, input.request, shell) || variesOnQuery(shell, route, pathname)) {
     return undefined;
   }
   const descriptor = descriptorFor(store, route, pathname);
@@ -212,12 +214,6 @@ function afterPartialFallback(job: Job, response: Response): Response {
   return withPartialFallbackUpgrade(job, response, (reason, base) =>
     scheduleJob(job, reason, base),
   );
-}
-
-function withOutcome(response: Response, outcome: string): Response {
-  const headers = new Headers(response.headers);
-  headers.set(CACHE_OUTCOME_HEADER, outcome);
-  return new Response(response.body, { status: response.status, headers });
 }
 
 /** Answer at once; the regeneration runs after, on its own. */
@@ -444,7 +440,7 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
     runtime === undefined ||
     shell === undefined ||
     bypassesPrerender(store, input.request, shell, source.url) ||
-    queryDependent(shell, source.route, source.pathname)
+    variesOnQuery(shell, source.route, source.pathname)
   ) {
     return;
   }
@@ -542,17 +538,7 @@ async function answerMiss(
   once: boolean,
 ): Promise<Response | undefined> {
   if (once && partialUpgrade(job)) {
-    const { input, store, target } = job;
-    const resolved = {
-      route: source.route,
-      pathname: new URL(source.url, input.request.url).pathname,
-      url: source.url,
-    };
-    const entry = { kind: 'node' as const, handler: target.handler };
-    const response = await (source.representation === 'html'
-      ? documentFromBuild(input, store, resolved, { entry, status: 200 })
-      : rscFromBuild(input, store, entry, resolved));
-    return input.request.method === 'HEAD' ? response : afterPartialFallback(job, response);
+    return answerPartialMiss(job, source, want, (reason, base) => scheduleJob(job, reason, base));
   }
   const onMiss = foundDynamic(job.runtime, job.target.descriptor) ? 'build' : source.onMiss;
   if (once && onMiss === 'behind' && source.pagesFallback === true) {
@@ -608,9 +594,7 @@ export async function serveFromGeneration(
   if (once && lookup.kind === 'unavailable' && partialUpgrade(job)) {
     return answerMiss({ ...job, pending: lookup.pending }, source, want, once);
   }
-  if (lookup.kind !== 'generation') {
-    return undefined;
-  }
+  if (lookup.kind !== 'generation') return renderCompletedRscForVisitor(job, source, once);
   const { pack, validity } = lookup.current;
   if (validity === 'expired' && !once) {
     return renderRequest(job, source.url);

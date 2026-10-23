@@ -721,6 +721,18 @@ export const invalidateRequestSchema = z.object({
   expire: z.number().nonnegative().optional(),
   cause: invalidationCauseSchema,
   /**
+   * The moment the invalidation took effect in the Worker that asked (unix ms, by the clock it stamps
+   * what it writes with): its own reads miss what the invalidation made stale from then on, and what
+   * it computed after that moment is stamped later than it. The authority records the invalidation
+   * at this moment rather than at its own clock — never later than its own clock, and no further back
+   * than it allows — so that what the Worker wrote after the invalidation, before the authority had
+   * the call, is not condemned by it. Absent, or anything but a finite number — taken as it comes,
+   * and read by the authority alone (`inForceMoment`), so that a moment it cannot read costs the
+   * invalidation nothing — the invalidation is recorded at the authority's own clock, as it was
+   * before a Worker said when.
+   */
+  inForceAt: z.unknown().optional(),
+  /**
    * More requests of the same invalidation follow — one with more tags than a request carries, sent
    * a chunk at a time: the authority tells the host of each behind its answer, and waits for the
    * host's telling on the last alone. Absent, as from a Worker that sends none, each waits.

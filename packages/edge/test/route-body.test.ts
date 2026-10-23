@@ -288,7 +288,10 @@ async function fixture(
     app: edge.app!,
     cache: { keySchemaVersion: 1, scopeId: SCOPE },
     routeBodies: [entry],
-    ...(options.headerRules !== undefined && { headerRules: options.headerRules }),
+    // `headers()` of `next.config`, which Next.js puts ahead of the middleware, unless one says.
+    ...(options.headerRules !== undefined && {
+      headerRules: options.headerRules.map((rule) => ({ phase: 'beforeMiddleware', ...rule })),
+    }),
     ...(hasMiddleware && {
       middleware: { matchers: [{ sourceRegex: '^/icon$' }] },
     }),

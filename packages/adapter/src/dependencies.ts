@@ -206,8 +206,12 @@ function mib(bytes: number): string {
   return `${(bytes / MIB).toFixed(MIB_DIGITS)} MiB`;
 }
 
-/** Whether a Function is over the limit, said as the message will say it; `undefined` when under. */
-function overLimit(size: FunctionSize): string | undefined {
+/**
+ * Whether a Function is over the limit, said as the message will say it; `undefined` when under.
+ * Also what a build that may still leave its large page bodies out asks of the Functions it weighed
+ * (`withinTheLimit`), so that it lays them out again exactly where this audit would refuse them.
+ */
+export function overLimit(size: FunctionSize): string | undefined {
   if (size.bytes > MAX_FUNCTION_BYTES) {
     return `${mib(size.bytes)}, over the ${mib(MAX_FUNCTION_BYTES)} limit`;
   }

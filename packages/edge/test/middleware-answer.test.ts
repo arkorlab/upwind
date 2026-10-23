@@ -55,7 +55,8 @@ async function throughMiddleware(
   const site = await seedSite({
     document: pprDocument(),
     files: { [FILE]: 'User-agent: *' },
-    headerRules: answering.headerRules,
+    // `headers()` of `next.config`, which Next.js puts ahead of the middleware, unless one says.
+    headerRules: answering.headerRules?.map((rule) => ({ phase: 'beforeMiddleware', ...rule })),
     ...(answering.completeRouting === true && { dynamicRoutes: [] }),
   });
   const manifest: ProjectManifest = {

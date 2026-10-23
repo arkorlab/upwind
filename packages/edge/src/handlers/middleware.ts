@@ -99,12 +99,13 @@ export interface MiddlewareContinued extends Extract<
    */
   readonly rewriteStatus?: number | undefined;
   /**
-   * The headers the rules of `next.config` set on the request as the client sent it, judged before
-   * the middleware ran (`withJudgedRules`): what Next.js's router lays on whatever answers the
-   * request. A Function the request is handed on to is told the edge holds them
+   * The headers the rules ahead of the middleware set on the request as the client sent it, judged
+   * before the middleware ran (`withJudgedRules`): what Next.js's router lays on whatever answers
+   * the request. A Function the request is handed on to is told the edge holds them
    * (`HEADER_RULES_JUDGED_HEADER`), and leaves them for the edge to lay where it says it did
    * (`HEADER_RULES_LEFT_HEADER`): judged there, on the request as the middleware left it, the rules
-   * of the path the client asked for were lost and those of the path it was rewritten to added.
+   * of the path the client asked for were lost and those of the path it was rewritten to added. The
+   * rules that run on a match it judges itself, on the request as it is finally matched.
    */
   readonly judgedRules?: ConfiguredHeaders | undefined;
   /** A deny-only local signal retained before transport filtering removes privacy fields. */
