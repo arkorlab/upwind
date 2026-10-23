@@ -20,8 +20,8 @@ import { type DESTROY_MODE } from './workers/protocol.ts';
  *
  * Uploaded every run, the key with it, rather than given a new key alone: one upload is the code
  * and the key at once, so a run never reaches an agent of another version with its key. The key is
- * the run's lock as well — a second run uploads its own, and the first one's calls are refused from
- * then on (`agent-client.ts`).
+ * also rejects a superseded client that does not honor the project's separate account lock: a
+ * second run uploads its own, and the first one's calls are refused from then on (`agent-client.ts`).
  *
  * So the key a run takes away at its end is only ever its own: one the agent no longer takes was
  * replaced by a newer run, whose key a write now would take away from under it.
@@ -118,9 +118,8 @@ export async function openAgent(input: AgentInput): Promise<AgentSession> {
   // kept nowhere — the next deploy or rollback replaces it (Sentry).
   const close = async (): Promise<void> => {
     try {
-      // Between this question and the write, a newer run could still set its key: the window two
-      // deploys of the same project at once have anyway, which a project's deploys are run one at
-      // a time to close.
+      // The project lock excludes another cooperating command between this read and the write.
+      // An older client or an operator can still replace the key without honoring that lock.
       if (await agentTakesKey(client)) {
         await putSecret(scope, names.agent, { name: 'AGENT_KEY', text: freshKey() });
         return;

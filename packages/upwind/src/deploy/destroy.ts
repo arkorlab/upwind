@@ -19,6 +19,7 @@ import { type AccountScope, deleteScript } from './cloudflare/workers.ts';
 import { readDeploySettings } from './config.ts';
 import type { CloudflareCredentials } from './credentials.ts';
 import { deploymentOfScript, type ProjectNames, projectNames } from './names.ts';
+import { withProjectLock } from './project-lock.ts';
 import { shippedWorkers } from './shipped.ts';
 import { recordedStores } from './stores.ts';
 import { AGENT_PATHS, OWNER_KEY } from './workers/protocol.ts';
@@ -261,22 +262,31 @@ export async function runDestroy(
   const names = projectNames(settings.project);
   const client = createCloudflareClient({ apiToken: credentials.apiToken, fetch: io.fetch });
   const scope = { client, accountId: await resolveAccount(client, credentials.accountId) };
-  const account = await readAccount(scope, names);
-  const refused = refusalOf(names, account);
-  if (refused !== undefined) {
-    console.error(`upwind: ${refused}`);
-    return 1;
-  }
-  const left = await destroyAll(scope, names, account, { options, io });
-  say(`destroyed ${names.project}`);
-  if (left.length > 0) {
-    say(
-      `the application's storage is left as it is, and ${names.artifactsBucket} with the record of it (--include-storage deletes them):`,
-    );
-    for (const store of left) {
-      const why = store.why === undefined ? '' : `, ${store.why}`;
-      console.log(`  ${store.name} (${store.id})${why}`);
-    }
-  }
-  return 0;
+  return withProjectLock(
+    scope,
+    names,
+    async (held) => {
+      const { scope } = held;
+      const lockedIo = { ...io, fetch: held.fetch };
+      const account = await readAccount(scope, names);
+      const refused = refusalOf(names, account);
+      if (refused !== undefined) {
+        console.error(`upwind: ${refused}`);
+        return 1;
+      }
+      const left = await destroyAll(scope, names, account, { options, io: lockedIo });
+      say(`destroyed ${names.project}`);
+      if (left.length > 0) {
+        say(
+          `the application's storage is left as it is, and ${names.artifactsBucket} with the record of it (--include-storage deletes them):`,
+        );
+        for (const store of left) {
+          const why = store.why === undefined ? '' : `, ${store.why}`;
+          console.log(`  ${store.name} (${store.id})${why}`);
+        }
+      }
+      return 0;
+    },
+    { fetch: io.fetch },
+  );
 }

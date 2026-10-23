@@ -4,10 +4,18 @@ import path from 'node:path';
 import { createId } from '@stayingupwind/core/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { OWNER_KEY } from '../../src/deploy/account.ts';
+import { OWNER_KEY, readAccount } from '../../src/deploy/account.ts';
 import type { DeployOptions } from '../../src/deploy/args.ts';
+import { createCloudflareClient } from '../../src/deploy/cloudflare/client.ts';
 import { runDeploy } from '../../src/deploy/command.ts';
+import { readDeploySettings } from '../../src/deploy/config.ts';
+import { deployToAccount } from '../../src/deploy/deploy-run.ts';
+import { runDeployments } from '../../src/deploy/deployments.ts';
+import { runDestroy } from '../../src/deploy/destroy.ts';
 import { deploymentLabel, functionScriptName, projectNames } from '../../src/deploy/names.ts';
+import { preflight } from '../../src/deploy/preflight.ts';
+import { projectLockBucket } from '../../src/deploy/project-lock.ts';
+import { runRollback } from '../../src/deploy/rollback.ts';
 import { ownVersion } from '../../src/manifest.ts';
 import {
   bundleOf,
@@ -236,5 +244,81 @@ describe('`upwind deploy --dry-run`', () => {
     expect(errors).toStrictEqual([
       expect.stringMatching(/CLOUDFLARE_API_TOKEN, which is not set/u),
     ]);
+  });
+
+  it('refuses every mutating command before reading the project while another host holds it', async () => {
+    const { dir } = await builtProject();
+    const fake = fakeCloudflare();
+    const bucket = projectLockBucket(projectNames('shop'));
+    fake.buckets.set(bucket, new Map());
+    const credentials = { apiToken: 'token', accountId: 'account-1' };
+    const commands = [
+      () => runDeploy(optionsFor(dir, { dryRun: false }), credentials, fake),
+      () => runRollback({ projectDir: dir, to: undefined }, credentials, fake),
+      () => runDestroy({ projectDir: dir, yes: true, includeStorage: true }, credentials, fake),
+    ];
+    for (const command of commands) {
+      const from = fake.requests.length;
+      await expect(command()).rejects.toThrow(/could not acquire the project lock/u);
+      expect(fake.requests.slice(from).map(({ method, path }) => ({ method, path }))).toStrictEqual(
+        [{ method: 'POST', path: '/accounts/account-1/r2/buckets' }],
+      );
+    }
+    expect([...fake.buckets.keys()]).toStrictEqual([bucket]);
+    expect(fake.kv.size).toBe(0);
+    expect(fake.scripts.size).toBe(0);
+  });
+
+  it('keeps planning and listing read-only while a project lock is held', async () => {
+    const { dir } = await builtProject();
+    const fake = fakeCloudflare();
+    const bucket = projectLockBucket(projectNames('shop'));
+    fake.buckets.set(bucket, new Map());
+    const credentials = { apiToken: 'token', accountId: 'account-1' };
+
+    await expect(runDeploy(optionsFor(dir), credentials, fake)).resolves.toBe(0);
+    await expect(runDeployments({ projectDir: dir }, credentials, fake)).resolves.toBe(0);
+    expect(fake.requests.every((request) => request.method === 'GET')).toBe(true);
+    expect([...fake.buckets.keys()]).toStrictEqual([bucket]);
+  });
+
+  it('replaces a direct deploy caller account snapshot only after acquiring the lock', async () => {
+    const { dir } = await builtProject();
+    const fake = fakeCloudflare();
+    const names = projectNames('shop');
+    const scope = {
+      client: createCloudflareClient({ apiToken: 'token', fetch: fake.fetch }),
+      accountId: 'account-1',
+    };
+    const account = await readAccount(scope, names);
+    const settings = await readDeploySettings(dir);
+    const secrets = new Map<string, string>();
+    const plan = await preflight({ projectDir: dir, settings, secrets });
+    // A caller's valid earlier snapshot must not authorize provisioning against the changed account.
+    fake.subdomain = undefined;
+    const from = fake.requests.length;
+
+    await expect(
+      deployToAccount({
+        scope,
+        account,
+        settings,
+        plan,
+        secrets,
+        message: undefined,
+        resetCacheKey: false,
+        fetch: fake.fetch,
+      }),
+    ).rejects.toThrow(/the account has no workers.dev subdomain/u);
+    const requests = fake.requests.slice(from);
+    expect(requests[0]).toMatchObject({ method: 'POST', path: '/accounts/account-1/r2/buckets' });
+    expect(requests.at(-1)).toMatchObject({
+      method: 'DELETE',
+      path: `/accounts/account-1/r2/buckets/${projectLockBucket(names)}`,
+    });
+    expect(requests.slice(1, -1).every((request) => request.method === 'GET')).toBe(true);
+    expect(fake.buckets.size).toBe(0);
+    expect(fake.kv.size).toBe(0);
+    expect(fake.scripts.size).toBe(0);
   });
 });

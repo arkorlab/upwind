@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runDeploy } from '../../src/deploy/command.ts';
 import { runDestroy } from '../../src/deploy/destroy.ts';
 import { projectNames } from '../../src/deploy/names.ts';
+import { projectLockBucket } from '../../src/deploy/project-lock.ts';
 import { OWNER_KEY } from '../../src/deploy/workers/protocol.ts';
 import {
   bucketKeys,
@@ -134,9 +135,10 @@ describe('`upwind destroy`', () => {
 
     // The site goes first, and the mark goes after everything it vouched for but its bucket.
     expect(deletions[0]).toBe(`/workers/scripts/${NAMES.edge}`);
-    expect(deletions.slice(-2)).toStrictEqual([
+    expect(deletions.slice(-3)).toStrictEqual([
       `/r2/buckets/${NAMES.artifactsBucket}/objects/${OWNER_KEY}`,
       `/r2/buckets/${NAMES.artifactsBucket}`,
+      `/r2/buckets/${projectLockBucket(NAMES)}`,
     ]);
   });
 
@@ -152,8 +154,9 @@ describe('`upwind destroy`', () => {
     expect(
       fake.requests
         .slice(from)
-        .filter((request) => request.method !== 'GET' && request.method !== 'DELETE'),
-    ).toStrictEqual([]);
+        .filter((request) => request.method !== 'GET' && request.method !== 'DELETE')
+        .map(({ method, path }) => ({ method, path })),
+    ).toStrictEqual([{ method: 'POST', path: '/accounts/account-1/r2/buckets' }]);
     expect(sorted(fake.scripts.keys())).toStrictEqual([]);
   });
 

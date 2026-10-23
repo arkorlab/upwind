@@ -1,3 +1,4 @@
+import { ProjectWriteUncertainError } from './project-lock.ts';
 import { AGENT_PATHS } from './workers/protocol.ts';
 
 /**
@@ -100,6 +101,9 @@ export function agentClient(options: AgentClientOptions): AgentClient {
       const what = `${method} ${path}`;
       for (let count = 1; ; count += 1) {
         const { response, error } = await attempt(method, path, init);
+        if (error instanceof ProjectWriteUncertainError) {
+          throw error;
+        }
         const last = count >= MAX_ATTEMPTS;
         if (last && response === undefined) {
           throw new Error(`the deploy agent could not be reached for ${what}`, { cause: error });
