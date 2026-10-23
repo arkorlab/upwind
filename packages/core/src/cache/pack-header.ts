@@ -1,4 +1,5 @@
 import { SHA256_HEX_LENGTH } from '../artifact/hash.ts';
+import { repairPackArtifactFields } from './artifact-locator.ts';
 import { ARTIFACT_ENCODINGS, ARTIFACT_ROLES } from './artifacts.ts';
 import { MAX_TAG_LENGTH, MAX_TAGS_PER_ENTRY, ROUTE_ENTRY_KINDS, TAG_KINDS } from './keys.ts';
 import type {
@@ -13,7 +14,8 @@ import { STATIC_PAGES_FALLBACK_PRIVACY, type StaticPagePrivacy } from './static-
 import { CACHE_POLICY_SOURCES } from './timing.ts';
 
 /**
- * The header of a delivery record, checked as `generationPackHeaderSchema` checks it and handed
+ * The header of a delivery record, expanding version-two repair tuples before checking the same
+ * logical fields `generationPackHeaderSchema` checks, and handed
  * back as that schema hands it back: the fields it names, in its order, and nothing else.
  *
  * Written out rather than asked of the schema, because this is the check the runtime makes on a
@@ -25,7 +27,13 @@ import { CACHE_POLICY_SOURCES } from './timing.ts';
  * key; a record's `__proto__` is not one of its keys, as the schema's record type has it.
  */
 
+/** The default producer stays version one until every immutable consumer has been verified. */
 export const PACK_SCHEMA_VERSION = 1;
+export const COMPACT_PACK_SCHEMA_VERSION = 2;
+
+export function isSupportedPackSchemaVersion(value: unknown): value is 1 | 2 {
+  return value === PACK_SCHEMA_VERSION || value === COMPACT_PACK_SCHEMA_VERSION;
+}
 /** Whether a generation came out of a build or out of a regeneration at runtime. */
 export const GENERATION_SOURCE_KINDS = ['build', 'runtime'] as const;
 
@@ -125,7 +133,8 @@ function tagOf(value: unknown): GenerationTag | undefined {
     : undefined;
 }
 
-function artifactOf(value: unknown): PackArtifactRef | undefined {
+function artifactOf(input: unknown, compact = false): PackArtifactRef | undefined {
+  const value = compact && Array.isArray(input) ? repairPackArtifactFields(input) : input;
   if (!isFields(value)) {
     return undefined;
   }
@@ -161,6 +170,10 @@ function artifactOf(value: unknown): PackArtifactRef | undefined {
     representationKey,
     ...(storageRef !== undefined && { storageRef }),
   };
+}
+
+function compactArtifactOf(value: unknown): PackArtifactRef | undefined {
+  return artifactOf(value, true);
 }
 
 /** Each item as `itemOf` checks it, or `undefined` when one fails or there are too many. */
@@ -255,15 +268,17 @@ function isStaticPagePrivacy(value: unknown): value is StaticPagePrivacy | undef
 }
 
 export function packHeaderOf(value: unknown): GenerationPackHeader | undefined {
-  if (!isFields(value) || value['schemaVersion'] !== PACK_SCHEMA_VERSION) {
+  if (!isFields(value) || !isSupportedPackSchemaVersion(value['schemaVersion'])) {
     return undefined;
   }
+  const schemaVersion = value['schemaVersion'];
   const identity = identityOf(value);
   const bodies = bodiesOf(value);
   const policy = policyOf(value['policy']);
   const headers = headersOf(value['headers']);
   const tags = listOf(value['tags'], tagOf, MAX_TAGS_PER_ENTRY);
-  const artifacts = listOf(value['artifacts'], artifactOf);
+  const compact = schemaVersion === COMPACT_PACK_SCHEMA_VERSION;
+  const artifacts = listOf(value['artifacts'], compact ? compactArtifactOf : artifactOf);
   const { cacheTimestamp, producedAt, status, revision, invalidation, staticPagePrivacy } = value;
   const invalidationState = invalidation === undefined ? undefined : invalidationOf(invalidation);
   if (
@@ -283,7 +298,7 @@ export function packHeaderOf(value: unknown): GenerationPackHeader | undefined {
     return undefined;
   }
   return {
-    schemaVersion: PACK_SCHEMA_VERSION,
+    schemaVersion,
     scopeId: identity.scopeId,
     entryId: identity.entryId,
     generationId: identity.generationId,

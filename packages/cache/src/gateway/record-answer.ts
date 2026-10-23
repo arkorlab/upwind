@@ -1,7 +1,7 @@
 import {
   MAX_PACK_BYTES,
   MAX_PACK_HEADER_BYTES,
-  PACK_SCHEMA_VERSION,
+  isSupportedPackSchemaVersion,
 } from '@stayingupwind/core/cache';
 import { concatBytes, decodeUtf8, encodeUtf8, releaseStream } from '@stayingupwind/core/util';
 
@@ -150,7 +150,7 @@ async function recordStart(
 
 /** How long the header is that the record's prefix names, or `undefined` for no prefix of one. */
 function headerLengthOf(prefix: Uint8Array): number | undefined {
-  if (prefix.byteLength < PREFIX_LENGTH || prefix[VERSION_AT] !== PACK_SCHEMA_VERSION) {
+  if (prefix.byteLength < PREFIX_LENGTH || !isSupportedPackSchemaVersion(prefix[VERSION_AT])) {
     return undefined;
   }
   if (MAGIC.some((byte, at) => prefix[at] !== byte)) {

@@ -7,7 +7,6 @@ import {
   KEY_SCHEMA_VERSION,
   keyDescriptorSchema,
   type OutputSnapshot,
-  outputSnapshotSchema,
   tagKindSchema,
 } from '@stayingupwind/core/cache';
 import {
@@ -38,6 +37,8 @@ import {
 } from '@stayingupwind/host/cache';
 import { toZod } from '@stayingupwind/host/zod';
 import { z } from 'zod';
+
+import { decodeStoredOutputs } from './stored-outputs.ts';
 
 /**
  * The tables as rows, and the rows as the entities the rest of the cache reads. A JSON column
@@ -202,7 +203,6 @@ export interface AttemptArtifactRow extends Record<string, SqlStorageValue> {
 
 const headersSchema = z.record(z.string(), z.string());
 const tagsSchema = z.array(toZod(generationTagSchema));
-const outputsSchema = z.array(toZod(outputSnapshotSchema));
 
 /** A schema that parses: zod's, or one core's validator made (`@stayingupwind/core/schema`). */
 interface Parsing<T> {
@@ -307,7 +307,7 @@ export function toGeneration(scopeId: string, row: GenerationRow): CacheGenerati
     prunedAt: row.pruned_at,
     bodyBytes: row.body_bytes,
     producer: parseNullable(generationProducerSchema, row.producer),
-    outputs: parseJson(outputsSchema, row.outputs),
+    outputs: decodeStoredOutputs(row.outputs),
     schemaVersion: ENTITY_SCHEMA_VERSION,
   };
 }
@@ -322,7 +322,7 @@ export function generationHeaders(row: Pick<GenerationRow, 'headers'>): Record<s
 }
 
 export function generationOutputs(row: GenerationRow): OutputSnapshot[] {
-  return parseJson(outputsSchema, row.outputs);
+  return decodeStoredOutputs(row.outputs);
 }
 
 export function toTag(scopeId: string, row: TagRow): CacheTag {

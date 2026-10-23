@@ -1,3 +1,12 @@
+export {
+  compactCacheArtifact,
+  compactPackArtifact,
+  createRepairStorageRef,
+  isRepairStorageRef,
+  REPAIR_STORAGE_REF_LENGTH,
+  type RepairArtifactTuple,
+  type RepairPackArtifactTuple,
+} from './artifact-locator.ts';
 export { publicArtifactRef, publicOutputSnapshot } from './artifacts.ts';
 export {
   evaluateFreshness,
@@ -43,6 +52,8 @@ export {
   tagKindOf,
 } from './keys.ts';
 export {
+  COMPACT_PACK_SCHEMA_VERSION,
+  isSupportedPackSchemaVersion,
   type DecodedGenerationPack,
   decodeGenerationPack,
   type DecodeGenerationPackResult,
