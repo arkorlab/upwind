@@ -108,9 +108,11 @@ const fixture = {
 };
 
 /** A generation of a page's record, holding `props` as its props. */
-function generationHolding(props: string): RecordedGeneration {
+function generationHolding(props: string, page?: string): RecordedGeneration {
   const { sha256, byteLength } = shellOf(props);
+  const html = page === undefined ? undefined : shellOf(page);
   return {
+    ...(html !== undefined && { htmlSha256: html.sha256, htmlLength: html.byteLength }),
     headers: {},
     artifacts: [
       {
@@ -257,7 +259,7 @@ describe('pages the edge serves itself', () => {
       requested: '/about',
       route: ABOUT_ROUTE,
       answer: { account: 'static-page;src=kv;m=12345678', body: FIRST },
-      reason: 'not the bytes',
+      reason: 'neither those the build wrote',
     },
     {
       label: 'a cookie set on a shared page',
@@ -349,12 +351,44 @@ describe('pages the edge serves itself', () => {
   });
 
   // A fallback route's member a render completed after the build is served as a page of its own,
-  // though its request still classifies as the fallback (greptile): its record says so.
-  it('accepts a completed fallback route member served as a page from its record', async () => {
+  // though its request still classifies as the fallback (greptile): its record says so, and holds
+  // the page it is served as.
+  it('accepts a completed fallback route member served as the page its record holds', async () => {
     fixture.answers.set(LAZY, { account: 'static-page;src=kv;m=12345678', body: LAZY_PAGE });
-    fixture.generations.set(await lazyEntry(), { 1: generationHolding(LAZY_PROPS) });
+    fixture.generations.set(await lazyEntry(), { 1: generationHolding(LAZY_PROPS, LAZY_PAGE) });
 
     await expect(verdictAt(LAZY, FALLBACK_ROUTE)).resolves.toStrictEqual({ kind: 'ok' });
+  });
+
+  it.each([
+    { label: "another page's", body: FIRST },
+    { label: 'an empty', body: '' },
+  ])('still rejects a completed fallback route member served with $label body', async (example) => {
+    fixture.answers.set(LAZY, { account: 'static-page;src=kv;m=12345678', body: example.body });
+    fixture.generations.set(await lazyEntry(), { 1: generationHolding(LAZY_PROPS, LAZY_PAGE) });
+
+    await expect(verdictAt(LAZY, FALLBACK_ROUTE)).resolves.toMatchObject({
+      kind: 'failed',
+      reason: expect.stringContaining('nor those of a generation its record holds') as unknown,
+    });
+  });
+
+  // A member the build wrote, regenerated since: its record holds the page it is served as now.
+  it('accepts a regenerated member served as the page its record holds now', async () => {
+    fixture.answers.set(MEMBER, { account: 'static-page;src=kv;m=12345678', body: LAZY_PAGE });
+    fixture.generations.set('first-entry', { 2: generationHolding(PROPS, LAZY_PAGE) });
+
+    await expect(verdictAt(MEMBER, MEMBER_ROUTE)).resolves.toStrictEqual({ kind: 'ok' });
+  });
+
+  it('still rejects a regenerated member served with bytes no generation holds', async () => {
+    fixture.answers.set(MEMBER, { account: 'static-page;src=kv;m=12345678', body: ABOUT });
+    fixture.generations.set('first-entry', { 2: generationHolding(PROPS, LAZY_PAGE) });
+
+    await expect(verdictAt(MEMBER, MEMBER_ROUTE)).resolves.toMatchObject({
+      kind: 'failed',
+      reason: expect.stringContaining('nor those of a generation its record holds') as unknown,
+    });
   });
 
   it('still rejects a fallback route member served as a page its record holds nothing of', async () => {
