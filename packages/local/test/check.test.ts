@@ -129,6 +129,8 @@ interface Answer {
   readonly inPart?: Answer;
   /** Whether a file is answered whole to a request on the entity tag it is served under. */
   readonly unconditional?: boolean;
+  /** Whether a file is answered whole to a request on a precondition it fails, not `412`. */
+  readonly preconditionless?: boolean;
   /** The headers a request on its entity tag is answered with instead, where not the file's. */
   readonly unmodifiedHeaders?: OutgoingHttpHeaders;
   /** What a request on its entity tag is answered with instead of a `304`: the file, whole. */
@@ -557,8 +559,44 @@ function answeredUnmodified(
 }
 
 /**
+ * A file's answer to a request on a precondition it fails, as the edge answers one
+ * (`preconditionFailure`): an `If-Match` naming neither `*` nor its tag, answered `412` under its
+ * headers but its length, with no body, and kept by nobody (`keptByNobody`); false for none — and
+ * where the test has the edge answer it whole (`preconditionless`).
+ */
+function answeredPreconditionFailed(
+  answer: Answer,
+  request: IncomingMessage,
+  headers: OutgoingHttpHeaders,
+  response: ServerResponse,
+): boolean {
+  const ifMatch = request.headers['if-match'];
+  if (
+    ifMatch === undefined ||
+    ifMatch === '' ||
+    (answer.status ?? 200) !== 200 ||
+    answer.preconditionless === true
+  ) {
+    return false;
+  }
+  const own = (headers.etag ?? '').replace(/^W\//u, '');
+  const listed = new Set(ifMatch.split(',').map((tag) => tag.trim().replace(/^W\//u, '')));
+  if (listed.has('*') || listed.has(own)) {
+    return false;
+  }
+  const refused = Object.fromEntries(
+    Object.entries(headers).filter(
+      ([name]) => name !== 'content-length' && !SHARED_CACHE_CONTROL_HEADERS.includes(name),
+    ),
+  );
+  response.writeHead(412, { ...refused, 'cache-control': NO_STORE_CACHE_CONTROL }).end();
+  return true;
+}
+
+/**
  * What the test's edge answers a request that selects of a file with, where it answers one apart:
- * its headers alone (`HEAD`) as the test gives them, a range of it, or that the browser holds it.
+ * its headers alone (`HEAD`) as the test gives them, a precondition it fails, a range of it, or
+ * that the browser holds it.
  */
 function answeredApart(
   request: IncomingMessage,
@@ -613,10 +651,23 @@ function answeredApart(
     response.writeHead(resent.status ?? 200, tagged).end(resent.body);
     return true;
   }
+  return file.served && answeredSelected(answer, request, headers, response);
+}
+
+/**
+ * A file's answer to what a request selects of it, as the edge judges it: a precondition it fails
+ * first, then a range of it, then that the browser holds it; false for none.
+ */
+function answeredSelected(
+  answer: Answer,
+  request: IncomingMessage,
+  headers: OutgoingHttpHeaders,
+  response: ServerResponse,
+): boolean {
   return (
-    file.served &&
-    (answeredInPart(answer, request, headers, response) ||
-      answeredUnmodified(answer, request.headers['if-none-match'], headers, response))
+    answeredPreconditionFailed(answer, request, headers, response) ||
+    answeredInPart(answer, request, headers, response) ||
+    answeredUnmodified(answer, request.headers['if-none-match'], headers, response)
   );
 }
 
@@ -1300,6 +1351,15 @@ function blobsOf(): string {
 
 function fileOf(text: string, contentType: string, immutable = false): StaticFileEntry {
   return { sha256: sha256Of(text), byteLength: Buffer.byteLength(text), contentType, immutable };
+}
+
+/** A rule of `next.config` that types `/a.txt` as an image for a request carrying a header. */
+function typedOnHeader(key: string, value: string): HeaderRule {
+  return {
+    sourceRegex: String.raw`^/a\.txt$`,
+    has: [{ type: 'header', key, value }],
+    headers: { 'Content-Type': 'image/png' },
+  };
 }
 
 /** A file the build wrote at `pathname`, as its bundle names one. */
@@ -4086,6 +4146,50 @@ describe('what the check makes of the middleware', () => {
       expect(elsewhere.failures[0]?.reason).toContain('image/png');
       expect(elsewhere.failures[0]?.reason).not.toContain('distinct conditioned header rules');
       expect(traceIds.letGo).toStrictEqual(traceIds.registered);
+    });
+
+    it('holds a request a rule types it for on a condition to what the condition selects of the file', async () => {
+      const asFile = {
+        'content-type': TEXT,
+        'cache-control': REVALIDATE,
+        'x-arkor-edge': FILE_EDGE,
+      };
+      // As the edge holds an answer a rule judged a header for: the client's alone.
+      const png = { 'content-type': 'image/png', 'cache-control': GATED };
+      const stale = typedOnHeader('if-match', '"stale"');
+      const held = typedOnHeader('if-none-match', `"${sha256Of('kept bytes')}"`);
+      // A precondition the file fails: `412`, with no body (Codex).
+      answers.set('/a.txt', {
+        headers: asFile,
+        body: 'kept bytes',
+        withHeader: { name: 'if-match', headers: png },
+      });
+      const refused = await checkStack(stackOf([], files, { headerRules: [stale] }));
+      // A validator the client holds: `304`.
+      answers.set('/a.txt', {
+        headers: asFile,
+        body: 'kept bytes',
+        withHeader: { name: 'if-none-match', headers: png },
+      });
+      const unmodified = await checkStack(stackOf([], files, { headerRules: [held] }));
+      // And the file whole in the place of the `412` its precondition selects: a failure still.
+      answers.set('/a.txt', {
+        headers: asFile,
+        body: 'kept bytes',
+        preconditionless: true,
+        withHeader: { name: 'if-match', headers: png },
+      });
+      const whole = await checkStack(stackOf([], files, { headerRules: [stale] }));
+
+      expect(refused).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(unmodified).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(whole.failures).toStrictEqual([
+        {
+          path: '/a.txt',
+          reason:
+            'asked for as the request a rule of next.config types it for (if-match: "stale"), answered 200, not 412',
+        },
+      ]);
     });
 
     it('is asked for as a request a rule of next.config types it for where a header is missing', async () => {
