@@ -12,15 +12,11 @@ import {
   type CommitResponse,
 } from '@stayingupwind/host/cache';
 
-import {
-  type ArtifactRepair,
-  finishArtifactRepairs,
-  repairArtifact,
-  retargetedRecordsFailure,
-} from './artifact-repair.ts';
+import { type ArtifactRepair, repairArtifact } from './artifact-repair.ts';
 import { addedBytesOf, artifactIdsFor, referenceArtifact } from './artifacts.ts';
 import { endAttempt, entryStateEvent, findAttempt, isLive } from './attempts.ts';
 import { locateArtifacts, missingUploads } from './commit-artifacts.ts';
+import { advanceCommitRepair, prepareCommitRepair } from './commit-repair.ts';
 import { controlFenceFloorInvalidations } from './control-fences.ts';
 import { publishEntry, requireEntry, setRegeneration } from './entries.ts';
 import { findGeneration, insertGeneration, supersedeGeneration } from './generations.ts';
@@ -28,6 +24,7 @@ import type { EventInput } from './history.ts';
 import type { BlobStore } from './io.ts';
 import { type IsrWrite, isrWriteOf, sameOutputs } from './metering.ts';
 import { type PackHeaderFields, unwritableRecord } from './records.ts';
+import type { RepairJob, RepairPending, RepairStep } from './repair-jobs.ts';
 import {
   type AttemptRow,
   type EntryRow,
@@ -64,9 +61,10 @@ const OUTPUT_ID_PREFIX = 'out';
  */
 const DEPENDENCY_TAG_IDS_AT_ONCE = 128;
 
-interface CommitPlan {
+export interface CommitPlan {
   readonly scopeId: string;
   readonly attemptId: string;
+  readonly repairNamespace?: string | undefined;
   readonly request: CommitRequest;
   readonly generationId: string;
   readonly tagRefs: readonly TagRef[];
@@ -93,7 +91,7 @@ export async function planCommit(
   attemptId: string,
   request: CommitRequest,
   blobs: BlobStore,
-): Promise<Apply<CommitOutcome | Refusal>> {
+): Promise<Apply<CommitOutcome | Refusal | RepairPending>> {
   const { generation } = request;
   const [generationId, tagRefs, artifactIds, dependencyTagIds, missing] = await Promise.all([
     attemptGenerationIdFor(input.scopeId, attemptId),
@@ -103,12 +101,19 @@ export async function planCommit(
       generation.outputs.flatMap((output) => output.artifacts.map((artifact) => artifact.sha256)),
     ),
     dependencyTagIdsFor(input.scopeId, generation.dependencies),
-    missingUploads(input.sql, attemptId, generation.outputs, blobs),
+    missingUploads(
+      input.sql,
+      attemptId,
+      { outputs: generation.outputs, repairNamespace: input.repairNamespace },
+      blobs,
+    ),
   ]);
+  if (missing.repairCandidate) await input.prepareRepair?.();
   return () => {
     return applyCommit(input, {
       scopeId: input.scopeId,
       attemptId,
+      repairNamespace: input.repairNamespace,
       request,
       generationId,
       tagRefs,
@@ -150,6 +155,7 @@ function recordFields(
   return {
     scopeId: input.scopeId,
     buildId,
+    packSchemaVersion: input.packSchemaVersion,
     entry: {
       entryId: entry.entry_id,
       kind: entry.kind,
@@ -268,7 +274,7 @@ function alreadyEnded(sql: SqlStorage, attempt: AttemptRow): CommitResponse {
   return { kind: 'superseded', reason: `the attempt is ${attempt.status}` };
 }
 
-interface Publication {
+export interface Publication {
   readonly attempt: AttemptRow;
   readonly entry: EntryRow;
   readonly outputs: readonly OutputSnapshot[];
@@ -327,6 +333,7 @@ function publish(input: TxInput, plan: CommitPlan, state: Publication): CommitOu
     producer: generation.producer ?? { kind: 'attempt', reason: attempt.reason },
     outputs,
     committedAt: now,
+    compactRepairLocators: input.packSchemaVersion === 2,
   });
   if (entry.current_generation_id !== null) {
     supersedeGeneration(sql, entry.current_generation_id, revision);
@@ -362,7 +369,6 @@ function publish(input: TxInput, plan: CommitPlan, state: Publication): CommitOu
     attempt.attempt_id,
   );
   sql.exec(`UPDATE scope SET body_bytes = body_bytes + ?`, addedBytes);
-  if (state.repairs.size > 0) finishArtifactRepairs(input, state.repairs, entry.entry_id);
   const published = findGeneration(sql, plan.generationId);
   const events: EventInput[] = [];
   if (published !== undefined) {
@@ -392,17 +398,15 @@ function publish(input: TxInput, plan: CommitPlan, state: Publication): CommitOu
   };
 }
 
-function repairedRecordsRefusal(
+/** Continue without re-running the accepted lease/admission decision after its accepted time. */
+export function advancePreparedCommit(
   input: TxInput,
-  repairs: ReadonlyMap<string, ArtifactRepair>,
-  publishingEntry: string,
-): Refusal | undefined {
-  if (repairs.size === 0) return undefined;
-  const unwritable = retargetedRecordsFailure(input, repairs.values(), publishingEntry);
-  return unwritable === undefined ? undefined : refuse('too_large', unwritable);
+  job: RepairJob,
+): RepairStep<CommitOutcome | Refusal> {
+  return advanceCommitRepair(input, job, publish);
 }
 
-function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal {
+function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal | RepairPending {
   const { sql, now } = input;
   const scope = requireActiveScope(sql);
   if (isRefusal(scope)) {
@@ -496,14 +500,15 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
   if (invalidations.some((row) => row.meaning === 'immediate')) {
     return refuseStale(input, attempt, entry, invalidations);
   }
-  const unwritableRepair = repairedRecordsRefusal(input, storageRefs.repairs, entry.entry_id);
-  if (unwritableRepair !== undefined) return unwritableRepair;
-  return publish(input, plan, {
+  const state: Publication = {
     attempt,
     entry,
     outputs,
     repairs: storageRefs.repairs,
     condemned: condemnationOf(invalidations),
     dependencyRevision: Math.max(attempt.dependency_revision, heldThrough),
-  });
+  };
+  return state.repairs.size === 0
+    ? publish(input, plan, state)
+    : prepareCommitRepair(input, plan, state);
 }

@@ -14,6 +14,10 @@ export interface TxInput {
   readonly scopeId: string;
   /** Already verified immutable build identity; absent before the first scope seed. */
   readonly buildId?: string | undefined;
+  readonly packSchemaVersion?: 1 | 2 | undefined;
+  readonly repairNamespace?: string | undefined;
+  /** Rare repair preparation supplied by the authority; never stored with a publication. */
+  readonly prepareRepair?: (() => Promise<void>) | undefined;
   readonly limits: ScopeLimits;
   /** The clock the caller acts at (unix ms). */
   readonly now: number;

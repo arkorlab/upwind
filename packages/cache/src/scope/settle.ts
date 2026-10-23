@@ -12,6 +12,8 @@ import {
 import { findGeneration } from './generations.ts';
 import type { ScopeHistory } from './history.ts';
 import { type BlobStore, type CarriedValue, type KvSink, writeKey } from './io.ts';
+import { projectRepairWindow } from './repair-projection.ts';
+export { ownRepairRecordsOf } from './repair-projection.ts';
 import { PROJECTION_MEMORY_BYTES, withProjectionMemory } from './projection-memory.ts';
 import {
   acknowledge,
@@ -53,6 +55,8 @@ export interface SettleDeps {
   readonly sql: SqlStorage;
   readonly scopeId: string;
   readonly buildId?: string | undefined;
+  readonly packSchemaVersion?: 1 | 2 | undefined;
+  readonly repairNamespace?: string | undefined;
   readonly kv: KvSink;
   readonly blobs: BlobStore;
   /** What the host keeps of the scope's history, told each change and published after it. */
@@ -184,7 +188,10 @@ function projectionChunk(
         : findGeneration(deps.sql, entry.current_generation_id);
     if (current !== undefined) {
       try {
-        bytes = projectionMemoryOf(deps.scopeId, entry, current, deps.buildId);
+        bytes = projectionMemoryOf(deps.scopeId, entry, current, {
+          buildId: deps.buildId,
+          packSchemaVersion: deps.packSchemaVersion,
+        });
       } catch {
         // A malformed record is still tried, and its failure logged, without losing the page.
         bytes = PROJECTION_MEMORY_BYTES;
@@ -292,6 +299,11 @@ const NO_RECORDS: Projection = { failed: 0, written: 0, cut: false };
 export interface OwnRecords {
   readonly revision: number;
   readonly first: readonly string[];
+  /** A durable repair records bounded physical healing at several revisions. */
+  readonly repairWindow?: {
+    readonly fromRevision: number;
+    readonly firstAfter: { readonly revision: number; readonly entryId: string };
+  };
   readonly controlTags: ControlTagWork;
   /**
    * The tags it invalidated, named as it committed: a later change may invalidate one again before
@@ -413,6 +425,8 @@ async function projectOwn(
   own: OwnRecords,
   stop: () => boolean,
 ): Promise<Projection> {
+  if (own.repairWindow !== undefined)
+    return projectRepairWindow(deps, own, own.repairWindow, { stop, projectPage });
   const retired = readScope(deps.sql)?.status === 'retired';
   let failed = 0;
   let written = 0;

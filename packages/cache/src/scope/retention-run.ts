@@ -7,6 +7,7 @@ import { dataUploadScanPending, type DataUploadPage, queueDataUploads } from './
 import type { ScopeHistory } from './history.ts';
 import type { BlobStore } from './io.ts';
 import type { ScopeQueue } from './mutations.ts';
+import { readRepairJob } from './repair-jobs.ts';
 import {
   applyRetention,
   forgetDeletions,
@@ -127,6 +128,7 @@ export async function letGoOfRetired(
     return;
   }
   await lock.run(() => {
+    if (readRepairJob(run.sql) !== undefined) return;
     run.transaction(() => {
       if (letGoOfWithdrawn(run.sql)) {
         writeMeta(run.sql, META_RETENTION_BACKLOG, '1');
@@ -140,9 +142,11 @@ export async function eraseScopeStorage(
   scopeId: string,
   blobs: BlobStore,
   log: Logger,
+  repairNamespace?: string,
 ): Promise<boolean> {
   try {
     await blobs.deletePrefix(r2CachePrefix(scopeId));
+    if (repairNamespace !== undefined) await blobs.deletePrefix(`r/${repairNamespace}/`);
     return true;
   } catch (error) {
     log.warn('scope storage not erased', { detail: detailOf(error) });

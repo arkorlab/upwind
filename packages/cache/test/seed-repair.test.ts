@@ -5,6 +5,7 @@ import {
   decodeGenerationPack,
   deriveEntry,
   kvGenerationKey,
+  MAX_PACK_HEADER_BYTES,
   type OutputSnapshot,
   policyFromBuild,
   r2BlobKey,
@@ -17,21 +18,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
 import { type EventInput, NO_HISTORY } from '../src/scope/history.ts';
+import { headerFieldsOf, recordBytesOf, unwritableRecord } from '../src/scope/records.ts';
 import {
+  completeRepairJob,
+  isRepairPending,
+  hasRepairValue,
+  readRepairJob,
+  readRepairValue,
+} from '../src/scope/repair-jobs.ts';
+import {
+  type EntryRow,
   type EntryStateRow,
   type GenerationRow,
   generationOutputs,
   toEntryState,
 } from '../src/scope/rows.ts';
 import { seedLocationKey, verifySeedLocations } from '../src/scope/seed-repair.ts';
-import { planSeedEntries } from '../src/scope/seed.ts';
+import { advancePreparedSeed, planSeedEntries } from '../src/scope/seed.ts';
+import { readRevision } from '../src/scope/state.ts';
 import { scopeStub } from '../src/scope/stub.ts';
+import type { TxInput } from '../src/scope/tx.ts';
+import { withRepairAlarms } from './support/repair-alarm.ts';
 
 const NOW = 1_800_000_000_000;
 const HTML_TYPE = 'text/html; charset=utf-8';
 const BODY = '<html>the build</html>';
 
-async function scopeForTest() {
+async function scopeForTest(compact = false) {
   const scopeId = createId('dpl');
   const stub = scopeStub(env, scopeId);
   await stub.seedScope(
@@ -45,6 +58,29 @@ async function scopeForTest() {
         keySchemaVersion: 1,
         buildId: 'build-site',
       },
+      ...(compact && {
+        generationPackReaders: JSON.stringify({
+          schemaVersion: 2,
+          rolloutId: 'verified-seed-test',
+          deploymentId: scopeId,
+          buildId: 'build-site',
+          platform: Object.fromEntries(
+            ['edge', 'authority', 'gateway', 'readGateway'].map((name) => [
+              name,
+              { versionId: 'reviewed', moduleSha256: 'a'.repeat(64) },
+            ]),
+          ),
+          consumers: [
+            {
+              name: 'app',
+              mainModule: 'main.mjs',
+              mainModuleSha256: 'a'.repeat(64),
+              hostIdentity: 'reviewed-host',
+              hostModuleSha256: 'a'.repeat(64),
+            },
+          ],
+        }),
+      }),
     },
     NOW,
   );
@@ -116,9 +152,9 @@ function atLocation(plan: Plan, storageRef: string): SeedEntryInput {
 }
 
 function seedBatch(scope: Scope, entries: readonly SeedEntryInput[]) {
-  return scope.stub.seedEntries(
-    { scopeId: scope.scopeId, batchIndex: 0, entries: [...entries] },
-    NOW,
+  return withRepairAlarms(
+    scope.stub,
+    scope.stub.seedEntries({ scopeId: scope.scopeId, batchIndex: 0, entries: [...entries] }, NOW),
   );
 }
 
@@ -243,6 +279,32 @@ function byEntity(left: RecordedEvent, right: RecordedEvent): number {
   return left.event.entityId.localeCompare(right.event.entityId);
 }
 
+/** Reconstruct every step from SQLite, just as a new alarm invocation does after a reset. */
+function drainSeedJob(storage: DurableObjectStorage, tx: Omit<TxInput, 'revision'>) {
+  const { sql } = storage;
+  for (let index = 0; index < 500; index += 1) {
+    const job = readRepairJob(sql);
+    if (job === undefined) throw new Error('the expected seed continuation disappeared');
+    const step = storage.transactionSync(() =>
+      advancePreparedSeed(
+        {
+          ...tx,
+          limits: job.limits,
+          revision: readRevision(sql) + 1,
+        },
+        job,
+      ),
+    );
+    if (step.kind === 'completed') {
+      storage.transactionSync(() =>
+        completeRepairJob(sql, job, { value: step.value, own: null }, tx.now),
+      );
+      return step.value;
+    }
+  }
+  throw new Error('the bounded seed continuation did not finish');
+}
+
 async function observedSeedRepair(scope: Scope, plans: readonly Plan[], revision: number) {
   const proofs = new Map<string, boolean>();
   await verifySeedLocations(
@@ -274,12 +336,26 @@ async function observedSeedRepair(scope: Scope, plans: readonly Plan[], revision
       },
       proofs,
     );
-    const result = state.storage.transactionSync(apply);
+    const prepared = state.storage.transactionSync(apply);
+    const result = isRepairPending(prepared)
+      ? drainSeedJob(state.storage, {
+          sql,
+          scopeId: scope.scopeId,
+          limits: limitsOf(parseVars({})),
+          now: NOW + 1,
+          history: {
+            ...NO_HISTORY,
+            append: (context, event) => {
+              history.push({ revision: context.revision, event });
+            },
+          },
+        })
+      : prepared;
     const states = Array.from(
       sql.exec<EntryStateRow>(`SELECT * FROM entries ORDER BY entry_id`),
       (entry): RecordedEvent => {
         return {
-          revision,
+          revision: entry.revision,
           event: {
             entityType: 'entry',
             entityId: entry.entry_id,
@@ -493,12 +569,14 @@ describe('a seed whose artifact projection could not read', () => {
       revision: firstAfter.revision,
       entry: {
         ...secondBefore.entry,
-        revision: firstAfter.entry.record_revision,
-        record_revision: firstAfter.entry.record_revision,
+        revision: secondAfter.entry.record_revision,
+        record_revision: secondAfter.entry.record_revision,
       },
       generation: { ...secondBefore.generation, outputs: JSON.stringify(outputs) },
       artifact: { ...secondBefore.artifact, storage_ref: sharedRef },
     });
+    expect(secondAfter.entry.record_revision).toBeGreaterThan(secondBefore.entry.record_revision);
+    expect(secondAfter.entry.record_revision).toBeLessThan(firstAfter.entry.record_revision);
     expect(decodeUtf8((await recordFor(scope, first.entryId)).html)).toBe('<html>first</html>');
 
     await seedBatch(scope, [second.seed]);
@@ -628,7 +706,7 @@ describe('a seed whose artifact projection could not read', () => {
       const record = await recordFor(scope, first.entryId);
 
       expect({ reply: retried, ...repaired }).toMatchObject({
-        reply: { inserted: 0, skipped: 2, refused: [], revision: repaired.entry.record_revision },
+        reply: { inserted: 0, skipped: 2, refused: [], revision: repaired.revision },
         entry: {
           kv_revision: repaired.entry.record_revision,
           current_generation_id: first.generationId,
@@ -652,7 +730,7 @@ describe('a seed whose artifact projection could not read', () => {
     },
   );
 
-  it('records each shared-repair entry state once while retaining both seed generation events', async () => {
+  it('records durable shared-repair states while retaining both seed generation events', async () => {
     const scope = await scopeForTest();
     const first = await planFor(scope, '/first');
     const second = await planFor(scope, '/second');
@@ -678,9 +756,16 @@ describe('a seed whose artifact projection could not read', () => {
       inserted: 0,
       skipped: 2,
       refused: [],
-      revision: before.revision + 1,
+      revision: repaired.revision,
     });
-    expect(states.toSorted(byEntity)).toStrictEqual(observed.states.toSorted(byEntity));
+    const finalStates = new Map(states.map((state) => [state.event.entityId, state]));
+
+    expect([...finalStates.values()].toSorted(byEntity)).toStrictEqual(
+      observed.states.toSorted(byEntity),
+    );
+    expect(new Set(states.map((state) => `${state.event.entityId}:${state.revision}`)).size).toBe(
+      states.length,
+    );
     expect(
       generations
         .map(({ event }) => event.entityId)
@@ -690,7 +775,8 @@ describe('a seed whose artifact projection could not read', () => {
         left.localeCompare(right),
       ),
     );
-    expect(observed.history).toHaveLength(5);
+    expect(states.length).toBeGreaterThanOrEqual(3);
+    expect(generations).toHaveLength(2);
     expect(repaired.artifact).toStrictEqual({
       storage_ref: first.artifact.storageRef,
       owned: 0,
@@ -699,6 +785,269 @@ describe('a seed whose artifact projection could not read', () => {
     expect(generationOutputs(repaired.generation)[0]?.artifacts[0]?.storageRef).toBe(
       first.artifact.storageRef,
     );
+  });
+
+  it('copies a v2 borrowed retry to a fresh fixed locator and reuses it for a later duplicate seed', async () => {
+    const scope = await scopeForTest(true);
+    const failed = await planFor(scope, '/failed');
+    await seedBatch(scope, [atLocation(failed, 'x')]);
+    await seedBatch(scope, [failed.seed]);
+    const repaired = await rowsFor(scope, failed);
+    const location = repaired.artifact.storage_ref;
+
+    expect(location).toMatch(/^r\/[a-f0-9]{32}\/[a-f0-9]{32}$/u);
+    expect(repaired.artifact).toMatchObject({ owned: 0, refs: 1 });
+    const copied = await env.ARTIFACTS.get(location);
+    const borrowed = await env.ARTIFACTS.get(failed.artifact.storageRef);
+
+    expect(await copied?.text()).toBe(BODY);
+    expect(await borrowed?.text()).toBe(BODY);
+
+    const fresh = await planFor(scope, '/fresh');
+    await seedBatch(scope, [atLocation(fresh, 'x')]);
+    const duplicate = await rowsFor(scope, fresh);
+
+    expect(duplicate.artifact).toMatchObject({ storage_ref: location, owned: 0, refs: 2 });
+    expect(generationOutputs(duplicate.generation)[0]?.artifacts[0]?.storageRef).toBe(location);
+    expect(
+      Array.isArray(
+        (JSON.parse(duplicate.generation.outputs) as { artifacts: unknown[] }[])[0]?.artifacts[0],
+      ),
+    ).toBe(true);
+    expect(decodeUtf8((await recordFor(scope, fresh.entryId)).html)).toBe(BODY);
+  });
+
+  it('resumes a shared seed repair from durable cursors and keeps fences until all publications finish', async () => {
+    const scope = await scopeForTest();
+    const first = await planFor(scope, '/first');
+    const second = await planFor(scope, '/second');
+    await seedBatch(scope, [atLocation(first, 'x'), atLocation(second, 'x')]);
+    const prepared = await runInDurableObject(scope.stub, async (_instance, state) => {
+      const sql = state.storage.sql;
+      const tx = {
+        sql,
+        scopeId: scope.scopeId,
+        now: NOW + 1,
+        limits: limitsOf(parseVars({})),
+        revision: readRevision(sql) + 1,
+        history: NO_HISTORY,
+      };
+      const apply = await planSeedEntries(
+        tx,
+        {
+          scopeId: scope.scopeId,
+          batchIndex: 0,
+          entries: [first.seed, second.seed],
+        },
+        new Map([[seedLocationKey(first.artifact), true]]),
+      );
+      const pending = state.storage.transactionSync(apply);
+      if (!isRepairPending(pending)) throw new Error('expected a durable seed repair');
+      // Lose this invocation after a committed shared-snapshot update, before its owner publishes.
+      for (let index = 0; index < 20; index += 1) {
+        const job = readRepairJob(sql);
+        if (job === undefined) throw new Error('expected the active repair');
+        state.storage.transactionSync(() =>
+          advancePreparedSeed({ ...tx, limits: job.limits, revision: readRevision(sql) + 1 }, job),
+        );
+        const latest = readRepairJob(sql);
+        if (latest?.group === 0 && latest.phase === 'publish') break;
+      }
+      return {
+        id: pending.jobId,
+        job: readRepairJob(sql),
+        failure: sql
+          .exec<{ value: string }>(
+            'SELECT value FROM meta WHERE key = ?',
+            `artifact_failure:${first.artifact.sha256}`,
+          )
+          .one().value,
+        pin: sql
+          .exec<{ value: string }>(
+            'SELECT value FROM meta WHERE key = ?',
+            `artifact_repair_pin:${first.artifact.sha256}`,
+          )
+          .one().value,
+      };
+    });
+
+    expect(prepared.job).toMatchObject({ group: 0, phase: 'publish' });
+    expect(prepared.pin).toBe(prepared.id);
+    expect(prepared.failure).toBeTruthy();
+
+    const resumed = await runInDurableObject(scope.stub, (_instance, state) => {
+      const sql = state.storage.sql;
+      const restored = readRepairJob(sql);
+      const result = drainSeedJob(state.storage, {
+        sql,
+        scopeId: scope.scopeId,
+        now: NOW + 2,
+        limits: limitsOf(parseVars({})),
+        history: NO_HISTORY,
+      });
+      return {
+        restored,
+        result,
+        remainingFences: sql
+          .exec(
+            'SELECT key FROM meta WHERE key IN (?, ?)',
+            `artifact_failure:${first.artifact.sha256}`,
+            `artifact_repair_pin:${first.artifact.sha256}`,
+          )
+          .toArray(),
+      };
+    });
+
+    expect(resumed.restored).toStrictEqual(prepared.job);
+    expect(resumed.result).toMatchObject({ inserted: 0, skipped: 2, refused: [] });
+    expect(resumed.remainingFences).toStrictEqual([]);
+    await expect(rowsFor(scope, first)).resolves.toMatchObject({
+      artifact: { storage_ref: first.artifact.storageRef, owned: 0 },
+    });
+    const outside = await rowsFor(scope, second);
+
+    expect(generationOutputs(outside.generation)[0]?.artifacts[0]?.storageRef).toBe(
+      first.artifact.storageRef,
+    );
+  });
+
+  it('keeps an initially leased retry excluded after its heartbeat expires during another repair', async () => {
+    const scope = await scopeForTest();
+    const first = await planFor(scope, '/first');
+    const leased = await planFor(scope, '/lease');
+    await seedBatch(scope, [atLocation(first, 'x'), atLocation(leased, 'x')]);
+    const started = await lease(scope, leased);
+    const pending = await runInDurableObject(scope.stub, async (_instance, state) => {
+      const sql = state.storage.sql;
+      const apply = await planSeedEntries(
+        {
+          sql,
+          scopeId: scope.scopeId,
+          now: NOW + 1,
+          revision: readRevision(sql) + 1,
+          limits: limitsOf(parseVars({})),
+          history: NO_HISTORY,
+        },
+        { scopeId: scope.scopeId, batchIndex: 0, entries: [first.seed, leased.seed] },
+        new Map([[seedLocationKey(first.artifact), true]]),
+      );
+      const value = state.storage.transactionSync(apply);
+      if (!isRepairPending(value)) throw new Error('expected the first seed repair');
+      return readRepairJob(sql);
+    });
+
+    expect(pending).toMatchObject({ groupCount: 1 });
+    await expect(
+      scope.stub.heartbeat(started.attemptId, started.fencingToken, started.leaseExpiresAt + 1),
+    ).resolves.toMatchObject({ kind: 'refused', code: 'lease_expired' });
+
+    const result = await runInDurableObject(scope.stub, (_instance, state) =>
+      drainSeedJob(state.storage, {
+        sql: state.storage.sql,
+        scopeId: scope.scopeId,
+        now: started.leaseExpiresAt + 2,
+        limits: limitsOf(parseVars({})),
+        history: NO_HISTORY,
+      }),
+    );
+
+    expect(result).toMatchObject({ inserted: 0, skipped: 2, refused: [] });
+    await expect(failureFor(scope, leased)).resolves.toBe(leased.generationId);
+    await expect(failureFor(scope, first)).resolves.toBeNull();
+    const healed = await rowsFor(scope, leased);
+
+    expect(healed.entry.regeneration_attempt_id).toBeNull();
+    expect(generationOutputs(healed.generation)[0]?.artifacts[0]?.storageRef).toBe(
+      first.artifact.storageRef,
+    );
+  });
+
+  it('keeps a fresh near-limit entry and skips only the oversized retry before a later shared repair', async () => {
+    const scope = await scopeForTest();
+    const first = await planFor(scope, '/first');
+    const second = await planFor(scope, '/other');
+    const fresh = await planFor(scope, '/fresh');
+    await seedBatch(scope, [atLocation(first, 'x'), atLocation(second, 'x')]);
+    const before = await rowsFor(scope, first);
+    const owner = await runInDurableObject(scope.stub, (_instance, state) =>
+      state.storage.sql
+        .exec<EntryRow>('SELECT * FROM entries WHERE entry_id = ?', first.entryId)
+        .one(),
+    );
+    const padding =
+      MAX_PACK_HEADER_BYTES - recordBytesOf(scope.scopeId, owner, before.generation) - 400;
+    fresh.seed.generation.headers['x-padding'] = 'a'.repeat(padding);
+    const long = 'l'.repeat(900);
+    const short = 'repaired/shared';
+    const firstRetry = atLocation(first, long);
+    const secondRetry = atLocation(second, short);
+    const proofs = new Map([
+      [seedLocationKey({ ...first.artifact, storageRef: long }), true],
+      [seedLocationKey({ ...second.artifact, storageRef: short }), true],
+    ]);
+    const outcome = await runInDurableObject(scope.stub, async (_instance, state) => {
+      const sql = state.storage.sql;
+      const tx = {
+        sql,
+        scopeId: scope.scopeId,
+        limits: limitsOf(parseVars({})),
+        now: NOW + 1,
+        revision: readRevision(sql) + 1,
+        history: NO_HISTORY,
+      };
+      const apply = await planSeedEntries(
+        tx,
+        {
+          scopeId: scope.scopeId,
+          batchIndex: 0,
+          entries: [atLocation(fresh, 'x'), firstRetry, secondRetry],
+        },
+        proofs,
+      );
+      const pending = state.storage.transactionSync(apply);
+      if (!isRepairPending(pending)) throw new Error('expected ordered durable retries');
+      const freshEntry = sql
+        .exec<EntryRow>('SELECT * FROM entries WHERE entry_id = ?', fresh.entryId)
+        .one();
+      const freshGeneration = sql
+        .exec<GenerationRow>(
+          'SELECT * FROM generations WHERE generation_id = ?',
+          fresh.generationId,
+        )
+        .one();
+      const previous = generationOutputs(freshGeneration);
+      const admitted = unwritableRecord(
+        headerFieldsOf(tx, freshEntry, freshGeneration, previous),
+        tx.limits.maxRecordBytes,
+      );
+      const oversized = unwritableRecord(
+        headerFieldsOf(
+          tx,
+          freshEntry,
+          freshGeneration,
+          relocatedArtifact(previous, first.artifact.sha256, long),
+        ),
+        tx.limits.maxRecordBytes,
+      );
+      const result = drainSeedJob(state.storage, tx);
+      return {
+        result,
+        admitted,
+        oversized,
+        firstMoved: hasRepairValue(sql, pending.jobId, 'seed-moved-0'),
+        secondMoved: readRepairValue<boolean>(sql, pending.jobId, 'seed-moved-1'),
+      };
+    });
+
+    expect(outcome.admitted).toBeUndefined();
+    expect(outcome.oversized).toBeTypeOf('string');
+    expect(outcome.result).toMatchObject({ inserted: 1, skipped: 2, refused: [] });
+    expect(outcome.firstMoved).toBe(false);
+    expect(outcome.secondMoved).toBe(true);
+    const final = await rowsFor(scope, fresh);
+
+    expect(final.artifact).toMatchObject({ storage_ref: short, refs: 3, owned: 0 });
+    expect(generationOutputs(final.generation)[0]?.artifacts[0]?.storageRef).toBe(short);
   });
 
   it('leaves a seed whose record was delivered unchanged on a later retry', async () => {

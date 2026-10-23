@@ -1,3 +1,4 @@
+import { createRepairStorageRef, isRepairStorageRef } from '@stayingupwind/core/cache';
 import { createId } from '@stayingupwind/core/util';
 import {
   ATTEMPT_ID_PREFIX,
@@ -417,12 +418,15 @@ export interface UploadedArtifact {
   readonly encoding: 'identity' | 'gzip' | 'br';
   readonly role: string;
   readonly storageRef: string;
+  /** A conditional create found an unrelated object; rotate only this current reservation. */
+  readonly avoidStorageRef?: string;
 }
 
 /** A known broken canonical location needs the already verified upload stored again. */
 export interface RecordedArtifact {
   readonly ok: true;
   readonly replace?: true;
+  readonly fresh?: true;
   readonly storageRef?: string;
 }
 
@@ -451,6 +455,42 @@ export function reservedBytes(sql: SqlStorage, sha256: string): number {
     .one().bytes;
 }
 
+/** Reuse one fresh reservation per attempt and SHA, across roles and idempotent retries. */
+function freshUploadStorageRef(
+  sql: SqlStorage,
+  attemptId: string,
+  upload: UploadedArtifact,
+  namespace: string,
+): string {
+  const previous = sql
+    .exec<{ storage_ref: string }>(
+      `SELECT aa.storage_ref FROM attempt_artifacts aa
+     WHERE aa.attempt_id = ? AND aa.sha256 = ?
+       AND NOT EXISTS (SELECT 1 FROM artifacts a
+         WHERE a.sha256 = aa.sha256 AND a.storage_ref = aa.storage_ref)
+     ORDER BY aa.role LIMIT 1`,
+      attemptId,
+      upload.sha256,
+    )
+    .toArray()[0]?.storage_ref;
+  if (
+    previous !== undefined &&
+    previous !== upload.avoidStorageRef &&
+    isRepairStorageRef(previous) &&
+    previous.startsWith(`r/${namespace}/`)
+  )
+    return previous;
+  const storageRef = createRepairStorageRef(namespace);
+  // A collision retry rotates every role together; an older concurrent retry reuses the new key.
+  sql.exec(
+    `UPDATE attempt_artifacts SET storage_ref = ? WHERE attempt_id = ? AND sha256 = ?`,
+    storageRef,
+    attemptId,
+    upload.sha256,
+  );
+  return storageRef;
+}
+
 /** An artifact the gateway is about to store for the attempt: counted against the scope first. */
 export function applyRecordArtifact(
   input: TxInput,
@@ -477,9 +517,11 @@ export function applyRecordArtifact(
   ) {
     return refuse('quota_exceeded', 'the scope holds as many bytes as it may');
   }
-  const storageRef = replace
-    ? repairStorageRef(input.scopeId, upload.sha256, attemptId)
-    : (held ?? upload.storageRef);
+  const namespace = scope.repair_namespace;
+  const fresh = replace && scope.pack_schema_version === 2 && typeof namespace === 'string';
+  let storageRef = held ?? upload.storageRef;
+  if (fresh) storageRef = freshUploadStorageRef(sql, attemptId, upload, namespace);
+  else if (replace) storageRef = repairStorageRef(input.scopeId, upload.sha256, attemptId);
   sql.exec(
     `INSERT OR REPLACE INTO attempt_artifacts (attempt_id, sha256, role, byte_length, content_type, encoding, storage_ref, uploaded_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -494,6 +536,7 @@ export function applyRecordArtifact(
   );
   sql.exec(`DELETE FROM pending_deletions WHERE storage_ref = ?`, storageRef);
   sql.exec(`UPDATE attempts SET status = 'uploading' WHERE attempt_id = ?`, attemptId);
+  if (fresh) return { ok: true, replace: true, fresh: true, storageRef };
   if (replace) return { ok: true, replace: true, storageRef };
   return storageRef === upload.storageRef ? { ok: true } : { ok: true, storageRef };
 }

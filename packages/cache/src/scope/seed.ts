@@ -1,5 +1,6 @@
 import {
   generationTagSchema,
+  isRepairStorageRef,
   MAX_TAG_LENGTH,
   MAX_TAGS_PER_ENTRY,
   type OutputSnapshot,
@@ -14,7 +15,7 @@ import {
 } from '@stayingupwind/host/cache';
 
 import type { Logger } from '../logger.ts';
-import { artifactIdsFor, referenceBuildArtifacts } from './artifacts.ts';
+import { artifactIdsFor, findArtifactBySha, referenceBuildArtifacts } from './artifacts.ts';
 import {
   type EntryIdentity,
   findEntry,
@@ -28,12 +29,15 @@ import { findGeneration, insertGeneration, retireGenerations } from './generatio
 import type { EventInput } from './history.ts';
 import { prepareFirstPackSchema } from './pack-capability.ts';
 import { type PackHeaderFields, unwritableRecord } from './records.ts';
+import type { RepairPending } from './repair-jobs.ts';
 import { toEntry, toEntryState, toPublicGeneration, toScope } from './rows.ts';
 import {
   existingSeedArtifactLengths,
   reserveSeedArtifactLengths,
 } from './seed-artifact-lengths.ts';
+import { prepareSeedPublication } from './seed-repair-job.ts';
 import {
+  hasSeedRelocations,
   repairSeedEntries,
   seedRepairVerification,
   type SeedLocationProofs,
@@ -49,6 +53,7 @@ import {
 } from './tags.ts';
 import { type Apply, inChunks, record, type TxInput } from './tx.ts';
 
+export { advancePreparedSeed } from './seed-repair-job.ts';
 export { finishSeedRepair, needsSeedVerification } from './seed-repair.ts';
 
 /**
@@ -182,7 +187,8 @@ export async function planSeedEntries(
   input: TxInput,
   batch: SeedEntriesInput,
   proofs: SeedLocationProofs = new Map(),
-): Promise<Apply<SeedEntriesResult | Refusal | SeedRepairVerification>> {
+  prepareRepair?: () => Promise<void>,
+): Promise<Apply<SeedEntriesResult | Refusal | SeedRepairVerification | RepairPending>> {
   const plans = await inChunks(batch.entries, SEED_PLANS_AT_ONCE, async (entry) => {
     // Judged before a tag of it is named: an entry that may not carry its tags keeps none.
     const tagsRefused = tagsRefusal(entry.generation.tags);
@@ -198,6 +204,9 @@ export async function planSeedEntries(
     ]);
     return { entry, identity, tagRefs, outputs: seedOutputs(entry, artifactIds), tagsRefused };
   });
+  // Existing failed build retries alone pay for draining projection and arming continuation.
+  // The transaction below rechecks repairability after that drain, before publishing fresh rows.
+  if (hasSeedRelocations(input, plans, proofs)) await prepareRepair?.();
   return () => applySeedEntries(input, plans, proofs);
 }
 
@@ -234,11 +243,17 @@ function seedOutputs(
 }
 
 /** What the delivery record of an entry's build generation is made of. */
-function recordFields(scopeId: string, plan: SeedPlan, buildId: string): PackHeaderFields {
+function recordFields(
+  scopeId: string,
+  plan: SeedPlan,
+  buildId: string,
+  packSchemaVersion?: 1 | 2,
+): PackHeaderFields {
   const { generation } = plan.entry;
   return {
     scopeId,
     buildId,
+    packSchemaVersion,
     entry: {
       entryId: plan.identity.entryId,
       kind: plan.identity.kind,
@@ -260,6 +275,27 @@ function recordFields(scopeId: string, plan: SeedPlan, buildId: string): PackHea
   };
 }
 
+/** V2 seeds reuse this scope's repaired canonical copy, preserving existing borrowed accounting. */
+function canonicalSeedOutputs(
+  input: TxInput,
+  outputs: readonly OutputSnapshot[],
+): readonly OutputSnapshot[] {
+  if (input.packSchemaVersion !== 2 || input.repairNamespace === undefined) return outputs;
+  const prefix = `r/${input.repairNamespace}/`;
+  return outputs.map((output) => ({
+    ...output,
+    artifacts: output.artifacts.map((artifact) => {
+      const canonical = findArtifactBySha(input.sql, artifact.sha256);
+      return canonical !== undefined &&
+        canonical.byte_length === artifact.byteLength &&
+        isRepairStorageRef(canonical.storage_ref) &&
+        canonical.storage_ref.startsWith(prefix)
+        ? { ...artifact, storageRef: canonical.storage_ref }
+        : artifact;
+    }),
+  }));
+}
+
 function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
   const { sql, scopeId, now, revision } = input;
   const { generation } = plan.entry;
@@ -275,7 +311,7 @@ function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
     kind: 'entry.created',
     payload: { entry: toEntry(scopeId, entry) },
   });
-  const { outputs } = plan;
+  const outputs = canonicalSeedOutputs(input, plan.outputs);
   let bodyBytes = 0;
   for (const output of outputs) {
     for (const artifact of output.artifacts) {
@@ -319,6 +355,7 @@ function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
     bodyBytes,
     producer: { kind: 'build' },
     outputs,
+    compactRepairLocators: input.packSchemaVersion === 2,
     committedAt: now,
   });
   replaceEntryTags(sql, entry.entry_id, plan.tagRefs);
@@ -379,7 +416,7 @@ function applySeedEntries(
   input: TxInput,
   plans: readonly SeedPlan[],
   proofs: SeedLocationProofs,
-): SeedEntriesResult | Refusal | SeedRepairVerification {
+): SeedEntriesResult | Refusal | SeedRepairVerification | RepairPending {
   const { sql, limits, revision } = input;
   const scope = requireActiveScope(sql);
   if (isRefusal(scope)) {
@@ -416,7 +453,10 @@ function applySeedEntries(
   for (const plan of fresh) {
     let reason =
       plan.tagsRefused ??
-      unwritableRecord(recordFields(input.scopeId, plan, scope.build_id), limits.maxRecordBytes);
+      unwritableRecord(
+        recordFields(input.scopeId, plan, scope.build_id, input.packSchemaVersion),
+        limits.maxRecordBytes,
+      );
     const generationId = plan.entry.generation.generationId;
     reason ??= reserveSeedPlan(plan, generationId, generationIds, artifactLengths);
     if (reason === undefined) {
@@ -433,12 +473,27 @@ function applySeedEntries(
     return refuse('quota_exceeded', 'the scope holds as many entries as it may');
   }
   const addedRefs = addedSeedReferences(retries.length > 0 ? seedable : []);
-  const verification = seedRepairVerification(sql, retries, proofs, addedRefs);
+  const verification = seedRepairVerification(
+    sql,
+    retries,
+    proofs,
+    addedRefs,
+    input.packSchemaVersion === 2,
+  );
   if (verification !== undefined) return verification;
   const inserted = seedable.length;
   const skipped = plans.length - fresh.length;
   for (const plan of seedable) {
     seedOne(input, plan, events);
+  }
+  if (hasSeedRelocations(input, retries, proofs)) {
+    if (inserted > 0) record(input, events);
+    return prepareSeedPublication(input, retries, proofs, {
+      inserted,
+      skipped,
+      refused,
+      revision: inserted > 0 ? revision : revision - 1,
+    });
   }
   const repaired = repairSeedEntries(input, retries, events, proofs);
   if (inserted === 0 && repaired === 0) {

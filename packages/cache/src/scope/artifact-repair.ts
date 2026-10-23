@@ -1,10 +1,10 @@
-import { type OutputSnapshot, r2BlobKey } from '@stayingupwind/core/cache';
+import { isRepairStorageRef, r2BlobKey } from '@stayingupwind/core/cache';
 
-import { forgetArtifactFailure } from './artifacts.ts';
 import { requireEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import { headerFieldsOf, unwritableRecord } from './records.ts';
-import { generationOutputs, type GenerationRow, toEntryState } from './rows.ts';
+import { type EntryRow, generationOutputs, toEntryState } from './rows.ts';
+import { encodeStoredOutputs } from './stored-outputs.ts';
 import type { TxInput } from './tx.ts';
 
 /** A repair never accepts mere existence of the canonical key whose bytes failed verification. */
@@ -20,138 +20,143 @@ export interface ArtifactRepair {
   readonly previouslyOwned: boolean;
 }
 
-/** Only current snapshots are inspected, in small pages, on the rare verified repair path. */
-const SNAPSHOTS_AT_ONCE = 32;
+/** Only the provider's exact row limit is converted to a per-group preflight refusal. */
+export class RepairRowTooLargeError extends Error {
+  override name = 'RepairRowTooLargeError';
 
-function liveSnapshots(
-  sql: SqlStorage,
-  repairs: string,
-  cursor: { readonly after: string; readonly excluding: string },
-): Pick<GenerationRow, 'generation_id' | 'entry_id'>[] {
-  return sql
-    .exec<Pick<GenerationRow, 'generation_id' | 'entry_id'>>(
-      `SELECT g.generation_id, g.entry_id FROM entries e
-       JOIN generations g ON g.generation_id = e.current_generation_id
-       WHERE e.publication = 'published' AND e.entry_id > ? AND e.entry_id <> ?
-         AND EXISTS (SELECT 1 FROM json_each(g.outputs) o,
-           json_each(o.value, '$.artifacts') a, json_each(?) r
-           WHERE json_extract(a.value, '$.sha256') = json_extract(r.value, '$.sha256')
-             AND json_extract(a.value, '$.byteLength') = json_extract(r.value, '$.byteLength')
-             AND json_extract(a.value, '$.storageRef') = json_extract(r.value, '$.previousStorageRef'))
-       ORDER BY e.entry_id LIMIT ?`,
-      cursor.after,
-      cursor.excluding,
-      repairs,
-      SNAPSHOTS_AT_ONCE,
-    )
-    .toArray();
-}
-
-function repairedOutputs(
-  generation: GenerationRow,
-  repairs: ReadonlyMap<string, ArtifactRepair>,
-): OutputSnapshot[] {
-  return generationOutputs(generation).map((output) => {
-    return {
-      ...output,
-      artifacts: output.artifacts.map((artifact) => {
-        const repair = repairs.get(artifact.sha256);
-        return repair?.byteLength === artifact.byteLength &&
-          artifact.storageRef === repair.previousStorageRef
-          ? { ...artifact, storageRef: repair.storageRef }
-          : artifact;
-      }),
-    };
-  });
-}
-
-/** Preflight before publication: a longer replacement key must still fit every live record. */
-export function retargetedRecordsFailure(
-  input: TxInput,
-  repairs: Iterable<ArtifactRepair>,
-  publishingEntry: string,
-): string | undefined {
-  const bySha = new Map([...repairs].map((repair) => [repair.sha256, repair]));
-  const selected = JSON.stringify([...bySha.values()]);
-  let after = '';
-  for (;;) {
-    const page = liveSnapshots(input.sql, selected, { after, excluding: publishingEntry });
-    for (const id of page) {
-      const generation = findGeneration(input.sql, id.generation_id);
-      if (generation === undefined) throw new Error('the current repair snapshot disappeared');
-      const fields = headerFieldsOf(
-        input,
-        requireEntry(input.sql, generation.entry_id),
-        generation,
-        repairedOutputs(generation, bySha),
-      );
-      const failure = unwritableRecord(fields, input.limits.maxRecordBytes);
-      if (failure !== undefined) return failure;
-      after = generation.entry_id;
-    }
-    if (page.length < SNAPSHOTS_AT_ONCE) break;
+  constructor(cause: unknown) {
+    super('a repaired generation exceeds the authority storage row limit', { cause });
   }
-  return undefined;
+}
+
+/** SQLite reports its configured row/string length limit with this stable result-code name. */
+function rowLimitError(error: unknown): boolean {
+  return error instanceof Error && /\bSQLITE_TOOBIG\b/u.test(error.message);
+}
+
+/** A durable continuation visits one entry primary-key row, including entries it skips. */
+export interface RepairSnapshotStep {
+  readonly done: boolean;
+  readonly after: string;
+  readonly changed: boolean;
+  readonly failure?: string;
 }
 
 /**
- * Redirect every other live snapshot before forgetting the broken location. Only storage refs
- * change; archived generations and reference counts stay as they were. The revision invalidates
- * an older projection's acknowledgment and queues every changed record in the existing settle
- * backlog. SQL may scan all current entries; paging holds only 32 ids plus one generation at a time, not a hard heap or total CPU bound. All repairs are applied to each entry together,
- * so its final state is appended once without accumulating scope-wide history events.
+ * Select the ID window before examining publication, JSON or artifact matches. A LIMIT after a
+ * matching EXISTS can still visit every generation in the scope during a single invocation.
+ * This query visits one entry after the primary-key seek; at most its one current generation is
+ * then materialized. SQLite's existing row limit bounds that materialization independently of
+ * how many matching or nonmatching entries the scope holds.
  */
-export function finishArtifactRepairs(
+export function repairSnapshotStep(
   input: TxInput,
   repairs: ReadonlyMap<string, ArtifactRepair>,
-  publishingEntry: string,
-): void {
-  const selected = JSON.stringify([...repairs.values()]);
-  let after = '';
-  for (;;) {
-    const page = liveSnapshots(input.sql, selected, { after, excluding: publishingEntry });
-    for (const id of page) {
-      after = id.entry_id;
-      const generation = findGeneration(input.sql, id.generation_id);
-      if (generation === undefined) throw new Error('the current repair snapshot disappeared');
-      const before = requireEntry(input.sql, generation.entry_id);
+  cursor: {
+    readonly after: string;
+    readonly excluding: ReadonlySet<string>;
+    readonly apply: boolean;
+  },
+): RepairSnapshotStep {
+  const entry = input.sql
+    .exec<EntryRow>(
+      `SELECT * FROM entries WHERE entry_id > ? ORDER BY entry_id LIMIT 1`,
+      cursor.after,
+    )
+    .toArray()[0];
+  if (entry === undefined) return { done: true, after: cursor.after, changed: false };
+  const skipped = { done: false, after: entry.entry_id, changed: false };
+  if (
+    entry.publication !== 'published' ||
+    entry.current_generation_id === null ||
+    cursor.excluding.has(entry.entry_id)
+  )
+    return skipped;
+  const generation = findGeneration(input.sql, entry.current_generation_id);
+  if (generation === undefined) throw new Error('the current repair snapshot disappeared');
+  const before = generationOutputs(generation);
+  let changed = false;
+  const outputs = before.map((output) => ({
+    ...output,
+    artifacts: output.artifacts.map((artifact) => {
+      const repair = repairs.get(artifact.sha256);
       if (
-        before.current_generation_id !== generation.generation_id ||
-        before.publication !== 'published'
+        repair === undefined ||
+        repair.byteLength !== artifact.byteLength ||
+        artifact.storageRef !== repair.previousStorageRef ||
+        artifact.storageRef === repair.storageRef
       )
-        continue;
+        return artifact;
+      changed = true;
+      return { ...artifact, storageRef: repair.storageRef };
+    }),
+  }));
+  if (!changed) return skipped;
+  const failure = unwritableRecord(
+    headerFieldsOf(input, entry, generation, outputs),
+    input.limits.maxRecordBytes,
+  );
+  if (failure !== undefined) {
+    return { done: false, after: entry.entry_id, changed, failure };
+  }
+  const encoded = encodeStoredOutputs(outputs, input.packSchemaVersion === 2);
+  if (!cursor.apply) {
+    const nonGrowing =
+      input.packSchemaVersion === 2 &&
+      input.repairNamespace !== undefined &&
+      [...repairs.values()].every(
+        (repair) =>
+          isRepairStorageRef(repair.storageRef) &&
+          repair.storageRef.startsWith(`r/${input.repairNamespace}/`),
+      );
+    if (!nonGrowing) {
+      // The pack does not contain every output-specific field. Its header can fit while this
+      // generation's SQL row is near the provider limit. Ask that same limit, with no new cap.
+      // Both writes are synchronous in this preflight transaction; no observer sees the probe.
+      // A provider limit exception escapes and rolls the entire step back before the coordinator
+      // records the refusal in a fresh transaction. Other storage errors remain retryable errors.
+      try {
+        input.sql.exec(
+          `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
+          encoded,
+          generation.generation_id,
+        );
+      } catch (error) {
+        if (rowLimitError(error)) throw new RepairRowTooLargeError(error);
+        throw error;
+      }
       input.sql.exec(
         `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
-        JSON.stringify(repairedOutputs(generation, repairs)),
+        generation.outputs,
         generation.generation_id,
       );
-      input.sql.exec(
-        `UPDATE entries SET revision = ?, record_revision = ?, updated_at = ?
-         WHERE entry_id = ? AND current_generation_id = ?`,
-        input.revision,
-        input.revision,
-        input.now,
-        generation.entry_id,
-        generation.generation_id,
-      );
-      // A prior seed repair in this transaction already emitted the same public entry state;
-      // subsequent SHA relocations change private output refs alone, not that state again.
-      if (before.revision !== input.revision) {
-        input.history.append(
-          { sql: input.sql, revision: input.revision, now: input.now },
-          {
-            entityType: 'entry',
-            entityId: generation.entry_id,
-            kind: 'entry.state.changed',
-            payload: { entryState: toEntryState(requireEntry(input.sql, generation.entry_id)) },
-          },
-        );
-      }
-      after = generation.entry_id;
     }
-    if (page.length < SNAPSHOTS_AT_ONCE) break;
+    return { done: false, after: entry.entry_id, changed };
   }
-  for (const repair of repairs.values()) forgetArtifactFailure(input.sql, repair.sha256);
+  input.sql.exec(
+    `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
+    encoded,
+    generation.generation_id,
+  );
+  input.sql.exec(
+    `UPDATE entries SET revision = ?, record_revision = ?, updated_at = ?
+     WHERE entry_id = ? AND current_generation_id = ?`,
+    input.revision,
+    input.revision,
+    input.now,
+    entry.entry_id,
+    generation.generation_id,
+  );
+  input.history.append(
+    { sql: input.sql, revision: input.revision, now: input.now },
+    {
+      entityType: 'entry',
+      entityId: entry.entry_id,
+      kind: 'entry.state.changed',
+      payload: { entryState: toEntryState(requireEntry(input.sql, entry.entry_id)) },
+    },
+  );
+  return { done: false, after: entry.entry_id, changed: true };
 }
 
 /** A verified attempt-specific upload replaces the failed canonical location atomically. */

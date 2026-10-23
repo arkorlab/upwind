@@ -60,6 +60,8 @@ export interface ScopeMutationHost {
   readonly storage: DurableObjectStorage;
   readonly scopeId: string;
   readonly buildId?: string | undefined;
+  readonly packSchemaVersion?: 1 | 2 | undefined;
+  readonly repairNamespace?: string | undefined;
   readonly kv: KVNamespace;
   readonly limits: ScopeLimits;
   /** What the host keeps of the scope's history: its tables, and each change as it commits. */
@@ -70,7 +72,7 @@ export interface ScopeMutationHost {
   readonly clock?: () => number;
 }
 
-interface MutationResult<T> {
+export interface MutationResult<T> {
   readonly value: T;
   readonly own: OwnRecords | null | undefined;
   readonly tables: boolean;
@@ -98,6 +100,8 @@ export async function commitMutation<T>(
     sql,
     scopeId: host.scopeId,
     buildId: host.buildId,
+    packSchemaVersion: host.packSchemaVersion,
+    repairNamespace: host.repairNamespace,
     limits: host.limits,
     now: host.clock?.() ?? now,
     revision: readRevision(sql) + 1,

@@ -14,6 +14,7 @@ import {
 } from '@stayingupwind/host/cache';
 
 import { generationHeaders, type GenerationRow, parseJson } from './rows.ts';
+import { encodeStoredOutputs } from './stored-outputs.ts';
 
 /**
  * Generations: immutable once written, except for the four things the authority learns about
@@ -21,7 +22,7 @@ import { generationHeaders, type GenerationRow, parseJson } from './rows.ts';
  * their bytes were pruned, and where they are in publication.
  * A build's storage locations can be corrected before its first delivery record is acknowledged
  * in KV (`seed-repair.ts`). A verified artifact repair can redirect current snapshots' storage
- * refs and reproject them atomically; archived snapshots remain unchanged. Neither changes the
+ * refs with a durable bounded continuation before publication succeeds; archived snapshots remain unchanged. Neither changes the
  * content identity a generation names.
  */
 
@@ -45,6 +46,7 @@ export interface GenerationInsert {
   readonly producer: GenerationProducer | null;
   readonly outputs: readonly OutputSnapshot[];
   readonly committedAt: number;
+  readonly compactRepairLocators?: boolean;
 }
 
 export function insertGeneration(sql: SqlStorage, g: GenerationInsert): void {
@@ -72,7 +74,7 @@ export function insertGeneration(sql: SqlStorage, g: GenerationInsert): void {
     g.condemned === null ? null : JSON.stringify(g.condemned),
     g.bodyBytes,
     g.producer === null ? null : JSON.stringify(g.producer),
-    JSON.stringify(g.outputs),
+    encodeStoredOutputs(g.outputs, g.compactRepairLocators),
     g.committedAt,
   );
 }

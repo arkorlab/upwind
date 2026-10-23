@@ -1,5 +1,6 @@
 import { artifactIdFor } from '@stayingupwind/core/cache';
 
+import { REPAIR_PIN_PREFIX } from './repair-jobs.ts';
 import type { ArtifactRow } from './rows.ts';
 import { deleteMeta, readMeta, writeMeta } from './state.ts';
 import { inChunks } from './tx.ts';
@@ -63,6 +64,11 @@ export function artifactFailed(sql: SqlStorage, row: ArtifactRow): boolean {
   return failureNames(readMeta(sql, FAILURE_PREFIX + row.sha256), row.byte_length, row.storage_ref);
 }
 
+/** The exact observation pinned by a durable repair, including its ABA token. */
+export function artifactRepairMarker(sql: SqlStorage, sha256: string): string | undefined {
+  return readMeta(sql, FAILURE_PREFIX + sha256);
+}
+
 /**
  * Remember the existing verification's result; no extra body read is needed to repair it. Whether
  * it was remembered: not where the artifact is no longer where the verification read it.
@@ -113,12 +119,13 @@ export function forgetVerifiedArtifactFailures(
     sql.exec(
       `DELETE FROM meta WHERE key = ? AND value = ? AND EXISTS (
          SELECT 1 FROM artifacts WHERE sha256 = ? AND byte_length = ? AND storage_ref = ?
-       )`,
+       ) AND NOT EXISTS (SELECT 1 FROM meta WHERE key = ?)`,
       FAILURE_PREFIX + artifact.sha256,
       artifact.failureMarker,
       artifact.sha256,
       artifact.byteLength,
       artifact.storageRef,
+      REPAIR_PIN_PREFIX + artifact.sha256,
     );
   }
 }

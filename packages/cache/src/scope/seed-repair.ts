@@ -3,19 +3,20 @@ import type { OutputSnapshot } from '@stayingupwind/core/cache';
 import { withDeadline } from '@stayingupwind/core/util';
 import type { SeedEntriesResult, SeedEntryInput } from '@stayingupwind/host/cache';
 
+import { type ArtifactRepair, relocateBorrowedArtifact } from './artifact-repair.ts';
 import {
-  type ArtifactRepair,
-  finishArtifactRepairs,
-  relocateBorrowedArtifact,
-  retargetedRecordsFailure,
-} from './artifact-repair.ts';
-import { findArtifactBySha, rememberArtifactFailure } from './artifacts.ts';
+  artifactFailed,
+  artifactRepairMarker,
+  findArtifactBySha,
+  rememberArtifactFailure,
+} from './artifacts.ts';
 import { entryStateEvent } from './attempts.ts';
 import { type EntryIdentity, findEntry, requireEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import type { EventInput } from './history.ts';
 import { checkFault, type TestFaults, verifyBlob } from './io.ts';
 import { headerFieldsOf, InvalidArtifactError, unwritableRecord } from './records.ts';
+import type { RepairGroup, RepairPending } from './repair-jobs.ts';
 import {
   type EntryRow,
   generationOutputs,
@@ -24,6 +25,7 @@ import {
   toPublicGeneration,
 } from './rows.ts';
 import { deleteMeta, readMeta, type Refusal, refuse, writeMeta } from './state.ts';
+import { encodeStoredOutputs } from './stored-outputs.ts';
 import type { TxInput } from './tx.ts';
 
 const FAILURE_PREFIX = 'seed_artifact_failure:';
@@ -58,8 +60,8 @@ export function forgetSeedFailure(sql: SqlStorage, entryId: string): void {
   deleteMeta(sql, FAILURE_PREFIX + entryId);
 }
 
-interface SeedLocations {
-  readonly entry: SeedEntryInput;
+export interface SeedLocations {
+  readonly entry: { readonly generation: Pick<SeedEntryInput['generation'], 'generationId'> };
   readonly identity: Pick<EntryIdentity, 'entryId'>;
   readonly outputs: readonly OutputSnapshot[];
 }
@@ -68,16 +70,20 @@ export interface SeedLocationCheck {
   readonly sha256: string;
   readonly byteLength: number;
   readonly storageRef: string;
+  readonly contentType?: string;
 }
 
 /** Internal preparation only: no entry, generation, revision or event has changed. */
 export interface SeedRepairVerification {
   readonly kind: 'verify-seed-locations';
   readonly locations: readonly SeedLocationCheck[];
+  /** V2 stores verified copies at fixed-width scope-owned physical keys, retaining borrowed quota. */
+  readonly copy?: true;
 }
 
-export type SeedLocationProofs = ReadonlyMap<string, boolean>;
-type SeedOutcome = SeedEntriesResult | Refusal | SeedRepairVerification;
+export type SeedLocationProofs = ReadonlyMap<string, boolean | string>;
+export type SeedProofLookup = Pick<SeedLocationProofs, 'get' | 'has'>;
+type SeedOutcome = SeedEntriesResult | Refusal | SeedRepairVerification | RepairPending;
 
 export function needsSeedVerification(value: SeedOutcome): value is SeedRepairVerification {
   return 'kind' in value && value.kind === 'verify-seed-locations';
@@ -90,14 +96,23 @@ export async function finishSeedRepair(
     readonly bucket: Pick<R2Bucket, 'get'>;
     readonly retry: (proofs: SeedLocationProofs) => Promise<SeedOutcome>;
     readonly faults: () => TestFaults;
+    readonly copyRepair?: (
+      location: SeedLocationCheck,
+      signal: AbortSignal,
+    ) => Promise<string | undefined>;
   },
-): Promise<SeedEntriesResult | Refusal> {
-  const proofs = new Map<string, boolean>();
+): Promise<SeedEntriesResult | Refusal | RepairPending> {
+  const proofs = new Map<string, boolean | string>();
   let result: SeedOutcome = prepared;
   while (needsSeedVerification(result)) {
     try {
       checkFault(deps.faults, 'r2');
-      await verifySeedLocations((key) => deps.bucket.get(key), result.locations, proofs);
+      if (result.copy === true) {
+        if (deps.copyRepair === undefined) throw new Error('seed repair copying is unavailable');
+        await copySeedLocations(deps.copyRepair, result.locations, proofs);
+      } else {
+        await verifySeedLocations((key) => deps.bucket.get(key), result.locations, proofs);
+      }
     } catch {
       return refuse('internal', 'the proposed shared artifact locations could not be verified');
     }
@@ -117,7 +132,7 @@ const REPAIR_VERIFICATION_MS = 10_000;
 export async function verifySeedLocations(
   open: Parameters<typeof verifyBlob>[0],
   locations: readonly SeedLocationCheck[],
-  proofs: Map<string, boolean>,
+  proofs: Pick<Map<string, boolean>, 'set'>,
   deadlineMs = REPAIR_VERIFICATION_MS,
 ): Promise<void> {
   const controller = new AbortController();
@@ -134,12 +149,37 @@ export async function verifySeedLocations(
   }
 }
 
+/** The same phase deadline applies while the provider verifies a fresh streamed copy. */
+async function copySeedLocations(
+  copy: (location: SeedLocationCheck, signal: AbortSignal) => Promise<string | undefined>,
+  locations: readonly SeedLocationCheck[],
+  proofs: Map<string, boolean | string>,
+): Promise<void> {
+  const controller = new AbortController();
+  const checking = async (): Promise<void> => {
+    for (const location of locations) {
+      controller.signal.throwIfAborted();
+      const copied = await copy(location, controller.signal);
+      proofs.set(seedLocationKey(location), copied ?? false);
+      if (copied !== undefined) {
+        proofs.set(seedLocationKey({ ...location, storageRef: copied }), true);
+      }
+    }
+  };
+  try {
+    await withDeadline(checking(), REPAIR_VERIFICATION_MS, 'seed artifact copy');
+  } finally {
+    controller.abort();
+  }
+}
+
 /** Ask only for changed, shared borrowed rows a failed seed could actually relocate. */
 export function seedRepairVerification(
   sql: SqlStorage,
   plans: readonly SeedLocations[],
   proofs: SeedLocationProofs,
   addedRefs: ReadonlyMap<string, number>,
+  copy = false,
 ): SeedRepairVerification | undefined {
   const locations = new Map<string, SeedLocationCheck>();
   for (const plan of plans) {
@@ -148,11 +188,15 @@ export function seedRepairVerification(
     const previous = generationOutputs(generation);
     const outputs = relocatedOutputs(previous, plan.outputs);
     if (outputs === undefined) continue;
-    addSharedChecks(sql, previous, outputs, { proofs, addedRefs, locations });
+    addSharedChecks(sql, previous, outputs, { proofs, addedRefs, locations, copy });
   }
   return locations.size === 0
     ? undefined
-    : { kind: 'verify-seed-locations', locations: [...locations.values()] };
+    : {
+        kind: 'verify-seed-locations',
+        locations: [...locations.values()],
+        ...(copy && { copy: true }),
+      };
 }
 
 function addSharedChecks(
@@ -163,9 +207,10 @@ function addSharedChecks(
     readonly proofs: SeedLocationProofs;
     readonly addedRefs: ReadonlyMap<string, number>;
     readonly locations: Map<string, SeedLocationCheck>;
+    readonly copy: boolean;
   },
 ): void {
-  const { proofs, addedRefs, locations } = checks;
+  const { proofs, addedRefs, locations, copy } = checks;
   for (const [index, output] of outputs.entries()) {
     for (const [offset, artifact] of output.artifacts.entries()) {
       const before = previous[index]?.artifacts[offset]?.storageRef;
@@ -173,7 +218,7 @@ function addSharedChecks(
       const row = findArtifactBySha(sql, artifact.sha256);
       if (
         row?.owned !== 0 ||
-        row.refs + (addedRefs.get(artifact.sha256) ?? 0) <= 1 ||
+        (!copy && row.refs + (addedRefs.get(artifact.sha256) ?? 0) <= 1) ||
         row.storage_ref !== before
       )
         continue;
@@ -187,7 +232,8 @@ function protectedOutputs(
   sql: SqlStorage,
   previous: readonly OutputSnapshot[],
   proposed: readonly OutputSnapshot[],
-  proofs: SeedLocationProofs,
+  proofs: SeedProofLookup,
+  copy: boolean,
 ): OutputSnapshot[] {
   const locations = new Map<string, string>();
   const selected = new Set<string>();
@@ -197,6 +243,7 @@ function protectedOutputs(
         proofs,
         locations,
         selected,
+        copy,
       });
     }
   }
@@ -213,17 +260,22 @@ function protectedOutputs(
   });
 }
 
+function acceptedProof(value: boolean | string | undefined): boolean {
+  return value === true || typeof value === 'string';
+}
+
 function selectLocation(
   sql: SqlStorage,
   artifact: SeedLocationCheck,
   before: string | undefined,
   chosen: {
-    readonly proofs: SeedLocationProofs;
+    readonly proofs: SeedProofLookup;
     readonly locations: Map<string, string>;
     readonly selected: Set<string>;
+    readonly copy: boolean;
   },
 ): void {
-  const { locations, proofs, selected } = chosen;
+  const { locations, proofs, selected, copy } = chosen;
   if (selected.has(artifact.sha256)) return;
   const row = findArtifactBySha(sql, artifact.sha256);
   if (row === undefined) return;
@@ -231,13 +283,15 @@ function selectLocation(
   // An earlier repair in this batch may have advanced every live snapshot to this key.
   // Keep that already verified canonical location rather than moving it again for a later plan.
   if (
-    proofs.get(
-      seedLocationKey({
-        sha256: row.sha256,
-        byteLength: row.byte_length,
-        storageRef: row.storage_ref,
-      }),
-    ) === true
+    acceptedProof(
+      proofs.get(
+        seedLocationKey({
+          sha256: row.sha256,
+          byteLength: row.byte_length,
+          storageRef: row.storage_ref,
+        }),
+      ),
+    )
   )
     return;
   if (
@@ -245,9 +299,12 @@ function selectLocation(
     row.byte_length === artifact.byteLength &&
     row.storage_ref === before &&
     artifact.storageRef !== before &&
-    (row.refs <= 1 || proofs.get(seedLocationKey(artifact)) === true)
+    (copy
+      ? typeof proofs.get(seedLocationKey(artifact)) === 'string'
+      : row.refs <= 1 || acceptedProof(proofs.get(seedLocationKey(artifact))))
   ) {
-    locations.set(artifact.sha256, artifact.storageRef);
+    const proof = proofs.get(seedLocationKey(artifact));
+    locations.set(artifact.sha256, typeof proof === 'string' ? proof : artifact.storageRef);
     selected.add(artifact.sha256);
   }
 }
@@ -324,19 +381,27 @@ function seedRelocations(
   return [...repairs.values()];
 }
 
-function repairOne(
+export interface PreparedSeedRepair extends RepairGroup {
+  readonly generationId: string;
+  readonly outputs: readonly OutputSnapshot[];
+  readonly verifiedLocations: readonly SeedLocationCheck[];
+}
+
+/** One retry's unchanged admission decision, before any current snapshot is changed. */
+export function prepareSeedRepair(
   input: TxInput,
   plan: SeedLocations,
-  events: EventInput[],
-  proofs: SeedLocationProofs,
-): boolean {
-  const { sql, revision, now, scopeId } = input;
+  proofs: SeedProofLookup,
+): PreparedSeedRepair | undefined {
+  const { sql } = input;
   const generation = repairableGeneration(sql, plan);
-  if (generation === undefined) return false;
+  if (generation === undefined) return undefined;
   const previous = generationOutputs(generation);
   const proposed = relocatedOutputs(previous, plan.outputs);
   const outputs =
-    proposed === undefined ? undefined : protectedOutputs(sql, previous, proposed, proofs);
+    proposed === undefined
+      ? undefined
+      : protectedOutputs(sql, previous, proposed, proofs, input.packSchemaVersion === 2);
   const entry = findEntry(sql, generation.entry_id);
   if (
     outputs === undefined ||
@@ -345,20 +410,56 @@ function repairOne(
       headerFieldsOf(input, entry, generation, outputs),
       input.limits.maxRecordBytes,
     ) !== undefined
-  ) {
-    return false;
-  }
-  // Every other live snapshot follows a verified canonical move in the same transaction.
+  )
+    return undefined;
   const repairs = seedRelocations(sql, previous, outputs);
-  if (retargetedRecordsFailure(input, repairs, generation.entry_id) !== undefined) return false;
-  const moved = new Map<string, ArtifactRepair>();
-  for (const repair of repairs) {
-    if (relocateBorrowedArtifact(input, repair)) moved.set(repair.sha256, repair);
+  return {
+    entryId: generation.entry_id,
+    generationId: generation.generation_id,
+    outputs,
+    repairs,
+    verifiedLocations: repairs.filter((repair) =>
+      acceptedProof(proofs.get(seedLocationKey(repair))),
+    ),
+    failureMarkers: repairs.flatMap((repair) => {
+      const row = findArtifactBySha(sql, repair.sha256);
+      const marker = artifactRepairMarker(sql, repair.sha256);
+      return row !== undefined && artifactFailed(sql, row) && marker !== undefined
+        ? [[repair.sha256, marker] as [string, string]]
+        : [];
+    }),
+  };
+}
+
+/** Bounded by the submitted plans, with no scope-wide query before the rare alarm is armed. */
+export function hasSeedRelocations(
+  input: TxInput,
+  plans: readonly SeedLocations[],
+  proofs: SeedLocationProofs,
+): boolean {
+  return plans.some((plan) => (prepareSeedRepair(input, plan, proofs)?.repairs.length ?? 0) > 0);
+}
+
+export function publishSeedRepair(
+  input: TxInput,
+  prepared: PreparedSeedRepair,
+  events: EventInput[],
+): void {
+  const { sql, revision, now, scopeId } = input;
+  const generation = findGeneration(sql, prepared.generationId);
+  const entry = findEntry(sql, prepared.entryId);
+  if (generation === undefined || entry?.current_generation_id !== prepared.generationId) {
+    throw new Error('the prepared seed generation changed');
   }
-  if (moved.size > 0) finishArtifactRepairs(input, moved, generation.entry_id);
+  for (const repair of prepared.repairs) {
+    if (!relocateBorrowedArtifact(input, repair)) {
+      throw new Error('the prepared borrowed artifact location changed');
+    }
+  }
+  const outputs = encodeStoredOutputs(prepared.outputs, input.packSchemaVersion === 2);
   sql.exec(
     `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
-    JSON.stringify(outputs),
+    outputs,
     generation.generation_id,
   );
   sql.exec(
@@ -369,33 +470,57 @@ function repairOne(
     generation.entry_id,
   );
   forgetSeedFailure(sql, generation.entry_id);
-  // A prior shared-artifact relocation already recorded this same public state at this revision.
   if (entry.revision !== revision) events.push(entryStateEvent(sql, generation.entry_id));
   events.push({
     entityType: 'generation',
     entityId: generation.generation_id,
     kind: 'generation.committed',
     payload: {
-      generation: toPublicGeneration(scopeId, { ...generation, outputs: JSON.stringify(outputs) }),
+      generation: toPublicGeneration(scopeId, { ...generation, outputs }),
       entryState: toEntryState(requireEntry(sql, generation.entry_id)),
       supersededGenerationId: null,
       attempt: null,
     },
   });
-  return true;
 }
 
-/**
- * A seed whose record has never been acknowledged in KV may correct where its unchanged bytes are
- * kept after projection found them missing or corrupt. Only a changed shared location needs a
- * streaming check before repair; ordinary seeds and serving reads do not ask storage in advance.
- * A retry changes neither an acknowledged generation nor one a render holds a lease to replace.
- */
+/** Ordinary retries need no scope scan. Actual canonical moves use the durable path below. */
 export function repairSeedEntries(
   input: TxInput,
   plans: readonly SeedLocations[],
   events: EventInput[],
   proofs: SeedLocationProofs,
 ): number {
-  return plans.reduce((count, plan) => count + Number(repairOne(input, plan, events, proofs)), 0);
+  let repaired = 0;
+  for (const plan of plans) {
+    const prepared = prepareSeedRepair(input, plan, proofs);
+    if (prepared === undefined) continue;
+    if (prepared.repairs.length !== 0) throw new Error('a seed relocation needs a durable job');
+    publishSeedRepair(input, prepared, events);
+    repaired += 1;
+  }
+  return repaired;
+}
+
+/** A lease ending during another group's continuation cannot admit a previously skipped retry. */
+export function eligibleSeedRepairs(
+  input: TxInput,
+  plans: readonly SeedLocations[],
+): readonly SeedLocations[] {
+  return plans.filter((plan) => repairableGeneration(input.sql, plan) !== undefined);
+}
+
+/** Pin possible future moves before an older in-flight projection can acknowledge them. */
+export function potentialSeedRepairGroup(input: TxInput, plan: SeedLocations): RepairGroup {
+  const generation = repairableGeneration(input.sql, plan);
+  const previous = generation === undefined ? undefined : generationOutputs(generation);
+  const outputs = previous === undefined ? undefined : relocatedOutputs(previous, plan.outputs);
+  return {
+    entryId: plan.identity.entryId,
+    repairs:
+      previous === undefined || outputs === undefined
+        ? []
+        : seedRelocations(input.sql, previous, outputs),
+    failureMarkers: [],
+  };
 }

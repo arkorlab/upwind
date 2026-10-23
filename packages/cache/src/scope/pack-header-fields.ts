@@ -10,6 +10,7 @@ export interface PackHeaderFields {
   readonly scopeId: string;
   /** The immutable scope's own build, required only for version-three paired Pages output. */
   readonly buildId?: string | undefined;
+  readonly packSchemaVersion?: 1 | 2 | undefined;
   readonly entry: {
     readonly entryId: string;
     readonly kind: string;
