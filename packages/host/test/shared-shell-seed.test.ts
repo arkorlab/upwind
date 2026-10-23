@@ -1,5 +1,10 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
-import { deriveEntry } from '@stayingupwind/core/cache';
+import {
+  appPathFor,
+  deriveEntry,
+  implicitTagsFor,
+  sharedShellTagOf,
+} from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
 import { buildTagsOf, seedRouteFor } from '../src/bundle/cache-seed.ts';
@@ -43,7 +48,6 @@ describe('seeding the shared identity of a reusable terminal shell', () => {
     { response: 'complete' },
     { compute: 'blocking' },
     { partialFallback: true },
-    { allowQuery: ['nxtPtwo'] },
     { allowQuery: ['search'] },
     { pathname: '/prefix/b/value' },
     { pathname: '/prefix/b/[literal]', routeType: undefined },
@@ -126,6 +130,62 @@ describe('seeding the shared identity of a reusable terminal shell', () => {
     expect(seeded?.input.generation.tags).toContainEqual({ kind: 'next-explicit', value });
     expect(seeded?.cache).not.toHaveProperty('buildTags');
   });
+});
+
+/**
+ * A terminal shell as Next.js 16.4.2 writes one that postponed nothing: keyed by every route key,
+ * `two` among them, which the shell leaves open.
+ */
+const KEYED_SHELL: Prerender = {
+  ...SHARED_SHELL,
+  compute: 'static',
+  postponed: undefined,
+  allowQuery: ['nxtPone', 'nxtPtwo'],
+};
+
+/** What a regeneration of a class's entry carries, where its render recorded no tags of its own. */
+async function regenerationTags(prerender: Prerender): Promise<string[]> {
+  const descriptor = {
+    kind: 'app-page' as const,
+    route: prerender.route,
+    pathname: prerender.pathname,
+  };
+  const { entryId } = await deriveEntry(CONTEXT.scopeId, descriptor);
+  return [...implicitTagsFor(appPathFor('app-page', prerender.route)), sharedShellTagOf(entryId)];
+}
+
+describe('seeding the entry of a terminal shell keyed by the parameters it leaves open', () => {
+  it.each<Partial<Prerender>>([
+    {},
+    { compute: 'resuming', postponed: SHARED_SHELL.postponed, allowQuery: ['nxtPtwo'] },
+  ])(
+    'keys and tags it as its regeneration does, where a query besides its parameters keeps it: %j',
+    async (changes) => {
+      const prerender = { ...KEYED_SHELL, ...changes };
+      const other = { ...prerender, allowQuery: [...(prerender.allowQuery ?? []), 'preview'] };
+      const descriptor = { kind: 'app-page', route: prerender.route, pathname: prerender.pathname };
+      const [seeded, kept, derived] = await Promise.all([
+        seedRouteFor(shellBundle(prerender), prerender, CONTEXT),
+        seedRouteFor(shellBundle(other), other, CONTEXT),
+        deriveEntry(CONTEXT.scopeId, {
+          kind: 'app-page',
+          route: prerender.route,
+          pathname: prerender.pathname,
+        }),
+      ]);
+
+      // The entry the runtime answers every member from, keyed as it keys it, keys and all.
+      expect(seeded?.input.descriptor).toStrictEqual(descriptor);
+      expect(seeded?.input).not.toHaveProperty('allowQuery');
+      expect(seeded?.cache?.entryId).toBe(derived.entryId);
+      expect(seeded?.input.generation.tags.map((tag) => tag.value)).toStrictEqual(
+        await regenerationTags(prerender),
+      );
+      // Keys that name a query besides the route's parameters vary the entry, as they did.
+      expect(kept?.input.allowQuery).toStrictEqual(other.allowQuery);
+      expect(kept?.input.generation.tags).toStrictEqual(buildTagsOf('app-page', other));
+    },
+  );
 });
 
 describe('concrete pathname tags and class metadata in a seed', () => {
