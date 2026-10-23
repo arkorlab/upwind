@@ -113,6 +113,9 @@ const JSON_TYPE = 'application/json';
 const PART_VARY =
   'rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch, accept-encoding';
 const NOT_FOUND = '<!doctype html><html><body>Not here</body></html>';
+/** What a byte of a part the test has the edge corrupt is turned into (`corruptedRange`): `*`, or `-`. */
+const CORRUPT_BYTE = 0x2a;
+const OTHER_CORRUPT_BYTE = 0x2d;
 
 interface Answer {
   /** A router answer whose redirects depend on the query exactly as sent. */
@@ -128,6 +131,8 @@ interface Answer {
   readonly rangeless?: boolean;
   /** What a request for a range of it is answered with instead, where not the file's range. */
   readonly inPart?: Answer;
+  /** The byte at `at` of the part a request asking `range` is answered with, other than the file's. */
+  readonly corruptedRange?: { readonly range: string; readonly at: number };
   /** Whether a file is answered whole to a request on the entity tag it is served under. */
   readonly unconditional?: boolean;
   /** Whether a file is answered whole to a request on a precondition it fails, not `412`. */
@@ -490,7 +495,14 @@ function answeredInPart(
   const contentRange = `bytes ${start}-${end}/${bytes.length}`;
   const length = String(end - start + 1);
   response.writeHead(206, { ...headers, 'content-range': contentRange, 'content-length': length });
-  response.end(bytes.subarray(start, end + 1));
+  const part = Buffer.from(bytes.subarray(start, end + 1));
+  // A byte of the part other than the file's, where the test has the edge send one for this range.
+  const { corruptedRange } = answer;
+  if (corruptedRange !== undefined && corruptedRange.range === request.headers.range) {
+    const at = corruptedRange.at - start;
+    part[at] = part[at] === CORRUPT_BYTE ? OTHER_CORRUPT_BYTE : CORRUPT_BYTE;
+  }
+  response.end(part);
   return true;
 }
 
@@ -4199,6 +4211,48 @@ describe('what the check makes of the middleware', () => {
           path: '/a.txt',
           reason:
             'asked for as the request a rule of next.config sets headers on it for (range: bytes=4-7), asked for Range bytes=4-7, answered with x-part none, not the yes the application set',
+        },
+      ]);
+    });
+
+    it('holds a part a rule of next.config asks for to every byte of it, past those read first', async () => {
+      // Longer than the bytes the check reads of an answer first, so a byte past them is held by the
+      // part's digest (greptile, Codex).
+      const text = Array.from({ length: 400 }, (_, index) =>
+        String.fromCodePoint(0x61 + (index % 26)),
+      ).join('');
+      await writeFile(path.join(blobsOf(), sha256Of(text)), text);
+      const long = { '/long.txt': fileOf(text, TEXT) };
+      const part: HeaderRule = {
+        sourceRegex: String.raw`^/long\.txt$`,
+        has: [{ type: 'header', key: 'range', value: 'bytes=10-209' }],
+        headers: { 'X-Part': 'yes' },
+      };
+      const asFile = {
+        'content-type': TEXT,
+        'cache-control': REVALIDATE,
+        'x-arkor-edge': FILE_EDGE,
+      };
+      const ranged = {
+        test: (headers: IncomingMessage['headers']) => headers.range === 'bytes=10-209',
+        headers: { 'x-part': 'yes', 'cache-control': GATED },
+      };
+      answers.set('/long.txt', { headers: asFile, body: text, when: ranged });
+      const whole = await checkStack(stackOf([], long, { headerRules: [part] }));
+      answers.set('/long.txt', {
+        headers: asFile,
+        body: text,
+        when: ranged,
+        corruptedRange: { range: 'bytes=10-209', at: 150 },
+      });
+      const corrupted = await checkStack(stackOf([], long, { headerRules: [part] }));
+
+      expect(whole).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(corrupted.failures).toStrictEqual([
+        {
+          path: '/long.txt',
+          reason:
+            "asked for as the request a rule of next.config sets headers on it for (range: bytes=10-209), answered Range bytes=10-209 with other bytes than the file's",
         },
       ]);
     });

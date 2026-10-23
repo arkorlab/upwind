@@ -209,12 +209,17 @@ function rangeSelected(
  * holds, `206` for a range it names and `416` for one no byte satisfies, and the file, whole,
  * otherwise (`selectedBy`).
  */
-function selectedFailure(
+async function selectedFailure(
   stack: CheckedStack,
   subject: Subject,
   answer: Reading,
-  read: { readonly sent: Readonly<Record<string, string>>; readonly expected: FileExpectation },
-): string | undefined {
+  read: {
+    readonly sent: Readonly<Record<string, string>>;
+    readonly expected: FileExpectation;
+    /** The whole file asked for, as answered: what it kept of the file's bytes. */
+    readonly whole: Reading;
+  },
+): Promise<string | undefined> {
   const { file } = subject;
   const selected = selectedBy(file, read.sent, read.expected);
   switch (selected.kind) {
@@ -226,7 +231,13 @@ function selectedFailure(
     }
     case 'range': {
       const { what, range } = selected;
-      return selectedRangeFailure(stack, subject, { answer, what, range, expected: read.expected });
+      return await selectedRangeFailure(stack, subject, {
+        answer,
+        what,
+        range,
+        expected: read.expected,
+        whole: read.whole,
+      });
     }
     case 'unsatisfied': {
       return unsatisfiedFailure(selected.what, { file, answer, expected: read.expected });
@@ -321,6 +332,8 @@ async function ruleFailure(
     readonly file: StaticFileEntry;
     readonly headers: Readonly<Record<string, string>>;
     readonly head: Buffer;
+    /** The whole file, as answered: what it kept of the file's bytes. */
+    readonly whole: Reading;
   },
 ): Promise<string | undefined> {
   const { requests: ruleRequests, unproved } = ruleRequestsOf(stack, url, asked.headers);
@@ -338,9 +351,10 @@ async function ruleFailure(
       ...again,
       headers: typed.headers,
     });
-    const failure = selectedFailure(stack, subject, again.answer, {
+    const failure = await selectedFailure(stack, subject, again.answer, {
       sent: typed.headers,
       expected,
+      whole: asked.whole,
     });
     if (failure !== undefined) {
       return said(subject, `asked for as ${typed.what}, ${failure}`);
@@ -376,6 +390,6 @@ export async function followUpFailure(
     (await rangeFormsFailure(stack, url, { file, headers, answer })) ??
     (await conditionalFailure(stack, url, { ...again, etag })) ??
     (await headFailure(stack, url, again)) ??
-    (await ruleFailure(stack, url, again))
+    (await ruleFailure(stack, url, { ...again, whole: answer }))
   );
 }

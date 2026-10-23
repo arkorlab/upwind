@@ -18,7 +18,7 @@ import {
   type FileExpectation,
   fileFailure,
 } from './file-expectations.ts';
-import { rangeDigestOf } from './range-digests.ts';
+import { rangeDigestOf, spanDigestOf } from './range-digests.ts';
 import type { Reading } from './reading.ts';
 
 /**
@@ -156,10 +156,10 @@ export async function rangeFailure(
 /**
  * Why a file asked for by a request that carries a range of it (`what`) — one a rule of `next.config`
  * conditioned on a range has it carry (Codex) — is not answered as the edge answers the range it names
- * (`requestedRange`): `206` under the `Content-Range` those bytes are, their length, those bytes of the
- * file as far as they were read, and the whole file's headers — the rule's among them.
+ * (`requestedRange`): `206` under the `Content-Range` those bytes are, their length, every one of those
+ * bytes of the file, and the whole file's headers — the rule's among them.
  */
-export function selectedRangeFailure(
+export async function selectedRangeFailure(
   stack: CheckedStack,
   subject: Subject,
   read: {
@@ -167,8 +167,10 @@ export function selectedRangeFailure(
     readonly what: string;
     readonly range: ByteRange;
     readonly expected: FileExpectation;
+    /** The whole file asked for, as answered: what it kept of the file's bytes. */
+    readonly whole: Reading;
   },
-): string | undefined {
+): Promise<string | undefined> {
   const { file } = subject;
   const { answer, what, range, expected } = read;
   if (answer.status !== PARTIAL_CONTENT_STATUS) {
@@ -197,6 +199,24 @@ export function selectedRangeFailure(
   }
   if (!seen.equals(held)) {
     return `answered ${what} with other bytes than the file's`;
+  }
+  // And past them, by their digest (greptile, Codex): a part a rule selects runs as long as its range
+  // does, and a byte past those read first is as much the file's as they — held to those bytes of the
+  // file by what its whole answer kept of them where it kept them all, by its blob otherwise
+  // (`spanDigestOf`), as a range by its end or from a byte on is (`formBytesFailure`).
+  if (size > seen.length) {
+    const expectedDigest = await spanDigestOf(
+      stack,
+      file,
+      { start: range.start, stop: range.end + 1 },
+      subject.onto === undefined ? read.whole : undefined,
+    );
+    if (expectedDigest === undefined) {
+      return `answered ${what} of a file the build holds no bytes of`;
+    }
+    if (answer.sha256 !== expectedDigest) {
+      return `answered ${what} with other bytes than the file's`;
+    }
   }
   const described = describedFailure(answer, expected, false);
   return described === undefined ? undefined : `asked for ${what}, ${described}`;
