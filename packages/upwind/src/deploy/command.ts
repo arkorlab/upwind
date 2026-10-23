@@ -273,7 +273,7 @@ export async function runDeploy(
     }
     return undefined;
   };
-  if (options.dryRun || scope === undefined) {
+  if (scope === undefined || options.dryRun) {
     const account = scope === undefined ? undefined : await readAccount(scope, names);
     return inspect(account) ?? 0;
   }

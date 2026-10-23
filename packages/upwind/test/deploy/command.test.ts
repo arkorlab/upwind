@@ -304,11 +304,13 @@ describe('`upwind deploy --dry-run`', () => {
     ];
     for (const command of commands) {
       const from = fake.requests.length;
+
       await expect(command()).rejects.toThrow(/could not acquire the project lock/u);
-      expect(fake.requests.slice(from).map(({ method, path }) => ({ method, path }))).toStrictEqual(
-        [{ method: 'POST', path: '/accounts/account-1/r2/buckets' }],
-      );
+      expect(
+        fake.requests.slice(from).map(({ method, path: pathname }) => ({ method, path: pathname })),
+      ).toStrictEqual([{ method: 'POST', path: '/accounts/account-1/r2/buckets' }]);
     }
+
     expect([...fake.buckets.keys()]).toStrictEqual([bucket]);
     expect(fake.kv.size).toBe(0);
     expect(fake.scripts.size).toBe(0);
@@ -355,7 +357,9 @@ describe('`upwind deploy --dry-run`', () => {
         fetch: fake.fetch,
       }),
     ).rejects.toThrow(/the account has no workers.dev subdomain/u);
+
     const requests = fake.requests.slice(from);
+
     expect(requests[0]).toMatchObject({ method: 'POST', path: '/accounts/account-1/r2/buckets' });
     expect(requests.at(-1)).toMatchObject({
       method: 'DELETE',

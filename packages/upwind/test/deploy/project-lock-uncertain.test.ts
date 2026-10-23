@@ -16,7 +16,7 @@ const BUCKET = projectLockBucket(NAMES);
 const WRITE = '/accounts/account-1/workers/scripts/shop-agent/secrets';
 const AGENT_URL = new URL('https://shop-agent.example.workers.dev/');
 
-function scope(send: typeof fetch, sleep = vi.fn(async () => undefined)) {
+function scope(send: typeof fetch, sleep = vi.fn(() => Promise.resolve())) {
   return {
     client: createCloudflareClient({ apiToken: 'token', fetch: send, sleep }),
     accountId: 'account-1',
@@ -34,20 +34,20 @@ function deletes(fake: ReturnType<typeof fakeCloudflare>) {
   return fake.requests.filter((request) => request.method === 'DELETE');
 }
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
 describe('uncertain writes keep project exclusion', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it.each(['network', 'server', 'malformed'] as const)(
     'does not retry a REST write with a %s outcome, or release its lock',
     async (outcome) => {
       const fake = fakeCloudflare();
-      const sleep = vi.fn(async () => undefined);
+      const sleep = vi.fn(() => Promise.resolve());
       let attempts = 0;
       const send: typeof fetch = async (input, init) => {
         const request = new Request(input, init);
-        if (new URL(request.url).pathname === WRITE) {
+        if (new URL(request.url).pathname.endsWith(WRITE)) {
           attempts += 1;
           if (outcome === 'network') {
             throw new TypeError('the write answer was lost');
@@ -56,7 +56,9 @@ describe('uncertain writes keep project exclusion', () => {
         }
         return fake.fetch(request);
       };
-      const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {
+        // Keep the expected warning out of the test output.
+      });
 
       await expect(
         withProjectLock(scope(send, sleep), NAMES, ({ scope: locked }) => {
@@ -66,12 +68,12 @@ describe('uncertain writes keep project exclusion', () => {
             repeatable: true,
           });
         }),
-      ).rejects.toThrow();
+      ).rejects.toThrow(/write answer was lost|Cloudflare answered PUT .* with (?:200|503)/u);
       expect(attempts).toBe(1);
       expect(sleep).not.toHaveBeenCalled();
       expect(fake.buckets.has(BUCKET)).toBe(true);
       expect(deletes(fake)).toStrictEqual([]);
-      expect(warning).toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('retained the project lock'));
     },
   );
 
@@ -79,11 +81,11 @@ describe('uncertain writes keep project exclusion', () => {
     'also quarantines a raw object PUT with a %s outcome',
     async (outcome) => {
       const fake = fakeCloudflare();
-      const sleep = vi.fn(async () => undefined);
+      const sleep = vi.fn(() => Promise.resolve());
       let attempts = 0;
       const send: typeof fetch = async (input, init) => {
         const request = new Request(input, init);
-        if (new URL(request.url).pathname === WRITE) {
+        if (new URL(request.url).pathname.endsWith(WRITE)) {
           attempts += 1;
           if (outcome === 'network') {
             throw new TypeError('the object answer was lost');
@@ -92,13 +94,15 @@ describe('uncertain writes keep project exclusion', () => {
         }
         return fake.fetch(request);
       };
-      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.spyOn(console, 'warn').mockImplementation(() => {
+        // Keep the expected warning out of the test output.
+      });
 
       await expect(
-        withProjectLock(scope(send, sleep), NAMES, ({ scope: locked }) => {
-          return locked.client.raw('PUT', WRITE, { body: 'object bytes', repeatable: true });
-        }),
-      ).rejects.toThrow();
+        withProjectLock(scope(send, sleep), NAMES, ({ scope: locked }) =>
+          locked.client.raw('PUT', WRITE, { body: 'object bytes', repeatable: true }),
+        ),
+      ).rejects.toThrow(/object answer was lost|Cloudflare answered PUT .* with 503/u);
       expect(attempts).toBe(1);
       expect(sleep).not.toHaveBeenCalled();
       expect(fake.buckets.has(BUCKET)).toBe(true);
@@ -111,13 +115,15 @@ describe('uncertain writes keep project exclusion', () => {
     let attempts = 0;
     const send: typeof fetch = async (input, init) => {
       const request = new Request(input, init);
-      if (new URL(request.url).pathname === WRITE) {
+      if (new URL(request.url).pathname.endsWith(WRITE)) {
         attempts += 1;
         return envelope(503);
       }
       return fake.fetch(request);
     };
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {
+      // Keep the expected warning out of the test output.
+    });
 
     await expect(
       withProjectLock(scope(send), NAMES, async ({ scope: locked }) => {
@@ -127,39 +133,43 @@ describe('uncertain writes keep project exclusion', () => {
         } catch {
           // The lock must remember this even though its caller handled the error.
         }
+
         await expect(
           locked.client.request('PUT', WRITE, { body: { name: 'AGENT_KEY', text: 'another' } }),
         ).rejects.toBeInstanceOf(ProjectWriteUncertainError);
+
         return 'the deployment is live';
       }),
     ).resolves.toBe('the deployment is live');
     expect(attempts).toBe(1);
     expect(fake.buckets.has(BUCKET)).toBe(true);
     expect(deletes(fake)).toStrictEqual([]);
-    expect(warning).toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('retained the project lock'));
   });
 
   it.each([400, 409, 429])(
     'releases after a REST write is explicitly refused with %i',
     async (status) => {
       const fake = fakeCloudflare();
-      const sleep = vi.fn(async () => undefined);
+      const sleep = vi.fn(() => Promise.resolve());
       let attempts = 0;
       const send: typeof fetch = async (input, init) => {
         const request = new Request(input, init);
-        if (new URL(request.url).pathname === WRITE) {
+        if (new URL(request.url).pathname.endsWith(WRITE)) {
           attempts += 1;
           return envelope(status);
         }
         return fake.fetch(request);
       };
-      const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {
+        // Keep the expected warning out of the test output.
+      });
 
       await expect(
-        withProjectLock(scope(send, sleep), NAMES, ({ scope: locked }) => {
-          return locked.client.request('PUT', WRITE, { body: {}, repeatable: true });
-        }),
-      ).rejects.toThrow();
+        withProjectLock(scope(send, sleep), NAMES, ({ scope: locked }) =>
+          locked.client.request('PUT', WRITE, { body: {}, repeatable: true }),
+        ),
+      ).rejects.toThrow(`refused with ${String(status)}`);
       expect(attempts).toBe(1);
       expect(sleep).not.toHaveBeenCalled();
       expect(fake.buckets.has(BUCKET)).toBe(false);
@@ -170,18 +180,20 @@ describe('uncertain writes keep project exclusion', () => {
 
   it('releases after a read fails without making a write uncertain', async () => {
     const fake = fakeCloudflare();
-    const sleep = vi.fn(async () => undefined);
+    const sleep = vi.fn(() => Promise.resolve());
     const send: typeof fetch = async (input, init) => {
       const request = new Request(input, init);
-      return new URL(request.url).pathname === WRITE ? envelope(503) : fake.fetch(request);
+      return new URL(request.url).pathname.endsWith(WRITE) ? envelope(503) : fake.fetch(request);
     };
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {
+      // Keep the expected warning out of the test output.
+    });
 
     await expect(
-      withProjectLock(scope(send, sleep), NAMES, ({ scope: locked }) => {
-        return locked.client.request('GET', WRITE);
-      }),
-    ).rejects.toThrow();
+      withProjectLock(scope(send, sleep), NAMES, ({ scope: locked }) =>
+        locked.client.request('GET', WRITE),
+      ),
+    ).rejects.toThrow(/Cloudflare answered GET .* with 503/u);
     expect(fake.buckets.has(BUCKET)).toBe(false);
     expect(deletes(fake)).toHaveLength(1);
     expect(warning).not.toHaveBeenCalled();
@@ -203,8 +215,10 @@ describe('uncertain writes keep project exclusion', () => {
         }
         return fake.fetch(request);
       };
-      const sleep = vi.fn(async () => undefined);
-      const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const sleep = vi.fn(() => Promise.resolve());
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {
+        // Keep the expected warning out of the test output.
+      });
 
       await expect(
         withProjectLock(
@@ -221,25 +235,27 @@ describe('uncertain writes keep project exclusion', () => {
       expect(sleep).not.toHaveBeenCalled();
       expect(fake.buckets.has(BUCKET)).toBe(true);
       expect(deletes(fake)).toStrictEqual([]);
-      expect(warning).toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('retained the project lock'));
     },
   );
 
   it('keeps the missing-blobs POST read-only, including its normal retries and failed result', async () => {
     const fake = fakeCloudflare();
     let attempts = 0;
+    const observed: { method: string; pathname: string }[] = [];
     const send: typeof fetch = async (input, init) => {
       const request = new Request(input, init);
       if (new URL(request.url).host === AGENT_URL.host) {
-        expect(request.method).toBe('POST');
-        expect(new URL(request.url).pathname).toBe(AGENT_PATHS.missing);
+        observed.push({ method: request.method, pathname: new URL(request.url).pathname });
         attempts += 1;
         return new Response('the read failed', { status: 503 });
       }
       return fake.fetch(request);
     };
-    const sleep = vi.fn(async () => undefined);
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const sleep = vi.fn(() => Promise.resolve());
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {
+      // Keep the expected warning out of the test output.
+    });
 
     await expect(
       withProjectLock(
@@ -253,6 +269,9 @@ describe('uncertain writes keep project exclusion', () => {
       ),
     ).rejects.toThrow(/the deploy agent answered 503/u);
     expect(attempts).toBe(4);
+    expect(observed).toStrictEqual(
+      Array.from({ length: 4 }, () => ({ method: 'POST', pathname: AGENT_PATHS.missing })),
+    );
     expect(sleep).toHaveBeenCalledTimes(3);
     expect(fake.buckets.has(BUCKET)).toBe(false);
     expect(deletes(fake)).toHaveLength(1);

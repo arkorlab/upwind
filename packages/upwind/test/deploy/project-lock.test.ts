@@ -1,4 +1,4 @@
-import path from 'node:path';
+import nodePath from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 
 import { blobObjectKey } from '@stayingupwind/host/storage';
@@ -19,7 +19,7 @@ const BUCKET = projectLockBucket(NAMES);
 const BUCKETS = '/accounts/account-1/r2/buckets';
 const LOCK = `${BUCKETS}/${BUCKET}`;
 
-function scope(send: typeof fetch, sleep = vi.fn(async () => undefined)) {
+function scope(send: typeof fetch, sleep = vi.fn(() => Promise.resolve())) {
   return {
     client: createCloudflareClient({ apiToken: 'token', fetch: send, sleep }),
     accountId: 'account-1',
@@ -27,26 +27,25 @@ function scope(send: typeof fetch, sleep = vi.fn(async () => undefined)) {
 }
 
 function signal() {
-  let open: (() => void) | undefined;
-  const promise = new Promise<void>((resolve) => {
-    open = resolve;
-  });
-  return { promise, open: () => open?.() };
+  const { promise, resolve } = Promise.withResolvers<void>();
+  return { promise, open: resolve };
 }
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
 describe('project exclusion through the R2 management API', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('fits every accepted project name and cannot name any derived project or app store', () => {
     const bindings = ['', 'UPWIND_R2', '--_---', 'DEPLOY___LOCK', 'A_'.repeat(100)];
     for (let length = 2; length <= 24; length += 1) {
       const names = projectNames(`a${'b'.repeat(length - 2)}z`);
       const lock = projectLockBucket(names);
+
       expect(lock).toMatch(/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/u);
-      expect(lock.length).toBe(length + 21);
+      expect(lock).toHaveLength(length + 21);
       expect(lock).toContain('--');
+
       for (const name of Object.values(names)) {
         expect(name).not.toContain('--');
       }
@@ -56,7 +55,10 @@ describe('project exclusion through the R2 management API', () => {
         }
       }
     }
-    expect(projectLockBucket(projectNames('a'.repeat(24)))).toHaveLength(45);
+
+    const longest = projectNames('a'.repeat(24));
+
+    expect(projectLockBucket(longest)).toHaveLength(45);
     expect(() => projectNames('a'.repeat(25))).toThrow(/not a project name/u);
     expect(() => projectNames('a--z')).toThrow(/not a project name/u);
   });
@@ -70,7 +72,7 @@ describe('project exclusion through the R2 management API', () => {
       ]);
       fake.buckets.set(BUCKET, objects);
       fake.fail({ method: 'POST', path: BUCKETS }, status);
-      const run = vi.fn(async () => 'done');
+      const run = vi.fn(() => Promise.resolve('done'));
 
       await expect(withProjectLock(scope(fake.fetch), NAMES, run)).rejects.toThrow(
         /could not acquire the project lock/u,
@@ -92,7 +94,7 @@ describe('project exclusion through the R2 management API', () => {
       return 'first';
     });
     await entered.promise;
-    const second = vi.fn(async () => 'second');
+    const second = vi.fn(() => Promise.resolve('second'));
     try {
       await expect(withProjectLock(scope(fake.fetch), NAMES, second)).rejects.toThrow(
         /could not acquire the project lock/u,
@@ -102,25 +104,27 @@ describe('project exclusion through the R2 management API', () => {
       expect(fake.requests.filter((request) => request.method === 'DELETE')).toStrictEqual([]);
     } finally {
       finish.open();
+
       await expect(first).resolves.toBe('first');
     }
+
     await expect(withProjectLock(scope(fake.fetch), NAMES, second)).resolves.toBe('second');
-    expect(second).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledExactlyOnceWith(expect.anything());
     expect(fake.buckets.has(BUCKET)).toBe(false);
   });
 
   it.each([429, 503])('does not retry or release a create refused with %i', async (status) => {
     const fake = fakeCloudflare();
     fake.fail({ method: 'POST', path: BUCKETS }, status);
-    const sleep = vi.fn(async () => undefined);
-    const run = vi.fn(async () => 'done');
+    const sleep = vi.fn(() => Promise.resolve());
+    const run = vi.fn(() => Promise.resolve('done'));
 
     await expect(withProjectLock(scope(fake.fetch, sleep), NAMES, run)).rejects.toThrow(
       /could not acquire the project lock/u,
     );
-    expect(fake.requests.map(({ method, path }) => ({ method, path }))).toStrictEqual([
-      { method: 'POST', path: BUCKETS },
-    ]);
+    expect(
+      fake.requests.map(({ method, path: pathname }) => ({ method, path: pathname })),
+    ).toStrictEqual([{ method: 'POST', path: BUCKETS }]);
     expect(run).not.toHaveBeenCalled();
     expect(sleep).not.toHaveBeenCalled();
   });
@@ -141,8 +145,8 @@ describe('project exclusion through the R2 management API', () => {
         }
         return response;
       };
-      const sleep = vi.fn(async () => undefined);
-      const run = vi.fn(async () => 'done');
+      const sleep = vi.fn(() => Promise.resolve());
+      const run = vi.fn(() => Promise.resolve('done'));
 
       await expect(withProjectLock(scope(send, sleep), NAMES, run)).rejects.toThrow(
         /confirming every deploy, rollback and destroy/u,
@@ -168,12 +172,14 @@ describe('project exclusion through the R2 management API', () => {
       }
       return response;
     };
-    const sleep = vi.fn(async () => undefined);
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const sleep = vi.fn(() => Promise.resolve());
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {
+      // The warning is asserted below.
+    });
 
-    await expect(withProjectLock(scope(send, sleep), NAMES, async () => 'live')).resolves.toBe(
-      'live',
-    );
+    await expect(
+      withProjectLock(scope(send, sleep), NAMES, () => Promise.resolve('live')),
+    ).resolves.toBe('live');
     expect(fake.buckets.has(BUCKET)).toBe(true);
     expect(fake.requests.filter((request) => request.method === 'DELETE')).toHaveLength(1);
     expect(sleep).not.toHaveBeenCalled();
@@ -183,19 +189,19 @@ describe('project exclusion through the R2 management API', () => {
   it('keeps the primary error when releasing is refused', async () => {
     const fake = fakeCloudflare();
     fake.fail({ method: 'DELETE', path: LOCK }, 503);
-    const sleep = vi.fn(async () => undefined);
+    const sleep = vi.fn(() => Promise.resolve());
     const error = new Error('staging failed');
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {
+      // The warning is asserted below.
+    });
 
     await expect(
-      withProjectLock(scope(fake.fetch, sleep), NAMES, async () => {
-        throw error;
-      }),
+      withProjectLock(scope(fake.fetch, sleep), NAMES, () => Promise.reject(error)),
     ).rejects.toBe(error);
     expect(fake.buckets.has(BUCKET)).toBe(true);
     expect(fake.requests.filter((request) => request.method === 'DELETE')).toHaveLength(1);
     expect(sleep).not.toHaveBeenCalled();
-    expect(warning).toHaveBeenCalledOnce();
+    expect(warning).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('could not release'));
   });
 
   it('holds the lock until sibling blob PUTs settle after a failure, without starting queued PUTs', async () => {
@@ -231,18 +237,17 @@ describe('project exclusion through the R2 management API', () => {
         return new Response(null, { status: 204 });
       },
     };
-    const outcome = withProjectLock(scope(fake.fetch), NAMES, () => {
-      return uploadBuildBlobs(agent, path.dirname(path.join(dir, BUNDLE_PATH)), bundle);
-    }).then(
-      () => {
+    const outcome = (async () => {
+      try {
+        return await withProjectLock(scope(fake.fetch), NAMES, () =>
+          uploadBuildBlobs(agent, nodePath.dirname(nodePath.join(dir, BUNDLE_PATH)), bundle),
+        );
+      } catch (error_) {
+        return error_;
+      } finally {
         settled = true;
-        return undefined;
-      },
-      (failure: unknown) => {
-        settled = true;
-        return failure;
-      },
-    );
+      }
+    })();
     await started.promise;
     fail.open();
     // Let the rejection propagate, while the seven sibling PUTs remain held by the fake API.
@@ -254,6 +259,7 @@ describe('project exclusion through the R2 management API', () => {
     } finally {
       finish.open();
     }
+
     await expect(outcome).resolves.toBe(error);
     expect(uploads).toBe(8);
     expect(fake.buckets.has(BUCKET)).toBe(false);

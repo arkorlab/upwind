@@ -7,6 +7,9 @@ import type { AccountScope } from './cloudflare/workers.ts';
 import type { ProjectNames } from './names.ts';
 import { AGENT_PATHS } from './workers/protocol.ts';
 
+const CLIENT_ERROR = 400;
+const SERVER_ERROR = 500;
+
 /**
  * Only a project's account-changing commands use this bucket. It is never bound to a Worker, and
  * never holds objects. R2's REST create refuses an existing name: a successful create owns the
@@ -54,9 +57,16 @@ function unknownOutcome(error: unknown): boolean {
   return (
     !(error instanceof CloudflareApiError) ||
     error.status === 0 ||
-    error.status >= 500 ||
-    error.status < 400
+    error.status >= SERVER_ERROR ||
+    error.status < CLIENT_ERROR
   );
+}
+
+function writeOptions(
+  method: string,
+  options: RequestOptions | undefined,
+): RequestOptions | undefined {
+  return writes(method) ? { ...options, repeatable: false } : options;
 }
 
 /**
@@ -89,21 +99,13 @@ function guardedProject(
       throw error;
     }
   };
-  const once = (
-    method: string,
-    options: RequestOptions | undefined,
-  ): RequestOptions | undefined => {
-    return writes(method) ? { ...options, repeatable: false } : options;
-  };
   const client: CloudflareClient = {
-    request<T>(method: string, path: string, options?: RequestOptions) {
-      return guard(method, path, () =>
-        scope.client.request<T>(method, path, once(method, options)),
-      );
-    },
-    raw: (method, path, options) => {
-      return guard(method, path, () => scope.client.raw(method, path, once(method, options)));
-    },
+    request: <T>(method: string, path: string, options?: RequestOptions) =>
+      guard(method, path, () =>
+        scope.client.request<T>(method, path, writeOptions(method, options)),
+      ),
+    raw: (method, path, options) =>
+      guard(method, path, () => scope.client.raw(method, path, writeOptions(method, options))),
   };
   const observed: typeof fetch = async (input, init) => {
     const request = new Request(input, init);
@@ -126,10 +128,14 @@ function guardedProject(
       uncertain.add(operation);
       throw new ProjectWriteUncertainError(`${operation} has an unknown outcome`, { cause: error });
     }
-    if (write && response.status >= 500) {
+    if (write && response.status >= SERVER_ERROR) {
       const operation = `${request.method} ${url.host}${url.pathname}`;
       uncertain.add(operation);
-      await response.body?.cancel().catch(() => undefined);
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Failure to discard the answer does not make the already uncertain write safe to retry.
+      }
       throw new ProjectWriteUncertainError(
         `${operation} answered ${response.status} with an unknown outcome`,
       );

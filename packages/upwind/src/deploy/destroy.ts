@@ -261,9 +261,9 @@ export async function runDestroy(
   const settings = await readDeploySettings(options.projectDir);
   const names = projectNames(settings.project);
   const client = createCloudflareClient({ apiToken: credentials.apiToken, fetch: io.fetch });
-  const scope = { client, accountId: await resolveAccount(client, credentials.accountId) };
+  const accountScope = { client, accountId: await resolveAccount(client, credentials.accountId) };
   return withProjectLock(
-    scope,
+    accountScope,
     names,
     async (held) => {
       const { scope } = held;
