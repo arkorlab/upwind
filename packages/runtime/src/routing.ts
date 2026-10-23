@@ -222,7 +222,8 @@ export function routingTables(
  */
 export function noteLaterHeaderRules(routed: ResolveRoutesResult, judged: boolean): void {
   if (!judged) return;
-  const headers = (routed.resolvedHeaders ??= new Headers());
+  const headers = routed.resolvedHeaders ?? new Headers();
+  routed.resolvedHeaders = headers;
   headers.delete(HEADER_RULES_AFTER_HEADER);
   headers.delete(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER);
   headers.set(HEADER_RULES_AFTER_HEADER, [...headers.keys()].join(','));

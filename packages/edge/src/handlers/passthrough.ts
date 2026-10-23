@@ -469,9 +469,10 @@ function laterHeaderRules(answer: Response): Set<string> | undefined {
   const later = new Set(names);
   // A later Connection replaces the earlier routing and middleware Connection before forwarding.
   // Its nominations must not be restored by either of those earlier layers.
-  if (later.has('connection')) {
-    for (const name of nominatedBy(answer.headers) ?? []) later.add(name);
-  }
+  if (!later.has('connection')) return later;
+  const nominated = nominatedBy(answer.headers);
+  if (nominated === undefined) return later;
+  for (const name of nominated) later.add(name);
   return later;
 }
 
@@ -552,7 +553,9 @@ function layAfterMiddleware(
   // (`splice/cookies.ts`): a browser keeps the last of a cookie set twice, and the middleware's is
   // the one it meant — a `Max-Age=0` that the copy before it lost, say.
   mergeScopedMiddlewareHeaders(headers, middleware.responseHeaders, scope, later);
-  for (const cookie of laterCookies ?? []) headers.append('set-cookie', cookie);
+  if (laterCookies !== undefined) {
+    for (const cookie of laterCookies) headers.append('set-cookie', cookie);
+  }
   if (rewrittenPath !== null) headers.set(REWRITTEN_PATH_HEADER, rewrittenPath);
 }
 

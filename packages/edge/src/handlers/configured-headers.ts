@@ -165,6 +165,24 @@ function removeNominatedFields(headers: Headers, nominated: ReadonlySet<string> 
   }
 }
 
+/** Set an already-filtered deferred field; cookies accumulate beside the answer's own. */
+function layDeferredField(
+  headers: Headers,
+  name: string,
+  value: string,
+  scope: PassthroughResponseContext,
+): void {
+  if (name !== SET_COOKIE_HEADER) {
+    setConfigured(headers, name, value, scope);
+    return;
+  }
+  try {
+    headers.append(name, scopedValue(name, value, scope));
+  } catch {
+    // Not a header value, on this request: left off.
+  }
+}
+
 /**
  * The headers the rules of `next.config` set on a request, laid on an answer a Function left them
  * off (`HEADER_RULES_LEFT_HEADER`), as the runtime lays what routing collected on its answer
@@ -213,15 +231,7 @@ export function layConfiguredOver(
     ) {
       continue;
     }
-    if (name === SET_COOKIE_HEADER) {
-      try {
-        headers.append(name, scopedValue(name, value, scope));
-      } catch {
-        // Not a header value, on this request: left off.
-      }
-    } else {
-      setConfigured(headers, name, value, scope);
-    }
+    layDeferredField(headers, name, value, scope);
   }
 }
 
