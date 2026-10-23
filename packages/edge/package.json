@@ -1,0 +1,60 @@
+{
+  "name": "@stayingupwind/edge",
+  "version": "0.4.0",
+  "private": true,
+  "description": "The edge in front of a deployment: shell-first documents and their continuation, the build's files and images, prefetch segments, middleware, the runtime cache's reads, and the pointer that names what is served.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git",
+    "directory": "packages/edge"
+  },
+  "files": [
+    "src",
+    "types",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "NOTICE"
+  ],
+  "type": "module",
+  "exports": {
+    "./bindings": "./src/bindings.ts",
+    "./blob-worker": "./src/blob/worker.ts",
+    "./edge-host": "./src/edge-host.ts",
+    "./edge-runtime": "./src/edge-runtime.ts",
+    "./handlers/csp-nonce": "./src/handlers/csp-nonce.ts",
+    "./handlers/layered-clients": "./src/handlers/layered-clients.ts",
+    "./handlers/responses": "./src/handlers/responses.ts",
+    "./internal/*": "./src/*",
+    "./memory/caches": "./src/memory/caches.ts",
+    "./observability/logger": "./src/observability/logger.ts",
+    "./observability/metrics": "./src/observability/metrics.ts",
+    "./pattern-budget": "./src/pattern-budget.ts",
+    "./preview/manifest": "./src/preview/manifest.ts",
+    "./preview/pointer": "./src/preview/pointer.ts",
+    "./preview/state": "./src/preview/state.ts",
+    "./preview/storage": "./src/preview/storage.ts",
+    "./reports": "./src/reports.ts",
+    "./request-context": "./src/request-context.ts",
+    "./route": "./src/route.ts",
+    "./standalone": "./src/standalone/index.ts",
+    "./standalone/worker": "./src/standalone/worker.ts",
+    "./strategies/asset-upstream": "./src/strategies/asset-upstream.ts",
+    "./strategies/context": "./src/strategies/context.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stayingupwind/core": "workspace:*",
+    "@stayingupwind/host": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
