@@ -94,6 +94,32 @@ const CASES: readonly (readonly [string, s.Schema, readonly unknown[]])[] = [
   ['a loose object', s.looseObject({ name: s.string() }), [{ name: 'x', other: 1 }, {}]],
   ['a bounded list', s.array(s.number()).min(1).max(2), [[1], [1, 2, 3], [], ['x'], 'x']],
   [
+    'an oversized list with invalid elements',
+    s.array(s.number()).min(10).max(2, 'at most two'),
+    [['x', 'y', 'z'], [1, 2, 3], [1], 'not an array'],
+  ],
+  [
+    'an exact list with a later refinement',
+    s
+      .array(s.number())
+      .length(2, 'exactly two')
+      .refine(() => false, 'after parsing'),
+    [['x', 'y', 'z'], [1, 2, 3], [1], [1, 2]],
+  ],
+  [
+    'a list whose upper bound follows a refinement',
+    s
+      .array(s.number())
+      .refine(() => true)
+      .max(1),
+    [[1, 2], ['x', 'y'], [1]],
+  ],
+  [
+    'a parent refinement after an oversized list',
+    s.object({ entries: s.array(s.number()).max(1) }).refine(() => false, 'after parsing'),
+    [{ entries: ['x', 'y'] }, { entries: [1, 2] }, { entries: [1] }],
+  ],
+  [
     'a record of named keys',
     s.record(s.string().regex(/^[a-z]+$/u), s.number()),
     [{ a: 1 }, { A: 1 }, { a: 'x' }, [], null],
