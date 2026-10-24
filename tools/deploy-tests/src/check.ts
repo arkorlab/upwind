@@ -13,6 +13,7 @@ import {
 } from './check-application.ts';
 import { installManagerScenarios } from './check-install-manager.ts';
 import { checkLifecycle, lifecycleScenarios } from './check-lifecycle.ts';
+import { nativeConfigScenario, ordinaryNodeOptions } from './check-native-config.ts';
 import { NEXT_JS_STACK, sameEnvironment, stackSizeScenario } from './check-stack-size.ts';
 import { workspaceScenario } from './check-workspace.ts';
 import { fakeHost, type FakeHost } from './fake-host.ts';
@@ -292,42 +293,6 @@ async function ownUrlScenarios(
       host.close();
     }
   }
-}
-
-/**
- * A suite of a `next.config.ts` that Node.js loads itself is built with that loader, as Next.js's own CI
- * builds it; any other suite is built without, as every application is.
- */
-async function nativeConfigScenario(
-  deploymentId: string,
-  appDir: string,
-  env: NodeJS.ProcessEnv,
-): Promise<void> {
-  const host = await fakeHost(deploymentId);
-  try {
-    await bounded(DEPLOY_HOOK, appDir, {
-      ...env,
-      ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
-      JEST_SUITE_NAME:
-        'deploy:e2e:test/e2e/app-dir/next-config-ts-native-ts/export-default/next-config-ts-export-default-esm.test.ts',
-    });
-    const build = readFileSync(path.join(appDir, '.adapter-build.log'), 'utf8');
-    holds(
-      "a suite of a next.config Node.js loads itself is built with Node.js's loader",
-      build.includes('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED: YES'),
-    );
-    holds('and with types transformed', build.includes('the build saw types transformed: YES'));
-  } finally {
-    host.close();
-  }
-}
-
-/** The shell's `NODE_OPTIONS` without the one a native-TS suite's build is given (`e2e-deploy.sh`). */
-function ordinaryNodeOptions(options = ''): string | undefined {
-  const kept = options
-    .split(/\s+/u)
-    .filter((option) => option !== '' && option !== '--experimental-transform-types');
-  return kept.length === 0 ? undefined : kept.join(' ');
 }
 
 /** A harness as Next.js's is one: it starts the hook it is handed, with a suite's variable on top. */
@@ -626,7 +591,13 @@ async function main(): Promise<void> {
     );
 
     await ownUrlScenarios(deploymentId, appDir, env);
-    await nativeConfigScenario(deploymentId, appDir, env);
+    await nativeConfigScenario({
+      deploymentId,
+      appDir,
+      env,
+      deploy: (dir, hookEnv) => bounded(DEPLOY_HOOK, dir, hookEnv),
+      holds,
+    });
     await suiteEnvScenario(deploymentId, appDir, env);
     // End this fixture's lifetime before another fake host can reuse an earlier one's port.
     rmSync(appDir, { recursive: true, force: true });

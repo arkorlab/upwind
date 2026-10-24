@@ -48,14 +48,17 @@ const WORKSPACE_JSON = `${JSON.stringify(
   2,
 )}\n`;
 
+function yamlException(name: string): string {
+  const quoted = name.startsWith('@') ? `'${name}'` : name;
+  return `  - ${quoted}`;
+}
+
 // js-yaml's output for that exact profile. Accepting a fixed serialization avoids interpreting
 // arbitrary YAML (including duplicate keys, aliases or another workspace's stricter policy).
 const WORKSPACE_YAML = `blockExoticSubdeps: true
 minimumReleaseAge: 2880
 minimumReleaseAgeExclude:
-${UPSTREAM_EXCEPTIONS.map((name) => {
-  return `  - ${name.startsWith('@') ? `'${name}'` : name}`;
-}).join('\n')}
+${UPSTREAM_EXCEPTIONS.map((name) => yamlException(name)).join('\n')}
 `;
 
 /** Refuse custom pnpm settings rather than silently dropping them when npm is selected. */
@@ -97,9 +100,9 @@ export function acceptsNpmConfig(value: unknown): boolean {
   ) {
     return false;
   }
-  return ['allow-git', 'allow-remote', 'allow-directory', 'allow-file'].every((key) => {
-    return value[key] === 'all' || value[key] === 'root';
-  });
+  return ['allow-git', 'allow-remote', 'allow-directory', 'allow-file'].every(
+    (key) => value[key] === 'all' || value[key] === 'root',
+  );
 }
 
 /** Arguments, not shell text: the package-name globs must reach npm without shell expansion. */

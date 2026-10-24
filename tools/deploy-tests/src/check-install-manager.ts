@@ -41,6 +41,10 @@ const DEFAULT_CONFIG = {
   'allow-file': 'all',
 };
 
+const WORKSPACE_HEADER_LINES = 3;
+const WORKSPACE_ITEM_PREFIX = '  - ';
+const EXPECTED_EXEMPTION_COUNT = 12;
+
 const EXPECTED_NPM_ARGS = [
   'install',
   '--include=dev',
@@ -80,6 +84,7 @@ interface Scenario {
   readonly fails?: boolean;
   readonly version?: string;
   readonly installExit?: number;
+  readonly installSignal?: 'SIGTERM' | 'SIGPIPE';
   readonly configExit?: number;
   readonly config?: unknown;
   readonly workspace?: string;
@@ -95,6 +100,8 @@ const SCENARIOS: Scenario[] = [
   { name: 'unsupported-npm', manager: 'npm', version: '11.18.0', fails: true },
   { name: 'failed-probe', manager: 'npm', configExit: 7, fails: true },
   { name: 'failed-install', manager: 'npm', installExit: 7, fails: true },
+  { name: 'terminated-install', manager: 'npm', installSignal: 'SIGTERM', fails: true },
+  { name: 'broken-pipe-install', manager: 'npm', installSignal: 'SIGPIPE', fails: true },
   { name: 'symlink-workspace', manager: 'npm', symlinkWorkspace: true, fails: true },
   {
     name: 'custom-workspace',
@@ -110,10 +117,14 @@ const SCENARIOS: Scenario[] = [
   },
 ];
 
+function configDenyingExotic(key: string): Record<string, unknown> {
+  return { ...DEFAULT_CONFIG, [key]: 'none' };
+}
+
 function policyChecks(holds: (message: string, condition: boolean) => void): void {
   const upstreamExceptions = UPSTREAM_WORKSPACE.split('\n')
-    .slice(3, -1)
-    .map((line) => line.slice(4).replaceAll("'", ''));
+    .slice(WORKSPACE_HEADER_LINES, -1)
+    .map((line) => line.slice(WORKSPACE_ITEM_PREFIX.length).replaceAll("'", ''));
   const jsonWorkspace = `${JSON.stringify(
     {
       blockExoticSubdeps: true,
@@ -150,9 +161,9 @@ function policyChecks(holds: (message: string, condition: boolean) => void): voi
     { ...DEFAULT_CONFIG, global: true },
     { ...DEFAULT_CONFIG, 'min-release-age': 7 },
     { ...DEFAULT_CONFIG, 'min-release-age-exclude': ['private-policy'] },
-    ...['allow-git', 'allow-remote', 'allow-directory', 'allow-file'].map((key) => {
-      return { ...DEFAULT_CONFIG, [key]: 'none' };
-    }),
+    ...['allow-git', 'allow-remote', 'allow-directory', 'allow-file'].map((key) =>
+      configDenyingExotic(key),
+    ),
   ];
   holds(
     'npm checks effective security settings before adding its command-line policy',
@@ -184,8 +195,8 @@ function argumentChecks(holds: (message: string, condition: boolean) => void): v
       ['git', 'remote', 'directory', 'file'].every((kind) =>
         args.includes(`--allow-${kind}=root`),
       ) &&
-      exemptions.length === 12 &&
-      !exemptions.some((arg) => /interceptors|@types\/react|httpxy|satori/u.test(arg)),
+      exemptions.length === EXPECTED_EXEMPTION_COUNT &&
+      exemptions.every((arg) => !/interceptors|@types\/react|httpxy|satori/u.test(arg)),
   );
 }
 
@@ -205,12 +216,31 @@ function checkFailure(result: ScenarioResult, registered: string | undefined, ho
     `${scenario.name}: failure stops before build and deployment`,
     failure instanceof Error &&
       !existsSync(path.join(dir, '.adapter-build.log')) &&
+      !existsSync(path.join(dir, '.adapter-build-output.log')) &&
       !existsSync(path.join(dir, 'lifecycle.txt')) &&
       registered === undefined,
   );
   const installs = result.calls.filter((call) => call.args[0] === 'install');
-  const expectedInstalls = scenario.installExit === undefined ? 0 : 1;
+  const attempted = scenario.installExit !== undefined || scenario.installSignal !== undefined;
+  const expectedInstalls = attempted ? 1 : 0;
   holds(`${scenario.name}: no unexpected install ran`, installs.length === expectedInstalls);
+  checkInterrupted(result, holds);
+}
+
+function checkInterrupted(result: ScenarioResult, holds: Check): void {
+  const signal = result.scenario.installSignal;
+  if (signal === undefined) return;
+  const ready = path.join(result.dir, 'manager-signal-ready');
+  const installs = result.calls.filter((call) => call.args[0] === 'install');
+  holds(
+    `${result.scenario.name}: the one npm install reached the reset signal and did not survive it`,
+    existsSync(ready) &&
+      readFileSync(ready, 'utf8') === `${signal.slice('SIG'.length)}\n` &&
+      !existsSync(path.join(result.dir, 'manager-signal-survived')) &&
+      installs.length === 1 &&
+      installs[0]?.command === 'npm' &&
+      JSON.stringify(installs[0]?.args) === JSON.stringify(EXPECTED_NPM_ARGS),
+  );
 }
 
 function checkSuccess(result: ScenarioResult, hostPort: number, holds: Check): void {
@@ -237,7 +267,8 @@ function checkSuccess(result: ScenarioResult, hostPort: number, holds: Check): v
 }
 
 function pnpmOnPath(): string {
-  for (const dir of (process.env['PATH'] ?? '').split(path.delimiter)) {
+  const directories = (process.env['PATH'] ?? '').split(path.delimiter);
+  for (const dir of directories) {
     const candidate = path.join(dir, 'pnpm');
     if (existsSync(candidate)) {
       return candidate;
@@ -249,7 +280,7 @@ function pnpmOnPath(): string {
 function commandStubs(dir: string, pnpm: string): string {
   const bin = path.join(dir, 'bin');
   mkdirSync(bin);
-  const shared = `
+  const shared = String.raw`
 import { appendFileSync, readFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 const options = JSON.parse(readFileSync('manager-options.json', 'utf8'));
@@ -259,14 +290,24 @@ appendFileSync('manager-calls.jsonl', JSON.stringify({
   token: process.env.ARKOR_API_TOKEN !== undefined,
   tokenFile: process.env.ARKOR_API_TOKEN_FILE !== undefined,
   manager: process.env.ADAPTER_TEST_INSTALL_MANAGER !== undefined,
-}) + '\\n');
+}) + '\n');
 `;
-  const npm = `${shared}
+  const npm = String.raw`${shared}
 if (args[0] === '--version') console.log(options.version ?? '11.19.1');
 else if (JSON.stringify(args) === JSON.stringify(['config', 'list', '--json'])) {
   console.log(JSON.stringify(options.config));
   console.error('probe output must stay private');
   process.exitCode = options.configExit ?? 0;
+} else if (args[0] === 'install' && options.installSignal !== undefined) {
+  // GNU env resets inherited SIGPIPE ignoring before exec; Node itself ignores SIGPIPE by default.
+  // execve keeps the npm child's PID, so the installer must observe a signal, not a wrapper exit.
+  const signal = options.installSignal.slice('SIG'.length);
+  process.execve('/usr/bin/env', [
+    'env', '--default-signal=' + signal, '/bin/sh', '-c',
+    'printf "%s\n" "$1" >manager-signal-ready; kill -s "$1" "$$"; printf survived >manager-signal-survived',
+    'npm-install-signal', signal,
+  ], process.env);
+  throw new Error('the signalled npm install returned from execve');
 } else if (args[0] === 'install') process.exitCode = options.installExit ?? 0;
 else throw new Error('unexpected npm command');
 `;
