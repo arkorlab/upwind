@@ -58,3 +58,38 @@ export interface Readiness {
   /** Whether the manifest is where the edge reads it from: the namespace, and the bucket behind it. */
   readonly manifest: { readonly kv: boolean; readonly r2: boolean };
 }
+
+/**
+ * The edge's bindings of its deployment's cron jobs: `CRONS`, then `CRONS_2`, `CRONS_3`…, each a
+ * part of the jobs by the trigger each fires on (`CronTable`), as JSON small enough for one variable.
+ */
+export const CRONS_BINDING = 'CRONS';
+
+/** How many bytes of the jobs one binding holds at most: a Worker's variable holds 5 KiB. */
+export const CRONS_PART_BYTES = 5000;
+
+/** The binding of a part of the jobs, counted from 0. */
+export function cronsBindingName(part: number): string {
+  return part === 0 ? CRONS_BINDING : `${CRONS_BINDING}_${part + 1}`;
+}
+
+/**
+ * The secret a cron job is sent with as a bearer token, where the project set one: the name Vercel
+ * reads it by, which an application's route compares the header with.
+ */
+export const CRON_SECRET = 'CRON_SECRET';
+
+/** What a cron job's request says it is. */
+export const CRON_USER_AGENT = 'upwind-cron/1.0';
+
+/** The schedule a cron job fired on, as the project wrote it, under the name Vercel sends it by. */
+export const CRON_SCHEDULE_HEADER = 'x-vercel-cron-schedule';
+
+/** One cron job: the path it is a GET of, and the schedule it was declared on. */
+export interface CronRun {
+  readonly path: string;
+  readonly schedule: string;
+}
+
+/** A deployment's cron jobs, by the Cloudflare Cron Trigger each fires on. */
+export type CronTable = Readonly<Record<string, readonly CronRun[]>>;
