@@ -47,7 +47,9 @@ import {
  *
  * The gate is handed the visitor's request as the deployment's Function would be (`gateRequest`),
  * told the route it is of (`GATE_ROUTE_HEADER`). An answer that says to go on (`GATE_PASS`) is let
- * go, and the request goes on exactly as it would with no gate. Any other answer is the visitor's,
+ * go, and the request goes on as it would with no gate, its answer kept from shared caches even
+ * where the application permits public caching: the gate admitted this visitor alone. Any other
+ * answer is the visitor's,
  * status, headers and body as the gate gave them, finished as a Function's answer the edge hands
  * on is (`gateAnswer`) — and like such an answer, kept nowhere: no cache, no memory of the edge's
  * holds it, so the next request is the gate's to answer again. A gate the host binds none of, one
@@ -388,7 +390,10 @@ async function throughGate(
   const answer = await answeredAtGate(input, gate);
   if (answer === undefined) {
     input.passed?.();
-    return routed();
+    const response = await routed();
+    const admitted = new Response(response.body, response);
+    unsharedUnlessPublic(admitted.headers, false);
+    return admitted;
   }
   const elapsed = (input.now?.() ?? started) - started;
   input.terminal?.(answer, gate.route, elapsed, input.host.gates !== undefined);

@@ -794,7 +794,9 @@ origin (`http://` or `https://`), reaches none of the routes.
 The host binds a gate under each name, and its edge asks the route's gate about every `GET` and
 `HEAD` of the route — a document, a router's request for its payload, a prefetch, a Pages Router
 page's props — before it serves the request anything. An answer that says `x-upwind-gate: pass` has
-the request served as though there were no gate; any other is the answer, kept nowhere. A gate that
+the request served as though there were no gate, with its answer kept from shared caches even
+where the application permits public caching: the gate admitted this visitor alone. The browser's
+own cache directives remain. Any other is the answer, kept nowhere. A gate that
 cannot be reached is a `503`, never what was kept of the route. A request of any other method goes
 to the Function, as it does without a gate. Nor is a gated route an image the optimizer may take:
 `/_next/image` answers a source of one `400`, as it answers a source that is no image, before
