@@ -109,18 +109,57 @@ export function gateBinding(name: string): `GATE__${string}` {
  * and the deployment of the site it is of, where the edge's manifest names one
  * (`GATE_DEPLOYMENT_HEADER`: its `deployment.dplId`, which a gate's answer made of another
  * deployment's page is no answer to); and, on the gate's answer, that the request is to be served
- * as though there were no gate (`GATE_ANSWER_HEADER` set to `GATE_PASS`). Every name begins
- * `GATE_HEADER_PREFIX`, which no visitor's request carries on to a gate: what a gate is told of a
- * request, its host tells it.
+ * as though there were no gate (`GATE_ANSWER_HEADER` set to `GATE_PASS`) — a `GET` handed to the
+ * route's Function as a capture where the gate says so beside it (`GATE_CAPTURE_HEADER` set to
+ * `GATE_CAPTURE`) — or that the visitor is to be served the shell its body is, of the gate's own,
+ * completed by the route's Function (`GATE_ANSWER_HEADER` set to `GATE_SHELL`, `gate-shell.ts`) —
+ * which a gate answers only a request its host says it would serve one for (`GATE_ACCEPT_HEADER`
+ * set to `GATE_SHELL`), in no content coding (a host serves one its fetch undid of gzip or br, as
+ * workerd's does, and refuses any other). A gate that decides nothing else of its route says so
+ * beside a pass (`GATE_SCOPE_HEADER` set to `GATE_SCOPE_DOCUMENTS`), and its host may let the route's
+ * other requests go on unasked, but one that says it is to be captured (`GATE_CAPTURE_HEADER` set
+ * to `GATE_CAPTURE`, on the request). Every name begins `GATE_HEADER_PREFIX`, which no visitor's
+ * request carries on to a gate: what a gate is told of a request, its host tells it.
  */
 export const GATE_HEADER_PREFIX = 'x-upwind-gate';
 export const GATE_ROUTE_HEADER = 'x-upwind-gate-route';
 export const GATE_DEPLOYMENT_HEADER = 'x-upwind-gate-deployment';
 export const GATE_ANSWER_HEADER = 'x-upwind-gate';
 export const GATE_PASS = 'pass';
+export const GATE_SHELL = 'shell';
+export const GATE_CAPTURE_HEADER = 'x-upwind-gate-capture';
+export const GATE_ACCEPT_HEADER = 'x-upwind-gate-accept';
+export const GATE_SCOPE_HEADER = 'x-upwind-gate-scope';
+export const GATE_SCOPE_DOCUMENTS = 'documents';
+export const GATE_CAPTURE = '1';
+/**
+ * What the edge tells the route's Function beside the resume that completes a gate's shell: the
+ * token the gate handed with the shell for it (`GateShellHeader.resume`), as the gate wrote it. A
+ * capture its gate asked for is told by the Function's own name for one (`CAPTURE_HEADER`, in
+ * `@stayingupwind/core/paas`). Set after what the visitor sent under the edge's own names is taken
+ * off the request: the Function reads it as the edge's word, and keeps it from what the
+ * application's framework reads of the request, as it keeps every name of the edge's, handing it on
+ * through the request's context alone.
+ */
+export const GATE_RESUME_HEADER = 'x-arkor-gate-resume';
 /**
  * The URL a visitor asked for, where the host reaches a gate at an address of the gate's own rather
  * than over a binding, which keeps the request's own URL: the request a gate is handed is then
  * addressed to the gate, and this says where it was going.
  */
 export const GATE_URL_HEADER = 'x-upwind-gate-url';
+
+export {
+  type DecodedGateShell,
+  decodeGateShell,
+  encodeGateShell,
+  GATE_SHELL_CONTENT_TYPE,
+  GATE_SHELL_VERSION,
+  type GateShell,
+  type GateShellFields,
+  type GateShellHeader,
+  isGateShellType,
+  MAX_GATE_SHELL_BYTES,
+  MAX_GATE_SHELL_HEADER_BYTES,
+  reachesUncoded,
+} from './gate-shell.ts';
