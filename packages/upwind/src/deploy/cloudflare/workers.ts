@@ -252,6 +252,38 @@ export async function setScriptSubdomain(
   });
 }
 
+/** One of a Worker's Cron Triggers, as Cloudflare lists it. */
+interface Schedule {
+  readonly cron: string;
+}
+
+/** The Cron Triggers a Worker fires on, as written; none for a Worker that is not there. */
+export async function getSchedules(scope: AccountScope, name: string): Promise<readonly string[]> {
+  const answer = await unlessMissing(
+    scope.client.request<{ readonly schedules?: readonly Schedule[] }>(
+      'GET',
+      `${script(scope, name)}/schedules`,
+    ),
+  );
+  return (answer?.result.schedules ?? []).map((schedule) => schedule.cron);
+}
+
+/**
+ * Replace a Worker's Cron Triggers with these. They are the Worker's, not a version's: the live
+ * version is invoked on them as soon as Cloudflare has them everywhere, which it says may take as
+ * long as fifteen minutes.
+ */
+export async function putSchedules(
+  scope: AccountScope,
+  name: string,
+  crons: readonly string[],
+): Promise<void> {
+  await scope.client.request('PUT', `${script(scope, name)}/schedules`, {
+    body: crons.map((cron) => ({ cron })),
+    repeatable: true,
+  });
+}
+
 /**
  * Set one secret of a Worker. Cloudflare makes this a new version, deployed at once — and refuses
  * it while the Worker's newest version is not the deployed one, which a Worker only uploaded with

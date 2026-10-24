@@ -58,3 +58,27 @@ export interface Readiness {
   /** Whether the manifest is where the edge reads it from: the namespace, and the bucket behind it. */
   readonly manifest: { readonly kv: boolean; readonly r2: boolean };
 }
+
+/** The edge's binding of its deployment's cron jobs, by the trigger each fires on (`CronTable`). */
+export const CRONS_BINDING = 'CRONS';
+
+/**
+ * The secret a cron job is sent with as a bearer token, where the project set one: the name Vercel
+ * reads it by, which an application's route compares the header with.
+ */
+export const CRON_SECRET = 'CRON_SECRET';
+
+/** What a cron job's request says it is. */
+export const CRON_USER_AGENT = 'upwind-cron/1.0';
+
+/** The schedule a cron job fired on, as the project wrote it, under the name Vercel sends it by. */
+export const CRON_SCHEDULE_HEADER = 'x-vercel-cron-schedule';
+
+/** One cron job: the path it is a GET of, and the schedule it was declared on. */
+export interface CronRun {
+  readonly path: string;
+  readonly schedule: string;
+}
+
+/** A deployment's cron jobs, by the Cloudflare Cron Trigger each fires on. */
+export type CronTable = Readonly<Record<string, readonly CronRun[]>>;

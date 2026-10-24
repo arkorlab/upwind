@@ -13,7 +13,7 @@ import { runRollback } from '../../src/deploy/rollback.ts';
 import { remoteTarget } from '../../src/deploy/target.ts';
 import { AGENT_PATHS } from '../../src/deploy/workers/protocol.ts';
 import { bundleOf, deployableFunction, moduleOf, writeBundle } from './bundle.ts';
-import { bindingText } from './fake-cloudflare.ts';
+import { bindingText, type FakeVersion } from './fake-cloudflare.ts';
 import {
   deployableProject,
   deployOptions,
@@ -50,8 +50,13 @@ const NAMES = projectNames(PROJECT);
  * A build whose page loads a script of its own name, as each build's chunks are its own; and, where
  * asked, a file of its `public/` beside it.
  */
-function buildWith(dir: string, chunk: string, publicFile?: string): DeploymentBundle {
-  const bundle = bundleOf(deployableFunction(dir));
+function buildWith(
+  dir: string,
+  chunk: string,
+  publicFile?: string,
+  extra: Pick<Partial<DeploymentBundle>, 'crons'> = {},
+): DeploymentBundle {
+  const bundle = bundleOf(deployableFunction(dir), extra);
   const script = moduleOf(dir, `${chunk}.js`, 'text', `console.log(${JSON.stringify(chunk)});\n`);
   const shipped = publicFile === undefined ? undefined : moduleOf(dir, publicFile, 'text', chunk);
   const built = {
@@ -80,6 +85,15 @@ function buildWith(dir: string, chunk: string, publicFile?: string): DeploymentB
 }
 
 /** The version the edge gives all of its traffic to. */
+/** The edge's newest version, which a rollback uploaded. */
+function newestEdgeVersion(account: LiveAccount): FakeVersion {
+  const [version] = scriptOn(account, NAMES.edge).versions;
+  if (version === undefined) {
+    throw new Error('the edge has no version');
+  }
+  return version;
+}
+
 function liveVersion(account: LiveAccount): string | undefined {
   return scriptOn(account, NAMES.edge).deployments[0]?.versions[0]?.version_id;
 }
@@ -170,6 +184,35 @@ describe('`upwind rollback` on an account', () => {
       '/_next/static/chunks/one.js',
       '/_next/static/chunks/two.js',
     ]);
+  });
+
+  it("goes back with the deployment's cron jobs, and the secret the edge sent them with", async () => {
+    const dir = await deployableProject(PROJECT);
+    const deployed = (): Promise<number> =>
+      runDeploy(deployOptions(dir), account().credentials, account().io);
+    const first = buildWith(dir, 'one', undefined, {
+      crons: [{ path: '/api/weekly', schedule: '0 9 * * 1' }],
+    });
+
+    await expect(deployed()).resolves.toBe(0);
+
+    buildWith(dir, 'two');
+
+    await expect(deployed()).resolves.toBe(0);
+    expect(scriptOn(account(), NAMES.edge).schedules).toStrictEqual([]);
+
+    await expect(
+      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io),
+    ).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(first.deploymentId);
+    expect(scriptOn(account(), NAMES.edge).schedules).toStrictEqual(['0 9 * * 2']);
+
+    const version = newestEdgeVersion(account());
+
+    expect(bindingText(version, 'CRONS')).toBe(
+      JSON.stringify({ '0 9 * * 2': [{ path: '/api/weekly', schedule: '0 9 * * 1' }] }),
+    );
+    expect(version.metadata['keep_bindings']).toStrictEqual(['secret_text']);
   });
 
   it('discards the key it took the agent with, as a deploy does', async () => {

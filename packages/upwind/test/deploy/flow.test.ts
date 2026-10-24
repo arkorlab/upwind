@@ -367,6 +367,78 @@ describe("the edge's reach, as the settings change it", () => {
   });
 });
 
+describe("the edge's Cron Triggers, as the deployments' cron jobs say", () => {
+  const { account, errors, setUp, tearDown } = liveSuite();
+
+  beforeEach(setUp, 60_000);
+
+  afterEach(tearDown);
+
+  const JOBS = [
+    { path: '/api/tick', schedule: '0 * * * *' },
+    { path: '/api/weekly', schedule: '0 9 * * 1' },
+    { path: '/api/also-hourly', schedule: '0 */1 * * *' },
+  ];
+
+  function triggers(): readonly string[] | undefined {
+    return scriptOn(account(), NAMES.edge).schedules;
+  }
+
+  it("are set to a deployment's jobs once it is live, Monday written as Cloudflare numbers it", async () => {
+    const dir = await deployableProject(PROJECT);
+    buildIn(dir, { crons: JOBS });
+
+    await expect(deploy(account(), dir)).resolves.toBe(0);
+    expect(errors()).toStrictEqual([]);
+    // Two schedules that select the same minutes share one trigger.
+    expect(triggers()).toStrictEqual(['0 * * * *', '0 9 * * 2']);
+  });
+
+  it('are taken away by a deployment with no jobs', async () => {
+    const first = await deployableProject(PROJECT);
+    buildIn(first, { crons: JOBS });
+
+    await expect(deploy(account(), first)).resolves.toBe(0);
+
+    const dir = await deployableProject(PROJECT);
+    buildIn(dir);
+
+    await expect(deploy(account(), dir)).resolves.toBe(0);
+    expect(triggers()).toStrictEqual([]);
+  });
+
+  it('are left as they were where the new version fails its checks', async () => {
+    const first = await deployableProject(PROJECT);
+    buildIn(first, { crons: JOBS });
+
+    await expect(deploy(account(), first)).resolves.toBe(0);
+
+    const before = liveVersion(account());
+    account().site = (_, version) =>
+      version.id === before ? undefined : new Response('broken', { status: 500 });
+    const dir = await deployableProject(PROJECT);
+    buildIn(dir, { crons: [{ path: '/api/daily', schedule: '0 0 * * *' }] });
+
+    await expect(deploy(account(), dir)).resolves.toBe(1);
+    expect(triggers()).toStrictEqual(['0 * * * *', '0 9 * * 2']);
+  });
+
+  it('are set by a run of the live deployment where the run that made it live could not', async () => {
+    const dir = await deployableProject(PROJECT);
+    const { deploymentId } = buildIn(dir, { crons: JOBS });
+    account().fake.fail({ method: 'PUT', path: `/workers/scripts/${NAMES.edge}/schedules` }, 400);
+
+    // Live, and said to have no triggers: the run ends in failure for it.
+    await expect(deploy(account(), dir)).resolves.toBe(1);
+    expect(servedBy(account(), NAMES.edge)).toBe(deploymentId);
+    expect(triggers()).toBeUndefined();
+    expect(errors()).toContainEqual(expect.stringMatching(/Cron Triggers were not set/u));
+
+    await expect(deploy(account(), dir)).resolves.toBe(0);
+    expect(triggers()).toStrictEqual(['0 * * * *', '0 9 * * 2']);
+  });
+});
+
 describe("a run's key to the agent", () => {
   const { account, setUp, tearDown } = liveSuite();
 

@@ -1,5 +1,6 @@
 import { handleStandalone, type StandaloneEnv } from '@stayingupwind/edge/standalone';
 
+import { fireCronJobs } from './cron-jobs.ts';
 import { READINESS_PATH, type Readiness } from './protocol.ts';
 
 /**
@@ -17,11 +18,19 @@ import { READINESS_PATH, type Readiness } from './protocol.ts';
  * Every other request is the standalone edge's. What a visitor's request pays for this is one
  * search of its URL for the path, with nothing awaited and nothing read; the pointer is read for
  * readiness alone, and only on that path.
+ *
+ * The deployment's cron jobs are fired from here too, on the edge's Cron Triggers (`scheduled`):
+ * each a GET of its path on the site, through the standalone edge as a visitor's request goes, so
+ * that it reaches the route as one would. Nothing of that is on a visitor's way.
  */
 
 interface DeployEdgeEnv extends StandaloneEnv {
   /** The version that is running, as Cloudflare numbers it. */
   readonly CF_VERSION_METADATA?: WorkerVersionMetadata | undefined;
+  /** The deployment's cron jobs by the trigger each fires on, as JSON (`CronTable`). */
+  readonly CRONS?: string | undefined;
+  /** What each job is sent as a bearer token, where the project set it. */
+  readonly CRON_SECRET?: string | undefined;
 }
 
 /** What the pinned pointer names, read loosely: readiness reports it, and judges nothing by it. */
@@ -78,5 +87,19 @@ export default {
       return readiness(env);
     }
     return handleStandalone(request, env, ctx);
+  },
+  scheduled: (controller, env, ctx): Promise<void> => {
+    // One attempt, as Vercel makes one: what failed is said, and not tried again.
+    controller.noRetry();
+    return fireCronJobs({
+      trigger: controller.cron,
+      table: env.CRONS,
+      hostnames: env.HOSTNAMES,
+      secret: env.CRON_SECRET,
+      // A request made here carries no `cf`, which the edge reads where it is there and does
+      // without where it is not.
+      send: (request) =>
+        handleStandalone(request as Parameters<typeof handleStandalone>[0], env, ctx),
+    });
   },
 } satisfies ExportedHandler<DeployEdgeEnv>;

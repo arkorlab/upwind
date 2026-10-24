@@ -6,6 +6,7 @@ import { type Activation, activate, confirmLive } from './activate.ts';
 import { openAgent } from './agent-session.ts';
 import { type AccountScope, getVersion, type ScriptSubdomain } from './cloudflare/workers.ts';
 import type { DeploySettings } from './config.ts';
+import { cronTableOf, holdCrons } from './crons.ts';
 import { deploymentOfTag, uploadEdgeVersion } from './edge-version.ts';
 import { uploadFunctions } from './functions.ts';
 import { pointerOf } from './history.ts';
@@ -20,12 +21,14 @@ import { stageBuild } from './stage.ts';
 import { ensureStores } from './stores.ts';
 import { remoteTarget } from './target.ts';
 import { holdReach } from './uploads.ts';
+import { CRON_SECRET } from './workers/protocol.ts';
 
 /**
  * A deployment made on the account, once the plan has been checked (`command.ts`): its stores and
  * the Workers behind its Functions found or made, the build staged through the deploy agent, its
  * Functions uploaded, its pointer published, the edge's version for it uploaded, checked, and made
- * the live one (`activate.ts`).
+ * the live one (`activate.ts`), and the edge's Cron Triggers set to the deployment's cron jobs
+ * (`crons.ts`).
  *
  * Nothing a visitor reaches changes before that last step, except the Workers behind the Functions
  * where this version of upwind ships them otherwise — which every deployment still live uses, and
@@ -225,9 +228,9 @@ async function unconfirmedLive(
  * A run of the deployment that is live already. Staged again, it would be staged without the
  * deployment before it, whose files its open pages still ask for; and switched to again, it would
  * be switched from itself. What a run that made it live may have left undone is done, though, and
- * nothing else: the edge's reach, which a run narrows only once its deployment is live, and the
- * cleanup of older deployments, which takes the agent — a failure of either is left for the next
- * run, which may be this one.
+ * nothing else: the edge's reach and its Cron Triggers, which a run sets only once its deployment
+ * is live, and the cleanup of older deployments, which takes the agent — a failure of any is left
+ * for the next run, which may be this one.
  *
  * Neither is done before the deployment is confirmed live, as a deploy confirms one it has just
  * switched to: a run that made it live may have ended with it unconfirmed, or failing its checks,
@@ -251,6 +254,12 @@ async function finishLive(
     return unconfirmed;
   }
   await narrowReach(scope, names.edge, input.reach);
+  const scheduled = await holdCrons(
+    scope,
+    names.edge,
+    cronTableOf(plan.bundle.crons),
+    plan.bundle.deploymentId,
+  );
   const stores = await ensureStores({ scope, names, account, storage: settings.storage });
   const scripts = await shippedWorkers();
   const session = await openAgent({
@@ -272,7 +281,13 @@ async function finishLive(
     await session.close();
   }
   say(`${plan.bundle.deploymentId} is live already, and answers as it; nothing else was changed`);
-  return 0;
+  return scheduled ? 0 : 1;
+}
+
+/** The secret a deployment's cron jobs are sent with: the project's, where it set one with a value. */
+function cronSecretOf(secrets: ReadonlyMap<string, string>): string | undefined {
+  const secret = secrets.get(CRON_SECRET);
+  return secret === undefined || secret === '' ? undefined : secret;
 }
 
 /**
@@ -391,6 +406,7 @@ async function deployWhileLocked(run: DeployRun): Promise<number> {
       sleep: run.sleep,
     });
     const message = run.message ?? `upwind deploy ${bundle.deploymentId}`;
+    const crons = cronTableOf(bundle.crons);
     const edge = await uploadEdgeVersion({
       scope,
       names,
@@ -403,6 +419,9 @@ async function deployWhileLocked(run: DeployRun): Promise<number> {
       reach,
       message,
       existing,
+      crons,
+      cronSecret: cronSecretOf(run.secrets),
+      keepSecrets: false,
     });
     say(`checking ${names.edge} version ${edge.versionId}`);
     const activation = await activate({
@@ -425,7 +444,9 @@ async function deployWhileLocked(run: DeployRun): Promise<number> {
     if (switched && !edge.live) {
       await narrowReach(scope, names.edge, reach);
     }
-    const code = report(activation, bundle.deploymentId, site.origin);
+    const scheduled = !switched || (await holdCrons(scope, names.edge, crons, bundle.deploymentId));
+    const reported = report(activation, bundle.deploymentId, site.origin);
+    const code = reported === 0 && !scheduled ? 1 : reported;
     if (activation.kind === 'live') {
       await cleanUp(run, names, remoteTarget(session.client, bundleDir).cache);
     }

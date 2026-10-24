@@ -57,6 +57,9 @@ function inputOf(
     reach: { enabled: true, previews_enabled: false },
     message: `upwind deploy ${deploymentId}`,
     existing: new Set(fake.scripts.keys()),
+    crons: {},
+    cronSecret: undefined,
+    keepSecrets: false,
     ...overrides,
   };
 }
@@ -132,6 +135,40 @@ describe("the edge's version for a deployment", () => {
       { version_id: live.versionId, percentage: 100 },
     ]);
     expect(bindingsOf(newest(fake))).toContainEqual({ type: 'images', name: 'IMAGES' });
+  });
+
+  it("holds the deployment's cron jobs by trigger, and the secret they are sent with", async () => {
+    const fake = fakeCloudflare();
+    const crons = {
+      '0 * * * *': [{ path: '/api/tick', schedule: '0 * * * *' }],
+      '0 9 * * 2': [{ path: '/api/weekly', schedule: '0 9 * * 1' }],
+    };
+    await uploadEdgeVersion(inputOf(fake, createId('dpl'), { crons, cronSecret: 'c'.repeat(32) }));
+
+    expect(bindingsOf(newest(fake)).slice(-2)).toStrictEqual([
+      { type: 'plain_text', name: 'CRONS', text: JSON.stringify(crons) },
+      { type: 'secret_text', name: 'CRON_SECRET', text: 'c'.repeat(32) },
+    ]);
+    expect(newest(fake).metadata['keep_bindings']).toBeUndefined();
+  });
+
+  it('holds no jobs or secret for a deployment with no jobs, whatever secret is given', async () => {
+    const fake = fakeCloudflare();
+    await uploadEdgeVersion(inputOf(fake, createId('dpl'), { cronSecret: 'c'.repeat(32) }));
+    const names = bindingsOf(newest(fake)).map((binding) => binding['name']);
+
+    expect(names).not.toContain('CRONS');
+    expect(names).not.toContain('CRON_SECRET');
+  });
+
+  it("keeps the version before's secret for a rollback, which reads none", async () => {
+    const fake = fakeCloudflare();
+    await uploadEdgeVersion(inputOf(fake, createId('dpl')));
+    const crons = { '0 * * * *': [{ path: '/api/tick', schedule: '0 * * * *' }] };
+    await uploadEdgeVersion(inputOf(fake, createId('dpl'), { crons, keepSecrets: true }));
+
+    expect(newest(fake).metadata['keep_bindings']).toStrictEqual(['secret_text']);
+    expect(bindingsOf(newest(fake)).map((binding) => binding['name'])).not.toContain('CRON_SECRET');
   });
 
   it('narrows nothing of the reach the live version has, for a later deployment', async () => {
