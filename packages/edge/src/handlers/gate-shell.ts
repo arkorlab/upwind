@@ -1,5 +1,7 @@
 import {
   dynamicRouteFor,
+  functionFor,
+  isExactPathname,
   type ProjectManifest,
   type RouteEntry,
 } from '@stayingupwind/core/manifest';
@@ -8,7 +10,7 @@ import { GATE_RESUME_HEADER } from '@stayingupwind/host/bindings';
 import type { ResolvedPolicy } from '@stayingupwind/host/delivery';
 import { RECOVERY_SCRIPT_CSP_SOURCE } from '@stayingupwind/host/splice';
 
-import { ownRecordEntry } from '../cache/member.ts';
+import { ownRecordEntry, shelllessEntry } from '../cache/member.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import type { ServedGeneration } from './document-delivery.ts';
 import { type DocumentInput, handleDocument } from './document.ts';
@@ -127,20 +129,26 @@ export function serveGateShell(input: GateShellInput): Promise<Response> {
 }
 
 /**
- * The route a gate's shell of a class the build made no shell of is served under, as a member's own
- * record is (`ownRecordEntry`): of a navigation that named no proved route (`unproved`, the reason
- * its classification gave), whose pathname is of the class of the gate's own route
- * (`DynamicRoute.gated`) — its name, its Function and, where the build serves its members from
- * records, the conditions they are passed on under. None of any other request, which the gate's
- * shell is not served for.
+ * The route a gate's shell of a page the build made no shell of is served under, as a member's own
+ * record is (`ownRecordEntry`), of a navigation that named no proved route (`unproved`, the reason
+ * its classification gave): of a pathname Next.js resolves exactly, the gate's own route (`route`,
+ * the shell's, as its gate found it of the pathname) — ahead of any class its pattern matches, as
+ * Next.js resolves it — its Function the request's own (`functionFor`); else of a pathname of the
+ * class of the gate's own route (`DynamicRoute.gated`), its name, its Function and, where the build
+ * serves its members from records, the conditions they are passed on under. None of any other
+ * request, which the gate's shell is not served for.
  */
 export function gatedEntryOf(
   manifest: ProjectManifest,
   request: { readonly url: URL; readonly headers: Headers },
-  unproved: string | undefined,
+  { unproved, route }: { readonly unproved: string | undefined; readonly route: string },
 ): RouteEntry | undefined {
   if (unproved !== ROUTE_NOT_PROVED) {
     return undefined;
+  }
+  if (isExactPathname(manifest, request.url.pathname)) {
+    const fn = functionFor(manifest, request.url, request.headers);
+    return { ...shelllessEntry(route), ...(fn !== undefined && { function: fn }) };
   }
   const dynamic = dynamicRouteFor(manifest, request.url, request.headers);
   const gated = dynamic?.gated;

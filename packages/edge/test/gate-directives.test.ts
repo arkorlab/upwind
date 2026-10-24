@@ -161,6 +161,11 @@ interface Settings {
    * dynamic route naming none — gated (`DynamicRoute.gated`) where `gated` says so.
    */
   readonly classless?: { readonly gated: boolean };
+  /**
+   * A page Next.js resolves exactly that the build made no shell of (`exactPathnames`), its own
+   * route, the gate's too.
+   */
+  readonly exact?: string;
   /** The isolate's memory, where the request is served after others of the same isolate. */
   readonly memory?: EdgeMemory;
   /** How far the host's clock is set on once the gate is asked: not at all, unless said. */
@@ -213,15 +218,25 @@ function classlessManifest(manifest: ProjectManifest, gated: boolean): ProjectMa
   };
 }
 
+/** `manifest` with a page Next.js resolves exactly that the build made no shell of, gated (`exact`). */
+function exactManifest(manifest: ProjectManifest, exact: string): ProjectManifest {
+  return {
+    ...manifest,
+    exactPathnames: { ...manifest.exactPathnames, [exact]: true },
+    gates: { ...manifest.gates, [exact]: GATE },
+    gatedPathnames: { ...manifest.gatedPathnames, [exact]: exact },
+  };
+}
+
 /** The manifest the edge serves `site` by, as `settings` lay it out. */
 function manifestOf(
   site: { readonly manifest: ProjectManifest },
   settings: Settings,
 ): ProjectManifest {
   const cached = cachedManifest(site.manifest);
-  return settings.classless === undefined
-    ? cached
-    : classlessManifest(cached, settings.classless.gated);
+  const classed =
+    settings.classless === undefined ? cached : classlessManifest(cached, settings.classless.gated);
+  return settings.exact === undefined ? classed : exactManifest(classed, settings.exact);
 }
 
 /** The gated site's manifest, its route an entry of the runtime cache's scope. */
@@ -837,6 +852,29 @@ describe('a shell its gate answers with', () => {
 
     expect(body).toBe('from the Function');
     expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('passthrough;reason=route-not-proved');
+  });
+
+  /**
+   * A page Next.js resolves exactly that the build made no shell of is served the gate's shell as
+   * its own route — ahead of a gated class its pattern matches too, as Next.js resolves it.
+   */
+  it.each([
+    ['of no class', '/about'],
+    ['whose pattern a gated class’s matches', '/posts/new'],
+  ])('is served for a page Next.js resolves exactly %s', async (_of, exact) => {
+    const { response, body, dispatched, recordReads, shellReads, document } = await served(
+      navigation(exact),
+      () => gateShell({ route: exact }),
+      { classless: { gated: true }, exact },
+    );
+
+    const debug = response.headers.get(EDGE_DEBUG_HEADER) ?? '';
+
+    expect(body).toBe(GATE_HTML + document.suffixText);
+    expect(debug).toContain(';src=gen-gate;');
+    expect(debug).toContain(`;route=${exact};`);
+    expect(dispatched.map(({ headers }) => headers.get(GATE_RESUME_HEADER))).toStrictEqual([TOKEN]);
+    expect(recordReads + shellReads).toBe(0);
   });
 
   /**

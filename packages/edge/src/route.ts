@@ -402,11 +402,12 @@ function routeAsDirected(
 /**
  * A request its gate answered with a shell of the gate's own: the route's document composed from
  * it (`serveGateShell`) where the edge composes one for the request — a document it classifies as
- * one, or of a gated class the build made no shell of (`gatedEntryOf`), of a pointer that serves
- * from the edge — with nothing read for it but the policy it is served under. Where it composes
- * none — the edge's recovery bypassing it, draft mode, a crawler Next.js renders for, a pointer that
- * serves nothing from the edge — the request is routed as a pass would be, for the route's Function
- * to render the document whole, as it renders one whose shell cannot be served (`fallbackToApp`).
+ * one, or a page of the gate's route the build made no shell of, one Next.js resolves exactly or a
+ * member of a gated class (`gatedEntryOf`), of a pointer that serves from the edge — with nothing
+ * read for it but the policy it is served under. Where it composes none — the edge's recovery
+ * bypassing it, draft mode, a crawler Next.js renders for, a pointer that serves nothing from the
+ * edge — the request is routed as a pass would be, for the route's Function to render the document
+ * whole, as it renders one whose shell cannot be served (`fallbackToApp`).
  */
 function routeGateShell(
   input: ManifestRoutingInput,
@@ -430,7 +431,7 @@ function routeGateShell(
   const entry =
     classification.kind === DOCUMENT_CLASS
       ? classification.entry
-      : gatedEntryOf(manifest, { headers, url }, unproved);
+      : gatedEntryOf(manifest, { headers, url }, { route: directive.shell.header.route, unproved });
   if (entry === undefined) {
     return routeWithManifest(input, forwarding);
   }
