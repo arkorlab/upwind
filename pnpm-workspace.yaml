@@ -93,12 +93,13 @@ allowBuilds:
 strictPeerDependencies: true
 
 # Security fixes within the versions already used by Miniflare, Next.js and build tooling:
-# undici's HTTP client advisories (7.29.1), sharp's librsvg CVE-2026-96889 (0.35.5), and
+# undici's HTTP client advisories (7.30.1), sharp's librsvg CVE-2026-96889 (0.35.5), and
 # source-map-js's indexed-map denial of service CVE-2026-93749 (1.2.2). Keep the parent releases
 # pinned; these dependencies do not run on a deployed Function's request path.
 # Zod v4's bounded collection validation is patched for CVE-2023-54404 in 4.6.6.
 overrides:
-  'undici@>=7.0.0 <7.29.1': 7.29.1
+  # GHSA-4qv8-2p9j-2685 and GHSA-f72v-6w45-q472 are fixed within v7.
+  'undici@>=7.0.0 <7.30.1': 7.30.1
   'sharp@>=0.35.0 <0.35.5': 0.35.5
   'source-map-js@>=1.0.0 <1.2.2': 1.2.2
   'zod@>=4.0.0 <4.6.6': 4.6.7
