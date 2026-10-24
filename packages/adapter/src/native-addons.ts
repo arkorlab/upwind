@@ -1,5 +1,5 @@
 import { jsLiteral } from './codegen.ts';
-import { AuditError } from './dependencies.ts';
+import { AuditError, auditFunction, type FunctionDependencies } from './dependencies.ts';
 
 /** Next.js's existing per-entry trace; no package discovery or native module loading. */
 export interface NativeAddonEntryTrace {
@@ -27,7 +27,7 @@ export function nativeAddonAuditError(
       const files = Object.entries(entry.assets)
         .filter(([, file]) => file.endsWith('.node'))
         .map(([name]) => name)
-        .toSorted();
+        .toSorted((left, right) => left.localeCompare(right));
       return { id: entry.id, files };
     })
     .filter((entry) => entry.files.length > 0)
@@ -52,4 +52,20 @@ export function nativeAddonAuditError(
     ].join('\n'),
     { cause: error },
   );
+}
+
+/** The existing graph audit, with diagnostic context on its own refusal and nothing else. */
+export function auditNativeFunction(input: {
+  readonly name: string;
+  readonly sources: Parameters<typeof auditFunction>[1];
+  readonly dependencies: FunctionDependencies;
+  readonly output: string;
+  readonly entryTraces: readonly NativeAddonEntryTrace[];
+}): void {
+  try {
+    auditFunction(input.name, input.sources, input.dependencies, input.output);
+  } catch (error) {
+    if (error instanceof AuditError) throw nativeAddonAuditError(error, input.entryTraces);
+    throw error;
+  }
 }

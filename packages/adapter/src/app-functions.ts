@@ -15,6 +15,7 @@ import type { EdgeEntry } from './edge.ts';
 import { buildFunction, type BuiltFunction, type EntryModule } from './function.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import type { TextModule } from './manifests.ts';
+import type { NativeAddonEntryTrace } from './native-addons.ts';
 import { type BodiesLeftOut, withinTheLimit } from './page-body-layout.ts';
 import type { PatchContext } from './patches/index.ts';
 import type { PlanBudget } from './plan.ts';
@@ -53,6 +54,14 @@ export interface MiddlewareParts {
   readonly edge: readonly EdgeEntry[];
   readonly chunks: readonly string[];
   readonly wasm: readonly string[];
+}
+
+/** Only the middleware graph actually carried by this Function can explain its audit refusal. */
+function middlewareEntryTraces(middleware: MiddlewareParts): NativeAddonEntryTrace[] {
+  const { output } = middleware;
+  if (output === undefined) return [];
+  const entries = output.runtime === 'edge' ? middleware.edge : middleware.node;
+  return entries.map(({ id }) => ({ id, assets: output.assets }));
 }
 
 /** The instrumentation hook and what it reaches (`instrumentationOf`): every Function runs it. */
@@ -255,7 +264,7 @@ export async function buildAppFunction(
     outDir: context.outDir,
     patch: await patchFor(context, [...parts.chunks, ...middleware.chunks], wasm),
     entries: [...parts.modules, ...middleware.node],
-    entryTraces: parts.routes,
+    entryTraces: [...parts.routes, ...middlewareEntryTraces(middleware)],
     edgeEntries,
     edgeInstrumentation: context.edgeInstrumentation,
     wasm: wasm.collector,
@@ -298,6 +307,7 @@ export async function buildMiddlewareFunction(
     outDir: context.outDir,
     patch: await patchFor(context, middleware.chunks, wasm),
     entries: middleware.node,
+    entryTraces: middlewareEntryTraces(middleware),
     edgeEntries: middleware.edge,
     edgeInstrumentation: context.edgeInstrumentation,
     wasm: wasm.collector,

@@ -77,11 +77,12 @@ describe('native addon context for a rejected Function graph', () => {
   });
 
   it('escapes labels and bounds additional routes, files and label lengths', () => {
-    const traces = Array.from({ length: 7 }, (_, index) => {
+    const traces = Array.from({ length: 7 }, (_entry, index) => {
       const assets = Object.fromEntries(
-        Array.from({ length: 5 }, (_, file) => {
-          return [`asset-${String(file)}.node`, `/build/${String(file)}.node`];
-        }),
+        Array.from({ length: 5 }, (_asset, file) => [
+          `asset-${String(file)}.node`,
+          `/build/${String(file)}.node`,
+        ]),
       );
       return { id: `/route-${String(index)}\n\u{2028}${'x'.repeat(200)}`, assets };
     });
@@ -89,8 +90,8 @@ describe('native addon context for a rejected Function graph', () => {
     const entries = failure.message.split('\n').filter((line) => line.startsWith('  - "/route-'));
 
     expect(entries).toHaveLength(5);
-    expect(entries[0]).toContain('\\n');
-    expect(entries[0]).toContain('\\u2028');
+    expect(entries[0]).toContain(String.raw`\n`);
+    expect(entries[0]).toContain(String.raw`\u2028`);
     expect(failure.message).toContain('(+2 more traced files)');
     expect(failure.message).toContain('2 more server entries');
     expect(failure.message).not.toContain('x'.repeat(200));

@@ -16,9 +16,7 @@ import { appEntrySource } from './app-entry.ts';
 import { type BlobStore, contentTypeFor } from './blobs.ts';
 import { buildPaths } from './build-paths.ts';
 import {
-  AuditError,
   auditTracedFiles,
-  auditFunction,
   auditFunctionSize,
   bundled,
   bundleDependencies,
@@ -35,7 +33,7 @@ import { APP_MODULE } from './generated-modules.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import { bundleLinkedExternals, type LinkedExternals } from './linked-externals.ts';
 import type { TextModule } from './manifests.ts';
-import { nativeAddonAuditError, type NativeAddonEntryTrace } from './native-addons.ts';
+import { auditNativeFunction, type NativeAddonEntryTrace } from './native-addons.ts';
 import { type PageRuntimeRequire, withPageRuntimeAsReact } from './page-runtime-react.ts';
 import { auditExternalPagesApiDist } from './patches/external-pages-api-dist.ts';
 import {
@@ -525,21 +523,17 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
   };
   auditWasmLoader(name, input.patch, app.trace.patches);
   auditFunctionSize(name, { modules, size }, input.deferSizeAudit === true);
-  try {
-    auditFunction(
-      name,
-      {
-        app: await readFile(appFile, 'utf8'),
-        ...(edge !== undefined && { edge: await readFile(edge.outFile, 'utf8') }),
-        ...(linked !== undefined && { linked: await linkedSource(linked) }),
-      },
-      dependencies,
-      outputNameOf(input.projectDir, distDir),
-    );
-  } catch (error) {
-    if (error instanceof AuditError) throw nativeAddonAuditError(error, input.entryTraces ?? []);
-    throw error;
-  }
+  auditNativeFunction({
+    name,
+    sources: {
+      app: await readFile(appFile, 'utf8'),
+      ...(edge !== undefined && { edge: await readFile(edge.outFile, 'utf8') }),
+      ...(linked !== undefined && { linked: await linkedSource(linked) }),
+    },
+    dependencies,
+    output: outputNameOf(input.projectDir, distDir),
+    entryTraces: input.entryTraces ?? [],
+  });
   return {
     spec: {
       mainModule: RUNTIME_MODULE,
