@@ -28,8 +28,11 @@ interface Evaluated {
 
 describe('edgeEntrySource', () => {
   let dir: string;
+  /** The build id an entry's `env` sets for the process, as it was before the case set it (greptile). */
+  let buildId: string | undefined;
 
   beforeEach(async () => {
+    buildId = process.env['__NEXT_BUILD_ID'];
     dir = await mkdtemp(path.join(tmpdir(), 'adapter-edge-'));
     Reflect.set(globalThis, 'evaluated', []);
     Reflect.deleteProperty(globalThis, '_ENTRIES');
@@ -40,6 +43,11 @@ describe('edgeEntrySource', () => {
     Reflect.deleteProperty(globalThis, 'evaluated');
     Reflect.deleteProperty(globalThis, '_ENTRIES');
     Reflect.deleteProperty(globalThis, '__SERVER_FILES_MANIFEST');
+    if (buildId === undefined) {
+      Reflect.deleteProperty(process.env, '__NEXT_BUILD_ID');
+    } else {
+      process.env['__NEXT_BUILD_ID'] = buildId;
+    }
   });
 
   /** A chunk as Turbopack writes one: a script that marks that it ran, and may register an entry. */
