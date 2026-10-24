@@ -85,7 +85,7 @@ export {
   type StaticFileLocales,
 } from './schema.ts';
 export { spellsPrefixOf } from './spelled-prefix.ts';
-export { fromStoredManifest } from './stored.ts';
+export { fromStoredManifest, parseStoredManifest } from './stored.ts';
 
 export { findRouteBody } from './route-bodies.ts';
 
