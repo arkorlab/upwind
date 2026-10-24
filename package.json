@@ -19,6 +19,7 @@
     "check:matrix": "node tools/next-matrix/src/run.ts",
     "check:deploy-tests": "node tools/deploy-tests/src/check.ts",
     "check:deploy-cloudflare": "node packages/upwind/scripts/check-deploy.ts",
+    "check:preview": "node packages/upwind/scripts/check-preview.ts",
     "test:deploy": "node tools/deploy-tests/src/main.ts",
     "format": "oxfmt --check",
     "format:write": "oxfmt",
