@@ -478,7 +478,7 @@ describe('action passthrough lifetime through invalidation receipt', () => {
     expect(test.memory.invalidations.of(SCOPE)?.tags.get('posts')).toBe(7);
   });
 
-  it('lets go of the bound once a detached Action answers within it', async () => {
+  it('lets go of the bound, and of the dispatch, once a detached Action answers within it', async () => {
     const test = await mutationLifetimeFixture();
     const canceled = new AbortController();
     const headers = Promise.withResolvers<Response>();
@@ -501,14 +501,58 @@ describe('action passthrough lifetime through invalidation receipt', () => {
     canceled.abort();
     await vi.advanceTimersByTimeAsync(DETACHED_ACTION_LIMIT_MS / 2);
 
+    expect(upstream?.signal.aborted).toBe(false);
+
     headers.resolve(invalidatedResponse());
     await Promise.all(test.held);
-    await vi.advanceTimersByTimeAsync(DETACHED_ACTION_LIMIT_MS);
+
+    // The receipt is taken with the headers, so the dispatch goes with its gone client at once.
+    expect(test.memory.invalidations.of(SCOPE)?.tags.get('posts')).toBe(7);
+    expect(upstream?.signal.aborted).toBe(true);
+    expect((upstream?.signal.reason as Error | undefined)?.name).toBe('AbortError');
+    expect(vi.getTimerCount()).toBe(0);
+
+    await response;
+  });
+
+  it('cancels an answered Action whose client leaves while its body still streams', async () => {
+    const test = await mutationLifetimeFixture();
+    const canceled = new AbortController();
+    let upstream: Request | undefined;
+
+    test.dispatch.mockImplementation((_script, request) => {
+      upstream = request;
+      return Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start() {
+              // A handler still working on its body after its headers.
+            },
+          }),
+          { headers: { [INVALIDATED_TAGS_HEADER]: 'posts', [INVALIDATED_REVISION_HEADER]: '7' } },
+        ),
+      );
+    });
+
+    vi.useFakeTimers();
+    const response = await test.serve(
+      new Request('https://app.test/', {
+        method: 'POST',
+        headers: { 'next-action': 'fixture-action' },
+        signal: canceled.signal,
+      }),
+    );
+    await Promise.all(test.held);
 
     expect(upstream?.signal.aborted).toBe(false);
+
+    canceled.abort();
+
+    expect(upstream?.signal.aborted).toBe(true);
+    expect((upstream?.signal.reason as Error | undefined)?.name).toBe('AbortError');
     expect(vi.getTimerCount()).toBe(0);
     expect(test.memory.invalidations.of(SCOPE)?.tags.get('posts')).toBe(7);
 
-    await response;
+    await response.body?.cancel();
   });
 });

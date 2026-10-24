@@ -51,15 +51,18 @@ function sentByForm(headers: Headers): boolean {
   );
 }
 
-/** The signal a detached Action is dispatched on, and how to stop bounding it once it answered. */
+/** The signal a detached Action is dispatched on, and what to do once its answer is in. */
 export interface DetachedLifetime {
   readonly signal: AbortSignal;
-  readonly release: () => void;
+  readonly answered: () => void;
 }
 
 /**
- * A signal of the dispatch's own: the client's leaving does not abort it, but it is aborted
- * `DETACHED_ACTION_LIMIT_MS` after the client has gone, unless the answer came first (`release`).
+ * A signal of the dispatch's own. Until the answer's headers are in, the client's leaving does not
+ * abort it, but the dispatch is aborted `DETACHED_ACTION_LIMIT_MS` after the client has gone.
+ * Once they are in (`answered`), the receipt they carry has been taken, so the dispatch goes with
+ * its client again: at once where the client has already gone, else as soon as it goes, so that a
+ * body still streaming is not left running behind it (Codex).
  */
 export function detachedLifetime(client: AbortSignal): DetachedLifetime {
   const controller = new AbortController();
@@ -69,12 +72,17 @@ export function detachedLifetime(client: AbortSignal): DetachedLifetime {
       controller.abort(new DOMException('a detached Action outlived its limit', 'TimeoutError'));
     }, DETACHED_ACTION_LIMIT_MS);
   };
+  const follow = (): void => {
+    controller.abort(client.reason);
+  };
   client.addEventListener('abort', left, { once: true });
   return {
     signal: controller.signal,
-    release: () => {
+    answered: () => {
       client.removeEventListener('abort', left);
       if (timer !== undefined) clearTimeout(timer);
+      if (client.aborted) follow();
+      else client.addEventListener('abort', follow, { once: true });
     },
   };
 }
@@ -91,6 +99,6 @@ export async function mutationSettled(
   } catch {
     // The caller still observes the same answer or failure; background retention never rejects.
   } finally {
-    lifetime.release();
+    lifetime.answered();
   }
 }
