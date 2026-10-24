@@ -13,15 +13,21 @@ import {
   setScriptSubdomain,
   uploadVersion,
 } from './cloudflare/workers.ts';
+import { cronTableParts } from './crons.ts';
 import type { ProjectNames } from './names.ts';
 import type { WorkerScript } from './shipped.ts';
 import type { ProjectStores } from './stores.ts';
 import { COMPATIBILITY_DATE, ensureWorker, holdReach, shippedForm } from './uploads.ts';
+import { CRON_SECRET, type CronTable, cronsBindingName } from './workers/protocol.ts';
 
 /**
  * The edge's version for a deployment: the shipped edge, its pointer fixed (`POINTER`), each of the
  * deployment's Functions bound by the name the pointer gives it, and its version's own id bound
- * (`CF_VERSION_METADATA`), for the readiness answer to say which version is answering.
+ * (`CF_VERSION_METADATA`), for the readiness answer to say which version is answering. Where the
+ * deployment has cron jobs, the version holds them by trigger (`CRONS`, in parts); and the secret
+ * they are sent with wherever the project set one (`CRON_SECRET`), jobs or none, so that a version
+ * a rollback keeps it from has it. The triggers themselves are the Worker's, set once the version
+ * has the traffic (`crons.ts`).
  *
  * The first deployment of a project creates the edge with its version live at once — there is no
  * other to keep serving. Every other one uploads a version that takes no traffic until it has been
@@ -51,6 +57,15 @@ export interface EdgeVersionInput {
   readonly reach: ScriptSubdomain;
   readonly message: string;
   readonly existing: ReadonlySet<string>;
+  /** The deployment's cron jobs, by the trigger each fires on. */
+  readonly crons: CronTable;
+  /** The secret the jobs are sent with, as the command read it; nothing where none is set. */
+  readonly cronSecret: string | undefined;
+  /**
+   * Whether the version keeps the secret the edge's newest version holds: for a rollback whose
+   * environment sets none, as Cloudflare keeps only the newest version's.
+   */
+  readonly keepSecrets: boolean;
 }
 
 export interface EdgeVersion {
@@ -97,6 +112,22 @@ function bindingsOf(input: EdgeVersionInput): WorkerBinding[] {
     { type: 'version_metadata', name: 'CF_VERSION_METADATA' },
     ...(input.images ? [{ type: 'images', name: 'IMAGES' } as const] : []),
     ...functionBindings(input.app),
+    ...cronBindings(input),
+  ];
+}
+
+/** One part of the deployment's cron jobs, under the binding of its place. */
+function cronPartBinding(text: string, part: number): WorkerBinding {
+  return { type: 'plain_text', name: cronsBindingName(part), text };
+}
+
+/** The deployment's cron jobs, in parts, and the secret they are sent with, jobs or none. */
+function cronBindings({ crons, cronSecret }: EdgeVersionInput): WorkerBinding[] {
+  return [
+    ...cronTableParts(crons).map((text, part) => cronPartBinding(text, part)),
+    ...(cronSecret === undefined
+      ? []
+      : [{ type: 'secret_text', name: CRON_SECRET, text: cronSecret } as const]),
   ];
 }
 
@@ -133,6 +164,7 @@ export async function uploadEdgeVersion(input: EdgeVersionInput): Promise<EdgeVe
     compatibility_flags: ['nodejs_compat'],
     bindings: bindingsOf(input),
     annotations: { 'workers/tag': tag, 'workers/message': input.message },
+    ...(input.keepSecrets && { keep_bindings: ['secret_text'] }),
   });
   if (!first) {
     const version = await uploadVersion(scope, names.edge, form);

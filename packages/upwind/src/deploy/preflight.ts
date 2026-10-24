@@ -10,8 +10,10 @@ import {
 
 import { authLayout } from '../auth/layout.ts';
 import type { DeploySettings } from './config.ts';
+import { cronProblems } from './crons.ts';
 import { isHostBound } from './env.ts';
 import { type FunctionScript, functionScripts } from './names.ts';
+import { CRON_SECRET } from './workers/protocol.ts';
 
 /**
  * What a deploy checks of a build before it reaches for an account: everything that would refuse
@@ -19,8 +21,9 @@ import { type FunctionScript, functionScripts } from './names.ts';
  *
  * Each check is about a deployment that would *run* and be wrong — not one Cloudflare would turn
  * away, which it says itself, but one it would take and serve: a Function missing its runtime
- * cache answers every read a miss, a cron nobody fires never runs, an auth secret nobody set fails
- * the first sign-in. None of those shows until a visitor finds it.
+ * cache answers every read a miss, a cron job on a trigger that fires at other times runs when it
+ * should not, an auth secret nobody set fails the first sign-in. None of those shows until a
+ * visitor finds it.
  *
  * The limits held to are Workers Paid's, which a deployment of a Next.js application needs: on
  * Workers Free, whose limits are lower (100 Workers, 64 variables a Worker), Cloudflare refuses what
@@ -126,10 +129,12 @@ interface CheckInput {
   readonly projectDir: string;
   readonly settings: DeploySettings;
   readonly secrets: ReadonlyMap<string, string>;
+  /** The moment a job's trigger is checked from; now, where none is given. */
+  readonly now?: (() => number) | undefined;
 }
 
-/** What the build has that a self-hosted deployment cannot run yet: workflows, Durable Objects, crons. */
-function unsupported(bundle: DeploymentBundle, settings: DeploySettings): string[] {
+/** What the build has that a self-hosted deployment cannot run yet: workflows, Durable Objects. */
+function unsupported(bundle: DeploymentBundle): string[] {
   const problems: string[] = [];
   if (bundle.functions.workflow !== undefined) {
     problems.push(
@@ -146,11 +151,6 @@ function unsupported(bundle: DeploymentBundle, settings: DeploySettings): string
   if (objects.size > 0) {
     problems.push(
       `the build has Durable Objects of its own (${[...objects].join(', ')}), which a self-hosted deployment does not bind yet`,
-    );
-  }
-  if (settings.crons > 0 || (bundle.crons?.length ?? 0) > 0) {
-    problems.push(
-      'the project declares cron jobs, and a self-hosted deployment fires none yet — remove them, or they would silently never run',
     );
   }
   return problems;
@@ -212,16 +212,24 @@ async function wrongAtRuntime(bundleDir: string, bundle: DeploymentBundle): Prom
 /**
  * What may be wrong at runtime, where only the project's code knows whether it is: a sign-in with
  * no secret in the environment, which is right where the project's auth configuration names its
- * own. An empty value is no secret, as the auth package reads it.
+ * own; and cron jobs sent with no secret, which is right where their routes check none. An empty
+ * value is no secret, as the auth package and Vercel read it.
  */
-function mayBeWrong(input: CheckInput): string[] {
+function mayBeWrong(input: CheckInput, bundle: DeploymentBundle): string[] {
+  const warnings: string[] = [];
   const signsIn = authLayout(input.projectDir) !== undefined;
   const given = AUTH_SECRETS.some((name) => (input.secrets.get(name) ?? '') !== '');
-  return signsIn && !given
-    ? [
-        `the project signs users in, and none of ${AUTH_SECRETS.join(', ')} is among the secrets with a value; unless its auth configuration names its secret itself, sign-in will refuse to answer — name one in deploy.secrets or an --env-file`,
-      ]
-    : [];
+  if (signsIn && !given) {
+    warnings.push(
+      `the project signs users in, and none of ${AUTH_SECRETS.join(', ')} is among the secrets with a value; unless its auth configuration names its secret itself, sign-in will refuse to answer — name one in deploy.secrets or an --env-file`,
+    );
+  }
+  if ((bundle.crons?.length ?? 0) > 0 && (input.secrets.get(CRON_SECRET) ?? '') === '') {
+    warnings.push(
+      `the project declares cron jobs, and ${CRON_SECRET} is not among the secrets with a value, so they are sent with no Authorization header; a route that checks it answers them 401 — name ${CRON_SECRET} in deploy.secrets`,
+    );
+  }
+  return warnings;
 }
 
 /** Every reason this build, deployed with these settings, would be wrong. */
@@ -235,7 +243,8 @@ export async function preflight(input: CheckInput): Promise<Preflight> {
     );
   }
   problems.push(
-    ...unsupported(bundle, settings),
+    ...unsupported(bundle),
+    ...cronProblems(bundle.crons, input.now?.() ?? Date.now()),
     ...clashing(settings),
     ...beyondLimits(bundle, input),
     ...(await wrongAtRuntime(bundleDir, bundle)),
@@ -249,5 +258,12 @@ export async function preflight(input: CheckInput): Promise<Preflight> {
       `keeping ${settings.keep} deployments of ${functions.length} Functions each would take ${projectedWorkers} Workers, over the ${MAX_ACCOUNT_WORKERS} an account on Workers Paid may hold; lower deploy.keep`,
     );
   }
-  return { bundleDir, bundle, functions, projectedWorkers, problems, warnings: mayBeWrong(input) };
+  return {
+    bundleDir,
+    bundle,
+    functions,
+    projectedWorkers,
+    problems,
+    warnings: mayBeWrong(input, bundle),
+  };
 }
