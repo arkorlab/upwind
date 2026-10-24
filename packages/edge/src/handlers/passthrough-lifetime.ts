@@ -7,6 +7,13 @@ import { releaseStream } from '@stayingupwind/core/util';
  * Route Handler's or a Pages API's, is cancelled with the client as before.
  */
 
+/**
+ * How long a detached Action is still held once its client has gone: long enough for an Action's
+ * answer, and a bound on the work a caller can leave behind by sending what an Action sends and
+ * leaving, since nothing a request carries proves it is one (Codex).
+ */
+export const DETACHED_ACTION_LIMIT_MS = 30_000;
+
 /** What a form is sent as, which Next.js takes for a possible Action without `next-action`. */
 const FORM_URLENCODED = 'application/x-www-form-urlencoded';
 const FORM_MULTIPART = 'multipart/form-data';
@@ -44,12 +51,46 @@ function sentByForm(headers: Headers): boolean {
   );
 }
 
+/** The signal a detached Action is dispatched on, and how to stop bounding it once it answered. */
+export interface DetachedLifetime {
+  readonly signal: AbortSignal;
+  readonly release: () => void;
+}
+
+/**
+ * A signal of the dispatch's own: the client's leaving does not abort it, but it is aborted
+ * `DETACHED_ACTION_LIMIT_MS` after the client has gone, unless the answer came first (`release`).
+ */
+export function detachedLifetime(client: AbortSignal): DetachedLifetime {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const left = (): void => {
+    timer = setTimeout(() => {
+      controller.abort(new DOMException('a detached Action outlived its limit', 'TimeoutError'));
+    }, DETACHED_ACTION_LIMIT_MS);
+  };
+  client.addEventListener('abort', left, { once: true });
+  return {
+    signal: controller.signal,
+    release: () => {
+      client.removeEventListener('abort', left);
+      if (timer !== undefined) clearTimeout(timer);
+    },
+  };
+}
+
 /** Retain the receipt continuation, not an arbitrary response stream or a rejection. */
-export async function mutationSettled(answer: Promise<Response>, client: Request): Promise<void> {
+export async function mutationSettled(
+  answer: Promise<Response>,
+  client: Request,
+  lifetime: DetachedLifetime,
+): Promise<void> {
   try {
     const response = await answer;
     if (client.signal.aborted) releaseStream(response.body, 'mutation client disconnected');
   } catch {
     // The caller still observes the same answer or failure; background retention never rejects.
+  } finally {
+    lifetime.release();
   }
 }

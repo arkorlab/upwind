@@ -4,8 +4,9 @@ import {
   INVALIDATED_TAGS_HEADER,
   MISDIRECTED_STATUS,
 } from '@stayingupwind/core/paas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { DETACHED_ACTION_LIMIT_MS } from '../src/handlers/passthrough-lifetime.ts';
 import { mutationLifetimeFixture, SCOPE } from './mutation-lifetime-fixture.ts';
 
 function invalidatedResponse(): Response {
@@ -15,6 +16,10 @@ function invalidatedResponse(): Response {
 }
 
 describe('action passthrough lifetime through invalidation receipt', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('retains delayed receipt ingestion after a dispatched Action loses its client', async () => {
     const test = await mutationLifetimeFixture();
     const canceled = new AbortController();
@@ -398,5 +403,112 @@ describe('action passthrough lifetime through invalidation receipt', () => {
     expect(test.memory.invalidations.of(SCOPE)?.tags.get('posts')).toBe(7);
     expect(test.dispatch).toHaveBeenCalledTimes(2);
     expect(test.held).toHaveLength(1);
+  });
+
+  it('stops a detached Action that has not answered by its limit after the client left', async () => {
+    const test = await mutationLifetimeFixture();
+    const canceled = new AbortController();
+    const headers = Promise.withResolvers<Response>();
+    const accepted = Promise.withResolvers<undefined>();
+    let upstream: Request | undefined;
+
+    test.dispatch.mockImplementation(async (_script, request) => {
+      upstream = request;
+      request.signal.addEventListener('abort', () => {
+        headers.reject(request.signal.reason);
+      });
+      await request.text();
+      accepted.resolve(undefined);
+      return headers.promise;
+    });
+
+    const response = test.serve(
+      new Request('https://app.test/', {
+        method: 'POST',
+        body: 'mutation body',
+        headers: { 'next-action': 'fixture-action' },
+        signal: canceled.signal,
+      }),
+    );
+    await accepted.promise;
+    vi.useFakeTimers();
+    canceled.abort();
+
+    await vi.advanceTimersByTimeAsync(DETACHED_ACTION_LIMIT_MS - 1);
+
+    expect(upstream?.signal.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(upstream?.signal.aborted).toBe(true);
+    expect((upstream?.signal.reason as Error | undefined)?.name).toBe('TimeoutError');
+
+    await Promise.all(test.held);
+    await response;
+
+    expect(test.memory.invalidations.of(SCOPE)).toBeUndefined();
+    expect(test.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds a detached Action only after its client has gone', async () => {
+    const test = await mutationLifetimeFixture();
+    const headers = Promise.withResolvers<Response>();
+    let upstream: Request | undefined;
+
+    test.dispatch.mockImplementation((_script, request) => {
+      upstream = request;
+      return headers.promise;
+    });
+
+    vi.useFakeTimers();
+    const response = test.serve(
+      new Request('https://app.test/', {
+        method: 'POST',
+        headers: { 'next-action': 'fixture-action' },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(DETACHED_ACTION_LIMIT_MS * 2);
+
+    expect(upstream?.signal.aborted).toBe(false);
+
+    headers.resolve(invalidatedResponse());
+    await response;
+    await Promise.all(test.held);
+
+    expect(test.memory.invalidations.of(SCOPE)?.tags.get('posts')).toBe(7);
+  });
+
+  it('lets go of the bound once a detached Action answers within it', async () => {
+    const test = await mutationLifetimeFixture();
+    const canceled = new AbortController();
+    const headers = Promise.withResolvers<Response>();
+    let upstream: Request | undefined;
+
+    test.dispatch.mockImplementation((_script, request) => {
+      upstream = request;
+      return headers.promise;
+    });
+
+    vi.useFakeTimers();
+    const response = test.serve(
+      new Request('https://app.test/', {
+        method: 'POST',
+        headers: { 'next-action': 'fixture-action' },
+        signal: canceled.signal,
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    canceled.abort();
+    await vi.advanceTimersByTimeAsync(DETACHED_ACTION_LIMIT_MS / 2);
+
+    headers.resolve(invalidatedResponse());
+    await Promise.all(test.held);
+    await vi.advanceTimersByTimeAsync(DETACHED_ACTION_LIMIT_MS);
+
+    expect(upstream?.signal.aborted).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(test.memory.invalidations.of(SCOPE)?.tags.get('posts')).toBe(7);
+
+    await response;
   });
 });

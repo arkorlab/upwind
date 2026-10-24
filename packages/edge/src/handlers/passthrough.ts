@@ -33,7 +33,7 @@ import type { EdgeContext } from '../strategies/context.ts';
 import { layConfiguredOver } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { type AbandonedShellReads, observeMetric, observeRequestMetric } from './observer.ts';
-import { mutationSettled, outlivesClient } from './passthrough-lifetime.ts';
+import { detachedLifetime, mutationSettled, outlivesClient } from './passthrough-lifetime.ts';
 import {
   anonymousRequest,
   badGatewayResponse,
@@ -630,14 +630,13 @@ export function handlePassthrough(input: PassthroughInput): Promise<Response> {
   const detached =
     input.waitUntil !== undefined &&
     outlivesClient(input.request, input.middleware?.requestHeaders ?? input.request.headers);
-  const signal = detached ? new AbortController().signal : input.request.signal;
-  const answer = forwardPassthrough(input, signal);
-  if (detached) {
-    try {
-      input.waitUntil(mutationSettled(answer, input.request));
-    } catch {
-      // A host no longer accepting work must not replace the application's original answer.
-    }
+  if (!detached) return forwardPassthrough(input, input.request.signal);
+  const lifetime = detachedLifetime(input.request.signal);
+  const answer = forwardPassthrough(input, lifetime.signal);
+  try {
+    input.waitUntil(mutationSettled(answer, input.request, lifetime));
+  } catch {
+    // A host no longer accepting work must not replace the application's original answer.
   }
   return answer;
 }
