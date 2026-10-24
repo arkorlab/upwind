@@ -1,0 +1,21 @@
+{
+  "name": "@upwind-fixture/next-local",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Next.js app the local stack serves as deployed, built through the cache's adapter preset.",
+  "scripts": {
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build",
+    "build:local": "NEXT_ADAPTER_PATH=\"$PWD/../../packages/cache/src/function/adapter.ts\" NEXT_DEPLOYMENT_ID=dpl_4Fixture2Minima1AppXy NEXT_TELEMETRY_DISABLED=1 next build"
+  },
+  "dependencies": {
+    "next": "16.4.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "6.0.3"
+  }
+}

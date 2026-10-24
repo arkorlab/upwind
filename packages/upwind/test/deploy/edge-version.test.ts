@@ -57,6 +57,9 @@ function inputOf(
     reach: { enabled: true, previews_enabled: false },
     message: `upwind deploy ${deploymentId}`,
     existing: new Set(fake.scripts.keys()),
+    crons: {},
+    cronSecret: undefined,
+    keepSecrets: false,
     ...overrides,
   };
 }
@@ -132,6 +135,66 @@ describe("the edge's version for a deployment", () => {
       { version_id: live.versionId, percentage: 100 },
     ]);
     expect(bindingsOf(newest(fake))).toContainEqual({ type: 'images', name: 'IMAGES' });
+  });
+
+  it("holds the deployment's cron jobs by trigger, and the secret they are sent with", async () => {
+    const fake = fakeCloudflare();
+    const crons = {
+      '0 * * * *': [{ path: '/api/tick', schedule: '0 * * * *' }],
+      '0 9 * * 2': [{ path: '/api/weekly', schedule: '0 9 * * 1' }],
+    };
+    await uploadEdgeVersion(inputOf(fake, createId('dpl'), { crons, cronSecret: 'c'.repeat(32) }));
+
+    expect(bindingsOf(newest(fake)).slice(-2)).toStrictEqual([
+      { type: 'plain_text', name: 'CRONS', text: JSON.stringify(crons) },
+      { type: 'secret_text', name: 'CRON_SECRET', text: 'c'.repeat(32) },
+    ]);
+    expect(newest(fake).metadata['keep_bindings']).toBeUndefined();
+  });
+
+  it('holds the secret for a deployment with no jobs, for a rollback to keep it from', async () => {
+    const fake = fakeCloudflare();
+    await uploadEdgeVersion(inputOf(fake, createId('dpl'), { cronSecret: 'c'.repeat(32) }));
+    const names = bindingsOf(newest(fake)).map((binding) => binding['name']);
+
+    expect(names).not.toContain('CRONS');
+    expect(names).toContain('CRON_SECRET');
+  });
+
+  it("holds a table too long for one variable in parts, each within one's size", async () => {
+    const fake = fakeCloudflare();
+    const crons = Object.fromEntries(
+      Array.from({ length: 100 }, (_, index) => {
+        const schedule = `${index % 60} ${Math.floor(index / 60)} * * *`;
+        return [schedule, [{ path: `/api/${'p'.repeat(500)}/${index}`, schedule }]];
+      }),
+    );
+    await uploadEdgeVersion(inputOf(fake, createId('dpl'), { crons }));
+    const parts = bindingsOf(newest(fake)).filter((binding) =>
+      String(binding['name']).startsWith('CRONS'),
+    );
+
+    expect(parts.length).toBeGreaterThan(10);
+    expect(parts.map((binding) => binding['name'])).toStrictEqual(
+      parts.map((_, part) => (part === 0 ? 'CRONS' : `CRONS_${part + 1}`)),
+    );
+    expect(parts.every((binding) => Buffer.byteLength(String(binding['text'])) <= 5000)).toBe(true);
+
+    const joined = parts.flatMap((binding) =>
+      Object.entries(JSON.parse(String(binding['text'])) as Record<string, unknown>),
+    );
+
+    expect(Object.fromEntries(joined)).toStrictEqual(crons);
+  });
+
+  it("keeps the version before's secret for a rollback, which reads none", async () => {
+    const fake = fakeCloudflare();
+    await uploadEdgeVersion(inputOf(fake, createId('dpl')));
+    const crons = { '0 * * * *': [{ path: '/api/tick', schedule: '0 * * * *' }] };
+    await uploadEdgeVersion(inputOf(fake, createId('dpl'), { crons, keepSecrets: true }));
+
+    expect(newest(fake).metadata['keep_bindings']).toStrictEqual(['secret_text']);
+    expect(bindingsOf(newest(fake)).map((binding) => binding['name'])).not.toContain('CRON_SECRET');
   });
 
   it('narrows nothing of the reach the live version has, for a later deployment', async () => {

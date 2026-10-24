@@ -295,10 +295,10 @@ account, and says what a deploy would make there, changing nothing.
   `--env-file` adds a file's variables to those secrets. Nothing is guessed from the code: storage
   a project does not name is not made.
 - **What would be wrong is refused before the account is changed**: a Function built without the
-  runtime cache, a cron nobody would fire, more Workers than the account can hold beside the ones
-  it has, an account with no `workers.dev` subdomain to reach. Each is said, and the run ends. A
-  project that signs users in with no secret among its secrets is warned of, since its auth
-  configuration may name one itself.
+  runtime cache, more Workers than the account can hold beside the ones it has, an account with no
+  `workers.dev` subdomain to reach. Each is said, and the run ends. A project that signs users in
+  with no secret among its secrets is warned of, since its auth configuration may name one itself;
+  so is one with cron jobs and no `CRON_SECRET`, since its routes may check none.
 - **The account is on Workers Paid.** Its limits are the ones held to — 500 Workers an account,
   128 variables a Worker — and a deployment of a Next.js application needs them; on Workers Free,
   Cloudflare refuses at upload what goes past its lower ones.
@@ -350,6 +350,32 @@ attached to `shop-edge` by hand, in Cloudflare, and named in `deploy.hostnames`.
 
 `upwind destroy --yes` deletes everything a deploy made for the project, its edge first. The storage
 `deploy.storage` names holds the application's data, and is deleted only with `--include-storage`.
+
+### Cron jobs
+
+The cron jobs a project declares (`crons` in `upwind.config.ts`, or in `vercel.json`) run as on
+Vercel: each a `GET` of its path on the site, on its schedule, read in UTC.
+
+- **On the edge's Cron Triggers.** Each schedule is written as the Cloudflare Cron Trigger that
+  fires when it does: Cloudflare counts the days of the week from 1, so `0 9 * * 1`, Monday, is
+  `0 9 * * 2` there. Schedules that select the same minutes share a trigger. The edge's version for
+  the deployment holds its jobs, and the triggers are set to them once it has the traffic; a
+  rollback sets them back to the deployment it goes back to. Cloudflare says a trigger it was
+  just given may take up to 15 minutes to fire, and an account holds 5 triggers on Workers Free,
+  250 on Workers Paid, across its Workers.
+- **As Vercel sends them.** A job goes through the edge like a visitor's request, with
+  `user-agent: upwind-cron/1.0`, the schedule it fired on in `x-vercel-cron-schedule`, and
+  `Authorization: Bearer <CRON_SECRET>` where `CRON_SECRET` is among `deploy.secrets` with a value.
+  It is tried once, and its answer read to its end; nothing is retried, and a run can be missed, so
+  a job should not mind running twice or not at all. What it was answered is in the edge's logs.
+- **A rollback reads `CRON_SECRET` as a deploy does**, from the environment where
+  `deploy.secrets` names it and from each `--env-file`; where neither sets it, its version of the
+  edge keeps the one the edge's newest version holds, which a deploy holds whether or not its
+  deployment has jobs, and the rollback says so. A deployment gone back to past a change of
+  `CRON_SECRET` checks its jobs against the value it was deployed with, and refuses them until it
+  is deployed again.
+- **Where the triggers could not be set**, the deployment is still live, and the run says so and
+  fails; a deploy of the live deployment sets them.
 
 ### Deployments, and going back to one
 
@@ -404,7 +430,7 @@ upwind dev [directory]
 upwind build [directory]
 upwind deploy [directory]
 upwind deployments [directory]
-upwind rollback [directory] [--to <deployment>]
+upwind rollback [directory] [--to <deployment>] [--env-file <file>]...
 upwind destroy [directory] --yes
 
   -p, --port <port>      Port to listen on, `dev` only (default: $PORT, else 3000)
@@ -413,7 +439,8 @@ upwind destroy [directory] --yes
       --dry-run          Say what a deploy would do and change nothing, `deploy` only
       --build-only       Build for a deploy and stop, `deploy` only
       --prebuilt         Deploy what --build-only built, `deploy` only
-      --env-file <file>  Secrets for the deployment's Functions, `deploy` only; may repeat
+      --env-file <file>  Secrets for the deployment's Functions, for `deploy`; CRON_SECRET, for
+                         `rollback`; may repeat
       --keep <n>         Deployments kept to roll back to, `deploy` only (default: 5)
       --message <text>   What the deployment is noted as, `deploy` only
       --reset-cache-key  Give the runtime cache a new key, `deploy` only
