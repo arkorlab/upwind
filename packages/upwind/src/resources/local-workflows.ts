@@ -49,15 +49,15 @@ export async function localWorkflows(
     if (bundle === undefined)
       throw new Error('install matching upwind packages with Cloudflare Workflow support');
     const settled = await Promise.allSettled(
-      declarations.map((declaration) =>
-        bundle(projectDir, [declaration], {
+      declarations.map((declaration) => {
+        return bundle(projectDir, [declaration], {
           mode,
           onSourceFile: (file) => {
             watchFile(file, watchedFiles, versions);
             watchManifests(file, watchedFiles, versions);
           },
-        }),
-      ),
+        });
+      }),
     );
     return settled.flatMap((result) => {
       if (result.status === 'fulfilled') return result.value;
@@ -91,7 +91,9 @@ interface NativeWorkflow {
 }
 
 /** Match the hosted scoped bridge while all execution and persistence stays on this machine. */
-export function localWorkflowBridge(binding: unknown) {
+export function localWorkflowBridge(binding: unknown): {
+  invoke(request: { method: string; id?: string; options?: unknown }): Promise<unknown>;
+} {
   const workflow = binding as NativeWorkflow;
   return {
     async invoke(request: { method: string; id?: string; options?: unknown }): Promise<unknown> {
@@ -105,24 +107,33 @@ export function localWorkflowBridge(binding: unknown) {
       if (request.id === undefined) throw new Error('a Workflow instance ID is required');
       const instance = await workflow.get(request.id);
       switch (request.method) {
-        case 'get':
+        case 'get': {
           return { id: instance.id };
-        case 'status':
+        }
+        case 'status': {
           return instance.status();
-        case 'pause':
+        }
+        case 'pause': {
           return instance.pause();
-        case 'resume':
+        }
+        case 'resume': {
           return instance.resume();
-        case 'restart':
+        }
+        case 'restart': {
           return instance.restart(request.options);
-        case 'terminate':
+        }
+        case 'terminate': {
           return instance.terminate(request.options);
-        case 'sendEvent':
+        }
+        case 'sendEvent': {
           return instance.sendEvent(request.options);
-        case 'delete':
+        }
+        case 'delete': {
           return instance.delete();
-        default:
+        }
+        default: {
           throw new Error('unknown Workflow operation');
+        }
       }
     },
   };

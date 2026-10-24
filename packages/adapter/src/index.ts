@@ -27,7 +27,6 @@ import { BlobStore } from './blobs.ts';
 import { assertBuildPaths } from './build-paths.ts';
 import { bundleConfig } from './bundle-config.ts';
 import { cacheHandlersModule } from './cache-handlers.ts';
-import { cloudflareWorkflowParts } from './cloudflare-workflows.ts';
 import {
   type BuildContext,
   bundleRouting,
@@ -43,7 +42,6 @@ import {
   tracedWasm,
 } from './collect.ts';
 import { reserveUpwindPrefix } from './dev-prefix.ts';
-import { durableObjectParts } from './durable-objects.ts';
 import {
   checkedEdgeInstrumentationModules,
   edgeInstrumentationOf,
@@ -52,6 +50,7 @@ import type { EdgeEntry } from './edge.ts';
 import { ensureStaticRoutes } from './ensure-static.ts';
 import { environmentOptions } from './environment-options.ts';
 import { exists } from './fs.ts';
+import { dependencyRecord } from './function-report.ts';
 import { type BuiltFunction, type EntryModule, middlewareManifest } from './function.ts';
 import { declaredGates } from './gates.ts';
 import { instrumentationOf, writeClientInstrumentation } from './instrumentation.ts';
@@ -66,6 +65,7 @@ import { buildSplitBudget, checkSplitOptions, type SplitOptions } from './split.
 import { collectStaticFiles, rewriteTargetFiles } from './static-files.ts';
 import { staticPagesRuntimeFields } from './static-pages.ts';
 import { type TracedFile, tracedFiles } from './traced-files.ts';
+import { workerClassParts } from './worker-class-functions.ts';
 import {
   buildWorkflowFunction,
   warnOfNoWorld,
@@ -319,22 +319,12 @@ async function onBuildComplete(
       files: files.workflow,
     }),
   );
-  const objects = await durableObjectParts({
+  const objects = await workerClassParts({
     projectDir: ctx.projectDir,
     outDir,
     blobs,
-    declarations: options.durableObjects,
+    options,
     split: functions.built.length > 1,
-    sourceMaps: options.sourceMaps,
-    distDir: ctx.distDir,
-  });
-  const cloudflareWorkflows = await cloudflareWorkflowParts({
-    projectDir: ctx.projectDir,
-    outDir,
-    blobs,
-    declarations: options.cloudflareWorkflows,
-    split: functions.built.length > 1,
-    sourceMaps: options.sourceMaps,
     distDir: ctx.distDir,
   });
   const sourceMaps = [
@@ -343,7 +333,6 @@ async function onBuildComplete(
     ...(middlewareFunction?.sourceMaps ?? []),
     ...workflowParts.sourceMaps,
     ...objects.sourceMaps,
-    ...cloudflareWorkflows.sourceMaps,
   ];
 
   // Publication adds capabilities the host needs; routing reference semantics also travel with
@@ -358,7 +347,6 @@ async function onBuildComplete(
     routeBodyPrivacy: 2,
     staticPagesPrivacy: STATIC_PAGES_FALLBACK_PRIVACY,
     ...objects.bundle,
-    ...cloudflareWorkflows.bundle,
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).
     sourcePages,
@@ -381,7 +369,6 @@ async function onBuildComplete(
       ...bundleFunctions(functions.built, middlewareFunction),
       ...workflowParts.functions,
       ...objects.functions,
-      ...cloudflareWorkflows.functions,
     },
   });
   await writeFile(path.join(outDir, BUNDLE_FILE), JSON.stringify(bundle, null, 2));
@@ -389,7 +376,6 @@ async function onBuildComplete(
     ...dependencyRecord(functions, middlewareFunction),
     ...workflowParts.dependencies,
     ...objects.dependencies,
-    ...cloudflareWorkflows.dependencies,
   };
   await writeFile(path.join(outDir, DEPENDENCIES_FILE), JSON.stringify(dependencies, null, 2));
   await rm(path.join(outDir, 'work'), { recursive: true, force: true });
@@ -442,18 +428,6 @@ function bundleFunctions(
     ...(rest.length > 0 && {
       split: Object.fromEntries(rest.map((each) => [each.name, each.built.spec])),
     }),
-  };
-}
-
-/** What went into each Function, by its name, and the plan where the routes were split. */
-function dependencyRecord(
-  functions: AppFunctions<unknown>,
-  middleware: BuiltFunction | undefined,
-): Record<string, unknown> {
-  return {
-    ...Object.fromEntries(functions.built.map((each) => [each.name, each.built.dependencies])),
-    ...(middleware !== undefined && { middleware: middleware.dependencies }),
-    ...(functions.plan !== undefined && { plan: functions.plan }),
   };
 }
 

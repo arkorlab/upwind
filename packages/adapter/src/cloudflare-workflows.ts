@@ -2,6 +2,9 @@ import path from 'node:path';
 
 import {
   type CloudflareWorkflowDeclaration,
+  type DeploymentBundle,
+  type FunctionSpec,
+  type SourceMapRef,
   cloudflareWorkflowDeclarationsSchema,
   CLOUDFLARE_WORKFLOW_BUNDLE_VERSION,
   CLOUDFLARE_WORKFLOW_SPLIT_BUNDLE_VERSION,
@@ -10,6 +13,7 @@ import {
 import { UPWIND_CLOUDFLARE_WORKFLOWS_ENV } from '@stayingupwind/core/paas';
 
 import { BlobStore } from './blobs.ts';
+import type { FunctionDependencies } from './dependencies.ts';
 import {
   type BundleOptions,
   type BundledDurableObject,
@@ -29,15 +33,16 @@ export async function bundleCloudflareWorkflows(
   options: BundleOptions = {},
 ): Promise<BundledCloudflareWorkflow[]> {
   return Promise.all(
-    cloudflareWorkflowDeclarationsSchema.parse(declarations).map((declaration) =>
-      bundleWorkerClass(projectDir, declaration, options, {
+    cloudflareWorkflowDeclarationsSchema.parse(declarations).map((declaration) => {
+      return bundleWorkerClass(projectDir, declaration, options, {
         description: 'Cloudflare Workflow',
         exportName: CLOUDFLARE_WORKFLOW_EXPORT,
-      }),
-    ),
+      });
+    }),
   );
 }
 
+/** Build content-addressed native Workflow modules and private debugging artifacts. */
 export async function buildCloudflareWorkflowFunctions(input: {
   readonly projectDir: string;
   readonly outDir: string;
@@ -45,7 +50,12 @@ export async function buildCloudflareWorkflowFunctions(input: {
   readonly declarations: readonly CloudflareWorkflowDeclaration[];
   readonly sourceMaps?: SourceMapsOption;
   readonly distDir?: string;
-}) {
+}): Promise<{
+  functions: Readonly<Record<string, FunctionSpec>>;
+  sourceMaps: SourceMapRef[];
+  dependencies: Readonly<Record<string, FunctionDependencies>>;
+  declarations: CloudflareWorkflowDeclaration[];
+}> {
   const declarations = cloudflareWorkflowDeclarationsSchema.parse(input.declarations);
   const blobs = input.blobs ?? new BlobStore(input.outDir);
   if (input.blobs === undefined) await blobs.init();
@@ -69,7 +79,12 @@ export async function cloudflareWorkflowParts(input: {
   readonly split: boolean;
   readonly sourceMaps?: SourceMapsOption;
   readonly distDir?: string;
-}) {
+}): Promise<{
+  bundle: Partial<Pick<DeploymentBundle, 'v' | 'cloudflareWorkflows'>>;
+  functions: Partial<Pick<DeploymentBundle['functions'], 'cloudflareWorkflows'>>;
+  sourceMaps: SourceMapRef[];
+  dependencies: Readonly<Record<string, FunctionDependencies>>;
+}> {
   const raw = process.env[UPWIND_CLOUDFLARE_WORKFLOWS_ENV];
   let declarations: CloudflareWorkflowDeclaration[];
   try {

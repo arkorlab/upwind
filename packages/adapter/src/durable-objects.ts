@@ -288,12 +288,12 @@ export async function bundleDurableObjects(
 ): Promise<BundledDurableObject[]> {
   const checked = durableObjectDeclarationsSchema.parse(declarations);
   return Promise.all(
-    checked.map(async (declaration) =>
-      bundleWorkerClass(projectDir, declaration, options, {
+    checked.map(async (declaration) => {
+      return bundleWorkerClass(projectDir, declaration, options, {
         description: 'Durable Object',
         exportName: DURABLE_OBJECT_EXPORT,
-      }),
-    ),
+      });
+    }),
   );
 }
 

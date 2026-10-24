@@ -7,11 +7,6 @@ import sole from '../src/workflow.ts';
 const KEY = Symbol.for('upwind.resources');
 const BEFORE = Object.getOwnPropertyDescriptor(globalThis, KEY);
 
-afterEach(() => {
-  if (BEFORE === undefined) Reflect.deleteProperty(globalThis, KEY);
-  else Object.defineProperty(globalThis, KEY, BEFORE);
-});
-
 function publish(binding: unknown) {
   Object.defineProperty(globalThis, KEY, {
     configurable: true,
@@ -26,6 +21,11 @@ function publish(binding: unknown) {
 }
 
 describe('scoped Cloudflare Workflow access', () => {
+  afterEach(() => {
+    if (BEFORE === undefined) Reflect.deleteProperty(globalThis, KEY);
+    else Object.defineProperty(globalThis, KEY, BEFORE);
+  });
+
   it('does no work during lookup and hydrates native-shaped handles with synchronous IDs', async () => {
     const requests: CloudflareWorkflowRequest[] = [];
     publish({
@@ -37,18 +37,23 @@ describe('scoped Cloudflare Workflow access', () => {
       },
     });
     const jobs = workflow<{ order: number }>('JOBS');
+
     expect(jobs).toBeDefined();
     expect(workflow('DB')).toBeUndefined();
     expect(workflow('MISSING')).toBeUndefined();
     expect(requests).toHaveLength(0);
+
     const run = await jobs!.create({ id: 'job-1', params: { order: 8 } });
+
     expect(run.id).toBe('job-1');
-    expect(await run.status()).toStrictEqual({ status: 'waiting' });
+    await expect(run.status()).resolves.toStrictEqual({ status: 'waiting' });
+
     await run.pause();
     await run.resume();
     await run.restart();
     await run.sendEvent({ type: 'approved', payload: true });
     await run.terminate();
+
     expect(requests).toStrictEqual([
       { method: 'create', options: { id: 'job-1', params: { order: 8 } } },
       { method: 'status', id: 'job-1' },
@@ -69,6 +74,7 @@ describe('scoped Cloudflare Workflow access', () => {
       },
     });
     const run = await sole.get('known');
+
     expect(run.id).toBe('known');
     expect(requests).toStrictEqual([{ method: 'get', id: 'known' }]);
   });
@@ -77,11 +83,14 @@ describe('scoped Cloudflare Workflow access', () => {
     const batch = workflowBinding({
       invoke: () => Promise.resolve([{ id: 'one' }, { id: 'two' }]),
     });
+
     expect((await batch.createBatch([{}, {}])).map((run) => run.id)).toStrictEqual(['one', 'two']);
+
     const partial = workflowBinding({
       invoke: () => Promise.resolve({ created: [{ id: 'one' }], errors: ['two failed'] }),
     });
-    expect(await partial.createBatch([])).toMatchObject({
+
+    await expect(partial.createBatch([])).resolves.toMatchObject({
       created: [{ id: 'one' }],
       errors: ['two failed'],
     });
@@ -94,7 +103,9 @@ describe('scoped Cloudflare Workflow access', () => {
     await expect(
       workflowBinding({ invoke: () => Promise.resolve({}) }).createBatch([]),
     ).rejects.toThrow('invalid batch');
+
     const error = new Error('workflow_forbidden');
+
     await expect(
       workflowBinding({ invoke: () => Promise.reject(error) }).get('foreign'),
     ).rejects.toBe(error);

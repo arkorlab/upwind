@@ -23,6 +23,7 @@ import {
 } from './durable-objects.ts';
 import { judgedApart } from './gate-conditions.ts';
 import { gatedEitherWay, isOptimizerPath, rewritesOnto } from './gate-routes.ts';
+import { workerClassIssues } from './worker-classes.ts';
 
 export {
   type RouteHas,
@@ -765,53 +766,7 @@ export const deploymentBundleSchema = bundleSchema
     }
   })
   .superRefine((bundle, ctx) => {
-    const declarations = bundle.durableObjects ?? [];
-    const functions = Object.keys(bundle.functions.durableObjects ?? {});
-    const carriesObjects = declarations.length > 0;
-    const objectVersion =
-      bundle.v === DURABLE_OBJECT_BUNDLE_VERSION ||
-      bundle.v === DURABLE_OBJECT_SPLIT_BUNDLE_VERSION ||
-      bundle.v === CLOUDFLARE_WORKFLOW_BUNDLE_VERSION ||
-      bundle.v === CLOUDFLARE_WORKFLOW_SPLIT_BUNDLE_VERSION;
-    if (
-      (carriesObjects && !objectVersion) ||
-      (!carriesObjects &&
-        (bundle.v === DURABLE_OBJECT_BUNDLE_VERSION ||
-          bundle.v === DURABLE_OBJECT_SPLIT_BUNDLE_VERSION)) ||
-      declarations.length !== functions.length ||
-      declarations.some(
-        (entry) => !Object.hasOwn(bundle.functions.durableObjects ?? {}, entry.name),
-      ) ||
-      (!carriesObjects &&
-        (bundle.durableObjects !== undefined || bundle.functions.durableObjects !== undefined))
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        message:
-          'Durable Object declarations and Functions must match, at bundle version 5, 6, 7 or 8',
-      });
-    }
-    const workflows = bundle.cloudflareWorkflows ?? [];
-    const workflowFunctions = Object.keys(bundle.functions.cloudflareWorkflows ?? {});
-    const carriesWorkflows =
-      bundle.v === CLOUDFLARE_WORKFLOW_BUNDLE_VERSION ||
-      bundle.v === CLOUDFLARE_WORKFLOW_SPLIT_BUNDLE_VERSION;
-    if (
-      (carriesWorkflows && workflows.length === 0) ||
-      workflows.length !== workflowFunctions.length ||
-      workflows.some(
-        (entry) => !Object.hasOwn(bundle.functions.cloudflareWorkflows ?? {}, entry.name),
-      ) ||
-      (!carriesWorkflows &&
-        (bundle.cloudflareWorkflows !== undefined ||
-          bundle.functions.cloudflareWorkflows !== undefined))
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        message:
-          'Cloudflare Workflow declarations and Functions must match, at bundle version 7 or 8',
-      });
-    }
+    for (const message of workerClassIssues(bundle)) ctx.addIssue({ code: 'custom', message });
   });
 
 /** The complete reference walk shared by validation and collection. */

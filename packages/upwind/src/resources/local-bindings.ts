@@ -33,6 +33,13 @@ export function localEntries(
   ai: readonly LocalStorageEntry[] = [],
   workflows: readonly string[] = [],
 ): LocalStorageEntry[] {
+  const occupied = new Set(customerNames);
+  for (const entry of ai) occupied.add(entry.name);
+  const collision = workflows.find((name) => occupied.has(name));
+  if (collision !== undefined)
+    throw new Error(
+      `Cloudflare Workflow binding ${collision} conflicts with another local resource`,
+    );
   return [
     ...localBindings([...customerNames, ...ai.map((entry) => entry.name), ...workflows]),
     ...ai,

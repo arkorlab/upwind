@@ -54,7 +54,7 @@ function instance(bridge: CloudflareWorkflowBridge, value: unknown): CloudflareW
   }
   const id = value.id;
   const call = (method: CloudflareWorkflowRequest['method'], options?: unknown) =>
-    bridge.invoke({ method, id, ...(options === undefined ? {} : { options }) });
+    bridge.invoke({ method, id, ...(options !== undefined && { options }) });
   return Object.freeze({
     id,
     status: () => call('status'),
@@ -74,15 +74,13 @@ export function workflowBinding<Params = unknown>(binding: unknown): CloudflareW
   }
   const bridge = binding as CloudflareWorkflowBridge;
   return Object.freeze({
-    async create(options?: unknown) {
+    create: async (options?: unknown) => {
       return instance(
         bridge,
-        await bridge.invoke({ method: 'create', ...(options === undefined ? {} : { options }) }),
+        await bridge.invoke({ method: 'create', ...(options !== undefined && { options }) }),
       );
     },
-    async get(id: string) {
-      return instance(bridge, await bridge.invoke({ method: 'get', id }));
-    },
+    get: async (id: string) => instance(bridge, await bridge.invoke({ method: 'get', id })),
     async createBatch(options: unknown) {
       const result = await bridge.invoke({ method: 'createBatch', options });
       if (Array.isArray(result)) return result.map((value: unknown) => instance(bridge, value));

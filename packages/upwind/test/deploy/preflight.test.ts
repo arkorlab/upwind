@@ -1,3 +1,4 @@
+/* eslint-disable unicorn/no-keyword-prefix -- Matches the host registration className field. */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -68,6 +69,7 @@ describe('checking a build before a deploy', () => {
       }),
     );
     const plan = await preflight({ projectDir: dir, settings: SETTINGS, secrets: NO_SECRETS });
+
     expect(plan.problems).toContainEqual(
       expect.stringMatching(/scoped Workflow execution service/u),
     );

@@ -1,3 +1,4 @@
+/* eslint-disable unicorn/no-keyword-prefix -- Matches the host registration className field. */
 import { describe, expect, it } from 'vitest';
 
 import { cloudflareWorkflowDeclarationsSchema } from '../src/bundle/cloudflare-workflows.ts';
@@ -57,21 +58,25 @@ function bundle() {
   };
 }
 
-describe('Cloudflare Workflow bundle and resource contracts', () => {
+describe('cloudflare Workflow bundle and resource contracts', () => {
   it('validates declarations and reserves traversal and prototype names', () => {
     expect(cloudflareWorkflowDeclarationsSchema.parse([declaration])).toStrictEqual([declaration]);
-    for (const module of ['../job.ts', '/job.ts', 'dir/./job.ts', 'dir\\job.ts'])
+
+    for (const module of ['../job.ts', '/job.ts', 'dir/./job.ts', String.raw`dir\job.ts`])
       expect(
         cloudflareWorkflowDeclarationsSchema.safeParse([{ ...declaration, module }]).success,
       ).toBe(false);
+
     expect(
       cloudflareWorkflowDeclarationsSchema.safeParse([{ ...declaration, name: '__proto__' }])
         .success,
     ).toBe(false);
   });
+
   it('requires a matching new-version artifact map and includes every workflow blob', () => {
     const input = bundle();
     const parsed = deploymentBundleSchema.parse(input);
+
     expect(bundleBlobs(parsed).get(blob.sha256)).toStrictEqual(blob);
     expect(deploymentBundleSchema.safeParse({ ...input, v: 3 }).success).toBe(false);
     expect(deploymentBundleSchema.safeParse({ ...input, functions: { app: fn } }).success).toBe(
@@ -88,6 +93,19 @@ describe('Cloudflare Workflow bundle and resource contracts', () => {
       }).success,
     ).toBe(true);
   });
+
+  it('rejects a binding name shared by a Workflow and Durable Object', () => {
+    const input = bundle();
+
+    expect(
+      deploymentBundleSchema.safeParse({
+        ...input,
+        durableObjects: [declaration],
+        functions: { ...input.functions, durableObjects: { JOBS: fn } },
+      }).error?.message,
+    ).toContain('conflicts with a Durable Object binding');
+  });
+
   it('publishes a scoped Workflow bridge without invoking or exposing unlisted bindings', () => {
     const bridge = {
       invoke: () => {
@@ -99,6 +117,7 @@ describe('Cloudflare Workflow bundle and resource contracts', () => {
       JOBS: bridge,
       PRIVATE: bridge,
     });
+
     expect(result.resources['JOBS']?.binding).toBe(bridge);
     expect(Object.keys(result.resources)).toStrictEqual(['JOBS']);
   });
