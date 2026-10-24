@@ -230,7 +230,9 @@ export default {
       socket: {},
     };
     try {
-      const running = await runWorkers([worker], () => undefined);
+      const running = await runWorkers([worker], () => {
+        // No Worker log is needed to observe the passing header.
+      });
       try {
         const answer = await fetch(await running.url('gate-pass-reader'), {
           signal: AbortSignal.timeout(5000),
