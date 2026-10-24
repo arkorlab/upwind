@@ -4,6 +4,7 @@ import { routeEntrySchema } from '../src/manifest/schema.ts';
 import {
   answeredAsCandidate,
   manifestIdPrefix,
+  respondedUnderPolicy,
   routeDebugValue,
 } from '../src/request/edge-response.ts';
 
@@ -74,5 +75,49 @@ describe('a route identity in a diagnostic field', () => {
     expect(routeDebugValue('/a;b')).not.toBe(routeDebugValue('/a%3Bb'));
     expect(routeDebugValue('/日本')).not.toBe(routeDebugValue('/%E6%97%A5%E6%9C%AC'));
     expect(routeDebugValue('/\u{D800}')).not.toBe(routeDebugValue(String.raw`/\ud800`));
+  });
+});
+
+const MANIFEST_ID = 'abcdef0123456789abcdef0123456789';
+const CANDIDATE = { manifestId: MANIFEST_ID, policyId: 'v1' };
+const DEBUG = `shell;strategy=kv;src=kv;m=abcdef01;policy=v1`;
+
+describe('respondedUnderPolicy', () => {
+  it('matches the policy field whole', () => {
+    const debug = 'asset;strategy=workers-cache;admit=1;bytes=1024;project=p;policy=v1-beta';
+
+    expect(respondedUnderPolicy(debug, 'v1-beta')).toBe(true);
+    // A substring test would accept this response for a run validating `v1`.
+    expect(respondedUnderPolicy(debug, 'v1')).toBe(false);
+    expect(respondedUnderPolicy(DEBUG, 'v1')).toBe(true);
+    expect(respondedUnderPolicy('', 'v1')).toBe(false);
+  });
+});
+
+describe('answeredAsCandidate', () => {
+  it('accepts a validated response from the named manifest and policy', () => {
+    expect(answeredAsCandidate({ debug: DEBUG, validated: true }, CANDIDATE)).toBe(true);
+  });
+
+  /**
+   * A validation header the edge cannot verify is ignored in silence and the active pointer
+   * answers. When the candidate reuses the active policy — benchmarking a new manifest does
+   * exactly that — the policy field alone would accept that answer as the candidate's.
+   */
+  it('refuses a response the edge did not mark validated', () => {
+    expect(answeredAsCandidate({ debug: DEBUG, validated: false }, CANDIDATE)).toBe(false);
+  });
+
+  it('refuses a response from another manifest under the same policy', () => {
+    const other = 'shell;strategy=kv;src=kv;m=99999999;policy=v1';
+
+    expect(answeredAsCandidate({ debug: other, validated: true }, CANDIDATE)).toBe(false);
+  });
+
+  it('refuses a response from another policy and one with no debug header at all', () => {
+    const other = `shell;strategy=kv;src=kv;m=abcdef01;policy=v2`;
+
+    expect(answeredAsCandidate({ debug: other, validated: true }, CANDIDATE)).toBe(false);
+    expect(answeredAsCandidate({ debug: '', validated: true }, CANDIDATE)).toBe(false);
   });
 });
