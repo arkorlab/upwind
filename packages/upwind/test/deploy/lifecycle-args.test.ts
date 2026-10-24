@@ -20,11 +20,19 @@ describe('what `upwind deployments` and `upwind rollback` understand', () => {
 
     expect(parseRollbackRequest(['--to', deploymentId])).toStrictEqual({
       answer: undefined,
-      options: { projectDir: path.resolve('.'), to: deploymentId },
+      options: { projectDir: path.resolve('.'), to: deploymentId, envFiles: [] },
     });
     expect(parseRollbackRequest([])).toStrictEqual({
       answer: undefined,
-      options: { projectDir: path.resolve('.'), to: undefined },
+      options: { projectDir: path.resolve('.'), to: undefined, envFiles: [] },
+    });
+    expect(parseRollbackRequest(['--env-file', 'a.env', '--env-file', 'b.env'])).toStrictEqual({
+      answer: undefined,
+      options: {
+        projectDir: path.resolve('.'),
+        to: undefined,
+        envFiles: [path.resolve('a.env'), path.resolve('b.env')],
+      },
     });
     expect(() => parseRollbackRequest(['--to', 'yesterday'])).toThrow(/a deployment's id/u);
     expect(() => parseRollbackRequest(['--yes'])).toThrow(/Unknown option '--yes'/u);

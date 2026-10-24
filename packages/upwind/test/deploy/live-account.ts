@@ -185,8 +185,11 @@ export async function deployableProject(project: string, deploy?: unknown): Prom
 }
 
 /** A build of a new deployment in the project, as `upwind deploy --build-only` leaves one. */
-export function buildIn(dir: string): DeploymentBundle {
-  const bundle = bundleOf(deployableFunction(dir));
+export function buildIn(
+  dir: string,
+  extra: Pick<Partial<DeploymentBundle>, 'crons'> = {},
+): DeploymentBundle {
+  const bundle = bundleOf(deployableFunction(dir), extra);
   const robots = moduleOf(dir, 'robots.txt', 'text', `User-agent: *\n# ${bundle.deploymentId}\n`);
   const built = {
     ...bundle,

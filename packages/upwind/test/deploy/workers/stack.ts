@@ -59,6 +59,8 @@ export async function runStack(
     readonly pointer?: string;
     readonly versionId?: string;
     readonly agentKey?: string;
+    /** More text bindings of the edge's, as a deploy gives its version them. */
+    readonly edgeText?: Readonly<Record<string, string>>;
   } = {},
 ): Promise<RunningStack> {
   const scripts = await workers();
@@ -88,6 +90,7 @@ export async function runStack(
     r2Buckets: stores.r2Buckets,
     bindings: {
       ...(options.pointer !== undefined && { POINTER: options.pointer }),
+      ...options.edgeText,
       // What Cloudflare's version metadata binding holds, which Miniflare does not bind.
       CF_VERSION_METADATA: { id: options.versionId ?? 'version-1', tag: '', timestamp: '' },
     },
