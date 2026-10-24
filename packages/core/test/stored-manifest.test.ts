@@ -143,9 +143,11 @@ describe('a stored manifest', () => {
   /**
    * Every manifest published before the tables writes its values out route by route, and is read
    * as it is: at each version a reader reads — its own, and every one a manifest still serving was
-   * published at, back to the 3 a deployment made before 2026-10-04 still serves.
+   * published at, back to the 3 a deployment made before 2026-10-04 still serves. Spelled out
+   * rather than taken from `READ_MANIFEST_SCHEMA_VERSIONS`, so that a version dropped from that
+   * list fails here instead of taking its case with it (greptile).
    */
-  it.each([...READ_MANIFEST_SCHEMA_VERSIONS])(
+  it.each([3, 4, 5, 6, 7, 8])(
     'reads a manifest of version %i written route by route',
     (version) => {
       const written = canonicalJson({ ...SITE, schemaVersion: version });
@@ -155,15 +157,14 @@ describe('a stored manifest', () => {
   );
 
   /**
-   * And no other. Upwind main's 5 means a header's `$` references filled in one pass
-   * (`routerReferences`): where a reader does not know it, it refuses it rather than fill those
-   * headers in turn.
+   * And no other. Version 5 means a header's `$` references filled in one pass
+   * (`routerReferences`): a reader that does not know a version refuses it rather than fill those
+   * headers in turn. The versions are ones no reader reads — before the earliest still served, and
+   * after the latest — named outright so that the case cannot become empty (greptile).
    */
-  it('refuses every version it does not read', () => {
-    const read: readonly number[] = READ_MANIFEST_SCHEMA_VERSIONS;
-    const unread = [3, 4, 5, 6].filter((version) => !read.includes(version));
-
-    expect(unread.map((version) => readsAt(version))).toStrictEqual(unread.map(() => false));
+  it.each([1, 2, 9])('refuses version %i, which it does not read', (version) => {
+    expect(READ_MANIFEST_SCHEMA_VERSIONS).not.toContain(version);
+    expect(readsAt(version)).toBe(false);
   });
 
   /**
