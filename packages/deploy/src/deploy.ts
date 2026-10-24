@@ -653,6 +653,7 @@ export async function publishDeployment(
     {
       fingerprint: manifest.deployment,
       manifestId: staged.manifestId,
+      requiresGate: manifest.gates !== undefined,
       policyId: input.policy.id,
       app: manifest.app,
       cspNonce: input.cspNonce ?? false,

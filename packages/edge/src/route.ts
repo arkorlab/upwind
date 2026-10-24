@@ -365,6 +365,10 @@ function routeWithinBudget(input: GateObservedRoutingInput): Promise<Response> {
   // other decision of the edge's (`handlers/gate.ts`). A deployment that declares none is asked
   // this, and nothing more.
   const { manifest } = state;
+  if (manifest?.gates === undefined && state.requiresGate === true && !state.validated) {
+    observeTerminalFor(input, url.pathname, 'gate-unavailable');
+    return Promise.resolve(serviceUnavailableResponse('gate-unavailable'));
+  }
   if (manifest?.gates === undefined) {
     return routeWithManifest(input, forwarding);
   }

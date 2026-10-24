@@ -197,6 +197,7 @@ export async function seedSite(options: SiteOptions): Promise<Site> {
     originHost: SITE_HOST,
     mode: 'edge',
     manifestId,
+    ...(manifest.gates !== undefined && { requiresGate: true }),
     policyId: DEFAULT_DELIVERY_POLICY.id,
     app: APP,
     updatedAt: UPDATED_AT,
