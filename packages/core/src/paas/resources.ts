@@ -21,7 +21,11 @@ export const RESOURCE_TYPES = [
   'durable_object_namespace',
   'ai',
 ] as const;
+/** Resource kinds that can be provisioned, excluding published private service capabilities. */
 export type ResourceType = (typeof RESOURCE_TYPES)[number];
+
+/** Published capabilities include private services; those are not provisionable storage. */
+export type PublishedResourceType = ResourceType | 'service';
 
 /**
  * The key the runtime publishes the bindings under, in the global symbol registry.
@@ -37,13 +41,13 @@ export const RESOURCES_API_VERSION = 1;
 /** One binding as the host lists it: its name on the Function, and its kind. */
 export interface ResourceManifestEntry {
   readonly name: string;
-  readonly type: ResourceType;
+  readonly type: PublishedResourceType;
 }
 
 /** One published binding: its kind and the capability granted to the Function. */
 export interface PublishedResource {
-  readonly type: ResourceType;
-  /** A native storage binding or an AI service exposing only `run(model, inputs)`. */
+  readonly type: PublishedResourceType;
+  /** A native storage or service binding, or inference exposing only `run(model, inputs)`. */
   readonly binding: unknown;
 }
 
@@ -57,8 +61,9 @@ export interface PublishedResources {
 /** An environment a deployment's Functions are handed, as much of one as anything here reads. */
 export type FunctionEnv = Readonly<Record<string, unknown>>;
 
-const KNOWN_TYPES: ReadonlySet<string> = new Set(RESOURCE_TYPES);
+const KNOWN_TYPES: ReadonlySet<string> = new Set([...RESOURCE_TYPES, 'service']);
 
+/** Serialize only the public name and kind of each capability, never its native binding. */
 export function formatResourcesManifest(entries: readonly ResourceManifestEntry[]): string {
   return JSON.stringify(entries.map((entry) => ({ name: entry.name, type: entry.type })));
 }

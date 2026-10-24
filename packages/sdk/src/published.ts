@@ -18,9 +18,9 @@ import { RESOURCES_API_VERSION, RESOURCES_SYMBOL_KEY } from '@stayingupwind/core
 
 /** One binding as an application finds it: what kind of storage it is, and the object for it. */
 export interface PublishedResource {
-  /** The kind, as the deployment listed it: `d1`, `kv_namespace`, `r2_bucket`, `durable_object_namespace`. */
+  /** The kind, as the deployment listed it: storage, inference, or a `service`. */
   readonly type: string;
-  /** Cloudflare's own `D1Database`, `KVNamespace`, `R2Bucket` or `DurableObjectNamespace`. */
+  /** The native binding or inference capability the deployment published. */
   readonly binding: unknown;
 }
 

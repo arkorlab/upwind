@@ -532,6 +532,16 @@ export const headerRuleSchema = z.object({
    * Applied only to a document's resolved CSP, leaving other captured fields as configured.
    */
   documentRecoverySources: z.record(z.string(), z.string()).optional(),
+  /**
+   * The routing phase the rule came from (`headerPhases`), which says what Next.js judges it on:
+   * one ahead of the middleware (`beforeMiddleware`) on the request as the client sent it, for
+   * whatever answers it; one that runs on a match (`onMatch` — the year-long `Cache-Control` of a
+   * build's own assets among them) on the request as it is finally matched, by what answers it.
+   * What the edge judges for a Function to leave off is the first alone (`aheadOfMiddleware`).
+   * Absent on every rule of a manifest from before it was published, of whose rules no phase can be
+   * told; a reader that does not know the field drops it, so no schema version turns on it.
+   */
+  phase: z.enum(['beforeMiddleware', 'afterFiles', 'onMatch']).optional(),
 });
 export type HeaderRule = z.infer<typeof headerRuleSchema>;
 
