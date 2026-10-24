@@ -1,4 +1,15 @@
 export {
+  type CloudflareCronExpression,
+  CloudflareCronExpressionError,
+  cloudflareCronExpressionError,
+  parseCloudflareCronExpression,
+} from './cloudflare-expression.ts';
+export {
+  nextCloudflareFireAfter,
+  nextCloudflareFireAfterExpression,
+} from './cloudflare-occurrence.ts';
+export { cloudflareScheduleOf } from './cloudflare-schedule.ts';
+export {
   type CronExpression,
   CronExpressionError,
   cronExpressionError,
