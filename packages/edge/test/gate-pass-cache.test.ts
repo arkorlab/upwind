@@ -11,7 +11,7 @@ const PATH = '/gated';
 const ORIGIN = 'https://site.example';
 const GENERATED_AT = '2026-10-24T00:00:00.000Z';
 
-function input(validated = false, declared = true): GateInput {
+function input(validated = false, declared = true) {
   const request = new Request<unknown, IncomingRequestCfProperties>(`${ORIGIN}${PATH}`);
   const original = standaloneHost(env);
   const host = {
@@ -44,7 +44,7 @@ function input(validated = false, declared = true): GateInput {
     cspReportingPath: undefined,
     cspNonce: undefined,
     passed: vi.fn(),
-  };
+  } satisfies GateInput;
 }
 
 describe('a response served after a gate passes', () => {
@@ -78,9 +78,13 @@ describe('a response served after a gate passes', () => {
     );
 
     expect(answer.headers.get('cache-control')).toBe('private, max-age=60');
-    for (const name of Object.keys(headers).filter((name) => name !== 'cache-control')) {
+
+    for (const name of Object.keys(headers)) {
+      if (name === 'cache-control') continue;
+
       expect(answer.headers.has(name)).toBe(false);
     }
+
     await answer.arrayBuffer();
   });
 
@@ -105,8 +109,9 @@ describe('a response served after a gate passes', () => {
 
     expect(answer).toBe(original);
     expect(answer.headers.get('cache-control')).toBe('public');
-    expect(asked.host.gates?.answer).not.toHaveBeenCalled();
+    expect(asked.host.gates.answer).not.toHaveBeenCalled();
     expect(asked.passed).not.toHaveBeenCalled();
+
     await answer.arrayBuffer();
   });
 
@@ -116,15 +121,15 @@ describe('a response served after a gate passes', () => {
     try {
       const asked = input();
       asked.request.headers.set('upgrade', 'websocket');
-      const answer = await routeThroughGate(asked, () =>
-        Promise.resolve(
+      const answer = await routeThroughGate(asked, () => {
+        return Promise.resolve(
           new Response(null, {
             // eslint-disable-next-line unicorn/no-invalid-response-options -- A native Worker upgrade carries its WebSocket beside status 101.
             status: 101,
             webSocket: pair[0],
           }),
-        ),
-      );
+        );
+      });
 
       expect(answer.status).toBe(101);
       expect(answer.webSocket).toBe(pair[0]);

@@ -676,7 +676,7 @@ describe('a route gate the command cannot bind', () => {
           resetCacheKey: false,
           fetch: remote.fetch,
         }),
-      ).rejects.toThrow(/route gates.*`upwind deploy` does not bind yet/u);
+      ).rejects.toThrow('the build declares route gates, which `upwind deploy` does not bind yet');
 
       expect({
         remoteCalls: remote.requests.length + remote.workersDevRequests.length,

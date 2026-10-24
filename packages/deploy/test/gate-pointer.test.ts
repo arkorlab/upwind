@@ -10,6 +10,7 @@ import { publishDeployment, type DeployTarget } from '../src/deploy.ts';
 import { edgePointerOf } from '../src/pointer.ts';
 
 const NOW = '2026-10-24T00:00:00.000Z';
+const NOW_MS = 1_792_800_000_000;
 const APP = { deploymentId: 'dpl_site', scriptName: 'site-app' };
 const SITE = { projectId: 'site', originHost: 'site.example' };
 const FINGERPRINT = { assetSetHash: 'a'.repeat(64), observedAt: NOW };
@@ -48,8 +49,9 @@ describe('gate admission survives the independent pointer', () => {
         serialized: serializeManifest(manifest),
         manifestId: await computeManifestId(manifest),
       },
-      { policy: DEFAULT_DELIVERY_POLICY, now: () => Date.parse(NOW) },
+      { policy: DEFAULT_DELIVERY_POLICY, now: () => NOW_MS },
     );
+
     expect(pointer.hasGates).toBe(gated ? true : undefined);
     expect(edgePointerSchema.parse(pointer).hasGates).toBe(pointer.hasGates);
     expect(JSON.stringify(edgePointerSchema.parse(pointer))).toBe(JSON.stringify(pointer));
@@ -65,8 +67,9 @@ describe('gate admission survives the independent pointer', () => {
         app: APP,
         cspNonce: false,
       },
-      Date.parse(NOW),
+      NOW_MS,
     );
+
     expect(Object.hasOwn(pointer, 'hasGates')).toBe(false);
     expect(edgePointerSchema.safeParse({ ...pointer, hasGates: false }).success).toBe(false);
   });

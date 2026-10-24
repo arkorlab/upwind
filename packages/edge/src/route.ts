@@ -366,8 +366,23 @@ function routeWithinBudget(input: GateObservedRoutingInput): Promise<Response> {
     return routeWithManifest(input, forwarding);
   }
   return routeThroughGate(gateInputOf(input, manifest, forwarding), () =>
-    routeWithManifest(input, forwarding),
+    routeGatedManifest(input, forwarding),
   );
+}
+
+/** A later routing fallback stays inside any admitted gate's response boundary. */
+async function routeGatedManifest(
+  input: ManifestRoutingInput,
+  forwarding: ForwardingContext,
+): Promise<Response> {
+  try {
+    return await routeWithManifest(input, forwarding);
+  } catch (error) {
+    if (error instanceof PatternBudgetExceededError) {
+      return passthroughFor(input, PATTERN_BUDGET);
+    }
+    throw error;
+  }
 }
 
 /** The same request context accompanies every terminal routing outcome. */

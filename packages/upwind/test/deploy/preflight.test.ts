@@ -59,7 +59,9 @@ describe('checking a build before a deploy', () => {
     const plan = await preflight({ projectDir: dir, settings: SETTINGS, secrets: NO_SECRETS });
 
     expect(plan.problems).toStrictEqual([
-      expect.stringMatching(/route gates.*`upwind deploy` does not bind yet/u),
+      expect.stringContaining(
+        'the build declares route gates, which `upwind deploy` does not bind yet',
+      ),
     ]);
   });
 

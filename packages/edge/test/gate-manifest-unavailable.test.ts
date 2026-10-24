@@ -59,13 +59,13 @@ async function routed(input: {
     ...(input.gated && { gates: { [PATH]: NAME }, gatedPathnames: { [PATH]: PATH } }),
   });
   const dispatch = vi.fn(() => Promise.resolve(htmlResponse(document.suffix)));
-  const gate = vi.fn(() =>
-    Promise.resolve(
-      input.pass
+  const gate = vi.fn(() => {
+    return Promise.resolve(
+      input.pass === true
         ? new Response(null, { headers: { [GATE_ANSWER_HEADER]: GATE_PASS } })
         : new Response('denied', { status: 403 }),
-    ),
-  );
+    );
+  });
   const bindings = bindingsFor(input.fault, site.manifestId, serializeManifest(site.manifest));
   const runtime = standaloneRuntime(env, {
     memory: createEdgeMemory(() => Date.now()),
@@ -102,6 +102,7 @@ describe('a gated deployment whose manifest cannot be read', () => {
       vi.spyOn(console, 'warn').mockReturnValue();
       for (const fault of ['missing', 'unavailable', 'corrupt'] as const) {
         const result = await routed({ method, gated: true, fault });
+
         expect(result.response.status).toBe(503);
         expect(result.response.headers.get('cache-control')).toContain('no-store');
         expect(result.response.headers.get('x-arkor-edge')).toBe(
@@ -119,6 +120,7 @@ describe('a gated deployment whose manifest cannot be read', () => {
     async (method) => {
       vi.spyOn(console, 'warn').mockReturnValue();
       const result = await routed({ method, gated: false, fault: 'unavailable' });
+
       expect(result.response.status).toBe(200);
       expect(result.dispatch).toHaveBeenCalledTimes(1);
       expect(result.gate).not.toHaveBeenCalled();
@@ -128,6 +130,7 @@ describe('a gated deployment whose manifest cannot be read', () => {
   it('keeps a non-read request on its existing application path', async () => {
     vi.spyOn(console, 'warn').mockReturnValue();
     const result = await routed({ method: 'POST', gated: true, fault: 'unavailable' });
+
     expect(result.response.status).toBe(200);
     expect(result.dispatch).toHaveBeenCalledTimes(1);
     expect(result.gate).not.toHaveBeenCalled();
@@ -138,6 +141,7 @@ describe('a gated deployment whose manifest cannot be read', () => {
     async (method) => {
       vi.spyOn(console, 'warn').mockReturnValue();
       const result = await routed({ method, gated: true, fault: 'durable' });
+
       expect(result.response.status).toBe(403);
       expect(result.gate).toHaveBeenCalledTimes(1);
       expect(result.dispatch).not.toHaveBeenCalled();
@@ -148,6 +152,7 @@ describe('a gated deployment whose manifest cannot be read', () => {
     'still dispatches an admitted %s with its manifest available',
     async (method) => {
       const result = await routed({ method, gated: true, fault: 'none', pass: true });
+
       expect(result.response.status).toBe(200);
       expect(result.gate).toHaveBeenCalledTimes(1);
       expect(result.dispatch).toHaveBeenCalledTimes(1);
