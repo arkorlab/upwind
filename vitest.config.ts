@@ -42,6 +42,7 @@ export default defineConfig({
       'packages/*/vitest.config.mts',
       'packages/*/vitest.workers.config.mts',
       'tools/*/vitest.config.mts',
+      'tools/*/vitest.workers.config.mts',
     ],
   },
 });
