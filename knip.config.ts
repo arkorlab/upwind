@@ -23,7 +23,7 @@ const config: KnipConfig = {
     'packages/deploy': {},
     // `cloudflare:workers` and `cloudflare:test` are the Workers runtime's own, not npm packages.
     'packages/cache': { ignoreDependencies: ['cloudflare'] },
-    'packages/edge': { ignoreDependencies: ['cloudflare'] },
+    'packages/edge': { ignoreDependencies: ['cloudflare', 'arkor'] },
     // A local stack's Workers are bundled by path (`bundleWorker`), so nothing imports them; `cloudflare:*`
     // is the Workers runtime's own.
     'packages/local': {
