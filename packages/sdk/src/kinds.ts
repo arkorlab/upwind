@@ -57,3 +57,11 @@ export const AI: Kind = {
   lookup: 'ai',
   module: '@stayingupwind/sdk/ai',
 };
+
+export const WORKFLOW: Kind = {
+  type: 'workflow',
+  called: 'Cloudflare Workflow',
+  accessor: 'workflow',
+  lookup: 'workflow',
+  module: '@stayingupwind/sdk/workflow',
+};

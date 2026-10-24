@@ -2,7 +2,7 @@ import { unlinkSync } from 'node:fs';
 import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { DURABLE_OBJECT_EXPORT } from '@stayingupwind/core/bundle';
+import { CLOUDFLARE_WORKFLOW_EXPORT, DURABLE_OBJECT_EXPORT } from '@stayingupwind/core/bundle';
 import {
   formatResourcesManifest,
   type FunctionEnv,
@@ -21,6 +21,11 @@ import {
 import { localEntries, type LocalStorageEntry } from './local-bindings.ts';
 import { failedOwnerNames, runtimeStartupFailure } from './local-failure.ts';
 import { type LocalDurableObject, localObjects } from './local-objects.ts';
+import {
+  type LocalCloudflareWorkflow,
+  localWorkflows,
+  localWorkflowBridge,
+} from './local-workflows.ts';
 import { publishResources } from './publish.ts';
 import { disposeLocalResources } from './shutdown.ts';
 import { sourceChanges } from './watch-sources.ts';
@@ -156,7 +161,7 @@ const RUNTIME_TYPES = {
   kv_namespace: 'kv',
   r2_bucket: 'r2',
   [DURABLE_OBJECT_TYPE]: DURABLE_OBJECT_KIND,
-} as const satisfies Record<Exclude<ResourceType, 'ai'>, string>;
+} as const satisfies Record<Exclude<ResourceType, 'ai' | 'workflow'>, string>;
 
 export interface LocalResources {
   /** Class dependencies whose edits require a fresh worker module. */
@@ -194,6 +199,10 @@ function noSourceChanges(): boolean {
   return false;
 }
 
+function workflowWorkerName(name: string): string {
+  return `upwind-workflow-${name}`;
+}
+
 function ownerName(name: string): string {
   return `upwind-object-${name}`;
 }
@@ -202,17 +211,29 @@ type LocalBinding =
   | ReturnType<typeof localAiBinding>
   | { type: 'd1' | 'kv'; id: string }
   | { type: 'r2'; name: string }
-  | { type: typeof DURABLE_OBJECT_KIND; worker: string; exportName: string };
+  | { type: typeof DURABLE_OBJECT_KIND; worker: string; exportName: string }
+  | { type: 'workflow'; name: string; worker: string; exportName: string };
 
 function runtimeOptions(
   projectDir: string,
   entries: readonly LocalStorageEntry[],
   objects: readonly LocalDurableObject[],
   ai: LocalAi,
+  workflows: readonly LocalCloudflareWorkflow[],
 ): MiniflareOptions {
   const env = Object.fromEntries<LocalBinding>(
     entries.map((entry): [string, LocalBinding] => {
       if (entry.type === 'ai') return [entry.name, localAiBinding()];
+      if (entry.type === 'workflow')
+        return [
+          entry.name,
+          {
+            type: 'workflow',
+            name: workflowWorkerName(entry.name),
+            worker: workflowWorkerName(entry.name),
+            exportName: CLOUDFLARE_WORKFLOW_EXPORT,
+          },
+        ];
       if (entry.type === DURABLE_OBJECT_TYPE)
         return [
           entry.name,
@@ -248,6 +269,26 @@ function runtimeOptions(
         },
       },
       ...(ai.worker === undefined ? [] : [ai.worker]),
+      ...workflows.map((workflow) => ({
+        config: {
+          name: workflowWorkerName(workflow.declaration.name),
+          compatibilityDate: COMPATIBILITY_DATE,
+          compatibilityFlags: ['nodejs_compat'],
+          manifest: {
+            mainModule: ENTRY_MODULE,
+            modules: {
+              [ENTRY_MODULE]: { type: 'esm' as const, contents: workflow.source },
+              ...Object.fromEntries(
+                (workflow.wasmModules ?? []).map((module) => [
+                  module.name,
+                  { type: 'wasm' as const, contents: new Uint8Array(module.bytes) },
+                ]),
+              ),
+            },
+          },
+          env,
+        },
+      })),
       ...objects.map((object) => {
         const modules: Record<
           string,
@@ -303,6 +344,10 @@ async function bindingOf(runtime: Miniflare, entry: LocalStorageEntry): Promise<
     case 'r2_bucket': {
       return runtime.getR2Bucket(entry.name);
     }
+    case 'workflow': {
+      const env = await runtime.getBindings(WORKER_NAME);
+      return localWorkflowBridge(env[entry.name]);
+    }
     case 'ai': {
       const env = await runtime.getBindings(WORKER_NAME);
       return env[entry.name];
@@ -324,6 +369,7 @@ class LocalStorageError extends Error {
 async function probe(entry: LocalStorageEntry, binding: unknown): Promise<void> {
   switch (entry.type) {
     case 'ai':
+    case 'workflow':
     case DURABLE_OBJECT_TYPE: {
       // Namespace readiness never constructs an object or executes the customer's class.
       return;
@@ -568,12 +614,13 @@ function startAndPublish(
   entries: readonly LocalStorageEntry[],
   objects: readonly LocalDurableObject[],
   ai: LocalAi,
+  workflows: readonly LocalCloudflareWorkflow[],
 ): Attempt {
   const arrived: PromiseWithResolvers<Miniflare | undefined> = Promise.withResolvers();
   const done = (async (): Promise<Miniflare> => {
     let runtime: Miniflare | undefined;
     try {
-      runtime = await startRuntime(runtimeOptions(projectDir, entries, objects, ai));
+      runtime = await startRuntime(runtimeOptions(projectDir, entries, objects, ai, workflows));
     } finally {
       // Either way, and before anything slower: a runtime, or the news that there will not be one.
       arrived.resolve(runtime);
@@ -651,13 +698,22 @@ export async function startLocalResources(
       versions,
       options.mode ?? 'development',
     );
+    const workflows = await localWorkflows(
+      projectDir,
+      watchedFiles,
+      versions,
+      options.mode ?? 'development',
+    );
     sourcesChanged = sourceChanges(versions);
     options.signal?.throwIfAborted();
     // A rejected storage claim must not authenticate or create a remote AI session.
     release = await claimStorage(path.join(projectDir, PERSIST_DIR));
     options.signal?.throwIfAborted();
     ai = await prepareLocalAi(
-      objects.map((object) => object.declaration.name),
+      [
+        ...objects.map((object) => object.declaration.name),
+        ...workflows.map((workflow) => workflow.declaration.name),
+      ],
       options.mode !== 'production' && options.remoteAi === true,
       undefined,
       {
@@ -669,13 +725,15 @@ export async function startLocalResources(
     const entries = localEntries(
       objects.map((object) => object.declaration.name),
       ai.entries,
+      workflows.map((workflow) => workflow.declaration.name),
     );
-    attempt = startAndPublish(projectDir, entries, objects, ai);
+    attempt = startAndPublish(projectDir, entries, objects, ai, workflows);
     let remaining = objects;
+    let remainingWorkflows = workflows;
     async function recover(error: unknown): Promise<Miniflare> {
       if (
         !isStarting() ||
-        (remaining.length === 0 && ai?.worker === undefined) ||
+        (remaining.length === 0 && remainingWorkflows.length === 0 && ai?.worker === undefined) ||
         !runtimeStartupFailure(error)
       )
         throw error;
@@ -704,7 +762,10 @@ export async function startLocalResources(
       } else {
         remaining = remaining.filter((object) => !broken.has(object.declaration.name));
         // An unclassified failure cannot safely identify a particular customer owner.
-        if (broken.size === 0) remaining = [];
+        if (broken.size === 0) {
+          remaining = [];
+          remainingWorkflows = [];
+        }
         const diagnostic =
           broken.size === 0
             ? 'native runtime startup failed without identifying an owner; retrying default storage without Durable Object namespaces'
@@ -714,8 +775,9 @@ export async function startLocalResources(
       const surviving = localEntries(
         remaining.map((object) => object.declaration.name),
         ai.entries,
+        remainingWorkflows.map((workflow) => workflow.declaration.name),
       );
-      attempt = startAndPublish(projectDir, surviving, remaining, ai);
+      attempt = startAndPublish(projectDir, surviving, remaining, ai, remainingWorkflows);
       return ready(attempt);
     }
     async function ready(current: Attempt): Promise<Miniflare> {

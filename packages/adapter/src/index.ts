@@ -6,6 +6,7 @@ import {
   bundleBlobs,
   type DeploymentBundle,
   type DurableObjectDeclaration,
+  type CloudflareWorkflowDeclaration,
   deploymentBundleSchema,
   ONE_PASS_BUNDLE_VERSION,
   travelsWithFunction,
@@ -26,6 +27,7 @@ import { BlobStore } from './blobs.ts';
 import { assertBuildPaths } from './build-paths.ts';
 import { bundleConfig } from './bundle-config.ts';
 import { cacheHandlersModule } from './cache-handlers.ts';
+import { cloudflareWorkflowParts } from './cloudflare-workflows.ts';
 import {
   type BuildContext,
   bundleRouting,
@@ -326,12 +328,22 @@ async function onBuildComplete(
     sourceMaps: options.sourceMaps,
     distDir: ctx.distDir,
   });
+  const cloudflareWorkflows = await cloudflareWorkflowParts({
+    projectDir: ctx.projectDir,
+    outDir,
+    blobs,
+    declarations: options.cloudflareWorkflows,
+    split: functions.built.length > 1,
+    sourceMaps: options.sourceMaps,
+    distDir: ctx.distDir,
+  });
   const sourceMaps = [
     ...clientMaps,
     ...functions.built.flatMap((each) => each.built.sourceMaps),
     ...(middlewareFunction?.sourceMaps ?? []),
     ...workflowParts.sourceMaps,
     ...objects.sourceMaps,
+    ...cloudflareWorkflows.sourceMaps,
   ];
 
   // Publication adds capabilities the host needs; routing reference semantics also travel with
@@ -346,6 +358,7 @@ async function onBuildComplete(
     routeBodyPrivacy: 2,
     staticPagesPrivacy: STATIC_PAGES_FALLBACK_PRIVACY,
     ...objects.bundle,
+    ...cloudflareWorkflows.bundle,
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).
     sourcePages,
@@ -368,6 +381,7 @@ async function onBuildComplete(
       ...bundleFunctions(functions.built, middlewareFunction),
       ...workflowParts.functions,
       ...objects.functions,
+      ...cloudflareWorkflows.functions,
     },
   });
   await writeFile(path.join(outDir, BUNDLE_FILE), JSON.stringify(bundle, null, 2));
@@ -375,6 +389,7 @@ async function onBuildComplete(
     ...dependencyRecord(functions, middlewareFunction),
     ...workflowParts.dependencies,
     ...objects.dependencies,
+    ...cloudflareWorkflows.dependencies,
   };
   await writeFile(path.join(outDir, DEPENDENCIES_FILE), JSON.stringify(dependencies, null, 2));
   await rm(path.join(outDir, 'work'), { recursive: true, force: true });
@@ -524,6 +539,8 @@ function middlewarePlacement(middleware: AdapterOutput['MIDDLEWARE'] | undefined
 export interface AdapterOptions {
   /** Host registrations whose class code is built separately from every Next.js Function. */
   readonly durableObjects?: readonly DurableObjectDeclaration[] | undefined;
+  /** Host-owned Cloudflare Workflow registrations, built independently of application routes. */
+  readonly cloudflareWorkflows?: readonly CloudflareWorkflowDeclaration[] | undefined;
   /**
    * The module the runtime's cache reads and writes through, as an absolute path — what
    * `arkor:cache-host` resolves to, bundled into the app Function's runtime. The middleware
@@ -858,3 +875,9 @@ export default createAdapter(environmentOptions());
 export { bundleDurableObjects, type BundledDurableObject } from './durable-objects.ts';
 // What `upwind deploy` reads the project's configuration with: the reader its build uses.
 export { type DeployConfig, readProjectConfig, type UpwindConfig } from './project-config.ts';
+
+export {
+  bundleCloudflareWorkflows,
+  buildCloudflareWorkflowFunctions,
+  type BundledCloudflareWorkflow,
+} from './cloudflare-workflows.ts';

@@ -31,10 +31,12 @@ function localBindings(customerNames: readonly string[]): LocalStorageEntry[] {
 export function localEntries(
   customerNames: readonly string[],
   ai: readonly LocalStorageEntry[] = [],
+  workflows: readonly string[] = [],
 ): LocalStorageEntry[] {
   return [
-    ...localBindings([...customerNames, ...ai.map((entry) => entry.name)]),
+    ...localBindings([...customerNames, ...ai.map((entry) => entry.name), ...workflows]),
     ...ai,
+    ...workflows.map((name): LocalStorageEntry => ({ name, type: 'workflow' })),
     ...customerNames.map((name): LocalStorageEntry => {
       return {
         name,
