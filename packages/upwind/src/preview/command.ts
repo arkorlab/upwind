@@ -182,6 +182,21 @@ async function disposed(stack: LocalStack): Promise<void> {
   }
 }
 
+/**
+ * Ask a serving preview the paths a deploy asks, and say which fail — beside the wait for a stop
+ * rather than before it, so that a stop does not wait on them: it ends the asking.
+ */
+async function warnOfChecks(
+  site: URL,
+  paths: readonly string[],
+  signal: AbortSignal,
+): Promise<void> {
+  const failures = await failedChecks(site, paths, { signal });
+  for (const failure of failures) {
+    console.warn(`upwind: ${failure}, which a deploy would not switch to`);
+  }
+}
+
 /** Serve until stopped; what the run exits with. */
 async function serve(
   stackOptions: StackOptions,
@@ -199,16 +214,17 @@ async function serve(
       { cause: error },
     );
   }
+  const asking = new AbortController();
   try {
     signals?.serving();
     console.log(`upwind: serving ${stack.deploymentId} at ${stack.url.href} (Ctrl-C to stop)`);
-    const failures = await failedChecks(stack.url, settings.checks);
-    for (const failure of failures) {
-      console.warn(`upwind: ${failure}, which a deploy would not switch to`);
-    }
+    const checked = warnOfChecks(stack.url, settings.checks, asking.signal);
     io.serving?.(stack);
     await (io.stopped ?? signals?.asked);
+    asking.abort();
+    await checked;
   } finally {
+    asking.abort();
     await disposed(stack);
     signals?.release();
   }

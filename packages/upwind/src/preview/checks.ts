@@ -11,15 +11,24 @@ const SERVER_ERROR = 500;
 /** What the edge says of a request it had no deployment to serve. */
 const NO_DEPLOYMENT = new Set(['reason=no-pointer', 'reason=pointer-unavailable']);
 
+/** How the paths are asked: through what, and until when. */
+export interface CheckOptions {
+  readonly fetchImpl?: typeof fetch | undefined;
+  /** Stops the asking: a path asked when it aborts, and those after it, are neither passed nor failed. */
+  readonly signal?: AbortSignal | undefined;
+}
+
 async function failureOf(
   site: URL,
   path: string,
   fetchImpl: typeof fetch,
+  stop: AbortSignal | undefined,
 ): Promise<string | undefined> {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   try {
     const response = await fetchImpl(new URL(path, site), {
       redirect: 'manual',
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: stop === undefined ? timeout : AbortSignal.any([timeout, stop]),
     });
     await response.body?.cancel();
     const said = (response.headers.get(EDGE_DEBUG_HEADER) ?? '').split(';');
@@ -30,6 +39,9 @@ async function failureOf(
       ? `${path} was answered with ${String(response.status)}`
       : undefined;
   } catch (error) {
+    if (stop?.aborted === true) {
+      return undefined;
+    }
     return `${path} was not answered: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
@@ -38,11 +50,15 @@ async function failureOf(
 export async function failedChecks(
   site: URL,
   paths: readonly string[],
-  fetchImpl: typeof fetch = fetch,
+  options: CheckOptions = {},
 ): Promise<string[]> {
+  const { fetchImpl = fetch, signal } = options;
   const failures: string[] = [];
   for (const path of paths) {
-    const failure = await failureOf(site, path, fetchImpl);
+    if (signal?.aborted === true) {
+      break;
+    }
+    const failure = await failureOf(site, path, fetchImpl, signal);
     if (failure !== undefined) {
       failures.push(failure);
     }

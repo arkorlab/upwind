@@ -32,11 +32,12 @@ const PORT_SPELLING = /^\d+$/u;
 
 /**
  * The port asked for: `--port`, then `PORT`, then 3000 — but a check, which nothing outside asks,
- * takes any free one unless `--port` names one.
+ * takes any free one unless `--port` names one. An empty value names none, as `upwind dev` reads
+ * one: `PORT=${PORT}` with nothing to fill it in is not a port asked for.
  */
 function portOf(value: string | undefined, check: boolean): number {
   const asked = value ?? (check ? undefined : process.env['PORT']);
-  if (asked === undefined) {
+  if (asked === undefined || asked === '') {
     return check ? 0 : DEFAULT_PORT;
   }
   // `Number` would take `1e3`, `0x10` and a string of spaces: a port is written the way it is read.

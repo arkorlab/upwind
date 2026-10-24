@@ -26,9 +26,29 @@ describe('the paths a deploy asks, asked of a preview', () => {
       ]),
     );
 
-    await expect(failedChecks(SITE, ['/', '/gone', '/moved'], fetchImpl)).resolves.toStrictEqual(
-      [],
-    );
+    await expect(
+      failedChecks(SITE, ['/', '/gone', '/moved'], { fetchImpl }),
+    ).resolves.toStrictEqual([]);
+  });
+
+  it('stop being asked once stopped, failing none for it', async () => {
+    const stop = new AbortController();
+    const asked: string[] = [];
+    // The stop arrives while the first path is asked, which it aborts.
+    const fetchImpl: typeof fetch = (input, init) => {
+      asked.push(new URL(input instanceof Request ? input.url : String(input)).pathname);
+      const { promise, reject } = Promise.withResolvers<Response>();
+      init?.signal?.addEventListener('abort', () => {
+        reject(new Error('aborted'));
+      });
+      stop.abort();
+      return promise;
+    };
+
+    await expect(
+      failedChecks(SITE, ['/held', '/after'], { fetchImpl, signal: stop.signal }),
+    ).resolves.toStrictEqual([]);
+    expect(asked).toStrictEqual(['/held']);
   });
 
   it('fail on a server error, on no deployment, and where nothing answers', async () => {
@@ -47,7 +67,7 @@ describe('the paths a deploy asks, asked of a preview', () => {
     );
 
     await expect(
-      failedChecks(SITE, ['/broken', '/empty', '/unreached'], fetchImpl),
+      failedChecks(SITE, ['/broken', '/empty', '/unreached'], { fetchImpl }),
     ).resolves.toStrictEqual([
       '/broken was answered with 502',
       '/empty was answered with no deployment',

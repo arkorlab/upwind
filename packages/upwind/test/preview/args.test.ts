@@ -28,6 +28,13 @@ describe('what `upwind preview` understands', () => {
     expect(parsePreviewRequest(['app', '--port', '0'])).toMatchObject({ options: { port: 0 } });
   });
 
+  it('takes an empty PORT for none, as `upwind dev` does', () => {
+    vi.stubEnv('PORT', '');
+
+    expect(parsePreviewRequest([])).toMatchObject({ options: { port: 3000 } });
+    expect(parsePreviewRequest(['--check'])).toMatchObject({ options: { port: 0 } });
+  });
+
   it('checks on a free port, unless --port names one', () => {
     vi.stubEnv('PORT', '4000');
 

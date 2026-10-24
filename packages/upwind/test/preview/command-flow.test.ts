@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BUNDLE_PATH } from '../../src/deploy/preflight.ts';
 import { ownVersion } from '../../src/manifest.ts';
 import type { PreviewOptions } from '../../src/preview/args.ts';
+import type { CheckOptions } from '../../src/preview/checks.ts';
 import { runPreview } from '../../src/preview/command.ts';
 import {
   bundleOf,
@@ -32,7 +33,11 @@ const local = vi.hoisted(() => {
   };
 });
 
-const paths = vi.hoisted(() => ({ failures: [] as string[] }));
+/**
+ * The paths of `deploy.checks`, as asked: failing as the test says, or — `held` — answered only once
+ * the asking is stopped, which is then noted.
+ */
+const paths = vi.hoisted(() => ({ failures: [] as string[], held: false, stopped: false }));
 
 vi.mock(import('@stayingupwind/local'), async (importOriginal) => {
   const actual = await importOriginal();
@@ -55,7 +60,17 @@ vi.mock(import('@stayingupwind/local'), async (importOriginal) => {
 
 vi.mock(import('../../src/preview/checks.ts'), () => {
   return {
-    failedChecks: () => Promise.resolve(paths.failures),
+    failedChecks: (_site: URL, _asked: readonly string[], options?: CheckOptions) => {
+      if (!paths.held) {
+        return Promise.resolve(paths.failures);
+      }
+      return new Promise<string[]>((resolve) => {
+        options?.signal?.addEventListener('abort', () => {
+          paths.stopped = true;
+          resolve([]);
+        });
+      });
+    },
   };
 });
 
@@ -92,6 +107,8 @@ describe('a preview around its stack', () => {
     local.disposed = 0;
     local.check = () => Promise.resolve({ checked: 3, failures: [], skipped: [] });
     paths.failures = [];
+    paths.held = false;
+    paths.stopped = false;
     out = [];
     vi.spyOn(console, 'log').mockImplementation(kept('log'));
     vi.spyOn(console, 'warn').mockImplementation(kept('warn'));
@@ -189,6 +206,26 @@ describe('a preview around its stack', () => {
 
     await expect(runPreview(checking(dir))).resolves.toBe(1);
     expect(out).toContain('error: upwind: / was answered with 502');
+  });
+
+  it('stops serving without waiting on a path of deploy.checks still asked', async () => {
+    paths.held = true;
+    const dir = await project({ file: undefined });
+    const { promise: served, resolve } = Promise.withResolvers<undefined>();
+
+    await expect(
+      runPreview(
+        { projectDir: dir, port: 0, envFiles: [], check: false },
+        {
+          stopped: served,
+          serving: () => {
+            resolve(undefined);
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+    expect(paths.stopped).toBe(true);
+    expect(local.disposed).toBe(1);
   });
 
   it('ends with 1, and lets the stack go, where the check cannot finish', async () => {
