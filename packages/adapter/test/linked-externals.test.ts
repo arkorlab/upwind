@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,7 +8,11 @@ import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
 import { afterEach, assert, describe, expect, it } from 'vitest';
 
 import { FUNCTION_COMPATIBILITY_DATE, FUNCTION_COMPATIBILITY_FLAGS } from '../src/function.ts';
-import { bundleLinkedExternals, linkedModuleBanner } from '../src/linked-externals.ts';
+import {
+  bundleLinkedExternals,
+  linkedImportsPlugin,
+  linkedModuleBanner,
+} from '../src/linked-externals.ts';
 
 const IDS = ['@scope/linked-one-1111111111111111', '@scope/linked-two-2222222222222222'];
 const roots: string[] = [];
@@ -187,4 +191,113 @@ describe('linked external module URLs', () => {
       expect(state.meta).toStrictEqual({ url: expected, filename: `/bundle/${name}`, dirname });
     },
   );
+});
+
+/**
+ * A package the build leaves to the runtime as an ES module, as `esm-externals` has one: linked
+ * under `.next/node_modules` by its name and a hash, with an `import` export the runtime loads and
+ * a `require` one it must not, and awaiting at its top level.
+ */
+
+const LINKED = 'esm-package2-f0c287beaea44dce';
+const ID = `${LINKED}/entry`;
+
+describe('a package the build links for the runtime to import', () => {
+  const directories: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+    );
+  });
+
+  async function project(): Promise<string> {
+    const dir = await mkdtemp(path.join(tmpdir(), 'adapter-linked-'));
+    directories.push(dir);
+    const pkg = path.join(dir, 'node_modules', 'esm-package2');
+    await mkdir(pkg, { recursive: true });
+    await writeFile(
+      path.join(pkg, 'package.json'),
+      JSON.stringify({
+        type: 'module',
+        name: 'esm-package',
+        exports: { './entry': { import: './correct.js', require: './wrong.cjs' } },
+      }),
+    );
+    await writeFile(
+      path.join(pkg, 'correct.js'),
+      "import { sep } from 'node:path';\nexport const separator = sep;\nawait 1;\n" +
+        "if (Math.random() < 0) import('fail');\nexport default 'World';\n",
+    );
+    await writeFile(path.join(pkg, 'wrong.cjs'), "module.exports = 'Wrong';\n");
+    await mkdir(path.join(dir, '.next', 'node_modules'), { recursive: true });
+    await mkdir(path.join(dir, '.next', 'server', 'chunks'), { recursive: true });
+    await symlink(
+      '../../node_modules/esm-package2',
+      path.join(dir, '.next', 'node_modules', LINKED),
+    );
+    return dir;
+  }
+
+  it('is carried as an ES module under the name the chunk imports it by', async () => {
+    const dir = await project();
+    const linked = await bundleLinkedExternals({
+      projectDir: dir,
+      files: [],
+      distDir: path.join(dir, '.next'),
+      workDir: path.join(dir, 'work'),
+      kind: 'app',
+      ids: [ID, 'unlinked-0123456789abcdef/entry'],
+    });
+
+    expect(linked?.modules.map((module) => module.name)).toStrictEqual([ID]);
+
+    const source = await readFile(linked?.modules[0]?.file ?? '', 'utf8');
+
+    // The `import` export, and its top-level await, which a CommonJS bundle could not carry.
+    expect(source).toContain('await 1');
+    expect(source).toContain('World');
+    expect(source).not.toContain('Wrong');
+    expect(linked?.trace.externals).toContain('node:path');
+    // A module nobody installed, imported where no request reaches: left to fail as under Node.js.
+    expect(linked?.trace.externals).not.toContain('fail');
+    expect(linked?.trace.unresolved).toStrictEqual(['fail']);
+  });
+
+  it('is nothing to carry when no name is linked', async () => {
+    const dir = await project();
+
+    await expect(
+      bundleLinkedExternals({
+        projectDir: dir,
+        files: [],
+        distDir: path.join(dir, '.next'),
+        workDir: path.join(dir, 'work'),
+        kind: 'app',
+        ids: ['unlinked-0123456789abcdef/entry'],
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+/** What the plugin collects from one chunk's code, run as Rolldown runs its hook. */
+function namesIn(code: string): string[] {
+  const names: string[] = [];
+  const { transform } = linkedImportsPlugin((id) => {
+    names.push(id);
+  });
+  const handler = typeof transform === 'object' ? transform.handler : transform;
+  (handler as unknown as (code: string) => void)(code);
+  return names;
+}
+
+describe('the names a chunk imports linked packages by', () => {
+  it('are the hashed names alone: not a built-in, not an application method called `y`', () => {
+    expect(
+      namesIn(
+        `var d=await a.y("${ID}");var f=await e.y("node:fs");chart.y("value");` +
+          'var s=b.y("@scope/pkg-0123456789abcdef");',
+      ),
+    ).toStrictEqual([ID, '@scope/pkg-0123456789abcdef']);
+  });
 });
