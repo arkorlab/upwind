@@ -1,5 +1,5 @@
 import type { EncodedShellRef, ShellEncoding } from '@stayingupwind/core/artifact';
-import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
+import type { GenerationPackHeader } from '@stayingupwind/core/cache';
 import type { RouteEntry } from '@stayingupwind/core/manifest';
 import {
   brotliWire,
@@ -60,12 +60,37 @@ function renderingWire(
 export type Layering = 'off' | 'declined' | 'on';
 
 /**
+ * What a document's delivery reads of the generation it serves: its two bodies, and this much of
+ * what its header says — all a record read whole has (`DecodedGenerationPack`), and what a gate's
+ * shell is given to be served as one (`gateGeneration`).
+ */
+export interface ServedPack {
+  readonly header: Pick<
+    GenerationPackHeader,
+    'headers' | 'htmlLength' | 'htmlSha256' | 'pathname' | 'route' | 'seq' | 'source'
+  >;
+  readonly html: Uint8Array;
+  /** `undefined` for a generation complete in itself, which nothing resumes. */
+  readonly postponed: Uint8Array | undefined;
+}
+
+/**
+ * The gate whose shell a document is served from, in place of the route's own (`gateGeneration`):
+ * its name, and what it said to tell the resume beside the request (`GATE_RESUME_HEADER`).
+ */
+export interface ServedGate {
+  readonly name: string;
+  readonly told: Readonly<Record<string, string>> | undefined;
+}
+
+/**
  * The generation a hosted application's document is served from, when the deployment's runtime
  * cache holds one: its record is the shell, its state is what the resume completes, and what it
- * says of its own freshness is on the wire for whoever reads the markers.
+ * says of its own freshness is on the wire for whoever reads the markers. A gate's shell is served
+ * as one, and says whose it is (`gate`).
  */
 export interface ServedGeneration {
-  readonly pack: DecodedGenerationPack;
+  readonly pack: ServedPack;
   readonly validity: ServedValidity;
   /** Where the record came from: this isolate's memory, this data center's copy, or KV. */
   readonly source: string;
@@ -104,6 +129,8 @@ export interface ServedGeneration {
    * resume for its regeneration to ride.
    */
   readonly onServed: (() => void) | undefined;
+  /** The gate whose shell this is, where a gate answered with one; none for a record. */
+  readonly gate?: ServedGate | undefined;
 }
 
 export interface DeliveryInput {

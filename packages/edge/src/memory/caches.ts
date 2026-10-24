@@ -298,6 +298,12 @@ export interface EdgeMemory {
   readonly rewritesSeen: TtlCache<string, RewriteSeen>;
   /** Legacy refused-asset memo for composed hosts; the built-in handler no longer uses it. */
   readonly refusedAssets: TtlCache<string, true>;
+  /**
+   * The gated routes whose gate said it decides a request that takes a shell alone, by manifest,
+   * gate and route (`documentGateKey`): any other request of one goes on with its gate unasked
+   * (`handlers/gate.ts`).
+   */
+  readonly documentGates: TtlCache<string, true>;
 }
 
 /** Where a scope stands, as an isolate last found it, and when it looked, on its own clock. */
@@ -310,6 +316,12 @@ export interface KnownScope {
 /** How long an isolate keeps where a scope stood, and for how many scopes at most. */
 const SCOPES_TTL_MS = HOUR_MS;
 const SCOPES_MAX_ENTRIES = 4096;
+/**
+ * How long, and for how many routes, an isolate remembers a gate that decides a request that takes
+ * a shell alone: what a deployment's gate says of its route holds while the deployment does.
+ */
+const DOCUMENT_GATE_TTL_MS = HOUR_MS;
+const DOCUMENT_GATE_MAX_ENTRIES = 1024;
 
 /** What a host adds to what the edge holds of its own. */
 export interface EdgeMemoryOptions {
@@ -355,7 +367,16 @@ export function createEdgeMemory(now: () => number, options: EdgeMemoryOptions =
     }),
     rewritesSeen: new TtlCache(REWRITE_SEEN_TTL_MS, REWRITE_SEEN_MAX_ENTRIES, now),
     refusedAssets: new TtlCache(REFUSED_ASSET_TTL_MS, REFUSED_ASSET_MAX_ENTRIES, now),
+    documentGates: new TtlCache(DOCUMENT_GATE_TTL_MS, DOCUMENT_GATE_MAX_ENTRIES, now),
   };
+}
+
+/**
+ * The key a gate that decides a request that takes a shell alone is remembered under: the manifest,
+ * the gate and the route, each but the last by its length, since any of them may hold a colon.
+ */
+export function documentGateKey(manifestId: string, gate: string, route: string): string {
+  return `${String(manifestId.length)}:${manifestId}:${String(gate.length)}:${gate}:${route}`;
 }
 
 /**

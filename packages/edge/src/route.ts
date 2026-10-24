@@ -13,16 +13,29 @@ import { transferInvalidations } from './cache/condemned.ts';
 import { manifestForClassification, servedAtEdge } from './classification.ts';
 import type { EdgeHost } from './edge-host.ts';
 import type { EdgeRuntime } from './edge-runtime.ts';
+import {
+  countedGateInput,
+  gateInputOf,
+  type GateObservationInput,
+  type GateObservedRoutingInput,
+} from './gate-input.ts';
 import { answerAsset } from './handlers/asset-answer.ts';
 import { routeHostedFallbackPage } from './handlers/fallback-page.ts';
-import { type GateInput, routeThroughGate } from './handlers/gate.ts';
+import { capturedHeaders } from './handlers/gate-capture.ts';
+import { gatedEntryOf, serveGateShell } from './handlers/gate-shell.ts';
+import {
+  type GateCapture,
+  type GateDirective,
+  type GateShellDirective,
+  routeThroughGate,
+} from './handlers/gate.ts';
 import { routeHostedDocument } from './handlers/hosted-document.ts';
 import {
   dispatchedFor,
   type MiddlewareOutcome,
   type MiddlewareTiming,
 } from './handlers/middleware.ts';
-import { gateObservation, observeTerminal } from './handlers/observer.ts';
+import { observeTerminal } from './handlers/observer.ts';
 import {
   finishObserved,
   type ObservePassthrough,
@@ -70,6 +83,9 @@ const FALLBACK_PRIVACY = 3;
 /** A probe of one app Worker of a split deployment (`fn`, signed): that Worker's to answer. */
 const FUNCTION_PROBE = 'function-probe';
 const NOT_DEPLOYED = 'not-deployed';
+const DOCUMENT_CLASS = 'document';
+/** Why a capture its gate asked for went to the route's Function (`GateCapture`). */
+const GATE_CAPTURE = 'gate-capture';
 
 /** A request routed by the edge, with what it knows of the project and what it waited on for it. */
 export interface RoutingInput {
@@ -127,18 +143,20 @@ async function afterDeferredPolicy<T>(
 
 /**
  * What a passthrough is counted under: the route a document was classified as, where it was, and
- * what it waited on before it was handed on.
+ * what it waited on before it was handed on — and the capture its gate asked for, where it is one
+ * (`capturedHeaders`), whose answer nobody keeps.
  */
 interface Counted {
   readonly route?: string | undefined;
   readonly waited?: PassthroughWait | undefined;
+  readonly capture?: GateCapture | undefined;
 }
 
 function passthroughFor(
   input: ManifestRoutingInput,
   reason: string,
   middleware?: MiddlewareOutcome & Partial<MiddlewareTiming>,
-  { route, waited }: Counted = {},
+  { route, waited, capture }: Counted = {},
 ): Promise<Response> {
   const { servedAgain } = input;
   const manifestReady = 'manifestReady' in input ? input.manifestReady : undefined;
@@ -177,13 +195,16 @@ function passthroughFor(
     function: input.state.function,
     reason,
     validated: input.state.validated,
-    privateDelivery: input.state.privateDelivery,
+    // A capture's answer is the render the Function made for the gate that asked, kept by nobody.
+    privateDelivery: capture !== undefined || input.state.privateDelivery,
     ...(middleware?.kind === 'continue' && { middleware }),
     // A probe proves the Worker it names answers, and nothing of what the middleware would make of
     // the path — as validation proves a shell and not the middleware's redirect or cookie
     // (`routeHostedDocument`) — so the Worker is told the middleware ran, and routes the path
     // itself rather than running it once for every Worker probed.
     ...(input.state.function !== undefined && { headers: { [MIDDLEWARE_DONE_HEADER]: '1' } }),
+    // Never beside a probe's: a probe is handed on before any gate is asked.
+    ...(capture !== undefined && { headers: capturedHeaders(capture) }),
     ...(servedAgain !== undefined && { whenGone: () => servedAgain(input.state.app) }),
     metrics: {
       projectId: input.state.projectId,
@@ -275,24 +296,6 @@ export function routeRequest(input: ManifestRoutingInput): Promise<Response> {
   return withPatternBudget(() => routeWithBudget(input));
 }
 
-interface GateObservationInput {
-  readonly gatePassed?: (() => void) | undefined;
-}
-
-type GateObservedRoutingInput = GateObservationInput & ManifestRoutingInput;
-
-/** One request keeps its gate's dispatch even where later routing falls back on a pattern budget. */
-function countedGateInput(input: ManifestRoutingInput): GateObservedRoutingInput {
-  if (
-    input.state.manifest?.gates === undefined ||
-    input.state.validated ||
-    (input.request.method !== 'GET' && input.request.method !== 'HEAD')
-  )
-    return input;
-  const observed = gateObservation(input.host);
-  return { ...input, host: observed.host, gatePassed: observed.passed };
-}
-
 async function routeWithBudget(initial: ManifestRoutingInput): Promise<Response> {
   const input = countedGateInput(initial);
   try {
@@ -369,9 +372,87 @@ function routeWithinBudget(input: GateObservedRoutingInput): Promise<Response> {
   if (manifest?.gates === undefined) {
     return routeWithManifest(input, forwarding);
   }
-  return routeThroughGate(gateInputOf(input, manifest, forwarding), () =>
-    routeWithManifest(input, forwarding),
-  );
+  const observe = (pathname: string, outcome: string, extra: Partial<EdgeMetric>): void => {
+    observeTerminalFor(input, pathname, outcome, extra);
+  };
+  return routeThroughGate(gateInputOf(input, manifest, forwarding, observe), (directive) => {
+    return directive === undefined
+      ? routeWithManifest(input, forwarding)
+      : routeAsDirected(input, manifest, forwarding, directive);
+  });
+}
+
+/**
+ * A request its gate let through with a word of its own (`GateDirective`): a capture, handed to the
+ * route's Function at once — told so, and its answer kept by nobody — before the edge reads
+ * anything it holds for it, a shell, a record, a part, a rendering; or the gate's own shell, served
+ * as a generation of the route is (`routeGateShell`).
+ */
+function routeAsDirected(
+  input: ManifestRoutingInput,
+  manifest: ProjectManifest,
+  forwarding: ForwardingContext,
+  directive: GateDirective,
+): Promise<Response> {
+  if (directive.kind === 'capture') {
+    return passthroughFor(input, GATE_CAPTURE, undefined, {
+      route: directive.route,
+      capture: directive,
+    });
+  }
+  return routeGateShell(input, manifest, forwarding, directive);
+}
+
+/**
+ * A request its gate answered with a shell of the gate's own: the route's document composed from
+ * it (`serveGateShell`) where the edge composes one for the request — a document it classifies as
+ * one, or a page of the gate's route the build made no shell of, one Next.js resolves exactly or a
+ * member of a gated class (`gatedEntryOf`), of a pointer that serves from the edge — with nothing
+ * read for it but the policy it is served under. Where it composes none — the edge's recovery
+ * bypassing it, draft mode, a crawler Next.js renders for, a pointer that serves nothing from the
+ * edge — the request is routed as a pass would be, for the route's Function to render the document
+ * whole, as it renders one whose shell cannot be served (`fallbackToApp`).
+ */
+function routeGateShell(
+  input: ManifestRoutingInput,
+  manifest: ProjectManifest,
+  forwarding: ForwardingContext,
+  directive: GateShellDirective,
+): Promise<Response> {
+  const { request, url, state } = input;
+  if (state.mode !== EDGE_MODE) {
+    return routeWithManifest(input, forwarding);
+  }
+  const headers = headersToClassify(manifest, request.headers, input.host.credentials, forwarding);
+  const classification = classifyRequest({
+    method: request.method,
+    url,
+    headers,
+    manifest: manifestForClassification(manifest, state.validated),
+    deployment: manifest.deployment,
+  });
+  const unproved = classification.kind === 'passthrough' ? classification.reason : undefined;
+  const entry =
+    classification.kind === DOCUMENT_CLASS
+      ? classification.entry
+      : gatedEntryOf(manifest, { headers, url }, { route: directive.shell.header.route, unproved });
+  if (entry === undefined) {
+    return routeWithManifest(input, forwarding);
+  }
+  return afterPolicy(input, (ready) => {
+    return serveGateShell({
+      request: ready.request,
+      url,
+      manifest,
+      entry,
+      classifiedHeaders: headers,
+      edge: edgeContextFor(ready, manifest, forwarding),
+      resolved: resolvePolicy(edgeStrategyRegistry, ready.state.policy),
+      directive,
+      passthrough: (reason, middleware, route, waited) =>
+        passthroughFor(ready, reason, middleware, { route, waited }),
+    });
+  });
 }
 
 /** The same request context accompanies every terminal routing outcome. */
@@ -393,39 +474,6 @@ function observeTerminalFor(
     manifestLookupMs: input.timings.manifestMs,
     ...extra,
   });
-}
-
-/** What a request of a deployment that declares a gate brings to it (`routeThroughGate`). */
-function gateInputOf(
-  input: GateObservedRoutingInput,
-  manifest: ProjectManifest,
-  forwarding: ForwardingContext,
-): GateInput {
-  const { request, url, host, state } = input;
-  return {
-    request,
-    url,
-    manifest,
-    // Read as the classification reads the request (`headersToClassify`), so the route the gate is
-    // asked about is the route the request would be served.
-    routedHeaders: headersToClassify(manifest, request.headers, host.credentials, forwarding),
-    host,
-    forwarding,
-    validated: state.validated,
-    privateDelivery: state.privateDelivery,
-    cspReportingPath: state.app === undefined ? undefined : state.cspReportingPath,
-    cspNonce: state.cspNonce
-      ? { mode: state.cspNonceMode, strictDynamic: state.cspStrictDynamic }
-      : undefined,
-    now: input.runtime.now,
-    passed: input.gatePassed,
-    terminal: (response, route, elapsed, dispatched): void => {
-      observeTerminalFor(input, route ?? url.pathname, `gate-${String(response.status)}`, {
-        originFirstByteMs: elapsed,
-        subrequests: Number(dispatched),
-      });
-    },
-  };
 }
 
 /** Read the policy only once the request is known to need an edge strategy. */
