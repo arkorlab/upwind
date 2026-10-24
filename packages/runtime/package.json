@@ -30,7 +30,10 @@
     "@stayingupwind/core": "workspace:*"
   },
   "devDependencies": {
+    "@sentry/core": "catalog:",
     "@types/node": "catalog:",
+    "miniflare": "catalog:",
+    "rolldown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

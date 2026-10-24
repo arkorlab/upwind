@@ -185,6 +185,9 @@ catalogs:
     '@oxc-project/types':
       specifier: 0.154.0
       version: 0.154.0
+    '@sentry/core':
+      specifier: 10.76.2
+      version: 10.76.2
     '@types/node':
       specifier: 24.19.2
       version: 24.19.2
@@ -582,9 +585,18 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@sentry/core':
+        specifier: 'catalog:'
+        version: 10.76.2
       '@types/node':
         specifier: 'catalog:'
         version: 24.19.2
+      miniflare:
+        specifier: 'catalog:'
+        version: 5.20261012.1-beta(@types/node@24.19.2)
+      rolldown:
+        specifier: 'catalog:'
+        version: 1.2.14
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1850,6 +1862,14 @@ packages:
 
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
+
+  '@sentry/conventions@0.16.0':
+    resolution: {integrity: sha512-fO9PLmHdVURcSPUpWCItWAtgKiMwGdJHbovoSEyLplX5sxs2ugvI4CBPTrkkgqhObnZOD0CnWBKDzSVQYBKEyQ==}
+    engines: {node: '>=14'}
+
+  '@sentry/core@10.76.2':
+    resolution: {integrity: sha512-vndrQalRiwYatTkjlLWvyf69KocXIb9TKJ4A9oiyWguL8PJYtqIRTlRe4OpkpjLrxS18fvRdV0jEm29c/9p3hQ==}
+    engines: {node: '>=18'}
 
   '@sindresorhus/is@7.2.0':
     resolution: {integrity: sha512-P1Cz1dWaFfR4IR+U13mqqiGsLFf1KbayybWwdd2vfctdV6hDpUkgCY0nKOLLTMSoRd/jJNjtbqzf13K8DCCXQw==}
@@ -4114,6 +4134,12 @@ snapshots:
     optional: true
 
   '@rolldown/pluginutils@1.0.1': {}
+
+  '@sentry/conventions@0.16.0': {}
+
+  '@sentry/core@10.76.2':
+    dependencies:
+      '@sentry/conventions': 0.16.0
 
   '@sindresorhus/is@7.2.0': {}
 
