@@ -62,7 +62,7 @@ catalog:
   tldts: 7.4.18
   wrangler: 4.151.1
   typescript: 6.0.3
-  typescript-eslint: 8.71.2
+  typescript-eslint: 8.72.0
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
   # lint rules they are held to beside the rest.
   vitest: 5.0.5
