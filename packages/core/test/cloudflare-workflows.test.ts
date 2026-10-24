@@ -59,6 +59,18 @@ function bundle() {
 }
 
 describe('cloudflare Workflow bundle and resource contracts', () => {
+  it('admits independently named declarations without an arbitrary per-project class cap', () => {
+    const declarations = Array.from({ length: 11 }, (_, index) => {
+      const name = `JOBS_${String(index)}`;
+      return { ...declaration, name };
+    });
+
+    expect(cloudflareWorkflowDeclarationsSchema.parse(declarations)).toStrictEqual(declarations);
+    expect(cloudflareWorkflowDeclarationsSchema.safeParse([declaration, declaration]).success).toBe(
+      false,
+    );
+  });
+
   it('validates declarations and reserves traversal and prototype names', () => {
     expect(cloudflareWorkflowDeclarationsSchema.parse([declaration])).toStrictEqual([declaration]);
 

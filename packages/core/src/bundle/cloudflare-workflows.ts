@@ -1,15 +1,12 @@
 import * as z from '../schema/index.ts';
 import { durableObjectDeclarationSchema } from './durable-objects.ts';
 
-const MAX_CLOUDFLARE_WORKFLOWS = 10;
-
 /** Host registrations, with module paths relative to the application root. */
 export const cloudflareWorkflowDeclarationSchema = durableObjectDeclarationSchema;
 export type CloudflareWorkflowDeclaration = z.infer<typeof cloudflareWorkflowDeclarationSchema>;
 
 export const cloudflareWorkflowDeclarationsSchema = z
   .array(cloudflareWorkflowDeclarationSchema)
-  .max(MAX_CLOUDFLARE_WORKFLOWS)
   .refine(
     (entries) => new Set(entries.map((entry) => entry.name)).size === entries.length,
     'Cloudflare Workflow binding names must be unique',
