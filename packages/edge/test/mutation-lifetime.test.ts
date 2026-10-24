@@ -59,6 +59,52 @@ describe('action passthrough lifetime through invalidation receipt', () => {
     expect(test.dispatch).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { type: 'application/x-www-form-urlencoded', body: '%24ACTION_ID_fixture-action=&title=new' },
+    {
+      type: 'multipart/form-data; boundary=fixture',
+      body: '--fixture\r\nContent-Disposition: form-data; name="title"\r\n\r\nnew\r\n--fixture--\r\n',
+    },
+  ])(
+    'retains a form-sent Action without next-action after it loses its client ($type)',
+    async ({ type, body }) => {
+      const test = await mutationLifetimeFixture();
+      const canceled = new AbortController();
+      const headers = Promise.withResolvers<Response>();
+      const accepted = Promise.withResolvers<undefined>();
+      let upstream: Request | undefined;
+
+      test.dispatch.mockImplementation(async (_script, request) => {
+        upstream = request;
+        await request.text();
+        accepted.resolve(undefined);
+        return headers.promise;
+      });
+
+      const response = test.serve(
+        new Request('https://app.test/', {
+          method: 'POST',
+          body,
+          headers: { 'content-type': type },
+          signal: canceled.signal,
+        }),
+      );
+      await accepted.promise;
+      canceled.abort();
+
+      expect(upstream?.signal.aborted).toBe(false);
+      expect(test.held).toHaveLength(1);
+
+      headers.resolve(invalidatedResponse());
+      await Promise.all(test.held);
+
+      expect(test.memory.invalidations.of(SCOPE)?.tags.get('posts')).toBe(7);
+      expect(test.selection().kind).toBe('regenerate');
+      expect((await response).headers.has(INVALIDATED_TAGS_HEADER)).toBe(false);
+      expect(test.dispatch).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('keeps an accepted Action dispatch signal independent of a later client abort', async () => {
     const test = await mutationLifetimeFixture();
     const canceled = new AbortController();
@@ -149,15 +195,17 @@ describe('action passthrough lifetime through invalidation receipt', () => {
   });
 
   it.each([
-    { method: 'POST', actionHeader: false },
-    { method: 'PUT', actionHeader: false },
-    { method: 'PATCH', actionHeader: false },
-    { method: 'DELETE', actionHeader: false },
-    { method: 'GET', actionHeader: true },
-    { method: 'PUT', actionHeader: true },
+    { method: 'POST', actionHeader: false, type: undefined },
+    { method: 'POST', actionHeader: false, type: 'application/json' },
+    { method: 'PUT', actionHeader: false, type: undefined },
+    { method: 'PUT', actionHeader: false, type: 'multipart/form-data; boundary=fixture' },
+    { method: 'PATCH', actionHeader: false, type: undefined },
+    { method: 'DELETE', actionHeader: false, type: undefined },
+    { method: 'GET', actionHeader: true, type: undefined },
+    { method: 'PUT', actionHeader: true, type: undefined },
   ])(
-    'keeps a streaming $method response cancelable (Action header: $actionHeader)',
-    async ({ method, actionHeader }) => {
+    'keeps a streaming $method response cancelable (Action header: $actionHeader, type: $type)',
+    async ({ method, actionHeader, type }) => {
       const test = await mutationLifetimeFixture();
       const canceled = new AbortController();
       let upstream: Request | undefined;
@@ -182,7 +230,10 @@ describe('action passthrough lifetime through invalidation receipt', () => {
       const response = await test.serve(
         new Request('https://app.test/', {
           method,
-          headers: actionHeader ? { 'next-action': 'fixture-action' } : {},
+          headers: {
+            ...(actionHeader && { 'next-action': 'fixture-action' }),
+            ...(type !== undefined && { 'content-type': type }),
+          },
           signal: canceled.signal,
         }),
       );

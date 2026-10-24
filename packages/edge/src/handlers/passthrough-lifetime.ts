@@ -7,22 +7,37 @@ import { releaseStream } from '@stayingupwind/core/util';
  * Route Handler's or a Pages API's, is cancelled with the client as before.
  */
 
+/** What a form is sent as, which Next.js takes for a possible Action without `next-action`. */
+const FORM_URLENCODED = 'application/x-www-form-urlencoded';
+const FORM_MULTIPART = 'multipart/form-data';
+
 /**
- * Whether a passthrough is dispatched on a signal of its own rather than the client's: a POST the
- * headers forwarded after the middleware classify as an Action, not already aborted on arrival.
+ * Whether a passthrough is dispatched on a signal of its own rather than the client's: a POST that
+ * may be an Action by the headers forwarded after the middleware, not already aborted on arrival.
  */
 export function outlivesClient(request: Request, headers: Headers): boolean {
   return (
     request.method === 'POST' &&
-    classifyRequest({
-      method: request.method,
-      url: new URL(request.url),
-      headers,
-      manifest: undefined,
-      deployment: undefined,
-    }).kind === 'action' &&
+    (sentByForm(headers) ||
+      classifyRequest({
+        method: request.method,
+        url: new URL(request.url),
+        headers,
+        manifest: undefined,
+        deployment: undefined,
+      }).kind === 'action') &&
     !request.signal.aborted
   );
+}
+
+/**
+ * Whether a POST was sent by a form, which Next.js takes for a possible Action as the runtime does
+ * (`getIsPossibleServerAction`): a form submitted before hydration, or without JavaScript, names
+ * its Action in its body and sends no `next-action` header (greptile).
+ */
+function sentByForm(headers: Headers): boolean {
+  const type = headers.get('content-type');
+  return type === FORM_URLENCODED || (type?.startsWith(FORM_MULTIPART) ?? false);
 }
 
 /** Retain the receipt continuation, not an arbitrary response stream or a rejection. */
