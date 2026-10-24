@@ -66,7 +66,7 @@ catalog:
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
   # lint rules they are held to beside the rest.
   vitest: 5.0.5
-  '@vitest/eslint-plugin': 1.6.27
+  '@vitest/eslint-plugin': 1.6.28
   # What `@stayingupwind/host` writes the cache's control contract in, and turns core's schemas into
   # where something takes zod's alone (`./zod`). What the runtime and the edge read — the gateway's
   # contract, the cache's records — is written with core's own validator instead, which is cheap to
