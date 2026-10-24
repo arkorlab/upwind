@@ -49,6 +49,7 @@ import {
   withoutPolicies,
 } from './csp-nonce.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
+import { gateBodyDecodedByFetch } from './gate-body-encoding.ts';
 import { decompressLive } from './live-compression.ts';
 import { headerRulesAsRouted } from './middleware.ts';
 import {
@@ -66,17 +67,20 @@ import {
  *
  * The gate is handed the visitor's request as the deployment's Function would be (`gateRequest`),
  * told the route it is of (`GATE_ROUTE_HEADER`). An answer that says to go on (`GATE_PASS`) is let
- * go, and the request goes on exactly as it would with no gate — a `GET` the gate asks a capture of
- * beside it (`GATE_CAPTURE_HEADER`) to the route's Function at once, told so, served from nothing
- * the edge holds and kept by nobody (`GateCapture`). An answer that is a shell of the gate's own
- * (`GATE_SHELL`) is read whole, and served as the route's runtime cache serves a generation:
- * completed by the route's Function, read nothing else for (`GateShellDirective`). Any other answer
- * is the visitor's, status, headers and body as the gate gave them, finished as a Function's answer
- * the edge hands on is (`gateAnswer`) — and like such an answer, kept nowhere: no cache, no memory
- * of the edge's holds it, so the next request is the gate's to answer again. A gate the host binds
+ * go, and the request goes on as it would with no gate, its answer kept from shared caches even
+ * where the application permits public caching: the gate admitted this visitor alone — a `GET` the
+ * gate asks a capture of beside it (`GATE_CAPTURE_HEADER`) to the route's Function at once, told
+ * so, served from nothing the edge holds and kept by nobody (`GateCapture`). An answer that is a
+ * shell of the gate's own (`GATE_SHELL`) is read whole, and served as the route's runtime cache
+ * serves a generation: completed by the route's Function, read nothing else for
+ * (`GateShellDirective`), kept from shared caches as a pass's answer is. Any other answer is the
+ * visitor's, status, headers and body as the gate gave them, finished as a Function's answer the
+ * edge hands on is (`gateAnswer`) — and like such an answer, kept nowhere: no cache, no memory of
+ * the edge's holds it, so the next request is the gate's to answer again. A gate the host binds
  * none of, one that fails, and one that does not answer in time (`GATE_TIMEOUT_MS`) are all
- * answered that the gate is unavailable, never with what the edge holds of the route; and so, under
- * a reason of its own, is a shell that is none, or that answers what no shell can (`shellOf`).
+ * answered that the gate is unavailable, never with what the edge holds of the route; and so,
+ * under a reason of its own, is a shell that is none, or that answers what no shell can
+ * (`shellOf`).
  *
  * Asked of `GET` and `HEAD` alone: any other method goes to the application's Function, a Server
  * Action's among them, as it does with no gate. Nor of a request whose validation the edge accepted,
@@ -424,7 +428,7 @@ function gateAnswer(input: GateInput, gate: RouteGate, answer: Response): Respon
     headers.delete(CONTENT_ENCODING);
     return response;
   }
-  const decoded = decodedNonceDocument(response);
+  const decoded = decodedNonceDocument(response, input.host.gates);
   if (decoded === undefined) {
     releaseStream(response.body, 'gate');
     return serviceUnavailableResponse(GATE_UNAVAILABLE);
@@ -613,14 +617,14 @@ async function throughGate(
 ): Promise<Response> {
   const started = input.now?.() ?? 0;
   const answer = await answeredAtGate(input, gate, { since: performance.now(), started });
-  if (answer === undefined) {
+  if (answer === undefined || !(answer instanceof Response)) {
+    // A directive is a pass the edge acts on: the handler downstream counts the request, as a pass's,
+    // and what it answers this visitor is kept from shared caches as a pass's answer is.
     input.passed?.();
-    return routed();
-  }
-  if (!(answer instanceof Response)) {
-    // A directive is a pass the edge acts on: the handler downstream counts the request, as a pass's.
-    input.passed?.();
-    return routed(answer);
+    const response = await routed(answer);
+    const admitted = new Response(response.body, response);
+    unsharedUnlessPublic(admitted.headers, false);
+    return admitted;
   }
   const elapsed = (input.now?.() ?? started) - started;
   input.terminal?.(answer, gate.route, elapsed, input.host.gates !== undefined);
@@ -703,7 +707,10 @@ export function routeThroughGate(
 }
 
 /** Content codings describe the input bytes and are removed once the gate's HTML is decoded. */
-function decodedNonceDocument(response: Response): Response | undefined {
+function decodedNonceDocument(
+  response: Response,
+  gates: EdgeGates | undefined,
+): Response | undefined {
   const encoding = response.headers.get(CONTENT_ENCODING);
   if (encoding === null || encoding.trim() === '' || response.body === null) return response;
   const parts = encoding.split(',');
@@ -715,7 +722,8 @@ function decodedNonceDocument(response: Response): Response | undefined {
   }
   // Fetch response bodies carry bytes; the Workers declaration leaves their element type open.
   let body = response.body as ReadableStream<Uint8Array>;
-  for (const coding of codings.toReversed()) {
+  const remaining = gateBodyDecodedByFetch(gates, encoding) ? [] : codings.toReversed();
+  for (const coding of remaining) {
     if (coding !== 'identity') body = decompressLive(body, coding);
   }
   const headers = new Headers(response.headers);

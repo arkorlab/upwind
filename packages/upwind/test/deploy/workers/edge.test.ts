@@ -58,4 +58,23 @@ describe("the edge's entry", () => {
 
     await page.body?.cancel();
   });
+
+  it('fires the jobs of the trigger it is invoked on, and asks Cloudflare to try none again', async () => {
+    stack = await runStack({
+      edgeText: {
+        HOSTNAMES: 'shop.example.com',
+        CRONS: JSON.stringify({ '0 * * * *': [{ path: '/api/tick', schedule: '0 * * * *' }] }),
+      },
+    });
+    const worker = await stack.mf.getWorker('edge');
+
+    // No pointer: the job is the standalone edge's to answer, and is answered.
+    await expect(worker.scheduled({ cron: '0 * * * *' })).resolves.toStrictEqual({
+      outcome: 'ok',
+      noRetry: true,
+    });
+    await expect(worker.scheduled({ cron: '*/5 * * * *' })).resolves.toMatchObject({
+      outcome: 'ok',
+    });
+  });
 });

@@ -13,7 +13,7 @@ import { runRollback } from '../../src/deploy/rollback.ts';
 import { remoteTarget } from '../../src/deploy/target.ts';
 import { AGENT_PATHS } from '../../src/deploy/workers/protocol.ts';
 import { bundleOf, deployableFunction, moduleOf, writeBundle } from './bundle.ts';
-import { bindingText } from './fake-cloudflare.ts';
+import { bindingText, type FakeVersion } from './fake-cloudflare.ts';
 import {
   deployableProject,
   deployOptions,
@@ -50,8 +50,13 @@ const NAMES = projectNames(PROJECT);
  * A build whose page loads a script of its own name, as each build's chunks are its own; and, where
  * asked, a file of its `public/` beside it.
  */
-function buildWith(dir: string, chunk: string, publicFile?: string): DeploymentBundle {
-  const bundle = bundleOf(deployableFunction(dir));
+function buildWith(
+  dir: string,
+  chunk: string,
+  publicFile?: string,
+  extra: Pick<Partial<DeploymentBundle>, 'crons'> = {},
+): DeploymentBundle {
+  const bundle = bundleOf(deployableFunction(dir), extra);
   const script = moduleOf(dir, `${chunk}.js`, 'text', `console.log(${JSON.stringify(chunk)});\n`);
   const shipped = publicFile === undefined ? undefined : moduleOf(dir, publicFile, 'text', chunk);
   const built = {
@@ -80,6 +85,15 @@ function buildWith(dir: string, chunk: string, publicFile?: string): DeploymentB
 }
 
 /** The version the edge gives all of its traffic to. */
+/** The edge's newest version, which a rollback uploaded. */
+function newestEdgeVersion(account: LiveAccount): FakeVersion {
+  const [version] = scriptOn(account, NAMES.edge).versions;
+  if (version === undefined) {
+    throw new Error('the edge has no version');
+  }
+  return version;
+}
+
 function liveVersion(account: LiveAccount): string | undefined {
   return scriptOn(account, NAMES.edge).deployments[0]?.versions[0]?.version_id;
 }
@@ -126,6 +140,7 @@ describe('`upwind rollback` on an account', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await held.account?.dispose();
   });
 
@@ -170,6 +185,108 @@ describe('`upwind rollback` on an account', () => {
       '/_next/static/chunks/one.js',
       '/_next/static/chunks/two.js',
     ]);
+  });
+
+  it("goes back with the deployment's cron jobs, and the secret the edge sent them with", async () => {
+    const dir = await deployableProject(PROJECT);
+    const deployed = (): Promise<number> =>
+      runDeploy(deployOptions(dir), account().credentials, account().io);
+    const first = buildWith(dir, 'one', undefined, {
+      crons: [{ path: '/api/weekly', schedule: '0 9 * * 1' }],
+    });
+
+    await expect(deployed()).resolves.toBe(0);
+
+    buildWith(dir, 'two');
+
+    await expect(deployed()).resolves.toBe(0);
+    expect(scriptOn(account(), NAMES.edge).schedules).toStrictEqual([]);
+
+    await expect(
+      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io),
+    ).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(first.deploymentId);
+    expect(scriptOn(account(), NAMES.edge).schedules).toStrictEqual(['0 9 * * 2']);
+
+    const version = newestEdgeVersion(account());
+
+    expect(bindingText(version, 'CRONS')).toBe(
+      JSON.stringify({ '0 9 * * 2': [{ path: '/api/weekly', schedule: '0 9 * * 1' }] }),
+    );
+    expect(version.metadata['keep_bindings']).toStrictEqual(['secret_text']);
+  });
+
+  /** A deployment with a job and then one without, both deployed with the project's secret. */
+  async function secretDeployed(dir: string): Promise<DeploymentBundle> {
+    const deployed = (): Promise<number> =>
+      runDeploy(deployOptions(dir), account().credentials, account().io);
+    vi.stubEnv('CRON_SECRET', 'a'.repeat(32));
+    const first = buildWith(dir, 'one', undefined, {
+      crons: [{ path: '/api/weekly', schedule: '0 9 * * 1' }],
+    });
+
+    await expect(deployed()).resolves.toBe(0);
+
+    buildWith(dir, 'two');
+
+    await expect(deployed()).resolves.toBe(0);
+
+    // Held by the version with no jobs too, for a rollback to keep it from.
+    const second = newestEdgeVersion(account());
+
+    expect(bindingText(second, 'CRON_SECRET')).toBe('a'.repeat(32));
+
+    return first;
+  }
+
+  it('keeps the secret the newest version holds where its environment sets none, and says so', async () => {
+    const dir = await deployableProject(PROJECT, { secrets: ['CRON_SECRET'] });
+    const first = await secretDeployed(dir);
+    vi.unstubAllEnvs();
+
+    await expect(
+      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io),
+    ).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(first.deploymentId);
+    expect(newestEdgeVersion(account()).metadata['keep_bindings']).toStrictEqual(['secret_text']);
+    expect(held.warnings).toContainEqual(expect.stringMatching(/CRON_SECRET is in neither/u));
+  });
+
+  it('sends the secret its environment sets, as a deploy does', async () => {
+    const dir = await deployableProject(PROJECT, { secrets: ['CRON_SECRET'] });
+    await secretDeployed(dir);
+    vi.stubEnv('CRON_SECRET', 'b'.repeat(32));
+
+    await expect(
+      runRollback({ projectDir: dir, to: undefined }, account().credentials, account().io),
+    ).resolves.toBe(0);
+
+    const version = newestEdgeVersion(account());
+
+    expect(bindingText(version, 'CRON_SECRET')).toBe('b'.repeat(32));
+    expect(version.metadata['keep_bindings']).toBeUndefined();
+    expect(held.warnings).toStrictEqual([]);
+  });
+
+  it('reads the secret from an --env-file, whatever else the file holds', async () => {
+    const dir = await deployableProject(PROJECT, { secrets: ['CRON_SECRET'] });
+    await secretDeployed(dir);
+    vi.unstubAllEnvs();
+    const envFile = path.join(dir, 'rollback.env');
+    // A credential, which a deploy would refuse to hand a Function: a rollback binds none of it.
+    writeFileSync(envFile, `CLOUDFLARE_API_TOKEN=token\nCRON_SECRET=${'c'.repeat(32)}\n`);
+
+    await expect(
+      runRollback(
+        { projectDir: dir, to: undefined, envFiles: [envFile] },
+        account().credentials,
+        account().io,
+      ),
+    ).resolves.toBe(0);
+
+    const version = newestEdgeVersion(account());
+
+    expect(bindingText(version, 'CRON_SECRET')).toBe('c'.repeat(32));
   });
 
   it('discards the key it took the agent with, as a deploy does', async () => {

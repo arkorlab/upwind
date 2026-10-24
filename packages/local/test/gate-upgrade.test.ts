@@ -6,7 +6,8 @@ import { gzipSync } from 'node:zlib';
 import { GATE_ANSWER_HEADER, GATE_PASS, GATE_URL_HEADER } from '@stayingupwind/host/bindings';
 import { describe, expect, it } from 'vitest';
 
-import { gateForwarder } from '../src/gates.ts';
+import { gateForwarder, gateServices } from '../src/gates.ts';
+import { type LocalWorker, runWorkers } from '../src/miniflare.ts';
 import { GATE_UNREACHABLE_HEADER } from '../src/workers/protocol.ts';
 
 /** A gate that authorizes an upgrade without upgrading its own authorization connection. */
@@ -198,4 +199,51 @@ describe('a local gate authorizing a WebSocket request', () => {
       await gate.close();
     }
   });
+});
+
+/** A passing gate is decided at its headers, even where its body has not produced one byte. */
+describe('a gate pass forwarded through the local service', () => {
+  it('reaches the Worker before an unfinished gate body', async () => {
+    const gate = await startGate((_request, response) => {
+      response.writeHead(200, { [GATE_ANSWER_HEADER]: GATE_PASS });
+      response.flushHeaders();
+    });
+    const worker: LocalWorker = {
+      name: 'gate-pass-reader',
+      modules: [
+        {
+          name: 'index.mjs',
+          type: 'ESModule',
+          contents: `
+export default {
+  async fetch(_request, env) {
+    const answer = await env.GATE__CHECKER.fetch('https://site.example/gated');
+    void answer.body?.cancel().catch(() => undefined);
+    return new Response(answer.headers.get('${GATE_ANSWER_HEADER}'));
+  },
+};
+`,
+        },
+      ],
+      compatibilityDate: '2026-09-15',
+      handlers: gateServices({ checker: { url: gate.url } }),
+      socket: {},
+    };
+    try {
+      const running = await runWorkers([worker], () => {
+        // No Worker log is needed to observe the passing header.
+      });
+      try {
+        const answer = await fetch(await running.url('gate-pass-reader'), {
+          signal: AbortSignal.timeout(5000),
+        });
+
+        await expect(answer.text()).resolves.toBe(GATE_PASS);
+      } finally {
+        await running.dispose();
+      }
+    } finally {
+      await gate.close();
+    }
+  }, 60_000);
 });

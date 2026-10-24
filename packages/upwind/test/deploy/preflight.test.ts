@@ -26,7 +26,6 @@ const SETTINGS: DeploySettings = {
   checks: ['/'],
   cspNonce: undefined,
   logs: false,
-  crons: 0,
 };
 
 const NO_SECRETS: ReadonlyMap<string, string> = new Map();
@@ -44,6 +43,25 @@ describe('checking a build before a deploy', () => {
     expect(plan.projectedWorkers).toBe(1 * 7 + 5);
   });
 
+  it.each([
+    ['an app page', '/', 'app-page'],
+    ['an app route', '/api/private', 'app-route'],
+    ['a dynamic page', '/posts/[slug]', 'app-page'],
+  ] as const)('refuses %s whose route gate the command cannot bind', async (_, route, kind) => {
+    const dir = projectDir();
+    writeBundle(
+      dir,
+      bundleOf(deployableFunction(dir), {
+        entrypoints: [{ id: route, kind, pathname: route }],
+        gates: { [route]: 'members' },
+      }),
+    );
+    const plan = await preflight({ projectDir: dir, settings: SETTINGS, secrets: NO_SECRETS });
+
+    expect(plan.problems).toStrictEqual([expect.stringContaining('route gates')]);
+    expect(plan.problems[0]).toContain('`upwind deploy` does not bind yet');
+  });
+
   it('refuses a Function built without the runtime cache', async () => {
     const dir = projectDir();
     const plain = functionOf([moduleOf(dir, 'index.mjs', 'esm', 'export default {};')]);
@@ -55,7 +73,7 @@ describe('checking a build before a deploy', () => {
     ]);
   });
 
-  it('refuses crons, workflows and a module the upload keeps for itself', async () => {
+  it('refuses workflows and a module the upload keeps for itself, and takes cron jobs', async () => {
     const dir = projectDir();
     const app = deployableFunction(dir);
     const workflow = functionOf([...app.modules, moduleOf(dir, 'metadata', 'text', '{}')]);
@@ -71,9 +89,30 @@ describe('checking a build before a deploy', () => {
 
     expect(plan.problems).toStrictEqual([
       expect.stringMatching(/runs workflows/u),
-      expect.stringMatching(/declares cron jobs/u),
       expect.stringMatching(/module called `metadata`/u),
     ]);
+  });
+
+  it('takes cron jobs, and says when they are sent with no secret', async () => {
+    const dir = projectDir();
+    const crons = [
+      { path: '/api/tick', schedule: '0 * * * *' },
+      { path: '/api/weekly', schedule: '0 9 * * 1' },
+    ];
+    writeBundle(dir, bundleOf(deployableFunction(dir), { crons }));
+    const plan = await preflight({ projectDir: dir, settings: SETTINGS, secrets: NO_SECRETS });
+
+    expect(plan.problems).toStrictEqual([]);
+    expect(plan.warnings).toStrictEqual([expect.stringMatching(/CRON_SECRET is not among/u)]);
+
+    const secret = await preflight({
+      projectDir: dir,
+      settings: SETTINGS,
+      secrets: new Map([['CRON_SECRET', 's'.repeat(32)]]),
+    });
+
+    expect(secret.problems).toStrictEqual([]);
+    expect(secret.warnings).toStrictEqual([]);
   });
 
   it('refuses an edge nothing would reach, and more Workers than an account holds', async () => {

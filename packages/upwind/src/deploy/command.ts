@@ -5,6 +5,7 @@ import { createCloudflareClient } from './cloudflare/client.ts';
 import type { AccountScope } from './cloudflare/workers.ts';
 import { type DeploySettings, readDeploySettings } from './config.ts';
 import type { CloudflareCredentials } from './credentials.ts';
+import { cronTableOf, triggersOf } from './crons.ts';
 import { deployToAccount } from './deploy-run.ts';
 import { readSecrets, reservedNames } from './env.ts';
 import { projectNames } from './names.ts';
@@ -138,6 +139,13 @@ function describePlan(input: {
   if (secrets.size > 0) {
     // Names only: a plan is printed to logs, and a secret's value is never anyone's to read there.
     line(`secrets: ${[...secrets.keys()].join(', ')}`);
+  }
+  const crons = plan.bundle.crons ?? [];
+  if (crons.length > 0) {
+    const triggers = triggersOf(cronTableOf(crons)).length;
+    line(
+      `cron jobs: ${crons.length}, on ${triggers} Cron ${plural(triggers, 'Trigger', 'Triggers')} of ${projectNames(settings.project).edge}; an account holds 5 on Workers Free, 250 on Workers Paid`,
+    );
   }
   line(`reached at: ${reachedAt(settings, account).join(', ')}`);
   if (account === undefined) {

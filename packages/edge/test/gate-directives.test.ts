@@ -882,7 +882,8 @@ describe('a shell its gate answers with', () => {
 
   /**
    * A gate's shell is partial whatever the build made of the route: a crawler Next.js renders a
-   * partial page whole for is routed as a pass, of a route the build finished whole too.
+   * partial page whole for is routed as a pass, of a route the build finished whole too — kept from
+   * shared caches either way.
    */
   it.each([
     ['of a route the build left partial', {}],
@@ -894,6 +895,7 @@ describe('a shell its gate answers with', () => {
       const { response } = await served(request, () => gateShell(), settings);
 
       expect(response.headers.get(EDGE_DEBUG_HEADER) ?? '').not.toContain(';gate=');
+      expect(response.headers.get('cache-control')).toMatch(/^private,/u);
     },
   );
 
@@ -956,7 +958,8 @@ describe('a shell its gate answers with', () => {
 
   /**
    * A request the edge composes no document for — here one its recovery bypasses it for — is routed
-   * as a pass would be, the Function rendering the document whole.
+   * as a pass would be, the Function rendering the document whole, and its answer kept from shared
+   * caches as a pass's is, whatever the Function said of keeping it.
    */
   it('is routed as a pass where the edge composes no document for the request', async () => {
     const request = navigation('/posts/abc', { headers: { cookie: `${EDGE_BYPASS_COOKIE}=1` } });
@@ -964,6 +967,7 @@ describe('a shell its gate answers with', () => {
 
     expect(body).toBe('from the Function');
     expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('passthrough;reason=bypass-cookie');
+    expect(response.headers.get('cache-control')).toBe('private, max-age=60');
     expect(dispatched.map(({ headers }) => headers.has(GATE_RESUME_HEADER))).toStrictEqual([false]);
   });
 });
