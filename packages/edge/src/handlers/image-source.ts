@@ -6,6 +6,7 @@ import {
 } from '@stayingupwind/core/images';
 import {
   findStaticFile,
+  gateFor,
   isReserved,
   type ProjectManifest,
   staticFileBuildWithoutDpl,
@@ -187,6 +188,35 @@ export function resolveImageSource(
     return { kind: 'local', href: params.href };
   }
   return { kind: 'blob', file, href: params.href, gate: blobGate(edge, manifest, params.href) };
+}
+
+/**
+ * Why the source `params` name is refused before anything is fetched or kept: one of the
+ * application's own — no file the build shipped (`resolveImageSource`) — of a route the build
+ * declared a gate for (`gateFor`), as the source's request would be routed. What the optimizer
+ * makes of a source is kept for every visitor, and every answer of a gated route is its gate's — so
+ * such a source is refused in the words Next.js's optimizer has for an internal source that is no
+ * image. `undefined` for any other source, and for every source of a deployment that declares no
+ * gate, which is asked nothing more. Throws where the source's route cannot be found within what
+ * the edge spends testing the application's patterns (`PatternBudgetExceededError`).
+ */
+export function gatedSourceRefusal(
+  edge: EdgeContext,
+  manifest: ProjectManifest,
+  params: ImageRequestParams,
+  dpl?: string,
+): SourceError | undefined {
+  if (
+    manifest.gates === undefined ||
+    params.isAbsolute ||
+    shippedSource(manifest, localPathname(params.href), dpl) !== undefined
+  ) {
+    return undefined;
+  }
+  const request = localRequest(edge, params.href);
+  return gateFor(manifest, new URL(request.url), request.headers) === undefined
+    ? undefined
+    : { status: HTTP_BAD_REQUEST, message: INTERNAL_INVALID, requests: 0 };
 }
 
 /** Whether a source's result is the file itself, kept for as long as the file is. */
