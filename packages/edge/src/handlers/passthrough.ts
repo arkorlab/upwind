@@ -24,7 +24,7 @@ import { takeInvalidation } from '../cache/condemned.ts';
 import type { DetachedRegeneration } from '../cache/regenerate.ts';
 import type { EdgeHost } from '../edge-host.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
-import { buildPassthroughRequest } from '../forwarding.ts';
+import { buildPassthroughRequest, passthroughHeaders } from '../forwarding.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
@@ -604,7 +604,8 @@ function anonymous(input: PassthroughInput): boolean {
 export function handlePassthrough(input: PassthroughInput): Promise<Response> {
   const detached =
     input.waitUntil !== undefined &&
-    outlivesClient(input.request, input.middleware?.requestHeaders ?? input.request.headers);
+    input.request.method === 'POST' &&
+    outlivesClient(input.request, forwardedHeaders(input));
   if (!detached) return forwardPassthrough(input, input.request.signal);
   const lifetime = detachedLifetime(input.request.signal);
   const answer = forwardPassthrough(input, lifetime.signal);
@@ -614,6 +615,18 @@ export function handlePassthrough(input: PassthroughInput): Promise<Response> {
     // A host no longer accepting work must not replace the application's original answer.
   }
   return answer;
+}
+
+/**
+ * The headers the Function is handed, as the forwarder sends them: an Action is judged by what
+ * reaches the Function, so a header the host takes off as its own credential makes none.
+ */
+function forwardedHeaders(input: PassthroughInput): Headers {
+  return passthroughHeaders(
+    input.middleware?.requestHeaders ?? input.request.headers,
+    input.forwarding,
+    input.host.credentials,
+  );
 }
 
 async function forwardPassthrough(input: PassthroughInput, signal: AbortSignal): Promise<Response> {

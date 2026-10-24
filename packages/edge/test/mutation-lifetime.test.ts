@@ -256,6 +256,58 @@ describe('action passthrough lifetime through invalidation receipt', () => {
     },
   );
 
+  it.each(['client', 'middleware'] as const)(
+    'keeps host-owned Next-Action from %s cancelable without mutation retention',
+    async (source) => {
+      const test = await mutationLifetimeFixture({ cookies: [], headers: ['NeXt-AcTiOn'] });
+      const canceled = new AbortController();
+      let upstream: Request | undefined;
+      let stopped = false;
+
+      test.dispatch.mockImplementation((_script, request) => {
+        upstream = request;
+        return Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                request.signal.addEventListener('abort', () => {
+                  stopped = true;
+                  controller.close();
+                });
+              },
+            }),
+          ),
+        );
+      });
+
+      const headers = new Headers({ 'next-action': 'fixture-action' });
+      const request = new Request('https://app.test/', {
+        method: 'POST',
+        headers: source === 'client' ? headers : {},
+        signal: canceled.signal,
+      });
+      const response = await (source === 'client'
+        ? test.serve(request)
+        : test.serveAfterMiddleware(request, {
+            kind: 'continue',
+            url: new URL(request.url),
+            rewritten: false,
+            requestHeaders: headers,
+            responseHeaders: new Headers(),
+            setCookie: undefined,
+          }));
+      canceled.abort();
+      const signaled = upstream?.signal.aborted;
+      await response.body?.cancel();
+
+      expect(upstream?.headers.has('next-action')).toBe(false);
+      expect(signaled).toBe(true);
+      expect(stopped).toBe(true);
+      expect(test.held).toHaveLength(0);
+      expect(test.dispatch).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it.each(['POST', 'PUT', 'PATCH', 'DELETE'])(
     'still ingests a connected ordinary %s receipt without detaching its lifetime',
     async (method) => {

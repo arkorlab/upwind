@@ -12,9 +12,11 @@ import { vi } from 'vitest';
 
 import { condemnedIn } from '../src/cache/condemned.ts';
 import { decideGeneration } from '../src/cache/decision.ts';
+import type { EdgeHost } from '../src/edge-host.ts';
 import type { DispatchApp, EdgeRuntime } from '../src/edge-runtime.ts';
+import { handlePassthrough, type MiddlewareContinue } from '../src/handlers/passthrough.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
-import type { IncomingRequest } from '../src/request-context.ts';
+import { forwardingFor, type IncomingRequest } from '../src/request-context.ts';
 import { routeRequest } from '../src/route.ts';
 import type { StandaloneEnv } from '../src/standalone/env.ts';
 import { standaloneHost } from '../src/standalone/host.ts';
@@ -66,11 +68,13 @@ async function oldRecord(scopeId: string, tag: string, entryId: string) {
 }
 
 /** Actual routing and generation decisions; only dispatch and the invocation context are mocked. */
-export function mutationLifetimeFixture(): ReturnType<typeof createMutationLifetimeFixture> {
-  return createMutationLifetimeFixture();
+export function mutationLifetimeFixture(
+  credentials?: EdgeHost['credentials'],
+): ReturnType<typeof createMutationLifetimeFixture> {
+  return createMutationLifetimeFixture(credentials);
 }
 
-async function createMutationLifetimeFixture() {
+async function createMutationLifetimeFixture(credentials?: EdgeHost['credentials']) {
   const target = await oldRecord(SCOPE, 'posts', 'old-entry');
   const otherTag = await oldRecord(SCOPE, 'unrelated', 'other-entry');
   const otherScope = await oldRecord('another-scope', 'posts', 'other-scope-entry');
@@ -89,6 +93,10 @@ async function createMutationLifetimeFixture() {
   const waitUntil = vi.spyOn(invocation, 'waitUntil');
   const ctx = invocation as unknown as ExecutionContext;
   const env = {} as StandaloneEnv;
+  const host = {
+    ...standaloneHost(env),
+    ...(credentials !== undefined && { credentials }),
+  };
   const dispatch = vi.fn<DispatchApp>(() => Promise.resolve(new Response('original')));
   const now = vi.fn(() => NOW);
   const runtime: EdgeRuntime = {
@@ -132,7 +140,7 @@ async function createMutationLifetimeFixture() {
         env,
         ctx,
         runtime,
-        host: standaloneHost(env),
+        host,
         state: {
           projectId: 'project',
           mode: 'passthrough',
@@ -155,6 +163,24 @@ async function createMutationLifetimeFixture() {
           demotedRoutes: undefined,
         },
         timings: { pointerMs: 0, manifestMs: 0, middlewareMs: undefined },
+      });
+    },
+    serveAfterMiddleware: (request: Request, middleware: MiddlewareContinue) => {
+      return handlePassthrough({
+        request,
+        forwarding: forwardingFor(
+          request as IncomingRequest,
+          host.sharedDomain,
+          new URL(request.url).hostname,
+        ),
+        runtime,
+        host,
+        app: { scriptName: 'function', deploymentId: SCOPE },
+        reason: 'fixture',
+        middleware,
+        waitUntil: (work) => {
+          invocation.waitUntil(work);
+        },
       });
     },
   };
