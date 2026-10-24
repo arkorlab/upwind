@@ -13,6 +13,7 @@ import { createCloudflareClient } from './cloudflare/client.ts';
 import type { AccountScope, ScriptSubdomain } from './cloudflare/workers.ts';
 import { type DeploySettings, readDeploySettings } from './config.ts';
 import type { CloudflareCredentials } from './credentials.ts';
+import { type CronTable, holdCrons, rollbackCronSecret, rollbackCrons } from './crons.ts';
 import { narrowReach, report, siteOf } from './deploy-run.ts';
 import { uploadEdgeVersion } from './edge-version.ts';
 import {
@@ -99,6 +100,8 @@ export interface RollbackIo {
 interface Served {
   readonly versionId: string;
   readonly manifestId: string;
+  /** The deployment's cron jobs, which the edge fires once its version has the traffic. */
+  readonly crons: CronTable;
 }
 
 function warn(text: string): void {
@@ -373,6 +376,8 @@ interface Restaging {
   readonly reach: ScriptSubdomain;
   readonly message: string;
   readonly io: RollbackIo;
+  /** The secret the jobs are sent with, as the rollback read it (`rollbackCronSecret`). */
+  readonly cronSecret: string | undefined;
 }
 
 /**
@@ -408,6 +413,7 @@ async function restage(input: Restaging): Promise<Served | undefined> {
     sleep: input.io.sleep,
   });
   const scripts = await shippedWorkers();
+  const crons = rollbackCrons(kept.bundle.crons, input.cronSecret);
   const edge = await uploadEdgeVersion({
     scope,
     names,
@@ -420,8 +426,9 @@ async function restage(input: Restaging): Promise<Served | undefined> {
     reach: input.reach,
     message: input.message,
     existing: new Set(account.projectWorkers),
+    ...crons,
   });
-  return { versionId: edge.versionId, manifestId: staged.manifestId };
+  return { versionId: edge.versionId, manifestId: staged.manifestId, crons: crons.crons };
 }
 
 function messageOf(deploymentId: string): string {
@@ -562,7 +569,7 @@ export async function runRollback(
           scope,
           edge: names.edge,
           origin: site.origin,
-          expected: { deploymentId, ...served },
+          expected: { deploymentId, versionId: served.versionId, manifestId: served.manifestId },
           first: false,
           checks: settings.checks,
           message: messageOf(deploymentId),
@@ -570,10 +577,14 @@ export async function runRollback(
           sleep: lockedIo.sleep,
           now: lockedIo.now,
         });
-        if (activation.kind === 'live' || activation.kind === 'unconfirmed') {
+        const switched = activation.kind === 'live' || activation.kind === 'unconfirmed';
+        if (switched) {
           await narrowReach(scope, names.edge, reach);
         }
-        return report(activation, deploymentId, site.origin);
+        const scheduled =
+          !switched || (await holdCrons(scope, names.edge, served.crons, deploymentId));
+        const reported = report(activation, deploymentId, site.origin);
+        return reported === 0 && !scheduled ? 1 : reported;
       };
       const { stores, refused: unusable } = storesOf(names, account);
       if (stores === undefined) {
@@ -615,6 +626,7 @@ export async function runRollback(
             previous,
             reach,
             io: lockedIo,
+            cronSecret: await rollbackCronSecret(options.envFiles ?? [], settings),
           },
           choice,
           switchTo,

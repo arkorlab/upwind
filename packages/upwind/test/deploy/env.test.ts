@@ -5,7 +5,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { takeCredentials } from '../../src/deploy/credentials.ts';
-import { readSecrets, reservedNames } from '../../src/deploy/env.ts';
+import { readSecret, readSecrets, reservedNames } from '../../src/deploy/env.ts';
 
 function file(text: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'upwind-deploy-env-'));
@@ -70,6 +70,41 @@ describe("a deployment's secrets", () => {
     await expect(
       readSecrets({ files: [file('__proto__=x\n')], names: [], env: {}, reserved: NONE }),
     ).rejects.toThrow(/__proto__/u);
+  });
+});
+
+describe('one secret, as a command that sends that one alone reads it', () => {
+  it('is the named one from the environment over the files, else the last file that sets it', async () => {
+    const first = file('CRON_SECRET=first\n');
+    const second = file('CRON_SECRET=second\n');
+    const input = { name: 'CRON_SECRET', files: [first, second], reserved: NONE };
+
+    await expect(
+      readSecret({ ...input, names: ['CRON_SECRET'], env: { CRON_SECRET: 'env' } }),
+    ).resolves.toBe('env');
+    await expect(readSecret({ ...input, names: [], env: { CRON_SECRET: 'env' } })).resolves.toBe(
+      'second',
+    );
+    await expect(
+      readSecret({ ...input, files: [], names: ['CRON_SECRET'], env: {} }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('reads nothing else of the files, which no other variable of theirs can stop', async () => {
+    const env = file('CLOUDFLARE_API_TOKEN=token\nDB=x\nCRON_SECRET=s3cret\n');
+    const input = { files: [env], names: [], env: {}, reserved: reservedNames([{ name: 'DB' }]) };
+
+    // Every secret of a deploy is held to what a Function may be given, and these are not.
+    await expect(readSecrets(input)).rejects.toThrow(/CLOUDFLARE_API_TOKEN/u);
+    await expect(readSecret({ ...input, name: 'CRON_SECRET' })).resolves.toBe('s3cret');
+  });
+
+  it('is held to what a Worker variable may be, as every secret is', async () => {
+    const large = file(`CRON_SECRET=${'x'.repeat(6000)}\n`);
+
+    await expect(
+      readSecret({ name: 'CRON_SECRET', files: [large], names: [], env: {}, reserved: NONE }),
+    ).rejects.toThrow(/over the 5120 bytes/u);
   });
 });
 

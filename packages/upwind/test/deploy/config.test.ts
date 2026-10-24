@@ -20,7 +20,6 @@ describe("a deploy's settings", () => {
       checks: ['/'],
       cspNonce: undefined,
       logs: false,
-      crons: 0,
     });
   });
 
@@ -52,7 +51,6 @@ describe("a deploy's settings", () => {
       storage: [{ name: 'UPWIND_D1', kind: 'd1' }],
       secrets: ['AUTH_SECRET'],
       cspNonce: { mode: 'enforce', strictDynamic: true },
-      crons: 1,
     });
   });
 
