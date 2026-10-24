@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
   resolve: {
@@ -14,5 +14,7 @@ export default defineConfig({
     name: 'runtime',
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    // The suites only workerd runs are the workers project's (`vitest.workers.config.mts`).
+    exclude: [...configDefaults.exclude, 'test/workers/**'],
   },
 });

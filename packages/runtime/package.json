@@ -30,7 +30,9 @@
     "@stayingupwind/core": "workspace:*"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
     "@types/node": "catalog:",
+    "next": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
