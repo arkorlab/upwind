@@ -11,6 +11,7 @@ import {
   OUTPUT_DIRECTORY_BUILD_ID,
   writeApplication,
 } from './check-application.ts';
+import { installManagerScenarios } from './check-install-manager.ts';
 import { checkLifecycle, lifecycleScenarios } from './check-lifecycle.ts';
 import { NEXT_JS_STACK, sameEnvironment, stackSizeScenario } from './check-stack-size.ts';
 import { workspaceScenario } from './check-workspace.ts';
@@ -441,6 +442,7 @@ async function main(): Promise<void> {
     NODE_OPTIONS: ordinaryNodeOptions(process.env['NODE_OPTIONS']),
     NEXT_E2E_TEST_TIMEOUT: undefined,
     ADAPTER_TEST_HOOK_STARTED_MS: undefined,
+    ADAPTER_TEST_INSTALL_MANAGER: undefined,
     ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
     ARKOR_API_TOKEN_FILE: tokenFile,
     ADAPTER_TEST_PROJECT_ID: 'p',
@@ -633,6 +635,14 @@ async function main(): Promise<void> {
       workDir,
       env,
       deploy: (dir, hookEnv) => bounded(DEPLOY_HOOK, dir, hookEnv),
+      holds,
+    });
+    await installManagerScenarios({
+      deploymentId,
+      workDir,
+      env,
+      deploy: (dir, hookEnv) => bounded(DEPLOY_HOOK, dir, hookEnv),
+      said: (error) => (error instanceof HookFailureError ? error.said : undefined),
       holds,
     });
     await workspaceScenario({

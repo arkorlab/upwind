@@ -79,6 +79,34 @@ run with Corepack's last known good pnpm, and pnpm 11 and 12 refuse such a proje
 version Next.js pins every other fixture to, from the Next.js checkout, as the workflow does:
 `corepack install -g "$(node -p "require('./package.json').packageManager")"`.
 
+### Choosing the installer
+
+`ADAPTER_TEST_INSTALL_MANAGER=npm` selects npm for the isolated application's **install step**.
+Unset, or explicitly `pnpm`, keeps the existing `pnpm install --no-frozen-lockfile --prod=false`.
+An empty or another value fails before installation. This option never changes an official fixture,
+its dependencies or its assertions. The build still uses pnpm, including `prebuild`, the harness's
+appended `pnpm post-build`, and `postbuild`, so the pnpm setup above is still required.
+
+The npm option currently requires **npm 11.19.1**. It uses a two-day minimum release age and allows
+git, remote, directory and file dependencies only when declared by the root application. Its package
+name exemptions match the unversioned entries in Next.js 16.4.3's test-install security profile.
+That profile also has five version-qualified exemptions; npm's name-only matcher cannot express
+them, so this hook omits them rather than exempting every version of those packages. The npm policy
+is consequently more restrictive for those entries.
+
+This is a narrow opt-in: an absent `pnpm-workspace.yaml`, or the exact three-key security profile
+written by Next.js 16.4.3 (standard js-yaml YAML or canonical JSON), is supported. Other workspace
+settings, comments, reordered or custom security profiles are rejected instead of being silently
+ignored. The hook also checks npm's effective security settings privately: a custom `before`, age,
+exemption list or stricter exotic-dependency restriction fails before installation. Registry and
+authentication configuration is not printed. Other npm settings remain in force. A failed policy
+probe or install fails the hook before build or deployment.
+
+Choosing npm changes dependency layout and can change installation outcomes. A successful build with
+one manager does not establish that every official test passes, or that the managers have identical
+policies. Record the installer with the results when comparing runs; this option adds no work to a
+deployed application's request handling.
+
 A fixture that is a workspace and builds one of its packages (`pnpm run --dir apps/web build`, as
 `import-meta-glob-monorepo` does) has its bundle beside that package, which is where the adapter writes
 it, rather than at its own root. The deploy hook deploys from the one place that holds a bundle — the
