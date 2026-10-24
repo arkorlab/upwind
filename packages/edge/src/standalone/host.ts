@@ -1,6 +1,10 @@
+import { GATE_ROUTE_HEADER, gateBinding } from '@stayingupwind/host/bindings';
+
 import { encodedScopeId } from '../cache/scope-identity.ts';
-import type { EdgeHost } from '../edge-host.ts';
+import type { EdgeGates, EdgeHost } from '../edge-host.ts';
+import { fetchedGateBodies } from '../handlers/gate-body-encoding.ts';
 import type { StandaloneEnv } from './env.ts';
+import { isFetcher } from './runtime.ts';
 
 /**
  * The names a standalone edge keeps things under between requests (`EdgeHost.names`). Each keys
@@ -47,6 +51,37 @@ function hostnamesOf(listed: string | undefined): string[] {
   });
 }
 
+/**
+ * A gate a deployment's manifest names that this edge is not bound to: every request of its routes
+ * is answered that the gate is unavailable (`handlers/gate.ts`), as for a gate that fails, and not
+ * as one with no gate. The edge is deployed with the gates its routes name, so one missing now is
+ * missing until the edge is deployed again.
+ */
+export class GateNotBoundError extends Error {
+  constructor(name: string, options?: ErrorOptions) {
+    super(`no gate is bound as ${gateBinding(name)}`, options);
+    this.name = 'GateNotBoundError';
+  }
+}
+
+/**
+ * The gates a standalone edge is bound to, each over its service binding (`gateBinding`), handed
+ * the request with the route it is of said on it (`GATE_ROUTE_HEADER`).
+ */
+function boundGates(env: StandaloneEnv): EdgeGates {
+  return fetchedGateBodies({
+    answer: async (name, request, route): Promise<Response> => {
+      const gate: unknown = Reflect.get(env, gateBinding(name));
+      if (!isFetcher(gate)) {
+        throw new GateNotBoundError(name);
+      }
+      const headers = new Headers(request.headers);
+      headers.set(GATE_ROUTE_HEADER, route);
+      return gate.fetch(new Request(request, { headers }));
+    },
+  });
+}
+
 /** What a standalone edge records of what it observes (`EdgeHost.observer`): nothing. */
 function unobserved(): void {
   // No host reads a standalone edge's measurements.
@@ -57,7 +92,7 @@ function unobserved(): void {
  * another site; every hostname it is routed (`HOSTNAMES`) as one it answers on, so that no image
  * source there is fetched from this edge, whichever hostname a request came in on; no credentials of
  * its own to take off what it forwards; no Function that can be gone while its pointer names it,
- * since it is deployed with the ones it names; and nothing it reports.
+ * since it is deployed with the ones it names; the gates it is bound to; and nothing it reports.
  */
 export function standaloneHost(env: StandaloneEnv): EdgeHost {
   const held = hosts.get(env);
@@ -74,6 +109,7 @@ export function standaloneHost(env: StandaloneEnv): EdgeHost {
     credentials: { cookies: [], headers: [] },
     functionGone: () => false,
     observer: { metric: unobserved, recordServed: unobserved, imageTransformed: unobserved },
+    gates: boundGates(env),
     // Where the cache it is bound to answers what moved in a scope: a standalone cache purges no
     // copy, so the edge asks it again every moment (`ScopeSignals.announced`).
     ...(signals !== undefined && {

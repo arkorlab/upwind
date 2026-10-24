@@ -40,8 +40,6 @@ const FALLBACK_ENTRY_OBJECTS = 4;
  * entry of its own, each would be charged 104 bytes, more than any took, and a manifest of such
  * pathnames refused past some 207 thousand of them rather than 245 thousand.
  */
-// Gate names and gated pathname routes are strings too, so their lookup tables take the same
-// additional per-entry charge. Their JSON still pays for the strings; no per-entry object is made.
 const PATHNAME_TABLE_BYTES = 48;
 
 /** A rule as a manifest lists one: a pattern, and perhaps conditions and headers. */
@@ -140,7 +138,11 @@ function routeObjects(manifest: ProjectManifest): number {
   return objects;
 }
 
-/** The routes, files and pathnames a manifest lists, and the objects of its rules. */
+/**
+ * The routes, files and pathnames a manifest lists, and the objects of its rules. A pathname found
+ * to be of a gated route (`gatedPathnames`) is charged as an entry of its own: unlike one a split
+ * deployment names a Function for, it may be a template no other table lists.
+ */
 function manifestObjects(manifest: ProjectManifest): number {
   let bodies = 0;
   if (manifest.routeBodies !== undefined) {
@@ -172,6 +174,8 @@ function manifestObjects(manifest: ProjectManifest): number {
     keysOf(manifest.staticFiles) +
     keysOf(manifest.exactPathnames) +
     keysOf(manifest.filesystemPages) +
+    keysOf(manifest.gates) +
+    keysOf(manifest.gatedPathnames) +
     ruleObjects(manifest.dynamicRoutes) +
     ruleObjects(manifest.reservedRoutes) +
     ruleObjects(manifest.headerRules, manifest.foldedHeaderRules) +
@@ -192,7 +196,6 @@ export function manifestCharge(manifest: ProjectManifest, jsonBytes: number): nu
   return (
     MANIFEST_JSON_FACTOR * jsonBytes +
     MANIFEST_OBJECT_BYTES * manifestObjects(manifest) +
-    PATHNAME_TABLE_BYTES *
-      (keysOf(manifest.exactFunctions) + keysOf(manifest.gates) + keysOf(manifest.gatedPathnames))
+    PATHNAME_TABLE_BYTES * keysOf(manifest.exactFunctions)
   );
 }

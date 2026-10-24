@@ -8,6 +8,7 @@ import { DEPLOYMENT_ID_QUERY, PatternBudgetExceededError } from '@stayingupwind/
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 
 import { withJudgedRules } from './configured-headers.ts';
+import { gateBudgetSpent } from './gate.ts';
 import {
   claimedAsLeft,
   type HostedGateInput,
@@ -15,12 +16,15 @@ import {
   type TimedContinue,
 } from './hosted-gate.ts';
 import { serveHostedFile } from './hosted-static-file.ts';
+import { imagePatternRequests } from './image-pattern-requests.ts';
+import { gatedSourceRefusal } from './image-source.ts';
 import { handleImage, type ImageAnswerInput, refuseImage } from './image.ts';
 import {
   headerRulesAsRouted,
   type MiddlewareOutcome,
   type MiddlewareTiming,
 } from './middleware.ts';
+import { observeTerminal } from './observer.ts';
 import { PATTERN_BUDGET } from './passthrough.ts';
 
 export interface HostedImageInput extends HostedGateInput {
@@ -100,13 +104,32 @@ function refused(
  * of `next.config` that claim the path, the middleware — has its say first, on every request
  * alike; then the parameters are checked as the optimizer checks them, and a request that names
  * something the configuration does not allow is refused in the optimizer's words.
+ *
+ * Of a deployment that declares a gate, one whose source's route — or its own rules — cannot be
+ * judged within what the edge spends testing the application's patterns may be of a gated route,
+ * and is answered as a request of such a route is (`gateBudgetSpent`): fetched by no one, and
+ * never handed to the Function, whose optimizer would fetch the source with no gate asked.
  */
 export async function routeHostedImage(input: HostedImageInput): Promise<Response> {
   try {
     return await routeWithinBudget(input);
   } catch (error) {
     if (error instanceof PatternBudgetExceededError) {
-      return refused(input);
+      if (input.manifest.gates === undefined) return refused(input);
+      const response = gateBudgetSpent();
+      const { edge } = input;
+      observeTerminal(edge.host, {
+        projectId: edge.projectId,
+        pathname: input.url.pathname,
+        outcomeKind: `gate-${String(response.status)}`,
+        colo: edge.colo ?? '',
+        manifestId: edge.manifestId,
+        policyId: edge.policy.id,
+        pointerLookupMs: edge.timings.pointerMs,
+        manifestLookupMs: edge.timings.manifestMs,
+        subrequests: imagePatternRequests(error),
+      });
+      return response;
     }
     throw error;
   }
@@ -115,6 +138,8 @@ export async function routeHostedImage(input: HostedImageInput): Promise<Respons
 /**
  * The optimizer's answer for the parameters `target` carries — the request's own, or those of the
  * optimizer's path a middleware rewrote it to — under the rules the request as it came selected.
+ * A source that is a gated route's is refused before anything is read or kept
+ * (`gatedSourceRefusal`): its answer is its gate's every time.
  */
 function optimized(
   input: HostedImageInput,
@@ -131,11 +156,16 @@ function optimized(
     const error = { status: HTTP_BAD_REQUEST, message: parsed.errorMessage, requests: 0 };
     return Promise.resolve(refuseImage(answer, error, 'image-invalid'));
   }
+  const dpl = namedDeployment(input.url);
+  const gated = gatedSourceRefusal(answer.edge, manifest, parsed.params, dpl);
+  if (gated !== undefined) {
+    return Promise.resolve(refuseImage(answer, gated, 'image-source-gated'));
+  }
   return handleImage({
     ...answer,
     manifest,
     params: parsed.params,
-    dpl: namedDeployment(input.url),
+    dpl,
   });
 }
 

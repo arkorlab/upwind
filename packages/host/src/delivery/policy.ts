@@ -340,6 +340,12 @@ export const edgePointerSchema = z.object({
    * reads none. A pointer in `edge` mode names one.
    */
   manifestId: z.string().optional(),
+  /**
+   * This deployment declares route gates. A GET or HEAD with no usable manifest must fail closed:
+   * the edge cannot find its gate, and cannot treat it as a route with none. Only true is written;
+   * older upstream pointers predate route-gate serving and describe ungated deployments.
+   */
+  requiresGate: z.literal(true).optional(),
   policyId: z.string().min(1),
   /**
    * The immutable policy this pointer selected, copied by its publisher beside its id so a cold

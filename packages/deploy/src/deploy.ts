@@ -41,7 +41,6 @@ import {
   oversizedManifest,
   routedPages,
   unreachableFunctions,
-  unsupportedGates,
   unsupportedNext,
 } from './manifest.ts';
 import { edgePointerOf } from './pointer.ts';
@@ -400,7 +399,7 @@ export async function stageDeployment(
   // refused here, before anything is read, rather than by the assembly once its documents are; one
   // with limited support is deployed as any is. The assembly is not told the version was judged
   // (`nextVersionJudged`): that is for a deployment a host already holds, and this one is new.
-  const unsupported = unsupportedGates(bundle) ?? unsupportedNext(input);
+  const unsupported = unsupportedNext(input);
   if (unsupported !== undefined) {
     throw new DeployRefusalError(unsupported, { code: 'bundle_invalid' });
   }
@@ -598,7 +597,7 @@ async function manifestOf(
       cause: error,
     });
   }
-  const refusal = unsupportedGates(manifest) ?? oversizedManifest(manifest, staged.serialized);
+  const refusal = oversizedManifest(manifest, staged.serialized);
   if (refusal !== undefined) {
     throw new DeployRefusalError(refusal, { code: 'bundle_invalid' });
   }
@@ -654,6 +653,7 @@ export async function publishDeployment(
     {
       fingerprint: manifest.deployment,
       manifestId: staged.manifestId,
+      requiresGate: manifest.gates !== undefined,
       policyId: input.policy.id,
       app: manifest.app,
       cspNonce: input.cspNonce ?? false,
