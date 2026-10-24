@@ -183,6 +183,7 @@ function partsOf(
   context: FunctionsContext,
   held: HeldRoutes | undefined,
 ): {
+  routes: readonly RouteCode[];
   modules: readonly EntryModule[];
   edge: readonly EdgeEntry[];
   chunks: readonly string[];
@@ -193,6 +194,7 @@ function partsOf(
 } {
   if (held === undefined) {
     return {
+      routes: context.routes,
       modules: context.modules,
       edge: context.edgeEntries,
       chunks: context.chunks,
@@ -208,6 +210,7 @@ function partsOf(
   // What every Function holds besides its routes, whose traces name what it reads as theirs do.
   const base = [...(output === undefined ? [] : [output]), { assets: context.hook.assets }];
   return {
+    routes: own,
     modules: own.flatMap((route) => (route.module === undefined ? [] : [route.module])),
     edge: own.flatMap((route) => (route.edge === undefined ? [] : [route.edge])),
     chunks: [...new Set(own.flatMap((route) => route.chunks))],
@@ -252,6 +255,7 @@ export async function buildAppFunction(
     outDir: context.outDir,
     patch: await patchFor(context, [...parts.chunks, ...middleware.chunks], wasm),
     entries: [...parts.modules, ...middleware.node],
+    entryTraces: parts.routes,
     edgeEntries,
     edgeInstrumentation: context.edgeInstrumentation,
     wasm: wasm.collector,
