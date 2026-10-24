@@ -66,7 +66,7 @@ describe('action passthrough lifetime through invalidation receipt', () => {
       body: '--fixture\r\nContent-Disposition: form-data; name="title"\r\n\r\nnew\r\n--fixture--\r\n',
     },
   ])(
-    'retains a form-sent Action without next-action after it loses its client ($type)',
+    'retains a form navigation without next-action after it loses its client ($type)',
     async ({ type, body }) => {
       const test = await mutationLifetimeFixture();
       const canceled = new AbortController();
@@ -85,7 +85,7 @@ describe('action passthrough lifetime through invalidation receipt', () => {
         new Request('https://app.test/', {
           method: 'POST',
           body,
-          headers: { 'content-type': type },
+          headers: { 'content-type': type, 'sec-fetch-mode': 'navigate' },
           signal: canceled.signal,
         }),
       );
@@ -197,6 +197,8 @@ describe('action passthrough lifetime through invalidation receipt', () => {
   it.each([
     { method: 'POST', actionHeader: false, type: undefined },
     { method: 'POST', actionHeader: false, type: 'application/json' },
+    { method: 'POST', actionHeader: false, type: 'application/x-www-form-urlencoded' },
+    { method: 'POST', actionHeader: false, type: 'multipart/form-data; boundary=fixture' },
     { method: 'PUT', actionHeader: false, type: undefined },
     { method: 'PUT', actionHeader: false, type: 'multipart/form-data; boundary=fixture' },
     { method: 'PATCH', actionHeader: false, type: undefined },

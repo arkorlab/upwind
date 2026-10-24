@@ -31,13 +31,17 @@ export function outlivesClient(request: Request, headers: Headers): boolean {
 }
 
 /**
- * Whether a POST was sent by a form, which Next.js takes for a possible Action as the runtime does
- * (`getIsPossibleServerAction`): a form submitted before hydration, or without JavaScript, names
- * its Action in its body and sends no `next-action` header (greptile).
+ * Whether a POST is a form the browser navigated with, which Next.js takes for a possible Action as
+ * the runtime does (`getIsPossibleServerAction`): a form submitted before hydration, or without
+ * JavaScript, names its Action in its body and sends no `next-action` header (greptile). A script's
+ * form POST is no navigation, and stays cancelled with its client as any other request is (greptile).
  */
 function sentByForm(headers: Headers): boolean {
   const type = headers.get('content-type');
-  return type === FORM_URLENCODED || (type?.startsWith(FORM_MULTIPART) ?? false);
+  return (
+    headers.get('sec-fetch-mode') === 'navigate' &&
+    (type === FORM_URLENCODED || (type?.startsWith(FORM_MULTIPART) ?? false))
+  );
 }
 
 /** Retain the receipt continuation, not an arbitrary response stream or a rejection. */
