@@ -153,6 +153,9 @@ function passthroughFor(
   const manifestReady = 'manifestReady' in input ? input.manifestReady : undefined;
   const passthrough: PassthroughInput = {
     request: input.request,
+    waitUntil: (work) => {
+      input.ctx.waitUntil(work);
+    },
     forwarding: forwardingFor(input.request, input.host.sharedDomain, input.url.hostname),
     runtime: input.runtime,
     host: input.host,
