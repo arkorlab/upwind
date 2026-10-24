@@ -10,6 +10,16 @@ set -euo pipefail
 # Where everything is, from this script's own place rather than from one another.
 tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Select only the install step. The harness's build and its appended pnpm post-build stay unchanged.
+install_manager="${ADAPTER_TEST_INSTALL_MANAGER-pnpm}"
+case "$install_manager" in
+  npm | pnpm) ;;
+  *)
+    echo 'ADAPTER_TEST_INSTALL_MANAGER must be npm or pnpm when set' >&2
+    exit 1
+    ;;
+esac
+
 # The suite's own variables (`createNext({ env })`): what the harness handed this hook beyond its own
 # environment, read before anything below sets a variable of its own (`src/suite-env.ts`). The harness
 # is this script's parent; a caller that starts the hook through something else names it.
@@ -79,12 +89,16 @@ export NEXT_PRIVATE_TEST_MODE=e2e
 # where pnpm 10 leaves it alone. `handle-non-hoisted-swc-helpers`, which pins npm, failed on it.
 fixture() {
   env -u ARKOR_API_URL -u ARKOR_API_TOKEN -u ARKOR_API_TOKEN_FILE -u ADAPTER_TEST_PROJECT_ID \
-    -u ADAPTER_TEST_SETTLE_SECONDS COREPACK_ENABLE_STRICT=0 COREPACK_DEFAULT_TO_LATEST=0 "$@"
+    -u ADAPTER_TEST_SETTLE_SECONDS -u ADAPTER_TEST_INSTALL_MANAGER \
+    COREPACK_ENABLE_STRICT=0 COREPACK_DEFAULT_TO_LATEST=0 "$@"
 }
 
 # Deploy mode makes the isolated copy with `skipInstall: true` (`test/lib/next-modes/next-deploy.ts`),
 # so the application arrives without its dependencies and installing them is this script's job.
-fixture pnpm install --no-frozen-lockfile --prod=false >&2
+case "$install_manager" in
+  pnpm) fixture pnpm install --no-frozen-lockfile --prod=false >&2 ;;
+  npm) fixture node "${tool_dir}/src/install-npm.ts" >&2 ;;
+esac
 
 # The harness writes the application's own build script and appends `&& pnpm post-build`
 # (`test/lib/next-modes/base.ts`). Run its build through pnpm, including prebuild and postbuild:
