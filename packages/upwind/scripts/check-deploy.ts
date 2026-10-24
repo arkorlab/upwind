@@ -10,6 +10,7 @@ import { createCloudflareClient } from '../src/deploy/cloudflare/client.ts';
 import {
   type AccountScope,
   accountSubdomain,
+  getSchedules,
   listDeployments,
   listScripts,
 } from '../src/deploy/cloudflare/workers.ts';
@@ -24,6 +25,7 @@ import {
   cliOf,
   command,
   CONFIG_FILE,
+  CRONS_OF,
   homeOf,
   say,
   succeed,
@@ -44,8 +46,8 @@ import {
  *
  * `run`, here, in the step that holds them. The three builds are deployed to one project, one after
  * another, with what each deployment has to show checked between them: the site served, a page of
- * each kind the fixture has, what must stay closed, the previous deployment's files kept, rollback
- * and forward again, retention, a deploy of what is live already changing nothing — and the project
+ * each kind the fixture has, what must stay closed, the previous deployment's files kept, the edge's
+ * Cron Triggers its cron jobs', rollback and forward again, retention, a deploy of what is live already changing nothing — and the project
  * destroyed at the end, whatever happened before, and checked gone. Projects earlier runs left are
  * destroyed first.
  *
@@ -127,7 +129,7 @@ async function buildsIn(dir: string, project: string): Promise<Record<Version, B
       await exists(path.join(at, 'node_modules')),
       `${at} has no modules: run the install phase first, in a step without the credentials`,
     );
-    const config = { deploy: { name: project, checks: CHECKS } };
+    const config = { crons: CRONS_OF[version], deploy: { name: project, checks: CHECKS } };
     await writeFile(path.join(at, CONFIG_FILE), `${JSON.stringify(config, undefined, 2)}\n`);
     const bundle = JSON.parse(await readFile(path.join(at, BUNDLE_PATH), 'utf8')) as {
       readonly deploymentId: string;
@@ -339,6 +341,20 @@ async function snapshot(run: Run): Promise<string> {
   });
 }
 
+/**
+ * Whether the edge fires on the triggers of the deployment it serves: what a deploy and a rollback
+ * set once the deployment is live. That Cloudflare fires on them is its own to say, in up to
+ * fifteen minutes, which no check here waits for.
+ */
+async function expectTriggers(run: Run, triggers: readonly string[]): Promise<void> {
+  const set = await getSchedules(run.scope, projectNames(run.project).edge);
+  assert.deepEqual(
+    set.toSorted(compareCodeUnits),
+    [...triggers].toSorted(compareCodeUnits),
+    `the edge fires on ${JSON.stringify(set)}, not ${JSON.stringify(triggers)}`,
+  );
+}
+
 function deploy(run: Run, build: Build, extra: readonly string[] = []): void {
   const { status } = upwind(run, ['deploy', build.dir, '--prebuilt', ...extra]);
   assert.equal(status, 0, `deploying ${build.version} exited ${String(status)}`);
@@ -357,11 +373,13 @@ async function scenario(run: Run): Promise<void> {
   await expectStatic(v1Files, 'a static file');
   await expectPages(run);
   await expectClosed(run, v1);
+  await expectTriggers(run, ['0 9 * * 2']);
 
   deploy(run, v2);
   await expectServing(run, v2);
   // The pages of v1 still open in a browser load its files, which v2's deployment kept.
   await expectStatic(v1Files, "v1's static file, after v2");
+  await expectTriggers(run, []);
   const listed = upwind(run, ['deployments', v1.dir], true);
   assert.equal(listed.status, 0, `upwind deployments exited ${String(listed.status)}`);
   for (const build of [v1, v2]) {
@@ -373,11 +391,14 @@ async function scenario(run: Run): Promise<void> {
 
   assert.equal(rollback(run, v1), 0, 'rolling back to v1 failed');
   await expectServing(run, v1);
+  await expectTriggers(run, ['0 9 * * 2']);
   assert.equal(rollback(run, v2), 0, 'rolling forward to v2 failed');
   await expectServing(run, v2);
+  await expectTriggers(run, []);
 
   deploy(run, v3, ['--keep', '1']);
   await expectServing(run, v3);
+  await expectTriggers(run, ['0 * * * *']);
   const v1Prefix = `${run.project}-${deploymentLabel(v1.deploymentId)}-`;
   const left = [...(await projectWorkers(run))].filter((name) => name.startsWith(v1Prefix));
   assert.deepEqual(left, [], 'v1 kept its Functions past --keep 1');

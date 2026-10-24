@@ -31,6 +31,15 @@ export const BLOG_PAGE = '/blog/first';
 export const CHECKS = ['/', '/hello', BLOG_PAGE, '/api/ping'];
 /** The project's settings beside its name, which the `run` half gives it. */
 export const CONFIG_FILE = 'upwind.json';
+/**
+ * Each version's cron jobs: one on a weekday, none, then one every hour, so that a deploy and a
+ * rollback each have triggers to set and to take away. Monday is `2` on Cloudflare.
+ */
+export const CRONS_OF: Readonly<Record<Version, readonly { path: string; schedule: string }[]>> = {
+  v1: [{ path: '/api/ping', schedule: '0 9 * * 1' }],
+  v2: [],
+  v3: [{ path: '/api/ping', schedule: '0 * * * *' }],
+};
 /** A command takes at most this long, twenty minutes; a deploy waits on Cloudflare at several steps. */
 const COMMAND_TIMEOUT_MS = 1_200_000;
 
@@ -119,7 +128,7 @@ export async function copyFixture(out: string, version: Version): Promise<string
   );
   await writeFile(
     path.join(dir, CONFIG_FILE),
-    `${JSON.stringify({ deploy: { checks: CHECKS } }, undefined, 2)}\n`,
+    `${JSON.stringify({ crons: CRONS_OF[version], deploy: { checks: CHECKS } }, undefined, 2)}\n`,
   );
   return dir;
 }

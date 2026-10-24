@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import type { DeploymentBundle } from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -37,6 +38,7 @@ async function builtProject(
     readonly deployable?: boolean;
     readonly noted?: boolean;
     readonly functions?: number;
+    readonly crons?: DeploymentBundle['crons'];
   } = {},
 ) {
   const dir = projectDir();
@@ -49,10 +51,12 @@ async function builtProject(
     { length: (input.functions ?? 1) - 1 },
     (_, index) => `app-${index + 2}`,
   );
-  const bundle =
+  const crons = input.crons === undefined ? {} : { crons: input.crons };
+  const bundle = bundleOf(
+    app,
     split.length === 0
-      ? bundleOf(app)
-      : bundleOf(app, {
+      ? crons
+      : {
           v: 2,
           entrypoints: [
             { id: '/', kind: 'app-page', pathname: '/' },
@@ -66,7 +70,8 @@ async function builtProject(
             }),
           ],
           functions: { app, split: Object.fromEntries(split.map((name) => [name, app])) },
-        });
+        },
+  );
   writeBundle(dir, bundle);
   if (input.noted !== false) {
     const note = { v: 1, deploymentId: bundle.deploymentId, upwind: '0.4.0', builtAt: 'now' };
@@ -133,6 +138,21 @@ describe('`upwind deploy --dry-run`', () => {
       '  account: not read, since CLOUDFLARE_API_TOKEN is not set',
     ]);
     expect(errors).toStrictEqual([]);
+  });
+
+  it('says how many cron jobs it would schedule, on how many triggers', async () => {
+    const { dir } = await builtProject({
+      crons: [
+        { path: '/api/tick', schedule: '0 * * * *' },
+        { path: '/api/tick-too', schedule: '0 */1 * * *' },
+        { path: '/api/weekly', schedule: '0 9 * * 1' },
+      ],
+    });
+
+    await expect(runDeploy(optionsFor(dir), undefined)).resolves.toBe(0);
+    expect(printed).toContain(
+      '  cron jobs: 3, on 2 Cron Triggers of shop-edge; an account holds 5 on Workers Free, 250 on Workers Paid',
+    );
   });
 
   it('reads the account it would deploy to, and changes nothing on it', async () => {

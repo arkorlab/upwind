@@ -35,7 +35,7 @@ Usage
   upwind preview [directory]
   upwind deploy [directory]
   upwind deployments [directory]
-  upwind rollback [directory] [--to <deployment>]
+  upwind rollback [directory] [--to <deployment>] [--env-file <file>]...
   upwind destroy [directory] --yes
 
 Options
@@ -46,7 +46,8 @@ Options
       --dry-run          Say what a deploy would do and change nothing, \`deploy\` only
       --build-only       Build for a deploy and stop, \`deploy\` only
       --prebuilt         Deploy what --build-only built, \`deploy\` only
-      --env-file <file>  Secrets for the Functions, \`deploy\` and \`preview\`; may repeat
+      --env-file <file>  Secrets for the Functions, for \`deploy\` and \`preview\`; CRON_SECRET,
+                         for \`rollback\`; may repeat
       --keep <n>         Deployments kept to roll back to, \`deploy\` only (default: 5)
       --message <text>   What the deployment is noted as, \`deploy\` only
       --reset-cache-key  Give the runtime cache a new key, \`deploy\` only

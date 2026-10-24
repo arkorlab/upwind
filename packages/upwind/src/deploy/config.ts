@@ -41,8 +41,6 @@ export interface DeploySettings {
     | { readonly mode: 'enforce' | 'report-only'; readonly strictDynamic: boolean }
     | undefined;
   readonly logs: boolean;
-  /** How many cron jobs the project declares, which a deploy refuses until it can run them. */
-  readonly crons: number;
 }
 
 /** What `deploy.keep` is when the configuration does not say. */
@@ -50,7 +48,6 @@ export const DEFAULT_KEEP = 5;
 
 export interface AdapterConfig {
   readonly file: string | undefined;
-  readonly crons: readonly unknown[];
   readonly deploy?:
     | {
         readonly name?: string | undefined;
@@ -168,6 +165,5 @@ export async function readDeploySettings(
             strictDynamic: deploy.cspNonce.strictDynamic ?? false,
           },
     logs: deploy.logs ?? false,
-    crons: config.crons.length,
   };
 }

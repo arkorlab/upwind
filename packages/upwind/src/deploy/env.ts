@@ -159,3 +159,25 @@ export async function readSecrets(input: SecretInput): Promise<ReadonlyMap<strin
   }
   return secrets;
 }
+
+/**
+ * One secret, as `readSecrets` reads it among the rest — from the environment where
+ * `deploy.secrets` names it, else from the last `--env-file` that sets it — with that one alone held
+ * to what a variable may be: for a command that sends that secret and binds nothing else of the
+ * files, which their other variables, valid as a Function's or not, are no reason to refuse.
+ */
+export async function readSecret(
+  input: SecretInput & { readonly name: string },
+): Promise<string | undefined> {
+  const { name } = input;
+  const named = input.names.includes(name) ? input.env[name] : undefined;
+  const value = named ?? (await fromFiles(input.files)).get(name);
+  if (value === undefined) {
+    return undefined;
+  }
+  const refusal = refusalOf(name, value, input.reserved);
+  if (refusal !== undefined) {
+    throw new Error(refusal);
+  }
+  return value;
+}

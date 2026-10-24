@@ -37,6 +37,8 @@ export interface FakeScript {
   subdomain: { enabled: boolean; previews_enabled: boolean };
   migrationTag: string | undefined;
   readonly secrets: Map<string, string>;
+  /** The Worker's Cron Triggers, as they were last set; none where they never were. */
+  schedules?: readonly string[];
   /** When the Worker was made, as the list of Workers says; a test sets it to age one. */
   createdOn?: string;
 }
@@ -481,6 +483,29 @@ export function fakeCloudflare(options: { readonly accountId?: string } = {}): F
         }
         target.subdomain = (await request.json()) as FakeScript['subdomain'];
         return envelope(target.subdomain);
+      },
+    },
+    {
+      method: 'GET',
+      path: /^\/workers\/scripts\/([^/]+)\/schedules$/u,
+      answer: (_, match) => {
+        const target = scriptOr(match);
+        return target instanceof Response
+          ? target
+          : envelope({ schedules: (target.schedules ?? []).map((cron) => ({ cron })) });
+      },
+    },
+    {
+      method: 'PUT',
+      path: /^\/workers\/scripts\/([^/]+)\/schedules$/u,
+      answer: async (request, match) => {
+        const target = scriptOr(match);
+        if (target instanceof Response) {
+          return target;
+        }
+        const body = (await request.json()) as readonly { readonly cron: string }[];
+        target.schedules = body.map((schedule) => schedule.cron);
+        return envelope({ schedules: body });
       },
     },
     {
