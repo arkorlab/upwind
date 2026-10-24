@@ -91,3 +91,36 @@ export const PREFETCH_INTERNAL_ORIGIN = 'https://prefetch.upwind.internal';
 export function functionBinding(scriptName: string): `APP__${string}` {
   return `APP__${scriptName.replaceAll(/\W/gu, '_')}`;
 }
+
+/**
+ * The binding a standalone edge reaches a route's gate by (`gates`, in a deployment's manifest):
+ * the gate's name after `GATE__`, upper-cased, each `-` an `_` — `GATE__CONTENT_RULES` for
+ * `content-rules`. A gate's name holds nothing else (`gateNameSchema`), so no two names are one
+ * binding. Here rather than in the edge alone, as whatever deploys the edge binds each gate under
+ * it.
+ */
+export function gateBinding(name: string): `GATE__${string}` {
+  return `GATE__${name.toUpperCase().replaceAll('-', '_')}`;
+}
+
+/**
+ * What the edge and a route's gate say to each other, beside the request itself: the route the
+ * request is of, as the build declared it (`GATE_ROUTE_HEADER`, on the request the gate is handed),
+ * and the deployment of the site it is of, where the edge's manifest names one
+ * (`GATE_DEPLOYMENT_HEADER`: its `deployment.dplId`, which a gate's answer made of another
+ * deployment's page is no answer to); and, on the gate's answer, that the request is to be served
+ * as though there were no gate (`GATE_ANSWER_HEADER` set to `GATE_PASS`). Every name begins
+ * `GATE_HEADER_PREFIX`, which no visitor's request carries on to a gate: what a gate is told of a
+ * request, its host tells it.
+ */
+export const GATE_HEADER_PREFIX = 'x-upwind-gate';
+export const GATE_ROUTE_HEADER = 'x-upwind-gate-route';
+export const GATE_DEPLOYMENT_HEADER = 'x-upwind-gate-deployment';
+export const GATE_ANSWER_HEADER = 'x-upwind-gate';
+export const GATE_PASS = 'pass';
+/**
+ * The URL a visitor asked for, where the host reaches a gate at an address of the gate's own rather
+ * than over a binding, which keeps the request's own URL: the request a gate is handed is then
+ * addressed to the gate, and this says where it was going.
+ */
+export const GATE_URL_HEADER = 'x-upwind-gate-url';

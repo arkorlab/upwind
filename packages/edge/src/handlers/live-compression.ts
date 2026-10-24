@@ -1,7 +1,7 @@
 // eslint-disable-next-line @typescript-eslint/triple-slash-reference -- the runtime's module has no declarations of its own, and a consumer that imports this one without `@types/node` reads them from here: no type entry or import can name a file of ambient declarations.
 /// <reference path="../../types/node-zlib.d.ts" />
 // eslint-disable-next-line no-restricted-imports, import-x/no-nodejs-modules -- the Workers runtime has no other compressor that can be told to flush; this module is the one place that compresses on the way out.
-import { constants, createBrotliCompress, createGzip } from 'node:zlib';
+import { constants, createBrotliCompress, createBrotliDecompress, createGzip } from 'node:zlib';
 
 import type { ShellEncoding } from '@stayingupwind/core/artifact';
 import { concatBytes } from '@stayingupwind/core/util';
@@ -409,4 +409,17 @@ export function onTheWayOut(
     return compressLive(body, delivery.encoding);
   }
   return body;
+}
+
+/** A gate's encoded bytes are decoded before its per-response HTML nonce can be rewritten. */
+export function decompressLive(
+  body: ReadableStream<Uint8Array>,
+  encoding: 'br' | 'gzip' | 'deflate',
+): ReadableStream<Uint8Array> {
+  return encoding === 'br'
+    ? compressWith(body, {
+        stream: createBrotliDecompress(),
+        flushKind: constants.BROTLI_OPERATION_FLUSH,
+      })
+    : body.pipeThrough(new DecompressionStream(encoding));
 }

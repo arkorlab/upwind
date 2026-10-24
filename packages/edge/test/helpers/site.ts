@@ -66,6 +66,8 @@ export interface SiteOptions {
   readonly pathname?: string | undefined;
   /** Files the manifest serves from storage, by pathname, each stored under `blobs/`. */
   readonly files?: Readonly<Record<string, string>> | undefined;
+  /** Files kept from the deployment before (`KEPT_DEPLOYMENT`), stored the same way. */
+  readonly keptFiles?: Readonly<Record<string, string>> | undefined;
   /** The build's `next/image` configuration; none, absent. */
   readonly images?: ImagesConfig | undefined;
   /** The build's dynamic routes, in Next.js's order; none, absent. */
@@ -78,6 +80,12 @@ export interface SiteOptions {
   readonly headerRules?: readonly HeaderRule[] | undefined;
   /** What the page's prerender is not served under, as Next.js recorded it; nothing, absent. */
   readonly bypassFor?: RouteEntry['bypassFor'];
+  /** The routes the build declared a gate for, each with its gate's name; none, absent. */
+  readonly gates?: Readonly<Record<string, string>> | undefined;
+  /** The deployment of the site the manifest names (`deployment.dplId`); none unless said. */
+  readonly dplId?: string | undefined;
+  /** The pathnames Next.js resolves exactly that are of a gated route, each with that route. */
+  readonly gatedPathnames?: Readonly<Record<string, string>> | undefined;
 }
 
 export interface Site {
@@ -86,8 +94,12 @@ export interface Site {
   readonly pointer: EdgePointer;
 }
 
+/** The deployment before, whose files a manifest keeps for the documents still open of it. */
+export const KEPT_DEPLOYMENT = 'dpl_before';
+
 async function fileEntries(
   files: Readonly<Record<string, string>>,
+  kept = false,
 ): Promise<Record<string, StaticFileEntry>> {
   const entries: Record<string, StaticFileEntry> = {};
   for (const [pathname, text] of Object.entries(files)) {
@@ -99,6 +111,7 @@ async function fileEntries(
       byteLength: bytes.byteLength,
       contentType: 'text/plain; charset=utf-8',
       immutable: false,
+      ...(kept && { deploymentId: KEPT_DEPLOYMENT }),
     };
   }
   return entries;
@@ -152,14 +165,23 @@ export async function seedSite(options: SiteOptions): Promise<Site> {
     runId: 'run_site',
     generatedAt: UPDATED_AT,
     originHost: SITE_HOST,
-    deployment: { assetSetHash: 'a'.repeat(64), observedAt: UPDATED_AT },
+    deployment: {
+      assetSetHash: 'a'.repeat(64),
+      observedAt: UPDATED_AT,
+      ...(options.dplId !== undefined && { dplId: options.dplId }),
+    },
     routes: [route],
     app: APP,
-    staticFiles: await fileEntries(options.files ?? {}),
+    staticFiles: {
+      ...(await fileEntries(options.keptFiles ?? {}, true)),
+      ...(await fileEntries(options.files ?? {})),
+    },
     images: options.images,
     ...(options.headerRules !== undefined && { headerRules: [...options.headerRules] }),
     ...(options.dynamicRoutes !== undefined && { dynamicRoutes: [...options.dynamicRoutes] }),
     ...(options.reservedRoutes !== undefined && { reservedRoutes: options.reservedRoutes }),
+    gates: options.gates,
+    gatedPathnames: options.gatedPathnames,
     crawlersStreamed: true,
   });
   const manifestId = await computeManifestId(manifest);

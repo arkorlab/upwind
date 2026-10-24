@@ -20,7 +20,8 @@ export class FunctionNotBoundError extends Error {
   }
 }
 
-function isFetcher(value: unknown): value is Fetcher {
+/** Whether a binding of the environment is a service, which a request can be handed to. */
+export function isFetcher(value: unknown): value is Fetcher {
   return typeof value === 'object' && value !== null && 'fetch' in value;
 }
 

@@ -17,7 +17,7 @@ import { replaceLegacyRecoverySource, type WireEncoding } from '@stayingupwind/h
 
 import { serverTiming, type ServerTimingEntry } from '../observability/server-timing.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { acceptsNonce, applyNonceToHeaders } from './csp-nonce.ts';
+import { acceptsNonce, applyNonceToHeaders, cspMarkers } from './csp-nonce.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { mergeScopedMiddlewareHeaders, removeSharedCacheOverrides } from './responses.ts';
 
@@ -456,14 +456,14 @@ export function documentHeaders(header: DocumentHeaderInput): DocumentHeaders {
   if (nonce !== undefined) {
     applyNonceToHeaders(headers, nonce, edge.cspNonceMode, edge.cspStrictDynamic);
   }
-  const cspMarker = nonce === undefined ? '' : ';csp=nonce';
-  const cspModeMarker =
-    edge.cspNonce && edge.cspNonceMode === 'report-only' ? ';csp-mode=report-only' : '';
-  // The setting, as the mode's marker is: what shadow validation checks the run's against.
-  const strictDynamicMarker = edge.cspNonce && edge.cspStrictDynamic ? ';csp-strict-dynamic' : '';
+  const csp = cspMarkers(
+    nonce,
+    edge.cspNonce ? edge.cspNonceMode : undefined,
+    edge.cspStrictDynamic,
+  );
   headers.set(
     EDGE_DEBUG_HEADER,
-    `shell;strategy=${header.strategyId};src=${shell.source};m=${manifestPrefix};policy=${edge.policy.id}${cspMarker}${cspModeMarker}${strictDynamicMarker}${encoded}${header.hosted}`,
+    `shell;strategy=${header.strategyId};src=${shell.source};m=${manifestPrefix};policy=${edge.policy.id}${csp}${encoded}${header.hosted}`,
   );
   applyPreloads(headers, header);
   applyCspReporting(headers, edge.cspReportingPath);

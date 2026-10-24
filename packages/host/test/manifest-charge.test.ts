@@ -3,6 +3,7 @@ import {
   type DynamicRoute,
   MAX_MANIFEST_BYTES,
   parseProjectManifest,
+  type ProjectManifest,
   serializeManifest,
   type RouteEntry,
 } from '@stayingupwind/core/manifest';
@@ -248,13 +249,13 @@ describe('the additional lookup tables of a gated manifest', () => {
     expect(parsed.gatedPathnames).toStrictEqual(gatedPathnames);
     expect(parsed.gates).not.toBe(gates);
     expect(parsed.gatedPathnames).not.toBe(gatedPathnames);
-    // Their strings pay the existing JSON multiplier; each extra table entry pays the same
-    // 48 bytes already used for exactFunctions, rather than disappearing beside its pathname.
+    // Their strings pay the existing JSON multiplier; each gate entry keeps the conservative
+    // 80-byte charge because a gated pathname may be a template no other table lists.
     expect(
       manifestCharge(parsed, encodeUtf8(stored).byteLength) -
         manifestCharge(plain, encodeUtf8(plainStored).byteLength) -
         1.5 * (encodeUtf8(stored).byteLength - encodeUtf8(plainStored).byteLength),
-    ).toBe(48 * (counts.gates + counts.pathnames));
+    ).toBe(80 * (counts.gates + counts.pathnames));
   });
 });
 
@@ -274,6 +275,51 @@ describe('the request-key static file format', () => {
       manifestCharge(parsed, encodeUtf8(stored).byteLength) -
         manifestCharge(plain, encodeUtf8(plainStored).byteLength),
     ).toBe(1.5 * extraBytes);
+  });
+});
+
+/**
+ * What an isolate is charged for holding a manifest (`manifestCharge`): what it lists counts, the
+ * table of a gated route's pathnames among it, whatever its JSON comes to.
+ */
+
+const GENERATED_AT = '2026-10-16T00:00:00.000Z';
+const POST = '/posts/[slug]';
+/** The class's dynamic route, which every manifest compared lists alike. */
+const POST_PATTERN = '^/posts/(?<slug>[^/]+?)(?:/)?$';
+/** The same JSON's bytes for every manifest compared, so only what each lists differs. */
+const JSON_BYTES = 1000;
+/** What an entry of its own is charged (`MANIFEST_OBJECT_BYTES`). */
+const ENTRY_BYTES = 80;
+/** How many pathnames the gated manifest finds to be of its gated route. */
+const GATED = 10;
+
+function gatedManifestOf(gated: number): ProjectManifest {
+  const pathnames = Array.from({ length: gated }, (_, at) => `/posts/${String(at)}`);
+  return buildProjectManifest({
+    projectId: 'p',
+    runId: 'r',
+    generatedAt: GENERATED_AT,
+    originHost: 'app.example',
+    deployment: { dplId: 'dpl_a', assetSetHash: 'h', observedAt: GENERATED_AT },
+    routes: [],
+    app: { deploymentId: 'dpl_a', scriptName: 'app' },
+    dynamicRoutes: [{ sourceRegex: POST_PATTERN, ...(gated > 0 && { gated: POST }) }],
+    ...(gated > 0 && {
+      gates: { [POST]: 'checker' },
+      gatedPathnames: Object.fromEntries(pathnames.map((pathname) => [pathname, POST])),
+    }),
+  });
+}
+
+describe('the charge of a manifest that declares gates', () => {
+  /** Each is an entry of its own, which no other table need list. */
+  it('counts the gate and every pathname found to be of a gated route', () => {
+    const ungated = manifestCharge(gatedManifestOf(0), JSON_BYTES);
+    const gated = manifestCharge(gatedManifestOf(GATED), JSON_BYTES);
+
+    // The gate, and each pathname of its route.
+    expect(gated - ungated).toBe((1 + GATED) * ENTRY_BYTES);
   });
 });
 

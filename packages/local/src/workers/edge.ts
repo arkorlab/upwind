@@ -32,7 +32,9 @@ import { GenerationEvidence, watchedGenerationMemory } from './generation-eviden
 import {
   BACKSTAGE_ROUTES,
   FRONT_LINE_CODINGS,
+  GATE_UNREACHABLE_HEADER,
   type MiddlewareProbe,
+  NODE_URL_HEADER,
   NONCE_PARAMS,
   type NoncedPolicies,
   probeReason,
@@ -53,6 +55,8 @@ import { watchedCacheSignals } from './watched-records.ts';
  */
 
 const FUNCTION_BINDING_PREFIX = 'APP__';
+/** How the edge is bound to each of the routes' gates (`gateBinding`). */
+const GATE_BINDING_PREFIX = 'GATE__';
 /** How many traced requests are kept unread: a check reads each as soon as it needs it. */
 const MAX_TRACES = 256;
 /** The regeneration a request waits on, whose render is its answer. */
@@ -211,6 +215,35 @@ function servedFrom(
   };
 }
 
+/**
+ * `service`, a route's gate as the stack binds it (`../gates.ts`): handed what the edge asks it
+ * addressed to the visitor's origin, as a Function is (`addressed`) — the URL said beside it for
+ * Node, which the loopback there does not carry whole (`NODE_URL_HEADER`) — and failing as a
+ * deployed edge's binding to a gate that cannot answer fails where the stack says the gate could
+ * not be reached at all (`GATE_UNREACHABLE_HEADER`) — so the edge answers as it would deployed. It
+ * is cancelled with what the edge asked, as the request it addresses is (`addressed`).
+ */
+function gateFrom(
+  origin: URL,
+  service: FunctionService,
+  originalCf: IncomingRequestCfProperties | undefined,
+): FunctionService {
+  return {
+    async fetch(asked) {
+      const sent = addressed(origin, asked, originalCf);
+      const headers = new Headers(sent.headers);
+      headers.set(NODE_URL_HEADER, sent.url);
+      const answer = await service.fetch(new Request(sent, { headers, signal: sent.signal }));
+      const unreachable = answer.headers.get(GATE_UNREACHABLE_HEADER);
+      if (unreachable === null) {
+        return answer;
+      }
+      await answer.body?.cancel();
+      throw new Error(`the gate could not be reached: ${unreachable}`);
+    },
+  };
+}
+
 /** `kv`, whatever the edge reads of it looked at for a generation's headers on its way. */
 function watched(kv: KVNamespace, trace: string): KVNamespace {
   return new Proxy(kv, {
@@ -254,8 +287,13 @@ function servedEnv(
   };
   for (const name of Object.keys(env)) {
     const service: unknown = Reflect.get(env, name);
-    if (name.startsWith(FUNCTION_BINDING_PREFIX) && isFunctionService(service)) {
+    if (!isFunctionService(service)) {
+      continue;
+    }
+    if (name.startsWith(FUNCTION_BINDING_PREFIX)) {
       Reflect.set(local, name, servedFrom(origin, service, trace, originalCf));
+    } else if (name.startsWith(GATE_BINDING_PREFIX)) {
+      Reflect.set(local, name, gateFrom(origin, service, originalCf));
     }
   }
   return local;

@@ -46,6 +46,7 @@ import { kvPolicyKey } from '@stayingupwind/host/storage';
 
 import { assertHostOnly, bundleWorker } from './bundle.ts';
 import { deploymentFunctions, type FunctionStores } from './functions.ts';
+import { gateServices, type LocalGate } from './gates.ts';
 import { type LocalWorker, runWorkers, type SignalHandling } from './miniflare.ts';
 import { type Loopback, loopbackFor } from './ports.ts';
 import { LOCAL_PORT_BINDING, requestedRuntimePort, runtimePortBinding } from './runtime-port.ts';
@@ -148,6 +149,14 @@ export interface StackOptions {
   readonly policy?: DeliveryPolicy | undefined;
   /** The site's opt-in to a nonce the edge mints for each document (`EdgePointer.cspNonce`). */
   readonly cspNonce?: CspNonceSetting | undefined;
+  /**
+   * The gates the build's routes are asked of (`gates`, in its bundle), by name, and where each
+   * answers: the edge is bound to each as a deployed edge is, and a request it asks a gate is sent
+   * on to the gate's URL from Node (`gateForwarder`). A gate the build declares that this does not
+   * name is one the edge is bound to none of: every request of its routes is answered that the gate
+   * is unavailable. A configured name absent from the loaded build is refused before workers start.
+   */
+  readonly gates?: Readonly<Record<string, LocalGate>> | undefined;
 }
 
 /** A site's nonce setting, as a deployment's pointer carries it (`cspNoncePointerFields`). */
@@ -390,6 +399,8 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
   const json = await readFile(path.join(bundleDir, 'bundle.json'), 'utf8');
   const bundle = deploymentBundleSchema.parse(JSON.parse(json));
   const { deploymentId } = bundle;
+  // Refused before anything starts: a name no build declares, an address that is no URL.
+  const gates = gateServices(options.gates, new Set(Object.values(bundle.gates ?? {})));
   // A key of the stack's own, gone with it: what the scope's token is signed with.
   const cacheTokenKey = `${crypto.randomUUID()}${crypto.randomUUID()}`;
   const token = await signCacheToken(cacheTokenKey, deploymentId, STANDALONE_NAMING);
@@ -461,6 +472,8 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
         // Where a scope stands, so an invalidation reaches the edge within a moment, as deployed.
         CACHE_SIGNALS: { name: WORKERS.cache, entrypoint: 'CacheSignals' },
       },
+      // Each gate the stack was told of, under the name a deployed edge binds it by.
+      handlers: gates,
       socket,
       entrypointSockets: [BACKSTAGE_ENTRYPOINT],
     },
