@@ -2,25 +2,30 @@ import { unlinkSync } from 'node:fs';
 import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { DURABLE_OBJECT_EXPORT } from '@stayingupwind/core/bundle';
 import {
   formatResourcesManifest,
   type FunctionEnv,
   RESOURCES_MANIFEST_BINDING,
-  type ResourceType,
 } from '@stayingupwind/core/paas';
 import type { Miniflare, MiniflareOptions } from 'miniflare';
 
 import { guardListeners } from './listeners.ts';
-import {
-  type LocalAi,
-  localAiBinding,
-  prepareLocalAi,
-  type RemoteAiCredentials,
-} from './local-ai.ts';
+import { type LocalAi, prepareLocalAi, type RemoteAiCredentials } from './local-ai.ts';
 import { localEntries, type LocalStorageEntry } from './local-bindings.ts';
 import { failedOwnerNames, runtimeStartupFailure } from './local-failure.ts';
-import { type LocalDurableObject, localObjects } from './local-objects.ts';
+import { localObjects } from './local-objects.ts';
+import {
+  DURABLE_OBJECT_TYPE,
+  WORKER_NAME,
+  PERSIST_DIR,
+  runtimeOptions,
+  type LocalRuntimeOptions,
+} from './local-runtime-options.ts';
+import {
+  independentLocalWorkflows,
+  localWorkflows,
+  localWorkflowBridge,
+} from './local-workflows.ts';
 import { publishResources } from './publish.ts';
 import { disposeLocalResources } from './shutdown.ts';
 import { sourceChanges } from './watch-sources.ts';
@@ -49,7 +54,6 @@ import { sourceChanges } from './watch-sources.ts';
  * project*, which is also what an auth secret generated for a development run is (`auth/secret.ts`).
  * One definition, so that a release moving the directory moves everything under it at once.
  */
-export const PERSIST_DIR = '.upwind';
 
 /**
  * One directory of storage, one runtime that may write to it.
@@ -75,20 +79,6 @@ export const PERSIST_DIR = '.upwind';
  * exit. `ProxyClient` — a client for a runtime you do not own, which is what would make several
  * renderers possible — is exported but refuses anyone but the instance that owns it.
  */
-
-/**
- * The compatibility date the local runtime runs at.
- *
- * The date `@stayingupwind/adapter` builds a Function against (`FUNCTION_COMPATIBILITY_DATE`), so
- * that local storage behaves as a deployment's does rather than as whatever the installed runtime
- * defaults to. Written out rather than imported: this CLI resolves the adapter from the project it
- * was pointed at and does not depend on the package, so a release that moves that date moves this
- * line with it.
- */
-const COMPATIBILITY_DATE = '2026-09-15';
-
-/** The one worker there is. Its name appears in the storage paths, so it does not change. */
-const WORKER_NAME = 'upwind-local';
 
 /**
  * A key nothing is ever stored under. Read once per run, to prove the storage can be read at all.
@@ -140,24 +130,6 @@ const START_MS = START_SECONDS * MS_IN_SECOND;
  */
 const STOP_MS = 1500;
 
-/**
- * The runtime insists a worker have code. This one answers nothing and is never sent a request: it
- * exists so that its bindings do, and those are reached from Node rather than from a request.
- */
-const ENTRY_MODULE = 'upwind-local.mjs';
-const ENTRY_SOURCE = 'export default {};';
-
-/** What the local runtime calls each kind of storage the contract names. */
-const DURABLE_OBJECT_TYPE = 'durable_object_namespace';
-const DURABLE_OBJECT_KIND = 'durable-object';
-
-const RUNTIME_TYPES = {
-  d1: 'd1',
-  kv_namespace: 'kv',
-  r2_bucket: 'r2',
-  [DURABLE_OBJECT_TYPE]: DURABLE_OBJECT_KIND,
-} as const satisfies Record<Exclude<ResourceType, 'ai'>, string>;
-
 export interface LocalResources {
   /** Class dependencies whose edits require a fresh worker module. */
   readonly watchedFiles?: readonly string[];
@@ -194,94 +166,6 @@ function noSourceChanges(): boolean {
   return false;
 }
 
-function ownerName(name: string): string {
-  return `upwind-object-${name}`;
-}
-
-type LocalBinding =
-  | ReturnType<typeof localAiBinding>
-  | { type: 'd1' | 'kv'; id: string }
-  | { type: 'r2'; name: string }
-  | { type: typeof DURABLE_OBJECT_KIND; worker: string; exportName: string };
-
-function runtimeOptions(
-  projectDir: string,
-  entries: readonly LocalStorageEntry[],
-  objects: readonly LocalDurableObject[],
-  ai: LocalAi,
-): MiniflareOptions {
-  const env = Object.fromEntries<LocalBinding>(
-    entries.map((entry): [string, LocalBinding] => {
-      if (entry.type === 'ai') return [entry.name, localAiBinding()];
-      if (entry.type === DURABLE_OBJECT_TYPE)
-        return [
-          entry.name,
-          {
-            type: DURABLE_OBJECT_KIND,
-            worker: ownerName(entry.name),
-            exportName: DURABLE_OBJECT_EXPORT,
-          },
-        ];
-      const id = `${entry.storageName ?? entry.name}-${WORKER_NAME}`;
-      return [
-        entry.name,
-        entry.type === 'r2_bucket'
-          ? { type: 'r2' as const, name: id }
-          : { type: RUNTIME_TYPES[entry.type], id },
-      ];
-    }),
-  );
-  return {
-    resourcePersistencePath: path.join(projectDir, PERSIST_DIR),
-    workers: [
-      {
-        config: {
-          name: WORKER_NAME,
-          compatibilityDate: COMPATIBILITY_DATE,
-          manifest: {
-            mainModule: ENTRY_MODULE,
-            modules: { [ENTRY_MODULE]: { type: 'esm', contents: ENTRY_SOURCE } },
-          },
-          // Keep the original default identifiers when the same storage is bound to an owner
-          // Worker too; otherwise each owner's constructor would receive a separate database.
-          env,
-        },
-      },
-      ...(ai.worker === undefined ? [] : [ai.worker]),
-      ...objects.map((object) => {
-        const modules: Record<
-          string,
-          {
-            type: 'esm' | 'wasm';
-            contents: string | Uint8Array<ArrayBuffer>;
-          }
-        > = { [ENTRY_MODULE]: { type: 'esm', contents: object.source } };
-        if (object.wasmModules !== undefined)
-          for (const module of object.wasmModules)
-            modules[module.name] = { type: 'wasm', contents: new Uint8Array(module.bytes) };
-        return {
-          config: {
-            name: ownerName(object.declaration.name),
-            compatibilityDate: COMPATIBILITY_DATE,
-            compatibilityFlags: ['nodejs_compat'],
-            manifest: {
-              mainModule: ENTRY_MODULE,
-              modules,
-            },
-            exports: {
-              [DURABLE_OBJECT_EXPORT]: {
-                type: DURABLE_OBJECT_KIND,
-                storage: 'sqlite',
-              } as const,
-            },
-            env,
-          },
-        };
-      }),
-    ],
-  };
-}
-
 /** The local runtime, started. Its module is loaded here and not at the top of this one. */
 async function startRuntime(options: MiniflareOptions): Promise<Miniflare> {
   // On demand, because what this import brings with it is a runtime binary for this platform. A
@@ -302,6 +186,10 @@ async function bindingOf(runtime: Miniflare, entry: LocalStorageEntry): Promise<
     }
     case 'r2_bucket': {
       return runtime.getR2Bucket(entry.name);
+    }
+    case 'workflow': {
+      const env = await runtime.getBindings(WORKER_NAME);
+      return localWorkflowBridge(env[entry.name]);
     }
     case 'ai': {
       const env = await runtime.getBindings(WORKER_NAME);
@@ -324,6 +212,7 @@ class LocalStorageError extends Error {
 async function probe(entry: LocalStorageEntry, binding: unknown): Promise<void> {
   switch (entry.type) {
     case 'ai':
+    case 'workflow':
     case DURABLE_OBJECT_TYPE: {
       // Namespace readiness never constructs an object or executes the customer's class.
       return;
@@ -563,17 +452,13 @@ interface Attempt {
   readonly done: Promise<Miniflare>;
 }
 
-function startAndPublish(
-  projectDir: string,
-  entries: readonly LocalStorageEntry[],
-  objects: readonly LocalDurableObject[],
-  ai: LocalAi,
-): Attempt {
+function startAndPublish(projectDir: string, input: LocalRuntimeOptions): Attempt {
+  const { entries } = input;
   const arrived: PromiseWithResolvers<Miniflare | undefined> = Promise.withResolvers();
   const done = (async (): Promise<Miniflare> => {
     let runtime: Miniflare | undefined;
     try {
-      runtime = await startRuntime(runtimeOptions(projectDir, entries, objects, ai));
+      runtime = await startRuntime(runtimeOptions(projectDir, input));
     } finally {
       // Either way, and before anything slower: a runtime, or the news that there will not be one.
       arrived.resolve(runtime);
@@ -651,13 +536,20 @@ export async function startLocalResources(
       versions,
       options.mode ?? 'development',
     );
+    const workflows = independentLocalWorkflows(
+      await localWorkflows(projectDir, watchedFiles, versions, options.mode ?? 'development'),
+      objects.map((object) => object.declaration.name),
+    );
     sourcesChanged = sourceChanges(versions);
     options.signal?.throwIfAborted();
     // A rejected storage claim must not authenticate or create a remote AI session.
     release = await claimStorage(path.join(projectDir, PERSIST_DIR));
     options.signal?.throwIfAborted();
     ai = await prepareLocalAi(
-      objects.map((object) => object.declaration.name),
+      [
+        ...objects.map((object) => object.declaration.name),
+        ...workflows.map((workflow) => workflow.declaration.name),
+      ],
       options.mode !== 'production' && options.remoteAi === true,
       undefined,
       {
@@ -669,13 +561,15 @@ export async function startLocalResources(
     const entries = localEntries(
       objects.map((object) => object.declaration.name),
       ai.entries,
+      workflows.map((workflow) => workflow.declaration.name),
     );
-    attempt = startAndPublish(projectDir, entries, objects, ai);
+    attempt = startAndPublish(projectDir, { entries, objects, ai, workflows });
     let remaining = objects;
+    let remainingWorkflows = workflows;
     async function recover(error: unknown): Promise<Miniflare> {
       if (
         !isStarting() ||
-        (remaining.length === 0 && ai?.worker === undefined) ||
+        (remaining.length === 0 && remainingWorkflows.length === 0 && ai?.worker === undefined) ||
         !runtimeStartupFailure(error)
       )
         throw error;
@@ -683,12 +577,18 @@ export async function startLocalResources(
       // Keep the storage claim throughout recovery, and never overlap two native runtimes.
       if (failed !== undefined && !(await stopRuntime(failed, error))) throw error;
       if (!isStarting()) throw error;
+      if (ai === undefined) throw error;
       const broken = failedOwnerNames(
         error,
         remaining.map((object) => object.declaration.name),
       );
-      if (ai === undefined) throw error;
-      if (broken.size === 0 && ai.worker !== undefined) {
+      const brokenWorkflows = failedOwnerNames(
+        error,
+        remainingWorkflows.map((workflow) => workflow.declaration.name),
+        'workflow',
+      );
+      const unidentified = broken.size === 0 && brokenWorkflows.size === 0;
+      if (unidentified && ai.worker !== undefined) {
         // An AI worker or proxy failure must not take healthy storage or customer DOs down.
         await discardAi(ai);
         if (!isStarting()) throw error;
@@ -702,20 +602,29 @@ export async function startLocalResources(
           'upwind: native runtime startup failed; retrying local storage without AI bindings',
         );
       } else {
-        remaining = remaining.filter((object) => !broken.has(object.declaration.name));
         // An unclassified failure cannot safely identify a particular customer owner.
-        if (broken.size === 0) remaining = [];
-        const diagnostic =
-          broken.size === 0
-            ? 'native runtime startup failed without identifying an owner; retrying default storage without Durable Object namespaces'
-            : 'could not start local Durable Objects; retrying unaffected resources';
+        remaining = remaining.filter(
+          (object) => !unidentified && !broken.has(object.declaration.name),
+        );
+        remainingWorkflows = remainingWorkflows.filter(
+          (workflow) => !unidentified && !brokenWorkflows.has(workflow.declaration.name),
+        );
+        const diagnostic = unidentified
+          ? 'native runtime startup failed without identifying an owner; retrying default storage without native worker registrations'
+          : 'could not start a local native worker; retrying unaffected resources';
         console.warn(`upwind: ${diagnostic}:\n${error.message}`);
       }
       const surviving = localEntries(
         remaining.map((object) => object.declaration.name),
         ai.entries,
+        remainingWorkflows.map((workflow) => workflow.declaration.name),
       );
-      attempt = startAndPublish(projectDir, surviving, remaining, ai);
+      attempt = startAndPublish(projectDir, {
+        entries: surviving,
+        objects: remaining,
+        ai,
+        workflows: remainingWorkflows,
+      });
       return ready(attempt);
     }
     async function ready(current: Attempt): Promise<Miniflare> {
@@ -778,3 +687,5 @@ export async function startLocalResources(
     guard.restore();
   }
 }
+
+export { PERSIST_DIR } from './local-runtime-options.ts';

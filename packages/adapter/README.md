@@ -753,6 +753,40 @@ registration, bundled source and its dependency paths. The CLI uses this to star
 modules in its local runtime. The adapter's default export also reads downloaded declarations from
 `UPWIND_DURABLE_OBJECTS`, which is the local build input rather than a storage registration command.
 
+## Cloudflare Workflows
+
+Pass `cloudflareWorkflows: [{ name, module, className, definitionRevision? }]` to `createAdapter`.
+These are host registrations. Module paths are relative to the application directory and must resolve
+inside it, including through symlinks. The registered named class export should extend Cloudflare's
+`WorkflowEntrypoint`; bundling checks missing imports and exports before anything is deployed.
+
+Each declaration produces `functions.cloudflareWorkflows[name]`, with main module
+`cloudflare-workflow.mjs` exporting the class as `UpwindCloudflareWorkflow`. Top-level
+`cloudflareWorkflows` carries the exact registrations. Modules, WebAssembly, source maps and dependency
+reports use the same content-addressed format as other Functions. The native class is built separately
+from the application's routes and introduces no page-routing or request-time lookup.
+
+Next.js bundles with these artifacts use version 7, or 8 with split app Functions. Existing Durable
+Objects and the Workflow SDK may coexist with them. A bundle without Cloudflare Workflows keeps its
+existing version. `bundleBlobs` includes every Workflow artifact.
+
+Other framework hosts can call the exported `buildCloudflareWorkflowFunctions({ projectDir, outDir,
+declarations, sourceMaps? })`. It writes blobs beneath `outDir/blobs` and returns `functions`, checked
+`declarations`, `sourceMaps` and `dependencies` without writing a deployment bundle. The lower-level
+`bundleCloudflareWorkflows(projectDir, declarations, options?)` returns bundled class source and watched
+inputs for local tools. Neither entry point needs a Next.js build or credentials.
+
+The host supplies execution, private scoped Workflow bindings, resource adapters, ownership checks,
+and immutable code/environment retention while instances remain active. It must reject a bundle whose
+registrations differ from its sealed deployment configuration. The standard Worker Loader accepts
+data and service capabilities; native storage bindings need host resource adapters when executing in
+a Dynamic Worker. See [Dynamic Workflows](https://developers.cloudflare.com/dynamic-workers/usage/dynamic-workflows/)
+and [Worker Loader environments](https://developers.cloudflare.com/dynamic-workers/api-reference/#env-object).
+
+The default adapter and local CLI read downloaded registrations from
+`UPWIND_CLOUDFLARE_WORKFLOWS` when explicit adapter registrations are absent. This is a build input,
+not a request to create a remote Workflow.
+
 ## Route gates
 
 A build declares, in `UPWIND_ROUTE_GATES`, a gate for each of the routes whose every answer is to be

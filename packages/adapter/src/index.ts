@@ -6,6 +6,7 @@ import {
   bundleBlobs,
   type DeploymentBundle,
   type DurableObjectDeclaration,
+  type CloudflareWorkflowDeclaration,
   deploymentBundleSchema,
   ONE_PASS_BUNDLE_VERSION,
   travelsWithFunction,
@@ -41,7 +42,6 @@ import {
   tracedWasm,
 } from './collect.ts';
 import { reserveUpwindPrefix } from './dev-prefix.ts';
-import { durableObjectParts } from './durable-objects.ts';
 import {
   checkedEdgeInstrumentationModules,
   edgeInstrumentationOf,
@@ -50,6 +50,7 @@ import type { EdgeEntry } from './edge.ts';
 import { ensureStaticRoutes } from './ensure-static.ts';
 import { environmentOptions } from './environment-options.ts';
 import { exists } from './fs.ts';
+import { dependencyRecord } from './function-report.ts';
 import { type BuiltFunction, type EntryModule, middlewareManifest } from './function.ts';
 import { declaredGates } from './gates.ts';
 import { instrumentationOf, writeClientInstrumentation } from './instrumentation.ts';
@@ -64,6 +65,7 @@ import { buildSplitBudget, checkSplitOptions, type SplitOptions } from './split.
 import { collectStaticFiles, rewriteTargetFiles } from './static-files.ts';
 import { staticPagesRuntimeFields } from './static-pages.ts';
 import { type TracedFile, tracedFiles } from './traced-files.ts';
+import { workerClassParts } from './worker-class-functions.ts';
 import {
   buildWorkflowFunction,
   warnOfNoWorld,
@@ -317,13 +319,12 @@ async function onBuildComplete(
       files: files.workflow,
     }),
   );
-  const objects = await durableObjectParts({
+  const objects = await workerClassParts({
     projectDir: ctx.projectDir,
     outDir,
     blobs,
-    declarations: options.durableObjects,
+    options,
     split: functions.built.length > 1,
-    sourceMaps: options.sourceMaps,
     distDir: ctx.distDir,
   });
   const sourceMaps = [
@@ -430,18 +431,6 @@ function bundleFunctions(
   };
 }
 
-/** What went into each Function, by its name, and the plan where the routes were split. */
-function dependencyRecord(
-  functions: AppFunctions<unknown>,
-  middleware: BuiltFunction | undefined,
-): Record<string, unknown> {
-  return {
-    ...Object.fromEntries(functions.built.map((each) => [each.name, each.built.dependencies])),
-    ...(middleware !== undefined && { middleware: middleware.dependencies }),
-    ...(functions.plan !== undefined && { plan: functions.plan }),
-  };
-}
-
 /**
  * What a reader of the build is told once it is written, rather than in the middle of it.
  *
@@ -524,6 +513,8 @@ function middlewarePlacement(middleware: AdapterOutput['MIDDLEWARE'] | undefined
 export interface AdapterOptions {
   /** Host registrations whose class code is built separately from every Next.js Function. */
   readonly durableObjects?: readonly DurableObjectDeclaration[] | undefined;
+  /** Host-owned Cloudflare Workflow registrations, built independently of application routes. */
+  readonly cloudflareWorkflows?: readonly CloudflareWorkflowDeclaration[] | undefined;
   /**
    * The module the runtime's cache reads and writes through, as an absolute path — what
    * `arkor:cache-host` resolves to, bundled into the app Function's runtime. The middleware
@@ -858,3 +849,9 @@ export default createAdapter(environmentOptions());
 export { bundleDurableObjects, type BundledDurableObject } from './durable-objects.ts';
 // What `upwind deploy` reads the project's configuration with: the reader its build uses.
 export { type DeployConfig, readProjectConfig, type UpwindConfig } from './project-config.ts';
+
+export {
+  bundleCloudflareWorkflows,
+  buildCloudflareWorkflowFunctions,
+  type BundledCloudflareWorkflow,
+} from './cloudflare-workflows.ts';
