@@ -29,6 +29,7 @@ import {
   withoutPolicies,
 } from './csp-nonce.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
+import { gateBodyDecodedByFetch } from './gate-body-encoding.ts';
 import { decompressLive } from './live-compression.ts';
 import { headerRulesAsRouted } from './middleware.ts';
 import {
@@ -350,7 +351,7 @@ function gateAnswer(input: GateInput, gate: RouteGate, answer: Response): Respon
     headers.delete(CONTENT_ENCODING);
     return response;
   }
-  const decoded = decodedNonceDocument(response);
+  const decoded = decodedNonceDocument(response, input.host.gates);
   if (decoded === undefined) {
     releaseStream(response.body, 'gate');
     return serviceUnavailableResponse(GATE_UNAVAILABLE);
@@ -442,7 +443,10 @@ export function routeThroughGate(
 }
 
 /** Content codings describe the input bytes and are removed once the gate's HTML is decoded. */
-function decodedNonceDocument(response: Response): Response | undefined {
+function decodedNonceDocument(
+  response: Response,
+  gates: EdgeGates | undefined,
+): Response | undefined {
   const encoding = response.headers.get(CONTENT_ENCODING);
   if (encoding === null || encoding.trim() === '' || response.body === null) return response;
   const parts = encoding.split(',');
@@ -454,7 +458,8 @@ function decodedNonceDocument(response: Response): Response | undefined {
   }
   // Fetch response bodies carry bytes; the Workers declaration leaves their element type open.
   let body = response.body as ReadableStream<Uint8Array>;
-  for (const coding of codings.toReversed()) {
+  const remaining = gateBodyDecodedByFetch(gates, encoding) ? [] : codings.toReversed();
+  for (const coding of remaining) {
     if (coding !== 'identity') body = decompressLive(body, coding);
   }
   const headers = new Headers(response.headers);
