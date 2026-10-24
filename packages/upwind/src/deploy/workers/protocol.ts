@@ -59,8 +59,19 @@ export interface Readiness {
   readonly manifest: { readonly kv: boolean; readonly r2: boolean };
 }
 
-/** The edge's binding of its deployment's cron jobs, by the trigger each fires on (`CronTable`). */
+/**
+ * The edge's bindings of its deployment's cron jobs: `CRONS`, then `CRONS_2`, `CRONS_3`…, each a
+ * part of the jobs by the trigger each fires on (`CronTable`), as JSON small enough for one variable.
+ */
 export const CRONS_BINDING = 'CRONS';
+
+/** How many bytes of the jobs one binding holds at most: a Worker's variable holds 5 KiB. */
+export const CRONS_PART_BYTES = 5000;
+
+/** The binding of a part of the jobs, counted from 0. */
+export function cronsBindingName(part: number): string {
+  return part === 0 ? CRONS_BINDING : `${CRONS_BINDING}_${part + 1}`;
+}
 
 /**
  * The secret a cron job is sent with as a bearer token, where the project set one: the name Vercel

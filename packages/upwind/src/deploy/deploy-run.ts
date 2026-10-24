@@ -6,7 +6,7 @@ import { type Activation, activate, confirmLive } from './activate.ts';
 import { openAgent } from './agent-session.ts';
 import { type AccountScope, getVersion, type ScriptSubdomain } from './cloudflare/workers.ts';
 import type { DeploySettings } from './config.ts';
-import { cronTableOf, holdCrons } from './crons.ts';
+import { cronSecretIn, cronTableOf, holdCrons } from './crons.ts';
 import { deploymentOfTag, uploadEdgeVersion } from './edge-version.ts';
 import { uploadFunctions } from './functions.ts';
 import { pointerOf } from './history.ts';
@@ -21,7 +21,6 @@ import { stageBuild } from './stage.ts';
 import { ensureStores } from './stores.ts';
 import { remoteTarget } from './target.ts';
 import { holdReach } from './uploads.ts';
-import { CRON_SECRET } from './workers/protocol.ts';
 
 /**
  * A deployment made on the account, once the plan has been checked (`command.ts`): its stores and
@@ -284,12 +283,6 @@ async function finishLive(
   return scheduled ? 0 : 1;
 }
 
-/** The secret a deployment's cron jobs are sent with: the project's, where it set one with a value. */
-function cronSecretOf(secrets: ReadonlyMap<string, string>): string | undefined {
-  const secret = secrets.get(CRON_SECRET);
-  return secret === undefined || secret === '' ? undefined : secret;
-}
-
 /**
  * Make the deployment under project exclusion. A caller's earlier account view is never used:
  * the account is read again only after acquisition, and the command checks that same view.
@@ -420,7 +413,7 @@ async function deployWhileLocked(run: DeployRun): Promise<number> {
       message,
       existing,
       crons,
-      cronSecret: cronSecretOf(run.secrets),
+      cronSecret: cronSecretIn(run.secrets),
       keepSecrets: false,
     });
     say(`checking ${names.edge} version ${edge.versionId}`);

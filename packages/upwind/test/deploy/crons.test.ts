@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import { createCloudflareClient } from '../../src/deploy/cloudflare/client.ts';
 import type { AccountScope } from '../../src/deploy/cloudflare/workers.ts';
-import { cronProblems, cronTableOf, scheduleCrons, triggersOf } from '../../src/deploy/crons.ts';
+import {
+  cronProblems,
+  cronTableOf,
+  cronTableParts,
+  scheduleCrons,
+  triggersOf,
+} from '../../src/deploy/crons.ts';
 import { type FakeCloudflare, fakeCloudflare } from './fake-cloudflare.ts';
 
 const NOW_MS = Date.parse('2026-10-24T12:34:56Z');
@@ -52,6 +58,40 @@ describe("a deployment's cron jobs, by trigger", () => {
         NOW_MS,
       ),
     ).toStrictEqual([]);
+  });
+});
+
+/** An hourly job on a path of over 400 characters, the `index`th of them. */
+function longJob(index: number): { path: string; schedule: string } {
+  return { path: `/api/${'p'.repeat(400)}/${index}`, schedule: '0 * * * *' };
+}
+
+describe("a deployment's cron jobs, in the parts the edge holds them in", () => {
+  it('is one part where the jobs fit in one, and none where there are none', () => {
+    const table = cronTableOf([{ path: '/api/tick', schedule: '0 * * * *' }]);
+
+    expect(cronTableParts(table)).toStrictEqual([JSON.stringify(table)]);
+    expect(cronTableParts({})).toStrictEqual([]);
+  });
+
+  it("carries a trigger's jobs on into the next part, each part within a variable's size", () => {
+    const jobs = Array.from({ length: 100 }, (_, index) => longJob(index));
+    const parts = cronTableParts(cronTableOf(jobs));
+    const joined = parts.flatMap(
+      (part) => (JSON.parse(part) as Record<string, unknown[]>)['0 * * * *'] ?? [],
+    );
+
+    expect(parts.length).toBeGreaterThan(5);
+    expect(parts.every((part) => Buffer.byteLength(part) <= 5000)).toBe(true);
+    expect(joined).toStrictEqual(jobs);
+  });
+
+  it('refuses a job longer than one part can hold', () => {
+    const schedule = `0${' '.repeat(6000)}* * * *`;
+
+    expect(cronProblems([{ path: '/api/tick', schedule }], NOW_MS)).toStrictEqual([
+      expect.stringMatching(/is over the 5000 bytes/u),
+    ]);
   });
 });
 

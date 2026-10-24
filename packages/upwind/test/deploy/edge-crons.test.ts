@@ -24,7 +24,7 @@ describe("the edge's cron jobs", () => {
   function firing(trigger: string, overrides: Partial<CronFiring> = {}): CronFiring {
     return {
       trigger,
-      table: JSON.stringify(TABLE),
+      tables: [JSON.stringify(TABLE)],
       hostnames: 'shop.example.com,shop-edge.example.workers.dev',
       secret: undefined,
       send: (request) => {
@@ -66,6 +66,23 @@ describe("the edge's cron jobs", () => {
     expect(logged).toContain('upwind cron: GET /api/weekly on "0 9 * * 1" answered 200');
   });
 
+  it("joins a trigger's jobs across the parts the table is held in", async () => {
+    const tables = [
+      JSON.stringify({ '0 * * * *': [{ path: '/api/one', schedule: '0 * * * *' }] }),
+      '{not json',
+      JSON.stringify({
+        '0 * * * *': [{ path: '/api/two', schedule: '0 */1 * * *' }],
+        '0 9 * * 2': [{ path: '/api/weekly', schedule: '0 9 * * 1' }],
+      }),
+    ];
+    await fireCronJobs(firing('0 * * * *', { tables }));
+
+    expect(sent.map((request) => new URL(request.url).pathname)).toStrictEqual([
+      '/api/one',
+      '/api/two',
+    ]);
+  });
+
   it('sends the secret as a bearer token where the project set one', async () => {
     await fireCronJobs(firing('0 * * * *', { secret: 's3cret' }));
 
@@ -74,8 +91,8 @@ describe("the edge's cron jobs", () => {
 
   it('fires nothing on a trigger the deployment has no job on, or with no jobs at all', async () => {
     await fireCronJobs(firing('*/5 * * * *'));
-    await fireCronJobs(firing('0 * * * *', { table: undefined }));
-    await fireCronJobs(firing('0 * * * *', { table: '{not json' }));
+    await fireCronJobs(firing('0 * * * *', { tables: [] }));
+    await fireCronJobs(firing('0 * * * *', { tables: ['{not json'] }));
 
     expect(sent).toStrictEqual([]);
     expect(logged.filter((line) => line.includes('has no job on'))).toHaveLength(3);

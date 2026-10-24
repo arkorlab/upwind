@@ -10,8 +10,8 @@ import { CRON_SCHEDULE_HEADER, CRON_USER_AGENT, type CronRun } from './protocol.
 export interface CronFiring {
   /** The Cloudflare Cron Trigger that fired, as written. */
   readonly trigger: string;
-  /** The deployment's jobs by trigger, as JSON (`CRONS`); nothing for one with none. */
-  readonly table: string | undefined;
+  /** The deployment's jobs by trigger, as JSON, in the parts the edge holds them in (`CRONS`…). */
+  readonly tables: readonly string[];
   /** The hostnames the edge is reached on, comma-separated (`HOSTNAMES`). */
   readonly hostnames: string | undefined;
   /** What each job is sent as a bearer token, where the project set it (`CRON_SECRET`). */
@@ -20,11 +20,12 @@ export interface CronFiring {
   readonly send: (request: Request) => Promise<Response>;
 }
 
-/** The jobs of a trigger, read loosely: a table that cannot be read, or names none, fires none. */
-export function jobsOn(table: string | undefined, trigger: string): CronRun[] {
-  if (table === undefined) {
-    return [];
-  }
+/** The jobs of a trigger in every part of the table, read loosely: a part that cannot be read has none. */
+export function jobsOn(tables: readonly string[], trigger: string): CronRun[] {
+  return tables.flatMap((table) => jobsIn(table, trigger));
+}
+
+function jobsIn(table: string, trigger: string): CronRun[] {
   try {
     const parsed: unknown = JSON.parse(table);
     const jobs: unknown =
@@ -72,7 +73,7 @@ async function fire(firing: CronFiring, job: CronRun): Promise<number> {
 
 /** Every job of the trigger, at once; each said, with what it was answered or why it was not. */
 export async function fireCronJobs(firing: CronFiring): Promise<void> {
-  const jobs = jobsOn(firing.table, firing.trigger);
+  const jobs = jobsOn(firing.tables, firing.trigger);
   if (jobs.length === 0) {
     console.warn(`upwind cron: this deployment has no job on "${firing.trigger}"`);
     return;

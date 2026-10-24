@@ -340,8 +340,10 @@ Vercel: each a `GET` of its path on the site, on its schedule, read in UTC.
   `Authorization: Bearer <CRON_SECRET>` where `CRON_SECRET` is among `deploy.secrets` with a value.
   It is tried once, and its answer read to its end; nothing is retried, and a run can be missed, so
   a job should not mind running twice or not at all. What it was answered is in the edge's logs.
-- **A rollback reads no secret.** Its version of the edge keeps the `CRON_SECRET` the version
-  before held, the one the last deploy sent. A deployment gone back to past a change of
+- **A rollback reads `CRON_SECRET` as a deploy does**, from the environment where
+  `deploy.secrets` names it and from each `--env-file`; where neither sets it, its version of the
+  edge keeps the one the edge's newest version holds, which a deploy holds whether or not its
+  deployment has jobs, and the rollback says so. A deployment gone back to past a change of
   `CRON_SECRET` checks its jobs against the value it was deployed with, and refuses them until it
   is deployed again.
 - **Where the triggers could not be set**, the deployment is still live, and the run says so and
@@ -400,7 +402,7 @@ upwind dev [directory]
 upwind build [directory]
 upwind deploy [directory]
 upwind deployments [directory]
-upwind rollback [directory] [--to <deployment>]
+upwind rollback [directory] [--to <deployment>] [--env-file <file>]...
 upwind destroy [directory] --yes
 
   -p, --port <port>      Port to listen on, `dev` only (default: $PORT, else 3000)
@@ -409,7 +411,8 @@ upwind destroy [directory] --yes
       --dry-run          Say what a deploy would do and change nothing, `deploy` only
       --build-only       Build for a deploy and stop, `deploy` only
       --prebuilt         Deploy what --build-only built, `deploy` only
-      --env-file <file>  Secrets for the deployment's Functions, `deploy` only; may repeat
+      --env-file <file>  Secrets for the deployment's Functions, for `deploy`; CRON_SECRET, for
+                         `rollback`; may repeat
       --keep <n>         Deployments kept to roll back to, `deploy` only (default: 5)
       --message <text>   What the deployment is noted as, `deploy` only
       --reset-cache-key  Give the runtime cache a new key, `deploy` only

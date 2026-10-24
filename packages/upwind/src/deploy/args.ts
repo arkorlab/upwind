@@ -166,6 +166,8 @@ export interface RollbackOptions {
   readonly projectDir: string;
   /** The deployment to go back to; the newest one before the live one that can be, when absent. */
   readonly to: string | undefined;
+  /** `--env-file`, in the order given: where `CRON_SECRET` is read from, beside the environment. */
+  readonly envFiles?: readonly string[] | undefined;
 }
 
 export type DeploymentsRequest =
@@ -206,7 +208,7 @@ export function parseDeploymentsRequest(args: readonly string[]): DeploymentsReq
   return { answer: undefined, options: { projectDir: directoryOf('deployments', positionals) } };
 }
 
-/** What `upwind rollback` understands: a directory, and the deployment to go back to. */
+/** What `upwind rollback` understands: a directory, the deployment to go back to, env files. */
 export function parseRollbackRequest(args: readonly string[]): RollbackRequest {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -214,6 +216,7 @@ export function parseRollbackRequest(args: readonly string[]): RollbackRequest {
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
       to: { type: 'string' },
+      'env-file': { type: 'string', multiple: true },
     },
     allowPositionals: true,
     strict: true,
@@ -230,6 +233,10 @@ export function parseRollbackRequest(args: readonly string[]): RollbackRequest {
   }
   return {
     answer: undefined,
-    options: { projectDir: directoryOf('rollback', positionals), to },
+    options: {
+      projectDir: directoryOf('rollback', positionals),
+      to,
+      envFiles: (values['env-file'] ?? []).map((file) => path.resolve(file)),
+    },
   };
 }

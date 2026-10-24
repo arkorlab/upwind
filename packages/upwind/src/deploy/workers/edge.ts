@@ -1,7 +1,7 @@
 import { handleStandalone, type StandaloneEnv } from '@stayingupwind/edge/standalone';
 
 import { fireCronJobs } from './cron-jobs.ts';
-import { READINESS_PATH, type Readiness } from './protocol.ts';
+import { cronsBindingName, READINESS_PATH, type Readiness } from './protocol.ts';
 
 /**
  * The edge, as `upwind deploy` puts it on an account: `@stayingupwind/edge`'s standalone edge,
@@ -27,8 +27,6 @@ import { READINESS_PATH, type Readiness } from './protocol.ts';
 interface DeployEdgeEnv extends StandaloneEnv {
   /** The version that is running, as Cloudflare numbers it. */
   readonly CF_VERSION_METADATA?: WorkerVersionMetadata | undefined;
-  /** The deployment's cron jobs by the trigger each fires on, as JSON (`CronTable`). */
-  readonly CRONS?: string | undefined;
   /** What each job is sent as a bearer token, where the project set it. */
   readonly CRON_SECRET?: string | undefined;
 }
@@ -81,6 +79,17 @@ async function readiness(env: DeployEdgeEnv): Promise<Response> {
   return Response.json(said, { headers: { 'cache-control': 'no-store' } });
 }
 
+/** Every part of the deployment's cron jobs the version holds: `CRONS`, `CRONS_2`… until one is not. */
+function cronTables(env: DeployEdgeEnv): string[] {
+  const parts: string[] = [];
+  let part: unknown = Reflect.get(env, cronsBindingName(0));
+  while (typeof part === 'string') {
+    parts.push(part);
+    part = Reflect.get(env, cronsBindingName(parts.length));
+  }
+  return parts;
+}
+
 export default {
   fetch: (request, env, ctx): Promise<Response> => {
     if (request.url.includes(READINESS_PATH) && new URL(request.url).pathname === READINESS_PATH) {
@@ -93,7 +102,7 @@ export default {
     controller.noRetry();
     return fireCronJobs({
       trigger: controller.cron,
-      table: env.CRONS,
+      tables: cronTables(env),
       hostnames: env.HOSTNAMES,
       secret: env.CRON_SECRET,
       // A request made here carries no `cf`, which the edge reads where it is there and does

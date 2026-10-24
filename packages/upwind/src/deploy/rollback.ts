@@ -13,7 +13,7 @@ import { createCloudflareClient } from './cloudflare/client.ts';
 import type { AccountScope, ScriptSubdomain } from './cloudflare/workers.ts';
 import { type DeploySettings, readDeploySettings } from './config.ts';
 import type { CloudflareCredentials } from './credentials.ts';
-import { type CronTable, cronTableOf, holdCrons } from './crons.ts';
+import { type CronTable, holdCrons, rollbackCronSecret, rollbackCrons } from './crons.ts';
 import { narrowReach, report, siteOf } from './deploy-run.ts';
 import { uploadEdgeVersion } from './edge-version.ts';
 import {
@@ -376,6 +376,8 @@ interface Restaging {
   readonly reach: ScriptSubdomain;
   readonly message: string;
   readonly io: RollbackIo;
+  /** The secret the jobs are sent with, as the rollback read it (`rollbackCronSecret`). */
+  readonly cronSecret: string | undefined;
 }
 
 /**
@@ -411,7 +413,7 @@ async function restage(input: Restaging): Promise<Served | undefined> {
     sleep: input.io.sleep,
   });
   const scripts = await shippedWorkers();
-  const crons = cronTableOf(kept.bundle.crons);
+  const crons = rollbackCrons(kept.bundle.crons, input.cronSecret);
   const edge = await uploadEdgeVersion({
     scope,
     names,
@@ -424,11 +426,9 @@ async function restage(input: Restaging): Promise<Served | undefined> {
     reach: input.reach,
     message: input.message,
     existing: new Set(account.projectWorkers),
-    crons,
-    cronSecret: undefined,
-    keepSecrets: true,
+    ...crons,
   });
-  return { versionId: edge.versionId, manifestId: staged.manifestId, crons };
+  return { versionId: edge.versionId, manifestId: staged.manifestId, crons: crons.crons };
 }
 
 function messageOf(deploymentId: string): string {
@@ -626,6 +626,7 @@ export async function runRollback(
             previous,
             reach,
             io: lockedIo,
+            cronSecret: await rollbackCronSecret(options.envFiles ?? [], settings),
           },
           choice,
           switchTo,

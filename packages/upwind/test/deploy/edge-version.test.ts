@@ -152,13 +152,39 @@ describe("the edge's version for a deployment", () => {
     expect(newest(fake).metadata['keep_bindings']).toBeUndefined();
   });
 
-  it('holds no jobs or secret for a deployment with no jobs, whatever secret is given', async () => {
+  it('holds the secret for a deployment with no jobs, for a rollback to keep it from', async () => {
     const fake = fakeCloudflare();
     await uploadEdgeVersion(inputOf(fake, createId('dpl'), { cronSecret: 'c'.repeat(32) }));
     const names = bindingsOf(newest(fake)).map((binding) => binding['name']);
 
     expect(names).not.toContain('CRONS');
-    expect(names).not.toContain('CRON_SECRET');
+    expect(names).toContain('CRON_SECRET');
+  });
+
+  it("holds a table too long for one variable in parts, each within one's size", async () => {
+    const fake = fakeCloudflare();
+    const crons = Object.fromEntries(
+      Array.from({ length: 100 }, (_, index) => {
+        const schedule = `${index % 60} ${Math.floor(index / 60)} * * *`;
+        return [schedule, [{ path: `/api/${'p'.repeat(500)}/${index}`, schedule }]];
+      }),
+    );
+    await uploadEdgeVersion(inputOf(fake, createId('dpl'), { crons }));
+    const parts = bindingsOf(newest(fake)).filter((binding) =>
+      String(binding['name']).startsWith('CRONS'),
+    );
+
+    expect(parts.length).toBeGreaterThan(10);
+    expect(parts.map((binding) => binding['name'])).toStrictEqual(
+      parts.map((_, part) => (part === 0 ? 'CRONS' : `CRONS_${part + 1}`)),
+    );
+    expect(parts.every((binding) => Buffer.byteLength(String(binding['text'])) <= 5000)).toBe(true);
+
+    const joined = parts.flatMap((binding) =>
+      Object.entries(JSON.parse(String(binding['text'])) as Record<string, unknown>),
+    );
+
+    expect(Object.fromEntries(joined)).toStrictEqual(crons);
   });
 
   it("keeps the version before's secret for a rollback, which reads none", async () => {
