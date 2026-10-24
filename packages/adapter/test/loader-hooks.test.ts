@@ -1,13 +1,20 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runInNewContext } from 'node:vm';
 
 import { rolldown } from 'rolldown';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { isStubbedModule, stubSourceFor } from '../src/patches/loader-hooks.ts';
 import { stubPlugin } from '../src/patches/rolldown.ts';
+
+/** Every directory a case made, removed once the case has run, however it ended. */
+const roots: string[] = [];
+
+async function removeRoots(): Promise<void> {
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+}
 
 /**
  * What stands in for the module-loader hooks, held to how OpenTelemetry's instrumentation — the
@@ -95,6 +102,7 @@ describe("the process module workerd's require does not find", () => {
 /** A project with Next.js's two modules, and an entry that requires both, as its server does. */
 async function projectRequiringBoth(): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), 'adapter-stubs-'));
+  roots.push(dir);
   await writeFile(
     path.join(dir, 'entry.js'),
     "module.exports = [require('next/dist/compiled/ws'), require('next/dist/compiled/jsonwebtoken')];\n",
@@ -138,6 +146,8 @@ async function bundledWith(
  * module that cannot load.
  */
 describe('the modules Next.js ships for code a Function cannot run', () => {
+  afterEach(removeRoots);
+
   it("stands in for the WebSocket client under either of Next.js's names, and nothing else", () => {
     expect(isStubbedModule('next/dist/compiled/ws')).toBe(true);
     expect(isStubbedModule('next-10f02c336b0cb774/dist/compiled/ws')).toBe(true);

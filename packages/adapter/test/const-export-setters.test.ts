@@ -1,12 +1,19 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { rolldown } from 'rolldown';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { constExportSettersPlugin, constSetterBodies } from '../src/const-export-setters.ts';
 import { edgeBundleOptions } from '../src/edge.ts';
+
+/** Every directory a case made, removed once the case has run, however it ended. */
+const roots: string[] = [];
+
+async function removeRoots(): Promise<void> {
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+}
 
 /**
  * Turbopack's module fragments (`experimental.turbopackModuleFragments`, Next.js 16.4) register
@@ -84,6 +91,7 @@ export { registry };
 
 async function chunkFile(): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), 'adapter-setters-'));
+  roots.push(dir);
   const file = path.join(dir, 'chunk.mjs');
   await writeFile(file, CHUNK);
   return file;
@@ -101,6 +109,8 @@ describe('the bundles the rewrite is made in', () => {
 });
 
 describe('a Function bundle of a chunk with such setters', () => {
+  afterEach(removeRoots);
+
   it('is refused by Rolldown as Turbopack wrote it', async () => {
     const input = await chunkFile();
     await using bundle = await rolldown({ input });

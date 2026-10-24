@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { RouteCode, ShippedBlob } from '../src/collect.ts';
 import type { BuiltFunction } from '../src/function.ts';
@@ -20,6 +20,13 @@ import {
   type SplitInput,
   splitBudget,
 } from '../src/split.ts';
+
+/** Every directory a case made, removed once the case has run, however it ended. */
+const roots: string[] = [];
+
+async function removeRoots(): Promise<void> {
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+}
 
 /** When a build splits, on what budgets, and what each Function of a plan is given. */
 
@@ -256,12 +263,15 @@ function routeReading(id: string, chunk: string): RouteCode {
 }
 
 describe('a plan of routes that import linked packages', () => {
+  afterEach(removeRoots);
+
   const PACKAGE_A = 'pkg-a-0123456789abcdef/entry';
   const PACKAGE_B = 'pkg-b-0123456789abcdef/entry';
 
   /** Two pages, each of whose chunks imports a linked package of three MiB of its own. */
   async function linkedApplication(): Promise<SplitInput> {
     const projectDir = await mkdtemp(path.join(tmpdir(), 'split-linked-'));
+    roots.push(projectDir);
     const distDir = path.join(projectDir, '.next');
     const chunks = path.join(distDir, 'server', 'chunks');
     await mkdir(chunks, { recursive: true });
@@ -318,6 +328,7 @@ function routeReadingManifest(id: string, chunk: string, manifest: TextModule): 
 /** Two pages, each with a little code and a manifest of three MiB that its module alone reads. */
 async function manifestApplication(): Promise<SplitInput> {
   const projectDir = await mkdtemp(path.join(tmpdir(), 'split-manifests-'));
+  roots.push(projectDir);
   const distDir = path.join(projectDir, '.next');
   const chunks = path.join(distDir, 'server', 'chunks');
   await mkdir(chunks, { recursive: true });
@@ -358,6 +369,8 @@ async function manifestApplication(): Promise<SplitInput> {
 }
 
 describe('a plan of routes with manifests of their own', () => {
+  afterEach(removeRoots);
+
   it('weighs each manifest with its route, not with what every Function carries', async () => {
     const plan = await planSplit(await manifestApplication());
 
@@ -376,6 +389,7 @@ describe('a plan of routes with manifests of their own', () => {
  */
 async function bothRuntimes(): Promise<SplitInput> {
   const projectDir = await mkdtemp(path.join(tmpdir(), 'split-runtimes-'));
+  roots.push(projectDir);
   const distDir = path.join(projectDir, '.next');
   const chunks = path.join(distDir, 'server', 'chunks');
   await mkdir(chunks, { recursive: true });
@@ -415,6 +429,8 @@ async function bothRuntimes(): Promise<SplitInput> {
 }
 
 describe('a plan of routes on both runtimes', () => {
+  afterEach(removeRoots);
+
   it('weighs each bundle’s copy with the routes of its runtime', async () => {
     const plan = await planSplit(await bothRuntimes());
 
