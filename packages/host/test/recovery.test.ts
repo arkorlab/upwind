@@ -1,3 +1,8 @@
+import {
+  EDGE_BYPASS_COOKIE_MAX_AGE_SECONDS,
+  RECOVERY_LOOP_GUARD_SECONDS,
+  RECOVERY_MARKER,
+} from '@stayingupwind/core/request';
 import { toBase64 } from '@stayingupwind/core/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -167,5 +172,94 @@ describe('recovery script permissions across immutable deployments', () => {
     `script-src ${LEGACY_RECOVERY_SCRIPT_CSP_SOURCE}\v`,
   ])('leaves unrelated sources and token lookalikes unchanged: %j', (policy) => {
     expect(replaceLegacyRecoverySource(policy)).toBe(policy);
+  });
+});
+
+describe('buildRecoveryHtml', () => {
+  it('sets the bypass cookie, guards against loops and closes the document', () => {
+    const html = buildRecoveryHtml();
+
+    // Everything before the marker is the escape sequence; the marker itself is what validation and
+    // the tests downstream look for, so nothing may come between it and the script.
+    expect(html).toContain(`${RECOVERY_MARKER}<script>`);
+    expect(html).toContain('__arkor_edge_bypass=1; Path=/; Max-Age=30; SameSite=Lax; Secure');
+    expect(html).toContain('sessionStorage');
+    // The whole request, not its path: `/search?q=a` failing is no reason to leave the next
+    // visitor to `/search?q=b` on a truncated document for the rest of the guard's window.
+    expect(html).toContain('location.pathname+location.search');
+    expect(html).toContain('location.reload()');
+    expect(html.endsWith('</body></html>')).toBe(true);
+    expect(buildRecoveryHtml({ cookieName: 'x', maxAgeSeconds: 5 })).toContain(
+      'x=1; Path=/; Max-Age=5',
+    );
+  });
+
+  /**
+   * The continuation is cut at an arbitrary byte, so the recovery script can land in whatever
+   * tokenizer state the origin was in. Every one of them has to be left before the script, or the
+   * parser reads it as raw text (or as template content, which never executes) and the user is
+   * stranded on the truncated document with no bypass cookie and no reload.
+   *
+   * Each row is the token that leaves one state: `"` closes a quoted attribute value and opens one
+   * that has not started, `>` closes the tag itself, `-->` closes a comment, and a raw-text or
+   * RCDATA element is left only by its own end tag. `plaintext` is the one state nothing escapes.
+   */
+  it.each([
+    ['an attribute value', '"'],
+    ['an open tag', '>'],
+    // Only in SVG or MathML, where nothing but `]]>` ends one.
+    ['a CDATA section', ']]>'],
+    ['a comment', '-->'],
+    ['a script', '</script>'],
+    ['a style', '</style>'],
+    ['a textarea', '</textarea>'],
+    ['a title', '</title>'],
+    ['a noscript', '</noscript>'],
+    ['a noembed', '</noembed>'],
+    ['a noframes', '</noframes>'],
+    ['an iframe', '</iframe>'],
+    ['an xmp', '</xmp>'],
+    ['a template', '</template>'],
+  ])('leaves %s before the script', (_state, closer) => {
+    const html = buildRecoveryHtml();
+    const escape = html.slice(0, html.indexOf(RECOVERY_MARKER));
+
+    expect(escape).toContain(closer);
+  });
+
+  /**
+   * One `</template>` closes only the innermost template, and templates nest: the escape closes
+   * sixteen. It closes them after the text-holding elements, inside one of which a `</template>` is
+   * still text.
+   */
+  it('closes templates nested inside one another, after everything else it leaves', () => {
+    const html = buildRecoveryHtml();
+    const escape = html.slice(0, html.indexOf(RECOVERY_MARKER));
+    const templates = escape.slice(escape.indexOf('</template>'));
+
+    expect(templates.split('</template>')).toHaveLength(17);
+    expect(templates.replaceAll('</template>', '')).not.toContain('</');
+  });
+
+  /**
+   * Inside SVG or MathML a `<script>` is that language's element, and a MathML one never runs. A
+   * `<meta>` is a tag both hand back to HTML: it pops every foreign element down to an HTML one or
+   * an integration point, where the script is HTML's. So it comes last, after everything that would
+   * read it as text.
+   */
+  it('leaves SVG and MathML last, by a tag both hand back to HTML', () => {
+    const html = buildRecoveryHtml();
+    const escape = html.slice(0, html.indexOf(RECOVERY_MARKER));
+
+    expect(escape.endsWith('</template><meta>')).toBe(true);
+  });
+
+  it('keeps the loop guard shorter than the bypass cookie', () => {
+    const html = buildRecoveryHtml();
+    const guardMs = /Date\.now\(\)-t<(?<ms>\d+)/u.exec(html)?.groups?.['ms'];
+
+    // A guard that outlived the cookie would leave a repeat failure unrecovered once it expires.
+    expect(RECOVERY_LOOP_GUARD_SECONDS).toBeLessThan(EDGE_BYPASS_COOKIE_MAX_AGE_SECONDS);
+    expect(Number(guardMs)).toBe(RECOVERY_LOOP_GUARD_SECONDS * 1000);
   });
 });
