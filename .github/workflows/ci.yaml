@@ -267,6 +267,9 @@ jobs:
         working-directory: fixtures/next-local
       - run: npm run build:local
         working-directory: fixtures/next-local
+      # What the check leaves unasked: what the fixture renders on request (its README).
+      - run: node probe.mts
+        working-directory: fixtures/next-local
       - run: pnpm local:check --dir fixtures/next-local
 
   website:

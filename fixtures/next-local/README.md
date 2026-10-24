@@ -3,12 +3,15 @@
 The application CI's `local-check` job serves on a local stack (`@stayingupwind/local`), as it
 would be served deployed:
 
-1. It is built through the cache's adapter preset (`pnpm run build:local`, which names
+1. It is built through the cache's adapter preset (`npm run build:local`, which names
    `packages/cache/src/function/adapter.ts`).
 2. A stack serves it on one machine as it is served deployed: the standalone edge, the runtime cache
    and the prefetch Worker.
-3. `pnpm local:check` asks it for every document and file it prerendered, as a deployment is
-   validated.
+3. `node probe.mts` asks it what it renders on request: each route handler, the middleware's own
+   answers, a member the build did not know, and a page after a `revalidateTag` and after a
+   `revalidatePath`, each held to the answer the fixture's code gives.
+4. `pnpm local:check` asks it for every document and file it prerendered, and each Function for a
+   pathname nothing serves, as a deployment is validated.
 
 Every file is here because the stack has to serve something it holds:
 
