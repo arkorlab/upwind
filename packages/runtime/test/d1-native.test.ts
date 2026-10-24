@@ -1,9 +1,13 @@
 import { fileURLToPath } from 'node:url';
 
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
-import { afterAll, assert, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, assert, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { bundleInlineWorker } from './inline-worker.ts';
+
+// The time each test had where this suite ran before: it starts workerd and Miniflare, which a
+// loaded machine can take longer than the default to have ready (Sentry).
+vi.setConfig({ testTimeout: 60_000 });
 
 const OBSERVER = fileURLToPath(new URL('../../core/src/paas/d1-observation.ts', import.meta.url));
 const WORKER = String.raw`

@@ -1,9 +1,13 @@
 import { fileURLToPath } from 'node:url';
 
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { bundleInlineWorker } from './inline-worker.ts';
+
+// The time each test had where this suite ran before: it starts workerd and Miniflare, which a
+// loaded machine can take longer than the default to have ready (Sentry).
+vi.setConfig({ testTimeout: 60_000 });
 
 const REQUEST_TIMEOUT_MS = 5000;
 const SCHEDULER = fileURLToPath(new URL('../src/tasks.ts', import.meta.url));
@@ -14,12 +18,29 @@ import { installTaskScheduler, runWithTaskScheduler } from ${JSON.stringify(SCHE
 const scheduler = installTaskScheduler();
 let immediateRan = false;
 let retained;
+// Set once a request other than the streaming one has entered: a plain flag, not a promise one
+// request resolves for another, which workerd does not carry across requests.
+let secondEntered = false;
 
 function readInTask(request, delay) {
   return new Promise((resolve, reject) => {
     scheduler.taskTimer(() => {
       request.text().then(resolve, reject);
     }, delay);
+  });
+}
+
+/** The streaming request's tail, read only once another request is in the Worker beside it. */
+function readOnceOverlapped(request) {
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      if (!secondEntered) {
+        scheduler.taskTimer(poll, 10);
+        return;
+      }
+      request.text().then(resolve, reject);
+    };
+    scheduler.taskTimer(poll, 0);
   });
 }
 
@@ -36,7 +57,7 @@ export default {
         return new Response('cleared');
       }
       if (pathname === '/stream') {
-        const tail = readInTask(request, 1000);
+        const tail = readOnceOverlapped(request);
         return new Response(new ReadableStream({
           start(controller) {
             controller.enqueue(new TextEncoder().encode('SHELL'));
@@ -47,6 +68,7 @@ export default {
           },
         }));
       }
+      secondEntered = true;
       const pending = scheduler.pendingImmediates();
       const body = await readInTask(request, 0);
       return Response.json({ body, pending, immediateRan });

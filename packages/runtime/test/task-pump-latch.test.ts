@@ -1,9 +1,13 @@
 import { fileURLToPath } from 'node:url';
 
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { bundleInlineWorker } from './inline-worker.ts';
+
+// The time each test had where this suite ran before: it starts workerd and Miniflare, which a
+// loaded machine can take longer than the default to have ready (Sentry).
+vi.setConfig({ testTimeout: 60_000 });
 
 /**
  * A task queue that stops pumping, which is how a request ends up waiting on nothing at all.
