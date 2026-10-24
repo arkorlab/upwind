@@ -424,3 +424,114 @@ describe('explicit declaration data traces', () => {
     ).toStrictEqual([{ name: 'data.json', filePath: data }]);
   });
 });
+
+/**
+ * What an application reads through `node:fs` goes into its Worker at its path in the project,
+ * where `process.cwd()`, `/bundle`, puts the application's own path to it. A page that read a
+ * `data.json` next to itself, or a middleware that read `package.json`, failed on the Worker with
+ * `no such file or directory` for a file the build had traced.
+ */
+
+const PROJECT = path.join(path.sep, 'repo', 'apps', 'site');
+const DIST = path.join(PROJECT, '.next');
+
+function at(...segments: string[]): string {
+  return path.join(PROJECT, ...segments);
+}
+
+function output(files: string[], runtime?: 'edge' | 'nodejs') {
+  return {
+    ...(runtime !== undefined && { runtime }),
+    assets: Object.fromEntries(files.map((file) => [path.relative('/repo', file), file])),
+  };
+}
+
+describe('the files a Worker carries for the application to read', () => {
+  it('are the data files the trace found in the project, by their paths in it', () => {
+    const files = tracedFiles(
+      [
+        output([
+          at('app', 'account', 'deployments', '[id]', 'data.json'),
+          at('package.json'),
+          at('public', 'notes.txt'),
+        ]),
+      ],
+      PROJECT,
+      DIST,
+    );
+
+    expect(files.map((file) => file.name)).toStrictEqual([
+      'app/account/deployments/[id]/data.json',
+      'package.json',
+      'public/notes.txt',
+    ]);
+    expect(files[1]?.filePath).toBe(at('package.json'));
+  });
+
+  it('leave out code, packages, what the build wrote and what lies outside the project', () => {
+    const files = tracedFiles(
+      [
+        output([
+          at('lib', 'read.js'),
+          at('lib', 'types.ts'),
+          at('lib', 'font.wasm'),
+          at('node_modules', 'pkg', 'data.json'),
+          at('.next', 'server', 'app', 'page.js'),
+          at('.next', 'required-server-files.json'),
+          path.join(path.sep, 'repo', 'node_modules', 'next', 'package.json'),
+          path.join(path.sep, 'repo', 'shared', 'data.json'),
+        ]),
+      ],
+      PROJECT,
+      DIST,
+    );
+
+    expect(files).toStrictEqual([]);
+  });
+
+  /**
+   * `new URL('./data.json', import.meta.url)` in a server module: Turbopack copies the file into the
+   * build output's `server/assets` and lists it among the output's `assets`, and the module reads
+   * the copy. The one thing the build wrote that travels — whatever it is called, since it is read
+   * as data and travels as data — and nothing else beside it in the build output does.
+   */
+  it('take a file a server module refers to by URL, whatever its extension', () => {
+    const files = tracedFiles(
+      [
+        output([
+          at('.next', 'server', 'assets', 'my-data.0xq5k_kxzo_4n.json'),
+          at('.next', 'server', 'assets', 'template.2u76vq-hdeuu-.js'),
+          at('.next', 'server', 'chunks', 'ssr', 'page.js'),
+          at('.next', 'server', 'assets-elsewhere.json'),
+        ]),
+      ],
+      PROJECT,
+      DIST,
+    );
+
+    expect(files.map((file) => file.name)).toStrictEqual([
+      '.next/server/assets/my-data.0xq5k_kxzo_4n.json',
+      '.next/server/assets/template.2u76vq-hdeuu-.js',
+    ]);
+  });
+
+  it('are what the outputs on the Node.js runtime read, each once', () => {
+    const files = tracedFiles(
+      [
+        output([at('content', 'a.md'), at('content', 'b.md')]),
+        output([at('content', 'a.md')], 'nodejs'),
+        output([at('edge-only.md')], 'edge'),
+      ],
+      PROJECT,
+      DIST,
+    );
+
+    expect(files.map((file) => file.name)).toStrictEqual(['content/a.md', 'content/b.md']);
+  });
+
+  it('keep a sibling of the build directory whose name only starts with its own', () => {
+    const files = tracedFiles([output([at('..next-notes', 'n.txt')])], PROJECT, DIST);
+
+    expect(files.map((file) => file.name)).toStrictEqual(['..next-notes/n.txt']);
+  });
+});
