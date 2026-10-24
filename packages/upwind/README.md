@@ -176,7 +176,9 @@ writes, as it goes into a deployment's: where a runtime cache is bound — under
 deployed by `upwind deploy` — a Function reads and writes it through that host, and without one,
 every read is a miss. Where none is bound, the host finds nothing to reach and stays out of the
 way. A build whose environment names an adapter (`NEXT_ADAPTER_PATH`) or a host
-(`UPWIND_CACHE_HOST_MODULE`) of its own is left as the environment says.
+(`UPWIND_CACHE_HOST_MODULE`) of its own is left as the environment says, and one whose adapter is of
+another version than `upwind` is built without the host, and says so: the host is `upwind`'s own,
+made for the runtime of its version.
 
 ## Storage during a build
 

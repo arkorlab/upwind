@@ -11,6 +11,7 @@ import { cacheHostModuleFor } from '../deploy/cache-host.ts';
 import { shippedCacheHost } from '../deploy/shipped.ts';
 import { ADAPTER_PACKAGE, ADAPTER_PATH_ENV, resolveAdapterPath } from '../dev/adapter.ts';
 import { resolveFromProject } from '../dev/next-app.ts';
+import { moduleVersion, ownVersion } from '../manifest.ts';
 import { localResourcesEntry, PROJECT_DIR_ENV } from '../resources/entry-path.ts';
 import type { BuildOptions } from './args.ts';
 
@@ -182,7 +183,10 @@ export async function runBuild(options: BuildOptions): Promise<never> {
  *
  * Nothing where the adapter is not the project's own — one `NEXT_ADAPTER_PATH` names reads no
  * environment and names its own host — nor where a host is named already, by the environment or by
- * the run itself (`upwind deploy`'s build, `run.extraEnv`).
+ * the run itself (`upwind deploy`'s build, `run.extraEnv`). Nor, said, where the adapter is of
+ * another version than this command: the host is this command's, built against its runtime, and a
+ * build bundles it with the adapter's — a build that ran before a host was named should not stop
+ * running for one, and a preview or a deploy refuses the two apart regardless.
  */
 export async function cacheHostEnv(
   projectDir: string,
@@ -197,6 +201,13 @@ export async function cacheHostEnv(
     hosted ||
     run.extraEnv?.[UPWIND_CACHE_HOST_MODULE_ENV] !== undefined
   ) {
+    return {};
+  }
+  const [adapterVersion, version] = await Promise.all([moduleVersion(adapter), ownVersion()]);
+  if (adapterVersion === undefined || adapterVersion !== version) {
+    console.warn(
+      `upwind: ${ADAPTER_PACKAGE} ${adapterVersion ?? '(unknown version)'} is installed, and this is upwind ${version ?? '(unknown version)'}, so the Functions are built without the runtime cache's host — install the same version of both`,
+    );
     return {};
   }
   const host = await cacheHostModuleFor(await shippedCacheHost(), projectDir, adapter);
