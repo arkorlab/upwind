@@ -52,7 +52,9 @@ const config: KnipConfig = {
     },
     'tools/benchmark': { entry: ['src/main.ts', 'src/publish.ts'] },
     // The readers are started as child processes by path, so nothing here imports them.
-    'tools/deploy-tests': { entry: ['src/read-env.ts', 'src/read-suite-env.ts'] },
+    'tools/deploy-tests': {
+      entry: ['src/read-env.ts', 'src/read-suite-env.ts', 'src/install-npm.ts'],
+    },
     // The lifetime control is run directly by CI, beside the Next.js matrix runner.
     'tools/next-matrix': { entry: ['src/node-handler-lifetime.ts'] },
     'tools/vocabulary': {},
