@@ -239,7 +239,7 @@ function checkInterrupted(result: ScenarioResult, holds: Check): void {
       !existsSync(path.join(result.dir, 'manager-signal-survived')) &&
       installs.length === 1 &&
       installs[0]?.command === 'npm' &&
-      JSON.stringify(installs[0]?.args) === JSON.stringify(EXPECTED_NPM_ARGS),
+      JSON.stringify(installs[0].args) === JSON.stringify(EXPECTED_NPM_ARGS),
   );
 }
 

@@ -12,8 +12,8 @@ const MAX_POLICY_BYTES = 65_536;
 const PROBE_TIMEOUT_MS = 10_000;
 
 class InstallPolicyError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'InstallPolicyError';
   }
 }
