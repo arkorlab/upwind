@@ -797,7 +797,12 @@ page's props — before it serves the request anything. An answer that says `x-u
 the request served as though there were no gate, with its answer kept from shared caches even
 where the application permits public caching: the gate admitted this visitor alone. The browser's
 own cache directives remain. Any other is the answer, kept nowhere. A gate that
-cannot be reached is a `503`, never what was kept of the route. A request of any other method goes
+cannot be reached is a `503`, never what was kept of the route. A publisher also carries
+`hasGates: true` on the deployment's pointer. If its routing manifest cannot be read, every `GET`
+and `HEAD` is answered `503`: without the routing table the edge cannot prove that the request is
+of an ungated route. The marker is retained whenever the same deployment's pointer is rebuilt;
+an ungated or legacy pointer omits it and keeps its existing fallback behavior. The edge must be
+rolled out before a publisher starts writing gated deployments. A request of any other method goes
 to the Function, as it does without a gate. Nor is a gated route an image the optimizer may take:
 `/_next/image` answers a source of one `400`, as it answers a source that is no image, before
 anything is fetched or kept — what it optimizes is kept for every visitor, and a gated route's

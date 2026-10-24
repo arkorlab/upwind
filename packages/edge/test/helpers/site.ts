@@ -200,6 +200,7 @@ export async function seedSite(options: SiteOptions): Promise<Site> {
     policyId: DEFAULT_DELIVERY_POLICY.id,
     app: APP,
     updatedAt: UPDATED_AT,
+    ...(manifest.gates !== undefined && { hasGates: true as const }),
   };
   return { manifest, manifestId, pointer };
 }

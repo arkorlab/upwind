@@ -655,6 +655,7 @@ export async function publishDeployment(
       manifestId: staged.manifestId,
       policyId: input.policy.id,
       app: manifest.app,
+      hasGates: manifest.gates === undefined ? undefined : true,
       cspNonce: input.cspNonce ?? false,
       cspNonceMode: input.cspNonceMode,
       cspStrictDynamic: input.cspStrictDynamic,
