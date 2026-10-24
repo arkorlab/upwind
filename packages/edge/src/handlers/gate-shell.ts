@@ -5,7 +5,11 @@ import {
   type ProjectManifest,
   type RouteEntry,
 } from '@stayingupwind/core/manifest';
-import { allowRecoveryScript } from '@stayingupwind/core/request';
+import {
+  allowRecoveryScript,
+  isBotUserAgent,
+  wantsBlockingMetadata,
+} from '@stayingupwind/core/request';
 import { GATE_RESUME_HEADER } from '@stayingupwind/host/bindings';
 import type { ResolvedPolicy } from '@stayingupwind/host/delivery';
 import { RECOVERY_SCRIPT_CSP_SOURCE } from '@stayingupwind/host/splice';
@@ -161,4 +165,36 @@ export function gatedEntryOf(
     ...dynamic,
     members: dynamic.members ?? { kind: APP_PAGE, route: gated },
   });
+}
+
+/**
+ * The document `entry` the edge classified a request as, where it is of the route of the gate's
+ * shell (`route`): its own, or a page of it the build prerendered (`gatedPathnames`) — none of
+ * another, which a pathname two routes match apart may land on.
+ */
+export function routeEntryOf(
+  manifest: ProjectManifest,
+  entry: RouteEntry,
+  route: string,
+): RouteEntry | undefined {
+  const gated = manifest.gatedPathnames;
+  const ofRoute =
+    entry.pathname === route ||
+    (gated !== undefined &&
+      Object.hasOwn(gated, entry.pathname) &&
+      gated[entry.pathname] === route);
+  return ofRoute ? entry : undefined;
+}
+
+/**
+ * Whether a crawler Next.js renders a partially prerendered page whole for asks (`classifyRequest`):
+ * one that wants the metadata blocking (`wantsBlockingMetadata`), or any crawler where the build
+ * streams to none. A gate's shell is partial whatever the build made of the route.
+ */
+export function crawledWhole(manifest: ProjectManifest, userAgent: string | null): boolean {
+  return (
+    userAgent !== null &&
+    ((manifest.crawlersStreamed !== true && isBotUserAgent(userAgent)) ||
+      wantsBlockingMetadata(userAgent, manifest))
+  );
 }

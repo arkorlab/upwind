@@ -22,7 +22,7 @@ import {
 import { answerAsset } from './handlers/asset-answer.ts';
 import { routeHostedFallbackPage } from './handlers/fallback-page.ts';
 import { capturedHeaders } from './handlers/gate-capture.ts';
-import { gatedEntryOf, serveGateShell } from './handlers/gate-shell.ts';
+import { crawledWhole, gatedEntryOf, routeEntryOf, serveGateShell } from './handlers/gate-shell.ts';
 import {
   type GateCapture,
   type GateDirective,
@@ -431,12 +431,13 @@ function routeGateShell(
     manifest: manifestForClassification(manifest, state.validated),
     deployment: manifest.deployment,
   });
+  const shellRoute = directive.shell.header.route;
   const unproved = classification.kind === 'passthrough' ? classification.reason : undefined;
   const entry =
     classification.kind === DOCUMENT_CLASS
-      ? classification.entry
-      : gatedEntryOf(manifest, { headers, url }, { route: directive.shell.header.route, unproved });
-  if (entry === undefined) {
+      ? routeEntryOf(manifest, classification.entry, shellRoute)
+      : gatedEntryOf(manifest, { headers, url }, { route: shellRoute, unproved });
+  if (entry === undefined || crawledWhole(manifest, request.headers.get('user-agent'))) {
     return routeWithManifest(input, forwarding);
   }
   return afterPolicy(input, (ready) => {

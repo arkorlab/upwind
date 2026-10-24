@@ -167,6 +167,13 @@ interface Settings {
    * route, the gate's too.
    */
   readonly exact?: string;
+  /** The route the build finished whole (`cache.delivery: 'complete'`), its document complete. */
+  readonly complete?: true;
+  /**
+   * A gated route (`variant`) whose pattern the router matches the request's pathname by, without
+   * regard to case, ahead of the class the edge classifies it of, which no gate is of.
+   */
+  readonly variant?: string;
   /** The isolate's memory, where the request is served after others of the same isolate. */
   readonly memory?: EdgeMemory;
   /** How far the host's clock is set on once the gate is asked: not at all, unless said. */
@@ -229,19 +236,33 @@ function exactManifest(manifest: ProjectManifest, exact: string): ProjectManifes
   };
 }
 
+/** `manifest` with a gated route (`variant`) matched, as the router matches, ahead of the class. */
+function variantManifest(manifest: ProjectManifest, variant: string): ProjectManifest {
+  return {
+    ...manifest,
+    dynamicRoutes: [
+      { sourceRegex: '^/Posts/(?<slug>[^/]+?)(?:/)?$', route: variant, gated: variant },
+      { sourceRegex: POST_PATTERN, route: POST },
+    ],
+    gates: { [variant]: GATE },
+    gatedPathnames: { [variant]: variant },
+  };
+}
+
 /** The manifest the edge serves `site` by, as `settings` lay it out. */
 function manifestOf(
   site: { readonly manifest: ProjectManifest },
   settings: Settings,
 ): ProjectManifest {
-  const cached = cachedManifest(site.manifest);
+  const cached = cachedManifest(site.manifest, settings.complete === true);
   const classed =
     settings.classless === undefined ? cached : classlessManifest(cached, settings.classless.gated);
-  return settings.exact === undefined ? classed : exactManifest(classed, settings.exact);
+  const exact = settings.exact === undefined ? classed : exactManifest(classed, settings.exact);
+  return settings.variant === undefined ? exact : variantManifest(exact, settings.variant);
 }
 
-/** The gated site's manifest, its route an entry of the runtime cache's scope. */
-function cachedManifest(manifest: ProjectManifest): ProjectManifest {
+/** The gated site's manifest, its route an entry of the runtime cache's scope, complete or not. */
+function cachedManifest(manifest: ProjectManifest, complete: boolean): ProjectManifest {
   const route = manifest.routes[POST];
   if (route === undefined) throw new Error('the site has no post route');
   return {
@@ -250,7 +271,11 @@ function cachedManifest(manifest: ProjectManifest): ProjectManifest {
     routes: {
       [POST]: {
         ...route,
-        cache: { entryId: KEY.entryId, kind: 'app-page', delivery: 'resume' },
+        cache: {
+          entryId: KEY.entryId,
+          kind: 'app-page',
+          delivery: complete ? 'complete' : 'resume',
+        },
       },
     },
   };
@@ -856,12 +881,47 @@ describe('a shell its gate answers with', () => {
   });
 
   /**
+   * A gate's shell is partial whatever the build made of the route: a crawler Next.js renders a
+   * partial page whole for is routed as a pass, of a route the build finished whole too.
+   */
+  it.each([
+    ['of a route the build left partial', {}],
+    ['of a route the build finished whole', { complete: true }],
+  ] as const)(
+    'is not served to a crawler that wants its metadata blocking, %s',
+    async (_of, settings) => {
+      const request = navigation('/posts/abc', { headers: { 'user-agent': 'Twitterbot/1.0' } });
+      const { response } = await served(request, () => gateShell(), settings);
+
+      expect(response.headers.get(EDGE_DEBUG_HEADER) ?? '').not.toContain(';gate=');
+    },
+  );
+
+  /**
+   * A document the edge classifies of another route than the one the gate's shell is of — a
+   * pathname the gate's route matches as the router matches, the class as the edge serves — is
+   * routed as a pass: the shell is no document of it.
+   */
+  it('is not served under a document of a route other than its own', async () => {
+    const variant = '/Posts/[slug]';
+    const { response } = await served(
+      navigation('/posts/abc'),
+      () => gateShell({ route: variant }),
+      {
+        variant,
+      },
+    );
+
+    expect(response.headers.get(EDGE_DEBUG_HEADER) ?? '').not.toContain(';gate=');
+  });
+
+  /**
    * Of a class the build made no shell of, a gate's shell is served as the class's own only where
    * the class is of the shell's route: one of another, which another gate answered, is none.
    */
   it('takes a class the build made no shell of for the route of the shell alone', async () => {
     const site = await seedSite({ document: pprDocument(), ...GATED });
-    const manifest = classlessManifest(cachedManifest(site.manifest), true);
+    const manifest = classlessManifest(cachedManifest(site.manifest, false), true);
     const request = { headers: new Headers(), url: new URL('https://example.com/posts/abc') };
     const unproved = 'route-not-proved';
 
