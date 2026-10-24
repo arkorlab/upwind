@@ -5,8 +5,10 @@ import { readForRender } from '../../../lib/db';
 
 type Params = Promise<{ readonly slug: string }>;
 
-const REVALIDATE_SECONDS = 60;
-const EXPIRE_SECONDS = 600;
+// Longer than anything that asks it waits (`probe.mts`): a new version is then one a revalidation
+// asked for, never one the lifetime ran out into.
+const REVALIDATE_SECONDS = 86_400;
+const EXPIRE_SECONDS = 604_800;
 
 /** One member the build knows; any other is rendered on demand and kept by the cache. */
 export function generateStaticParams(): { slug: string }[] {

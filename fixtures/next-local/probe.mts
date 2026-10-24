@@ -12,8 +12,11 @@ import { fileURLToPath } from 'node:url';
 
 import { startStack } from '../../packages/local/src/index.ts';
 
-/** How long a revalidated page may take to show what was revalidated. */
-const REGENERATION_MS = 60_000;
+/**
+ * How long a page may take to be kept, or to show what was revalidated: well inside the posts'
+ * lifetimes (`app/posts/[slug]/page.tsx`), so that only a revalidation shows a new version.
+ */
+const WAIT_MS = 30_000;
 const POLL_MS = 500;
 
 const stack = await startStack({
@@ -61,17 +64,26 @@ async function postShown(slug: string): Promise<{ version: number; render: numbe
   return { version: Number(shown[1]), render: Number(shown[2]) };
 }
 
-/** Asks the post again until it shows `version`, as a revalidation has the next renders show. */
+function pause(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, POLL_MS));
+}
+
+/**
+ * Asks the post again until it shows `version`, as a revalidation has the next renders show: no
+ * read is begun after the deadline.
+ */
 async function waitForVersion(slug: string, version: number): Promise<void> {
-  const until = performance.now() + REGENERATION_MS;
-  let shown = await postShown(slug);
-  while (shown.version !== version) {
+  const until = performance.now() + WAIT_MS;
+  for (;;) {
+    const shown = await postShown(slug);
+    if (shown.version === version) {
+      return;
+    }
+    await pause();
     assert.ok(
       performance.now() < until,
-      `still v=${String(shown.version)}, not v=${String(version)}, after ${String(REGENERATION_MS)} ms`,
+      `still v=${String(shown.version)}, not v=${String(version)}, after ${String(WAIT_MS)} ms`,
     );
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-    shown = await postShown(slug);
   }
 }
 
@@ -109,10 +121,15 @@ const probes: Record<string, () => Promise<void>> = {
       value: 42,
     });
   },
-  'GET /api/lazy': async () => {
+  'GET /api/lazy, then GET /': async () => {
+    // A module loaded on demand, read whole before the next request is sent: the render after it
+    // is the one that meets what the import left behind in the isolate (`app/api/lazy/route.ts`).
     assert.deepEqual(await json<unknown>(await ask('/api/lazy')), {
       from: 'a module loaded on demand',
     });
+    const after = await ask('/');
+    assert.equal(after.status, 200);
+    assert.match(await after.text(), /id="shell"/);
   },
   'GET /api/boom': async () => {
     const response = await ask('/api/boom');
@@ -153,16 +170,16 @@ const probes: Record<string, () => Promise<void>> = {
   'GET /posts/second': async () => {
     // A member the build did not know: rendered on demand, then kept, so that asked again it is
     // the same render. What it rendered may reach the cache after its answer: asked until it has.
-    const until = performance.now() + REGENERATION_MS;
+    const until = performance.now() + WAIT_MS;
     let last = await postShown('second');
     for (;;) {
       const next = await postShown('second');
       if (next.render === last.render) {
         return;
       }
-      assert.ok(performance.now() < until, `rendered again on each read, r=${String(next.render)}`);
       last = next;
-      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+      await pause();
+      assert.ok(performance.now() < until, `rendered again on each read, r=${String(next.render)}`);
     }
   },
   'revalidateTag, then GET /posts/first': async () => {
