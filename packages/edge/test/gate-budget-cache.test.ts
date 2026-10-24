@@ -37,6 +37,7 @@ interface Scenario {
   readonly gateCalls?: number;
   readonly appCalls?: number;
   readonly budget?: boolean;
+  readonly subrequests?: number;
 }
 
 const SCENARIOS: readonly Scenario[] = [
@@ -54,7 +55,15 @@ const SCENARIOS: readonly Scenario[] = [
   },
   { name: 'ungated deployment', declared: false, gateCalls: 0, cache: PUBLIC },
   { name: 'ungated route of a gated deployment', otherGate: true, gateCalls: 0, cache: PUBLIC },
-  { name: 'validated request', validated: true, gateCalls: 0, cache: PRIVATE, budget: false },
+  {
+    name: 'validated request',
+    validated: true,
+    gateCalls: 0,
+    cache: PRIVATE,
+    budget: false,
+    // A navigation checks the missing build shell before asking the application.
+    subrequests: 2,
+  },
   { name: 'POST', method: 'POST', gateCalls: 0, cache: PUBLIC, budget: false },
   {
     name: 'terminal gate',
@@ -218,33 +227,49 @@ async function routed(scenario: Scenario) {
   return { response, body, gates, applications, network, metrics };
 }
 
+/** The response facts the routing scenarios observe. */
+function observedAnswer(result: Awaited<ReturnType<typeof routed>>) {
+  const headers = result.response.headers;
+  return {
+    status: result.response.status,
+    gates: result.gates,
+    applications: result.applications,
+    network: result.network,
+    cache: headers.get('cache-control'),
+    cdn: ['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control'].filter((name) =>
+      headers.has(name),
+    ),
+    metrics: result.metrics.length,
+    subrequests: result.metrics[0]?.subrequests,
+    budget: headers.get('x-arkor-edge')?.includes('pattern-budget') ?? false,
+    location: headers.get('location'),
+    body: result.body,
+  };
+}
+
+/** The same required facts and conditional checks as each scenario's delivery contract. */
+function expectedAnswer(scenario: Scenario) {
+  const gates = scenario.gateCalls ?? 1;
+  const applications = scenario.appCalls ?? 1;
+  return {
+    status: scenario.status ?? 200,
+    gates,
+    applications,
+    network: 0,
+    cache: scenario.cache ?? PRIVATE,
+    cdn: [],
+    metrics: 1,
+    subrequests: scenario.subrequests ?? gates + applications,
+    ...(scenario.budget !== false && { budget: true }),
+    ...(scenario.location !== undefined && { location: scenario.location }),
+    ...(applications > 0 && { body: scenario.method === 'HEAD' ? '' : 'application bytes' }),
+  };
+}
+
 describe('cache privacy when routing falls back after gate admission', () => {
   it.each(SCENARIOS)('preserves $name', async (scenario) => {
     const result = await routed(scenario);
 
-    expect(result.response.status).toBe(scenario.status ?? 200);
-    expect(result.gates).toBe(scenario.gateCalls ?? 1);
-    expect(result.applications).toBe(scenario.appCalls ?? 1);
-    expect(result.network).toBe(0);
-    expect(result.response.headers.get('cache-control')).toBe(scenario.cache ?? PRIVATE);
-
-    for (const name of ['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control']) {
-      expect(result.response.headers.has(name)).toBe(false);
-    }
-
-    expect(result.metrics).toHaveLength(1);
-    expect(result.metrics[0]?.subrequests).toBe(result.gates + result.applications);
-
-    if (scenario.budget !== false) {
-      expect(result.response.headers.get('x-arkor-edge')).toContain('pattern-budget');
-    }
-
-    if (scenario.location !== undefined) {
-      expect(result.response.headers.get('location')).toBe(scenario.location);
-    }
-
-    if (result.applications > 0) {
-      expect(result.body).toBe(scenario.method === 'HEAD' ? '' : 'application bytes');
-    }
+    expect(observedAnswer(result)).toMatchObject(expectedAnswer(scenario));
   });
 });
