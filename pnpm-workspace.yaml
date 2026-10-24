@@ -24,7 +24,7 @@ catalog:
   '@jridgewell/trace-mapping': 0.3.31
   '@next/routing': 16.4.3
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
-  '@oxc-project/types': 0.154.0
+  '@oxc-project/types': 0.155.0
   # The runtime's suites check that its random-safe request context keeps Sentry's own random
   # reads working in workerd, as an application that reports to Sentry makes them. Tests only.
   '@sentry/core': 10.76.2
