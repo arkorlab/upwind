@@ -268,6 +268,27 @@ describe('`upwind rollback` on an account', () => {
     expect(held.warnings).toStrictEqual([]);
   });
 
+  it('reads the secret from an --env-file, whatever else the file holds', async () => {
+    const dir = await deployableProject(PROJECT, { secrets: ['CRON_SECRET'] });
+    await secretDeployed(dir);
+    vi.unstubAllEnvs();
+    const envFile = path.join(dir, 'rollback.env');
+    // A credential, which a deploy would refuse to hand a Function: a rollback binds none of it.
+    writeFileSync(envFile, `CLOUDFLARE_API_TOKEN=token\nCRON_SECRET=${'c'.repeat(32)}\n`);
+
+    await expect(
+      runRollback(
+        { projectDir: dir, to: undefined, envFiles: [envFile] },
+        account().credentials,
+        account().io,
+      ),
+    ).resolves.toBe(0);
+
+    const version = newestEdgeVersion(account());
+
+    expect(bindingText(version, 'CRON_SECRET')).toBe('c'.repeat(32));
+  });
+
   it('discards the key it took the agent with, as a deploy does', async () => {
     const dir = await deployableProject(PROJECT);
     await twoDeployed(dir);

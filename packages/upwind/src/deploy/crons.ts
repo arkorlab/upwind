@@ -9,7 +9,7 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
 
 import { type AccountScope, getSchedules, putSchedules } from './cloudflare/workers.ts';
 import type { DeploySettings } from './config.ts';
-import { readSecrets, reservedNames } from './env.ts';
+import { readSecret, reservedNames } from './env.ts';
 import { CRON_SECRET, CRONS_PART_BYTES, type CronRun, type CronTable } from './workers/protocol.ts';
 
 export type { CronTable } from './workers/protocol.ts';
@@ -197,22 +197,22 @@ export async function holdCrons(
 
 /**
  * The secret a rollback sends its deployment's jobs with: `CRON_SECRET` as a deploy reads it, from
- * each `--env-file`, and from the environment where `deploy.secrets` names it — the value the
- * deployment's Functions were deployed with, unless it has changed since.
+ * the environment where `deploy.secrets` names it, else from the `--env-file`s — the value the
+ * deployment's Functions were deployed with, unless it has changed since. Nothing else of the files
+ * is read or held to anything (`readSecret`): a rollback binds no other.
  */
 export async function rollbackCronSecret(
   envFiles: readonly string[],
   settings: Pick<DeploySettings, 'secrets' | 'storage'>,
 ): Promise<string | undefined> {
-  const secrets = await readSecrets({
+  const secret = await readSecret({
+    name: CRON_SECRET,
     files: envFiles,
-    names: settings.secrets.filter(
-      (name) => name === CRON_SECRET && process.env[name] !== undefined,
-    ),
+    names: settings.secrets,
     env: process.env,
     reserved: reservedNames(settings.storage),
   });
-  return cronSecretIn(secrets);
+  return secret === undefined || secret === '' ? undefined : secret;
 }
 
 /**
