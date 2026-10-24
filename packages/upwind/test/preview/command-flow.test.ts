@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import type { DeploymentBundle } from '@stayingupwind/core/bundle';
 import type { CheckResult, LocalStack, StackOptions } from '@stayingupwind/local';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -58,13 +59,18 @@ vi.mock(import('../../src/preview/checks.ts'), () => {
   };
 });
 
-async function project(config: unknown, cacheHost = true): Promise<string> {
+/** A project configured as the test says, with a build of one Function; or of what the test changes. */
+async function project(
+  config: unknown,
+  build: { readonly cacheHost?: boolean; readonly bundle?: Partial<DeploymentBundle> } = {},
+): Promise<string> {
   const dir = projectDir();
   projectWith({ dir, adapterVersion: await ownVersion(), config });
-  const app = cacheHost
-    ? deployableFunction(dir)
-    : functionOf([moduleOf(dir, 'index.mjs', 'esm', 'export default {};')]);
-  writeBundle(dir, bundleOf(app));
+  const app =
+    build.cacheHost === false
+      ? functionOf([moduleOf(dir, 'index.mjs', 'esm', 'export default {};')])
+      : deployableFunction(dir);
+  writeBundle(dir, bundleOf(app, build.bundle));
   return dir;
 }
 
@@ -99,7 +105,6 @@ describe('a preview around its stack', () => {
   it("starts the stack as the project's deploy section has it deployed", async () => {
     const dir = await project({
       file: undefined,
-      crons: [],
       deploy: {
         secrets: ['FROM_ENV'],
         hostnames: ['shop.example.com'],
@@ -131,12 +136,8 @@ describe('a preview around its stack', () => {
 
   it('warns of what it serves otherwise than a deployment would', async () => {
     const dir = await project(
-      {
-        file: undefined,
-        crons: [{ path: '/tick', schedule: '* * * * *' }],
-        deploy: { storage: { UPWIND_D1: 'd1' }, images: true },
-      },
-      false,
+      { file: undefined, deploy: { storage: { UPWIND_D1: 'd1' }, images: true } },
+      { cacheHost: false, bundle: { crons: [{ path: '/tick', schedule: '* * * * *' }] } },
     );
     const envFile = path.join(dir, 'preview.env');
     writeFileSync(envFile, 'PORT=1234\n');
@@ -153,14 +154,14 @@ describe('a preview around its stack', () => {
   });
 
   it('refuses a secret a deploy would refuse, before any stack starts', async () => {
-    const dir = await project({ file: undefined, crons: [], deploy: { secrets: ['MISSING'] } });
+    const dir = await project({ file: undefined, deploy: { secrets: ['MISSING'] } });
 
     await expect(runPreview(checking(dir))).rejects.toThrow(/MISSING/u);
     expect(local.started).toHaveLength(0);
   });
 
   it('ends a passing check with 0, and says how much it asked', async () => {
-    const dir = await project({ file: undefined, crons: [] });
+    const dir = await project({ file: undefined });
 
     await expect(runPreview(checking(dir))).resolves.toBe(0);
     expect(out).toContain(
@@ -176,7 +177,7 @@ describe('a preview around its stack', () => {
         skipped: [],
       });
     };
-    const dir = await project({ file: undefined, crons: [] });
+    const dir = await project({ file: undefined });
 
     await expect(runPreview(checking(dir))).resolves.toBe(1);
     expect(out).toContain('error: upwind: /blog: answered 500');
@@ -184,7 +185,7 @@ describe('a preview around its stack', () => {
 
   it('ends with 1 where a path of deploy.checks fails, as a deploy would not switch to it', async () => {
     paths.failures = ['/ was answered with 502'];
-    const dir = await project({ file: undefined, crons: [] });
+    const dir = await project({ file: undefined });
 
     await expect(runPreview(checking(dir))).resolves.toBe(1);
     expect(out).toContain('error: upwind: / was answered with 502');
@@ -192,7 +193,7 @@ describe('a preview around its stack', () => {
 
   it('ends with 1, and lets the stack go, where the check cannot finish', async () => {
     local.check = () => Promise.reject(new Error('the backstage went away'));
-    const dir = await project({ file: undefined, crons: [] });
+    const dir = await project({ file: undefined });
 
     await expect(runPreview(checking(dir))).resolves.toBe(1);
     expect(out.join('\n')).toMatch(/the check could not finish: the backstage went away/u);

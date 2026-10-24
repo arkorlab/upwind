@@ -113,7 +113,7 @@ async function warningsOf(
       `deploy.storage names ${settings.storage.join(', ')}, and a preview binds no storage yet: the Functions find none of it`,
     );
   }
-  if (settings.crons > 0 || (build.bundle.crons?.length ?? 0) > 0) {
+  if ((build.bundle.crons?.length ?? 0) > 0) {
     warnings.push('the project declares cron jobs, and a preview fires none of them');
   }
   if (settings.images) {

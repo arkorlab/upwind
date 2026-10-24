@@ -16,7 +16,6 @@ describe("a preview's settings", () => {
       checks: ['/'],
       storage: [],
       images: false,
-      crons: 0,
     });
   });
 
@@ -45,7 +44,6 @@ describe("a preview's settings", () => {
       checks: ['/', '/api/health'],
       storage: ['UPWIND_D1', 'CACHE'],
       images: true,
-      crons: 1,
     });
   });
 

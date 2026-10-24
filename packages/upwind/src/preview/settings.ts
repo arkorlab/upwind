@@ -23,11 +23,10 @@ export interface PreviewSettings {
   readonly checks: readonly string[];
   /**
    * What a deploy gives a project that a preview does not yet, for it to say so: the storage it
-   * binds, by name, images it transforms, and cron jobs it fires.
+   * binds, by name, and images it transforms. The cron jobs it fires are the build's to say.
    */
   readonly storage: readonly string[];
   readonly images: boolean;
-  readonly crons: number;
 }
 
 /** The paths a deploy asks where the configuration names none. */
@@ -52,6 +51,5 @@ export async function readPreviewSettings(projectDir: string): Promise<PreviewSe
     checks: deploy.checks ?? DEFAULT_CHECKS,
     storage: Object.keys(deploy.storage ?? {}),
     images: deploy.images ?? false,
-    crons: config.crons.length,
   };
 }
