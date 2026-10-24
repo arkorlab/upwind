@@ -306,9 +306,10 @@ describe("the build's generation of a route", () => {
       ...change,
     };
 
-    expect((await seeded(shell)).input.generation.tags).toStrictEqual(
-      buildTagsOf('app-page', shell),
-    );
+    // The bundle a shared shell is tagged under, so the changed field is what keeps the tag off.
+    expect(
+      (await seeded(shell, sharedShellBundle(shell.route))).input.generation.tags,
+    ).toStrictEqual(buildTagsOf('app-page', shell));
   });
 
   it("records a route handler's own headers, and a page's as its shell replays them", async () => {
