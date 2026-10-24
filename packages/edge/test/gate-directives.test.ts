@@ -51,6 +51,7 @@ import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { EdgeHost } from '../src/edge-host.ts';
+import { gatedEntryOf } from '../src/handlers/gate-shell.ts';
 import { createEdgeMemory, type EdgeMemory } from '../src/memory/caches.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
 import { serveFromPointer } from '../src/route.ts';
@@ -852,6 +853,22 @@ describe('a shell its gate answers with', () => {
 
     expect(body).toBe('from the Function');
     expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('passthrough;reason=route-not-proved');
+  });
+
+  /**
+   * Of a class the build made no shell of, a gate's shell is served as the class's own only where
+   * the class is of the shell's route: one of another, which another gate answered, is none.
+   */
+  it('takes a class the build made no shell of for the route of the shell alone', async () => {
+    const site = await seedSite({ document: pprDocument(), ...GATED });
+    const manifest = classlessManifest(cachedManifest(site.manifest), true);
+    const request = { headers: new Headers(), url: new URL('https://example.com/posts/abc') };
+    const unproved = 'route-not-proved';
+
+    expect(gatedEntryOf(manifest, request, { route: POST, unproved })?.pathname).toBe(POST);
+    expect(
+      gatedEntryOf(manifest, request, { route: '/[category]/[slug]', unproved }),
+    ).toBeUndefined();
   });
 
   /**

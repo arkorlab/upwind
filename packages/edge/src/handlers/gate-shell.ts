@@ -134,9 +134,9 @@ export function serveGateShell(input: GateShellInput): Promise<Response> {
  * its classification gave): of a pathname Next.js resolves exactly, the gate's own route (`route`,
  * the shell's, as its gate found it of the pathname) — ahead of any class its pattern matches, as
  * Next.js resolves it — its Function the request's own (`functionFor`); else of a pathname of the
- * class of the gate's own route (`DynamicRoute.gated`), its name, its Function and, where the build
- * serves its members from records, the conditions they are passed on under. None of any other
- * request, which the gate's shell is not served for.
+ * class of the gate's own route (`DynamicRoute.gated`), the shell's too, its name, its Function and,
+ * where the build serves its members from records, the conditions they are passed on under. None of
+ * any other request, which the gate's shell is not served for.
  */
 export function gatedEntryOf(
   manifest: ProjectManifest,
@@ -153,7 +153,8 @@ export function gatedEntryOf(
   const dynamic = dynamicRouteFor(manifest, request.url, request.headers);
   const gated = dynamic?.gated;
   // The class of the gate's route, whatever the build made of it: no shell is what it names none.
-  if (dynamic === undefined || gated === undefined || (dynamic.route ?? gated) !== gated) {
+  // And the gate's that answered: a shell of another route is no member's of this class.
+  if (dynamic === undefined || gated !== route || (dynamic.route ?? gated) !== gated) {
     return undefined;
   }
   return ownRecordEntry({
