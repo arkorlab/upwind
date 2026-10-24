@@ -12,7 +12,7 @@ const ORIGIN = 'https://site.example';
 const GENERATED_AT = '2026-10-24T00:00:00.000Z';
 
 function input(validated = false, declared = true): GateInput {
-  const request = new Request(`${ORIGIN}${PATH}`);
+  const request = new Request<unknown, IncomingRequestCfProperties>(`${ORIGIN}${PATH}`);
   const original = standaloneHost(env);
   const host = {
     ...original,
