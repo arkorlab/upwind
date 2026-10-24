@@ -30,9 +30,11 @@
     "@stayingupwind/core": "workspace:*"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
     "@sentry/core": "catalog:",
     "@types/node": "catalog:",
     "miniflare": "catalog:",
+    "next": "catalog:",
     "rolldown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

@@ -5,5 +5,5 @@
     "types": ["node"],
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*", "test/**/*", "vitest.config.mts"]
+  "include": ["src/**/*", "test/**/*", "vitest.config.mts", "vitest.workers.config.mts"]
 }
