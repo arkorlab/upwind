@@ -32,6 +32,7 @@ import type { EdgeContext } from '../strategies/context.ts';
 import { laterHeaderRules, layConfiguredOver } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { type AbandonedShellReads, observeMetric, observeRequestMetric } from './observer.ts';
+import { detachedLifetime, mutationSettled, outlivesClient } from './passthrough-lifetime.ts';
 import {
   anonymousRequest,
   badGatewayResponse,
@@ -183,6 +184,8 @@ export function passthroughMetrics(
 
 export interface PassthroughInput {
   readonly request: Request;
+  /** Keep an accepted Action through its response's invalidation receipt, even after disconnect. */
+  readonly waitUntil?: ((work: Promise<unknown>) => void) | undefined;
   /**
    * The branch of the body the edge forwards, where the host's observer asked for a copy of it
    * (`CopyRequestBody`): the request's own body is the other branch's source, and read no more.
@@ -598,9 +601,26 @@ function anonymous(input: PassthroughInput): boolean {
   );
 }
 
-export async function handlePassthrough(input: PassthroughInput): Promise<Response> {
+export function handlePassthrough(input: PassthroughInput): Promise<Response> {
+  const detached =
+    input.waitUntil !== undefined &&
+    outlivesClient(input.request, input.middleware?.requestHeaders ?? input.request.headers);
+  if (!detached) return forwardPassthrough(input, input.request.signal);
+  const lifetime = detachedLifetime(input.request.signal);
+  const answer = forwardPassthrough(input, lifetime.signal);
+  try {
+    input.waitUntil(mutationSettled(answer, input.request, lifetime));
+  } catch {
+    // A host no longer accepting work must not replace the application's original answer.
+  }
+  return answer;
+}
+
+async function forwardPassthrough(input: PassthroughInput, signal: AbortSignal): Promise<Response> {
   const client = new Request(input.request, {
     headers: stripEdgeHeaders(input.request.headers),
+    // Dispatch starts synchronously below. Do not detach a request already aborted at entry.
+    signal,
     // A stream in place of the request's own body, which Fetch takes in half-duplex mode alone: a
     // runtime that keeps to the standard refuses the request without it.
     ...(input.observedBody !== undefined && { body: input.observedBody, duplex: 'half' }),
