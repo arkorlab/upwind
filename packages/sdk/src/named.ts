@@ -1,6 +1,7 @@
 import type {
   D1Database,
   DurableObjectNamespace,
+  Fetcher,
   KVNamespace,
   R2Bucket,
   Rpc,
@@ -18,7 +19,7 @@ import { read, unreadable } from './published.ts';
  * that fell back to a default is a typo nobody ever finds; a KV namespace answering to `d1('DB')` is
  * one found at the first `prepare`, in a stack that says nothing about the name that was wrong.
  */
-function byName(name: string, kind: Kind): unknown {
+function byName(name: string, kind: Pick<Kind, 'type'>): unknown {
   const reading = read();
   if (reading.state === 'unreadable') {
     // The one thing here that throws. "This run published a shape I cannot read" is not an answer
@@ -65,4 +66,9 @@ export function durableObject<T extends Rpc.DurableObjectBranded | undefined = u
 export function ai(name: string): AiInference | undefined {
   const binding = byName(name, AI);
   return binding === undefined ? undefined : inference(binding);
+}
+
+/** The native service binding published under this name, or nothing. No request is made. */
+export function service(name: string): Fetcher | undefined {
+  return byName(name, { type: 'service' }) as Fetcher | undefined;
 }
