@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { requestedEntryId } from '../../cache/src/function/entry-identity.ts';
 import { asRegeneration, withRequestContext } from '../src/cache/context.ts';
 import {
   configureCacheHandlers,
@@ -55,10 +56,21 @@ function invalidated(tags: readonly string[], at: number): Response {
   });
 }
 
+/**
+ * The entry `get('key')` asks the host for, under the id the host holds an answer to
+ * (`requestedEntryId`): one under any other id is refused as another's, and reads as a miss, which
+ * an invalidation's hiding the value would be indistinguishable from (greptile).
+ */
+const FEED_ENTRY_ID = requestedEntryId(ENV.NEXT_DEPLOYMENT_ID, {
+  kind: 'data:use-cache',
+  handler: 'default',
+  key: 'key',
+});
+
 /** A value a `use cache` function made a second ago under the tag `feed`. */
 function feedEntry(timestamp: number): Response {
   return result({
-    entryId: 'entry',
+    entryId: FEED_ENTRY_ID,
     generationId: 'generation',
     dependencyRevision: 0,
     entry: {
@@ -210,6 +222,9 @@ describe('an invalidation every cache handler is handed', () => {
     const h = harness(() => Promise.resolve(new Response('down', { status: HTTP_UNAVAILABLE })));
     const handler = useCacheHandler('default');
 
+    // Read before it, the value is there to hide.
+    await expect(handler.get('key', [])).resolves.toBeDefined();
+
     const request = requestKeeping(h.runtime, []);
 
     await expect(withRequestContext(request, () => everyHandler(['feed']))).resolves.toBeDefined();
@@ -292,6 +307,9 @@ describe('an invalidation every cache handler is handed', () => {
     const answered = Promise.withResolvers<Response>();
     const h = harness(() => answered.promise);
     const handler = useCacheHandler('default');
+
+    // Read before it, the value is there to hide.
+    await expect(handler.get('key', [])).resolves.toBeDefined();
 
     const invalidating = withRequestContext(requestKeeping(h.runtime, []), () =>
       everyHandler(['feed']),
