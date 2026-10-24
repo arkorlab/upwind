@@ -30,9 +30,11 @@ const GATED = [
   'packages/edge',
   'packages/host',
   'packages/local',
-  // The command that deploys them, which is no host's either.
+  // The commands that deploy them and serve a build on them, which are no host's either.
   'packages/upwind/src/deploy',
   'packages/upwind/test/deploy',
+  'packages/upwind/src/preview',
+  'packages/upwind/test/preview',
 ];
 
 const EXIT_HITS = 1;

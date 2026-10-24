@@ -48,7 +48,7 @@ export interface DeploySettings {
 /** What `deploy.keep` is when the configuration does not say. */
 export const DEFAULT_KEEP = 5;
 
-interface AdapterConfig {
+export interface AdapterConfig {
   readonly file: string | undefined;
   readonly crons: readonly unknown[];
   readonly deploy?:
@@ -91,7 +91,7 @@ async function manifestOf(module: string): Promise<string | undefined> {
 }
 
 /** The project's adapter's reader of its configuration, refused if it is not this command's version. */
-async function adapterReader(projectDir: string): Promise<ReadProjectConfig> {
+export async function adapterReader(projectDir: string): Promise<ReadProjectConfig> {
   const adapter = resolveFromProject(projectDir, ADAPTER_PACKAGE);
   if (adapter === undefined) {
     throw new Error(
