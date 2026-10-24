@@ -259,6 +259,8 @@ async function written(response: Response, outgoing: ServerResponse): Promise<vo
     headers[name] = name === 'set-cookie' ? response.headers.getSetCookie() : value;
   }
   outgoing.writeHead(response.status, response.statusText, headers);
+  // A caller may decide at the headers and let go without reading any body.
+  outgoing.flushHeaders();
   if (response.body === null) {
     outgoing.end();
     return;
