@@ -39,6 +39,22 @@ export interface ScopeSignalSource {
 }
 
 /**
+ * Where the edge asks a route's gate (`gates`, in a deployment's manifest) about a request of the
+ * route, before it serves the request anything (`handlers/gate.ts`).
+ */
+export interface EdgeGates {
+  /**
+   * The answer of the gate bound under `name` to `request` — the visitor's, as the deployment's
+   * Function would be handed it, the host's credentials taken off, and told `route`
+   * (`GATE_ROUTE_HEADER`). One that says to go on (`GATE_ANSWER_HEADER`) is let go, and the request
+   * served as though there were no gate; any other is the visitor's answer. A gate that is not
+   * bound, or that cannot answer, is a rejection: the edge then answers that the gate is
+   * unavailable, and nothing else.
+   */
+  answer(name: string, request: Request, route: string): Promise<Response>;
+}
+
+/**
  * What the edge tells its host as it goes. Every call is made on the way to, or right after, a
  * response, so each is synchronous and none is awaited: it may record, and not wait.
  */
@@ -80,6 +96,12 @@ export interface EdgeHost {
    * as before.
    */
   readonly scopeSignals?: ScopeSignalSource | undefined;
+  /**
+   * The gates of the routes a deployment declares one for. Absent, a request of such a route is
+   * answered that its gate is unavailable — never as though it had none. A deployment that declares
+   * no gate asks nothing of it.
+   */
+  readonly gates?: EdgeGates | undefined;
   /**
    * Looks up a delivery record newer than the supplied afterRevision at the authority; zero
    * requests initial discovery when no record is held. Background checks can overlap response

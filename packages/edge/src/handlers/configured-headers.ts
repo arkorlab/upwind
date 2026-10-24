@@ -152,6 +152,20 @@ export function setConfigured(
   }
 }
 
+/** The same, beside what the answer already has: a cookie goes with the answer's own. */
+export function appendConfigured(
+  headers: Headers,
+  name: string,
+  value: string,
+  scope: PassthroughResponseContext,
+): void {
+  try {
+    headers.append(name, scopedValue(name, value, scope));
+  } catch {
+    // As above.
+  }
+}
+
 /** The same, under what the answer already has: a header it holds stands. */
 export function setConfiguredUnder(
   headers: Headers,

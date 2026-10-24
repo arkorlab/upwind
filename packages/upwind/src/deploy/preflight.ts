@@ -128,7 +128,7 @@ interface CheckInput {
   readonly secrets: ReadonlyMap<string, string>;
 }
 
-/** What the build has that a self-hosted deployment cannot run yet: workflows, Durable Objects, crons. */
+/** What the build has that this command cannot run yet: workflows, Durable Objects, crons, gates. */
 function unsupported(bundle: DeploymentBundle, settings: DeploySettings): string[] {
   const problems: string[] = [];
   if (bundle.functions.workflow !== undefined) {
@@ -151,6 +151,11 @@ function unsupported(bundle: DeploymentBundle, settings: DeploySettings): string
   if (settings.crons > 0 || (bundle.crons?.length ?? 0) > 0) {
     problems.push(
       'the project declares cron jobs, and a self-hosted deployment fires none yet — remove them, or they would silently never run',
+    );
+  }
+  if (bundle.gates !== undefined) {
+    problems.push(
+      'the build declares route gates, which `upwind deploy` does not bind yet; deploy it with a host that binds those gates',
     );
   }
   return problems;

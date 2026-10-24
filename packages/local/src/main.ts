@@ -12,6 +12,7 @@ import {
 
 import { checkStack } from './check.ts';
 import { environmentOf } from './environment.ts';
+import type { LocalGate } from './gates.ts';
 import {
   type CspNonceSetting,
   deliveryPolicyRefusal,
@@ -38,12 +39,15 @@ import {
  * enforce|report-only`, and `--csp-strict-dynamic` for `'strict-dynamic'` beside it). A check asks
  * as that deployment's validation asks: as its prover (`--prover-agent`), and naming the site by
  * the hostname it asks a candidate under (`--hostname`), the stack still reached at its own socket.
+ *
+ * A build that declares gates for its routes has the edge ask each where `--gate <name>=<url>`
+ * says it answers, once for each gate (`StackOptions.gates`).
  */
 
 /** The highest port a socket listens on. */
 const MAX_PORT = 65_535;
 const USAGE =
-  'usage: main.ts serve|check --dir <app> [--port <port>] [--env-file <file>]… [--kv|--r2|--d1 <name>]… [--delivery-policy <id|file>] [--csp-nonce enforce|report-only [--csp-strict-dynamic]] [--prover-agent <agent>] [--hostname <host>]';
+  'usage: main.ts serve|check --dir <app> [--port <port>] [--env-file <file>]… [--kv|--r2|--d1 <name>]… [--delivery-policy <id|file>] [--csp-nonce enforce|report-only [--csp-strict-dynamic]] [--prover-agent <agent>] [--hostname <host>] [--gate <name>=<url>]…';
 
 function log(message: string): void {
   process.stderr.write(`${message}\n`);
@@ -85,8 +89,26 @@ function commandLine() {
       hostname: { type: 'string' },
       'csp-nonce': { type: 'string' },
       'csp-strict-dynamic': { type: 'boolean' },
+      // Where each gate the build declares answers, as `<name>=<url>`.
+      gate: { type: 'string', multiple: true },
     },
   });
+}
+
+/** The gates the command line names, each by `<name>=<url>`, or why one is not so named. */
+function gatesOf(
+  named: readonly string[],
+): { readonly gates: Record<string, LocalGate> } | { readonly refused: string } {
+  const gates: [string, LocalGate][] = [];
+  for (const pair of named) {
+    const at = pair.indexOf('=');
+    if (at <= 0) {
+      return { refused: `--gate ${pair} is to be <name>=<url>` };
+    }
+    gates.push([pair.slice(0, at), { url: pair.slice(at + 1) }]);
+  }
+  // As entries, each made the record's own: what a name may be is the stack's to judge.
+  return { gates: Object.fromEntries(gates) };
 }
 
 /** What the command line asked of a deployment beside its build, or why it cannot be. */
@@ -147,6 +169,22 @@ function servedOf(values: ReturnType<typeof commandLine>['values']): Served {
     : { refused: `--csp-nonce is enforce or report-only, not ${asked}` };
 }
 
+/** What the command line asked of a deployment beside its build, its gates among it, or why not. */
+type Asked =
+  | (Exclude<Served, { readonly refused: string }> & {
+      readonly gates: Record<string, LocalGate>;
+    })
+  | { readonly refused: string };
+
+function askedOf(values: ReturnType<typeof commandLine>['values']): Asked {
+  const served = servedOf(values);
+  if ('refused' in served) {
+    return served;
+  }
+  const named = gatesOf(values.gate ?? []);
+  return 'refused' in named ? named : { ...served, gates: named.gates };
+}
+
 async function main(): Promise<number> {
   let parsed: ReturnType<typeof commandLine>;
   try {
@@ -160,7 +198,7 @@ async function main(): Promise<number> {
   const [command] = positionals;
   const port = values.port === undefined ? undefined : portOf(values.port);
   const hostname = values.hostname === undefined ? undefined : hostOf(values.hostname);
-  const served = servedOf(values);
+  const served = askedOf(values);
   if ('refused' in served) {
     log(`${served.refused}\n${USAGE}`);
     return 2;
@@ -186,6 +224,7 @@ async function main(): Promise<number> {
       log,
       policy: served.policy,
       cspNonce: served.cspNonce,
+      gates: served.gates,
     });
   } catch (error) {
     log(`the stack did not start: ${String(error)}`);

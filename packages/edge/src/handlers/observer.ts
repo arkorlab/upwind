@@ -42,6 +42,31 @@ export function observeMetric(host: Pick<EdgeHost, 'observer'>, metric: EdgeMetr
   });
 }
 
+type TerminalMetric = Partial<EdgeMetric> &
+  Pick<EdgeMetric, 'projectId' | 'pathname' | 'outcomeKind' | 'colo' | 'manifestId' | 'policyId'>;
+
+/** An early terminal answer uses no delivery strategy; its own waits and dispatches are supplied. */
+export function observeTerminal(host: Pick<EdgeHost, 'observer'>, metric: TerminalMetric): void {
+  observeMetric(host, {
+    kind: 'passthrough',
+    shellStrategy: '',
+    shellSource: '',
+    originCacheHeader: '',
+    encoding: '',
+    ttfbInternalMs: 0,
+    shellLookupMs: 0,
+    originFirstByteMs: 0,
+    originTotalMs: 0,
+    shellBytes: 0,
+    suffixBytes: 0,
+    recovery: 0,
+    retry: 0,
+    assetHit: 0,
+    subrequests: 0,
+    ...metric,
+  });
+}
+
 /** Count storage already started, behind the answer, before writing its single delivery point. */
 export async function observeMetricAfterRequests(
   host: Pick<EdgeHost, 'observer'>,
@@ -177,4 +202,59 @@ function reportFailed(report: RouteReport, error: unknown): void {
     kind: report.kind,
     detail: error instanceof Error ? error.message : String(error),
   });
+}
+
+/** A request-local metric carrier; a passed gate adds its one dispatch to the existing point. */
+export function gateObservation(original: EdgeHost): {
+  readonly host: EdgeHost;
+  readonly passed: () => void;
+} {
+  let dispatched = false;
+  const host: EdgeHost = {
+    get names() {
+      return original.names;
+    },
+    get sharedDomain() {
+      return original.sharedDomain;
+    },
+    get ownDomains() {
+      return original.ownDomains;
+    },
+    get ownHostnames() {
+      return original.ownHostnames;
+    },
+    get credentials() {
+      return original.credentials;
+    },
+    functionGone: (error) => original.functionGone(error),
+    get scopeSignals() {
+      return original.scopeSignals;
+    },
+    get gates() {
+      return original.gates;
+    },
+    get currentRecord() {
+      return original.currentRecord?.bind(original);
+    },
+    observer: {
+      metric(metric) {
+        original.observer.metric({
+          ...metric,
+          subrequests: metric.subrequests + Number(dispatched),
+        });
+      },
+      recordServed(bytes) {
+        original.observer.recordServed(bytes);
+      },
+      imageTransformed() {
+        original.observer.imageTransformed();
+      },
+    },
+  };
+  return {
+    host,
+    passed: () => {
+      dispatched = true;
+    },
+  };
 }

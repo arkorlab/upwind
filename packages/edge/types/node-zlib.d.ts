@@ -29,6 +29,9 @@ declare module 'node:zlib' {
   export const constants: ZlibConstants;
   export function createBrotliCompress(options?: BrotliOptions): CompressorStream;
   export function createGzip(): CompressorStream;
+  export function createBrotliDecompress(): CompressorStream;
+  export function gzipSync(input: Uint8Array): Uint8Array;
+  export function deflateSync(input: Uint8Array): Uint8Array;
   export function brotliCompressSync(input: Uint8Array, options?: BrotliOptions): Uint8Array;
   export function brotliDecompressSync(input: Uint8Array, options?: BrotliOptions): Uint8Array;
   export function gunzipSync(

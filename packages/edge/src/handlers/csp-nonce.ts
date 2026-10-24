@@ -21,8 +21,33 @@ const CSP_HEADERS: readonly string[] = [CSP_HEADER, REPORT_ONLY_HEADER];
 // One registration calls the stamp once even when a script or preload already has a nonce.
 const NONCE_ELEMENTS = ['script', '[nonce]', ...SCRIPT_PRELOAD_LINKS].join(',');
 
+/**
+ * The response without a policy at all: what a browser keeps of a response it refreshes with one
+ * that carries none is the policy it kept with the body.
+ */
+export function withoutPolicies(headers: Headers): void {
+  for (const name of CSP_HEADERS) {
+    headers.delete(name);
+  }
+}
+
 export function mintCspNonce(): string {
   return toBase64(crypto.getRandomValues(new Uint8Array(NONCE_BYTES)));
+}
+
+/**
+ * What the debug header says of a document's nonce, for shadow validation to check a run's against:
+ * that one was minted, and the setting it was minted under — the mode (`mode`, none where the
+ * project did not hand nonces over) and `'strict-dynamic'` beside it.
+ */
+export function cspMarkers(
+  nonce: string | undefined,
+  mode: CspNonceMode | undefined,
+  strictDynamic: boolean,
+): string {
+  const minted = nonce === undefined ? '' : ';csp=nonce';
+  const reportOnly = mode === 'report-only' ? ';csp-mode=report-only' : '';
+  return `${minted}${reportOnly}${mode !== undefined && strictDynamic ? ';csp-strict-dynamic' : ''}`;
 }
 
 /**
@@ -91,6 +116,27 @@ function withExistingNoncesReplaced(value: string, nonce: string): string {
   );
 }
 
+/** The ordered policy identities, without whitespace beside their comma boundaries. */
+function policySequence(value: string): string {
+  return value
+    .split(',')
+    .map((policy) => policy.trim())
+    .join(',');
+}
+
+/**
+ * The report-only policies with the trial of the enforcing one beside them — once: a document the
+ * edge answered before, kept whole and answered again (a gate's), carries the trial already, its
+ * nonce now this response's, and a second would have every violation reported twice.
+ */
+function withTrial(reporting: string | undefined, trial: string): string {
+  if (reporting === undefined) {
+    return trial;
+  }
+  const tried = `,${policySequence(reporting)},`.includes(`,${policySequence(trial)},`);
+  return tried ? reporting : `${reporting}, ${trial}`;
+}
+
 /**
  * Put the minted nonce in the selected policy, with no placeholder reaching a browser.
  *
@@ -117,7 +163,7 @@ function applyReportOnlyNonce(headers: Headers, nonce: string, strictDynamic: bo
   }
   const replaced = reporting === null ? undefined : withExistingNoncesReplaced(reporting, nonce);
   if (clone !== undefined) {
-    headers.set(REPORT_ONLY_HEADER, replaced === undefined ? clone : `${replaced}, ${clone}`);
+    headers.set(REPORT_ONLY_HEADER, withTrial(replaced, clone));
   } else if (replaced !== undefined) {
     // A report-only policy can be the route's only policy. Without an enforcing clone to trial,
     // the application's existing report-only policy is where the nonce is enabled.

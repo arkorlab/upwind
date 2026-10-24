@@ -1,3 +1,8 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
+
 import {
   convertV4MiniflareOptions,
   Log,
@@ -5,6 +10,8 @@ import {
   Miniflare,
   type V4WorkerOptions,
 } from 'miniflare';
+
+import { NODE_URL_HEADER } from './workers/protocol.ts';
 
 /**
  * Every call this package makes on Miniflare, whose API is an alpha: the Workers of a stack in the
@@ -33,6 +40,13 @@ type LocalService =
       readonly props?: Readonly<Record<string, unknown>>;
     };
 
+/**
+ * A service the stack answers in Node rather than in a Worker of its own: handed each request a
+ * Worker sends it as Node's own `Request` — cancelled where the Worker lets go of it
+ * (`nodeService`) — and what it answers is that Worker's answer, its body streamed as it comes.
+ */
+export type LocalHandler = (request: Request) => Promise<Response>;
+
 /** One Worker of a stack. */
 export interface LocalWorker {
   readonly name: string;
@@ -42,6 +56,8 @@ export interface LocalWorker {
   readonly compatibilityFlags?: readonly string[] | undefined;
   readonly bindings?: Readonly<Record<string, string>> | undefined;
   readonly services?: Readonly<Record<string, LocalService>> | undefined;
+  /** And the services it is bound to that the stack answers in Node, each by its binding. */
+  readonly handlers?: Readonly<Record<string, LocalHandler>> | undefined;
   /** The Worker of the stack what this one fetches itself goes to, where not the network. */
   readonly outbound?: string | undefined;
   /** Each KV namespace and bucket by the id the stack keeps it under: one id, one store. */
@@ -187,6 +203,112 @@ function durableObjectOptions(
   return options;
 }
 
+type ServiceDesignator = NonNullable<V4WorkerOptions['serviceBindings']>[string];
+
+/**
+ * What the loopback a Worker's request travels on to Node puts on it — Miniflare's own, and the
+ * URL the stack says beside it (`NODE_URL_HEADER`) — and its hop's own, which no request carries on.
+ */
+const LOOPBACK_HEADERS: ReadonlySet<string> = new Set([
+  'connection',
+  'expect',
+  'keep-alive',
+  'mf-cf-blob',
+  'mf-custom-node-service',
+  NODE_URL_HEADER,
+  'transfer-encoding',
+]);
+
+/** Where a request that came on the loopback with no URL said beside it is taken to be asked. */
+const LOOPBACK_ORIGIN = 'http://localhost';
+
+/**
+ * A request a Worker sent a service in Node, as Node's own, cancelled with `signal`: at the URL the
+ * Worker addressed it to (`NODE_URL_HEADER`), of which the loopback keeps only the path and the
+ * host, with the headers the Worker sent. A body, which no request a stack sends in Node now has,
+ * is read whole on the way.
+ */
+async function nodeRequestOf(incoming: IncomingMessage, signal: AbortSignal): Promise<Request> {
+  const headers = new Headers();
+  const { rawHeaders } = incoming;
+  for (let at = 0; at + 1 < rawHeaders.length; at += 2) {
+    const name = rawHeaders[at] ?? '';
+    if (!LOOPBACK_HEADERS.has(name.toLowerCase())) {
+      headers.append(name, rawHeaders[at + 1] ?? '');
+    }
+  }
+  const said = incoming.headers[NODE_URL_HEADER];
+  const host = incoming.headers.host ?? new URL(LOOPBACK_ORIGIN).host;
+  const url = typeof said === 'string' ? said : new URL(incoming.url ?? '/', `http://${host}`).href;
+  const method = incoming.method ?? 'GET';
+  const hasBody = method !== 'GET' && method !== 'HEAD';
+  const chunks: unknown[] = hasBody ? await incoming.toArray() : [];
+  return new Request(url, {
+    method,
+    headers,
+    redirect: 'manual',
+    signal,
+    ...(hasBody && { body: Buffer.concat(chunks as Buffer[]) }),
+  });
+}
+
+/** `response` written to the loopback as it streams; a Worker that lets go of it ends the writing. */
+async function written(response: Response, outgoing: ServerResponse): Promise<void> {
+  const headers: Record<string, string | string[]> = {};
+  for (const [name, value] of response.headers) {
+    headers[name] = name === 'set-cookie' ? response.headers.getSetCookie() : value;
+  }
+  outgoing.writeHead(response.status, response.statusText, headers);
+  // A caller may decide at the headers and let go without reading any body.
+  outgoing.flushHeaders();
+  if (response.body === null) {
+    outgoing.end();
+    return;
+  }
+  // The DOM's stream and Node's are one at run time; only their types tell them apart.
+  await pipeline(Readable.fromWeb(response.body as NodeReadableStream<Uint8Array>), outgoing);
+}
+
+/**
+ * A handler in Node as Miniflare takes one with the loopback request it came on (`node`), whose
+ * answer is written as it streams. A Worker that lets go of its request — its own visitor gone, a
+ * deadline of its passed — has the loopback closed before the answer is all written, and that
+ * cancels the request the handler was handed (`Request.signal`), and whatever it sent on with it.
+ * Taken as a function instead (`#handleLoopbackCustomFetchService`), a handler is handed a request
+ * nothing cancels, and what it sends on runs until it is answered, long after the Worker has.
+ */
+function nodeService(handler: LocalHandler): ServiceDesignator {
+  return {
+    node: async (incoming, outgoing): Promise<void> => {
+      const cancelled = new AbortController();
+      outgoing.once('close', () => {
+        if (!outgoing.writableFinished) {
+          cancelled.abort(new Error('the Worker let go of its request'));
+        }
+      });
+      const response = await handler(await nodeRequestOf(incoming, cancelled.signal));
+      if (cancelled.signal.aborted) {
+        await response.body?.cancel();
+        return;
+      }
+      try {
+        await written(response, outgoing);
+      } catch {
+        // The Worker let go of the answer as it streamed: nothing waits for the rest of it.
+      }
+    },
+  };
+}
+
+/** Each handler in Node as Miniflare takes one (`nodeService`), by its binding. */
+function nodeServices(
+  handlers: Readonly<Record<string, LocalHandler>> = {},
+): Record<string, ServiceDesignator> {
+  return Object.fromEntries(
+    Object.entries(handlers).map(([name, handler]) => [name, nodeService(handler)]),
+  );
+}
+
 function v4Options(worker: LocalWorker): V4WorkerOptions {
   const { socket } = worker;
   const sockets = [
@@ -220,7 +342,7 @@ function v4Options(worker: LocalWorker): V4WorkerOptions {
     compatibilityDate: worker.compatibilityDate,
     compatibilityFlags: [...(worker.compatibilityFlags ?? [])],
     bindings: { ...worker.bindings },
-    serviceBindings: { ...worker.services },
+    serviceBindings: { ...worker.services, ...nodeServices(worker.handlers) },
     ...(worker.outbound !== undefined && { outboundService: worker.outbound }),
     kvNamespaces: { ...worker.kvNamespaces },
     r2Buckets: { ...worker.r2Buckets },
