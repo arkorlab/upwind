@@ -1,7 +1,6 @@
 import type { AppRuntime, ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
 import {
   HEADER_RULES_AFTER_COOKIE_COUNT_HEADER,
-  HEADER_RULES_AFTER_HEADER,
   HEADER_RULES_JUDGED_HEADER,
   HEADER_RULES_LEFT_HEADER,
   INVALIDATED_REVISION_HEADER,
@@ -30,7 +29,7 @@ import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { layConfiguredOver } from './configured-headers.ts';
+import { laterHeaderRules, layConfiguredOver } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { type AbandonedShellReads, observeMetric, observeRequestMetric } from './observer.ts';
 import {
@@ -462,30 +461,6 @@ function takeResponseInvalidation(input: PassthroughInput, response: Response): 
   if (input.manifest === undefined) {
     input.observeInvalidation?.(invalidated);
   }
-}
-
-/** A later routing phase owns these fields; absent on runtimes from before it says so. */
-function laterHeaderRules(answer: Response): Set<string> | undefined {
-  const value = answer.headers.get(HEADER_RULES_AFTER_HEADER);
-  if (value === null || value === '') return undefined;
-  const names = value.split(',');
-  // Native Headers validates each name without accepting whitespace or a malformed name list.
-  try {
-    for (const name of names) {
-      if (name === '' || name !== name.toLowerCase()) return undefined;
-      answer.headers.has(name);
-    }
-  } catch {
-    return undefined;
-  }
-  const later = new Set(names);
-  // A later Connection replaces the earlier routing and middleware Connection before forwarding.
-  // Its nominations must not be restored by either of those earlier layers.
-  if (!later.has('connection')) return later;
-  const nominated = nominatedBy(answer.headers);
-  if (nominated === undefined) return later;
-  for (const name of nominated) later.add(name);
-  return later;
 }
 
 /**

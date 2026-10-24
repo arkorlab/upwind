@@ -1,4 +1,5 @@
 import type { ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
+import { HEADER_RULES_AFTER_HEADER } from '@stayingupwind/core/paas';
 import {
   HOP_BY_HOP_HEADERS,
   PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
@@ -12,6 +13,30 @@ import { nominatedBy, statusAllowsLength } from './responses.ts';
 const SET_COOKIE_HEADER = 'set-cookie';
 const CONNECTION_HEADER = 'connection';
 const CONTENT_LENGTH_HEADER = 'content-length';
+
+/** A later routing phase owns these fields; absent on runtimes from before it says so. */
+export function laterHeaderRules(answer: Response): Set<string> | undefined {
+  const value = answer.headers.get(HEADER_RULES_AFTER_HEADER);
+  if (value === null || value === '') return undefined;
+  const names = value.split(',');
+  // Native Headers validates each name without accepting whitespace or a malformed name list.
+  try {
+    for (const name of names) {
+      if (name === '' || name !== name.toLowerCase()) return undefined;
+      answer.headers.has(name);
+    }
+  } catch {
+    return undefined;
+  }
+  const later = new Set(names);
+  // A later Connection replaces the earlier routing and middleware Connection before forwarding.
+  // Its nominations must not be restored by either of those earlier layers.
+  if (!later.has('connection')) return later;
+  const nominated = nominatedBy(answer.headers);
+  if (nominated === undefined) return later;
+  for (const name of nominated) later.add(name);
+  return later;
+}
 
 /** Coding, framing and entity tags describe the optimizer's bytes; it does not offer ranges. */
 const IMAGE_ENTITY_HEADERS: ReadonlySet<string> = new Set([

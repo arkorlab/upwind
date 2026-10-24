@@ -40,7 +40,8 @@
     "./standalone": "./src/standalone/index.ts",
     "./standalone/worker": "./src/standalone/worker.ts",
     "./strategies/asset-upstream": "./src/strategies/asset-upstream.ts",
-    "./strategies/context": "./src/strategies/context.ts"
+    "./strategies/context": "./src/strategies/context.ts",
+    "./handlers/app-dispatch": "./src/handlers/app-dispatch.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",
