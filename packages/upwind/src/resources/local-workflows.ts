@@ -17,6 +17,21 @@ export interface LocalCloudflareWorkflow {
   readonly wasmModules?: readonly { readonly name: string; readonly bytes: Uint8Array }[];
 }
 
+/** A conflicting declaration cannot shadow another resource or prevent healthy local storage. */
+export function independentLocalWorkflows<
+  Workflow extends { readonly declaration: { readonly name: string } },
+>(workflows: readonly Workflow[], occupied: readonly string[]): readonly Workflow[] {
+  const reserved = new Set(occupied);
+  return workflows.filter((workflow) => {
+    const name = workflow.declaration.name;
+    if (!reserved.has(name)) return true;
+    console.warn(
+      `upwind: Cloudflare Workflow binding ${name} conflicts with another resource; skipping this Workflow while other local resources remain available`,
+    );
+    return false;
+  });
+}
+
 /** Watch failed entry modules too, so fixing a Workflow restores it on the next dev restart. */
 export async function localWorkflows(
   projectDir: string,

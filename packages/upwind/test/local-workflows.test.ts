@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { localEntries } from '../src/resources/local-bindings.ts';
 import { failedOwnerNames } from '../src/resources/local-failure.ts';
-import { localWorkflowBridge } from '../src/resources/local-workflows.ts';
+import {
+  independentLocalWorkflows,
+  localWorkflowBridge,
+} from '../src/resources/local-workflows.ts';
 
 describe('local Workflow bridge', () => {
   it('keeps default persistence identities while reserving Workflow names', () => {
@@ -23,6 +26,21 @@ describe('local Workflow bridge', () => {
     expect(() => localEntries([], [{ name: 'JOBS', type: 'ai' }], ['JOBS'])).toThrow(
       'Cloudflare Workflow binding JOBS conflicts',
     );
+  });
+
+  it('isolates only conflicting Workflow registrations before local resource admission', () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {
+      // Assert the diagnostic without writing it to the test runner.
+    });
+    const workflows = ['JOBS', 'HEALTHY'].map((name) => ({ declaration: { name } }));
+    try {
+      expect(independentLocalWorkflows(workflows, ['JOBS'])).toStrictEqual([workflows[1]]);
+      expect(warning).toHaveBeenCalledExactlyOnceWith(
+        expect.stringContaining('Cloudflare Workflow binding JOBS conflicts'),
+      );
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it('identifies only registered native worker service prefixes during startup recovery', () => {

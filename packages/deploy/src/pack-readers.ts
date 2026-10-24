@@ -14,6 +14,9 @@ function consumersOf(bundle: DeploymentBundle): readonly (readonly [string, Func
     ...Object.entries(functions.durableObjects ?? {}).map(
       ([name, spec]) => [`durable-object:${name}`, spec] as const,
     ),
+    ...Object.entries(functions.cloudflareWorkflows ?? {}).map(
+      ([name, spec]) => [`cloudflare-workflow:${name}`, spec] as const,
+    ),
   ];
 }
 

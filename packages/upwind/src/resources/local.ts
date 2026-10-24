@@ -21,7 +21,11 @@ import {
   runtimeOptions,
   type LocalRuntimeOptions,
 } from './local-runtime-options.ts';
-import { localWorkflows, localWorkflowBridge } from './local-workflows.ts';
+import {
+  independentLocalWorkflows,
+  localWorkflows,
+  localWorkflowBridge,
+} from './local-workflows.ts';
 import { publishResources } from './publish.ts';
 import { disposeLocalResources } from './shutdown.ts';
 import { sourceChanges } from './watch-sources.ts';
@@ -532,11 +536,9 @@ export async function startLocalResources(
       versions,
       options.mode ?? 'development',
     );
-    const workflows = await localWorkflows(
-      projectDir,
-      watchedFiles,
-      versions,
-      options.mode ?? 'development',
+    const workflows = independentLocalWorkflows(
+      await localWorkflows(projectDir, watchedFiles, versions, options.mode ?? 'development'),
+      objects.map((object) => object.declaration.name),
     );
     sourcesChanged = sourceChanges(versions);
     options.signal?.throwIfAborted();
