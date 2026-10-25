@@ -89,7 +89,7 @@ async function fixture(scenario: Scenario) {
   const code = await source(scenario);
   // Run the current absolute Node executable, with only the inert bootstrap; never a PATH command.
   const child = spawn(process.execPath, ['--input-type=module', '--eval', code], {
-    env: { ARKOR_NODE_RUNTIME: CONFIGURATION },
+    env: { NODE_ENV: 'production', ARKOR_NODE_RUNTIME: CONFIGURATION },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const events: Witness[] = [];
