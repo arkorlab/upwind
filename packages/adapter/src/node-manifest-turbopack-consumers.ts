@@ -11,6 +11,7 @@ import {
   type NodeManifestConsumerImport,
 } from './node-manifest-consumers.ts';
 import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
+import { reachableNodeManifestFactories } from './node-manifest-reachability.ts';
 import {
   proveNodeManifestRuntimeCallers,
   type NodeManifestRuntimeCallers,
@@ -132,6 +133,21 @@ class TurbopackConsumers {
             distDir: input.distDir,
           });
     this.assertPhysicalCallers();
+    this.restrictProtectedIncoming();
+  }
+
+  private restrictProtectedIncoming(): void {
+    const reached = reachableNodeManifestFactories({
+      factories: [...this.factories.values()],
+      graphs: this.graphs,
+      callers: this.callerProof?.callers ?? [],
+      physicalIds: new Set(this.input.sources.map((source) => source.id)),
+      runtimeIds: new Set(this.graphs.map((graph) => graph.runtimeId)),
+    });
+    if (reached === undefined) return;
+    const reachable = new Set(reached);
+    for (const [target, parents] of this.incoming)
+      this.incoming.set(target, parents.intersection(reachable));
   }
 
   private producerKind(): 'app-page' | 'pages' | 'app-route' | 'pages-api' {
