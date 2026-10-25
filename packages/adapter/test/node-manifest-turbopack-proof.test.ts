@@ -291,6 +291,31 @@ async function templateFixture(
   return own;
 }
 
+type RuntimeKind = 'app-page' | 'pages' | 'app-route' | 'pages-api';
+const CLIENT_ASSET_PREFIX = 'https://cdn.example/assets/_next/';
+const PREFIX_PROFILES = [
+  ['app-page', CLIENT_ASSET_PREFIX],
+  ['pages', CLIENT_ASSET_PREFIX],
+  ['app-route', '/'],
+  ['pages-api', '/'],
+] as const;
+
+async function prefixFixture(directory: string, kind: RuntimeKind) {
+  return kind === 'app-page' ? fixture(directory) : templateFixture(directory, kind);
+}
+
+async function compilerPrefix(
+  own: Awaited<ReturnType<typeof fixture>>,
+  prefix: string,
+): Promise<void> {
+  const code = await readFile(own.runtime, 'utf8');
+  const original = 'var ASSET_PREFIX = "/";';
+  if (!code.includes(original)) throw new Error('Missing source-only compiler prefix fixture');
+  const changed = code.replace(original, () => `var ASSET_PREFIX = ${jsLiteral(prefix)};`);
+  await writeFile(own.runtime, changed);
+  own.sources.set(own.runtime, { file: own.runtime, sha256: digest(changed) });
+}
+
 describe('sealed Turbopack producers through the real manifest proof entry', () => {
   let directory: string;
 
@@ -303,6 +328,33 @@ describe('sealed Turbopack producers through the real manifest proof entry', () 
   afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
   });
+
+  it.each(PREFIX_PROFILES)(
+    'propagates trusted client config through the complete %s manifest proof',
+    async (kind, expectedPrefix) => {
+      const own = await prefixFixture(directory, kind);
+      await compilerPrefix(own, expectedPrefix);
+      const proof = await proveNodeManifests(
+        { ...own.input, clientAssetPrefix: CLIENT_ASSET_PREFIX },
+        own.graph,
+      );
+
+      expect(proof.normalization?.runtimeRootDir).toBe(directory);
+      expect(proof.approvedCompilerSources).toStrictEqual([own.sources.get(own.runtime)]);
+    },
+  );
+
+  it.each(PREFIX_PROFILES)(
+    'refuses a %s runtime prefix from the other endpoint profile instead of trusting its declaration',
+    async (kind, expectedPrefix) => {
+      const own = await prefixFixture(directory, kind);
+      await compilerPrefix(own, expectedPrefix === '/' ? CLIENT_ASSET_PREFIX : '/');
+
+      await expect(
+        proveNodeManifests({ ...own.input, clientAssetPrefix: CLIENT_ASSET_PREFIX }, own.graph),
+      ).rejects.toThrow('asset prefix');
+    },
+  );
 
   it('closes all actual boot importers before emitting compiler source and immutable root metadata', async () => {
     const own = await fixture(directory);

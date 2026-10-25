@@ -26,7 +26,7 @@ import { projectNodeManifestTurbopackFactory } from './node-manifest-turbopack.t
 export interface NodeManifestTurbopackConsumerInput {
   readonly distDir: string;
   readonly rootDir: string;
-  readonly assetPrefix?: string;
+  readonly assetPrefix?: string | undefined;
   readonly sources: readonly NodeManifestTurbopackGraphFile[];
   readonly entries: readonly NodeManifestTurbopackSealedEntry[];
   readonly producer: {

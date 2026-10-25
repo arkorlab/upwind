@@ -198,6 +198,31 @@ describe('native Function reserved layout', () => {
     vi.mocked(buildNodeFunction).mockReset().mockImplementation(node);
   });
 
+  it('passes computed trusted config to both final build backends without adding it to runtime data', async () => {
+    const routes = [route('/worker'), route('/native')];
+    const own = context(routes);
+    const configured: FunctionsContext = {
+      ...own,
+      ctx: {
+        ...own.ctx,
+        config: { ...own.ctx.config, assetPrefix: 'https://cdn.example/assets///' },
+      },
+    };
+    const built = await nativeFunctionLayout(configured, manifest(routes), {
+      budget: undefined,
+      loads: load('/native'),
+      weighOnly: false,
+    });
+
+    expect(
+      vi.mocked(buildFunction).mock.calls.map(([input]) => input.clientAssetPrefix),
+    ).toStrictEqual(['https://cdn.example/assets/_next/', 'https://cdn.example/assets/_next/']);
+    expect(
+      vi.mocked(buildNodeFunction).mock.calls.map(([input]) => input.clientAssetPrefix),
+    ).toStrictEqual(['https://cdn.example/assets/_next/']);
+    expect(built.runtimeManifest).not.toHaveProperty('clientAssetPrefix');
+  });
+
   it('replans exactly32 Worker clusters into31 before adding one sealed native owner', async () => {
     const workers = Array.from({ length: MAX_APP_FUNCTIONS }, (_, at) =>
       route(`/worker-${String(at).padStart(2, '0')}`),

@@ -108,6 +108,8 @@ export interface BuildFunctionInput {
   readonly projectDir: string;
   /** The trusted repository root Next.js used to name explicitly traced declarations. */
   readonly repoRoot?: string | undefined;
+  /** Trusted normalized build config, computed with Next.js's client asset-prefix rule. */
+  readonly clientAssetPrefix?: string | undefined;
   readonly outDir: string;
   readonly patch: PatchContext;
   readonly entries: readonly EntryModule[];

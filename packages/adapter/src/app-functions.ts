@@ -25,6 +25,7 @@ import { instrumentationEntryTraces } from './native-addon-entries.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
 import { nativeFunctionLayout } from './native-layout.ts';
 import { NativeFunctionRequiredError } from './native-loads.ts';
+import { nextClientAssetPrefix } from './node-asset-prefix.ts';
 import type { NodeBuiltFunction } from './node-function.ts';
 import { type BodiesLeftOut, withinTheLimit } from './page-body-layout.ts';
 import type { PatchContext } from './patches/index.ts';
@@ -271,6 +272,7 @@ export async function appFunctionInput(
     ...(held !== undefined && held.name !== PRIMARY_FUNCTION && { name: held.name }),
     projectDir: ctx.projectDir,
     repoRoot: ctx.repoRoot,
+    clientAssetPrefix: nextClientAssetPrefix(ctx.config),
     outDir: context.outDir,
     patch: await patchFor(context, [...parts.chunks, ...middleware.chunks], wasm),
     entries: [...parts.modules, ...middleware.node],
@@ -327,6 +329,7 @@ export async function buildMiddlewareFunction(
     kind: 'middleware',
     projectDir: ctx.projectDir,
     repoRoot: ctx.repoRoot,
+    clientAssetPrefix: nextClientAssetPrefix(ctx.config),
     outDir: context.outDir,
     patch: await patchFor(context, middleware.chunks, wasm),
     entries: middleware.node,

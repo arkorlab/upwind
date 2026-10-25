@@ -7,6 +7,7 @@ import { beneath } from './build-paths.ts';
 import { jsLiteral } from './codegen.ts';
 import { AuditError } from './dependencies.ts';
 import type { EntryModule } from './function.ts';
+import { manifestRuntimeAssetPrefix } from './node-asset-prefix.ts';
 import {
   assertNodeManifestConsumer,
   type NodeManifestConsumerImport,
@@ -73,6 +74,7 @@ export interface NodeManifestNormalization {
 export interface ManifestGraphInput {
   readonly distDir: string;
   readonly rootDir?: string;
+  readonly clientAssetPrefix?: string | undefined;
   readonly entries?: readonly EntryModule[] | undefined;
   readonly runtimeManifest?: string | undefined;
   readonly instrumentation?: string | undefined;
@@ -363,6 +365,7 @@ class ConsumerGraph {
     const proof = await proveNodeManifestTurbopackConsumers({
       rootDir,
       distDir,
+      assetPrefix: manifestRuntimeAssetPrefix(this.input.clientAssetPrefix, kind),
       sources,
       entries,
       producer: { id: child.id, file: producer.file, sha256: producer.sha256, kind: producerKind },

@@ -38,7 +38,7 @@ const ROLLDOWN_RUNTIME_MODULE = '\0rolldown/runtime.js';
 const GRAPH_LINKS = [turbopackRuntimePatch, instrumentationPatch, cacheHandlersPatch];
 
 type NodeProofInput = Partial<
-  Pick<BuildFunctionInput, 'manifests' | 'runtimeManifest' | 'repoRoot'>
+  Pick<BuildFunctionInput, 'manifests' | 'runtimeManifest' | 'repoRoot' | 'clientAssetPrefix'>
 > &
   Pick<
     BuildFunctionInput,
@@ -392,6 +392,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     {
       distDir: input.patch.distDir,
       rootDir: input.repoRoot ?? input.projectDir,
+      clientAssetPrefix: input.clientAssetPrefix,
       manifests: input.manifests,
       entryTraces: input.entryTraces,
       entries: input.entries,
