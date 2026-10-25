@@ -1,13 +1,17 @@
 import type { Node } from '@oxc-project/types';
 
 import type { NativeAddonEntryTrace } from './native-addons.ts';
-import { type NativeBindings, required, stringOf, walk } from './native-ast.ts';
+import { type NativeBindings, required, stringOf } from './native-ast.ts';
 import type { NativeEdit } from './native-operations.ts';
 import { ownedNativeFiles } from './native-ownership.ts';
 import {
+  nativeWorkerMemberKey as memberKey,
   nativeWorkerValues,
   retainedWorkerNodes,
+  scalarNamespaceSelection,
+  scalarWorkerBinding,
   workerNodeMayExecute,
+  workerSelectionWasMutated,
 } from './native-worker-branches.ts';
 
 type WorkerOrigin = 'constructor' | 'prototype' | 'namespace' | 'module' | 'promise' | 'ambiguous';
@@ -56,11 +60,6 @@ function workerImports(tree: readonly Node[]): ReadonlyMap<Node, WorkerOrigin> {
 
 function isNamespace(origin: WorkerOrigin | undefined): boolean {
   return origin === 'namespace' || origin === 'module';
-}
-
-function memberKey(member: Extract<Node, { type: 'MemberExpression' }>): string | undefined {
-  if (member.computed) return stringOf(member.property);
-  return member.property.type === 'Identifier' ? member.property.name : undefined;
 }
 
 function constructorMember(
@@ -166,7 +165,12 @@ function declaredOrigin(
   if (imported !== undefined) return stableOrigin(imported, node, context);
   if (declaration.type !== 'VariableDeclarator' || declaration.init === null) return undefined;
   const origin = workerOrigin(declaration.init, context, seen);
-  const found = origin === undefined ? undefined : bindingOrigin(declaration.id, node.name, origin);
+  const scalar = scalarWorkerBinding(declaration, node.name, {
+    ...context,
+    origin: (value) => workerOrigin(value, context, seen),
+  });
+  const found =
+    origin === undefined || scalar ? undefined : bindingOrigin(declaration.id, node.name, origin);
   return stableOrigin(found, node, context);
 }
 
@@ -248,10 +252,13 @@ function workerOrigin(
   }
   if (workerRequire(node, context)) return 'namespace';
   if (node.type === 'MemberExpression')
-    return (
-      memberOrigin(node, workerOrigin(node.object, context, next)) ??
-      containerMemberOrigin(node, context, next)
-    );
+    return scalarNamespaceSelection(node, {
+      ...context,
+      origin: (value) => workerOrigin(value, context, next),
+    })
+      ? undefined
+      : (memberOrigin(node, workerOrigin(node.object, context, next)) ??
+          containerMemberOrigin(node, context, next));
   return undefined;
 }
 
@@ -262,7 +269,11 @@ function invokedCapability(
   if (node.callee.type === 'MemberExpression') {
     const receiver = node.callee.object;
     const owner = workerOrigin(receiver, context);
-    if (owner === 'constructor' || owner === 'ambiguous') return receiver;
+    if (
+      owner === 'constructor' ||
+      (owner === 'ambiguous' && workerOrigin(node.callee, context) !== undefined)
+    )
+      return receiver;
     const method = memberKey(node.callee);
     if (owner === 'promise' && (method === undefined || PROMISE_METHODS.has(method)))
       return receiver;
@@ -300,7 +311,7 @@ function returnedCapability(node: Node, context: WorkerContext): Node | undefine
     isNamespace(origin) &&
     context.tree !== undefined &&
     unmodifiedWorkerSource(value, context) &&
-    !workerWasMutated(context.tree, context)
+    !workerSelectionWasMutated(context.tree, (candidate) => workerOrigin(candidate, context))
   )
     return undefined;
   return capabilityReceiver(value, context);
@@ -339,28 +350,6 @@ function unmodifiedWorkerSource(node: Node, context: WorkerContext): boolean {
   return false;
 }
 
-function workerWasMutated(tree: readonly Node[], context: WorkerContext): boolean {
-  const changed = tree.some((node) => {
-    let target: Node | undefined;
-    if (node.type === 'AssignmentExpression') target = node.left;
-    if (
-      node.type === 'UpdateExpression' ||
-      (node.type === 'UnaryExpression' && node.operator === 'delete')
-    )
-      target = node.argument;
-    return (
-      target !== undefined &&
-      walk(target).some((value) => {
-        return (
-          workerOrigin(value.type === 'MemberExpression' ? value.object : value, context) !==
-          undefined
-        );
-      })
-    );
-  });
-  return changed;
-}
-
 function handledWorkerConstructor(
   node: Node,
   context: WorkerContext,
@@ -372,7 +361,7 @@ function handledWorkerConstructor(
     (node.type === 'NewExpression' || node.type === 'CallExpression') &&
     workerOrigin(node.callee, context) === 'constructor' &&
     unmodifiedWorkerSource(node.callee, context) &&
-    !workerWasMutated(tree, context)
+    !workerSelectionWasMutated(tree, (value) => workerOrigin(value, context))
   );
 }
 

@@ -38,6 +38,61 @@ function constructorOf(program: ReturnType<typeof parseAst>) {
   return node;
 }
 
+const SCALAR_CHOICE =
+  "const chosen=process.env.USE?require('node:worker_threads'):{isMainThread:true,threadId:0};";
+
+describe('finite scalar fields of selected Worker namespaces', () => {
+  it.each([
+    'exports.check=()=>chosen.isMainThread;',
+    'exports.check=()=>chosen.threadId;',
+    'exports.check=()=>chosen["isMainThread"];',
+    'const alias=chosen;exports.check=()=>alias.isMainThread;',
+    'const {isMainThread:flag}=chosen;exports.check=()=>flag;',
+    'const {threadId:id,isMainThread:flag}=chosen;exports.check=()=>id;',
+    'exports.check=()=>chosen.isMainThread();',
+  ])('keeps only proved primitive fields ordinary: %s', (use) => {
+    const source = SCALAR_CHOICE + use;
+
+    expect(capability(source)).toBe(false);
+    expect(dynamicNodeClosureRefusal('/project/scalar.cjs', source)).toBeUndefined();
+  });
+
+  it.each([
+    'exports.check=()=>chosen.Worker;',
+    'exports.check=()=>new chosen.Worker("source",{eval:true});',
+    'exports.check=()=>chosen[globalThis.key];',
+    'const {isMainThread:flag=true}=chosen;exports.check=()=>flag;',
+    'const {...rest}=chosen;exports.check=()=>rest.isMainThread;',
+    'const {isMainThread:{value}}=chosen;exports.check=()=>value;',
+    'let {isMainThread:flag}=chosen;flag=globalThis.other;exports.check=()=>flag;',
+    'chosen.isMainThread=globalThis.other;exports.check=()=>chosen.isMainThread;',
+    'const alias=chosen;alias.isMainThread=globalThis.other;exports.check=()=>chosen.isMainThread;',
+    'const left=chosen.isMainThread;const right=chosen.threadId;chosen.isMainThread=right;chosen.threadId=left;exports.check=()=>chosen.isMainThread;',
+    'chosen.isMainThread.value=0;exports.check=()=>chosen.threadId;',
+  ])('keeps unknown selections, patterns and mutations strict and terminating: %s', (use) => {
+    const source = SCALAR_CHOICE + use;
+
+    expect(capability(source)).toBe(true);
+    expect(dynamicNodeClosureRefusal('/project/scalar.cjs', source)).toBeTypeOf('string');
+  });
+
+  it.each([
+    'globalThis.other',
+    '{}',
+    '{isMainThread:globalThis.other}',
+    "{isMainThread:require('node:worker_threads').Worker}",
+    '{get isMainThread(){return true;}}',
+    '{isMainThread(){return true;}}',
+    '{isMainThread:true,...globalThis.other}',
+    '{isMainThread:true,[globalThis.key]:false}',
+  ])('does not assume an unknown ordinary object property is scalar: %s', (other) => {
+    const source = `const chosen=process.env.USE?require('node:worker_threads'):${other};exports.check=()=>chosen.isMainThread;`;
+
+    expect(capability(source)).toBe(true);
+    expect(dynamicNodeClosureRefusal('/project/scalar.cjs', source)).toBeTypeOf('string');
+  });
+});
+
 describe('closed Worker value selections', () => {
   it.each(SELECTIONS)('retains known capability through selected value %s', (selection) => {
     const source = programSource(selection);
@@ -188,6 +243,17 @@ describe('retained native selection markers', () => {
     await expect(proof.retained(chunk)).resolves.toStrictEqual([]);
     expect(chunk.code).not.toContain('__UPWIND_NATIVE_');
   });
+
+  it.each(['chosen.isMainThread', 'flag'])(
+    'keeps trace-only scalar source marker-free after real source/final analysis: %s',
+    async (value) => {
+      const source = `${SCALAR_CHOICE}const {isMainThread:flag}=chosen;exports.check=()=>${value};`;
+      const { proof, chunk } = await bundle(source, true, true);
+
+      await expect(proof.retained(chunk)).resolves.toStrictEqual([]);
+      expect(chunk.code).not.toContain('__UPWIND_NATIVE_');
+    },
+  );
 
   it('does not mint an eager child marker for a proved literal-dead original site', async () => {
     const source = `${IMPORT}if(false){new Worker('source',{eval:true});}`;
