@@ -1,13 +1,7 @@
 import { parseAst } from 'rolldown/parseAst';
 
-import {
-  childrenOf,
-  isNode,
-  listOf,
-  type Node,
-  type Scope,
-  scopeOpenedBy,
-} from './lexical-scope.ts';
+import { isNode, listOf, type Node, type Scope, scopeOpenedBy } from './lexical-scope.ts';
+import { hostObjectOf } from './node-closure-hosts.ts';
 
 type Builtin = 'child_process' | 'module' | 'process' | 'vm';
 interface Origin {
@@ -20,9 +14,15 @@ interface Visit {
   readonly key: string | undefined;
   readonly scopes: readonly Scope[];
 }
+interface Traversal {
+  readonly program: Node;
+  readonly imports: ReadonlyMap<Node, Origin>;
+  readonly factories: ReadonlyMap<Node, string | null>;
+  readonly contexts: Map<Scope, string>;
+}
+const NODE_LOADER_REFUSAL = 'an unproved Node module loader or code compiler';
 
 const MODULE_LOADERS = new Set([
-  'Module',
   '_cache',
   '_compile',
   '_extensions',
@@ -33,6 +33,7 @@ const MODULE_LOADERS = new Set([
   'createRequire',
   'createRequireFromPath',
   'load',
+  'Module',
   'prototype',
   'register',
   'registerHooks',
@@ -47,17 +48,17 @@ const PROCESS_LOADERS = new Set([
   'mainModule',
 ]);
 const VM_COMPILERS = new Set([
-  'Script',
-  'SourceTextModule',
-  'SyntheticModule',
   'compileFunction',
   'runInContext',
   'runInNewContext',
   'runInThisContext',
+  'Script',
+  'SourceTextModule',
+  'SyntheticModule',
 ]);
 const CHILD_PROCESS_EXECUTORS = new Set([
-  'ChildProcess',
   '_forkChild',
+  'ChildProcess',
   'exec',
   'execFile',
   'execFileSync',
@@ -67,7 +68,7 @@ const CHILD_PROCESS_EXECUTORS = new Set([
   'spawnSync',
 ]);
 
-function identifier(
+function isIdentifier(
   node: unknown,
   name?: string,
 ): node is Node & { readonly type: 'Identifier'; readonly name: string } {
@@ -94,11 +95,9 @@ function stringOf(node: unknown): string | undefined {
 }
 
 function memberOf(node: Node): string | undefined {
-  return node['computed'] === true
-    ? stringOf(node['property'])
-    : identifier(node['property'])
-      ? (node['property']['name'] as string)
-      : undefined;
+  const property = node['property'];
+  if (node['computed'] === true) return stringOf(property);
+  return isIdentifier(property) ? property.name : undefined;
 }
 
 function builtinOf(specifier: string | undefined): Builtin | undefined {
@@ -129,7 +128,7 @@ function importedOrigins(program: Node): Map<Node, Origin> {
     for (const specifier of listOf(declaration, 'specifiers')) {
       if (!isNode(specifier)) continue;
       const imported = specifier['imported'];
-      const member = identifier(imported) ? (imported['name'] as string) : stringOf(imported);
+      const member = isIdentifier(imported) ? imported.name : stringOf(imported);
       origins.set(specifier, {
         builtin,
         ...(member === undefined || member === 'default' ? {} : { member }),
@@ -149,14 +148,21 @@ function originOf(
   seen.add(value);
   const imported = imports.get(value);
   if (imported !== undefined) return imported;
-  if (identifier(value)) {
-    const binding = bindingOf(value['name'] as string, scopes);
-    if (binding !== undefined) return originOf(binding.node, binding.scopes, imports, seen);
-    return value['name'] === 'process' ? { builtin: 'process' } : undefined;
-  }
+  if (isIdentifier(value)) return identifierOrigin(value.name, scopes, imports, seen);
   if (value.type === 'VariableDeclarator') return originOf(value['init'], scopes, imports, seen);
   if (value.type === 'MemberExpression') return memberOrigin(value, scopes, imports, seen);
   return requiredOrigin(value, scopes);
+}
+
+function identifierOrigin(
+  name: string,
+  scopes: readonly Scope[],
+  imports: ReadonlyMap<Node, Origin>,
+  seen: Set<Node>,
+): Origin | undefined {
+  const binding = bindingOf(name, scopes);
+  if (binding !== undefined) return originOf(binding.node, binding.scopes, imports, seen);
+  return name === 'process' ? { builtin: 'process' } : undefined;
 }
 
 function memberOrigin(
@@ -165,16 +171,28 @@ function memberOrigin(
   imports: ReadonlyMap<Node, Origin>,
   seen: Set<Node>,
 ): Origin | undefined {
+  const host = hostMemberOrigin(value, scopes);
+  if (host !== undefined) return host;
   const owner = originOf(value['object'], scopes, imports, seen);
   if (owner === undefined || owner.member !== undefined) return owner;
   const member = memberOf(value);
   return member === 'default' ? owner : { builtin: owner.builtin, member: member ?? '*' };
 }
 
+function hostMemberOrigin(value: Node, scopes: readonly Scope[]): Origin | undefined {
+  const owner = hostObjectOf(value['object'], scopes);
+  const member = memberOf(value);
+  if (owner === 'global' && member === 'process') return { builtin: 'process' };
+  if (owner !== 'cjs-module') return undefined;
+  if (member === 'constructor') return { builtin: 'module', member: 'Module' };
+  if (member === 'require' || member === 'load') return { builtin: 'module', member: 'load' };
+  return member === undefined ? { builtin: 'module', member: '*' } : undefined;
+}
+
 function requiredOrigin(value: Node, scopes: readonly Scope[]): Origin | undefined {
   if (
     value.type !== 'CallExpression' ||
-    !identifier(value['callee'], 'require') ||
+    !isIdentifier(value['callee'], 'require') ||
     bindingOf('require', scopes) !== undefined
   )
     return undefined;
@@ -182,7 +200,7 @@ function requiredOrigin(value: Node, scopes: readonly Scope[]): Origin | undefin
   return builtin === undefined ? undefined : { builtin };
 }
 
-function forbidden(origin: Origin | undefined): boolean {
+function isForbiddenOrigin(origin: Origin | undefined): boolean {
   if (origin?.member === undefined) return false;
   if (origin.member === '*') return true;
   switch (origin.builtin) {
@@ -206,7 +224,7 @@ function exportTable(assignment: Node): Node | undefined {
   // numeric-id/factory protocol remain the same; no ordinary geometry member identifies it.
   return isNode(left) &&
     left.type === 'MemberExpression' &&
-    identifier(left['object']) &&
+    isIdentifier(left['object']) &&
     memberOf(left) === 'exports' &&
     isNode(right) &&
     right.type === 'ArrayExpression'
@@ -218,48 +236,81 @@ function exportTables(program: Node): Node[] {
   const tables: Node[] = [];
   const pending = [program];
   for (let assignment = pending.pop(); assignment !== undefined; assignment = pending.pop()) {
-    for (const child of childrenOf(assignment)) {
-      for (const value of Array.isArray(child) ? child : [child])
-        if (isNode(value)) pending.push(value);
-    }
+    const children = childVisits(assignment, []);
+    for (const child of children) pending.push(child.node);
     const table = exportTable(assignment);
     if (table !== undefined) tables.push(table);
   }
   return tables;
 }
 
+function registerFactory(element: Node, factories: Map<Node, string | null>): void {
+  if (element.type !== 'ArrowFunctionExpression' && element.type !== 'FunctionExpression') return;
+  const context = listOf(element, 'params')[0];
+  if (context !== undefined) factories.set(element, isIdentifier(context) ? context.name : null);
+}
+
+function scanFactoryTable(table: Node, tables: Node[], factories: Map<Node, string | null>): void {
+  let hasId = false;
+  const elements = listOf(table, 'elements').entries();
+  for (const [index, element] of elements) {
+    if (!isNode(element)) {
+      hasId = false;
+      continue;
+    }
+    if (index === 0 && element.type === 'ArrayExpression') {
+      tables.push(element);
+      hasId = false;
+      continue;
+    }
+    if (element.type === 'Literal' && typeof element['value'] === 'number') {
+      hasId = true;
+      continue;
+    }
+    if (hasId) registerFactory(element, factories);
+    hasId = false;
+  }
+}
+
 /** Reuse Turbopack's numeric-id/factory table shape, rather than a property's spelling alone. */
 function factoriesOf(program: Node): Map<Node, string | null> {
   const factories = new Map<Node, string | null>();
   const tables = exportTables(program);
-  for (let table = tables.pop(); table !== undefined; table = tables.pop()) {
-    let hasId = false;
-    for (const [index, element] of listOf(table, 'elements').entries()) {
-      if (!isNode(element)) {
-        hasId = false;
-        continue;
-      }
-      if (index === 0 && element.type === 'ArrayExpression') {
-        tables.push(element);
-        hasId = false;
-        continue;
-      }
-      if (element.type === 'Literal' && typeof element['value'] === 'number') {
-        hasId = true;
-        continue;
-      }
-      if (
-        hasId &&
-        (element.type === 'ArrowFunctionExpression' || element.type === 'FunctionExpression')
-      ) {
-        const context = listOf(element, 'params')[0];
-        if (context !== undefined)
-          factories.set(element, identifier(context) ? (context['name'] as string) : null);
-      }
-      hasId = false;
+  for (let table = tables.pop(); table !== undefined; table = tables.pop())
+    scanFactoryTable(table, tables, factories);
+  return factories;
+}
+
+function installImports(scope: Scope, imports: ReadonlyMap<Node, Origin>): void {
+  const specifiers = imports.keys();
+  for (const specifier of specifiers) {
+    const local = specifier['local'];
+    if (!isIdentifier(local)) continue;
+    scope.declared.add(local.name);
+    scope.bindings.set(local.name, specifier);
+  }
+}
+
+function visitScopes(visit: Visit, state: Traversal): readonly Scope[] {
+  const scope = scopeOpenedBy(visit.node);
+  if (scope === undefined) return visit.scopes;
+  const context = state.factories.get(visit.node);
+  if (context !== undefined && context !== null) state.contexts.set(scope, context);
+  if (visit.node === state.program) installImports(scope, state.imports);
+  return [...visit.scopes, scope];
+}
+
+function childVisits(node: Node, scopes: readonly Scope[]): Visit[] {
+  const found: Visit[] = [];
+  const properties = Object.entries(node);
+  for (const [key, child] of properties) {
+    if (key === 'parent') continue;
+    const values: unknown[] = Array.isArray(child) ? child : [child];
+    for (const value of values) {
+      if (isNode(value)) found.push({ node: value, parent: node, key, scopes });
     }
   }
-  return factories;
+  return found;
 }
 
 function visits(
@@ -269,30 +320,13 @@ function visits(
 ): { visits: Visit[]; contexts: ReadonlyMap<Scope, string> } {
   const found: Visit[] = [];
   const contexts = new Map<Scope, string>();
+  const state: Traversal = { program, imports, factories: factoryNames, contexts };
   const pending: Visit[] = [{ node: program, parent: undefined, key: undefined, scopes: [] }];
   for (let visit = pending.pop(); visit !== undefined; visit = pending.pop()) {
-    const scope = scopeOpenedBy(visit.node);
-    const scopes = scope === undefined ? visit.scopes : [...visit.scopes, scope];
-    if (scope !== undefined) {
-      const context = factoryNames.get(visit.node);
-      if (context !== undefined && context !== null) contexts.set(scope, context);
-      if (visit.node === program) {
-        for (const specifier of imports.keys()) {
-          const local = specifier['local'];
-          if (identifier(local)) {
-            scope.declared.add(local['name'] as string);
-            scope.bindings.set(local['name'] as string, specifier);
-          }
-        }
-      }
-    }
+    const scopes = visitScopes(visit, state);
     found.push({ ...visit, scopes });
-    for (const [key, child] of Object.entries(visit.node)) {
-      if (key === 'parent') continue;
-      for (const value of Array.isArray(child) ? child : [child]) {
-        if (isNode(value)) pending.push({ node: value, parent: visit.node, key, scopes });
-      }
-    }
+    const children = childVisits(visit.node, scopes);
+    for (const child of children) pending.push(child);
   }
   return { visits: found, contexts };
 }
@@ -303,9 +337,9 @@ function isContext(
   contexts: ReadonlyMap<Scope, string>,
   seen = new Set<Node>(),
 ): boolean {
-  if (!identifier(node) || seen.has(node)) return false;
+  if (!isIdentifier(node) || seen.has(node)) return false;
   seen.add(node);
-  const name = node['name'] as string;
+  const name = node.name;
   for (let at = scopes.length - 1; at >= 0; at -= 1) {
     const scope = scopes[at];
     if (scope?.declared.has(name) !== true) continue;
@@ -319,17 +353,10 @@ function isContext(
   return false;
 }
 
-function globalCompiler(node: Node, scopes: readonly Scope[]): boolean {
-  if (identifier(node))
-    return (
-      ['eval', 'Function'].includes(node['name'] as string) &&
-      bindingOf(node['name'] as string, scopes) === undefined
-    );
-  if (
-    node.type !== 'MemberExpression' ||
-    !identifier(node['object'], 'globalThis') ||
-    bindingOf('globalThis', scopes) !== undefined
-  )
+function isGlobalCompiler(node: Node, scopes: readonly Scope[]): boolean {
+  if (isIdentifier(node))
+    return ['eval', 'Function'].includes(node.name) && bindingOf(node.name, scopes) === undefined;
+  if (node.type !== 'MemberExpression' || hostObjectOf(node['object'], scopes) !== 'global')
     return false;
   return ['eval', 'Function'].includes(memberOf(node) ?? '');
 }
@@ -348,7 +375,7 @@ function isReference({ parent, key }: Visit): boolean {
   return true;
 }
 
-function namespaceEscapes(
+function isNamespaceEscape(
   visit: Visit,
   imports: ReadonlyMap<Node, Origin>,
   builtin: 'child_process' | 'module',
@@ -373,10 +400,10 @@ function namespaceEscapes(
 function destructuredMember(property: Node): string | undefined {
   if (property['computed'] === true) return stringOf(property['key']);
   const key = property['key'];
-  return identifier(key) ? (key['name'] as string) : stringOf(key);
+  return isIdentifier(key) ? key.name : stringOf(key);
 }
 
-function destructuredLoader(
+function isDestructuredLoader(
   node: Node,
   scopes: readonly Scope[],
   imports: ReadonlyMap<Node, Origin>,
@@ -386,15 +413,16 @@ function destructuredLoader(
     return false;
   const owner = originOf(node['init'], scopes, imports);
   if (owner === undefined) return false;
-  return listOf(pattern, 'properties').some(
-    (property) =>
+  return listOf(pattern, 'properties').some((property) => {
+    return (
       isNode(property) &&
       (property.type === 'RestElement' ||
-        forbidden({ builtin: owner.builtin, member: destructuredMember(property) ?? '*' })),
-  );
+        isForbiddenOrigin({ builtin: owner.builtin, member: destructuredMember(property) ?? '*' }))
+    );
+  });
 }
 
-function contextLoader(visit: Visit, contexts: ReadonlyMap<Scope, string>): boolean {
+function isContextLoader(visit: Visit, contexts: ReadonlyMap<Scope, string>): boolean {
   const { node, scopes } = visit;
   if (node.type === 'MemberExpression')
     return (
@@ -409,16 +437,17 @@ function contextLoader(visit: Visit, contexts: ReadonlyMap<Scope, string>): bool
     !isContext(node['init'], scopes, contexts)
   )
     return false;
-  return listOf(pattern, 'properties').some(
-    (property) =>
+  return listOf(pattern, 'properties').some((property) => {
+    return (
       isNode(property) &&
       (property.type === 'RestElement' ||
         destructuredMember(property) === 'y' ||
-        destructuredMember(property) === undefined),
-  );
+        destructuredMember(property) === undefined)
+    );
+  });
 }
 
-function contextEscapes(visit: Visit, contexts: ReadonlyMap<Scope, string>): boolean {
+function isContextEscape(visit: Visit, contexts: ReadonlyMap<Scope, string>): boolean {
   if (!isReference(visit) || !isContext(visit.node, visit.scopes, contexts)) return false;
   return !(
     (visit.parent?.type === 'VariableDeclarator' && visit.key === 'init') ||
@@ -426,22 +455,14 @@ function contextEscapes(visit: Visit, contexts: ReadonlyMap<Scope, string>): boo
   );
 }
 
-function loaderRefusal(visit: Visit, imports: ReadonlyMap<Node, Origin>): string | undefined {
-  const { node, scopes } = visit;
-  if (isReference(visit) && globalCompiler(node, scopes))
-    return 'an unproved JavaScript code compiler';
-  if (
-    (node.type === 'MemberExpression' && forbidden(originOf(node, scopes, imports))) ||
-    destructuredLoader(node, scopes, imports)
-  )
-    return 'an unproved Node module loader or code compiler';
+function importRefusal(node: Node, imports: ReadonlyMap<Node, Origin>): string | undefined {
   if (
     node.type === 'ImportDeclaration' &&
     listOf(node, 'specifiers').some(
-      (specifier) => isNode(specifier) && forbidden(imports.get(specifier)),
+      (specifier) => isNode(specifier) && isForbiddenOrigin(imports.get(specifier)),
     )
   )
-    return 'an unproved Node module loader or code compiler';
+    return NODE_LOADER_REFUSAL;
   if (node.type === 'ImportExpression' && builtinOf(stringOf(node['source'])) !== undefined)
     return 'an unproved dynamically imported Node loader namespace';
   if (
@@ -449,10 +470,34 @@ function loaderRefusal(visit: Visit, imports: ReadonlyMap<Node, Origin>): string
     builtinOf(stringOf(node['source'])) === 'child_process'
   )
     return 'an unproved Node child-process namespace escape';
-  if (namespaceEscapes(visit, imports, 'module')) return 'an unproved Node Module namespace escape';
-  if (namespaceEscapes(visit, imports, 'child_process'))
+  return undefined;
+}
+
+function loaderRefusal(visit: Visit, imports: ReadonlyMap<Node, Origin>): string | undefined {
+  const { node, scopes } = visit;
+  if (isReference(visit) && isGlobalCompiler(node, scopes))
+    return 'an unproved JavaScript code compiler';
+  if (isNamespaceRebinding(visit, imports)) return 'an unproved rebound Node loader namespace';
+  if (
+    (node.type === 'MemberExpression' && isForbiddenOrigin(originOf(node, scopes, imports))) ||
+    isDestructuredLoader(node, scopes, imports)
+  )
+    return NODE_LOADER_REFUSAL;
+  const imported = importRefusal(node, imports);
+  if (imported !== undefined) return imported;
+  if (isNamespaceEscape(visit, imports, 'module'))
+    return 'an unproved Node Module namespace escape';
+  if (isNamespaceEscape(visit, imports, 'child_process'))
     return 'an unproved Node child-process namespace escape';
   return undefined;
+}
+
+function isNamespaceRebinding(visit: Visit, imports: ReadonlyMap<Node, Origin>): boolean {
+  const { node, scopes } = visit;
+  if (node.type !== 'AssignmentExpression' || !isIdentifier(node['left'])) return false;
+  if (hostObjectOf(node['right'], scopes) !== undefined) return true;
+  const origin = originOf(node['right'], scopes, imports);
+  return origin !== undefined && origin.member === undefined;
 }
 
 /** Refuse executable closures the physical Node graph has not proved; never a Worker fallback. */
@@ -466,7 +511,7 @@ export function dynamicNodeClosureRefusal(file: string, code: string): string | 
   if (serverChunk && [...factories.values()].includes(null))
     return 'an unproved Turbopack factory context';
   for (const visit of all) {
-    if (serverChunk && (contextLoader(visit, contexts) || contextEscapes(visit, contexts)))
+    if (serverChunk && (isContextLoader(visit, contexts) || isContextEscape(visit, contexts)))
       return 'an unproved Turbopack external import';
     const refusal = loaderRefusal(visit, imports);
     if (refusal !== undefined) return refusal;
