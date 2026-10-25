@@ -137,6 +137,11 @@ function closeHttpServer(server: Server): Promise<void> {
   });
 }
 
+function exitAfterSignal(code: number): never {
+  // eslint-disable-next-line unicorn/no-process-exit -- Only the Container's process-owned signal path exits; ordinary library close remains non-exiting.
+  process.exit(code);
+}
+
 /** Import this module before importing the bundled Function, so broker fetch is native Node fetch. */
 export async function startNodeContainer(
   options: (
@@ -184,14 +189,29 @@ export async function startNodeContainer(
     })();
     return closing;
   };
+  let terminating = false;
   function terminate(): void {
+    if (terminating) return;
+    terminating = true;
+    // A foreign interval or native handle must not outlive the host's bounded shutdown.
+    const deadline = setTimeout(() => {
+      exitAfterSignal(1);
+    }, DRAIN_MS);
+    async function finish(): Promise<never> {
+      let drained = false;
+      try {
+        drained = await close();
+      } catch {
+        // A failed owned cleanup must still terminate the signal-owned process unsuccessfully.
+      }
+      clearTimeout(deadline);
+      return exitAfterSignal(drained ? 0 : 1);
+    }
     // eslint-disable-next-line unicorn/prefer-await -- Signal handlers cannot return a shutdown promise to Node.
-    close().catch(() => {
-      process.exitCode = 1;
-    });
+    finish().catch(() => exitAfterSignal(1));
   }
-  process.once('SIGTERM', terminate);
-  process.once('SIGINT', terminate);
+  process.on('SIGTERM', terminate);
+  process.on('SIGINT', terminate);
   const address = server.address();
   if (typeof address !== 'object' || address === null)
     throw new Error('Node container did not listen');

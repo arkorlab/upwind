@@ -51,6 +51,8 @@ describe('native child constructor classification', () => {
     "import * as threads from 'node:worker_threads'; export const worker = new threads['Worker']('./child.js');\n",
     "import { Worker as Thread } from 'node:worker_threads'; export const worker = new Thread('./child.js');\n",
     "import { 'Worker' as Thread } from 'node:worker_threads'; export const worker = new Thread('./child.js');\n",
+    "import { default as threads } from 'node:worker_threads'; export const worker = new threads.Worker('./child.js');\n",
+    "import { 'default' as threads } from 'worker_threads'; export const worker = new threads['Worker']('./child.js');\n",
     "import threads from 'node:worker_threads'; const {'Worker':Thread}=threads; export const worker=new Thread('./child.js');\n",
     "import threads from 'node:worker_threads'; const {['Worker']:Thread}=threads; export const worker=new Thread('./child.js');\n",
   ])(
@@ -87,6 +89,8 @@ describe('native child constructor classification', () => {
     "import threads from 'node:worker_threads'; const Thread=threads.Worker; export const worker=new Thread('./child.js');\n",
     "import {Worker as Thread} from 'node:worker_threads'; const Alias=Thread; export function helper(Thread){return Thread;} export const worker=new Alias('./child.js');\n",
     "import * as threads from 'node:worker_threads'; const alias=threads; export const worker=new alias['Worker']('./child.js');\n",
+    "import { default as threads } from 'node:worker_threads'; const alias=threads; export const worker=new alias.Worker('./child.js');\n",
+    "import { 'default' as threads } from 'node:worker_threads'; const {Worker:Thread}=threads; export const worker=new Thread('./child.js');\n",
   ])('retains native child refusal through a lexically proved ESM alias: %s', async (source) => {
     await expect(classify(source)).rejects.toThrow('unclassified owned native child');
   });
@@ -116,6 +120,8 @@ describe('native child constructor classification', () => {
   it.each([
     "import threads from 'node:worker_threads'; export function start(threads) { return new threads['Worker']('./child.js'); }\n",
     "import { Worker as Thread } from 'node:worker_threads'; export function start(Thread) { return new Thread('./child.js'); }\n",
+    "import { default as threads } from 'node:worker_threads'; export function start(threads) { return new threads.Worker('./child.js'); }\n",
+    "import { 'default' as threads } from 'node:worker_threads'; export function start() { const threads={Worker:class {}}; return new threads.Worker('./child.js'); }\n",
     "class Worker { constructor(file) { this.file = file; } } export const worker = new Worker('./child.js');\n",
   ])(
     'does not manufacture Node ownership from an application constructor or shadow: %s',

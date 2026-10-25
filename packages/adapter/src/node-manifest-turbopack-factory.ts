@@ -456,8 +456,10 @@ class FactoryProjection {
         reference(visit) &&
         this.ownIdentifier(visit.node, visit) &&
         !this.allowedContext.has(visit.node)
-      )
-        refuse('context alias or escape');
+      ) {
+        const parent = this.parents.get(visit.node)?.parent;
+        refuse(`context alias or escape (${parent?.type ?? 'unknown'}:${visit.key ?? 'unknown'})`);
+      }
     }
     this.renameParameters();
     const edits = [...this.edits.values()].toSorted((a, b) => b.start - a.start);

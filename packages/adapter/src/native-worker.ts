@@ -1,7 +1,7 @@
 import type { Node } from '@oxc-project/types';
 
 import type { NativeAddonEntryTrace } from './native-addons.ts';
-import { identifier, type NativeBindings, stringOf, workerModule } from './native-ast.ts';
+import { type NativeBindings, stringOf, workerModule } from './native-ast.ts';
 import type { NativeEdit } from './native-operations.ts';
 import { ownedNativeFiles } from './native-ownership.ts';
 
@@ -18,13 +18,14 @@ function importedWorkers(
 ): void {
   if (!['node:worker_threads', 'worker_threads'].includes(stringOf(node.source) ?? '')) return;
   for (const specifier of node.specifiers) {
-    if (['ImportDefaultSpecifier', 'ImportNamespaceSpecifier'].includes(specifier.type))
-      imports.set(specifier, 'namespace');
+    const selected = specifier.type === 'ImportSpecifier' ? specifier.imported : undefined;
+    const name = selected?.type === 'Identifier' ? selected.name : stringOf(selected);
     if (
-      specifier.type === 'ImportSpecifier' &&
-      (identifier(specifier.imported, 'Worker') || stringOf(specifier.imported) === 'Worker')
+      name === 'default' ||
+      ['ImportDefaultSpecifier', 'ImportNamespaceSpecifier'].includes(specifier.type)
     )
-      imports.set(specifier, 'constructor');
+      imports.set(specifier, 'namespace');
+    if (name === 'Worker') imports.set(specifier, 'constructor');
   }
 }
 
