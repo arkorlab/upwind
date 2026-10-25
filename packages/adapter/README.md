@@ -889,7 +889,9 @@ served with no gate asked. A rewrite to the optimizer that leaves the source to 
 in what its rule captured, may have it fetch any. The edge runs a middleware itself only for the
 requests it serves as documents; one it hands on runs the middleware in the Function, where a
 rewrite onto a gated route reaches that route with no gate asked, so no build with a middleware
-declares a gate. Nor may a rule of the routing ask for a header the edge takes off what it hands the
+declares a gate. Hosts that publish through `buildProjectManifest` have the same restriction,
+independently of their adapter. Structural manifest parsing does not perform this publication
+check. Nor may a rule of the routing ask for a header the edge takes off what it hands the
 Function or writes there itself — a forwarding header, `host`, `via`, a hop's own, the platform's —
 as the edge would judge the rule on what the visitor sent and the router on what it is handed.
 Nor may a prerendered page be served as a gated route and as another: its own, and a class ahead of
