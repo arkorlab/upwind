@@ -52,10 +52,40 @@ describe('gate admission survives the independent pointer', () => {
       { policy: DEFAULT_DELIVERY_POLICY, now: () => NOW_MS },
     );
 
+    expect(pointer.v).toBe(gated ? 2 : 1);
     expect(pointer.hasGates).toBe(gated ? true : undefined);
     expect(edgePointerSchema.parse(pointer).hasGates).toBe(pointer.hasGates);
     expect(JSON.stringify(edgePointerSchema.parse(pointer))).toBe(JSON.stringify(pointer));
   });
+
+  it.each([
+    { version: 1, marker: undefined, accepted: true },
+    { version: 1, marker: true, accepted: false },
+    { version: 1, marker: false, accepted: false },
+    { version: 2, marker: true, accepted: true },
+    { version: 2, marker: undefined, accepted: false },
+    { version: 2, marker: false, accepted: false },
+    { version: 3, marker: true, accepted: false },
+  ])(
+    'requires the version and gate marker together: $version/$marker',
+    ({ version, marker, accepted }) => {
+      const pointer = edgePointerOf(
+        SITE,
+        {
+          fingerprint: FINGERPRINT,
+          manifestId: 'manifest',
+          policyId: DEFAULT_DELIVERY_POLICY.id,
+          app: APP,
+          cspNonce: false,
+        },
+        NOW_MS,
+      );
+
+      expect(
+        edgePointerSchema.safeParse({ ...pointer, v: version, hasGates: marker }).success,
+      ).toBe(accepted);
+    },
+  );
 
   it('keeps legacy pointer bytes without a marker and rejects an explicit false marker', () => {
     const pointer = edgePointerOf(

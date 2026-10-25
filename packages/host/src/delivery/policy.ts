@@ -328,80 +328,86 @@ const demotedRouteSchema = z.object({
  * order it stores a pointer in, rather than extending this one: a parse writes what it returns in
  * its schema's key order, as zod's does, so the order is part of the bytes a host stores.
  */
-export const edgePointerSchema = z.object({
-  v: z.literal(1),
-  projectId: z.string().min(1),
-  originHost: z.string().min(1),
-  mode: activePointerModeSchema,
-  reason: z.string().optional(),
-  /**
-   * Optional, as it has always been: a pointer that serves nothing from the edge — passed through
-   * or disabled — may name no manifest, where no deployment has been activated, and the edge then
-   * reads none. A pointer in `edge` mode names one.
-   */
-  manifestId: z.string().optional(),
-  policyId: z.string().min(1),
-  /**
-   * The immutable policy this pointer selected, copied by its publisher beside its id so a cold
-   * request needs no separate policy read. `builtin` selects the frozen built-in of `policyId`,
-   * emitted only after the publisher verified that exact spec; other policies carry their full
-   * spec. An optional hint: the edge validates it independently and reads the named policy as
-   * before when it is absent, malformed or names another id. Keeping the field permissive here
-   * means a bad hint never makes the whole pointer unreadable.
-   */
-  selectedPolicy: z.unknown().optional(),
-  deployment: deploymentFingerprintSchema.optional(),
-  /**
-   * The project has handed CSP nonces to the edge.
-   *
-   * On the pointer rather than the manifest because it describes the application, not a build,
-   * and a new manifest every time the project deploys must not re-decide it.
-   */
-  cspNonce: z.boolean().optional(),
-  /** Absent on legacy pointers and in `enforce` mode; ignored while nonces are disabled. */
-  cspNonceMode: cspNonceModeSchema.optional(),
-  /**
-   * The edge adds `'strict-dynamic'` beside each nonce it puts in a policy, so a script the
-   * document's nonced scripts load is trusted and the policy's host and `'self'` sources stop
-   * counting. Only `true` is written, and only beside `cspNonce`: a nonce is what the keyword hands
-   * trust from, and a policy carrying it with none would run no script at all — which is why it is
-   * never in an application's own policy for a document the edge does not compose.
-   */
-  cspStrictDynamic: z.boolean().optional(),
-  /**
-   * Whether the edge keeps this project's pages in each data center's Cache API beside KV; `false`
-   * reads every delivery record from the isolate's memory and KV alone, whatever the policy's
-   * `runtimeCache.cacheApiMaxAgeMs` says.
-   *
-   * Only `false` is written: absent is on, which is every project by default, and one fact has one
-   * representation. Here rather than on the policy for the reason `cspNonce` is — it describes the
-   * application, and the policy is chosen by deployments — and stamped on every write from the
-   * host's own record of the project, so no path that builds a pointer can drop it.
-   */
-  cacheApi: z.boolean().optional(),
-  /**
-   * The Workers the deployment runs as. Named here as well as in the manifest so a pointer whose
-   * manifest cannot be read still knows where to send everything.
-   */
-  app: appRuntimeSchema.optional(),
-  /**
-   * This deployment declares route gates. Only `true` is written, so an ungated or legacy pointer
-   * keeps its existing bytes. Without its manifest the edge cannot know which reads need admission,
-   * and answers them unavailable rather than forwarding them around their gates.
-   */
-  hasGates: z.literal(true).optional(),
-  /**
-   * Routes of this pointer's manifest the edge does not split for now: each goes to the
-   * deployment's Worker whole, a passthrough with the reason `demoted`, until its `until`. The rest
-   * of the manifest is served from the edge as ever.
-   *
-   * Stamped by whatever writes the pointer, on every write, from its own record of the manifest's
-   * demotions, so no path that builds a pointer can drop one; absent for a pointer that demotes
-   * nothing, which is what a project pays for the feature — one test, no read. Unbounded here,
-   * whatever bound a writer keeps: a pointer the edge cannot parse is no pointer at all, so a bound
-   * raised later must not be one an older edge refuses.
-   */
-  demotedRoutes: z.array(demotedRouteSchema).optional(),
-  updatedAt: z.iso.datetime(),
-});
+export const edgePointerSchema = z
+  .object({
+    /** Version two requires route admission; readers that know only version one serve none of it. */
+    v: z.union([z.literal(1), z.literal(2)]),
+    projectId: z.string().min(1),
+    originHost: z.string().min(1),
+    mode: activePointerModeSchema,
+    reason: z.string().optional(),
+    /**
+     * Optional, as it has always been: a pointer that serves nothing from the edge — passed through
+     * or disabled — may name no manifest, where no deployment has been activated, and the edge then
+     * reads none. A pointer in `edge` mode names one.
+     */
+    manifestId: z.string().optional(),
+    policyId: z.string().min(1),
+    /**
+     * The immutable policy this pointer selected, copied by its publisher beside its id so a cold
+     * request needs no separate policy read. `builtin` selects the frozen built-in of `policyId`,
+     * emitted only after the publisher verified that exact spec; other policies carry their full
+     * spec. An optional hint: the edge validates it independently and reads the named policy as
+     * before when it is absent, malformed or names another id. Keeping the field permissive here
+     * means a bad hint never makes the whole pointer unreadable.
+     */
+    selectedPolicy: z.unknown().optional(),
+    deployment: deploymentFingerprintSchema.optional(),
+    /**
+     * The project has handed CSP nonces to the edge.
+     *
+     * On the pointer rather than the manifest because it describes the application, not a build,
+     * and a new manifest every time the project deploys must not re-decide it.
+     */
+    cspNonce: z.boolean().optional(),
+    /** Absent on legacy pointers and in `enforce` mode; ignored while nonces are disabled. */
+    cspNonceMode: cspNonceModeSchema.optional(),
+    /**
+     * The edge adds `'strict-dynamic'` beside each nonce it puts in a policy, so a script the
+     * document's nonced scripts load is trusted and the policy's host and `'self'` sources stop
+     * counting. Only `true` is written, and only beside `cspNonce`: a nonce is what the keyword hands
+     * trust from, and a policy carrying it with none would run no script at all — which is why it is
+     * never in an application's own policy for a document the edge does not compose.
+     */
+    cspStrictDynamic: z.boolean().optional(),
+    /**
+     * Whether the edge keeps this project's pages in each data center's Cache API beside KV; `false`
+     * reads every delivery record from the isolate's memory and KV alone, whatever the policy's
+     * `runtimeCache.cacheApiMaxAgeMs` says.
+     *
+     * Only `false` is written: absent is on, which is every project by default, and one fact has one
+     * representation. Here rather than on the policy for the reason `cspNonce` is — it describes the
+     * application, and the policy is chosen by deployments — and stamped on every write from the
+     * host's own record of the project, so no path that builds a pointer can drop it.
+     */
+    cacheApi: z.boolean().optional(),
+    /**
+     * The Workers the deployment runs as. Named here as well as in the manifest so a pointer whose
+     * manifest cannot be read still knows where to send everything.
+     */
+    app: appRuntimeSchema.optional(),
+    /**
+     * This deployment declares route gates. Only `true` is written, so an ungated or legacy pointer
+     * keeps its existing bytes. Without its manifest the edge cannot know which reads need admission,
+     * and answers them unavailable rather than forwarding them around their gates.
+     */
+    hasGates: z.literal(true).optional(),
+    /**
+     * Routes of this pointer's manifest the edge does not split for now: each goes to the
+     * deployment's Worker whole, a passthrough with the reason `demoted`, until its `until`. The rest
+     * of the manifest is served from the edge as ever.
+     *
+     * Stamped by whatever writes the pointer, on every write, from its own record of the manifest's
+     * demotions, so no path that builds a pointer can drop one; absent for a pointer that demotes
+     * nothing, which is what a project pays for the feature — one test, no read. Unbounded here,
+     * whatever bound a writer keeps: a pointer the edge cannot parse is no pointer at all, so a bound
+     * raised later must not be one an older edge refuses.
+     */
+    demotedRoutes: z.array(demotedRouteSchema).optional(),
+    updatedAt: z.iso.datetime(),
+  })
+  .refine((pointer) => (pointer.v === 2) === (pointer.hasGates === true), {
+    message: 'A route-gated pointer requires version two and hasGates together',
+    path: ['hasGates'],
+  });
 export type EdgePointer = z.infer<typeof edgePointerSchema>;

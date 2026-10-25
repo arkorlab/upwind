@@ -192,7 +192,7 @@ export async function seedSite(options: SiteOptions): Promise<Site> {
     JSON.stringify(DEFAULT_DELIVERY_POLICY),
   );
   const pointer: EdgePointer = {
-    v: 1,
+    v: manifest.gates === undefined ? 1 : 2,
     projectId: PROJECT_ID,
     originHost: SITE_HOST,
     mode: 'edge',
