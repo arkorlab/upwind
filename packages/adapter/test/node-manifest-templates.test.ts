@@ -40,18 +40,40 @@ const ROUTE_IMPORTS = [
   '../../server/response-cache',
   'VAR_USERLAND',
 ];
+const API_IMPORTS = [
+  '../../server/api-utils',
+  '../../server/route-kind',
+  '../../server/route-modules/pages-api/module.compiled',
+  './helpers',
+  'VAR_USERLAND',
+  '../../server/lib/trace/tracer',
+  '../../server/lib/trace/constants',
+  '../../server/request-meta',
+];
+const IMPORTS = {
+  pages: PAGES_IMPORTS,
+  'app-route': ROUTE_IMPORTS,
+  'pages-api': API_IMPORTS,
+} as const;
+const ROUTES = {
+  pages: { page: '/blog/[slug]', pathname: '/blog/[slug]' },
+  'app-route': { page: '/stream/route', pathname: '/stream' },
+  'pages-api': { page: '/api/native', pathname: '/api/native' },
+} as const;
 function digest(code: string | Uint8Array): string {
   return createHash('sha256').update(code).digest('hex');
 }
 function source(code: string): { code: string; sha256: string } {
   return { code, sha256: digest(code) };
 }
-async function input(kind: 'pages' | 'app-route'): Promise<NodeManifestTemplateInput> {
+async function input(
+  kind: NodeManifestTemplateInput['route']['kind'],
+): Promise<NodeManifestTemplateInput> {
   const file = await realpath(
     fileURLToPath(import.meta.resolve(`next/dist/build/templates/${kind}.js`)),
   );
   const imports = [];
-  const specifiers = kind === 'pages' ? PAGES_IMPORTS : ROUTE_IMPORTS;
+  const specifiers = IMPORTS[kind];
   for (const specifier of specifiers) {
     if (specifier.startsWith('VAR_')) {
       imports.push({ specifier, file: `/project/${specifier}.js`, sha256: digest(specifier) });
@@ -60,10 +82,7 @@ async function input(kind: 'pages' | 'app-route'): Promise<NodeManifestTemplateI
     const dependency = await realpath(createRequire(file).resolve(specifier));
     imports.push({ specifier, file: dependency, sha256: digest(await readFile(dependency)) });
   }
-  const route =
-    kind === 'pages'
-      ? { kind, page: '/blog/[slug]', pathname: '/blog/[slug]' }
-      : { kind, page: '/stream/route', pathname: '/stream' };
+  const route = { kind, ...ROUTES[kind] };
   const code = (await readFile(file, 'utf8'))
     .replaceAll('VAR_DEFINITION_PAGE', () => route.page)
     .replaceAll('VAR_DEFINITION_PATHNAME', () => route.pathname)
@@ -78,9 +97,18 @@ const REFUSAL_REPLACEMENTS = {
   constructor: ['new _modulecompiled.PagesRouteModule', 'new _modulecompiled.OtherRouteModule'],
   'export-helper': ['_export(exports, {', '_export = function() {};\n_export(exports, {'],
   'export-escape': ['const handler =', 'exports.escaped=routeModule;\nconst handler ='],
-  'dist-expression': ["distDir: process.env.__NEXT_RELATIVE_DIST_DIR || ''", 'distDir: userInput()'],
-  'handler-mutation': ['const handler =', 'routeModule.loadManifests(userInput(), userInput());\nconst handler ='],
-  'handler-alias': ['const handler =', 'exports.class=_modulecompiled.PagesRouteModule;\nconst handler ='],
+  'dist-expression': [
+    "distDir: process.env.__NEXT_RELATIVE_DIST_DIR || ''",
+    'distDir: userInput()',
+  ],
+  'handler-mutation': [
+    'const handler =',
+    'routeModule.loadManifests(userInput(), userInput());\nconst handler =',
+  ],
+  'handler-alias': [
+    'const handler =',
+    'exports.class=_modulecompiled.PagesRouteModule;\nconst handler =',
+  ],
   digest: ['const handler =', 'const handler ='],
 } as const;
 
@@ -173,13 +201,46 @@ describe('finite original Next.js route template consumers', () => {
     );
   });
 
-  it('does not certify a PagesAPI handler whose private routeModule cannot be normalized by the SDK entry', async () => {
-    const own = await input('pages');
-    const api = fileURLToPath(import.meta.resolve('next/dist/build/templates/pages-api.js'));
-    const code = await readFile(api, 'utf8');
+  it('certifies a private PagesAPI instance only with a handler metadata-normalization obligation', async () => {
+    const own = await input('pages-api');
+    const proof = await assertNodeManifestTemplateConsumer(own);
+
+    expect(proof).toStrictEqual({
+      kind: 'pages-api',
+      page: '/api/native',
+      pathname: '/api/native',
+      exports: ['handler'],
+      requiresRuntimeNormalization: true,
+    });
+  });
+
+  it.each([
+    ['wrong route kind', 'RouteKind.PAGES_API', 'RouteKind.PAGES'],
+    ['dropped metadata', 'ctx.requestMeta', 'undefined'],
+    [
+      'private instance escape',
+      'async function handler(',
+      'exports.routeModule=routeModule;\nasync function handler(',
+    ],
+  ])('refuses a PagesAPI %s before allowing its private instance', async (_name, before, after) => {
+    const own = await input('pages-api');
+    const code = own.source.code.replaceAll(before, () => after);
 
     await expect(
       assertNodeManifestTemplateConsumer({ ...own, source: source(code) }),
-    ).rejects.toThrow('route constructor');
+    ).rejects.toThrow('template structure or protected export escape');
+  });
+
+  it('binds the PagesAPI metadata consumer to its exact published implementation', async () => {
+    const own = await input('pages-api');
+    const imports = own.imports.map((entry) => {
+      return entry.specifier.endsWith('/request-meta')
+        ? { ...entry, sha256: digest('changed metadata') }
+        : entry;
+    });
+
+    await expect(assertNodeManifestTemplateConsumer({ ...own, imports })).rejects.toThrow(
+      'changed protected dependency',
+    );
   });
 });

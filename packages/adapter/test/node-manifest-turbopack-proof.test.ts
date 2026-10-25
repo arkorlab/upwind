@@ -144,7 +144,7 @@ async function fixture(directory: string) {
   };
 }
 
-async function templateFixture(directory: string, kind: 'pages' | 'app-route') {
+async function templateFixture(directory: string, kind: 'pages' | 'app-route' | 'pages-api') {
   const own = await fixture(directory);
   const projected = await projectedTemplateFixture(kind);
   const published = await realpath(
@@ -202,7 +202,8 @@ async function templateFixture(directory: string, kind: 'pages' | 'app-route') {
   code = code.replace('module.exports=[', () => `module.exports=[${slots}`);
   await put(own.chunk, code);
   own.imports.set(own.chunk, external);
-  const relative = kind === 'pages' ? 'server/pages/blog/[slug].js' : 'server/app/stream/route.js';
+  const relative =
+    kind === 'app-route' ? 'server/app/stream/route.js' : `server/pages${projected.route.page}.js`;
   const entry = path.join(own.input.distDir, relative);
   const runtimeSpecifier = path
     .relative(path.dirname(entry), own.runtime)
@@ -288,7 +289,7 @@ describe('sealed Turbopack producers through the real manifest proof entry', () 
     );
   });
 
-  it.each(['pages', 'app-route'] as const)(
+  it.each(['pages', 'app-route', 'pages-api'] as const)(
     'connects the published projected %s body through every physical importer to the SDK root',
     async (kind) => {
       const own = await templateFixture(directory, kind);
@@ -301,6 +302,20 @@ describe('sealed Turbopack producers through the real manifest proof entry', () 
       );
     },
   );
+
+  it('refuses a private Pages API handler without the exact Node requestMeta facade', async () => {
+    const own = await templateFixture(directory, 'pages-api');
+    const code = appEntrySource(own.input.entries, {
+      external: true,
+      runtimeDistDir: own.input.distDir,
+    });
+    await writeFile(own.analysisEntry, code);
+    own.sources.set(own.analysisEntry, { file: own.analysisEntry, sha256: digest(code) });
+
+    await expect(proveNodeManifests(own.input, own.graph)).rejects.toThrow(
+      'unproved SDK entry terminal',
+    );
+  });
 
   it('refuses a second physical importer that escapes the SDK normalization terminal', async () => {
     const own = await fixture(directory);

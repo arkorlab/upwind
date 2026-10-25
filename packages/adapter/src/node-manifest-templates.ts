@@ -23,12 +23,39 @@ const PAGE_MODULE = 'dist/server/route-modules/pages/module.compiled.js';
 const ROUTE_MODULE = 'dist/server/route-modules/app-route/module.compiled.js';
 const PAGE_MODULE_SHA = 'b88d690f8f1f34d7458d6f7424dee20aab425252f62f2b60d15740ac0808037f';
 const ROUTE_MODULE_SHA = 'aeab4882c08e62a742aa67daa0d4a434b3330f389c38ffdf4262b6143c80b5ed';
+const API_MODULE = 'dist/server/route-modules/pages-api/module.compiled.js';
+const API_MODULE_SHA = '0203c76f81559286e5c80c7ef070fe7ceb325a0a7f13528e44e6b6acec208d36';
+const TEMPLATE_PROFILES = {
+  pages: {
+    module: PAGE_MODULE,
+    moduleSha: PAGE_MODULE_SHA,
+    templateSha: PAGE_TEMPLATE_SHA,
+    constructorName: 'PagesRouteModule',
+  },
+  'app-route': {
+    module: ROUTE_MODULE,
+    moduleSha: ROUTE_MODULE_SHA,
+    templateSha: ROUTE_TEMPLATE_SHA,
+    constructorName: 'AppRouteRouteModule',
+  },
+  'pages-api': {
+    module: API_MODULE,
+    moduleSha: API_MODULE_SHA,
+    templateSha: 'a1943f62ef5d5a7c0093c560600484bd3029c047bd72e83803e36171dc6d8ac0',
+    constructorName: 'PagesAPIRouteModule',
+  },
+} as const;
 const PROTECTED_DEPENDENCIES: ReadonlyMap<string, string> = new Map([
+  [
+    'dist/server/request-meta.js',
+    'd91bfe6253f61ada12eb73650589cee8e8cd3eb038c35e0550d242bb6c31803d',
+  ],
   ['dist/server/route-kind.js', '4dc92760c2e4925613034896faa04c52daaf7a4420d7bcbd6de5214b55d84fea'],
   [
     'dist/server/route-modules/pages/pages-handler.js',
     'b20671fb66060f58b98fe7677adf844d10697a97b463eb2390eb00831500bda1',
   ],
+  [API_MODULE, API_MODULE_SHA],
   [PAGE_MODULE, PAGE_MODULE_SHA],
   [ROUTE_MODULE, ROUTE_MODULE_SHA],
 ]);
@@ -37,7 +64,7 @@ const USERLAND_BINDINGS: ReadonlyMap<string, string> = new Map([
   ['_VAR_MODULE_DOCUMENT', 'VAR_MODULE_DOCUMENT'],
   ['_VAR_USERLAND', 'VAR_USERLAND'],
 ]);
-type Kind = 'pages' | 'app-route';
+type Kind = keyof typeof TEMPLATE_PROFILES;
 export interface NodeManifestTemplateImport {
   readonly specifier: string;
   readonly file: string;
@@ -76,8 +103,9 @@ function digest(bytes: Uint8Array | string): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 async function templateOf(input: NodeManifestTemplateInput): Promise<Template> {
-  const relative = input.route.kind === 'pages' ? PAGE_MODULE : ROUTE_MODULE;
-  const expected = input.route.kind === 'pages' ? PAGE_MODULE_SHA : ROUTE_MODULE_SHA;
+  const profile = TEMPLATE_PROFILES[input.route.kind];
+  const relative = profile.module;
+  const expected = profile.moduleSha;
   const classes = input.imports.filter((entry) =>
     entry.file.replaceAll('\\', '/').endsWith(`/${relative}`),
   );
@@ -90,7 +118,7 @@ async function templateOf(input: NodeManifestTemplateInput): Promise<Template> {
   const info = await stat(file);
   if (!info.isFile() || info.size > MAX_TEMPLATE_BYTES) refuse('template source bounds');
   const bytes = await readFile(file);
-  const expectedTemplate = input.route.kind === 'pages' ? PAGE_TEMPLATE_SHA : ROUTE_TEMPLATE_SHA;
+  const expectedTemplate = profile.templateSha;
   if (bytes.length !== info.size || digest(bytes) !== expectedTemplate)
     refuse('template source identity');
   return { file, root, code: bytes.toString('utf8') };
@@ -172,7 +200,7 @@ function constructorFields(
   program: Node,
   input: NodeManifestTemplateInput,
 ): ReadonlyMap<string, Node> {
-  const name = input.route.kind === 'pages' ? 'PagesRouteModule' : 'AppRouteRouteModule';
+  const name = TEMPLATE_PROFILES[input.route.kind].constructorName;
   const constructors = visitTree(program).filter((visit) => {
     const callee = visit.node['callee'];
     return (
@@ -194,7 +222,7 @@ function generatedValues(
     ['VAR_DEFINITION_PAGE', input.route.page],
     ['VAR_DEFINITION_PATHNAME', input.route.pathname],
   ]);
-  if (input.route.kind === 'pages') return replacements;
+  if (input.route.kind !== 'app-route') return replacements;
   const definition = fieldsOf(fields.get('definition'));
   for (const [placeholder, value] of [
     ['VAR_DEFINITION_FILENAME', definition.get('filename')],
@@ -223,7 +251,9 @@ function injectedOutput(actual: Node, expected: Node): Node {
     return (
       isNode(statement) &&
       statement.type === 'VariableDeclaration' &&
-      listOf(statement, 'declarations').some((item) => isNode(item) && identifier(item['id']) && item['id'].name === 'nextConfigOutput')
+      listOf(statement, 'declarations').some(
+        (item) => isNode(item) && identifier(item['id']) && item['id'].name === 'nextConfigOutput',
+      )
     );
   });
   if (declarations.length === 0) return expected;
@@ -243,7 +273,9 @@ function injectedOutput(actual: Node, expected: Node): Node {
     return (
       isNode(candidate) &&
       candidate.type === 'VariableDeclaration' &&
-      listOf(candidate, 'declarations').some((item) => isNode(item) && identifier(item['id']) && item['id'].name === 'routeModule')
+      listOf(candidate, 'declarations').some(
+        (item) => isNode(item) && identifier(item['id']) && item['id'].name === 'routeModule',
+      )
     );
   });
   if (index === -1) return refuse('output template position');
@@ -306,6 +338,18 @@ function contextOf(
     visits: new Map(visitTree(program).map((visit) => [visit.node, visit])),
   };
 }
+function protectedExports(kind: Kind): readonly string[] {
+  if (kind === 'pages-api') return ['handler'];
+  if (kind === 'pages') return ['routeModule', 'handler'];
+  return [
+    'routeModule',
+    'handler',
+    'patchFetch',
+    'serverHooks',
+    'workAsyncStorage',
+    'workUnitAsyncStorage',
+  ];
+}
 /** Exact fixed-template structure; no arbitrary RouteModule constructor or handler is trusted. */
 export async function assertNodeManifestTemplateConsumer(
   input: NodeManifestTemplateInput,
@@ -313,7 +357,8 @@ export async function assertNodeManifestTemplateConsumer(
   if (digest(input.source.code) !== input.source.sha256) refuse('original source digest');
   const template = await templateOf(input);
   const actual = programOf(input.source.code);
-  const expected = injectedOutput(actual, programOf(template.code));
+  const primary = programOf(template.code);
+  const expected = input.route.kind === 'app-route' ? injectedOutput(actual, primary) : primary;
   const fields = constructorFields(actual, input);
   const replacements = generatedValues(fields, input);
   const constructorValues = staticConstructorValues(fields);
@@ -331,17 +376,7 @@ export async function assertNodeManifestTemplateConsumer(
     kind: input.route.kind,
     page: input.route.page,
     pathname: input.route.pathname,
-    exports:
-      input.route.kind === 'pages'
-        ? ['routeModule', 'handler']
-        : [
-            'routeModule',
-            'handler',
-            'patchFetch',
-            'serverHooks',
-            'workAsyncStorage',
-            'workUnitAsyncStorage',
-          ],
+    exports: protectedExports(input.route.kind),
     requiresRuntimeNormalization: true,
   };
 }

@@ -17,6 +17,7 @@ import {
   EVALUATOR,
   frameworkParent,
   PAGES_MODULE,
+  PAGES_API_MODULE,
   reviewedFrameworkSource,
   ROUTE_EXPORTS,
   type ManifestProtectedKind,
@@ -33,6 +34,7 @@ import {
 
 const MAX_SOURCE_MEBIBYTES = 128;
 const BYTES_PER_MEBIBYTE = 1_048_576;
+const MAX_CALLER_LABEL_CHARACTERS = 240;
 const MAX_SOURCE_BYTES = MAX_SOURCE_MEBIBYTES * BYTES_PER_MEBIBYTE;
 const ENTRYPOINTS = 'entrypoints';
 const OPAQUE_ROUTE_METADATA = 'opaque route metadata';
@@ -40,6 +42,7 @@ const TURBOPACK_PRODUCER_KINDS = {
   'app-page': 'app-page-factory',
   pages: 'pages-class',
   'app-route': 'app-route-class',
+  'pages-api': 'pages-api-class',
 } as const;
 
 export interface ManifestGraphFile {
@@ -82,7 +85,7 @@ interface ProtectedModule {
   readonly kind: ManifestProtectedKind;
 }
 interface SealedRoute {
-  readonly kind: 'app-page' | 'app-route' | 'pages';
+  readonly kind: 'app-page' | 'app-route' | 'pages' | 'pages-api';
   readonly file: string;
   readonly page: string;
   readonly pathname: string;
@@ -94,9 +97,10 @@ interface RouteLocation {
   readonly shared: boolean;
 }
 
-function turbopackKind(child: ProtectedModule): 'app-page' | 'pages' | 'app-route' | undefined {
+function turbopackKind(child: ProtectedModule): SealedRoute['kind'] | undefined {
   if (child.kind === APP_PAGE_FACTORY) return 'app-page';
   if (child.relative === PAGES_MODULE) return 'pages';
+  if (child.relative === PAGES_API_MODULE) return 'pages-api';
   return child.relative === APP_ROUTE_MODULE ? 'app-route' : undefined;
 }
 
@@ -214,9 +218,8 @@ function sealedRoute(
   const appKind = kind === 'app-page' || kind === 'app-route';
   const pagesKind = kind === 'pages' || kind === 'pages-api';
   if ((!appKind && location.app) || (!pagesKind && location.pages)) refuse('unsealed route kind');
-  // PagesAPI has no exported routeModule for SDK normalization.
-  if (kind === 'pages-api') return undefined;
-  if (kind !== 'app-page' && kind !== 'app-route' && kind !== 'pages')
+  // The exact Node SDK root also seals handler requestMeta for private API route modules.
+  if (kind !== 'app-page' && kind !== 'app-route' && kind !== 'pages' && kind !== 'pages-api')
     refuse('unsealed route kind');
   return {
     kind,
@@ -311,7 +314,10 @@ class ConsumerGraph {
     if (child.kind === ROUTE_EXPORTS) return refuse('unknown consumer or export escape');
     const route = this.routes.get(source.file);
     if (route === undefined) {
-      if (turbopackKind(child) === undefined) return refuse('consumer is not a sealed route entry');
+      if (turbopackKind(child) === undefined) {
+        const caller = JSON.stringify(relative.slice(0, MAX_CALLER_LABEL_CHARACTERS));
+        return refuse(`consumer is not a sealed route entry (${child.kind} through ${caller})`);
+      }
       await this.turbopack(child);
       return undefined;
     }
@@ -319,7 +325,8 @@ class ConsumerGraph {
       this.appPage(parent, child, { source, code, route });
     } else if (
       (child.relative === PAGES_MODULE && route.kind === 'pages') ||
-      (child.relative === APP_ROUTE_MODULE && route.kind === 'app-route')
+      (child.relative === APP_ROUTE_MODULE && route.kind === 'app-route') ||
+      (child.relative === PAGES_API_MODULE && route.kind === 'pages-api')
     ) {
       await this.template(parent, { source, code, route });
     } else return refuse('unknown consumer or export escape');
@@ -432,7 +439,8 @@ class ConsumerGraph {
       }
     }
     const kind = context.route.kind;
-    if (kind !== 'pages' && kind !== 'app-route') return refuse('unsealed template kind');
+    if (kind !== 'pages' && kind !== 'app-route' && kind !== 'pages-api')
+      return refuse('unsealed template kind');
     await assertNodeManifestTemplateConsumer({
       source: { code: context.code, sha256: context.source.sha256 },
       imports,

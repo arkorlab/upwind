@@ -25,7 +25,7 @@ export interface NodeManifestTurbopackConsumerInput {
     readonly id: string;
     readonly file: string;
     readonly sha256: string;
-    readonly kind?: 'app-page-factory' | 'pages-class' | 'app-route-class';
+    readonly kind?: 'app-page-factory' | 'pages-class' | 'app-route-class' | 'pages-api-class';
   };
 }
 export interface NodeManifestTurbopackConsumerProof {
@@ -98,10 +98,11 @@ class TurbopackConsumers {
     this.assertPhysicalCallers();
   }
 
-  private producerKind(): 'app-page' | 'pages' | 'app-route' {
+  private producerKind(): 'app-page' | 'pages' | 'app-route' | 'pages-api' {
     const kind = this.input.producer.kind ?? APP_PAGE_FACTORY;
     if (kind === APP_PAGE_FACTORY) return 'app-page';
     if (kind === 'pages-class') return 'pages';
+    if (kind === 'pages-api-class') return 'pages-api';
     return kind === 'app-route-class' ? 'app-route' : refuse('unknown protected producer role');
   }
 

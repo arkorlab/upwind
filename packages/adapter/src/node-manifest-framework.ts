@@ -7,6 +7,8 @@ const APP_PAGE_SOURCE = 'dist/server/route-modules/app-page/module.js';
 const ROUTE_MODULE = 'dist/server/route-modules/route-module.js';
 export const PAGES_MODULE = 'dist/server/route-modules/pages/module.compiled.js';
 const PAGES_SOURCE = 'dist/server/route-modules/pages/module.js';
+export const PAGES_API_MODULE = 'dist/server/route-modules/pages-api/module.compiled.js';
+const PAGES_API_SOURCE = 'dist/server/route-modules/pages-api/module.js';
 export const APP_ROUTE_MODULE = 'dist/server/route-modules/app-route/module.compiled.js';
 const APP_ROUTE_SOURCE = 'dist/server/route-modules/app-route/module.js';
 const PAGES_RUNTIMES: ReadonlyMap<string, string> = new Map([
@@ -17,6 +19,16 @@ const PAGES_RUNTIMES: ReadonlyMap<string, string> = new Map([
   [
     'dist/compiled/next-server/pages.runtime.prod.js',
     '28f90af862ee5ae750fddea94d36a55cda89e4636993569d0e60c36f2813dc98',
+  ],
+]);
+const PAGES_API_RUNTIMES: ReadonlyMap<string, string> = new Map([
+  [
+    'dist/compiled/next-server/pages-api-turbo.runtime.prod.js',
+    '9bda335900891fa996b194d830883cb833a869a86e59f33ec7c80cf018309424',
+  ],
+  [
+    'dist/compiled/next-server/pages-api.runtime.prod.js',
+    '322a597b07fdc559b86562fd68f1c828b554deac36e1e84a10e6687daa01a00f',
   ],
 ]);
 const ROUTE_RUNTIMES: ReadonlyMap<string, string> = new Map([
@@ -61,6 +73,7 @@ const APP_RUNTIMES: ReadonlyMap<string, string> = new Map([
 const REVIEWED: ReadonlyMap<string, string> = new Map([
   ...APP_RUNTIMES,
   ...PAGES_RUNTIMES,
+  ...PAGES_API_RUNTIMES,
   ...ROUTE_RUNTIMES,
   [APP_PAGE_MODULE, '3b55f56f8c70bbadffdacea23a1c19689c3889bab7e78da6c8121ada787bfe99'],
   [APP_PAGE_RUNTIME, '0a6a5c726f95e2df2600b2fd6d71e37fd72f936f8f4dc5b94fa38d40fcd62a6b'],
@@ -68,6 +81,8 @@ const REVIEWED: ReadonlyMap<string, string> = new Map([
   [APP_ROUTE_MODULE, 'aeab4882c08e62a742aa67daa0d4a434b3330f389c38ffdf4262b6143c80b5ed'],
   [APP_ROUTE_SOURCE, '9f9ae9defd45e773888c948e844d7a401ca79ff5c09f14211c4abd9b725e3b1b'],
   [LOAD_COMPONENTS, '47e1446da77172ba77d6f3e6f68ae00ca7bebda206b26c0ba8625d41915dcaed'],
+  [PAGES_API_MODULE, '0203c76f81559286e5c80c7ef070fe7ceb325a0a7f13528e44e6b6acec208d36'],
+  [PAGES_API_SOURCE, '9e1e4f6076e2d020ffa91fa79dbd2ca8e4788ffb5294df0c67f27bc90da2f3f8'],
   [PAGES_MODULE, 'b88d690f8f1f34d7458d6f7424dee20aab425252f62f2b60d15740ac0808037f'],
   [PAGES_SOURCE, 'fc0ccc89c288c9426a39ae38af43e96bd14958e8a37ab79de2bca31a893dd29a'],
   [ROUTE_MODULE, '2f1de319c06e89b9adda0365a655e8fc6b23ec0fa424a0ea9d513b6d814a1865'],
@@ -81,11 +96,13 @@ export type ManifestProtectedKind =
 const RUNTIME_WRAPPERS: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map([
   [APP_PAGE_MODULE, APP_RUNTIMES],
   [APP_ROUTE_MODULE, ROUTE_RUNTIMES],
+  [PAGES_API_MODULE, PAGES_API_RUNTIMES],
   [PAGES_MODULE, PAGES_RUNTIMES],
 ]);
 const RUNTIMES = new Set([
   ...APP_RUNTIMES.keys(),
   ...PAGES_RUNTIMES.keys(),
+  ...PAGES_API_RUNTIMES.keys(),
   ...ROUTE_RUNTIMES.keys(),
 ]);
 const FRAMEWORK_TRANSITIONS: ReadonlyMap<
@@ -102,12 +119,14 @@ const FRAMEWORK_TRANSITIONS: ReadonlyMap<
       [ROUTE_MODULE, ROUTE_CLASS],
     ]),
   ],
+  [PAGES_API_SOURCE, new Map<string, ManifestProtectedKind>([[PAGES_API_MODULE, ROUTE_CLASS]])],
   [PAGES_SOURCE, new Map<string, ManifestProtectedKind>([[PAGES_MODULE, ROUTE_CLASS]])],
   [
     ROUTE_MODULE,
     new Map<string, ManifestProtectedKind>([
       [APP_PAGE_SOURCE, ROUTE_CLASS],
       [APP_ROUTE_SOURCE, ROUTE_CLASS],
+      [PAGES_API_SOURCE, ROUTE_CLASS],
       [PAGES_SOURCE, ROUTE_CLASS],
     ]),
   ],

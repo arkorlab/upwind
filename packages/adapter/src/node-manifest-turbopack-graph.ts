@@ -32,7 +32,7 @@ export interface NodeManifestTurbopackSealedEntry {
   readonly file: string;
   readonly page: string;
   readonly pathname: string;
-  readonly kind?: 'app-page' | 'pages' | 'app-route';
+  readonly kind?: 'app-page' | 'pages' | 'app-route' | 'pages-api';
 }
 export interface NodeManifestTurbopackGraphFactory {
   readonly id: string;
@@ -260,9 +260,7 @@ function runtimeTables(
   return [...tables.values()];
 }
 
-function factoryRecords(
-  tables: readonly NodeManifestTurbopackGraphFile[],
-): ReadonlyMap<
+function factoryRecords(tables: readonly NodeManifestTurbopackGraphFile[]): ReadonlyMap<
   number,
   {
     readonly physical: NodeManifestTurbopackGraphFile;

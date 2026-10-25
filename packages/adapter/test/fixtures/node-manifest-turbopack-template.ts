@@ -127,14 +127,16 @@ function editedStatements(
   }
   return statements;
 }
-export async function projectedTemplateFixture(kind: 'pages' | 'app-route'): Promise<NodeManifestTurbopackTemplateInput> {
+export async function projectedTemplateFixture(kind: NodeManifestTurbopackTemplateInput['route']['kind']): Promise<NodeManifestTurbopackTemplateInput> {
   const file = await realpath(
     fileURLToPath(import.meta.resolve(`next/dist/build/templates/${kind}.js`)),
   );
-  const route =
-    kind === 'pages'
-      ? { kind, page: '/blog/[slug]', pathname: '/blog/[slug]' }
-      : { kind, page: '/stream/route', pathname: '/stream' };
+  const definitions = {
+    pages: { page: '/blog/[slug]', pathname: '/blog/[slug]' },
+    'app-route': { page: '/stream/route', pathname: '/stream' },
+    'pages-api': { page: '/api/native', pathname: '/api/native' },
+  };
+  const route = { kind, ...definitions[kind] };
   const code = await templateCode(file, route);
   const parsed = program(code);
   const view = swcTemplateExports(parsed);

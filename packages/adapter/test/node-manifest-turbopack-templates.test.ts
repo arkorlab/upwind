@@ -117,4 +117,42 @@ describe('projected fixed Next Pages and AppRoute template bodies', () => {
       'unproved factory strictness',
     );
   });
+
+  it('certifies a projected PagesAPI handler without inventing a public routeModule export', async () => {
+    const own = await projectedTemplateFixture('pages-api');
+    const proof = await assertNodeManifestTurbopackTemplateConsumer(own);
+
+    expect(proof.exports).toStrictEqual(['config', 'default', 'handler']);
+    expect(proof.requiresRuntimeNormalization).toBe(true);
+    expect([proof.kind, proof.page, proof.pathname]).toStrictEqual([
+      'pages-api',
+      '/api/native',
+      '/api/native',
+    ]);
+  });
+
+  it.each([
+    ['route kind', 'RouteKind.PAGES_API', 'RouteKind.PAGES'],
+    ['metadata propagation', 'ctx.requestMeta', 'undefined'],
+  ])('refuses changed PagesAPI %s in the original factory body', async (_name, before, after) => {
+    const own = await projectedTemplateFixture('pages-api');
+    const changed = changeOriginalTemplateFixture(own, before, after);
+
+    await expect(assertNodeManifestTurbopackTemplateConsumer(changed)).rejects.toThrow(
+      'changed handler or constructor body',
+    );
+  });
+
+  it('rejects the private PagesAPI instance as an extra export even though other selectors are fixed', async () => {
+    const own = await projectedTemplateFixture('pages-api');
+    const changed = changeOriginalTemplateFixture(
+      own,
+      'runtimeContext.s([',
+      'runtimeContext.s(["routeModule",()=>routeModule,',
+    );
+
+    await expect(assertNodeManifestTurbopackTemplateConsumer(changed)).rejects.toThrow(
+      'changed protected export selector',
+    );
+  });
 });

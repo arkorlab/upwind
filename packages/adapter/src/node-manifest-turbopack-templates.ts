@@ -45,8 +45,18 @@ const PROFILES = {
     moduleSha: 'aeab4882c08e62a742aa67daa0d4a434b3330f389c38ffdf4262b6143c80b5ed',
     templateSha: '01ee442c7e37226e4721aff08f74f95808ac9c83a277c6c7878104bfe2efc985',
   },
+  'pages-api': {
+    constructorName: 'PagesAPIRouteModule',
+    module: 'dist/server/route-modules/pages-api/module.compiled.js',
+    moduleSha: '0203c76f81559286e5c80c7ef070fe7ceb325a0a7f13528e44e6b6acec208d36',
+    templateSha: 'a1943f62ef5d5a7c0093c560600484bd3029c047bd72e83803e36171dc6d8ac0',
+  },
 } as const;
 const PROTECTED_IMPORTS: ReadonlyMap<string, string> = new Map([
+  [
+    'dist/server/request-meta.js',
+    'd91bfe6253f61ada12eb73650589cee8e8cd3eb038c35e0550d242bb6c31803d',
+  ],
   ['dist/server/route-kind.js', '4dc92760c2e4925613034896faa04c52daaf7a4420d7bcbd6de5214b55d84fea'],
   [
     'dist/server/route-modules/pages/pages-handler.js',
@@ -54,12 +64,13 @@ const PROTECTED_IMPORTS: ReadonlyMap<string, string> = new Map([
   ],
   [PROFILES.pages.module, PROFILES.pages.moduleSha],
   [PROFILES['app-route'].module, PROFILES['app-route'].moduleSha],
+  [PROFILES['pages-api'].module, PROFILES['pages-api'].moduleSha],
 ]);
 export interface NodeManifestTurbopackTemplateInput {
   readonly projection: NodeManifestTurbopackProjection;
   readonly imports: readonly NodeManifestTemplateImport[];
   readonly route: {
-    readonly kind: 'pages' | 'app-route';
+    readonly kind: keyof typeof PROFILES;
     readonly page: string;
     readonly pathname: string;
   };
@@ -372,8 +383,10 @@ function view(
 function assertExports(
   actual: ReturnType<typeof view>,
   expected: ReturnType<typeof view>,
+  kind: NodeManifestTurbopackTemplateInput['route']['kind'],
 ): readonly string[] {
-  for (const required of ['routeModule', 'handler'])
+  const mandatory = kind === 'pages-api' ? ['handler'] : ['routeModule', 'handler'];
+  for (const required of mandatory)
     if (!actual.exports.fields.has(required)) refuse('missing protected export');
   for (const [name, selector] of actual.exports.fields) {
     const known = expected.exports.fields.get(name);
@@ -400,7 +413,7 @@ export async function assertNodeManifestTurbopackTemplateConsumer(
   const expectedView = view(expected);
   if (JSON.stringify(actualView.alpha.body()) !== JSON.stringify(expectedView.alpha.body()))
     refuse('changed handler or constructor body');
-  const exports = assertExports(actualView, expectedView);
+  const exports = assertExports(actualView, expectedView, input.route.kind);
   return {
     kind: input.route.kind,
     page: input.route.page,
