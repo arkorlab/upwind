@@ -7,6 +7,7 @@ import { parseAst } from 'rolldown/parseAst';
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node } from './lexical-scope.ts';
 import { identifier, propertyName, stringOf } from './node-manifest-consumer-ast.ts';
+import type { NodeManifestPagesDefinition } from './node-manifest-pages-definitions.ts';
 import {
   nodeManifestRuntimeCohortLookup,
   nodeManifestRuntimeCohortSources,
@@ -43,6 +44,7 @@ export interface NodeManifestTurbopackSealedEntry {
   readonly page: string;
   readonly pathname: string;
   readonly kind?: 'app-page' | 'pages' | 'app-route' | 'pages-api';
+  readonly definition?: NodeManifestPagesDefinition | undefined;
 }
 export interface NodeManifestTurbopackGraphFactory {
   readonly id: string;

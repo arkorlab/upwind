@@ -372,7 +372,7 @@ export async function buildNodeFunction(
   assertNativeSelection(selected, native);
   assertNodeTarget(input, native);
   const abi = assertNativeAbi();
-  const physical = await nodePhysicalFiles(input, native);
+  const physical = await nodePhysicalFiles(input, native, proof.normalization?.metadataFiles);
   const files = new NodeArtifactFiles(input, physical, native);
   const work = path.join(input.outDir, 'work', `node-${input.name ?? input.kind}`);
   await mkdir(work, { recursive: true });

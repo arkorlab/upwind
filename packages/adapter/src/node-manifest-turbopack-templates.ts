@@ -26,6 +26,10 @@ import {
   reviewedRouteConstructorSource,
 } from './node-manifest-framework.ts';
 import {
+  nodeManifestPagesPage,
+  type NodeManifestPagesDefinition,
+} from './node-manifest-pages-definitions.ts';
+import {
   projectedTemplateExports,
   swcTemplateExports,
   type ManifestTemplateExports,
@@ -82,6 +86,7 @@ export interface NodeManifestTurbopackTemplateInput {
     readonly kind: keyof typeof PROFILES;
     readonly page: string;
     readonly pathname: string;
+    readonly definition?: NodeManifestPagesDefinition | undefined;
   };
   /** Private, original-source-bound inspection only; never a physical source identity. */
   readonly coalesced?: {
@@ -386,9 +391,20 @@ function constructorScalar(value: Node, actual: Context): Node | undefined {
     return refuse('opaque inline output');
   return { ...value, value: selected };
 }
+function templatePage(actual: Context): string {
+  if (actual.input.route.kind !== 'pages') {
+    if (actual.input.route.definition !== undefined)
+      refuse('canonical Pages definition used for another kind');
+    return actual.input.route.page;
+  }
+  return nodeManifestPagesPage(
+    actual.input.route,
+    fieldsOf(actual.fields.get('definition')).get('page'),
+  );
+}
 function expectedScalars(template: Template, actual: Context): Template {
   const replacements = new Map<string, string>([
-    ['VAR_DEFINITION_PAGE', actual.input.route.page],
+    ['VAR_DEFINITION_PAGE', templatePage(actual)],
     ['VAR_DEFINITION_PATHNAME', actual.input.route.pathname],
   ]);
   if (actual.input.route.kind === 'app-route') {
@@ -476,7 +492,7 @@ export async function assertNodeManifestTurbopackTemplateConsumer(
   const exports = assertExports(actualView, expectedView, input.route.kind);
   return {
     kind: input.route.kind,
-    page: input.route.page,
+    page: templatePage(actual),
     pathname: input.route.pathname,
     exports,
     requiresRuntimeNormalization: true,

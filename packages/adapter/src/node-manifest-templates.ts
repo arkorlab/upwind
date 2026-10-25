@@ -19,6 +19,10 @@ import {
   manifestConstructorImport,
   reviewedRouteConstructorSource,
 } from './node-manifest-framework.ts';
+import {
+  nodeManifestPagesPage,
+  type NodeManifestPagesDefinition,
+} from './node-manifest-pages-definitions.ts';
 
 const MAX_TEMPLATE_BYTES = 131_072;
 const PAGE_TEMPLATE_SHA = '74447861b9e7809dbac55efc1cb6b6c6365b2f8ea290679c7493b8f08f56990a';
@@ -78,7 +82,12 @@ export interface NodeManifestTemplateInput {
   readonly source: { readonly code: string; readonly sha256: string };
   /** All static imports, resolved through the original physical/module-id graph. */
   readonly imports: readonly NodeManifestTemplateImport[];
-  readonly route: { readonly kind: Kind; readonly page: string; readonly pathname: string };
+  readonly route: {
+    readonly kind: Kind;
+    readonly page: string;
+    readonly pathname: string;
+    readonly definition?: NodeManifestPagesDefinition | undefined;
+  };
 }
 export interface NodeManifestTemplateProof {
   readonly kind: Kind;
@@ -223,12 +232,20 @@ function constructorFields(
   if (constructor === undefined || constructors.length !== 1) return refuse('route constructor');
   return fieldsOf(listOf(constructor.node, 'arguments')[0]);
 }
+function templatePage(fields: ReadonlyMap<string, Node>, input: NodeManifestTemplateInput): string {
+  if (input.route.kind !== 'pages') {
+    if (input.route.definition !== undefined)
+      refuse('canonical Pages definition used for another kind');
+    return input.route.page;
+  }
+  return nodeManifestPagesPage(input.route, fieldsOf(fields.get('definition')).get('page'));
+}
 function generatedValues(
   fields: ReadonlyMap<string, Node>,
   input: NodeManifestTemplateInput,
 ): ReadonlyMap<string, string> {
   const replacements = new Map([
-    ['VAR_DEFINITION_PAGE', input.route.page],
+    ['VAR_DEFINITION_PAGE', templatePage(fields, input)],
     ['VAR_DEFINITION_PATHNAME', input.route.pathname],
   ]);
   if (input.route.kind !== 'app-route') return replacements;
@@ -383,7 +400,7 @@ export async function assertNodeManifestTemplateConsumer(
     refuse('template structure or protected export escape');
   return {
     kind: input.route.kind,
-    page: input.route.page,
+    page: templatePage(fields, input),
     pathname: input.route.pathname,
     exports: protectedExports(input.route.kind),
     requiresRuntimeNormalization: true,

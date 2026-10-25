@@ -18,6 +18,7 @@ import { assertCoalescedPagesConsumer } from './node-manifest-coalesced-consumer
 import type { NodeManifestCoalescedImport } from './node-manifest-coalesced-pages.ts';
 import type { NodeManifestConsumerImport } from './node-manifest-consumers.ts';
 import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
+import { nodeManifestPagesContextLeaf } from './node-manifest-pages-context-consumer.ts';
 import { inspectNodeManifestReachability } from './node-manifest-reachability.ts';
 import {
   proveNodeManifestRuntimeCallers,
@@ -335,13 +336,13 @@ class TurbopackConsumers {
         graphs: this.allGraphs,
         factory,
         imports: this.coalescedImports(factory),
-        route: { page: route.page, pathname: route.pathname },
+        route: { page: route.page, pathname: route.pathname, definition: route.definition },
       });
     else
       await assertNodeManifestTurbopackTemplateConsumer({
         projection: factory.projection,
         imports: this.templateImports(factory),
-        route: { kind, page: route.page, pathname: route.pathname },
+        route: { kind, page: route.page, pathname: route.pathname, definition: route.definition },
       });
   }
 
@@ -412,6 +413,12 @@ class TurbopackConsumers {
     id: string,
     role: Role,
   ): Promise<void> {
+    if (
+      role === 'factory' &&
+      !this.routes.has(factory.id) &&
+      nodeManifestPagesContextLeaf(factory, id, this.unwrapped(id), this.input)
+    )
+      return;
     if (forwarded(factory) === id) await this.visit(factory.id, role);
     else if (role === 'class') {
       await this.fixedFactory(factory);

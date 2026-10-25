@@ -344,6 +344,7 @@ export async function proveNodeManifests(
       files.set(source.file, source);
       codeSources.set(source.file, source);
     }
+    for (const source of consumers.metadataFiles) files.set(source.file, source);
     for (const source of consumers.approvedCompilerSources)
       compilerSources.set(source.file, source);
     files.set(evaluator.file, evaluator);

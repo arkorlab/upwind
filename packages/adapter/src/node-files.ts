@@ -485,6 +485,7 @@ function emittedLinks(
 export async function nodePhysicalFiles(
   input: BuildFunctionInput,
   native: readonly NativeLoad[],
+  metadataFiles: readonly { readonly file: string; readonly sha256: string }[] = [],
 ): Promise<NodePhysicalFiles> {
   const layout = await nodePhysicalLayout(input);
   for (const load of native)
@@ -494,7 +495,9 @@ export async function nodePhysicalFiles(
       layout.nameOf,
     );
   const instrumentation = await projectInstrumentation(input);
-  const sources = await physicalSources(inputFiles(input, instrumentation), layout);
+  const owned = inputFiles(input, instrumentation);
+  for (const metadata of metadataFiles) owned.add(metadata.file);
+  const sources = await physicalSources(owned, layout);
   const links = new Map<string, string>();
   await moduleAliases(sources, layout, links);
   await traceAliases(input, layout, links);

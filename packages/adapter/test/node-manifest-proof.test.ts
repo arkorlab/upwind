@@ -257,6 +257,21 @@ describe('original Node manifest operation proof', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it('does not let a shared physical file overwrite a conflicting sealed definition', async () => {
+    const current = await fixture(directory);
+    current.input.entries.push({ id: '/alias', filePath: current.route });
+    current.input.runtimeManifest = JSON.stringify({
+      entrypoints: [
+        { id: '/native', kind: 'app-page', pathname: '/native' },
+        { id: '/alias', kind: 'app-route', pathname: '/alias' },
+      ],
+    });
+
+    await expect(proveNodeManifests(current.input, current.graph)).rejects.toThrow(
+      'shared physical route has conflicting definitions',
+    );
+  });
+
   it.each(APP_PAGE_RUNTIMES)(
     'closes direct %s class resolution only through the exact published AppPage factory',
     async (runtime) => {

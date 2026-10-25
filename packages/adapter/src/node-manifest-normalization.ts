@@ -13,6 +13,8 @@ export interface NodeManifestNormalization {
   readonly distDir: string;
   readonly canonicalDistDir: string;
   readonly runtimeRootDir?: string;
+  /** Inert canonical compiler metadata, sealed separately from executable code. */
+  readonly metadataFiles?: readonly { readonly file: string; readonly sha256: string }[];
 }
 
 function refuse(reason: string): never {
@@ -28,12 +30,11 @@ export async function nodeManifestNormalization(input: {
     refuse('missing sealed entry inventory');
   const entries: NodeManifestNormalization['entries'][number][] = [];
   const ids = new Set<string>();
-  const paths = new Set<string>();
   for (const entry of input.entries) {
     const canonicalFilePath = await realpath(entry.filePath);
-    if (ids.has(entry.id) || paths.has(canonicalFilePath)) refuse('duplicate sealed route');
+    if (ids.has(entry.id)) refuse('duplicate sealed route');
     ids.add(entry.id);
-    paths.add(canonicalFilePath);
+    // Route IDs are unique; a built error module may intentionally serve several SDK entries.
     entries.push(Object.freeze({ id: entry.id, filePath: entry.filePath, canonicalFilePath }));
   }
   const distDir = path.resolve(input.distDir);
