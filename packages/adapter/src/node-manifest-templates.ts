@@ -23,6 +23,7 @@ import {
   nodeManifestPagesPage,
   type NodeManifestPagesDefinition,
 } from './node-manifest-pages-definitions.ts';
+import type { NodeManifestTemplateHelperImport } from './node-manifest-template-helpers.ts';
 
 const MAX_TEMPLATE_BYTES = 131_072;
 const PAGE_TEMPLATE_SHA = '74447861b9e7809dbac55efc1cb6b6c6365b2f8ea290679c7493b8f08f56990a';
@@ -77,6 +78,7 @@ export interface NodeManifestTemplateImport {
   readonly specifier: string;
   readonly file: string;
   readonly sha256: string;
+  readonly helper?: NodeManifestTemplateHelperImport | undefined;
 }
 export interface NodeManifestTemplateInput {
   readonly source: { readonly code: string; readonly sha256: string };

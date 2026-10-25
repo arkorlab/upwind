@@ -8,6 +8,7 @@ import {
   manifestConstructorImport,
   reviewedFrameworkSource,
 } from './node-manifest-framework.ts';
+import type { NodeManifestTemplateHelperImport } from './node-manifest-template-helpers.ts';
 import { assertTurbopackCacheOwners } from './node-manifest-turbopack-cache.ts';
 import type { NodeManifestTurbopackConsumerInput } from './node-manifest-turbopack-consumers.ts';
 import type {
@@ -24,7 +25,12 @@ export interface NodeManifestCoalescedPagesProfile {
   readonly [PROFILE]: boolean;
 }
 export type NodeManifestCoalescedImport =
-  | { readonly specifier: string; readonly file: string; readonly sha256: string }
+  | {
+      readonly specifier: string;
+      readonly file: string;
+      readonly sha256: string;
+      readonly helper?: NodeManifestTemplateHelperImport | undefined;
+    }
   | { readonly specifier: string; readonly builtin: string };
 interface NodeManifestCoalescedPagesInput {
   readonly owner: NodeManifestTurbopackConsumerInput;

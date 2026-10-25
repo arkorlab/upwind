@@ -15,7 +15,6 @@ import {
   type NodeManifestBoundConsumerProof,
 } from './node-manifest-bound-batch.ts';
 import { assertCoalescedPagesConsumer } from './node-manifest-coalesced-consumer.ts';
-import type { NodeManifestCoalescedImport } from './node-manifest-coalesced-pages.ts';
 import type { NodeManifestConsumerImport } from './node-manifest-consumers.ts';
 import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
 import { nodeManifestPagesContextLeaf } from './node-manifest-pages-context-consumer.ts';
@@ -35,7 +34,6 @@ import {
   nodeManifestCoalescedImports,
   nodeManifestTemplateImports,
 } from './node-manifest-template-imports.ts';
-import type { NodeManifestTemplateImport } from './node-manifest-templates.ts';
 import {
   type NodeManifestTurbopackBootGraph,
   type NodeManifestTurbopackEntryGraph,
@@ -113,6 +111,7 @@ class TurbopackConsumers {
   private readonly runtimeConsumers = new Set<string>();
   private readonly boundConsumers = new Map<string, NodeManifestBoundConsumerProof>();
   private readonly strictFactories = new Map<string, NodeManifestTurbopackGraphFactory>();
+  private readonly helperOwner = Object.freeze({ identity: Symbol('Pages template helper owner') });
   private readonly certifiedFactories = new Map<string, NodeManifestAppPageFactoryProof>();
   private readonly callerProof: NodeManifestRuntimeCallerProof | undefined;
   private reachabilityFallback: ReturnType<typeof inspectNodeManifestReachability>['fallback'];
@@ -307,14 +306,18 @@ class TurbopackConsumers {
     this.boundConsumers.set(factory.id, proof);
   }
 
-  private templateImports(
+  private importInput(
     factory: NodeManifestTurbopackGraphFactory,
-  ): readonly NodeManifestTemplateImport[] {
-    return nodeManifestTemplateImports({
+  ): Parameters<typeof nodeManifestTemplateImports>[0] {
+    return {
       factory,
       sources: this.input.sources,
       target: (id) => this.importTarget(id),
-    });
+      helper:
+        this.producerKind() === 'pages'
+          ? { owner: this.helperOwner, factories: this.factories }
+          : undefined,
+    };
   }
 
   private async consumer(factory: NodeManifestTurbopackGraphFactory): Promise<void> {
@@ -336,25 +339,17 @@ class TurbopackConsumers {
         owner: this.input,
         graphs: this.allGraphs,
         factory,
-        imports: this.coalescedImports(factory),
+        imports: nodeManifestCoalescedImports(this.importInput(factory)),
+        helperOwner: this.helperOwner,
         route: { page: route.page, pathname: route.pathname, definition: route.definition },
       });
     else
       await assertNodeManifestTurbopackTemplateConsumer({
         projection: factory.projection,
-        imports: this.templateImports(factory),
+        imports: nodeManifestTemplateImports(this.importInput(factory)),
+        helperOwner: this.helperOwner,
         route: { kind, page: route.page, pathname: route.pathname, definition: route.definition },
       });
-  }
-
-  private coalescedImports(
-    factory: NodeManifestTurbopackGraphFactory,
-  ): readonly NodeManifestCoalescedImport[] {
-    return nodeManifestCoalescedImports({
-      factory,
-      sources: this.input.sources,
-      target: (id) => this.importTarget(id),
-    });
   }
 
   private importTarget(id: string): string {
@@ -368,10 +363,12 @@ class TurbopackConsumers {
     const imports: NodeManifestAppPageFactoryImport[] = factory.imports
       .filter((edge) => isBuiltin(edge.target))
       .map((edge) => ({ specifier: edge.specifier, builtin: edge.target }));
-    const physicalImports = this.templateImports({
-      ...factory,
-      imports: factory.imports.filter((edge) => !isBuiltin(edge.target)),
-    });
+    const physicalImports = nodeManifestTemplateImports(
+      this.importInput({
+        ...factory,
+        imports: factory.imports.filter((edge) => !isBuiltin(edge.target)),
+      }),
+    );
     const proof = await certifyNodeManifestAppPageFactory({
       file: physical.file,
       projection: factory.projection,

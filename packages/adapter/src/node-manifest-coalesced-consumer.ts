@@ -4,6 +4,7 @@ import {
   type NodeManifestCoalescedImport,
 } from './node-manifest-coalesced-pages.ts';
 import type { NodeManifestPagesDefinition } from './node-manifest-pages-definitions.ts';
+import type { NodeManifestTemplateHelperOwner } from './node-manifest-template-helpers.ts';
 import type { NodeManifestTurbopackConsumerInput } from './node-manifest-turbopack-consumers.ts';
 import type {
   NodeManifestTurbopackBootGraph,
@@ -17,6 +18,7 @@ export async function assertCoalescedPagesConsumer(input: {
   readonly graphs: readonly NodeManifestTurbopackBootGraph[];
   readonly factory: NodeManifestTurbopackGraphFactory;
   readonly imports: readonly NodeManifestCoalescedImport[];
+  readonly helperOwner?: NodeManifestTemplateHelperOwner | undefined;
   readonly route: {
     readonly page: string;
     readonly pathname: string;
@@ -30,6 +32,7 @@ export async function assertCoalescedPagesConsumer(input: {
   await assertNodeManifestTurbopackTemplateConsumer({
     projection: input.factory.projection,
     imports: input.imports.filter((entry) => 'file' in entry),
+    helperOwner: input.helperOwner,
     route,
     coalesced: { profile, owner: input.owner },
   });

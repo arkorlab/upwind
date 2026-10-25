@@ -34,11 +34,17 @@ import {
   swcTemplateExports,
   type ManifestTemplateExports,
 } from './node-manifest-template-exports.ts';
+import {
+  currentTemplateHelperImport,
+  nodeManifestTemplateHelperToken,
+} from './node-manifest-template-helper-tokens.ts';
+import type { NodeManifestTemplateHelperOwner } from './node-manifest-template-helpers.ts';
 import type {
   NodeManifestTemplateImport,
   NodeManifestTemplateProof,
 } from './node-manifest-templates.ts';
 import type { NodeManifestTurbopackConsumerInput } from './node-manifest-turbopack-consumers.ts';
+import { assertStrictFactory, withoutStrict } from './node-manifest-turbopack-template-strict.ts';
 import {
   projectNodeManifestTurbopackFactory,
   type NodeManifestTurbopackProjection,
@@ -82,6 +88,7 @@ const PROTECTED_IMPORTS: ReadonlyMap<string, string> = new Map([
 export interface NodeManifestTurbopackTemplateInput {
   readonly projection: NodeManifestTurbopackProjection;
   readonly imports: readonly NodeManifestTemplateImport[];
+  readonly helperOwner?: NodeManifestTemplateHelperOwner | undefined;
   readonly route: {
     readonly kind: keyof typeof PROFILES;
     readonly page: string;
@@ -286,6 +293,20 @@ function namespaceToken(node: Node, context: Context): string | undefined {
   return undefined;
 }
 function importToken(node: Node, context: Context): string | undefined {
+  const helper =
+    context.input.route.kind === 'pages'
+      ? nodeManifestTemplateHelperToken(node, {
+          program: context.program,
+          visits: context.visits,
+          imports: context.input.imports,
+          templateFile: context.template.file,
+          nextRoot: context.template.root,
+          expected: context.expected,
+          owner: context.input.helperOwner,
+          projection: context.input.projection,
+        })
+      : undefined;
+  if (helper !== undefined) return helper;
   const namespace = namespaceToken(node, context);
   if (namespace !== undefined) return namespace;
   if (
@@ -304,6 +325,13 @@ function importToken(node: Node, context: Context): string | undefined {
   const imports = context.input.imports.filter((entry) => entry.specifier === specifier);
   const imported = imports[0];
   if (imported === undefined || imports.length !== 1) return refuse('unresolved import');
+  if (
+    !currentTemplateHelperImport(imported, {
+      owner: context.input.helperOwner,
+      projection: context.input.projection,
+    })
+  )
+    refuse('changed template helper import');
   if (beneath(context.template.root, imported.file) !== undefined)
     return nextToken(imported.file, imported.sha256, context);
   const slot = slotOf(node, context);
@@ -314,36 +342,6 @@ function importToken(node: Node, context: Context): string | undefined {
     );
   }
   return `slot:${slot}`;
-}
-function strict(node: unknown): boolean {
-  return (
-    isNode(node) &&
-    node.type === 'ExpressionStatement' &&
-    stringOf(node['expression']) === 'use strict'
-  );
-}
-function assertStrictFactory(projection: NodeManifestTurbopackProjection): void {
-  const parsed = program(projection.original.code);
-  const visits = new Map(visitTree(parsed).map((visit) => [visit.node, visit]));
-  let factory: Node | undefined;
-  const candidates = visits.keys();
-  for (const candidate of candidates) {
-    if (candidate.start === projection.factory.start && candidate.end === projection.factory.end) {
-      factory = candidate;
-      break;
-    }
-  }
-  let node = factory;
-  while (node !== undefined) {
-    if (node.type === 'Program' && strict(listOf(node, 'body')[0])) return;
-    const body = node['body'];
-    if (isNode(body) && body.type === 'BlockStatement' && strict(listOf(body, 'body')[0])) return;
-    node = visits.get(node)?.parent;
-  }
-  return refuse('unproved factory strictness');
-}
-function withoutStrict(body: readonly unknown[]): readonly unknown[] {
-  return strict(body[0]) ? body.slice(1) : body;
 }
 function outputDeclaration(actual: Context, expected: Node): Node {
   if (actual.input.route.kind !== 'app-route') return expected;
