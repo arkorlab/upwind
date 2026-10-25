@@ -44,6 +44,11 @@ existing version support.
 Hook TypeScript is analyzed after compiler lowering and can be bundled as JavaScript. A dependency
 executed from its original file must use syntax the target Node runtime can execute directly.
 Raw JSX and TypeScript features requiring transformation, such as enums, need compilation first.
+Raw TypeScript under an archived `node_modules` directory also requires compilation.
+
+Package import aliases support exact `package.json` mappings to literal relative files or external
+packages. Conditional, pattern and chained mappings are refused before publication until their
+resolution can be proved without changing the original package metadata.
 
 The first backend supports plain environment values, shared cache access and delegated HTTP
 services. Native storage bindings, Durable Objects, Cloudflare Workflows, custom cache-handler

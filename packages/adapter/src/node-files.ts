@@ -221,19 +221,132 @@ async function packageAliases(
   file: string,
   specifier: string,
   context: PackageAliasContext,
-): Promise<void> {
-  if (isBuiltin(specifier)) return;
+): Promise<boolean> {
+  if (isBuiltin(specifier)) return true;
   if (path.isAbsolute(specifier) || specifier.startsWith('file:'))
     throw new AuditError('Absolute Node module imports cannot be relocated into an artifact');
   const pkg = packageName(specifier);
-  if (pkg === undefined) return;
+  if (pkg === undefined) return false;
   const require = createRequire(file);
   // Search paths are independent of exports conditions. Import-only packages may forbid both
   // require(pkg) and require(pkg/package.json), but still need their original physical alias.
   const searches = require.resolve.paths(pkg) ?? [];
   for (const search of searches) {
-    if (await recordPackageAlias(path.join(search, pkg), context)) break;
+    if (await recordPackageAlias(path.join(search, pkg), context)) return true;
   }
+  return false;
+}
+
+function packageRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function packageScope(
+  importer: string,
+  context: PackageAliasContext,
+): Promise<{ readonly file: string; readonly metadata: Record<string, unknown> }> {
+  for (
+    let dir = path.dirname(importer);
+    beneath(context.layout.root, dir) !== undefined && path.basename(dir) !== 'node_modules';
+    dir = path.dirname(dir)
+  ) {
+    const file = path.join(dir, PACKAGE_MANIFEST);
+    try {
+      await stat(file);
+      const bytes = context.sources.files.get(context.layout.nameOf(file));
+      if (bytes === undefined)
+        throw new AuditError('Node package import scope metadata is not closed');
+      const metadata: unknown = JSON.parse(new TextDecoder().decode(bytes));
+      if (!packageRecord(metadata))
+        throw new AuditError('Invalid Node package import scope metadata');
+      return { file, metadata };
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    }
+    if (dir === context.layout.root) break;
+  }
+  throw new AuditError('Node package import has no closed package scope');
+}
+
+function packageImportTarget(metadata: Record<string, unknown>, specifier: string): string {
+  const imports = metadata['imports'];
+  if (
+    !packageRecord(imports) ||
+    !Object.hasOwn(imports, specifier) ||
+    !/^#[\w./-]+$/u.test(specifier) ||
+    specifier.startsWith('#/') ||
+    specifier.endsWith('/')
+  )
+    throw new AuditError(
+      'Node package import requires a proved exact mapping; patterns are unsupported',
+    );
+  const target = imports[specifier];
+  if (typeof target !== 'string' || target === '' || /[*#?%\\]/u.test(target))
+    throw new AuditError(
+      'Node package import requires a literal target; conditions and chains are unsupported',
+    );
+  return target;
+}
+
+async function relativePackageImport(
+  file: string,
+  target: string,
+  context: PackageAliasContext,
+): Promise<void> {
+  const logical = path.resolve(path.dirname(file), target);
+  if (
+    beneath(path.dirname(file), logical) === undefined ||
+    target
+      .slice(2)
+      .split('/')
+      .some((segment) => ['.', '..', 'node_modules'].includes(segment))
+  )
+    throw new AuditError('Node package import target escapes its package scope');
+  const canonical = await realpath(logical);
+  if (!(await stat(canonical)).isFile())
+    throw new AuditError('Node package import requires an exact regular target file');
+  await assertPackageTarget(canonical, context);
+  assertSpecifierTopology(file, target, context.layout);
+  await relativeAliases(file, target, context);
+}
+
+function resolvedPackageBuiltin(importer: string, specifier: string): boolean {
+  let resolved: string;
+  try {
+    resolved = createRequire(importer).resolve(specifier);
+  } catch {
+    return false;
+  }
+  return isBuiltin(resolved);
+}
+
+/** Exact package imports resolve external targets from package.json, never an importer subfolder. */
+async function packageImports(
+  importer: string,
+  specifier: string,
+  context: PackageAliasContext,
+): Promise<void> {
+  if (!specifier.startsWith('#')) return;
+  const scope = await packageScope(importer, context);
+  const target = packageImportTarget(scope.metadata, specifier);
+  if (target.startsWith('./')) return relativePackageImport(scope.file, target, context);
+  if (isBuiltin(target)) {
+    // Node imports rejects URL-scheme targets; bare builtins resolve through packageResolve.
+    if (target.includes(':') || !resolvedPackageBuiltin(importer, specifier))
+      throw new AuditError('Node package import has an unproved builtin target');
+    return;
+  }
+  const pkg = packageName(target);
+  const segments = target.split('/');
+  if (
+    pkg === undefined ||
+    !/^(?:@[\w.-]+\/)?[\w.-]+(?:\/[\w.-]+)*$/u.test(target) ||
+    segments.some((segment) => ['.', '..', 'node_modules'].includes(segment)) ||
+    (pkg === scope.metadata['name'] && scope.metadata['exports'] !== undefined)
+  )
+    throw new AuditError('Node package import has an unproved external target');
+  if (!(await packageAliases(scope.file, target, context)))
+    throw new AuditError('Node package import external alias has no closed physical target');
 }
 
 function absentRelativePath(error: unknown): boolean {
@@ -338,6 +451,7 @@ async function moduleAliases(
     for (const specifier of specifiers) {
       assertSpecifierTopology(file, specifier, layout);
       await relativeAliases(file, specifier, context);
+      await packageImports(file, specifier, context);
       await packageAliases(file, specifier, context);
     }
   }
