@@ -19,6 +19,7 @@
     "./bundle-blobs": "./src/bundle-blobs.ts",
     "./cache-host": "./src/cache/host.ts",
     "./function": "./src/function.ts",
+    "./node-bindings": "./src/node-bindings.ts",
     "./node-container": "./src/node-container.ts",
     "./node-environment": "./src/node-environment.ts",
     "./node-fetch-response": "./src/node-fetch-response.ts",

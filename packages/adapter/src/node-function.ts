@@ -54,7 +54,7 @@ function assertNativeAbi(): NodeContainerFunctionSpec['abi'] {
   };
 }
 
-/** Resolve only the four exact runtime-owned module identities, from any runtime subdirectory. */
+/** Resolve only the exact runtime-owned module identities, from any runtime subdirectory. */
 export function nodeRuntimeAlias(
   source: string,
   importer: string | undefined,
@@ -65,7 +65,11 @@ export function nodeRuntimeAlias(
   if (owner === '..' || owner.startsWith(`..${path.sep}`) || path.isAbsolute(owner))
     return undefined;
   const resolved = path.relative(runtime, path.resolve(path.dirname(importer), source));
-  if (!/^(?:environment|fetch-response|node-bridge|resources)\.(?:ts|js)$/u.test(resolved))
+  if (
+    !/^(?:environment|fetch-response|node-bindings|node-bridge|resources)\.(?:ts|js)$/u.test(
+      resolved,
+    )
+  )
     return undefined;
   return path.basename(resolved, path.extname(resolved));
 }
@@ -90,6 +94,9 @@ function nodeAliases(input: BuildFunctionInput): Plugin {
       if (source === 'arkor:wasm') return { id: './wasm.mjs', external: true };
       if (source === 'arkor:cache-host') return input.cacheHostModule ?? '\0upwind-node-no-cache';
       const target = nodeRuntimeAlias(source, importer, runtime);
+      // Both separately bundled entrypoints share one private bootstrap/cache module.
+      // It consumes and removes the token-bearing environment value exactly once.
+      if (target === 'node-bindings') return { id: './node-bindings.mjs', external: true };
       return target === undefined ? null : (aliases[target] ?? null);
     },
     load(id) {
@@ -300,6 +307,12 @@ async function addNodeEdge(files: NodeArtifactFiles, work: string): Promise<void
 }
 
 async function addNodeRuntime(files: NodeArtifactFiles, work: string): Promise<void> {
+  const bindings = path.join(work, 'node-bindings.mjs');
+  await bundleNode(files.input, {
+    entry: fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-bindings')),
+    outFile: bindings,
+  });
+  files.add('upwind/node-bindings.mjs', new Uint8Array(await readFile(bindings)));
   const runtime = path.join(work, 'function.mjs');
   await bundleNode(files.input, {
     entry: fileURLToPath(import.meta.resolve('@stayingupwind/runtime/function')),
