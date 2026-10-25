@@ -42,6 +42,10 @@ at [http://localhost:3000](http://localhost:3000). It builds nothing, so a chang
 project is built again. `pnpm preview --check` asks every route and file of the build once, and
 ends.
 
+What a preview does otherwise than a deployment — with storage, images and cron jobs among it — it
+says as it starts, and [upwind's README](https://github.com/arkorlab/upwind/blob/main/packages/upwind/README.md#upwind-preview)
+lists all of it.
+
 There is no `start` script on purpose. What a deployment runs is the bundle, not a Node server of
 this project's own, and `pnpm preview` is that bundle, run here.
 
