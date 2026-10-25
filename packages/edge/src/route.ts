@@ -81,8 +81,13 @@ const FALLBACK_PRIVACY = 3;
 /** A probe of one app Worker of a split deployment (`fn`, signed): that Worker's to answer. */
 const FUNCTION_PROBE = 'function-probe';
 const NOT_DEPLOYED = 'not-deployed';
-/** Next.js's own paths, the build's files chief among them: nothing under them is judged by a tag. */
+/**
+ * Next.js's own paths, the build's files chief among them: nothing under them is judged by a tag,
+ * but for a Pages Router page's data (`/_next/data/`), which the page's Function renders as it
+ * renders the page, from what an invalidation reaches.
+ */
 const NEXT_OWN_PATHS = '/_next/';
+const PAGES_DATA_PATHS = '/_next/data/';
 
 /** A request routed by the edge, with what it knows of the project and what it waited on for it. */
 export interface RoutingInput {
@@ -459,13 +464,15 @@ function routeWithinBudget(input: ManifestRoutingInput): Promise<Response> {
  * of the scope, and so is what it hands to the scope's Functions, which are told where the scope
  * stands as this isolate knows it (`withScopeRevision`): a page Next.js routes there itself — behind
  * a rewrite the edge stays out of — or a route handler reads no record here, and is no less one an
- * invalidation reaches. Not for a path of Next.js's own, nor for a validation, which proves the
- * build and reads nothing of the cache; a file the build shipped and an optimized image are answered
- * before this (`hostedFirst`), and a request of another method is handed on before its manifest is
- * in (`routeWithinBudget`).
+ * invalidation reaches, nor is a Pages Router page's data. Not for another path of Next.js's own,
+ * nor for a validation, which proves the build and reads nothing of the cache; a file the build
+ * shipped and an optimized image are answered before this (`hostedFirst`), and a request of another
+ * method is handed on before its manifest is in (`routeWithinBudget`).
  */
 function lookAtScopeOf(input: ManifestRoutingInput, scopeId: string): void {
-  if (input.state.validated || input.url.pathname.startsWith(NEXT_OWN_PATHS)) {
+  const { pathname } = input.url;
+  const nextOwn = pathname.startsWith(NEXT_OWN_PATHS) && !pathname.startsWith(PAGES_DATA_PATHS);
+  if (nextOwn || input.state.validated) {
     return;
   }
   lookAtScopeBehind(

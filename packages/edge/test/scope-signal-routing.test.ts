@@ -115,7 +115,6 @@ describe('what looks at scope signals as it is routed', () => {
   it.each([
     { pathname: '/_next/static/chunks/main.js' },
     { pathname: '/_next/static/chunks/main.js', method: 'HEAD' },
-    { pathname: '/_next/data/build/index.json' },
     { pathname: '/', method: 'POST' },
   ])('leaves the signal cache and authority untouched for %j', async (request) => {
     const subject = await fixture();
@@ -135,6 +134,7 @@ describe('what looks at scope signals as it is routed', () => {
 
   it.each([
     { pathname: '/unknown' },
+    { pathname: '/_next/data/build/index.json' },
     { pathname: '/', mode: 'passthrough' as const },
     { pathname: '/', generations: false },
   ])('looks at the scope behind a request it reads no record for, %j', async (request) => {
