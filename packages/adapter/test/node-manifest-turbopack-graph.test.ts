@@ -93,6 +93,17 @@ function addDeferredTable(
   };
 }
 
+function runtimeSelfEdge(own: ReturnType<typeof fixture>): ReturnType<typeof fixture> {
+  return {
+    ...own,
+    sources: own.sources.map((record) => {
+      return record.file === RUNTIME
+        ? { ...record, imports: [...record.imports, { specifier: RUNTIME, target: RUNTIME }] }
+        : record;
+    }),
+  };
+}
+
 function graphFailure(own: ReturnType<typeof fixture>): Error {
   try {
     nodeManifestTurbopackEntryGraph(own);
@@ -104,6 +115,39 @@ function graphFailure(own: ReturnType<typeof fixture>): Error {
 }
 
 describe('next Turbopack route topology', () => {
+  it('keeps the actual runtime self-edge separate from factory tables and its proof obligation', () => {
+    const own = runtimeSelfEdge(fixture());
+    const graph = nodeManifestTurbopackEntryGraph(own);
+    const expected = nodeManifestTurbopackEntryGraph(fixture());
+
+    expect(graph.factories).toStrictEqual(expected.factories);
+    expect(graph.initialChunks).toStrictEqual([CHUNK]);
+    expect(graph.runtimeId).toBe(RUNTIME);
+    expect(graph.runtime.source).toStrictEqual(source('module.exports=unprovedRuntime;'));
+    expect(graph.requiresReviewedRuntime).toBe(true);
+    expect(graph.requiresSdkNormalization).toBe(true);
+  });
+
+  it('still checks every different physical target even if it has the same runtime bytes', () => {
+    const own = addDeferredTable(
+      runtimeSelfEdge(fixture()),
+      'other-runtime',
+      'module.exports=unprovedRuntime;',
+    );
+
+    expect(() => nodeManifestTurbopackEntryGraph(own)).toThrow('registration target');
+  });
+
+  it('rejects an entry explicitly trying to load its runtime as a registration table', () => {
+    const own = replaceFile(
+      runtimeSelfEdge(fixture()),
+      ENTRY,
+      BOOT.replace('R.m(1);', 'R.c("server/chunks/[turbopack]_runtime.js");R.m(1);'),
+    );
+
+    expect(() => nodeManifestTurbopackEntryGraph(own)).toThrow('runtime used as a factory table');
+  });
+
   it('rejects the complete graph with independent bounded reasons from initial and deferred tables', () => {
     let own = replaceFile(
       fixture(),

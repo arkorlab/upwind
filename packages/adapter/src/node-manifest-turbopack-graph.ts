@@ -254,6 +254,9 @@ function runtimeTables(
   const tables = new Map<string, NodeManifestTurbopackGraphFile>();
   for (const edge of runtime.imports) {
     if (isBuiltin(edge.target)) continue;
+    // Closing the runtime's dynamic chunk lookup can include its own physical module. Its
+    // production body has a separate proof obligation; it is never a registration table.
+    if (edge.target === runtime.id) continue;
     const table = sources.get(edge.target);
     if (table === undefined) refuse('unclosed runtime table target');
     tables.set(table.id, table);
@@ -359,6 +362,7 @@ export function nodeManifestTurbopackEntryGraph(input: {
     const target = input.sources.find((source) => source.file === file);
     if (target === undefined || runtime.imports.every((edge) => edge.target !== target.id))
       refuse('unclosed loaded chunk');
+    if (target.id === runtime.id) refuse('runtime used as a factory table');
     return target.id;
   });
   // ctx.l can load a deferred table not present among initial R.c calls. Close the
