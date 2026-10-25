@@ -2,6 +2,8 @@ import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
+  CONTAINER_BUNDLE_VERSION,
+  CONTAINER_SPLIT_BUNDLE_VERSION,
   type DurableObjectDeclaration,
   DURABLE_OBJECT_BUNDLE_VERSION,
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
@@ -61,7 +63,7 @@ export interface BundledDurableObject {
 }
 
 /** How `bundleDurableObjects` is asked to build. */
-interface BundleOptions {
+export interface BundleOptions {
   readonly outDir?: string;
   readonly sourceMaps?: SourceMapsOption;
   /** Adapter output defaults to production; local resources select development. */
@@ -74,6 +76,7 @@ interface BundleOptions {
 async function sourcePath(
   projectDir: string,
   declaration: DurableObjectDeclaration,
+  description: string,
 ): Promise<{ readonly root: string; readonly module: string }> {
   const root = await realpath(projectDir);
   let module: string;
@@ -81,7 +84,7 @@ async function sourcePath(
     module = await realpath(path.join(root, declaration.module));
   } catch (error) {
     throw new Error(
-      `@stayingupwind/adapter: ${declaration.name}: the Durable Object module ${declaration.module} does not exist or cannot be resolved`,
+      `@stayingupwind/adapter: ${declaration.name}: the ${description} module ${declaration.module} does not exist or cannot be resolved`,
       { cause: error },
     );
   }
@@ -94,7 +97,7 @@ async function sourcePath(
     !(await stat(module)).isFile()
   ) {
     throw new Error(
-      `@stayingupwind/adapter: ${declaration.name}: the Durable Object module must be a file inside the project directory`,
+      `@stayingupwind/adapter: ${declaration.name}: the ${description} module must be a file inside the project directory`,
     );
   }
   return { root, module };
@@ -142,12 +145,17 @@ function entryPlugin(id: string, source: string, read: Set<string>): Plugin {
 }
 
 /** One class module, bundled by Rolldown into one ES module of the class code alone. */
-async function bundleDurableObject(
+export async function bundleWorkerClass(
   projectDir: string,
   declaration: DurableObjectDeclaration,
   options: BundleOptions,
+  kind: {
+    readonly description: string;
+    readonly exportName: string;
+  },
 ): Promise<BundledDurableObject> {
-  const { root, module } = await sourcePath(projectDir, declaration);
+  const { root, module } = await sourcePath(projectDir, declaration, kind.description);
+  const description = kind.description;
   const named = (file: string): string => projectNamed(projectDir, root, file);
   // The restart watch is told of a file by the name the caller gave its project, as `inputs` are.
   const { onSourceFile } = options;
@@ -181,7 +189,7 @@ async function bundleDurableObject(
       globalObjectPlugin(),
       entryPlugin(
         entryId,
-        `export { ${declaration.className} as ${DURABLE_OBJECT_EXPORT} } from ${jsLiteral(module)};\nexport default {};`,
+        `export { ${declaration.className} as ${kind.exportName} } from ${jsLiteral(module)};\nexport default {};`,
         read,
       ),
       // After the two above, so that what they answer for — the global object injected into every
@@ -225,12 +233,12 @@ async function bundleDurableObject(
   // Read once the bundle is generated: Rolldown reads the modules then, and not before.
   if (unresolved.length > 0)
     throw new Error(
-      `@stayingupwind/adapter: ${declaration.name}: the Durable Object module ${declaration.module} imports what cannot be resolved\n${unresolved.join('\n')}`,
+      `@stayingupwind/adapter: ${declaration.name}: the ${description} module ${declaration.module} imports what cannot be resolved\n${unresolved.join('\n')}`,
     );
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined)
     throw new Error(
-      `@stayingupwind/adapter: ${declaration.name}: no Durable Object module was emitted`,
+      `@stayingupwind/adapter: ${declaration.name}: no ${description} module was emitted`,
     );
   const wasmModules = wasm.collector.modules.map((entry) => {
     return {
@@ -282,7 +290,12 @@ export async function bundleDurableObjects(
 ): Promise<BundledDurableObject[]> {
   const checked = durableObjectDeclarationsSchema.parse(declarations);
   return Promise.all(
-    checked.map(async (declaration) => bundleDurableObject(projectDir, declaration, options)),
+    checked.map(async (declaration) => {
+      return bundleWorkerClass(projectDir, declaration, options, {
+        description: 'Durable Object',
+        exportName: DURABLE_OBJECT_EXPORT,
+      });
+    }),
   );
 }
 
@@ -298,7 +311,32 @@ export async function buildDurableObjectFunctions(input: {
   sourceMaps: SourceMapRef[];
   dependencies: Readonly<Record<string, FunctionDependencies>>;
 }> {
-  const built = await bundleDurableObjects(input.projectDir, input.declarations, input);
+  return buildWorkerClassFunctions(
+    input,
+    await bundleDurableObjects(input.projectDir, input.declarations, input),
+    {
+      label: 'durable-object',
+      moduleName: OBJECT_MODULE,
+    },
+  );
+}
+
+/** Package isolated class code into the ordinary content-addressed Function format. */
+export async function buildWorkerClassFunctions(
+  input: {
+    readonly projectDir: string;
+    readonly outDir: string;
+    readonly blobs: BlobStore;
+    readonly sourceMaps?: SourceMapsOption;
+    readonly distDir?: string;
+  },
+  built: readonly BundledDurableObject[],
+  settings: { readonly label: string; readonly moduleName: string },
+): Promise<{
+  functions: Readonly<Record<string, FunctionSpec>>;
+  sourceMaps: SourceMapRef[];
+  dependencies: Readonly<Record<string, FunctionDependencies>>;
+}> {
   const sourceMaps: SourceMapRef[] = [];
   const dependencies: Record<string, FunctionDependencies> = {};
   const functions: Record<string, FunctionSpec> = Object.create(null) as Record<
@@ -308,7 +346,7 @@ export async function buildDurableObjectFunctions(input: {
   for (const object of built) {
     const modules: FunctionModule[] = [
       {
-        name: OBJECT_MODULE,
+        name: settings.moduleName,
         type: 'esm' as const,
         blob: await input.blobs.putText(object.source, 'text/javascript'),
       },
@@ -323,7 +361,7 @@ export async function buildDurableObjectFunctions(input: {
       modules,
       size: await functionSize(input.outDir, modules),
     };
-    const kind = `durable-object/${object.declaration.name}`;
+    const kind = `${settings.label}/${object.declaration.name}`;
     const record = functionDependencies(
       input.projectDir,
       input.distDir ?? path.join(input.projectDir, '.next'),
@@ -349,12 +387,12 @@ export async function buildDurableObjectFunctions(input: {
           : object.map.source;
       sourceMaps.push({
         kind: 'function',
-        name: `${kind}/${OBJECT_MODULE}`,
+        name: `${kind}/${settings.moduleName}`,
         ...(await storeSourceMap(input.blobs, source, object.map.path)),
       });
     }
     functions[object.declaration.name] = {
-      mainModule: OBJECT_MODULE,
+      mainModule: settings.moduleName,
       modules,
       compatibilityDate: FUNCTION_COMPATIBILITY_DATE,
       compatibilityFlags: [...FUNCTION_COMPATIBILITY_FLAGS],
@@ -373,7 +411,11 @@ export async function durableObjectParts(input: {
   readonly distDir?: string;
 }): Promise<{
   bundle: {
-    v?: typeof DURABLE_OBJECT_BUNDLE_VERSION | typeof DURABLE_OBJECT_SPLIT_BUNDLE_VERSION;
+    v?:
+      | typeof DURABLE_OBJECT_BUNDLE_VERSION
+      | typeof DURABLE_OBJECT_SPLIT_BUNDLE_VERSION
+      | typeof CONTAINER_BUNDLE_VERSION
+      | typeof CONTAINER_SPLIT_BUNDLE_VERSION;
     durableObjects?: DurableObjectDeclaration[];
   };
   functions: { durableObjects?: Readonly<Record<string, FunctionSpec>> };
@@ -395,9 +437,14 @@ export async function durableObjectParts(input: {
   if (declarations.length === 0)
     return { bundle: {}, functions: {}, sourceMaps: [], dependencies: {} };
   const built = await buildDurableObjectFunctions({ ...input, declarations });
+  const hasContainers = declarations.some((declaration) => declaration.container !== undefined);
+  const version = hasContainers ? CONTAINER_BUNDLE_VERSION : DURABLE_OBJECT_BUNDLE_VERSION;
+  const splitVersion = hasContainers
+    ? CONTAINER_SPLIT_BUNDLE_VERSION
+    : DURABLE_OBJECT_SPLIT_BUNDLE_VERSION;
   return {
     bundle: {
-      v: input.split ? DURABLE_OBJECT_SPLIT_BUNDLE_VERSION : DURABLE_OBJECT_BUNDLE_VERSION,
+      v: input.split ? splitVersion : version,
       durableObjects: declarations,
     },
     functions: { durableObjects: built.functions },

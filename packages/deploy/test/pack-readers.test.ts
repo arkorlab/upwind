@@ -64,6 +64,7 @@ function bundle(): DeploymentBundle {
       middleware: spec('c'),
       workflow: spec('d'),
       durableObjects: { state: spec('e') },
+      cloudflareWorkflows: { jobs: spec('9') },
     },
   };
 }
@@ -79,7 +80,7 @@ function approval(): ApprovedPackReaderRollout {
       gateway: platformReader,
       readGateway: platformReader,
     },
-    functions: ['a', 'b', 'c', 'd', 'e'].map((digit) => {
+    functions: ['a', 'b', 'c', 'd', 'e', '9'].map((digit) => {
       return {
         mainModuleSha256: digit.repeat(64),
         hostIdentity: 'reviewed-first-party-host',
@@ -105,9 +106,10 @@ describe('a trusted pack-reader rollout applied to an immutable bundle', () => {
       'middleware',
       'workflow',
       'durable-object:state',
+      'cloudflare-workflow:jobs',
     ]);
     expect(proof?.consumers.map((consumer) => consumer.mainModuleSha256)).toStrictEqual(
-      ['a', 'b', 'c', 'd', 'e'].map((digit) => digit.repeat(64)),
+      ['a', 'b', 'c', 'd', 'e', '9'].map((digit) => digit.repeat(64)),
     );
   });
 
@@ -148,6 +150,13 @@ describe('a trusted pack-reader rollout applied to an immutable bundle', () => {
   it('does not carry an old approval over a changed Function module', () => {
     const value = bundle();
     value.functions.app = spec('f');
+
+    expect(scopePackReadersOf(value, approval())).toBeUndefined();
+  });
+
+  it('requires independent approval of a native Workflow artifact', () => {
+    const value = bundle();
+    value.functions.cloudflareWorkflows!['jobs'] = spec('0');
 
     expect(scopePackReadersOf(value, approval())).toBeUndefined();
   });

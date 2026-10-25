@@ -19,6 +19,12 @@ import { writeShipped } from './shipped.ts';
  * at startup. Neither is `miniflare`, which carries a runtime binary for the platform it was
  * installed on: there is nothing for a bundler to do with that.
  *
+ * `@stayingupwind/local`, which `upwind preview` serves a build with, is bundled in as the core is:
+ * it is not published at all. What it imports at runtime stays the installed packages it is —
+ * Rolldown, whose parser it reads JSON imports with, and `tldts`, whose list of public suffixes is
+ * data under a licence of its own — so both are dependencies of this package rather than code in
+ * its `dist/`.
+ *
  * Two entries, not one. The second is the module `upwind build` tells the processes below it to
  * `--import` (`src/resources/entry-path.ts`), which has to be a file of its own for a child to be
  * able to name it. Whatever the two share, Rolldown puts in a chunk beside them.
@@ -35,15 +41,15 @@ async function main(): Promise<void> {
       'resources-entry': path.join(ROOT, 'src/resources/entry.ts'),
     },
     platform: 'node',
-    // The bundler and the Workers' sources are reached only by a run from this repository's sources
+    // The Workers' sources are reached only by a run from this repository's sources
     // (`src/deploy/shipped.ts`); the published command reads `dist/shipped/` instead.
     external: [
       /^next(\/|$)/u,
       /^node:/u,
       /^miniflare$/u,
       /^wrangler$/u,
-      /^@stayingupwind\/local$/u,
       /^rolldown(\/|$)/u,
+      /^tldts$/u,
     ],
   });
   // No `banner`: the hashbang is `src/cli.ts`'s own and Rolldown carries it to the top of the
@@ -64,9 +70,13 @@ async function main(): Promise<void> {
   }
   const bytes = Buffer.byteLength(entry.code);
   console.log(`dist/cli.js: ${String(bytes)} bytes, ${String(output.length)} chunk(s)`);
-  // What `upwind deploy` builds with, bundled once here rather than on every machine it runs on.
+  // What `upwind deploy` and `upwind preview` run, bundled once here rather than on every machine
+  // they run on.
   const shipped = await writeShipped(path.join(OUT_DIR, 'shipped'));
-  console.log(`dist/shipped: ${Object.keys(shipped.workers).join(', ')} and the cache host`);
+  const preview = Object.keys(shipped.preview ?? {}).join(', ');
+  console.log(
+    `dist/shipped: ${Object.keys(shipped.workers).join(', ')}, the cache host, and a preview's ${preview}`,
+  );
 }
 
 await main();

@@ -418,6 +418,21 @@ renamed with it (above): its functions and classes keep their names, and its var
 parameters are renamed short. A cache module that reads its own functions' parameter names, through
 `Function.prototype.toString()`, would read renamed ones and not work.
 
+### Native Node.js addons
+
+A native package used only by build tooling runs in the Node.js build process; it does not need
+Workers support. A native package retained in a server entry is different: Workers cannot load a
+Node.js `.node` addon through
+[`process.dlopen`](https://github.com/cloudflare/workerd/blob/d0c519786437b6b79dc79caddc35641762fbba57/src/node/internal/public_process.ts#L270-L275).
+An existing graph-audit refusal also names the server entries whose Next.js traces include native
+addons, when those traces are available. This context is bounded and does not replace the original
+audit error or prove that a traced addon was invoked.
+
+A prerendered response alone does not make its server entry build-only. The Adapter API records
+[bypass, revalidation and fallback conditions separately from static compute](https://nextjs.org/docs/app/api-reference/adapters/output-types);
+Draft Mode or a later render can still need that entry. The adapter keeps those runtime contracts
+and the graph audit. It does not remove an entry or substitute native exports to make a build pass.
+
 ## Type declarations a Function carries
 
 A server module that runs TypeScript while it answers, such as Twoslash or a documentation renderer,
@@ -752,6 +767,82 @@ request path, and no instance is created during bundling or namespace publicatio
 registration, bundled source and its dependency paths. The CLI uses this to start the same class
 modules in its local runtime. The adapter's default export also reads downloaded declarations from
 `UPWIND_DURABLE_OBJECTS`, which is the local build input rather than a storage registration command.
+
+### Container-enabled objects
+
+A registration may also carry a host-owned `container` definition:
+
+```ts
+{
+  name: 'JOBS',
+  module: 'src/objects/jobs.ts',
+  className: 'Jobs',
+  container: {
+    image: { dockerfile: 'container/Dockerfile', buildContext: '.' },
+    instanceType: 'lite',
+    maxInstances: 3,
+  },
+}
+```
+
+For an existing image, use `image: { reference: 'registry.example/jobs:release' }`.
+Dockerfile and context paths are project-relative; an omitted context means the Dockerfile's
+directory. `@stayingupwind/core/bundle` exports `ContainerDefinition` and
+`containerDefinitionSchema`. Fixed instance sizes are `lite`, `basic`, and `standard-1` through
+`standard-4`; the host applies its own instance and account limits.
+
+This definition uses Cloudflare's `default` scheduling policy. The host prepares a digest-pinned
+image separately, provisions the Container application against the owner's namespace, and keeps the
+source definition and its optional `definitionRevision` sealed together. The adapter copies source
+metadata unchanged and does not run Docker or include the image in a Next.js Function. Without
+Workflow declarations, Container bundles use version 7, or 8 when app Functions are split; ordinary
+objects retain versions 5 and 6.
+An older host refuses the version instead of silently publishing a namespace without its Container.
+
+Classes can use the native `this.ctx.container` API or extend `Container` from
+`@cloudflare/containers`. With this policy, `ctx.container.start()` takes no image or instance-size
+options. Starting returns before the process is ready, so a class that forwards requests must check
+its listening port first. Runtime image selection belongs to a different scheduling policy and is
+not part of this definition. See Cloudflare's
+[Container API](https://developers.cloudflare.com/containers/api/durable-object-container/).
+
+The application's `durableObject(name)` accessor remains a native namespace. Nothing starts an
+instance during bundling or namespace publication; an application's explicit call is what reaches
+its object and Container. The deployment's ordinary Next.js serving path gains no lookup or proxy.
+
+## Cloudflare Workflows
+
+Pass `cloudflareWorkflows: [{ name, module, className, definitionRevision? }]` to `createAdapter`.
+These are host registrations. Module paths are relative to the application directory and must resolve
+inside it, including through symlinks. The registered named class export should extend Cloudflare's
+`WorkflowEntrypoint`; bundling checks missing imports and exports before anything is deployed.
+
+Each declaration produces `functions.cloudflareWorkflows[name]`, with main module
+`cloudflare-workflow.mjs` exporting the class as `UpwindCloudflareWorkflow`. Top-level
+`cloudflareWorkflows` carries the exact registrations. Modules, WebAssembly, source maps and dependency
+reports use the same content-addressed format as other Functions. The native class is built separately
+from the application's routes and introduces no page-routing or request-time lookup.
+
+Next.js bundles with these artifacts use version 9, or 10 with split app Functions. Durable Objects,
+including Container-enabled objects, and the Workflow SDK may coexist with them. A bundle without Cloudflare Workflows keeps its
+existing version. `bundleBlobs` includes every Workflow artifact.
+
+Other framework hosts can call the exported `buildCloudflareWorkflowFunctions({ projectDir, outDir,
+declarations, sourceMaps? })`. It writes blobs beneath `outDir/blobs` and returns `functions`, checked
+`declarations`, `sourceMaps` and `dependencies` without writing a deployment bundle. The lower-level
+`bundleCloudflareWorkflows(projectDir, declarations, options?)` returns bundled class source and watched
+inputs for local tools. Neither entry point needs a Next.js build or credentials.
+
+The host supplies execution, private scoped Workflow bindings, resource adapters, ownership checks,
+and immutable code/environment retention while instances remain active. It must reject a bundle whose
+registrations differ from its sealed deployment configuration. The standard Worker Loader accepts
+data and service capabilities; native storage bindings need host resource adapters when executing in
+a Dynamic Worker. See [Dynamic Workflows](https://developers.cloudflare.com/dynamic-workers/usage/dynamic-workflows/)
+and [Worker Loader environments](https://developers.cloudflare.com/dynamic-workers/api-reference/#env-object).
+
+The default adapter and local CLI read downloaded registrations from
+`UPWIND_CLOUDFLARE_WORKFLOWS` when explicit adapter registrations are absent. This is a build input,
+not a request to create a remote Workflow.
 
 ## Route gates
 

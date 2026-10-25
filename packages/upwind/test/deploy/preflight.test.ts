@@ -1,3 +1,4 @@
+/* eslint-disable unicorn/no-keyword-prefix -- Matches the host registration className field. */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -71,6 +72,25 @@ describe('checking a build before a deploy', () => {
     expect(plan.problems).toStrictEqual([
       expect.stringMatching(/built without the runtime cache's host/u),
     ]);
+  });
+
+  it('refuses Cloudflare Workflow artifacts when no scoped execution service is provisioned', async () => {
+    const dir = projectDir();
+    const app = deployableFunction(dir);
+    writeBundle(
+      dir,
+      bundleOf(app, {
+        v: 9,
+        routerReferences: 'one-pass',
+        cloudflareWorkflows: [{ name: 'JOBS', module: 'jobs.ts', className: 'Job' }],
+        functions: { app, cloudflareWorkflows: { JOBS: app } },
+      }),
+    );
+    const plan = await preflight({ projectDir: dir, settings: SETTINGS, secrets: NO_SECRETS });
+
+    expect(plan.problems).toContainEqual(
+      expect.stringMatching(/scoped Workflow execution service/u),
+    );
   });
 
   it('refuses workflows and a module the upload keeps for itself, and takes cron jobs', async () => {

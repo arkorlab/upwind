@@ -17,10 +17,12 @@ export {
 } from './functions.ts';
 export { type LocalGate } from './gates.ts';
 export {
+  bundleStackScripts,
   type CspNonceSetting,
   type LocalStack,
   type LocalStorage,
   type StackOptions,
+  type StackScripts,
   startStack,
 } from './stack.ts';
 export { agentTarget } from './target.ts';

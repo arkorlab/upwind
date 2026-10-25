@@ -47,3 +47,6 @@ export function isUpwindInternalPath(pathname: string): boolean {
 
 /** Downloaded host registrations used by local development and builds. */
 export const UPWIND_DURABLE_OBJECTS_ENV = 'UPWIND_DURABLE_OBJECTS';
+
+/** Downloaded Workflow registrations used by local development and builds. */
+export const UPWIND_CLOUDFLARE_WORKFLOWS_ENV = 'UPWIND_CLOUDFLARE_WORKFLOWS';

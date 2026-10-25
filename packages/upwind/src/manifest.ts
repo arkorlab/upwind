@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 /**
  * A package's version, or nothing when its manifest cannot be read or does not say.
@@ -20,6 +21,22 @@ export async function packageVersion(manifest: string | URL): Promise<string | u
     return undefined;
   } catch {
     return undefined;
+  }
+}
+
+/** The version of the package a resolved module belongs to: the nearest manifest up from it that says one. */
+export async function moduleVersion(module: string): Promise<string | undefined> {
+  let at = path.dirname(module);
+  for (;;) {
+    const version = await packageVersion(path.join(at, 'package.json'));
+    if (version !== undefined) {
+      return version;
+    }
+    const up = path.dirname(at);
+    if (up === at) {
+      return undefined;
+    }
+    at = up;
   }
 }
 

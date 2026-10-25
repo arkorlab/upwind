@@ -20,13 +20,19 @@ function logMessage(line: string): string {
 }
 
 /** Read the actual workerd service prefix, before any customer exception text. */
-export function failedOwnerNames(error: unknown, names: readonly string[]): ReadonlySet<string> {
+export function failedOwnerNames(
+  error: unknown,
+  names: readonly string[],
+  kind: 'object' | 'workflow' = 'object',
+): ReadonlySet<string> {
   const reason = error instanceof Error ? error.message : String(error);
   const registered = new Set(names);
   const failed = new Set<string>();
   for (const line of reason.split('\n')) {
-    const match = /^service core:user:upwind-object-([A-Za-z_]\w*):/u.exec(logMessage(line));
-    const name = match?.[1];
+    const match = /^service core:user:upwind-(object|workflow)-([A-Za-z_]\w*):/u.exec(
+      logMessage(line),
+    );
+    const name = match?.[1] === kind ? match[2] : undefined;
     if (name !== undefined && registered.has(name)) failed.add(name);
   }
   return failed;

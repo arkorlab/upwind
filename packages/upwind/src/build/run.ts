@@ -4,11 +4,14 @@ import { readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
+import { UPWIND_CACHE_HOST_MODULE_ENV, UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
 
 import { prepareAuth } from '../auth/prepare.ts';
+import { cacheHostModuleFor } from '../deploy/cache-host.ts';
+import { shippedCacheHost } from '../deploy/shipped.ts';
 import { ADAPTER_PACKAGE, ADAPTER_PATH_ENV, resolveAdapterPath } from '../dev/adapter.ts';
 import { resolveFromProject } from '../dev/next-app.ts';
+import { moduleVersion, ownVersion } from '../manifest.ts';
 import { localResourcesEntry, PROJECT_DIR_ENV } from '../resources/entry-path.ts';
 import type { BuildOptions } from './args.ts';
 
@@ -172,6 +175,45 @@ export async function runBuild(options: BuildOptions): Promise<never> {
   process.exit(await spawnBuild(options));
 }
 
+/**
+ * The runtime cache's host, named to the project's own adapter: every Function the build makes
+ * then carries it, as a deployment's does. Where a cache is bound — `upwind preview`, `upwind
+ * deploy` — it reads and writes that cache; where none is, it does nothing (`createCacheHost`
+ * answers no cache), so the bundle a host without a cache serves is what it was.
+ *
+ * Nothing where the adapter is not the project's own — one `NEXT_ADAPTER_PATH` names reads no
+ * environment and names its own host — nor where a host is named already, by the environment or by
+ * the run itself (`upwind deploy`'s build, `run.extraEnv`). Nor, said, where the adapter is of
+ * another version than this command: the host is this command's, built against its runtime, and a
+ * build bundles it with the adapter's — a build that ran before a host was named should not stop
+ * running for one, and a preview or a deploy refuses the two apart regardless.
+ */
+export async function cacheHostEnv(
+  projectDir: string,
+  adapter: string | undefined,
+  run: BuildRun,
+): Promise<Record<string, string>> {
+  const named = (process.env[ADAPTER_PATH_ENV] ?? '') !== '';
+  const hosted = ((run.env ?? process.env)[UPWIND_CACHE_HOST_MODULE_ENV] ?? '') !== '';
+  if (
+    adapter === undefined ||
+    named ||
+    hosted ||
+    run.extraEnv?.[UPWIND_CACHE_HOST_MODULE_ENV] !== undefined
+  ) {
+    return {};
+  }
+  const [adapterVersion, version] = await Promise.all([moduleVersion(adapter), ownVersion()]);
+  if (adapterVersion === undefined || adapterVersion !== version) {
+    console.warn(
+      `upwind: ${ADAPTER_PACKAGE} ${adapterVersion ?? '(unknown version)'} is installed, and this is upwind ${version ?? '(unknown version)'}, so the Functions are built without the runtime cache's host — install the same version of both`,
+    );
+    return {};
+  }
+  const host = await cacheHostModuleFor(await shippedCacheHost(), projectDir, adapter);
+  return { [UPWIND_CACHE_HOST_MODULE_ENV]: host };
+}
+
 /** The project's own `next build`, with the adapter named; what it exits with. */
 export async function spawnBuild(options: BuildOptions, run: BuildRun = {}): Promise<number> {
   const vercel = run.forDeploy !== true && isVercelsOwnBuild();
@@ -208,12 +250,15 @@ export async function spawnBuild(options: BuildOptions, run: BuildRun = {}): Pro
   // before anything else: this process cannot publish it for them, and the one that renders pages is
   // where an application asks for it (`storageEnv`, `resources/entry.ts`). Both together or neither:
   // storage is published for an adapter to bind, and a build with no adapter has nothing to bind it.
+  //
+  // And the runtime cache's host, for the adapter to bundle into every Function (`cacheHostEnv`).
   const adapterEnv =
     adapter === undefined
       ? { [ADAPTER_PATH_ENV]: '' }
       : {
           [ADAPTER_PATH_ENV]: adapter,
           ...(run.forDeploy !== true && storageEnv(options.projectDir)),
+          ...(await cacheHostEnv(options.projectDir, adapter, run)),
         };
   // Before the child, because the route it mounts has to be on disk when Next.js reads `app`. This
   // runs for a Vercel build too: what that build must not have is upwind's adapter and upwind's
