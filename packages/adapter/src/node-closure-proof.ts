@@ -1,6 +1,8 @@
 import { parseAst } from 'rolldown/parseAst';
 
 import { isNode, listOf, type Node, type Scope, scopeOpenedBy } from './lexical-scope.ts';
+import { nativeBindings, walk } from './native-ast.ts';
+import { hasRetainedWorkerCapability } from './native-worker.ts';
 import { globalPatternRefusal } from './node-closure-globals.ts';
 import { hostObjectOf } from './node-closure-hosts.ts';
 
@@ -517,8 +519,11 @@ function isNamespaceRebinding(visit: Visit, imports: ReadonlyMap<Node, Origin>):
 
 /** Refuse executable closures the physical Node graph has not proved; never a Worker fallback. */
 export function dynamicNodeClosureRefusal(file: string, code: string): string | undefined {
-  const program: unknown = parseAst(code);
+  const parsed = parseAst(code);
+  const program: unknown = parsed;
   if (!isNode(program)) throw new TypeError('Node closure proof requires a JavaScript program');
+  if (hasRetainedWorkerCapability(walk(parsed), nativeBindings(parsed)))
+    return 'an unproved Node Worker native-child closure';
   const imports = importedOrigins(program);
   const factories = factoriesOf(program);
   const { visits: all, contexts } = visits(program, imports, factories);

@@ -4,6 +4,11 @@ import type { NativeAddonEntryTrace } from './native-addons.ts';
 import { type NativeBindings, required, stringOf, walk } from './native-ast.ts';
 import type { NativeEdit } from './native-operations.ts';
 import { ownedNativeFiles } from './native-ownership.ts';
+import {
+  nativeWorkerValues,
+  retainedWorkerNodes,
+  workerNodeMayExecute,
+} from './native-worker-branches.ts';
 
 type WorkerOrigin = 'constructor' | 'prototype' | 'namespace' | 'module' | 'promise' | 'ambiguous';
 const IMPORTS = new WeakMap<readonly Node[], ReadonlyMap<Node, WorkerOrigin>>();
@@ -229,6 +234,11 @@ function workerOrigin(
 ): WorkerOrigin | undefined {
   if (seen.has(node)) return undefined;
   const next = new Set([...seen, node]);
+  const branches = nativeWorkerValues(node);
+  if (branches !== undefined) {
+    const origins = branches.map((branch) => workerOrigin(branch, context, next));
+    return origins.every((origin) => origin === origins[0]) ? origins[0] : 'ambiguous';
+  }
   if (node.type === 'Identifier') return declaredOrigin(node, context, next);
   if (node.type === 'ImportExpression' && WORKER_MODULES.has(stringOf(node.source) ?? ''))
     return 'promise';
@@ -460,7 +470,7 @@ export function retainedWorkerCapabilityNodes(
     tree,
     nodeTarget: options?.nodeTarget,
   };
-  return tree.filter((node) => {
+  return retainedWorkerNodes(tree).filter((node) => {
     if (
       options?.nodeTarget === false &&
       handledWorkerConstructor(node, context, tree, options.guards)
@@ -494,6 +504,7 @@ export async function nativeWorkerEdit(
     markChild(binaries: readonly string[], site: NativeWorkerSite): string;
   },
 ): Promise<NativeEdit | undefined> {
+  if (!workerNodeMayExecute(node, context.tree)) return undefined;
   const capability = {
     bindings: context.bindings,
     imports: workerImports(context.tree),
