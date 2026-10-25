@@ -43,6 +43,7 @@ Options
   -H, --hostname <host>  Hostname to bind, \`dev\` only (default: every interface)
       --remote-ai        Enable declared Workers AI bindings using your Cloudflare account, \`dev\` only
       --check            Ask the build once and stop, rather than serve it, \`preview\` only
+      --crons            Fire the build's cron jobs on their schedules, \`preview\` only
       --dry-run          Say what a deploy would do and change nothing, \`deploy\` only
       --build-only       Build for a deploy and stop, \`deploy\` only
       --prebuilt         Deploy what --build-only built, \`deploy\` only
@@ -68,7 +69,8 @@ names no adapter and writes no bundle: the build there is Vercel's.
 \`upwind preview\` serves the bundle \`upwind build\` wrote on this machine, as a deployment of
 it is served: the edge in front, the runtime cache behind it, and the build's Functions. It
 builds nothing and deploys nothing, and listens on the loopback alone. \`--check\` asks every
-route and file of the build once, and the paths deploy.checks names, and ends.
+route and file of the build once, and the paths deploy.checks names, and ends. \`--crons\` fires
+the build's cron jobs on their schedules while it serves, which it does not otherwise.
 
 \`upwind deploy\` builds the project and deploys it to a Cloudflare account of your own: the
 edge in front, the runtime cache behind it, each deployment's Functions as Workers of their own,

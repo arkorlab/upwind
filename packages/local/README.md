@@ -46,14 +46,15 @@ pnpm local:check --dir <app> [options]
 - `check` asks the stack once for every prerendered route, every file of the build and every app
   Function, and exits non-zero where an answer is not what a deployment would give.
 
-| Option                                                     | What it does                                                                                       |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `--env-file <file>`                                        | Gives the Functions the variables a `.env` file holds; a later file's value of a name wins         |
-| `--kv <name>`, `--r2 <name>`, `--d1 <name>`                | Binds an empty store of that kind under the name given, for an application whose host gives it one |
-| `--delivery-policy <id\|file>`                             | Serves under a built-in delivery policy, or the policy a file holds                                |
-| `--csp-nonce enforce\|report-only`, `--csp-strict-dynamic` | Has the edge mint a nonce for each document, with `'strict-dynamic'` beside it where asked         |
-| `--prover-agent <agent>`                                   | The user agent a check asks as                                                                     |
-| `--hostname <host>`                                        | The hostname a check names the site by; the stack is still reached at its own socket               |
+| Option                                                     | What it does                                                                                        |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `--env-file <file>`                                        | Gives the Functions the variables a `.env` file holds; a later file's value of a name wins          |
+| `--kv <name>`, `--r2 <name>`, `--d1 <name>`                | Binds an empty store of that kind under the name given, for an application whose host gives it one  |
+| `--images`                                                 | Has the edge transform images, as an edge bound to Cloudflare Images does, with Miniflare's binding |
+| `--delivery-policy <id\|file>`                             | Serves under a built-in delivery policy, or the policy a file holds                                 |
+| `--csp-nonce enforce\|report-only`, `--csp-strict-dynamic` | Has the edge mint a nonce for each document, with `'strict-dynamic'` beside it where asked          |
+| `--prover-agent <agent>`                                   | The user agent a check asks as                                                                      |
+| `--hostname <host>`                                        | The hostname a check names the site by; the stack is still reached at its own socket                |
 
 Each of `--env-file`, `--kv`, `--r2` and `--d1` may be given more than once.
 

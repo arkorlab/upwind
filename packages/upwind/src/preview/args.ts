@@ -5,8 +5,9 @@ import { MAX_PORT } from '../dev/listen.ts';
 
 /**
  * What `upwind preview` understands: a directory whose build to serve, the port to serve it on,
- * each `--env-file` whose variables join the secrets its Functions are given, and `--check`, which
- * asks the build once and ends rather than serving it.
+ * each `--env-file` whose variables join the secrets its Functions are given, `--crons`, which fires
+ * the build's cron jobs on their schedules while it serves, and `--check`, which asks the build once
+ * and ends rather than serving it.
  *
  * Strict, like the other commands' parsers: a flag this does not implement is an error rather than
  * a preview that ignored it.
@@ -20,6 +21,8 @@ export interface PreviewOptions {
   readonly envFiles: readonly string[];
   /** Ask the build once and end, rather than serve it. */
   readonly check: boolean;
+  /** Fire the build's cron jobs on their schedules while it serves. */
+  readonly crons: boolean;
 }
 
 export type PreviewRequest =
@@ -59,6 +62,7 @@ export function parsePreviewRequest(args: readonly string[]): PreviewRequest {
       port: { type: 'string', short: 'p' },
       'env-file': { type: 'string', multiple: true },
       check: { type: 'boolean' },
+      crons: { type: 'boolean' },
     },
     allowPositionals: true,
     strict: true,
@@ -75,6 +79,12 @@ export function parsePreviewRequest(args: readonly string[]): PreviewRequest {
     );
   }
   const check = values.check === true;
+  const crons = values.crons === true;
+  if (check && crons) {
+    throw new Error(
+      '--crons fires the cron jobs of a preview that serves, and --check serves nothing: give one or the other',
+    );
+  }
   return {
     answer: undefined,
     options: {
@@ -82,6 +92,7 @@ export function parsePreviewRequest(args: readonly string[]): PreviewRequest {
       port: portOf(values.port, check),
       envFiles: (values['env-file'] ?? []).map((file) => path.resolve(file)),
       check,
+      crons,
     },
   };
 }

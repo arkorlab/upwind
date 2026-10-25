@@ -131,7 +131,13 @@ describe('built native Workflows in upwind preview', () => {
     const served = Promise.withResolvers<LocalStack>();
     const stopped = Promise.withResolvers<undefined>();
     const running = runPreview(
-      { projectDir: dir, port: 0, envFiles: [path.join(dir, 'preview.env')], check: false },
+      {
+        projectDir: dir,
+        port: 0,
+        envFiles: [path.join(dir, 'preview.env')],
+        check: false,
+        crons: false,
+      },
       {
         stopped: stopped.promise,
         serving: (stack) => {

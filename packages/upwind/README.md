@@ -307,13 +307,26 @@ nothing, so a change is seen once the project is built again, and it deploys not
   that asks its own site by one of them reaches this preview rather than the deployment; and each of
   `deploy.checks` is asked once the preview serves. The Functions are given those secrets and
   nothing else of this machine's environment: no `.env` file is read for them.
+- **The storage `deploy.storage` names is bound under the same names**, each a D1 database, KV
+  namespace or R2 bucket of the preview's own: empty as it starts, as a new deployment's is, and gone
+  when it stops. Nothing of `.upwind/`, which `upwind dev` keeps, is read.
+- **`deploy.images` has the edge transform images** as Cloudflare Images does for a deployment, here
+  by Miniflare's Images binding: the same widths and formats, in bytes of its own encoder. Without
+  it, each image is answered as it is.
 - **Native Cloudflare Workflows run from the build's artifacts**, with their own execution Workers
   and the project's declared KV, R2 and D1 stores. Instance operations use the SDK; state lasts until
   the preview stops. Builds without these Workflows keep the existing delivery stack.
-- **What a deployment has that a preview does not yet is said, not left to be found.** For builds
-  without native Workflows, `deploy.storage` is not bound. An image is answered as it is rather than transformed, and no
-  cron job fires. A Function built without the runtime cache's host — by an older upwind, or by a
-  plain `next build` — is served with every cache read a miss, and said to be.
+- **What a preview would serve otherwise than the project is, is said, not left to be found.** A
+  build older than files of the project — its sources, its configuration, an `.env` file, the
+  lockfile an upgrade rewrote — is served as it was built, and the files are named. So is a Function
+  built without the runtime cache's host, by an older upwind or a plain `next build`: every cache
+  read of it is a miss.
+- **Cron jobs fire only with `--crons`.** Each job of the build is then a GET of its path on its
+  schedule, in UTC, sent as a deployment's edge sends it — `user-agent: upwind-cron/1.0`, the
+  schedule in `x-vercel-cron-schedule`, and `CRON_SECRET` as a bearer token where the secrets hold
+  one — and each answer is printed. Without it, none fires: a preview beside a deployment of the
+  same project would run every job twice, against whatever both of them reach. A job is not tried
+  again, and one missed while the machine slept is not made up.
 - **`--check` asks the build once and ends**, for a job in CI: every route and file of the build, as
   a deployment's edge has to answer it, and each of `deploy.checks`, as a deploy asks it before it
   switches. It ends with `1` where anything answered otherwise, and listens on a free port unless
@@ -494,6 +507,7 @@ upwind destroy [directory] --yes
   -H, --hostname <host>  Hostname to bind, `dev` only (default: every interface)
       --remote-ai        Enable declared Workers AI bindings, `dev` only
       --check            Ask the build once and stop, rather than serve it, `preview` only
+      --crons            Fire the build's cron jobs on their schedules, `preview` only
       --dry-run          Say what a deploy would do and change nothing, `deploy` only
       --build-only       Build for a deploy and stop, `deploy` only
       --prebuilt         Deploy what --build-only built, `deploy` only

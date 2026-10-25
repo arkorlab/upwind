@@ -31,6 +31,8 @@ import {
  * variables a `.env` file holds, as their deployment's environment would — a later file's value of
  * a name wins — and `--kv`, `--r2` and `--d1 <name>`, which bind an empty store of that kind under
  * the name given, for an application whose host gives it one. Each may be given more than once.
+ * `--images` has the edge transform images, as an edge bound to Cloudflare Images does, on this
+ * machine.
  *
  * A deployment it stands in for is served as its pointer has the edge serve it: under the delivery
  * policy it went live under (`--delivery-policy`, a built-in policy's id or a file holding one
@@ -43,7 +45,7 @@ import {
 /** The highest port a socket listens on. */
 const MAX_PORT = 65_535;
 const USAGE =
-  'usage: main.ts serve|check --dir <app> [--port <port>] [--env-file <file>]… [--kv|--r2|--d1 <name>]… [--delivery-policy <id|file>] [--csp-nonce enforce|report-only [--csp-strict-dynamic]] [--prover-agent <agent>] [--hostname <host>]';
+  'usage: main.ts serve|check --dir <app> [--port <port>] [--env-file <file>]… [--kv|--r2|--d1 <name>]… [--images] [--delivery-policy <id|file>] [--csp-nonce enforce|report-only [--csp-strict-dynamic]] [--prover-agent <agent>] [--hostname <host>]';
 
 function log(message: string): void {
   process.stderr.write(`${message}\n`);
@@ -78,6 +80,7 @@ function commandLine() {
       kv: { type: 'string', multiple: true },
       r2: { type: 'string', multiple: true },
       d1: { type: 'string', multiple: true },
+      images: { type: 'boolean' },
       // The agent a check asks as first, where a host's validation proves a build as its own.
       'prover-agent': { type: 'string' },
       'delivery-policy': { type: 'string' },
@@ -183,6 +186,7 @@ async function main(): Promise<number> {
       ...(hostname !== undefined && { hostnames: [hostname] }),
       env: environmentOf(values['env-file'] ?? []),
       storage: { kv: values.kv, r2: values.r2, d1: values.d1 },
+      images: values.images,
       log,
       policy: served.policy,
       cspNonce: served.cspNonce,

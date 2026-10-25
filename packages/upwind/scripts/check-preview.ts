@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
-import { CHECKS, cliOf, copyFixture, homeOf, packAll, succeed } from './check-deploy-build.ts';
+import {
+  CHECKS,
+  cliOf,
+  CONFIG_FILE,
+  copyFixture,
+  homeOf,
+  packAll,
+  succeed,
+} from './check-deploy-build.ts';
 
 /**
  * `upwind preview` as an application outside this workspace runs it: the packages packed as a
@@ -14,8 +23,13 @@ import { CHECKS, cliOf, copyFixture, homeOf, packAll, succeed } from './check-de
  *
  * - `upwind preview --check`, which asks every route and file of the build once, as a deployment's
  *   edge has to answer it, and the paths `deploy.checks` names;
- * - `upwind preview`, served on a free port, asked over HTTP for the home page and each of those
- *   paths, then stopped with SIGINT: it has to end on its own, and its port with it.
+ * - `upwind preview`, served on a free port, asked over HTTP for the home page, each of those
+ *   paths and an image the edge has to transform, then stopped with SIGINT: it has to end on its
+ *   own, and its port with it.
+ *
+ * The copy asks a preview for what a deploy gives beside the build: a database bound by name, and
+ * images transformed (`deploy.storage`, `deploy.images`) — the latter by Miniflare's binding, whose
+ * encoder an installed project has to be able to load.
  *
  * Nothing here holds a credential, so it runs wherever a pull request runs.
  *
@@ -39,6 +53,25 @@ const SERVING = /^upwind: serving \S+ at (\S+)/mu;
 const NO_CACHE_HOST = "built without the runtime cache's host";
 const OK = 200;
 const SERVER_ERROR = 500;
+/** A PNG of one red pixel, which the edge is asked for as WebP. */
+const PIXEL = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+  'base64',
+);
+/** `/_next/image` for it, at a width and quality Next.js allows by default. */
+const PIXEL_IMAGE = `/_next/image?url=${encodeURIComponent('/pixel.png')}&w=64&q=75`;
+
+/** The copy given a file to transform, and a deploy section that binds a database and Images. */
+async function withStorageAndImages(dir: string): Promise<void> {
+  await mkdir(path.join(dir, 'public'), { recursive: true });
+  await writeFile(path.join(dir, 'public', 'pixel.png'), PIXEL);
+  const file = path.join(dir, CONFIG_FILE);
+  const config = JSON.parse(await readFile(file, 'utf8')) as {
+    readonly deploy?: Readonly<Record<string, unknown>>;
+  };
+  const deploy = { ...config.deploy, storage: { UPWIND_D1: 'd1' }, images: true };
+  await writeFile(file, `${JSON.stringify({ ...config, deploy }, undefined, 2)}\n`);
+}
 
 /** Ask the build once: it has to pass, and say nothing of a missing cache host. */
 function checkOnce(dir: string): void {
@@ -80,6 +113,12 @@ async function serveAndStop(dir: string): Promise<void> {
       await response.body?.cancel();
       assert.ok(response.status < SERVER_ERROR, `${asked} was answered ${String(response.status)}`);
     }
+    const image = await fetch(new URL(PIXEL_IMAGE, site), {
+      headers: { accept: 'image/webp,image/*,*/*;q=0.8' },
+    });
+    await image.arrayBuffer();
+    assert.equal(image.status, OK, `the image was answered ${String(image.status)}`);
+    assert.equal(image.headers.get('content-type'), 'image/webp', 'the image was not transformed');
     child.kill('SIGINT');
     const [code, signal] = await within(exited, STOP_MS, 'the preview did not end on SIGINT');
     assert.equal(signal, null, `the preview ended on ${String(signal)}, not on its own`);
@@ -143,6 +182,7 @@ async function main(): Promise<void> {
   process.env['NEXT_TELEMETRY_DISABLED'] = '1';
   await packAll(out);
   const dir = await copyFixture(out, VERSION);
+  await withStorageAndImages(dir);
   say('installing and building');
   succeed('npm', ['install', '--no-audit', '--no-fund'], dir);
   succeed(process.execPath, [cliOf(dir), 'build', dir], dir);
