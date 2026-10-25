@@ -20,7 +20,9 @@ describe('original physical Node Function proof', () => {
   let assets: Record<string, string>;
 
   beforeEach(async () => {
-    directory = await realpath(await mkdtemp(path.join(tmpdir(), 'upwind-node-proof-')));
+    const prefix = path.join(tmpdir(), 'upwind-node-proof-');
+    const temporary = await mkdtemp(prefix);
+    directory = await realpath(temporary);
     distDir = path.join(directory, '.next');
     await mkdir(path.join(distDir, 'server/chunks'), { recursive: true });
     entry = path.join(distDir, 'server/entry.cjs');
@@ -60,7 +62,7 @@ describe('original physical Node Function proof', () => {
         '\0rolldown/runtime.js?application',
         '/application/rolldown/runtime.js',
       ].map((id) => isNodeProofCompilerModule(id)),
-    ).toEqual([true, false, false, false]);
+    ).toStrictEqual([true, false, false, false]);
   });
 
   it('proves native source with actual Node built-ins and checks the original copied bytes', async () => {
@@ -70,26 +72,27 @@ describe('original physical Node Function proof', () => {
     );
     const proof = await proveNodeFunction(input());
     const files = await Promise.all(
-      proof.files.map(async (file) => ({ name: file.file, bytes: await readFile(file.file) })),
+      proof.files.map(async (file) => {
+        return { name: file.file, bytes: await readFile(file.file) };
+      }),
     );
     const physical = { files, nameOf: (file: string) => file };
+    const missing = { ...physical, files: [] };
+    const changed = {
+      ...physical,
+      files: files.map((file) => {
+        return { ...file, bytes: new Uint8Array([9]) };
+      }),
+    };
 
-    expect(proof.native).toEqual([
+    expect(proof.native).toStrictEqual([
       { kind: 'direct', importer: entry, binary, owners: ['/native'] },
     ]);
-    expect(proof.dependencies.externals).toEqual(['node:process', 'node:vm']);
-    expect(proof.dependencies.stubs).toEqual([]);
+    expect(proof.dependencies.externals).toStrictEqual(['node:process', 'node:vm']);
+    expect(proof.dependencies.stubs).toStrictEqual([]);
     expect(() => assertNodeProofFiles(proof, physical, new Map())).not.toThrow(Error);
-    expect(() => assertNodeProofFiles(proof, { ...physical, files: [] }, new Map())).toThrow(
-      'absent or changed',
-    );
-    expect(() =>
-      assertNodeProofFiles(
-        proof,
-        { ...physical, files: files.map((file) => ({ ...file, bytes: new Uint8Array([9]) })) },
-        new Map(),
-      ),
-    ).toThrow('absent or changed');
+    expect(() => assertNodeProofFiles(proof, missing, new Map())).toThrow('absent or changed');
+    expect(() => assertNodeProofFiles(proof, changed, new Map())).toThrow('absent or changed');
   });
 
   it('does not let a Worker stub hide another owned native operation', async () => {
@@ -106,12 +109,14 @@ describe('original physical Node Function proof', () => {
     );
     assets = { ...assets, source, second };
     const proof = await proveNodeFunction(input());
+    const actualBinaries = proof.native
+      .map((load) => load.binary)
+      .toSorted((a, b) => a.localeCompare(b));
+    const expectedBinaries = [binary, second].toSorted((a, b) => a.localeCompare(b));
 
-    expect(proof.native.map((load) => load.binary).toSorted((a, b) => a.localeCompare(b))).toEqual(
-      [binary, second].toSorted((a, b) => a.localeCompare(b)),
-    );
+    expect(actualBinaries).toStrictEqual(expectedBinaries);
     expect(proof.files.some((file) => file.file === source)).toBe(true);
-    expect(proof.dependencies.stubs).toEqual([]);
+    expect(proof.dependencies.stubs).toStrictEqual([]);
   });
 
   it('follows the original Node OG branch instead of the Worker edge replacement', async () => {
@@ -135,12 +140,14 @@ describe('original physical Node Function proof', () => {
     const options = input();
     const worker = vercelOgImageResponsePatch.apply(source, response, options.patch);
     const proof = await proveNodeFunction(options);
+    const actualBinaries = proof.native
+      .map((load) => load.binary)
+      .toSorted((a, b) => a.localeCompare(b));
+    const expectedBinaries = [binary, second].toSorted((a, b) => a.localeCompare(b));
 
     expect(worker.contents).toContain('index.edge.js');
-    expect(proof.native.map((load) => load.binary).toSorted((a, b) => a.localeCompare(b))).toEqual(
-      [binary, second].toSorted((a, b) => a.localeCompare(b)),
-    );
-    expect(proof.dependencies.patches).toEqual([]);
+    expect(actualBinaries).toStrictEqual(expectedBinaries);
+    expect(proof.dependencies.patches).toStrictEqual([]);
   });
 
   it('expands the computed Turbopack chunk loader without applying Worker substitutions', async () => {
@@ -162,10 +169,12 @@ describe('original physical Node Function proof', () => {
     options.patch.chunks.push(chunk);
     const proof = await proveNodeFunction(options);
 
-    expect(proof.native).toEqual([
+    expect(proof.native).toStrictEqual([
       { kind: 'direct', importer: chunk, binary, owners: ['/native'] },
     ]);
-    expect(proof.dependencies.patches.map((patch) => patch.patch)).toEqual(['turbopack-runtime']);
+    expect(proof.dependencies.patches.map((patch) => patch.patch)).toStrictEqual([
+      'turbopack-runtime',
+    ]);
   });
 
   it('links and proves the original project instrumentation explicitly', async () => {
@@ -176,7 +185,7 @@ describe('original physical Node Function proof', () => {
       input(hook, [{ id: 'instrumentation', assets: { hook, binary } }]),
     );
 
-    expect(proof.native).toEqual([
+    expect(proof.native).toStrictEqual([
       { kind: 'direct', importer: hook, binary, owners: ['instrumentation'] },
     ]);
   });

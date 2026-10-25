@@ -1,53 +1,35 @@
 import type { Node } from '@oxc-project/types';
 
 import type { NativeAddonEntryTrace } from './native-addons.ts';
-import { binds, identifier, stringOf, unchangedBinding, workerModule } from './native-ast.ts';
+import { identifier, type NativeBindings, stringOf, workerModule } from './native-ast.ts';
 import type { NativeEdit } from './native-operations.ts';
 import { ownedNativeFiles } from './native-ownership.ts';
 
-interface WorkerBindings {
-  readonly names: Set<string>;
-  readonly namespaces: Set<string>;
+type WorkerOrigin = 'constructor' | 'namespace';
+interface WorkerContext {
+  readonly bindings: NativeBindings;
+  readonly imports: ReadonlyMap<Node, WorkerOrigin>;
 }
 
 function importedWorkers(
   node: Extract<Node, { type: 'ImportDeclaration' }>,
-  bindings: WorkerBindings,
+  imports: Map<Node, WorkerOrigin>,
 ): void {
   if (!['node:worker_threads', 'worker_threads'].includes(String(node.source.value))) return;
   for (const specifier of node.specifiers) {
     if (['ImportNamespaceSpecifier', 'ImportDefaultSpecifier'].includes(specifier.type))
-      bindings.namespaces.add(specifier.local.name);
+      imports.set(specifier, 'namespace');
     if (specifier.type === 'ImportSpecifier' && identifier(specifier.imported, 'Worker'))
-      bindings.names.add(specifier.local.name);
+      imports.set(specifier, 'constructor');
   }
 }
 
-function requiredWorkers(
-  node: Extract<Node, { type: 'VariableDeclarator' }>,
-  bindings: WorkerBindings,
-): void {
-  if (node.init === null || !workerModule(node.init)) return;
-  if (node.id.type === 'Identifier') bindings.namespaces.add(node.id.name);
-  if (node.id.type !== 'ObjectPattern') return;
-  for (const property of node.id.properties) {
-    if (
-      property.type === 'Property' &&
-      identifier(property.key, 'Worker') &&
-      property.value.type === 'Identifier'
-    )
-      bindings.names.add(property.value.name);
-  }
-}
-
-function workerBindings(tree: readonly Node[]): WorkerBindings {
-  const bindings = { names: new Set<string>(), namespaces: new Set<string>() };
-  const requireSafe = !binds(tree, 'require');
+function workerImports(tree: readonly Node[]): ReadonlyMap<Node, WorkerOrigin> {
+  const imports = new Map<Node, WorkerOrigin>();
   for (const node of tree) {
-    if (node.type === 'ImportDeclaration') importedWorkers(node, bindings);
-    if (requireSafe && node.type === 'VariableDeclarator') requiredWorkers(node, bindings);
+    if (node.type === 'ImportDeclaration') importedWorkers(node, imports);
   }
-  return bindings;
+  return imports;
 }
 
 function workerProperty(callee: Extract<Node, { type: 'MemberExpression' }>): boolean {
@@ -59,18 +41,59 @@ function workerProperty(callee: Extract<Node, { type: 'MemberExpression' }>): bo
   return property === 'Worker' || (callee.computed && property === undefined);
 }
 
-/** Only the actual imported Node constructor, never a same-named application class. */
-export function nodeWorkerConstructor(callee: Node, tree: readonly Node[]): boolean {
-  const { names, namespaces } = workerBindings(tree);
-  const requireSafe = !binds(tree, 'require');
-  if (callee.type === 'Identifier')
-    return names.has(callee.name) && unchangedBinding(tree, callee.name);
-  if (callee.type !== 'MemberExpression') return false;
-  // Unknown computed access to the actual namespace remains an unclassified child marker.
-  if (!workerProperty(callee)) return false;
-  if (callee.object.type === 'Identifier')
-    return namespaces.has(callee.object.name) && unchangedBinding(tree, callee.object.name);
-  return requireSafe && workerModule(callee.object);
+function destructuredWorker(pattern: Node, name: string): boolean {
+  if (pattern.type !== 'ObjectPattern') return false;
+  return pattern.properties.some((property) => {
+    if (property.type !== 'Property' || !identifier(property.key, 'Worker')) return false;
+    const value =
+      property.value.type === 'AssignmentPattern' ? property.value.left : property.value;
+    return identifier(value, name);
+  });
+}
+
+function declaredOrigin(
+  node: Extract<Node, { type: 'Identifier' }>,
+  context: WorkerContext,
+  seen: ReadonlySet<Node>,
+): WorkerOrigin | undefined {
+  const declaration = context.bindings.lookup(node, node.name);
+  if (declaration === undefined || declaration === null) return undefined;
+  const imported = context.imports.get(declaration);
+  if (imported !== undefined) return imported;
+  if (declaration.type !== 'VariableDeclarator' || declaration.init === null) return undefined;
+  const origin = workerOrigin(declaration.init, context, seen);
+  if (declaration.id.type === 'Identifier') return origin;
+  return origin === 'namespace' && destructuredWorker(declaration.id, node.name)
+    ? 'constructor'
+    : undefined;
+}
+
+function workerOrigin(
+  node: Node,
+  context: WorkerContext,
+  seen: ReadonlySet<Node> = new Set(),
+): WorkerOrigin | undefined {
+  if (seen.has(node)) return undefined;
+  const next = new Set([...seen, node]);
+  if (node.type === 'Identifier') return declaredOrigin(node, context, next);
+  if (workerModule(node) && context.bindings.lookup(node, 'require') === undefined)
+    return 'namespace';
+  if (
+    node.type === 'MemberExpression' &&
+    workerProperty(node) &&
+    workerOrigin(node.object, context, next) === 'namespace'
+  )
+    return 'constructor';
+  return undefined;
+}
+
+/** Only the lexically imported Node constructor; mutated origins still require child-graph proof. */
+function nodeWorkerConstructor(
+  callee: Node,
+  tree: readonly Node[],
+  bindings: NativeBindings,
+): boolean {
+  return workerOrigin(callee, { bindings, imports: workerImports(tree) }) === 'constructor';
 }
 
 export async function nativeWorkerEdit(
@@ -80,10 +103,14 @@ export async function nativeWorkerEdit(
     readonly importer: string;
     readonly traces: readonly NativeAddonEntryTrace[];
     readonly tree: readonly Node[];
+    readonly bindings: NativeBindings;
     markChild(binaries: readonly string[]): string;
   },
 ): Promise<NativeEdit | undefined> {
-  if (node.type !== 'NewExpression' || !nodeWorkerConstructor(node.callee, context.tree))
+  if (
+    node.type !== 'NewExpression' ||
+    !nodeWorkerConstructor(node.callee, context.tree, context.bindings)
+  )
     return undefined;
   const binaries = await ownedNativeFiles(context.importer, context.traces);
   if (binaries.length === 0) return undefined;

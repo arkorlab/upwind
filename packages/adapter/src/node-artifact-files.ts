@@ -17,7 +17,20 @@ import { resourceCacheBridgePatch } from './patches/resource-cache-bridge.ts';
 /** Only shared-cache/render semantics. No Worker loader, VM, native, fs or process substitutes. */
 const NODE_PATCHES = [fetchCacheWaitUntilPatch, instrumentationPatch, resourceCacheBridgePatch];
 const ELF_HEADER_BYTES = 64;
-const ELF_PREFIX = [0x7f, 0x45, 0x4c, 0x46, 2, 1] as const;
+const ELF_MAGIC_START = 0x7f;
+const ELF_MAGIC_E = 0x45;
+const ELF_MAGIC_L = 0x4c;
+const ELF_MAGIC_F = 0x46;
+const ELF_CLASS_64 = 2;
+const ELF_DATA_LITTLE_ENDIAN = 1;
+const ELF_PREFIX = [
+  ELF_MAGIC_START,
+  ELF_MAGIC_E,
+  ELF_MAGIC_L,
+  ELF_MAGIC_F,
+  ELF_CLASS_64,
+  ELF_DATA_LITTLE_ENDIAN,
+] as const;
 const ELF_MACHINE_OFFSET = 18;
 const ELF_X64_MACHINE = 62;
 
@@ -42,6 +55,25 @@ function wasmSource(module: BuildFunctionInput['wasm']['modules'][number]): stri
   return `const ${variable}=new WebAssembly.Module(readFileSync(new URL(${relative},import.meta.url)));${globals}`;
 }
 
+function rewrittenNextFile(
+  file: NodeArchiveFile,
+  input: BuildFunctionInput,
+  patchContext: BuildFunctionInput['patch'],
+): NodeArchiveFile | undefined {
+  const original = file.name.startsWith('project/')
+    ? path.join(input.repoRoot ?? input.projectDir, file.name.slice('project/'.length))
+    : undefined;
+  if (original === undefined || !/\.[cm]?js$/u.test(original)) return undefined;
+  const source = Buffer.from(file.bytes).toString('utf8');
+  let contents = source;
+  for (const patch of NODE_PATCHES) {
+    if (patch.target.test(original) && (patch.marker === undefined || patch.marker(contents)))
+      contents = patch.apply(contents, original, patchContext).contents;
+  }
+  if (contents === source) return undefined;
+  return { ...file, bytes: new TextEncoder().encode(contents) };
+}
+
 /** Physical app files plus explicit generated metadata, all constructed during the build. */
 export class NodeArtifactFiles {
   readonly files: Map<string, NodeArchiveFile>;
@@ -62,8 +94,11 @@ export class NodeArtifactFiles {
 
   add(name: string, bytes: Uint8Array): void {
     const previous = this.files.get(name);
-    if (previous !== undefined && Buffer.compare(previous.bytes, bytes) !== 0)
-      throw new AuditError('Node artifact generated metadata conflicts with a physical input');
+    if (previous !== undefined) {
+      if (Buffer.compare(previous.bytes, bytes) !== 0)
+        throw new AuditError('Node artifact generated metadata conflicts with a physical input');
+      return;
+    }
     this.files.set(name, { name, bytes });
   }
 
@@ -81,19 +116,8 @@ export class NodeArtifactFiles {
           : '/bundle/upwind/instrumentation.cjs',
     };
     for (const file of this.physical.files) {
-      const original = file.name.startsWith('project/')
-        ? path.join(
-            this.input.repoRoot ?? this.input.projectDir,
-            file.name.slice('project/'.length),
-          )
-        : undefined;
-      if (original === undefined || !/\.[cm]?js$/u.test(original)) continue;
-      let contents = new TextDecoder().decode(file.bytes);
-      for (const patch of NODE_PATCHES) {
-        if (patch.target.test(original) && (patch.marker === undefined || patch.marker(contents)))
-          contents = patch.apply(contents, original, patchContext).contents;
-      }
-      this.files.set(file.name, { ...file, bytes: new TextEncoder().encode(contents) });
+      const rewritten = rewrittenNextFile(file, this.input, patchContext);
+      if (rewritten !== undefined) this.files.set(file.name, rewritten);
     }
   }
 

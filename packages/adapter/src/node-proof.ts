@@ -25,7 +25,9 @@ import { instrumentationPatch } from './patches/instrumentation.ts';
 import type { AppliedPatch } from './patches/rolldown.ts';
 import { turbopackRuntimePatch } from './patches/turbopack-runtime.ts';
 
-const MAX_SOURCE_BYTES = 128 * 1024 * 1024;
+const BYTES_PER_MEBIBYTE = 1_048_576;
+const MAX_SOURCE_MEBIBYTES = 128;
+const MAX_SOURCE_BYTES = MAX_SOURCE_MEBIBYTES * BYTES_PER_MEBIBYTE;
 const ROLLDOWN_RUNTIME_MODULE = '\0rolldown/runtime.js';
 // These expose the original Node graph. No Worker-specific code or dependency is substituted.
 const GRAPH_LINKS = [turbopackRuntimePatch, instrumentationPatch, cacheHandlersPatch];
@@ -34,10 +36,23 @@ type NodeProofInput = Pick<
   BuildFunctionInput,
   'kind' | 'name' | 'projectDir' | 'outDir' | 'entries' | 'entryTraces' | 'patch'
 >;
+interface OriginalNodeSource {
+  readonly file: string;
+  readonly sha256: string;
+}
+interface OriginalNodeGraph {
+  readonly sources: Map<string, OriginalNodeSource>;
+  readonly patches: AppliedPatch[];
+  readonly externals: Set<string>;
+}
+interface CopiedNodeSources {
+  readonly files: ReadonlyMap<string, Uint8Array>;
+  readonly nameOf: (this: void, file: string) => string;
+}
 
 export interface NodeFunctionProof {
   readonly native: readonly NativeLoad[];
-  readonly files: readonly { readonly file: string; readonly sha256: string }[];
+  readonly files: readonly OriginalNodeSource[];
   readonly dependencies: FunctionDependencies;
 }
 
@@ -61,10 +76,7 @@ export async function nodeProofSource(file: string): Promise<Buffer> {
   return bytes;
 }
 
-/** Prove the retained original Node graph independently from every Worker patch and stub. */
-export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunctionProof> {
-  if (input.patch.cacheHandlers !== undefined)
-    throw new AuditError('Native Node proof does not support custom cache handler closures');
+async function proofEntry(input: NodeProofInput): Promise<string> {
   const work = path.join(input.outDir, 'work', `node-proof-${input.name ?? input.kind}`);
   await mkdir(work, { recursive: true });
   const entry = path.join(work, 'entry.cjs');
@@ -79,41 +91,125 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
           ]),
     ].join('\n'),
   );
-  const entryFile = await realpath(entry);
-  const native = nativeLoadsPlugin(input.entryTraces ?? [], { nodeTarget: true });
-  const originals = new Map<string, { file: string; sha256: string }>();
-  const patches: AppliedPatch[] = [];
-  const externals = new Set<string>();
-  const sources: Plugin = {
+  return realpath(entry);
+}
+
+function linkedSource(
+  code: string,
+  id: string,
+  input: NodeProofInput,
+  graph: OriginalNodeGraph,
+): string {
+  let contents = code;
+  for (const patch of GRAPH_LINKS) {
+    if (!patch.target.test(id) || (patch.marker !== undefined && !patch.marker(contents))) continue;
+    const result = patch.apply(contents, id, input.patch);
+    graph.patches.push({ patch: patch.name, file: id, result });
+    contents = result.contents;
+  }
+  return contents;
+}
+
+async function originalNodeModule(
+  id: string,
+  input: NodeProofInput,
+  graph: OriginalNodeGraph,
+): Promise<{ code: string } | null> {
+  if (!path.isAbsolute(id)) return null;
+  const file = await realpath(id);
+  const bytes = await nodeProofSource(file);
+  graph.sources.set(id, { file, sha256: digest(bytes) });
+  return { code: linkedSource(bytes.toString('utf8'), id, input, graph) };
+}
+
+function originalNodeGraphPlugin(input: NodeProofInput, graph: OriginalNodeGraph): Plugin {
+  return {
     name: 'upwind-original-node-graph',
     load: {
       filter: { id: /\.(?:[cm]?[jt]sx?|json)$/u },
-      async handler(id) {
-        if (!path.isAbsolute(id)) return null;
-        const file = await realpath(id);
-        const bytes = await nodeProofSource(file);
-        originals.set(id, { file, sha256: digest(bytes) });
-        let code = bytes.toString('utf8');
-        for (const patch of GRAPH_LINKS) {
-          if (!patch.target.test(id) || (patch.marker !== undefined && !patch.marker(code)))
-            continue;
-          const result = patch.apply(code, id, input.patch);
-          patches.push({ patch: patch.name, file: id, result });
-          code = result.contents;
-        }
-        return { code };
-      },
+      handler: (id) => originalNodeModule(id, input, graph),
     },
   };
+}
+
+function assertRetainedClosures(chunk: OutputChunk): void {
+  const modules = Object.entries(chunk.modules);
+  for (const [file, module] of modules) {
+    if (module.code === null || isNodeProofCompilerModule(file)) continue;
+    const refusal = dynamicNodeClosureRefusal(file, module.code);
+    if (refusal !== undefined)
+      throw new AuditError(`Original Node graph has ${refusal}; refusing native publication`);
+  }
+}
+
+function proofDependencies(
+  input: NodeProofInput,
+  chunk: OutputChunk,
+  graph: OriginalNodeGraph,
+): FunctionDependencies {
+  return functionDependencies(
+    input.projectDir,
+    input.patch.distDir,
+    {
+      inputs: Object.entries(chunk.modules).map(([file, module]) => bundled(file, module)),
+      externals: [...graph.externals],
+      patches: graph.patches,
+      stubs: [],
+      wasmModules: [],
+      dynamicLoads: dynamicLoadsInChunk(chunk),
+    },
+    { modules: [], size: { bytes: Buffer.byteLength(chunk.code), gzipBytes: 0 } },
+  );
+}
+
+function retainedSources(
+  chunk: OutputChunk,
+  graph: OriginalNodeGraph,
+  entryFile: string,
+): OriginalNodeSource[] {
+  return Object.keys(chunk.modules).flatMap((id) => {
+    if (isNodeProofCompilerModule(id)) return [];
+    const original = graph.sources.get(id);
+    if (original === undefined)
+      throw new AuditError('Original Node graph includes a source without physical-file proof');
+    if (original.file === entryFile) return [];
+    return [original];
+  });
+}
+
+function includingLoaderSources(
+  sources: readonly OriginalNodeSource[],
+  retained: readonly NativeLoad[],
+): OriginalNodeSource[] {
+  const files = new Map(sources.map((source) => [source.file, source]));
+  for (const load of retained) {
+    const loaders = load.loaderSources ?? [];
+    for (const source of loaders) {
+      const previous = files.get(source.file);
+      if (previous !== undefined && previous.sha256 !== source.sha256)
+        throw new AuditError('Reviewed native loader changed during original Node proof');
+      files.set(source.file, { file: source.file, sha256: source.sha256 });
+    }
+  }
+  return [...files.values()];
+}
+
+/** Prove the retained original Node graph independently from every Worker patch and stub. */
+export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunctionProof> {
+  if (input.patch.cacheHandlers !== undefined)
+    throw new AuditError('Native Node proof does not support custom cache handler closures');
+  const entryFile = await proofEntry(input);
+  const native = nativeLoadsPlugin(input.entryTraces ?? [], { nodeTarget: true });
+  const graph: OriginalNodeGraph = { sources: new Map(), patches: [], externals: new Set() };
   await using bundle = await rolldown({
     cwd: input.projectDir,
     input: entryFile,
     platform: 'node',
     resolve: { conditionNames: ['node', 'default'] },
-    plugins: [sources, native.plugin],
+    plugins: [originalNodeGraphPlugin(input, graph), native.plugin],
     external(specifier) {
       if (!isBuiltin(specifier)) return false;
-      externals.add(specifier);
+      graph.externals.add(specifier);
       return true;
     },
     transform: {
@@ -121,7 +217,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     },
     onLog(_level, log) {
       if (log.code === 'UNRESOLVED_IMPORT' && log.exporter !== undefined)
-        externals.add(log.exporter);
+        graph.externals.add(log.exporter);
     },
   });
   const { output } = await bundle.generate({
@@ -132,78 +228,59 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) throw new AuditError('Original Node graph produced no proof chunk');
-  for (const [file, module] of Object.entries(chunk.modules)) {
-    if (module.code === null || isNodeProofCompilerModule(file)) continue;
-    const refusal = dynamicNodeClosureRefusal(file, module.code);
-    if (refusal !== undefined)
-      throw new AuditError(`Original Node graph has ${refusal}; refusing native publication`);
-  }
+  assertRetainedClosures(chunk);
   const retained = await native.retained(chunk);
   if (retained.length === 0)
     throw new AuditError('The original Node graph has no retained, owned native capability');
-  const dependencies = functionDependencies(
-    input.projectDir,
-    input.patch.distDir,
-    {
-      inputs: Object.entries(chunk.modules).map(([file, module]) => bundled(file, module)),
-      externals: [...externals],
-      patches,
-      stubs: [],
-      wasmModules: [],
-      dynamicLoads: dynamicLoadsInChunk(chunk),
-    },
-    { modules: [], size: { bytes: Buffer.byteLength(chunk.code), gzipBytes: 0 } },
-  );
+  const dependencies = proofDependencies(input, chunk, graph);
   auditNodeFunction(
     input.name ?? input.kind,
     { app: chunk.code },
     dependencies,
     outputNameOf(input.projectDir, input.patch.distDir),
   );
-  const files = Object.keys(chunk.modules).flatMap((id) => {
-    if (isNodeProofCompilerModule(id)) return [];
-    const original = originals.get(id);
-    if (original === undefined)
-      throw new AuditError('Original Node graph includes a source without physical-file proof');
-    if (original.file === entryFile) return [];
-    return [original];
-  });
-  const sourceFiles = new Map(files.map((source) => [source.file, source]));
-  for (const load of retained) {
-    for (const source of load.loaderSources ?? []) {
-      const previous = sourceFiles.get(source.file);
-      if (previous !== undefined && previous.sha256 !== source.sha256)
-        throw new AuditError('Reviewed native loader changed during original Node proof');
-      sourceFiles.set(source.file, { file: source.file, sha256: source.sha256 });
-    }
+  const files = includingLoaderSources(retainedSources(chunk, graph, entryFile), retained);
+  return { native: retained, files, dependencies };
+}
+
+function assertCopiedSource(
+  original: OriginalNodeSource,
+  copied: CopiedNodeSources,
+  bundledHash: string | undefined,
+): void {
+  if (bundledHash !== undefined) {
+    if (bundledHash !== original.sha256)
+      throw new AuditError('Original Node instrumentation changed after its source proof');
+    return;
   }
-  return { native: retained, files: [...sourceFiles.values()], dependencies };
+  const bytes = copied.files.get(copied.nameOf(original.file));
+  if (bytes === undefined || digest(bytes) !== original.sha256)
+    throw new AuditError(
+      'Original Node graph source is absent or changed in its physical artifact',
+    );
 }
 
 /** Compare original bytes before the explicit shared-cache/instrumentation artifact rewrites. */
 export function assertNodeProofFiles(
   proof: NodeFunctionProof,
-  physical: { readonly files: readonly NodeArchiveFile[]; nameOf(file: string): string },
+  physical: {
+    readonly files: readonly NodeArchiveFile[];
+    nameOf(this: void, file: string): string;
+  },
   bundledInstrumentation: ReadonlyMap<string, string>,
 ): void {
   const files = new Map(physical.files.map((file) => [file.name, file.bytes]));
+  const copied: CopiedNodeSources = { files, nameOf: physical.nameOf };
   const loaderFiles = new Set(
-    proof.native.flatMap((load) => (load.loaderSources ?? []).map((source) => source.file)),
+    proof.native.flatMap((load) => {
+      return (load.loaderSources ?? []).map((source) => source.file);
+    }),
   );
   for (const original of proof.files) {
     // A loader executes from the physical Node graph, even if a host hook bundled it too.
     const bundledHash = loaderFiles.has(original.file)
       ? undefined
       : bundledInstrumentation.get(original.file);
-    if (bundledHash !== undefined) {
-      if (bundledHash !== original.sha256)
-        throw new AuditError('Original Node instrumentation changed after its source proof');
-      continue;
-    }
-    const bytes = files.get(physical.nameOf(original.file));
-    if (bytes === undefined || digest(bytes) !== original.sha256)
-      throw new AuditError(
-        'Original Node graph source is absent or changed in its physical artifact',
-      );
+    assertCopiedSource(original, copied, bundledHash);
   }
 }

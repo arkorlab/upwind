@@ -164,6 +164,55 @@ describe('retained native capability proof', () => {
     expect(loads).toStrictEqual([{ kind: 'dlopen', importer: entry, binary, owners: ['/native'] }]);
   });
 
+  it('keeps global native proof separate from an unrelated helper scope and its assignments', async () => {
+    const { loads } = await bundled(
+      "const path=require('node:path'); exports.helper=function(process,module,__dirname,path){process.changed=true; module={}; __dirname='other'; path.join=()=>''; return process;}; process.dlopen(module,path.join(__dirname,'addon.node'));\n",
+    );
+
+    expect(loads).toStrictEqual([{ kind: 'dlopen', importer: entry, binary, owners: ['/native'] }]);
+  });
+
+  it('does not let an unrelated require parameter hide a genuine global native load', async () => {
+    const { loads } = await bundled(
+      "exports.helper=function(require){return require;}; module.exports.native=require('./addon.node');\n",
+    );
+
+    expect(loads).toStrictEqual([{ kind: 'direct', importer: entry, binary, owners: ['/native'] }]);
+  });
+
+  it('does not mistake an unrelated object property write for a native binding reassignment', async () => {
+    const { loads } = await bundled(
+      "const path=require('node:path'); const settings={}; settings.path='other'; settings.__dirname='other'; settings.process='other'; process.dlopen(module,path.join(__dirname,'addon.node')); module.exports=settings;\n",
+    );
+
+    expect(loads).toStrictEqual([{ kind: 'dlopen', importer: entry, binary, owners: ['/native'] }]);
+  });
+
+  it.each([
+    "const path=require('node:path'); module.exports=function run(){function path(){} process.dlopen(module,path.join(__dirname,'addon.node'));};\n",
+    "const path=require('node:path'); module.exports=class path {static run(){process.dlopen(module,path.join(__dirname,'addon.node'));}};\n",
+  ])('refuses native path proof from the call scope shadowing node:path: %s', async (source) => {
+    await expect(bundled(source)).rejects.toThrow('statically known native binary');
+  });
+
+  it.each([
+    "__dirname='/different'; module.exports=require('node-gyp-build')(__dirname);\n",
+    "module.exports=function run(__dirname){return require('node-gyp-build')(__dirname);};\n",
+  ])(
+    'refuses node-gyp selection from a reassigned or locally bound dirname: %s',
+    async (source) => {
+      await expect(bundled(source)).rejects.toThrow('statically known argument');
+    },
+  );
+
+  it('refuses a replaced process loader instead of treating the original global as proof', async () => {
+    await expect(
+      bundled(
+        "const path=require('node:path'); process.dlopen=()=>42; process.dlopen(module,path.join(__dirname,'addon.node')); module.exports=42;\n",
+      ),
+    ).rejects.toThrow('modified process binding');
+  });
+
   it.each([
     "module.exports = (process) => process.dlopen(module, './addon.node');\n",
     "module.exports = (require) => require('./addon.node');\n",

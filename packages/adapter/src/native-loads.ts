@@ -7,7 +7,7 @@ import { parseAst } from 'rolldown/parseAst';
 import { AuditError } from './dependencies.ts';
 import { nativeOperationGuards } from './dynamic-loads.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
-import { binds, identifier, stringOf, unassignedIdentifier, walk } from './native-ast.ts';
+import { identifier, nativeBindings, stringOf, walk } from './native-ast.ts';
 import type { NativeLoaderSource } from './native-loaders.ts';
 import {
   isNativeOperation,
@@ -125,16 +125,16 @@ export function nativeLoadsPlugin(
           throw new AuditError('reserved native analysis marker appears in application source');
         const program = parseAst(source);
         const tree = walk(program);
-        if (binds(tree, 'require') || !unassignedIdentifier(tree, 'require')) return null;
+        const bindings = nativeBindings(program);
         const context: NativeOperationContext = {
           importer,
           traces,
-          tree,
+          bindings,
           guards: nativeOperationGuards(program),
           nodeTarget: options.nodeTarget === true,
           mark,
         };
-        const worker = { source, importer, traces, tree, markChild };
+        const worker = { source, importer, traces, tree, bindings, markChild };
         const edits = await collectEdits(
           tree,
           context,

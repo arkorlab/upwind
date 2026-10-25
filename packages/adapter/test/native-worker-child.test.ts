@@ -65,6 +65,40 @@ describe('native child constructor classification', () => {
   });
 
   it.each([
+    "const threads=require('node:worker_threads'); exports.helper=function(require,threads){return [require,threads];}; exports.start=()=>new threads.Worker('./child.js');\n",
+    "const {Worker:Thread}=require('node:worker_threads'); exports.helper=function(Thread){return Thread;}; exports.start=()=>new Thread('./child.js');\n",
+  ])('does not let another scope hide a retained CJS native child: %s', async (source) => {
+    await expect(classify(source, true)).rejects.toThrow('unclassified owned native child');
+  });
+
+  it.each([
+    "import threads from 'node:worker_threads'; const Thread=threads.Worker; export const worker=new Thread('./child.js');\n",
+    "import {Worker as Thread} from 'node:worker_threads'; const Alias=Thread; export function helper(Thread){return Thread;} export const worker=new Alias('./child.js');\n",
+    "import * as threads from 'node:worker_threads'; const alias=threads; export const worker=new alias['Worker']('./child.js');\n",
+  ])('retains native child refusal through a lexically proved ESM alias: %s', async (source) => {
+    await expect(classify(source)).rejects.toThrow('unclassified owned native child');
+  });
+
+  it.each([
+    "import threads from 'node:worker_threads'; export function start(){const threads={Worker:class {}}; return new threads.Worker('./child.js');}\n",
+    "const threads=require('node:worker_threads'); exports.start=function(){const threads={Worker:class {}}; return new threads.Worker('./child.js');};\n",
+  ])(
+    'does not classify an application constructor in a nearer lexical scope: %s',
+    async (source) => {
+      const loads = await classify(source, source.startsWith('const'));
+
+      expect(loads).toStrictEqual([]);
+    },
+  );
+
+  it('refuses a mutated known Worker origin instead of treating its child closure as proved', async () => {
+    const source =
+      "let {Worker:Thread}=require('node:worker_threads'); Thread=globalThis.customConstructor; exports.start=()=>new Thread('./child.js');\n";
+
+    await expect(classify(source, true)).rejects.toThrow('unclassified owned native child');
+  });
+
+  it.each([
     "import threads from 'node:worker_threads'; export function start(threads) { return new threads['Worker']('./child.js'); }\n",
     "import { Worker as Thread } from 'node:worker_threads'; export function start(Thread) { return new Thread('./child.js'); }\n",
     "class Worker { constructor(file) { this.file = file; } } export const worker = new Worker('./child.js');\n",

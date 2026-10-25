@@ -5,15 +5,7 @@ import type { Node } from '@oxc-project/types';
 
 import { AuditError } from './dependencies.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
-import {
-  binds,
-  identifier,
-  nativePath,
-  required,
-  stringOf,
-  unchangedBinding,
-  unassignedIdentifier,
-} from './native-ast.ts';
+import { identifier, nativePath, type NativeBindings, required, stringOf } from './native-ast.ts';
 import { nativeLoaderBinary, UnreviewedNativeLoaderError } from './native-loaders.ts';
 import type { NativeLoad } from './native-loads.ts';
 import { ownedBinary } from './native-ownership.ts';
@@ -23,7 +15,7 @@ const DLOPEN_ARGUMENTS = 2;
 export interface NativeOperationContext {
   readonly importer: string;
   readonly traces: readonly NativeAddonEntryTrace[];
-  readonly tree: readonly Node[];
+  readonly bindings: NativeBindings;
   readonly guards: ReadonlyMap<number, 'plain' | 'ambiguous'>;
   readonly nodeTarget: boolean;
   mark(load: NativeLoad | Error): string;
@@ -38,6 +30,7 @@ type Candidate = Pick<NativeLoad, 'kind' | 'binary' | 'loaderSources'>;
 function directNative(call: Call, context: NativeOperationContext): Candidate | undefined {
   const specifier = required(call);
   if (specifier === undefined || !specifier.endsWith('.node')) return undefined;
+  if (!globalRequire(call, context)) return undefined;
   if (path.isAbsolute(specifier))
     throw new AuditError('Absolute native imports are not relocatable');
   if (context.guards.has(call.start))
@@ -45,10 +38,17 @@ function directNative(call: Call, context: NativeOperationContext): Candidate | 
   return { kind: 'direct', binary: createRequire(context.importer).resolve(specifier) };
 }
 
+function globalRequire(call: Call, context: NativeOperationContext): boolean {
+  if (context.bindings.lookup(call, 'require') !== undefined) return false;
+  if (!context.bindings.unmodified(call, 'require', false))
+    throw new AuditError('A modified require binding has no statically known native loader');
+  return true;
+}
+
 function loaderArgument(
   call: Call,
   kind: 'bindings' | 'node-gyp-build',
-  tree: readonly Node[],
+  context: NativeOperationContext,
 ): string {
   if (call.arguments.length !== 1)
     throw new AuditError('Native loader requires a statically known argument');
@@ -57,7 +57,9 @@ function loaderArgument(
     throw new AuditError('Native loader requires a statically known argument');
   if (
     kind === 'node-gyp-build' &&
-    (!identifier(call.arguments[0], '__dirname') || binds(tree, '__dirname'))
+    (!identifier(call.arguments[0], '__dirname') ||
+      context.bindings.lookup(call, '__dirname') !== undefined ||
+      !context.bindings.unmodified(call, '__dirname', false))
   )
     throw new AuditError('Native loader requires a statically known argument');
   return value ?? '';
@@ -70,13 +72,14 @@ async function loaderNative(
   if (call.callee.type !== 'CallExpression') return undefined;
   const kind = required(call.callee);
   if (!isNativeLoader(kind)) return undefined;
+  if (!globalRequire(call.callee, context)) return undefined;
   if (context.guards.has(call.start))
     throw new AuditError(
       'A guarded native loader is ambiguous; refusing automatic backend selection',
     );
   const selected = await nativeLoaderBinary({
     kind,
-    value: loaderArgument(call, kind, context.tree),
+    value: loaderArgument(call, kind, context),
     importer: context.importer,
     traces: context.traces,
   });
@@ -92,8 +95,11 @@ function isDlopenForm(call: Call): boolean {
   return identifier(call.callee.object, 'process') && identifier(call.callee.property, 'dlopen');
 }
 
-function isDlopen(call: Call, tree: readonly Node[]): boolean {
-  return isDlopenForm(call) && !binds(tree, 'process') && unchangedBinding(tree, 'process');
+function isDlopen(call: Call, context: NativeOperationContext): boolean {
+  if (!isDlopenForm(call) || context.bindings.lookup(call, 'process') !== undefined) return false;
+  if (!context.bindings.unmodified(call, 'process', true))
+    throw new AuditError('A modified process binding has no statically known native loader');
+  return true;
 }
 
 function namesNativeFile(value: string | undefined): boolean {
@@ -116,12 +122,14 @@ export function isNativeOperation(node: Node): boolean {
   }
 }
 
-function assertDlopenArguments(call: Call, tree: readonly Node[]): void {
+function assertDlopenArguments(call: Call, context: NativeOperationContext): void {
   const moduleKnown =
     identifier(call.arguments[0], 'module') &&
-    !binds(tree, 'module') &&
-    unassignedIdentifier(tree, 'module');
-  const directoryKnown = !binds(tree, '__dirname') && unassignedIdentifier(tree, '__dirname');
+    context.bindings.lookup(call, 'module') === undefined &&
+    context.bindings.unmodified(call, 'module', false);
+  const directoryKnown =
+    context.bindings.lookup(call, '__dirname') === undefined &&
+    context.bindings.unmodified(call, '__dirname', false);
   if (call.arguments.length !== DLOPEN_ARGUMENTS || !moduleKnown || !directoryKnown)
     throw new AuditError(
       'custom process.dlopen flags, shadowed module objects or directories are unsupported',
@@ -129,7 +137,7 @@ function assertDlopenArguments(call: Call, tree: readonly Node[]): void {
 }
 
 function dlopenNative(call: Call, context: NativeOperationContext): Candidate | undefined {
-  if (!isDlopen(call, context.tree)) return undefined;
+  if (!isDlopen(call, context)) return undefined;
   if (context.guards.get(call.start) === 'plain') {
     if (context.nodeTarget)
       throw new AuditError('A guarded process.dlopen is unclassified on the Node target');
@@ -137,8 +145,8 @@ function dlopenNative(call: Call, context: NativeOperationContext): Candidate | 
   }
   if (context.guards.has(call.start))
     throw new AuditError('A guarded process.dlopen has no proved Worker-safe fallback');
-  assertDlopenArguments(call, context.tree);
-  const binary = nativePath(call.arguments[1], context.importer, context.tree);
+  assertDlopenArguments(call, context);
+  const binary = nativePath(call.arguments[1], context.importer, context.bindings);
   if (binary === undefined || !binary.endsWith('.node'))
     throw new AuditError('process.dlopen has no statically known native binary');
   return { kind: 'dlopen', binary };

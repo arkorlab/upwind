@@ -2,6 +2,8 @@ import path from 'node:path';
 
 import type { Node } from '@oxc-project/types';
 
+import { scopeOpenedBy, type Node as ScopeNode, type Scope } from './lexical-scope.ts';
+
 function nodes(node: Node): Node[] {
   const found: Node[] = [];
   for (const value of Object.values(node)) {
@@ -37,61 +39,6 @@ export function identifier(node: Node | undefined, name: string): boolean {
   return node?.type === 'Identifier' && node.name === name;
 }
 
-type FunctionNode = Extract<
-  Node,
-  { type: 'FunctionDeclaration' | 'FunctionExpression' | 'ArrowFunctionExpression' }
->;
-function hasParameters(node: Node): node is FunctionNode {
-  return ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(
-    node.type,
-  );
-}
-
-function patternBinds(node: Node, name: string): boolean {
-  return walk(node).some((part) => identifier(part, name));
-}
-
-function parameterBinds(node: Node, name: string): boolean {
-  return hasParameters(node) && node.params.some((param) => patternBinds(param, name));
-}
-
-type NamedDeclaration = Extract<
-  Node,
-  { type: 'FunctionDeclaration' | 'FunctionExpression' | 'ClassDeclaration' | 'ClassExpression' }
->;
-function hasDeclaredName(node: Node): node is NamedDeclaration {
-  return [
-    'FunctionDeclaration',
-    'FunctionExpression',
-    'ClassDeclaration',
-    'ClassExpression',
-  ].includes(node.type);
-}
-
-function declarationBinds(node: Node, name: string): boolean {
-  return hasDeclaredName(node) && identifier(node.id ?? undefined, name);
-}
-
-function nodeBinds(node: Node, name: string): boolean {
-  switch (node.type) {
-    case 'VariableDeclarator':
-      return patternBinds(node.id, name);
-    case 'CatchClause':
-      return node.param !== null && patternBinds(node.param, name);
-    case 'ImportSpecifier':
-    case 'ImportDefaultSpecifier':
-    case 'ImportNamespaceSpecifier':
-      return identifier(node.local, name);
-    default:
-      return declarationBinds(node, name) || parameterBinds(node, name);
-  }
-}
-
-/** Deliberately narrow: shadowed loader/global bindings are not native proof. */
-export function binds(tree: readonly Node[], name: string): boolean {
-  return tree.some((node) => nodeBinds(node, name));
-}
-
 type AssignmentNode = Extract<Node, { type: 'AssignmentExpression' | 'UpdateExpression' }>;
 function isAssignment(node: Node): node is AssignmentNode {
   return ['AssignmentExpression', 'UpdateExpression'].includes(node.type);
@@ -100,8 +47,7 @@ function isAssignment(node: Node): node is AssignmentNode {
 function assignmentBinds(node: Node, name: string, members: boolean): boolean {
   if (!isAssignment(node)) return false;
   const target = node.type === 'AssignmentExpression' ? node.left : node.argument;
-  if (!members && target.type === 'MemberExpression') return false;
-  return patternBinds(target, name);
+  return patternNames(target, members).includes(name);
 }
 
 export function required(node: Node): string | undefined {
@@ -116,42 +62,159 @@ export function workerModule(node: Node): boolean {
   return ['node:worker_threads', 'worker_threads'].includes(required(node) ?? '');
 }
 
-export function unchangedBinding(tree: readonly Node[], name: string): boolean {
-  return !tree.some((node) => {
-    if (
-      ['FunctionDeclaration', 'ClassDeclaration'].includes(node.type) &&
-      declarationBinds(node, name)
-    )
-      return true;
-    return assignmentBinds(node, name, true) || parameterBinds(node, name);
-  });
+interface NativeScope {
+  readonly scope: Scope;
+  readonly parent: NativeScope | undefined;
 }
 
-export function unassignedIdentifier(tree: readonly Node[], name: string): boolean {
-  return !tree.some((node) => assignmentBinds(node, name, false));
+export interface NativeBindings {
+  /** Undefined means global; null means a declared parameter or another opaque local binding. */
+  lookup(node: Node, name: string): Node | null | undefined;
+  unmodified(node: Node, name: string, members: boolean): boolean;
 }
 
-function realPathBinding(tree: readonly Node[]): boolean {
-  const bindings = tree.filter(
-    (node) => node.type === 'VariableDeclarator' && identifier(node.id, 'path'),
+function openedNativeScope(node: Node, parent: NativeScope | undefined): NativeScope | undefined {
+  // The shared scope visitor reads this same ESTree syntax without changing its nodes.
+  const scope = namedClassScope(node) ?? scopeOpenedBy(node as unknown as ScopeNode);
+  if (scope === undefined) return parent;
+  if (node.type === 'Program') {
+    for (const declaration of node.body) {
+      if (declaration.type !== 'ImportDeclaration') continue;
+      for (const specifier of declaration.specifiers) {
+        scope.declared.add(specifier.local.name);
+        scope.bindings.set(specifier.local.name, specifier as unknown as ScopeNode);
+      }
+    }
+  }
+  return { scope, parent };
+}
+
+function namedClassScope(node: Node): Scope | undefined {
+  if ((node.type !== 'ClassDeclaration' && node.type !== 'ClassExpression') || node.id === null)
+    return undefined;
+  return {
+    declared: new Set([node.id.name]),
+    constants: new Set(),
+    bindings: new Map([[node.id.name, node as unknown as ScopeNode]]),
+  };
+}
+
+function bindingScope(scope: NativeScope | undefined, name: string): NativeScope | undefined {
+  for (let at = scope; at !== undefined; at = at.parent) {
+    if (at.scope.declared.has(name)) return at;
+  }
+  return undefined;
+}
+
+function nativeBinding(scope: NativeScope | undefined, name: string): Node | null | undefined {
+  const found = bindingScope(scope, name);
+  return found === undefined
+    ? undefined
+    : ((found.scope.bindings.get(name) as Node | undefined) ?? null);
+}
+
+function patternNames(pattern: Node, members = false): string[] {
+  switch (pattern.type) {
+    case 'Identifier':
+      return [pattern.name];
+    case 'ObjectPattern':
+      return pattern.properties.flatMap((property) => {
+        return patternNames(
+          property.type === 'Property' ? property.value : property.argument,
+          members,
+        );
+      });
+    case 'ArrayPattern':
+      return pattern.elements.flatMap((element) => {
+        return element === null ? [] : patternNames(element, members);
+      });
+    case 'RestElement':
+      return patternNames(pattern.argument, members);
+    case 'AssignmentPattern':
+      return patternNames(pattern.left, members);
+    case 'MemberExpression':
+      return members ? patternNames(pattern.object, true) : [];
+    default:
+      return [];
+  }
+}
+
+function recordPatterns(scopes: ReadonlyMap<Node, NativeScope | undefined>): void {
+  for (const [node, scope] of scopes) {
+    if (node.type !== 'VariableDeclarator') continue;
+    for (const name of patternNames(node.id)) {
+      const owner = bindingScope(scope, name);
+      if (owner !== undefined && !owner.scope.bindings.has(name))
+        owner.scope.bindings.set(name, node as unknown as ScopeNode);
+    }
+  }
+}
+
+function initializesBinding(
+  node: Node,
+  name: string,
+  declaration: Node | null | undefined,
+): boolean {
+  return (
+    node.type === 'VariableDeclarator' &&
+    node !== declaration &&
+    node.init !== null &&
+    patternNames(node.id).includes(name)
   );
-  if (bindings.length !== 1) return false;
-  const binding = bindings[0];
+}
+
+/** Resolve a native operation's own scope; unrelated parameters must not hide a global load. */
+export function nativeBindings(program: Node): NativeBindings {
+  const scopes = new Map<Node, NativeScope | undefined>();
+  const pending: { node: Node; parent: NativeScope | undefined }[] = [
+    { node: program, parent: undefined },
+  ];
+  for (let visit = pending.pop(); visit !== undefined; visit = pending.pop()) {
+    const scope = openedNativeScope(visit.node, visit.parent);
+    scopes.set(visit.node, scope);
+    for (const child of nodes(visit.node)) pending.push({ node: child, parent: scope });
+  }
+  recordPatterns(scopes);
+  return {
+    lookup: (node, name) => nativeBinding(scopes.get(node), name),
+    unmodified(node, name, members) {
+      const binding = bindingScope(scopes.get(node), name);
+      const declaration = nativeBinding(scopes.get(node), name);
+      for (const [candidate, scope] of scopes) {
+        if (
+          (assignmentBinds(candidate, name, members) ||
+            initializesBinding(candidate, name, declaration)) &&
+          bindingScope(scope, name) === binding
+        )
+          return false;
+      }
+      return true;
+    },
+  };
+}
+
+function realPathBinding(node: Node, bindings: NativeBindings): boolean {
+  const binding = bindings.lookup(node, 'path');
   if (binding?.type !== 'VariableDeclarator' || binding.init === null) return false;
   if (!['path', 'node:path'].includes(required(binding.init) ?? '')) return false;
-  return !tree.some((node) => assignmentBinds(node, 'path', true) || parameterBinds(node, 'path'));
+  if (
+    bindings.lookup(binding.init, 'require') !== undefined ||
+    !bindings.unmodified(binding.init, 'require', false)
+  )
+    return false;
+  return bindings.unmodified(node, 'path', true);
 }
 
 export function nativePath(
   node: Node | undefined,
   importer: string,
-  tree: readonly Node[],
+  bindings: NativeBindings,
 ): string | undefined {
   if (node?.type !== 'CallExpression' || node.callee.type !== 'MemberExpression') return undefined;
   const { object, property, computed } = node.callee;
   if (
     !identifier(object, 'path') ||
-    !realPathBinding(tree) ||
+    !realPathBinding(node, bindings) ||
     computed ||
     property.type !== 'Identifier' ||
     !['join', 'resolve'].includes(property.name)
