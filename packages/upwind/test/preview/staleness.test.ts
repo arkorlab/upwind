@@ -70,6 +70,16 @@ describe('what of a project changed after its build', () => {
     });
   });
 
+  it('looks at no more entries than its limit, a large directory among them', async () => {
+    const files = Object.fromEntries(
+      Array.from({ length: 10 }, (_, index) => [`public/${String(index)}.png`, AFTER]),
+    );
+    const dir = projectOf({ 'next.config.ts': AFTER, ...files });
+
+    // The root's two entries, then four of the directory's ten.
+    await expect(changedSinceBuild(dir, BUILT.getTime(), 6)).resolves.toMatchObject({ count: 5 });
+  });
+
   it('follows no link', async () => {
     const elsewhere = projectOf({ 'lib/shared.ts': AFTER });
     const dir = projectOf({ 'app/page.tsx': BEFORE });

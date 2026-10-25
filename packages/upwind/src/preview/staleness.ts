@@ -1,5 +1,5 @@
 import type { Dirent } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { opendir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { compareCodeUnits } from '@stayingupwind/core/util';
@@ -34,6 +34,8 @@ const WRITTEN_FILES = new Set(['.DS_Store', 'next-env.d.ts']);
 const WRITTEN_SUFFIX = '.tsbuildinfo';
 /** How many entries are looked at, at most: a larger project is walked only that far. */
 const MAX_ENTRIES = 50_000;
+/** How many files are asked for their times at once. */
+const STAT_BATCH = 64;
 /** How many of the changed files are named. */
 const NAMED = 3;
 
@@ -62,14 +64,27 @@ function skipped(entry: Dirent, top: boolean): boolean {
   return WRITTEN_FILES.has(entry.name) || entry.name.endsWith(WRITTEN_SUFFIX);
 }
 
-/** A directory's entries, relative to the project; none where it cannot be read. */
-async function listing(projectDir: string, relative: string): Promise<Listing> {
-  let read: Dirent[];
+/** As many of a directory's entries as `budget` allows; none where it cannot be read. */
+async function entriesOf(directory: string, budget: number): Promise<Dirent[]> {
+  const read: Dirent[] = [];
   try {
-    read = await readdir(path.join(projectDir, relative), { withFileTypes: true });
+    // Read as a stream, so a directory larger than the budget is not read whole first.
+    const stream = await opendir(directory);
+    for await (const entry of stream) {
+      read.push(entry);
+      if (read.length >= budget) {
+        break;
+      }
+    }
   } catch {
-    return { entries: 0, directories: [], files: [] };
+    return read;
   }
+  return read;
+}
+
+/** A directory's entries, relative to the project, within the budget left. */
+async function listing(projectDir: string, relative: string, budget: number): Promise<Listing> {
+  const read = await entriesOf(path.join(projectDir, relative), budget);
   const sorted = read.toSorted((a, b) => compareCodeUnits(a.name, b.name));
   const counted = sorted.filter((entry) => !skipped(entry, relative === ''));
   const named = (entry: Dirent): string =>
@@ -81,33 +96,48 @@ async function listing(projectDir: string, relative: string): Promise<Listing> {
   };
 }
 
-/** Which of the files were modified after `builtAtMs`; none that cannot be read. */
-async function newer(projectDir: string, files: readonly string[], builtAtMs: number) {
-  const modified = await Promise.all(
-    files.map(async (file) => {
-      try {
-        return (await stat(path.join(projectDir, file))).mtimeMs > builtAtMs;
-      } catch {
-        return false;
-      }
-    }),
-  );
-  return files.filter((_, index) => modified[index] === true);
+/** Whether the file was modified after `builtAtMs`; not where it cannot be read. */
+async function modifiedAfter(file: string, builtAtMs: number): Promise<boolean> {
+  try {
+    return (await stat(file)).mtimeMs > builtAtMs;
+  } catch {
+    return false;
+  }
 }
 
-/** The files under the project modified after `builtAtMs`, the build's own time. */
-export async function changedSinceBuild(projectDir: string, builtAtMs: number): Promise<Changed> {
+/** Which of the files were modified after `builtAtMs`, asked a batch at a time. */
+async function newer(
+  projectDir: string,
+  files: readonly string[],
+  builtAtMs: number,
+): Promise<string[]> {
+  const found: string[] = [];
+  for (let start = 0; start < files.length; start += STAT_BATCH) {
+    const batch = files.slice(start, start + STAT_BATCH);
+    const modified = await Promise.all(
+      batch.map((file) => modifiedAfter(path.join(projectDir, file), builtAtMs)),
+    );
+    found.push(...batch.filter((_, index) => modified[index] === true));
+  }
+  return found;
+}
+
+/**
+ * The files under the project modified after `builtAtMs`, the build's own time, looking at `limit`
+ * entries at most.
+ */
+export async function changedSinceBuild(
+  projectDir: string,
+  builtAtMs: number,
+  limit = MAX_ENTRIES,
+): Promise<Changed> {
   const changed: string[] = [];
   let entries = 0;
   // Breadth first, each directory's entries by name: the files nearest the project's root are the
   // ones named, and in the same order on every system.
   const queue = [''];
-  for (
-    let next = queue.shift();
-    next !== undefined && entries < MAX_ENTRIES;
-    next = queue.shift()
-  ) {
-    const listed = await listing(projectDir, next);
+  for (let next = queue.shift(); next !== undefined && entries < limit; next = queue.shift()) {
+    const listed = await listing(projectDir, next, limit - entries);
     entries += listed.entries;
     queue.push(...listed.directories);
     changed.push(...(await newer(projectDir, listed.files, builtAtMs)));
