@@ -211,7 +211,7 @@ function readonlyAsyncIterator(member: Node | undefined, input: PatchFlagInput):
   const parent = input.parents.get(member)?.parent;
   if (writesMember(member, parent)) return false;
   if (parent?.type === 'MemberExpression' && parent['object'] === member) return false;
-  if (parent !== undefined && parent['callee'] === member) return false;
+  if (parent?.['callee'] === member) return false;
   if (parent?.type === 'TaggedTemplateExpression' && parent['tag'] === member) return false;
   return !destructuredTarget(member, parent, input);
 }

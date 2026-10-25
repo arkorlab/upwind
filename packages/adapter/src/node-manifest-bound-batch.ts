@@ -100,8 +100,7 @@ function obligation(
 ): string {
   const source = input.sources.find((candidate) => candidate.id === factory.physicalId);
   if (
-    source === undefined ||
-    source.source.sha256 !== factory.projection.original.sha256 ||
+    source?.source.sha256 !== factory.projection.original.sha256 ||
     source.source.code !== factory.projection.original.code
   )
     refuse('factory source binding');
@@ -149,7 +148,6 @@ export function certifyNodeManifestBoundConsumer(input: {
     runtimeInputs: { require: requireInput.identifier, loadChunk: loadChunkInput.identifier },
   });
   const scope = input.cohort === undefined ? undefined : boundScope(input.context, input.cohort);
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- Private unique-symbol brand; WeakMap identity checks handle authenticity.
   const proof = Object.freeze({ [CONSUMER]: true as const });
   CONSUMERS.set(proof, {
     key: factoryFingerprint(input.factory),
@@ -161,7 +159,6 @@ export function certifyNodeManifestBoundConsumer(input: {
 
 /** Internal build scope only. A collector never appears in bundle or runtime configuration. */
 export function createNodeManifestBoundBatch(): NodeManifestBoundBatch {
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- Private unique-symbol brand; WeakMap identity checks handle authenticity.
   const batch = Object.freeze({ [BATCH]: true as const });
   BATCHES.set(batch, {
     closed: false,
@@ -199,12 +196,11 @@ export function stageNodeManifestBoundProof(input: {
     refuse('non-AppPage discharge');
   const discharges = input.certified.map((proof) => {
     const certified = CONSUMERS.get(proof);
-    if (certified === undefined || certified.scope !== scope || certified.batch !== input.batch)
+    if (certified?.scope !== scope || certified.batch !== input.batch)
       refuse('uncertified or foreign AppPage discharge');
     if (!own.has(certified.key)) refuse('discharge outside bound inventory');
     return certified.key;
   });
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- Private unique-symbol brand; WeakMap identity checks handle authenticity.
   const stage = Object.freeze({ [STAGE]: true as const });
   STAGES.set(stage, { batch: input.batch, discharges: Object.freeze(discharges) });
   state.pending.add(stage);
