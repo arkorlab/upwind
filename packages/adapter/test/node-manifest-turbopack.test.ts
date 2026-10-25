@@ -7,6 +7,7 @@ import { assertNodeManifestConsumer } from '../src/node-manifest-consumers.ts';
 import {
   nodeManifestTurbopackFactories,
   projectNodeManifestTurbopackFactory,
+  turbopackModuleSpecifier,
   type NodeManifestTurbopackSource,
 } from '../src/node-manifest-turbopack.ts';
 
@@ -73,24 +74,73 @@ describe('next Turbopack manifest factory projections', () => {
     });
   });
 
+  it('preserves numeric and string Map keys through registration and projected imports', () => {
+    const original = source(
+      'module.exports=[1,((ctx)=>{ctx.v(42);}),"1",((ctx)=>{var own=ctx.i(1);var other=ctx.r("1");})];',
+    );
+    const projected = projectNodeManifestTurbopackFactory(original, '1', 'dependencies');
+
+    expect(nodeManifestTurbopackFactories(original).map((factory) => factory.ids)).toStrictEqual([
+      [1],
+      ['1'],
+    ]);
+
+    const imports = projected.imports.toSorted((left, right) =>
+      left.specifier.localeCompare(right.specifier),
+    );
+
+    expect(imports).toStrictEqual([
+      { kind: 'import', specifier: 'turbopack:1', targetId: 1 },
+      { kind: 'require', specifier: 'turbopack:string:"1"', targetId: '1' },
+    ]);
+    expect(projected.source.code).toContain(String.raw`require("turbopack:string:\"1\"")`);
+  });
+
+  it('encodes quoted Unicode string IDs without colliding with numeric or namespace-looking strings', () => {
+    const ids = [123, '123', 'string:"123"', String.raw`日本語"\quoted`] as const;
+    const keys = ids.map((id) => turbopackModuleSpecifier(id));
+    const original = source(`module.exports=[${jsLiteral(ids[3])},((ctx)=>{})];`);
+
+    expect(new Set(keys).size).toBe(ids.length);
+    expect(nodeManifestTurbopackFactories(original)[0]?.ids).toStrictEqual([ids[3]]);
+  });
+
+  it.each([
+    ['empty string', '""'],
+    ['NUL string', String.raw`"\u0000"`],
+    ['oversized string', jsLiteral('x'.repeat(16_385))],
+    ['dynamic string', '"a"+"b"'],
+    ['template string', '`static`'],
+    ['duplicate string', '"same",((ctx)=>{}),"same"'],
+  ])('refuses an invalid %s module registration', (_name, id) => {
+    expect(() =>
+      nodeManifestTurbopackFactories(source(`module.exports=[${id},((ctx)=>{})];`)),
+    ).toThrow('Unproved Next.js');
+  });
+
   it.each(['ctx.v(42);', 'ctx.n({answer:42});', 'ctx.s(["answer",()=>calculate()]);'])(
     'records ordinary export dependencies without certifying its opaque value: %s',
     (body) => {
       const original = chunk(`var p=ctx.i(2);${body}`);
       const projected = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
 
-      expect({ mode: projected.mode, exports: projected.exports, imports: projected.imports })
-        .toStrictEqual({
-          mode: 'dependencies',
-          exports: { kind: 'opaque' },
-          imports: [{ kind: 'import', specifier: 'turbopack:2', targetId: 2 }],
-        });
+      expect({
+        mode: projected.mode,
+        exports: projected.exports,
+        imports: projected.imports,
+      }).toStrictEqual({
+        mode: 'dependencies',
+        exports: { kind: 'opaque' },
+        imports: [{ kind: 'import', specifier: 'turbopack:2', targetId: 2 }],
+      });
       expect(() => projectNodeManifestTurbopackFactory(original, 1)).toThrow('Unproved Next.js');
     },
   );
 
   it('retains raw static require and import edges while excluding the checked external thunk duplicate', () => {
-    const original = chunk('const a=require("node:fs");import("other");var p=ctx.x("next",()=>require("next"));');
+    const original = chunk(
+      'const a=require("node:fs");import("other");var p=ctx.x("next",()=>require("next"));',
+    );
     const projected = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
 
     expect(projected.imports).toStrictEqual([

@@ -5,21 +5,25 @@ import { parseAst } from 'rolldown/parseAst';
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node } from './lexical-scope.ts';
 import { identifier, propertyName, stringOf } from './node-manifest-consumer-ast.ts';
-import { projectTurbopackFactory } from './node-manifest-turbopack-factory.ts';
+import { projectTurbopackFactory, turbopackModuleId } from './node-manifest-turbopack-factory.ts';
+
+export { turbopackModuleId, turbopackModuleSpecifier } from './node-manifest-turbopack-factory.ts';
+
+export type NodeManifestTurbopackModuleId = number | string;
 
 export interface NodeManifestTurbopackSource {
   readonly code: string;
   readonly sha256: string;
 }
 export interface NodeManifestTurbopackFactory {
-  readonly ids: readonly number[];
+  readonly ids: readonly NodeManifestTurbopackModuleId[];
   readonly start: number;
   readonly end: number;
 }
 export interface NodeManifestTurbopackImport {
   readonly kind: 'import' | 'require' | 'external';
   readonly specifier: string;
-  readonly targetId?: number;
+  readonly targetId?: NodeManifestTurbopackModuleId;
 }
 export type NodeManifestTurbopackExports =
   | { readonly kind: 'commonjs' }
@@ -124,12 +128,6 @@ function registration(program: Node): Node {
   return right;
 }
 
-function turbopackModuleId(value: unknown): number | undefined {
-  if (!isNode(value) || value.type !== 'Literal') return undefined;
-  const id = value['value'];
-  return typeof id === 'number' && Number.isSafeInteger(id) && id >= 0 ? id : undefined;
-}
-
 function factoryParameters(factory: Node): void {
   functionBody(factory);
   const params = listOf(factory, 'params');
@@ -143,7 +141,7 @@ function factoryParameters(factory: Node): void {
 function appendNested(
   node: Node,
   result: NodeManifestTurbopackFactory[],
-  known: Set<number>,
+  known: Set<NodeManifestTurbopackModuleId>,
 ): void {
   if (node.type !== 'ArrayExpression') refuseTurbopack('strict factory table');
   const first = listOf(node, 'elements')[0];
@@ -155,9 +153,9 @@ function appendNested(
 function appendFactories(
   table: Node,
   result: NodeManifestTurbopackFactory[],
-  known: Set<number>,
+  known: Set<NodeManifestTurbopackModuleId>,
 ): void {
-  let pending: number[] = [];
+  let pending: NodeManifestTurbopackModuleId[] = [];
   for (const [index, item] of listOf(table, 'elements').entries()) {
     if (!isNode(item)) refuseTurbopack('factory table hole');
     const nested = index === 0 ? strictWrapper(item, true) : undefined;
@@ -200,7 +198,7 @@ export function nodeManifestTurbopackFactories(
 
 export function projectNodeManifestTurbopackFactory(
   source: NodeManifestTurbopackSource,
-  id: number,
+  id: NodeManifestTurbopackModuleId,
   mode: 'strict' | 'dependencies' = 'strict',
 ): NodeManifestTurbopackProjection {
   const factory = nodeManifestTurbopackFactories(source).find((candidate) =>

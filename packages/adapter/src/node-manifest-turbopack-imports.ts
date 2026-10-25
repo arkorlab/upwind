@@ -1,11 +1,6 @@
 import { AuditError } from './dependencies.ts';
 import { listOf, type Node } from './lexical-scope.ts';
-import {
-  declaration,
-  identifier,
-  stringOf,
-  type Visit,
-} from './node-manifest-consumer-ast.ts';
+import { declaration, identifier, stringOf, type Visit } from './node-manifest-consumer-ast.ts';
 import type { NodeManifestTurbopackImport } from './node-manifest-turbopack.ts';
 
 function refuse(reason: string): never {

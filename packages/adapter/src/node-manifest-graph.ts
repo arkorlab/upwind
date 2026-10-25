@@ -13,6 +13,7 @@ import {
 } from './node-manifest-consumers.ts';
 import {
   APP_PAGE_FACTORY,
+  APP_PAGE_CLASS,
   EVALUATOR,
   frameworkParent,
   reviewedFrameworkSource,
@@ -96,6 +97,8 @@ interface RouteLocation {
 }
 
 function turbopackKind(child: ProtectedModule, sha256: string): SealedRoute['kind'] | undefined {
+  // A compiled AppPage namespace exposes class authority, not the fixed template factory.
+  if (child.kind === APP_PAGE_CLASS) return undefined;
   if (child.kind === APP_PAGE_FACTORY) {
     return child.relative === 'dist/build/templates/app-page-runtime.js' &&
       reviewedFrameworkSource(child.relative) === sha256
@@ -192,7 +195,7 @@ function routeLocation(file: string, app: string, pages: string): RouteLocation 
   const appRelative = beneath(app, file);
   const pagesRelative = beneath(pages, file);
   const relative = appRelative ?? pagesRelative;
-  if (!relative?.endsWith('.js')) return undefined;
+  if (relative?.endsWith('.js') !== true) return undefined;
   return {
     relative,
     app: appRelative !== undefined,

@@ -351,6 +351,23 @@ describe('sealed Turbopack producers through the real manifest proof entry', () 
     expect(proof.approvedCompilerSources).toStrictEqual([own.sources.get(own.runtime)]);
   });
 
+  it('closes a string-ID protected route while retaining a distinct numeric factory in the same table', async () => {
+    const own = await fixture(directory);
+    const code = (await readFile(own.chunk, 'utf8'))
+      .replace('module.exports=[1,', 'module.exports=[1,((ctx)=>{ctx.v(42);}),"1",')
+      .replace('ctx.i(2)', 'ctx.i("2")')
+      .replace('}),2,', '}),"2",');
+    await writeFile(own.chunk, code);
+    own.sources.set(own.chunk, { file: own.chunk, sha256: digest(code) });
+    const entry = (await readFile(own.entry, 'utf8')).replaceAll('R.m(1)', 'R.m("1")');
+    await writeFile(own.entry, entry);
+    own.sources.set(own.entry, { file: own.entry, sha256: digest(entry) });
+    const proof = await proveNodeManifests(own.input, own.graph);
+
+    expect(proof.normalization?.runtimeRootDir).toBe(directory);
+    expect(proof.approvedCompilerSources).toStrictEqual([own.sources.get(own.runtime)]);
+  });
+
   it('refuses a raw protected consumer sharing an otherwise certified physical factory table', async () => {
     const own = await fixture(directory);
     const body = `var p=require(${jsLiteral(SPECIFIER)});ctx.v(p);`;

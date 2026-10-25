@@ -124,6 +124,50 @@ describe('next Turbopack route topology', () => {
     });
   });
 
+  it('connects literal string boot and dependency IDs without conflating numeric keys', () => {
+    let own = fixture();
+    own = replaceFile(own, ENTRY, BOOT.replaceAll('R.m(1)', 'R.m("route")'));
+    own = replaceFile(
+      own,
+      CHUNK,
+      `module.exports=["route",((ctx)=>{var p=ctx.i("factory");ctx.n(p);}),"factory",((ctx)=>{var p=ctx.x(${jsLiteral(SPECIFIER)},()=>require(${jsLiteral(SPECIFIER)}));ctx.n(p);}),1,((ctx)=>{ctx.v(42);}),"1",((ctx)=>{ctx.v(7);})];`,
+    );
+    const graph = nodeManifestTurbopackEntryGraph(own);
+
+    expect(graph.exportedId).toBe(`${CHUNK}#turbopack:string:"route"`);
+    expect(graph.evaluations).toStrictEqual([`${CHUNK}#turbopack:string:"route"`]);
+    expect(graph.factories.map((factory) => factory.id)).toStrictEqual([
+      `${CHUNK}#turbopack:string:"route"`,
+      `${CHUNK}#turbopack:string:"factory"`,
+      `${CHUNK}#turbopack:1`,
+      `${CHUNK}#turbopack:string:"1"`,
+    ]);
+    expect(graph.factories[0]?.imports).toStrictEqual([
+      { specifier: 'turbopack:string:"factory"', target: `${CHUNK}#turbopack:string:"factory"` },
+    ]);
+  });
+
+  it('refuses physical source metadata that impersonates a generated string factory key', () => {
+    const own = replaceFile(fixture(), CHUNK, 'module.exports=["route",((ctx)=>{})];');
+    const changed = replaceFile(own, ENTRY, BOOT.replaceAll('R.m(1)', 'R.m("route")'));
+    const collision = `${CHUNK}#turbopack:string:"route"`;
+
+    expect(() => {
+      return nodeManifestTurbopackEntryGraph({
+        ...changed,
+        sources: [
+          ...changed.sources,
+          {
+            id: collision,
+            file: '/project/collision.js',
+            source: source('module.exports=0;'),
+            imports: [],
+          },
+        ],
+      });
+    }).toThrow('factory metadata identity collision');
+  });
+
   it.each([
     ['extra statement', `${BOOT}\nglobalThis.sideEffect();`],
     ['bootstrap alias', BOOT.replace('var R=', 'var Other=')],

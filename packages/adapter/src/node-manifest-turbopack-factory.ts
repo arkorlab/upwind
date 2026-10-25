@@ -16,6 +16,7 @@ import type {
   NodeManifestTurbopackExports,
   NodeManifestTurbopackFactory,
   NodeManifestTurbopackImport,
+  NodeManifestTurbopackModuleId,
   NodeManifestTurbopackProjection,
   NodeManifestTurbopackSource,
 } from './node-manifest-turbopack.ts';
@@ -29,6 +30,7 @@ const GETTER_PREFIX = '__upwind_turbopack_getter_';
 const BOUND_PREFIX = '__upwind_turbopack_bound_';
 const BOUND_KINDS = { l: 'loadChunk', r: 'require' } as const;
 const EXTERNAL_INTEROP_ARITY = 3;
+const MAX_MODULE_ID_BYTES = 16_384;
 
 function refuse(reason: string): never {
   throw new AuditError(
@@ -36,12 +38,23 @@ function refuse(reason: string): never {
   );
 }
 
-function numericId(node: unknown): number {
-  if (!isNode(node) || node.type !== 'Literal') return refuse('dynamic module id');
+/** Fixed Next ModuleId is an untagged number/string; the runtime stores exact keys in a Map. */
+export function turbopackModuleId(node: unknown): NodeManifestTurbopackModuleId | undefined {
+  if (!isNode(node) || node.type !== 'Literal') return undefined;
   const value = node['value'];
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
-    return refuse('module id');
-  return value;
+  if (typeof value === 'number')
+    return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    !value.includes('\0') &&
+    Buffer.byteLength(value) <= MAX_MODULE_ID_BYTES
+    ? value
+    : undefined;
+}
+
+/** Keep runtime-distinct numeric/string keys distinct in the inspection-only module namespace. */
+export function turbopackModuleSpecifier(id: NodeManifestTurbopackModuleId): string {
+  return typeof id === 'number' ? `turbopack:${id}` : `turbopack:string:${JSON.stringify(id)}`;
 }
 
 function staticSelector(node: unknown): node is Node {
@@ -203,9 +216,9 @@ class FactoryProjection {
   private imported(call: Node, visit: Visit, kind: 'import' | 'require'): void {
     const args = listOf(call, 'arguments');
     if (args.length !== 1) refuse('module import arity');
-    const id = numericId(args[0]);
+    const id = turbopackModuleId(args[0]) ?? refuse('dynamic or invalid module id');
     if (declaration('require', visit.scopes) !== undefined) refuse('shadowed inspection require');
-    const specifier = `turbopack:${id}`;
+    const specifier = turbopackModuleSpecifier(id);
     this.imports.set(call, { kind, specifier, targetId: id });
     this.edit(call, `require(${JSON.stringify(specifier)})`);
   }

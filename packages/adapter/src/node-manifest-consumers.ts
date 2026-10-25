@@ -35,7 +35,7 @@ export interface NodeManifestConsumerImport {
   readonly specifier: string;
   readonly file: string;
   readonly sha256: string;
-  readonly kind: 'app-page-factory' | 'route-class' | 'evaluator';
+  readonly kind: 'app-page-factory' | 'app-page-class' | 'route-class' | 'evaluator';
   readonly exportName: string;
 }
 

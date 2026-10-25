@@ -191,7 +191,7 @@ describe('sealed Next manifest consumers', () => {
     );
   });
 
-  it.each(['route-class', 'evaluator'] as const)(
+  it.each(['route-class', 'app-page-class', 'evaluator'] as const)(
     'keeps direct %s imports refused without a complete reviewed producer',
     (kind) => {
       const own = input();

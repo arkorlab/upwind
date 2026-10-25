@@ -21,7 +21,7 @@ describe('unchanged executable sources in a native Node artifact', () => {
     };
 
     expect(() => {
-      return assertNodeProofFiles(
+      assertNodeProofFiles(
         { files: [own.original], native: [] },
         physical,
         new Map([[own.original.file, own.original.sha256]]),
@@ -35,7 +35,9 @@ describe('unchanged executable sources in a native Node artifact', () => {
       const own = source(`/project/source${extension}`, 'const value: number = 42;');
       const before = new Uint8Array(own.copied.bytes);
 
-      expect(() => assertRawNodeSource(own.original.file, own.copied.bytes)).not.toThrow();
+      expect(() => {
+        assertRawNodeSource(own.original.file, own.copied.bytes);
+      }).not.toThrow();
       expect(own.copied.bytes).toStrictEqual(before);
     },
   );
@@ -54,9 +56,9 @@ describe('unchanged executable sources in a native Node artifact', () => {
     };
     const proof = { files: [own.original], native: [] };
 
-    expect(() => assertNodeProofFiles(proof, physical, new Map())).toThrow(
-      'compilation before native publication',
-    );
+    expect(() => {
+      assertNodeProofFiles(proof, physical, new Map());
+    }).toThrow('compilation before native publication');
   });
 
   it('keeps separately compiled instrumentation under its original byte and output proof', () => {
@@ -65,7 +67,7 @@ describe('unchanged executable sources in a native Node artifact', () => {
     const compiled = new Map([[own.original.file, own.original.sha256]]);
 
     expect(() => {
-      return assertNodeProofFiles(
+      assertNodeProofFiles(
         proof,
         { files: [], sourcePaths: new Map(), nameOf: (file) => file },
         compiled,
@@ -82,9 +84,9 @@ describe('unchanged executable sources in a native Node artifact', () => {
       nameOf: (file: string) => file,
     };
 
-    expect(() =>
-      assertNodeProofFiles(proof, physical, new Map([[own.original.file, own.original.sha256]])),
-    ).toThrow('compilation before native publication');
+    expect(() => {
+      assertNodeProofFiles(proof, physical, new Map([[own.original.file, own.original.sha256]]));
+    }).toThrow('compilation before native publication');
   });
 
   it.each(['.ts', '.cts', '.mts'])(
@@ -98,9 +100,9 @@ describe('unchanged executable sources in a native Node artifact', () => {
         nameOf: () => name,
       };
 
-      expect(() =>
-        assertNodeProofFiles({ files: [own.original], native: [] }, physical, new Map()),
-      ).toThrow('node_modules requires compilation');
+      expect(() => {
+        assertNodeProofFiles({ files: [own.original], native: [] }, physical, new Map());
+      }).toThrow('node_modules requires compilation');
     },
   );
 });

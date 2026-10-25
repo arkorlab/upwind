@@ -41,9 +41,7 @@ describe('mixed native and Worker placement audit', () => {
     }).not.toThrow();
     expect(() => {
       auditNodeFunction('native', { app: '' }, input);
-    }).toThrow(
-      'not known to be provided',
-    );
+    }).toThrow('not known to be provided');
   });
 
   it('still refuses unknown platform modules before partitioning', () => {
@@ -51,9 +49,7 @@ describe('mixed native and Worker placement audit', () => {
 
     expect(() => {
       auditNativePlacement('app', { app: '' }, input);
-    }).toThrow(
-      'not known to be provided',
-    );
+    }).toThrow('not known to be provided');
   });
 
   it('admits genuine Node builtins during placement without extending Worker support', () => {

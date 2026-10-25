@@ -293,8 +293,7 @@ class TurbopackConsumers {
   async prove(): Promise<NodeManifestTurbopackConsumerProof> {
     const producer = this.input.sources.find((source) => source.id === this.input.producer.id);
     if (
-      producer === undefined ||
-      producer.file !== this.input.producer.file ||
+      producer?.file !== this.input.producer.file ||
       producer.source.sha256 !== this.input.producer.sha256
     )
       refuse('producer source binding');

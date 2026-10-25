@@ -42,11 +42,11 @@ function digest(bytes: Uint8Array | string): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-const SOURCE_CHAIN = [
-  'dist/server/load-manifest.external.js',
+const APP_PAGE_RUNTIMES = [
+  'dist/compiled/next-server/app-page-experimental.runtime.prod.js',
+  'dist/compiled/next-server/app-page-turbo-experimental.runtime.prod.js',
+  'dist/compiled/next-server/app-page-turbo.runtime.prod.js',
   'dist/compiled/next-server/app-page.runtime.prod.js',
-  'dist/server/route-modules/app-page/module.compiled.js',
-  'dist/build/templates/app-page-runtime.js',
 ] as const;
 
 function routeSource(producer: string): string {
@@ -59,16 +59,24 @@ function routeSource(producer: string): string {
   ].join('\n');
 }
 
-async function fixture(directory: string) {
+async function fixture(directory: string, directRuntime?: (typeof APP_PAGE_RUNTIMES)[number]) {
   // Read published source without importing or evaluating a Next.js module.
   const evaluatorFile = fileURLToPath(
     import.meta.resolve('next/dist/server/load-manifest.external.js'),
   );
   const originalRoot = path.resolve(path.dirname(evaluatorFile), '../..');
   const root = path.join(directory, 'node_modules/next');
-  const chain = SOURCE_CHAIN.map((relative) => path.join(root, relative));
+  const sourceChain = [
+    'dist/server/load-manifest.external.js',
+    directRuntime ?? 'dist/compiled/next-server/app-page.runtime.prod.js',
+    ...(directRuntime === undefined
+      ? ['dist/server/route-modules/app-page/module.compiled.js']
+      : []),
+    'dist/build/templates/app-page-runtime.js',
+  ];
+  const chain = sourceChain.map((relative) => path.join(root, relative));
   const sources = new Map<string, { file: string; sha256: string }>();
-  for (const relative of SOURCE_CHAIN) {
+  for (const relative of sourceChain) {
     const bytes = await readFile(path.join(originalRoot, relative));
     const file = path.join(root, relative);
     await mkdir(path.dirname(file), { recursive: true });
@@ -77,7 +85,7 @@ async function fixture(directory: string) {
   }
   const evaluator = chain[0]!;
   const caller = chain[1]!;
-  const producer = chain[3]!;
+  const producer = path.join(root, 'dist/build/templates/app-page-runtime.js');
   const distDir = path.join(directory, '.next');
   const route = path.join(distDir, 'server/app/native/page.js');
   const manifest = path.join(distDir, `server/app/native/page${SUFFIX}`);
@@ -247,6 +255,80 @@ describe('original Node manifest operation proof', () => {
 
   afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
+  });
+
+  it.each(APP_PAGE_RUNTIMES)(
+    'closes direct %s class resolution only through the exact published AppPage factory',
+    async (runtime) => {
+      const current = await fixture(directory, runtime);
+      const proof = await proveNodeManifests(current.input, current.graph);
+      const files = proof.files.map((source) => source.file);
+
+      expect(files).toContain(current.caller);
+      expect(files).toContain(current.producer);
+      expect(files).not.toContain(
+        path.join(current.root, 'dist/server/route-modules/app-page/module.compiled.js'),
+      );
+      expect(proof.normalization?.entries).toStrictEqual([
+        { id: '/native', filePath: current.route, canonicalFilePath: current.route },
+      ]);
+    },
+  );
+
+  it.each(['runtime', 'factory'] as const)(
+    'rejects changed physical %s bytes on a directly resolved AppPage chain',
+    async (changed) => {
+      const current = await fixture(directory, APP_PAGE_RUNTIMES[3]);
+      const file = changed === 'runtime' ? current.caller : current.producer;
+      const code = `${await readFile(file, 'utf8')}\nexports.changed=true;`;
+      await writeFile(file, code);
+      current.graph.sources.set(file, { file, sha256: digest(code) });
+
+      await expect(proveNodeManifests(current.input, current.graph)).rejects.toThrow(
+        'unknown or changed caller',
+      );
+    },
+  );
+
+  it.each(['factory-export', 'class-constructor'] as const)(
+    'never gives arbitrary AppPage %s consumers factory authority',
+    async (consumer) => {
+      const current = await fixture(directory, APP_PAGE_RUNTIMES[3]);
+      const code =
+        consumer === 'factory-export'
+          ? routeSource(current.caller)
+          : `import {AppPageRouteModule} from ${JSON.stringify(current.caller)};export const routeModule=new AppPageRouteModule({});`;
+      await writeFile(current.route, code);
+      current.graph.sources.set(current.route, { file: current.route, sha256: digest(code) });
+      current.graph.importers.set(current.caller, [current.route]);
+      current.graph.imports.set(current.route, [
+        { specifier: current.caller, target: current.caller },
+      ]);
+
+      await expect(proveNodeManifests(current.input, current.graph)).rejects.toThrow(
+        'unknown consumer or export escape',
+      );
+    },
+  );
+
+  it('rejects an unknown caller path even when it copies the exact AppPage factory bytes', async () => {
+    const current = await fixture(directory, APP_PAGE_RUNTIMES[3]);
+    const file = path.join(current.root, 'copied-factory.js');
+    const code = await readFile(current.producer, 'utf8');
+    const route = routeSource(file);
+    await writeFile(file, code);
+    await writeFile(current.route, route);
+    current.graph.sources.set(file, { file, sha256: digest(code) });
+    current.graph.sources.set(current.route, { file: current.route, sha256: digest(route) });
+    current.graph.retained.add(file);
+    current.graph.importers.set(current.caller, [file]);
+    current.graph.importers.set(file, [current.route]);
+    current.graph.imports.set(file, [{ specifier: current.caller, target: current.caller }]);
+    current.graph.imports.set(current.route, [{ specifier: file, target: file }]);
+
+    await expect(proveNodeManifests(current.input, current.graph)).rejects.toThrow(
+      'consumer is not a sealed route entry',
+    );
   });
 
   it('certifies only the reviewed operation and binds its unchanged physical data', async () => {

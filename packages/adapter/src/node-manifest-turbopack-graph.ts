@@ -10,6 +10,9 @@ import { identifier, propertyName, stringOf } from './node-manifest-consumer-ast
 import {
   nodeManifestTurbopackFactories,
   projectNodeManifestTurbopackFactory,
+  turbopackModuleId,
+  turbopackModuleSpecifier,
+  type NodeManifestTurbopackModuleId,
   type NodeManifestTurbopackProjection,
   type NodeManifestTurbopackSource,
 } from './node-manifest-turbopack.ts';
@@ -18,8 +21,8 @@ export interface NodeManifestTurbopackEntry {
   readonly runtimeSpecifier: string;
   readonly publicPath: string;
   readonly chunks: readonly string[];
-  readonly evaluations: readonly number[];
-  readonly exportedId: number;
+  readonly evaluations: readonly NodeManifestTurbopackModuleId[];
+  readonly exportedId: NodeManifestTurbopackModuleId;
 }
 export interface NodeManifestTurbopackGraphFile {
   readonly id: string;
@@ -72,12 +75,8 @@ function checkedProgram(source: NodeManifestTurbopackSource): Node {
   return program;
 }
 
-function moduleId(value: unknown): number {
-  if (!isNode(value) || value.type !== 'Literal') return refuse('dynamic entry module id');
-  const id = value['value'];
-  return typeof id === 'number' && Number.isSafeInteger(id) && id >= 0
-    ? id
-    : refuse('entry module id');
+function moduleId(value: unknown): NodeManifestTurbopackModuleId {
+  return turbopackModuleId(value) ?? refuse('dynamic or invalid entry module id');
 }
 
 function argument(call: Node): unknown {
@@ -144,7 +143,7 @@ function bootRuntime(statement: unknown): {
   return { name: only['id'].name, runtimeSpecifier: specifier, publicPath: source };
 }
 
-function exportedModule(statement: unknown, name: string): number {
+function exportedModule(statement: unknown, name: string): NodeManifestTurbopackModuleId {
   if (!isNode(statement) || statement.type !== 'ExpressionStatement')
     return refuse('entry export statement');
   const expression = statement['expression'];
@@ -186,7 +185,7 @@ export function inspectNodeManifestTurbopackEntry(
     statements = statements.slice(1);
   const runtime = bootRuntime(statements[0]);
   const chunks = new Set<string>();
-  const evaluations: number[] = [];
+  const evaluations: NodeManifestTurbopackModuleId[] = [];
   let evaluating = false;
   const loading = statements.slice(1, -1);
   for (const statement of loading) {
@@ -242,8 +241,8 @@ function resolved(source: NodeManifestTurbopackGraphFile, specifier: string): st
 }
 
 /** Metadata-only identity; it is never registered as a bundler or physical source module. */
-function factoryId(physical: string, id: number): string {
-  return `${physical}#turbopack:${id}`;
+function factoryId(physical: string, id: NodeManifestTurbopackModuleId): string {
+  return `${physical}#${turbopackModuleSpecifier(id)}`;
 }
 
 function runtimeTables(
@@ -261,14 +260,14 @@ function runtimeTables(
 }
 
 function factoryRecords(tables: readonly NodeManifestTurbopackGraphFile[]): ReadonlyMap<
-  number,
+  NodeManifestTurbopackModuleId,
   {
     readonly physical: NodeManifestTurbopackGraphFile;
     readonly projection: NodeManifestTurbopackProjection;
   }
 > {
   const factories = new Map<
-    number,
+    NodeManifestTurbopackModuleId,
     {
       readonly physical: NodeManifestTurbopackGraphFile;
       readonly projection: NodeManifestTurbopackProjection;
@@ -315,11 +314,15 @@ export function nodeManifestTurbopackEntryGraph(input: {
   // entire rewritten runtime table, not just the entry's initial loading cohort.
   const tables = runtimeTables(runtime, sources);
   const factories = factoryRecords(tables);
-  const targetOf = (id: number): string => {
+  const logicalIds = new Map<string, NodeManifestTurbopackModuleId>();
+  const targetOf = (id: NodeManifestTurbopackModuleId): string => {
     const target = factories.get(id);
     if (target === undefined) return refuse('unregistered module dependency');
     const logical = factoryId(target.physical.id, id);
     if (sources.has(logical)) refuse('factory metadata identity collision');
+    const previous = logicalIds.get(logical);
+    if (previous !== undefined && previous !== id) refuse('factory logical identity collision');
+    logicalIds.set(logical, id);
     return logical;
   };
   const modules = [...factories].map(([id, factory]) => {
@@ -340,7 +343,7 @@ export function nodeManifestTurbopackEntryGraph(input: {
     };
   });
   const initialTables = new Set(initialChunks);
-  const initialTargetOf = (id: number): string => {
+  const initialTargetOf = (id: NodeManifestTurbopackModuleId): string => {
     const factory = factories.get(id);
     if (factory === undefined || !initialTables.has(factory.physical.id))
       refuse('entry module is not initially registered');

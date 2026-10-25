@@ -1,4 +1,5 @@
 export const ROUTE_CLASS = 'route-class';
+export const APP_PAGE_CLASS = 'app-page-class';
 export const APP_PAGE_FACTORY = 'app-page-factory';
 export const ROUTE_EXPORTS = 'route-exports';
 const APP_PAGE_RUNTIME = 'dist/build/templates/app-page-runtime.js';
@@ -90,6 +91,7 @@ const REVIEWED: ReadonlyMap<string, string> = new Map([
 export type ManifestProtectedKind =
   | 'evaluator'
   | typeof ROUTE_CLASS
+  | typeof APP_PAGE_CLASS
   | typeof APP_PAGE_FACTORY
   | typeof ROUTE_EXPORTS;
 
@@ -112,7 +114,7 @@ const FRAMEWORK_TRANSITIONS: ReadonlyMap<
   ReadonlyMap<string, ManifestProtectedKind>
 > = new Map([
   [APP_PAGE_MODULE, new Map<string, ManifestProtectedKind>([[APP_PAGE_RUNTIME, APP_PAGE_FACTORY]])],
-  [APP_PAGE_SOURCE, new Map<string, ManifestProtectedKind>([[APP_PAGE_MODULE, ROUTE_CLASS]])],
+  [APP_PAGE_SOURCE, new Map<string, ManifestProtectedKind>([[APP_PAGE_MODULE, APP_PAGE_CLASS]])],
   [APP_ROUTE_SOURCE, new Map<string, ManifestProtectedKind>([[APP_ROUTE_MODULE, ROUTE_CLASS]])],
   [
     EVALUATOR,
@@ -126,7 +128,7 @@ const FRAMEWORK_TRANSITIONS: ReadonlyMap<
   [
     ROUTE_MODULE,
     new Map<string, ManifestProtectedKind>([
-      [APP_PAGE_SOURCE, ROUTE_CLASS],
+      [APP_PAGE_SOURCE, APP_PAGE_CLASS],
       [APP_ROUTE_SOURCE, ROUTE_CLASS],
       [PAGES_API_SOURCE, ROUTE_CLASS],
       [PAGES_SOURCE, ROUTE_CLASS],
@@ -135,6 +137,11 @@ const FRAMEWORK_TRANSITIONS: ReadonlyMap<
 ]);
 
 export function frameworkParent(parent: string, child: string): ManifestProtectedKind | undefined {
+  if (child === EVALUATOR && APP_RUNTIMES.has(parent)) return APP_PAGE_CLASS;
+  if (parent === APP_PAGE_MODULE && APP_RUNTIMES.has(child)) return APP_PAGE_CLASS;
+  // Resolution may select the production namespace directly instead of retaining its wrapper.
+  // Only the separately hash-checked, fixed template factory may consume this class authority.
+  if (parent === APP_PAGE_RUNTIME && APP_RUNTIMES.has(child)) return APP_PAGE_FACTORY;
   if (child === EVALUATOR && RUNTIMES.has(parent)) return ROUTE_CLASS;
   if (RUNTIME_WRAPPERS.get(parent)?.has(child) === true) return ROUTE_CLASS;
   return FRAMEWORK_TRANSITIONS.get(child)?.get(parent);

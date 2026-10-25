@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  APP_PAGE_CLASS,
+  APP_PAGE_FACTORY,
+  EVALUATOR,
+  frameworkParent,
   manifestConstructorImport,
   reviewedRouteConstructorSource,
 } from '../src/node-manifest-framework.ts';
@@ -80,6 +84,31 @@ const PROFILES = [
 ] as const;
 
 describe('fixed constructor namespace identities', () => {
+  it.each([
+    'app-page.runtime.prod.js',
+    'app-page-turbo.runtime.prod.js',
+    'app-page-experimental.runtime.prod.js',
+    'app-page-turbo-experimental.runtime.prod.js',
+  ])('keeps %s class authority distinct from the reviewed factory', (name) => {
+    const relative = `dist/compiled/next-server/${name}`;
+    const wrapper = 'dist/server/route-modules/app-page/module.compiled.js';
+    const factory = 'dist/build/templates/app-page-runtime.js';
+
+    expect([
+      frameworkParent(relative, EVALUATOR),
+      frameworkParent(wrapper, relative),
+      frameworkParent(factory, relative),
+      frameworkParent(factory, wrapper),
+      frameworkParent('customer.js', relative),
+    ]).toStrictEqual([
+      APP_PAGE_CLASS,
+      APP_PAGE_CLASS,
+      APP_PAGE_FACTORY,
+      APP_PAGE_FACTORY,
+      undefined,
+    ]);
+  });
+
   it.each(PROFILES)(
     'binds $relative to its exact published namespace and canonical role',
     async ({ kind, module, relative, sha256 }) => {

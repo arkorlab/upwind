@@ -40,12 +40,11 @@ describe('native capability source parsing', () => {
       const source =
         'declare const module: {require: (name:string)=>unknown}; export const load=(name:string)=>module.require(name);';
       const analysis = originalNodeHostLoaderAnalysis(file, source);
+      const site = analysis.sites[0]!;
 
       expect(analysis.code).not.toContain('declare const');
       expect(analysis.sites).toHaveLength(1);
-      expect(analysis.code.slice(analysis.sites[0]?.start, analysis.sites[0]?.end)).toContain(
-        'module.require',
-      );
+      expect(analysis.code.slice(site.start, site.end)).toContain('module.require');
     },
   );
 
