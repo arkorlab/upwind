@@ -17,6 +17,7 @@ import { type BlobStore, contentTypeFor } from './blobs.ts';
 import { buildPaths } from './build-paths.ts';
 import {
   auditTracedFiles,
+  AuditError,
   auditNativePlacement,
   auditFunctionSize,
   bundled,
@@ -555,6 +556,10 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
   };
   if (app.native.length > 0) {
     auditNativePlacement(name, sources, dependencies, outputNameOf(input.projectDir, distDir));
+    if (input.kind !== 'app')
+      throw new AuditError(
+        `Native Node.js addons are unsupported in the ${input.kind} Function; automatic Container placement is limited to app Functions`,
+      );
     throw new NativeFunctionRequiredError(app.native);
   }
   auditNativeFunction({

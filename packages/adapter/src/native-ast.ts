@@ -45,6 +45,8 @@ function isAssignment(node: Node): node is AssignmentNode {
 }
 
 function assignmentBinds(node: Node, name: string, members: boolean): boolean {
+  if (node.type === 'UnaryExpression' && node.operator === 'delete')
+    return patternNames(node.argument, members).includes(name);
   if (!isAssignment(node)) return false;
   const target = node.type === 'AssignmentExpression' ? node.left : node.argument;
   return patternNames(target, members).includes(name);
@@ -68,9 +70,22 @@ interface NativeScope {
 }
 
 export interface NativeBindings {
+  readonly moduleSyntax: boolean;
   /** Undefined means global; null means a declared parameter or another opaque local binding. */
   lookup(node: Node, name: string): Node | null | undefined;
+  importSource(node: Node): string | undefined;
   unmodified(node: Node, name: string, members: boolean): boolean;
+}
+
+function importSources(program: Node): ReadonlyMap<Node, string> {
+  const sources = new Map<Node, string>();
+  if (program.type !== 'Program') return sources;
+  for (const declaration of program.body) {
+    if (declaration.type !== 'ImportDeclaration') continue;
+    for (const specifier of declaration.specifiers)
+      sources.set(specifier, String(declaration.source.value));
+  }
+  return sources;
 }
 
 function openedNativeScope(node: Node, parent: NativeScope | undefined): NativeScope | undefined {
@@ -165,30 +180,48 @@ function initializesBinding(
 
 /** Resolve a native operation's own scope; unrelated parameters must not hide a global load. */
 export function nativeBindings(program: Node): NativeBindings {
+  const sources = importSources(program);
   const scopes = new Map<Node, NativeScope | undefined>();
+  const unchanged = new Map<NativeScope | undefined, Map<string, boolean>>();
+  let moduleSyntax =
+    program.type === 'Program' &&
+    program.body.some((node) => node.type.startsWith('Import') || node.type.startsWith('Export'));
   const pending: { node: Node; parent: NativeScope | undefined }[] = [
     { node: program, parent: undefined },
   ];
   for (let visit = pending.pop(); visit !== undefined; visit = pending.pop()) {
+    if (visit.node.type === 'MetaProperty' && identifier(visit.node.meta, 'import'))
+      moduleSyntax = true;
     const scope = openedNativeScope(visit.node, visit.parent);
     scopes.set(visit.node, scope);
     for (const child of nodes(visit.node)) pending.push({ node: child, parent: scope });
   }
   recordPatterns(scopes);
   return {
+    moduleSyntax,
     lookup: (node, name) => nativeBinding(scopes.get(node), name),
+    importSource: (node) => sources.get(node),
     unmodified(node, name, members) {
       const binding = bindingScope(scopes.get(node), name);
+      const key = `${name}:${String(members)}`;
+      const cached = unchanged.get(binding)?.get(key);
+      if (cached !== undefined) return cached;
       const declaration = nativeBinding(scopes.get(node), name);
+      let result = true;
       for (const [candidate, scope] of scopes) {
         if (
           (assignmentBinds(candidate, name, members) ||
             initializesBinding(candidate, name, declaration)) &&
           bindingScope(scope, name) === binding
-        )
-          return false;
+        ) {
+          result = false;
+          break;
+        }
       }
-      return true;
+      const checks = unchanged.get(binding) ?? new Map<string, boolean>();
+      checks.set(key, result);
+      unchanged.set(binding, checks);
+      return result;
     },
   };
 }
@@ -196,6 +229,7 @@ export function nativeBindings(program: Node): NativeBindings {
 function realPathBinding(node: Node, bindings: NativeBindings): boolean {
   const binding = bindings.lookup(node, 'path');
   if (binding?.type !== 'VariableDeclarator' || binding.init === null) return false;
+  if (!identifier(binding.id, 'path')) return false;
   if (!['path', 'node:path'].includes(required(binding.init) ?? '')) return false;
   if (
     bindings.lookup(binding.init, 'require') !== undefined ||

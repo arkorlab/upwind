@@ -9,6 +9,7 @@ import { identifier, nativePath, type NativeBindings, required, stringOf } from 
 import { nativeLoaderBinary, UnreviewedNativeLoaderError } from './native-loaders.ts';
 import type { NativeLoad } from './native-loads.ts';
 import { ownedBinary } from './native-ownership.ts';
+import { processDlopen } from './native-process.ts';
 
 type Call = Extract<Node, { type: 'CallExpression' }>;
 const DLOPEN_ARGUMENTS = 2;
@@ -90,24 +91,12 @@ function isNativeLoader(value: string | undefined): value is 'bindings' | 'node-
   return ['bindings', 'node-gyp-build'].includes(value ?? '');
 }
 
-function isDlopenForm(call: Call): boolean {
-  if (call.callee.type !== 'MemberExpression' || call.callee.computed) return false;
-  return identifier(call.callee.object, 'process') && identifier(call.callee.property, 'dlopen');
-}
-
-function isDlopen(call: Call, context: NativeOperationContext): boolean {
-  if (!isDlopenForm(call) || context.bindings.lookup(call, 'process') !== undefined) return false;
-  if (!context.bindings.unmodified(call, 'process', true))
-    throw new AuditError('A modified process binding has no statically known native loader');
-  return true;
-}
-
 function namesNativeFile(value: string | undefined): boolean {
   return value !== undefined && value.endsWith('.node');
 }
 
 /** Keep non-loading AST nodes off the asynchronous filesystem proof path. */
-export function isNativeOperation(node: Node): boolean {
+export function isNativeOperation(node: Node, bindings: NativeBindings): boolean {
   switch (node.type) {
     case 'ImportDeclaration':
       return typeof node.source.value === 'string' && namesNativeFile(node.source.value);
@@ -116,13 +105,17 @@ export function isNativeOperation(node: Node): boolean {
     case 'CallExpression':
       if (namesNativeFile(required(node))) return true;
       if (node.callee.type === 'CallExpression') return isNativeLoader(required(node.callee));
-      return isDlopenForm(node);
+      return processDlopen(node.callee, bindings) !== undefined;
     default:
       return false;
   }
 }
 
 function assertDlopenArguments(call: Call, context: NativeOperationContext): void {
+  if (context.bindings.moduleSyntax || context.importer.endsWith('.mjs'))
+    throw new AuditError(
+      'ES module native loaders require explicitly proved module and directory objects; this operand form is unsupported',
+    );
   const moduleKnown =
     identifier(call.arguments[0], 'module') &&
     context.bindings.lookup(call, 'module') === undefined &&
@@ -137,7 +130,10 @@ function assertDlopenArguments(call: Call, context: NativeOperationContext): voi
 }
 
 function dlopenNative(call: Call, context: NativeOperationContext): Candidate | undefined {
-  if (!isDlopen(call, context)) return undefined;
+  const origin = processDlopen(call.callee, context.bindings);
+  if (origin === undefined) return undefined;
+  if (origin === 'ambiguous')
+    throw new AuditError('An ambiguous or modified process loader cannot be classified');
   if (context.guards.get(call.start) === 'plain') {
     if (context.nodeTarget)
       throw new AuditError('A guarded process.dlopen is unclassified on the Node target');

@@ -52,7 +52,7 @@ function canAnalyze(candidates: boolean, source: string, importer: string): bool
   return (
     candidates &&
     /\.(?:c|m)?js$/u.test(importer) &&
-    ['bindings', 'node-gyp-build', 'dlopen', '.node', 'worker_threads'].some((word) =>
+    ['bindings', 'node-gyp-build', 'process', 'dlopen', '.node', 'worker_threads'].some((word) =>
       source.includes(word),
     )
   );
@@ -78,7 +78,7 @@ async function collectEdits(
       if (child !== undefined) edits.push(child);
       continue;
     }
-    if (!isNativeOperation(node)) continue;
+    if (!isNativeOperation(node, context.bindings)) continue;
     const edit = await nativeOperationEdit(node, context, local);
     if (edit !== undefined) edits.push(edit);
   }

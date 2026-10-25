@@ -210,7 +210,7 @@ describe('retained native capability proof', () => {
       bundled(
         "const path=require('node:path'); process.dlopen=()=>42; process.dlopen(module,path.join(__dirname,'addon.node')); module.exports=42;\n",
       ),
-    ).rejects.toThrow('modified process binding');
+    ).rejects.toThrow('modified process loader');
   });
 
   it.each([
@@ -226,6 +226,7 @@ describe('retained native capability proof', () => {
     "module.exports = (module) => process.dlopen(module, './addon.node');\n",
     "module.exports = (__dirname) => process.dlopen(module, require('node:path').join(__dirname, 'addon.node'));\n",
     "const path = { join: () => './addon.node' }; process.dlopen(module, path.join(__dirname, 'addon.node')); module.exports = 42;\n",
+    "const {path}=require('node:path'); process.dlopen(module,path.join(__dirname,'addon.node')); module.exports=42;\n",
   ])('refuses to manufacture proof from shadowed module, dirname or path', async (source) => {
     await expect(bundled(source)).rejects.toBeInstanceOf(AuditError);
   });
