@@ -58,8 +58,8 @@ on:
           test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
         type: string
       shards:
-        description: 'How many pieces to cut `all` into (ignored for a named selection)'
-        default: '6'
+        description: 'How many pieces to cut `all` into, 1 to 64: 6 on a host, 64 on the runner when empty'
+        default: ''
         type: string
       only:
         description: 'Run just this shard of that many — for taking a slice again on its own'
@@ -76,12 +76,16 @@ env:
   # The Next.js a night's run tests against: the one a dispatch defaults to (`nextjsRef`), which moves
   # with it.
   NIGHTLY_NEXTJS_REF: 'v16.4.3'
-  NIGHTLY_SHARDS: '16'
+  # The pieces the runner's targets are cut into, a night's run and a dispatch that names none: as fine
+  # as the plan cuts. Both targets in 64 pieces each is 128 jobs, inside the 256 a matrix holds, and
+  # each piece about seventeen suites — a job a few minutes long beside its own setup.
+  RUNNER_SHARDS: '64'
 
 # Never two runs on a host at once: they would be deploying into the same projects. The runner's
-# targets share nothing, and a night's run is a group of its own.
+# targets share nothing, so each of their runs is a group of its own — one group for them all would
+# hold one run and one waiting, and cancel the one waiting when another was dispatched.
 concurrency:
-  group: deploy-tests-${{ github.event_name == 'schedule' && 'nightly' || inputs.target }}
+  group: ${{ github.event_name != 'schedule' && inputs.target == 'host' && 'deploy-tests-host' || format('deploy-tests-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
@@ -113,11 +117,11 @@ jobs:
         run: |
           set -euo pipefail
           # A night's run is both of the runner's targets over the whole manifest, cut as finely as
-          # `NIGHTLY_SHARDS` says; a dispatch is what it was asked for.
+          # `RUNNER_SHARDS` says; a dispatch is what it was asked for.
           if [ "$EVENT" = 'schedule' ]; then
             targets='cloudflare node'
             TESTS='all'
-            SHARDS="$NIGHTLY_SHARDS"
+            SHARDS="$RUNNER_SHARDS"
             ONLY=''
             CONCURRENCY=''
             nextjs="$NIGHTLY_NEXTJS_REF"
@@ -149,6 +153,14 @@ jobs:
           }
           # A named selection is one job: `-g` would cut *those* paths into pieces, and nine of ten
           # shards of three paths are empty jobs that install Next.js to run nothing.
+          # Unsaid, as many as the target allows: a host's projects bound it, nothing bounds the runner.
+          if [ -z "$SHARDS" ]; then
+            if [ "$targets" = 'host' ]; then
+              SHARDS=6
+            else
+              SHARDS="$RUNNER_SHARDS"
+            fi
+          fi
           if [ "$selection" = 'all' ]; then
             total="$(whole shards "$SHARDS")"
           else
