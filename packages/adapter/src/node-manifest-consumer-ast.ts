@@ -71,13 +71,24 @@ function childrenOf(parent: Node, scopes: readonly Scope[]): Visit[] {
   return children;
 }
 
+/** A class expression's self-name belongs to its own scope, including its heritage TDZ. */
+function namedClassScope(node: Node): Scope | undefined {
+  const name = node['id'];
+  if (node.type !== 'ClassExpression' || !identifier(name)) return undefined;
+  return {
+    declared: new Set([name.name]),
+    constants: new Set(),
+    bindings: new Map([[name.name, node]]),
+  };
+}
+
 export function visitTree(program: Node): Visit[] {
   const visits: Visit[] = [];
   const pending: Visit[] = [{ node: program, scopes: [] }];
   while (pending.length > 0) {
     const visit = pending.pop();
     if (visit === undefined) break;
-    const opened = scopeOpenedBy(visit.node);
+    const opened = namedClassScope(visit.node) ?? scopeOpenedBy(visit.node);
     const scopes = opened === undefined ? visit.scopes : [...visit.scopes, opened];
     if (opened !== undefined && visit.node.type === 'Program') registerImports(visit.node, opened);
     visits.push({ ...visit, scopes });

@@ -34,6 +34,57 @@ function chunk(body = CALLER): NodeManifestTurbopackSource {
 }
 
 describe('next Turbopack manifest factory projections', () => {
+  it('keeps a named class self-reference separate from the outer factory context', () => {
+    const original = source(
+      'module.exports=[1,(ctx)=>{const C=class ctx{method(){return ctx;}};ctx.v(C);}];',
+    );
+    const projected = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
+
+    expect(projected.exports).toStrictEqual({ kind: 'opaque' });
+    expect(projected.source.code).toContain('class ctx{method(){return ctx;}}');
+  });
+
+  it.each([
+    ['method', 'class ctx{method(){return ctx;}}'],
+    ['static field', 'class ctx{static value=ctx;}'],
+    ['computed key', 'class ctx{[ctx](){}}'],
+    ['heritage TDZ', 'class ctx extends ctx{}'],
+  ])(
+    'preserves the named class %s binding without treating it as runtime context',
+    (_name, code) => {
+      const original = source(`module.exports=[1,(ctx)=>{const C=${code};ctx.s(["C",()=>C]);}];`);
+      const projected = projectNodeManifestTurbopackFactory(original, 1);
+
+      expect(projected.exports).toStrictEqual({ kind: 'getters', names: ['C'] });
+      expect(projected.source.code).toContain(code);
+      expect(projected.imports).toStrictEqual([]);
+    },
+  );
+
+  it.each([
+    ['outside class', 'const C=class ctx{method(){return ctx;}};const escaped=ctx;'],
+    ['anonymous class', 'const C=class{method(){return ctx;}};'],
+    ['differently named class', 'const C=class Other{method(){return ctx;}};'],
+    ['anonymous heritage', 'const C=class extends ctx{};'],
+    ['different-name heritage', 'const C=class Other extends ctx{};'],
+  ])('keeps %s references to the actual outer context refused', (_name, body) => {
+    const original = source(`module.exports=[1,(ctx)=>{${body}ctx.v(C);}];`);
+
+    expect(() => projectNodeManifestTurbopackFactory(original, 1, 'dependencies')).toThrow(
+      'context alias or escape',
+    );
+  });
+
+  it('still audits outer context operations after the named class scope has ended', () => {
+    const original = source(
+      'module.exports=[1,(ctx)=>{const C=class ctx{method(){return ctx;}};ctx.r(dynamic);ctx.v(C);}];',
+    );
+
+    expect(() => projectNodeManifestTurbopackFactory(original, 1, 'dependencies')).toThrow(
+      'dynamic or invalid module id',
+    );
+  });
+
   it('binds factory offsets and local dependencies without evaluating or rewriting the original chunk', () => {
     const original = chunk();
     const projected = projectNodeManifestTurbopackFactory(original, 1);

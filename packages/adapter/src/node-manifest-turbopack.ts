@@ -110,19 +110,15 @@ function strictWrapper(value: Node, returned: boolean): Node | undefined {
   return last.type === type && isNode(last[key]) ? last[key] : undefined;
 }
 
-function registration(program: Node): { readonly table: Node; readonly inheritedStrict: boolean } {
+function registration(program: Node): Node {
   let statements = listOf(program, 'body');
-  let inheritedStrict = strictStatement(statements[0]);
-  if (inheritedStrict) statements = statements.slice(1);
+  if (strictStatement(statements[0])) statements = statements.slice(1);
   const only = statements[0];
   if (statements.length !== 1 || !isNode(only) || only.type !== 'ExpressionStatement')
     return refuseTurbopack('registration statements');
   let expression = only['expression'];
   if (!isNode(expression)) return refuseTurbopack('registration expression');
-  if (expression.type === 'CallExpression') {
-    expression = strictWrapper(expression, false);
-    inheritedStrict = expression !== undefined;
-  }
+  if (expression.type === 'CallExpression') expression = strictWrapper(expression, false);
   if (
     !isNode(expression) ||
     expression.type !== 'AssignmentExpression' ||
@@ -141,31 +137,26 @@ function registration(program: Node): { readonly table: Node; readonly inherited
     right.type !== 'ArrayExpression'
   )
     return refuseTurbopack('registration target');
-  return { table: right, inheritedStrict };
+  return right;
 }
 
-function factoryParameters(factory: Node): Node {
-  const body = functionBody(factory);
+function factoryParameters(factory: Node): void {
+  functionBody(factory);
   const params = listOf(factory, 'params');
   if (params.length !== 1 && params.length !== COMMONJS_PARAMETERS)
     refuseTurbopack('factory parameters');
   if (params.some((param) => !identifier(param))) refuseTurbopack('factory parameter binding');
   const names = params.filter(identifier).map((param) => param.name);
   if (new Set(names).size !== params.length) refuseTurbopack('duplicate factory parameter');
-  return body;
 }
 
 function appendNested(
   node: Node,
   result: NodeManifestTurbopackFactory[],
   known: Set<NodeManifestTurbopackModuleId>,
-  inheritedStrict: boolean,
 ): void {
   if (node.type !== 'ArrayExpression') refuseTurbopack('strict factory table');
-  const previous = result.length;
-  appendFactories(node, result, known, { allowNested: false, inheritedStrict });
-  if (!inheritedStrict && result.length === previous)
-    refuseTurbopack('nested table has no strict factory proof');
+  appendFactories(node, result, known, false);
 }
 
 function factoryShape(node: Node): string {
@@ -175,43 +166,29 @@ function factoryShape(node: Node): string {
   return `${node.type}:${typeof value}${length}`;
 }
 
-interface RegistrationContext {
-  readonly allowNested: boolean;
-  readonly inheritedStrict: boolean;
-}
-
-function nestedTable(
-  item: Node,
-  index: number,
-  context: RegistrationContext,
-): { readonly table: Node; readonly inheritedStrict: boolean } | undefined {
+function nestedTable(item: Node, index: number, allowNested: boolean): Node | undefined {
   const nested = index === 0 ? strictWrapper(item, true) : undefined;
   if (nested !== undefined) {
-    if (!context.allowNested) refuseTurbopack('recursive strict factory tables');
-    return { table: nested, inheritedStrict: true };
+    if (!allowNested) refuseTurbopack('recursive strict factory tables');
+    return nested;
   }
   if (item.type !== 'ArrayExpression') return undefined;
-  if (index !== 0 || !context.allowNested) refuseTurbopack('later or recursive factory table');
-  return { table: item, inheritedStrict: context.inheritedStrict };
-}
-
-function assertNestedStrict(body: Node, context: RegistrationContext): void {
-  if (!context.allowNested && !context.inheritedStrict && !strictStatement(listOf(body, 'body')[0]))
-    refuseTurbopack('nested factory lacks strict mode');
+  if (index !== 0 || !allowNested) refuseTurbopack('later or recursive factory table');
+  return item;
 }
 
 function appendFactories(
   table: Node,
   result: NodeManifestTurbopackFactory[],
   known: Set<NodeManifestTurbopackModuleId>,
-  context: RegistrationContext,
+  allowNested: boolean,
 ): void {
   let pending: NodeManifestTurbopackModuleId[] = [];
   for (const [index, item] of listOf(table, 'elements').entries()) {
     if (!isNode(item)) refuseTurbopack('factory table hole');
-    const nested = nestedTable(item, index, context);
+    const nested = nestedTable(item, index, allowNested);
     if (nested !== undefined) {
-      appendNested(nested.table, result, known, nested.inheritedStrict);
+      appendNested(nested, result, known);
       continue;
     }
     const id = turbopackModuleId(item);
@@ -223,8 +200,7 @@ function appendFactories(
     }
     if (pending.length === 0)
       refuseTurbopack(`unbound factory at item ${index} (${factoryShape(item)})`);
-    const body = factoryParameters(item);
-    assertNestedStrict(body, context);
+    factoryParameters(item);
     result.push({ ids: pending, start: item.start, end: item.end });
     pending = [];
   }
@@ -242,9 +218,9 @@ function checkedTurbopackProgram(source: NodeManifestTurbopackSource): Node {
 export function nodeManifestTurbopackFactories(
   source: NodeManifestTurbopackSource,
 ): readonly NodeManifestTurbopackFactory[] {
-  const { table, inheritedStrict } = registration(checkedTurbopackProgram(source));
+  const table = registration(checkedTurbopackProgram(source));
   const result: NodeManifestTurbopackFactory[] = [];
-  appendFactories(table, result, new Set(), { allowNested: true, inheritedStrict });
+  appendFactories(table, result, new Set(), true);
   if (result.length === 0) refuseTurbopack('empty factory table');
   return result;
 }

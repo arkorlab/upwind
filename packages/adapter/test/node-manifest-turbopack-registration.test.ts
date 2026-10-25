@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
+import { certifyNodeManifestAppPageFactory } from '../src/node-manifest-app-page-factory.ts';
 import {
   nodeManifestTurbopackFactories,
   projectNodeManifestTurbopackFactory,
@@ -11,7 +12,7 @@ function source(code: string) {
   return { code, sha256: createHash('sha256').update(code).digest('hex') };
 }
 
-describe('first strict subgroup in fixed Node factory registration', () => {
+describe('first grouping array in fixed Node factory registration', () => {
   it.each([
     ['global directive', '"use strict";module.exports=[[1,((ctx)=>{})],2,((ctx)=>{})];'],
     ['single quoted directive', "'use strict';module.exports=[[1,((ctx)=>{})],2,((ctx)=>{})];"],
@@ -39,6 +40,69 @@ describe('first strict subgroup in fixed Node factory registration', () => {
     );
   });
 
+  it.each([
+    ['no directive', 'module.exports=[[1,((ctx)=>{})],2,((ctx)=>{})];', [1, 2]],
+    ['empty first group', 'module.exports=[[],2,((ctx)=>{})];', [2]],
+    [
+      'partial own directives',
+      'module.exports=[[1,((ctx)=>{"use strict";}),2,((ctx)=>{})],3,((ctx)=>{})];',
+      [1, 2, 3],
+    ],
+    ['own escaped lookalike', String.raw`module.exports=[[1,((ctx)=>{"use\x20strict";})]];`, [1]],
+    ['own parenthesized lookalike', 'module.exports=[[1,((ctx)=>{("use strict");})]];', [1]],
+  ] as const)(
+    'accepts ordinary grouping with %s without asserting JS strictness',
+    (_name, code, expected) => {
+      expect(
+        nodeManifestTurbopackFactories(source(code)).flatMap((factory) => factory.ids),
+      ).toStrictEqual(expected);
+    },
+  );
+
+  it('gives a flat and grouped ordinary callback identical inspection semantics without a new authority flag', () => {
+    const body = 'ctx.v(42);';
+    const flat = projectNodeManifestTurbopackFactory(
+      source(`module.exports=[1,((ctx)=>{${body}})];`),
+      1,
+      'dependencies',
+    );
+    const grouped = projectNodeManifestTurbopackFactory(
+      source(`module.exports=[[1,((ctx)=>{${body}})]];`),
+      1,
+      'dependencies',
+    );
+    const view = (projection: typeof flat) => {
+      return {
+        moduleId: projection.moduleId,
+        mode: projection.mode,
+        source: projection.source,
+        imports: projection.imports,
+        exports: projection.exports,
+        cacheInitializers: projection.cacheInitializers,
+        boundRuntimeInputs: projection.boundRuntimeInputs,
+        requiresReviewedRuntime: projection.requiresReviewedRuntime,
+      };
+    };
+
+    expect(view(grouped)).toStrictEqual(view(flat));
+    expect('inheritedStrict' in grouped).toBe(false);
+  });
+
+  it('does not grant an AppPage factory certificate to a non-strict grouped callback', async () => {
+    const original = source(
+      'module.exports=[[1,((ctx)=>{ctx.s(["createAppPageEntrypoint",()=>createAppPageEntrypoint]);function createAppPageEntrypoint(){}})]];',
+    );
+    const projection = projectNodeManifestTurbopackFactory(original, 1);
+
+    await expect(
+      certifyNodeManifestAppPageFactory({
+        file: '/not-read-without-strict-proof.js',
+        projection,
+        imports: [],
+      }),
+    ).rejects.toThrow('factory strictness');
+  });
+
   it('retains original offsets and selected-ID projection without granting a manifest exemption', () => {
     const original = source(
       '"use strict";module.exports=[[1,((ctx)=>{ctx.v(42);})],"1",((ctx)=>{})];',
@@ -56,12 +120,6 @@ describe('first strict subgroup in fixed Node factory registration', () => {
   });
 
   it.each([
-    ['no inherited or own strictness', 'module.exports=[[1,((ctx)=>{})],2,((ctx)=>{})];'],
-    ['empty subgroup without strictness', 'module.exports=[[],2,((ctx)=>{})];'],
-    [
-      'one sloppy nested callback',
-      'module.exports=[[1,((ctx)=>{"use strict";}),2,((ctx)=>{})],3,((ctx)=>{})];',
-    ],
     ['later array', '"use strict";module.exports=[1,((ctx)=>{}),[2,((ctx)=>{})]];'],
     ['recursive direct array', '"use strict";module.exports=[[[1,((ctx)=>{})]],2,((ctx)=>{})];'],
     [
@@ -78,8 +136,6 @@ describe('first strict subgroup in fixed Node factory registration', () => {
     ['template lookalike', '`use strict`;module.exports=[[1,((ctx)=>{})]];'],
     ['parenthesized lookalike', '("use strict");module.exports=[[1,((ctx)=>{})]];'],
     ['escaped lookalike', String.raw`"use\x20strict";module.exports=[[1,((ctx)=>{})]];`],
-    ['own escaped lookalike', String.raw`module.exports=[[1,((ctx)=>{"use\x20strict";})]];`],
-    ['own parenthesized lookalike', 'module.exports=[[1,((ctx)=>{("use strict");})]];'],
     [
       'strict wrapper side effects',
       '(()=>{"use strict";run();module.exports=[[1,((ctx)=>{})]];})();',

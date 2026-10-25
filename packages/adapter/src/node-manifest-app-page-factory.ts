@@ -91,10 +91,13 @@ function constructorIdentity(file: string, sha256: string): { readonly root: str
   return undefined;
 }
 function strict(statement: unknown): boolean {
+  if (!isNode(statement) || statement.type !== 'ExpressionStatement') return false;
+  const expression = statement['expression'];
   return (
-    isNode(statement) &&
-    statement.type === 'ExpressionStatement' &&
-    stringOf(statement['expression']) === 'use strict'
+    isNode(expression) &&
+    expression.type === 'Literal' &&
+    expression.start === statement.start &&
+    (expression['raw'] === '"use strict"' || expression['raw'] === "'use strict'")
   );
 }
 function assertStrict(projection: NodeManifestTurbopackProjection): void {

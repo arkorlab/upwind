@@ -130,6 +130,21 @@ describe('fixed AppPage factory authority in an original Turbopack graph', () =>
     expect(isCertifiedNodeManifestAppPageFactory(serialized, proof)).toBe(false);
   });
 
+  it.each(['`use strict`;', '("use strict");', String.raw`"use\x20strict";`])(
+    'does not certify the strict-mode lookalike %s',
+    async (directive) => {
+      const own = await fixture(directory);
+      const code = own.code.replace('"use strict";', () => directive);
+      await writeFile(own.chunk, code);
+      const projection = projectNodeManifestTurbopackFactory(source(code), 2);
+
+      expect(code).not.toBe(own.code);
+      await expect(certifyNodeManifestAppPageFactory({ ...own.input, projection })).rejects.toThrow(
+        'factory strictness',
+      );
+    },
+  );
+
   it('grants only the existing sealed six-field route use without impersonating a published physical source', async () => {
     const own = await fixture(directory);
     const proof = await certifyNodeManifestAppPageFactory(own.input);
