@@ -70,9 +70,9 @@ function document(input: PackHeaderFields) {
   return output;
 }
 
-type Change = (input: PackHeaderFields) => PackHeaderFields;
-
 describe('a static Pages pack carries only the build output sharing proof', () => {
+  type Change = (input: PackHeaderFields) => PackHeaderFields;
+
   it('projects the explicit primary HTML proof without a storage read', () => {
     expect(staticPagePrivacyOf(fields(), DIGESTS)).toBe(1);
   });

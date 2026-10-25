@@ -15,7 +15,7 @@ import { createAdapter } from '@stayingupwind/adapter';
  * Function reads one it is asked for from the prefetch Worker (`ARKOR_PREFETCH`).
  */
 // `NEXT_ADAPTER_PATH` names a module whose default export is the adapter.
-// eslint-disable-next-line import-x/no-default-export, unicorn/no-top-level-side-effects
+// eslint-disable-next-line import-x/no-default-export
 export default createAdapter({
   cacheHostModule: fileURLToPath(import.meta.resolve('./host.ts')),
   unshippedOutputs: 'prefetch-segments',
