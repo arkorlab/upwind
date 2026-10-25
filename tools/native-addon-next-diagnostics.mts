@@ -43,6 +43,10 @@ function safeName(name: string): boolean {
   );
 }
 
+function allowedEntry(prefix: string, name: string): boolean {
+  return safeName(name) && (prefix !== '' || name === 'pages' || name === 'chunks');
+}
+
 function javascriptText(bytes: Buffer): boolean {
   try {
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -82,7 +86,8 @@ async function copyJavaScript(
   relative: string,
   state: Collection,
 ): Promise<void> {
-  if (!name.endsWith('.js')) return;
+  // Retain compiled code, never generated manifest data (including build-time encryption metadata).
+  if (!name.endsWith('.js') || name.endsWith('-manifest.js')) return;
   await using file = await open(descriptorPath(directory, name), FILE_FLAGS);
   const bytes = await boundedBytes(file, MAX_TOTAL_BYTES - state.summary.bytes);
   if (bytes === undefined) {
@@ -113,7 +118,7 @@ async function collect(
       break;
     }
     state.entries += 1;
-    if (!safeName(entry.name)) continue;
+    if (!allowedEntry(prefix, entry.name)) continue;
     const relative = path.posix.join(prefix, entry.name);
     if (entry.isDirectory()) {
       if (depth >= MAX_DEPTH) {

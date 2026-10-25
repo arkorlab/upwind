@@ -49,31 +49,58 @@ describe.runIf(process.platform === 'linux')('fixed public native fixture diagno
     for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
   });
 
-  it('copies exact regular JavaScript bytes and excludes links, maps, binaries and other roots', async () => {
+  it('copies only compiled pages and chunks without manifests, root data, links or binary payloads', async () => {
     const own = await fixture();
     const code = 'exports.publicFixture=42;\n';
     await mkdir(path.join(own.server, 'chunks'));
+    await mkdir(path.join(own.server, 'pages/blog'), { recursive: true });
+    await mkdir(path.join(own.server, 'app'));
     await writeFile(path.join(own.server, 'chunks/ordinary.js'), code);
-    await writeFile(path.join(own.server, 'chunk.js.map'), '{"source":"not retained"}');
-    await writeFile(path.join(own.server, 'addon.node'), 'not retained');
-    await writeFile(path.join(own.server, 'archive.tar.gz'), 'not retained');
-    await writeFile(path.join(own.server, '.env'), 'not retained');
-    await writeFile(path.join(own.server, 'binary.js'), Buffer.from([0x7f, 0x45, 0]));
+    await writeFile(path.join(own.server, 'pages/blog/[slug].js'), code);
+    await writeFile(path.join(own.server, 'root.js'), 'not retained');
+    await writeFile(path.join(own.server, 'app/ordinary.js'), 'not retained');
+    for (const relative of [
+      'server-reference-manifest.js',
+      'chunks/server-reference-manifest.js',
+      'pages/pages-manifest.js',
+      'pages/blog/server-reference-manifest.js',
+    ])
+      await writeFile(path.join(own.server, relative), 'exports.key="inert-build-metadata";');
+    await writeFile(path.join(own.server, 'chunks/chunk.js.map'), '{"source":"not retained"}');
+    await writeFile(path.join(own.server, 'chunks/addon.node'), 'not retained');
+    await writeFile(path.join(own.server, 'chunks/archive.tar.gz'), 'not retained');
+    await writeFile(path.join(own.server, 'chunks/.env'), 'not retained');
+    await writeFile(path.join(own.server, 'chunks/binary.js'), Buffer.from([0x7f, 0x45, 0]));
     await writeFile(
-      path.join(own.server, 'inline-map.js'),
+      path.join(own.server, 'chunks/inline-map.js'),
       '//# sourceMappingURL=data:application/json,{}',
     );
     await writeFile(path.join(own.fixture, 'outside.js'), 'not retained');
-    await symlink(path.join(own.fixture, 'outside.js'), path.join(own.server, 'linked.js'));
-    await symlink(own.fixture, path.join(own.server, 'linked-directory'), 'dir');
-    await link(path.join(own.fixture, 'outside.js'), path.join(own.server, 'hard-linked.js'));
+    await symlink(path.join(own.fixture, 'outside.js'), path.join(own.server, 'chunks/linked.js'));
+    await symlink(own.fixture, path.join(own.server, 'chunks/linked-directory'), 'dir');
+    await link(
+      path.join(own.fixture, 'outside.js'),
+      path.join(own.server, 'chunks/hard-linked.js'),
+    );
 
     const result = await retainNativeNextDiagnostics(own.fixture, own.root);
+    const outputNames = await readdir(own.output);
 
-    expect(result.files).toBe(1);
-    expect(result.bytes).toBe(Buffer.byteLength(code));
-    await expect(readdir(own.output)).resolves.toStrictEqual(['chunks']);
+    expect(result.files).toBe(2);
+    expect(result.bytes).toBe(Buffer.byteLength(code) * 2);
+    expect(outputNames.toSorted((left, right) => left.localeCompare(right))).toStrictEqual([
+      'chunks',
+      'pages',
+    ]);
     await expect(readFile(path.join(own.output, 'chunks/ordinary.js'), 'utf8')).resolves.toBe(code);
+    await expect(readFile(path.join(own.output, 'pages/blog/[slug].js'), 'utf8')).resolves.toBe(
+      code,
+    );
+    await expect(readdir(path.join(own.output, 'chunks'))).resolves.toStrictEqual(['ordinary.js']);
+    await expect(readdir(path.join(own.output, 'pages'))).resolves.toStrictEqual(['blog']);
+    await expect(readdir(path.join(own.output, 'pages/blog'))).resolves.toStrictEqual([
+      '[slug].js',
+    ]);
   });
 
   it('never follows a symlinked server root', async () => {
@@ -104,7 +131,8 @@ describe.runIf(process.platform === 'linux')('fixed public native fixture diagno
     const own = await fixture();
     const outside = path.join(own.root, 'outside');
     await mkdir(outside);
-    await writeFile(path.join(own.server, 'ordinary.js'), 'exports.publicFixture=42;');
+    await mkdir(path.join(own.server, 'chunks'));
+    await writeFile(path.join(own.server, 'chunks/ordinary.js'), 'exports.publicFixture=42;');
     await symlink(outside, own.output, 'dir');
 
     await expect(retainNativeNextDiagnostics(own.fixture, own.root)).rejects.toThrow('EEXIST');
@@ -113,28 +141,32 @@ describe.runIf(process.platform === 'linux')('fixed public native fixture diagno
 
   it('bounds the retained file count', async () => {
     const own = await fixture();
+    const chunks = path.join(own.server, 'chunks');
+    await mkdir(chunks);
     for (let index = 0; index <= COUNT_LIMIT; index += 1)
-      await writeFile(path.join(own.server, `ordinary-${index}.js`), 'exports.publicFixture=42;');
+      await writeFile(path.join(chunks, `ordinary-${index}.js`), 'exports.publicFixture=42;');
 
     const result = await retainNativeNextDiagnostics(own.fixture, own.root);
 
     expect(result.files).toBe(COUNT_LIMIT);
     expect(result.truncated).toBe(true);
-    await expect(readdir(own.output)).resolves.toHaveLength(COUNT_LIMIT);
+    await expect(readdir(path.join(own.output, 'chunks'))).resolves.toHaveLength(COUNT_LIMIT);
   });
 
   it('refuses an oversized source before allocating or reading its bytes', async () => {
     const own = await fixture();
-    const oversized = path.join(own.server, 'oversized.js');
+    const chunks = path.join(own.server, 'chunks');
+    await mkdir(chunks);
+    const oversized = path.join(chunks, 'oversized.js');
     await writeFile(oversized, '');
     await truncate(oversized, FILE_LIMIT + 1);
-    await writeFile(path.join(own.server, 'ordinary.js'), 'exports.publicFixture=42;');
+    await writeFile(path.join(chunks, 'ordinary.js'), 'exports.publicFixture=42;');
 
     const result = await retainNativeNextDiagnostics(own.fixture, own.root);
 
     expect(result.files).toBe(1);
     expect(result.truncated).toBe(true);
-    await expect(readdir(own.output)).resolves.toStrictEqual(['ordinary.js']);
+    await expect(readdir(path.join(own.output, 'chunks'))).resolves.toStrictEqual(['ordinary.js']);
   });
 
   it('refuses a source outside the control-owned temporary fixture shape', async () => {
