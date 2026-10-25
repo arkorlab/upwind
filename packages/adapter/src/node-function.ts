@@ -388,7 +388,9 @@ export async function buildNodeFunction(
   await addNodeRuntime(files, work);
   await addNodeServer(files, work);
   await files.assertAppEntryNormalization(proof.normalization);
-  const archive = nodeArtifactArchive([...files.files.values()]);
+  const archiveFiles = [...files.files.values()];
+  const archive = nodeArtifactArchive(archiveFiles);
+  const bytes = archiveFiles.reduce((total, file) => total + file.bytes.byteLength, 0);
   const artifact = await input.blobStore.put(archive, 'application/gzip');
   return {
     spec: { runtime: 'node-container', artifact, entrypoint: 'upwind/server.mjs', abi },
@@ -396,7 +398,7 @@ export async function buildNodeFunction(
     inputs: physical.files.map((file) => ({ file: file.name, bytes: file.bytes.byteLength })),
     dependencies: {
       ...proof.dependencies,
-      size: { bytes: archive.byteLength, gzipBytes: archive.byteLength },
+      size: { bytes, gzipBytes: archive.byteLength },
     },
   };
 }
