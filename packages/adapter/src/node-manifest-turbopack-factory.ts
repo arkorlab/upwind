@@ -3,8 +3,7 @@ import { createHash } from 'node:crypto';
 import { jsLiteral } from './codegen.ts';
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
-import { assertGlobalContextRead, normalizedGlobalInspection } from './node-closure-globals.ts';
-import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
+import { assertGlobalContextRead } from './node-closure-globals.ts';
 import {
   declaration,
   identifier,
@@ -14,6 +13,7 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import { nodeManifestInspectionRefusal } from './node-manifest-inspection.ts';
 import {
   TurbopackAsyncProjection,
   nodeManifestAsyncMetadata,
@@ -455,7 +455,6 @@ class FactoryProjection {
       this.edit(clear.assignment, 'void 0');
       for (const member of clear.members) this.clearMembers.add(member);
       for (const node of clear.references) this.allowedContext.add(node);
-      this.normalizedGlobal = true;
     }
     this.async = new TurbopackAsyncProjection({
       body: this.body,
@@ -496,13 +495,11 @@ class FactoryProjection {
       end = edit.start;
     }
     code += `\n${this.append.join('\n')}`;
-    if (this.normalizedGlobal) {
-      const failure = dynamicNodeClosureRefusal(
-        'upwind-turbopack-global-inspection.js',
-        normalizedGlobalInspection(code, { nextPatchFlag: this.clearMembers.size > 0 }),
-      );
-      if (failure !== undefined) refuse(failure);
-    }
+    const failure = nodeManifestInspectionRefusal(code, {
+      normalizedGlobal: this.normalizedGlobal,
+      clearScaffold: this.clearMembers.size > 0,
+    });
+    if (failure !== undefined) refuse(failure);
     const sha256 = createHash('sha256').update(code).digest('hex');
     return {
       mode: this.mode,
