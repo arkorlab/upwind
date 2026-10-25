@@ -9,11 +9,13 @@ import { AuditError } from './dependencies.ts';
 import type { BuildFunctionInput } from './function.ts';
 import type { NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
+import { nodePackageScope } from './node-package-scope.ts';
 import {
   nodePackageMain,
   nodePackageName,
   preserveNodePackageSubpaths,
 } from './node-package-subpaths.ts';
+import { nodePhysicalLayout, type NodePhysicalLayout } from './node-physical-layout.ts';
 import { originalNodeSpecifiers } from './node-source-specifiers.ts';
 
 const MAX_FILE_BYTES = 134_217_728;
@@ -33,12 +35,7 @@ export interface NodePhysicalFiles {
 }
 
 type NameOf = NodePhysicalFiles['nameOf'];
-interface PhysicalLayout {
-  readonly root: string;
-  readonly distDir: string;
-  readonly cwd: string;
-  readonly nameOf: NameOf;
-}
+type PhysicalLayout = NodePhysicalLayout;
 interface PhysicalSources {
   readonly files: Map<string, Uint8Array>;
   readonly executable: Set<string>;
@@ -69,24 +66,6 @@ function assertRelativeTopology(importer: string, target: string, nameOf: NameOf
       'Native Function relocation changes a relative module or native binary lookup; refusing publication',
     );
   }
-}
-
-function physicalLayout(input: BuildFunctionInput): PhysicalLayout {
-  const root = path.resolve(input.repoRoot ?? input.projectDir);
-  const project = beneath(root, path.resolve(input.projectDir));
-  if (project === undefined)
-    throw new AuditError('Node project directory escapes its tracing root');
-  const cwd = path.posix.join('project', project.split(path.sep).join('/'));
-  const nameOf: NameOf = (file) => {
-    const relative = beneath(root, path.resolve(file));
-    if (relative !== undefined)
-      return path.posix.join('project', relative.split(path.sep).join('/'));
-    const built = beneath(input.patch.distDir, path.resolve(file));
-    if (built !== undefined)
-      return path.posix.join(cwd, '.upwind-build', built.split(path.sep).join('/'));
-    throw new AuditError('Node artifact input escapes both its tracing root and build output');
-  };
-  return { root, distDir: input.patch.distDir, cwd, nameOf };
 }
 
 async function projectInstrumentation(input: BuildFunctionInput): Promise<string | undefined> {
@@ -160,7 +139,10 @@ function assertSpecifierTopology(file: string, specifier: string, layout: Physic
   const target = path.resolve(path.dirname(file), specifier);
   // Optional missing modules outside the closed trace retain their existing audit/fallback.
   // Known roots, including an extensionless relative import, must preserve their topology.
-  if (beneath(layout.root, target) !== undefined || beneath(layout.distDir, target) !== undefined)
+  if (
+    beneath(layout.root, target) !== undefined ||
+    (layout.distDir !== undefined && beneath(layout.distDir, target) !== undefined)
+  )
     assertRelativeTopology(file, target, layout.nameOf);
 }
 
@@ -220,6 +202,15 @@ async function packageAliases(
     throw new AuditError('Absolute Node module imports cannot be relocated into an artifact');
   const pkg = nodePackageName(specifier);
   if (pkg === undefined) return false;
+  const scope = await nodePackageScope(file, context);
+  if (
+    scope?.metadata['name'] === pkg &&
+    scope.metadata['exports'] !== undefined &&
+    scope.metadata['exports'] !== null
+  ) {
+    await packageSubpathAliases(path.dirname(scope.file), specifier, pkg, context);
+    return true;
+  }
   const require = createRequire(file);
   // Search paths are independent of exports conditions. Import-only packages may forbid both
   // require(pkg) and require(pkg/package.json), but still need their original physical alias.
@@ -252,33 +243,6 @@ async function packageSubpathAliases(
 
 function packageRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-async function packageScope(
-  importer: string,
-  context: PackageAliasContext,
-): Promise<{ readonly file: string; readonly metadata: Record<string, unknown> }> {
-  for (
-    let dir = path.dirname(importer);
-    beneath(context.layout.root, dir) !== undefined && path.basename(dir) !== 'node_modules';
-    dir = path.dirname(dir)
-  ) {
-    const file = path.join(dir, PACKAGE_MANIFEST);
-    try {
-      await stat(file);
-      const bytes = context.sources.files.get(context.layout.nameOf(file));
-      if (bytes === undefined)
-        throw new AuditError('Node package import scope metadata is not closed');
-      const metadata: unknown = JSON.parse(new TextDecoder().decode(bytes));
-      if (!packageRecord(metadata))
-        throw new AuditError('Invalid Node package import scope metadata');
-      return { file, metadata };
-    } catch (error) {
-      if (!isMissingFile(error)) throw error;
-    }
-    if (dir === context.layout.root) break;
-  }
-  throw new AuditError('Node package import has no closed package scope');
 }
 
 function packageImportTarget(metadata: Record<string, unknown>, specifier: string): string {
@@ -339,7 +303,8 @@ async function packageImports(
   context: PackageAliasContext,
 ): Promise<void> {
   if (!specifier.startsWith('#')) return;
-  const scope = await packageScope(importer, context);
+  const scope = await nodePackageScope(importer, context);
+  if (scope === undefined) throw new AuditError('Node package import has no closed package scope');
   const target = packageImportTarget(scope.metadata, specifier);
   if (target.startsWith('./')) return relativePackageImport(scope.file, target, context);
   if (isBuiltin(target)) {
@@ -474,7 +439,7 @@ async function recordTraceAlias(
   links: Map<string, string>,
 ): Promise<void> {
   if (path.isAbsolute(logical) || logical.includes('\\')) return;
-  const alias = path.resolve(layout.root, logical);
+  const alias = path.resolve(layout.traceRoot, logical);
   try {
     const target = await realpath(alias);
     if (target !== path.resolve(alias) && target === (await realpath(physical)))
@@ -521,7 +486,7 @@ export async function nodePhysicalFiles(
   input: BuildFunctionInput,
   native: readonly NativeLoad[],
 ): Promise<NodePhysicalFiles> {
-  const layout = physicalLayout(input);
+  const layout = await nodePhysicalLayout(input);
   for (const load of native)
     assertRelativeTopology(
       await realpath(load.importer),

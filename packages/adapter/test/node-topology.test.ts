@@ -57,6 +57,124 @@ describe('native physical module relocation', () => {
     expect(physical.files.map((file) => file.name)).toContain('project/app/entry.cjs');
   });
 
+  it.each(['repository', 'project', 'both'] as const)(
+    'preserves the canonical project namespace through a symlinked %s root',
+    async (mode) => {
+      const entry = path.join(project, 'entry.cjs');
+      await writeFile(entry, 'module.exports=42;');
+      const repositoryAlias = path.join(directory, 'repository-link');
+      const projectAlias = path.join(directory, 'project-link');
+      await symlink(repository, repositoryAlias);
+      await symlink(project, projectAlias);
+      const build = input(entry, [entry]);
+      const projectDir = mode === 'both' ? path.join(repositoryAlias, 'app') : projectAlias;
+      const physical = await nodePhysicalFiles(
+        {
+          ...build,
+          repoRoot: mode === 'project' ? repository : repositoryAlias,
+          projectDir: mode === 'repository' ? project : projectDir,
+        },
+        [],
+      );
+
+      expect(physical.cwd).toBe('project/app');
+      expect(physical.files.map((file) => file.name)).toContain('project/app/entry.cjs');
+    },
+  );
+
+  it('keeps a canonical external distDir in its reserved namespace through a symlink', async () => {
+    const entry = path.join(output, 'server/entry.cjs');
+    const chunk = path.join(output, 'server/chunk.cjs');
+    await writeFile(entry, "module.exports=require('./chunk.cjs');");
+    await writeFile(chunk, 'module.exports=42;');
+    const alias = path.join(directory, 'output-link');
+    await symlink(output, alias);
+    const build = input(entry, [entry, chunk]);
+    const physical = await nodePhysicalFiles(
+      { ...build, patch: { ...build.patch, distDir: alias } },
+      [],
+    );
+
+    expect(physical.files.map((file) => file.name)).toStrictEqual(
+      expect.arrayContaining([
+        'project/app/.upwind-build/server/entry.cjs',
+        'project/app/.upwind-build/server/chunk.cjs',
+      ]),
+    );
+  });
+
+  it('preserves root-contained files when an unused distDir does not exist', async () => {
+    const entry = path.join(project, 'entry.cjs');
+    await writeFile(entry, 'module.exports=42;');
+    const build = input(entry, [entry]);
+    const physical = await nodePhysicalFiles(
+      {
+        ...build,
+        patch: { ...build.patch, distDir: path.join(directory, 'missing-output') },
+      },
+      [],
+    );
+
+    expect(physical.files.map((file) => file.name)).toContain('project/app/entry.cjs');
+  });
+
+  it('grants no outside-root namespace from a nonexistent distDir', async () => {
+    const entry = path.join(output, 'server/entry.cjs');
+    await writeFile(entry, 'module.exports=42;');
+    const build = input(entry, [entry]);
+
+    await expect(
+      nodePhysicalFiles(
+        {
+          ...build,
+          patch: { ...build.patch, distDir: path.join(directory, 'missing-output') },
+        },
+        [],
+      ),
+    ).rejects.toThrow('escapes both its tracing root and build output');
+  });
+
+  it('does not ignore a non-ENOENT distDir error', async () => {
+    const entry = path.join(project, 'entry.cjs');
+    await writeFile(entry, 'module.exports=42;');
+    const build = input(entry, [entry]);
+
+    await expect(
+      nodePhysicalFiles(
+        {
+          ...build,
+          patch: { ...build.patch, distDir: path.join(entry, 'not-a-directory') },
+        },
+        [],
+      ),
+    ).rejects.toMatchObject({ code: 'ENOTDIR' });
+  });
+
+  it('rejects a logical project root whose symlink leaves the canonical repository', async () => {
+    const outside = path.join(directory, 'outside');
+    await mkdir(outside);
+    const entry = path.join(outside, 'entry.cjs');
+    await writeFile(entry, 'module.exports=42;');
+    const alias = path.join(repository, 'outside-link');
+    await symlink(outside, alias);
+    const build = input(entry, [entry]);
+
+    await expect(nodePhysicalFiles({ ...build, projectDir: alias }, [])).rejects.toThrow(
+      'project directory escapes its tracing root',
+    );
+  });
+
+  it('rejects a source symlink outside both canonical root namespaces', async () => {
+    const outside = path.join(directory, 'outside.cjs');
+    await writeFile(outside, 'module.exports=42;');
+    const entry = path.join(project, 'entry.cjs');
+    await symlink(outside, entry);
+
+    await expect(nodePhysicalFiles(input(entry, [entry]), [])).rejects.toThrow(
+      'escapes both its tracing root and build output',
+    );
+  });
+
   it('normalizes a relocated manifest root using the real Node cwd and path.join semantics', async () => {
     const entry = path.join(output, 'server/entry.cjs');
     await writeFile(entry, 'exports.routeModule={};');
