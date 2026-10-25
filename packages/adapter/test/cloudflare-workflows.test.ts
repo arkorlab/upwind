@@ -1,7 +1,9 @@
 /* eslint-disable unicorn/no-keyword-prefix -- Matches the host registration className field. */
+import { execFile as execFileCallback } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { CLOUDFLARE_WORKFLOW_EXPORT } from '@stayingupwind/core/bundle';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -14,6 +16,7 @@ import {
 } from '../src/cloudflare-workflows.ts';
 
 const folders: string[] = [];
+const execFile = promisify(execFileCallback);
 
 async function fixture() {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), 'upwind-workflows-'));
@@ -34,6 +37,38 @@ describe('framework-independent Cloudflare Workflow artifacts', () => {
     await Promise.all(
       folders.splice(0).map((folder) => rm(folder, { recursive: true, force: true })),
     );
+  });
+
+  it('builds through the public adapter entry without loading Next.js', async () => {
+    const input = await fixture();
+    const { stdout } = await execFile(process.execPath, [
+      '--input-type=module',
+      '--eval',
+      `
+        import { registerHooks } from 'node:module';
+        registerHooks({
+          resolve(specifier, context, nextResolve) {
+            if (specifier === 'next' || specifier.startsWith('next/')) {
+              throw new Error('Native Workflow builds must not load Next.js');
+            }
+            return nextResolve(specifier, context);
+          },
+        });
+        const { buildCloudflareWorkflowFunctions } = await import(process.argv[1]);
+        const built = await buildCloudflareWorkflowFunctions({
+          projectDir: process.argv[2],
+          outDir: process.argv[3],
+          declarations: JSON.parse(process.argv[4]),
+        });
+        console.log(Object.keys(built.functions).join(','));
+      `,
+      new URL('../src/index.ts', import.meta.url).href,
+      input.projectDir,
+      input.outDir,
+      JSON.stringify(input.declarations),
+    ]);
+
+    expect(stdout.trim()).toBe('JOBS');
   });
 
   it('bundles the native class independently from application code and packages its maps and dependency report', async () => {

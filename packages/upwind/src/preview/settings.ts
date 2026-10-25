@@ -1,3 +1,5 @@
+import type { LocalStorage } from '@stayingupwind/local';
+
 import { adapterReader } from '../deploy/config.ts';
 
 /**
@@ -26,6 +28,8 @@ export interface PreviewSettings {
    * binds, by name, and images it transforms. The cron jobs it fires are the build's to say.
    */
   readonly storage: readonly string[];
+  /** Explicit customer stores shared by Functions and native Workflow classes in a preview. */
+  readonly localStorage: LocalStorage;
   readonly images: boolean;
 }
 
@@ -50,6 +54,17 @@ export async function readPreviewSettings(projectDir: string): Promise<PreviewSe
     hostnames: deploy.hostnames ?? [],
     checks: deploy.checks ?? DEFAULT_CHECKS,
     storage: Object.keys(deploy.storage ?? {}),
+    localStorage: {
+      kv: Object.entries(deploy.storage ?? {})
+        .filter(([, kind]) => kind === 'kv')
+        .map(([name]) => name),
+      r2: Object.entries(deploy.storage ?? {})
+        .filter(([, kind]) => kind === 'r2')
+        .map(([name]) => name),
+      d1: Object.entries(deploy.storage ?? {})
+        .filter(([, kind]) => kind === 'd1')
+        .map(([name]) => name),
+    },
     images: deploy.images ?? false,
   };
 }

@@ -6,7 +6,6 @@ import {
   PRIMARY_FUNCTION,
 } from '@stayingupwind/core/bundle';
 import type { AdapterOutput } from 'next';
-import { INSTRUMENTATION_HOOK_FILENAME } from 'next/dist/lib/constants.js';
 
 import type { BlobStore } from './blobs.ts';
 import type { BuildContext, RouteCode, ShippedBlob } from './collect.ts';
@@ -75,9 +74,8 @@ export interface HookParts {
 
 /** The same file gate as the instrumentation patch: absent hooks explain no Function's refusal. */
 function hookEntryTraces(hook: HookParts): NativeAddonEntryTrace[] {
-  return hook.file === undefined
-    ? []
-    : [{ id: INSTRUMENTATION_HOOK_FILENAME, assets: hook.assets }];
+  // A diagnostic label for the public instrumentation.js|ts convention, independent of Next imports.
+  return hook.file === undefined ? [] : [{ id: 'instrumentation', assets: hook.assets }];
 }
 
 /** Everything a Function of this build is built from, whichever routes it holds. */
