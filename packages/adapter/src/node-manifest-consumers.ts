@@ -266,11 +266,7 @@ class Consumer {
       return;
     }
     const getter = getterExport(value, this.byNode);
-    if (
-      getter !== undefined &&
-      getter.field === field &&
-      this.getterMap(getter.call, visit.scopes)
-    ) {
+    if (getter?.field === field && this.getterMap(getter.call, visit.scopes)) {
       this.addExport(field);
       return;
     }

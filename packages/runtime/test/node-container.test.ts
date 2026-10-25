@@ -1,4 +1,3 @@
-/* eslint-disable unicorn/prefer-dispose -- This server exposes close() with a drain result, not an async-disposal method. */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { startNodeContainer, type NodeContainerServer } from '../src/node-container.ts';

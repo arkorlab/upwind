@@ -337,6 +337,33 @@ describe('sealed Turbopack producers through the real manifest proof entry', () 
     );
   });
 
+  it('closes the full manifest proof with an ordinary scalar-exporting factory in the same table', async () => {
+    const own = await fixture(directory);
+    const code = (await readFile(own.chunk, 'utf8')).replace(
+      'module.exports=[',
+      'module.exports=[3,((ctx)=>{ctx.v(42);}),',
+    );
+    await writeFile(own.chunk, code);
+    own.sources.set(own.chunk, { file: own.chunk, sha256: digest(code) });
+    const proof = await proveNodeManifests(own.input, own.graph);
+
+    expect(proof.normalization?.runtimeRootDir).toBe(directory);
+    expect(proof.approvedCompilerSources).toStrictEqual([own.sources.get(own.runtime)]);
+  });
+
+  it('refuses a raw protected consumer sharing an otherwise certified physical factory table', async () => {
+    const own = await fixture(directory);
+    const body = `var p=require(${jsLiteral(SPECIFIER)});ctx.v(p);`;
+    const code = (await readFile(own.chunk, 'utf8')).replace(
+      'module.exports=[',
+      () => `module.exports=[3,((ctx)=>{${body}}),`,
+    );
+    await writeFile(own.chunk, code);
+    own.sources.set(own.chunk, { file: own.chunk, sha256: digest(code) });
+
+    await expect(proveNodeManifests(own.input, own.graph)).rejects.toThrow('Unproved Next.js');
+  });
+
   it.each(['pages', 'app-route', 'pages-api'] as const)(
     'connects the published projected %s body through every physical importer to the SDK root',
     async (kind) => {

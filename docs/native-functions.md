@@ -41,6 +41,10 @@ Next.js 16.4.3. Changed compiler or template shapes are refused until their sour
 reviewed. This restriction applies to native Node artifacts; ordinary Worker output keeps its
 existing version support.
 
+Hook TypeScript is analyzed after compiler lowering and can be bundled as JavaScript. A dependency
+executed from its original file must use syntax the target Node runtime can execute directly.
+Raw JSX and TypeScript features requiring transformation, such as enums, need compilation first.
+
 The first backend supports plain environment values, shared cache access and delegated HTTP
 services. Native storage bindings, Durable Objects, Cloudflare Workflows, custom cache-handler
 closures and unproved native loaders are refused. The direct CLI and local Miniflare stack also

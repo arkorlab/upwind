@@ -238,7 +238,7 @@ function resolved(source: NodeManifestTurbopackGraphFile, specifier: string): st
   const targets = new Set(edges.map((edge) => edge.target));
   if (targets.size !== 1) return refuse('missing or ambiguous actual import edge');
   const only = targets.values().next().value;
-  return only === undefined ? refuse('missing actual import target') : only;
+  return only ?? refuse('missing actual import target');
 }
 
 /** Metadata-only identity; it is never registered as a bundler or physical source module. */
@@ -278,7 +278,7 @@ function factoryRecords(tables: readonly NodeManifestTurbopackGraphFile[]): Read
     for (const factory of nodeManifestTurbopackFactories(table.source)) {
       const firstId = factory.ids[0];
       if (firstId === undefined) refuse('empty factory identity');
-      const projection = projectNodeManifestTurbopackFactory(table.source, firstId);
+      const projection = projectNodeManifestTurbopackFactory(table.source, firstId, 'dependencies');
       for (const id of factory.ids) {
         if (factories.has(id)) refuse('duplicate module id across loaded chunks');
         factories.set(id, { physical: table, projection });
@@ -328,12 +328,13 @@ export function nodeManifestTurbopackEntryGraph(input: {
       physicalId: factory.physical.id,
       projection: factory.projection,
       imports: factory.projection.imports.map((edge) => {
+        if (edge.targetId !== undefined)
+          return { specifier: edge.specifier, target: targetOf(edge.targetId) };
         return {
           specifier: edge.specifier,
-          target:
-            edge.targetId === undefined
-              ? resolved(factory.physical, edge.specifier)
-              : targetOf(edge.targetId),
+          target: isBuiltin(edge.specifier)
+            ? edge.specifier
+            : resolved(factory.physical, edge.specifier),
         };
       }),
     };

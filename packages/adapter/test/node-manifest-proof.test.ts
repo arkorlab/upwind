@@ -261,7 +261,11 @@ describe('original Node manifest operation proof', () => {
         };
       }),
     );
-    const physical = { files, nameOf: (file: string) => file };
+    const physical = {
+      files,
+      sourcePaths: new Map(files.map((file) => [file.name, file.name])),
+      nameOf: (file: string) => file,
+    };
     const unchanged = await readFile(current.evaluator, 'utf8');
     const unknown = "const vm=require('vm');vm.runInNewContext(content,contextObject);";
     const other = proof.inspectionCode('/user/loader.js', unknown);
@@ -418,11 +422,12 @@ describe('original Node manifest operation proof', () => {
         };
         break;
       }
-      default: {
+      case 'export-escape': {
         replacement = {
           file: current.route,
           code: `${routeSource(current.producer)}\nexport const escaped=routeModule;`,
         };
+        break;
       }
     }
     if (replacement !== undefined) {
@@ -525,7 +530,11 @@ describe('original Node manifest operation proof', () => {
         };
       }),
     );
-    const physical = { files, nameOf: (file: string) => file };
+    const physical = {
+      files,
+      sourcePaths: new Map(files.map((file) => [file.name, file.name])),
+      nameOf: (file: string) => file,
+    };
     const second = `${current.source}\n_vm.runInNewContext(other,contextObject);`;
     const unchangedUnknown = `${current.source}\nrequire("vm").runInThisContext(other);`;
     const inspection = proof.inspectionCode(current.evaluator, unchangedUnknown);

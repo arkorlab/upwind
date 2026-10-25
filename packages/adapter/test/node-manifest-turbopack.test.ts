@@ -73,6 +73,47 @@ describe('next Turbopack manifest factory projections', () => {
     });
   });
 
+  it.each(['ctx.v(42);', 'ctx.n({answer:42});', 'ctx.s(["answer",()=>calculate()]);'])(
+    'records ordinary export dependencies without certifying its opaque value: %s',
+    (body) => {
+      const original = chunk(`var p=ctx.i(2);${body}`);
+      const projected = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
+
+      expect({ mode: projected.mode, exports: projected.exports, imports: projected.imports })
+        .toStrictEqual({
+          mode: 'dependencies',
+          exports: { kind: 'opaque' },
+          imports: [{ kind: 'import', specifier: 'turbopack:2', targetId: 2 }],
+        });
+      expect(() => projectNodeManifestTurbopackFactory(original, 1)).toThrow('Unproved Next.js');
+    },
+  );
+
+  it('retains raw static require and import edges while excluding the checked external thunk duplicate', () => {
+    const original = chunk('const a=require("node:fs");import("other");var p=ctx.x("next",()=>require("next"));');
+    const projected = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
+
+    expect(projected.imports).toStrictEqual([
+      { kind: 'external', specifier: 'next' },
+      { kind: 'external', specifier: 'node:fs' },
+      { kind: 'external', specifier: 'other' },
+    ]);
+  });
+
+  it.each([
+    'ctx.v(42);const alias=ctx.i;',
+    'ctx.v(42);ctx.M(other);',
+    'ctx.v(42);ctx.c=other;',
+    'ctx.v(42);require(dynamic);',
+    'ctx.v(42);import(dynamic);',
+    'ctx.v(42,2);',
+    'ctx.s(["answer",()=>42],2);',
+  ])('preserves dependency-mode loader and context refusal: %s', (body) => {
+    expect(() => projectNodeManifestTurbopackFactory(chunk(body), 1, 'dependencies')).toThrow(
+      'Unproved Next.js',
+    );
+  });
+
   it.each([
     ['flat aliases', 'module.exports=[1,2,((ctx)=>{})];'],
     ['all strict', '(()=>{"use strict";module.exports=[1,((ctx)=>{}),2,((ctx)=>{})];})();'],

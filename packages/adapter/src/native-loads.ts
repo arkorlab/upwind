@@ -15,7 +15,7 @@ import {
   type NativeEdit,
   type NativeOperationContext,
 } from './native-operations.ts';
-import { parseNativeSource } from './native-source-parser.ts';
+import { nativeSourceAnalysis } from './native-source-parser.ts';
 import { nativeWorkerEdit } from './native-worker.ts';
 
 const MARKER = '__UPWIND_NATIVE_CAPABILITY__';
@@ -25,6 +25,7 @@ const MIB = KIB * KIB;
 const MAX_SOURCE_MIB = 32;
 const MAX_SOURCE_BYTES = MAX_SOURCE_MIB * MIB;
 const SOURCE_WORDS = ['bindings', 'node-gyp-build', 'process', 'dlopen', '.node', 'worker_threads'];
+const RESERVED_MARKER = 'reserved native analysis marker appears in application source';
 
 export interface NativeLoad {
   readonly kind: 'direct' | 'dlopen' | 'bindings' | 'node-gyp-build';
@@ -53,7 +54,9 @@ function markerId(node: Extract<Node, { type: 'CallExpression' }>): string {
 
 function canAnalyze(candidates: boolean, source: string, importer: string): boolean {
   return (
-    candidates && /\.[cm]?js$/u.test(importer) && SOURCE_WORDS.some((word) => source.includes(word))
+    candidates &&
+    /\.[cm]?[jt]sx?$/u.test(importer) &&
+    SOURCE_WORDS.some((word) => source.includes(word))
   );
 }
 
@@ -62,6 +65,18 @@ function applyEdits(source: string, edits: readonly NativeEdit[]): string {
   const ordered = edits.toSorted((a, b) => b.start - a.start);
   for (const edit of ordered) code = code.slice(0, edit.start) + edit.text + code.slice(edit.end);
   return code;
+}
+
+function assertMarkerIdentifiers(tree: readonly Node[]): void {
+  if (
+    tree.some((node) => {
+      return (
+        node.type === 'Identifier' &&
+        (node.name.includes(MARKER) || node.name.includes(CHILD_MARKER))
+      );
+    })
+  )
+    throw new AuditError(RESERVED_MARKER);
 }
 
 async function collectEdits(
@@ -121,9 +136,13 @@ export function nativeLoadsPlugin(
         if (Buffer.byteLength(source) > MAX_SOURCE_BYTES)
           throw new AuditError('native analysis source exceeds its limit');
         if (source.includes(MARKER) || source.includes(CHILD_MARKER))
-          throw new AuditError('reserved native analysis marker appears in application source');
-        const program = parseNativeSource(source, importer);
+          throw new AuditError(RESERVED_MARKER);
+        const analysis = nativeSourceAnalysis(source, importer, {
+          target: options.nodeTarget === true ? 'node' : 'worker',
+        });
+        const program = analysis.program;
         const tree = walk(program);
+        assertMarkerIdentifiers(tree);
         const bindings = nativeBindings(program);
         const context: NativeOperationContext = {
           importer,
@@ -133,14 +152,15 @@ export function nativeLoadsPlugin(
           nodeTarget: options.nodeTarget === true,
           mark,
         };
-        const worker = { source, importer, traces, tree, bindings, markChild };
+        const worker = { source: analysis.code, importer, traces, tree, bindings, markChild };
         const edits = await collectEdits(
           tree,
           context,
           worker,
           () => `__upwindNativeImport${ordinal}`,
         );
-        return edits.length === 0 ? null : { code: applyEdits(source, edits), moduleType: 'js' };
+        if (edits.length === 0) return null;
+        return { code: applyEdits(analysis.code, edits), moduleType: 'js' };
       },
     },
     async retained(chunk) {

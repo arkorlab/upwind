@@ -23,9 +23,11 @@ export interface NodeManifestTurbopackImport {
 }
 export type NodeManifestTurbopackExports =
   | { readonly kind: 'commonjs' }
+  | { readonly kind: 'opaque' }
   | { readonly kind: 'getters'; readonly names: readonly string[] }
   | { readonly kind: 'namespace'; readonly specifier: string };
 export interface NodeManifestTurbopackProjection {
+  readonly mode: 'strict' | 'dependencies';
   readonly original: NodeManifestTurbopackSource;
   readonly factory: NodeManifestTurbopackFactory;
   /** Inspection only. Never write these bytes into the physical Node artifact. */
@@ -199,10 +201,11 @@ export function nodeManifestTurbopackFactories(
 export function projectNodeManifestTurbopackFactory(
   source: NodeManifestTurbopackSource,
   id: number,
+  mode: 'strict' | 'dependencies' = 'strict',
 ): NodeManifestTurbopackProjection {
   const factory = nodeManifestTurbopackFactories(source).find((candidate) =>
     candidate.ids.includes(id),
   );
   if (factory === undefined) return refuseTurbopack('unknown module id');
-  return projectTurbopackFactory(source, factory, checkedTurbopackProgram(source));
+  return projectTurbopackFactory(source, factory, checkedTurbopackProgram(source), mode);
 }

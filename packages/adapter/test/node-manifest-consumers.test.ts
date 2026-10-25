@@ -232,11 +232,11 @@ describe('sealed Next manifest consumers', () => {
         runtimeInputs: { require: '__next_app_require__', loadChunk: '__next_app_load_chunk__' },
       }).requiresRuntimeNormalization,
     ).toBe(true);
-    expect(() =>
-      assertNodeManifestConsumer({
+    expect(() => {
+      return assertNodeManifestConsumer({
         ...own,
         runtimeInputs: { require: 'other', loadChunk: '__next_app_load_chunk__' },
-      }),
-    ).toThrow('runtime callback binding');
+      });
+    }).toThrow('runtime callback binding');
   });
 });

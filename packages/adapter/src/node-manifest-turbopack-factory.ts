@@ -11,6 +11,7 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import { originalTurbopackImports } from './node-manifest-turbopack-imports.ts';
 import type {
   NodeManifestTurbopackExports,
   NodeManifestTurbopackFactory,
@@ -116,6 +117,7 @@ class FactoryProjection {
   private readonly scope: Scope;
   private readonly visits: readonly Visit[];
   private readonly parents: ReadonlyMap<Node, Visit>;
+  private readonly mode: 'strict' | 'dependencies';
   private readonly allowedContext = new Set<Node>();
   private readonly edits = new Map<Node, Edit>();
   private readonly imports = new Map<Node, NodeManifestTurbopackImport>();
@@ -131,8 +133,10 @@ class FactoryProjection {
     source: NodeManifestTurbopackSource,
     factory: NodeManifestTurbopackFactory,
     program: Node,
+    mode: 'strict' | 'dependencies',
   ) {
     this.source = source;
+    this.mode = mode;
     this.factory = factory;
     const all = visitTree(program);
     const found = all.find(({ node }) => {
@@ -225,6 +229,11 @@ class FactoryProjection {
   }
 
   private getterExports(call: Node): void {
+    if (this.mode === 'dependencies') {
+      if (listOf(call, 'arguments').length !== 1) refuse('export registration arguments');
+      this.exports = { kind: 'opaque' };
+      return;
+    }
     this.topLevel(call);
     const args = listOf(call, 'arguments');
     const table = args[0];
@@ -247,15 +256,14 @@ class FactoryProjection {
     this.edit(call, 'void 0');
   }
 
-  private namespaceExports(call: Node, visit: Visit): void {
-    this.topLevel(call);
+  private namespaceIdentity(call: Node, visit: Visit): NodeManifestTurbopackImport | undefined {
     const args = listOf(call, 'arguments');
     const value = args[0];
-    if (!identifier(value)) refuse('namespace forwarding value');
+    if (!identifier(value)) return undefined;
     const binding = declaration(value.name, visit.scopes)?.node;
     const init = binding?.type === 'VariableDeclarator' ? binding['init'] : undefined;
     const imported = isNode(init) ? this.imports.get(init) : undefined;
-    if (imported === undefined || args.length !== 1) refuse('namespace forwarding identity');
+    if (imported === undefined || args.length !== 1) return undefined;
     const statements = listOf(this.body, 'body').filter((statement) => {
       return (
         !isNode(statement) ||
@@ -275,8 +283,22 @@ class FactoryProjection {
       last.type !== 'ExpressionStatement' ||
       last['expression'] !== call
     )
-      refuse('namespace forwarding side effects');
+      return undefined;
+    return imported;
+  }
+
+  private namespaceExports(call: Node, visit: Visit): void {
+    const imported = this.namespaceIdentity(call, visit);
+    if (imported === undefined) {
+      if (this.mode === 'strict') refuse('namespace forwarding identity');
+      if (listOf(call, 'arguments').length !== 1) refuse('namespace forwarding arguments');
+      this.exports = { kind: 'opaque' };
+      return;
+    }
+    this.topLevel(call);
     this.exports = { kind: 'namespace', specifier: imported.specifier };
+    const value = listOf(call, 'arguments')[0];
+    if (!isNode(value)) refuse('namespace forwarding value');
     this.edit(call, `module.exports=${this.text(value)}`);
   }
 
@@ -330,6 +352,10 @@ class FactoryProjection {
         this.getterExports(call);
         break;
       }
+      case undefined: {
+        refuse('unreviewed context method');
+        break;
+      }
       default: {
         if (name !== 'n' && name !== 'v') refuse('unreviewed context method');
       }
@@ -365,30 +391,6 @@ class FactoryProjection {
     }
   }
 
-  private assertOriginalSpecifiers(): void {
-    for (const visit of this.visits) {
-      const node = visit.node;
-      if (
-        node.type === 'CallExpression' &&
-        identifier(node['callee']) &&
-        node['callee'].name === 'require' &&
-        declaration('require', visit.scopes) === undefined &&
-        stringOf(listOf(node, 'arguments')[0])?.startsWith('turbopack:') === true
-      )
-        refuse('reserved synthetic module specifier');
-      if (
-        [
-          'ExportAllDeclaration',
-          'ExportNamedDeclaration',
-          'ImportDeclaration',
-          'ImportExpression',
-        ].includes(node.type) &&
-        stringOf(node['source'])?.startsWith('turbopack:') === true
-      )
-        refuse('reserved synthetic module specifier');
-    }
-  }
-
   private forwardNamespaces(): void {
     for (const visit of this.visits) {
       const member = visit.node;
@@ -403,9 +405,9 @@ class FactoryProjection {
   }
 
   project(): NodeManifestTurbopackProjection {
-    this.assertOriginalSpecifiers();
     this.assertCommonJsBindings();
     for (const visit of this.visits) this.operation(visit);
+    const originalImports = originalTurbopackImports(this.visits, this.parents, this.imports);
     this.forwardNamespaces();
     for (const visit of this.visits) {
       if (
@@ -429,10 +431,11 @@ class FactoryProjection {
     code += `\n${this.append.join('\n')}`;
     const sha256 = createHash('sha256').update(code).digest('hex');
     return {
+      mode: this.mode,
       original: this.source,
       factory: this.factory,
       source: { code, sha256 },
-      imports: [...this.imports.values()],
+      imports: [...this.imports.values(), ...originalImports],
       exports: this.exports,
       boundRuntimeInputs: this.boundRuntimeInputs,
       requiresReviewedRuntime: true,
@@ -444,6 +447,7 @@ export function projectTurbopackFactory(
   source: NodeManifestTurbopackSource,
   factory: NodeManifestTurbopackFactory,
   program: Node,
+  mode: 'strict' | 'dependencies',
 ): NodeManifestTurbopackProjection {
-  return new FactoryProjection(source, factory, program).project();
+  return new FactoryProjection(source, factory, program, mode).project();
 }

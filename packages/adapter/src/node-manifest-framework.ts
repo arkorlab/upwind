@@ -99,6 +99,8 @@ const RUNTIME_WRAPPERS: ReadonlyMap<string, ReadonlyMap<string, string>> = new M
   [PAGES_API_MODULE, PAGES_API_RUNTIMES],
   [PAGES_MODULE, PAGES_RUNTIMES],
 ]);
+
+// eslint-disable-next-line unicorn/prefer-iterator-concat -- The supported Node.js 24 runtime does not provide Iterator.concat.
 const RUNTIMES = new Set([
   ...APP_RUNTIMES.keys(),
   ...PAGES_RUNTIMES.keys(),

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
+import { jsLiteral } from '../src/codegen.ts';
 import {
   inspectNodeManifestTurbopackEntry,
   nodeManifestTurbopackEntryGraph,
@@ -50,7 +51,7 @@ function fixture(): {
         id: CHUNK,
         file: CHUNK,
         source: source(
-          `module.exports=[1,((ctx)=>{var p=ctx.i(2);ctx.n(p);}),2,((ctx)=>{var p=ctx.x(${JSON.stringify(SPECIFIER)},()=>require(${JSON.stringify(SPECIFIER)}));ctx.n(p);})];`,
+          `module.exports=[1,((ctx)=>{var p=ctx.i(2);ctx.n(p);}),2,((ctx)=>{var p=ctx.x(${jsLiteral(SPECIFIER)},()=>require(${jsLiteral(SPECIFIER)}));ctx.n(p);})];`,
         ),
         imports: [{ specifier: SPECIFIER, target: PRODUCER }],
       },
@@ -91,11 +92,13 @@ describe('next Turbopack route topology', () => {
       physical: graph.physicalId,
       exported: graph.exportedId,
       evaluations: graph.evaluations,
-      modules: graph.factories.map((factory) => ({
-        id: factory.id,
-        physical: factory.physicalId,
-        imports: factory.imports,
-      })),
+      modules: graph.factories.map((factory) => {
+        return {
+          id: factory.id,
+          physical: factory.physicalId,
+          imports: factory.imports,
+        };
+      }),
       runtime: graph.runtime.source,
       runtimeProof: graph.requiresReviewedRuntime,
       normalization: graph.requiresSdkNormalization,
@@ -143,57 +146,66 @@ describe('next Turbopack route topology', () => {
   it.each([
     [
       'route public path mismatch',
-      (own: ReturnType<typeof fixture>) =>
-        replaceFile(
+      (own: ReturnType<typeof fixture>) => {
+        return replaceFile(
           own,
           ENTRY,
           BOOT.replace('server/app/native/page.js', 'server/app/other/page.js'),
-        ),
+        );
+      },
     ],
     [
       'missing physical chunk',
-      (own: ReturnType<typeof fixture>) => ({
-        ...own,
-        sources: own.sources.filter((record) => record.file !== CHUNK),
-      }),
+      (own: ReturnType<typeof fixture>) => {
+        return {
+          ...own,
+          sources: own.sources.filter((record) => record.file !== CHUNK),
+        };
+      },
     ],
     [
       'missing runtime edge',
-      (own: ReturnType<typeof fixture>) => ({
-        ...own,
-        sources: own.sources.map((record) =>
-          record.file === RUNTIME ? { ...record, imports: [] } : record,
-        ),
-      }),
+      (own: ReturnType<typeof fixture>) => {
+        return {
+          ...own,
+          sources: own.sources.map((record) =>
+            record.file === RUNTIME ? { ...record, imports: [] } : record,
+          ),
+        };
+      },
     ],
     [
       'missing actual external edge',
-      (own: ReturnType<typeof fixture>) => ({
-        ...own,
-        sources: own.sources.map((record) =>
-          record.file === CHUNK ? { ...record, imports: [] } : record,
-        ),
-      }),
+      (own: ReturnType<typeof fixture>) => {
+        return {
+          ...own,
+          sources: own.sources.map((record) =>
+            record.file === CHUNK ? { ...record, imports: [] } : record,
+          ),
+        };
+      },
     ],
     [
       'unproved deferred table target',
-      (own: ReturnType<typeof fixture>) => ({
-        ...own,
-        sources: own.sources.map((record) =>
-          record.file === RUNTIME
-            ? {
-                ...record,
-                imports: [
-                  ...record.imports,
-                  {
-                    specifier: '/project/.next/server/chunks/absent.js',
-                    target: '/project/.next/server/chunks/absent.js',
-                  },
-                ],
-              }
-            : record,
-        ),
-      }),
+      (own: ReturnType<typeof fixture>) => {
+        return {
+          ...own,
+          sources: own.sources.map((record) => {
+            return record.file === RUNTIME
+              ? {
+                  ...record,
+                  imports: [
+                    ...record.imports,
+                    {
+                      specifier: '/project/.next/server/chunks/absent.js',
+                      target: '/project/.next/server/chunks/absent.js',
+                    },
+                  ],
+                }
+              : record;
+          }),
+        };
+      },
     ],
     [
       'unregistered exported module',
@@ -212,14 +224,16 @@ describe('next Turbopack route topology', () => {
     ],
     [
       'changed source hash',
-      (own: ReturnType<typeof fixture>) => ({
-        ...own,
-        sources: own.sources.map((record) =>
-          record.file === CHUNK
-            ? { ...record, source: { ...record.source, sha256: 'a'.repeat(64) } }
-            : record,
-        ),
-      }),
+      (own: ReturnType<typeof fixture>) => {
+        return {
+          ...own,
+          sources: own.sources.map((record) => {
+            return record.file === CHUNK
+              ? { ...record, source: { ...record.source, sha256: 'a'.repeat(64) } }
+              : record;
+          }),
+        };
+      },
     ],
     [
       'duplicate source identity',
@@ -227,18 +241,20 @@ describe('next Turbopack route topology', () => {
     ],
     [
       'factory metadata collision',
-      (own: ReturnType<typeof fixture>) => ({
-        ...own,
-        sources: [
-          ...own.sources,
-          {
-            id: `${CHUNK}#turbopack:1`,
-            file: '/project/collision.js',
-            source: source('module.exports=1;'),
-            imports: [],
-          },
-        ],
-      }),
+      (own: ReturnType<typeof fixture>) => {
+        return {
+          ...own,
+          sources: [
+            ...own.sources,
+            {
+              id: `${CHUNK}#turbopack:1`,
+              file: '/project/collision.js',
+              source: source('module.exports=1;'),
+              imports: [],
+            },
+          ],
+        };
+      },
     ],
   ])('refuses %s before exposing virtual module metadata', (_name, change) => {
     expect(() => nodeManifestTurbopackEntryGraph(change(fixture()))).toThrow(

@@ -80,12 +80,76 @@ describe('retained native capability proof', () => {
     expect(loads).toStrictEqual([{ kind: 'direct', importer: entry, binary, owners: ['/native'] }]);
   });
 
+  it('classifies an owned native load after TypeScript annotations and casts are lowered', async () => {
+    entry = path.join(directory, 'entry.cts');
+    const source =
+      'declare const require:(name:string)=>unknown;exports.native=()=>require("./addon.node") as {hello:()=>string};';
+    const { loads } = await bundled(source);
+
+    expect(loads).toStrictEqual([{ kind: 'direct', importer: entry, binary, owners: ['/native'] }]);
+  });
+
+  it('does not replace ordinary typed Worker source when no native operation needs an edit', async () => {
+    entry = path.join(directory, 'entry.ts');
+    const source =
+      'import {Loader} from "./type-use-only.js";type Shape=Loader;exports.label="process";';
+    await writeFile(entry, source);
+    const proof = nativeLoadsPlugin([{ id: '/worker', assets: { entry, binary } }]);
+    const observed: string[] = [];
+    await using build = await rolldown({
+      input: entry,
+      plugins: [
+        proof.plugin,
+        {
+          name: 'observe-source-before-the-ordinary-compiler',
+          transform(code, id) {
+            if (id === entry) observed.push(code);
+            return null;
+          },
+        },
+      ],
+    });
+    await build.generate({ format: 'cjs' });
+
+    expect(observed).toStrictEqual([source]);
+  });
+
+  it('preserves Worker import elision when an edited native branch is later removed', async () => {
+    entry = path.join(directory, 'entry.ts');
+    const source =
+      'import {Loader} from "./type-use-only.js";type Shape=Loader;if(false)require("./addon.node");exports.value=42;';
+    const { loads, chunk } = await bundled(source);
+
+    expect(loads).toStrictEqual([]);
+    expect(chunk.code).not.toContain('type-use-only.js');
+  });
+
   it('does not route a dead native load or build-only trace to a Container', async () => {
     const dead = await bundled("if (false) require('./addon.node'); module.exports = 42;\n");
     const traced = await bundled('module.exports = 42;\n');
 
     expect({ dead: dead.loads, traced: traced.loads }).toStrictEqual({ dead: [], traced: [] });
   });
+
+  it.each([
+    ['.cjs', String.raw`exports.forged=__UPWIND_NAT\u0049VE_CAPABILITY__("0");`],
+    ['.cts', String.raw`exports.forged=__UPWIND_NAT\u0049VE_CAPABILITY__("0") as unknown;`],
+    ['.cjs', String.raw`const __UPWIND_NAT\u0049VE_CAPABILITY__=()=>0;exports.value=42;`],
+    [
+      '.cts',
+      String.raw`const __UPWIND_NATIVE_WORKER_CH\u0049LD__:unknown=undefined;exports.value=42;`,
+    ],
+  ])(
+    'rejects decoded reserved identifiers in %s before attributing retained markers',
+    async (extension, body) => {
+      entry = path.join(directory, `entry${extension}`);
+      const source = `if(false)require('./addon.node');${body}`;
+
+      await expect(bundled(source)).rejects.toThrow(
+        'reserved native analysis marker appears in application source',
+      );
+    },
+  );
 
   it('leaves a guarded node-gyp-build fallback untouched when no trace names a native binary', async () => {
     const loader = path.join(directory, 'node_modules/node-gyp-build');

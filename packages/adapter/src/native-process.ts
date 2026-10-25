@@ -5,8 +5,8 @@ import { identifier, type NativeBindings, required, stringOf } from './native-as
 const MODIFIED_NAMESPACE = 'modified-namespace';
 type ProcessOrigin = 'namespace' | typeof MODIFIED_NAMESPACE | 'dlopen' | 'ambiguous';
 
-function processModule(specifier: string | undefined): boolean {
-  return ['node:process', 'process'].includes(specifier ?? '');
+function processModule(specifier = ''): boolean {
+  return ['node:process', 'process'].includes(specifier);
 }
 
 function propertyName(node: Extract<Node, { type: 'MemberExpression' }>): string | undefined {

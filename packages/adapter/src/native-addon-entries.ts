@@ -27,7 +27,7 @@ export async function entryOwnsImporter(
 ): Promise<boolean> {
   const candidates = [...Object.values(trace.assets), ...(trace.importers ?? [])];
   const sources = await Promise.all(
-    candidates.filter((file) => /\.[cm]?js$/u.test(file)).map((file) => realpath(file)),
+    candidates.filter((file) => /\.[cm]?[jt]sx?$/u.test(file)).map((file) => realpath(file)),
   );
   return sources.includes(original);
 }

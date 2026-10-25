@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { jsLiteral } from '../src/codegen.ts';
 import {
   proveNodeManifestTurbopackConsumers,
   type NodeManifestTurbopackConsumerInput,
@@ -65,7 +66,7 @@ async function fixture(): Promise<NodeManifestTurbopackConsumerInput> {
         id: CHUNK,
         file: CHUNK,
         source: source(
-          `module.exports=[1,((ctx)=>{${CALLER}}),2,((ctx)=>{var p=ctx.x(${JSON.stringify(SPECIFIER)},()=>require(${JSON.stringify(SPECIFIER)}));ctx.n(p);})];`,
+          `module.exports=[1,((ctx)=>{${CALLER}}),2,((ctx)=>{var p=ctx.x(${jsLiteral(SPECIFIER)},()=>require(${jsLiteral(SPECIFIER)}));ctx.n(p);})];`,
         ),
         imports: [{ specifier: SPECIFIER, target: PRODUCER }],
       },
@@ -119,30 +120,62 @@ describe('next Turbopack protected producer chains', () => {
     ]);
   });
 
+  it('keeps ordinary opaque factories outside the protected consumer exemption', async () => {
+    const input = replaceFile(await fixture(), CHUNK, (code) =>
+      code.replace('module.exports=[', 'module.exports=[3,((ctx)=>{ctx.v(42);}),'),
+    );
+    const proof = await proveNodeManifestTurbopackConsumers(input);
+
+    expect(proof.terminals).toStrictEqual([
+      { id: ENTRY, file: ENTRY, page: '/native/page', pathname: '/native' },
+    ]);
+  });
+
+  it.each([
+    ['opaque protected import', 'var p=ctx.i(2);ctx.v(42);'],
+    ['raw protected require', `var p=require(${jsLiteral(SPECIFIER)});ctx.v(p);`],
+    [
+      'raw protected import',
+      `import(${jsLiteral(SPECIFIER)}).then(p=>p.createAppPageEntrypoint({}));`,
+    ],
+  ])(
+    'strictly reprojects every %s instead of skipping a malformed consumer',
+    async (_name, body) => {
+      const input = replaceFile(await fixture(), CHUNK, (code) =>
+        code.replace('module.exports=[', () => `module.exports=[3,((ctx)=>{${body}}),`),
+      );
+
+      await expect(proveNodeManifestTurbopackConsumers(input)).rejects.toThrow('Unproved Next.js');
+    },
+  );
+
   it.each([
     [
       'unsealed consumer',
-      (input: NodeManifestTurbopackConsumerInput) =>
-        replaceFile(input, CHUNK, (code) =>
+      (input: NodeManifestTurbopackConsumerInput) => {
+        return replaceFile(input, CHUNK, (code) =>
           code.replace('module.exports=[', () => `module.exports=[3,((ctx)=>{${CALLER}}),`),
-        ),
+        );
+      },
     ],
     [
       'handler call outside normalization',
-      (input: NodeManifestTurbopackConsumerInput) =>
-        replaceFile(input, CHUNK, (code) =>
-          code.replace(
+      (input: NodeManifestTurbopackConsumerInput) => {
+        return replaceFile(input, CHUNK, (code) => {
+          return code.replace(
             'module.exports=[',
             'module.exports=[3,((ctx)=>{var p=ctx.i(1);p.handler(request,response,context);}),',
-          ),
-        ),
+          );
+        });
+      },
     ],
     [
       'producer reaches route terminal',
-      (input: NodeManifestTurbopackConsumerInput) =>
-        replaceFile(input, ENTRY, (code) =>
+      (input: NodeManifestTurbopackConsumerInput) => {
+        return replaceFile(input, ENTRY, (code) =>
           code.replace('module.exports=R.m(1)', 'module.exports=R.m(2)'),
-        ),
+        );
+      },
     ],
     [
       'changed runtime semantics',
@@ -151,37 +184,43 @@ describe('next Turbopack protected producer chains', () => {
     ],
     [
       'unsealed page constant',
-      (input: NodeManifestTurbopackConsumerInput) => ({
-        ...input,
-        entries: [{ file: ENTRY, page: '/other/page', pathname: '/native' }],
-      }),
+      (input: NodeManifestTurbopackConsumerInput) => {
+        return {
+          ...input,
+          entries: [{ file: ENTRY, page: '/other/page', pathname: '/native' }],
+        };
+      },
     ],
     [
       'duplicate sealed entry',
-      (input: NodeManifestTurbopackConsumerInput) => ({
-        ...input,
-        entries: [...input.entries, { file: ENTRY, page: '/native/page', pathname: '/native' }],
-      }),
+      (input: NodeManifestTurbopackConsumerInput) => {
+        return {
+          ...input,
+          entries: [...input.entries, { file: ENTRY, page: '/native/page', pathname: '/native' }],
+        };
+      },
     ],
     [
       'custom untraced runtime callback',
-      (input: NodeManifestTurbopackConsumerInput) =>
-        replaceFile(input, CHUNK, (code) =>
+      (input: NodeManifestTurbopackConsumerInput) => {
+        return replaceFile(input, CHUNK, (code) =>
           code.replace('require:ctx.r.bind(ctx)', 'require:customRequire'),
-        ),
+        );
+      },
     ],
     [
       'extra bound callback in a real consumer',
-      (input: NodeManifestTurbopackConsumerInput) =>
-        replaceFile(input, CHUNK, (code) =>
+      (input: NodeManifestTurbopackConsumerInput) => {
+        return replaceFile(input, CHUNK, (code) =>
           code.replace('var producer=', 'const leak={require:ctx.r.bind(ctx)};var producer='),
-        ),
+        );
+      },
     ],
     [
       'callbacks bound outside the verified factory argument',
-      (input: NodeManifestTurbopackConsumerInput) =>
-        replaceFile(input, CHUNK, (code) =>
-          code
+      (input: NodeManifestTurbopackConsumerInput) => {
+        return replaceFile(input, CHUNK, (code) => {
+          return code
             .replace(
               'var producer=',
               'const ignored={require:ctx.r.bind(ctx),loadChunk:ctx.l.bind(ctx)};var producer=',
@@ -189,8 +228,9 @@ describe('next Turbopack protected producer chains', () => {
             .replace(
               'require:ctx.r.bind(ctx),loadChunk:ctx.l.bind(ctx),interopDefault',
               'require:customRequire,loadChunk:customLoadChunk,interopDefault',
-            ),
-        ),
+            );
+        });
+      },
     ],
   ])('refuses %s even though the original physical files remain present', async (_name, change) => {
     const input = change(await fixture());
@@ -212,7 +252,7 @@ describe('next Turbopack protected producer chains', () => {
         {
           id: other,
           file: other,
-          source: source(`module.exports=require(${JSON.stringify(target)});`),
+          source: source(`module.exports=require(${jsLiteral(target)});`),
           imports: [{ specifier: target, target }],
         },
       ],
@@ -255,12 +295,12 @@ describe('next Turbopack protected producer chains', () => {
 
   it('refuses an untainted factory that exports a bound runtime loader with no static protected-module edge', async () => {
     let input = await fixture();
-    input = replaceFile(input, CHUNK, (code) =>
-      code.replace(
+    input = replaceFile(input, CHUNK, (code) => {
+      return code.replace(
         'module.exports=[',
         'module.exports=[3,((ctx)=>{ctx.s(["leak",()=>leak]);const leak={require:ctx.r.bind(ctx)};}),',
-      ),
-    );
+      );
+    });
 
     await expect(proveNodeManifestTurbopackConsumers(input)).rejects.toThrow(
       'bound runtime callback escapes a sealed consumer',

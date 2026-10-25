@@ -23,6 +23,7 @@ import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
 import type { ManifestGraphEdge, NodeManifestNormalization } from './node-manifest-graph.ts';
 import { proveNodeManifests, type NodeManifestProof } from './node-manifest-proof.ts';
 import { originalHostLoadersPlugin } from './node-original-host-loaders.ts';
+import { assertRawNodeSource } from './node-source-runtime.ts';
 import { cacheHandlersPatch } from './patches/cache-handlers.ts';
 import { instrumentationPatch } from './patches/instrumentation.ts';
 import type { AppliedPatch } from './patches/rolldown.ts';
@@ -59,13 +60,13 @@ interface OriginalNodeGraph {
 interface CopiedNodeSources {
   readonly files: ReadonlyMap<string, Uint8Array>;
   readonly nameOf: (file: string) => string;
+  readonly sourceNames: ReadonlyMap<string, string>;
 }
 
 export interface NodeFunctionProof {
   readonly native: readonly NativeLoad[];
   readonly files: readonly OriginalNodeSource[];
   readonly dependencies: FunctionDependencies;
-  // eslint-disable-next-line sonarjs/no-redundant-optional -- Preserve exactOptionalPropertyTypes forwarding.
   readonly normalization?: NodeManifestNormalization | undefined;
 }
 
@@ -453,13 +454,15 @@ function assertCopiedSource(
   if (bundledHash !== undefined) {
     if (bundledHash !== original.sha256)
       throw new AuditError('Original Node instrumentation changed after its source proof');
-    return;
+    if (!copied.sourceNames.has(original.file)) return;
   }
-  const bytes = copied.files.get(copied.nameOf(original.file));
+  const name = copied.sourceNames.get(original.file) ?? copied.nameOf(original.file);
+  const bytes = copied.files.get(name);
   if (bytes === undefined || digest(bytes) !== original.sha256)
     throw new AuditError(
       'Original Node graph source is absent or changed in its physical artifact',
     );
+  assertRawNodeSource(name, bytes);
 }
 
 /** Compare original bytes before the explicit shared-cache/instrumentation artifact rewrites. */
@@ -468,11 +471,13 @@ export function assertNodeProofFiles(
   physical: {
     readonly files: readonly NodeArchiveFile[];
     readonly nameOf: (file: string) => string;
+    readonly sourcePaths: ReadonlyMap<string, string>;
   },
   bundledInstrumentation: ReadonlyMap<string, string>,
 ): void {
   const files = new Map(physical.files.map((file) => [file.name, file.bytes]));
-  const copied: CopiedNodeSources = { files, nameOf: physical.nameOf };
+  const sourceNames = new Map([...physical.sourcePaths].map(([name, file]) => [file, name]));
+  const copied: CopiedNodeSources = { files, nameOf: physical.nameOf, sourceNames };
   const loaderFiles = new Set(
     proof.native.flatMap((load) => (load.loaderSources ?? []).map((source) => source.file)),
   );

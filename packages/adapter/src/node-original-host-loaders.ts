@@ -7,7 +7,7 @@ import { AuditError } from './dependencies.ts';
 import { identifier, stringOf, walk } from './native-ast.ts';
 import {
   ORIGINAL_HOST_MARKER_PREFIX as MARKER_PREFIX,
-  originalNodeHostLoaderSites,
+  originalNodeHostLoaderAnalysis,
   type OriginalNodeHostLoaderSite,
 } from './node-original-host-proof.ts';
 
@@ -97,14 +97,17 @@ function instrument(source: string, sites: readonly MarkedSite[]): string {
   return code + source.slice(previous);
 }
 
-function sourceSites(source: string, importer: string): readonly OriginalNodeHostLoaderSite[] {
+function sourceSites(
+  source: string,
+  importer: string,
+): ReturnType<typeof originalNodeHostLoaderAnalysis> | undefined {
   // Match the original graph loader's executable suffixes; unsupported syntax still refuses.
-  if (!/\.[cm]?[jt]sx?$/u.test(importer)) return [];
+  if (!/\.[cm]?[jt]sx?$/u.test(importer)) return undefined;
   if (source.includes(MARKER_PREFIX))
     throw new AuditError('Reserved original host analysis marker appears in application source');
   if (Buffer.byteLength(source) > MAX_SOURCE_BYTES)
     throw new AuditError('Original host analysis source exceeds its limit');
-  return originalNodeHostLoaderSites(importer, source);
+  return originalNodeHostLoaderAnalysis(importer, source);
 }
 
 /** Analysis-only wrappers are compressed with the source and never enter the physical artifact. */
@@ -117,15 +120,18 @@ export function originalHostLoadersPlugin(sources: ReadonlyMap<string, OriginalS
     plugin: {
       name: 'upwind-original-host-loaders',
       transform(source, importer) {
-        const sites = sourceSites(source, importer);
-        if (sites.length === 0) return null;
+        const analysis = sourceSites(source, importer);
+        if (analysis === undefined) return null;
+        const sites = analysis.sites;
+        if (sites.length === 0)
+          return analysis.code === source ? null : { code: analysis.code, moduleType: 'js' };
         const original = sources.get(importer);
         if (original === undefined || !SOURCE_SHA.test(original.sha256))
           throw new AuditError('Original host operation has no physical source identity');
-        const sha256 = digest(source);
+        const sha256 = digest(analysis.code);
         const registered = sites.map((site) => markedSite(importer, original, sha256, site));
         for (const site of registered) markers.set(site.id, site.identity);
-        return { code: instrument(source, registered), moduleType: 'js' };
+        return { code: instrument(analysis.code, registered), moduleType: 'js' };
       },
     },
     retained(chunk) {

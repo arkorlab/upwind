@@ -192,7 +192,7 @@ function routeLocation(file: string, app: string, pages: string): RouteLocation 
   const appRelative = beneath(app, file);
   const pagesRelative = beneath(pages, file);
   const relative = appRelative ?? pagesRelative;
-  if (relative === undefined || !relative.endsWith('.js')) return undefined;
+  if (!relative?.endsWith('.js')) return undefined;
   return {
     relative,
     app: appRelative !== undefined,
@@ -209,11 +209,7 @@ function sealedRoute(
   // Shared Pages _app/_document inputs stay in the normalization seal, but cannot terminate a
   // protected route-export chain when the route inventory does not declare them.
   if (metadata === undefined && location.shared) return undefined;
-  if (
-    metadata === undefined ||
-    metadata['pathname'] !== entry.id ||
-    metadata['runtime'] !== undefined
-  )
+  if (metadata?.['pathname'] !== entry.id || metadata['runtime'] !== undefined)
     refuse('unsealed app route metadata');
   const kind = metadata['kind'];
   const appKind = kind === 'app-page' || kind === 'app-route';

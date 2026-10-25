@@ -2,7 +2,7 @@ import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
 import { identifier as nativeIdentifier, nativeBindings, walk } from './native-ast.ts';
 import { processDlopen } from './native-process.ts';
-import { parseNativeSource } from './native-source-parser.ts';
+import { nativeSourceAnalysis, type NativeSourceAnalysis } from './native-source-parser.ts';
 import { hostPropertyName, isCommonJsHost } from './node-closure-hosts.ts';
 import { reference, visitTree, type Visit } from './node-manifest-consumer-ast.ts';
 
@@ -198,9 +198,7 @@ function originalSites(
   return [...sites.values()];
 }
 
-function classifiedNativeOperands(
-  program: ReturnType<typeof parseNativeSource>,
-): ReadonlySet<unknown> {
+function classifiedNativeOperands(program: NativeSourceAnalysis['program']): ReadonlySet<unknown> {
   const operands = new Set<unknown>();
   const bindings = nativeBindings(program);
   for (const node of walk(program)) {
@@ -214,15 +212,26 @@ function classifiedNativeOperands(
   return operands;
 }
 
+/** Offsets and source stay together after trusted, inspection-only TypeScript lowering. */
+export function originalNodeHostLoaderAnalysis(
+  file: string,
+  code: string,
+): { readonly code: string; readonly sites: readonly OriginalNodeHostLoaderSite[] } {
+  const analysis = nativeSourceAnalysis(code, file);
+  const program: unknown = analysis.program;
+  if (!isNode(program)) throw new TypeError('Original host-loader proof requires a program');
+  return {
+    code: analysis.code,
+    sites: originalSites(program, classifiedNativeOperands(analysis.program)),
+  };
+}
+
 /** Source-proven host operations, before a CommonJS wrapper can shadow the host module. */
 export function originalNodeHostLoaderSites(
   file: string,
   code: string,
 ): readonly OriginalNodeHostLoaderSite[] {
-  const parsed = parseNativeSource(code, file);
-  const program: unknown = parsed;
-  if (!isNode(program)) throw new TypeError('Original host-loader proof requires a program');
-  return originalSites(program, classifiedNativeOperands(parsed));
+  return originalNodeHostLoaderAnalysis(file, code).sites;
 }
 
 /**

@@ -32,7 +32,7 @@ type Candidate = Pick<NativeLoad, 'kind' | 'binary' | 'loaderSources'>;
 
 function directNative(call: Call, context: NativeOperationContext): Candidate | undefined {
   const specifier = required(call);
-  if (specifier === undefined || !specifier.endsWith('.node')) return undefined;
+  if (!specifier?.endsWith('.node')) return undefined;
   if (!globalRequire(call, context)) return undefined;
   if (path.isAbsolute(specifier))
     throw new AuditError('Absolute native imports are not relocatable');
@@ -92,7 +92,7 @@ function isNativeLoader(value: string | undefined): value is 'bindings' | 'node-
 }
 
 function namesNativeFile(value: string | undefined): boolean {
-  return value !== undefined && value.endsWith('.node');
+  return value?.endsWith('.node') === true;
 }
 
 /** Keep non-loading AST nodes off the asynchronous filesystem proof path. */
@@ -137,7 +137,7 @@ function dlopenNative(call: Call, context: NativeOperationContext): Candidate | 
     throw new AuditError('A guarded process.dlopen has no proved Worker-safe fallback');
   assertDlopenArguments(call, context);
   const binary = nativePath(call.arguments[1], context.importer, context.bindings);
-  if (binary === undefined || !binary.endsWith('.node'))
+  if (!binary?.endsWith('.node'))
     throw new AuditError('process.dlopen has no statically known native binary');
   return { kind: 'dlopen', binary };
 }
@@ -192,13 +192,13 @@ async function operationSource(
 ): Promise<string | undefined> {
   if (node.type === 'ImportDeclaration') {
     const source = stringOf(node.source);
-    if (source === undefined || !source.endsWith('.node')) return undefined;
+    if (!source?.endsWith('.node')) return undefined;
     const proof = context.mark(await importNative(source, context));
     return declarationSource(node, proof, local());
   }
   if (node.type === 'ImportExpression') {
     const specifier = stringOf(node.source);
-    if (specifier === undefined || !specifier.endsWith('.node')) return undefined;
+    if (!specifier?.endsWith('.node')) return undefined;
     return `Promise.resolve(${context.mark(await importNative(specifier, context))})`;
   }
   if (node.type !== 'CallExpression') return undefined;

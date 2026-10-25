@@ -81,7 +81,11 @@ describe('reviewed native loader physical closure', () => {
         };
       }),
     );
-    const physical = { files, nameOf: (file: string) => file };
+    const physical = {
+      files,
+      sourcePaths: new Map(files.map((file) => [file.name, file.name])),
+      nameOf: (file: string) => file,
+    };
     const replaced = replacedLoaderFiles(files, loader);
     const hostSources = new Map([[loader, loaderProof.sha256]]);
     const retainedLoaders = proof.native[0]?.loaderSources?.map((source) => {

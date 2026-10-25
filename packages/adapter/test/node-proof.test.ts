@@ -74,7 +74,11 @@ describe('original physical Node Function proof', () => {
     const files = await Promise.all(
       proof.files.map(async (file) => ({ name: file.file, bytes: await readFile(file.file) })),
     );
-    const physical = { files, nameOf: (file: string) => file };
+    const physical = {
+      files,
+      sourcePaths: new Map(files.map((file) => [file.name, file.name])),
+      nameOf: (file: string) => file,
+    };
     const missing = { ...physical, files: [] };
     const changed = {
       ...physical,

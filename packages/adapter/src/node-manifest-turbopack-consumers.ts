@@ -14,6 +14,7 @@ import {
 } from './node-manifest-turbopack-graph.ts';
 import { assertNodeManifestTurbopackRuntime } from './node-manifest-turbopack-runtime.ts';
 import { assertNodeManifestTurbopackTemplateConsumer } from './node-manifest-turbopack-templates.ts';
+import { projectNodeManifestTurbopackFactory } from './node-manifest-turbopack.ts';
 
 export interface NodeManifestTurbopackConsumerInput {
   readonly distDir: string;
@@ -62,6 +63,7 @@ class TurbopackConsumers {
   private readonly visiting = new Set<string>();
   private readonly routes = new Map<string, NodeManifestTurbopackSealedEntry>();
   private readonly runtimeConsumers = new Set<string>();
+  private readonly strictFactories = new Map<string, NodeManifestTurbopackGraphFactory>();
 
   constructor(input: NodeManifestTurbopackConsumerInput) {
     this.input = input;
@@ -103,6 +105,8 @@ class TurbopackConsumers {
     if (kind === APP_PAGE_FACTORY) return 'app-page';
     if (kind === 'pages-class') return 'pages';
     if (kind === 'pages-api-class') return 'pages-api';
+
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Preserve fail-closed validation at this runtime boundary.
     return kind === 'app-route-class' ? 'app-route' : refuse('unknown protected producer role');
   }
 
@@ -230,6 +234,25 @@ class TurbopackConsumers {
       });
   }
 
+  private strictFactory(
+    factory: NodeManifestTurbopackGraphFactory,
+  ): NodeManifestTurbopackGraphFactory {
+    const previous = this.strictFactories.get(factory.id);
+    if (previous !== undefined) return previous;
+    const id = factory.projection.factory.ids[0];
+    if (id === undefined) return refuse('missing protected factory identity');
+    const projection = projectNodeManifestTurbopackFactory(factory.projection.original, id);
+    if (
+      JSON.stringify(projection.imports) !== JSON.stringify(factory.projection.imports) ||
+      JSON.stringify(projection.boundRuntimeInputs) !==
+        JSON.stringify(factory.projection.boundRuntimeInputs)
+    )
+      refuse('protected factory dependency projection disagreement');
+    const strict = { ...factory, projection };
+    this.strictFactories.set(factory.id, strict);
+    return strict;
+  }
+
   private captureTerminals(id: string, role: Role): boolean {
     let found = false;
     for (const graph of this.graphs) {
@@ -253,8 +276,9 @@ class TurbopackConsumers {
     const parents = this.incoming.get(id) ?? new Set<string>();
     if (!terminal && parents.size === 0) refuse('unclosed protected factory chain');
     for (const parent of parents) {
-      const factory = this.factories.get(parent);
-      if (factory === undefined) refuse('unknown protected consumer');
+      const incoming = this.factories.get(parent);
+      if (incoming === undefined) refuse('unknown protected consumer');
+      const factory = this.strictFactory(incoming);
       if (forwarded(factory) === id) await this.visit(parent, role);
       else {
         if (role !== 'factory') refuse('route class/handler used outside normalization');

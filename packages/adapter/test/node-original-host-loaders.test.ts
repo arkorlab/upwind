@@ -234,13 +234,38 @@ describe('retained original CommonJS host-loader sites', () => {
     },
   );
 
-  it('does not silently transpile unsupported original TypeScript syntax', async () => {
+  it('lowers authored TypeScript for analysis while keeping physical source bytes', async () => {
     entry = path.join(directory, 'entry.cts');
+    const source = 'const value: number=1;exports.value=value;';
+    const { chunk, proof } = await bundleSource(source);
 
-    await expect(bundleSource('const value: number=1;exports.host=module;')).rejects.toThrow(
-      'cannot parse an executable module',
-    );
+    expect(proof.retained(chunk)).toStrictEqual([]);
+    await expect(readFile(entry, 'utf8')).resolves.toBe(source);
   });
+
+  it.each([
+    [
+      'ambient declaration',
+      'declare const module:{require:(name:string)=>unknown};exports.load=(name:string)=>module.require(name);',
+    ],
+    ['cast', 'exports.load=(name:string)=>(module as any).constructor._load(name);'],
+    ['enum initializer', 'enum Value { Native=module.require("./unowned") }exports.Value=Value;'],
+  ])(
+    'binds retained TypeScript %s sites to transformed offsets and original SHA',
+    async (_name, source) => {
+      entry = path.join(directory, 'entry.cts');
+      const { chunk, proof } = await bundleSource(source);
+      const retained = proof.retained(chunk);
+
+      expect(retained.length).toBeGreaterThan(0);
+      expect(
+        retained.every(
+          (site) => site.sha256 === digest(source) && site.analysisSha256 !== site.sha256,
+        ),
+      ).toBe(true);
+      await expect(readFile(entry, 'utf8')).resolves.toBe(source);
+    },
+  );
 
   it('rejects the reserved prefix on a retained CommonJS TypeScript input', async () => {
     entry = path.join(directory, 'entry.cts');

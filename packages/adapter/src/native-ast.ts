@@ -130,6 +130,7 @@ function nativeBinding(scope: NativeScope | undefined, name: string): Node | nul
 }
 
 function patternChildren(pattern: Node, members: boolean): Node[] {
+  // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- Non-binding AST kinds intentionally use the leaf/member default.
   switch (pattern.type) {
     case 'ObjectPattern': {
       return pattern.properties.map((property) =>

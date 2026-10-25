@@ -112,7 +112,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 describe('the shipped manifest normalization boundary', () => {
-  it.each(['route', 'distDir', 'entry-bytes', 'runtime-root'] as const)(
+  it.each(['route', 'distDir', 'entryBytes', 'runtimeRoot'] as const)(
     'rejects a changed %s after sealing the original entry inventory',
     async (change) => {
       const directory = await mkdtemp(path.join(tmpdir(), 'upwind-node-entry-seal-'));
@@ -147,13 +147,13 @@ describe('the shipped manifest normalization boundary', () => {
           distDir: () => {
             Object.assign(files.input.patch, { distDir: otherDist });
           },
-          'entry-bytes': () => {
+          entryBytes: () => {
             files.files.set('upwind/app.cjs', {
               name: 'upwind/app.cjs',
               bytes: new TextEncoder().encode('module.exports={};'),
             });
           },
-          'runtime-root': () => {
+          runtimeRoot: () => {
             Object.assign(files.input, { repoRoot: otherDist });
           },
         };
