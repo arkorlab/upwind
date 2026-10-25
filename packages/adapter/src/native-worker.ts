@@ -8,6 +8,7 @@ import { ownedNativeFiles } from './native-ownership.ts';
 type WorkerOrigin = 'constructor' | 'namespace' | 'module' | 'promise' | 'ambiguous';
 const IMPORTS = new WeakMap<readonly Node[], ReadonlyMap<Node, WorkerOrigin>>();
 const PROMISE_METHODS: ReadonlySet<string> = new Set(['catch', 'finally', 'then']);
+const WORKER_MODULES: ReadonlySet<string> = new Set(['node:worker_threads', 'worker_threads']);
 interface WorkerContext {
   readonly bindings: NativeBindings;
   readonly imports: ReadonlyMap<Node, WorkerOrigin>;
@@ -17,7 +18,7 @@ function importedWorkers(
   node: Extract<Node, { type: 'ImportDeclaration' }>,
   imports: Map<Node, WorkerOrigin>,
 ): void {
-  if (!['node:worker_threads', 'worker_threads'].includes(stringOf(node.source) ?? '')) return;
+  if (!WORKER_MODULES.has(stringOf(node.source) ?? '')) return;
   for (const specifier of node.specifiers) {
     const selected = specifier.type === 'ImportSpecifier' ? specifier.imported : undefined;
     const name = selected?.type === 'Identifier' ? selected.name : stringOf(selected);
@@ -151,10 +152,7 @@ function workerOrigin(
   if (seen.has(node)) return undefined;
   const next = new Set([...seen, node]);
   if (node.type === 'Identifier') return declaredOrigin(node, context, next);
-  if (
-    node.type === 'ImportExpression' &&
-    ['node:worker_threads', 'worker_threads'].includes(stringOf(node.source) ?? '')
-  )
+  if (node.type === 'ImportExpression' && WORKER_MODULES.has(stringOf(node.source) ?? ''))
     return 'promise';
   if (node.type === 'AwaitExpression') {
     const origin = workerOrigin(node.argument, context, next);
@@ -205,6 +203,59 @@ function returnedCapability(node: Node, context: WorkerContext): Node | undefine
   if (node.type === 'ArrowFunctionExpression' && node.expression) value = node.body;
   if (value === undefined || workerOrigin(value, context) === undefined) return undefined;
   return capabilityReceiver(value, context);
+}
+
+function exportedPattern(pattern: Node, context: WorkerContext): boolean {
+  let value = pattern;
+  while (value.type === 'AssignmentPattern' || value.type === 'RestElement')
+    value = value.type === 'AssignmentPattern' ? value.left : value.argument;
+  if (value.type === 'Identifier') return workerOrigin(value, context) !== undefined;
+  if (value.type === 'ArrayPattern')
+    return value.elements.some((element) => element !== null && exportedPattern(element, context));
+  if (value.type === 'ObjectPattern')
+    return value.properties.some((property) =>
+      exportedPattern(property.type === 'Property' ? property.value : property.argument, context),
+    );
+  return false;
+}
+
+function exportedCapability(node: Node, context: WorkerContext): boolean {
+  if (node.type === 'ExportAllDeclaration') return WORKER_MODULES.has(stringOf(node.source) ?? '');
+  if (node.type === 'ExportDefaultDeclaration')
+    return workerOrigin(node.declaration, context) !== undefined;
+  if (node.type === 'AssignmentExpression') return workerOrigin(node.right, context) !== undefined;
+  if (node.type !== 'ExportNamedDeclaration') return false;
+  if (node.source !== null) {
+    if (!WORKER_MODULES.has(stringOf(node.source) ?? '')) return false;
+    return node.specifiers.some((specifier) => {
+      const name =
+        specifier.local.type === 'Identifier' ? specifier.local.name : stringOf(specifier.local);
+      return name === 'Worker' || name === 'default';
+    });
+  }
+  const declared = node.declaration;
+  if (
+    declared?.type === 'VariableDeclaration' &&
+    declared.declarations.some((item) => exportedPattern(item.id, context))
+  )
+    return true;
+  return node.specifiers.some((specifier) => workerOrigin(specifier.local, context) !== undefined);
+}
+
+/** Inspect only the tree-shaken chunk; exports receive no eager source marker. */
+export function hasRetainedWorkerCapability(
+  tree: readonly Node[],
+  bindings: NativeBindings,
+): boolean {
+  const context = { bindings, imports: workerImports(tree) };
+  return tree.some((node) => {
+    if (returnedCapability(node, context) !== undefined || exportedCapability(node, context))
+      return true;
+    return (
+      (node.type === 'CallExpression' || node.type === 'NewExpression') &&
+      invokedCapability(node, context) !== undefined
+    );
+  });
 }
 
 export async function nativeWorkerEdit(

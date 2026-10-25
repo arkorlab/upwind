@@ -16,6 +16,7 @@ import {
   type NativeOperationContext,
 } from './native-operations.ts';
 import { nativeSourceAnalysis } from './native-source-parser.ts';
+import { assertRetainedNativeWorkerCapability } from './native-worker-retained.ts';
 import { nativeWorkerEdit } from './native-worker.ts';
 
 const MARKER = '__UPWIND_NATIVE_CAPABILITY__';
@@ -171,7 +172,8 @@ export function nativeLoadsPlugin(
       },
     },
     async retained(chunk) {
-      const tree = walk(parseAst(chunk.code));
+      const program = parseAst(chunk.code);
+      const tree = walk(program);
       const ids = new Set(
         tree.flatMap((node) => {
           if (node.type !== 'CallExpression' || !identifier(node.callee, MARKER)) return [];
@@ -193,6 +195,7 @@ export function nativeLoadsPlugin(
           'A retained Node Worker has unclassified owned native child dependencies',
         );
       }
+      if (candidates) await assertRetainedNativeWorkerCapability(chunk, program, tree, traces);
       return retained;
     },
   };
