@@ -4,7 +4,9 @@ import type { EdgePointer } from '@stayingupwind/host/delivery';
 import type { EdgeBindings } from '../bindings.ts';
 import type { EdgeHost } from '../edge-host.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
-import type { IncomingRequest } from '../request-context.ts';
+import { observeTerminal } from '../handlers/observer.ts';
+import { serviceUnavailableResponse } from '../handlers/responses.ts';
+import { coloOf, type IncomingRequest } from '../request-context.ts';
 import type { RoutingInput } from '../route.ts';
 import type { StaticFileContext } from '../strategies/context.ts';
 import { getManifest, getPolicyForPointer, type PolicyLookup } from './manifest.ts';
@@ -119,6 +121,26 @@ export async function servePointerRequest(
     // The pointer selected this name. A shipped file uses none of the policy's settings.
     policy: { id: pointer.policyId },
   };
+  // With no routing manifest a read may be of any gated route. The publisher's pointer keeps
+  // that admission requirement independently of the manifest; a failed read must not erase it.
+  if (
+    pointer.hasGates === true &&
+    state.manifest === undefined &&
+    (request.method === 'GET' || request.method === 'HEAD')
+  ) {
+    const reason = 'gate-manifest-unavailable';
+    observeTerminal(host, {
+      projectId: pointer.projectId,
+      pathname: url.pathname,
+      outcomeKind: reason,
+      colo: coloOf(request) ?? '',
+      manifestId: state.manifestId,
+      policyId: pointer.policyId,
+      pointerLookupMs: input.pointerMs,
+      manifestLookupMs: manifestMs,
+    });
+    return serviceUnavailableResponse(reason);
+  }
   const timings = {
     requestStartedAt: input.requestStartedAt,
     pointerMs: input.pointerMs,

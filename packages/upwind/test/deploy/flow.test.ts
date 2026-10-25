@@ -4,9 +4,14 @@ import { agentTakesKey } from '../../src/deploy/agent-client.ts';
 import { type AgentInput, openAgent } from '../../src/deploy/agent-session.ts';
 import { createCloudflareClient } from '../../src/deploy/cloudflare/client.ts';
 import { runDeploy } from '../../src/deploy/command.ts';
+import type { DeploySettings } from '../../src/deploy/config.ts';
+import { deployToAccount } from '../../src/deploy/deploy-run.ts';
 import { functionScriptName, projectNames } from '../../src/deploy/names.ts';
+import { preflight } from '../../src/deploy/preflight.ts';
 import { shippedWorkers } from '../../src/deploy/shipped.ts';
 import { READINESS_PATH } from '../../src/deploy/workers/protocol.ts';
+import { bundleOf, deployableFunction, projectDir, writeBundle } from './bundle.ts';
+import { fakeCloudflare } from './fake-cloudflare.ts';
 import {
   buildIn,
   deployableProject,
@@ -631,4 +636,53 @@ describe('`upwind deploy` stopped part way, and run again', () => {
       before,
     );
   });
+});
+
+describe('a route gate the command cannot bind', () => {
+  it.each(['/', '/robots.txt'])(
+    'refuses before reaching an account when checks name %s',
+    async (check) => {
+      const dir = projectDir();
+      writeBundle(dir, bundleOf(deployableFunction(dir), { gates: { '/': 'members' } }));
+      const settings: DeploySettings = {
+        file: undefined,
+        project: PROJECT,
+        workersDev: true,
+        hostnames: [],
+        keep: 5,
+        storage: [],
+        secrets: [],
+        images: false,
+        checks: [check],
+        cspNonce: undefined,
+        logs: false,
+      };
+      const secrets: ReadonlyMap<string, string> = new Map();
+      const plan = await preflight({ projectDir: dir, settings, secrets });
+      const remote = fakeCloudflare();
+      // A missing refusal stops at the first lock request rather than uploading any Worker.
+      remote.fail({ method: 'POST', path: '/r2/buckets' }, 400);
+
+      await expect(
+        deployToAccount({
+          scope: {
+            client: createCloudflareClient({ apiToken: 'token', fetch: remote.fetch }),
+            accountId: 'account-1',
+          },
+          settings,
+          plan,
+          secrets,
+          message: undefined,
+          resetCacheKey: false,
+          fetch: remote.fetch,
+        }),
+      ).rejects.toThrow('the build declares route gates, which `upwind deploy` does not bind yet');
+
+      expect({
+        remoteCalls: remote.requests.length + remote.workersDevRequests.length,
+        workers: remote.scripts.size,
+        buckets: remote.buckets.size,
+      }).toStrictEqual({ remoteCalls: 0, workers: 0, buckets: 0 });
+    },
+  );
 });

@@ -158,7 +158,7 @@ interface CheckInput {
   readonly now?: (() => number) | undefined;
 }
 
-/** What the build has that a self-hosted deployment cannot run yet: workflows, Durable Objects. */
+/** What the build has that this command cannot run yet: workflows, Durable Objects, gates. */
 function unsupported(bundle: DeploymentBundle): string[] {
   const problems: string[] = [];
   if (
@@ -184,6 +184,11 @@ function unsupported(bundle: DeploymentBundle): string[] {
   if (objects.size > 0) {
     problems.push(
       `the build has Durable Objects of its own (${[...objects].join(', ')}), which a self-hosted deployment does not bind yet`,
+    );
+  }
+  if (bundle.gates !== undefined) {
+    problems.push(
+      'the build declares route gates, which `upwind deploy` does not bind yet; deploy it with a host that binds those gates',
     );
   }
   return problems;

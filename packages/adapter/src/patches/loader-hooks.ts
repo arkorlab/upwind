@@ -28,6 +28,16 @@ import { RAW_BODY_MODULE, RAW_BODY_SOURCE } from './raw-body.ts';
  * SDK requires it, and an application whose instrumentation started one answered every render
  * with a 500 (`cache-components-allow-otel-spans`).
  *
+ * The `require` that `createRequire` hands out is workerd's as well, and does not find it either.
+ * A package compiled to an ES module may load its built-ins through one at run time, where no
+ * bundler sees the name: esbuild's output calls whatever `require` is in scope, and a package that
+ * runs on Node.js puts one there with `createRequire(import.meta.url)`. `@vercel/otel`'s Node.js
+ * build loads `process` that way while it is evaluated, so the instrumentation hook that registers
+ * it threw as it loaded, and every request that reached the Function was a 500
+ * (`otel-middleware-trace`). So `node:module` is workerd's own with that one function replaced:
+ * the `require` it makes answers `node:process` with the global, as above, and every other name
+ * as workerd's does.
+ *
  * Two modules Next.js ships are carried for code that cannot run in a Function, and resolve to a
  * module that says so if it is ever loaded:
  *
@@ -48,6 +58,30 @@ const LOADER_HOOKS = /^(?:require-in-the-middle|import-in-the-middle)(?:-[0-9a-f
 const OPTIONAL_MODULES = /^critters$/u;
 const PROCESS_MODULE = /^(?:node:)?process$/u;
 const PROCESS_SOURCE = 'module.exports = globalThis.process;';
+/** `node:module`, under either spelling; `stubPlugin` gives both one module, as Node.js does. */
+export const NODE_MODULE_MODULE = /^(?:node:)?module$/u;
+/**
+ * workerd's `node:module` behind a proxy that answers only `createRequire` with a function of its
+ * own. The `require` that function makes answers `node:process` with the global, hands every other
+ * name to the one workerd's `createRequire` made, and reads that one's properties as its own. Every
+ * other property of the module is read and written through to workerd's — `_resolveFilename` too,
+ * which Next.js's require hook replaces — and the stub's own require of `node:module` is workerd's,
+ * since a stub's requires are never stubbed (`stubPlugin`).
+ */
+const NODE_MODULE_SOURCE = `const builtin = require("node:module");
+const PROCESS = ${String(PROCESS_MODULE)};
+function createRequire(from) {
+  const required = builtin.createRequire(from);
+  return Object.setPrototypeOf(function requireFrom(id) {
+    return PROCESS.test(id) ? globalThis.process : required(id);
+  }, required);
+}
+module.exports = new Proxy(builtin, {
+  get(target, key, receiver) {
+    return key === "createRequire" ? createRequire : Reflect.get(target, key, receiver);
+  },
+});
+`;
 /** Next.js's own name for the package, or the hashed one Turbopack may give an external of it. */
 const WEBSOCKET_MODULE = /^next(?:-[0-9a-f]+)?\/dist\/compiled\/ws$/u;
 const WEBSOCKET_SOURCE =
@@ -123,6 +157,7 @@ export function isStubbedModule(specifier: string): boolean {
     OPTIONAL_MODULES.test(specifier) ||
     RAW_BODY_MODULE.test(specifier) ||
     PROCESS_MODULE.test(specifier) ||
+    NODE_MODULE_MODULE.test(specifier) ||
     WEBSOCKET_MODULE.test(specifier)
   );
 }
@@ -147,6 +182,9 @@ export function stubSourceFor(specifier: string): string {
   }
   if (PROCESS_MODULE.test(specifier)) {
     return PROCESS_SOURCE;
+  }
+  if (NODE_MODULE_MODULE.test(specifier)) {
+    return NODE_MODULE_SOURCE;
   }
   return OPTIONAL_MODULES.test(specifier) ? UNSUPPORTED_SOURCE : STUB_SOURCE;
 }

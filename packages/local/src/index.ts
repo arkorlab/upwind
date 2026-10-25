@@ -15,6 +15,7 @@ export {
   type DeploymentFunctions,
   type FunctionBindings,
 } from './functions.ts';
+export { type LocalGate } from './gates.ts';
 export {
   bundleStackScripts,
   type CspNonceSetting,
