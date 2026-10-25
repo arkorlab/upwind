@@ -21,6 +21,7 @@
     "check:deploy-tests": "node tools/deploy-tests/src/check.ts",
     "check:deploy-cloudflare": "node packages/upwind/scripts/check-deploy.ts",
     "check:preview": "node packages/upwind/scripts/check-preview.ts",
+    "check:native": "node packages/upwind/scripts/check-native.ts",
     "test:deploy": "node tools/deploy-tests/src/main.ts",
     "format": "oxfmt --check",
     "format:write": "oxfmt",

@@ -1,4 +1,4 @@
-import { rm } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -55,6 +55,35 @@ async function main(): Promise<void> {
   const [entry] = output;
   const bytes = Buffer.byteLength(entry.code);
   console.log(`dist/index.js: ${String(bytes)} bytes, ${String(output.length)} chunk(s)`);
+  // These templates contain the private host/cache packages. An installed adapter copies the
+  // finished JavaScript; a customer never has to install the host's workspace-only packages.
+  const nativeDir = path.join(OUT_DIR, 'native');
+  await mkdir(nativeDir, { recursive: true });
+  for (const [name, source] of [
+    ['server', path.join(ROOT, 'src/native/server.ts')],
+    ['cache-worker', fileURLToPath(new URL('../../cache/src/native/worker.ts', import.meta.url))],
+  ] as const) {
+    await using native = await rolldown({
+      input: source,
+      platform: 'node',
+      external: [/^node:/u],
+      plugins: [
+        {
+          name: 'native-host-function',
+          resolveId: (id) =>
+            id === 'arkor:native-function' ? { id: './function.mjs', external: true } : null,
+        },
+      ],
+      onLog(_level, log) {
+        if (log.code === 'UNRESOLVED_IMPORT') throw new Error(log.message);
+      },
+    });
+    await native.write({
+      file: path.join(nativeDir, `${name}.mjs`),
+      format: 'esm',
+      codeSplitting: false,
+    });
+  }
 }
 
 await main();

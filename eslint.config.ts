@@ -565,6 +565,16 @@ export default defineConfig([
     rules: { 'import-x/no-nodejs-modules': 'error' },
   },
 
+  // The native cache is explicitly Node-only. Worker thread messages are not window messages.
+  {
+    files: ['packages/cache/src/native/**/*.ts', 'packages/cache/test/native/**/*.ts'],
+    rules: {
+      'no-restricted-imports': 'off',
+      'import-x/no-nodejs-modules': 'off',
+      'unicorn/require-post-message-target-origin': 'off',
+    },
+  },
+
   // This local Worker has nodejs_compat; its async context attributes only its own reads.
   // Other Workers and Node built-ins retain their existing restrictions.
   {

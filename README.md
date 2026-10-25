@@ -214,6 +214,23 @@ Your app needs Next.js in [the supported range](#-which-nextjs), built with Turb
 
 Then add `.arkor/`, which a build writes, and `.upwind/`, where local storage is kept, to `.gitignore`.
 
+### Run on native Node.js
+
+```bash
+pnpm upwind build --target=node
+pnpm upwind start --port 3000
+```
+
+This opt-in target writes `.arkor/node/`: a Node server, the application's traced dependencies,
+static files, and a persistent cache for one server process. It needs no Cloudflare account,
+Miniflare, or workerd. The default build and Cloudflare deployment continue to use Workers.
+
+Copy `.arkor/node/` to another directory and run `node server.mjs` there to serve it directly.
+Native addons retain the build machine's operating-system and architecture requirements.
+Use `upwind start --origin https://app.example --cache-dir /var/lib/upwind` behind a proxy;
+the configured origin is trusted, while client-supplied forwarding headers are discarded.
+See the [native server options and supported features](packages/upwind/README.md#native-nodejs).
+
 ## 💡 Why upwind
 
 <table>
@@ -475,7 +492,9 @@ Yes — it is your Next.js. With `adapterPath` set in `next.config`, a plain `ne
 <details>
 <summary><b>Why is there no <code>start</code> script?</b></summary>
 
-Because a deployment never runs one: what serves your app is the bundle — Functions behind an edge — not a Node.js server of your own. To run that bundle on your machine, as it is deployed, there is `pnpm preview` (`upwind preview`) after `pnpm build`.
+The default Cloudflare deployment serves Functions behind an edge and needs no start script.
+After `pnpm build`, `pnpm preview` (`upwind preview`) runs that bundle locally.
+For a native Node deployment, build with `upwind build --target=node` and add `"start": "upwind start"`.
 
 </details>
 

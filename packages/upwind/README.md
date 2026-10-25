@@ -217,6 +217,43 @@ way. A build whose environment names an adapter (`NEXT_ADAPTER_PATH`) or a host
 another version than `upwind` is built without the host, and says so: the host is `upwind`'s own,
 made for the runtime of its version.
 
+## Native Node.js
+
+```bash
+upwind build --target=node
+upwind start [directory] --port 3000 --hostname 0.0.0.0
+```
+
+The native target emits `.arkor/node/` and runs on Node.js 24.10 or later. An explicit adapter
+`target` conflicting with the CLI's target fails the build. Cloudflare remains the default.
+Node builds neither start local Cloudflare storage nor include Workers-only compatibility patches.
+
+`start` accepts `-p, --port` (`PORT`, otherwise 3000), `-H, --hostname` (otherwise `0.0.0.0`),
+`--origin`, `--cache-dir`, and repeated `--env-file` arguments. Existing environment variables
+win over environment files; a later file wins over an earlier one. With `--origin`, the application
+sees that public origin even behind a TLS-terminating proxy. Client forwarding and internal control
+headers are removed at the public boundary. Without it, the direct HTTP request's Host is used.
+
+The artifact can be relocated and started with `node server.mjs`. For direct execution set `PORT`,
+`UPWIND_NODE_HOSTNAME`, `UPWIND_NODE_ORIGIN`, or `UPWIND_NODE_CACHE_DIR` as needed. The writable cache
+defaults to `.upwind/node-cache/<deploymentId>/`, relative to the original working directory (the
+project directory for `upwind start`), outside the immutable artifact. When direct execution starts
+inside the artifact, the default instead uses its parent's `.upwind/node-cache/`. Persist that directory across
+restarts. One process owns a deployment cache; a second process opening it is refused. Rebuilding
+creates a new immutable deployment and a distinct cache scope. Native addons must match the runtime's
+OS, architecture, and Node ABI.
+
+Routing, middleware/proxy, PPR streaming, Server Actions, RSC, ISR and tag invalidation use the shared
+runtime. Images retain its original-source fallback. Cloudflare storage, Durable Objects, Containers,
+Cloudflare Workflows, hosted Workflow Worlds, route gates, host cron jobs, and edge CSP nonce handling
+are unavailable on this target and are rejected when declared. Project instrumentation remains
+available. This target does not connect a Cloudflare edge to a Node origin or coordinate caches
+between servers.
+
+On SIGINT or SIGTERM the server stops accepting requests and drains accepted responses, handler work,
+`waitUntil` tasks and cache writes for up to 30 seconds. A crash or the shutdown deadline can still
+interrupt application work; the task group is not a durable queue.
+
 ## Storage during a build
 
 A page can read the project's own storage while it prerenders — `generateStaticParams` pulling its
@@ -320,7 +357,13 @@ nothing, so a change is seen once the project is built again, and it deploys not
   build older than files of the project — its sources, its configuration, an `.env` file, the
   lockfile an upgrade rewrote — is served as it was built, and the files are named. So is a Function
   built without the runtime cache's host, by an older upwind or a plain `next build`: every cache
-  read of it is a miss. And no cron job fires.
+  read of it is a miss.
+- **Cron jobs fire only with `--crons`.** Each job of the build is then a GET of its path on its
+  schedule, in UTC, sent as a deployment's edge sends it — `user-agent: upwind-cron/1.0`, the
+  schedule in `x-vercel-cron-schedule`, and `CRON_SECRET` as a bearer token where the secrets hold
+  one — and each answer is printed. Without it, none fires: a preview beside a deployment of the
+  same project would run every job twice, against whatever both of them reach. A job is not tried
+  again, and one missed while the machine slept is not made up.
 - **`--check` asks the build once and ends**, for a job in CI: every route and file of the build, as
   a deployment's edge has to answer it, and each of `deploy.checks`, as a deploy asks it before it
   switches. It ends with `1` where anything answered otherwise, and listens on a free port unless
@@ -501,6 +544,7 @@ upwind destroy [directory] --yes
   -H, --hostname <host>  Hostname to bind, `dev` only (default: every interface)
       --remote-ai        Enable declared Workers AI bindings, `dev` only
       --check            Ask the build once and stop, rather than serve it, `preview` only
+      --crons            Fire the build's cron jobs on their schedules, `preview` only
       --dry-run          Say what a deploy would do and change nothing, `deploy` only
       --build-only       Build for a deploy and stop, `deploy` only
       --prebuilt         Deploy what --build-only built, `deploy` only

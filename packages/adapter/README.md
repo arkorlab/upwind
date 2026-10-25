@@ -1,5 +1,32 @@
 # @stayingupwind/adapter
 
+## Native Node deployments
+
+`upwind build --target=node` selects a native Node.js deployment instead of the default Cloudflare
+deployment. A project can also export `createAdapter({ target: 'node' })` from its adapter module.
+An explicit adapter target that conflicts with `UPWIND_BUILD_TARGET` fails the build.
+
+The resulting `.arkor/node/` directory contains `server.mjs`, a dedicated `manifest.json`, the
+shared routing/runtime code, build outputs and traced Node dependencies. Run it with `upwind start`
+or `node .arkor/node/server.mjs`. The directory can be moved independently of the application's
+source and installed packages, on the same operating system and architecture as its native addons.
+It requires neither Cloudflare bindings nor a Workers emulator. Environment files are not copied;
+give secrets to the server at runtime.
+
+The native build retains Node's module loader and native addons. It does not apply Workers-only
+module stubs, task-scheduler rewrites or upload-size limits. Static files still pass through the
+shared router and middleware. PPR, RSC, Server Actions and revalidation use the same runtime
+contracts as the Cloudflare build; image requests retain the runtime's source-image fallback.
+
+Native deployments use one process and a persistent local cache. Cloudflare Durable Objects,
+Containers, Workflows and storage bindings, host route gates, scheduled jobs and edge CSP nonces
+are not emulated. A build that requires those capabilities fails with a diagnostic. Host-added
+instrumentation and a host Workflow World are currently unsupported; the application's own
+Next.js instrumentation is preserved.
+`cacheHostModule` is rejected for the native target, whose persistent local cache is configured by
+the server's cache-directory option. Function split budgets apply to Cloudflare deployments;
+every native route runs in the same process.
+
 Bundles declare `aiInference: 1` at the top level when their runtime supports publishing inference-only
 AI service bindings. The marker is independent of the bundle version and resource manifest version.
 A host must require it before publishing an AI-enabled deployment, including an uploaded bundle.

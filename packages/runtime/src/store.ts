@@ -25,7 +25,8 @@ import { ByteLru } from '@stayingupwind/core/util';
  * a deployment is immutable, so the bytes shipped with the code are the truth for its lifetime.
  */
 
-const BUNDLE_ROOT = '/bundle';
+const BUNDLE_ROOT =
+  typeof __ARKOR_BUNDLE_ROOT__ === 'undefined' ? '/bundle' : __ARKOR_BUNDLE_ROOT__;
 const RUNTIME_MANIFEST = 'runtime.json';
 /** What `next build` puts in front of a dynamic route's pattern in an application with `i18n`. */
 const LOCALE_PATTERN = '[/]?(?<nextLocale>[^/]{1,})';

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 
 import { handleAsNodeRequest } from 'cloudflare:node';
 
-import type { NodeHandler } from './app-module.ts';
+import { changesSomething, type InvokeInput, type Run } from './invocation.ts';
 import { runWithTaskScheduler } from './tasks.ts';
 
 /**
@@ -20,46 +20,8 @@ import { runWithTaskScheduler } from './tasks.ts';
  * whatever object is handed to `handleAsNodeRequest`.
  */
 
-/**
- * The async context a handler runs in. The server's request event is its own context: what the
- * request established with `AsyncLocalStorage` before it crossed the loopback (its clock, its
- * platform hooks) is re-established around the handler by this.
- */
-export type Run = <T>(work: () => Promise<T>) => Promise<T>;
-
-/** How a handler that threw before it sent anything is answered, in place of plain text. */
-export type FailureAnswer = (request: IncomingMessage, response: ServerResponse) => Promise<void>;
-
-export interface InvokeInput {
-  readonly handler: NodeHandler;
-  readonly request: Request;
-  /** Path and query the handler sees as `req.url` (after rewrites), defaulting to the request's. */
-  readonly url?: string | undefined;
-  readonly requestMeta: Record<string, unknown>;
-  readonly waitUntil: (promise: Promise<unknown>) => void;
-  readonly run?: Run | undefined;
-  /**
-   * The handler is expected to answer through a callback rather than the response (a render
-   * the platform captures): a response it did not commit is ended empty rather than left open.
-   */
-  readonly expectNoResponse?: boolean | undefined;
-  /** The route's own answer to a failure, when it has one: the Pages Router's error page. */
-  readonly onFailure?: FailureAnswer | undefined;
-  /**
-   * The status the response starts at, for a render that reads it: Next.js sets a not-found's 404
-   * before it renders the Pages Router's error page, whose `getInitialProps` reads the status off
-   * the response, and sends whatever status the response then has.
-   */
-  readonly status?: number | undefined;
-}
-
-/** The methods that ask for something and change nothing (RFC 9110, "Safe Methods"). */
-const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
-
-/** Whether a request with this method may change something before answering. */
-export function changesSomething(method: string): boolean {
-  return !SAFE_METHODS.has(method);
-}
+export type { FailureAnswer, InvokeInput, Run } from './invocation.ts';
+export { changesSomething } from './invocation.ts';
 
 /** A port on the Function's own loopback: nothing listens there but this server. */
 const BRIDGE_PORT = 18_080;

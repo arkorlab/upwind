@@ -41,7 +41,7 @@ async function builtProject(handler = ANSWERING, config?: unknown): Promise<stri
 }
 
 function optionsFor(dir: string, port = 0): PreviewOptions {
-  return { projectDir: dir, port, envFiles: [], check: false };
+  return { projectDir: dir, port, envFiles: [], check: false, crons: false };
 }
 
 /** The site asked once it serves: what it answered, and where. */

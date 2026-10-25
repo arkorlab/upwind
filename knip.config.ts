@@ -14,7 +14,11 @@ const config: KnipConfig = {
     // `playwright` is installed and run inside the Next.js checkout the deploy-tests workflow makes,
     // which is not a dependency of this repository and never will be.
     '.': { ignoreBinaries: ['playwright'] },
-    'packages/adapter': {},
+    // Native host templates are bundled by path; their Function import is generated per build.
+    'packages/adapter': {
+      entry: ['src/native/server.ts'],
+      ignoreDependencies: ['arkor'],
+    },
     // Three entry points, and `exports` names the `dist` they are built into — the same arrangement
     // as the SDK below, and named here for the same reason.
     'packages/auth': { entry: ['src/{index,next,client}.ts'] },
@@ -34,7 +38,11 @@ const config: KnipConfig = {
     'packages/create-upwind': { ignore: ['templates/**'] },
     // `arkor:*` are the modules the adapter generates beside the runtime and resolves for it;
     // `cloudflare:*` are the Workers runtime's own. Neither is an npm package.
-    'packages/runtime': { ignoreDependencies: ['cloudflare', 'arkor'] },
+    'packages/runtime': {
+      // The native compiler selects these through build-time aliases rather than source imports.
+      entry: ['src/native/{function,environment,cache-host}.ts'],
+      ignoreDependencies: ['cloudflare', 'arkor'],
+    },
     // Seven entry points, and `exports` names the `dist` they are built into — so the sources behind
     // them are named here rather than looked for through files this has not built.
     'packages/sdk': {

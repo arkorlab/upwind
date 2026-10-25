@@ -8,6 +8,7 @@ import {
   type DeploymentBundle,
   deploymentBundleSchema,
 } from '@stayingupwind/core/bundle';
+import type { CronJob } from '@stayingupwind/core/cron';
 import {
   checkStack,
   type LocalStack,
@@ -21,8 +22,10 @@ import type { StorageBinding, StorageKind } from '../deploy/config.ts';
 import { readSecrets, reservedNames } from '../deploy/env.ts';
 import { AUTH_SECRETS, BUNDLE_PATH, carriesCacheHost } from '../deploy/preflight.ts';
 import { shippedStackScripts } from '../deploy/shipped.ts';
+import { CRON_SECRET } from '../deploy/workers/protocol.ts';
 import type { PreviewOptions } from './args.ts';
 import { failedChecks } from './checks.ts';
+import { type RunningCronJobs, startCronJobs } from './crons.ts';
 import { type PreviewSettings, readPreviewSettings } from './settings.ts';
 import { changedSinceBuild } from './staleness.ts';
 
@@ -35,9 +38,9 @@ import { changedSinceBuild } from './staleness.ts';
  * What a deployment is given that the build does not say comes from the project's `deploy` section,
  * as a deploy reads it: the secrets, the nonce, the hostnames the site is reached on, the paths a
  * deploy asks before it switches, the storage its Functions bind — each a store of the preview's
- * own, empty — and whether the edge transforms images. What a deploy does that a preview does not
- * yet — cron jobs fired — is said rather than left to be found, and so is a build older than the
- * project it serves.
+ * own, empty — and whether the edge transforms images. The build's cron jobs fire only where
+ * `--crons` asks (`crons.ts`), which a preview that fires none says; and a build older than the
+ * project it serves is said rather than left to be found.
  */
 
 /** What a run waits on and is told of, where a test runs it: in place of a signal, the stack. */
@@ -133,11 +136,12 @@ function storageOf(bindings: readonly StorageBinding[]): LocalStorage {
 
 /** What a preview serves otherwise than a deployment would, or than the project may expect. */
 async function warningsOf(
-  projectDir: string,
+  options: PreviewOptions,
   build: Build,
   settings: PreviewSettings,
   secrets: ReadonlyMap<string, string>,
 ): Promise<string[]> {
+  const { projectDir, crons } = options;
   const warnings: string[] = [];
   const stale = await staleness(projectDir, build);
   if (stale !== undefined) {
@@ -156,8 +160,14 @@ async function warningsOf(
       `the storage deploy.storage names — ${named} — is bound to stores of the preview's own, empty as it starts and gone when it stops`,
     );
   }
-  if ((build.bundle.crons?.length ?? 0) > 0) {
-    warnings.push('the project declares cron jobs, and a preview fires none of them');
+  const jobs = build.bundle.crons?.length ?? 0;
+  if (!crons && jobs > 0) {
+    warnings.push(
+      `the build declares ${String(jobs)} cron ${jobs === 1 ? 'job' : 'jobs'}, which a preview fires only with --crons`,
+    );
+  }
+  if (crons && jobs === 0) {
+    warnings.push('--crons is given, and the build declares no cron job to fire');
   }
   const signsIn = authLayout(projectDir) !== undefined;
   if (signsIn && AUTH_SECRETS.every((name) => (secrets.get(name) ?? '') === '')) {
@@ -235,11 +245,32 @@ async function warnOfChecks(
   }
 }
 
+/** The build's cron jobs a serving preview fires (`--crons`), and the secret each is sent. */
+interface CronFiring {
+  readonly jobs: readonly CronJob[];
+  readonly secret: string | undefined;
+}
+
+/** Fire the build's cron jobs on their schedules at the site, saying when the first fires. */
+function firingCrons(site: URL, firing: CronFiring): RunningCronJobs {
+  const running = startCronJobs({ jobs: firing.jobs, site, secret: firing.secret });
+  const [first] = running.next.toSorted((a, b) => a.at - b.at);
+  const count = firing.jobs.length;
+  const when =
+    first === undefined
+      ? 'though no schedule of them comes round again'
+      : `the first on "${first.schedule}", at ${new Date(first.at).toISOString()}`;
+  const jobs = count === 1 ? 'cron job on its schedule' : 'cron jobs on their schedules';
+  console.log(`upwind: firing ${String(count)} ${jobs}, in UTC — ${when}`);
+  return running;
+}
+
 /** Serve until stopped; what the run exits with. */
 async function serve(
   stackOptions: StackOptions,
   settings: PreviewSettings,
   io: PreviewIo,
+  crons: CronFiring | undefined,
 ): Promise<number> {
   const signals = io.stopped === undefined ? signalStop() : undefined;
   let stack: LocalStack;
@@ -253,9 +284,11 @@ async function serve(
     );
   }
   const asking = new AbortController();
+  let fired: RunningCronJobs | undefined;
   try {
     signals?.serving();
     console.log(`upwind: serving ${stack.deploymentId} at ${stack.url.href} (Ctrl-C to stop)`);
+    fired = crons === undefined ? undefined : firingCrons(stack.url, crons);
     const checked = warnOfChecks(stack.url, settings.checks, asking.signal);
     io.serving?.(stack);
     await (io.stopped ?? signals?.asked);
@@ -263,6 +296,8 @@ async function serve(
     await checked;
   } finally {
     asking.abort();
+    // Before the stack goes: no job fires on a stack being let go, and none under way is waited on.
+    await fired?.stop();
     await disposed(stack);
     signals?.release();
   }
@@ -332,7 +367,7 @@ export async function runPreview(options: PreviewOptions, io: PreviewIo = {}): P
     );
     return 1;
   }
-  const warnings = await warningsOf(options.projectDir, build, settings, secrets);
+  const warnings = await warningsOf(options, build, settings, secrets);
   for (const warning of warnings) {
     console.warn(`upwind: ${warning}`);
   }
@@ -347,5 +382,11 @@ export async function runPreview(options: PreviewOptions, io: PreviewIo = {}): P
     scripts: await shippedStackScripts(),
     log,
   };
-  return options.check ? check(stackOptions, settings) : serve(stackOptions, settings, io);
+  if (options.check) {
+    return check(stackOptions, settings);
+  }
+  const jobs = build.bundle.crons ?? [];
+  const crons =
+    options.crons && jobs.length > 0 ? { jobs, secret: secrets.get(CRON_SECRET) } : undefined;
+  return serve(stackOptions, settings, io, crons);
 }
