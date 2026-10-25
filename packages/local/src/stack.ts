@@ -107,6 +107,8 @@ const HOST_NAMES: readonly string[] = [
 ];
 /** Where the edge reads its pointer in `EDGE_STATE`. */
 const POINTER_KEY = 'pointer';
+/** The edge's Images binding, by the name a deployed standalone edge reads it under. */
+const IMAGES_BINDING = 'IMAGES';
 const PROJECT_ID = 'local';
 const RUN_ID = 'run_local';
 const OWNER = 'local';
@@ -157,6 +159,12 @@ export interface StackOptions {
    * is unavailable. A configured name absent from the loaded build is refused before workers start.
    */
   readonly gates?: Readonly<Record<string, LocalGate>> | undefined;
+  /**
+   * Whether the edge transforms what `/_next/image` asks for, as an edge a host binds Cloudflare
+   * Images to does (`IMAGES`): on this machine, by Miniflare's Images binding. Without it, the edge
+   * answers each image as it is.
+   */
+  readonly images?: boolean | undefined;
   /**
    * The stack's own Workers, bundled ahead of time (`bundleStackScripts`), for a command that runs
    * where upwind's sources are not; bundled from the sources as the stack starts when this names
@@ -484,6 +492,7 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
     ],
     services,
     stores,
+    workflowText: own.map(([name, value]) => ({ name, value, secret: false })),
   });
   const names = siteNamesOf(socket, options.hostnames ?? []);
   const workers: LocalWorker[] = [
@@ -495,6 +504,7 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
       bindings: { HOSTNAMES: names.hostnames, POINTER_KEY },
       kvNamespaces: { EDGE_STATE: STORES.edgeState, CACHE_STATE: STORES.cacheState },
       r2Buckets: { ARTIFACTS: STORES.artifacts },
+      ...(options.images === true && { images: IMAGES_BINDING }),
       services: {
         ...Object.fromEntries(
           functions.workers.map((worker) => [functionBinding(worker.name), worker.name]),
@@ -534,6 +544,12 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
     },
     // What each Function fetches itself, the site's own pages among it, through the router.
     ...functions.workers.map((worker) => ({ ...worker, outbound: WORKERS.outbound })),
+    ...(functions.backgroundWorkers ?? []).map((worker) => {
+      return {
+        ...worker,
+        outbound: WORKERS.outbound,
+      };
+    }),
   ];
   const running = await runWorkers(workers, options.log ?? ignore, options.signals);
   try {

@@ -37,6 +37,8 @@
     "./host": "./src/authority-host.ts",
     "./internal/*": "./src/*",
     "./logger": "./src/logger.ts",
+    "./native": "./src/native/index.ts",
+    "./native-worker": "./src/native/worker.ts",
     "./prefetch-worker": "./src/prefetch/worker.ts",
     "./read-gateway": "./src/read-gateway.ts",
     "./standalone/naming": "./src/standalone/naming.ts",
@@ -44,9 +46,9 @@
     "./standalone/worker": "./src/standalone/worker.ts"
   },
   "scripts": {
-    "build": "tsc --noEmit && tsc --noEmit -p src/function",
+    "build": "tsc --noEmit && tsc --noEmit -p src/function && tsc --noEmit -p src/native",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/function"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/function && tsc --noEmit -p src/native"
   },
   "dependencies": {
     "@stayingupwind/core": "workspace:*",

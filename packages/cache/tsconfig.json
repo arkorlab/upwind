@@ -5,6 +5,6 @@
     "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"],
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*", "test/**/*", "vitest.config.mts"],
-  "exclude": ["src/function/**/*"]
+  "include": ["src/**/*", "test/**/*", "vitest.config.mts", "vitest.native.config.mts"],
+  "exclude": ["src/function/**/*", "src/native/**/*", "test/native/**/*"]
 }

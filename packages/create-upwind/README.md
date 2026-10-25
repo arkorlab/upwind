@@ -26,7 +26,8 @@ my-upwind-app
 {
   "scripts": {
     "dev": "upwind dev",
-    "build": "upwind build"
+    "build": "upwind build",
+    "preview": "upwind preview"
   },
   "dependencies": { "next": "…", "react": "…", "react-dom": "…" },
   "devDependencies": { "upwind": "…", "@stayingupwind/adapter": "…", "tailwindcss": "…", … }

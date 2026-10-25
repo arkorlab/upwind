@@ -15,7 +15,7 @@ packages:
 catalog:
   # Cloudflare's own types for the storage objects `@stayingupwind/sdk` hands an application. They
   # are in that package's public declarations, so they are a dependency of it and not a dev one.
-  '@cloudflare/workers-types': 5.20261016.1
+  '@cloudflare/workers-types': 5.20261024.1
   '@eslint/js': 10.0.1
   # What the adapter reads a build's source maps with: `sourcemap-codec` for a map's mappings as
   # numbers and back (`projectOnly`), `trace-mapping` for the index maps Turbopack writes when debug
@@ -24,20 +24,20 @@ catalog:
   '@jridgewell/trace-mapping': 0.3.31
   '@next/routing': 16.4.3
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
-  '@oxc-project/types': 0.154.0
+  '@oxc-project/types': 0.155.0
   # The runtime's suites check that its random-safe request context keeps Sentry's own random
   # reads working in workerd, as an application that reports to Sentry makes them. Tests only.
-  '@sentry/core': 10.76.2
+  '@sentry/core': 11.9.0
   '@types/node': 24.19.2
   # What `@stayingupwind/auth` wraps. A peer dependency there, so a project brings its own copy and
   # this pin is what the repository builds and typechecks against — the same arrangement as `next`.
-  better-auth: 1.7.10
+  better-auth: 1.7.12
   eslint: 10.13.0
   eslint-config-prettier: 10.1.8
   eslint-import-resolver-typescript: 4.4.5
   eslint-plugin-import-x: 4.17.1
-  eslint-plugin-n: 18.4.1
-  eslint-plugin-perfectionist: 5.12.1
+  eslint-plugin-n: 18.5.0
+  eslint-plugin-perfectionist: 5.13.0
   eslint-plugin-promise: 7.3.0
   # `recheck`, which decides a regular expression's worst case rather than guessing at its shape.
   # It is here because the cheaper checks miss what CodeQL's `js/polynomial-redos` reports: a
@@ -47,29 +47,29 @@ catalog:
   eslint-plugin-regexp: 3.3.1
   eslint-plugin-security: 4.2.0
   eslint-plugin-sonarjs: 4.2.2
-  eslint-plugin-unicorn: 78.0.0
+  eslint-plugin-unicorn: 79.0.0
   globals: 17.13.0
   # Reads a project's own config at build time, the way wrangler reads its own. Build-time only:
   # nothing of it reaches a Function.
   jsonc-parser: 3.3.1
-  knip: 6.41.0
+  knip: 6.42.1
   # The workerd `upwind dev` and `upwind build` bind a project's local storage to. Follow the
   # registry's `beta` channel for v5: `latest` still names v4, whose workerd is from July and older
   # than the compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
   # `@stayingupwind/adapter`). Keep this aligned with the version Wrangler uses.
-  miniflare: 5.20261012.1-beta
+  miniflare: 5.20261019.2-beta
   next: 16.4.3
-  oxfmt: 0.73.0
-  rolldown: 1.2.14
+  oxfmt: 0.74.0
+  rolldown: 1.2.15
   # The Public Suffix List, by which `local:check` refuses a cookie for a domain no site holds.
-  tldts: 7.4.18
-  wrangler: 4.151.1
+  tldts: 7.4.19
+  wrangler: 4.152.0
   typescript: 6.0.3
-  typescript-eslint: 8.71.2
+  typescript-eslint: 8.72.0
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
   # lint rules they are held to beside the rest.
   vitest: 5.0.5
-  '@vitest/eslint-plugin': 1.6.27
+  '@vitest/eslint-plugin': 1.6.28
   # What `@stayingupwind/host` writes the cache's control contract in, and turns core's schemas into
   # where something takes zod's alone (`./zod`). What the runtime and the edge read — the gateway's
   # contract, the cache's records — is written with core's own validator instead, which is cheap to
@@ -79,7 +79,7 @@ catalog:
   hono: 4.13.13
   # Runs `@stayingupwind/cache`'s suites inside workerd, with its own pinned Wrangler and
   # Miniflare, independently of the top-level development runtime.
-  '@cloudflare/vitest-plugin': 1.4.0
+  '@cloudflare/vitest-plugin': 1.4.7
 
 # Only these dependencies may run install scripts.
 allowBuilds:
@@ -101,6 +101,9 @@ strictPeerDependencies: true
 # pinned; these dependencies do not run on a deployed Function's request path.
 # Zod v4's bounded collection validation is patched for CVE-2023-54404 in 4.6.6.
 overrides:
+  # API 1.10 splits the facade from its global state, so Turbopack's embedded copies escape
+  # the adapter's whole-module deduplication. Keep one API initializer per Function.
+  '@opentelemetry/api': 1.9.1
   # GHSA-4qv8-2p9j-2685 and GHSA-f72v-6w45-q472 are fixed within v7.
   'undici@>=7.0.0 <7.30.1': 7.30.1
   'sharp@>=0.35.0 <0.35.5': 0.35.5

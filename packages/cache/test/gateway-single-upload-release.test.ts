@@ -5,8 +5,6 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { Gateway } from '../src/function/gateway.ts';
 
-type Cancellation = Awaited<ReturnType<ReadableStream<Uint8Array>['cancel']>>;
-
 const UNUSED_RESPONSE = 'the artifact upload response is not used';
 const BYTES = encodeUtf8('the uploaded artifact');
 const UPLOAD: ArtifactUpload = {
@@ -43,6 +41,7 @@ describe('a single artifact upload releases its unused success response', () => 
   });
 
   it('does not wait for the cancellation acknowledgement', async () => {
+    type Cancellation = Awaited<ReturnType<ReadableStream<Uint8Array>['cancel']>>;
     const cancelled = Promise.withResolvers<Cancellation>();
     const cancel = vi.fn(() => cancelled.promise);
     const subject = gateway(responseWith(cancel));

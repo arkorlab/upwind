@@ -49,6 +49,7 @@ export async function writeManifest(target: string, name: string): Promise<void>
     scripts: {
       dev: 'upwind dev',
       build: 'upwind build',
+      preview: 'upwind preview',
     },
     dependencies: {
       next: VERSIONS.next,

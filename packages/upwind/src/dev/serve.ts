@@ -136,10 +136,10 @@ function internalPathname(pathname: string): string | undefined {
   return isUpwindAuthPath(decoded) ? undefined : decoded;
 }
 
-/** How far along a run is, for the signal handler to know what there is to close. */
-type Phase = 'starting' | 'running' | 'stopping';
-
 export async function serveDev(options: DevOptions): Promise<void> {
+  /** How far along a run is, for the signal handler to know what there is to close. */
+  type Phase = 'starting' | 'running' | 'stopping';
+
   const remoteAiAuth = options.remoteAi === true ? takeRemoteAiCredentials() : undefined;
   const devSession = createSession({
     projectDir: options.projectDir,

@@ -141,8 +141,6 @@ interface SeedPlan {
   readonly tagsRefused: string | undefined;
 }
 
-type SeedRefusal = SeedEntriesResult['refused'][number];
-
 export function logSeedRefusals(log: Logger, result: SeedEntriesResult | Refusal): void {
   if (isRefusal(result)) return;
   for (const refused of result.refused) {
@@ -452,6 +450,7 @@ function applySeedEntries(
   proofs: SeedLocationProofs,
   options: SeedRepairOptions = {},
 ): SeedEntriesOutcome {
+  type SeedRefusal = SeedEntriesResult['refused'][number];
   const { sql, limits, revision } = input;
   const scope = requireActiveScope(sql);
   if (isRefusal(scope)) {

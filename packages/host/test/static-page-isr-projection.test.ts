@@ -82,9 +82,9 @@ function projected(input: PackHeaderFields) {
   return { ...input, outputs: runtimeStaticPageOutputsOf(input) };
 }
 
-type Change = (input: PackHeaderFields) => PackHeaderFields;
-
 describe('each ISR generation earns its own output authority', () => {
+  type Change = (input: PackHeaderFields) => PackHeaderFields;
+
   it.each([false, true])('projects an independently proved runtime=%s output', (runtime) => {
     const input = fields(runtime);
 

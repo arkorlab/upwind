@@ -131,6 +131,12 @@ pnpm dev
 pnpm build   # upwind build: アダプターを差し込んだ、いつもの next build → バンドル
 ```
 
+そのバンドルを、デプロイしたときと同じ構成（前にエッジ、後ろにランタイムキャッシュ）で手元で動かすには:
+
+```bash
+pnpm preview   # upwind preview: ビルドを http://localhost:3000 で配信。ビルドはしない
+```
+
 > [!TIP]
 > <http://localhost:3000/__upwind> を開くと、この `upwind dev` の情報（各バージョン、アドレス、プロジェクトのディレクトリー、解決したアダプター）を確認できます。`/__upwind/health` は Next.js の準備ができたら `200`、それまでは `503` を返すので、サーバーの起動を待つスクリプトに使えます。
 
@@ -159,7 +165,7 @@ my-app
 │   ├── layout.tsx
 │   └── page.tsx
 ├── next.config.ts     # adapterPath を設定。素の `next build` でも同じバンドルになる
-├── package.json       # "dev": "upwind dev", "build": "upwind build"
+├── package.json       # "dev": "upwind dev", "build": "upwind build", "preview": "upwind preview"
 ├── postcss.config.mjs
 ├── tsconfig.json
 └── README.md
@@ -207,6 +213,23 @@ my-app
    CommonJS の `next.config.js` なら、`require.resolve('@stayingupwind/adapter')` で同じことができます。同じアプリを Vercel にもデプロイするなら、`adapterPath` は環境変数 `VERCEL` が設定されていないときだけ指定してください。`next.config` で指定したアダプターは、Vercel 上のビルドでも使われてしまうからです。条件付きの書き方は [upwind の README](packages/upwind/README.md#on-vercel)（英語）にあります。
 
 最後に、ビルドが書き出す `.arkor/` と、ローカルのストレージが置かれる `.upwind/` を `.gitignore` に加えてください。
+
+### Node.js ネイティブで実行する
+
+```bash
+pnpm upwind build --target=node
+pnpm upwind start --port 3000
+```
+
+Node を明示したビルドは、サーバー、追跡された依存パッケージ、静的ファイルと、単一プロセス用の
+永続キャッシュを `.arkor/node/` に出力します。Cloudflare アカウント、Miniflare、workerd は不要です。
+既定のビルドと Cloudflare へのデプロイは引き続き Workers を使用します。
+
+`.arkor/node/` を別の場所に移動し、その中で `node server.mjs` を実行して起動することもできます。
+ネイティブアドオンは、ビルドした OS とアーキテクチャに対応したものが含まれます。
+プロキシの後ろでは `upwind start --origin https://app.example --cache-dir /var/lib/upwind` のように
+公開 origin と永続保存先を指定します。クライアントが送った転送ヘッダーは信頼しません。
+詳細は [Node サーバーのオプションと対応範囲](packages/upwind/README.md#native-nodejs)（英語）を参照してください。
 
 ## 💡 なぜ upwind なのか
 
@@ -462,7 +485,9 @@ Adapter API だけでは足りない箇所では、アダプターが Next.js �
 <details>
 <summary><b><code>start</code> スクリプトがないのはなぜですか？</b></summary>
 
-デプロイ先で `start` スクリプトが実行されることはないからです。アプリを配信するのはバンドル（エッジの後ろで動くFunction）であって、プロジェクト自身の Node.js サーバーではありません。
+既定の Cloudflare デプロイでは、エッジの後ろの Function が配信するため起動スクリプトは不要です。
+そのバンドルを手元で動かすには、`pnpm build` の後に `pnpm preview`（`upwind preview`）を使います。
+Node 版では `upwind build --target=node` でビルドし、`"start": "upwind start"` を追加して実行できます。
 
 </details>
 

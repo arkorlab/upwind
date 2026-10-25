@@ -1,9 +1,6 @@
 #!/usr/bin/env node
-import { type DevRequest, parseDevRequest } from './args.ts';
-import { type BuildRequest, parseBuildRequest } from './build/args.ts';
-import { runBuild } from './build/run.ts';
-import { serveDev } from './dev/serve.ts';
-import { supervise } from './dev/supervise.ts';
+import type { DevRequest } from './args.ts';
+import type { BuildRequest } from './build/args.ts';
 import { WORKER_ENV, WORKER_PORT_ENV } from './dev/worker-env.ts';
 import { ownVersion } from './manifest.ts';
 
@@ -32,6 +29,7 @@ const USAGE = `upwind — the front door of a Next.js application
 Usage
   upwind dev [directory]
   upwind build [directory]
+  upwind start [directory]
   upwind preview [directory]
   upwind deploy [directory]
   upwind deployments [directory]
@@ -39,14 +37,18 @@ Usage
   upwind destroy [directory] --yes
 
 Options
-  -p, --port <port>      Port to listen on, \`dev\` and \`preview\` (default: $PORT, else 3000)
-  -H, --hostname <host>  Hostname to bind, \`dev\` only (default: every interface)
+  -p, --port <port>      Port to listen on, \`dev\`, \`preview\` and \`start\` (default: $PORT, else 3000)
+  -H, --hostname <host>  Hostname to bind, \`dev\` and \`start\` (default: every interface)
+      --target <target> Build for \`cloudflare\` (default) or native \`node\`
+      --origin <url>    Trusted public origin, \`start\` only
+      --cache-dir <dir> Persistent native cache directory, \`start\` only
       --remote-ai        Enable declared Workers AI bindings using your Cloudflare account, \`dev\` only
       --check            Ask the build once and stop, rather than serve it, \`preview\` only
+      --crons            Fire the build's cron jobs on their schedules, \`preview\` only
       --dry-run          Say what a deploy would do and change nothing, \`deploy\` only
       --build-only       Build for a deploy and stop, \`deploy\` only
       --prebuilt         Deploy what --build-only built, \`deploy\` only
-      --env-file <file>  Secrets for the Functions, for \`deploy\` and \`preview\`; CRON_SECRET,
+      --env-file <file>  Secrets for \`deploy\`, \`preview\` and \`start\`; CRON_SECRET,
                          for \`rollback\`; may repeat
       --keep <n>         Deployments kept to roll back to, \`deploy\` only (default: 5)
       --message <text>   What the deployment is noted as, \`deploy\` only
@@ -65,10 +67,15 @@ Options
 writes the deployment bundle under .arkor/. On Vercel (VERCEL set, NEXT_ADAPTER_PATH not) it
 names no adapter and writes no bundle: the build there is Vercel's.
 
+\`upwind build --target=node\` writes a relocatable native artifact under .arkor/node/.
+\`upwind start\` serves that artifact with Node.js and its own persistent local cache. It
+needs no Cloudflare account or runtime. The generated server.mjs can also run directly.
+
 \`upwind preview\` serves the bundle \`upwind build\` wrote on this machine, as a deployment of
 it is served: the edge in front, the runtime cache behind it, and the build's Functions. It
 builds nothing and deploys nothing, and listens on the loopback alone. \`--check\` asks every
-route and file of the build once, and the paths deploy.checks names, and ends.
+route and file of the build once, and the paths deploy.checks names, and ends. \`--crons\` fires
+the build's cron jobs on their schedules while it serves, which it does not otherwise.
 
 \`upwind deploy\` builds the project and deploys it to a Cloudflare account of your own: the
 edge in front, the runtime cache behind it, each deployment's Functions as Workers of their own,
@@ -104,12 +111,25 @@ function orFail<T>(parse: () => T): T {
 
 /** The project's own `next build`, with the adapter named; it ends this process as that one ended. */
 async function build(rest: readonly string[]): Promise<void> {
+  const { parseBuildRequest } = await import('./build/args.ts');
   const request: BuildRequest = orFail(() => parseBuildRequest(rest));
   if (request.answer !== undefined) {
     await answer(request.answer);
     return;
   }
+  const { runBuild } = await import('./build/run.ts');
   await runBuild(request.options);
+}
+
+async function start(rest: readonly string[]): Promise<void> {
+  const { parseStartRequest } = await import('./start/args.ts');
+  const request = orFail(() => parseStartRequest(rest));
+  if (request.answer !== undefined) {
+    await answer(request.answer);
+    return;
+  }
+  const { runStart } = await import('./start/command.ts');
+  process.exitCode = await runStart(request.options);
 }
 
 /**
@@ -193,6 +213,7 @@ async function destroy(rest: readonly string[]): Promise<void> {
 }
 
 async function dev(rest: readonly string[], argv: readonly string[]): Promise<void> {
+  const { parseDevRequest } = await import('./args.ts');
   const request: DevRequest = orFail(() => parseDevRequest(rest));
   if (request.answer !== undefined) {
     await answer(request.answer);
@@ -205,10 +226,12 @@ async function dev(rest: readonly string[], argv: readonly string[]): Promise<vo
     // for.
     Reflect.deleteProperty(process.env, WORKER_ENV);
     Reflect.deleteProperty(process.env, WORKER_PORT_ENV);
+    const { serveDev } = await import('./dev/serve.ts');
     await serveDev(request.options);
     return;
   }
   // The child is this same file, with the same arguments: one place says what a run is.
+  const { supervise } = await import('./dev/supervise.ts');
   await supervise(import.meta.filename, argv);
 }
 
@@ -234,6 +257,10 @@ async function main(): Promise<void> {
     await preview(rest);
     return;
   }
+  if (command === 'start') {
+    await start(rest);
+    return;
+  }
   if (command === 'deploy') {
     await deploy(rest);
     return;
@@ -252,7 +279,7 @@ async function main(): Promise<void> {
   }
   if (command !== 'dev') {
     fail(
-      `unknown command \`${command}\`; the commands are \`dev\`, \`build\`, \`preview\`, \`deploy\`, \`deployments\`, \`rollback\` and \`destroy\``,
+      `unknown command \`${command}\`; the commands are \`dev\`, \`build\`, \`start\`, \`preview\`, \`deploy\`, \`deployments\`, \`rollback\` and \`destroy\``,
     );
   }
   await dev(rest, argv);
