@@ -176,8 +176,7 @@ export function nodeManifestCoalescedPagesInspection(
 ): ReturnType<typeof derive> {
   const stored = PROFILES.get(profile);
   if (
-    stored === undefined ||
-    stored.owner !== owner ||
+    stored?.owner !== owner ||
     stored.input.owner !== stored.owner ||
     stored.input.graph !== stored.graphObject ||
     stored.input.factory !== stored.factoryObject ||

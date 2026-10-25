@@ -20,8 +20,7 @@ export function nodeManifestPagesContextLeaf(
   if (edge === undefined || factory.imports.length !== 1 || edge.target !== target) return false;
   const actual = input.sources.find((source) => source.id === input.producer.id);
   if (
-    actual === undefined ||
-    actual.file !== input.producer.file ||
+    actual?.file !== input.producer.file ||
     actual.source.sha256 !== input.producer.sha256 ||
     createHash('sha256').update(actual.source.code).digest('hex') !== input.producer.sha256
   )
@@ -34,8 +33,6 @@ export function nodeManifestPagesContextLeaf(
   };
   const certificate = certifyNodeManifestPagesContext(context);
   return (
-    certificate !== undefined &&
-    certificate.root === producer.root &&
-    isCertifiedNodeManifestPagesContext(certificate, context)
+    certificate?.root === producer.root && isCertifiedNodeManifestPagesContext(certificate, context)
   );
 }

@@ -209,8 +209,7 @@ export function certifyNodeManifestPagesContext(
   })?.node;
   const selected = factory === undefined ? undefined : selector(factory);
   if (
-    selected === undefined ||
-    selected.dependency.kind !== imported.kind ||
+    selected?.dependency.kind !== imported.kind ||
     selected.dependency.specifier !== imported.specifier ||
     selected.dependency.targetId !== imported.targetId
   )
@@ -236,8 +235,6 @@ export function isCertifiedNodeManifestPagesContext(
 ): boolean {
   const certificate = CERTIFICATES.get(proof);
   return (
-    certificate !== undefined &&
-    certificate.projection === input.projection &&
-    certificate.fingerprint === fingerprint(input)
+    certificate?.projection === input.projection && certificate.fingerprint === fingerprint(input)
   );
 }

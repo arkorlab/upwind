@@ -246,7 +246,9 @@ class ConsumerGraph {
       const route = this.routes.get(entry.canonicalFilePath);
       return route === undefined ? [] : [{ ...route, pathname: entry.id }];
     });
-    for (const route of [...this.routes.values(), ...logical]) {
+    const routes = [...this.routes.values()];
+    for (const route of logical) routes.push(route);
+    for (const route of routes) {
       const key = JSON.stringify([route.file, route.pathname]);
       profiles.set(key, {
         file: route.file,
