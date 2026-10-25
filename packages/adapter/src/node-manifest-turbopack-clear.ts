@@ -1,5 +1,5 @@
 import { AuditError } from './dependencies.ts';
-import { isNode, type Node, type Scope } from './lexical-scope.ts';
+import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
 import { hostObjectOf } from './node-closure-hosts.ts';
 import {
   declaration,
@@ -65,10 +65,23 @@ function globalReceiver(node: unknown, visit: Visit, context: ContextBinding): n
   );
 }
 
+function discardedTopLevel(assignment: Node, input: ClearProjectionInput): boolean {
+  let value = assignment;
+  let parent = input.parents.get(value)?.parent;
+  while (parent?.type === 'SequenceExpression' && listOf(parent, 'expressions').includes(value)) {
+    value = parent;
+    parent = input.parents.get(value)?.parent;
+  }
+  return (
+    parent?.type === 'ExpressionStatement' &&
+    parent['expression'] === value &&
+    input.parents.get(parent)?.parent === input.body
+  );
+}
+
 function clearAssignment(visit: Visit, input: ClearProjectionInput): Node {
   const assignment = visit.parent;
   const target = assignment?.['left'];
-  const statement = assignment === undefined ? undefined : input.parents.get(assignment)?.parent;
   if (
     assignment?.type !== 'AssignmentExpression' ||
     assignment['operator'] !== '=' ||
@@ -80,10 +93,9 @@ function clearAssignment(visit: Visit, input: ClearProjectionInput): Node {
     propertyName(target) !== CLEAR_SLOT ||
     !globalReceiver(target['object'], visit, input.context) ||
     declaration('globalThis', visit.scopes) !== undefined ||
-    statement?.type !== 'ExpressionStatement' ||
-    input.parents.get(statement)?.parent !== input.body
+    !discardedTopLevel(assignment, input)
   )
-    refuse('is not the standalone fixed global assignment');
+    refuse('is not the unconditional fixed global assignment');
   return assignment;
 }
 

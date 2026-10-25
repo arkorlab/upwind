@@ -15,6 +15,10 @@ describe('fixed production chunk-cache hook inspection', () => {
   it.each([
     CLEAR,
     'ctx.g.__next__clear_chunk_cache__=ctx.C;',
+    `(${CLEAR.slice(0, -1)},sideEffect());`,
+    `(sideEffect(),${CLEAR.slice(0, -1)});`,
+    `(first(),(${CLEAR.slice(0, -1)},last()));`,
+    '(ctx.g.__next__clear_chunk_cache__=ctx.C,sideEffect());',
     `const ordinary=globalThis.console;${CLEAR}ctx.v(ordinary);`,
     `${CLEAR}function local(globalThis){return globalThis.__next__clear_chunk_cache__;}ctx.v(local);`,
     `${CLEAR}const C=class globalThis{method(){return globalThis.__next__clear_chunk_cache__;}};ctx.v(C);`,
@@ -26,7 +30,7 @@ describe('fixed production chunk-cache hook inspection', () => {
     const projected = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
 
     expect(projected.original).toStrictEqual(original);
-    expect(projected.source.code).toContain('void 0;');
+    expect(projected.source.code).toContain('void 0');
     expect(projected.source.code).not.toContain('=ctx.C');
     expect(projected.boundRuntimeInputs).toStrictEqual([]);
     expect(projected.imports).toStrictEqual([]);
@@ -51,7 +55,9 @@ describe('fixed production chunk-cache hook inspection', () => {
     ['bound context hook', 'globalThis.__next__clear_chunk_cache__=ctx.C.bind(ctx);'],
     ['conditional assignment', `if(flag){${CLEAR}}`],
     ['deferred assignment', `function later(){${CLEAR}}ctx.v(later);`],
-    ['sequence assignment', `(${CLEAR.slice(0, -1)},sideEffect());`],
+    ['conditional sequence', `flag&&(${CLEAR.slice(0, -1)},sideEffect());`],
+    ['call argument sequence', `consume((${CLEAR.slice(0, -1)},value));`],
+    ['returned sequence', `return (${CLEAR.slice(0, -1)},value);`],
     ['slot value read', `${CLEAR}ctx.v(globalThis.__next__clear_chunk_cache__);`],
     [
       'slot call without a stable identity proof',
