@@ -88,6 +88,11 @@ function defaultExportTarget(value: unknown, visit: Visit): boolean {
   );
 }
 
+function escapedContextMethod(name: string | undefined, parent: Node | undefined): never {
+  const label = name !== undefined && /^[a-zA-Z]$/u.test(name) ? name : 'other';
+  return refuse(`context method escape (${label}; ${parent?.type ?? 'missing'})`);
+}
+
 class FactoryProjection {
   private readonly source: NodeManifestTurbopackSource;
   private readonly factory: NodeManifestTurbopackFactory;
@@ -378,7 +383,7 @@ class FactoryProjection {
     if ((name === 'r' || name === 'l') && this.bound(member, visit, name)) return;
     const call = this.parents.get(member)?.parent;
     if (call?.type !== 'CallExpression' || call['callee'] !== member || call['optional'] === true)
-      refuse('context method escape');
+      escapedContextMethod(name, call);
     switch (name) {
       case 'i':
       case 'r': {
