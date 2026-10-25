@@ -58,12 +58,17 @@ export async function install(manager: PackageManager, cwd: string): Promise<voi
 const NEEDS_RUN: ReadonlySet<PackageManager> = new Set<PackageManager>(['bun', 'npm']);
 
 /**
- * How a developer runs one of the project's scripts with this manager.
+ * How a developer runs one of the project's scripts with this manager, and what they hand it.
  *
  * `npm dev` is not a command at all, and `bun build` is a different one: Bun's own bundler, which
  * answers a project's `build` script with "Missing entrypoints". Both take `run`. `pnpm` and `yarn`
- * pass an unknown word to the scripts, and `pnpm run dev` would only be longer.
+ * pass an unknown word to the scripts, and `pnpm run dev` would only be longer. Of what follows the
+ * script, npm hands it on only after `--`, and takes the rest for its own options.
  */
-export function runCommand(manager: PackageManager, script: string): string {
-  return NEEDS_RUN.has(manager) ? `${manager} run ${script}` : `${manager} ${script}`;
+export function runCommand(manager: PackageManager, script: string, args = ''): string {
+  const command = NEEDS_RUN.has(manager) ? `${manager} run ${script}` : `${manager} ${script}`;
+  if (args === '') {
+    return command;
+  }
+  return manager === 'npm' ? `${command} -- ${args}` : `${command} ${args}`;
 }

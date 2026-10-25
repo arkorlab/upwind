@@ -131,6 +131,12 @@ Open <http://localhost:3000> and edit `app/page.tsx` — it is the Next.js dev s
 pnpm build   # upwind build: your own next build, with the adapter plugged in → the bundle
 ```
 
+And to serve that bundle on your machine as it is deployed — an edge in front, the runtime cache behind it:
+
+```bash
+pnpm preview   # upwind preview: the build, at http://localhost:3000; it builds nothing
+```
+
 > [!TIP]
 > Open <http://localhost:3000/__upwind> to see what upwind knows about the run: the versions, the address, the project directory, and the adapter it resolved. `/__upwind/health` answers `200` once Next.js is ready and `503` until then, for a script that waits for the server.
 
@@ -159,7 +165,7 @@ my-app
 │   ├── layout.tsx
 │   └── page.tsx
 ├── next.config.ts     # sets adapterPath, so a plain `next build` writes the same bundle
-├── package.json       # "dev": "upwind dev", "build": "upwind build"
+├── package.json       # "dev": "upwind dev", "build": "upwind build", "preview": "upwind preview"
 ├── postcss.config.mjs
 ├── tsconfig.json
 └── README.md
@@ -368,7 +374,7 @@ Apart from `--port` and `--hostname`, `next dev`'s flags — `--experimental-htt
 
 **So is a workflow's World.** A build that uses the Workflow SDK runs its workflows and steps in a Function of their own, on the SDK's QuickJS engine, and keeps its runs in a World the host names, `createAdapter({ workflowWorldModule })`: the host delivers the SDK's queue to that Function, and nothing a visitor sends reaches it. The adapter's readme says [what the host provides](packages/adapter/README.md#the-workflow-sdk).
 
-**Cloudflare Workflows are supported separately.** The adapter produces isolated native class artifacts, the SDK exposes scoped instance controls, and local development runs the classes in Miniflare. Hosted execution and resource isolation are supplied by a supporting host; see [the adapter contract](packages/adapter/README.md#cloudflare-workflows).
+**Cloudflare Workflows are supported separately.** The adapter produces isolated native class artifacts, the SDK exposes scoped instance controls, and `upwind dev` and `upwind preview` run the classes in Miniflare. Hosted execution and resource isolation are supplied by a supporting host; see [the adapter contract](packages/adapter/README.md#cloudflare-workflows).
 
 <details>
 <summary><b>Not supported</b></summary>
@@ -487,6 +493,7 @@ Yes — it is your Next.js. With `adapterPath` set in `next.config`, a plain `ne
 <summary><b>Why is there no <code>start</code> script?</b></summary>
 
 The default Cloudflare deployment serves Functions behind an edge and needs no start script.
+After `pnpm build`, `pnpm preview` (`upwind preview`) runs that bundle locally.
 For a native Node deployment, build with `upwind build --target=node` and add `"start": "upwind start"`.
 
 </details>

@@ -22,7 +22,10 @@ code supplies no account credentials, tenant identifier, deployment selector or 
 The exported `CloudflareWorkflow` and `CloudflareWorkflowInstance` types cover `create`, `get`,
 `createBatch`, and instance `status`, `pause`, `resume`, `restart`, `terminate`, `sendEvent` and `delete`.
 Batch creation accepts the current `{ count, params }` or `{ instances }` object forms and returns
-`{ created, errors }`; the deprecated array form returns an array of handles. Termination and restart
+`{ created, errors }`; the deprecated array form returns an array of handles, skipping existing or
+repeated IDs. Object-form errors distinguish existing IDs (`10405`) from repeats in the same batch
+(`10415`), following the [native API](https://developers.cloudflare.com/workflows/build/workers-api/#createbatch).
+Termination and restart
 options are forwarded to the host. Ownership checks, instance retention and availability are the
 host's responsibility. Native streaming subscriptions and batch deletion are not part of this client.
 

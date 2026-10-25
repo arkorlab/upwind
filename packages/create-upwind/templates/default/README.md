@@ -25,12 +25,29 @@ writes a deployment bundle under `.arkor/` — every route, prerender and static
 and the Functions that run the application's code. `next.config.ts` names the same adapter, so a
 plain `next build` from CI or from any other tool produces the same bundle.
 
-One thing only `upwind build` does: bind this project's own storage for the build, so that a page
-prerendering from `@stayingupwind/sdk` has a database to read. A plain `next build` publishes none,
-and such a page fails there saying so.
+Two things only `upwind build` does. It binds this project's own storage for the build, so that a
+page prerendering from `@stayingupwind/sdk` has a database to read: a plain `next build` publishes
+none, and such a page fails there saying so. And it puts the runtime cache's host into every
+Function, which a deployment — and `pnpm preview` — keeps the cache through.
+
+## Previewing
+
+```bash
+pnpm preview
+```
+
+`pnpm preview` is `upwind preview`: the build `pnpm build` left, served on this machine as a
+deployment serves it — the edge in front, the runtime cache behind it, and the build's Functions —
+at [http://localhost:3000](http://localhost:3000). It builds nothing, so a change is seen once the
+project is built again. `pnpm preview --check` asks every route and file of the build once, and
+ends.
+
+What a preview does otherwise than a deployment — with storage, images and cron jobs among it — it
+says as it starts, and [upwind's README](https://github.com/arkorlab/upwind/blob/main/packages/upwind/README.md#upwind-preview)
+lists all of it.
 
 There is no `start` script on purpose. What a deployment runs is the bundle, not a Node server of
-this project's own.
+this project's own, and `pnpm preview` is that bundle, run here.
 
 ## Scheduled work
 
