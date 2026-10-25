@@ -13,6 +13,7 @@ const HTTP_NO_CONTENT = 204;
 const HTTP_RESET_CONTENT = 205;
 const HTTP_NOT_MODIFIED = 304;
 const BODYLESS = new Set([HTTP_NO_CONTENT, HTTP_NOT_MODIFIED, HTTP_RESET_CONTENT]);
+const STREAM_BUFFER_BYTES = 64 * 1024;
 
 function requireMatchingFile(info: Stats, file: StaticFile): void {
   if (!info.isFile() || info.size !== file.blob.byteLength) {
@@ -71,7 +72,13 @@ export async function staticFileResponse(
     input.request.signal.throwIfAborted();
     const stream = handle.createReadStream({ autoClose: true, signal: input.request.signal });
     try {
-      return new Response(Readable.toWeb(stream) as ReadableStream<Uint8Array>, {
+      const body = Readable.toWeb(stream, {
+        strategy: {
+          highWaterMark: STREAM_BUFFER_BYTES,
+          size: (chunk: Uint8Array) => chunk.byteLength,
+        },
+      }) as ReadableStream<Uint8Array>;
+      return new Response(body, {
         status,
         headers,
       });

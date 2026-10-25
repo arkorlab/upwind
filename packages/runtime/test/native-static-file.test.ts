@@ -1,5 +1,6 @@
 /* eslint-disable security/detect-non-literal-fs-filename -- Every path belongs to a test-created fixture directory. */
 import { once } from 'node:events';
+import type { ReadStream } from 'node:fs';
 import { type FileHandle, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,13 +13,22 @@ import type { RoutedInput } from '../src/serve.ts';
 import type { Store } from '../src/store.ts';
 
 const handles = vi.hoisted(() => [] as Promise<FileHandle>[]);
+const streams = vi.hoisted(() => [] as ReadStream[]);
 
 vi.mock(import('node:fs/promises'), async (original) => {
   const fs = await original();
   return {
     ...fs,
     open: vi.fn((...args: Parameters<typeof fs.open>) => {
-      const opened = fs.open(...args);
+      const opened = fs.open(...args).then((handle) => {
+        const create = handle.createReadStream.bind(handle);
+        vi.spyOn(handle, 'createReadStream').mockImplementation((options) => {
+          const stream = create(options);
+          streams.push(stream);
+          return stream;
+        });
+        return handle;
+      });
       handles.push(opened);
       return opened;
     }),
@@ -58,6 +68,7 @@ describe('native static file delivery', () => {
     vi.stubGlobal('__ARKOR_BUNDLE_ROOT__', directory);
     vi.mocked(open).mockClear();
     handles.length = 0;
+    streams.length = 0;
   });
 
   afterEach(async () => {
@@ -81,7 +92,9 @@ describe('native static file delivery', () => {
     expect(chunk?.value?.byteLength).toBeGreaterThan(0);
     expect(chunk?.value?.byteLength).toBeLessThan(bytes.byteLength);
 
-    const closed = once(handle, 'close');
+    const stream = streams[0];
+    if (stream === undefined) throw new Error('the file stream was not created');
+    const closed = once(stream, 'close');
     await reader?.cancel();
     await closed;
 

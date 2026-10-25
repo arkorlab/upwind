@@ -69,6 +69,7 @@ import { maintainNativeCache } from './maintenance.ts';
 import type { NativeCacheWorkerOptions } from './protocol.ts';
 import { seedNativeCache } from './seed.ts';
 import { sqlStorage, transaction } from './sql.ts';
+import { unixMilliseconds } from './timestamp.ts';
 
 const RETRY_MS = 1000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -424,7 +425,12 @@ export class NativeAuthority implements CacheHost {
     await this.#files.blobs.write(storageRef, bytes, 'application/octet-stream');
     const input: DataSetInput = {
       key: request.key,
-      entry: { ...request.entry, tags: [...request.entry.tags], dependencyCoverage: 'complete' },
+      entry: {
+        ...request.entry,
+        timestamp: unixMilliseconds(request.entry.timestamp),
+        tags: [...request.entry.tags],
+        dependencyCoverage: 'complete',
+      },
       value: {
         sha256,
         byteLength: bytes.byteLength,

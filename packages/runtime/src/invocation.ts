@@ -15,13 +15,16 @@ export type FailureAnswer = (request: IncomingMessage, response: ServerResponse)
 export interface InvokeInput {
   readonly handler: NodeHandler;
   readonly request: Request;
+  /** Path and query after rewrites; defaults to the request's own pathname and query. */
   readonly url?: string | undefined;
   readonly requestMeta: Record<string, unknown>;
   readonly waitUntil: (promise: Promise<unknown>) => void;
   readonly run?: Run | undefined;
   /** A capture can answer through its callback without ever writing an HTTP response. */
   readonly expectNoResponse?: boolean | undefined;
+  /** A route's error page, invoked only while its response headers remain uncommitted. */
   readonly onFailure?: FailureAnswer | undefined;
+  /** Starting status, visible to Next.js error pages before they produce a response. */
   readonly status?: number | undefined;
 }
 

@@ -88,8 +88,8 @@ async function generation(
     observedTagRevision: 0,
     heldTagRevisions: {},
     generation: {
-      cacheTimestamp: Date.now(),
-      producedAt: Date.now(),
+      cacheTimestamp: Date.now() + 0.75,
+      producedAt: Date.now() + 0.25,
       reason: 'miss',
       policy: policyFromBuild({ initialRevalidate: 60, initialExpiration: 600 }),
       status: 200,
@@ -145,6 +145,33 @@ describe('native cache', () => {
     });
   });
 
+  it('normalizes fractional producer timestamps before persistence and preserves invalidation after restart', async () => {
+    const first = await openCache();
+    const original = value('fractional');
+    const timestamp = original.entry.timestamp + 0.875;
+    await first.host.setData({
+      ...original,
+      entry: { ...original.entry, timestamp },
+    });
+    await first.cache.close();
+    const next = await openCache(first.directory);
+    const stored = await next.host.getData({ key: 'value', kind: 'data:fetch' });
+
+    expect(stored?.entry.timestamp).toBe(Math.floor(timestamp));
+    expect(stored?.value).toMatchObject({ base64: original.valueBase64 });
+
+    const invalidation = await next.host.invalidate({ tags: ['value'], api: 'updateTag' });
+    await next.cache.close();
+    const reopened = await openCache(first.directory);
+
+    await expect(
+      reopened.host.getData({ key: 'value', kind: 'data:fetch' }),
+    ).resolves.toMatchObject({
+      entry: { timestamp: Math.floor(timestamp) },
+      invalidation: { revision: invalidation.revision },
+    });
+  });
+
   it('an older write from one writer cannot replace its later value', async () => {
     const { host } = await openCache();
     await host.setData({ ...value('later'), order: { writer: 'writer', seq: 2 } });
@@ -196,6 +223,10 @@ describe('native cache', () => {
     const decoded = packOf(record ?? new Uint8Array());
 
     expect(decoded.header.artifacts).toHaveLength(2);
+    expect(decoded.header).toMatchObject({
+      cacheTimestamp: Math.floor(request.generation.cacheTimestamp),
+      producedAt: Math.floor(request.generation.producedAt),
+    });
 
     const rsc = decoded.header.artifacts.find((artifact) => artifact.role === 'rsc');
 

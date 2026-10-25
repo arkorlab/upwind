@@ -53,6 +53,7 @@ describe('native dependency files', () => {
       '{"name":"example","main":"index.cjs"}',
     );
     const data = await file(store, 'message.txt', 'native package data');
+    const license = await file(store, 'LICENSE', 'example package license');
     const link = path.join(project, 'node_modules/example');
     await mkdir(path.dirname(link), { recursive: true });
     await symlink(path.relative(path.dirname(link), store), link, 'dir');
@@ -71,6 +72,10 @@ describe('native dependency files', () => {
     );
 
     expect(result.stdout).toBe('native package data');
+
+    const copiedLicense = path.join(moved, layout.pathOf(license));
+
+    await expect(readFile(copiedLicense, 'utf8')).resolves.toBe('example package license');
   });
 
   it('keeps explicit environment files out of the relocatable artifact', async () => {

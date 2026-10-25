@@ -242,7 +242,7 @@ async function probe(out: string, source: string | undefined): Promise<void> {
   const native = path.join(deployed, '.arkor/node');
   if (source !== undefined) {
     await mkdir(path.dirname(native), { recursive: true });
-    await cp(path.join(source, '.arkor/node'), native, { recursive: true });
+    await cp(path.join(source, '.arkor/node'), native, { recursive: true, verbatimSymlinks: true });
   }
   await rm(path.join(out, 'cache'), { recursive: true, force: true });
   const files = await readdir(native, { recursive: true });

@@ -1,4 +1,13 @@
-import { copyFile, lstat, mkdir, readFile, realpath, stat, symlink } from 'node:fs/promises';
+import {
+  copyFile,
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  stat,
+  symlink,
+} from 'node:fs/promises';
 import path from 'node:path';
 
 /** NFT metadata remains relative to its trace, including explicitly declared additional roots. */
@@ -79,6 +88,34 @@ interface Sources {
   readonly parents: Set<string>;
 }
 
+const LICENSE_FILES = new Set([
+  'licence',
+  'licence.md',
+  'licence.txt',
+  'license',
+  'license-apache',
+  'license-apache2',
+  'license-mit',
+  'license.apache',
+  'license.apache2',
+  'license.md',
+  'license.txt',
+  'notice',
+  'notice.md',
+  'notice.txt',
+]);
+
+async function packageLicenses(directory: string, sources: Sources): Promise<void> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!LICENSE_FILES.has(entry.name.toLowerCase()) || entry.isDirectory()) continue;
+    const file = path.join(directory, entry.name);
+    const physical = await realpath(file);
+    sources.files.add(physical);
+    if (entry.isSymbolicLink()) sources.links.set(file, physical);
+  }
+}
+
 async function discoverParents(file: string, sources: Sources): Promise<void> {
   let parent = path.dirname(file);
   while (!sources.parents.has(parent)) {
@@ -87,7 +124,10 @@ async function discoverParents(file: string, sources: Sources): Promise<void> {
     if (info.isSymbolicLink()) sources.links.set(parent, await realpath(parent));
     const manifest = path.join(parent, 'package.json');
     try {
-      if ((await stat(manifest)).isFile()) sources.files.add(await realpath(manifest));
+      if ((await stat(manifest)).isFile()) {
+        sources.files.add(await realpath(manifest));
+        await packageLicenses(parent, sources);
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }

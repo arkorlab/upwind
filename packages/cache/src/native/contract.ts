@@ -1,6 +1,8 @@
 import type { CommitRequest as AuthorityCommitRequest } from '@stayingupwind/host/cache';
 import type { CommitRequest } from '@stayingupwind/runtime/cache-host';
 
+import { unixMilliseconds } from './timestamp.ts';
+
 /** Native artifacts retain their bytes; the runtime's writes cover all their dependencies. */
 export function authorityCommitRequest(request: CommitRequest): AuthorityCommitRequest {
   const generation = request.generation;
@@ -10,6 +12,8 @@ export function authorityCommitRequest(request: CommitRequest): AuthorityCommitR
     heldTagRevisions: request.heldTagRevisions,
     generation: {
       ...generation,
+      cacheTimestamp: unixMilliseconds(generation.cacheTimestamp),
+      producedAt: unixMilliseconds(generation.producedAt),
       tags: [...generation.tags],
       outputs: generation.outputs.map((output) => {
         return {
