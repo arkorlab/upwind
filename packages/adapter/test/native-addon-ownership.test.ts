@@ -1,4 +1,5 @@
 import type { AdapterOutput } from 'next';
+import { AdapterOutputType } from 'next/dist/shared/lib/constants.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -37,9 +38,19 @@ function route(id: string): RouteCode {
 /** Both middleware runtimes carry the same trace through their own, different entry graph. */
 function middleware(runtime: 'edge' | 'nodejs'): MiddlewareParts {
   const filePath = '/project/.next/server/middleware.js';
+  const output: AdapterOutput['MIDDLEWARE'] = {
+    id: MIDDLEWARE,
+    type: AdapterOutputType.MIDDLEWARE,
+    pathname: MIDDLEWARE,
+    sourcePage: '/middleware',
+    runtime,
+    filePath,
+    assets: MIDDLEWARE_ASSETS,
+    assetsHashes: {},
+    config: { matchers: [] },
+  };
   return {
-    // Only the output metadata read by Function assembly is needed at this seam.
-    output: { runtime, filePath, assets: MIDDLEWARE_ASSETS } as AdapterOutput['MIDDLEWARE'],
+    output,
     node: runtime === 'nodejs' ? [{ id: MIDDLEWARE, filePath }] : [],
     edge:
       runtime === 'edge'
