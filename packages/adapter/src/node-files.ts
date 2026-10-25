@@ -236,6 +236,11 @@ interface PackageAliasContext {
   readonly links: Map<string, string>;
 }
 
+function ownsDirectory(sources: PhysicalSources, target: string): boolean {
+  for (const file of sources.originals.keys()) if (beneath(target, file) !== undefined) return true;
+  return false;
+}
+
 async function assertPackageTarget(target: string, context: PackageAliasContext): Promise<void> {
   const info = await stat(target);
   const name = context.layout.nameOf(target);
@@ -246,10 +251,7 @@ async function assertPackageTarget(target: string, context: PackageAliasContext)
   }
   if (!info.isDirectory())
     throw new AuditError('A Node package alias requires a regular physical target');
-  const owned = context.sources.originals
-    .keys()
-    .some((file) => beneath(target, file) !== undefined);
-  if (!owned)
+  if (!ownsDirectory(context.sources, target))
     throw new AuditError('The first existing Node package target is outside its closed trace');
   const metadata = path.join(target, PACKAGE_MANIFEST);
   try {
@@ -441,7 +443,8 @@ function emittedLinks(
     if (files.has(alias) || emitted.some((link) => alias.startsWith(`${link.path}/`))) continue;
     if (alias === target || target.startsWith(`${alias}/`))
       throw new AuditError('Node artifact contains a cyclic alias');
-    if (files.keys().every((file) => file !== target && !file.startsWith(`${target}/`)))
+    const physical = [...files.keys()];
+    if (physical.every((file) => file !== target && !file.startsWith(`${target}/`)))
       throw new AuditError('Node artifact alias has no physical target');
     emitted.push({ path: alias, target });
   }
