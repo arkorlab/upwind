@@ -15,6 +15,11 @@ Durable Objects and declared Workflows in `this.env`. Native steps, sleeps, retr
 instance controls execute locally; state uses the project's `.upwind` persistence directory. No remote
 Workflow or account credential is needed. Source changes restart the local runtime.
 
+`upwind build` also stores these classes in the deployment bundle. `upwind preview` runs the built
+classes in the local Miniflare stack, including native steps, event waits and instance controls.
+Workflow previews bind the KV, R2 and D1 stores declared in `deploy.storage`; those stores and
+Workflow instance state last until the preview stops. Rebuild to preview changed Workflow code.
+
 Application code uses `workflow('JOBS')` from `@stayingupwind/sdk` or the sole accessor from
 `@stayingupwind/sdk/workflow`, with the same scoped bridge protocol used by a supporting host.
 Import and lookup never start a run. Keep run creation in explicit actions or API handlers when it
@@ -27,6 +32,10 @@ until its host provisions Workflow execution; it does not silently omit their cl
 `WorkflowEntrypoint` クラスを Miniflare で実行します。ステップ、スリープ、イベント待機、
 インスタンス操作とローカルストレージを利用でき、リモートリソースの作成や認証情報は不要です。
 通常のページ配信とは独立してクラスをビルドし、SDK のインポートや名前の参照だけでは実行を開始しません。
+
+`upwind build` 後の `upwind preview` でも、ビルド済みのクラスと `deploy.storage` に宣言した
+KV・R2・D1 をローカルで実行できます。preview のストレージとインスタンス状態は終了時に破棄します。
+コードの変更を反映するには再ビルドしてください。
 
 ## Workers AI
 
@@ -304,6 +313,9 @@ nothing, so a change is seen once the project is built again, and it deploys not
 - **`deploy.images` has the edge transform images** as Cloudflare Images does for a deployment, here
   by Miniflare's Images binding: the same widths and formats, in bytes of its own encoder. Without
   it, each image is answered as it is.
+- **Native Cloudflare Workflows run from the build's artifacts**, with their own execution Workers
+  and the project's declared KV, R2 and D1 stores. Instance operations use the SDK; state lasts until
+  the preview stops. Builds without these Workflows keep the existing delivery stack.
 - **What a preview would serve otherwise than the project is, is said, not left to be found.** A
   build older than files of the project — its sources, its configuration, an `.env` file, the
   lockfile an upgrade rewrote — is served as it was built, and the files are named. So is a Function

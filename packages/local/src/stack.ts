@@ -481,6 +481,7 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
     ],
     services,
     stores,
+    workflowText: own.map(([name, value]) => ({ name, value, secret: false })),
   });
   const names = siteNamesOf(socket, options.hostnames ?? []);
   const workers: LocalWorker[] = [
@@ -530,6 +531,12 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
     },
     // What each Function fetches itself, the site's own pages among it, through the router.
     ...functions.workers.map((worker) => ({ ...worker, outbound: WORKERS.outbound })),
+    ...(functions.backgroundWorkers ?? []).map((worker) => {
+      return {
+        ...worker,
+        outbound: WORKERS.outbound,
+      };
+    }),
   ];
   const running = await runWorkers(workers, options.log ?? ignore, options.signals);
   try {

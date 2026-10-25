@@ -7,6 +7,12 @@ A build served on one machine as it is served deployed. `startStack` runs, under
 - the prefetch Worker;
 - the build's Functions, bound as a deploy binds them.
 
+Builds with native Cloudflare Workflows also run their verified class artifacts in dedicated
+execution Workers. App Functions use the scoped SDK bridge, and the Workflow Workers receive the
+application's environment, explicit local KV/R2/D1 stores and declared Workflow bindings. Native
+steps, retries, sleeps, events and instance controls execute in Miniflare. Workflow code stays out
+of page Functions, and builds without Workflows add no execution Workers or bindings.
+
 They run over stores of the stack's own, which go when it is disposed. The build is deployed to the
 stack by the same assembly any deploy uses (`deployBundle`, from `@stayingupwind/deploy`), so the
 manifest the edge serves by is the one a deployment of that build would have.

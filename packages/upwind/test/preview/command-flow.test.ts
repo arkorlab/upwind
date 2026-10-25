@@ -1,7 +1,10 @@
 import { mkdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import type { DeploymentBundle } from '@stayingupwind/core/bundle';
+import {
+  CLOUDFLARE_WORKFLOW_BUNDLE_VERSION,
+  type DeploymentBundle,
+} from '@stayingupwind/core/bundle';
 import type { CheckResult, LocalStack, StackOptions } from '@stayingupwind/local';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -201,6 +204,29 @@ describe('a preview around its stack', () => {
     expect(out).toContain(
       'warn: upwind: the build is older than 2 files of the project (next.config.ts, app/page.tsx), and serves them as they were before; build it again with `upwind build`',
     );
+  });
+
+  it('shares explicit local store kinds with a built native Workflow preview', async () => {
+    const dir = await project({
+      file: undefined,
+      deploy: { storage: { DATA: 'kv', DB: 'd1', FILES: 'r2' } },
+    });
+    const app = deployableFunction(dir);
+    writeBundle(
+      dir,
+      bundleOf(app, {
+        v: CLOUDFLARE_WORKFLOW_BUNDLE_VERSION,
+        routerReferences: 'one-pass',
+        // eslint-disable-next-line unicorn/no-keyword-prefix -- Native registration metadata uses className.
+        cloudflareWorkflows: [{ name: 'JOBS', module: 'jobs.ts', className: 'Jobs' }],
+        functions: { app, cloudflareWorkflows: { JOBS: app } },
+      }),
+    );
+
+    await expect(runPreview(checking(dir))).resolves.toBe(0);
+
+    expect(local.started[0]?.storage).toStrictEqual({ kv: ['DATA'], d1: ['DB'], r2: ['FILES'] });
+    expect(out.join('\n')).not.toMatch(/preview binds no storage/u);
   });
 
   it('refuses a secret a deploy would refuse, before any stack starts', async () => {

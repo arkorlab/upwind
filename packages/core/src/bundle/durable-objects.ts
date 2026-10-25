@@ -88,8 +88,8 @@ export function durableObjectBundleIssue(
     bundle.v,
   );
   if (
-    (!workflowVersion && objectVersion !== carriesObjects) ||
-    (!workflowVersion && containerVersion !== carriesContainers) ||
+    (!workflowVersion &&
+      (objectVersion !== carriesObjects || containerVersion !== carriesContainers)) ||
     declarations.length !== functions.length ||
     declarations.some(
       (entry) => !Object.hasOwn(bundle.functions.durableObjects ?? {}, entry.name),
