@@ -6,12 +6,13 @@ import { createAdapter } from '../src/index.ts';
 import { runtimeTargetOf } from '../src/native/target.ts';
 
 type ModifyConfig = NonNullable<NextAdapter['modifyConfig']>;
-type Config = Parameters<ModifyConfig>[0];
 type Context = Parameters<ModifyConfig>[1];
 const BUILD = { phase: 'phase-production-build', projectDir: '/project' } as Context;
 const DEV = { phase: 'phase-development-server', projectDir: '/project' } as Context;
 
 describe('native target selection', () => {
+  type Config = Parameters<ModifyConfig>[0];
+
   afterEach(() => vi.unstubAllEnvs());
 
   it('keeps Cloudflare as the default and accepts an explicit Node target', () => {
