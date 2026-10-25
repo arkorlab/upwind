@@ -4,6 +4,9 @@ import { isNode, listOf, type Node } from './lexical-scope.ts';
 import { identifier, propertyName, stringOf, visitTree } from './node-manifest-consumer-ast.ts';
 import {
   projectNodeManifestTurbopackFactory,
+  turbopackModuleId,
+  turbopackModuleSpecifier,
+  type NodeManifestTurbopackImport,
   type NodeManifestTurbopackProjection,
 } from './node-manifest-turbopack.ts';
 
@@ -32,7 +35,9 @@ function strictDirective(value: unknown): boolean {
     (expression['raw'] === '"use strict"' || expression['raw'] === "'use strict'")
   );
 }
-function assignment(node: Node): { readonly context: string; readonly call: Node } | undefined {
+function assignment(
+  node: Node,
+): { readonly kind: 'external' | 'require'; readonly call: Node } | undefined {
   const params = listOf(node, 'params');
   if (
     params.length !== COMMONJS_PARAMETERS ||
@@ -56,12 +61,32 @@ function assignment(node: Node): { readonly context: string; readonly call: Node
   )
     return undefined;
   const call = value['right'];
-  return isNode(call) &&
-    call.type === 'CallExpression' &&
-    call['optional'] !== true &&
-    member(call['callee'], context.name, 'x')
-    ? { context: context.name, call }
-    : undefined;
+  if (!isNode(call) || call.type !== 'CallExpression' || call['optional'] === true)
+    return undefined;
+  if (member(call['callee'], context.name, 'x')) return { kind: 'external', call };
+  return member(call['callee'], context.name, 'r') ? { kind: 'require', call } : undefined;
+}
+
+function forwardedImport(
+  exported: NonNullable<ReturnType<typeof assignment>>,
+): NodeManifestTurbopackImport | undefined {
+  const args = listOf(exported.call, 'arguments');
+  if (exported.kind === 'require') {
+    const targetId = turbopackModuleId(args[0]);
+    return targetId !== undefined && args.length === 1
+      ? { kind: 'require', targetId, specifier: turbopackModuleSpecifier(targetId) }
+      : undefined;
+  }
+  if (args.length !== EXTERNAL_ARGUMENTS && args.length !== EXTERNAL_INTEROP_ARGUMENTS)
+    return undefined;
+  const flag = args[2];
+  if (
+    args.length === EXTERNAL_INTEROP_ARGUMENTS &&
+    (!isNode(flag) || flag.type !== 'Literal' || flag['value'] !== false)
+  )
+    return undefined;
+  const specifier = stringOf(args[0]);
+  return specifier === undefined ? undefined : { kind: 'external', specifier };
 }
 
 /** Identity-only classification. The actual resolved producer and all callers still need proof. */
@@ -81,27 +106,19 @@ export function directExternalNamespace(
   if (node === undefined) return undefined;
   const exported = assignment(node);
   if (exported === undefined) return undefined;
-  const args = listOf(exported.call, 'arguments');
-  if (args.length !== EXTERNAL_ARGUMENTS && args.length !== EXTERNAL_INTEROP_ARGUMENTS)
-    return undefined;
-  const flag = args[2];
-  if (
-    args.length === EXTERNAL_INTEROP_ARGUMENTS &&
-    (!isNode(flag) || flag.type !== 'Literal' || flag['value'] !== false)
-  )
-    return undefined;
-  const specifier = stringOf(args[0]);
-  if (specifier === undefined) return undefined;
+  const expected = forwardedImport(exported);
+  if (expected === undefined) return undefined;
   // Recomputing from the selected original module checks SHA, registration ownership,
-  // lexical CommonJS identities and the exact unshadowed external-require thunk.
+  // lexical CommonJS identities and the bound require or unshadowed external-require thunk.
   const checked = projectNodeManifestTurbopackFactory(projection.original, projection.moduleId);
   const imported = checked.imports[0];
   return checked.factory.start === projection.factory.start &&
     checked.factory.end === projection.factory.end &&
     checked.exports.kind === 'commonjs' &&
     checked.imports.length === 1 &&
-    imported?.kind === 'external' &&
-    imported.specifier === specifier
-    ? specifier
+    imported?.kind === expected.kind &&
+    imported.specifier === expected.specifier &&
+    imported.targetId === expected.targetId
+    ? expected.specifier
     : undefined;
 }

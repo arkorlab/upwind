@@ -32,6 +32,7 @@ function projection(body: string, params = 'ctx,module,exports') {
 
 async function fixture(
   body = `module.exports=${CALL};`,
+  internalId?: number | string,
 ): Promise<NodeManifestTurbopackConsumerInput> {
   const template = await projectedTemplateFixture('pages');
   const original = template.imports.find((item) => item.file.endsWith('/pages/module.compiled.js'));
@@ -54,10 +55,13 @@ async function fixture(
   ]
     .map((id) => `${jsLiteral(id)},ctx=>{ctx.s(["default",()=>value]);const value={};},`)
     .join('');
-  const chunk = code.replace(
-    'module.exports=[',
-    () => `module.exports=[${slots}2,(ctx,module,exports)=>{${body}},`,
-  );
+  const chunk = code.replace('module.exports=[', () => {
+    const internal =
+      internalId === undefined
+        ? ''
+        : `${jsLiteral(internalId)},(ctx,module,exports)=>{module.exports=${CALL};},`;
+    return `module.exports=[${slots}${internal}2,(ctx,module,exports)=>{${body}},`;
+  });
   const runtime = (
     await readFile(new URL('fixtures/node-runtime/production.txt', import.meta.url), 'utf8')
   )
@@ -185,6 +189,71 @@ describe('direct CommonJS external namespace identity', () => {
         original: { ...original.original, sha256: '0'.repeat(64) },
       });
     }).toThrow('source');
+  });
+});
+
+describe('direct CommonJS internal require identity', () => {
+  it.each([
+    ['module.exports=ctx.r(7);', 'turbopack:7'],
+    ['"use strict";module.exports=ctx.r(7);', 'turbopack:7'],
+    ["module.exports=ctx.r('7');", 'turbopack:string:"7"'],
+  ])('recognizes only the complete required exports: %s', (body, specifier) => {
+    const original = projection(body);
+
+    expect(directExternalNamespace(original)).toBe(specifier);
+    expect(original.original.code).toContain(body);
+  });
+
+  it('retains renamed CommonJS identities for an internal require', () => {
+    const original = projection('mod.exports=c.r(7);', 'c,mod,out');
+
+    expect(directExternalNamespace(original)).toBe('turbopack:7');
+  });
+
+  it.each([
+    'module.exports=ctx.i(7);',
+    'module.exports=ctx.r(7).PagesRouteModule;',
+    'module.exports={namespace:ctx.r(7)};',
+    'module.exports=wrap(ctx.r(7));',
+    'module.exports=(effect(),ctx.r(7));',
+    'effect();module.exports=ctx.r(7);',
+    'module.exports=ctx.r(7);effect();',
+    'exports.namespace=ctx.r(7);',
+    'module.exports=(()=>ctx.r(7))();',
+    'const value=ctx.r(7);module.exports=value;',
+    'module.exports=(0,ctx.r)(7);',
+  ])('does not classify namespace conversion, picking, wrapping or effects: %s', (body) => {
+    expect(directExternalNamespace(projection(body))).toBeUndefined();
+  });
+
+  it.each([
+    'module.exports=ctx.r(value);',
+    'module.exports=ctx.r(7,8);',
+    'module.exports=ctx.r?.(7);',
+    'module.exports=ctx?.r(7);',
+    'module.exports=ctx.r.call(ctx,7);',
+    'module.exports=ctx.r(null);',
+    'module.exports=ctx["r"](7);',
+  ])('retains strict projector refusal for unproved require forms: %s', (body) => {
+    expect(() => projection(body)).toThrow('Unproved Next.js');
+  });
+
+  it.each([7, '7'])(
+    'closes the actual typed registry edge in the protected proof: %s',
+    async (id) => {
+      const body = `module.exports=ctx.r(${jsLiteral(id)});`;
+      const proof = await proveNodeManifestTurbopackConsumers(await fixture(body, id));
+
+      expect(proof.terminals.map((terminal) => terminal.file)).toStrictEqual([ENTRY]);
+    },
+  );
+
+  it('does not conflate an internal numeric target with a registered string target', async () => {
+    const input = await fixture('module.exports=ctx.r(7);', '7');
+
+    await expect(proveNodeManifestTurbopackConsumers(input)).rejects.toThrow(
+      'unregistered module dependency',
+    );
   });
 });
 
