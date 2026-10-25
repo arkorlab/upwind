@@ -131,6 +131,12 @@ pnpm dev
 pnpm build   # upwind build: アダプターを差し込んだ、いつもの next build → バンドル
 ```
 
+そのバンドルを、デプロイしたときと同じ構成（前にエッジ、後ろにランタイムキャッシュ）で手元で動かすには:
+
+```bash
+pnpm preview   # upwind preview: ビルドを http://localhost:3000 で配信。ビルドはしない
+```
+
 > [!TIP]
 > <http://localhost:3000/__upwind> を開くと、この `upwind dev` の情報（各バージョン、アドレス、プロジェクトのディレクトリー、解決したアダプター）を確認できます。`/__upwind/health` は Next.js の準備ができたら `200`、それまでは `503` を返すので、サーバーの起動を待つスクリプトに使えます。
 
@@ -159,7 +165,7 @@ my-app
 │   ├── layout.tsx
 │   └── page.tsx
 ├── next.config.ts     # adapterPath を設定。素の `next build` でも同じバンドルになる
-├── package.json       # "dev": "upwind dev", "build": "upwind build"
+├── package.json       # "dev": "upwind dev", "build": "upwind build", "preview": "upwind preview"
 ├── postcss.config.mjs
 ├── tsconfig.json
 └── README.md
@@ -462,7 +468,7 @@ Adapter API だけでは足りない箇所では、アダプターが Next.js �
 <details>
 <summary><b><code>start</code> スクリプトがないのはなぜですか？</b></summary>
 
-デプロイ先で `start` スクリプトが実行されることはないからです。アプリを配信するのはバンドル（エッジの後ろで動くFunction）であって、プロジェクト自身の Node.js サーバーではありません。
+デプロイ先で `start` スクリプトが実行されることはないからです。アプリを配信するのはバンドル（エッジの後ろで動くFunction）であって、プロジェクト自身の Node.js サーバーではありません。そのバンドルをデプロイしたときと同じ構成で手元で動かすには、`pnpm build` の後に `pnpm preview`（`upwind preview`）を使います。
 
 </details>
 
