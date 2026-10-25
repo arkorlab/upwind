@@ -106,6 +106,8 @@ const HOST_NAMES: readonly string[] = [
 ];
 /** Where the edge reads its pointer in `EDGE_STATE`. */
 const POINTER_KEY = 'pointer';
+/** The edge's Images binding, by the name a deployed standalone edge reads it under. */
+const IMAGES_BINDING = 'IMAGES';
 const PROJECT_ID = 'local';
 const RUN_ID = 'run_local';
 const OWNER = 'local';
@@ -148,6 +150,12 @@ export interface StackOptions {
   readonly policy?: DeliveryPolicy | undefined;
   /** The site's opt-in to a nonce the edge mints for each document (`EdgePointer.cspNonce`). */
   readonly cspNonce?: CspNonceSetting | undefined;
+  /**
+   * Whether the edge transforms what `/_next/image` asks for, as an edge a host binds Cloudflare
+   * Images to does (`IMAGES`): on this machine, by Miniflare's Images binding. Without it, the edge
+   * answers each image as it is.
+   */
+  readonly images?: boolean | undefined;
   /**
    * The stack's own Workers, bundled ahead of time (`bundleStackScripts`), for a command that runs
    * where upwind's sources are not; bundled from the sources as the stack starts when this names
@@ -484,6 +492,7 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
       bindings: { HOSTNAMES: names.hostnames, POINTER_KEY },
       kvNamespaces: { EDGE_STATE: STORES.edgeState, CACHE_STATE: STORES.cacheState },
       r2Buckets: { ARTIFACTS: STORES.artifacts },
+      ...(options.images === true && { images: IMAGES_BINDING }),
       services: {
         ...Object.fromEntries(
           functions.workers.map((worker) => [functionBinding(worker.name), worker.name]),
