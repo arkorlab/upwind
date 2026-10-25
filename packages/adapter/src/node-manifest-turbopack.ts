@@ -30,6 +30,11 @@ export interface NodeManifestTurbopackCacheInitializer {
   readonly start: number;
   readonly end: number;
 }
+export interface NodeManifestTurbopackAsyncLoader {
+  readonly targetId: NodeManifestTurbopackModuleId;
+  /** Exact Node-loaded chunk paths; runtime metadata hints do not grant additional authority. */
+  readonly chunks: readonly string[];
+}
 export type NodeManifestTurbopackExports =
   | { readonly kind: 'commonjs' }
   | { readonly kind: 'opaque' }
@@ -46,6 +51,9 @@ export interface NodeManifestTurbopackProjection {
   readonly imports: readonly NodeManifestTurbopackImport[];
   /** Ordinary cache writes, never independently invocable registered factory IDs. */
   readonly cacheInitializers: readonly NodeManifestTurbopackCacheInitializer[];
+  /** The graph must require an actual selected-ID loader certificate for each of these calls. */
+  readonly asyncLoads: readonly NodeManifestTurbopackModuleId[];
+  readonly asyncLoader?: NodeManifestTurbopackAsyncLoader;
   readonly exports: NodeManifestTurbopackExports;
   readonly boundRuntimeInputs: readonly {
     readonly kind: 'require' | 'loadChunk';

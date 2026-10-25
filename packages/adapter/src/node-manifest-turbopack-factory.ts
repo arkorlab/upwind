@@ -14,10 +14,21 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import {
+  TurbopackAsyncProjection,
+  nodeManifestAsyncMetadata,
+} from './node-manifest-turbopack-async.ts';
 import { TurbopackCacheInitializers } from './node-manifest-turbopack-cache.ts';
 import { nodeManifestClearProjection } from './node-manifest-turbopack-clear.ts';
 import { originalTurbopackImports } from './node-manifest-turbopack-imports.ts';
-import { defaultExportTarget, externalThunk, getterOf } from './node-manifest-turbopack-values.ts';
+import {
+  defaultExportTarget,
+  externalThunk,
+  getterOf,
+  turbopackModuleId,
+  turbopackModuleSpecifier,
+} from './node-manifest-turbopack-values.ts';
+export { turbopackModuleId, turbopackModuleSpecifier } from './node-manifest-turbopack-values.ts';
 import type {
   NodeManifestTurbopackExports,
   NodeManifestTurbopackFactory,
@@ -35,7 +46,6 @@ interface Edit {
 const GETTER_PREFIX = '__upwind_turbopack_getter_';
 const BOUND_PREFIX = '__upwind_turbopack_bound_';
 const BOUND_KINDS = { l: 'loadChunk', r: 'require' } as const;
-const MAX_MODULE_ID_BYTES = 16_384;
 const MAX_GETTER_EXPORT_ARGUMENTS = 3;
 const MAX_VALUE_EXPORT_ARGUMENTS = 2;
 
@@ -48,26 +58,6 @@ function refuse(reason: string): never {
   throw new AuditError(
     `Unproved Next.js Turbopack manifest ${reason}; refusing native publication`,
   );
-}
-
-/** Fixed Next ModuleId is an untagged number/string; the runtime stores exact keys in a Map. */
-// eslint-disable-next-line sonarjs/function-return-type -- Next.js ModuleId preserves runtime-distinct number and string Map keys.
-export function turbopackModuleId(node: unknown): NodeManifestTurbopackModuleId | undefined {
-  if (!isNode(node) || node.type !== 'Literal') return undefined;
-  const value = node['value'];
-  if (typeof value === 'number')
-    return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-  return typeof value === 'string' &&
-    value.length > 0 &&
-    !value.includes('\0') &&
-    Buffer.byteLength(value) <= MAX_MODULE_ID_BYTES
-    ? value
-    : undefined;
-}
-
-/** Keep runtime-distinct numeric/string keys distinct in the inspection-only module namespace. */
-export function turbopackModuleSpecifier(id: NodeManifestTurbopackModuleId): string {
-  return typeof id === 'number' ? `turbopack:${id}` : `turbopack:string:${JSON.stringify(id)}`;
 }
 
 function escapedContextMethod(name: string | undefined, parent: Node | undefined): never {
@@ -99,6 +89,7 @@ class FactoryProjection {
   private registered = false;
   private normalizedGlobal = false;
   private readonly clearMembers = new Set<Node>();
+  private async: TurbopackAsyncProjection | undefined;
 
   constructor(
     source: NodeManifestTurbopackSource,
@@ -359,6 +350,7 @@ class FactoryProjection {
   }
 
   private specialOperation(member: Node, visit: Visit, name: string | undefined): boolean {
+    if (this.async?.operation(member, visit) === true) return true;
     if (name === 'g' && this.mode === 'dependencies') {
       assertGlobalContextRead(member, visit, this.parents);
       this.edit(member, 'globalThis');
@@ -461,10 +453,23 @@ class FactoryProjection {
     this.normalizedGlobal = true;
   }
 
+  private projectAsyncLoader(): void {
+    if (this.mode !== 'dependencies') return;
+    this.async = new TurbopackAsyncProjection({
+      body: this.body,
+      visits: this.visits,
+      context: { name: this.context, scope: this.scope },
+      moduleId: this.moduleId,
+      factoryIds: this.factory.ids,
+    });
+    for (const node of this.async.references()) this.allowedContext.add(node);
+  }
+
   project(): NodeManifestTurbopackProjection {
     this.assertCommonJsBindings();
     this.cacheInitializers();
     this.projectClearChunkCache();
+    this.projectAsyncLoader();
     for (const visit of this.visits) this.operation(visit);
     const originalImports = originalTurbopackImports(this.visits, this.parents, this.imports);
     this.forwardNamespaces();
@@ -505,8 +510,9 @@ class FactoryProjection {
       original: this.source,
       factory: this.factory,
       source: { code, sha256 },
-      imports: [...this.imports.values(), ...originalImports],
+      imports: [...this.imports.values(), ...(this.async?.imports() ?? []), ...originalImports],
       cacheInitializers: this.cache.snapshot(),
+      ...nodeManifestAsyncMetadata(this.async),
       exports: this.exports,
       boundRuntimeInputs: this.boundRuntimeInputs,
       requiresReviewedRuntime: true,

@@ -12,6 +12,7 @@ import {
   nodeManifestRuntimeCohortSources,
   type NodeManifestRuntimeCohort,
 } from './node-manifest-runtime-cohort.ts';
+import { assertTurbopackAsyncGraph } from './node-manifest-turbopack-async-graph.ts';
 import { assertTurbopackCacheOwners } from './node-manifest-turbopack-cache.ts';
 import {
   nodeManifestTurbopackFactories,
@@ -394,6 +395,7 @@ export function nodeManifestTurbopackBootGraph(input: {
   const tables = runtimeTables(runtime, sources, runtimeIds, input.runtimeCohort);
   const factories = factoryRecords(tables);
   assertTurbopackCacheOwners([...factories.values()], new Set(factories.keys()));
+  assertTurbopackAsyncGraph({ distDir: input.distDir, tables, factories });
   const logicalIds = new Map<string, NodeManifestTurbopackModuleId>();
   const targetOf = (id: NodeManifestTurbopackModuleId): string => {
     const target = factories.get(id);

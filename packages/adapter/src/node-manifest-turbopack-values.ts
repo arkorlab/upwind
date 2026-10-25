@@ -1,8 +1,30 @@
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node } from './lexical-scope.ts';
 import { declaration, identifier, propertyName, type Visit } from './node-manifest-consumer-ast.ts';
+import type { NodeManifestTurbopackModuleId } from './node-manifest-turbopack.ts';
 
 const EXTERNAL_INTEROP_ARITY = 3;
+const MAX_MODULE_ID_BYTES = 16_384;
+
+/** Fixed Next ModuleId is an untagged number/string; the runtime stores exact keys in a Map. */
+// eslint-disable-next-line sonarjs/function-return-type -- Next.js ModuleId preserves runtime-distinct number and string Map keys.
+export function turbopackModuleId(node: unknown): NodeManifestTurbopackModuleId | undefined {
+  if (!isNode(node) || node.type !== 'Literal') return undefined;
+  const value = node['value'];
+  if (typeof value === 'number')
+    return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    !value.includes('\0') &&
+    Buffer.byteLength(value) <= MAX_MODULE_ID_BYTES
+    ? value
+    : undefined;
+}
+
+/** Keep runtime-distinct numeric/string keys distinct in the inspection-only module namespace. */
+export function turbopackModuleSpecifier(id: NodeManifestTurbopackModuleId): string {
+  return typeof id === 'number' ? `turbopack:${id}` : `turbopack:string:${JSON.stringify(id)}`;
+}
 
 function refuse(reason: string): never {
   throw new AuditError(

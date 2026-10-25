@@ -344,7 +344,10 @@ class TurbopackConsumers {
         this.reachabilityFallback === undefined
           ? ''
           : `; reachability fallback: ${this.reachabilityFallback}`;
-      refuse(`consumer without a sealed route${reason}`);
+      const registration = factory.projection.factory;
+      refuse(
+        `consumer without a sealed route${reason}; registration ${factory.projection.original.sha256}:${registration.start}-${registration.end}`,
+      );
     }
     const kind = this.producerKind();
     if (kind === 'app-page') this.appPageConsumer(factory, route);
