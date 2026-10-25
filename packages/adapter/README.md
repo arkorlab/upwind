@@ -796,7 +796,8 @@ The host binds a gate under each name, and its edge asks the route's gate about 
 page's props — before it serves the request anything. An answer that says `x-upwind-gate: pass` has
 the request served as though there were no gate, with its answer kept from shared caches even
 where the application permits public caching: the gate admitted this visitor alone. The browser's
-own cache directives remain. Any other is the answer, kept nowhere. A gate that
+own cache directives remain. That restriction also applies when a routing pattern exceeds its
+allowance after admission and the Function answers the fallback. Any other is the answer, kept nowhere. A gate that
 cannot be reached is a `503`, never what was kept of the route. A publisher also carries
 `hasGates: true` on the deployment's pointer. If its routing manifest cannot be read, every `GET`
 and `HEAD` is answered `503`: without the routing table the edge cannot prove that the request is
