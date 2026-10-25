@@ -56,6 +56,7 @@ import { declaredGates } from './gates.ts';
 import { instrumentationOf, writeClientInstrumentation } from './instrumentation.ts';
 import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
+import { runtimeTargetOf, type RuntimeTarget } from './native/target.ts';
 import { checkPageBodyHost, type UnshippedPrerenderBodies } from './page-bodies.ts';
 import { collectPageBodies } from './page-body-layout.ts';
 import { readProjectConfig } from './project-config.ts';
@@ -511,6 +512,8 @@ function middlewarePlacement(middleware: AdapterOutput['MIDDLEWARE'] | undefined
 
 /** What a host configures the adapter with; a build given none produces a bundle with no cache. */
 export interface AdapterOptions {
+  /** The runtime built into this deployment; Cloudflare remains the default. */
+  readonly target?: RuntimeTarget | undefined;
   /** Host registrations whose class code is built separately from every Next.js Function. */
   readonly durableObjects?: readonly DurableObjectDeclaration[] | undefined;
   /** Host-owned Cloudflare Workflow registrations, built independently of application routes. */
@@ -781,6 +784,12 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
  * a bundle should read the bundle.
  */
 export function createAdapter(options: AdapterOptions = {}): NextAdapter {
+  const target = runtimeTargetOf(options.target);
+  if (target === 'node' && options.cacheHostModule !== undefined) {
+    throw new Error(
+      '@stayingupwind/adapter: the node target uses its persistent local cache; remove cacheHostModule or select the cloudflare target',
+    );
+  }
   checkSplitOptions(options.functions?.split);
   checkPageBodyHost(options.unshippedPrerenderBodies, options.cacheHostModule);
   const edgeHosts = checkedEdgeInstrumentationModules(options.edgeInstrumentationModules);
@@ -809,9 +818,9 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
         // assets are recognized from the build's own `onMatch` rule instead (see
         // `immutableByBuild`).
         config.supportsImmutableAssets = true;
-        renderInOneProcessForStorage(config);
+        if (target === 'cloudflare') renderInOneProcessForStorage(config);
         // The Workflow SDK's own Worlds stay out of the Functions: neither can run there.
-        await aliasBuiltinWorlds(config, projectDir, OUT_DIR_NAME);
+        if (target === 'cloudflare') await aliasBuiltinWorlds(config, projectDir, OUT_DIR_NAME);
         if (carriesMaps(options.sourceMaps)) {
           // Both halves, because a stack has both in it: a page's frames are in the browser
           // chunks, and a render's are in the server ones. What keeps the browser maps from being
@@ -837,7 +846,14 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
       }
       return config;
     },
-    onBuildComplete: (ctx) => onBuildComplete(ctx, options, edgeHosts),
+    async onBuildComplete(ctx) {
+      if (target === 'node') {
+        const { emitNativeDeployment } = await import('./native/emit.ts');
+        await emitNativeDeployment(ctx, options);
+        return;
+      }
+      await onBuildComplete(ctx, options, edgeHosts);
+    },
   };
 }
 
@@ -849,6 +865,7 @@ export default createAdapter(environmentOptions());
 export { bundleDurableObjects, type BundledDurableObject } from './durable-objects.ts';
 // What `upwind deploy` reads the project's configuration with: the reader its build uses.
 export { type DeployConfig, readProjectConfig, type UpwindConfig } from './project-config.ts';
+export type { RuntimeTarget } from './native/target.ts';
 
 export {
   bundleCloudflareWorkflows,

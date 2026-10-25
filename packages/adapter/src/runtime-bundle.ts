@@ -61,6 +61,7 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
         ...THROWING_GLOBALS,
         'process.env.NODE_ENV': '"production"',
         __ARKOR_FUNCTION_KIND__: jsLiteral(input.kind),
+        __ARKOR_BUNDLE_ROOT__: '"/bundle"',
         // Which Function this is, among a deployment's app Functions: what a request for a route of
         // another one is told apart by (`placement.ts`).
         __ARKOR_FUNCTION_NAME__: jsLiteral(input.name),

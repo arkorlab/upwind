@@ -41,6 +41,7 @@ export default defineConfig({
     projects: [
       'packages/*/vitest.config.mts',
       'packages/*/vitest.workers.config.mts',
+      'packages/cache/vitest.native.config.mts',
       'tools/*/vitest.config.mts',
       'tools/*/vitest.workers.config.mts',
     ],
