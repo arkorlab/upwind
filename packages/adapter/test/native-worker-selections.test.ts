@@ -69,6 +69,10 @@ describe('finite scalar fields of selected Worker namespaces', () => {
     'const alias=chosen;alias.isMainThread=globalThis.other;exports.check=()=>chosen.isMainThread;',
     'const left=chosen.isMainThread;const right=chosen.threadId;chosen.isMainThread=right;chosen.threadId=left;exports.check=()=>chosen.isMainThread;',
     'chosen.isMainThread.value=0;exports.check=()=>chosen.threadId;',
+    'for(chosen.isMainThread of globalThis.values){}exports.check=()=>chosen.isMainThread;',
+    'for(chosen.threadId in globalThis.values){}exports.check=()=>chosen.threadId;',
+    'let {isMainThread:flag}=chosen;for(flag of globalThis.values){}exports.check=()=>flag;',
+    'let {threadId:id}=chosen;for(id in globalThis.values){}exports.check=()=>id;',
   ])('keeps unknown selections, patterns and mutations strict and terminating: %s', (use) => {
     const source = SCALAR_CHOICE + use;
 

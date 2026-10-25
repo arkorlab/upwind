@@ -125,7 +125,12 @@ export function workerSelectionWasMutated(
 ): boolean {
   return tree.some((node) => {
     let target: Node | undefined;
-    if (node.type === 'AssignmentExpression') target = node.left;
+    if (
+      node.type === 'AssignmentExpression' ||
+      node.type === 'ForInStatement' ||
+      node.type === 'ForOfStatement'
+    )
+      target = node.left;
     if (
       node.type === 'UpdateExpression' ||
       (node.type === 'UnaryExpression' && node.operator === 'delete')

@@ -47,6 +47,12 @@ function isAssignment(node: Node): node is AssignmentNode {
 function assignmentBinds(node: Node, name: string, members: boolean): boolean {
   if (node.type === 'UnaryExpression' && node.operator === 'delete')
     return patternNames(node.argument, members).includes(name);
+  if (node.type === 'ForInStatement' || node.type === 'ForOfStatement') {
+    const target = node.left;
+    return target.type === 'VariableDeclaration'
+      ? target.declarations.some((entry) => patternNames(entry.id, members).includes(name))
+      : patternNames(target, members).includes(name);
+  }
   if (!isAssignment(node)) return false;
   const target = node.type === 'AssignmentExpression' ? node.left : node.argument;
   return patternNames(target, members).includes(name);
