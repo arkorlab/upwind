@@ -15,8 +15,9 @@ import {
   type Visit,
 } from './node-manifest-consumer-ast.ts';
 import { TurbopackCacheInitializers } from './node-manifest-turbopack-cache.ts';
+import { nodeManifestClearProjection } from './node-manifest-turbopack-clear.ts';
 import { originalTurbopackImports } from './node-manifest-turbopack-imports.ts';
-import { externalThunk, getterOf } from './node-manifest-turbopack-values.ts';
+import { defaultExportTarget, externalThunk, getterOf } from './node-manifest-turbopack-values.ts';
 import type {
   NodeManifestTurbopackExports,
   NodeManifestTurbopackFactory,
@@ -69,28 +70,6 @@ export function turbopackModuleSpecifier(id: NodeManifestTurbopackModuleId): str
   return typeof id === 'number' ? `turbopack:${id}` : `turbopack:string:${JSON.stringify(id)}`;
 }
 
-function defaultExportTarget(value: unknown, visit: Visit): boolean {
-  if (value === undefined) return true;
-  if (!isNode(value)) return false;
-  if (
-    value.type === 'Literal' &&
-    value['value'] === null &&
-    !('regex' in value) &&
-    !('bigint' in value)
-  )
-    return true;
-  if (identifier(value) && value.name === 'undefined')
-    return declaration('undefined', visit.scopes) === undefined;
-  const argument = value['argument'];
-  return (
-    value.type === 'UnaryExpression' &&
-    value['operator'] === 'void' &&
-    isNode(argument) &&
-    argument.type === 'Literal' &&
-    argument['value'] === 0
-  );
-}
-
 function escapedContextMethod(name: string | undefined, parent: Node | undefined): never {
   const label = name !== undefined && /^[a-zA-Z]$/u.test(name) ? name : 'other';
   return refuse(`context method escape (${label}; ${parent?.type ?? 'missing'})`);
@@ -119,6 +98,7 @@ class FactoryProjection {
   private exports: NodeManifestTurbopackExports = { kind: 'commonjs' };
   private registered = false;
   private normalizedGlobal = false;
+  private readonly clearMembers = new Set<Node>();
 
   constructor(
     source: NodeManifestTurbopackSource,
@@ -390,6 +370,7 @@ class FactoryProjection {
 
   private operation(visit: Visit): void {
     const member = visit.node;
+    if (this.clearMembers.has(member)) return;
     if (member.type !== 'MemberExpression' || !this.ownIdentifier(member['object'], visit)) return;
     if (member['optional'] === true) refuse('optional context access');
     const name = propertyName(member);
@@ -465,9 +446,25 @@ class FactoryProjection {
     }
   }
 
+  private projectClearChunkCache(): void {
+    if (this.mode !== 'dependencies') return;
+    const clear = nodeManifestClearProjection({
+      body: this.body,
+      visits: this.visits,
+      parents: this.parents,
+      context: { name: this.context, scope: this.scope },
+    });
+    if (clear === undefined) return;
+    this.edit(clear.assignment, 'void 0');
+    for (const member of clear.members) this.clearMembers.add(member);
+    for (const node of clear.references) this.allowedContext.add(node);
+    this.normalizedGlobal = true;
+  }
+
   project(): NodeManifestTurbopackProjection {
     this.assertCommonJsBindings();
     this.cacheInitializers();
+    this.projectClearChunkCache();
     for (const visit of this.visits) this.operation(visit);
     const originalImports = originalTurbopackImports(this.visits, this.parents, this.imports);
     this.forwardNamespaces();

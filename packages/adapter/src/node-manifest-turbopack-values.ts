@@ -1,12 +1,34 @@
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node } from './lexical-scope.ts';
-import { identifier, propertyName } from './node-manifest-consumer-ast.ts';
+import { declaration, identifier, propertyName, type Visit } from './node-manifest-consumer-ast.ts';
 
 const EXTERNAL_INTEROP_ARITY = 3;
 
 function refuse(reason: string): never {
   throw new AuditError(
     `Unproved Next.js Turbopack manifest ${reason}; refusing native publication`,
+  );
+}
+
+export function defaultExportTarget(value: unknown, visit: Visit): boolean {
+  if (value === undefined) return true;
+  if (!isNode(value)) return false;
+  if (
+    value.type === 'Literal' &&
+    value['value'] === null &&
+    !('regex' in value) &&
+    !('bigint' in value)
+  )
+    return true;
+  if (identifier(value) && value.name === 'undefined')
+    return declaration('undefined', visit.scopes) === undefined;
+  const argument = value['argument'];
+  return (
+    value.type === 'UnaryExpression' &&
+    value['operator'] === 'void' &&
+    isNode(argument) &&
+    argument.type === 'Literal' &&
+    argument['value'] === 0
   );
 }
 
