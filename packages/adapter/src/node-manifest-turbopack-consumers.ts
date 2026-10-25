@@ -10,6 +10,7 @@ import {
   assertNodeManifestConsumer,
   type NodeManifestConsumerImport,
 } from './node-manifest-consumers.ts';
+import { directExternalNamespace } from './node-manifest-external-forwarder.ts';
 import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
 import { inspectNodeManifestReachability } from './node-manifest-reachability.ts';
 import {
@@ -71,8 +72,10 @@ function refuse(reason: string): never {
 
 function forwarded(factory: NodeManifestTurbopackGraphFactory): string | undefined {
   const own = factory.projection.exports;
-  if (own.kind !== 'namespace') return undefined;
-  const edges = factory.imports.filter((edge) => edge.specifier === own.specifier);
+  const specifier =
+    own.kind === 'namespace' ? own.specifier : directExternalNamespace(factory.projection);
+  if (specifier === undefined) return undefined;
+  const edges = factory.imports.filter((edge) => edge.specifier === specifier);
   return edges.length === 1 ? edges[0]?.target : refuse('ambiguous namespace forwarder');
 }
 
