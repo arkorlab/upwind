@@ -23,7 +23,7 @@ export interface NodePhysicalFiles {
   readonly cwd: string;
   /** The original compiled project hook, distinct from the generated host composition. */
   readonly instrumentation: string | undefined;
-  nameOf(file: string): string;
+  readonly nameOf: (file: string) => string;
 }
 
 type NameOf = NodePhysicalFiles['nameOf'];

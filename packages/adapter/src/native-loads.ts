@@ -21,7 +21,9 @@ const MARKER = '__UPWIND_NATIVE_CAPABILITY__';
 const CHILD_MARKER = '__UPWIND_NATIVE_WORKER_CHILD__';
 const KIB = 1024;
 const MIB = KIB * KIB;
-const MAX_SOURCE_BYTES = 32 * MIB;
+const MAX_SOURCE_MIB = 32;
+const MAX_SOURCE_BYTES = MAX_SOURCE_MIB * MIB;
+const SOURCE_WORDS = ['bindings', 'node-gyp-build', 'process', 'dlopen', '.node', 'worker_threads'];
 
 export interface NativeLoad {
   readonly kind: 'direct' | 'dlopen' | 'bindings' | 'node-gyp-build';
@@ -52,9 +54,7 @@ function canAnalyze(candidates: boolean, source: string, importer: string): bool
   return (
     candidates &&
     /\.(?:c|m)?js$/u.test(importer) &&
-    ['bindings', 'node-gyp-build', 'process', 'dlopen', '.node', 'worker_threads'].some((word) =>
-      source.includes(word),
-    )
+    SOURCE_WORDS.some((word) => source.includes(word))
   );
 }
 

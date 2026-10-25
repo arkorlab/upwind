@@ -20,6 +20,7 @@ import type { BuildFunctionInput } from './function.ts';
 import { nativeLoadsPlugin, type NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
 import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
+import { proveNodeManifests, type NodeManifestProof } from './node-manifest-proof.ts';
 import { cacheHandlersPatch } from './patches/cache-handlers.ts';
 import { instrumentationPatch } from './patches/instrumentation.ts';
 import type { AppliedPatch } from './patches/rolldown.ts';
@@ -33,22 +34,24 @@ const ROLLDOWN_RUNTIME_MODULE = '\0rolldown/runtime.js';
 // These expose the original Node graph. No Worker-specific code or dependency is substituted.
 const GRAPH_LINKS = [turbopackRuntimePatch, instrumentationPatch, cacheHandlersPatch];
 
-type NodeProofInput = Pick<
-  BuildFunctionInput,
-  'kind' | 'name' | 'projectDir' | 'outDir' | 'entries' | 'entryTraces' | 'patch'
->;
+type NodeProofInput = Partial<Pick<BuildFunctionInput, 'manifests'>> &
+  Pick<
+    BuildFunctionInput,
+    'kind' | 'name' | 'projectDir' | 'outDir' | 'entries' | 'entryTraces' | 'patch'
+  >;
 interface OriginalNodeSource {
   readonly file: string;
   readonly sha256: string;
 }
 interface OriginalNodeGraph {
   readonly sources: Map<string, OriginalNodeSource>;
+  readonly importers: Map<string, readonly string[]>;
   readonly patches: AppliedPatch[];
   readonly externals: Set<string>;
 }
 interface CopiedNodeSources {
   readonly files: ReadonlyMap<string, Uint8Array>;
-  readonly nameOf: (this: void, file: string) => string;
+  readonly nameOf: (file: string) => string;
 }
 
 export interface NodeFunctionProof {
@@ -130,6 +133,16 @@ function originalNodeGraphPlugin(input: NodeProofInput, graph: OriginalNodeGraph
       filter: { id: /\.(?:[cm]?[jt]sx?|json)$/u },
       handler: (id) => originalNodeModule(id, input, graph),
     },
+    generateBundle() {
+      // eslint-disable-next-line unicorn/no-this-outside-of-class -- Rolldown supplies its final module graph to this hook.
+      const ids = this.getModuleIds();
+      for (const id of ids) {
+        // eslint-disable-next-line unicorn/no-this-outside-of-class -- Importers must come from Rolldown's resolved graph, not source-name guesses.
+        const module = this.getModuleInfo(id);
+        if (module !== null)
+          graph.importers.set(id, [...module.importers, ...module.dynamicImporters]);
+      }
+    },
   };
 }
 
@@ -143,11 +156,16 @@ function retainedFileIdentity(projectDir: string, file: string): string {
   return JSON.stringify(bounded);
 }
 
-function assertRetainedClosures(projectDir: string, chunk: OutputChunk): void {
+function assertRetainedClosures(
+  projectDir: string,
+  chunk: OutputChunk,
+  manifests: NodeManifestProof,
+): void {
   const modules = Object.entries(chunk.modules);
   for (const [file, module] of modules) {
     if (module.code === null || isNodeProofCompilerModule(file)) continue;
-    const refusal = dynamicNodeClosureRefusal(file, module.code);
+    const inspection = manifests.inspectionCode(file, module.code);
+    const refusal = dynamicNodeClosureRefusal(file, inspection);
     if (refusal !== undefined) {
       const identity = retainedFileIdentity(projectDir, file);
       throw new AuditError(
@@ -195,8 +213,15 @@ function retainedSources(
 function includingLoaderSources(
   sources: readonly OriginalNodeSource[],
   retained: readonly NativeLoad[],
+  manifests: readonly OriginalNodeSource[],
 ): OriginalNodeSource[] {
   const files = new Map(sources.map((source) => [source.file, source]));
+  for (const source of manifests) {
+    const previous = files.get(source.file);
+    if (previous !== undefined && previous.sha256 !== source.sha256)
+      throw new AuditError('Reviewed Next.js manifest changed during original Node proof');
+    files.set(source.file, source);
+  }
   for (const load of retained) {
     const loaders = load.loaderSources ?? [];
     for (const source of loaders) {
@@ -215,7 +240,12 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     throw new AuditError('Native Node proof does not support custom cache handler closures');
   const entryFile = await proofEntry(input);
   const native = nativeLoadsPlugin(input.entryTraces ?? [], { nodeTarget: true });
-  const graph: OriginalNodeGraph = { sources: new Map(), patches: [], externals: new Set() };
+  const graph: OriginalNodeGraph = {
+    sources: new Map(),
+    importers: new Map(),
+    patches: [],
+    externals: new Set(),
+  };
   await using bundle = await rolldown({
     cwd: input.projectDir,
     input: entryFile,
@@ -243,7 +273,15 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) throw new AuditError('Original Node graph produced no proof chunk');
-  assertRetainedClosures(input.projectDir, chunk);
+  const manifests = await proveNodeManifests(
+    { distDir: input.patch.distDir, manifests: input.manifests, entryTraces: input.entryTraces },
+    {
+      sources: graph.sources,
+      importers: graph.importers,
+      retained: new Set(Object.keys(chunk.modules)),
+    },
+  );
+  assertRetainedClosures(input.projectDir, chunk, manifests);
   const retained = await native.retained(chunk);
   if (retained.length === 0)
     throw new AuditError('The original Node graph has no retained, owned native capability');
@@ -254,7 +292,11 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     dependencies,
     outputNameOf(input.projectDir, input.patch.distDir),
   );
-  const files = includingLoaderSources(retainedSources(chunk, graph, entryFile), retained);
+  const files = includingLoaderSources(
+    retainedSources(chunk, graph, entryFile),
+    retained,
+    manifests.files,
+  );
   return { native: retained, files, dependencies };
 }
 
@@ -277,19 +319,17 @@ function assertCopiedSource(
 
 /** Compare original bytes before the explicit shared-cache/instrumentation artifact rewrites. */
 export function assertNodeProofFiles(
-  proof: NodeFunctionProof,
+  proof: Pick<NodeFunctionProof, 'files' | 'native'>,
   physical: {
     readonly files: readonly NodeArchiveFile[];
-    nameOf(this: void, file: string): string;
+    readonly nameOf: (file: string) => string;
   },
   bundledInstrumentation: ReadonlyMap<string, string>,
 ): void {
   const files = new Map(physical.files.map((file) => [file.name, file.bytes]));
   const copied: CopiedNodeSources = { files, nameOf: physical.nameOf };
   const loaderFiles = new Set(
-    proof.native.flatMap((load) => {
-      return (load.loaderSources ?? []).map((source) => source.file);
-    }),
+    proof.native.flatMap((load) => (load.loaderSources ?? []).map((source) => source.file)),
   );
   for (const original of proof.files) {
     // A loader executes from the physical Node graph, even if a host hook bundled it too.

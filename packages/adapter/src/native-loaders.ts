@@ -14,7 +14,8 @@ const LOADER_BLOBS: Readonly<Record<string, readonly string[]>> = {
   'node-gyp-build': [NODE_GYP_RUNTIME, NODE_GYP_INDEX],
 };
 const KIB = 1024;
-const MAX_PACKAGE_METADATA_BYTES = 128 * KIB;
+const MAX_PACKAGE_METADATA_KIB = 128;
+const MAX_PACKAGE_METADATA_BYTES = MAX_PACKAGE_METADATA_KIB * KIB;
 const NODE_GYP_SELECTORS = [
   'PREBUILDS_ONLY',
   'npm_config_arch',
@@ -107,8 +108,13 @@ export async function nativeLoaderSelectorKeys(importer: string): Promise<readon
 
 async function assertDefaultSelectors(importer: string): Promise<void> {
   const keys = await nativeLoaderSelectorKeys(importer);
-  if (keys.some((key) => process.env[key]))
+  if (keys.some(hasSelector))
     throw new AuditError('Native loader environment overrides cannot be classified');
+}
+
+function hasSelector(key: string): boolean {
+  const value = process.env[key];
+  return value !== undefined && value !== '';
 }
 
 async function firstExisting(

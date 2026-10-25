@@ -6,6 +6,7 @@ import type { NativeEdit } from './native-operations.ts';
 import { ownedNativeFiles } from './native-ownership.ts';
 
 type WorkerOrigin = 'constructor' | 'namespace';
+const IMPORTS = new WeakMap<readonly Node[], ReadonlyMap<Node, WorkerOrigin>>();
 interface WorkerContext {
   readonly bindings: NativeBindings;
   readonly imports: ReadonlyMap<Node, WorkerOrigin>;
@@ -15,7 +16,7 @@ function importedWorkers(
   node: Extract<Node, { type: 'ImportDeclaration' }>,
   imports: Map<Node, WorkerOrigin>,
 ): void {
-  if (!['node:worker_threads', 'worker_threads'].includes(String(node.source.value))) return;
+  if (!['node:worker_threads', 'worker_threads'].includes(stringOf(node.source) ?? '')) return;
   for (const specifier of node.specifiers) {
     if (['ImportDefaultSpecifier', 'ImportNamespaceSpecifier'].includes(specifier.type))
       imports.set(specifier, 'namespace');
@@ -25,19 +26,20 @@ function importedWorkers(
 }
 
 function workerImports(tree: readonly Node[]): ReadonlyMap<Node, WorkerOrigin> {
+  const cached = IMPORTS.get(tree);
+  if (cached !== undefined) return cached;
   const imports = new Map<Node, WorkerOrigin>();
   for (const node of tree) {
     if (node.type === 'ImportDeclaration') importedWorkers(node, imports);
   }
+  IMPORTS.set(tree, imports);
   return imports;
 }
 
 function workerProperty(callee: Extract<Node, { type: 'MemberExpression' }>): boolean {
-  const property = callee.computed
-    ? stringOf(callee.property)
-    : callee.property.type === 'Identifier'
-      ? callee.property.name
-      : undefined;
+  let property: string | undefined;
+  if (callee.computed) property = stringOf(callee.property);
+  else if (callee.property.type === 'Identifier') property = callee.property.name;
   return property === 'Worker' || (callee.computed && property === undefined);
 }
 

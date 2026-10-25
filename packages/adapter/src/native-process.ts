@@ -9,11 +9,13 @@ function processModule(specifier: string | undefined): boolean {
 }
 
 function propertyName(node: Extract<Node, { type: 'MemberExpression' }>): string | undefined {
-  return node.computed
-    ? stringOf(node.property)
-    : node.property.type === 'Identifier'
-      ? node.property.name
-      : undefined;
+  if (node.computed) return stringOf(node.property);
+  return node.property.type === 'Identifier' ? node.property.name : undefined;
+}
+
+function destructuredKey(node: Extract<Node, { type: 'Property' }>): string | undefined {
+  if (node.computed) return stringOf(node.key);
+  return node.key.type === 'Identifier' ? node.key.name : stringOf(node.key);
 }
 
 function importedOrigin(node: Node, bindings: NativeBindings): ProcessOrigin | undefined {
@@ -21,7 +23,7 @@ function importedOrigin(node: Node, bindings: NativeBindings): ProcessOrigin | u
   if (node.type === 'ImportNamespaceSpecifier' || node.type === 'ImportDefaultSpecifier')
     return 'namespace';
   if (node.type !== 'ImportSpecifier') return undefined;
-  const name = node.imported.type === 'Identifier' ? node.imported.name : node.imported.value;
+  const name = node.imported.type === 'Identifier' ? node.imported.name : stringOf(node.imported);
   if (name === 'default') return 'namespace';
   return name === 'dlopen' ? 'dlopen' : undefined;
 }
@@ -33,11 +35,7 @@ function destructuredOrigin(pattern: Node, name: string): ProcessOrigin | undefi
     const value =
       property.value.type === 'AssignmentPattern' ? property.value.left : property.value;
     if (!identifier(value, name)) continue;
-    const key = property.computed
-      ? stringOf(property.key)
-      : property.key.type === 'Identifier'
-        ? property.key.name
-        : stringOf(property.key);
+    const key = destructuredKey(property);
     if (key === undefined) return 'ambiguous';
     return key === 'dlopen' ? 'dlopen' : undefined;
   }

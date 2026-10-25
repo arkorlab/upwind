@@ -20,6 +20,15 @@ vi.mock(import('../src/runtime-bundle.ts'), () => {
   };
 });
 
+async function failureOf(input: BuildFunctionInput): Promise<unknown> {
+  try {
+    await buildFunction(input);
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
 describe('native capability dispatch by Function kind', () => {
   let directory: string;
   let distDir: string;
@@ -72,19 +81,18 @@ describe('native capability dispatch by Function kind', () => {
   it.each(['middleware', 'workflow'] as const)(
     'refuses native requirements in %s with an explicit unsupported-runtime audit',
     async (kind) => {
-      const error = await buildFunction(input(kind)).catch((error_: unknown) => error_);
+      const error = await failureOf(input(kind));
+      if (!(error instanceof Error)) throw new Error('The Function build did not throw an Error');
 
       expect(error).toBeInstanceOf(AuditError);
-      expect(error).toMatchObject({
-        message: expect.stringContaining(
-          `Native Node.js addons are unsupported in the ${kind} Function`,
-        ),
-      });
+      expect(error.message).toContain(
+        `Native Node.js addons are unsupported in the ${kind} Function`,
+      );
     },
   );
 
   it('keeps the typed automatic placement signal for an app Function only', async () => {
-    const error = await buildFunction(input('app')).catch((error_: unknown) => error_);
+    const error = await failureOf(input('app'));
 
     expect(error).toBeInstanceOf(NativeFunctionRequiredError);
     expect(error).toMatchObject({
@@ -97,9 +105,10 @@ describe('native capability dispatch by Function kind', () => {
       entry,
       "exports.native=require('./addon.node'); exports.other=(name)=>require(name);\n",
     );
-    const error = await buildFunction(input('middleware')).catch((error_: unknown) => error_);
+    const error = await failureOf(input('middleware'));
+    if (!(error instanceof Error)) throw new Error('The Function build did not throw an Error');
 
     expect(error).toBeInstanceOf(AuditError);
-    expect(error).toMatchObject({ message: expect.stringContaining('bundler could not follow') });
+    expect(error.message).toContain('bundler could not follow');
   });
 });

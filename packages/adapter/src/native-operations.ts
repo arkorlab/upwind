@@ -97,22 +97,12 @@ function namesNativeFile(value: string | undefined): boolean {
 
 /** Keep non-loading AST nodes off the asynchronous filesystem proof path. */
 export function isNativeOperation(node: Node, bindings: NativeBindings): boolean {
-  switch (node.type) {
-    case 'ImportDeclaration': {
-      return typeof node.source.value === 'string' && namesNativeFile(node.source.value);
-    }
-    case 'ImportExpression': {
-      return namesNativeFile(stringOf(node.source));
-    }
-    case 'CallExpression': {
-      if (namesNativeFile(required(node))) return true;
-      if (node.callee.type === 'CallExpression') return isNativeLoader(required(node.callee));
-      return processDlopen(node.callee, bindings) !== undefined;
-    }
-    default: {
-      return false;
-    }
-  }
+  if (node.type === 'ImportDeclaration') return namesNativeFile(stringOf(node.source));
+  if (node.type === 'ImportExpression') return namesNativeFile(stringOf(node.source));
+  if (node.type !== 'CallExpression') return false;
+  if (namesNativeFile(required(node))) return true;
+  if (node.callee.type === 'CallExpression') return isNativeLoader(required(node.callee));
+  return processDlopen(node.callee, bindings) !== undefined;
 }
 
 function assertDlopenArguments(call: Call, context: NativeOperationContext): void {
@@ -180,13 +170,19 @@ function declarationSource(
   local: string,
 ): string {
   const declarations = node.specifiers.map((specifier) => {
-    const member =
-      specifier.type === 'ImportSpecifier'
-        ? `[${JSON.stringify(specifier.imported.type === 'Identifier' ? specifier.imported.name : specifier.imported.value)}]`
-        : '';
-    return `const ${specifier.local.name}=${local}${member};`;
+    return `const ${specifier.local.name}=${local}${importMember(specifier)};`;
   });
   return `const ${local}=${proof};${declarations.join('')}`;
+}
+
+function importMember(specifier: Node): string {
+  if (specifier.type !== 'ImportSpecifier') return '';
+  const name =
+    specifier.imported.type === 'Identifier'
+      ? specifier.imported.name
+      : stringOf(specifier.imported);
+  if (name === undefined) throw new AuditError('Native import has an unknown exported member');
+  return `[${JSON.stringify(name)}]`;
 }
 
 async function operationSource(
@@ -194,12 +190,10 @@ async function operationSource(
   context: NativeOperationContext,
   local: () => string,
 ): Promise<string | undefined> {
-  if (
-    node.type === 'ImportDeclaration' &&
-    typeof node.source.value === 'string' &&
-    node.source.value.endsWith('.node')
-  ) {
-    const proof = context.mark(await importNative(node.source.value, context));
+  if (node.type === 'ImportDeclaration') {
+    const source = stringOf(node.source);
+    if (source === undefined || !source.endsWith('.node')) return undefined;
+    const proof = context.mark(await importNative(source, context));
     return declarationSource(node, proof, local());
   }
   if (node.type === 'ImportExpression') {

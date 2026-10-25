@@ -72,9 +72,9 @@ interface NativeScope {
 export interface NativeBindings {
   readonly moduleSyntax: boolean;
   /** Undefined means global; null means a declared parameter or another opaque local binding. */
-  lookup(node: Node, name: string): Node | null | undefined;
-  importSource(node: Node): string | undefined;
-  unmodified(node: Node, name: string, members: boolean): boolean;
+  readonly lookup: (node: Node, name: string) => Node | null | undefined;
+  readonly importSource: (node: Node) => string | undefined;
+  readonly unmodified: (node: Node, name: string, members: boolean) => boolean;
 }
 
 function importSources(program: Node): ReadonlyMap<Node, string> {
@@ -82,8 +82,9 @@ function importSources(program: Node): ReadonlyMap<Node, string> {
   if (program.type !== 'Program') return sources;
   for (const declaration of program.body) {
     if (declaration.type !== 'ImportDeclaration') continue;
-    for (const specifier of declaration.specifiers)
-      sources.set(specifier, String(declaration.source.value));
+    const source = stringOf(declaration.source);
+    if (source === undefined) continue;
+    for (const specifier of declaration.specifiers) sources.set(specifier, source);
   }
   return sources;
 }
@@ -129,36 +130,22 @@ function nativeBinding(scope: NativeScope | undefined, name: string): Node | nul
 }
 
 function patternNames(pattern: Node, members = false): string[] {
-  switch (pattern.type) {
-    case 'Identifier': {
-      return [pattern.name];
-    }
-    case 'ObjectPattern': {
-      return pattern.properties.flatMap((property) => {
-        return patternNames(
-          property.type === 'Property' ? property.value : property.argument,
-          members,
-        );
-      });
-    }
-    case 'ArrayPattern': {
-      return pattern.elements.flatMap((element) =>
-        element === null ? [] : patternNames(element, members),
-      );
-    }
-    case 'RestElement': {
-      return patternNames(pattern.argument, members);
-    }
-    case 'AssignmentPattern': {
-      return patternNames(pattern.left, members);
-    }
-    case 'MemberExpression': {
-      return members ? patternNames(pattern.object, true) : [];
-    }
-    default: {
-      return [];
-    }
+  if (pattern.type === 'Identifier') return [pattern.name];
+  if (pattern.type === 'ObjectPattern') {
+    return pattern.properties.flatMap((property) => {
+      const target = property.type === 'Property' ? property.value : property.argument;
+      return patternNames(target, members);
+    });
   }
+  if (pattern.type === 'ArrayPattern') {
+    return pattern.elements.flatMap((element) => {
+      return element === null ? [] : patternNames(element, members);
+    });
+  }
+  if (pattern.type === 'RestElement') return patternNames(pattern.argument, members);
+  if (pattern.type === 'AssignmentPattern') return patternNames(pattern.left, members);
+  if (pattern.type === 'MemberExpression' && members) return patternNames(pattern.object, true);
+  return [];
 }
 
 function recordPatterns(scopes: ReadonlyMap<Node, NativeScope | undefined>): void {
@@ -210,7 +197,7 @@ export function nativeBindings(program: Node): NativeBindings {
     importSource: (node) => sources.get(node),
     unmodified(node, name, members) {
       const binding = bindingScope(scopes.get(node), name);
-      const key = `${name}:${String(members)}`;
+      const key = members ? `${name}:members` : `${name}:binding`;
       const cached = unchanged.get(binding)?.get(key);
       if (cached !== undefined) return cached;
       const declaration = nativeBinding(scopes.get(node), name);
