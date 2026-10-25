@@ -46,12 +46,13 @@ function fixture(
     readonly direct?: boolean;
     readonly sequence?: boolean;
     readonly parameters?: string;
+    readonly binding?: string;
   } = {},
 ) {
   const selected = options.id ?? 2;
   const target = options.target === undefined ? '' : `,${JSON.stringify(options.target)}`;
   const name = options.name ?? 'k';
-  const binding = options.direct === true ? `0,Enum` : '()=>Enum';
+  const binding = options.binding ?? (options.direct === true ? `0,Enum` : '()=>Enum');
   const call = `ctx.s([${JSON.stringify(name)},${binding}]${target})`;
   const registration = options.sequence === true ? `(0,${call},void 0);` : `${call};`;
   const body = `${options.before ?? ''}var Enum=${options.initializer ?? INITIALIZER};${registration}${options.extra ?? ''}`;
@@ -71,6 +72,13 @@ function fixture(
 }
 
 describe('selected pinned RouteKind template member', () => {
+  it.each(['function(){}', '()=>42', '42', 'effect()'])(
+    'does not classify an unrelated direct value as the enum: %s',
+    (value) => {
+      expect(certifyNodeManifestRouteKind(fixture({ binding: `0,${value}` }))).toBeUndefined();
+    },
+  );
+
   it.each([false, true])(
     'binds the entire published enum through a compact export (direct %s)',
     (direct) => {

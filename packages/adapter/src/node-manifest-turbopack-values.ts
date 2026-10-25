@@ -99,6 +99,22 @@ function getterOf(value: unknown): Node {
   return staticSelector(result) ? result : refuse('export getter expression');
 }
 
+/** Inspection only; callers must independently prove the selected value's complete semantics. */
+export function singleDirectExportValue(table: unknown, exportName: string): Node | undefined {
+  if (!isNode(table) || table.type !== 'ArrayExpression') return undefined;
+  const entries = listOf(table, 'elements');
+  const tag = entries[1];
+  const value = entries[GETTER_BINDING_WIDTH];
+  return entries.length === VALUE_BINDING_WIDTH &&
+    stringOf(entries[0]) === exportName &&
+    isNode(tag) &&
+    tag.type === 'Literal' &&
+    tag['value'] === 0 &&
+    isNode(value)
+    ? value
+    : undefined;
+}
+
 /** Fixed EsmBindings use name/getter pairs or name/0/value triples, with no setters here. */
 export function exportBindings(table: unknown): readonly ExportBinding[] {
   if (!isNode(table) || table.type !== 'ArrayExpression') refuse('export registration arguments');

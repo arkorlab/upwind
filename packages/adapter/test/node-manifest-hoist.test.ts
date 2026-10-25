@@ -72,6 +72,17 @@ function certify(input: NodeManifestHoistInput): 'hoist' | undefined {
 }
 
 describe('source-bound selected hoist helper', () => {
+  it.each(['function(){}', '()=>42', '42', 'effect()'])(
+    'keeps an unrelated direct value outside this helper profile: %s',
+    (value) => {
+      const input = fixture({ helper: '', registration: `ctx.s(["f",0,${value}]);` });
+
+      expect(() => certifyNodeManifestHoist(input)).toThrow(
+        'Unproved Next.js hoist helper actual export member',
+      );
+    },
+  );
+
   it.each(['hoist', 'f', 'independently-mangled-key'])(
     'certifies the actual %s export through its whole lexical function',
     (name) => {

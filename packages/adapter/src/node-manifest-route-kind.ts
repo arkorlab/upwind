@@ -14,6 +14,7 @@ import type { NodeManifestTurbopackGraphFactory } from './node-manifest-turbopac
 import {
   defaultExportTarget,
   exportBindings,
+  singleDirectExportValue,
   turbopackModuleId,
 } from './node-manifest-turbopack-values.ts';
 import { projectNodeManifestTurbopackFactory } from './node-manifest-turbopack.ts';
@@ -126,6 +127,8 @@ function exportValue(
     !unconditional(visit.node, body, visits)
   )
     return undefined;
+  const direct = singleDirectExportValue(args[0], input.exportName);
+  if (direct !== undefined && !identifier(direct)) return undefined;
   const binding = exportBindings(args[0]).find((entry) => entry.name === input.exportName);
   if (binding === undefined) return undefined;
   const variable = selectedVariable(binding.value, body, visits);

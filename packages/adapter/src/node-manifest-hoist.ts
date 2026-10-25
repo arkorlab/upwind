@@ -15,7 +15,11 @@ import {
   type Visit,
 } from './node-manifest-consumer-ast.ts';
 import type { NodeManifestTurbopackGraphFactory } from './node-manifest-turbopack-graph.ts';
-import { defaultExportTarget, exportBindings } from './node-manifest-turbopack-values.ts';
+import {
+  defaultExportTarget,
+  exportBindings,
+  singleDirectExportValue,
+} from './node-manifest-turbopack-values.ts';
 import { projectNodeManifestTurbopackFactory } from './node-manifest-turbopack.ts';
 
 // next@16.4.3 helpers.js SHA256 b9dd74a9ba684af8c21a7204d79c63f08683e22cf5e49d4e133ab5e2d9149b03.
@@ -207,6 +211,8 @@ function exportedFunction(input: NodeManifestHoistInput, original: Original): Se
   standalone(call, original);
   const inline = inlineFunction(args[0], input.exportName);
   if (inline !== undefined) return { fn: inline, selector: inline, inline: true };
+  const direct = singleDirectExportValue(args[0], input.exportName);
+  if (direct !== undefined && !identifier(direct)) return refuse('actual export member');
   const bindings = exportBindings(args[0]);
   const only = bindings[0];
   if (bindings.length !== 1 || only?.name !== input.exportName || !identifier(only.value))
