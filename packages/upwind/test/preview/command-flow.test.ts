@@ -10,6 +10,7 @@ import { ownVersion } from '../../src/manifest.ts';
 import type { PreviewOptions } from '../../src/preview/args.ts';
 import type { CheckOptions } from '../../src/preview/checks.ts';
 import { runPreview } from '../../src/preview/command.ts';
+import type { CronJobsInput } from '../../src/preview/crons.ts';
 import {
   bundleOf,
   deployableFunction,
@@ -58,6 +59,24 @@ vi.mock(import('@stayingupwind/local'), async (importOriginal) => {
   };
 });
 
+/** The cron jobs a serving preview was asked to fire, and how often they were stopped. */
+const crons = vi.hoisted(() => ({ started: [] as CronJobsInput[], stopped: 0 }));
+
+vi.mock(import('../../src/preview/crons.ts'), () => {
+  return {
+    startCronJobs: (input: CronJobsInput) => {
+      crons.started.push(input);
+      return {
+        next: input.jobs.map(({ schedule }) => ({ schedule, at: Date.UTC(2026, 9, 26, 12, 5) })),
+        stop: () => {
+          crons.stopped += 1;
+          return Promise.resolve();
+        },
+      };
+    },
+  };
+});
+
 vi.mock(import('../../src/preview/checks.ts'), () => {
   return {
     failedChecks: (_site: URL, _asked: readonly string[], options?: CheckOptions) => {
@@ -90,7 +109,7 @@ async function project(
 }
 
 function checking(dir: string, envFiles: readonly string[] = []): PreviewOptions {
-  return { projectDir: dir, port: 0, envFiles, check: true };
+  return { projectDir: dir, port: 0, envFiles, check: true, crons: false };
 }
 
 describe('a preview around its stack', () => {
@@ -109,6 +128,8 @@ describe('a preview around its stack', () => {
     paths.failures = [];
     paths.held = false;
     paths.stopped = false;
+    crons.started = [];
+    crons.stopped = 0;
     out = [];
     vi.spyOn(console, 'log').mockImplementation(kept('log'));
     vi.spyOn(console, 'warn').mockImplementation(kept('warn'));
@@ -165,7 +186,9 @@ describe('a preview around its stack', () => {
 
     expect(warned).toMatch(/the app Function was built without the runtime cache's host/u);
     expect(warned).toMatch(/deploy.storage names UPWIND_D1, and a preview binds no storage yet/u);
-    expect(warned).toMatch(/declares cron jobs, and a preview fires none of them/u);
+    expect(warned).toMatch(
+      /the build declares 1 cron job, which a preview fires only with --crons/u,
+    );
     expect(warned).toMatch(/deploy.images is set, and a preview transforms no image/u);
     expect(warned).toMatch(/PORT is among the secrets/u);
   });
@@ -208,6 +231,57 @@ describe('a preview around its stack', () => {
     expect(out).toContain('error: upwind: / was answered with 502');
   });
 
+  it("fires the build's cron jobs while it serves with --crons, with the project's secret", async () => {
+    const jobs = [{ path: '/api/tick', schedule: '*/5 * * * *' }];
+    const dir = await project({ file: undefined }, { bundle: { crons: jobs } });
+    const envFile = path.join(dir, 'preview.env');
+    writeFileSync(envFile, 'CRON_SECRET=from-file\n');
+    const { promise: served, resolve } = Promise.withResolvers<undefined>();
+
+    await expect(
+      runPreview(
+        { projectDir: dir, port: 0, envFiles: [envFile], check: false, crons: true },
+        {
+          stopped: served,
+          serving: () => {
+            resolve(undefined);
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+
+    expect(crons.started).toStrictEqual([
+      { jobs, site: new URL('http://localhost:3000/'), secret: 'from-file' },
+    ]);
+    expect(out).toContain(
+      'log: upwind: firing 1 cron job on its schedule, in UTC — the first on "*/5 * * * *", at 2026-10-26T12:05:00.000Z',
+    );
+    // Stopped as the preview stops, the stack let go after.
+    expect([crons.stopped, local.disposed]).toStrictEqual([1, 1]);
+  });
+
+  it('fires nothing, and says so, where --crons finds no job in the build', async () => {
+    const dir = await project({ file: undefined });
+    const { promise: served, resolve } = Promise.withResolvers<undefined>();
+
+    await expect(
+      runPreview(
+        { projectDir: dir, port: 0, envFiles: [], check: false, crons: true },
+        {
+          stopped: served,
+          serving: () => {
+            resolve(undefined);
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+
+    expect(crons.started).toStrictEqual([]);
+    expect(out).toContain(
+      'warn: upwind: --crons is given, and the build declares no cron job to fire',
+    );
+  });
+
   it('stops serving without waiting on a path of deploy.checks still asked', async () => {
     paths.held = true;
     const dir = await project({ file: undefined });
@@ -215,7 +289,7 @@ describe('a preview around its stack', () => {
 
     await expect(
       runPreview(
-        { projectDir: dir, port: 0, envFiles: [], check: false },
+        { projectDir: dir, port: 0, envFiles: [], check: false, crons: false },
         {
           stopped: served,
           serving: () => {
