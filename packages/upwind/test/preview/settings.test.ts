@@ -15,6 +15,7 @@ describe("a preview's settings", () => {
       hostnames: [],
       checks: ['/'],
       storage: [],
+      localStorage: { kv: [], r2: [], d1: [] },
       images: false,
     });
   });
@@ -43,6 +44,7 @@ describe("a preview's settings", () => {
       hostnames: ['shop.example.com'],
       checks: ['/', '/api/health'],
       storage: ['UPWIND_D1', 'CACHE'],
+      localStorage: { kv: ['CACHE'], r2: [], d1: ['UPWIND_D1'] },
       images: true,
     });
   });

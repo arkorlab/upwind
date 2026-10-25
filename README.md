@@ -351,7 +351,7 @@ Apart from `--port` and `--hostname`, `next dev`'s flags — `--experimental-htt
 
 **So is a workflow's World.** A build that uses the Workflow SDK runs its workflows and steps in a Function of their own, on the SDK's QuickJS engine, and keeps its runs in a World the host names, `createAdapter({ workflowWorldModule })`: the host delivers the SDK's queue to that Function, and nothing a visitor sends reaches it. The adapter's readme says [what the host provides](packages/adapter/README.md#the-workflow-sdk).
 
-**Cloudflare Workflows are supported separately.** The adapter produces isolated native class artifacts, the SDK exposes scoped instance controls, and local development runs the classes in Miniflare. Hosted execution and resource isolation are supplied by a supporting host; see [the adapter contract](packages/adapter/README.md#cloudflare-workflows).
+**Cloudflare Workflows are supported separately.** The adapter produces isolated native class artifacts, the SDK exposes scoped instance controls, and `upwind dev` and `upwind preview` run the classes in Miniflare. Hosted execution and resource isolation are supplied by a supporting host; see [the adapter contract](packages/adapter/README.md#cloudflare-workflows).
 
 <details>
 <summary><b>Not supported</b></summary>
