@@ -22,7 +22,12 @@ const MAX_TEXT_LENGTH = 1024;
 const MIN_CONTROL_TOKEN_LENGTH = 32;
 const DELEGATED = 'delegated';
 const HOST = /^[a-f0-9]{32}\.[a-f0-9]{32}\.arkor\.internal$/u;
-const NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/u;
+const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
+const RESERVED_SERVICE_NAMES: ReadonlySet<string> = new Set([
+  '__proto__',
+  'constructor',
+  'prototype',
+]);
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -66,6 +71,7 @@ function validateCapabilities(caps: unknown): void {
   for (const [name, url] of Object.entries(caps['services'])) {
     if (
       !NAME.test(name) ||
+      RESERVED_SERVICE_NAMES.has(name) ||
       name.startsWith('ARKOR_') ||
       name.startsWith('NEXT_') ||
       !capability(url)

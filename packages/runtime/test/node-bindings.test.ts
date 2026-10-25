@@ -31,6 +31,35 @@ const config = {
 };
 
 describe('Node delegated bindings', () => {
+  it('publishes a declared HTTP service alias beginning with an underscore', () => {
+    const parsed = parseNodeRuntimeConfiguration(
+      JSON.stringify({
+        ...config,
+        capabilities: { services: { _API: config.capabilities.services.SEARCH } },
+      }),
+    );
+    const env = createNodeFunctionEnv(parsed);
+
+    expect({
+      fetch: typeof (env['_API'] as { fetch: unknown }).fetch,
+      resources: env['ARKOR_RESOURCES'],
+    }).toEqual({ fetch: 'function', resources: '[{"name":"_API","type":"service"}]' });
+  });
+
+  it.each(['__proto__', 'constructor', 'prototype', 'ARKOR_CACHE', 'NEXT_DEPLOYMENT_ID'])(
+    'refuses reserved or prototype-sensitive service alias %s',
+    (name) => {
+      expect(() =>
+        parseNodeRuntimeConfiguration(
+          JSON.stringify({
+            ...config,
+            capabilities: { services: { [name]: config.capabilities.services.SEARCH } },
+          }),
+        ),
+      ).toThrow('invalid Node runtime service');
+    },
+  );
+
   it('publishes only declared HTTP resources and delegated markers', () => {
     const env = createNodeFunctionEnv(parseNodeRuntimeConfiguration(JSON.stringify(config)));
 
