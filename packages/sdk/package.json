@@ -42,6 +42,10 @@
       "types": "./dist/ai.d.ts",
       "default": "./dist/ai.js"
     },
+    "./workflow": {
+      "types": "./dist/workflow.d.ts",
+      "default": "./dist/workflow.js"
+    },
     "./service": {
       "types": "./dist/service.d.ts",
       "default": "./dist/service.js"

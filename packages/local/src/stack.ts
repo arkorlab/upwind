@@ -157,6 +157,12 @@ export interface StackOptions {
    * is unavailable. A configured name absent from the loaded build is refused before workers start.
    */
   readonly gates?: Readonly<Record<string, LocalGate>> | undefined;
+  /**
+   * The stack's own Workers, bundled ahead of time (`bundleStackScripts`), for a command that runs
+   * where upwind's sources are not; bundled from the sources as the stack starts when this names
+   * none.
+   */
+  readonly scripts?: StackScripts | undefined;
 }
 
 /** A site's nonce setting, as a deployment's pointer carries it (`cspNoncePointerFields`). */
@@ -223,6 +229,36 @@ async function scriptOf(entry: string): Promise<string> {
   const worker = await bundleWorker(entry);
   assertHostOnly(worker);
   return worker.script;
+}
+
+/**
+ * The stack's own Workers, each one ES module: what runs beside the build's Functions. All six or
+ * none, since each is found where upwind's sources are, and a command run from anywhere else has
+ * none of them to bundle.
+ */
+export interface StackScripts {
+  readonly edge: string;
+  readonly cache: string;
+  readonly cacheRead: string;
+  readonly prefetch: string;
+  readonly agent: string;
+  readonly outbound: string;
+}
+
+/**
+ * The stack's own Workers, bundled from upwind's sources as `startStack` bundles them when it is
+ * given none — for a command that ships them bundled, to run once where it is built.
+ */
+export async function bundleStackScripts(): Promise<StackScripts> {
+  const [edge, cache, cacheRead, prefetch, agent, outbound] = await Promise.all([
+    scriptOf(local('workers/edge.ts')),
+    scriptOf(resolved('@stayingupwind/cache/standalone/worker')),
+    scriptOf(resolved('@stayingupwind/cache/standalone/read-worker')),
+    scriptOf(resolved('@stayingupwind/cache/prefetch-worker')),
+    scriptOf(local('workers/agent.ts')),
+    scriptOf(local('workers/outbound.ts')),
+  ]);
+  return { edge, cache, cacheRead, prefetch, agent, outbound };
 }
 
 function scriptWorker(name: string, script: string): LocalWorker {
@@ -404,14 +440,8 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
   // A key of the stack's own, gone with it: what the scope's token is signed with.
   const cacheTokenKey = `${crypto.randomUUID()}${crypto.randomUUID()}`;
   const token = await signCacheToken(cacheTokenKey, deploymentId, STANDALONE_NAMING);
-  const [edge, cache, cacheRead, prefetch, agent, outbound] = await Promise.all([
-    scriptOf(local('workers/edge.ts')),
-    scriptOf(resolved('@stayingupwind/cache/standalone/worker')),
-    scriptOf(resolved('@stayingupwind/cache/standalone/read-worker')),
-    scriptOf(resolved('@stayingupwind/cache/prefetch-worker')),
-    scriptOf(local('workers/agent.ts')),
-    scriptOf(local('workers/outbound.ts')),
-  ]);
+  const { edge, cache, cacheRead, prefetch, agent, outbound } =
+    options.scripts ?? (await bundleStackScripts());
   const bound = functionBindings({
     deploymentId,
     prefetch: WORKERS.prefetch,

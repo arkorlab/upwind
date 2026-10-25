@@ -20,6 +20,7 @@ export const RESOURCE_TYPES = [
   'd1',
   'durable_object_namespace',
   'ai',
+  'workflow',
 ] as const;
 /** Resource kinds that can be provisioned, excluding published private service capabilities. */
 export type ResourceType = (typeof RESOURCE_TYPES)[number];

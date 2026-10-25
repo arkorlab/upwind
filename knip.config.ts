@@ -49,6 +49,9 @@ const config: KnipConfig = {
     'packages/upwind': {
       // The Workers a deploy ships are bundled by path, so each is an entry of its own.
       entry: ['src/resources/entry.ts', 'src/deploy/workers/{agent,edge}.ts'],
+      // Imported by `@stayingupwind/local`, which the command's `dist` bundles, and kept out of that
+      // bundle for the Public Suffix List it carries: the command installs it instead.
+      ignoreDependencies: ['tldts'],
     },
     'tools/benchmark': { entry: ['src/main.ts', 'src/publish.ts'] },
     // The readers are started as child processes by path, so nothing here imports them.
