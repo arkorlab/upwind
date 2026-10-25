@@ -88,7 +88,41 @@ function replaceFile(
   };
 }
 
+function runtimeSelfEdge(
+  input: NodeManifestTurbopackConsumerInput,
+): NodeManifestTurbopackConsumerInput {
+  return {
+    ...input,
+    sources: input.sources.map((record) => {
+      return record.id === RUNTIME
+        ? { ...record, imports: [...record.imports, { specifier: RUNTIME, target: RUNTIME }] }
+        : record;
+    }),
+  };
+}
+
 describe('next Turbopack protected producer chains', () => {
+  it('closes the complete consumer proof with only the sealed runtime exact self-edge added', async () => {
+    const input = await fixture();
+    const expected = await proveNodeManifestTurbopackConsumers(input);
+    const proof = await proveNodeManifestTurbopackConsumers(runtimeSelfEdge(input));
+
+    expect(proof).toStrictEqual(expected);
+    expect(proof.requiresSdkNormalization).toBe(true);
+  });
+
+  it('still refuses changed runtime code before allowing its exact self-edge', async () => {
+    const input = replaceFile(
+      runtimeSelfEdge(await fixture()),
+      RUNTIME,
+      (code) => `${code}\nContext.prototype.g=changedGlobal;`,
+    );
+
+    await expect(proveNodeManifestTurbopackConsumers(input)).rejects.toThrow(
+      'Unproved Next.js Turbopack runtime',
+    );
+  });
+
   it('proves the runtime, individual factory and sealed route, leaving the actual SDK root obligation open', async () => {
     const input = await fixture();
     const proof = await proveNodeManifestTurbopackConsumers(input);
@@ -242,26 +276,29 @@ describe('next Turbopack protected producer chains', () => {
     ['runtime API', RUNTIME],
     ['factory table', CHUNK],
     ['producer', PRODUCER],
-  ])('refuses an unknown physical caller of the %s', async (_name, target) => {
-    const input = await fixture();
-    const other = '/project/unknown.js';
-    const altered = {
-      ...input,
-      sources: [
-        ...input.sources,
-        {
-          id: other,
-          file: other,
-          source: source(`module.exports=require(${jsLiteral(target)});`),
-          imports: [{ specifier: target, target }],
-        },
-      ],
-    };
+  ])(
+    'refuses an unknown physical caller of the %s even beside the runtime self-edge',
+    async (_name, target) => {
+      const input = runtimeSelfEdge(await fixture());
+      const other = '/project/unknown.js';
+      const altered = {
+        ...input,
+        sources: [
+          ...input.sources,
+          {
+            id: other,
+            file: other,
+            source: source(`module.exports=require(${jsLiteral(target)});`),
+            imports: [{ specifier: target, target }],
+          },
+        ],
+      };
 
-    await expect(proveNodeManifestTurbopackConsumers(altered)).rejects.toThrow(
-      'Unproved Next.js Turbopack manifest chain',
-    );
-  });
+      await expect(proveNodeManifestTurbopackConsumers(altered)).rejects.toThrow(
+        'Unproved Next.js Turbopack manifest chain',
+      );
+    },
+  );
 
   it('inspects a deferred runtime table that accesses a protected route without directly importing its producer', async () => {
     const input = await fixture();

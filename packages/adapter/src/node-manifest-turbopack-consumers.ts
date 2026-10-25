@@ -62,6 +62,11 @@ function forwarded(factory: NodeManifestTurbopackGraphFactory): string | undefin
   return edges.length === 1 ? edges[0]?.target : refuse('ambiguous namespace forwarder');
 }
 
+/** The runtime's own table-closure edge is not an external runtime API consumer. */
+function knownRuntimeCaller(source: string, target: string, boots: ReadonlySet<string>): boolean {
+  return source === target || boots.has(source);
+}
+
 class TurbopackConsumers {
   private readonly input: NodeManifestTurbopackConsumerInput;
   private readonly graphs: readonly NodeManifestTurbopackEntryGraph[];
@@ -174,7 +179,7 @@ class TurbopackConsumers {
       for (const edge of source.imports) {
         if (tables.has(edge.target) && !runtimes.has(source.id))
           refuse('unknown physical factory-table caller');
-        if (runtimes.has(edge.target) && !boots.has(source.id))
+        if (runtimes.has(edge.target) && !knownRuntimeCaller(source.id, edge.target, boots))
           refuse('unknown runtime API caller');
         if (edge.target === this.input.producer.id && !tables.has(source.id))
           refuse('uncertified physical producer caller');
