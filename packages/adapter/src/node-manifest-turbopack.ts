@@ -150,6 +150,13 @@ function appendNested(
   appendFactories(node, result, known);
 }
 
+function factoryShape(node: Node): string {
+  if (node.type !== 'Literal') return node.type;
+  const value = node['value'];
+  const length = typeof value === 'string' ? `:${value.length}` : '';
+  return `${node.type}:${typeof value}${length}`;
+}
+
 function appendFactories(
   table: Node,
   result: NodeManifestTurbopackFactory[],
@@ -170,7 +177,8 @@ function appendFactories(
       pending.push(id);
       continue;
     }
-    if (pending.length === 0) refuseTurbopack('unbound factory');
+    if (pending.length === 0)
+      refuseTurbopack(`unbound factory at item ${index} (${factoryShape(item)})`);
     factoryParameters(item);
     result.push({ ids: pending, start: item.start, end: item.end });
     pending = [];
