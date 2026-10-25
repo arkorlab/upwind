@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -150,6 +150,8 @@ describe('a preview around its stack', () => {
         secrets: ['FROM_ENV'],
         hostnames: ['shop.example.com'],
         cspNonce: { mode: 'report-only' },
+        storage: { UPWIND_D1: 'd1', CACHE: 'kv', UPLOADS: 'r2', ORDERS: 'd1' },
+        images: true,
       },
     });
     const envFile = path.join(dir, 'preview.env');
@@ -165,6 +167,8 @@ describe('a preview around its stack', () => {
       env: { FROM_FILE: 'file', FROM_ENV: 'environment' },
       hostnames: ['shop.example.com'],
       cspNonce: { mode: 'report-only', strictDynamic: false },
+      storage: { kv: ['CACHE'], r2: ['UPLOADS'], d1: ['UPWIND_D1', 'ORDERS'] },
+      images: true,
       // From this repository's sources: the stack bundles its own.
       scripts: undefined,
     });
@@ -188,13 +192,41 @@ describe('a preview around its stack', () => {
     const warned = out.filter((line) => line.startsWith('warn: ')).join('\n');
 
     expect(warned).toMatch(/the app Function was built without the runtime cache's host/u);
-    expect(warned).toMatch(/deploy.storage names UPWIND_D1, and a preview binds no storage yet/u);
+    expect(warned).toMatch(
+      /the storage deploy\.storage names — UPWIND_D1 \(d1\) — is bound to stores of the preview's own, empty as it starts/u,
+    );
     expect(warned).toMatch(
       /the build declares 1 cron job, which a preview fires only with --crons/u,
     );
-    expect(warned).toMatch(/deploy.images is set, and a preview transforms no image/u);
     expect(warned).toMatch(/PORT is among the secrets/u);
-    expect(local.started[0]?.storage).toBeUndefined();
+    // Transformed as deployed: nothing to say.
+    expect(warned).not.toMatch(/images/u);
+  });
+
+  it('says what of the project is newer than its build', async () => {
+    const dir = await project({ file: undefined });
+    const builtAt = statSync(path.join(dir, BUNDLE_PATH)).mtime;
+    const later = new Date(builtAt.getTime() + 60_000);
+    const earlier = new Date(builtAt.getTime() - 60_000);
+    mkdirSync(path.join(dir, 'app'), { recursive: true });
+    for (const [file, at] of [
+      ['app/page.tsx', later],
+      ['next.config.ts', later],
+      ['app/layout.tsx', earlier],
+      ['next-env.d.ts', later],
+    ] as const) {
+      writeFileSync(path.join(dir, file), '');
+      utimesSync(path.join(dir, file), at, at);
+    }
+    // What an install rewrote is no source of the project's.
+    utimesSync(path.join(dir, 'node_modules/@stayingupwind/adapter/index.js'), later, later);
+    utimesSync(path.join(dir, 'package.json'), earlier, earlier);
+
+    await expect(runPreview(checking(dir))).resolves.toBe(0);
+
+    expect(out).toContain(
+      'warn: upwind: the build is older than 2 files of the project (next.config.ts, app/page.tsx), and serves them as they were before; build it again with `upwind build`',
+    );
   });
 
   it('shares explicit local store kinds with a built native Workflow preview', async () => {
