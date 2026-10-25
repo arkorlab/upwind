@@ -3,7 +3,13 @@ import type { Node as AstNode } from '@oxc-project/types';
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
 import { nativeBindings } from './native-ast.ts';
-import { identifier, reference, visitTree, type Visit } from './node-manifest-consumer-ast.ts';
+import {
+  identifier,
+  propertyName,
+  reference,
+  visitTree,
+  type Visit,
+} from './node-manifest-consumer-ast.ts';
 
 export interface CoalescedPagesClosureInput {
   readonly original: Node;
@@ -38,6 +44,11 @@ const IMPLICIT: ReadonlySet<string> = new Set([
   'ThisExpression',
 ]);
 const PRIMITIVE_GLOBALS: ReadonlySet<string> = new Set(['Infinity', 'NaN', 'undefined']);
+const ORDINARY_CALLS: ReadonlyMap<string, string> = new Map([
+  ['console', 'log'],
+  ['JSON', 'stringify'],
+  ['process', 'cwd'],
+]);
 const PRIMITIVE_UNARY: ReadonlySet<string> = new Set(['!', '+', '-', 'void', '~']);
 
 function refuse(reason: string): never {
@@ -183,11 +194,36 @@ class ClosureScanner {
     this.pending.push(node);
   }
 
+  private ordinaryDeferredGlobal(visit: Visit, root: Node): boolean {
+    if (!identifier(visit.node)) return false;
+    const member = visit.parent;
+    const call = member === undefined ? undefined : this.parents.get(member)?.parent;
+    if (
+      !ORDINARY_CALLS.has(visit.node.name) ||
+      member?.type !== 'MemberExpression' ||
+      member['object'] !== visit.node ||
+      member['optional'] === true ||
+      propertyName(member) !== ORDINARY_CALLS.get(visit.node.name) ||
+      call?.type !== 'CallExpression' ||
+      call['callee'] !== member ||
+      call['optional'] === true ||
+      (visit.node.name === 'process' && listOf(call, 'arguments').length > 0) ||
+      !this.mutable.unmodified(visit.node as unknown as AstNode, visit.node.name, true)
+    )
+      return false;
+    const body = root['body'];
+    return (
+      (FUNCTIONS.has(root.type) && isNode(body) && within(visit.node, body)) ||
+      this.deferred(visit, root)
+    );
+  }
+
   private capture(visit: Visit, root: Node): void {
     if (!identifier(visit.node) || !reference(visit)) return;
     const found = binding(visit);
     if (found === undefined) {
-      if (!PRIMITIVE_GLOBALS.has(visit.node.name)) refuse('unproved global capture');
+      if (!PRIMITIVE_GLOBALS.has(visit.node.name) && !this.ordinaryDeferredGlobal(visit, root))
+        refuse('unproved global capture');
       return;
     }
     const owner = this.scopeOwners.get(found.scope);

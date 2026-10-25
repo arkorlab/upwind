@@ -144,6 +144,43 @@ describe('whole-original coalesced Pages lexical closure', () => {
   });
 
   it.each([
+    '()=>JSON.stringify({page:42})',
+    'function Page(){return JSON.stringify({page:42})}',
+    '()=>{console.log("page");return 42}',
+    '()=>process.cwd()',
+  ])('keeps ordinary global calls deferred in an inline value: %s', (value) => {
+    expect(owned('', value)).toStrictEqual([]);
+  });
+
+  it('closes a deferred captured function using the fixed native fixture globals', () => {
+    expect(
+      owned(
+        'const path=ctx.i(10),Page=async()=>{const file=path.join(process.cwd(),"users.json");console.log(file);return JSON.stringify(file)}',
+      ),
+    ).toStrictEqual(['path', 'Page']);
+  });
+
+  it.each([
+    'const Page=()=>JSON',
+    'const Page=()=>JSON.stringify',
+    'const Page=()=>JSON.parse("42")',
+    'const Page=(key)=>JSON[key](42)',
+    'const Page=(key)=>globalThis[key](42)',
+    'const Page=()=>JSON?.stringify(42)',
+    'const Page=()=>JSON.stringify?.(42)',
+    'const Page=()=>console.error("page")',
+    'const Page=()=>process.cwd("other")',
+    'const Page=()=>process.dlopen({},"addon.node")',
+    'const Page=()=>JSON.stringify(42);JSON.stringify=effect',
+    'const Page=()=>console.log(42);console.log=effect',
+    'const Page=()=>process.cwd();process.cwd=effect',
+    'const JSON=effect();const Page=()=>JSON.stringify(42)',
+    'const value=JSON.stringify(42);const Page=()=>value',
+  ])('refuses broader global access, mutation and eager evaluation: %s', (before) => {
+    expect(() => owned(before)).toThrow('coalesced Pages closure');
+  });
+
+  it.each([
     'const Page=effect()',
     'const Page=class {static value=effect()}',
     'const value=/pattern/;const Page=()=>value',
