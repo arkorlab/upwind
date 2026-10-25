@@ -276,8 +276,14 @@ class FactoryProjection {
   private exportModule(value: unknown, visit: Visit): NodeManifestTurbopackModuleId {
     if (defaultExportTarget(value, visit)) return this.moduleId;
     const target = turbopackModuleId(value);
-    if (target === undefined || !this.factory.ids.includes(target))
-      return refuse('dynamic or foreign export target');
+    if (target === undefined) {
+      const shape = isNode(value) ? value.type : 'missing';
+      return refuse(`dynamic or foreign export target (syntax ${shape})`);
+    }
+    if (!this.factory.ids.includes(target))
+      return refuse(
+        `dynamic or foreign export target (${typeof target}; ${this.factory.ids.length} declared IDs)`,
+      );
     return target;
   }
 
