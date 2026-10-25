@@ -42,12 +42,13 @@ describe('combined local native class capabilities', () => {
         },
       },
     });
-    const workers = options.workers ?? [];
+    const workers = options.workers;
 
     expect(options).toMatchObject({
-      containerEngine: { localDocker: { socketPath: expect.any(String) } },
+      containerEngine: { localDocker: { socketPath: expect.any(String) as unknown } },
     });
     expect(workers).toHaveLength(3);
+
     for (const worker of workers) {
       expect(worker).toMatchObject({
         config: {
@@ -59,6 +60,7 @@ describe('combined local native class capabilities', () => {
         },
       });
     }
+
     expect(workers).toContainEqual(
       expect.objectContaining({
         config: expect.objectContaining({
@@ -70,7 +72,7 @@ describe('combined local native class capabilities', () => {
               container: { imageName: 'local-image:latest' },
             },
           },
-        }),
+        }) as unknown,
       }),
     );
   });
