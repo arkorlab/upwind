@@ -1,11 +1,14 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import * as url from 'node:url';
 import { runInNewContext } from 'node:vm';
 
-import { rolldown } from 'rolldown';
-import { afterEach, describe, expect, it } from 'vitest';
+import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
+import { type Plugin, rolldown } from 'rolldown';
+import { afterEach, assert, describe, expect, it } from 'vitest';
 
+import { FUNCTION_COMPATIBILITY_DATE, FUNCTION_COMPATIBILITY_FLAGS } from '../src/function.ts';
 import { isStubbedModule, stubSourceFor } from '../src/patches/loader-hooks.ts';
 import { stubPlugin } from '../src/patches/rolldown.ts';
 
@@ -97,6 +100,247 @@ describe("the process module workerd's require does not find", () => {
 
     expect(module.exports).toBe(running);
   });
+});
+
+/** What a `require` made by `createRequire` is, with the property Node.js's carries. */
+type MadeRequire = ((id: string) => unknown) & { readonly resolve?: (id: string) => string };
+
+/** As much of `node:module` as the stub and the cases below reach. */
+interface ModuleLike {
+  readonly createRequire: (from: string) => MadeRequire;
+  readonly isBuiltin: (id: string) => boolean;
+  /** Node.js's own, which Next.js's require hook replaces. */
+  _resolveFilename: (request: string) => string;
+}
+
+/** What Next.js's require hook puts in place of `_resolveFilename`. */
+function hookedResolveFilename(request: string): string {
+  return `hooked ${request}`;
+}
+
+/**
+ * workerd's `createRequire`, as far as the stub is concerned: the `require` it makes finds every
+ * built-in but `node:process`, under either spelling, which it says is no such module.
+ */
+function workerdRequire(from: string): MadeRequire {
+  return Object.assign(
+    (id: string): unknown => {
+      if (/^(?:node:)?process$/u.test(id)) {
+        throw new Error('No such module "node:process".');
+      }
+      return { id, from };
+    },
+    { resolve: (id: string) => `resolved ${id}` },
+  );
+}
+
+function workerdModule(): ModuleLike {
+  return {
+    createRequire: workerdRequire,
+    isBuiltin: (id) => !id.startsWith('.'),
+    _resolveFilename: (request) => request,
+  };
+}
+
+/** The `node:module` stub, run with `builtin` as the module its own require is handed. */
+function loadModuleStub(
+  builtin: ModuleLike,
+  running: unknown,
+): { readonly exports: ModuleLike; readonly required: readonly string[] } {
+  const required: string[] = [];
+  const module = { exports: {} as unknown };
+  // eslint-disable-next-line sonarjs/code-eval -- the adapter's own module source, run to be tested
+  runInNewContext(stubSourceFor('node:module'), {
+    module,
+    process: running,
+    require(id: string) {
+      required.push(id);
+      return builtin;
+    },
+  });
+  return { exports: module.exports as ModuleLike, required };
+}
+
+/**
+ * `node:module`, whose `createRequire` makes a `require` of workerd's that does not find
+ * `node:process` either: a package that loads its built-ins through one at run time, as esbuild's
+ * output does, is handed the global for it, and everything else as workerd gives it.
+ */
+describe('node:module, whose createRequire makes a require that does not find node:process', () => {
+  it('stands in for either spelling, and nothing that only starts like it', () => {
+    expect(isStubbedModule('module')).toBe(true);
+    expect(isStubbedModule('node:module')).toBe(true);
+    expect(isStubbedModule('module-alias')).toBe(false);
+    expect(isStubbedModule('node:modules')).toBe(false);
+  });
+
+  it("makes a require that answers node:process with the global, and the rest as workerd's", () => {
+    const running = { env: { NEXT_RUNTIME: 'nodejs' } };
+    const { exports, required } = loadModuleStub(workerdModule(), running);
+    const made = exports.createRequire('file:///bundle/app.cjs');
+
+    expect(required).toStrictEqual(['node:module']);
+    expect(made('process')).toBe(running);
+    expect(made('node:process')).toBe(running);
+    expect(made('node:path')).toStrictEqual({ id: 'node:path', from: 'file:///bundle/app.cjs' });
+    expect(made.resolve?.('node:path')).toBe('resolved node:path');
+  });
+
+  it("reads and writes every other member through to workerd's module", () => {
+    const builtin = workerdModule();
+    const { exports } = loadModuleStub(builtin, {});
+
+    expect(exports.isBuiltin).toBe(builtin.isBuiltin);
+    expect(exports.createRequire).not.toBe(builtin.createRequire);
+
+    exports._resolveFilename = hookedResolveFilename;
+
+    expect(builtin._resolveFilename).toBe(hookedResolveFilename);
+  });
+});
+
+/**
+ * What a package compiled to an ES module does with the `require` it makes for itself, as
+ * `@vercel/otel`'s Node.js build does while it is evaluated; and `node:module` under both of its
+ * names, which are one module.
+ */
+const CREATING_ENTRY = `import { createRequire } from 'node:module';
+import viaName from 'module';
+import viaPrefix from 'node:module';
+const require = createRequire(import.meta.url);
+export const processModule = require('process');
+export const prefixed = require('node:process');
+export const other = require('node:path');
+export const oneModule = viaName === viaPrefix;
+`;
+
+/** The Function's own require, as far as these bundles reach it: the built-ins workerd gives them. */
+function functionRequire(builtin: ModuleLike): (id: string) => unknown {
+  return (id) => {
+    if (id === 'url' || id === 'node:url') return url;
+    if (id === 'module' || id === 'node:module') return builtin;
+    throw new Error(`No such module "${id}".`);
+  };
+}
+
+async function bundledCjs(entry: string, plugins: readonly Plugin[]): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), 'adapter-create-require-'));
+  roots.push(dir);
+  await writeFile(path.join(dir, 'entry.mjs'), entry);
+  await using build = await rolldown({
+    cwd: dir,
+    input: path.join(dir, 'entry.mjs'),
+    platform: 'node',
+    logLevel: 'silent',
+    plugins: [...plugins],
+  });
+  const { output } = await build.generate({ format: 'cjs' });
+  return output[0].code;
+}
+
+describe('a bundle that loads node:process through createRequire(import.meta.url)', () => {
+  afterEach(removeRoots);
+
+  it("is handed the global by the stubbed node:module's require, under either spelling", async () => {
+    const stubbed: string[] = [];
+    const source = await bundledCjs(CREATING_ENTRY, [
+      stubPlugin((specifier) => {
+        stubbed.push(specifier);
+      }),
+    ]);
+    const running = { env: { NEXT_RUNTIME: 'nodejs' } };
+    const module = { exports: {} as Record<string, unknown> };
+    // eslint-disable-next-line sonarjs/code-eval -- the bundle the adapter's plugin made, run to be tested
+    runInNewContext(source, {
+      module,
+      exports: module.exports,
+      __filename: '/bundle/app.cjs',
+      process: running,
+      require: functionRequire(workerdModule()),
+    });
+
+    expect(new Set(stubbed)).toStrictEqual(new Set(['module', 'node:module']));
+    expect(module.exports['processModule']).toBe(running);
+    expect(module.exports['prefixed']).toBe(running);
+    expect(module.exports['other']).toStrictEqual({
+      id: 'node:path',
+      from: url.pathToFileURL('/bundle/app.cjs').href,
+    });
+    expect(module.exports['oneModule']).toBe(true);
+  });
+});
+
+const runtimes: Miniflare[] = [];
+
+/**
+ * Each bundle loaded as a CommonJS module of a Worker on the Function's compatibility date and
+ * flags, as the app bundle is: what it exports, or the message it failed to load with.
+ */
+async function loadedInWorkerd(bundles: Readonly<Record<string, string>>): Promise<unknown> {
+  const names = Object.keys(bundles);
+  const loads = names.map((name) => {
+    const specifier = JSON.stringify(`./${name}`);
+    return `try { loaded[${JSON.stringify(name)}] = (await import(${specifier})).default; } catch (error) { loaded[${JSON.stringify(name)}] = { error: error?.message }; }`;
+  });
+  const source = `export default {
+    async fetch() {
+      const loaded = {};
+      ${loads.join('\n      ')}
+      return Response.json(loaded);
+    },
+  };`;
+  const runtime = new Miniflare(
+    convertV4MiniflareOptions({
+      name: 'create-require',
+      compatibilityDate: FUNCTION_COMPATIBILITY_DATE,
+      compatibilityFlags: [...FUNCTION_COMPATIBILITY_FLAGS],
+      modulesRoot: '/bundle',
+      modules: [
+        { type: 'ESModule', path: '/bundle/test.mjs', contents: source },
+        ...names.map((name) => {
+          const contents = bundles[name] ?? '';
+          return { type: 'CommonJS' as const, path: `/bundle/${name}`, contents };
+        }),
+      ],
+      cf: false,
+      telemetry: { enabled: false },
+      log: new Log(LogLevel.NONE),
+      outboundService() {
+        throw new Error('The createRequire tests cannot use outbound network');
+      },
+    }),
+  );
+  runtimes.push(runtime);
+  const response = await runtime.dispatchFetch('https://create-require.test/', {
+    signal: AbortSignal.timeout(5000),
+  });
+  assert.equal(response.status, 200);
+  const value: unknown = await response.json();
+  return value;
+}
+
+/** A module that loads `node:process` through `createRequire` as it is evaluated, and no other way. */
+const LOADING_ENTRY = `import { createRequire } from 'node:module';
+export const isGlobal = createRequire(import.meta.url)('node:process') === globalThis.process;
+`;
+
+describe("workerd's require, under the Function's compatibility date and flags", () => {
+  afterEach(async () => {
+    for (const runtime of runtimes.splice(0)) await runtime.dispose();
+    await removeRoots();
+  });
+
+  it('loads the module once node:module is stubbed, which it cannot as it stands', async () => {
+    const plain = await bundledCjs(LOADING_ENTRY, []);
+    const stubbed = await bundledCjs(LOADING_ENTRY, [stubPlugin()]);
+
+    await expect(
+      loadedInWorkerd({ 'plain.cjs': plain, 'stubbed.cjs': stubbed }),
+    ).resolves.toStrictEqual({
+      'plain.cjs': { error: 'No such module "node:process".' },
+      'stubbed.cjs': { isGlobal: true },
+    });
+  }, 20_000);
 });
 
 /** A project with Next.js's two modules, and an entry that requires both, as its server does. */
