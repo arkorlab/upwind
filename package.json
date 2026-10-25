@@ -19,6 +19,7 @@
     "check:patches:canary": "node packages/adapter/scripts/check-patches.ts --canary",
     "check:matrix": "node tools/next-matrix/src/run.ts",
     "check:deploy-tests": "node tools/deploy-tests/src/check.ts",
+    "check:deploy-tests-local": "node tools/deploy-tests/src/check-local.ts",
     "check:deploy-cloudflare": "node packages/upwind/scripts/check-deploy.ts",
     "check:preview": "node packages/upwind/scripts/check-preview.ts",
     "check:native": "node packages/upwind/scripts/check-native.ts",
