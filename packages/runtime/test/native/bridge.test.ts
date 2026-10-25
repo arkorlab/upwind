@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { once } from 'node:events';
-import { type IncomingMessage, request as httpRequest } from 'node:http';
+import { type IncomingMessage, request as httpRequest, type ServerResponse } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gzipSync } from 'node:zlib';
 
@@ -11,9 +11,11 @@ import { describe, onTestFinished, it } from 'vitest';
 import type { InvokeInput } from '../../src/invocation.ts';
 import {
   createNodeBridge,
+  NodeBridgeError,
   type NodeBridge,
   type NodeBridgeOptions,
 } from '../../src/native/bridge.ts';
+import { nativeBridgeOptions } from '../../src/native/options.ts';
 
 function fixture(options: NodeBridgeOptions = {}): NodeBridge {
   const bridge = createNodeBridge({
@@ -76,6 +78,10 @@ function upload(body: ReadableStream<Uint8Array>): Request {
 
 async function unusedBodyHandler(): Promise<void> {
   assert.fail('an unavailable body must not invoke its handler');
+}
+
+async function answerUpload(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  res.end(await textOf(req));
 }
 
 describe('native Node bridge', () => {
@@ -540,6 +546,39 @@ describe('native Node bridge', () => {
       /deadline/u,
     );
     await until(() => bridge.activeInvocations === 0);
+  });
+
+  it('lets an executable override extend the header budget for a streaming upload', async () => {
+    const short = fixture(nativeBridgeOptions({ UPWIND_NODE_HEADERS_TIMEOUT_MS: '40' }));
+    const extended = fixture(nativeBridgeOptions({ UPWIND_NODE_HEADERS_TIMEOUT_MS: '2000' }));
+    let cancelled = false;
+    const stalled = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('first'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const held = new ReadableStream<Uint8Array>({
+      start(controller) {
+        source = controller;
+        controller.enqueue(new TextEncoder().encode('first'));
+      },
+    });
+    const shortInput = input(answerUpload, { request: upload(stalled) });
+    const extendedInput = input(answerUpload, { request: upload(held) });
+    const timedOut = assert.rejects(
+      short.invokeNodeHandler(shortInput),
+      (error: unknown) => error instanceof NodeBridgeError && error.code === 'headers-timeout',
+    );
+    const extendedAnswer = extended.invokeNodeHandler(extendedInput);
+    await timedOut;
+    await until(() => cancelled);
+    source.enqueue(new TextEncoder().encode('last'));
+    source.close();
+    assert.equal(await (await extendedAnswer).text(), 'firstlast');
   });
 
   it('rejects consumed and locked bodies without allocating a dispatch', async () => {

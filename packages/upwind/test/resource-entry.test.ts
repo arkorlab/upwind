@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const resources = vi.hoisted(() => ({
-  loaded: [] as string[],
-  start: vi.fn(),
-  install: vi.fn(),
-}));
+const resources = vi.hoisted(() => {
+  return {
+    loaded: [] as string[],
+    start: vi.fn(),
+    install: vi.fn(),
+  };
+});
 
 vi.mock(import('../src/resources/local.ts'), () => {
   resources.loaded.push('local');
@@ -55,7 +57,7 @@ describe('the build resource preload', () => {
 
     await import('../src/resources/entry.ts');
 
-    expect(resources.install).toHaveBeenCalledOnce();
+    expect(resources.install).toHaveBeenCalledExactlyOnceWith();
     expect(resources.start).toHaveBeenCalledWith('/project', {
       answersSignals: false,
       mode: 'production',

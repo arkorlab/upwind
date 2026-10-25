@@ -145,10 +145,15 @@ describe('native cache', () => {
     );
   });
 
-  it('data and invalidation revisions survive restarting the owner', async () => {
+  it('data and stale invalidation revisions survive restarting the owner', async () => {
     const first = await openCache();
     await first.host.setData(value('persisted'));
-    const invalidation = await first.host.invalidate({ tags: ['value'], api: 'updateTag' });
+    // Keep the stale value retained; startup maintenance may reclaim an immediately expired one.
+    const invalidation = await first.host.invalidate({
+      tags: ['value'],
+      api: 'revalidateTag',
+      expire: 600,
+    });
     await first.cache.close();
     const next = await openCache(first.directory);
 
@@ -161,7 +166,7 @@ describe('native cache', () => {
     });
   });
 
-  it('normalizes fractional producer timestamps before persistence and preserves invalidation after restart', async () => {
+  it('normalizes fractional producer timestamps before persistence and preserves stale invalidation after restart', async () => {
     const first = await openCache();
     const original = value('fractional');
     const timestamp = original.entry.timestamp + 0.875;
@@ -176,7 +181,11 @@ describe('native cache', () => {
     expect(stored?.entry.timestamp).toBe(Math.floor(timestamp));
     expect(stored?.value).toMatchObject({ base64: original.valueBase64 });
 
-    const invalidation = await next.host.invalidate({ tags: ['value'], api: 'updateTag' });
+    const invalidation = await next.host.invalidate({
+      tags: ['value'],
+      api: 'revalidateTag',
+      expire: 600,
+    });
     await next.cache.close();
     const reopened = await openCache(first.directory);
 
@@ -184,7 +193,12 @@ describe('native cache', () => {
       reopened.host.getData({ key: 'value', kind: 'data:fetch' }),
     ).resolves.toMatchObject({
       entry: { timestamp: Math.floor(timestamp) },
-      invalidation: { revision: invalidation.revision },
+      value: { base64: original.valueBase64 },
+      invalidation: {
+        revision: invalidation.revision,
+        staleAt: invalidation.invalidations[0]?.staleAt,
+        hardExpireAt: invalidation.invalidations[0]?.hardExpireAt,
+      },
     });
   });
 

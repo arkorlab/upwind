@@ -1,5 +1,6 @@
 import type { InvokeInput } from '../invocation.ts';
 import { createNodeBridge, NodeBridgeError } from './bridge.ts';
+import { nativeBridgeOptions } from './options.ts';
 
 export { changesSomething } from '../invocation.ts';
 export type { FailureAnswer, InvokeInput, Run } from '../invocation.ts';
@@ -8,7 +9,7 @@ export type { FailureAnswer, InvokeInput, Run } from '../invocation.ts';
 // I/O and patches no globals. The host must still supply native bootstrap, paths and resources.
 const HTTP_UNAVAILABLE = 503;
 const HTTP_GATEWAY_TIMEOUT = 504;
-const bridge = createNodeBridge();
+const bridge = createNodeBridge(nativeBridgeOptions(process.env));
 
 export async function invokeNodeHandler(input: InvokeInput): Promise<Response> {
   try {

@@ -16,23 +16,30 @@ const streams = vi.hoisted(() => [] as ReadStream[]);
 
 vi.mock(import('node:fs/promises'), async (original) => {
   const fs = await original();
+  const observeOpen = async (...args: Parameters<typeof fs.open>): Promise<FileHandle> => {
+    const handle = await fs.open(...args);
+    const create = handle.createReadStream.bind(handle);
+    vi.spyOn(handle, 'createReadStream').mockImplementation((options) => {
+      const stream = create(options);
+      streams.push(stream);
+      return stream;
+    });
+    return handle;
+  };
   return {
     ...fs,
     open: vi.fn((...args: Parameters<typeof fs.open>) => {
-      const opened = fs.open(...args).then((handle) => {
-        const create = handle.createReadStream.bind(handle);
-        vi.spyOn(handle, 'createReadStream').mockImplementation((options) => {
-          const stream = create(options);
-          streams.push(stream);
-          return stream;
-        });
-        return handle;
-      });
+      const opened = observeOpen(...args);
       handles.push(opened);
       return opened;
     }),
   };
 });
+
+function requireResource<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('the response resource was not created');
+  return value;
+}
 
 const digest = 'a'.repeat(64);
 const store = {
@@ -82,18 +89,15 @@ describe('native static file delivery', () => {
 
     expect(response?.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
 
-    const handle = await handles[0];
-    if (handle === undefined) throw new Error('the file was not opened');
-    const reader = response?.body?.getReader();
-    if (reader === undefined) throw new Error('the response has no streaming body');
+    const handle = requireResource(await handles[0]);
+    const reader = requireResource(response?.body?.getReader());
     const chunk = await reader.read();
 
-    expect(chunk?.done).toBe(false);
-    expect(chunk?.value?.byteLength).toBeGreaterThan(0);
-    expect(chunk?.value?.byteLength).toBeLessThan(bytes.byteLength);
+    expect(chunk.done).toBe(false);
+    expect(chunk.value?.byteLength).toBeGreaterThan(0);
+    expect(chunk.value?.byteLength).toBeLessThan(bytes.byteLength);
 
-    const stream = streams[0];
-    if (stream === undefined) throw new Error('the file stream was not created');
+    const stream = requireResource(streams[0]);
     // Cancellation emits AbortError on the Node stream before its final descriptor cleanup.
     const closed = new Promise<void>((resolve) => {
       stream.once('close', resolve);

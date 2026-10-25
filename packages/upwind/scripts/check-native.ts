@@ -6,6 +6,7 @@ import { createServer, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { gzipSync } from 'node:zlib';
 
 import { cliOf, packAll, succeed } from './check-deploy-build.ts';
 
@@ -156,6 +157,23 @@ async function cached(site: URL): Promise<string> {
   return data.value;
 }
 
+async function rewrites(site: URL): Promise<void> {
+  for (const method of ['POST', 'PUT']) {
+    const response = await fetch(new URL('/rewrite/echo', site), {
+      method,
+      body: `native-${method}`,
+      signal: AbortSignal.timeout(REQUEST_MS),
+    });
+    assert.equal(response.status, HTTP_OK);
+    assert.equal(await response.text(), `native-${method}`);
+  }
+  const compressed = await get(site, '/rewrite/compressed');
+  assert.equal(compressed.headers.get('content-encoding'), null);
+  assert.equal(compressed.headers.get('content-length'), null);
+  assert.deepEqual(compressed.headers.getSetCookie(), ['first=1; Path=/', 'second=2; Path=/']);
+  assert.equal(await compressed.text(), 'native-rewritten-gzip');
+}
+
 async function basicRoutes(site: URL, actionMarker: string): Promise<void> {
   const home = await (await get(site, '/')).text();
   assert.ok(home.includes(HOME_MARKER));
@@ -263,14 +281,34 @@ async function probe(out: string, source: string | undefined): Promise<void> {
   const after = { pending: new Set<ServerResponse>(), entered: Promise.withResolvers<undefined>() };
   const state = { value: 'one' };
   const control = createServer((request, response) => {
-    if (request.url === '/dynamic') {
-      if (dynamic.released) response.end('released');
-      else dynamic.pending.add(response);
-    } else if (request.url === '/after') {
-      after.pending.add(response);
-      after.entered.resolve(undefined);
-    } else {
-      response.end(state.value);
+    switch (request.url ?? '') {
+      case '/rewrite/echo': {
+        request.pipe(response);
+        break;
+      }
+      case '/rewrite/compressed': {
+        const bytes = gzipSync('native-rewritten-gzip');
+        response.writeHead(HTTP_OK, {
+          'content-encoding': 'gzip',
+          'content-length': bytes.byteLength,
+          'set-cookie': ['first=1; Path=/', 'second=2; Path=/'],
+        });
+        response.end(bytes);
+        break;
+      }
+      case '/dynamic': {
+        if (dynamic.released) response.end('released');
+        else dynamic.pending.add(response);
+        break;
+      }
+      case '/after': {
+        after.pending.add(response);
+        after.entered.resolve(undefined);
+        break;
+      }
+      default: {
+        response.end(state.value);
+      }
     }
   });
   await new Promise<void>((resolve, reject) => {
@@ -302,6 +340,7 @@ async function probe(out: string, source: string | undefined): Promise<void> {
     const first = await runServer([path.join(native, 'server.mjs')], deployed, env);
     children.add(first);
     await basicRoutes(first.site, actionMarker);
+    await rewrites(first.site);
     await ppr(first.site, () => {
       dynamic.released = true;
       for (const response of dynamic.pending) response.end('released');

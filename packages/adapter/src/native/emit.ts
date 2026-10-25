@@ -34,6 +34,7 @@ import { collectStaticFiles } from '../static-files.ts';
 import { staticPagesRuntimeFields } from '../static-pages.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from '../throwing-globals.ts';
 import { copyNativeFiles, nativeTraceFiles } from './files.ts';
+import { nativeEdgeGraphPlugin } from './graph.ts';
 
 const MIDDLEWARE_ID = '/_middleware';
 const SERVER_FILE = 'server.mjs';
@@ -89,11 +90,13 @@ async function nativeSources(ctx: BuildContext): Promise<string[]> {
     ...ctx.outputs.pagesApi,
     ...(ctx.outputs.middleware === undefined ? [] : [ctx.outputs.middleware]),
   ];
-  const sources = new Set([
-    ...outputs.flatMap((output) => [output.filePath, ...Object.values(output.assets)]),
-    ...(await filesUnder(path.join(ctx.distDir, 'server'))),
-    ...(await rootManifests(ctx.distDir)),
-  ]);
+  const sources = new Set(
+    outputs.flatMap((output) => [output.filePath, ...Object.values(output.assets)]),
+  );
+  const serverFiles = await filesUnder(path.join(ctx.distDir, 'server'));
+  const manifests = await rootManifests(ctx.distDir);
+  for (const file of serverFiles) sources.add(file);
+  for (const file of manifests) sources.add(file);
   const traces = new Set([
     ...outputs
       .filter((output) => output.runtime !== 'edge')
@@ -128,10 +131,10 @@ function appModuleSource(
     '  return typeof loaded?.then === "function" ? Promise.resolve(loaded).then(normalize) : normalize(loaded);',
     '}',
     'module.exports = { entries: {',
-    ...modules.map(
-      (entry) =>
-        `  ${jsLiteral(entry.id)}: () => load(${jsLiteral('./' + pathOf(entry.filePath))}),`,
-    ),
+    ...modules.map((entry) => {
+      const file = jsLiteral(`./${pathOf(entry.filePath)}`);
+      return `  ${jsLiteral(entry.id)}: () => load(${file}),`;
+    }),
     '} };',
     '',
   ].join('\n');
@@ -165,7 +168,10 @@ function edgeModuleSource(entries: readonly EdgeEntry[], pathOf: (file: string) 
           (wasm) =>
             `    globalThis[${jsLiteral(wasm.global)}] ??= new WebAssembly.Module(fs.readFileSync(path.resolve(__dirname, ${jsLiteral(pathOf(wasm.filePath))})));`,
         ),
-        ...entry.files.map((file) => `    require(${jsLiteral('./' + pathOf(file))});`),
+        ...entry.files.map((file) => {
+          const name = jsLiteral(`./${pathOf(file)}`);
+          return `    require(${name});`;
+        }),
         '    const config = globalThis.__SERVER_FILES_MANIFEST?.config?.experimental;',
         '    if (config !== undefined) config.trustHostHeader = true;',
         `    const entry = globalThis._ENTRIES?.[${jsLiteral(entry.entryKey)}];`,
@@ -180,16 +186,17 @@ function edgeModuleSource(entries: readonly EdgeEntry[], pathOf: (file: string) 
 }
 
 function nativeModules(runtimeRoot: string, cacheHost: string): Plugin {
-  const resolved: Readonly<Record<string, ResolveIdResult>> = {
+  const resolved: Readonly<Record<string, { readonly id: string; readonly external: boolean }>> = {
     'arkor:app': { id: './app.cjs', external: true },
     'arkor:edge': { id: './edge.cjs', external: true },
     'arkor:native-function': { id: './function.mjs', external: true },
-    'arkor:cache-host': cacheHost,
-    'arkor:wasm': '\0native-wasm',
+    'arkor:cache-host': { id: cacheHost, external: false },
+    'arkor:wasm': { id: '\0native-wasm', external: false },
   };
   const replacements = new Map([
     [path.join(runtimeRoot, 'environment.ts'), path.join(runtimeRoot, 'native/environment.ts')],
     [path.join(runtimeRoot, 'node-bridge.ts'), path.join(runtimeRoot, 'native/entry.ts')],
+    [path.join(runtimeRoot, 'rewrite-fetch.ts'), path.join(runtimeRoot, 'native/rewrite-fetch.ts')],
     [path.join(runtimeRoot, 'static-file.ts'), path.join(runtimeRoot, 'native/static-file.ts')],
   ]);
   return {
@@ -199,7 +206,8 @@ function nativeModules(runtimeRoot: string, cacheHost: string): Plugin {
         throw new Error('@stayingupwind/adapter: native runtime imports a Cloudflare-only module');
       if (Object.hasOwn(resolved, source)) return resolved[source] ?? null;
       if (importer !== undefined && source.startsWith('.')) {
-        return replacements.get(path.resolve(path.dirname(importer), source)) ?? null;
+        const replacement = replacements.get(path.resolve(path.dirname(importer), source));
+        return replacement === undefined ? null : { id: replacement, external: false };
       }
       return null;
     },
@@ -265,6 +273,7 @@ async function emitNativeEdge(
     external: [/^node:/u],
     plugins: [
       globalObjectPlugin(),
+      nativeEdgeGraphPlugin(),
       {
         name: 'upwind-native-edge',
         resolveId(specifier) {

@@ -46,7 +46,10 @@ Upgrades, CONNECT, trailers and early hints have no representation in this inter
 host can report admission failures as 503 and header deadlines as 504. Capacity counts accepted
 handlers until their work and transport have both finished, even after their response ends. It
 rejects excess work rather than growing a pending queue. The header deadline does not limit the
-lifetime of an SSE or other streaming body.
+lifetime of an SSE or other streaming body. It starts at dispatch and includes request upload time.
+The native executable accepts `UPWIND_NODE_HEADERS_TIMEOUT_MS` to raise or lower this budget for
+uploads or routes needing a different response-header deadline. Set it in the process environment
+or an `upwind start --env-file` file; it must be a positive integer within Node's timer range.
 
 Mutations are registered with the supplied `waitUntil` from the start; safe handlers are registered
 after a normal response finish. A prematurely closed safe stream does not acquire that retention.

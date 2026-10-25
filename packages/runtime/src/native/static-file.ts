@@ -13,7 +13,9 @@ const HTTP_NO_CONTENT = 204;
 const HTTP_RESET_CONTENT = 205;
 const HTTP_NOT_MODIFIED = 304;
 const BODYLESS = new Set([HTTP_NO_CONTENT, HTTP_NOT_MODIFIED, HTTP_RESET_CONTENT]);
-const STREAM_BUFFER_BYTES = 64 * 1024;
+const STREAM_BUFFER_KIB = 64;
+const KIB = 1024;
+const STREAM_BUFFER_BYTES = STREAM_BUFFER_KIB * KIB;
 
 function requireMatchingFile(info: Stats, file: StaticFile): void {
   if (!info.isFile() || info.size !== file.blob.byteLength) {

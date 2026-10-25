@@ -128,6 +128,7 @@ describe('native dependency files', () => {
         additionalRoots: [{ name: 'shared', path: '../../shared', files: ['data.json'] }],
       }),
     );
+
     await expect(nativeTraceFiles(trace)).resolves.toStrictEqual([
       path.join(root, 'project/entry.js'),
       path.resolve(root, '../shared/data.json'),

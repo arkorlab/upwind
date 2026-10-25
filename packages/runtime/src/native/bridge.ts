@@ -61,7 +61,7 @@ export class NodeBridgeError extends Error {
 
 export interface NodeBridgeOptions {
   readonly maxInFlight?: number | undefined;
-  /** Bounds time to response headers, not the lifetime of a streaming response. */
+  /** Bounds time from dispatch to response headers, including upload, not response streaming. */
   readonly headersTimeoutMs?: number | undefined;
   readonly onError?: ((error: unknown) => unknown) | undefined;
 }

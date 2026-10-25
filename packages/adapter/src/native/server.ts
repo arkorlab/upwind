@@ -19,6 +19,7 @@ import {
   seedEntriesOf,
   seededGenerationAt,
 } from '../../../deploy/src/cache-seed.ts';
+import { drainNativeWork } from './drain.ts';
 import { nativeOrigin, nativeRequest, writeNativeResponse } from './http.ts';
 
 const SHUTDOWN_MS = 30_000;
@@ -173,11 +174,15 @@ async function main(): Promise<void> {
           resolve();
         });
       });
-      const drained = (await requests.drain(remaining())) && (await tasks.drain(remaining()));
-      const transport = await closeNodeBridge(remaining());
+      const drained = await drainNativeWork({
+        requests,
+        tasks,
+        closeBridge: closeNodeBridge,
+        remaining,
+      });
       await cache.close();
       clearTimeout(forced);
-      process.exit(drained && transport ? 0 : 1);
+      process.exit(drained ? 0 : 1);
     };
     void drain().catch((error: unknown) => {
       report(error);

@@ -276,8 +276,9 @@ export class NativeAuthority implements CacheHost {
     this.#timer.unref();
   }
 
-  #tick(): Promise<void> {
-    return maintainNativeCache({
+  // Keep synchronous dependency setup failures behind #runTick's await boundary.
+  async #tick(): Promise<void> {
+    await maintainNativeCache({
       ...this.#deps(),
       storage: this.#storage,
       queue: this.#queue,
