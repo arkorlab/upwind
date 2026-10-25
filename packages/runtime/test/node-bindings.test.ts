@@ -38,7 +38,7 @@ describe('node delegated bindings', () => {
       const dump = JSON.stringify(env);
 
       expect(Object.hasOwn(env, 'ARKOR_NODE_RUNTIME')).toBe(false);
-      expect(dump.includes(config.controlToken)).toBe(false);
+      expect(dump).not.toContain(config.controlToken);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -103,6 +103,7 @@ describe('node delegated bindings', () => {
       custom: 'kept',
       redirect: 'manual',
     });
+
     transport.fetch.mockClear();
   });
 
@@ -124,14 +125,14 @@ describe('node delegated bindings', () => {
   it.each(['__proto__', 'constructor', 'prototype', 'ARKOR_CACHE', 'NEXT_DEPLOYMENT_ID'])(
     'refuses reserved or prototype-sensitive service alias %s',
     (name) => {
-      expect(() =>
-        parseNodeRuntimeConfiguration(
+      expect(() => {
+        return parseNodeRuntimeConfiguration(
           JSON.stringify({
             ...config,
             capabilities: { services: { [name]: config.capabilities.services.SEARCH } },
           }),
-        ),
-      ).toThrow('invalid Node runtime service');
+        );
+      }).toThrow('invalid Node runtime service');
     },
   );
 
@@ -161,14 +162,14 @@ describe('node delegated bindings', () => {
       write: undefined,
       read: undefined,
     });
-    expect(() =>
-      parseNodeRuntimeConfiguration(
+    expect(() => {
+      return parseNodeRuntimeConfiguration(
         JSON.stringify({
           ...withoutCache,
           capabilities: { services: {}, cacheRead: config.capabilities.cacheRead },
         }),
-      ),
-    ).toThrow(Error);
+      );
+    }).toThrow(Error);
   });
 
   it.each([

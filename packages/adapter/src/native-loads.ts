@@ -35,8 +35,8 @@ export interface NativeLoad {
 export class NativeFunctionRequiredError extends Error {
   readonly loads: readonly NativeLoad[];
 
-  constructor(loads: readonly NativeLoad[]) {
-    super('This Function requires a native Node.js runtime');
+  constructor(loads: readonly NativeLoad[], options: ErrorOptions) {
+    super('This Function requires a native Node.js runtime', options);
     this.name = 'NativeFunctionRequiredError';
     this.loads = loads;
   }
@@ -162,8 +162,7 @@ export function nativeLoadsPlugin(
       );
       for (const node of tree) {
         if (node.type !== 'CallExpression' || !identifier(node.callee, CHILD_MARKER)) continue;
-        if (children.get(markerId(node)) === undefined)
-          throw new AuditError('Unrecognized native child marker');
+        if (!children.has(markerId(node))) throw new AuditError('Unrecognized native child marker');
         throw new AuditError(
           'A retained Node Worker has unclassified owned native child dependencies',
         );

@@ -17,7 +17,7 @@ function importedWorkers(
 ): void {
   if (!['node:worker_threads', 'worker_threads'].includes(String(node.source.value))) return;
   for (const specifier of node.specifiers) {
-    if (['ImportNamespaceSpecifier', 'ImportDefaultSpecifier'].includes(specifier.type))
+    if (['ImportDefaultSpecifier', 'ImportNamespaceSpecifier'].includes(specifier.type))
       imports.set(specifier, 'namespace');
     if (specifier.type === 'ImportSpecifier' && identifier(specifier.imported, 'Worker'))
       imports.set(specifier, 'constructor');

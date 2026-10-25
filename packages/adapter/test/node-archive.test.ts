@@ -20,7 +20,7 @@ function stringOf(header: Buffer, start: number, length: number): string {
     header
       .subarray(start, start + length)
       .toString()
-      .split('\0')[0] ?? ''
+      .split('\0', 1)[0] ?? ''
   );
 }
 
@@ -58,15 +58,15 @@ function filesOf(archive: Uint8Array): TarFile[] {
 describe('canonical Node Function archive', () => {
   it('orders distinct Unicode spellings by code units even when locale collation treats them as equal', () => {
     const input = [
-      { name: 'project/caf\u00e9.txt', bytes: new Uint8Array([1]) },
-      { name: 'project/cafe\u0301.txt', bytes: new Uint8Array([2]) },
+      { name: 'project/caf\u{E9}.txt', bytes: new Uint8Array([1]) },
+      { name: 'project/cafe\u{301}.txt', bytes: new Uint8Array([2]) },
     ];
     const archive = nodeArtifactArchive(input);
 
     expect(archive).toStrictEqual(nodeArtifactArchive(input.toReversed()));
     expect(filesOf(archive).map(({ name }) => name)).toStrictEqual([
-      'project/cafe\u0301.txt',
-      'project/caf\u00e9.txt',
+      'project/cafe\u{301}.txt',
+      'project/caf\u{E9}.txt',
     ]);
   });
 
@@ -112,11 +112,13 @@ describe('canonical Node Function archive', () => {
     const files = filesOf(nodeArtifactArchive([{ name, bytes: new Uint8Array([7]) }]));
 
     expect(
-      files.map((file) => ({
-        name: file.name,
-        bytes: [...file.bytes],
-        validChecksum: file.validChecksum,
-      })),
+      files.map((file) => {
+        return {
+          name: file.name,
+          bytes: [...file.bytes],
+          validChecksum: file.validChecksum,
+        };
+      }),
     ).toStrictEqual([{ name, bytes: [7], validChecksum: true }]);
   });
 
@@ -126,7 +128,7 @@ describe('canonical Node Function archive', () => {
     'a/../parent',
     'a/./same',
     'a//empty',
-    'a\\backslash',
+    String.raw`a\backslash`,
     'a:drive',
     'a\0nul',
     'a\nline',
@@ -140,12 +142,12 @@ describe('canonical Node Function archive', () => {
     ['file', 'file/child'],
     ['file/child', 'file'],
   ])('rejects duplicate paths and file/directory conflicts %j', (left, right) => {
-    expect(() =>
-      nodeArtifactArchive([
+    expect(() => {
+      return nodeArtifactArchive([
         { name: left, bytes: new Uint8Array() },
         { name: right, bytes: new Uint8Array() },
-      ]),
-    ).toThrow(Error);
+      ]);
+    }).toThrow(Error);
   });
 
   it('rejects a long unsplittable component and the file-count limit before constructing an archive', () => {

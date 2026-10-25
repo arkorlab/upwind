@@ -13,7 +13,7 @@ function decodedCoding(coding: string): boolean {
 
 /** Call only at a native Fetch boundary, never on a raw IncomingMessage/Node handler response. */
 export function fetchedResponse(response: Response, method: string): Response {
-  if (response.body === null || method === 'HEAD' || method === 'CONNECT') return response;
+  if (method === 'HEAD' || method === 'CONNECT' || response.body === null) return response;
   const encoding = response.headers.get('content-encoding');
   if (encoding === null || encoding === '') return response;
   const codings = encoding

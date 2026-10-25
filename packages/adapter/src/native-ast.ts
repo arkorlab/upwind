@@ -130,27 +130,34 @@ function nativeBinding(scope: NativeScope | undefined, name: string): Node | nul
 
 function patternNames(pattern: Node, members = false): string[] {
   switch (pattern.type) {
-    case 'Identifier':
+    case 'Identifier': {
       return [pattern.name];
-    case 'ObjectPattern':
+    }
+    case 'ObjectPattern': {
       return pattern.properties.flatMap((property) => {
         return patternNames(
           property.type === 'Property' ? property.value : property.argument,
           members,
         );
       });
-    case 'ArrayPattern':
-      return pattern.elements.flatMap((element) => {
-        return element === null ? [] : patternNames(element, members);
-      });
-    case 'RestElement':
+    }
+    case 'ArrayPattern': {
+      return pattern.elements.flatMap((element) =>
+        element === null ? [] : patternNames(element, members),
+      );
+    }
+    case 'RestElement': {
       return patternNames(pattern.argument, members);
-    case 'AssignmentPattern':
+    }
+    case 'AssignmentPattern': {
       return patternNames(pattern.left, members);
-    case 'MemberExpression':
+    }
+    case 'MemberExpression': {
       return members ? patternNames(pattern.object, true) : [];
-    default:
+    }
+    default: {
       return [];
+    }
   }
 }
 
@@ -230,7 +237,7 @@ function realPathBinding(node: Node, bindings: NativeBindings): boolean {
   const binding = bindings.lookup(node, 'path');
   if (binding?.type !== 'VariableDeclarator' || binding.init === null) return false;
   if (!identifier(binding.id, 'path')) return false;
-  if (!['path', 'node:path'].includes(required(binding.init) ?? '')) return false;
+  if (!['node:path', 'path'].includes(required(binding.init) ?? '')) return false;
   if (
     bindings.lookup(binding.init, 'require') !== undefined ||
     !bindings.unmodified(binding.init, 'require', false)

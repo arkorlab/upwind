@@ -107,7 +107,7 @@ export async function nativeLoaderSelectorKeys(importer: string): Promise<readon
 
 async function assertDefaultSelectors(importer: string): Promise<void> {
   const keys = await nativeLoaderSelectorKeys(importer);
-  if (keys.some((key) => Boolean(process.env[key])))
+  if (keys.some((key) => process.env[key]))
     throw new AuditError('Native loader environment overrides cannot be classified');
 }
 

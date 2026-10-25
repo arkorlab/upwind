@@ -12,8 +12,10 @@ import type { BuildFunctionInput } from './function.ts';
 import type { NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
 
-const MAX_FILE_BYTES = 128 * 1024 * 1024;
+const MAX_FILE_BYTES = 134_217_728;
 const EXECUTABLE_BITS = 0o111;
+const PACKAGE_MANIFEST = 'package.json';
+const COMMONJS_SUFFIXES = ['', '.js', '.json', '.node'] as const;
 
 export interface NodePhysicalFiles {
   readonly files: NodeArchiveFile[];
@@ -21,7 +23,7 @@ export interface NodePhysicalFiles {
   readonly cwd: string;
   /** The original compiled project hook, distinct from the generated host composition. */
   readonly instrumentation: string | undefined;
-  nameOf(this: void, file: string): string;
+  nameOf(file: string): string;
 }
 
 type NameOf = NodePhysicalFiles['nameOf'];
@@ -55,8 +57,7 @@ function specifierIn(node: Node): string | undefined {
     (node.type === 'ImportDeclaration' ||
       node.type === 'ExportAllDeclaration' ||
       node.type === 'ExportNamedDeclaration') &&
-    node.source !== null &&
-    node.source !== undefined
+    node.source !== null
   )
     return staticString(node.source);
   return node.type === 'ImportExpression' ? staticString(node.source) : undefined;
@@ -81,7 +82,7 @@ function strings(node: Node): string[] {
     const specifier = specifierIn(current);
     if (specifier !== undefined) found.push(specifier);
     // Match the original source-order walk, without a recursive stack for large compiled files.
-    const children = astChildren(current).reverse();
+    const children = astChildren(current).toReversed();
     for (const child of children) pending.push(child);
   }
   return found;
@@ -116,9 +117,8 @@ async function boundedFile(file: string): Promise<Uint8Array> {
 /** A moved distDir must not make an unchanged relative lookup name a different location. */
 function assertRelativeTopology(importer: string, target: string, nameOf: NameOf): void {
   const relative = path.relative(path.dirname(importer), target).split(path.sep).join('/');
-  const lookedUp = path.posix.normalize(
-    path.posix.join(path.posix.dirname(nameOf(importer)), relative),
-  );
+  const owner = path.posix.dirname(nameOf(importer));
+  const lookedUp = path.posix.normalize(path.posix.join(owner, relative));
   if (lookedUp !== nameOf(target)) {
     throw new AuditError(
       'Native Function relocation changes a relative module or native binary lookup; refusing publication',
@@ -155,16 +155,17 @@ async function projectInstrumentation(input: BuildFunctionInput): Promise<string
 }
 
 function inputFiles(input: BuildFunctionInput, instrumentation: string | undefined): Set<string> {
-  return new Set([
-    ...(instrumentation === undefined ? [] : [instrumentation]),
-    ...input.entries.map((entry) => entry.filePath),
-    ...(input.entryTraces ?? []).flatMap((trace) => Object.values(trace.assets)),
-    ...input.files.map((file) => file.filePath),
-    ...input.edgeEntries.flatMap((entry) => entry.files),
-    ...input.manifests.flatMap((manifest) => {
-      return manifest.routeFile === undefined ? [] : [manifest.routeFile];
-    }),
-  ]);
+  const files = new Set(input.entries.map((entry) => entry.filePath));
+  if (instrumentation !== undefined) files.add(instrumentation);
+  if (input.entryTraces !== undefined) {
+    for (const trace of input.entryTraces)
+      for (const file of Object.values(trace.assets)) files.add(file);
+  }
+  for (const file of input.files) files.add(file.filePath);
+  for (const entry of input.edgeEntries) for (const file of entry.files) files.add(file);
+  for (const manifest of input.manifests)
+    if (manifest.routeFile !== undefined) files.add(manifest.routeFile);
+  return files;
 }
 
 async function packageMetadata(
@@ -177,7 +178,7 @@ async function packageMetadata(
     beneath(layout.root, dir) !== undefined;
     dir = path.dirname(dir)
   ) {
-    const manifest = path.join(dir, 'package.json');
+    const manifest = path.join(dir, PACKAGE_MANIFEST);
     try {
       files.set(layout.nameOf(manifest), await boundedFile(manifest));
     } catch (error) {
@@ -201,7 +202,7 @@ async function physicalSources(
     const name = layout.nameOf(canonical);
     sources.files.set(name, await boundedFile(canonical));
     const mode = (await stat(canonical)).mode;
-    // eslint-disable-next-line no-bitwise -- POSIX executable permission bits are the artifact's file mode.
+    // eslint-disable-next-line no-bitwise, sonarjs/bitwise-operators -- POSIX executable permission bits are the artifact's file mode.
     if ((mode & EXECUTABLE_BITS) !== 0) sources.executable.add(name);
     sources.originals.set(canonical, name);
     await packageMetadata(canonical, layout, sources.files);
@@ -245,15 +246,15 @@ async function assertPackageTarget(target: string, context: PackageAliasContext)
   }
   if (!info.isDirectory())
     throw new AuditError('A Node package alias requires a regular physical target');
-  const owned = [...context.sources.originals.keys()].some(
-    (file) => beneath(target, file) !== undefined,
-  );
+  const owned = context.sources.originals
+    .keys()
+    .some((file) => beneath(target, file) !== undefined);
   if (!owned)
     throw new AuditError('The first existing Node package target is outside its closed trace');
-  const metadata = path.join(target, 'package.json');
+  const metadata = path.join(target, PACKAGE_MANIFEST);
   try {
     await stat(metadata);
-    if (!context.sources.files.has(path.posix.join(name, 'package.json')))
+    if (!context.sources.files.has(path.posix.join(name, PACKAGE_MANIFEST)))
       throw new AuditError('Node package export metadata is absent from its physical artifact');
   } catch (error) {
     if (!isMissingFile(error)) throw error;
@@ -292,6 +293,97 @@ async function packageAliases(
   }
 }
 
+function absentRelativePath(error: unknown): boolean {
+  return (
+    isMissingFile(error) || (error instanceof Error && 'code' in error && error.code === 'ENOTDIR')
+  );
+}
+
+async function relativeMain(
+  logical: string,
+  context: PackageAliasContext,
+): Promise<string | undefined> {
+  let metadata: unknown;
+  try {
+    const file = await realpath(path.join(logical, PACKAGE_MANIFEST));
+    const bytes = context.sources.files.get(context.layout.nameOf(file));
+    if (bytes === undefined)
+      throw new AuditError('A relative package entry has no closed metadata');
+    metadata = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (error) {
+    if (!absentRelativePath(error)) throw error;
+    return undefined;
+  }
+  if (
+    typeof metadata !== 'object' ||
+    metadata === null ||
+    !('main' in metadata) ||
+    typeof metadata.main !== 'string'
+  )
+    return undefined;
+  const main = path.resolve(logical, metadata.main);
+  if (beneath(logical, main) === undefined)
+    throw new AuditError('A relative package entry escapes its closed physical directory');
+  return main;
+}
+
+function resolveRelative(file: string, specifier: string): string | undefined {
+  try {
+    return createRequire(file).resolve(specifier);
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'MODULE_NOT_FOUND')
+      return undefined;
+    throw error;
+  }
+}
+
+async function relativeDirectoryAlias(
+  logical: string,
+  context: PackageAliasContext,
+): Promise<void> {
+  try {
+    if ((await stat(logical)).isDirectory()) await recordPackageAlias(logical, context);
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+  }
+}
+
+async function matchingRelativeAlias(
+  alias: string,
+  resolved: string,
+  context: PackageAliasContext,
+): Promise<boolean> {
+  try {
+    if ((await realpath(alias)) !== resolved) return false;
+    await recordPackageAlias(alias, context);
+    return true;
+  } catch (error) {
+    if (!absentRelativePath(error)) throw error;
+    return false;
+  }
+}
+
+/** Preserve logical relative links even when NFT recorded only canonical files. */
+async function relativeAliases(
+  file: string,
+  specifier: string,
+  context: PackageAliasContext,
+): Promise<void> {
+  if (!specifier.startsWith('.')) return;
+  const logical = path.resolve(path.dirname(file), specifier);
+  context.layout.nameOf(logical);
+  const resolved = resolveRelative(file, specifier);
+  if (resolved === undefined) return;
+  const roots = [logical, path.join(logical, 'index')];
+  const main = await relativeMain(logical, context);
+  if (main !== undefined) roots.push(main);
+  await relativeDirectoryAlias(logical, context);
+  for (const root of roots)
+    for (const suffix of COMMONJS_SUFFIXES)
+      if (await matchingRelativeAlias(`${root}${suffix}`, resolved, context)) return;
+  throw new AuditError('A relative Node module lookup has no proved physical alias');
+}
+
 async function moduleAliases(
   sources: PhysicalSources,
   layout: PhysicalLayout,
@@ -302,6 +394,7 @@ async function moduleAliases(
     const specifiers = new Set(sourceSpecifiers(file, sources.files.get(name)));
     for (const specifier of specifiers) {
       assertSpecifierTopology(file, specifier, layout);
+      await relativeAliases(file, specifier, context);
       await packageAliases(file, specifier, context);
     }
   }
@@ -330,9 +423,11 @@ async function traceAliases(
   links: Map<string, string>,
 ): Promise<void> {
   // Asset keys can retain a logical import alias that values canonicalize away.
-  for (const trace of input.entryTraces ?? []) {
-    for (const [logical, physical] of Object.entries(trace.assets))
-      await recordTraceAlias(logical, physical, layout, links);
+  if (input.entryTraces !== undefined) {
+    for (const trace of input.entryTraces) {
+      for (const [logical, physical] of Object.entries(trace.assets))
+        await recordTraceAlias(logical, physical, layout, links);
+    }
   }
 }
 
@@ -346,7 +441,7 @@ function emittedLinks(
     if (files.has(alias) || emitted.some((link) => alias.startsWith(`${link.path}/`))) continue;
     if (alias === target || target.startsWith(`${alias}/`))
       throw new AuditError('Node artifact contains a cyclic alias');
-    if (![...files.keys()].some((file) => file === target || file.startsWith(`${target}/`)))
+    if (files.keys().every((file) => file !== target && !file.startsWith(`${target}/`)))
       throw new AuditError('Node artifact alias has no physical target');
     emitted.push({ path: alias, target });
   }
@@ -372,7 +467,11 @@ export async function nodePhysicalFiles(
   await traceAliases(input, layout, links);
   return {
     files: [...sources.files].map(([name, bytes]) => {
-      return { name, bytes, ...(sources.executable.has(name) && { executable: true }) };
+      return {
+        name,
+        bytes,
+        ...(sources.executable.has(name) && { executable: true }),
+      };
     }),
     links: emittedLinks(links, sources.files),
     cwd: layout.cwd,

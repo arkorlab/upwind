@@ -23,6 +23,13 @@ import {
 } from './node-proof.ts';
 import { nodeSourceMaps } from './node-source-maps.ts';
 
+const NO_CACHE_MODULE = '\0upwind-node-no-cache';
+const CLOUDFLARE_IMPORT_PREFIX = 'cloudflare:';
+
+function glibcReport(header: unknown): boolean {
+  return header !== null && typeof header === 'object' && 'glibcVersionRuntime' in header;
+}
+
 export interface NodeBuiltFunction {
   readonly spec: NodeContainerFunctionSpec;
   readonly dependencies: FunctionDependencies;
@@ -31,16 +38,9 @@ export interface NodeBuiltFunction {
 }
 
 function assertNativeAbi(): NodeContainerFunctionSpec['abi'] {
-  const report = process.report?.getReport();
-  const header =
-    typeof report === 'object' && report !== null && 'header' in report ? report.header : undefined;
-  if (
-    process.platform !== 'linux' ||
-    process.arch !== 'x64' ||
-    typeof header !== 'object' ||
-    header === null ||
-    !('glibcVersionRuntime' in header)
-  ) {
+  const report = process.report.getReport();
+  const header = typeof report === 'object' && 'header' in report ? report.header : undefined;
+  if (process.platform !== 'linux' || process.arch !== 'x64' || !glibcReport(header)) {
     throw new AuditError(
       'Native Functions must be built with the host-pinned Linux x64 glibc Node.js image',
     );
@@ -88,11 +88,12 @@ function nodeAliases(input: BuildFunctionInput): Plugin {
   };
   return {
     name: 'upwind-node-runtime',
+
     resolveId(source, importer) {
       if (source === 'arkor:app') return { id: './app.cjs', external: true };
       if (source === 'arkor:edge') return { id: './edge.cjs', external: true };
       if (source === 'arkor:wasm') return { id: './wasm.mjs', external: true };
-      if (source === 'arkor:cache-host') return input.cacheHostModule ?? '\0upwind-node-no-cache';
+      if (source === 'arkor:cache-host') return input.cacheHostModule ?? NO_CACHE_MODULE;
       const target = nodeRuntimeAlias(source, importer, runtime);
       // Both separately bundled entrypoints share one private bootstrap/cache module.
       // It consumes and removes the token-bearing environment value exactly once.
@@ -100,9 +101,9 @@ function nodeAliases(input: BuildFunctionInput): Plugin {
       return target === undefined ? null : (aliases[target] ?? null);
     },
     load(id) {
-      return id === '\0upwind-node-no-cache'
-        ? 'export function createCacheHost(){return undefined} export const createBundleBlobReader=undefined;'
-        : null;
+      if (id === NO_CACHE_MODULE)
+        return 'export function createCacheHost(){return undefined} export const createBundleBlobReader=undefined;';
+      return null;
     },
   };
 }
@@ -145,7 +146,8 @@ async function bundleNode(
     unresolved.length > 0 ||
     result.output.some(
       (chunk) =>
-        chunk.type === 'chunk' && chunk.imports.some((name) => name.startsWith('cloudflare:')),
+        chunk.type === 'chunk' &&
+        chunk.imports.some((name) => name.startsWith(CLOUDFLARE_IMPORT_PREFIX)),
     )
   ) {
     throw new AuditError('Node Function runtime has an unsupported or unresolved platform import');
@@ -157,16 +159,17 @@ async function bundleNodeInstrumentation(
   input: BuildFunctionInput,
   settings: {
     outFile: string;
-    nameOf: (this: void, file: string) => string;
+    nameOf: (file: string) => string;
     instrumentation: string | undefined;
   },
 ): Promise<ReadonlyMap<string, string>> {
   if (input.patch.instrumentation === undefined) return new Map();
   const entry = await realpath(input.patch.instrumentation);
   if (entry === settings.instrumentation) {
+    const projectHook = jsLiteral(`/bundle/${settings.nameOf(entry)}`);
     await writeFile(
       settings.outFile,
-      `globalThis.AsyncLocalStorage??=require('node:async_hooks').AsyncLocalStorage;module.exports=require(${jsLiteral(`/bundle/${settings.nameOf(entry)}`)});`,
+      `globalThis.AsyncLocalStorage??=require('node:async_hooks').AsyncLocalStorage;module.exports=require(${projectHook});`,
     );
     return new Map();
   }
@@ -214,16 +217,17 @@ async function bundleNodeInstrumentation(
     unresolved.length > 0 ||
     result.output.some(
       (chunk) =>
-        chunk.type === 'chunk' && chunk.imports.some((name) => name.startsWith('cloudflare:')),
+        chunk.type === 'chunk' &&
+        chunk.imports.some((name) => name.startsWith(CLOUDFLARE_IMPORT_PREFIX)),
     )
   ) {
     throw new AuditError('Host instrumentation cannot be represented by a Node Function artifact');
   }
-  const modules = result.output.flatMap((chunk) =>
-    chunk.type === 'chunk'
+  const modules = result.output.flatMap((chunk) => {
+    return chunk.type === 'chunk'
       ? Object.keys(chunk.modules).filter((id) => !isNodeProofCompilerModule(id))
-      : [],
-  );
+      : [];
+  });
   return new Map(
     await Promise.all(
       modules.map(async (id) => {
@@ -231,6 +235,7 @@ async function bundleNodeInstrumentation(
           throw new AuditError('Node instrumentation contains an unproved virtual module');
         const file = await realpath(id);
         const hash = originals.get(file);
+        // eslint-disable-next-line security/detect-possible-timing-attacks -- Presence of a public source digest is not a secret comparison.
         if (hash === undefined)
           throw new AuditError('Node instrumentation has no original physical source proof');
         return [file, hash] as const;
@@ -244,8 +249,8 @@ function assertNativeSelection(
   native: readonly NativeLoad[],
 ): void {
   const missing = selected.some((load) => {
-    return !native.some((original) => {
-      return (
+    return native.every((original) => {
+      return !(
         original.kind === load.kind &&
         original.importer === load.importer &&
         original.binary === load.binary
@@ -299,7 +304,7 @@ async function addNodeEdge(files: NodeArtifactFiles, work: string): Promise<void
     entries: files.input.edgeEntries,
     instrumentation: files.input.edgeInstrumentation,
   });
-  if (edge.trace.externals.some((name) => name.startsWith('cloudflare:')))
+  if (edge.trace.externals.some((name) => name.startsWith(CLOUDFLARE_IMPORT_PREFIX)))
     throw new AuditError(
       'Native Function Edge instrumentation requires unsupported platform bindings',
     );
@@ -385,9 +390,7 @@ export async function buildNodeFunction(
   return {
     spec: { runtime: 'node-container', artifact, entrypoint: 'upwind/server.mjs', abi },
     sourceMaps: await nodeSourceMaps(input, physical.files, files.files),
-    inputs: physical.files.map((file) => {
-      return { file: file.name, bytes: file.bytes.byteLength };
-    }),
+    inputs: physical.files.map((file) => ({ file: file.name, bytes: file.bytes.byteLength })),
     dependencies: {
       ...proof.dependencies,
       size: { bytes: archive.byteLength, gzipBytes: archive.byteLength },

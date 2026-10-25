@@ -49,9 +49,9 @@ async function answerFailure(
     const run: Run = input.run ?? ((work) => work());
     try {
       await run(() => onFailure(request, response));
-    } catch (failure) {
+    } catch (error_) {
       // eslint-disable-next-line no-console -- Keep the same private failure observation as the Worker bridge.
-      console.error('next-runtime: error page failed', failure);
+      console.error('next-runtime: error page failed', error_);
     }
     if (response.writableEnded) return;
   }
@@ -72,12 +72,12 @@ async function invoke(
   const run: Run = input.run ?? ((work) => work());
   if (input.status !== undefined) response.statusCode = input.status;
   try {
-    await run(() =>
-      input.handler(request, response, {
+    await run(() => {
+      return input.handler(request, response, {
         waitUntil: input.waitUntil,
         requestMeta: input.requestMeta,
-      }),
-    );
+      });
+    });
     if (input.expectNoResponse === true && !response.headersSent && !response.writableEnded) {
       response.statusCode = HTTP_NO_CONTENT;
       response.end();
@@ -179,9 +179,7 @@ class NodeBridge {
           path: '/',
           method: input.request.method,
           headers,
-          ...(changesSomething(input.request.method)
-            ? undefined
-            : { signal: input.request.signal }),
+          ...(!changesSomething(input.request.method) && { signal: input.request.signal }),
         });
         outgoing.once('error', reject);
         outgoing.once('response', (incoming) => {
@@ -234,26 +232,27 @@ interface SharedBridge {
 
 const BRIDGE_KEY = Symbol.for('upwind.node-http-bridge.v1');
 
+function isSharedBridge(value: unknown): value is SharedBridge {
+  if (value === null || typeof value !== 'object') return false;
+  return (
+    'version' in value &&
+    value.version === 1 &&
+    'invoke' in value &&
+    typeof value.invoke === 'function' &&
+    'close' in value &&
+    typeof value.close === 'function' &&
+    Object.isFrozen(value)
+  );
+}
+
 function sharedBridge(): SharedBridge {
   const existing = Object.getOwnPropertyDescriptor(globalThis, BRIDGE_KEY);
   if (existing !== undefined) {
     const value: unknown = existing.value;
-    if (
-      existing.configurable !== false ||
-      existing.writable !== false ||
-      typeof value !== 'object' ||
-      value === null ||
-      !Object.isFrozen(value) ||
-      !('version' in value) ||
-      value.version !== 1 ||
-      !('invoke' in value) ||
-      typeof value.invoke !== 'function' ||
-      !('close' in value) ||
-      typeof value.close !== 'function'
-    ) {
+    if (existing.configurable !== false || existing.writable !== false || !isSharedBridge(value)) {
       throw new Error('Conflicting Node HTTP bridge registry');
     }
-    return value as SharedBridge;
+    return value;
   }
   const instance = new NodeBridge();
   const made: SharedBridge = Object.freeze({

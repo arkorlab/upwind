@@ -14,7 +14,9 @@ describe('native physical module relocation', () => {
   let output: string;
 
   beforeEach(async () => {
-    directory = await realpath(await mkdtemp(path.join(tmpdir(), 'upwind-node-topology-')));
+    const prefix = path.join(tmpdir(), 'upwind-node-topology-');
+    const temporary = await mkdtemp(prefix);
+    directory = await realpath(temporary);
     repository = path.join(directory, 'repository');
     project = path.join(repository, 'app');
     output = path.join(directory, 'output');
@@ -128,6 +130,39 @@ describe('native physical module relocation', () => {
       path: 'project/app/node_modules/pkg',
       target: 'project/store/pkg',
     });
+  });
+
+  it.each([
+    { specifier: './addon.node', alias: 'addon.node' },
+    { specifier: './addon', alias: 'addon.node' },
+  ])(
+    'preserves a canonical-only relative binary alias: $specifier',
+    async ({ specifier, alias }) => {
+      const entry = path.join(project, 'entry.cjs');
+      const binary = path.join(project, 'build/Release/addon.node');
+      await mkdir(path.dirname(binary), { recursive: true });
+      await writeFile(binary, new Uint8Array([0, 1]));
+      await writeFile(entry, `module.exports=require(${JSON.stringify(specifier)});\n`);
+      await symlink(binary, path.join(project, alias));
+      const physical = await nodePhysicalFiles(input(entry, [entry, binary]), []);
+
+      expect(physical.links).toContainEqual({
+        path: `project/app/${alias}`,
+        target: 'project/app/build/Release/addon.node',
+      });
+    },
+  );
+
+  it('refuses a relative binary alias whose physical target is absent from the closed trace', async () => {
+    const entry = path.join(project, 'entry.cjs');
+    const binary = path.join(project, 'untraced.node');
+    await writeFile(binary, new Uint8Array([0, 1]));
+    await writeFile(entry, "module.exports=require('./addon.node');\n");
+    await symlink(binary, path.join(project, 'addon.node'));
+
+    await expect(nodePhysicalFiles(input(entry, [entry]), [])).rejects.toThrow(
+      'outside its closed trace',
+    );
   });
 
   it.each([

@@ -59,7 +59,7 @@ const PINNED_FILES: Readonly<Record<string, string>> = {
 };
 
 function record(value: unknown): Record<string, unknown> {
-  assert(
+  assert.ok(
     typeof value === 'object' && value !== null && !Array.isArray(value),
     'Expected a JSON object',
   );
@@ -77,12 +77,13 @@ function gitBlob(bytes: Buffer): string {
 
 async function inventory(directory: string, prefix = ''): Promise<string[]> {
   const files: string[] = [];
-  for (const item of await readdir(path.join(directory, prefix), { withFileTypes: true })) {
+  const entries = await readdir(path.join(directory, prefix), { withFileTypes: true });
+  for (const item of entries) {
     const name = path.posix.join(prefix, item.name);
-    assert(!item.isSymbolicLink(), 'The source fixture must not contain symlinks');
+    assert.ok(!item.isSymbolicLink(), 'The source fixture must not contain symlinks');
     if (item.isDirectory()) files.push(...(await inventory(directory, name)));
     else {
-      assert(item.isFile(), 'The source fixture must contain regular files');
+      assert.ok(item.isFile(), 'The source fixture must contain regular files');
       files.push(name);
     }
   }
@@ -95,10 +96,10 @@ async function copyFixture(source: string, target: string): Promise<void> {
     Object.keys(PINNED_FILES).toSorted(compareNames),
     'Official fixture inventory changed',
   );
-  for (const [name, expected] of Object.entries(PINNED_FILES)) {
+  for (const [name, expectedBlob] of Object.entries(PINNED_FILES)) {
     const bytes = await readFile(path.join(source, name));
     const blob = gitBlob(bytes);
-    assert.equal(blob, expected, `Official fixture source changed: ${name}`);
+    assert.equal(blob, expectedBlob, `Official fixture source changed: ${name}`);
     await mkdir(path.dirname(path.join(target, name)), { recursive: true });
     await writeFile(path.join(target, name), bytes, { flag: 'wx' });
   }
@@ -122,11 +123,12 @@ const processes = new NativeNextProcesses();
 async function prepare(source: string, directory: string, env: NodeJS.ProcessEnv): Promise<void> {
   await copyFixture(source, directory);
   const packageFile = path.join(directory, 'package.json');
-  const original = record(JSON.parse(await readFile(packageFile, 'utf8')));
-  const manager = record(JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')))[
-    'packageManager'
-  ];
-  assert(
+  const originalJson: unknown = JSON.parse(await readFile(packageFile, 'utf8'));
+  const original = record(originalJson);
+  const sdkPackage = path.join(ROOT, 'package.json');
+  const sdkJson: unknown = JSON.parse(await readFile(sdkPackage, 'utf8'));
+  const manager = record(sdkJson)['packageManager'];
+  assert.ok(
     typeof manager === 'string' && manager.startsWith(`pnpm@${PNPM_VERSION}+`),
     'SDK package manager pin changed',
   );
@@ -157,7 +159,7 @@ async function prepare(source: string, directory: string, env: NodeJS.ProcessEnv
     `${workspace}\nminimumReleaseAge: 1440\nminimumReleaseAgeExclude:\n  - next\n  - '@next/*'\nverifyDepsBeforeRun: false\nstrictPeerDependencies: true\n`,
   );
   const adapter = path.join(ROOT, 'packages/adapter/dist/index.js');
-  assert((await lstat(adapter)).isFile(), 'Build the SDK before this CI helper');
+  assert.ok((await lstat(adapter)).isFile(), 'Build the SDK before this CI helper');
   await writeFile(
     path.join(directory, 'next.config.mjs'),
     `export default {adapterPath:${JSON.stringify(adapter)}};\n`,
@@ -179,9 +181,9 @@ async function prepare(source: string, directory: string, env: NodeJS.ProcessEnv
     directory,
     { env },
   );
-  const installed = record(
-    JSON.parse(await readFile(path.join(directory, 'node_modules/next/package.json'), 'utf8')),
-  );
+  const installedFile = path.join(directory, 'node_modules/next/package.json');
+  const installedJson: unknown = JSON.parse(await readFile(installedFile, 'utf8'));
+  const installed = record(installedJson);
   assert.equal(installed['version'], NEXT_VERSION, 'The fixture installed a different Next.js');
   await processes.command(['exec', 'next', 'build'], directory, { env });
 }
@@ -192,7 +194,7 @@ async function bodyOf(response: Response): Promise<string> {
     assert.equal(response.status, HTTP_OK, 'The native Function did not answer successfully');
   }
   const reader = response.body?.getReader();
-  assert(reader !== undefined);
+  assert.ok(reader !== undefined);
   const parts: Uint8Array[] = [];
   let length = 0;
   try {
@@ -200,7 +202,7 @@ async function bodyOf(response: Response): Promise<string> {
       const part = await reader.read();
       if (part.done) break;
       length += part.value.byteLength;
-      assert(length <= MAX_BODY, 'Oversized fixture response');
+      assert.ok(length <= MAX_BODY, 'Oversized fixture response');
       parts.push(part.value);
     }
   } finally {
@@ -215,7 +217,7 @@ function request(pathname: string, data = false): Promise<Response> {
     headers: {
       'x-upwind-control-token': TOKEN,
       'x-upwind-request-url': `https://native-ci.test${pathname}`,
-      ...(data ? { 'x-nextjs-data': '1' } : undefined),
+      ...(data && { 'x-nextjs-data': '1' }),
     },
     redirect: 'manual',
     signal: AbortSignal.timeout(PROBE_MS),
@@ -224,10 +226,10 @@ function request(pathname: string, data = false): Promise<Response> {
 
 function nextData(html: string): Record<string, unknown> {
   const start = html.indexOf('<script id="__NEXT_DATA__"');
-  assert(start !== -1, 'Missing Next data script');
+  assert.ok(start !== -1, 'Missing Next data script');
   const content = html.indexOf('>', start);
   const end = html.indexOf('</script>', content);
-  assert(content !== -1 && end !== -1, 'Malformed Next data script');
+  assert.ok(content !== -1 && end !== -1, 'Malformed Next data script');
   return record(JSON.parse(html.slice(content + 1, end)));
 }
 
@@ -255,33 +257,35 @@ function expected(slug: string): PageProperties {
 }
 
 async function waitForReady(child: ChildProcess): Promise<void> {
-  let failed = false;
+  const state = { failed: false };
   child.once('error', () => {
-    failed = true;
+    state.failed = true;
   });
   const deadline = performance.now() + PROBE_MS;
   let ready = false;
-  while (performance.now() < deadline && child.exitCode === null && !failed) {
+  while (child.exitCode === null && !state.failed && performance.now() < deadline) {
     try {
       const remaining = Math.max(1, Math.ceil(deadline - performance.now()));
       const response = await fetch('http://127.0.0.1:8080/__upwind/ready', {
         headers: { 'x-upwind-control-token': TOKEN },
         signal: AbortSignal.timeout(remaining),
       });
-      const answer = record(JSON.parse(await bodyOf(response)));
+      const answerJson: unknown = JSON.parse(await bodyOf(response));
+      const answer = record(answerJson);
       ready =
         performance.now() <= deadline && response.status === HTTP_OK && answer['ready'] === true;
       if (ready) break;
     } catch {
       /* A cold Node process may not have bound its port yet. */
     }
-    await pause(Math.min(POLL_MS, Math.max(0, deadline - performance.now())));
+    const remaining = Math.max(0, deadline - performance.now());
+    await pause(Math.min(POLL_MS, remaining));
   }
-  assert(ready && !failed, 'The emitted Node Function did not become ready');
+  assert.ok(ready && !state.failed, 'The emitted Node Function did not become ready');
 }
 
 async function smoke(identity: NativeFixtureIdentity, env: NodeJS.ProcessEnv): Promise<void> {
-  assert(!processes.interrupted, 'The CI control was interrupted');
+  assert.ok(!processes.interrupted, 'The CI control was interrupted');
   const runtime = {
     v: 1,
     deploymentId: identity.deploymentId,
@@ -297,24 +301,25 @@ async function smoke(identity: NativeFixtureIdentity, env: NodeJS.ProcessEnv): P
   });
   try {
     await waitForReady(child);
-    const first = nextData(await bodyOf(await request('/blog/first')));
+    const firstResponse = await request('/blog/first');
+    const first = nextData(await bodyOf(firstResponse));
     assert.deepEqual(record(first['props'])['pageProps'], expected('first'));
     // Browser fallback fetches this exact Pages data route after receiving its initial shell.
     await bodyOf(await request('/blog/second'));
-    const second = record(
-      JSON.parse(
-        await bodyOf(
-          await request(
-            `/_next/data/${encodeURIComponent(identity.buildId)}/blog/second.json`,
-            true,
-          ),
-        ),
-      ),
+    const secondResponse = await request(
+      `/_next/data/${encodeURIComponent(identity.buildId)}/blog/second.json`,
+      true,
     );
+    const secondJson: unknown = JSON.parse(await bodyOf(secondResponse));
+    const second = record(secondJson);
     assert.deepEqual(second['pageProps'], expected('second'));
   } finally {
     await processes.stop(child);
   }
+}
+
+function cancel(): void {
+  processes.interrupt();
 }
 
 async function main(): Promise<void> {
@@ -322,29 +327,29 @@ async function main(): Promise<void> {
   assert.equal(process.platform, 'linux');
   assert.equal(process.arch, 'x64');
   assert.equal(process.versions.node, NODE_VERSION);
-  assert(
-    typeof record(record(process.report.getReport())['header'])['glibcVersionRuntime'] === 'string',
+  const report = record(process.report.getReport());
+  const reportHeader = record(report['header']);
+  assert.ok(
+    typeof reportHeader['glibcVersionRuntime'] === 'string',
     'The CI runtime must use glibc',
   );
-  assert(
+  assert.ok(
     process.env['NODE_OPTIONS'] === undefined,
     'Unset inherited Node loaders/options for this control',
   );
   const source = process.argv[2];
   const runnerTemp = process.env['RUNNER_TEMP'];
-  assert(
+  assert.ok(
     source !== undefined && runnerTemp !== undefined,
     'Pass the fixed fixture path and RUNNER_TEMP',
   );
-  assert(
+  assert.ok(
     (await lstat(BUNDLE_ROOT)).isDirectory() && (await readdir(BUNDLE_ROOT)).length === 0,
     'CI must provide an empty writable /bundle',
   );
   await writeFile(path.join(BUNDLE_ROOT, OWNER_MARKER), TOKEN, { flag: 'wx' });
-  const directory = await mkdtemp(path.join(await realpath(runnerTemp), 'upwind-native-next-'));
-  const cancel = (): void => {
-    processes.interrupt();
-  };
+  const temporaryRoot = await realpath(runnerTemp);
+  const directory = await mkdtemp(path.join(temporaryRoot, 'upwind-native-next-'));
   process.once('SIGTERM', cancel);
   process.once('SIGINT', cancel);
   try {
@@ -358,17 +363,19 @@ async function main(): Promise<void> {
     await prepare(await realpath(source), fixture, env);
     const identity = await materializeNativeArtifact(fixture, BUNDLE_ROOT, NODE_VERSION);
     await smoke(identity, env);
-    assert(!processes.interrupted, 'The CI control was interrupted');
+    assert.ok(!processes.interrupted, 'The CI control was interrupted');
   } finally {
     const closed = await processes.cleanup();
+    // eslint-disable-next-line security/detect-possible-timing-attacks -- A local cleanup ownership marker, never a remotely observable authentication check.
     if ((await readFile(path.join(BUNDLE_ROOT, OWNER_MARKER), 'utf8')) === TOKEN) {
-      for (const name of await readdir(BUNDLE_ROOT))
+      const names = await readdir(BUNDLE_ROOT);
+      for (const name of names)
         await rm(path.join(BUNDLE_ROOT, name), { recursive: true, force: true });
     }
     await rm(directory, { recursive: true, force: true });
     process.off('SIGTERM', cancel);
     process.off('SIGINT', cancel);
-    assert(closed, 'CI process group cleanup failed');
+    assert.ok(closed, 'CI process group cleanup failed');
   }
   console.log(
     JSON.stringify({

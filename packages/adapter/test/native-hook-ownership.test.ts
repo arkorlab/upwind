@@ -60,7 +60,11 @@ describe('native project instrumentation ownership', () => {
     });
     const owners = [...nativeRouteOwners(routes, loads, new Set())];
     const observedLoads = loads.map((load) => {
-      return { kind: load.kind, binary: load.binary, owners: load.owners };
+      return {
+        kind: load.kind,
+        binary: load.binary,
+        owners: load.owners,
+      };
     });
 
     expect({

@@ -12,11 +12,13 @@ import type { RuntimeBundleInput } from '../src/runtime-bundle.ts';
 import { WasmCollector } from '../src/wasm.ts';
 
 // Keep the production app bundle and audit dispatch. This fixture needs no application runtime.
-vi.mock(import('../src/runtime-bundle.ts'), () => ({
-  bundleRuntimeModule: async (input: RuntimeBundleInput) => {
-    await writeFile(input.outFile, 'export default {};\n');
-  },
-}));
+vi.mock(import('../src/runtime-bundle.ts'), () => {
+  return {
+    bundleRuntimeModule: async (input: RuntimeBundleInput) => {
+      await writeFile(input.outFile, 'export default {};\n');
+    },
+  };
+});
 
 describe('native capability dispatch by Function kind', () => {
   let directory: string;
@@ -70,7 +72,7 @@ describe('native capability dispatch by Function kind', () => {
   it.each(['middleware', 'workflow'] as const)(
     'refuses native requirements in %s with an explicit unsupported-runtime audit',
     async (kind) => {
-      const error = await buildFunction(input(kind)).catch((cause: unknown) => cause);
+      const error = await buildFunction(input(kind)).catch((error_: unknown) => error_);
 
       expect(error).toBeInstanceOf(AuditError);
       expect(error).toMatchObject({
@@ -82,7 +84,7 @@ describe('native capability dispatch by Function kind', () => {
   );
 
   it('keeps the typed automatic placement signal for an app Function only', async () => {
-    const error = await buildFunction(input('app')).catch((cause: unknown) => cause);
+    const error = await buildFunction(input('app')).catch((error_: unknown) => error_);
 
     expect(error).toBeInstanceOf(NativeFunctionRequiredError);
     expect(error).toMatchObject({
@@ -95,7 +97,7 @@ describe('native capability dispatch by Function kind', () => {
       entry,
       "exports.native=require('./addon.node'); exports.other=(name)=>require(name);\n",
     );
-    const error = await buildFunction(input('middleware')).catch((cause: unknown) => cause);
+    const error = await buildFunction(input('middleware')).catch((error_: unknown) => error_);
 
     expect(error).toBeInstanceOf(AuditError);
     expect(error).toMatchObject({ message: expect.stringContaining('bundler could not follow') });

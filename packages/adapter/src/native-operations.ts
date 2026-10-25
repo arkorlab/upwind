@@ -98,16 +98,20 @@ function namesNativeFile(value: string | undefined): boolean {
 /** Keep non-loading AST nodes off the asynchronous filesystem proof path. */
 export function isNativeOperation(node: Node, bindings: NativeBindings): boolean {
   switch (node.type) {
-    case 'ImportDeclaration':
+    case 'ImportDeclaration': {
       return typeof node.source.value === 'string' && namesNativeFile(node.source.value);
-    case 'ImportExpression':
+    }
+    case 'ImportExpression': {
       return namesNativeFile(stringOf(node.source));
-    case 'CallExpression':
+    }
+    case 'CallExpression': {
       if (namesNativeFile(required(node))) return true;
       if (node.callee.type === 'CallExpression') return isNativeLoader(required(node.callee));
       return processDlopen(node.callee, bindings) !== undefined;
-    default:
+    }
+    default: {
       return false;
+    }
   }
 }
 

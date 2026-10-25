@@ -5,7 +5,7 @@ import { identifier, type NativeBindings, required, stringOf } from './native-as
 type ProcessOrigin = 'namespace' | 'modified-namespace' | 'dlopen' | 'ambiguous';
 
 function processModule(specifier: string | undefined): boolean {
-  return ['process', 'node:process'].includes(specifier ?? '');
+  return ['node:process', 'process'].includes(specifier ?? '');
 }
 
 function propertyName(node: Extract<Node, { type: 'MemberExpression' }>): string | undefined {

@@ -73,7 +73,8 @@ function validateCapabilities(caps: unknown): void {
   if (caps['cacheRead'] !== undefined && caps['cacheWrite'] === undefined) {
     throw new Error('invalid Node runtime cache capability');
   }
-  for (const [name, url] of Object.entries(caps['services'])) {
+  const services = Object.entries(caps['services']);
+  for (const [name, url] of services) {
     if (
       !NAME.test(name) ||
       RESERVED_SERVICE_NAMES.has(name) ||

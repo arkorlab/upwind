@@ -373,7 +373,7 @@ function auditWasmLoader(
   if (patch.wasm.length === 0) {
     return;
   }
-  if (!applied.some((item) => WASM_LOADER_PATCHES.has(item.patch))) {
+  if (applied.every((item) => !WASM_LOADER_PATCHES.has(item.patch))) {
     throw new Error(
       `@stayingupwind/adapter: the ${kind} Function's entrypoints bundle WebAssembly (${patch.wasm
         .map((item) => item.chunkPath)
@@ -583,9 +583,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       ...app.trace.inputs,
       ...(edge === undefined
         ? []
-        : edge.trace.inputs.map((each) => {
-            return { ...each, edge: true as const };
-          })),
+        : edge.trace.inputs.map((each) => ({ ...each, edge: true as const }))),
     ],
   };
 }

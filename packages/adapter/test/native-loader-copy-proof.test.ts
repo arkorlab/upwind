@@ -74,14 +74,20 @@ describe('reviewed native loader physical closure', () => {
     const loaderProof = requiredLoaderSource(proof, loader);
     const files = await Promise.all(
       proof.files.map(async (source) => {
-        return { name: source.file, bytes: await readFile(source.file) };
+        return {
+          name: source.file,
+          bytes: await readFile(source.file),
+        };
       }),
     );
     const physical = { files, nameOf: (file: string) => file };
     const replaced = replacedLoaderFiles(files, loader);
     const hostSources = new Map([[loader, loaderProof.sha256]]);
     const retainedLoaders = proof.native[0]?.loaderSources?.map((source) => {
-      return { file: source.file, gitBlob: source.gitBlob };
+      return {
+        file: source.file,
+        gitBlob: source.gitBlob,
+      };
     });
 
     expect(retainedLoaders).toStrictEqual([

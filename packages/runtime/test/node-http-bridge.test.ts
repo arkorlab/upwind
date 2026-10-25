@@ -36,7 +36,7 @@ describe('real Node HTTP bridge', () => {
       onFailure: () => Promise.reject(fallbackFailure),
     });
     const body = await response.text();
-    const headers = JSON.stringify(Array.from(response.headers));
+    const headers = JSON.stringify([...response.headers]);
     await Promise.all(held);
 
     expect({

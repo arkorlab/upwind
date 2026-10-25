@@ -558,7 +558,7 @@ function problemsIn(
   }
   for (const dynamic of bundle.dynamicRequires) {
     const left = guarded.get(dynamic) ?? 0;
-    if (left > 0 && mode !== 'node') {
+    if (mode !== 'node' && left > 0) {
       guarded.set(dynamic, left - 1);
     } else if (!isAllowedDynamicLoad(dynamic, output)) {
       problems.push(`a load the bundler could not follow: ${dynamic}`);

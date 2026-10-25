@@ -187,6 +187,7 @@ describe('mixed native and Worker prerender body limits', () => {
     vi.spyOn(console, 'log').mockImplementation(vi.fn());
     vi.spyOn(console, 'warn').mockImplementation(vi.fn());
   });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -202,7 +203,7 @@ describe('mixed native and Worker prerender body limits', () => {
       const workers = vi
         .mocked(buildFunction)
         .mock.calls.map(([input]) => input)
-        .filter((input) => !input.entries.some((entry) => entry.id === '/native'));
+        .filter((input) => input.entries.every((entry) => entry.id !== '/native'));
       const first = workers[0];
       const final = workers.at(-1);
       const native = vi.mocked(buildNodeFunction).mock.calls.at(-1)?.[0];

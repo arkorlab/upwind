@@ -34,7 +34,7 @@ const PREFIX_SIZE = 155;
 const CHECKSUM_SPACE = 0x20;
 
 function record(value: unknown): Record<string, unknown> {
-  assert(
+  assert.ok(
     typeof value === 'object' && value !== null && !Array.isArray(value),
     'Expected a JSON object',
   );
@@ -42,12 +42,12 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function inside(name: unknown): string {
-  assert(
+  assert.ok(
     typeof name === 'string' && name.length > 0 && name.length <= MAX_NAME_CHARACTERS,
     'Invalid artifact name',
   );
-  assert(!name.startsWith('/') && !/[\\:\p{Cc}]/u.test(name), 'Invalid artifact path');
-  assert(
+  assert.ok(!name.startsWith('/') && !/[\\:\p{Cc}]/u.test(name), 'Invalid artifact path');
+  assert.ok(
     name.split('/').every((part) => part !== '' && part !== '.' && part !== '..'),
     'Noncanonical artifact path',
   );
@@ -70,13 +70,13 @@ function field(header: Buffer, offset: number, size: number): string {
   return (
     new TextDecoder('utf-8', { fatal: true })
       .decode(header.subarray(offset, offset + size))
-      .split('\0')[0] ?? ''
+      .split('\0', 1)[0] ?? ''
   );
 }
 
 function octal(header: Buffer, offset: number, size: number): number {
   const text = field(header, offset, size).trim();
-  assert(/^[0-7]+$/u.test(text), 'Invalid tar number');
+  assert.ok(/^[0-7]+$/u.test(text), 'Invalid tar number');
   return Number.parseInt(text, OCTAL_BASE);
 }
 
@@ -95,12 +95,11 @@ function members(bytes: Buffer): Member[] {
     );
     assert.equal(field(header, TYPE_OFFSET, 1), '0', 'Only regular tar files are accepted');
     const prefix = field(header, PREFIX_OFFSET, PREFIX_SIZE);
-    const name = inside(
-      `${prefix === '' ? '' : `${prefix}/`}${field(header, NAME_OFFSET, NAME_SIZE)}`,
-    );
-    assert(!names.has(name), 'Duplicate tar member');
+    const localName = field(header, NAME_OFFSET, NAME_SIZE);
+    const name = inside(prefix === '' ? localName : `${prefix}/${localName}`);
+    assert.ok(!names.has(name), 'Duplicate tar member');
     for (const old of names)
-      assert(
+      assert.ok(
         !name.startsWith(`${old}/`) && !old.startsWith(`${name}/`),
         'Tar file/directory conflict',
       );
@@ -115,17 +114,20 @@ function members(bytes: Buffer): Member[] {
     );
     const size = octal(header, LENGTH_OFFSET, LENGTH_SIZE);
     const mode = octal(header, MODE_OFFSET, MODE_SIZE);
-    assert(mode === FILE_MODE || mode === EXECUTABLE_MODE, 'Unexpected artifact executable bits');
-    assert(
+    assert.ok(
+      mode === FILE_MODE || mode === EXECUTABLE_MODE,
+      'Unexpected artifact executable bits',
+    );
+    assert.ok(
       Number.isSafeInteger(size) && offset + BLOCK + size <= tar.length,
       'Truncated tar member',
     );
     found.push({ name, bytes: tar.subarray(offset + BLOCK, offset + BLOCK + size), mode });
-    assert(found.length <= MAX_FILES, 'Artifact contains too many files');
+    assert.ok(found.length <= MAX_FILES, 'Artifact contains too many files');
     offset += BLOCK + Math.ceil(size / BLOCK) * BLOCK;
   }
   assert.equal(tar.length - offset, BLOCK * 2, 'Unexpected tar trailer');
-  assert(
+  assert.ok(
     tar.subarray(offset).every((byte) => byte === 0),
     'Nonzero tar trailer',
   );
@@ -133,10 +135,10 @@ function members(bytes: Buffer): Member[] {
 }
 
 async function restoreLinks(bundleRoot: string): Promise<void> {
-  const raw = record(
-    JSON.parse(await readFile(path.join(bundleRoot, 'upwind/links.json'), 'utf8')),
-  )['links'];
-  assert(Array.isArray(raw) && raw.length <= MAX_FILES, 'Invalid package links');
+  const linksFile = path.join(bundleRoot, 'upwind/links.json');
+  const linksJson: unknown = JSON.parse(await readFile(linksFile, 'utf8'));
+  const raw = record(linksJson)['links'];
+  assert.ok(Array.isArray(raw) && raw.length <= MAX_FILES, 'Invalid package links');
   const links = raw.map((value: unknown) => {
     const link = record(value);
     return { name: inside(link['path']), target: inside(link['target']) };
@@ -149,9 +151,9 @@ async function restoreLinks(bundleRoot: string): Promise<void> {
     for (const value of [link.name, link.target]) {
       const parts = value.split('/');
       for (let size = 1; size < parts.length; size += 1)
-        assert(!names.has(parts.slice(0, size).join('/')), 'Nested package aliases');
+        assert.ok(!names.has(parts.slice(0, size).join('/')), 'Nested package aliases');
     }
-    assert(!names.has(link.target), 'Package alias chain');
+    assert.ok(!names.has(link.target), 'Package alias chain');
     await assert.rejects(lstat(path.join(bundleRoot, link.name)), { code: 'ENOENT' });
   }
   for (const link of links) {
@@ -166,15 +168,15 @@ export async function materializeNativeArtifact(
   bundleRoot: string,
   nodeVersion: string,
 ): Promise<NativeFixtureIdentity> {
-  const bundle = deploymentBundleSchema.parse(
-    JSON.parse(await readFile(path.join(directory, '.arkor/bundle.json'), 'utf8')),
-  );
+  const bundleFile = path.join(directory, '.arkor/bundle.json');
+  const bundleJson: unknown = JSON.parse(await readFile(bundleFile, 'utf8'));
+  const bundle = deploymentBundleSchema.parse(bundleJson);
   const native = appFunctions(bundle).filter(([, spec]) => isNodeContainerFunction(spec));
   assert.equal(native.length, 1, 'The fixed Pages fixture must emit one native Function');
   const selected = native[0];
-  assert(selected !== undefined);
+  assert.ok(selected !== undefined);
   const [functionName, spec] = selected;
-  assert(isNodeContainerFunction(spec));
+  assert.ok(isNodeContainerFunction(spec));
   assert.deepEqual(spec.abi, {
     nodeVersion,
     nodeAbi: process.versions.modules,
@@ -196,20 +198,17 @@ export async function materializeNativeArtifact(
     await writeFile(target, member.bytes, { flag: 'wx', mode: member.mode });
   }
   await restoreLinks(bundleRoot);
-  const metadata = record(
-    JSON.parse(await readFile(path.join(bundleRoot, 'upwind/native.json'), 'utf8')),
-  )['modules'];
-  assert(Array.isArray(metadata) && metadata.length > 0, 'No selected native binary');
+  const metadataFile = path.join(bundleRoot, 'upwind/native.json');
+  const metadataJson: unknown = JSON.parse(await readFile(metadataFile, 'utf8'));
+  const metadata = record(metadataJson)['modules'];
+  assert.ok(Array.isArray(metadata) && metadata.length > 0, 'No selected native binary');
   for (const item of metadata) {
     const entry = record(item);
     const file = inside(entry['path']);
-    assert(file.endsWith('.node'));
-    assert.equal(
-      createHash('sha256')
-        .update(await readFile(path.join(bundleRoot, file)))
-        .digest('hex'),
-      entry['sha256'],
-    );
+    assert.ok(file.endsWith('.node'));
+    const binaryFile = path.join(bundleRoot, file);
+    const binary = await readFile(binaryFile);
+    assert.equal(createHash('sha256').update(binary).digest('hex'), entry['sha256']);
   }
   return {
     deploymentId: bundle.deploymentId,

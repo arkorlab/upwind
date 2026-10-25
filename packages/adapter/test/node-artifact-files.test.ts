@@ -47,7 +47,9 @@ describe('physical Node artifact byte and mode preservation', () => {
     { label: 'non-UTF-8 comment bytes', prefix: [0x2f, 0x2f, 0x20, 0xff] },
   ])('preserves $label when no Next patch changes the source', ({ prefix }) => {
     const suffix = new TextEncoder().encode('\nmodule.exports=42;\n');
-    const bytes = new Uint8Array([...prefix, ...suffix]);
+    const bytes = new Uint8Array(prefix.length + suffix.byteLength);
+    bytes.set(prefix);
+    bytes.set(suffix, prefix.length);
     const expected = new Uint8Array(bytes);
     const original = { name: 'project/.next/server/chunks/data.js', bytes, executable: true };
     const files = fixture([original]);
@@ -59,7 +61,7 @@ describe('physical Node artifact byte and mode preservation', () => {
 
   it('retains the BOM when a real cache-write patch changes a copied Next file', () => {
     const source =
-      '\uFEFFconst key=`cache-set-${id}`;cache[key]=previous.then(()=>write).finally(done);const warning="Failed to set fetch cache";';
+      '\u{FEFF}const key=`cache-set-${id}`;cache[key]=previous.then(()=>write).finally(done);const warning="Failed to set fetch cache";';
     const bytes = new TextEncoder().encode(source);
     const original = { name: 'project/.next/server/chunks/cache.js', bytes };
     const files = fixture([original]);

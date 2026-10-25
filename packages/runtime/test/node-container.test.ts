@@ -16,9 +16,11 @@ function internal(
   path: string,
   init: RequestInit = {},
 ): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('x-upwind-control-token', TOKEN);
   return fetch(`http://127.0.0.1:${server.port}${path}`, {
     ...init,
-    headers: { 'x-upwind-control-token': TOKEN, ...init.headers },
+    headers,
   });
 }
 
@@ -37,13 +39,11 @@ describe('node container HTTP service', () => {
       port: 0,
       entry: {
         fetch: (request, env, context) => {
-          const dump = JSON.stringify(env) ?? '';
+          const dump = JSON.stringify(env);
           observed.push({
             url: request.url,
             host: request.headers.get('host'),
-            internal: Array.from(request.headers.keys()).filter((name) =>
-              name.startsWith('x-upwind-'),
-            ),
+            internal: [...request.headers.keys()].filter((name) => name.startsWith('x-upwind-')),
             props: context.props,
             bootstrapVisible: dump.includes('ARKOR_NODE_RUNTIME'),
             tokenVisible: dump.includes(TOKEN),
@@ -150,8 +150,8 @@ describe('node container HTTP service', () => {
     const server = await startNodeContainer({
       port: 0,
       entry: {
-        fetch: () =>
-          Promise.resolve(
+        fetch: () => {
+          return Promise.resolve(
             new Response(
               new ReadableStream<Uint8Array>({
                 start: (controller) => {
@@ -160,7 +160,8 @@ describe('node container HTTP service', () => {
                 cancel: canceled,
               }),
             ),
-          ),
+          );
+        },
       },
     });
     try {

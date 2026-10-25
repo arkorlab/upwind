@@ -16,7 +16,7 @@ export class NodeLifetime {
     const settled = (): void => {
       this.#settled(promise);
     };
-    // eslint-disable-next-line promise/catch-or-return, unicorn/prefer-await -- Both outcomes settle lifetime without blocking the streaming response.
+    // eslint-disable-next-line promise/catch-or-return, unicorn/prefer-await, unicorn/prefer-then-catch -- Both outcomes settle lifetime exactly once without blocking the streaming response.
     promise.then(settled, settled);
   };
 

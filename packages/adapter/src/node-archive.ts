@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-magic-numbers -- USTAR field offsets/lengths, compression and byte limits are named binary protocol constants. */
 import { gzipSync } from 'node:zlib';
 
 import { compareCodeUnits } from '@stayingupwind/core/util';

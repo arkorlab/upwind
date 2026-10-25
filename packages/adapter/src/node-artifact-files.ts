@@ -48,9 +48,7 @@ function wasmSource(module: BuildFunctionInput['wasm']['modules'][number]): stri
   const variable = `m_${module.sha256}`;
   const relative = jsLiteral(`./wasm/${module.sha256}.wasm`);
   const globals = module.globals
-    .map((global) => {
-      return `globalThis[${jsLiteral(global)}]??=${variable};`;
-    })
+    .map((global) => `globalThis[${jsLiteral(global)}]??=${variable};`)
     .join('');
   return `const ${variable}=new WebAssembly.Module(readFileSync(new URL(${relative},import.meta.url)));${globals}`;
 }

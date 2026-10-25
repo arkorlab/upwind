@@ -70,7 +70,7 @@ describe('external rewrites over real Node HTTP', () => {
         const target = new URL(`http://127.0.0.1:${port}/target?q=1`);
         const request = new Request('https://incoming.example/source', {
           method,
-          ...(body === undefined ? undefined : { body }),
+          ...(body !== undefined && { body }),
           headers: { host: 'incoming.example', [MIDDLEWARE_DONE_HEADER]: '1', 'x-custom': 'kept' },
         });
         const response = await externalRewrite(request, target);

@@ -17,7 +17,7 @@ const HOP_HEADERS = new Set([
 
 /** Snapshot names before deletion so consecutive internal headers are all removed. */
 export function removeNodeControlHeaders(headers: Headers): void {
-  const names = Array.from(headers.keys());
+  const names = [...headers.keys()];
   for (const name of names) {
     if (name.startsWith('x-upwind-')) headers.delete(name);
   }
@@ -32,7 +32,8 @@ export function messageHeaders(message: IncomingMessage): Headers {
       headers.append(name, value);
     }
   }
-  for (const name of (message.headers.connection ?? '').split(',')) {
+  const connections = (message.headers.connection ?? '').split(',');
+  for (const name of connections) {
     if (name.trim() !== '') headers.delete(name.trim());
   }
   return headers;
