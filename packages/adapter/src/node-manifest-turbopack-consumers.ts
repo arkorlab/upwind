@@ -30,6 +30,7 @@ import {
   type NodeManifestRuntimeCohort,
   type NodeManifestRuntimeProfile,
 } from './node-manifest-runtime-cohort.ts';
+import { nodeManifestRuntimeLookupTables } from './node-manifest-runtime-tables.ts';
 import {
   nodeManifestCoalescedImports,
   nodeManifestTemplateImports,
@@ -232,7 +233,7 @@ class TurbopackConsumers {
   }
 
   private assertPhysicalCallers(): void {
-    const tables = new Set([...this.factories.values()].map((factory) => factory.physicalId));
+    const tables = nodeManifestRuntimeLookupTables(this.allGraphs);
     const runtimes = new Set(this.allGraphs.map((graph) => graph.runtimeId));
     const boots = physicalBoots(this.graphs, this.callerProof);
     for (const source of this.input.sources) {

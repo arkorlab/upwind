@@ -41,6 +41,7 @@ interface BootIdentity {
   readonly sha256: string;
   readonly runtimeId: string;
   readonly imports: string;
+  readonly chunks: readonly string[];
 }
 interface LookupEdge {
   readonly source: string;
@@ -211,6 +212,7 @@ export function certifyNodeManifestRuntimeCohort(input: {
         sha256: source.source.sha256,
         runtimeId: runtime.id,
         imports: JSON.stringify(source.imports),
+        chunks: Object.freeze([...boot.chunks]),
       }),
     );
   }
@@ -275,6 +277,15 @@ export function nodeManifestRuntimeCohortLookup(
     (known) =>
       known.source === source && known.target === edge.target && known.specifier === edge.specifier,
   );
+}
+
+/** Every source-bound owned boot contributes its actual initial installation paths. */
+export function nodeManifestRuntimeCohortBoots(
+  cohort: NodeManifestRuntimeCohort,
+  sources: readonly NodeManifestTurbopackGraphFile[],
+): readonly BootIdentity[] {
+  nodeManifestRuntimeCohortSources(cohort, sources);
+  return cohort.boots;
 }
 
 /** Generic owned boot graphs carry no route/normalization terminal authority. */

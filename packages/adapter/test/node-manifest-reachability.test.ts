@@ -171,6 +171,14 @@ function activate(
 }
 
 describe('closed static manifest reachability', () => {
+  it('groups merged registration aliases only within their actual runtime Map', () => {
+    const own = { ...factory('entry'), physicalId: 'shared-table', runtimeId: 'pages-runtime' };
+    const alias = { ...own, id: 'same-runtime-alias' };
+    const other = { ...own, id: 'other-runtime-alias', runtimeId: 'app-runtime' };
+
+    expect(reachable([own, alias, other])).toStrictEqual(['entry', 'same-runtime-alias']);
+  });
+
   it('seeds every evaluation, export and independently certified caller before following imports', () => {
     const factories = [
       factory('entry', [{ specifier: 'child', target: 'child' }]),

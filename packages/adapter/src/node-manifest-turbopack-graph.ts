@@ -13,6 +13,7 @@ import {
   nodeManifestRuntimeCohortSources,
   type NodeManifestRuntimeCohort,
 } from './node-manifest-runtime-cohort.ts';
+import { nodeManifestRuntimeTables } from './node-manifest-runtime-tables.ts';
 import { assertTurbopackAsyncGraph } from './node-manifest-turbopack-async-graph.ts';
 import { assertTurbopackCacheOwners } from './node-manifest-turbopack-cache.ts';
 import {
@@ -48,6 +49,7 @@ export interface NodeManifestTurbopackSealedEntry {
 }
 export interface NodeManifestTurbopackGraphFactory {
   readonly id: string;
+  readonly runtimeId?: string;
   readonly physicalId: string;
   readonly projection: NodeManifestTurbopackProjection;
   readonly imports: readonly { readonly specifier: string; readonly target: string }[];
@@ -60,6 +62,8 @@ export interface NodeManifestTurbopackBootGraph {
   readonly initialChunks: readonly string[];
   readonly factories: readonly NodeManifestTurbopackGraphFactory[];
   readonly runtime: NodeManifestTurbopackGraphFile;
+  /** Full lookup inventory for physical caller checks, including uninstalled table targets. */
+  readonly lookupTables?: readonly string[];
   /** Topology alone is never a manifest exemption or an SDK normalization terminal. */
   readonly requiresReviewedRuntime: true;
 }
@@ -253,8 +257,9 @@ function resolved(source: NodeManifestTurbopackGraphFile, specifier: string): st
 }
 
 /** Metadata-only identity; it is never registered as a bundler or physical source module. */
-function factoryId(physical: string, id: NodeManifestTurbopackModuleId): string {
-  return `${physical}#${turbopackModuleSpecifier(id)}`;
+function factoryId(physical: string, id: NodeManifestTurbopackModuleId, runtime?: string): string {
+  const owner = runtime === undefined ? physical : JSON.stringify([runtime, physical]);
+  return `${owner}#${turbopackModuleSpecifier(id)}`;
 }
 
 function runtimeTables(
@@ -391,9 +396,15 @@ export function nodeManifestTurbopackBootGraph(input: {
     if (runtimeIds.has(target.id)) refuse('runtime used as a factory table');
     return target.id;
   });
-  // ctx.l can load a deferred table not present among initial R.c calls. Close the
-  // entire rewritten runtime table, not just the entry's initial loading cohort.
-  const tables = runtimeTables(runtime, sources, runtimeIds, input.runtimeCohort);
+  const lookup = runtimeTables(runtime, sources, runtimeIds, input.runtimeCohort);
+  const tables = nodeManifestRuntimeTables({
+    distDir: input.distDir,
+    runtime,
+    sources: input.sources,
+    tables: lookup,
+    runtimeIds,
+    cohort: input.runtimeCohort,
+  });
   const factories = factoryRecords(tables);
   assertTurbopackCacheOwners([...factories.values()], new Set(factories.keys()));
   assertTurbopackAsyncGraph({ distDir: input.distDir, tables, factories });
@@ -401,7 +412,11 @@ export function nodeManifestTurbopackBootGraph(input: {
   const targetOf = (id: NodeManifestTurbopackModuleId): string => {
     const target = factories.get(id);
     if (target === undefined) return refuse('unregistered module dependency');
-    const logical = factoryId(target.physical.id, id);
+    const logical = factoryId(
+      target.physical.id,
+      id,
+      input.runtimeCohort === undefined ? undefined : runtime.id,
+    );
     if (sources.has(logical)) refuse('factory metadata identity collision');
     const previous = logicalIds.get(logical);
     if (previous !== undefined && previous !== id) refuse('factory logical identity collision');
@@ -411,6 +426,7 @@ export function nodeManifestTurbopackBootGraph(input: {
   const modules = [...factories].map(([id, factory]) => {
     return {
       id: targetOf(id),
+      runtimeId,
       physicalId: factory.physical.id,
       projection: factory.projection,
       imports: factory.projection.imports.map((edge) => {
@@ -440,6 +456,7 @@ export function nodeManifestTurbopackBootGraph(input: {
     initialChunks,
     factories: modules,
     runtime,
+    lookupTables: Object.freeze(lookup.map((table) => table.id)),
     requiresReviewedRuntime: true,
   };
 }

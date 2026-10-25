@@ -38,6 +38,7 @@ function closedFactories(reached: readonly string[]): NodeManifestReachabilityRe
 
 function ownerOf(factory: NodeManifestTurbopackGraphFactory): string {
   return JSON.stringify([
+    factory.runtimeId,
     factory.physicalId,
     factory.projection.original.sha256,
     factory.projection.factory.start,

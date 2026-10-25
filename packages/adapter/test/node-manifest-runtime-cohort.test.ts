@@ -236,7 +236,15 @@ describe('owned mixed runtime cohort', () => {
     const input = edit(await fixture(), API, (code) => `unknown();${code}`);
     const owned = { ...input, inventory: await inventory(input.sources) };
 
-    expect(() => prepare(owned)).toThrow('Unproved Next.js');
+    const prepared = prepare(owned);
+
+    expect(prepared.allGraphs.map((graph) => graph.runtimeId)).not.toContain(API_RUNTIME);
+    expect(
+      prepared.allGraphs.flatMap((graph) => graph.factories.map((factory) => factory.physicalId)),
+    ).not.toContain(API_RUNTIME);
+    await expect(proveNodeManifestTurbopackConsumers(await pages(owned))).rejects.toThrow(
+      'unknown physical factory-table caller',
+    );
   });
 
   it.each(['body', 'prefix'] as const)('refuses a changed other-kind runtime %s', async (mode) => {
@@ -292,7 +300,16 @@ describe('owned mixed runtime cohort', () => {
       },
     ];
 
-    expect(() => prepare({ ...input, sources })).toThrow('Unproved Next.js');
+    const prepared = prepare({ ...input, sources });
+
+    expect(prepared.cohort?.runtimes.map((identity) => identity.id)).not.toContain(file);
+    expect(prepared.allGraphs.flatMap((graph) => graph.lookupTables ?? [])).toContain(file);
+    expect(
+      prepared.allGraphs.flatMap((graph) => graph.factories.map((factory) => factory.physicalId)),
+    ).not.toContain(file);
+    await expect(
+      proveNodeManifestTurbopackConsumers(await pages({ ...input, sources })),
+    ).rejects.toThrow('unknown physical factory-table caller');
   });
 
   it('requires the exact absolute compiler lookup edge between reviewed runtime sources', async () => {
@@ -349,7 +366,7 @@ describe('owned mixed runtime cohort', () => {
     const owned = { ...input, inventory: await inventory(input.sources) };
 
     await expect(proveNodeManifestTurbopackConsumers(await pages(owned))).rejects.toThrow(
-      'additional runtime caller consumes protected route authority',
+      'consumer without a sealed route',
     );
   });
 
