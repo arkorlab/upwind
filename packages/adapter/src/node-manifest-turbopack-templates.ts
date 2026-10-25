@@ -307,7 +307,13 @@ function importToken(node: Node, context: Context): string | undefined {
   if (beneath(context.template.root, imported.file) !== undefined)
     return nextToken(imported.file, imported.sha256, context);
   const slot = slotOf(node, context);
-  return slot === undefined ? refuse('unrecognized external import') : `slot:${slot}`;
+  if (slot === undefined) {
+    const projection = context.input.projection;
+    refuse(
+      `unrecognized external import; registration ${projection.original.sha256}:${projection.factory.start}-${projection.factory.end}; inspection ${node.start}-${node.end}`,
+    );
+  }
+  return `slot:${slot}`;
 }
 function strict(node: unknown): boolean {
   return (
