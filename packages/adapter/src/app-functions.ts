@@ -28,7 +28,7 @@ import { NativeFunctionRequiredError } from './native-loads.ts';
 import type { NodeBuiltFunction } from './node-function.ts';
 import { type BodiesLeftOut, withinTheLimit } from './page-body-layout.ts';
 import type { PatchContext } from './patches/index.ts';
-import type { PlanBudget } from './plan.ts';
+import { appFunctionLimit, type PlanBudget } from './plan.ts';
 import { sameChunks } from './same-chunks.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
 import {
@@ -413,7 +413,7 @@ export async function appFunctionsOf<
   return withinTheLimit(context, async (layout, weighOnly): Promise<AppFunctions<M>> => {
     const selected = { ...context, ...layout };
     try {
-      return await layOutAppFunctions(selected, runtimeManifest, budget, weighOnly);
+      return await layOutAppFunctions(selected, runtimeManifest, budget, { weighOnly });
     } catch (error) {
       if (!(error instanceof NativeFunctionRequiredError)) throw error;
       return nativeFunctionLayout(selected, runtimeManifest, {
@@ -440,8 +440,13 @@ export async function layOutAppFunctions<
   context: FunctionsContext,
   runtimeManifest: M,
   budget: PlanBudget | undefined,
-  weighOnly: boolean,
+  options: {
+    readonly weighOnly: boolean;
+    readonly reservedFunctions?: number | undefined;
+  },
 ): Promise<AppFunctions<M, BuiltFunction>> {
+  appFunctionLimit(options.reservedFunctions);
+  const { weighOnly } = options;
   const single = await buildAppFunction(
     context,
     runtimeManifestJson(runtimeManifest),
@@ -479,6 +484,7 @@ export async function layOutAppFunctions<
     repoRoot: ctx.repoRoot,
     distDir: ctx.distDir,
     budget,
+    reservedFunctions: options.reservedFunctions,
   });
   if (plan.length < 2) {
     console.warn(

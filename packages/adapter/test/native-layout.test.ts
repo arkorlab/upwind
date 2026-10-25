@@ -1,8 +1,131 @@
-import { describe, expect, it } from 'vitest';
+import { isNodeContainerFunction, MAX_APP_FUNCTIONS } from '@stayingupwind/core/bundle';
+import { compareCodeUnits } from '@stayingupwind/core/util';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { RouteCode } from '../src/collect.ts';
-import { nativeRouteOwners } from '../src/native-layout.ts';
+import { layOutAppFunctions, type FunctionsContext } from '../src/app-functions.ts';
+import { BlobStore } from '../src/blobs.ts';
+import type { BuildContext, RouteCode } from '../src/collect.ts';
+import { auditFunctionSize } from '../src/dependencies.ts';
+import { buildFunction, type BuildFunctionInput, type BuiltFunction } from '../src/function.ts';
+import { nativeFunctionLayout, nativeRouteOwners } from '../src/native-layout.ts';
 import type { NativeLoad } from '../src/native-loads.ts';
+import { buildNodeFunction, type NodeBuiltFunction } from '../src/node-function.ts';
+
+vi.mock(import('../src/function.ts'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, buildFunction: vi.fn<typeof actual.buildFunction>() };
+});
+vi.mock(import('../src/node-function.ts'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, buildNodeFunction: vi.fn<typeof actual.buildNodeFunction>() };
+});
+
+const KIB = 1024;
+const WORKER_ROUTE_BYTES = 100 * KIB;
+const BUDGET = { maxBytes: 16 * KIB * KIB, maxCodeBytes: 150 * KIB };
+
+function dependencies(bytes: number): BuiltFunction['dependencies'] {
+  return {
+    buildOutput: [],
+    packages: {},
+    other: [],
+    externals: [],
+    stubs: [],
+    patches: [],
+    dynamicRequires: [],
+    wasmModules: [],
+    modules: [],
+    size: { bytes, gzipBytes: 0 },
+  };
+}
+
+/** Inert code weights use the real split planner; no native bytes or handler are executed. */
+function worker(input: BuildFunctionInput): Promise<BuiltFunction> {
+  const bytes = input.entries.length * WORKER_ROUTE_BYTES;
+  const spec: BuiltFunction['spec'] = {
+    mainModule: 'app.cjs',
+    modules: [
+      {
+        name: 'app.cjs',
+        type: 'commonjs',
+        blob: { sha256: '0'.repeat(64), byteLength: bytes, contentType: 'text/javascript' },
+      },
+    ],
+    compatibilityDate: '2026-09-15',
+    compatibilityFlags: [],
+  };
+  const own = dependencies(bytes);
+  auditFunctionSize(
+    input.name ?? 'app',
+    { modules: spec.modules, size: own.size },
+    input.deferSizeAudit === true,
+  );
+  return Promise.resolve({
+    spec,
+    dependencies: own,
+    sourceMaps: [],
+    inputs: input.entries.map((entry) => ({ file: entry.filePath, bytes: WORKER_ROUTE_BYTES })),
+  });
+}
+
+function node(): Promise<NodeBuiltFunction> {
+  return Promise.resolve({
+    spec: {
+      runtime: 'node-container',
+      artifact: { sha256: 'f'.repeat(64), byteLength: 1, contentType: 'application/gzip' },
+      entrypoint: 'upwind/server.mjs',
+      abi: {
+        nodeVersion: '24.22.1',
+        nodeAbi: '137',
+        platform: 'linux',
+        arch: 'x64',
+        libc: 'glibc',
+      },
+    },
+    dependencies: dependencies(1),
+    sourceMaps: [],
+    inputs: [],
+  });
+}
+
+function context(routes: RouteCode[]): FunctionsContext {
+  return {
+    // The mocked builders and real planner read only these build-context fields.
+    ctx: {
+      projectDir: '/project',
+      repoRoot: '/project',
+      distDir: '/project/.next',
+      config: { basePath: '' },
+    } as unknown as BuildContext,
+    outDir: '/project/.arkor',
+    blobs: new BlobStore('/project/.arkor'),
+    cacheHostModule: undefined,
+    sourceMaps: undefined,
+    keptMaps: undefined,
+    manifests: [],
+    hook: { file: undefined, chunks: [], wasm: [], assets: {} },
+    cacheHandlers: undefined,
+    middleware: { output: undefined, node: [], edge: [], chunks: [], wasm: [] },
+    modules: routes.flatMap((entry) => (entry.module === undefined ? [] : [entry.module])),
+    chunks: [],
+    wasm: [],
+    edgeEntries: [],
+    routes,
+    shipped: [],
+    staticBlobs: [],
+    files: { app: [], middleware: [] },
+    workflowSdk: false,
+    previewData: false,
+  };
+}
+
+function manifest(routes: RouteCode[]) {
+  return {
+    v: 3,
+    entrypoints: routes.map(({ id }) => ({ id, pathname: id, kind: 'app-route' as const })),
+    prerenders: [],
+  };
+}
 
 function route(id: string, kind: RouteCode['kind'] = 'app-route', file = id): RouteCode {
   return {
@@ -67,4 +190,65 @@ describe('native Function ownership', () => {
       'unknown Function owner',
     );
   });
+});
+
+describe('native Function reserved layout', () => {
+  beforeEach(() => {
+    vi.mocked(buildFunction).mockReset().mockImplementation(worker);
+    vi.mocked(buildNodeFunction).mockReset().mockImplementation(node);
+  });
+
+  it('replans exactly32 Worker clusters into31 before adding one sealed native owner', async () => {
+    const workers = Array.from({ length: MAX_APP_FUNCTIONS }, (_, at) =>
+      route(`/worker-${String(at).padStart(2, '0')}`),
+    );
+    const routes = [...workers, route('/native')];
+    const built = await nativeFunctionLayout(context(routes), manifest(routes), {
+      budget: BUDGET,
+      loads: load('/native'),
+      weighOnly: false,
+    });
+    const finalWorkers = vi
+      .mocked(buildFunction)
+      .mock.calls.slice(-(MAX_APP_FUNCTIONS - 1))
+      .map(([input]) => input.entries.map((entry) => entry.id));
+
+    expect(built.built).toHaveLength(MAX_APP_FUNCTIONS);
+    expect(
+      built.built
+        .filter((item) => isNodeContainerFunction(item.built.spec))
+        .map((item) => item.name),
+    ).toStrictEqual([`app-${MAX_APP_FUNCTIONS}`]);
+    expect(finalWorkers.flat().toSorted(compareCodeUnits)).toStrictEqual(
+      workers.map((entry) => entry.id),
+    );
+    expect(finalWorkers.filter((ids) => ids.length === 2)).toHaveLength(1);
+    expect(
+      vi
+        .mocked(buildNodeFunction)
+        .mock.calls.map(([input]) => input.entries.map((entry) => entry.id)),
+    ).toStrictEqual([['/native']]);
+    expect(built.runtimeManifest.entrypoints).toContainEqual({
+      id: '/native',
+      pathname: '/native',
+      kind: 'app-route',
+      function: `app-${MAX_APP_FUNCTIONS}`,
+    });
+  });
+
+  it.each([-1, MAX_APP_FUNCTIONS, 1.5, NaN, Infinity])(
+    'refuses invalid reserved count %s before even an unsplit Worker build',
+    async (reservedFunctions) => {
+      const routes = [route('/worker')];
+
+      await expect(
+        layOutAppFunctions(context(routes), manifest(routes), undefined, {
+          weighOnly: false,
+          reservedFunctions,
+        }),
+      ).rejects.toThrow(RangeError);
+
+      expect(buildFunction).not.toHaveBeenCalled();
+    },
+  );
 });

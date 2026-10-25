@@ -109,12 +109,10 @@ export async function nativeFunctionLayout<
     manifests: pieces.manifests,
     shipped: context.shipped.filter((blob) => carriesBlob(blob, workerIds, known)),
   };
-  const planned = await layOutAppFunctions(
-    workerContext,
-    manifest,
-    options.budget,
-    options.weighOnly,
-  );
+  const planned = await layOutAppFunctions(workerContext, manifest, options.budget, {
+    weighOnly: options.weighOnly,
+    reservedFunctions: 1,
+  });
   if (planned.built.length + 1 > MAX_APP_FUNCTIONS)
     throw new AuditError('Native Function placement exceeds the app Function limit');
   const name = `app-${planned.built.length + 1}`;
