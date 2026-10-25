@@ -234,11 +234,13 @@ function assertStrict(fn: Node, original: Original): void {
   }
   refuse('original helper strictness');
 }
-function assertCaptures(fn: Node, original: Original): void {
+function helperScopeOffset(fn: Node, original: Original): number {
   const found = original.parents.get(fn);
-  const scope = found?.scopes.at(-1);
-  if (scope === undefined) refuse('helper scope');
-  const offset = found.scopes.length - 1;
+  if (found === undefined || found.scopes.at(-1) === undefined) return refuse('helper scope');
+  return found.scopes.length - 1;
+}
+function assertCaptures(fn: Node, original: Original): void {
+  const offset = helperScopeOffset(fn, original);
   for (const visit of original.visits) {
     const { node } = visit;
     if (node.start < fn.start || node.end > fn.end || !identifier(node) || !reference(visit))
@@ -252,12 +254,13 @@ function assertCaptures(fn: Node, original: Original): void {
   }
 }
 function outerCommonJs(visit: Visit, original: Original): boolean {
-  if (!identifier(visit.node) || !reference(visit)) return false;
-  const bound = bindingScope(visit.node.name, visit.scopes);
+  const { node } = visit;
+  if (!identifier(node) || !reference(visit)) return false;
+  const bound = bindingScope(node.name, visit.scopes);
   const commonJs = listOf(original.factory, 'params').slice(1).filter(identifier);
   return (
-    (bound === original.scope && commonJs.some((param) => param.name === visit.node.name)) ||
-    (bound === undefined && ['exports', 'module'].includes(visit.node.name))
+    (bound === original.scope && commonJs.some((param) => param.name === node.name)) ||
+    (bound === undefined && ['exports', 'module'].includes(node.name))
   );
 }
 function allowedHelperReference(visit: Visit, fn: Node, selector: Node): boolean {
