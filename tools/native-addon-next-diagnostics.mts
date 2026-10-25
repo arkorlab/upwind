@@ -39,7 +39,7 @@ function safeName(name: string): boolean {
     !name.startsWith('.') &&
     !name.includes('/') &&
     !name.includes('\\') &&
-    [...name].every((character) => character >= ' ' && character !== '\u{7F}')
+    !/\p{Cc}/u.test(name)
   );
 }
 
