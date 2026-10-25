@@ -28,6 +28,7 @@ import {
   turbopackModuleId,
   turbopackModuleSpecifier,
 } from './node-manifest-turbopack-values.ts';
+import { escapeContext, unboundTurbopackRequire } from './node-manifest-unbound-require.ts';
 export { turbopackModuleId, turbopackModuleSpecifier } from './node-manifest-turbopack-values.ts';
 import type {
   NodeManifestTurbopackExports,
@@ -58,11 +59,6 @@ function refuse(reason: string): never {
   throw new AuditError(
     `Unproved Next.js Turbopack manifest ${reason}; refusing native publication`,
   );
-}
-
-function escapedContextMethod(name: string | undefined, parent: Node | undefined): never {
-  const label = name !== undefined && /^[a-zA-Z]$/u.test(name) ? name : 'other';
-  return refuse(`context method escape (${label}; ${parent?.type ?? 'missing'})`);
 }
 
 class FactoryProjection {
@@ -350,6 +346,15 @@ class FactoryProjection {
   }
 
   private specialOperation(member: Node, visit: Visit, name: string | undefined): boolean {
+    const unbound = unboundTurbopackRequire(visit, {
+      mode: this.mode,
+      parents: this.parents,
+      context: { name: this.context, scope: this.scope },
+    });
+    if (unbound !== undefined) {
+      this.imports.set(unbound.call, unbound.dependency);
+      return true;
+    }
     if (this.async?.operation(member, visit) === true) return true;
     if (name === 'g' && this.mode === 'dependencies') {
       assertGlobalContextRead(member, visit, this.parents);
@@ -371,7 +376,7 @@ class FactoryProjection {
     if (this.specialOperation(member, visit, name)) return;
     const call = this.parents.get(member)?.parent;
     if (call?.type !== 'CallExpression' || call['callee'] !== member || call['optional'] === true)
-      escapedContextMethod(name, call);
+      escapeContext(name, call);
     switch (name) {
       case 'i':
       case 'r': {
@@ -438,7 +443,7 @@ class FactoryProjection {
     }
   }
 
-  private projectClearChunkCache(): void {
+  private projectRuntimeScaffolds(): void {
     if (this.mode !== 'dependencies') return;
     const clear = nodeManifestClearProjection({
       body: this.body,
@@ -446,15 +451,12 @@ class FactoryProjection {
       parents: this.parents,
       context: { name: this.context, scope: this.scope },
     });
-    if (clear === undefined) return;
-    this.edit(clear.assignment, 'void 0');
-    for (const member of clear.members) this.clearMembers.add(member);
-    for (const node of clear.references) this.allowedContext.add(node);
-    this.normalizedGlobal = true;
-  }
-
-  private projectAsyncLoader(): void {
-    if (this.mode !== 'dependencies') return;
+    if (clear !== undefined) {
+      this.edit(clear.assignment, 'void 0');
+      for (const member of clear.members) this.clearMembers.add(member);
+      for (const node of clear.references) this.allowedContext.add(node);
+      this.normalizedGlobal = true;
+    }
     this.async = new TurbopackAsyncProjection({
       body: this.body,
       visits: this.visits,
@@ -468,8 +470,7 @@ class FactoryProjection {
   project(): NodeManifestTurbopackProjection {
     this.assertCommonJsBindings();
     this.cacheInitializers();
-    this.projectClearChunkCache();
-    this.projectAsyncLoader();
+    this.projectRuntimeScaffolds();
     for (const visit of this.visits) this.operation(visit);
     const originalImports = originalTurbopackImports(this.visits, this.parents, this.imports);
     this.forwardNamespaces();
