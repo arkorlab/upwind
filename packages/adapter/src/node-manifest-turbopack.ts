@@ -32,6 +32,10 @@ export interface NodeManifestTurbopackProjection {
   readonly source: NodeManifestTurbopackSource;
   readonly imports: readonly NodeManifestTurbopackImport[];
   readonly exports: NodeManifestTurbopackExports;
+  readonly boundRuntimeInputs: readonly {
+    readonly kind: 'require' | 'loadChunk';
+    readonly identifier: string;
+  }[];
   /** The graph owner must independently seal the runtime implementing these context methods. */
   readonly requiresReviewedRuntime: true;
 }

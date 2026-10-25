@@ -44,6 +44,8 @@ export interface NodeManifestConsumerInput {
   readonly imports: readonly NodeManifestConsumerImport[];
   /** Derived from the sealed route inventory, never from the consumer's own declarations. */
   readonly route: { readonly page: string; readonly pathname: string };
+  /** A projected runtime may require these exact, independently traced callback bindings. */
+  readonly runtimeInputs?: { readonly require: string; readonly loadChunk: string };
 }
 
 export interface NodeManifestConsumerProof {
@@ -155,11 +157,26 @@ class Consumer {
       : undefined;
   }
 
+  private assertFactoryArgument(call: Node): void {
+    assertArgument(call, this.input.route);
+    const expected = this.input.runtimeInputs;
+    if (expected === undefined) return;
+    const argument = listOf(call, 'arguments')[0];
+    if (!isNode(argument)) refuse('runtime callback argument');
+    for (const name of ['require', 'loadChunk'] as const) {
+      const property = listOf(argument, 'properties').find(
+        (value) => isNode(value) && propertyName(value) === name,
+      );
+      const value = isNode(property) ? property['value'] : undefined;
+      if (!identifier(value) || value.name !== expected[name]) refuse('runtime callback binding');
+    }
+  }
+
   private callOrigin(value: Node, scopes: readonly Scope[], seen: Set<Node>): Origin | undefined {
     const imported = this.required(value, scopes);
     if (imported !== undefined) return { kind: 'namespace', imported };
     if (this.origin(unwrappedCallee(value), scopes, seen)?.kind !== 'factory') return undefined;
-    assertArgument(value, this.input.route);
+    this.assertFactoryArgument(value);
     this.calls.add(value);
     const parent = this.byNode.get(value)?.parent;
     if (parent?.type !== 'VariableDeclarator' || !identifier(parent['id']))
@@ -359,7 +376,7 @@ class Consumer {
       refuse('factory alias escape');
     const call = visit.parent;
     if (call['optional'] === true) refuse('optional producer call');
-    assertArgument(call, this.input.route);
+    this.assertFactoryArgument(call);
     this.calls.add(call);
     const parent = this.byNode.get(call)?.parent;
     if (parent?.type !== 'VariableDeclarator' || !identifier(parent['id']))

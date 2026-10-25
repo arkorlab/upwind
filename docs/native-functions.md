@@ -36,6 +36,11 @@ Node ABI and Linux x64 glibc target before publishing it. Worker loader hooks, p
 and native shims are not applied to Node files. The existing shared cache and request runtime is
 retained through a Node transport, rather than replaced with an independent `next start` cache.
 
+The original Next.js manifest consumers and Turbopack runtime are currently verified against
+Next.js 16.4.3. Changed compiler or template shapes are refused until their source contracts are
+reviewed. This restriction applies to native Node artifacts; ordinary Worker output keeps its
+existing version support.
+
 The first backend supports plain environment values, shared cache access and delegated HTTP
 services. Native storage bindings, Durable Objects, Cloudflare Workflows, custom cache-handler
 closures and unproved native loaders are refused. The direct CLI and local Miniflare stack also

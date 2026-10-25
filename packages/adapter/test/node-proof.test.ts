@@ -84,7 +84,7 @@ describe('original physical Node Function proof', () => {
     expect(proof.native).toStrictEqual([
       { kind: 'direct', importer: entry, binary, owners: ['/native'] },
     ]);
-    expect(proof.dependencies.externals).toStrictEqual(['node:process', 'node:vm']);
+    expect(proof.dependencies.externals).toStrictEqual(['node:path', 'node:process', 'node:vm']);
     expect(proof.dependencies.stubs).toStrictEqual([]);
     expect(() => {
       assertNodeProofFiles(proof, physical, new Map());

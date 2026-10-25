@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Script } from 'node:vm';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BlobStore } from '../src/blobs.ts';
 import type { BuildFunctionInput } from '../src/function.ts';
@@ -65,7 +65,7 @@ describe('native physical module relocation', () => {
     const files = new NodeArtifactFiles(build, physical, []);
     await files.addAppEntry();
     const source = files.files.get('upwind/app.cjs');
-    if (source === undefined) throw new Error('missing generated app entry');
+    assert.isDefined(source, 'missing generated app entry');
     const routeModule = { distDir: 'build-machine-path' };
     const module = {
       exports: { entries: {} as Record<string, () => { routeModule: typeof routeModule }> },
@@ -74,6 +74,7 @@ describe('native physical module relocation', () => {
       'node:async_hooks': { AsyncLocalStorage },
       [`/bundle/${physical.nameOf(entry)}`]: { routeModule },
     };
+    // eslint-disable-next-line sonarjs/code-eval -- Execute only this SDK-generated table with inert authored module objects; never application source or filesystem loaders.
     new Script(new TextDecoder().decode(source.bytes)).runInNewContext({
       module,
       require: (name: string) => modules[name],

@@ -323,7 +323,7 @@ describe.skipIf(!ENABLED)('linux native Function artifact integration', () => {
       status: response.status,
       body: await response.text(),
       dist: response.headers.get('x-native-dist'),
-    }).toStrictEqual({ status: 200, body: 'native-function-real', dist: '/bundle/project/.next' });
+    }).toStrictEqual({ status: 200, body: 'native-function-real', dist: '.next' });
 
     const other = await fetch(ADDRESS, {
       headers: {

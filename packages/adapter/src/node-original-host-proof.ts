@@ -1,83 +1,210 @@
-import {
-  childrenOf,
-  isNode,
-  listOf,
-  scopeOpenedBy,
-  type Node,
-  type Scope,
-} from './lexical-scope.ts';
+import { AuditError } from './dependencies.ts';
+import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
+import { identifier as nativeIdentifier, nativeBindings, walk } from './native-ast.ts';
+import { processDlopen } from './native-process.ts';
 import { parseNativeSource } from './native-source-parser.ts';
 import { hostPropertyName, isCommonJsHost } from './node-closure-hosts.ts';
+import { reference, visitTree, type Visit } from './node-manifest-consumer-ast.ts';
 
-const HOST_LOADERS: ReadonlySet<string> = new Set(['constructor', 'load', 'require']);
+const HOST_LOADERS: ReadonlySet<string> = new Set(['_compile', 'constructor', 'load', 'require']);
+const HOST_VALUE_MEMBERS: ReadonlySet<string> = new Set(['children', 'parent']);
+const METADATA_UNARY: ReadonlySet<string> = new Set(['!', 'typeof', 'void']);
+const ASSIGNMENT_PATTERNS: ReadonlySet<string> = new Set([
+  'ArrayPattern',
+  'AssignmentPattern',
+  'ObjectPattern',
+  'Property',
+  'RestElement',
+]);
 
-function isIdentifier(value: unknown): boolean {
-  return isNode(value) && value.type === 'Identifier';
+export const ORIGINAL_HOST_MARKER_PREFIX = '__UPWIND_ORIGINAL_HOST_';
+
+export interface OriginalNodeHostLoaderSite {
+  readonly start: number;
+  readonly end: number;
+  readonly expressionStart: number;
+  readonly expressionEnd: number;
 }
 
 function isLoaderMember(name: string | undefined): boolean {
   return name === undefined || HOST_LOADERS.has(name);
 }
 
-function isHostPattern(node: Node, scopes: readonly Scope[]): boolean {
-  if (node.type !== 'VariableDeclarator' || !isCommonJsHost(node['init'], scopes)) return false;
-  const pattern = node['id'];
+function isLoaderPattern(pattern: unknown): boolean {
   if (!isNode(pattern) || pattern.type !== 'ObjectPattern') return false;
   return listOf(pattern, 'properties').some((property) => {
     return (
       !isNode(property) ||
       property.type === 'RestElement' ||
-      isLoaderMember(hostPropertyName(property))
+      isLoaderMember(hostPropertyName(property)) ||
+      HOST_VALUE_MEMBERS.has(hostPropertyName(property) ?? '')
     );
   });
 }
 
-function isHostOperation(node: Node, scopes: readonly Scope[]): boolean {
-  if (node.type === 'MemberExpression' && isCommonJsHost(node['object'], scopes))
-    return isLoaderMember(hostPropertyName(node));
-  if (isHostPattern(node, scopes)) return true;
+function memberExpression(node: Node, parent: Node | undefined): Node {
+  if (parent === undefined) return node;
+  if (
+    (parent.type === 'CallExpression' || parent.type === 'NewExpression') &&
+    parent['callee'] === node
+  )
+    return parent;
+  if (parent.type === 'AssignmentExpression' && parent['left'] === node) return parent;
+  if (parent.type === 'UpdateExpression' && parent['argument'] === node) return parent;
+  if (parent.type === 'UnaryExpression' && parent['operator'] === 'delete') return parent;
+  return node;
+}
+
+function hostExpression(
+  node: Node,
+  parent: Node | undefined,
+  scopes: readonly Scope[],
+): Node | undefined {
+  if (
+    node.type === 'MemberExpression' &&
+    isCommonJsHost(node['object'], scopes) &&
+    isLoaderMember(hostPropertyName(node))
+  )
+    return memberExpression(node, parent);
+  if (
+    node.type === 'VariableDeclarator' &&
+    isLoaderPattern(node['id']) &&
+    isCommonJsHost(node['init'], scopes) &&
+    isNode(node['init'])
+  )
+    return node['init'];
+  return undefined;
+}
+
+function isAliasInitializer(visit: Visit, byNode: ReadonlyMap<Node, Visit>): boolean {
+  const parent = visit.parent;
+  if (parent?.type !== 'VariableDeclarator' || visit.key !== 'init') return false;
+  const declaration = byNode.get(parent)?.parent;
   return (
-    node.type === 'AssignmentExpression' &&
-    isIdentifier(node['left']) &&
-    isCommonJsHost(node['right'], scopes)
+    declaration === undefined || byNode.get(declaration)?.parent?.type !== 'ExportNamedDeclaration'
   );
 }
 
-function registerImports(program: Node, scope: Scope): void {
-  for (const statement of listOf(program, 'body')) {
-    if (!isNode(statement) || statement.type !== 'ImportDeclaration') continue;
-    const specifiers = listOf(statement, 'specifiers');
-    for (const specifier of specifiers) {
-      const local = isNode(specifier) ? specifier['local'] : undefined;
-      if (isNode(local) && local.type === 'Identifier' && typeof local['name'] === 'string')
-        scope.declared.add(local['name']);
-    }
-  }
+function isMetadataUse(visit: Visit): boolean {
+  const parent = visit.parent;
+  if (parent === undefined) return false;
+  if (parent.type === 'MemberExpression' && visit.key === 'object') return true;
+  if (parent.type === 'ExpressionStatement') return true;
+  if (parent.type === 'UnaryExpression' && METADATA_UNARY.has(String(parent['operator'])))
+    return true;
+  return visit.key === 'test';
 }
 
-function openedScopes(node: Node, parents: readonly Scope[]): readonly Scope[] {
-  const scope = scopeOpenedBy(node);
-  if (scope === undefined) return parents;
-  if (node.type === 'Program') registerImports(node, scope);
-  return [...parents, scope];
+function directWriteTarget(parent: Node, value: Node): boolean | undefined {
+  if (parent.type === 'AssignmentExpression') return parent['left'] === value;
+  if (parent.type === 'UpdateExpression') return parent['argument'] === value;
+  if (parent.type === 'UnaryExpression') return parent['operator'] === 'delete';
+  if (parent.type === 'ForInStatement' || parent.type === 'ForOfStatement')
+    return parent['left'] === value;
+  return undefined;
 }
 
-function childNodes(node: Node): Node[] {
-  return childrenOf(node).flatMap((child) => {
-    const values: unknown[] = Array.isArray(child) ? child : [child];
-    return values.filter((value) => isNode(value));
-  });
-}
-
-function hasOriginalHostOperation(program: Node): boolean {
-  const pending: { node: Node; scopes: readonly Scope[] }[] = [{ node: program, scopes: [] }];
-  for (let visit = pending.pop(); visit !== undefined; visit = pending.pop()) {
-    const scopes = openedScopes(visit.node, visit.scopes);
-    if (isHostOperation(visit.node, scopes)) return true;
-    const children = childNodes(visit.node);
-    for (const node of children) pending.push({ node, scopes });
+function isWriteTarget(node: Node, byNode: ReadonlyMap<Node, Visit>): boolean {
+  let current = node;
+  for (
+    let parent = byNode.get(current)?.parent;
+    parent !== undefined;
+    parent = byNode.get(current)?.parent
+  ) {
+    const isDirectTarget = directWriteTarget(parent, current);
+    if (isDirectTarget !== undefined) return isDirectTarget;
+    if (!ASSIGNMENT_PATTERNS.has(parent.type)) return false;
+    if (parent.type === 'Property' && parent['value'] !== current) return false;
+    if (parent.type === 'AssignmentPattern' && parent['left'] !== current) return false;
+    current = parent;
   }
   return false;
+}
+
+function hostChildren(visit: Visit, byNode: ReadonlyMap<Node, Visit>): Node | undefined {
+  const node = visit.node;
+  if (
+    node.type !== 'MemberExpression' ||
+    hostPropertyName(node) !== 'children' ||
+    !isCommonJsHost(node['object'], visit.scopes)
+  )
+    return undefined;
+  const parent = visit.parent;
+  if (
+    parent?.type === 'MemberExpression' &&
+    parent['object'] === node &&
+    hostPropertyName(parent) === 'length' &&
+    !isWriteTarget(parent, byNode)
+  )
+    return undefined;
+  return memberExpression(node, parent);
+}
+
+function hostEscape(
+  visit: Visit,
+  byNode: ReadonlyMap<Node, Visit>,
+  nativeOperands: ReadonlySet<unknown>,
+): Node | undefined {
+  if (visit.node.type !== 'Identifier' && visit.node.type !== 'MemberExpression') return undefined;
+  if (!reference(visit) || !isCommonJsHost(visit.node, visit.scopes)) return undefined;
+  if (nativeOperands.has(visit.node) || isMetadataUse(visit) || isAliasInitializer(visit, byNode))
+    return undefined;
+  if (isWriteTarget(visit.node, byNode)) return undefined;
+  if (visit.parent?.type === 'Property' && visit.parent['shorthand'] === true) {
+    const object = byNode.get(visit.parent)?.parent;
+    return object?.type === 'ObjectExpression' ? object : undefined;
+  }
+  return visit.node;
+}
+
+function originalSites(
+  program: Node,
+  nativeOperands: ReadonlySet<unknown>,
+): OriginalNodeHostLoaderSite[] {
+  const sites = new Map<string, OriginalNodeHostLoaderSite>();
+  const visits = visitTree(program);
+  const byNode = new Map(visits.map((visit) => [visit.node, visit]));
+  for (const visit of visits) {
+    const expression =
+      hostExpression(visit.node, visit.parent, visit.scopes) ??
+      hostChildren(visit, byNode) ??
+      hostEscape(visit, byNode, nativeOperands);
+    if (expression !== undefined)
+      sites.set(`${visit.node.start}:${visit.node.end}:${expression.start}:${expression.end}`, {
+        start: visit.node.start,
+        end: visit.node.end,
+        expressionStart: expression.start,
+        expressionEnd: expression.end,
+      });
+  }
+  return [...sites.values()];
+}
+
+function classifiedNativeOperands(
+  program: ReturnType<typeof parseNativeSource>,
+): ReadonlySet<unknown> {
+  const operands = new Set<unknown>();
+  const bindings = nativeBindings(program);
+  for (const node of walk(program)) {
+    if (node.type === 'Identifier' && node.name.startsWith(ORIGINAL_HOST_MARKER_PREFIX))
+      throw new AuditError('Reserved original host analysis marker appears in application source');
+    if (node.type !== 'CallExpression' || processDlopen(node.callee, bindings) !== 'known')
+      continue;
+    const module = node.arguments[0];
+    if (nativeIdentifier(module, 'module')) operands.add(module);
+  }
+  return operands;
+}
+
+/** Source-proven host operations, before a CommonJS wrapper can shadow the host module. */
+export function originalNodeHostLoaderSites(
+  file: string,
+  code: string,
+): readonly OriginalNodeHostLoaderSite[] {
+  const parsed = parseNativeSource(code, file);
+  const program: unknown = parsed;
+  if (!isNode(program)) throw new TypeError('Original host-loader proof requires a program');
+  return originalSites(program, classifiedNativeOperands(parsed));
 }
 
 /**
@@ -85,9 +212,7 @@ function hasOriginalHostOperation(program: Node): boolean {
  * too; classified native operations and separately proved manifest VM calls stay independent.
  */
 export function originalNodeHostLoaderRefusal(file: string, code: string): string | undefined {
-  const program: unknown = parseNativeSource(code, file);
-  if (!isNode(program)) throw new TypeError('Original host-loader proof requires a program');
-  return hasOriginalHostOperation(program)
+  return originalNodeHostLoaderSites(file, code).length > 0
     ? 'an unproved original CommonJS host loader'
     : undefined;
 }

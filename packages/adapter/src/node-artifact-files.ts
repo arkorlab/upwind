@@ -39,6 +39,7 @@ type EntryNormalization = NonNullable<NodeFunctionProof['normalization']>;
 async function assertEntryNormalization(
   input: BuildFunctionInput,
   seal: EntryNormalization,
+  physical: NodePhysicalFiles,
 ): Promise<void> {
   if (
     path.resolve(input.patch.distDir) !== seal.distDir ||
@@ -46,6 +47,19 @@ async function assertEntryNormalization(
     input.entries.length !== seal.entries.length
   )
     throw new AuditError('The Node manifest normalization contract changed before packaging');
+  if (seal.runtimeRootDir !== undefined) {
+    const root = await realpath(input.repoRoot ?? input.projectDir);
+    const original = path
+      .relative(seal.canonicalDistDir, seal.runtimeRootDir)
+      .split(path.sep)
+      .join('/');
+    const relocated = path.posix.relative(
+      physical.nameOf(seal.canonicalDistDir),
+      physical.nameOf(seal.runtimeRootDir),
+    );
+    if (original !== relocated || root !== seal.runtimeRootDir)
+      throw new AuditError('Native Function relocation changes the sealed Turbopack runtime root');
+  }
   const ids = new Set<string>();
   for (const [index, entry] of input.entries.entries()) {
     const expected = seal.entries[index];
@@ -186,7 +200,8 @@ export class NodeArtifactFiles {
   }
 
   async addAppEntry(normalization?: EntryNormalization): Promise<void> {
-    if (normalization !== undefined) await assertEntryNormalization(this.input, normalization);
+    if (normalization !== undefined)
+      await assertEntryNormalization(this.input, normalization, this.physical);
     const dist = this.physical.nameOf(await realpath(this.input.patch.distDir));
     const table = await Promise.all(
       this.input.entries.map(async (entry) => {
@@ -197,7 +212,7 @@ export class NodeArtifactFiles {
     // Node's shared serve layer sets relativeProjectDir='.' and the bootstrap uses this cwd.
     // Next joins that project root with distDir; an absolute value would duplicate /bundle.
     const runtimeDistDir = path.posix.relative(this.physical.cwd, dist) || '.';
-    const entry = appEntrySource(table, { external: true, runtimeDistDir });
+    const entry = appEntrySource(table, { external: true, runtimeDistDir, nodeRequestMeta: true });
     const source = `globalThis.AsyncLocalStorage ??= require('node:async_hooks').AsyncLocalStorage;\n${entry}`;
     this.text('upwind/app.cjs', source);
     if (normalization !== undefined) this.#normalizedEntry = source;
@@ -206,7 +221,7 @@ export class NodeArtifactFiles {
   /** The proven analysis root is valid only if the shipped root normalizes the same route table. */
   async assertAppEntryNormalization(normalization?: EntryNormalization): Promise<void> {
     if (normalization === undefined) return;
-    await assertEntryNormalization(this.input, normalization);
+    await assertEntryNormalization(this.input, normalization, this.physical);
     const bytes = this.files.get('upwind/app.cjs')?.bytes;
     if (
       bytes === undefined ||

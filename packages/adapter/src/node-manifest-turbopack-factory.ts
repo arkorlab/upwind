@@ -26,6 +26,7 @@ interface Edit {
 }
 const GETTER_PREFIX = '__upwind_turbopack_getter_';
 const BOUND_PREFIX = '__upwind_turbopack_bound_';
+const BOUND_KINDS = { l: 'loadChunk', r: 'require' } as const;
 const EXTERNAL_INTEROP_ARITY = 3;
 
 function refuse(reason: string): never {
@@ -43,11 +44,12 @@ function numericId(node: unknown): number {
 }
 
 function staticSelector(node: unknown): node is Node {
-  if (identifier(node)) return true;
+  if (identifier(node)) return node.name !== 'arguments';
   return (
     isNode(node) &&
     node.type === 'MemberExpression' &&
     identifier(node['object']) &&
+    node['object'].name !== 'arguments' &&
     propertyName(node) !== undefined
   );
 }
@@ -55,7 +57,7 @@ function staticSelector(node: unknown): node is Node {
 function getterOf(value: unknown): Node {
   if (
     !isNode(value) ||
-    !['ArrowFunctionExpression', 'FunctionExpression'].includes(value.type) ||
+    value.type !== 'ArrowFunctionExpression' ||
     value['async'] === true ||
     value['generator'] === true ||
     listOf(value, 'params').length > 0
@@ -118,6 +120,10 @@ class FactoryProjection {
   private readonly edits = new Map<Node, Edit>();
   private readonly imports = new Map<Node, NodeManifestTurbopackImport>();
   private readonly append: string[] = [];
+  private readonly boundRuntimeInputs: {
+    readonly kind: 'require' | 'loadChunk';
+    readonly identifier: string;
+  }[] = [];
   private exports: NodeManifestTurbopackExports = { kind: 'commonjs' };
   private registered = false;
 
@@ -129,12 +135,13 @@ class FactoryProjection {
     this.source = source;
     this.factory = factory;
     const all = visitTree(program);
-    const found = all.find(
-      ({ node }) =>
+    const found = all.find(({ node }) => {
+      return (
         node.start === factory.start &&
         node.end === factory.end &&
-        ['ArrowFunctionExpression', 'FunctionExpression'].includes(node.type),
-    );
+        ['ArrowFunctionExpression', 'FunctionExpression'].includes(node.type)
+      );
+    });
     const body = found?.node['body'];
     const scope = found?.scopes.at(-1);
     const param = found === undefined ? undefined : listOf(found.node, 'params')[0];
@@ -148,11 +155,12 @@ class FactoryProjection {
     this.parents = new Map(all.map((visit) => [visit.node, visit]));
     if (scope.bindings.has(param.name)) refuse('mutated context parameter');
     if (
-      this.visits.some(
-        ({ node }) =>
+      this.visits.some(({ node }) => {
+        return (
           identifier(node) &&
-          (node.name.startsWith(GETTER_PREFIX) || node.name.startsWith(BOUND_PREFIX)),
-      )
+          (node.name.startsWith(GETTER_PREFIX) || node.name.startsWith(BOUND_PREFIX))
+        );
+      })
     )
       refuse('inspection identifier collision');
   }
@@ -248,12 +256,13 @@ class FactoryProjection {
     const init = binding?.type === 'VariableDeclarator' ? binding['init'] : undefined;
     const imported = isNode(init) ? this.imports.get(init) : undefined;
     if (imported === undefined || args.length !== 1) refuse('namespace forwarding identity');
-    const statements = listOf(this.body, 'body').filter(
-      (statement) =>
+    const statements = listOf(this.body, 'body').filter((statement) => {
+      return (
         !isNode(statement) ||
         statement.type !== 'ExpressionStatement' ||
-        stringOf(statement['expression']) !== 'use strict',
-    );
+        stringOf(statement['expression']) !== 'use strict'
+      );
+    });
     const first = statements[0];
     const last = statements[1];
     if (
@@ -271,7 +280,7 @@ class FactoryProjection {
     this.edit(call, `module.exports=${this.text(value)}`);
   }
 
-  private bound(member: Node, visit: Visit, name: string): boolean {
+  private bound(member: Node, visit: Visit, name: 'r' | 'l'): boolean {
     const bind = this.parents.get(member)?.parent;
     const call = bind === undefined ? undefined : this.parents.get(bind)?.parent;
     const owner = call === undefined ? undefined : this.parents.get(call)?.parent;
@@ -283,14 +292,16 @@ class FactoryProjection {
       call['callee'] !== bind ||
       owner?.type !== 'Property' ||
       owner['value'] !== call ||
-      propertyName(owner) !== (name === 'r' ? 'require' : 'loadChunk')
+      propertyName(owner) !== BOUND_KINDS[name]
     )
       return false;
     const args = listOf(call, 'arguments');
     const arg = args[0];
     if (args.length !== 1 || !this.ownIdentifier(arg, visit)) refuse('bound context identity');
     this.allowedContext.add(arg);
-    this.edit(call, `${BOUND_PREFIX}${name}`);
+    const binding = `${BOUND_PREFIX}${name}`;
+    this.boundRuntimeInputs.push({ kind: BOUND_KINDS[name], identifier: binding });
+    this.edit(call, binding);
     return true;
   }
 
@@ -344,6 +355,40 @@ class FactoryProjection {
     }
   }
 
+  private assertCommonJsBindings(): void {
+    for (const visit of this.visits) {
+      const node = visit.node;
+      if (!identifier(node) || !reference(visit) || !['exports', 'module'].includes(node.name))
+        continue;
+      if (declaration(node.name, visit.scopes) === undefined)
+        refuse('outer CommonJS export reference');
+    }
+  }
+
+  private assertOriginalSpecifiers(): void {
+    for (const visit of this.visits) {
+      const node = visit.node;
+      if (
+        node.type === 'CallExpression' &&
+        identifier(node['callee']) &&
+        node['callee'].name === 'require' &&
+        declaration('require', visit.scopes) === undefined &&
+        stringOf(listOf(node, 'arguments')[0])?.startsWith('turbopack:') === true
+      )
+        refuse('reserved synthetic module specifier');
+      if (
+        [
+          'ExportAllDeclaration',
+          'ExportNamedDeclaration',
+          'ImportDeclaration',
+          'ImportExpression',
+        ].includes(node.type) &&
+        stringOf(node['source'])?.startsWith('turbopack:') === true
+      )
+        refuse('reserved synthetic module specifier');
+    }
+  }
+
   private forwardNamespaces(): void {
     for (const visit of this.visits) {
       const member = visit.node;
@@ -358,6 +403,8 @@ class FactoryProjection {
   }
 
   project(): NodeManifestTurbopackProjection {
+    this.assertOriginalSpecifiers();
+    this.assertCommonJsBindings();
     for (const visit of this.visits) this.operation(visit);
     this.forwardNamespaces();
     for (const visit of this.visits) {
@@ -387,6 +434,7 @@ class FactoryProjection {
       source: { code, sha256 },
       imports: [...this.imports.values()],
       exports: this.exports,
+      boundRuntimeInputs: this.boundRuntimeInputs,
       requiresReviewedRuntime: true,
     };
   }

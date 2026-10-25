@@ -81,8 +81,9 @@ async function templateOf(input: NodeManifestTemplateInput): Promise<Template> {
   const classes = input.imports.filter((entry) =>
     entry.file.replaceAll('\\', '/').endsWith(`/${relative}`),
   );
-  if (classes.length !== 1 || classes[0]?.sha256 !== expected) refuse('constructor identity');
-  const module = classes[0]!;
+  const module = classes[0];
+  if (module === undefined || classes.length !== 1 || module.sha256 !== expected)
+    refuse('constructor identity');
   const root = module.file.slice(0, -relative.length - 1);
   const file = await realpath(path.join(root, 'dist/build/templates', `${input.route.kind}.js`));
   if (beneath(root, file) === undefined) refuse('template source path');
@@ -127,7 +128,7 @@ function canonicalNextImport(
   const relative = beneath(context.template.root, file)?.split(path.sep).join('/');
   if (relative === undefined) return refuse('external framework dependency');
   const expected = PROTECTED_DEPENDENCIES.get(relative);
-  if (!context.expected && expected !== undefined && sha256 !== expected)
+  if (expected !== undefined && sha256 !== expected && !context.expected)
     refuse('changed protected dependency');
   return `next:${relative}`;
 }
@@ -147,8 +148,9 @@ function importToken(node: Node, context: CanonicalContext): string | undefined 
     return canonicalNextImport(file, undefined, context);
   }
   const imports = context.input.imports.filter((entry) => entry.specifier === specifier);
-  if (imports.length !== 1) return refuse('missing or ambiguous resolved template import');
-  const imported = imports[0]!;
+  const imported = imports[0];
+  if (imported === undefined || imports.length !== 1)
+    return refuse('missing or ambiguous resolved template import');
   if (beneath(context.template.root, imported.file) !== undefined)
     return canonicalNextImport(imported.file, imported.sha256, context);
   const slot = userlandSlot(node, context);
@@ -180,8 +182,9 @@ function constructorFields(
       propertyName(callee) === name
     );
   });
-  if (constructors.length !== 1) return refuse('route constructor');
-  return fieldsOf(listOf(constructors[0]!.node, 'arguments')[0]);
+  const constructor = constructors[0];
+  if (constructor === undefined || constructors.length !== 1) return refuse('route constructor');
+  return fieldsOf(listOf(constructor.node, 'arguments')[0]);
 }
 function generatedValues(
   fields: ReadonlyMap<string, Node>,
@@ -246,26 +249,41 @@ function injectedOutput(actual: Node, expected: Node): Node {
   if (index === -1) return refuse('output template position');
   return { ...expected, body: [...body.slice(0, index), statement, ...body.slice(index)] };
 }
-function shape(value: unknown, context: CanonicalContext): unknown {
-  if (Array.isArray(value)) return value.map((item) => shape(item, context));
-  if (!record(value)) return value;
-  if (isNode(value)) {
-    const field = value.type === 'Property' ? propertyName(value) : undefined;
-    const replacement = field === undefined ? undefined : context.constructorValues.get(field);
-    if (context.expected && replacement !== undefined)
-      return shape({ ...value, value: replacement }, { ...context, constructorValues: new Map() });
-    const token = importToken(value, context);
-    if (token !== undefined) return { type: 'StaticTemplateImport', value: token };
-  }
+function constructorReplacement(
+  value: Record<string, unknown>,
+  context: CanonicalContext,
+): { value: Record<string, unknown>; context: CanonicalContext } {
+  const field = isNode(value) && value.type === 'Property' ? propertyName(value) : undefined;
+  const replacement = field === undefined ? undefined : context.constructorValues.get(field);
+  if (replacement === undefined || !context.expected) return { value, context };
+  return {
+    value: { ...value, value: replacement },
+    context: { ...context, constructorValues: new Map() },
+  };
+}
+
+function recordShape(value: Record<string, unknown>, context: CanonicalContext): unknown {
   const normalized: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
+  const entries = Object.entries(value);
+  for (const [key, item] of entries) {
     if (['end', 'raw', 'start'].includes(key)) continue;
     normalized[key] =
-      context.expected && key === 'value' && typeof item === 'string'
+      key === 'value' && typeof item === 'string' && context.expected
         ? (context.replacements.get(item) ?? item)
         : shape(item, context);
   }
   return normalized;
+}
+
+function shape(value: unknown, context: CanonicalContext): unknown {
+  if (Array.isArray(value)) return value.map((item) => shape(item, context));
+  if (!record(value)) return value;
+  const replaced = constructorReplacement(value, context);
+  if (isNode(replaced.value)) {
+    const imported = importToken(replaced.value, replaced.context);
+    if (imported !== undefined) return { type: 'StaticTemplateImport', value: imported };
+  }
+  return recordShape(replaced.value, replaced.context);
 }
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;

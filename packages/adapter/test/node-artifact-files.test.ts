@@ -112,7 +112,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 describe('the shipped manifest normalization boundary', () => {
-  it.each(['route', 'distDir', 'entry-bytes'] as const)(
+  it.each(['route', 'distDir', 'entry-bytes', 'runtime-root'] as const)(
     'rejects a changed %s after sealing the original entry inventory',
     async (change) => {
       const directory = await mkdtemp(path.join(tmpdir(), 'upwind-node-entry-seal-'));
@@ -136,6 +136,7 @@ describe('the shipped manifest normalization boundary', () => {
           entries: Object.freeze([sealedEntry]),
           distDir,
           canonicalDistDir: await realpath(distDir),
+          runtimeRootDir: await realpath(directory),
         });
         await files.addAppEntry(seal);
         await files.assertAppEntryNormalization(seal);
@@ -152,15 +153,50 @@ describe('the shipped manifest normalization boundary', () => {
               bytes: new TextEncoder().encode('module.exports={};'),
             });
           },
+          'runtime-root': () => {
+            Object.assign(files.input, { repoRoot: otherDist });
+          },
         };
         changes[change]();
 
         await expect(files.assertAppEntryNormalization(seal)).rejects.toThrow(
-          /normalization|route entry/u,
+          /normalization|route entry|runtime root/u,
         );
       } finally {
         await rm(directory, { recursive: true, force: true });
       }
     },
   );
+
+  it('refuses an archive layout that changes the runtime-to-tracing-root topology', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'upwind-node-runtime-root-'));
+    try {
+      const root = await realpath(directory);
+      const distDir = path.join(root, 'output');
+      await mkdir(distDir);
+      const entry = { id: '/native', filePath: path.join(distDir, 'page.js') };
+      await writeFile(entry.filePath, 'exports.routeModule={};');
+      const files = fixture([]);
+      Object.assign(files.input, {
+        projectDir: root,
+        repoRoot: root,
+        entries: [entry],
+        patch: { ...files.input.patch, distDir },
+      });
+      Object.assign(files.physical, {
+        nameOf: (file: string) =>
+          file === root ? 'project' : `project/.upwind-build/${path.basename(file)}`,
+      });
+      const seal = Object.freeze({
+        entries: Object.freeze([Object.freeze({ ...entry, canonicalFilePath: entry.filePath })]),
+        distDir,
+        canonicalDistDir: distDir,
+        runtimeRootDir: root,
+      });
+
+      await expect(files.addAppEntry(seal)).rejects.toThrow('sealed Turbopack runtime root');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });

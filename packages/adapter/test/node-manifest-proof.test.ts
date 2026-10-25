@@ -83,9 +83,9 @@ async function fixture(directory: string) {
   const manifest = path.join(distDir, `server/app/native/page${SUFFIX}`);
   const analysisEntry = path.join(directory, 'entry.cjs');
   const entries = [{ id: '/native', filePath: route }];
-  const rootCode = [appEntrySource(entries, { external: false, runtimeDistDir: distDir })].join(
-    '\n',
-  );
+  const rootCode = [
+    appEntrySource(entries, { external: true, runtimeDistDir: distDir, nodeRequestMeta: true }),
+  ].join('\n');
   await mkdir(path.dirname(manifest), { recursive: true });
   await writeFile(path.join(root, 'package.json'), '{"name":"next","version":"16.4.3"}');
   await writeFile(manifest, withDeploymentId());

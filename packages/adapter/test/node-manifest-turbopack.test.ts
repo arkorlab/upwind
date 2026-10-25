@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
+import { jsLiteral } from '../src/codegen.ts';
 import { assertNodeManifestConsumer } from '../src/node-manifest-consumers.ts';
 import {
   nodeManifestTurbopackFactories,
@@ -27,7 +28,7 @@ function source(code: string): NodeManifestTurbopackSource {
 }
 function chunk(body = CALLER): NodeManifestTurbopackSource {
   return source(
-    `module.exports=[1,((ctx)=>{${body}}),2,((ctx)=>{var mod=ctx.x(${JSON.stringify(PRODUCER)},()=>require(${JSON.stringify(PRODUCER)}));ctx.n(mod);})];`,
+    `module.exports=[1,((ctx)=>{${body}}),2,((ctx)=>{var mod=ctx.x(${jsLiteral(PRODUCER)},()=>require(${jsLiteral(PRODUCER)}));ctx.n(mod);})];`,
   );
 }
 
@@ -127,16 +128,24 @@ describe('next Turbopack manifest factory projections', () => {
     ['computed context access', 'const p=ctx["i"](2);'],
     ['method alias', 'const fn=ctx.i;'],
     ['context alias', 'const escaped=ctx;'],
+    ['outer CommonJS exports', 'exports.handler=entrypoint.handler;'],
+    ['outer CommonJS module', 'module.exports=entrypoint;'],
     ['context mutation', 'ctx.i=other;'],
     ['optional call', 'ctx.i?.(2);'],
     ['wrong external thunk', 'const p=ctx.x("next",()=>require("other"));'],
     ['effectful external thunk', 'const p=ctx.x("next",()=>{bad();return require("next")});'],
     ['shadowed external require', 'const require=other;const p=ctx.x("next",()=>require("next"));'],
+    ['raw synthetic require', 'var unused=ctx.i(2);var fake=require("turbopack:2");'],
+    ['raw synthetic dynamic import', 'var unused=ctx.i(2);import("turbopack:2");'],
+    ['external synthetic module', 'var fake=ctx.x("turbopack:2",()=>require("turbopack:2"));'],
     ['named external require', 'const p=ctx.x("next",function require(){return require("next")});'],
     ['dynamic external import', 'const p=ctx.y("next");'],
     ['conditional exports', 'if(flag)ctx.s(["handler",()=>handler]);'],
     ['duplicate exports', 'ctx.s(["handler",()=>handler,"handler",()=>handler]);'],
     ['effectful getter', 'ctx.s(["handler",()=>factory()]);'],
+    ['named function getter', 'ctx.s(["handler",function handler(){return handler;}]);'],
+    ['implicit arguments getter', 'ctx.s(["handler",()=>arguments]);'],
+    ['implicit arguments property getter', 'ctx.s(["handler",()=>arguments.handler]);'],
     ['context getter escape', 'ctx.s(["handler",()=>ctx]);'],
     ['setter export', 'ctx.s(["handler",()=>handler,v=>handler=v]);'],
     ['foreign target exports', 'ctx.s(["handler",()=>handler],2);'],
@@ -160,4 +169,15 @@ describe('next Turbopack manifest factory projections', () => {
     ).toThrow('source byte identity');
     expect(() => projectNodeManifestTurbopackFactory(original, 3)).toThrow('unknown module id');
   });
+
+  it.each(['module', 'exports'])(
+    'does not merge a free %s with a renamed CommonJS parameter',
+    (name) => {
+      const original = source(`module.exports=[1,((ctx,m,e)=>{e.handler=1;${name}.other=1;})];`);
+
+      expect(() => projectNodeManifestTurbopackFactory(original, 1)).toThrow(
+        'outer CommonJS export reference',
+      );
+    },
+  );
 });

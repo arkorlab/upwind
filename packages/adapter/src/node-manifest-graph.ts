@@ -12,88 +12,35 @@ import {
   type NodeManifestConsumerImport,
 } from './node-manifest-consumers.ts';
 import {
+  APP_PAGE_FACTORY,
+  APP_ROUTE_MODULE,
+  EVALUATOR,
+  frameworkParent,
+  PAGES_MODULE,
+  reviewedFrameworkSource,
+  ROUTE_EXPORTS,
+  type ManifestProtectedKind,
+} from './node-manifest-framework.ts';
+import {
   assertNodeManifestTemplateConsumer,
   type NodeManifestTemplateImport,
 } from './node-manifest-templates.ts';
+import { proveNodeManifestTurbopackConsumers } from './node-manifest-turbopack-consumers.ts';
+import {
+  inspectNodeManifestTurbopackEntry,
+  type NodeManifestTurbopackGraphFile,
+} from './node-manifest-turbopack-graph.ts';
 
 const MAX_SOURCE_MEBIBYTES = 128;
 const BYTES_PER_MEBIBYTE = 1_048_576;
 const MAX_SOURCE_BYTES = MAX_SOURCE_MEBIBYTES * BYTES_PER_MEBIBYTE;
-const ROUTE_CLASS = 'route-class';
-const APP_PAGE_FACTORY = 'app-page-factory';
 const ENTRYPOINTS = 'entrypoints';
 const OPAQUE_ROUTE_METADATA = 'opaque route metadata';
-const APP_PAGE_RUNTIME = 'dist/build/templates/app-page-runtime.js';
-const APP_PAGE_MODULE = 'dist/server/route-modules/app-page/module.compiled.js';
-const APP_PAGE_SOURCE = 'dist/server/route-modules/app-page/module.js';
-const ROUTE_MODULE = 'dist/server/route-modules/route-module.js';
-const PAGES_MODULE = 'dist/server/route-modules/pages/module.compiled.js';
-const PAGES_SOURCE = 'dist/server/route-modules/pages/module.js';
-const APP_ROUTE_MODULE = 'dist/server/route-modules/app-route/module.compiled.js';
-const APP_ROUTE_SOURCE = 'dist/server/route-modules/app-route/module.js';
-const PAGES_RUNTIMES: ReadonlyMap<string, string> = new Map([
-  [
-    'dist/compiled/next-server/pages-turbo.runtime.prod.js',
-    '6a6fb036d30a72fcd4cb10b4ffc13318f5b0df6a205fd3fa1ce97cda1717d9c1',
-  ],
-  [
-    'dist/compiled/next-server/pages.runtime.prod.js',
-    '28f90af862ee5ae750fddea94d36a55cda89e4636993569d0e60c36f2813dc98',
-  ],
-]);
-const ROUTE_RUNTIMES: ReadonlyMap<string, string> = new Map([
-  [
-    'dist/compiled/next-server/app-route-experimental.runtime.prod.js',
-    '356d9c9be870fac47a341221841c76341c37a17eb038d6151e22a0788f87a906',
-  ],
-  [
-    'dist/compiled/next-server/app-route-turbo-experimental.runtime.prod.js',
-    '4755bc19f3115dc66c2e818cf7cee5c0979a6821a5fec9513beb808cebe8a0bc',
-  ],
-  [
-    'dist/compiled/next-server/app-route-turbo.runtime.prod.js',
-    '4010a14b45b58154eaf01034845c5003de0f7c3945657e9d84290fe66ea3d41c',
-  ],
-  [
-    'dist/compiled/next-server/app-route.runtime.prod.js',
-    'ff6aea920fbe3a9a4cf4179b0bc80bf20127136754cd9225586edb77f96dc254',
-  ],
-]);
-const EVALUATOR = 'dist/server/load-manifest.external.js';
-const LOAD_COMPONENTS = 'dist/server/load-components.js';
-const APP_RUNTIMES: ReadonlyMap<string, string> = new Map([
-  [
-    'dist/compiled/next-server/app-page-experimental.runtime.prod.js',
-    '2974a9e688b53a8b9bf61ea8535f1b70f4fb4154fc60c64a231d337f556d99c7',
-  ],
-  [
-    'dist/compiled/next-server/app-page-turbo-experimental.runtime.prod.js',
-    'd0d80c2b545d96bfdebb2a3d5100c368a18a0757db211eba55abf977e37ee23f',
-  ],
-  [
-    'dist/compiled/next-server/app-page-turbo.runtime.prod.js',
-    '914353e0cf478e617e8a3b408fa74d9f526e9c338c8bda817cc05f05bfcce7a5',
-  ],
-  [
-    'dist/compiled/next-server/app-page.runtime.prod.js',
-    '9f24cd66e38f57c3144cbc456fe0f52853836d6218f449f54abba8e8c17c3921',
-  ],
-]);
-// Exact published next@16.4.3 sources, from its integrity-verified registry package.
-const REVIEWED: ReadonlyMap<string, string> = new Map([
-  ...APP_RUNTIMES,
-  ...PAGES_RUNTIMES,
-  ...ROUTE_RUNTIMES,
-  [APP_PAGE_MODULE, '3b55f56f8c70bbadffdacea23a1c19689c3889bab7e78da6c8121ada787bfe99'],
-  [APP_PAGE_RUNTIME, '0a6a5c726f95e2df2600b2fd6d71e37fd72f936f8f4dc5b94fa38d40fcd62a6b'],
-  [APP_PAGE_SOURCE, '0d658c55994938d4ffe32bbddb4e6009513248e1659e90e248d33bf3a98e0eed'],
-  [APP_ROUTE_MODULE, 'aeab4882c08e62a742aa67daa0d4a434b3330f389c38ffdf4262b6143c80b5ed'],
-  [APP_ROUTE_SOURCE, '9f9ae9defd45e773888c948e844d7a401ca79ff5c09f14211c4abd9b725e3b1b'],
-  [LOAD_COMPONENTS, '47e1446da77172ba77d6f3e6f68ae00ca7bebda206b26c0ba8625d41915dcaed'],
-  [PAGES_MODULE, 'b88d690f8f1f34d7458d6f7424dee20aab425252f62f2b60d15740ac0808037f'],
-  [PAGES_SOURCE, 'fc0ccc89c288c9426a39ae38af43e96bd14958e8a37ab79de2bca31a893dd29a'],
-  [ROUTE_MODULE, '2f1de319c06e89b9adda0365a655e8fc6b23ec0fa424a0ea9d513b6d814a1865'],
-]);
+const TURBOPACK_PRODUCER_KINDS = {
+  'app-page': 'app-page-factory',
+  pages: 'pages-class',
+  'app-route': 'app-route-class',
+} as const;
 
 export interface ManifestGraphFile {
   readonly file: string;
@@ -119,9 +66,11 @@ export interface NodeManifestNormalization {
   }[];
   readonly distDir: string;
   readonly canonicalDistDir: string;
+  readonly runtimeRootDir?: string;
 }
 export interface ManifestGraphInput {
   readonly distDir: string;
+  readonly rootDir?: string;
   readonly entries?: readonly EntryModule[] | undefined;
   readonly runtimeManifest?: string | undefined;
   readonly instrumentation?: string | undefined;
@@ -130,13 +79,25 @@ export interface ManifestGraphInput {
 interface ProtectedModule {
   readonly id: string;
   readonly relative: string;
-  readonly kind: 'evaluator' | typeof ROUTE_CLASS | typeof APP_PAGE_FACTORY | 'route-exports';
+  readonly kind: ManifestProtectedKind;
 }
 interface SealedRoute {
   readonly kind: 'app-page' | 'app-route' | 'pages';
   readonly file: string;
   readonly page: string;
   readonly pathname: string;
+}
+interface RouteLocation {
+  readonly relative: string;
+  readonly app: boolean;
+  readonly pages: boolean;
+  readonly shared: boolean;
+}
+
+function turbopackKind(child: ProtectedModule): 'app-page' | 'pages' | 'app-route' | undefined {
+  if (child.kind === APP_PAGE_FACTORY) return 'app-page';
+  if (child.relative === PAGES_MODULE) return 'pages';
+  return child.relative === APP_ROUTE_MODULE ? 'app-route' : undefined;
 }
 
 function refuse(reason: string): never {
@@ -198,59 +159,80 @@ function sealedRoutes(
   input: ManifestGraphInput,
   normalization: NodeManifestNormalization,
 ): ReadonlyMap<string, SealedRoute> {
-  const metadata = metadataEntries(input);
-  const ids = new Set<unknown>();
-  for (const entry of metadata) {
-    if (typeof entry['id'] !== 'string' || ids.has(entry['id'])) refuse('ambiguous route metadata');
-    ids.add(entry['id']);
-  }
+  const metadata = metadataById(input);
   const app = path.join(normalization.canonicalDistDir, 'server', 'app');
   const pages = path.join(normalization.canonicalDistDir, 'server', 'pages');
   const routes = new Map<string, SealedRoute>();
   for (const entry of normalization.entries) {
-    const appRelative = beneath(app, entry.canonicalFilePath);
-    const pagesRelative = beneath(pages, entry.canonicalFilePath);
-    const relative = appRelative ?? pagesRelative;
-    if (relative === undefined || !relative.endsWith('.js')) continue;
-    const metadataEntry = metadata.find((candidate) => candidate['id'] === entry.id);
-    // Shared Pages _app/_document inputs still belong to the normalization seal, but are not
-    // route constructors. They can never terminate a protected route export chain.
-    if (
-      metadataEntry === undefined &&
-      pagesRelative !== undefined &&
-      ['_app.js', '_document.js'].includes(pagesRelative)
-    )
-      continue;
-    if (
-      metadataEntry === undefined ||
-      metadataEntry['pathname'] !== entry.id ||
-      metadataEntry['runtime'] !== undefined
-    )
-      refuse('unsealed app route metadata');
-    const kind = metadataEntry['kind'];
-    const appKind = kind === 'app-page' || kind === 'app-route';
-    if (
-      (appRelative !== undefined && !appKind) ||
-      (pagesRelative !== undefined && kind !== 'pages' && kind !== 'pages-api')
-    )
-      refuse('unsealed route kind');
-    // The fixed PagesAPI template has no routeModule export, so the SDK cannot normalize it.
-    if (kind === 'pages-api') continue;
-    if (kind !== 'app-page' && kind !== 'app-route' && kind !== 'pages')
-      refuse('unsealed route kind');
-    routes.set(entry.canonicalFilePath, {
-      kind,
-      file: entry.canonicalFilePath,
-      page: `/${relative.slice(0, -'.js'.length).split(path.sep).join('/')}`,
-      pathname: entry.id,
-    });
+    const location = routeLocation(entry.canonicalFilePath, app, pages);
+    if (location === undefined) continue;
+    const route = sealedRoute(entry, metadata.get(entry.id), location);
+    if (route !== undefined) routes.set(entry.canonicalFilePath, route);
   }
   return routes;
+}
+
+function metadataById(input: ManifestGraphInput): ReadonlyMap<string, Record<string, unknown>> {
+  const metadata = new Map<string, Record<string, unknown>>();
+  const entries = metadataEntries(input);
+  for (const entry of entries) {
+    const id = entry['id'];
+    if (typeof id !== 'string' || metadata.has(id)) refuse('ambiguous route metadata');
+    metadata.set(id, entry);
+  }
+  return metadata;
+}
+
+function routeLocation(file: string, app: string, pages: string): RouteLocation | undefined {
+  const appRelative = beneath(app, file);
+  const pagesRelative = beneath(pages, file);
+  const relative = appRelative ?? pagesRelative;
+  if (relative === undefined || !relative.endsWith('.js')) return undefined;
+  return {
+    relative,
+    app: appRelative !== undefined,
+    pages: pagesRelative !== undefined,
+    shared: pagesRelative !== undefined && ['_app.js', '_document.js'].includes(pagesRelative),
+  };
+}
+
+function sealedRoute(
+  entry: NodeManifestNormalization['entries'][number],
+  metadata: Record<string, unknown> | undefined,
+  location: RouteLocation,
+): SealedRoute | undefined {
+  // Shared Pages _app/_document inputs stay in the normalization seal, but cannot terminate a
+  // protected route-export chain when the route inventory does not declare them.
+  if (metadata === undefined && location.shared) return undefined;
+  if (
+    metadata === undefined ||
+    metadata['pathname'] !== entry.id ||
+    metadata['runtime'] !== undefined
+  )
+    refuse('unsealed app route metadata');
+  const kind = metadata['kind'];
+  const appKind = kind === 'app-page' || kind === 'app-route';
+  const pagesKind = kind === 'pages' || kind === 'pages-api';
+  if ((!appKind && location.app) || (!pagesKind && location.pages)) refuse('unsealed route kind');
+  // PagesAPI has no exported routeModule for SDK normalization.
+  if (kind === 'pages-api') return undefined;
+  if (kind !== 'app-page' && kind !== 'app-route' && kind !== 'pages')
+    refuse('unsealed route kind');
+  return {
+    kind,
+    file: entry.canonicalFilePath,
+    page: `/${location.relative.slice(0, -'.js'.length).split(path.sep).join('/')}`,
+    pathname: entry.id,
+  };
 }
 function generatedEntry(input: ManifestGraphInput): string {
   if (input.entries === undefined) return refuse('missing generated entry inputs');
   return [
-    appEntrySource(input.entries, { external: false, runtimeDistDir: input.distDir }),
+    appEntrySource(input.entries, {
+      external: true,
+      runtimeDistDir: input.distDir,
+      nodeRequestMeta: true,
+    }),
     ...(input.instrumentation === undefined
       ? []
       : [`module.exports.instrumentation=()=>require(${jsLiteral(input.instrumentation)});`]),
@@ -272,31 +254,6 @@ function edgesTo(
   if (edges === undefined || edges.length === 0) return refuse('missing resolved import identity');
   return edges;
 }
-function frameworkParent(parent: string, child: string): ProtectedModule['kind'] | undefined {
-  if (
-    child === EVALUATOR &&
-    (parent === ROUTE_MODULE ||
-      APP_RUNTIMES.has(parent) ||
-      PAGES_RUNTIMES.has(parent) ||
-      ROUTE_RUNTIMES.has(parent))
-  )
-    return ROUTE_CLASS;
-  if (child === EVALUATOR && parent === LOAD_COMPONENTS) return 'evaluator';
-  if (parent === APP_PAGE_MODULE && APP_RUNTIMES.has(child)) return ROUTE_CLASS;
-  if (child === ROUTE_MODULE && parent === APP_PAGE_SOURCE) return ROUTE_CLASS;
-  if (child === APP_PAGE_SOURCE && parent === APP_PAGE_MODULE) return ROUTE_CLASS;
-  if (child === APP_PAGE_MODULE && parent === APP_PAGE_RUNTIME) return APP_PAGE_FACTORY;
-  if (parent === PAGES_MODULE && PAGES_RUNTIMES.has(child)) return ROUTE_CLASS;
-  if (parent === APP_ROUTE_MODULE && ROUTE_RUNTIMES.has(child)) return ROUTE_CLASS;
-  if (child === ROUTE_MODULE && (parent === PAGES_SOURCE || parent === APP_ROUTE_SOURCE))
-    return ROUTE_CLASS;
-  if (
-    (child === PAGES_SOURCE && parent === PAGES_MODULE) ||
-    (child === APP_ROUTE_SOURCE && parent === APP_ROUTE_MODULE)
-  )
-    return ROUTE_CLASS;
-  return undefined;
-}
 
 class ConsumerGraph {
   private readonly input: ManifestGraphInput;
@@ -307,6 +264,9 @@ class ConsumerGraph {
   private readonly complete = new Set<string>();
   private readonly visiting = new Set<string>();
   private readonly pages = new Set<string>();
+  private readonly compilerSources = new Map<string, ManifestGraphFile>();
+  private readonly turbopackProducers = new Set<string>();
+  private runtimeRoot: string | undefined;
 
   constructor(
     input: ManifestGraphInput,
@@ -323,7 +283,7 @@ class ConsumerGraph {
   private terminal(parent: string, child: ProtectedModule, code: string): boolean {
     if (parent !== this.input.analysisEntry) return false;
     if (
-      child.kind !== 'route-exports' ||
+      child.kind !== ROUTE_EXPORTS ||
       this.graph.roots?.has(parent) !== true ||
       code !== generatedEntry(this.input)
     )
@@ -344,22 +304,83 @@ class ConsumerGraph {
     const relative = path.relative(this.root, source.file).split(path.sep).join('/');
     const kind = frameworkParent(relative, child.relative);
     if (kind !== undefined) {
-      if (REVIEWED.get(relative) !== source.sha256) refuse('unknown or changed caller');
+      if (reviewedFrameworkSource(relative) !== source.sha256) refuse('unknown or changed caller');
       this.files.set(source.file, source);
       return { id: parent, relative, kind };
     }
-    if (child.kind === 'route-exports') return refuse('unknown consumer or export escape');
+    if (child.kind === ROUTE_EXPORTS) return refuse('unknown consumer or export escape');
     const route = this.routes.get(source.file);
-    if (route === undefined) return refuse('consumer is not a sealed route entry');
+    if (route === undefined) {
+      if (turbopackKind(child) === undefined) return refuse('consumer is not a sealed route entry');
+      await this.turbopack(child);
+      return undefined;
+    }
     if (child.kind === APP_PAGE_FACTORY && route.kind === 'app-page') {
       this.appPage(parent, child, { source, code, route });
-    } else if (child.relative === PAGES_MODULE && route.kind === 'pages') {
-      await this.template(parent, { source, code, route });
-    } else if (child.relative === APP_ROUTE_MODULE && route.kind === 'app-route') {
+    } else if (
+      (child.relative === PAGES_MODULE && route.kind === 'pages') ||
+      (child.relative === APP_ROUTE_MODULE && route.kind === 'app-route')
+    ) {
       await this.template(parent, { source, code, route });
     } else return refuse('unknown consumer or export escape');
     this.files.set(source.file, source);
-    return { id: parent, relative: '', kind: 'route-exports' };
+    return { id: parent, relative: '', kind: ROUTE_EXPORTS };
+  }
+
+  private async turbopackSources(): Promise<readonly NodeManifestTurbopackGraphFile[]> {
+    const sources: NodeManifestTurbopackGraphFile[] = [];
+    for (const [id, source] of this.graph.sources) {
+      const imports = this.graph.imports?.get(id);
+      if (imports === undefined) refuse('missing original graph resolutions');
+      const code = await checkedCode(source);
+      sources.push({ id, file: source.file, source: { code, sha256: source.sha256 }, imports });
+    }
+    return sources;
+  }
+
+  private async turbopack(child: ProtectedModule): Promise<void> {
+    if (this.turbopackProducers.has(child.id)) return;
+    if (this.input.rootDir === undefined || !path.isAbsolute(this.input.rootDir))
+      refuse('missing trusted compiler root');
+    const rootDir = await realpath(this.input.rootDir);
+    const distDir = await realpath(this.input.distDir);
+    const sources = await this.turbopackSources();
+    const producer = sourceOf(this.graph, child.id);
+    const kind = turbopackKind(child);
+    if (kind === undefined) refuse('unknown projected route constructor');
+    const entries = [...this.routes.values()].filter((route) => route.kind === kind);
+    const producerKind = TURBOPACK_PRODUCER_KINDS[kind];
+    const proof = await proveNodeManifestTurbopackConsumers({
+      rootDir,
+      distDir,
+      sources,
+      entries,
+      producer: { id: child.id, file: producer.file, sha256: producer.sha256, kind: producerKind },
+    });
+    // The source helper's boot terminals are not proof terminals: every actual physical
+    // importer must still reach the exact generated SDK entry's normalization contract.
+    for (const terminal of proof.terminals) {
+      await this.visit({ id: terminal.id, relative: '', kind: ROUTE_EXPORTS });
+      if (kind === 'app-page') this.pages.add(terminal.page);
+    }
+    for (const source of proof.files) this.files.set(source.file, source);
+    for (const entry of entries) {
+      const own = sources.find((source) => source.file === entry.file);
+      if (own === undefined) refuse('missing certified boot source');
+      const boot = inspectNodeManifestTurbopackEntry(own.source);
+      const targets = new Set(
+        own.imports
+          .filter((edge) => edge.specifier === boot.runtimeSpecifier)
+          .map((edge) => edge.target),
+      );
+      if (targets.size !== 1) refuse('ambiguous certified runtime source');
+      const target = targets.values().next().value;
+      const runtime = sources.find((source) => source.id === target);
+      if (runtime === undefined) refuse('missing certified runtime source');
+      this.compilerSources.set(runtime.file, { file: runtime.file, sha256: runtime.source.sha256 });
+    }
+    this.runtimeRoot = rootDir;
+    this.turbopackProducers.add(child.id);
   }
 
   private appPage(
@@ -400,11 +421,14 @@ class ConsumerGraph {
     },
   ): Promise<void> {
     const imports: NodeManifestTemplateImport[] = [];
-    for (const edge of this.graph.imports?.get(parent) ?? []) {
-      const source = this.graph.sources.get(edge.target);
-      if (source !== undefined) {
-        await checkedCode(source);
-        imports.push({ specifier: edge.specifier, file: source.file, sha256: source.sha256 });
+    const edges = this.graph.imports?.get(parent);
+    if (edges !== undefined) {
+      for (const edge of edges) {
+        const source = this.graph.sources.get(edge.target);
+        if (source !== undefined) {
+          await checkedCode(source);
+          imports.push({ specifier: edge.specifier, file: source.file, sha256: source.sha256 });
+        }
       }
     }
     const kind = context.route.kind;
@@ -435,6 +459,14 @@ class ConsumerGraph {
   sources(): readonly ManifestGraphFile[] {
     return [...this.files.values()];
   }
+
+  approvedCompilerSources(): readonly ManifestGraphFile[] {
+    return [...this.compilerSources.values()];
+  }
+
+  runtimeRootDir(): string | undefined {
+    return this.runtimeRoot;
+  }
 }
 
 /** Every protected export must terminate at the exact generated, normalizing SDK route entry. */
@@ -446,10 +478,25 @@ export async function proveManifestConsumerGraph(
   readonly files: readonly ManifestGraphFile[];
   readonly normalization: NodeManifestNormalization;
   readonly pages: readonly string[];
+  readonly approvedCompilerSources: readonly ManifestGraphFile[];
 }> {
   const normalization = await normalizationOf(input);
   const routes = sealedRoutes(input, normalization);
   const consumers = new ConsumerGraph(input, graph, evaluator.root, routes);
   await consumers.visit({ id: evaluator.id, relative: EVALUATOR, kind: 'evaluator' });
-  return { files: consumers.sources(), normalization, pages: consumers.certifiedPages() };
+  const runtimeRootDir = consumers.runtimeRootDir();
+  const sealedNormalization =
+    runtimeRootDir === undefined
+      ? normalization
+      : Object.freeze({
+          ...normalization,
+          entries: Object.freeze(normalization.entries.map((entry) => Object.freeze({ ...entry }))),
+          runtimeRootDir,
+        });
+  return {
+    files: consumers.sources(),
+    normalization: sealedNormalization,
+    pages: consumers.certifiedPages(),
+    approvedCompilerSources: consumers.approvedCompilerSources(),
+  };
 }

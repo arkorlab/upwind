@@ -8,7 +8,7 @@ import type { EntryModule } from './function.ts';
  */
 export function appEntrySource(
   entries: readonly EntryModule[],
-  paths: Pick<BuildPaths, 'external' | 'runtimeDistDir'>,
+  paths: Pick<BuildPaths, 'external' | 'runtimeDistDir'> & { readonly nodeRequestMeta?: boolean },
 ): string {
   const table = entries
     .map((entry) => {
@@ -22,6 +22,7 @@ export function appEntrySource(
         '      if (loaded.routeModule !== undefined) {',
         `        loaded.routeModule.distDir = ${jsLiteral(paths.runtimeDistDir)};`,
         '      }',
+        ...(paths.nodeRequestMeta === true ? nodeHandlerFacade(paths.runtimeDistDir) : []),
         '      return loaded;',
         '    };',
         '    return () => {',
@@ -49,4 +50,23 @@ export function appEntrySource(
     '};',
     '',
   ].join('\n');
+}
+
+/** Node-only: Pages API keeps its routeModule private and consumes the handler's requestMeta. */
+function nodeHandlerFacade(distDir: string): readonly string[] {
+  return [
+    '      const handler = loaded.handler;',
+    '      if (typeof handler === "function") {',
+    `        const distDir = require('node:path').resolve(process.cwd(), ${jsLiteral(distDir)});`,
+    '        const normalized = Object.create(loaded);',
+    '        Object.defineProperty(normalized, "handler", {',
+    '          enumerable: true,',
+    '          value(request, response, context, ...rest) {',
+    '            const requestMeta = { ...context?.requestMeta, distDir, relativeProjectDir: "." };',
+    '            return Reflect.apply(handler, loaded, [request, response, { ...context, requestMeta }, ...rest]);',
+    '          },',
+    '        });',
+    '        return normalized;',
+    '      }',
+  ];
 }

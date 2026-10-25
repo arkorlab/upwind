@@ -8,7 +8,7 @@ import { messageHeaders } from '../src/node-http.ts';
 describe('node connection-specific headers', () => {
   it('ignores malformed Connection tokens while stripping every valid nominated header', () => {
     const socket = new Socket();
-     
+
     try {
       const message = new IncomingMessage(socket);
       message.rawHeaders = ['X-Hop', 'private', 'X-Stay', 'public', 'X-Other-Hop', 'private'];

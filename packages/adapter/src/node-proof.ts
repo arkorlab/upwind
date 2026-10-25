@@ -15,13 +15,14 @@ import {
   outputNameOf,
   type FunctionDependencies,
 } from './dependencies.ts';
-import { dynamicLoadsInChunk } from './dynamic-loads.ts';
+import { dynamicLoadsOf } from './dynamic-loads.ts';
 import type { BuildFunctionInput } from './function.ts';
 import { nativeLoadsPlugin, type NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
-import { dynamicNodeClosureRefusal, originalNodeHostLoaderRefusal } from './node-closure-proof.ts';
+import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
 import type { ManifestGraphEdge, NodeManifestNormalization } from './node-manifest-graph.ts';
 import { proveNodeManifests, type NodeManifestProof } from './node-manifest-proof.ts';
+import { originalHostLoadersPlugin } from './node-original-host-loaders.ts';
 import { cacheHandlersPatch } from './patches/cache-handlers.ts';
 import { instrumentationPatch } from './patches/instrumentation.ts';
 import type { AppliedPatch } from './patches/rolldown.ts';
@@ -35,7 +36,9 @@ const ROLLDOWN_RUNTIME_MODULE = '\0rolldown/runtime.js';
 // These expose the original Node graph. No Worker-specific code or dependency is substituted.
 const GRAPH_LINKS = [turbopackRuntimePatch, instrumentationPatch, cacheHandlersPatch];
 
-type NodeProofInput = Partial<Pick<BuildFunctionInput, 'manifests' | 'runtimeManifest'>> &
+type NodeProofInput = Partial<
+  Pick<BuildFunctionInput, 'manifests' | 'runtimeManifest' | 'repoRoot'>
+> &
   Pick<
     BuildFunctionInput,
     'kind' | 'name' | 'projectDir' | 'outDir' | 'entries' | 'entryTraces' | 'patch'
@@ -62,6 +65,7 @@ export interface NodeFunctionProof {
   readonly native: readonly NativeLoad[];
   readonly files: readonly OriginalNodeSource[];
   readonly dependencies: FunctionDependencies;
+  // eslint-disable-next-line sonarjs/no-redundant-optional -- Preserve exactOptionalPropertyTypes forwarding.
   readonly normalization?: NodeManifestNormalization | undefined;
 }
 
@@ -92,7 +96,11 @@ async function proofEntry(input: NodeProofInput): Promise<string> {
   await writeFile(
     entry,
     [
-      appEntrySource(input.entries, { external: false, runtimeDistDir: input.patch.distDir }),
+      appEntrySource(input.entries, {
+        external: true,
+        runtimeDistDir: input.patch.distDir,
+        nodeRequestMeta: true,
+      }),
       ...(input.patch.instrumentation === undefined
         ? []
         : [
@@ -131,6 +139,23 @@ async function originalNodeModule(
   return { code: linkedSource(bytes.toString('utf8'), id, input, graph) };
 }
 
+function resolvedEdges(
+  importedIds: readonly string[],
+  dynamicallyImportedIds: readonly string[],
+  resolutions: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+): ManifestGraphEdge[] {
+  const edges: ManifestGraphEdge[] = [];
+  if (resolutions === undefined) return edges;
+  const imported = new Set(importedIds);
+  for (const dependency of dynamicallyImportedIds) imported.add(dependency);
+  for (const [specifier, targets] of resolutions) {
+    for (const target of targets) {
+      if (imported.has(target)) edges.push({ specifier, target });
+    }
+  }
+  return edges;
+}
+
 function originalNodeGraphPlugin(input: NodeProofInput, graph: OriginalNodeGraph): Plugin {
   return {
     name: 'upwind-original-node-graph',
@@ -162,15 +187,14 @@ function originalNodeGraphPlugin(input: NodeProofInput, graph: OriginalNodeGraph
         if (module === null) continue;
         graph.importers.set(id, [...module.importers, ...module.dynamicImporters]);
         if (module.isEntry) graph.roots.add(id);
-        const imported = new Set(module.importedIds);
-        for (const dependency of module.dynamicallyImportedIds) imported.add(dependency);
-        const edges: ManifestGraphEdge[] = [];
-        for (const [specifier, targets] of graph.resolutions.get(id) ?? []) {
-          for (const target of targets) {
-            if (imported.has(target)) edges.push({ specifier, target });
-          }
-        }
-        graph.imports.set(id, edges);
+        graph.imports.set(
+          id,
+          resolvedEdges(
+            module.importedIds,
+            module.dynamicallyImportedIds,
+            graph.resolutions.get(id),
+          ),
+        );
       }
     },
   };
@@ -186,8 +210,7 @@ function retainedFileIdentity(projectDir: string, file: string): string {
   return JSON.stringify(bounded);
 }
 
-async function assertRetainedOriginalClosures(
-  projectDir: string,
+async function assertRetainedSourceBytes(
   chunk: OutputChunk,
   graph: OriginalNodeGraph,
 ): Promise<void> {
@@ -199,26 +222,52 @@ async function assertRetainedOriginalClosures(
     const bytes = await nodeProofSource(original.file);
     if (digest(bytes) !== original.sha256)
       throw new AuditError('Original Node source changed before its host-loader proof');
-    // JSON is parsed as data by the bundler, never evaluated as a JavaScript module.
-    if (original.file.endsWith('.json')) continue;
-    const refusal = originalNodeHostLoaderRefusal(original.file, bytes.toString('utf8'));
-    if (refusal !== undefined) {
-      const identity = retainedFileIdentity(projectDir, original.file);
-      throw new AuditError(
-        `Original Node graph has ${refusal} in ${identity}; refusing native publication`,
-      );
-    }
   }
+}
+
+function approvedCompilerModules(
+  chunk: OutputChunk,
+  graph: OriginalNodeGraph,
+  manifests: NodeManifestProof,
+): ReadonlySet<string> {
+  const retained = new Map<string, Set<string>>();
+  const code = new Map(manifests.codeSources.map((source) => [source.file, source.sha256]));
+  const approved = new Map(
+    manifests.approvedCompilerSources.map((source) => [source.file, source.sha256]),
+  );
+  const modules = new Set<string>();
+  for (const [id, module] of Object.entries(chunk.modules)) {
+    if (module.code === null) continue;
+    const source = graph.sources.get(id);
+    if (source === undefined) continue;
+    const hashes = retained.get(source.file) ?? new Set<string>();
+    hashes.add(source.sha256);
+    retained.set(source.file, hashes);
+    if (approved.get(source.file) === source.sha256) modules.add(id);
+  }
+  // Deferred executable targets must have passed the ordinary original-closure audit too.
+  // Generated manifest data has a separate inert-data proof.
+  for (const source of manifests.codeSources) {
+    if (retained.get(source.file)?.has(source.sha256) !== true)
+      throw new AuditError('Reviewed Next.js code was not retained by the original Node graph');
+  }
+  for (const source of manifests.approvedCompilerSources) {
+    if (code.get(source.file) !== source.sha256)
+      throw new AuditError('Reviewed compiler runtime lacks its original code-source proof');
+  }
+  return modules;
 }
 
 function assertRetainedClosures(
   projectDir: string,
   chunk: OutputChunk,
   manifests: NodeManifestProof,
+  compilerModules: ReadonlySet<string>,
 ): void {
   const modules = Object.entries(chunk.modules);
   for (const [file, module] of modules) {
-    if (module.code === null || isNodeProofCompilerModule(file)) continue;
+    if (module.code === null || isNodeProofCompilerModule(file) || compilerModules.has(file))
+      continue;
     const inspection = manifests.inspectionCode(file, module.code);
     const refusal = dynamicNodeClosureRefusal(file, inspection);
     if (refusal !== undefined) {
@@ -234,6 +283,7 @@ function proofDependencies(
   input: NodeProofInput,
   chunk: OutputChunk,
   graph: OriginalNodeGraph,
+  compilerModules: ReadonlySet<string>,
 ): FunctionDependencies {
   return functionDependencies(
     input.projectDir,
@@ -244,7 +294,11 @@ function proofDependencies(
       patches: graph.patches,
       stubs: [],
       wasmModules: [],
-      dynamicLoads: dynamicLoadsInChunk(chunk),
+      // Exact, byte-sealed production runtimes have separately proven compiler operations.
+      // Their actual target chunks still pass the ordinary retained-code audit.
+      dynamicLoads: Object.entries(chunk.modules).flatMap(([file, module]) =>
+        module.code === null || compilerModules.has(file) ? [] : dynamicLoadsOf(file, module.code),
+      ),
     },
     { modules: [], size: { bytes: Buffer.byteLength(chunk.code), gzipBytes: 0 } },
   );
@@ -304,12 +358,13 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     patches: [],
     externals: new Set(),
   };
+  const hostLoaders = originalHostLoadersPlugin(graph.sources);
   await using bundle = await rolldown({
     cwd: input.projectDir,
     input: entryFile,
     platform: 'node',
     resolve: { conditionNames: ['node', 'default'] },
-    plugins: [originalNodeGraphPlugin(input, graph), native.plugin],
+    plugins: [originalNodeGraphPlugin(input, graph), hostLoaders.plugin, native.plugin],
     external(specifier) {
       if (!isBuiltin(specifier)) return false;
       graph.externals.add(specifier);
@@ -331,10 +386,11 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) throw new AuditError('Original Node graph produced no proof chunk');
-  await assertRetainedOriginalClosures(input.projectDir, chunk, graph);
+  await assertRetainedSourceBytes(chunk, graph);
   const manifests = await proveNodeManifests(
     {
       distDir: input.patch.distDir,
+      rootDir: input.repoRoot ?? input.projectDir,
       manifests: input.manifests,
       entryTraces: input.entryTraces,
       entries: input.entries,
@@ -348,16 +404,28 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
       imports: graph.imports,
       roots: graph.roots,
       rendered: new Map(
-        Object.entries(chunk.modules).flatMap(([id, module]) => module.code === null ? [] : [[id, module.code] as const]),
+        Object.entries(chunk.modules).flatMap(([id, module]) =>
+          module.code === null ? [] : [[id, module.code] as const],
+        ),
       ),
       retained: new Set(Object.keys(chunk.modules)),
     },
   );
-  assertRetainedClosures(input.projectDir, chunk, manifests);
+  const compilerModules = approvedCompilerModules(chunk, graph, manifests);
+  const retainedHost = hostLoaders
+    .retained(chunk)
+    .find((site) => !compilerModules.has(site.importer));
+  if (retainedHost !== undefined) {
+    const identity = retainedFileIdentity(input.projectDir, retainedHost.file);
+    throw new AuditError(
+      `Original Node graph has an unproved original CommonJS host loader in ${identity}; refusing native publication`,
+    );
+  }
+  assertRetainedClosures(input.projectDir, chunk, manifests, compilerModules);
   const retained = await native.retained(chunk);
   if (retained.length === 0)
     throw new AuditError('The original Node graph has no retained, owned native capability');
-  const dependencies = proofDependencies(input, chunk, graph);
+  const dependencies = proofDependencies(input, chunk, graph, compilerModules);
   auditNodeFunction(
     input.name ?? input.kind,
     { app: chunk.code },

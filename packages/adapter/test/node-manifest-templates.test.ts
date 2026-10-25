@@ -51,7 +51,8 @@ async function input(kind: 'pages' | 'app-route'): Promise<NodeManifestTemplateI
     fileURLToPath(import.meta.resolve(`next/dist/build/templates/${kind}.js`)),
   );
   const imports = [];
-  for (const specifier of kind === 'pages' ? PAGES_IMPORTS : ROUTE_IMPORTS) {
+  const specifiers = kind === 'pages' ? PAGES_IMPORTS : ROUTE_IMPORTS;
+  for (const specifier of specifiers) {
     if (specifier.startsWith('VAR_')) {
       imports.push({ specifier, file: `/project/${specifier}.js`, sha256: digest(specifier) });
       continue;
@@ -64,12 +65,34 @@ async function input(kind: 'pages' | 'app-route'): Promise<NodeManifestTemplateI
       ? { kind, page: '/blog/[slug]', pathname: '/blog/[slug]' }
       : { kind, page: '/stream/route', pathname: '/stream' };
   const code = (await readFile(file, 'utf8'))
-    .replaceAll('VAR_DEFINITION_PAGE', route.page)
-    .replaceAll('VAR_DEFINITION_PATHNAME', route.pathname)
+    .replaceAll('VAR_DEFINITION_PAGE', () => route.page)
+    .replaceAll('VAR_DEFINITION_PATHNAME', () => route.pathname)
     .replaceAll('VAR_DEFINITION_FILENAME', 'route')
     .replaceAll('VAR_DEFINITION_BUNDLE_PATH', 'app/stream/route')
     .replaceAll('VAR_RESOLVED_PAGE_PATH', '/project/app/stream/route.ts');
   return { source: source(code), imports, route };
+}
+
+const REFUSAL_REPLACEMENTS = {
+  route: ["page: '/blog/[slug]'", "page: '/other'"],
+  constructor: ['new _modulecompiled.PagesRouteModule', 'new _modulecompiled.OtherRouteModule'],
+  'export-helper': ['_export(exports, {', '_export = function() {};\n_export(exports, {'],
+  'export-escape': ['const handler =', 'exports.escaped=routeModule;\nconst handler ='],
+  'dist-expression': ["distDir: process.env.__NEXT_RELATIVE_DIST_DIR || ''", 'distDir: userInput()'],
+  'handler-mutation': ['const handler =', 'routeModule.loadManifests(userInput(), userInput());\nconst handler ='],
+  'handler-alias': ['const handler =', 'exports.class=_modulecompiled.PagesRouteModule;\nconst handler ='],
+  digest: ['const handler =', 'const handler ='],
+} as const;
+
+function changedInput(
+  own: NodeManifestTemplateInput,
+  scenario: keyof typeof REFUSAL_REPLACEMENTS,
+): NodeManifestTemplateInput {
+  const [original, replacement] = REFUSAL_REPLACEMENTS[scenario];
+  const code = own.source.code.replace(original, () => replacement);
+  const candidate = { ...own, source: source(code) };
+  if (scenario === 'digest') candidate.source.sha256 = digest('other bytes');
+  return candidate;
 }
 
 describe('finite original Next.js route template consumers', () => {
@@ -126,28 +149,7 @@ describe('finite original Next.js route template consumers', () => {
     'digest',
   ] as const)('refuses an unproved %s even with a reviewed class dependency', async (scenario) => {
     const own = await input('pages');
-    const replacements = {
-      route: ["page: '/blog/[slug]'", "page: '/other'"],
-      constructor: ['new _modulecompiled.PagesRouteModule', 'new _modulecompiled.OtherRouteModule'],
-      'export-helper': ['_export(exports, {', '_export = function() {};\n_export(exports, {'],
-      'export-escape': ['const handler =', 'exports.escaped=routeModule;\nconst handler ='],
-      'dist-expression': [
-        "distDir: process.env.__NEXT_RELATIVE_DIST_DIR || ''",
-        'distDir: userInput()',
-      ],
-      'handler-mutation': [
-        'const handler =',
-        'routeModule.loadManifests(userInput(), userInput());\nconst handler =',
-      ],
-      'handler-alias': [
-        'const handler =',
-        'exports.class=_modulecompiled.PagesRouteModule;\nconst handler =',
-      ],
-      digest: ['const handler =', 'const handler ='],
-    }[scenario];
-    const code = own.source.code.replace(replacements[0]!, replacements[1]!);
-    const candidate = { ...own, source: source(code) };
-    if (scenario === 'digest') candidate.source.sha256 = digest('other bytes');
+    const candidate = changedInput(own, scenario);
 
     await expect(assertNodeManifestTemplateConsumer(candidate)).rejects.toThrow(
       'Unproved Next.js route template',

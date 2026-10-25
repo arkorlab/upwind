@@ -45,15 +45,15 @@ async function fixture(directory: string, kind: 'pages' | 'app-route') {
       : { id: '/stream', page: '/stream/route', relative: 'server/app/stream/route.js' };
   const entry = path.join(distDir, route.relative);
   const code = (await readFile(templateFile, 'utf8'))
-    .replaceAll('VAR_DEFINITION_PAGE', route.page)
-    .replaceAll('VAR_DEFINITION_PATHNAME', route.id)
+    .replaceAll('VAR_DEFINITION_PAGE', () => route.page)
+    .replaceAll('VAR_DEFINITION_PATHNAME', () => route.id)
     .replaceAll('VAR_DEFINITION_FILENAME', 'route')
     .replaceAll('VAR_DEFINITION_BUNDLE_PATH', 'app/stream/route')
     .replaceAll('VAR_RESOLVED_PAGE_PATH', '/project/app/stream/route.ts');
   await mkdir(path.dirname(entry), { recursive: true });
   await writeFile(entry, code);
   sources.set(entry, { file: entry, sha256: digest(code) });
-  const imported = [];
+  const imported: { specifier: string; target: string }[] = [];
   const program: unknown = parseAst(code);
   if (!isNode(program)) throw new Error('Expected an inert published template program');
   for (const visit of visitTree(program)) {
@@ -81,7 +81,11 @@ async function fixture(directory: string, kind: 'pages' | 'app-route') {
   }
   const entries = [{ id: route.id, filePath: entry }];
   const analysisEntry = path.join(directory, 'entry.cjs');
-  const rootCode = appEntrySource(entries, { external: false, runtimeDistDir: distDir });
+  const rootCode = appEntrySource(entries, {
+    external: true,
+    runtimeDistDir: distDir,
+    nodeRequestMeta: true,
+  });
   await writeFile(analysisEntry, rootCode);
   sources.set(analysisEntry, { file: analysisEntry, sha256: digest(rootCode) });
   const importers = new Map([
@@ -125,7 +129,9 @@ describe('finite route templates through the complete manifest consumer graph', 
   let directory: string;
 
   beforeEach(async () => {
-    directory = await realpath(await mkdtemp(path.join(tmpdir(), 'upwind-template-graph-')));
+    const prefix = path.join(tmpdir(), 'upwind-template-graph-');
+    const temporary = await mkdtemp(prefix);
+    directory = await realpath(temporary);
   });
 
   afterEach(async () => {

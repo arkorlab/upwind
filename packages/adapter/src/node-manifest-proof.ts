@@ -35,6 +35,10 @@ interface ManifestProofInput extends ManifestGraphInput {
 
 export interface NodeManifestProof {
   readonly files: readonly ManifestProofFile[];
+  /** Code is separate from inert generated manifest data; the original closure gates still apply. */
+  readonly codeSources: readonly ManifestProofFile[];
+  /** Exact raw compiler runtimes, only after their complete caller/route/SDK-root proof closes. */
+  readonly approvedCompilerSources: readonly ManifestProofFile[];
   readonly normalization?: NodeManifestNormalization | undefined;
   /** Inspection only: never returned to Rolldown or copied into the physical Node artifact. */
   inspectionCode(file: string, code: string): string;
@@ -323,6 +327,8 @@ export async function proveNodeManifests(
   });
   const approved = new Set<string>();
   const files = new Map<string, ManifestProofFile>();
+  const codeSources = new Map<string, ManifestProofFile>();
+  const compilerSources = new Map<string, ManifestProofFile>();
   let normalization: NodeManifestNormalization | undefined;
   const pages = new Set<string>();
   for (const [id, evaluator] of evaluators) {
@@ -334,8 +340,14 @@ export async function proveNodeManifests(
     const consumers = await proveManifestConsumerGraph(input, graph, { id, root });
     normalization = consumers.normalization;
     for (const page of consumers.pages) pages.add(page);
-    for (const source of consumers.files) files.set(source.file, source);
+    for (const source of consumers.files) {
+      files.set(source.file, source);
+      codeSources.set(source.file, source);
+    }
+    for (const source of consumers.approvedCompilerSources)
+      compilerSources.set(source.file, source);
     files.set(evaluator.file, evaluator);
+    codeSources.set(evaluator.file, evaluator);
     files.set(metadata.file, metadata);
     approved.add(id);
   }
@@ -345,6 +357,8 @@ export async function proveNodeManifests(
   }
   return {
     files: [...files.values()],
+    codeSources: [...codeSources.values()],
+    approvedCompilerSources: [...compilerSources.values()],
     ...(normalization !== undefined && { normalization }),
     inspectionCode: (file, code) => (approved.has(file) ? inspectedEvaluator(code) : code),
   };
