@@ -47,6 +47,7 @@ import { dataUploadKey } from '../scope/data-uploads.ts';
 import type { DataSetInput, DataSetOutcome } from '../scope/data.ts';
 import { NO_HISTORY } from '../scope/history.ts';
 import { planInvalidate } from '../scope/invalidations.ts';
+import { BlobLengthError } from '../scope/io.ts';
 import { MutationPipeline, type MutationPlan, type OwnRun } from '../scope/mutation-pipeline.ts';
 import { Alarm, initializeScope, ScopeQueue } from '../scope/mutations.ts';
 import { locateArtifact, readCurrentData } from '../scope/reads.ts';
@@ -405,9 +406,16 @@ export class NativeAuthority implements CacheHost {
   async readArtifact(artifactId: string): Promise<Uint8Array | undefined> {
     const location = locateArtifact(this.#sql, artifactId);
     if (location === undefined) return undefined;
-    const bytes = await this.#files.blobs.read(location.storageRef, location.byteLength);
-    if (bytes !== undefined && createHash('sha256').update(bytes).digest('hex') === location.sha256)
-      return bytes;
+    try {
+      const bytes = await this.#files.blobs.read(location.storageRef, location.byteLength);
+      if (
+        bytes !== undefined &&
+        createHash('sha256').update(bytes).digest('hex') === location.sha256
+      )
+        return bytes;
+    } catch (error) {
+      if (!(error instanceof BlobLengthError)) throw error;
+    }
     await this.#pipeline.locked(false, () => rememberArtifactFailure(this.#sql, location));
     return undefined;
   }

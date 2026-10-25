@@ -1,5 +1,4 @@
 /* eslint-disable security/detect-non-literal-fs-filename -- Every path belongs to a test-created fixture directory. */
-import { once } from 'node:events';
 import type { ReadStream } from 'node:fs';
 import { type FileHandle, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -86,7 +85,8 @@ describe('native static file delivery', () => {
     const handle = await handles[0];
     if (handle === undefined) throw new Error('the file was not opened');
     const reader = response?.body?.getReader();
-    const chunk = await reader?.read();
+    if (reader === undefined) throw new Error('the response has no streaming body');
+    const chunk = await reader.read();
 
     expect(chunk?.done).toBe(false);
     expect(chunk?.value?.byteLength).toBeGreaterThan(0);
@@ -94,8 +94,13 @@ describe('native static file delivery', () => {
 
     const stream = streams[0];
     if (stream === undefined) throw new Error('the file stream was not created');
-    const closed = once(stream, 'close');
-    await reader?.cancel();
+    // Cancellation emits AbortError on the Node stream before its final descriptor cleanup.
+    const closed = new Promise<void>((resolve) => {
+      stream.once('close', resolve);
+    });
+
+    await expect(reader.cancel()).resolves.toBeUndefined();
+
     await closed;
 
     expect(handle.fd).toBe(-1);

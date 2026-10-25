@@ -8,7 +8,7 @@ describe('native build target environment', () => {
       spawnBuild(
         { projectDir: process.cwd() },
         {
-          env: { UPWIND_BUILD_TARGET: 'node' },
+          env: { NODE_ENV: 'production', UPWIND_BUILD_TARGET: 'node' },
           forDeploy: true,
         },
       ),

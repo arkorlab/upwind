@@ -4,6 +4,7 @@ import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 
 import { PLATFORM_REQUEST_HEADERS } from '@stayingupwind/core/paas';
+import { handedOnAsSent, PLATFORM_HEADER_PREFIX } from '@stayingupwind/core/request';
 
 const HOP_HEADERS = new Set([
   'connection',
@@ -49,8 +50,7 @@ function publicHeaders(req: IncomingMessage, origin: URL): Headers {
   // Snapshot before deleting: a live Headers iterator can skip the next field after a removal.
   const names = [...headers.keys()];
   for (const name of names) {
-    if (name === 'forwarded' || name === 'x-real-ip' || name.startsWith('x-forwarded-'))
-      headers.delete(name);
+    if (name === 'forwarded' || !handedOnAsSent(name)) headers.delete(name);
   }
   headers.set('host', origin.host);
   headers.set('x-forwarded-host', origin.host);
@@ -106,6 +106,7 @@ export async function writeNativeResponse(
   );
   res.statusCode = response.status;
   for (const [name, value] of response.headers) {
+    if (name === 'x-next-cache-tags' || name.startsWith(PLATFORM_HEADER_PREFIX)) continue;
     if (name !== 'set-cookie' && !HOP_HEADERS.has(name) && !nominated.has(name))
       res.setHeader(name, value);
   }

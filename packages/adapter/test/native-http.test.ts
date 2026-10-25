@@ -46,6 +46,15 @@ describe('native public boundary', () => {
                 forwarded: 'host=attacker.example',
                 connection: 'x-private',
                 'x-private': 'discard',
+                cookie: 'session=actual',
+                'x-middleware-set-cookie': 'session=spoofed',
+                'x-middleware-override-headers': 'cookie',
+                'x-middleware-request-cookie': 'session=spoofed-again',
+                'x-middleware-prefetch': '1',
+                'x-nextjs-data': '1',
+                'x-invoke-path': '/private',
+                rsc: '1',
+                'next-action': 'public-action',
               },
             },
             (response) => {
@@ -69,12 +78,15 @@ describe('native public boundary', () => {
       );
 
       expect(result.url).toBe('https://public.example//other.example/path');
-      expect(result.headers['host']).toBe('public.example');
-      expect(result.headers['x-forwarded-host']).toBe('public.example');
-      expect(result.headers['x-private']).toBeUndefined();
-      expect(result.headers[MIDDLEWARE_DONE_HEADER]).toBeUndefined();
-      expect(result.headers[RESUME_PRERENDER_HEADER]).toBeUndefined();
-      expect(result.headers['forwarded']).toBeUndefined();
+      expect(result.headers).toStrictEqual({
+        host: 'public.example',
+        'x-forwarded-host': 'public.example',
+        'x-forwarded-proto': 'https',
+        cookie: 'session=actual',
+        'x-middleware-prefetch': '1',
+        rsc: '1',
+        'next-action': 'public-action',
+      });
     } finally {
       await close(server);
     }
@@ -83,7 +95,12 @@ describe('native public boundary', () => {
   it('streams the first chunk before deferred work is released and keeps duplicate cookies', async () => {
     const deferred = Promise.withResolvers<undefined>();
     const server = createServer((req, res) => {
-      const headers = new Headers({ 'content-type': 'text/plain' });
+      const headers = new Headers({
+        'content-type': 'text/plain',
+        'x-arkor-invalidated-tags': 'private-tag',
+        'x-next-cache-tags': 'private-cache-tag',
+        'cdn-cache-control': 'public, max-age=60',
+      });
       headers.append('set-cookie', 'first=1');
       headers.append('set-cookie', 'second=2');
       const body = new ReadableStream<Uint8Array>({
@@ -111,6 +128,9 @@ describe('native public boundary', () => {
       const response = await fetch(url);
 
       expect(response.headers.getSetCookie()).toStrictEqual(['first=1', 'second=2']);
+      expect(response.headers.has('x-arkor-invalidated-tags')).toBe(false);
+      expect(response.headers.has('x-next-cache-tags')).toBe(false);
+      expect(response.headers.get('cdn-cache-control')).toBe('public, max-age=60');
 
       const reader = response.body?.getReader();
 

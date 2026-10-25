@@ -31,7 +31,7 @@ describe('native dependency files', () => {
     );
   });
 
-  it('runs copied package code and data through real Node resolution after moving the output', async () => {
+  it('relocates an NFT-discovered package alias across additional roots and runs it without the originals', async () => {
     const root = await temporary();
     const project = path.join(root, 'project');
     const store = path.join(root, 'store/example');
@@ -40,25 +40,38 @@ describe('native dependency files', () => {
     const entry = await file(
       project,
       '.next/server/entry.cjs',
-      'module.exports = require("example")',
+      'module.exports = require("example-native-alias")',
     );
-    const packageFile = await file(
+    await file(
       store,
       'index.cjs',
       'module.exports = require("node:fs").readFileSync(require("node:path").join(__dirname,"message.txt"),"utf8")',
     );
-    const packageManifest = await file(
-      store,
-      'package.json',
-      '{"name":"example","main":"index.cjs"}',
-    );
-    const data = await file(store, 'message.txt', 'native package data');
+    await file(store, 'package.json', '{"name":"example","main":"index.cjs"}');
+    await file(store, 'message.txt', 'native package data');
     const license = await file(store, 'LICENSE', 'example package license');
-    const link = path.join(project, 'node_modules/example');
+    const link = path.join(project, '.next/node_modules/example-native-alias');
     await mkdir(path.dirname(link), { recursive: true });
     await symlink(path.relative(path.dirname(link), store), link, 'dir');
+    const trace = await file(
+      project,
+      '.next/server/entry.cjs.nft.json',
+      JSON.stringify({
+        version: 1,
+        files: ['../node_modules/example-native-alias'],
+        symlinks: [[0, '.', 0]],
+        additionalRoots: [
+          {
+            name: 'package-store',
+            path: '../../../store/example',
+            files: ['index.cjs', 'package.json', 'message.txt'],
+          },
+        ],
+      }),
+    );
+    const traced = await nativeTraceFiles(trace);
     const layout = await copyNativeFiles({
-      files: [entry, packageFile, packageManifest, data, link],
+      files: [entry, ...traced],
       directories: [project],
       outDir: output,
     });

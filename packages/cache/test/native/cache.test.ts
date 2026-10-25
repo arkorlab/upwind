@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, truncate, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -31,6 +31,22 @@ function packOf(bytes: Uint8Array) {
   const decoded = decodeGenerationPack(bytes);
   if (decoded.kind !== 'ok') throw new Error('invalid generation pack');
   return decoded.pack;
+}
+
+async function truncateArtifact(directory: string, body: string): Promise<string> {
+  const objects = path.join(directory, 'objects');
+  // These paths refer only to this test's private temporary cache objects.
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
+  const names = await readdir(objects);
+  for (const name of names) {
+    const file = path.join(objects, name);
+    // eslint-disable-next-line security/detect-non-literal-fs-filename
+    if ((await readFile(file, 'utf8')) !== body) continue;
+    // eslint-disable-next-line security/detect-non-literal-fs-filename
+    await truncate(file, 1);
+    return file;
+  }
+  throw new Error('missing artifact fixture');
 }
 
 async function openCache(
@@ -250,6 +266,43 @@ describe('native cache', () => {
 
     expect(result.kind).toBe('refused');
     await expect(host.readRecord(winner.entryId)).resolves.toBeUndefined();
+  });
+
+  it('a truncated artifact becomes a cache miss and regeneration repairs it after restart', async () => {
+    const first = await openCache();
+    const original = leaseOf(await first.host.startAttempt(route));
+    const request = await generation(first.host, original.attemptId, original.fencingToken);
+    const committed = await first.host.commit(original.attemptId, request);
+
+    expect(committed.kind).toBe('published');
+
+    const record = packOf((await first.host.readRecord(original.entryId)) ?? new Uint8Array());
+    const artifactId = record.header.artifacts.find(
+      (artifact) => artifact.role === 'rsc',
+    )?.artifactId;
+
+    expect(artifactId).toBeDefined();
+
+    const damagedFile = await truncateArtifact(first.directory, 'RSC output');
+
+    await expect(first.host.readArtifact(artifactId ?? '')).resolves.toBeUndefined();
+    await expect(first.host.readArtifact(artifactId ?? '')).resolves.toBeUndefined();
+
+    await first.cache.close();
+
+    const reopened = await openCache(first.directory);
+    const repair = leaseOf(await reopened.host.startAttempt({ ...route, reason: 'manual' }));
+    const replacement = await generation(reopened.host, repair.attemptId, repair.fencingToken);
+
+    // The persisted failure must reserve a new location instead of overwriting the known bad one.
+    // eslint-disable-next-line security/detect-non-literal-fs-filename
+    await expect(readFile(damagedFile, 'utf8')).resolves.toBe('R');
+    await expect(reopened.host.commit(repair.attemptId, replacement)).resolves.toMatchObject({
+      kind: 'published',
+    });
+    expect(new TextDecoder().decode(await reopened.host.readArtifact(artifactId ?? ''))).toBe(
+      'RSC output',
+    );
   });
 
   it('restarting with build seeds preserves invalidations already applied to the build generation', async () => {

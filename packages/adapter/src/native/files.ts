@@ -28,7 +28,11 @@ function inside(root: string, file: string): string {
   return relative;
 }
 
-/** Every traced source, including symlinks that make Node's package resolution work. */
+/**
+ * Every traced source, including symlinks that make Node's package resolution work. NFT lists
+ * each link among its files; the copier reads that actual link rather than applying standalone's
+ * additional-root destination remapping, because native output retains the original tree.
+ */
 export async function nativeTraceFiles(file: string): Promise<string[]> {
   const trace: unknown = JSON.parse(await readFile(file, 'utf8'));
   if (typeof trace !== 'object' || trace === null || !('files' in trace)) {

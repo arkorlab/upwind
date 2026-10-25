@@ -4,11 +4,13 @@ import { describe, expect, it } from 'vitest';
 
 import { startEnvironment } from '../../src/start/environment.ts';
 
+const PROCESS_ENV: NodeJS.ProcessEnv = { NODE_ENV: 'production' };
 const OPTIONS = { projectDir: path.resolve('site'), envFiles: [] };
 
 describe('native start environment', () => {
   it('applies listen defaults after the environment is merged', () => {
-    expect(startEnvironment(OPTIONS, {}, {})).toStrictEqual({
+    expect(startEnvironment(OPTIONS, {}, PROCESS_ENV)).toStrictEqual({
+      ...PROCESS_ENV,
       PORT: '3000',
       UPWIND_NODE_HOSTNAME: '0.0.0.0',
       UPWIND_NODE_CACHE_DIR: path.join(OPTIONS.projectDir, '.upwind/node-cache'),
@@ -26,9 +28,10 @@ describe('native start environment', () => {
           UPWIND_NODE_CACHE_DIR: 'file-cache',
           APPLICATION_SETTING: 'from-file',
         },
-        {},
+        PROCESS_ENV,
       ),
     ).toStrictEqual({
+      ...PROCESS_ENV,
       PORT: '8080',
       UPWIND_NODE_HOSTNAME: '::1',
       UPWIND_NODE_ORIGIN: 'https://from-file.example',
@@ -48,6 +51,7 @@ describe('native start environment', () => {
           UPWIND_NODE_CACHE_DIR: 'file-cache',
         },
         {
+          ...PROCESS_ENV,
           PORT: '9090',
           UPWIND_NODE_HOSTNAME: 'process-host',
           UPWIND_NODE_ORIGIN: 'https://process.example',
@@ -79,6 +83,7 @@ describe('native start environment', () => {
           UPWIND_NODE_CACHE_DIR: 'file-cache',
         },
         {
+          ...PROCESS_ENV,
           PORT: '9090',
           UPWIND_NODE_HOSTNAME: 'process-host',
           UPWIND_NODE_ORIGIN: 'https://process.example',
@@ -94,12 +99,12 @@ describe('native start environment', () => {
   });
 
   it.each(['not-a-port', '-1', '65536'])('rejects the selected environment port %s', (port) => {
-    expect(() => startEnvironment(OPTIONS, { PORT: port }, {})).toThrow('port');
+    expect(() => startEnvironment(OPTIONS, { PORT: port }, PROCESS_ENV)).toThrow('port');
   });
 
   it('validates the selected origin after precedence is applied', () => {
     expect(() =>
-      startEnvironment(OPTIONS, { UPWIND_NODE_ORIGIN: 'https://file.example/path' }, {}),
+      startEnvironment(OPTIONS, { UPWIND_NODE_ORIGIN: 'https://file.example/path' }, PROCESS_ENV),
     ).toThrow('origin');
     expect(
       startEnvironment(
@@ -107,7 +112,7 @@ describe('native start environment', () => {
         {
           UPWIND_NODE_ORIGIN: 'invalid',
         },
-        {},
+        PROCESS_ENV,
       ),
     ).toHaveProperty('UPWIND_NODE_ORIGIN', 'https://flag.example');
   });
