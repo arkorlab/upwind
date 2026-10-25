@@ -5,6 +5,7 @@ import path from 'node:path';
 import { parseEnv } from 'node:util';
 
 import type { StartOptions } from './args.ts';
+import { startEnvironment } from './environment.ts';
 
 /** The CLI starts a built server in its own process; application globals stay in that process. */
 export async function runStart(options: StartOptions): Promise<number> {
@@ -25,14 +26,7 @@ export async function runStart(options: StartOptions): Promise<number> {
   const child = spawn(process.execPath, [path.join(root, 'server.mjs')], {
     cwd: options.projectDir,
     stdio: 'inherit',
-    env: {
-      ...fromFiles,
-      ...process.env,
-      PORT: String(options.port),
-      UPWIND_NODE_HOSTNAME: options.hostname,
-      UPWIND_NODE_CACHE_DIR: options.cacheDir,
-      ...(options.origin !== undefined && { UPWIND_NODE_ORIGIN: options.origin }),
-    },
+    env: startEnvironment(options, fromFiles),
   });
   const interrupt = (): void => {
     child.kill('SIGINT');

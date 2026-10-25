@@ -211,13 +211,18 @@ export async function cacheHostEnv(
     return {};
   }
   const host = await cacheHostModuleFor(await shippedCacheHost(), projectDir, adapter);
-  return { [UPWIND_CACHE_HOST_MODULE_ENV]: host };
+  return {
+    [UPWIND_CACHE_HOST_MODULE_ENV]: host,
+    // A config-only native selection may remove this auto-host before workers inherit it.
+    UPWIND_BUILD_CACHE_HOST_MODULE: host,
+  };
 }
 
 /** The project's own `next build`, with the adapter named; what it exits with. */
 export async function spawnBuild(options: BuildOptions, run: BuildRun = {}): Promise<number> {
+  const inherited = run.env ?? process.env;
   const target =
-    options.target ?? run.extraEnv?.['UPWIND_BUILD_TARGET'] ?? process.env['UPWIND_BUILD_TARGET'];
+    options.target ?? run.extraEnv?.['UPWIND_BUILD_TARGET'] ?? inherited['UPWIND_BUILD_TARGET'];
   if (target === 'node' && run.forDeploy === true) {
     throw new Error(
       'a native Node artifact is started with `upwind start`, not uploaded as Workers',
@@ -282,7 +287,7 @@ export async function spawnBuild(options: BuildOptions, run: BuildRun = {}): Pro
   const child = spawn(process.execPath, [command, 'build', options.projectDir], {
     cwd: options.projectDir,
     env: {
-      ...(run.env ?? process.env),
+      ...inherited,
       ...adapterEnv,
       ...authEnv,
       ...run.extraEnv,

@@ -56,7 +56,7 @@ import { declaredGates } from './gates.ts';
 import { instrumentationOf, writeClientInstrumentation } from './instrumentation.ts';
 import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
-import { runtimeTargetOf, type RuntimeTarget } from './native/target.ts';
+import { publishNativeBuildTarget, runtimeTargetOf, type RuntimeTarget } from './native/target.ts';
 import { checkPageBodyHost, type UnshippedPrerenderBodies } from './page-bodies.ts';
 import { collectPageBodies } from './page-body-layout.ts';
 import { readProjectConfig } from './project-config.ts';
@@ -812,6 +812,9 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
           config.rewrites = reserved;
         }
       } else if (phase === 'phase-production-build') {
+        // The CLI cannot inspect a custom adapter's target before loading next.config. Publish
+        // the choice now so forked prerender workers skip any inherited Cloudflare preload.
+        if (target === 'node') publishNativeBuildTarget();
         // Content-addressed `/_next/static/immutable/*`: shared across deployments, cached
         // forever. Asked for unconditionally. Before 16.4 Next.js refuses it for a static export,
         // turning the option off in `finalizeConfig` after this hook has run; such a build's

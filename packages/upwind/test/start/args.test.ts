@@ -21,7 +21,7 @@ describe('native commands', () => {
     expect(() => parseBuildRequest(['--target=bun'])).toThrow('--target');
   });
 
-  it('resolves writable cache paths outside the immutable artifact', () => {
+  it('leaves unspecified listen settings for the merged runtime environment', () => {
     vi.stubEnv('PORT', '');
     vi.stubEnv('UPWIND_NODE_CACHE_DIR', undefined);
     vi.stubEnv('UPWIND_NODE_HOSTNAME', undefined);
@@ -31,10 +31,6 @@ describe('native commands', () => {
       answer: undefined,
       options: {
         projectDir: path.resolve('site'),
-        port: 3000,
-        hostname: '0.0.0.0',
-        origin: undefined,
-        cacheDir: path.resolve('site/.upwind/node-cache'),
         envFiles: [],
       },
     });

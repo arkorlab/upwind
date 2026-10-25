@@ -103,8 +103,12 @@ class NativeHost implements CacheHost {
   }
 
   async #closeWorker(): Promise<void> {
-    await this.#call<undefined>('close', [], true);
-    await this.#worker.terminate();
+    try {
+      await this.#call<undefined>('close', [], true);
+    } finally {
+      // A failed flush must still release the worker and its exclusive database ownership.
+      await this.#worker.terminate();
+    }
   }
 
   ready(): Promise<void> {

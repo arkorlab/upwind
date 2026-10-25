@@ -40,6 +40,7 @@ describe('the cache host `upwind build` names', () => {
   it("is the runtime cache's, for the project's own adapter", async () => {
     await expect(cacheHostEnv(project, adapter, {})).resolves.toStrictEqual({
       [UPWIND_CACHE_HOST_MODULE_ENV]: cacheHostEntry(),
+      UPWIND_BUILD_CACHE_HOST_MODULE: cacheHostEntry(),
     });
   });
 
