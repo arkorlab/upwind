@@ -82,7 +82,7 @@ function unboundRequireInitializer(node: Node, bindings: NativeBindings): boolea
         child.type === 'MethodDefinition' ||
         child.type === 'PropertyDefinition') &&
       !child.computed &&
-      !(child.type === 'Property' && child.shorthand && child.key === child.value)
+      !(child.type === 'Property' && child.shorthand)
     )
       names.add(child.key);
   }

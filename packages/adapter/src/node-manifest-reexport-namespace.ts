@@ -56,11 +56,7 @@ export function reexportNamespaceId(
   if (
     id === undefined ||
     args.length !== 1 ||
-    !nativeBindings(input.factory as unknown as AstNode).unmodified(
-      head as unknown as AstNode,
-      head.name,
-      true,
-    )
+    !nativeBindings(input.factory as unknown as AstNode).unmodified(head, head.name, true)
   )
     return undefined;
   return id;
