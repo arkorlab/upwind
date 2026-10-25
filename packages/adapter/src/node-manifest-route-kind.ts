@@ -327,8 +327,7 @@ export function nodeManifestRouteKindMember(
 ): 'RouteKind' | undefined {
   const stored = PROOFS.get(proof);
   if (
-    stored === undefined ||
-    stored.owner !== input.owner ||
+    stored?.owner !== input.owner ||
     stored.factory !== input.factory ||
     stored.projection !== input.factory.projection ||
     stored.original !== input.factory.projection.original ||

@@ -236,7 +236,7 @@ function assertStrict(fn: Node, original: Original): void {
 }
 function helperScopeOffset(fn: Node, original: Original): number {
   const found = original.parents.get(fn);
-  if (found === undefined || found.scopes.at(-1) === undefined) return refuse('helper scope');
+  if (found?.scopes.at(-1) === undefined) return refuse('helper scope');
   return found.scopes.length - 1;
 }
 function assertCaptures(fn: Node, original: Original): void {
@@ -387,8 +387,7 @@ export function nodeManifestHoistMember(
 ): 'hoist' | undefined {
   const certificate = CERTIFIED.get(proof);
   if (
-    certificate === undefined ||
-    certificate.owner !== input.owner ||
+    certificate?.owner !== input.owner ||
     certificate.factory !== input.factory ||
     certificate.projection !== input.factory.projection ||
     certificate.original !== input.factory.projection.original ||

@@ -95,8 +95,7 @@ function checkedRoutes(
   for (const route of routes) {
     const original = actual.get(route.file);
     if (
-      original === undefined ||
-      original.sha256 !== route.sha256 ||
+      original?.sha256 !== route.sha256 ||
       !graph.retained.has(original.id) ||
       path.resolve(route.root, route.relative) !== route.file ||
       reviewedFrameworkSource(route.relative) !== route.sha256
@@ -112,7 +111,7 @@ function instrumentationCallerRoot(
   routes: ReadonlyMap<string, ManifestRouteSource>,
 ): string {
   const loader = graph.sources.get(id);
-  if (loader === undefined || loader.sha256 !== LOADER_SHA) return refuse('loader source');
+  if (loader?.sha256 !== LOADER_SHA) return refuse('loader source');
   const parents = graph.importers.get(id);
   if (parents === undefined || parents.length === 0) refuse('loader caller inventory');
   let root: string | undefined;

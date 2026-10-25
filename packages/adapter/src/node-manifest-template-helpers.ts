@@ -99,8 +99,7 @@ function current(
 ): StoredImport | undefined {
   const stored = IMPORTS.get(proof);
   if (
-    stored === undefined ||
-    stored.owner !== owner ||
+    stored?.owner !== owner ||
     stored.consumerProjection !== projection ||
     stored.input.owner !== stored.owner ||
     stored.input.consumer !== stored.consumer ||
@@ -131,8 +130,7 @@ export function currentNodeManifestTemplateHelperImport(
 ): boolean {
   const stored = current(proof, input.owner, input.projection);
   return (
-    stored !== undefined &&
-    stored.input.specifier === input.specifier &&
+    stored?.input.specifier === input.specifier &&
     stored.physical.file === input.file &&
     stored.physical.source.sha256 === input.sha256
   );

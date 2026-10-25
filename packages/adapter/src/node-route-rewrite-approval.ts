@@ -87,8 +87,7 @@ export function checkedNodeRouteRewriteSources(input: {
   for (const proof of input.approvals) {
     const stored = APPROVALS.get(proof);
     if (
-      stored === undefined ||
-      stored.graph !== input.graph ||
+      stored?.graph !== input.graph ||
       stored.graphSha256 !== graphDigest(input.graph) ||
       stored.context !== contextSnapshot(input.context) ||
       stored.normalization !== input.normalization ||
