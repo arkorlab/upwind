@@ -70,6 +70,41 @@ describe('native child constructor classification', () => {
   });
 
   it.each([
+    "const {Worker}=await import('node:worker_threads');export const worker=new Worker('source',{eval:true});",
+    "const {['Worker']:Thread}=await import(`worker_threads`);export const worker=new Thread('source',{eval:true});",
+    "const threads=await import('node:worker_threads');export const worker=new threads.Worker('./child.js');",
+    "const Thread=(await import('node:worker_threads')).Worker;export const worker=new Thread('./child.js');",
+    "export const worker=new (await import('node:worker_threads')).Worker('./child.js');",
+    "const pending=import('node:worker_threads');const alias=pending;const threads=await alias;export const worker=new threads.Worker('./child.js');",
+    "const threads=(await import('node:worker_threads')).default;export const worker=new threads.Worker('./child.js');",
+    "const {default:{Worker:Thread}}=await import('node:worker_threads');export const worker=new Thread('./child.js');",
+    "const threads=await import('node:worker_threads');const alias=await threads;export const worker=new alias.Worker('./child.js');",
+    "export async function start(key){const threads=await import('node:worker_threads');return new threads[key]('./child.js');}",
+    "let pending=import('node:worker_threads');pending=globalThis.other;const threads=await pending;export const worker=new threads.Worker('./child.js');",
+    "import * as threads from 'node:worker_threads';export const worker=new threads.default.Worker('./child.js');",
+  ])(
+    'refuses native child work through a dynamic import or module namespace: %s',
+    async (source) => {
+      await expect(classify(source)).rejects.toThrow('unclassified owned native child');
+    },
+  );
+
+  it.each([
+    "const threads=await import('node:worker_threads');export function start(threads){return new threads.Worker('./child.js');}",
+    "const {Worker:Thread}=await import('node:worker_threads');export function start(){const Thread=class {};return new Thread('./child.js');}",
+    "const loader={import:async()=>({Worker:class {}})};const threads=await loader.import('node:worker_threads');export const worker=new threads.Worker('./child.js');",
+    "const threads=import('node:worker_threads');export function start(){return new threads.Worker('./child.js');}",
+    "const {Worker:Thread}=import('node:worker_threads');export function start(){return new Thread('./child.js');}",
+    "const threads=await import('node:worker_threads');export const channel=new threads.BroadcastChannel('messages');",
+    "const {Worker:Thread}=await Promise.resolve({Worker:class {}});export const worker=new Thread('./child.js');",
+  ])(
+    'keeps promise values, non-Worker members and genuine local shadows separate: %s',
+    async (source) => {
+      await expect(classify(source)).resolves.toStrictEqual([]);
+    },
+  );
+
+  it.each([
     "const threads=require('node:worker_threads'); exports.helper=function(require,threads){return [require,threads];}; exports.start=()=>new threads.Worker('./child.js');\n",
     "const {Worker:Thread}=require('node:worker_threads'); exports.helper=function(Thread){return Thread;}; exports.start=()=>new Thread('./child.js');\n",
     "const {'Worker':Thread}=require('node:worker_threads'); exports.start=()=>new Thread('./child.js');\n",

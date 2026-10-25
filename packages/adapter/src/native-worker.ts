@@ -5,7 +5,7 @@ import { type NativeBindings, stringOf, workerModule } from './native-ast.ts';
 import type { NativeEdit } from './native-operations.ts';
 import { ownedNativeFiles } from './native-ownership.ts';
 
-type WorkerOrigin = 'constructor' | 'namespace' | 'ambiguous';
+type WorkerOrigin = 'constructor' | 'namespace' | 'module' | 'promise' | 'ambiguous';
 const IMPORTS = new WeakMap<readonly Node[], ReadonlyMap<Node, WorkerOrigin>>();
 interface WorkerContext {
   readonly bindings: NativeBindings;
@@ -20,11 +20,9 @@ function importedWorkers(
   for (const specifier of node.specifiers) {
     const selected = specifier.type === 'ImportSpecifier' ? specifier.imported : undefined;
     const name = selected?.type === 'Identifier' ? selected.name : stringOf(selected);
-    if (
-      name === 'default' ||
-      ['ImportDefaultSpecifier', 'ImportNamespaceSpecifier'].includes(specifier.type)
-    )
+    if (name === 'default' || specifier.type === 'ImportDefaultSpecifier')
       imports.set(specifier, 'namespace');
+    if (specifier.type === 'ImportNamespaceSpecifier') imports.set(specifier, 'module');
     if (name === 'Worker') imports.set(specifier, 'constructor');
   }
 }
@@ -40,24 +38,41 @@ function workerImports(tree: readonly Node[]): ReadonlyMap<Node, WorkerOrigin> {
   return imports;
 }
 
-function isWorkerProperty(callee: Extract<Node, { type: 'MemberExpression' }>): boolean {
-  let property: string | undefined;
-  if (callee.computed) property = stringOf(callee.property);
-  else if (callee.property.type === 'Identifier') property = callee.property.name;
-  return property === 'Worker' || (callee.computed && property === undefined);
+function isNamespace(origin: WorkerOrigin | undefined): boolean {
+  return origin === 'namespace' || origin === 'module';
+}
+
+function memberKey(member: Extract<Node, { type: 'MemberExpression' }>): string | undefined {
+  if (member.computed) return stringOf(member.property);
+  return member.property.type === 'Identifier' ? member.property.name : undefined;
+}
+
+function memberOrigin(
+  member: Extract<Node, { type: 'MemberExpression' }>,
+  owner: WorkerOrigin | undefined,
+): WorkerOrigin | undefined {
+  if (owner === 'ambiguous') return owner;
+  if (!isNamespace(owner)) return undefined;
+  const property = memberKey(member);
+  if (owner === 'module' && property === 'default') return 'namespace';
+  return property === 'Worker' || (property === undefined && member.computed)
+    ? 'constructor'
+    : undefined;
 }
 
 function propertyOrigin(
   property: Extract<Node, { type: 'Property' }>,
   owner: WorkerOrigin,
 ): WorkerOrigin | undefined {
-  if (owner !== 'namespace') return 'ambiguous';
+  if (owner === 'promise') return undefined;
+  if (!isNamespace(owner)) return 'ambiguous';
   const key =
     property.computed || property.key.type !== 'Identifier'
       ? stringOf(property.key)
       : property.key.name;
   if (key === undefined) return 'ambiguous';
-  return key === 'Worker' ? 'constructor' : undefined;
+  if (key === 'Worker') return 'constructor';
+  return owner === 'module' && key === 'default' ? 'namespace' : undefined;
 }
 
 function arrayOrigin(elements: readonly (Node | null)[], name: string): WorkerOrigin | undefined {
@@ -103,7 +118,8 @@ function stableOrigin(
   node: Extract<Node, { type: 'Identifier' }>,
   context: WorkerContext,
 ): WorkerOrigin | undefined {
-  return origin === 'namespace' && !context.bindings.unmodified(node, node.name, true)
+  return (origin === 'promise' || isNamespace(origin)) &&
+    !context.bindings.unmodified(node, node.name, true)
     ? 'ambiguous'
     : origin;
 }
@@ -131,13 +147,19 @@ function workerOrigin(
   if (seen.has(node)) return undefined;
   const next = new Set([...seen, node]);
   if (node.type === 'Identifier') return declaredOrigin(node, context, next);
+  if (
+    node.type === 'ImportExpression' &&
+    ['node:worker_threads', 'worker_threads'].includes(stringOf(node.source) ?? '')
+  )
+    return 'promise';
+  if (node.type === 'AwaitExpression') {
+    const origin = workerOrigin(node.argument, context, next);
+    return origin === 'promise' ? 'module' : origin;
+  }
   if (workerModule(node) && context.bindings.lookup(node, 'require') === undefined)
     return 'namespace';
-  if (node.type === 'MemberExpression') {
-    const owner = workerOrigin(node.object, context, next);
-    if (owner === 'ambiguous') return owner;
-    if (owner === 'namespace' && isWorkerProperty(node)) return 'constructor';
-  }
+  if (node.type === 'MemberExpression')
+    return memberOrigin(node, workerOrigin(node.object, context, next));
   return undefined;
 }
 
