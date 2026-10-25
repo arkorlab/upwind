@@ -19,10 +19,11 @@ import {
   type RemoteAiCredentials,
 } from './local-ai.ts';
 import { localEntries, type LocalStorageEntry } from './local-bindings.ts';
+import { containerEngine, prepareLocalContainers } from './local-containers.ts';
 import { failedOwnerNames, runtimeStartupFailure } from './local-failure.ts';
-import { type LocalDurableObject, localObjects } from './local-objects.ts';
+import { type LocalDurableObject, localObjects, ownerName } from './local-objects.ts';
 import { publishResources } from './publish.ts';
-import { disposeLocalResources } from './shutdown.ts';
+import { discardAi, disposeLocalResources } from './shutdown.ts';
 import { sourceChanges } from './watch-sources.ts';
 
 /**
@@ -194,17 +195,13 @@ function noSourceChanges(): boolean {
   return false;
 }
 
-function ownerName(name: string): string {
-  return `upwind-object-${name}`;
-}
-
 type LocalBinding =
   | ReturnType<typeof localAiBinding>
   | { type: 'd1' | 'kv'; id: string }
   | { type: 'r2'; name: string }
   | { type: typeof DURABLE_OBJECT_KIND; worker: string; exportName: string };
 
-function runtimeOptions(
+export function localRuntimeOptions(
   projectDir: string,
   entries: readonly LocalStorageEntry[],
   objects: readonly LocalDurableObject[],
@@ -233,6 +230,7 @@ function runtimeOptions(
   );
   return {
     resourcePersistencePath: path.join(projectDir, PERSIST_DIR),
+    ...containerEngine(objects),
     workers: [
       {
         config: {
@@ -272,6 +270,9 @@ function runtimeOptions(
               [DURABLE_OBJECT_EXPORT]: {
                 type: DURABLE_OBJECT_KIND,
                 storage: 'sqlite',
+                ...(object.containerImageName !== undefined && {
+                  container: { imageName: object.containerImageName },
+                }),
               } as const,
             },
             env,
@@ -573,7 +574,7 @@ function startAndPublish(
   const done = (async (): Promise<Miniflare> => {
     let runtime: Miniflare | undefined;
     try {
-      runtime = await startRuntime(runtimeOptions(projectDir, entries, objects, ai));
+      runtime = await startRuntime(localRuntimeOptions(projectDir, entries, objects, ai));
     } finally {
       // Either way, and before anything slower: a runtime, or the news that there will not be one.
       arrived.resolve(runtime);
@@ -606,16 +607,6 @@ async function letGo(
   }
 }
 
-async function discardAi(ai: LocalAi): Promise<void> {
-  try {
-    await ai.dispose();
-  } catch {
-    console.warn(
-      'upwind: could not finish remote AI cleanup; retrying local storage without AI bindings',
-    );
-  }
-}
-
 /**
  * Start a project's local storage and publish it, or say why there is none.
  *
@@ -645,17 +636,23 @@ export async function startLocalResources(
   const versions = new Map<string, string>();
   let sourcesChanged = noSourceChanges;
   try {
-    const objects = await localObjects(
+    const bundledObjects = await localObjects(
       projectDir,
       watchedFiles,
       versions,
       options.mode ?? 'development',
     );
-    sourcesChanged = sourceChanges(versions);
     options.signal?.throwIfAborted();
     // A rejected storage claim must not authenticate or create a remote AI session.
     release = await claimStorage(path.join(projectDir, PERSIST_DIR));
     options.signal?.throwIfAborted();
+    const objects = await prepareLocalContainers(
+      projectDir,
+      bundledObjects,
+      { files: watchedFiles, versions },
+      options.signal === undefined ? {} : { signal: options.signal },
+    );
+    sourcesChanged = sourceChanges(versions);
     ai = await prepareLocalAi(
       objects.map((object) => object.declaration.name),
       options.mode !== 'production' && options.remoteAi === true,

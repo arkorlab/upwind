@@ -508,3 +508,26 @@ The watch also covers TypeScript aliases and package `imports`/`exports`, includ
 dependency packages that have not been generated yet. If a
 registration uses a default storage name, the default gets a unique local alias while its persisted
 data and the SDK's default accessor stay available; the object's registered name is preserved.
+
+### Local Containers
+
+A host-exported Durable Object registration can include `container`, with the same shape as the
+[adapter's Container definition](../adapter/README.md#container-enabled-objects). Both Dockerfile
+sources and existing image references work with `upwind dev` and `upwind build`. Install and start a
+Docker-compatible CLI and engine before using these namespaces. Images are built or pulled for
+`linux/amd64`, then attached to the object's local runtime export. Class code uses the native
+`ctx.container` API with the `default` scheduling policy, including `start()` without runtime image
+or size options; `@cloudflare/containers` classes can use the same binding.
+
+Image preparation does not launch an application instance. The first explicit object operation
+starts its Container, and Miniflare stops the run's instances on shutdown. Docker keeps images for
+its build cache. Cloudflare's configured instance size and `maxInstances` apply after deployment;
+local Docker does not reproduce those limits.
+
+Editing a Dockerfile or its `.dockerignore` restarts development and rebuilds the image. Restart
+`upwind dev` after changing other files in the build context. Docker failure makes only the affected
+namespace unavailable; ordinary objects and D1, KV and R2 remain usable. No remote Container is
+started by local image preparation.
+
+For a nondefault local Docker socket, set `DOCKER_HOST` to the same engine used by the Docker CLI.
+Container-enabled local namespaces use this socket; ordinary local resources require no Docker engine.
