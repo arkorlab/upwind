@@ -37,6 +37,16 @@ export interface NativeLoad {
   readonly loaderSources?: readonly NativeLoaderSource[] | undefined;
 }
 
+interface NativeLoadsOptions {
+  readonly nodeTarget?: boolean;
+  /** A genuine native load becomes a placement error before any Worker artifact can be returned. */
+  readonly placementProbe?: boolean;
+}
+
+function isPlacementSignal(options: NativeLoadsOptions, retained: readonly NativeLoad[]): boolean {
+  return options.placementProbe === true && options.nodeTarget !== true && retained.length > 0;
+}
+
 export class NativeFunctionRequiredError extends Error {
   readonly loads: readonly NativeLoad[];
 
@@ -110,7 +120,7 @@ async function collectEdits(
 /** Analysis-only markers never enter a published Worker or the physical Node artifact. */
 export function nativeLoadsPlugin(
   traces: readonly NativeAddonEntryTrace[],
-  options: { readonly nodeTarget?: boolean } = {},
+  options: NativeLoadsOptions = {},
 ): {
   readonly plugin: Plugin;
   retained(chunk: OutputChunk): Promise<readonly NativeLoad[]>;
@@ -160,7 +170,16 @@ export function nativeLoadsPlugin(
           nodeTarget: options.nodeTarget === true,
           mark,
         };
-        const worker = { source: analysis.code, importer, traces, tree, bindings, markChild };
+        const worker = {
+          source: analysis.code,
+          importer,
+          traces,
+          tree,
+          bindings,
+          markChild,
+          nodeTarget: options.nodeTarget === true,
+          guards: context.guards,
+        };
         const edits = await collectEdits(
           tree,
           context,
@@ -195,7 +214,11 @@ export function nativeLoadsPlugin(
           'A retained Node Worker has unclassified owned native child dependencies',
         );
       }
-      if (candidates) await assertRetainedNativeWorkerCapability(chunk, program, tree, traces);
+      if (candidates && !isPlacementSignal(options, retained))
+        await assertRetainedNativeWorkerCapability(chunk, program, tree, {
+          traces,
+          nodeTarget: options.nodeTarget === true,
+        });
       return retained;
     },
   };

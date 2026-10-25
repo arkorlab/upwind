@@ -311,4 +311,24 @@ describe('native child constructor classification', () => {
     expect(worker).toStrictEqual([]);
     await expect(classify(source, true, true)).rejects.toThrow('unclassified on the Node target');
   });
+
+  it.each([
+    "import {Worker} from 'node:worker_threads';const constructors={Worker};export function start(kind){return new constructors[kind](\"require('dep')\",{eval:true});}",
+    "import {Worker} from 'node:worker_threads';const constructors={Thread:Worker};const alias=constructors;export function start(kind){return new alias[kind]('source',{eval:true});}",
+    "import {Worker} from 'node:worker_threads';const constructors={Worker};export const start=()=>new constructors.Worker('source',{eval:true});",
+    "import {Worker} from 'node:worker_threads';const constructors={Worker};constructors.Worker=globalThis.other;export const start=()=>new constructors.Worker('source');",
+  ])('refuses a retained local object carrying a known Worker constructor: %s', async (source) => {
+    await expect(classify(source)).rejects.toThrow('unclassified owned native child');
+  });
+
+  it.each([
+    "import {Worker} from 'node:worker_threads';const constructors={Worker};export const value=[constructors.Worker.name,constructors.Worker.length];",
+    "import {Worker} from 'node:worker_threads';const constructors={Worker};function unused(kind){return new constructors[kind]('source');}export const value=42;",
+    "const Worker=class {};const constructors={Worker};export const value=new constructors.Worker('ordinary');",
+  ])(
+    'preserves scalar selections, dead containers and genuine ordinary constructors: %s',
+    async (source) => {
+      await expect(classify(source)).resolves.toStrictEqual([]);
+    },
+  );
 });

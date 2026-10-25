@@ -35,6 +35,38 @@ function compilerRequireText(chunk: OutputChunk): string {
   return chunk.code.slice(declaration.start, declaration.end);
 }
 
+function withWorkerCall(chunk: OutputChunk): OutputChunk {
+  return {
+    ...chunk,
+    code: `${chunk.code}\nexport const child=new (__require('node:worker_threads').Worker)('source',{eval:true});`,
+  };
+}
+
+function changedRuntime(
+  chunk: OutputChunk,
+  change: 'missing' | 'renamed' | 'unexported',
+): OutputChunk {
+  const modules = Object.fromEntries(
+    Object.entries(chunk.modules).flatMap(([id, rendered]) => {
+      if (id !== '\0rolldown/runtime.js') return [[id, rendered]];
+      if (change === 'missing') return [];
+      return [
+        [
+          id,
+          {
+            ...rendered,
+            ...(change === 'renamed' && {
+              code: rendered.code?.replaceAll('__require', '__require2') ?? null,
+            }),
+            ...(change === 'unexported' && { renderedExports: [] }),
+          },
+        ],
+      ];
+    }),
+  );
+  return { ...chunk, modules };
+}
+
 describe('retained Worker capabilities through source reexports', () => {
   let directory: string;
   let entry: string;
@@ -273,6 +305,56 @@ describe('retained Worker capabilities through source reexports', () => {
     const code = `${chunk.code}\nexport function local(){var ${text};return 42;}`;
 
     expect(inspectedChunk({ ...chunk, code }).requires.size).toBe(0);
+  });
+
+  it('retains the authenticated compiler helper origin for an actual Worker call', async () => {
+    const chunk = withWorkerCall(await authoredPrimitiveChunk());
+
+    expect(inspectedChunk(chunk).capability).toBe(true);
+  });
+
+  it.each([
+    "const describeName=(value)=>value;export const described=describeName('worker_threads');",
+    "const describeName=(value)=>value;export const described=describeName('node:worker_threads');",
+    "const describeName=(value)=>({require:value});export const described=describeName('worker_threads');",
+    "const describeName=(value)=>value.require;export const described=describeName('worker_threads');",
+    "export function local(){const __require=value=>value;return __require('worker_threads');}",
+  ])('does not turn an ordinary scalar function into a compiler loader: %s', async (code) => {
+    const chunk = await authoredPrimitiveChunk();
+
+    expect(inspectedChunk({ ...chunk, code: `${chunk.code}\n${code}` }).capability).toBe(false);
+  });
+
+  it.each(['missing', 'renamed', 'unexported'] as const)(
+    'refuses ambiguous %s compiler metadata instead of losing a real capability',
+    async (change) => {
+      const chunk = withWorkerCall(await authoredPrimitiveChunk());
+
+      expect(() => inspectedChunk(changedRuntime(chunk, change))).toThrow(
+        'ambiguous compiler require provenance',
+      );
+    },
+  );
+
+  it.each(['__require=globalThis.other;', 'require=globalThis.other;'])(
+    'refuses a mutated loader when an actual Worker capability depends on it: %s',
+    async (mutation) => {
+      const chunk = withWorkerCall(await authoredPrimitiveChunk());
+
+      expect(() => inspectedChunk({ ...chunk, code: `${chunk.code}\n${mutation}` })).toThrow(
+        'ambiguous compiler require provenance',
+      );
+    },
+  );
+
+  it('refuses duplicate compiler-helper origins when a known Worker call is retained', async () => {
+    const original = await authoredPrimitiveChunk();
+    const chunk = withWorkerCall(original);
+    const text = compilerRequireText(original);
+
+    expect(() =>
+      inspectedChunk({ ...chunk, code: `${chunk.code}\nfunction copy(){var ${text};return 42;}` }),
+    ).toThrow('ambiguous compiler require provenance');
   });
 
   it.each([{ nativeOwned: false }, { orphanOnly: true }])(

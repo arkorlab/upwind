@@ -1,7 +1,7 @@
 import type { Node } from '@oxc-project/types';
 
 import type { NativeAddonEntryTrace } from './native-addons.ts';
-import { type NativeBindings, required, stringOf } from './native-ast.ts';
+import { type NativeBindings, required, stringOf, walk } from './native-ast.ts';
 import type { NativeEdit } from './native-operations.ts';
 import { ownedNativeFiles } from './native-ownership.ts';
 
@@ -169,6 +169,52 @@ function workerRequire(node: Node, context: WorkerContext): boolean {
   return declaration !== null && context.requires?.has(declaration) === true;
 }
 
+function containerInitializer(
+  value: Node,
+  context: WorkerContext,
+  seen: ReadonlySet<Node>,
+):
+  | { readonly object: Extract<Node, { type: 'ObjectExpression' }>; readonly stable: boolean }
+  | undefined {
+  if (seen.has(value)) return undefined;
+  if (value.type === 'ObjectExpression') return { object: value, stable: true };
+  if (value.type !== 'Identifier') return undefined;
+  const declaration = context.bindings.lookup(value, value.name);
+  if (declaration?.type !== 'VariableDeclarator' || declaration.init === null) return undefined;
+  const next = new Set([...seen, value]);
+  const found = containerInitializer(declaration.init, context, next);
+  return found === undefined
+    ? undefined
+    : { ...found, stable: found.stable && context.bindings.unmodified(value, value.name, true) };
+}
+
+function containerMemberOrigin(
+  member: Extract<Node, { type: 'MemberExpression' }>,
+  context: WorkerContext,
+  seen: ReadonlySet<Node>,
+): WorkerOrigin | undefined {
+  const container = containerInitializer(member.object, context, seen);
+  if (container === undefined) return undefined;
+  const key = memberKey(member);
+  const origins: WorkerOrigin[] = [];
+  for (const property of container.object.properties) {
+    const value = property.type === 'Property' ? property.value : property.argument;
+    const origin = workerOrigin(value, context, seen);
+    if (origin === undefined) continue;
+    if (
+      key === undefined ||
+      !container.stable ||
+      property.type !== 'Property' ||
+      property.computed ||
+      property.kind !== 'init'
+    )
+      return 'ambiguous';
+    const name = property.key.type === 'Identifier' ? property.key.name : stringOf(property.key);
+    if (key === name) origins.push(origin);
+  }
+  return origins.length > 1 ? 'ambiguous' : origins[0];
+}
+
 function workerOrigin(
   node: Node,
   context: WorkerContext,
@@ -185,7 +231,10 @@ function workerOrigin(
   }
   if (workerRequire(node, context)) return 'namespace';
   if (node.type === 'MemberExpression')
-    return memberOrigin(node, workerOrigin(node.object, context, next));
+    return (
+      memberOrigin(node, workerOrigin(node.object, context, next)) ??
+      containerMemberOrigin(node, context, next)
+    );
   return undefined;
 }
 
@@ -227,6 +276,76 @@ function returnedCapability(node: Node, context: WorkerContext): Node | undefine
   if (node.type === 'ArrowFunctionExpression' && node.expression) value = node.body;
   if (value === undefined || workerOrigin(value, context) === undefined) return undefined;
   return capabilityReceiver(value, context);
+}
+
+function unmodifiedWorkerBinding(
+  value: Node,
+  context: WorkerContext,
+): { readonly kind: 'import' } | { readonly kind: 'initializer'; readonly node: Node } | undefined {
+  if (value.type !== 'Identifier' || !context.bindings.unmodified(value, value.name, true))
+    return undefined;
+  const declared = context.bindings.lookup(value, value.name);
+  if (declared === undefined || declared === null) return undefined;
+  if (context.imports.has(declared)) return { kind: 'import' };
+  return declared.type === 'VariableDeclarator' && declared.init !== null
+    ? { kind: 'initializer', node: declared.init }
+    : undefined;
+}
+
+function unmodifiedWorkerSource(node: Node, context: WorkerContext): boolean {
+  const seen = new Set<Node>();
+  let value = node;
+  while (!seen.has(value)) {
+    seen.add(value);
+    if (value.type === 'MemberExpression' || value.type === 'AwaitExpression') {
+      value = value.type === 'MemberExpression' ? value.object : value.argument;
+      continue;
+    }
+    if (value.type === 'ImportExpression') return WORKER_MODULES.has(stringOf(value.source) ?? '');
+    if (workerRequire(value, context)) return true;
+    const declared = unmodifiedWorkerBinding(value, context);
+    if (declared === undefined) return false;
+    if (declared.kind === 'import') return true;
+    value = declared.node;
+  }
+  return false;
+}
+
+function workerWasMutated(tree: readonly Node[], context: WorkerContext): boolean {
+  const changed = tree.some((node) => {
+    let target: Node | undefined;
+    if (node.type === 'AssignmentExpression') target = node.left;
+    if (
+      node.type === 'UpdateExpression' ||
+      (node.type === 'UnaryExpression' && node.operator === 'delete')
+    )
+      target = node.argument;
+    return (
+      target !== undefined &&
+      walk(target).some((value) => {
+        return (
+          workerOrigin(value.type === 'MemberExpression' ? value.object : value, context) !==
+          undefined
+        );
+      })
+    );
+  });
+  return changed;
+}
+
+function handledWorkerConstructor(
+  node: Node,
+  context: WorkerContext,
+  tree: readonly Node[],
+  guards: ReadonlyMap<number, 'plain' | 'ambiguous'> | undefined,
+): boolean {
+  return (
+    guards?.get(node.start) === 'plain' &&
+    (node.type === 'NewExpression' || node.type === 'CallExpression') &&
+    workerOrigin(node.callee, context) === 'constructor' &&
+    unmodifiedWorkerSource(node.callee, context) &&
+    !workerWasMutated(tree, context)
+  );
 }
 
 function exportedPattern(pattern: Node, context: WorkerContext): boolean {
@@ -306,8 +425,19 @@ export function hasRetainedWorkerCapability(
   bindings: NativeBindings,
   requires?: ReadonlySet<Node>,
 ): boolean {
+  return retainedWorkerCapabilityNodes(tree, bindings, requires).length > 0;
+}
+
+/** Exact capability sites also let refusal-only loader-origin checks retain lexical shadows. */
+export function retainedWorkerCapabilityNodes(
+  tree: readonly Node[],
+  bindings: NativeBindings,
+  requires?: ReadonlySet<Node>,
+  guards?: ReadonlyMap<number, 'plain' | 'ambiguous'>,
+): readonly Node[] {
   const context = { bindings, imports: workerImports(tree), requires };
-  return tree.some((node) => {
+  return tree.filter((node) => {
+    if (handledWorkerConstructor(node, context, tree, guards)) return false;
     if (returnedCapability(node, context) !== undefined || exportedCapability(node, context))
       return true;
     return (
@@ -325,10 +455,17 @@ export async function nativeWorkerEdit(
     readonly traces: readonly NativeAddonEntryTrace[];
     readonly tree: readonly Node[];
     readonly bindings: NativeBindings;
+    readonly nodeTarget: boolean;
+    readonly guards: ReadonlyMap<number, 'plain' | 'ambiguous'>;
     markChild(binaries: readonly string[]): string;
   },
 ): Promise<NativeEdit | undefined> {
   const capability = { bindings: context.bindings, imports: workerImports(context.tree) };
+  if (
+    !context.nodeTarget &&
+    handledWorkerConstructor(node, capability, context.tree, context.guards)
+  )
+    return undefined;
   let target = returnedCapability(node, capability);
   if (target === undefined && (node.type === 'CallExpression' || node.type === 'NewExpression'))
     target = invokedCapability(node, capability);

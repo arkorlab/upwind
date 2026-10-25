@@ -706,7 +706,7 @@ export function dynamicLoadsOf(file: string, code: string): DynamicLoad[] {
 }
 
 function nativeGuard(visit: Visit): 'plain' | 'ambiguous' | undefined {
-  if (visit.node.type !== 'CallExpression') return undefined;
+  if (visit.node.type !== 'CallExpression' && visit.node.type !== 'NewExpression') return undefined;
   if (inGuardedBlock(visit)) return 'plain';
   for (let at = visit; at.up !== undefined; at = at.up) {
     if (runsLater(at.up, at.key)) break;

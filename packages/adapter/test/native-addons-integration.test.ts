@@ -1,13 +1,15 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildAppFunction, type FunctionsContext } from '../src/app-functions.ts';
+import { appFunctionInput, buildAppFunction, type FunctionsContext } from '../src/app-functions.ts';
 import { BlobStore } from '../src/blobs.ts';
 import type { BuildContext, RouteCode } from '../src/collect.ts';
 import { AuditError } from '../src/dependencies.ts';
+import { buildFunction, type FunctionKind } from '../src/function.ts';
+import { NativeFunctionRequiredError } from '../src/native-loads.ts';
 import { bundleRuntimeModule, type RuntimeBundleInput } from '../src/runtime-bundle.ts';
 
 /**
@@ -87,6 +89,32 @@ async function refused(context: FunctionsContext): Promise<AuditError> {
   throw new Error('The authored dynamic loader was unexpectedly admitted');
 }
 
+async function placementInput(directory: string, kind: FunctionKind, fallbackOnly = false) {
+  const context = await contextOf(directory, true);
+  const filePath = context.modules[0]?.filePath;
+  if (filePath === undefined) throw new Error('Expected the authored entry');
+  const binary = path.join(directory, 'addon.node');
+  await writeFile(binary, new Uint8Array([0, 1, 2]));
+  const nativeSource = fallbackOnly
+    ? "const {Worker}=require('node:worker_threads');try{exports.handler=new Worker('source',{eval:true});}catch{exports.handler=()=>42;}"
+    : "const addon=require('./addon.node');exports.handler=()=>addon;";
+  await writeFile(filePath, nativeSource);
+  const input = await appFunctionInput(context, '{}', undefined, false);
+  const nativeTrace = { id: ROUTE, assets: { entry: filePath, binary } };
+  if (fallbackOnly) return { ...input, kind, entryTraces: [nativeTrace] };
+  const worker = path.join(directory, 'worker.cjs');
+  await writeFile(
+    worker,
+    "const {Worker}=require('node:worker_threads');exports.handler=()=>new Worker('source',{eval:true});",
+  );
+  return {
+    ...input,
+    kind,
+    entries: [...input.entries, { id: '/worker', filePath: worker }],
+    entryTraces: [nativeTrace, { id: '/worker', assets: { entry: worker } }],
+  };
+}
+
 describe('native trace context through real app Function assembly', () => {
   let directory: string;
 
@@ -124,5 +152,31 @@ describe('native trace context through real app Function assembly', () => {
     expect(bundleRuntimeModule).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ kind: 'app', name: 'app', edge: false, wasm: false }),
     );
+  });
+
+  it('returns a native placement error before publishing an aggregate app Worker artifact', async () => {
+    const input = await placementInput(directory, 'app');
+
+    await expect(buildFunction(input)).rejects.toBeInstanceOf(NativeFunctionRequiredError);
+  });
+
+  it.each(['middleware', 'workflow'] as const)(
+    'does not grant aggregate placement deferral to the %s Function',
+    async (kind) => {
+      const input = await placementInput(directory, kind);
+
+      await expect(buildFunction(input)).rejects.toThrow('Node Worker');
+    },
+  );
+
+  it('publishes a marker-free ordinary Worker for a plain fallback with build-only native assets', async () => {
+    const input = await placementInput(directory, 'app', true);
+    const built = await buildFunction(input);
+    const appFile = path.join(input.outDir, 'work', 'app-app.cjs');
+    const code = await readFile(appFile, 'utf8');
+
+    expect(built.spec.mainModule).toBe('index.mjs');
+    expect(code).not.toContain('__UPWIND_NATIVE_');
+    expect(code).toContain('Worker');
   });
 });
