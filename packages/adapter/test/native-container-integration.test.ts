@@ -195,7 +195,9 @@ async function contextOf(directory: string): Promise<FunctionsContext> {
 async function stop(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const stopped = new Promise<void>((resolve) => {
-    child.once('exit', () => resolve());
+    child.once('exit', () => {
+      resolve();
+    });
   });
   child.kill('SIGTERM');
   const kill = setTimeout(() => child.kill('SIGKILL'), 2000);

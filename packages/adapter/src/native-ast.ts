@@ -129,23 +129,36 @@ function nativeBinding(scope: NativeScope | undefined, name: string): Node | nul
     : ((found.scope.bindings.get(name) as Node | undefined) ?? null);
 }
 
+function patternChildren(pattern: Node, members: boolean): Node[] {
+  switch (pattern.type) {
+    case 'ObjectPattern': {
+      return pattern.properties.map((property) =>
+        property.type === 'Property' ? property.value : property.argument,
+      );
+    }
+    case 'ArrayPattern': {
+      return pattern.elements.filter((element) => element !== null);
+    }
+    case 'RestElement': {
+      return [pattern.argument];
+    }
+    case 'AssignmentPattern': {
+      return [pattern.left];
+    }
+    default: {
+      return members && pattern.type === 'MemberExpression' ? [pattern.object] : [];
+    }
+  }
+}
+
 function patternNames(pattern: Node, members = false): string[] {
-  if (pattern.type === 'Identifier') return [pattern.name];
-  if (pattern.type === 'ObjectPattern') {
-    return pattern.properties.flatMap((property) => {
-      const target = property.type === 'Property' ? property.value : property.argument;
-      return patternNames(target, members);
-    });
+  const names: string[] = [];
+  const pending: Node[] = [pattern];
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    if (node.type === 'Identifier') names.push(node.name);
+    else for (const child of patternChildren(node, members).toReversed()) pending.push(child);
   }
-  if (pattern.type === 'ArrayPattern') {
-    return pattern.elements.flatMap((element) => {
-      return element === null ? [] : patternNames(element, members);
-    });
-  }
-  if (pattern.type === 'RestElement') return patternNames(pattern.argument, members);
-  if (pattern.type === 'AssignmentPattern') return patternNames(pattern.left, members);
-  if (pattern.type === 'MemberExpression' && members) return patternNames(pattern.object, true);
-  return [];
+  return names;
 }
 
 function recordPatterns(scopes: ReadonlyMap<Node, NativeScope | undefined>): void {
@@ -241,10 +254,10 @@ export function nativePath(
   if (node?.type !== 'CallExpression' || node.callee.type !== 'MemberExpression') return undefined;
   const { object, property, computed } = node.callee;
   if (
-    !identifier(object, 'path') ||
-    !realPathBinding(node, bindings) ||
     computed ||
     property.type !== 'Identifier' ||
+    !identifier(object, 'path') ||
+    !realPathBinding(node, bindings) ||
     !['join', 'resolve'].includes(property.name)
   )
     return undefined;

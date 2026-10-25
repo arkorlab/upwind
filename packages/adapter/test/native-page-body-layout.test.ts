@@ -1,5 +1,5 @@
 import { isNodeContainerFunction, type FunctionModule } from '@stayingupwind/core/bundle';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { appFunctionsOf, type FunctionsContext } from '../src/app-functions.ts';
 import { BlobStore } from '../src/blobs.ts';
@@ -21,8 +21,8 @@ vi.mock(import('../src/node-function.ts'), async (importOriginal) => {
 const MIB = 1024 * 1024;
 const WORKER_CODE = 62 * MIB;
 const NODE_ARCHIVE = 128 * MIB;
-function body(digit: string, bytes: number, route: string): ShippedBlob {
-  return { sha256: digit.repeat(64), bytes: new Uint8Array(bytes), routes: [route] };
+function body(digit: string, bytes: number, pathname: string): ShippedBlob {
+  return { sha256: digit.repeat(64), bytes: new Uint8Array(bytes), routes: [pathname] };
 }
 const SMALL = body('a', MIB / 2, '/worker');
 const LARGE = [body('b', 2 * MIB, '/worker'), body('c', 2 * MIB, '/worker')];
@@ -207,8 +207,9 @@ describe('mixed native and Worker prerender body limits', () => {
       const first = workers[0];
       const final = workers.at(-1);
       const native = vi.mocked(buildNodeFunction).mock.calls.at(-1)?.[0];
-      if (first === undefined || final === undefined || native === undefined)
-        throw new Error('Missing mixed layout inputs');
+      assert.isDefined(first, 'Missing first Worker layout input');
+      assert.isDefined(final, 'Missing final Worker layout input');
+      assert.isDefined(native, 'Missing native layout input');
       const workerSpec = built.built.find((entry) => !isNodeContainerFunction(entry.built.spec));
 
       expect(summary(first)).toStrictEqual({

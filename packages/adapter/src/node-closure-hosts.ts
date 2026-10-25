@@ -1,10 +1,11 @@
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
 
-type HostObject = 'global' | 'cjs-module';
+const COMMON_JS_HOST = 'cjs-module';
+type HostObject = 'global' | typeof COMMON_JS_HOST;
 
 function namedHost(name: unknown): HostObject | undefined {
   if (name === 'globalThis' || name === 'global') return 'global';
-  return name === 'module' ? 'cjs-module' : undefined;
+  return name === 'module' ? COMMON_JS_HOST : undefined;
 }
 
 function aliasedHost(
@@ -22,12 +23,15 @@ function aliasedHost(
   return namedHost(name);
 }
 
-function memberName(value: Node): string | undefined {
-  const property = value['property'];
+export function hostPropertyName(value: Node): string | undefined {
+  const property = value['property'] ?? value['key'];
   if (!isNode(property)) return undefined;
-  const name = value['computed'] === true ? property['value'] : property['name'];
+  const name =
+    value['computed'] !== true && property.type === 'Identifier'
+      ? property['name']
+      : property['value'];
   if (typeof name === 'string') return name;
-  if (property.type !== 'TemplateLiteral' || listOf(property, 'expressions').length !== 0)
+  if (property.type !== 'TemplateLiteral' || listOf(property, 'expressions').length > 0)
     return undefined;
   const first = listOf(property, 'quasis')[0];
   const data = isNode(first) ? first['value'] : undefined;
@@ -40,9 +44,9 @@ function memberName(value: Node): string | undefined {
 }
 
 function hostMember(value: Node, owner: HostObject | undefined): HostObject | undefined {
-  const member = memberName(value);
+  const member = hostPropertyName(value);
   if (owner === 'global') return namedHost(member);
-  return owner === 'cjs-module' && member === 'parent' ? owner : undefined;
+  return owner === COMMON_JS_HOST && member === 'parent' ? owner : undefined;
 }
 
 /** Only unshadowed host objects and their lexical aliases; ordinary objects stay ordinary. */
@@ -51,11 +55,21 @@ export function hostObjectOf(
   scopes: readonly Scope[],
   seen = new Set<Node>(),
 ): HostObject | undefined {
-  if (!isNode(value) || seen.has(value)) return undefined;
-  seen.add(value);
-  if (value.type === 'Identifier') return aliasedHost(value, scopes, seen);
-  if (value.type === 'VariableDeclarator') return hostObjectOf(value['init'], scopes, seen);
-  if (value.type !== 'MemberExpression') return undefined;
-  const owner = hostObjectOf(value['object'], scopes, seen);
-  return hostMember(value, owner);
+  let current = value;
+  while (isNode(current) && !seen.has(current)) {
+    seen.add(current);
+    if (current.type === 'VariableDeclarator') {
+      current = current['init'];
+      continue;
+    }
+    if (current.type === 'Identifier') return aliasedHost(current, scopes, seen);
+    if (current.type !== 'MemberExpression') return undefined;
+    const owner = hostObjectOf(current['object'], scopes, seen);
+    return hostMember(current, owner);
+  }
+  return undefined;
+}
+
+export function isCommonJsHost(value: unknown, scopes: readonly Scope[]): boolean {
+  return hostObjectOf(value, scopes) === COMMON_JS_HOST;
 }

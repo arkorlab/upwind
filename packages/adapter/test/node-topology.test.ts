@@ -1,11 +1,16 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Script } from 'node:vm';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { BlobStore } from '../src/blobs.ts';
 import type { BuildFunctionInput } from '../src/function.ts';
+import { NodeArtifactFiles } from '../src/node-artifact-files.ts';
 import { nodePhysicalFiles } from '../src/node-files.ts';
+import { nodeSourceMaps } from '../src/node-source-maps.ts';
 
 describe('native physical module relocation', () => {
   let directory: string;
@@ -43,6 +48,84 @@ describe('native physical module relocation', () => {
       manifests: [],
     } as unknown as BuildFunctionInput;
   }
+
+  it('preserves an unresolved optional relative lookup beyond the tracing root', async () => {
+    const entry = path.join(project, 'entry.cjs');
+    await writeFile(entry, "try{require('../../not-present.cjs')}catch{};module.exports=42;");
+    const physical = await nodePhysicalFiles(input(entry, [entry]), []);
+
+    expect(physical.files.map((file) => file.name)).toContain('project/app/entry.cjs');
+  });
+
+  it('normalizes a relocated manifest root using the real Node cwd and path.join semantics', async () => {
+    const entry = path.join(output, 'server/entry.cjs');
+    await writeFile(entry, 'exports.routeModule={};');
+    const build = input(entry, [entry]);
+    const physical = await nodePhysicalFiles(build, []);
+    const files = new NodeArtifactFiles(build, physical, []);
+    await files.addAppEntry();
+    const source = files.files.get('upwind/app.cjs');
+    if (source === undefined) throw new Error('missing generated app entry');
+    const routeModule = { distDir: 'build-machine-path' };
+    const module = {
+      exports: { entries: {} as Record<string, () => { routeModule: typeof routeModule }> },
+    };
+    const modules: Record<string, unknown> = {
+      'node:async_hooks': { AsyncLocalStorage },
+      [`/bundle/${physical.nameOf(entry)}`]: { routeModule },
+    };
+    new Script(new TextDecoder().decode(source.bytes)).runInNewContext({
+      module,
+      require: (name: string) => modules[name],
+    });
+    module.exports.entries['/native']!();
+
+    expect(routeModule.distDir).toBe('.upwind-build');
+    expect(
+      path.posix.join(`/bundle/${physical.cwd}`, routeModule.distDir, 'server/entry.cjs'),
+    ).toBe(`/bundle/${physical.nameOf(entry)}`);
+  });
+
+  it.each(['comment', 'kept'] as const)(
+    'finds a relocated output source map through its original physical path: %s',
+    async (mode) => {
+      const entry = path.join(output, 'server/entry.cjs');
+      const map = path.join(output, 'server/entry.cjs.map');
+      const source = JSON.stringify({
+        version: 3,
+        sources: ['entry.ts'],
+        names: [],
+        mappings: 'AAAA',
+      });
+      await writeFile(entry, 'module.exports=42;\n//# sourceMappingURL=entry.cjs.map\n');
+      await writeFile(map, source);
+      const mapFor = vi.fn(() => ({ seen: true, file: map, origin: map }));
+      const outDir = path.join(directory, 'artifacts');
+      const blobStore = new BlobStore(outDir);
+      await blobStore.init();
+      const build: BuildFunctionInput = {
+        ...input(entry, [entry]),
+        kind: 'app',
+        sourceMaps: true,
+        outDir,
+        blobStore,
+        ...(mode === 'kept' && { keptMaps: { mapFor } }),
+      };
+      const physical = await nodePhysicalFiles(build, []);
+      const maps = await nodeSourceMaps(
+        build,
+        physical,
+        new Map(physical.files.map((file) => [file.name, file])),
+      );
+
+      expect(maps).toHaveLength(1);
+      expect(maps[0]?.name).toBe('app/project/app/.upwind-build/server/entry.cjs');
+      await expect(
+        readFile(path.join(outDir, 'blobs', maps[0]!.blob.sha256), 'utf8'),
+      ).resolves.toBe(source);
+      expect(mapFor.mock.calls).toStrictEqual(mode === 'kept' ? [[entry]] : []);
+    },
+  );
 
   it.each([
     "module.exports=require('../../repository/app/shared.cjs');\n",

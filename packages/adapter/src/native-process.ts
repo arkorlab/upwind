@@ -2,7 +2,8 @@ import type { Node } from '@oxc-project/types';
 
 import { identifier, type NativeBindings, required, stringOf } from './native-ast.ts';
 
-type ProcessOrigin = 'namespace' | 'modified-namespace' | 'dlopen' | 'ambiguous';
+const MODIFIED_NAMESPACE = 'modified-namespace';
+type ProcessOrigin = 'namespace' | typeof MODIFIED_NAMESPACE | 'dlopen' | 'ambiguous';
 
 function processModule(specifier: string | undefined): boolean {
   return ['node:process', 'process'].includes(specifier ?? '');
@@ -52,10 +53,10 @@ function declaredOrigin(
   if (imported !== undefined) return imported;
   if (declaration.type !== 'VariableDeclarator' || declaration.init === null) return undefined;
   const origin = processOrigin(declaration.init, bindings, seen);
-  if (declaration.id.type === 'Identifier' || origin === 'ambiguous') return origin;
-  if (origin !== 'namespace' && origin !== 'modified-namespace') return undefined;
+  if (origin === 'ambiguous' || declaration.id.type === 'Identifier') return origin;
+  if (origin !== 'namespace' && origin !== MODIFIED_NAMESPACE) return undefined;
   const member = destructuredOrigin(declaration.id, name);
-  return origin === 'modified-namespace' && member !== undefined ? 'ambiguous' : member;
+  return origin === MODIFIED_NAMESPACE && member !== undefined ? 'ambiguous' : member;
 }
 
 function identifierOrigin(
@@ -74,9 +75,7 @@ function identifierOrigin(
   }
   if (origin === undefined) return undefined;
   if (bindings.unmodified(node, node.name, true)) return origin;
-  return origin === 'namespace' || origin === 'modified-namespace'
-    ? 'modified-namespace'
-    : 'ambiguous';
+  return origin === 'namespace' || origin === MODIFIED_NAMESPACE ? MODIFIED_NAMESPACE : 'ambiguous';
 }
 
 function memberOrigin(
@@ -86,11 +85,11 @@ function memberOrigin(
 ): ProcessOrigin | undefined {
   const origin = processOrigin(node.object, bindings, seen);
   if (origin === 'ambiguous' || origin === 'dlopen') return 'ambiguous';
-  if (origin !== 'namespace' && origin !== 'modified-namespace') return undefined;
+  if (origin !== 'namespace' && origin !== MODIFIED_NAMESPACE) return undefined;
   const name = propertyName(node);
   if (name === undefined) return 'ambiguous';
   if (name !== 'dlopen') return undefined;
-  return origin === 'modified-namespace' ? 'ambiguous' : 'dlopen';
+  return origin === MODIFIED_NAMESPACE ? 'ambiguous' : 'dlopen';
 }
 
 function processOrigin(
@@ -104,7 +103,7 @@ function processOrigin(
   if (node.type === 'MemberExpression') return memberOrigin(node, bindings, next);
   if (!processModule(required(node))) return undefined;
   if (bindings.lookup(node, 'require') !== undefined) return undefined;
-  return bindings.unmodified(node, 'require', false) ? 'namespace' : 'modified-namespace';
+  return bindings.unmodified(node, 'require', false) ? 'namespace' : MODIFIED_NAMESPACE;
 }
 
 /** Only genuine Node process origins qualify; ambiguous aliases must fail after retention. */

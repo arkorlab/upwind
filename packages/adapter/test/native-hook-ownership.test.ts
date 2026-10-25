@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { rolldown, type OutputChunk } from 'rolldown';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it } from 'vitest';
 
 import type { RouteCode } from '../src/collect.ts';
 import { instrumentationOf } from '../src/instrumentation.ts';
@@ -45,7 +45,7 @@ describe('native project instrumentation ownership', () => {
     await using build = await rolldown({ input: own, platform: 'node', plugins: [proof.plugin] });
     const result = await build.generate({ format: 'cjs' });
     const chunk = result.output.find((item): item is OutputChunk => item.type === 'chunk');
-    if (chunk === undefined) throw new Error('Authored hook did not produce a chunk');
+    assert.isDefined(chunk, 'Authored hook did not produce a chunk');
     const loads = await proof.retained(chunk);
     const routes: RouteCode[] = ['/one', '/two'].map((id) => {
       return {
@@ -90,7 +90,7 @@ describe('native project instrumentation ownership', () => {
     await using build = await rolldown({ input: entry, platform: 'node', plugins: [proof.plugin] });
     const result = await build.generate({ format: 'cjs' });
     const chunk = result.output.find((item): item is OutputChunk => item.type === 'chunk');
-    if (chunk === undefined) throw new Error('Authored hook did not produce a chunk');
+    assert.isDefined(chunk, 'Authored hook did not produce a chunk');
 
     await expect(proof.retained(chunk)).rejects.toThrow('no owned, regular-file binary');
   });

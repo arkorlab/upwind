@@ -15,6 +15,7 @@ import {
   type NativeEdit,
   type NativeOperationContext,
 } from './native-operations.ts';
+import { parseNativeSource } from './native-source-parser.ts';
 import { nativeWorkerEdit } from './native-worker.ts';
 
 const MARKER = '__UPWIND_NATIVE_CAPABILITY__';
@@ -52,9 +53,7 @@ function markerId(node: Extract<Node, { type: 'CallExpression' }>): string {
 
 function canAnalyze(candidates: boolean, source: string, importer: string): boolean {
   return (
-    candidates &&
-    /\.(?:c|m)?js$/u.test(importer) &&
-    SOURCE_WORDS.some((word) => source.includes(word))
+    candidates && /\.[cm]?js$/u.test(importer) && SOURCE_WORDS.some((word) => source.includes(word))
   );
 }
 
@@ -123,7 +122,7 @@ export function nativeLoadsPlugin(
           throw new AuditError('native analysis source exceeds its limit');
         if (source.includes(MARKER) || source.includes(CHILD_MARKER))
           throw new AuditError('reserved native analysis marker appears in application source');
-        const program = parseAst(source);
+        const program = parseNativeSource(source, importer);
         const tree = walk(program);
         const bindings = nativeBindings(program);
         const context: NativeOperationContext = {

@@ -37,7 +37,8 @@ describe('proved native loader selection', () => {
     );
     await writeFile(path.join(loader, 'node-gyp-build.js'), REVIEWED_NODE_GYP);
     // Give every case a defined selector environment without reading the developer's values.
-    for (const key of await nativeLoaderSelectorKeys(entry)) vi.stubEnv(key, '');
+    const selectorKeys = await nativeLoaderSelectorKeys(entry);
+    for (const key of selectorKeys) vi.stubEnv(key, '');
   });
 
   afterEach(async () => {
@@ -46,7 +47,7 @@ describe('proved native loader selection', () => {
   });
 
   async function selected(owned: readonly string[]) {
-    const entries = owned.map((file, index) => [String(index), file]);
+    const entries = owned.map((file, index) => [String(index), file] as const);
     const assets = { entry, ...Object.fromEntries(entries) };
     return nativeLoaderBinary({
       kind: 'node-gyp-build',

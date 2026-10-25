@@ -1,0 +1,44 @@
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { proveNodeFunction } from '../src/node-proof.ts';
+
+describe('original CommonJS host loader before Node publication', () => {
+  let directory: string;
+
+  beforeEach(async () => {
+    directory = await realpath(await mkdtemp(path.join(tmpdir(), 'upwind-original-host-')));
+  });
+
+  afterEach(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it('refuses the real original module constructor even after CJS bundling introduces a module parameter', async () => {
+    const distDir = path.join(directory, '.next');
+    const entry = path.join(distDir, 'server/entry.cjs');
+    const binary = path.join(distDir, 'server/addon.node');
+    await mkdir(path.dirname(entry), { recursive: true });
+    await writeFile(binary, new Uint8Array([0, 1, 2]));
+    await writeFile(
+      entry,
+      [
+        "exports.native=()=>require('./addon.node');",
+        'exports.load=name=>module.constructor._load(name);',
+      ].join('\n'),
+    );
+    const operation = proveNodeFunction({
+      kind: 'app',
+      projectDir: directory,
+      outDir: path.join(directory, '.upwind'),
+      entries: [{ id: '/native', filePath: entry }],
+      entryTraces: [{ id: '/native', assets: { entry, binary } }],
+      patch: { projectDir: directory, distDir, chunks: [], instrumentation: undefined, wasm: [] },
+    });
+
+    await expect(operation).rejects.toThrow('original CommonJS host loader');
+  });
+});

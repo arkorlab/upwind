@@ -10,6 +10,12 @@ import { AuditError } from './dependencies.ts';
 import { childrenOf, isNode, listOf, type Node } from './lexical-scope.ts';
 import type { TextModule } from './manifests.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
+import {
+  proveManifestConsumerGraph,
+  type ManifestGraphInput,
+  type ManifestModuleGraph,
+  type NodeManifestNormalization,
+} from './node-manifest-graph.ts';
 
 const MAX_MANIFEST_BYTES = 33_554_432;
 const MAX_PACKAGE_BYTES = 65_536;
@@ -17,54 +23,19 @@ const STATEMENTS_WITH_DEPLOYMENT_SUFFIX = 3;
 const MANIFEST_SUFFIX = '_client-reference-manifest.js';
 const EVALUATOR = 'dist/server/load-manifest.external.js';
 const EVALUATOR_SHA = '6e88909558245f1e1e95d97de869a9210f58995e4e19fdba62c25adf8e43d826';
-// Published next@16.4.3, verified against its registry tarball integrity. The corresponding
-// TypeScript/Rust producers are pinned at 29bbeab09981148ade186e8599ecdede15abc281.
-const CALLERS: ReadonlyMap<string, string> = new Map([
-  [
-    'dist/compiled/next-server/app-page.runtime.prod.js',
-    '9f24cd66e38f57c3144cbc456fe0f52853836d6218f449f54abba8e8c17c3921',
-  ],
-  [
-    'dist/compiled/next-server/app-route.runtime.prod.js',
-    'ff6aea920fbe3a9a4cf4179b0bc80bf20127136754cd9225586edb77f96dc254',
-  ],
-  [
-    'dist/compiled/next-server/pages-api.runtime.prod.js',
-    '322a597b07fdc559b86562fd68f1c828b554deac36e1e84a10e6687daa01a00f',
-  ],
-  [
-    'dist/compiled/next-server/pages.runtime.prod.js',
-    '28f90af862ee5ae750fddea94d36a55cda89e4636993569d0e60c36f2813dc98',
-  ],
-  [
-    'dist/server/load-components.js',
-    '47e1446da77172ba77d6f3e6f68ae00ca7bebda206b26c0ba8625d41915dcaed',
-  ],
-  [
-    'dist/server/route-modules/route-module.js',
-    '2f1de319c06e89b9adda0365a655e8fc6b23ec0fa424a0ea9d513b6d814a1865',
-  ],
-]);
-
 export interface ManifestProofFile {
   readonly file: string;
   readonly sha256: string;
 }
 
-interface ManifestProofInput {
-  readonly distDir: string;
+interface ManifestProofInput extends ManifestGraphInput {
   readonly manifests?: readonly TextModule[] | undefined;
   readonly entryTraces?: readonly NativeAddonEntryTrace[] | undefined;
 }
 
-interface ManifestProofGraph {
-  readonly sources: ReadonlyMap<string, ManifestProofFile>;
-  readonly importers: ReadonlyMap<string, readonly string[]>;
-  readonly retained: ReadonlySet<string>;
-}
-
 export interface NodeManifestProof {
   readonly files: readonly ManifestProofFile[];
+  readonly normalization?: NodeManifestNormalization | undefined;
   /** Inspection only: never returned to Rolldown or copied into the physical Node artifact. */
   inspectionCode(file: string, code: string): string;
 }
@@ -214,23 +185,6 @@ export function assertClientReferenceManifest(source: string, page: string): voi
   }
 }
 
-function graphFile(graph: ManifestProofGraph, id: string): ManifestProofFile {
-  const source = graph.sources.get(id);
-  if (source === undefined) return refuse('source identity');
-  return source;
-}
-
-function assertCallers(root: string, id: string, graph: ManifestProofGraph): void {
-  const importers = graph.importers.get(id);
-  if (importers === undefined || importers.length === 0) refuse('missing caller identity');
-  for (const importer of importers) {
-    const source = graphFile(graph, importer);
-    const relative = posix(path.relative(root, source.file));
-    const expected = CALLERS.get(relative);
-    if (expected === undefined || expected !== source.sha256) refuse('unknown or changed caller');
-  }
-}
-
 async function packageSource(root: string): Promise<ManifestProofFile> {
   const file = await realpath(path.join(root, 'package.json'));
   if (path.dirname(file) !== root) refuse('package identity');
@@ -271,9 +225,16 @@ async function ownedScripts(input: ManifestProofInput): Promise<Map<string, stri
   return scripts;
 }
 
-async function proveScripts(input: ManifestProofInput): Promise<ManifestProofFile[]> {
+async function proveScripts(
+  input: ManifestProofInput,
+  pages: ReadonlySet<string>,
+): Promise<ManifestProofFile[]> {
   if (input.manifests === undefined) refuse('missing sealed manifest inventory');
   const owned = await ownedScripts(input);
+  const ownedPages = new Set(owned.values());
+  for (const page of pages) {
+    if (!ownedPages.has(page.replaceAll('%5F', '_'))) refuse('missing sealed route manifest');
+  }
   const files = new Map<string, ManifestProofFile>();
   for (const manifest of input.manifests) {
     if (manifest.routeFile?.endsWith(MANIFEST_SUFFIX) !== true) continue;
@@ -350,27 +311,41 @@ function inspectedEvaluator(code: string): string {
 /** Certify the one reviewed VM operation over sealed, owned, generated client-manifest data. */
 export async function proveNodeManifests(
   input: ManifestProofInput,
-  graph: ManifestProofGraph,
+  graph: ManifestModuleGraph,
 ): Promise<NodeManifestProof> {
-  const evaluators = [...graph.sources].filter(
-    ([id, source]) => graph.retained.has(id) && posix(source.file).endsWith(`/${EVALUATOR}`),
-  );
+  const evaluators = [...graph.sources].filter(([id, source]) => {
+    if (!graph.retained.has(id) || !posix(source.file).endsWith(`/${EVALUATOR}`)) return false;
+    if (graph.rendered === undefined) return true;
+    const code = graph.rendered.get(id);
+    if (code === undefined) return false;
+    const program: unknown = parseAst(code);
+    return isNode(program) && vmOperations(program).length > 0;
+  });
   const approved = new Set<string>();
   const files = new Map<string, ManifestProofFile>();
+  let normalization: NodeManifestNormalization | undefined;
+  const pages = new Set<string>();
   for (const [id, evaluator] of evaluators) {
-    if (evaluator.sha256 !== EVALUATOR_SHA) refuse('evaluator identity');
+    const evaluatorBytes = await boundedSource(evaluator.file, MAX_MANIFEST_BYTES);
+    if (evaluator.sha256 !== EVALUATOR_SHA || sha256(evaluatorBytes) !== evaluator.sha256)
+      refuse('evaluator identity');
     const root = path.resolve(path.dirname(evaluator.file), '../..');
     const metadata = await packageSource(root);
-    assertCallers(root, id, graph);
+    const consumers = await proveManifestConsumerGraph(input, graph, { id, root });
+    normalization = consumers.normalization;
+    for (const page of consumers.pages) pages.add(page);
+    for (const source of consumers.files) files.set(source.file, source);
+    files.set(evaluator.file, evaluator);
     files.set(metadata.file, metadata);
     approved.add(id);
   }
   if (approved.size > 0) {
-    const scripts = await proveScripts(input);
+    const scripts = await proveScripts(input, pages);
     for (const source of scripts) files.set(source.file, source);
   }
   return {
     files: [...files.values()],
+    ...(normalization !== undefined && { normalization }),
     inspectionCode: (file, code) => (approved.has(file) ? inspectedEvaluator(code) : code),
   };
 }

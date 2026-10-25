@@ -10,6 +10,7 @@ import type { BuildFunctionInput } from './function.ts';
 import type { NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
 import type { NodePhysicalFiles } from './node-files.ts';
+import type { NodeFunctionProof } from './node-proof.ts';
 import { fetchCacheWaitUntilPatch } from './patches/fetch-cache-wait-until.ts';
 import { instrumentationPatch } from './patches/instrumentation.ts';
 import { resourceCacheBridgePatch } from './patches/resource-cache-bridge.ts';
@@ -33,6 +34,32 @@ const ELF_PREFIX = [
 ] as const;
 const ELF_MACHINE_OFFSET = 18;
 const ELF_X64_MACHINE = 62;
+type EntryNormalization = NonNullable<NodeFunctionProof['normalization']>;
+
+async function assertEntryNormalization(
+  input: BuildFunctionInput,
+  seal: EntryNormalization,
+): Promise<void> {
+  if (
+    path.resolve(input.patch.distDir) !== seal.distDir ||
+    (await realpath(input.patch.distDir)) !== seal.canonicalDistDir ||
+    input.entries.length !== seal.entries.length
+  )
+    throw new AuditError('The Node manifest normalization contract changed before packaging');
+  const ids = new Set<string>();
+  for (const [index, entry] of input.entries.entries()) {
+    const expected = seal.entries[index];
+    if (
+      expected === undefined ||
+      ids.has(entry.id) ||
+      entry.id !== expected.id ||
+      entry.filePath !== expected.filePath ||
+      (await realpath(entry.filePath)) !== expected.canonicalFilePath
+    )
+      throw new AuditError('The Node route entry changed after its manifest consumer proof');
+    ids.add(entry.id);
+  }
+}
 
 function nativeElf(bytes: Uint8Array): void {
   if (
@@ -74,6 +101,7 @@ function rewrittenNextFile(
 
 /** Physical app files plus explicit generated metadata, all constructed during the build. */
 export class NodeArtifactFiles {
+  #normalizedEntry: string | undefined;
   readonly files: Map<string, NodeArchiveFile>;
   readonly input: BuildFunctionInput;
   readonly physical: NodePhysicalFiles;
@@ -157,19 +185,37 @@ export class NodeArtifactFiles {
     for (const blob of this.input.blobs) this.add(`blobs/${blob.sha256}`, blob.bytes);
   }
 
-  async addAppEntry(): Promise<void> {
-    const dist = this.physical.nameOf(this.input.patch.distDir);
+  async addAppEntry(normalization?: EntryNormalization): Promise<void> {
+    if (normalization !== undefined) await assertEntryNormalization(this.input, normalization);
+    const dist = this.physical.nameOf(await realpath(this.input.patch.distDir));
     const table = await Promise.all(
       this.input.entries.map(async (entry) => {
         const file = this.physical.nameOf(await realpath(entry.filePath));
         return { id: entry.id, filePath: `/bundle/${file}` };
       }),
     );
-    const entry = appEntrySource(table, { external: true, runtimeDistDir: `/bundle/${dist}` });
-    this.text(
-      'upwind/app.cjs',
-      `globalThis.AsyncLocalStorage ??= require('node:async_hooks').AsyncLocalStorage;\n${entry}`,
-    );
+    // Node's shared serve layer sets relativeProjectDir='.' and the bootstrap uses this cwd.
+    // Next joins that project root with distDir; an absolute value would duplicate /bundle.
+    const runtimeDistDir = path.posix.relative(this.physical.cwd, dist) || '.';
+    const entry = appEntrySource(table, { external: true, runtimeDistDir });
+    const source = `globalThis.AsyncLocalStorage ??= require('node:async_hooks').AsyncLocalStorage;\n${entry}`;
+    this.text('upwind/app.cjs', source);
+    if (normalization !== undefined) this.#normalizedEntry = source;
+  }
+
+  /** The proven analysis root is valid only if the shipped root normalizes the same route table. */
+  async assertAppEntryNormalization(normalization?: EntryNormalization): Promise<void> {
+    if (normalization === undefined) return;
+    await assertEntryNormalization(this.input, normalization);
+    const bytes = this.files.get('upwind/app.cjs')?.bytes;
+    if (
+      bytes === undefined ||
+      this.#normalizedEntry === undefined ||
+      Buffer.compare(Buffer.from(bytes), Buffer.from(this.#normalizedEntry)) !== 0
+    )
+      throw new AuditError(
+        'The physical Node entry no longer enforces its manifest normalization contract',
+      );
   }
 
   addWasm(): void {

@@ -112,6 +112,7 @@ describe('native proof through the production app bundle pipeline', () => {
   it.each([
     '__UPWIND_NATIVE_CAPABILITY__()',
     '__UPWIND_NATIVE_CAPABILITY__(0)',
+    // eslint-disable-next-line no-template-curly-in-string -- This malformed marker is deliberately executable source text.
     '__UPWIND_NATIVE_CAPABILITY__(`id${1}`)',
     '__UPWIND_NATIVE_CAPABILITY__("0","extra")',
     '__UPWIND_NATIVE_CAPABILITY__("unknown")',

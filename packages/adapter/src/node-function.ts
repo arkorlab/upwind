@@ -93,12 +93,13 @@ function nodeAliases(input: BuildFunctionInput): Plugin {
       if (source === 'arkor:app') return { id: './app.cjs', external: true };
       if (source === 'arkor:edge') return { id: './edge.cjs', external: true };
       if (source === 'arkor:wasm') return { id: './wasm.mjs', external: true };
-      if (source === 'arkor:cache-host') return input.cacheHostModule ?? NO_CACHE_MODULE;
+      if (source === 'arkor:cache-host') return { id: input.cacheHostModule ?? NO_CACHE_MODULE };
       const target = nodeRuntimeAlias(source, importer, runtime);
       // Both separately bundled entrypoints share one private bootstrap/cache module.
       // It consumes and removes the token-bearing environment value exactly once.
       if (target === 'node-bindings') return { id: './node-bindings.mjs', external: true };
-      return target === undefined ? null : (aliases[target] ?? null);
+      const alias = target === undefined ? undefined : aliases[target];
+      return alias === undefined ? null : { id: alias };
     },
     load(id) {
       if (id === NO_CACHE_MODULE)
@@ -382,16 +383,17 @@ export async function buildNodeFunction(
   await files.addNativeMetadata();
   await files.addNextManifests();
   await files.addPlatformFiles();
-  await files.addAppEntry();
+  await files.addAppEntry(proof.normalization);
   await addNodeEdge(files, work);
   files.addWasm();
   await addNodeRuntime(files, work);
   await addNodeServer(files, work);
+  await files.assertAppEntryNormalization(proof.normalization);
   const archive = nodeArtifactArchive([...files.files.values()]);
   const artifact = await input.blobStore.put(archive, 'application/gzip');
   return {
     spec: { runtime: 'node-container', artifact, entrypoint: 'upwind/server.mjs', abi },
-    sourceMaps: await nodeSourceMaps(input, physical.files, files.files),
+    sourceMaps: await nodeSourceMaps(input, physical, files.files),
     inputs: physical.files.map((file) => ({ file: file.name, bytes: file.bytes.byteLength })),
     dependencies: {
       ...proof.dependencies,

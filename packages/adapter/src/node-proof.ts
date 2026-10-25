@@ -19,7 +19,8 @@ import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import type { BuildFunctionInput } from './function.ts';
 import { nativeLoadsPlugin, type NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
-import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
+import { dynamicNodeClosureRefusal, originalNodeHostLoaderRefusal } from './node-closure-proof.ts';
+import type { ManifestGraphEdge, NodeManifestNormalization } from './node-manifest-graph.ts';
 import { proveNodeManifests, type NodeManifestProof } from './node-manifest-proof.ts';
 import { cacheHandlersPatch } from './patches/cache-handlers.ts';
 import { instrumentationPatch } from './patches/instrumentation.ts';
@@ -34,7 +35,7 @@ const ROLLDOWN_RUNTIME_MODULE = '\0rolldown/runtime.js';
 // These expose the original Node graph. No Worker-specific code or dependency is substituted.
 const GRAPH_LINKS = [turbopackRuntimePatch, instrumentationPatch, cacheHandlersPatch];
 
-type NodeProofInput = Partial<Pick<BuildFunctionInput, 'manifests'>> &
+type NodeProofInput = Partial<Pick<BuildFunctionInput, 'manifests' | 'runtimeManifest'>> &
   Pick<
     BuildFunctionInput,
     'kind' | 'name' | 'projectDir' | 'outDir' | 'entries' | 'entryTraces' | 'patch'
@@ -46,6 +47,9 @@ interface OriginalNodeSource {
 interface OriginalNodeGraph {
   readonly sources: Map<string, OriginalNodeSource>;
   readonly importers: Map<string, readonly string[]>;
+  readonly resolutions: Map<string, Map<string, Set<string>>>;
+  readonly imports: Map<string, readonly ManifestGraphEdge[]>;
+  readonly roots: Set<string>;
   readonly patches: AppliedPatch[];
   readonly externals: Set<string>;
 }
@@ -58,6 +62,7 @@ export interface NodeFunctionProof {
   readonly native: readonly NativeLoad[];
   readonly files: readonly OriginalNodeSource[];
   readonly dependencies: FunctionDependencies;
+  readonly normalization?: NodeManifestNormalization | undefined;
 }
 
 function digest(bytes: Uint8Array): string {
@@ -129,6 +134,21 @@ async function originalNodeModule(
 function originalNodeGraphPlugin(input: NodeProofInput, graph: OriginalNodeGraph): Plugin {
   return {
     name: 'upwind-original-node-graph',
+    async resolveId(specifier, importer, options) {
+      // eslint-disable-next-line unicorn/no-this-outside-of-class -- Record the bundler's actual resolution, preserving its result and native-plugin handling.
+      const resolved = await this.resolve(specifier, importer, { ...options, skipSelf: true });
+      if (resolved !== null && importer !== undefined) {
+        let imports = graph.resolutions.get(importer);
+        if (imports === undefined) {
+          imports = new Map();
+          graph.resolutions.set(importer, imports);
+        }
+        const targets = imports.get(specifier) ?? new Set<string>();
+        targets.add(resolved.id);
+        imports.set(specifier, targets);
+      }
+      return resolved;
+    },
     load: {
       filter: { id: /\.(?:[cm]?[jt]sx?|json)$/u },
       handler: (id) => originalNodeModule(id, input, graph),
@@ -139,8 +159,18 @@ function originalNodeGraphPlugin(input: NodeProofInput, graph: OriginalNodeGraph
       for (const id of ids) {
         // eslint-disable-next-line unicorn/no-this-outside-of-class -- Importers must come from Rolldown's resolved graph, not source-name guesses.
         const module = this.getModuleInfo(id);
-        if (module !== null)
-          graph.importers.set(id, [...module.importers, ...module.dynamicImporters]);
+        if (module === null) continue;
+        graph.importers.set(id, [...module.importers, ...module.dynamicImporters]);
+        if (module.isEntry) graph.roots.add(id);
+        const imported = new Set(module.importedIds);
+        for (const dependency of module.dynamicallyImportedIds) imported.add(dependency);
+        const edges: ManifestGraphEdge[] = [];
+        for (const [specifier, targets] of graph.resolutions.get(id) ?? []) {
+          for (const target of targets) {
+            if (imported.has(target)) edges.push({ specifier, target });
+          }
+        }
+        graph.imports.set(id, edges);
       }
     },
   };
@@ -154,6 +184,31 @@ function retainedFileIdentity(projectDir: string, file: string): string {
       ? `${relative.slice(0, MAX_DIAGNOSTIC_FILE_CHARACTERS)}…`
       : relative;
   return JSON.stringify(bounded);
+}
+
+async function assertRetainedOriginalClosures(
+  projectDir: string,
+  chunk: OutputChunk,
+  graph: OriginalNodeGraph,
+): Promise<void> {
+  for (const id of Object.keys(chunk.modules)) {
+    if (isNodeProofCompilerModule(id)) continue;
+    const original = graph.sources.get(id);
+    if (original === undefined)
+      throw new AuditError('Original Node graph includes a source without physical-file proof');
+    const bytes = await nodeProofSource(original.file);
+    if (digest(bytes) !== original.sha256)
+      throw new AuditError('Original Node source changed before its host-loader proof');
+    // JSON is parsed as data by the bundler, never evaluated as a JavaScript module.
+    if (original.file.endsWith('.json')) continue;
+    const refusal = originalNodeHostLoaderRefusal(original.file, bytes.toString('utf8'));
+    if (refusal !== undefined) {
+      const identity = retainedFileIdentity(projectDir, original.file);
+      throw new AuditError(
+        `Original Node graph has ${refusal} in ${identity}; refusing native publication`,
+      );
+    }
+  }
 }
 
 function assertRetainedClosures(
@@ -243,6 +298,9 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   const graph: OriginalNodeGraph = {
     sources: new Map(),
     importers: new Map(),
+    resolutions: new Map(),
+    imports: new Map(),
+    roots: new Set(),
     patches: [],
     externals: new Set(),
   };
@@ -273,11 +331,25 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) throw new AuditError('Original Node graph produced no proof chunk');
+  await assertRetainedOriginalClosures(input.projectDir, chunk, graph);
   const manifests = await proveNodeManifests(
-    { distDir: input.patch.distDir, manifests: input.manifests, entryTraces: input.entryTraces },
+    {
+      distDir: input.patch.distDir,
+      manifests: input.manifests,
+      entryTraces: input.entryTraces,
+      entries: input.entries,
+      runtimeManifest: input.runtimeManifest,
+      instrumentation: input.patch.instrumentation,
+      analysisEntry: entryFile,
+    },
     {
       sources: graph.sources,
       importers: graph.importers,
+      imports: graph.imports,
+      roots: graph.roots,
+      rendered: new Map(
+        Object.entries(chunk.modules).flatMap(([id, module]) => module.code === null ? [] : [[id, module.code] as const]),
+      ),
       retained: new Set(Object.keys(chunk.modules)),
     },
   );
@@ -297,7 +369,12 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     retained,
     manifests.files,
   );
-  return { native: retained, files, dependencies };
+  return {
+    native: retained,
+    files,
+    dependencies,
+    ...(manifests.normalization !== undefined && { normalization: manifests.normalization }),
+  };
 }
 
 function assertCopiedSource(

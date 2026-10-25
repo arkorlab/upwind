@@ -14,6 +14,7 @@ import { nativeLoadsPlugin } from '../src/native-loads.ts';
 // Fixed official Next.js fixture, kept byte-for-byte so review is tied to its Git blob.
 // https://github.com/vercel/next.js/blob/29bbeab09981148ade186e8599ecdede15abc281/test/e2e/prerender-native-module/bindings/index.js
 const REVIEWED_BINDINGS =
+  // eslint-disable-next-line no-template-curly-in-string -- Byte-identical official fixture source, including its runtime template expressions.
   "// A minimal stand-in for the `bindings` npm package, reproducing only the part\n// both bundlers model: locate the calling package's root by walking up for a\n// `package.json`, then load the compiled binary from `build/Release`.\n//\n// Neither bundler evaluates this file. `@vercel/nft` maps the `bindings`\n// specifier to its own bundled copy, and Turbopack maps it to\n// `WellKnownFunctionKind::NodeBindings`; both then resolve the binary's path\n// themselves. `build/Release/<name>` is node-gyp's default output location and\n// is on both of their candidate lists, so this agrees with what they trace.\n\nconst fs = require('fs')\nconst path = require('path')\n\nfunction getCallerFile() {\n  const { prepareStackTrace } = Error\n  try {\n    Error.prepareStackTrace = (_error, stack) => stack\n    for (const frame of new Error().stack) {\n      const fileName = frame.getFileName()\n      if (typeof fileName === 'string' && fileName !== __filename) {\n        return fileName\n      }\n    }\n  } finally {\n    Error.prepareStackTrace = prepareStackTrace\n  }\n  throw new Error('bindings: could not determine the calling file')\n}\n\nfunction getPackageRoot(file) {\n  let dir = path.dirname(file)\n  while (!fs.existsSync(path.join(dir, 'package.json'))) {\n    const parent = path.dirname(dir)\n    if (parent === dir) {\n      throw new Error(`bindings: found no package.json above ${file}`)\n    }\n    dir = parent\n  }\n  return dir\n}\n\nmodule.exports = function bindings(name) {\n  const binary = path.join(\n    getPackageRoot(getCallerFile()),\n    'build',\n    'Release',\n    name\n  )\n\n  if (!fs.existsSync(binary)) {\n    throw new Error(\n      `bindings: ${binary} does not exist. The fixture addon is compiled by ` +\n        `node-gyp during install, which requires the package to be listed in ` +\n        `the test's pnpm.onlyBuiltDependencies.`\n    )\n  }\n\n  // Deliberately not wrapped. A non-context-aware addon fails on this line with\n  // Node's own `ERR_DLOPEN_FAILED` / \"Module did not self-register\", and the\n  // worker-thread tests assert on that message.\n  return require(binary)\n}\n";
 
 function dependencies(chunk: OutputChunk): FunctionDependencies {
@@ -30,8 +31,8 @@ function dependencies(chunk: OutputChunk): FunctionDependencies {
     wasmModules: [],
     modules: [],
     size: { bytes: chunk.code.length, gzipBytes: 0 },
-    dynamicRequires: loads.map(describeLoad),
-    guardedRequires: loads.filter((load) => load.guarded).map(describeLoad),
+    dynamicRequires: loads.map((load) => describeLoad(load)),
+    guardedRequires: loads.filter((load) => load.guarded).map((load) => describeLoad(load)),
   };
 }
 
@@ -104,7 +105,9 @@ describe('retained native capability proof', () => {
 
     expect(loads).toStrictEqual([]);
     expect(chunk.code).not.toContain('__UPWIND_NATIVE_');
-    expect(() => auditFunction('app', { app: chunk.code }, dependencies(chunk))).not.toThrow(Error);
+    expect(() => {
+      auditFunction('app', { app: chunk.code }, dependencies(chunk));
+    }).not.toThrow(Error);
   });
 
   it('refuses a guarded direct native import rather than choosing a backend from its fallback', async () => {
@@ -122,7 +125,9 @@ describe('retained native capability proof', () => {
 
     expect(loads).toStrictEqual([]);
     expect(chunk.code).toContain('dlopen');
-    expect(() => auditFunction('app', { app: chunk.code }, dependencies(chunk))).not.toThrow(Error);
+    expect(() => {
+      auditFunction('app', { app: chunk.code }, dependencies(chunk));
+    }).not.toThrow(Error);
   });
 
   it('refuses native attribution from an unrelated route trace', async () => {
@@ -140,9 +145,9 @@ describe('retained native capability proof', () => {
     const { chunk, loads } = await bundled('module.exports = (binary) => require(binary);\n');
 
     expect(loads).toStrictEqual([]);
-    expect(() => auditFunction('app', { app: chunk.code }, dependencies(chunk))).toThrow(
-      AuditError,
-    );
+    expect(() => {
+      auditFunction('app', { app: chunk.code }, dependencies(chunk));
+    }).toThrow(AuditError);
   });
 
   it('does not let a proved native capability hide an unrelated dynamic loader', async () => {
@@ -151,41 +156,42 @@ describe('retained native capability proof', () => {
     );
 
     expect(loads).toHaveLength(1);
-    expect(() => auditFunction('app', { app: chunk.code }, dependencies(chunk))).toThrow(
-      AuditError,
-    );
+    expect(() => {
+      auditFunction('app', { app: chunk.code }, dependencies(chunk));
+    }).toThrow(AuditError);
   });
 
-  it('classifies a statically owned process.dlopen using the genuine node:path binding', async () => {
-    const { loads } = await bundled(
-      "const path = require('node:path'); process.dlopen(module, path.join(__dirname, 'addon.node')); module.exports = 42;\n",
-    );
+  it.each([
+    {
+      title: 'classifies a statically owned process.dlopen using the genuine node:path binding',
+      source:
+        "const path = require('node:path'); process.dlopen(module, path.join(__dirname, 'addon.node')); module.exports = 42;\n",
+      kind: 'dlopen',
+    },
+    {
+      title:
+        'keeps global native proof separate from an unrelated helper scope and its assignments',
+      source:
+        "const path=require('node:path'); exports.helper=function(process,module,__dirname,path){process.changed=true; module={}; __dirname='other'; path.join=()=>''; return process;}; process.dlopen(module,path.join(__dirname,'addon.node'));\n",
+      kind: 'dlopen',
+    },
+    {
+      title: 'does not let an unrelated require parameter hide a genuine global native load',
+      source:
+        "exports.helper=function(require){return require;}; module.exports.native=require('./addon.node');\n",
+      kind: 'direct',
+    },
+    {
+      title:
+        'does not mistake an unrelated object property write for a native binding reassignment',
+      source:
+        "const path=require('node:path'); const settings={}; settings.path='other'; settings.__dirname='other'; settings.process='other'; process.dlopen(module,path.join(__dirname,'addon.node')); module.exports=settings;\n",
+      kind: 'dlopen',
+    },
+  ] as const)('$title', async ({ source, kind }) => {
+    const { loads } = await bundled(source);
 
-    expect(loads).toStrictEqual([{ kind: 'dlopen', importer: entry, binary, owners: ['/native'] }]);
-  });
-
-  it('keeps global native proof separate from an unrelated helper scope and its assignments', async () => {
-    const { loads } = await bundled(
-      "const path=require('node:path'); exports.helper=function(process,module,__dirname,path){process.changed=true; module={}; __dirname='other'; path.join=()=>''; return process;}; process.dlopen(module,path.join(__dirname,'addon.node'));\n",
-    );
-
-    expect(loads).toStrictEqual([{ kind: 'dlopen', importer: entry, binary, owners: ['/native'] }]);
-  });
-
-  it('does not let an unrelated require parameter hide a genuine global native load', async () => {
-    const { loads } = await bundled(
-      "exports.helper=function(require){return require;}; module.exports.native=require('./addon.node');\n",
-    );
-
-    expect(loads).toStrictEqual([{ kind: 'direct', importer: entry, binary, owners: ['/native'] }]);
-  });
-
-  it('does not mistake an unrelated object property write for a native binding reassignment', async () => {
-    const { loads } = await bundled(
-      "const path=require('node:path'); const settings={}; settings.path='other'; settings.__dirname='other'; settings.process='other'; process.dlopen(module,path.join(__dirname,'addon.node')); module.exports=settings;\n",
-    );
-
-    expect(loads).toStrictEqual([{ kind: 'dlopen', importer: entry, binary, owners: ['/native'] }]);
+    expect(loads).toStrictEqual([{ kind, importer: entry, binary, owners: ['/native'] }]);
   });
 
   it.each([
@@ -298,8 +304,8 @@ describe('retained native capability proof', () => {
     const { chunk, loads } = await bundled("module.exports = require('bindings')('addon');\n");
 
     expect(loads).toStrictEqual([]);
-    expect(() => auditFunction('app', { app: chunk.code }, dependencies(chunk))).toThrow(
-      AuditError,
-    );
+    expect(() => {
+      auditFunction('app', { app: chunk.code }, dependencies(chunk));
+    }).toThrow(AuditError);
   });
 });

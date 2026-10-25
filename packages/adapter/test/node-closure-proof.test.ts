@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { dynamicNodeClosureRefusal } from '../src/node-closure-proof.ts';
+import {
+  dynamicNodeClosureRefusal,
+  originalNodeHostLoaderRefusal,
+} from '../src/node-closure-proof.ts';
 
 const CHUNK = '/project/.next/server/chunks/native.js';
 const MODULE = '/project/node_modules/example/index.js';
@@ -210,5 +213,72 @@ describe('original Node executable closure proof', () => {
     ],
   ])('accepts %s without a loader-name heuristic', (_title, source) => {
     expect(dynamicNodeClosureRefusal(MODULE, source)).toBeUndefined();
+  });
+});
+
+describe('retained original CommonJS host provenance', () => {
+  const file = '/project/.next/server/entry.cjs';
+
+  it.each([
+    ['host constructor', 'module.exports.load=name=>module.constructor._load(name);'],
+    ['computed host constructor', "module.exports.load=name=>module['constructor']._load(name);"],
+    ['host alias', 'const current=module;exports.load=name=>current.constructor._load(name);'],
+    ['host parent', 'exports.load=name=>module.parent.constructor._load(name);'],
+    [
+      'destructured constructor',
+      'const {constructor:Loader}=module;exports.load=name=>Loader._load(name);',
+    ],
+    [
+      'computed destructured constructor',
+      "const {['constructor']:Loader}=module;exports.load=name=>Loader._load(name);",
+    ],
+    [
+      'unknown destructured host member',
+      'const {[key]:Loader}=module;exports.load=name=>Loader(name);',
+    ],
+    [
+      'host rest copy',
+      'const {...current}=module;exports.load=name=>current.constructor._load(name);',
+    ],
+    [
+      'host rebinding',
+      'let current={};current=module;exports.load=name=>current.constructor._load(name);',
+    ],
+    ['host require', "exports.load=()=>module.require('./unproved.js');"],
+    ['top-level CommonJS return', 'module.constructor._load(name);return;'],
+  ])('refuses %s before compiler wrapper parameters can hide it', (_title, source) => {
+    expect(originalNodeHostLoaderRefusal(file, source)).toBe(
+      'an unproved original CommonJS host loader',
+    );
+  });
+
+  it.each([
+    ['ordinary exports', 'module.exports={value:42};'],
+    ['metadata', 'exports.filename=module.filename;'],
+    ['destructured exports', 'const {exports:target}=module;target.value=42;'],
+    ['quoted destructured exports', "const {'exports':target}=module;target.value=42;"],
+    [
+      'local module',
+      'const module={constructor:{_load:()=>42}};exports.value=module.constructor._load();',
+    ],
+    ['parameter shadow', 'exports.value=module=>module.constructor._load();'],
+    [
+      'helper-name lookalike',
+      'const __commonJS=cb=>cb({}, {constructor:{_load:()=>42}});__commonJS((exports,module)=>{exports.value=module.constructor._load()});',
+    ],
+    ['independently classified dlopen', "process.dlopen(module,'./addon.node');module.exports={};"],
+    [
+      'independently certified manifest VM',
+      "const vm=require('vm');vm.runInNewContext(content,contextObject);",
+    ],
+    ['ordinary CommonJS return', 'module.exports={};return;'],
+  ])('does not broaden the raw check into %s', (_title, source) => {
+    expect(originalNodeHostLoaderRefusal(file, source)).toBeUndefined();
+  });
+
+  it('refuses parsing failure instead of treating unparsed executable source as safe', () => {
+    expect(() => originalNodeHostLoaderRefusal(file, 'function {')).toThrow(
+      'cannot parse an executable module',
+    );
   });
 });

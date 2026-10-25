@@ -5,7 +5,7 @@ import { identifier, type NativeBindings, stringOf, workerModule } from './nativ
 import type { NativeEdit } from './native-operations.ts';
 import { ownedNativeFiles } from './native-ownership.ts';
 
-type WorkerOrigin = 'constructor' | 'namespace';
+type WorkerOrigin = 'constructor' | 'namespace' | 'ambiguous';
 const IMPORTS = new WeakMap<readonly Node[], ReadonlyMap<Node, WorkerOrigin>>();
 interface WorkerContext {
   readonly bindings: NativeBindings;
@@ -20,7 +20,10 @@ function importedWorkers(
   for (const specifier of node.specifiers) {
     if (['ImportDefaultSpecifier', 'ImportNamespaceSpecifier'].includes(specifier.type))
       imports.set(specifier, 'namespace');
-    if (specifier.type === 'ImportSpecifier' && identifier(specifier.imported, 'Worker'))
+    if (
+      specifier.type === 'ImportSpecifier' &&
+      (identifier(specifier.imported, 'Worker') || stringOf(specifier.imported) === 'Worker')
+    )
       imports.set(specifier, 'constructor');
   }
 }
@@ -36,21 +39,72 @@ function workerImports(tree: readonly Node[]): ReadonlyMap<Node, WorkerOrigin> {
   return imports;
 }
 
-function workerProperty(callee: Extract<Node, { type: 'MemberExpression' }>): boolean {
+function isWorkerProperty(callee: Extract<Node, { type: 'MemberExpression' }>): boolean {
   let property: string | undefined;
   if (callee.computed) property = stringOf(callee.property);
   else if (callee.property.type === 'Identifier') property = callee.property.name;
   return property === 'Worker' || (callee.computed && property === undefined);
 }
 
-function destructuredWorker(pattern: Node, name: string): boolean {
-  if (pattern.type !== 'ObjectPattern') return false;
-  return pattern.properties.some((property) => {
-    if (property.type !== 'Property' || !identifier(property.key, 'Worker')) return false;
-    const value =
-      property.value.type === 'AssignmentPattern' ? property.value.left : property.value;
-    return identifier(value, name);
-  });
+function propertyOrigin(
+  property: Extract<Node, { type: 'Property' }>,
+  owner: WorkerOrigin,
+): WorkerOrigin | undefined {
+  if (owner !== 'namespace') return 'ambiguous';
+  const key =
+    property.computed || property.key.type !== 'Identifier'
+      ? stringOf(property.key)
+      : property.key.name;
+  if (key === undefined) return 'ambiguous';
+  return key === 'Worker' ? 'constructor' : undefined;
+}
+
+function arrayOrigin(elements: readonly (Node | null)[], name: string): WorkerOrigin | undefined {
+  for (const element of elements) {
+    if (element === null) continue;
+    const found = bindingOrigin(element, name, 'ambiguous');
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function objectOrigin(
+  pattern: Extract<Node, { type: 'ObjectPattern' }>,
+  name: string,
+  owner: WorkerOrigin,
+): WorkerOrigin | undefined {
+  for (const property of pattern.properties) {
+    const value = property.type === 'Property' ? property.value : property.argument;
+    const origin = property.type === 'Property' ? propertyOrigin(property, owner) : owner;
+    if (origin === undefined) continue;
+    const found = bindingOrigin(value, name, origin);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function bindingOrigin(
+  pattern: Node,
+  name: string,
+  origin: WorkerOrigin,
+): WorkerOrigin | undefined {
+  let binding = pattern;
+  while (binding.type === 'AssignmentPattern' || binding.type === 'RestElement')
+    binding = binding.type === 'AssignmentPattern' ? binding.left : binding.argument;
+  if (binding.type === 'Identifier') return binding.name === name ? origin : undefined;
+  if (binding.type === 'ArrayPattern') return arrayOrigin(binding.elements, name);
+  if (binding.type === 'ObjectPattern') return objectOrigin(binding, name, origin);
+  return undefined;
+}
+
+function stableOrigin(
+  origin: WorkerOrigin | undefined,
+  node: Extract<Node, { type: 'Identifier' }>,
+  context: WorkerContext,
+): WorkerOrigin | undefined {
+  return origin === 'namespace' && !context.bindings.unmodified(node, node.name, true)
+    ? 'ambiguous'
+    : origin;
 }
 
 function declaredOrigin(
@@ -61,13 +115,11 @@ function declaredOrigin(
   const declaration = context.bindings.lookup(node, node.name);
   if (declaration === undefined || declaration === null) return undefined;
   const imported = context.imports.get(declaration);
-  if (imported !== undefined) return imported;
+  if (imported !== undefined) return stableOrigin(imported, node, context);
   if (declaration.type !== 'VariableDeclarator' || declaration.init === null) return undefined;
   const origin = workerOrigin(declaration.init, context, seen);
-  if (declaration.id.type === 'Identifier') return origin;
-  return origin === 'namespace' && destructuredWorker(declaration.id, node.name)
-    ? 'constructor'
-    : undefined;
+  const found = origin === undefined ? undefined : bindingOrigin(declaration.id, node.name, origin);
+  return stableOrigin(found, node, context);
 }
 
 function workerOrigin(
@@ -80,12 +132,11 @@ function workerOrigin(
   if (node.type === 'Identifier') return declaredOrigin(node, context, next);
   if (workerModule(node) && context.bindings.lookup(node, 'require') === undefined)
     return 'namespace';
-  if (
-    node.type === 'MemberExpression' &&
-    workerProperty(node) &&
-    workerOrigin(node.object, context, next) === 'namespace'
-  )
-    return 'constructor';
+  if (node.type === 'MemberExpression') {
+    const owner = workerOrigin(node.object, context, next);
+    if (owner === 'ambiguous') return owner;
+    if (owner === 'namespace' && isWorkerProperty(node)) return 'constructor';
+  }
   return undefined;
 }
 
@@ -95,7 +146,8 @@ function nodeWorkerConstructor(
   tree: readonly Node[],
   bindings: NativeBindings,
 ): boolean {
-  return workerOrigin(callee, { bindings, imports: workerImports(tree) }) === 'constructor';
+  const origin = workerOrigin(callee, { bindings, imports: workerImports(tree) });
+  return origin === 'constructor' || origin === 'ambiguous';
 }
 
 export async function nativeWorkerEdit(

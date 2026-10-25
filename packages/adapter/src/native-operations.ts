@@ -21,6 +21,8 @@ export interface NativeOperationContext {
   readonly nodeTarget: boolean;
   mark(load: NativeLoad | Error): string;
 }
+const STATIC_LOADER_ARGUMENT = 'Native loader requires a statically known argument';
+
 export interface NativeEdit {
   readonly start: number;
   readonly end: number;
@@ -51,18 +53,16 @@ function loaderArgument(
   kind: 'bindings' | 'node-gyp-build',
   context: NativeOperationContext,
 ): string {
-  if (call.arguments.length !== 1)
-    throw new AuditError('Native loader requires a statically known argument');
+  if (call.arguments.length !== 1) throw new AuditError(STATIC_LOADER_ARGUMENT);
   const value = stringOf(call.arguments[0]);
-  if (kind === 'bindings' && value === undefined)
-    throw new AuditError('Native loader requires a statically known argument');
+  if (kind === 'bindings' && value === undefined) throw new AuditError(STATIC_LOADER_ARGUMENT);
   if (
     kind === 'node-gyp-build' &&
     (!identifier(call.arguments[0], '__dirname') ||
       context.bindings.lookup(call, '__dirname') !== undefined ||
       !context.bindings.unmodified(call, '__dirname', false))
   )
-    throw new AuditError('Native loader requires a statically known argument');
+    throw new AuditError(STATIC_LOADER_ARGUMENT);
   return value ?? '';
 }
 
@@ -117,7 +117,7 @@ function assertDlopenArguments(call: Call, context: NativeOperationContext): voi
   const directoryKnown =
     context.bindings.lookup(call, '__dirname') === undefined &&
     context.bindings.unmodified(call, '__dirname', false);
-  if (call.arguments.length !== DLOPEN_ARGUMENTS || !moduleKnown || !directoryKnown)
+  if (!moduleKnown || !directoryKnown || call.arguments.length !== DLOPEN_ARGUMENTS)
     throw new AuditError(
       'custom process.dlopen flags, shadowed module objects or directories are unsupported',
     );
@@ -169,9 +169,9 @@ function declarationSource(
   proof: string,
   local: string,
 ): string {
-  const declarations = node.specifiers.map((specifier) => {
-    return `const ${specifier.local.name}=${local}${importMember(specifier)};`;
-  });
+  const declarations = node.specifiers.map(
+    (specifier) => `const ${specifier.local.name}=${local}${importMember(specifier)};`,
+  );
   return `const ${local}=${proof};${declarations.join('')}`;
 }
 

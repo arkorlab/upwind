@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BlobStore } from '../src/blobs.ts';
 import { AuditError } from '../src/dependencies.ts';
@@ -82,7 +82,7 @@ describe('native capability dispatch by Function kind', () => {
     'refuses native requirements in %s with an explicit unsupported-runtime audit',
     async (kind) => {
       const error = await failureOf(input(kind));
-      if (!(error instanceof Error)) throw new Error('The Function build did not throw an Error');
+      assert.instanceOf(error, Error, 'The Function build did not throw an Error');
 
       expect(error).toBeInstanceOf(AuditError);
       expect(error.message).toContain(
@@ -106,7 +106,7 @@ describe('native capability dispatch by Function kind', () => {
       "exports.native=require('./addon.node'); exports.other=(name)=>require(name);\n",
     );
     const error = await failureOf(input('middleware'));
-    if (!(error instanceof Error)) throw new Error('The Function build did not throw an Error');
+    assert.instanceOf(error, Error, 'The Function build did not throw an Error');
 
     expect(error).toBeInstanceOf(AuditError);
     expect(error.message).toContain('bundler could not follow');

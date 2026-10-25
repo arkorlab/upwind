@@ -72,17 +72,13 @@ describe('original physical Node Function proof', () => {
     );
     const proof = await proveNodeFunction(input());
     const files = await Promise.all(
-      proof.files.map(async (file) => {
-        return { name: file.file, bytes: await readFile(file.file) };
-      }),
+      proof.files.map(async (file) => ({ name: file.file, bytes: await readFile(file.file) })),
     );
     const physical = { files, nameOf: (file: string) => file };
     const missing = { ...physical, files: [] };
     const changed = {
       ...physical,
-      files: files.map((file) => {
-        return { ...file, bytes: new Uint8Array([9]) };
-      }),
+      files: files.map((file) => ({ ...file, bytes: new Uint8Array([9]) })),
     };
 
     expect(proof.native).toStrictEqual([
@@ -90,9 +86,15 @@ describe('original physical Node Function proof', () => {
     ]);
     expect(proof.dependencies.externals).toStrictEqual(['node:process', 'node:vm']);
     expect(proof.dependencies.stubs).toStrictEqual([]);
-    expect(() => assertNodeProofFiles(proof, physical, new Map())).not.toThrow(Error);
-    expect(() => assertNodeProofFiles(proof, missing, new Map())).toThrow('absent or changed');
-    expect(() => assertNodeProofFiles(proof, changed, new Map())).toThrow('absent or changed');
+    expect(() => {
+      assertNodeProofFiles(proof, physical, new Map());
+    }).not.toThrow(Error);
+    expect(() => {
+      assertNodeProofFiles(proof, missing, new Map());
+    }).toThrow('absent or changed');
+    expect(() => {
+      assertNodeProofFiles(proof, changed, new Map());
+    }).toThrow('absent or changed');
   });
 
   it('does not let a Worker stub hide another owned native operation', async () => {

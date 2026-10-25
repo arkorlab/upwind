@@ -1,5 +1,6 @@
 import type { Node } from '@oxc-project/types';
-import { parseAst } from 'rolldown/parseAst';
+
+import { parseNativeSource } from './native-source-parser.ts';
 
 function staticString(node: Node | undefined): string | undefined {
   if (node?.type === 'Literal' && typeof node.value === 'string') return node.value;
@@ -29,29 +30,29 @@ function nodeValue(value: unknown): value is Node {
   return typeof value === 'object' && value !== null && 'type' in value;
 }
 
-function children(node: Node): Node[] {
+function conditionalBranch(node: Node): Node[] | undefined {
   // Literal boolean branches have no condition side effects and cannot load the other branch.
   if (
-    node.type === 'IfStatement' &&
+    (node.type === 'IfStatement' || node.type === 'ConditionalExpression') &&
     node.test.type === 'Literal' &&
     typeof node.test.value === 'boolean'
   ) {
     const selected = node.test.value ? node.consequent : node.alternate;
     return selected === null ? [] : [selected];
   }
+  return undefined;
+}
+
+function children(node: Node): Node[] {
+  const selected = conditionalBranch(node);
+  if (selected !== undefined) return selected;
   if (
-    node.type === 'ConditionalExpression' &&
-    node.test.type === 'Literal' &&
-    typeof node.test.value === 'boolean'
+    node.type === 'LogicalExpression' &&
+    node.left.type === 'Literal' &&
+    ((node.operator === '&&' && node.left.value === false) ||
+      (node.operator === '||' && node.left.value === true))
   )
-    return [node.test.value ? node.consequent : node.alternate];
-  if (node.type === 'LogicalExpression' && node.left.type === 'Literal') {
-    if (
-      (node.operator === '&&' && node.left.value === false) ||
-      (node.operator === '||' && node.left.value === true)
-    )
-      return [node.left];
-  }
+    return [node.left];
   const found: Node[] = [];
   for (const value of Object.values(node)) {
     const values: unknown[] = Array.isArray(value) ? value : [value];
@@ -65,7 +66,7 @@ export function originalNodeSpecifiers(file: string, bytes: Uint8Array | undefin
   if (!/\.[cm]?js$/u.test(file)) return [];
   try {
     const found: string[] = [];
-    const pending = [parseAst(new TextDecoder().decode(bytes)) as Node];
+    const pending: Node[] = [parseNativeSource(new TextDecoder().decode(bytes), file)];
     for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
       const specifier = specifierIn(node);
       if (specifier !== undefined) found.push(specifier);

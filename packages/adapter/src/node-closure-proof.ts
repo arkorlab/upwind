@@ -3,6 +3,8 @@ import { parseAst } from 'rolldown/parseAst';
 import { isNode, listOf, type Node, type Scope, scopeOpenedBy } from './lexical-scope.ts';
 import { hostObjectOf } from './node-closure-hosts.ts';
 
+export { originalNodeHostLoaderRefusal } from './node-original-host-proof.ts';
+
 type Builtin = 'child_process' | 'module' | 'process' | 'vm';
 interface Origin {
   readonly builtin: Builtin;
@@ -83,7 +85,7 @@ function isIdentifier(
 function stringOf(node: unknown): string | undefined {
   if (!isNode(node)) return undefined;
   if (node.type === 'Literal' && typeof node['value'] === 'string') return node['value'];
-  if (node.type !== 'TemplateLiteral' || listOf(node, 'expressions').length !== 0) return undefined;
+  if (node.type !== 'TemplateLiteral' || listOf(node, 'expressions').length > 0) return undefined;
   const quasi = listOf(node, 'quasis')[0];
   const value = isNode(quasi) ? quasi['value'] : undefined;
   return typeof value === 'object' &&
@@ -131,7 +133,7 @@ function importedOrigins(program: Node): Map<Node, Origin> {
       const member = isIdentifier(imported) ? imported.name : stringOf(imported);
       origins.set(specifier, {
         builtin,
-        ...(member === undefined || member === 'default' ? {} : { member }),
+        ...(!(member === undefined || member === 'default') && { member }),
       });
     }
   }
@@ -144,14 +146,20 @@ function originOf(
   imports: ReadonlyMap<Node, Origin>,
   seen = new Set<Node>(),
 ): Origin | undefined {
-  if (!isNode(value) || seen.has(value)) return undefined;
-  seen.add(value);
-  const imported = imports.get(value);
-  if (imported !== undefined) return imported;
-  if (isIdentifier(value)) return identifierOrigin(value.name, scopes, imports, seen);
-  if (value.type === 'VariableDeclarator') return originOf(value['init'], scopes, imports, seen);
-  if (value.type === 'MemberExpression') return memberOrigin(value, scopes, imports, seen);
-  return requiredOrigin(value, scopes);
+  let current = value;
+  while (isNode(current) && !seen.has(current)) {
+    seen.add(current);
+    const imported = imports.get(current);
+    if (imported !== undefined) return imported;
+    if (isIdentifier(current)) return identifierOrigin(current.name, scopes, imports, seen);
+    if (current.type === 'VariableDeclarator') {
+      current = current['init'];
+      continue;
+    }
+    if (current.type === 'MemberExpression') return memberOrigin(current, scopes, imports, seen);
+    return requiredOrigin(current, scopes);
+  }
+  return undefined;
 }
 
 function identifierOrigin(
@@ -204,14 +212,18 @@ function isForbiddenOrigin(origin: Origin | undefined): boolean {
   if (origin?.member === undefined) return false;
   if (origin.member === '*') return true;
   switch (origin.builtin) {
-    case 'child_process':
+    case 'child_process': {
       return CHILD_PROCESS_EXECUTORS.has(origin.member);
-    case 'module':
+    }
+    case 'module': {
       return MODULE_LOADERS.has(origin.member);
-    case 'process':
+    }
+    case 'process': {
       return PROCESS_LOADERS.has(origin.member);
-    case 'vm':
+    }
+    case 'vm': {
       return VM_COMPILERS.has(origin.member);
+    }
   }
 }
 
@@ -365,11 +377,11 @@ function isGlobalCompiler(node: Node, scopes: readonly Scope[]): boolean {
 function isReference({ parent, key }: Visit): boolean {
   if (parent === undefined) return true;
   if (parent.type.startsWith('Import')) return false;
-  if (parent.type === 'VariableDeclarator' && key === 'id') return false;
+  if (key === 'id' && parent.type === 'VariableDeclarator') return false;
   if (key === 'params' || (key === 'id' && parent.type.endsWith('Declaration'))) return false;
   if (
-    (parent.type === 'MemberExpression' && key === 'property') ||
-    ((parent.type === 'Property' || parent.type === 'MethodDefinition') && key === 'key')
+    (key === 'property' && parent.type === 'MemberExpression') ||
+    (key === 'key' && (parent.type === 'Property' || parent.type === 'MethodDefinition'))
   )
     return parent['computed'] === true;
   return true;
@@ -380,7 +392,7 @@ function isNamespaceEscape(
   imports: ReadonlyMap<Node, Origin>,
   builtin: 'child_process' | 'module',
 ): boolean {
-  if (!['Identifier', 'CallExpression', 'MemberExpression'].includes(visit.node.type)) return false;
+  if (!['CallExpression', 'Identifier', 'MemberExpression'].includes(visit.node.type)) return false;
   const origin = originOf(visit.node, visit.scopes, imports);
   if (origin?.builtin !== builtin || origin.member !== undefined || !isReference(visit))
     return false;

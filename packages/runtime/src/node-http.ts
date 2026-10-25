@@ -14,6 +14,7 @@ const HOP_HEADERS = new Set([
   'transfer-encoding',
   'upgrade',
 ]);
+const HEADER_TOKEN = /^[!#$%&'*+.^`|~\w-]+$/u;
 
 /** Snapshot names before deletion so consecutive internal headers are all removed. */
 export function removeNodeControlHeaders(headers: Headers): void {
@@ -33,8 +34,9 @@ export function messageHeaders(message: IncomingMessage): Headers {
     }
   }
   const connections = (message.headers.connection ?? '').split(',');
-  for (const name of connections) {
-    if (name.trim() !== '') headers.delete(name.trim());
+  for (const value of connections) {
+    const name = value.trim();
+    if (HEADER_TOKEN.test(name)) headers.delete(name);
   }
   return headers;
 }

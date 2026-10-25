@@ -1,0 +1,401 @@
+import { createHash } from 'node:crypto';
+
+import { AuditError } from './dependencies.ts';
+import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
+import {
+  declaration,
+  identifier,
+  propertyName,
+  reference,
+  stringOf,
+  visitTree,
+  type Visit,
+} from './node-manifest-consumer-ast.ts';
+import type {
+  NodeManifestTurbopackExports,
+  NodeManifestTurbopackFactory,
+  NodeManifestTurbopackImport,
+  NodeManifestTurbopackProjection,
+  NodeManifestTurbopackSource,
+} from './node-manifest-turbopack.ts';
+
+interface Edit {
+  readonly start: number;
+  readonly end: number;
+  readonly code: string;
+}
+const GETTER_PREFIX = '__upwind_turbopack_getter_';
+const BOUND_PREFIX = '__upwind_turbopack_bound_';
+const EXTERNAL_INTEROP_ARITY = 3;
+
+function refuse(reason: string): never {
+  throw new AuditError(
+    `Unproved Next.js Turbopack manifest ${reason}; refusing native publication`,
+  );
+}
+
+function numericId(node: unknown): number {
+  if (!isNode(node) || node.type !== 'Literal') return refuse('dynamic module id');
+  const value = node['value'];
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
+    return refuse('module id');
+  return value;
+}
+
+function staticSelector(node: unknown): node is Node {
+  if (identifier(node)) return true;
+  return (
+    isNode(node) &&
+    node.type === 'MemberExpression' &&
+    identifier(node['object']) &&
+    propertyName(node) !== undefined
+  );
+}
+
+function getterOf(value: unknown): Node {
+  if (
+    !isNode(value) ||
+    !['ArrowFunctionExpression', 'FunctionExpression'].includes(value.type) ||
+    value['async'] === true ||
+    value['generator'] === true ||
+    listOf(value, 'params').length > 0
+  )
+    return refuse('export getter');
+  let result = value['body'];
+  if (isNode(result) && result.type === 'BlockStatement') {
+    const statements = listOf(result, 'body');
+    const only = statements[0];
+    if (statements.length !== 1 || !isNode(only) || only.type !== 'ReturnStatement')
+      return refuse('export getter body');
+    result = only['argument'];
+  }
+  return staticSelector(result) ? result : refuse('export getter expression');
+}
+
+function externalThunk(args: readonly unknown[]): Node {
+  const thunk = args[1];
+  if (
+    (args.length !== 2 && args.length !== EXTERNAL_INTEROP_ARITY) ||
+    !isNode(thunk) ||
+    !['ArrowFunctionExpression', 'FunctionExpression'].includes(thunk.type) ||
+    thunk['async'] === true ||
+    thunk['generator'] === true ||
+    listOf(thunk, 'params').length > 0 ||
+    (thunk['id'] !== null && thunk['id'] !== undefined)
+  )
+    refuse('external require thunk');
+  const flag = args[2];
+  if (
+    args.length === EXTERNAL_INTEROP_ARITY &&
+    (!isNode(flag) || flag.type !== 'Literal' || typeof flag['value'] !== 'boolean')
+  )
+    refuse('external interop flag');
+  const body = thunk['body'];
+  if (!isNode(body)) return refuse('external thunk body');
+  if (body.type !== 'BlockStatement') return body;
+  const statements = listOf(body, 'body');
+  const only = statements[0];
+  if (
+    statements.length !== 1 ||
+    !isNode(only) ||
+    only.type !== 'ReturnStatement' ||
+    !isNode(only['argument'])
+  )
+    return refuse('external thunk body');
+  return only['argument'];
+}
+
+class FactoryProjection {
+  private readonly source: NodeManifestTurbopackSource;
+  private readonly factory: NodeManifestTurbopackFactory;
+  private readonly node: Node;
+  private readonly body: Node;
+  private readonly context: string;
+  private readonly scope: Scope;
+  private readonly visits: readonly Visit[];
+  private readonly parents: ReadonlyMap<Node, Visit>;
+  private readonly allowedContext = new Set<Node>();
+  private readonly edits = new Map<Node, Edit>();
+  private readonly imports = new Map<Node, NodeManifestTurbopackImport>();
+  private readonly append: string[] = [];
+  private exports: NodeManifestTurbopackExports = { kind: 'commonjs' };
+  private registered = false;
+
+  constructor(
+    source: NodeManifestTurbopackSource,
+    factory: NodeManifestTurbopackFactory,
+    program: Node,
+  ) {
+    this.source = source;
+    this.factory = factory;
+    const all = visitTree(program);
+    const found = all.find(
+      ({ node }) =>
+        node.start === factory.start &&
+        node.end === factory.end &&
+        ['ArrowFunctionExpression', 'FunctionExpression'].includes(node.type),
+    );
+    const body = found?.node['body'];
+    const scope = found?.scopes.at(-1);
+    const param = found === undefined ? undefined : listOf(found.node, 'params')[0];
+    if (found === undefined || scope === undefined || !isNode(body) || !identifier(param))
+      refuse('factory identity');
+    this.node = found.node;
+    this.body = body;
+    this.context = param.name;
+    this.scope = scope;
+    this.visits = all.filter(({ node }) => node.start >= body.start && node.end <= body.end);
+    this.parents = new Map(all.map((visit) => [visit.node, visit]));
+    if (scope.bindings.has(param.name)) refuse('mutated context parameter');
+    if (
+      this.visits.some(
+        ({ node }) =>
+          identifier(node) &&
+          (node.name.startsWith(GETTER_PREFIX) || node.name.startsWith(BOUND_PREFIX)),
+      )
+    )
+      refuse('inspection identifier collision');
+  }
+
+  private ownIdentifier(
+    node: unknown,
+    visit: Visit,
+    name = this.context,
+  ): node is Node & { readonly name: string } {
+    if (!identifier(node) || node.name !== name) return false;
+    for (const scope of visit.scopes.toReversed()) {
+      if (scope.declared.has(name)) return scope === this.scope && !scope.bindings.has(name);
+    }
+    return false;
+  }
+
+  private text(node: Node): string {
+    return this.source.code.slice(node.start, node.end);
+  }
+
+  private edit(node: Node, code: string): void {
+    this.edits.set(node, { start: node.start, end: node.end, code });
+  }
+
+  private topLevel(call: Node): void {
+    const statement = this.parents.get(call)?.parent;
+    if (
+      statement?.type !== 'ExpressionStatement' ||
+      this.parents.get(statement)?.parent !== this.body
+    )
+      refuse('conditional export registration');
+    if (this.registered) refuse('multiple export registrations');
+    this.registered = true;
+  }
+
+  private imported(call: Node, visit: Visit, kind: 'import' | 'require'): void {
+    const args = listOf(call, 'arguments');
+    if (args.length !== 1) refuse('module import arity');
+    const id = numericId(args[0]);
+    if (declaration('require', visit.scopes) !== undefined) refuse('shadowed inspection require');
+    const specifier = `turbopack:${id}`;
+    this.imports.set(call, { kind, specifier, targetId: id });
+    this.edit(call, `require(${JSON.stringify(specifier)})`);
+  }
+
+  private external(call: Node, visit: Visit): void {
+    const args = listOf(call, 'arguments');
+    const specifier = stringOf(args[0]);
+    const returned = externalThunk(args);
+    if (
+      specifier === undefined ||
+      returned.type !== 'CallExpression' ||
+      !identifier(returned['callee']) ||
+      returned['callee'].name !== 'require' ||
+      listOf(returned, 'arguments').length !== 1 ||
+      stringOf(listOf(returned, 'arguments')[0]) !== specifier ||
+      declaration('require', visit.scopes) !== undefined
+    )
+      refuse('external require identity');
+    this.imports.set(call, { kind: 'external', specifier });
+    this.edit(call, `require(${JSON.stringify(specifier)})`);
+  }
+
+  private getterExports(call: Node): void {
+    this.topLevel(call);
+    const args = listOf(call, 'arguments');
+    const table = args[0];
+    if (args.length !== 1 || !isNode(table) || table.type !== 'ArrayExpression')
+      refuse('export registration arguments');
+    const entries = listOf(table, 'elements');
+    const names = new Set<string>();
+    for (let index = 0; index < entries.length; index += 2) {
+      const name = stringOf(entries[index]);
+      if (name === undefined || names.has(name)) refuse('export name');
+      names.add(name);
+      const value = getterOf(entries[index + 1]);
+      const local = `${GETTER_PREFIX}${names.size}`;
+      this.append.push(
+        `const ${local}=${this.text(value)};export {${local} as ${JSON.stringify(name)}};`,
+      );
+    }
+    if (names.size === 0) refuse('empty export registration');
+    this.exports = { kind: 'getters', names: [...names] };
+    this.edit(call, 'void 0');
+  }
+
+  private namespaceExports(call: Node, visit: Visit): void {
+    this.topLevel(call);
+    const args = listOf(call, 'arguments');
+    const value = args[0];
+    if (!identifier(value)) refuse('namespace forwarding value');
+    const binding = declaration(value.name, visit.scopes)?.node;
+    const init = binding?.type === 'VariableDeclarator' ? binding['init'] : undefined;
+    const imported = isNode(init) ? this.imports.get(init) : undefined;
+    if (imported === undefined || args.length !== 1) refuse('namespace forwarding identity');
+    const statements = listOf(this.body, 'body').filter(
+      (statement) =>
+        !isNode(statement) ||
+        statement.type !== 'ExpressionStatement' ||
+        stringOf(statement['expression']) !== 'use strict',
+    );
+    const first = statements[0];
+    const last = statements[1];
+    if (
+      statements.length !== 2 ||
+      !isNode(first) ||
+      first.type !== 'VariableDeclaration' ||
+      listOf(first, 'declarations').length !== 1 ||
+      listOf(first, 'declarations')[0] !== binding ||
+      !isNode(last) ||
+      last.type !== 'ExpressionStatement' ||
+      last['expression'] !== call
+    )
+      refuse('namespace forwarding side effects');
+    this.exports = { kind: 'namespace', specifier: imported.specifier };
+    this.edit(call, `module.exports=${this.text(value)}`);
+  }
+
+  private bound(member: Node, visit: Visit, name: string): boolean {
+    const bind = this.parents.get(member)?.parent;
+    const call = bind === undefined ? undefined : this.parents.get(bind)?.parent;
+    const owner = call === undefined ? undefined : this.parents.get(call)?.parent;
+    if (
+      bind?.type !== 'MemberExpression' ||
+      bind['object'] !== member ||
+      propertyName(bind) !== 'bind' ||
+      call?.type !== 'CallExpression' ||
+      call['callee'] !== bind ||
+      owner?.type !== 'Property' ||
+      owner['value'] !== call ||
+      propertyName(owner) !== (name === 'r' ? 'require' : 'loadChunk')
+    )
+      return false;
+    const args = listOf(call, 'arguments');
+    const arg = args[0];
+    if (args.length !== 1 || !this.ownIdentifier(arg, visit)) refuse('bound context identity');
+    this.allowedContext.add(arg);
+    this.edit(call, `${BOUND_PREFIX}${name}`);
+    return true;
+  }
+
+  private operation(visit: Visit): void {
+    const member = visit.node;
+    if (member.type !== 'MemberExpression' || !this.ownIdentifier(member['object'], visit)) return;
+    if (member['optional'] === true) refuse('optional context access');
+    const name = propertyName(member);
+    const owner = member['object'];
+    this.allowedContext.add(owner);
+    if ((name === 'r' || name === 'l') && this.bound(member, visit, name)) return;
+    const call = this.parents.get(member)?.parent;
+    if (call?.type !== 'CallExpression' || call['callee'] !== member || call['optional'] === true)
+      refuse('context method escape');
+    switch (name) {
+      case 'i':
+      case 'r': {
+        this.imported(call, visit, name === 'i' ? 'import' : 'require');
+        break;
+      }
+      case 'x': {
+        this.external(call, visit);
+        break;
+      }
+      case 's': {
+        this.getterExports(call);
+        break;
+      }
+      default: {
+        if (name !== 'n' && name !== 'v') refuse('unreviewed context method');
+      }
+    }
+  }
+
+  private renameParameter(param: Node & { readonly name: string }, canonical: string): void {
+    if (this.scope.bindings.has(param.name)) refuse('mutated CommonJS parameter');
+    for (const visit of this.visits) {
+      if (!reference(visit) || !this.ownIdentifier(visit.node, visit, param.name)) continue;
+      if (param.name !== canonical && declaration(canonical, visit.scopes) !== undefined)
+        refuse('CommonJS projection collision');
+      this.edit(visit.node, canonical);
+    }
+  }
+
+  private renameParameters(): void {
+    const params = listOf(this.node, 'params');
+    for (const [index, param] of params.entries()) {
+      if (index === 0 || !identifier(param)) continue;
+      const canonical = index === 1 ? 'module' : 'exports';
+      this.renameParameter(param, canonical);
+    }
+  }
+
+  private forwardNamespaces(): void {
+    for (const visit of this.visits) {
+      const member = visit.node;
+      if (member.type !== 'MemberExpression' || !this.ownIdentifier(member['object'], visit))
+        continue;
+      const name = propertyName(member);
+      if (name !== 'n' && name !== 'v') continue;
+      const call = this.parents.get(member)?.parent;
+      if (call?.type !== 'CallExpression') refuse('namespace export call');
+      this.namespaceExports(call, visit);
+    }
+  }
+
+  project(): NodeManifestTurbopackProjection {
+    for (const visit of this.visits) this.operation(visit);
+    this.forwardNamespaces();
+    for (const visit of this.visits) {
+      if (
+        reference(visit) &&
+        this.ownIdentifier(visit.node, visit) &&
+        !this.allowedContext.has(visit.node)
+      )
+        refuse('context alias or escape');
+    }
+    this.renameParameters();
+    const edits = [...this.edits.values()].toSorted((a, b) => b.start - a.start);
+    let end = this.body.end - 1;
+    let code = this.source.code.slice(this.body.start + 1, end);
+    for (const edit of edits) {
+      if (edit.end > end || edit.start <= this.body.start)
+        refuse('overlapping inspection operations');
+      const at = edit.start - this.body.start - 1;
+      code = code.slice(0, at) + edit.code + code.slice(edit.end - this.body.start - 1);
+      end = edit.start;
+    }
+    code += `\n${this.append.join('\n')}`;
+    const sha256 = createHash('sha256').update(code).digest('hex');
+    return {
+      original: this.source,
+      factory: this.factory,
+      source: { code, sha256 },
+      imports: [...this.imports.values()],
+      exports: this.exports,
+      requiresReviewedRuntime: true,
+    };
+  }
+}
+
+export function projectTurbopackFactory(
+  source: NodeManifestTurbopackSource,
+  factory: NodeManifestTurbopackFactory,
+  program: Node,
+): NodeManifestTurbopackProjection {
+  return new FactoryProjection(source, factory, program).project();
+}

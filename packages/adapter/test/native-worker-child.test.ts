@@ -50,6 +50,9 @@ describe('native child constructor classification', () => {
     "import threads from 'worker_threads'; export const worker = new threads['Worker']('./child.js');\n",
     "import * as threads from 'node:worker_threads'; export const worker = new threads['Worker']('./child.js');\n",
     "import { Worker as Thread } from 'node:worker_threads'; export const worker = new Thread('./child.js');\n",
+    "import { 'Worker' as Thread } from 'node:worker_threads'; export const worker = new Thread('./child.js');\n",
+    "import threads from 'node:worker_threads'; const {'Worker':Thread}=threads; export const worker=new Thread('./child.js');\n",
+    "import threads from 'node:worker_threads'; const {['Worker']:Thread}=threads; export const worker=new Thread('./child.js');\n",
   ])(
     'refuses a retained actual Node Worker constructor with owned native dependencies: %s',
     async (source) => {
@@ -67,6 +70,15 @@ describe('native child constructor classification', () => {
   it.each([
     "const threads=require('node:worker_threads'); exports.helper=function(require,threads){return [require,threads];}; exports.start=()=>new threads.Worker('./child.js');\n",
     "const {Worker:Thread}=require('node:worker_threads'); exports.helper=function(Thread){return Thread;}; exports.start=()=>new Thread('./child.js');\n",
+    "const {'Worker':Thread}=require('node:worker_threads'); exports.start=()=>new Thread('./child.js');\n",
+    "const {['Worker']:Thread}=require('node:worker_threads'); exports.start=()=>new Thread('./child.js');\n",
+    "const {[`Worker`]:Thread}=require('node:worker_threads'); exports.start=()=>new Thread('./child.js');\n",
+    "const {['Worker']:Thread=class {}}=require('node:worker_threads'); exports.start=()=>new Thread('./child.js');\n",
+    "exports.start=function(key){const {[key]:Thread}=require('node:worker_threads'); return new Thread('./child.js');};\n",
+    "const {Worker:{prototype:{constructor:Thread}}}=require('node:worker_threads'); exports.start=()=>new Thread('./child.js');\n",
+    "const {...threads}=require('node:worker_threads'); exports.start=()=>new threads.Worker('./child.js');\n",
+    "const threads=require('node:worker_threads');threads.BroadcastChannel=threads.Worker;const {['BroadcastChannel']:Thread}=threads;exports.start=()=>new Thread('./child.js');\n",
+    "const threads=require('node:worker_threads');let alias=threads;alias=globalThis.unknown;const {[key]:Thread}=alias;exports.start=()=>new Thread('./child.js');\n",
   ])('does not let another scope hide a retained CJS native child: %s', async (source) => {
     await expect(classify(source, true)).rejects.toThrow('unclassified owned native child');
   });
@@ -82,6 +94,9 @@ describe('native child constructor classification', () => {
   it.each([
     "import threads from 'node:worker_threads'; export function start(){const threads={Worker:class {}}; return new threads.Worker('./child.js');}\n",
     "const threads=require('node:worker_threads'); exports.start=function(){const threads={Worker:class {}}; return new threads.Worker('./child.js');};\n",
+    "const {'Worker':Thread}=require('node:worker_threads'); exports.start=function(Thread){return new Thread('./child.js');};\n",
+    "const {['Worker']:Thread}=require('node:worker_threads'); exports.start=function(){const Thread=class {};return new Thread('./child.js');};\n",
+    "const threads={Worker:class {}};const {'Worker':Thread}=threads;exports.start=()=>new Thread('./child.js');\n",
   ])(
     'does not classify an application constructor in a nearer lexical scope: %s',
     async (source) => {
@@ -115,6 +130,14 @@ describe('native child constructor classification', () => {
     const loads = await classify(
       "import threads from 'node:worker_threads'; export const channel = new threads['BroadcastChannel']('messages');\n",
     );
+
+    expect(loads).toStrictEqual([]);
+  });
+
+  it('keeps a statically selected non-Worker destructured constructor on its ordinary path', async () => {
+    const source =
+      "const {['BroadcastChannel']:Channel}=require('node:worker_threads');exports.channel=new Channel('messages');\n";
+    const loads = await classify(source, true);
 
     expect(loads).toStrictEqual([]);
   });

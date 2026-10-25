@@ -33,6 +33,7 @@ function fixture(files: NodeArchiveFile[]): NodeArtifactFiles {
   };
   const physical: NodePhysicalFiles = {
     files,
+    sourcePaths: new Map(),
     links: [],
     cwd: 'project',
     instrumentation: undefined,
@@ -60,8 +61,8 @@ describe('physical Node artifact byte and mode preservation', () => {
   });
 
   it('retains the BOM when a real cache-write patch changes a copied Next file', () => {
-    // eslint-disable-next-line no-template-curly-in-string -- Compiled JavaScript source deliberately retains its runtime template expression.
     const source =
+      // eslint-disable-next-line no-template-curly-in-string -- Compiled JavaScript source retains its runtime template expression.
       '\u{FEFF}const key=`cache-set-${id}`;cache[key]=previous.then(()=>write).finally(done);const warning="Failed to set fetch cache";';
     const bytes = new TextEncoder().encode(source);
     const original = { name: 'project/.next/server/chunks/cache.js', bytes };
@@ -99,9 +100,67 @@ describe('physical Node artifact byte and mode preservation', () => {
     };
     const files = fixture([original]);
 
-    expect(() => files.add(original.name, new Uint8Array([9]))).toThrow(
-      'conflicts with a physical input',
-    );
+    expect(() => {
+      files.add(original.name, new Uint8Array([9]));
+    }).toThrow('conflicts with a physical input');
     expect(files.files.get(original.name)).toBe(original);
   });
+});
+
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+describe('the shipped manifest normalization boundary', () => {
+  it.each(['route', 'distDir', 'entry-bytes'] as const)(
+    'rejects a changed %s after sealing the original entry inventory',
+    async (change) => {
+      const directory = await mkdtemp(path.join(tmpdir(), 'upwind-node-entry-seal-'));
+      try {
+        const distDir = path.join(directory, '.next');
+        const otherDist = path.join(directory, 'other');
+        await mkdir(distDir);
+        await mkdir(otherDist);
+        const entry = { id: '/native', filePath: path.join(distDir, 'page.js') };
+        await writeFile(entry.filePath, 'exports.routeModule={};');
+        const files = fixture([]);
+        Object.assign(files.input, {
+          projectDir: directory,
+          repoRoot: directory,
+          entries: [entry],
+          patch: { ...files.input.patch, distDir },
+        });
+        const canonicalFilePath = await realpath(entry.filePath);
+        const sealedEntry = Object.freeze({ ...entry, canonicalFilePath });
+        const seal = Object.freeze({
+          entries: Object.freeze([sealedEntry]),
+          distDir,
+          canonicalDistDir: await realpath(distDir),
+        });
+        await files.addAppEntry(seal);
+        await files.assertAppEntryNormalization(seal);
+        const changes = {
+          route: () => {
+            entry.id = '/other';
+          },
+          distDir: () => {
+            Object.assign(files.input.patch, { distDir: otherDist });
+          },
+          'entry-bytes': () => {
+            files.files.set('upwind/app.cjs', {
+              name: 'upwind/app.cjs',
+              bytes: new TextEncoder().encode('module.exports={};'),
+            });
+          },
+        };
+        changes[change]();
+
+        await expect(files.assertAppEntryNormalization(seal)).rejects.toThrow(
+          /normalization|route entry/u,
+        );
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 });

@@ -9,6 +9,8 @@ import type { NativeAddonEntryTrace } from './native-addons.ts';
 const FIXTURE_BINDINGS = 'fd4a2e414af0b19ae18ef43baed3eaa37a918db5';
 const NODE_GYP_INDEX = '07eb14ffd8045c07d69a8acc15bb97b6ea3d1217';
 const NODE_GYP_RUNTIME = '76b96e107474cdd79394262b65ac286db36353e8';
+const MISSING_FILE = 'ENOENT';
+const BUILD_RELEASE = 'build/Release';
 const LOADER_BLOBS: Readonly<Record<string, readonly string[]>> = {
   bindings: ['727413a19969f773d01a2d18f8f42d892cf8fabe', FIXTURE_BINDINGS],
   'node-gyp-build': [NODE_GYP_RUNTIME, NODE_GYP_INDEX],
@@ -101,14 +103,14 @@ export async function nativeLoaderSelectorKeys(importer: string): Promise<readon
     )
       keys.push(`${metadata.name.toUpperCase().replaceAll('-', '_')}_PREBUILD`);
   } catch (error) {
-    if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+    if (!(error instanceof Error) || !('code' in error) || error.code !== MISSING_FILE) throw error;
   }
   return keys;
 }
 
 async function assertDefaultSelectors(importer: string): Promise<void> {
   const keys = await nativeLoaderSelectorKeys(importer);
-  if (keys.some(hasSelector))
+  if (keys.some((key) => hasSelector(key)))
     throw new AuditError('Native loader environment overrides cannot be classified');
 }
 
@@ -128,7 +130,8 @@ async function firstExisting(
         throw new AuditError('Native loader first existing binary is not an owned regular file');
       return actual;
     } catch (error) {
-      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+      if (!(error instanceof Error) || !('code' in error) || error.code !== MISSING_FILE)
+        throw error;
     }
   }
   return undefined;
@@ -138,12 +141,13 @@ async function localNodeGypBinary(
   root: string,
   owned: ReadonlySet<string>,
 ): Promise<string | undefined> {
-  for (const folder of ['build/Release', 'build/Debug']) {
+  for (const folder of [BUILD_RELEASE, 'build/Debug']) {
     let names: string[];
     try {
       names = (await readdir(path.join(root, folder))).filter((name) => name.endsWith('.node'));
     } catch (error) {
-      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+      if (!(error instanceof Error) || !('code' in error) || error.code !== MISSING_FILE)
+        throw error;
       continue;
     }
     // readdir order differs between filesystems. A unique candidate proves the same target.
@@ -177,7 +181,7 @@ export async function nativeLoaderBinary(input: {
     const root = await realpath(await packageRoot(input.importer));
     const name = input.value.endsWith('.node') ? input.value : `${input.value}.node`;
     const folders =
-      identity === FIXTURE_BINDINGS ? ['build/Release'] : ['build', 'build/Debug', 'build/Release'];
+      identity === FIXTURE_BINDINGS ? [BUILD_RELEASE] : ['build', 'build/Debug', BUILD_RELEASE];
     binary = await firstExisting(
       folders.map((folder) => path.join(root, folder, name)),
       owned,

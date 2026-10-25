@@ -18,6 +18,8 @@ const COMMONJS_SUFFIXES = ['', '.js', '.json', '.node'] as const;
 
 export interface NodePhysicalFiles {
   readonly files: NodeArchiveFile[];
+  /** Build-machine source locations; never serialized into the public archive. */
+  readonly sourcePaths: ReadonlyMap<string, string>;
   readonly links: readonly { readonly path: string; readonly target: string }[];
   readonly cwd: string;
   /** The original compiled project hook, distinct from the generated host composition. */
@@ -152,7 +154,7 @@ async function physicalSources(
     const name = layout.nameOf(canonical);
     sources.files.set(name, await boundedFile(canonical));
     const mode = (await stat(canonical)).mode;
-    // eslint-disable-next-line no-bitwise, sonarjs/bitwise-operators -- POSIX executable permission bits are the artifact's file mode.
+    // eslint-disable-next-line no-bitwise -- POSIX executable permission bits are the artifact's file mode.
     if ((mode & EXECUTABLE_BITS) !== 0) sources.executable.add(name);
     sources.originals.set(canonical, name);
     await packageMetadata(canonical, layout, sources.files);
@@ -312,9 +314,9 @@ async function relativeAliases(
 ): Promise<void> {
   if (!specifier.startsWith('.')) return;
   const logical = path.resolve(path.dirname(file), specifier);
-  context.layout.nameOf(logical);
   const resolved = resolveRelative(file, specifier);
   if (resolved === undefined) return;
+  context.layout.nameOf(logical);
   const roots = [logical, path.join(logical, 'index')];
   const main = await relativeMain(logical, context);
   if (main !== undefined) roots.push(main, path.join(main, 'index'));
@@ -416,6 +418,7 @@ export async function nodePhysicalFiles(
       };
     }),
     links: emittedLinks(links, sources.files),
+    sourcePaths: new Map([...sources.originals].map(([file, name]) => [name, file])),
     cwd: layout.cwd,
     instrumentation,
     nameOf: layout.nameOf,
