@@ -42,12 +42,14 @@ describe('combined local native class capabilities', () => {
         },
       },
     });
-    const workers = options.workers ?? [];
+    const workers = options.workers;
+    const expectedSocketPath: unknown = expect.any(String);
 
     expect(options).toMatchObject({
-      containerEngine: { localDocker: { socketPath: expect.any(String) } },
+      containerEngine: { localDocker: { socketPath: expectedSocketPath } },
     });
     expect(workers).toHaveLength(3);
+
     for (const worker of workers) {
       expect(worker).toMatchObject({
         config: {
@@ -59,19 +61,18 @@ describe('combined local native class capabilities', () => {
         },
       });
     }
-    expect(workers).toContainEqual(
-      expect.objectContaining({
-        config: expect.objectContaining({
-          name: 'upwind-object-OBJECT',
-          exports: {
-            UpwindDurableObject: {
-              type: 'durable-object',
-              storage: 'sqlite',
-              container: { imageName: 'local-image:latest' },
-            },
-          },
-        }),
-      }),
-    );
+
+    const expectedObjectConfig: unknown = expect.objectContaining({
+      name: 'upwind-object-OBJECT',
+      exports: {
+        UpwindDurableObject: {
+          type: 'durable-object',
+          storage: 'sqlite',
+          container: { imageName: 'local-image:latest' },
+        },
+      },
+    });
+
+    expect(workers).toContainEqual(expect.objectContaining({ config: expectedObjectConfig }));
   });
 });
