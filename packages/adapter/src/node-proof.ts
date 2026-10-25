@@ -263,6 +263,29 @@ function approvedCompilerModules(
   return modules;
 }
 
+function assertCertifiedRuntimePatches(
+  projectDir: string,
+  chunk: OutputChunk,
+  graph: OriginalNodeGraph,
+  compilerModules: ReadonlySet<string>,
+): void {
+  for (const applied of graph.patches) {
+    const module = chunk.modules[applied.file];
+    if (
+      module === undefined ||
+      applied.patch !== turbopackRuntimePatch.name ||
+      module.code === null
+    )
+      continue;
+    if (!compilerModules.has(applied.file)) {
+      const identity = retainedFileIdentity(projectDir, applied.file);
+      throw new AuditError(
+        `Original Node graph has an uncertified Turbopack runtime rewrite in ${identity}; refusing native publication`,
+      );
+    }
+  }
+}
+
 function assertRetainedClosures(
   projectDir: string,
   chunk: OutputChunk,
@@ -418,6 +441,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     },
   );
   const compilerModules = approvedCompilerModules(chunk, graph, manifests);
+  assertCertifiedRuntimePatches(input.projectDir, chunk, graph, compilerModules);
   const retainedHost = hostLoaders
     .retained(chunk)
     .find((site) => !compilerModules.has(site.importer));

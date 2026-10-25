@@ -156,7 +156,7 @@ describe('original physical Node Function proof', () => {
     expect(proof.dependencies.patches).toStrictEqual([]);
   });
 
-  it('expands the computed Turbopack chunk loader without applying Worker substitutions', async () => {
+  it('refuses an uncertified compiler-shaped runtime after analysis linking', async () => {
     const runtime = path.join(distDir, 'server/chunks/[turbopack]_runtime.js');
     const chunk = path.join(distDir, 'server/chunks/native.js');
     await writeFile(
@@ -173,14 +173,10 @@ describe('original physical Node Function proof', () => {
     assets = { ...assets, runtime, chunk };
     const options = input();
     options.patch.chunks.push(chunk);
-    const proof = await proveNodeFunction(options);
 
-    expect(proof.native).toStrictEqual([
-      { kind: 'direct', importer: chunk, binary, owners: ['/native'] },
-    ]);
-    expect(proof.dependencies.patches.map((patch) => patch.patch)).toStrictEqual([
-      'turbopack-runtime',
-    ]);
+    await expect(proveNodeFunction(options)).rejects.toThrow(
+      'uncertified Turbopack runtime rewrite',
+    );
   });
 
   it('links and proves the original project instrumentation explicitly', async () => {

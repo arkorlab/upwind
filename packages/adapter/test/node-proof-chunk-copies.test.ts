@@ -2,9 +2,10 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { jsLiteral } from '../src/codegen.ts';
+import * as manifestProof from '../src/node-manifest-proof.ts';
 import { proveNodeFunction } from '../src/node-proof.ts';
 import { turbopackRuntimePatch } from '../src/patches/turbopack-runtime.ts';
 import { sameChunks } from '../src/same-chunks.ts';
@@ -12,7 +13,7 @@ import { sameChunks } from '../src/same-chunks.ts';
 const CHUNK_SOURCE = 'module.exports=require("./dependency.cjs");\n';
 const DEPENDENCY_SOURCE = 'exports.native=()=>require("./addon.node");\n';
 
-describe('original Node chunk coordinates through Worker copy metadata', () => {
+describe('node chunk coordinate plumbing with compiler approval explicitly mocked', () => {
   let directory: string;
 
   beforeEach(async () => {
@@ -21,6 +22,7 @@ describe('original Node chunk coordinates through Worker copy metadata', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(directory, { recursive: true, force: true });
   });
 
@@ -73,6 +75,19 @@ describe('original Node chunk coordinates through Worker copy metadata', () => {
         wasm: [],
       }),
     };
+    // This synthetic runtime tests coordinate plumbing only. Its approval is not a native
+    // acceptance test: the separate runtime-gate suite uses the real certifier and refuses it.
+    const originalProof = manifestProof.proveNodeManifests;
+    vi.spyOn(manifestProof, 'proveNodeManifests').mockImplementation(async (proofInput, graph) => {
+      const result = await originalProof(proofInput, graph);
+      const runtimeSource = graph.sources.get(runtime);
+      if (runtimeSource === undefined) throw new Error('Expected the authored runtime source');
+      return {
+        ...result,
+        codeSources: [...result.codeSources, runtimeSource],
+        approvedCompilerSources: [runtimeSource],
+      };
+    });
     return { input, original, canonical, dependencies, binaries, runtime, runtimeCode, copies };
   }
 
