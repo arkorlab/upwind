@@ -63,6 +63,15 @@ describe('local Container image preparation', () => {
     expect(run.mock.calls).toStrictEqual([
       [['pull', '--platform', 'linux/amd64', 'alpine:3.22'], undefined],
       [['tag', 'alpine:3.22', tag], undefined],
+      [
+        [
+          'pull',
+          '--platform',
+          'linux/amd64',
+          expect.stringContaining('cloudflare/proxy-everything@sha256:'),
+        ],
+        undefined,
+      ],
     ]);
   });
 
@@ -92,6 +101,15 @@ describe('local Container image preparation', () => {
           '--tag',
           prepared?.containerImageName,
           root,
+        ],
+        undefined,
+      ],
+      [
+        [
+          'pull',
+          '--platform',
+          'linux/amd64',
+          expect.stringContaining('cloudflare/proxy-everything@sha256:'),
         ],
         undefined,
       ],

@@ -4,6 +4,7 @@ import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { ContainerDefinition } from '@stayingupwind/core/bundle';
+import type { MiniflareOptions } from 'miniflare';
 
 import type { LocalDurableObject } from './local-objects.ts';
 import { watchFile } from './watch-sources.ts';
@@ -11,6 +12,15 @@ import { watchFile } from './watch-sources.ts';
 const BUILD_TIMEOUT_MS = 900_000;
 const MAX_ERROR_BYTES = 16_384;
 const LOCAL_TAG_LENGTH = 24;
+const PLATFORM_FLAG = '--platform';
+const PLATFORM = 'linux/amd64';
+// Same pinned proxy as this Miniflare release, using its canonical digest rather than tag@digest.
+const EGRESS_IMAGE =
+  'docker.io/cloudflare/proxy-everything@sha256:0ef6716c52430096900b150d84a3302057d6cd2319dae7987128c85d0733e3c8';
+
+function proxyImage(): string {
+  return process.env['MINIFLARE_CONTAINER_EGRESS_IMAGE'] ?? EGRESS_IMAGE;
+}
 
 type DockerCommand = (args: readonly string[], signal?: AbortSignal) => Promise<void>;
 
@@ -71,14 +81,22 @@ async function prepareImage(input: {
       true,
     );
     await run(
-      ['build', '--platform', 'linux/amd64', '--file', file, '--tag', imageName, context],
+      ['build', PLATFORM_FLAG, PLATFORM, '--file', file, '--tag', imageName, context],
       signal,
     );
   } else {
-    await run(['pull', '--platform', 'linux/amd64', image.reference], signal);
+    await run(['pull', PLATFORM_FLAG, PLATFORM, image.reference], signal);
     await run(['tag', image.reference, imageName], signal);
   }
   return imageName;
+}
+
+function proxyPreparation(run: DockerCommand, signal?: AbortSignal): () => Promise<void> {
+  let pending: Promise<void> | undefined;
+  return () => {
+    pending ??= run(['pull', PLATFORM_FLAG, PLATFORM, proxyImage()], signal);
+    return pending;
+  };
 }
 
 interface PrepareOptions {
@@ -95,6 +113,7 @@ export async function prepareLocalContainers(
   options: PrepareOptions = {},
 ): Promise<readonly LocalDurableObject[]> {
   const prepared: LocalDurableObject[] = [];
+  const prepareProxy = proxyPreparation(options.run ?? docker, options.signal);
   for (const object of objects) {
     options.signal?.throwIfAborted();
     const { container } = object.declaration;
@@ -113,13 +132,15 @@ export async function prepareLocalContainers(
         watchFile(path.resolve(projectDir, source), watch.files, watch.versions);
     }
     try {
+      const run = options.run ?? docker;
       const containerImageName = await prepareImage({
         projectDir,
         name: object.declaration.name,
         definition: container,
-        run: options.run ?? docker,
+        run,
         ...(options.signal !== undefined && { signal: options.signal }),
       });
+      await prepareProxy();
       prepared.push({ ...object, containerImageName });
     } catch (error) {
       options.signal?.throwIfAborted();
@@ -133,11 +154,18 @@ export async function prepareLocalContainers(
 }
 
 /** The image CLI and runtime must address the same explicitly selected Docker engine. */
-export function containerEngine(objects: readonly LocalDurableObject[]): {
-  containerEngine?: string;
-} {
-  const engine = process.env['DOCKER_HOST'];
-  return engine !== undefined && objects.some((object) => object.containerImageName !== undefined)
-    ? { containerEngine: engine }
-    : {};
+export function containerEngine(
+  objects: readonly LocalDurableObject[],
+): Pick<MiniflareOptions, 'containerEngine'> {
+  if (objects.every((object) => object.containerImageName === undefined)) return {};
+  const fallback =
+    process.platform === 'win32' ? '//./pipe/docker_engine' : 'unix:///var/run/docker.sock';
+  return {
+    containerEngine: {
+      localDocker: {
+        socketPath: process.env['DOCKER_HOST'] ?? fallback,
+        containerEgressInterceptorImage: proxyImage(),
+      },
+    },
+  };
 }

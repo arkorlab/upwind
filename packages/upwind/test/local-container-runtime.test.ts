@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { Miniflare } from 'miniflare';
+import { Log, LogLevel, Miniflare } from 'miniflare';
 import { describe, expect, it } from 'vitest';
 
 import { DURABLE_OBJECT_EXPORT } from '../../core/src/bundle/durable-objects.ts';
@@ -16,7 +16,8 @@ export class ${DURABLE_OBJECT_EXPORT} extends DurableObject {
  async fetch(request) {
   const container=this.ctx.container;
   if(!container) throw new Error('Container binding missing');
-  if(!container.running) container.start();
+  if(!container.running) container.start({enableInternet:true});
+  let exit;void container.monitor().catch(error=>{exit=String(error);});
   const url=new URL(request.url);url.protocol='http:';url.host='container';
   const forwarded=new Request(url,request);forwarded.headers.delete('host');
   let lastError;
@@ -24,7 +25,7 @@ export class ${DURABLE_OBJECT_EXPORT} extends DurableObject {
    try { return await container.getTcpPort(8080).fetch(forwarded); }
    catch(error) { lastError=error; await new Promise(resolve=>setTimeout(resolve,100)); }
   }
-  throw new Error('Container did not start: '+String(lastError));
+  throw new Error('Container did not start: '+String(lastError)+' '+String(exit));
  }
 }`;
 
@@ -72,8 +73,8 @@ describe.skipIf(process.env['UPWIND_CONTAINER_INTEGRATION'] !== '1')(
 
           expect(objects).toHaveLength(1);
 
-          runtime = new Miniflare(
-            localRuntimeOptions(
+          runtime = new Miniflare({
+            ...localRuntimeOptions(
               project,
               [{ name: 'COMPUTE', type: 'durable_object_namespace' }],
               objects,
@@ -84,7 +85,8 @@ describe.skipIf(process.env['UPWIND_CONTAINER_INTEGRATION'] !== '1')(
                 },
               },
             ),
-          );
+            log: new Log(LogLevel.DEBUG),
+          });
           const namespace = await runtime.getDurableObjectNamespace('COMPUTE', 'upwind-local');
           const stub = namespace.get(namespace.idFromName('startup'));
           const response = await stub.fetch('http://container.test/native-port');
