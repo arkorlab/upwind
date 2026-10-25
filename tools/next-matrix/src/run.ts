@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import {
   type DeploymentBundle,
   deploymentBundleSchema,
-  type FunctionSpec,
+  type WorkerFunctionSpec as FunctionSpec,
 } from '@stayingupwind/core/bundle';
 
 import {

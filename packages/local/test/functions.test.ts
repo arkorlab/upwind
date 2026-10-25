@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type { FunctionSpec } from '@stayingupwind/core/bundle';
+import type { WorkerFunctionSpec as FunctionSpec } from '@stayingupwind/core/bundle';
 import { describe, expect, it } from 'vitest';
 
 import { deploymentFunctions, type DeploymentFunctions } from '../src/functions.ts';

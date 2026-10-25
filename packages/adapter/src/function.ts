@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   type FunctionModule,
-  type FunctionSpec,
+  type WorkerFunctionSpec,
   type ManifestHead,
   manifestHead,
   type SourceMapRef,
@@ -17,6 +17,8 @@ import { type BlobStore, contentTypeFor } from './blobs.ts';
 import { buildPaths } from './build-paths.ts';
 import {
   auditTracedFiles,
+  auditNodeFunction,
+  auditNativePlacement,
   auditFunctionSize,
   bundled,
   bundleDependencies,
@@ -34,6 +36,7 @@ import type { KeptMaps } from './kept-maps.ts';
 import { bundleLinkedExternals, type LinkedExternals } from './linked-externals.ts';
 import type { TextModule } from './manifests.ts';
 import { auditNativeFunction, type NativeAddonEntryTrace } from './native-addons.ts';
+import { NativeFunctionRequired, nativeLoadsPlugin, type NativeLoad } from './native-loads.ts';
 import { type PageRuntimeRequire, withPageRuntimeAsReact } from './page-runtime-react.ts';
 import { auditExternalPagesApiDist } from './patches/external-pages-api-dist.ts';
 import {
@@ -94,6 +97,8 @@ export interface EntryModule {
 export type FunctionKind = 'app' | 'middleware' | 'workflow';
 
 export interface BuildFunctionInput {
+  /** Final native ownership is audited without unrelated Worker-only optional fallbacks. */
+  readonly nativeTargetAudit?: boolean | undefined;
   readonly kind: FunctionKind;
   /**
    * The Function's own name, where it is not its kind: `app-2`, `app-3`… for the app Functions
@@ -108,7 +113,7 @@ export interface BuildFunctionInput {
   readonly outDir: string;
   readonly patch: PatchContext;
   readonly entries: readonly EntryModule[];
-  /** Existing route traces used only to explain a rejected app graph, never to admit one. */
+  /** Owned route traces; native admission additionally requires a retained, proved load site. */
   readonly entryTraces?: readonly NativeAddonEntryTrace[] | undefined;
   /** The entrypoints `next build` put on the edge runtime; they go into a bundle of their own. */
   readonly edgeEntries: readonly EdgeEntry[];
@@ -189,7 +194,12 @@ function runtimeEntry(): string {
 async function bundleApp(
   input: BuildFunctionInput,
   workDir: string,
-): Promise<{ outFile: string; trace: BundleTrace; linked: ReadonlySet<string> }> {
+): Promise<{
+  outFile: string;
+  trace: BundleTrace;
+  linked: ReadonlySet<string>;
+  native: readonly NativeLoad[];
+}> {
   const entryFile = path.join(workDir, `${nameOf(input)}-entry.cjs`);
   const outFile = path.join(workDir, `${nameOf(input)}-${APP_MODULE}`);
   await writeFile(
@@ -197,13 +207,21 @@ async function bundleApp(
     appEntrySource(input.entries, buildPaths(input.projectDir, input.patch.distDir)),
   );
   // The middleware's Function, with the page runtime as React alone where that is enough.
+  const native = nativeLoadsPlugin(input.entryTraces ?? []);
   const { chunk, sinks } =
     input.kind === 'middleware'
       ? await withPageRuntimeAsReact(
-          (reactOnly) => writeAppBundle(input, entryFile, outFile, reactOnly),
+          (reactOnly) =>
+            writeAppBundle(input, entryFile, outFile, {
+              reactOnly,
+              nativeCapabilities: native.plugin,
+            }),
           input.patch.chunks,
         )
-      : await writeAppBundle(input, entryFile, outFile, false);
+      : await writeAppBundle(input, entryFile, outFile, {
+          reactOnly: false,
+          nativeCapabilities: native.plugin,
+        });
   return {
     outFile,
     trace: {
@@ -215,6 +233,7 @@ async function bundleApp(
       dynamicLoads: dynamicLoadsInChunk(chunk),
     },
     linked: sinks.linked,
+    native: await native.retained(chunk),
   };
 }
 
@@ -226,12 +245,13 @@ async function writeAppBundle(
   input: BuildFunctionInput,
   entryFile: string,
   outFile: string,
-  reactOnly: boolean,
+  options: { readonly reactOnly: boolean; readonly nativeCapabilities: import('rolldown').Plugin },
 ): Promise<{
   readonly chunk: OutputChunk;
   readonly sinks: AppBundleSinks;
   readonly pageRuntime: readonly PageRuntimeRequire[];
 }> {
+  const { reactOnly, nativeCapabilities } = options;
   const sinks: AppBundleSinks = {
     patches: [],
     stubs: [],
@@ -246,6 +266,7 @@ async function writeAppBundle(
       entryFile,
       {
         patch: input.patch,
+        nativeCapabilities,
         wasm: input.wasm,
         ...(carriesMaps(input.sourceMaps) && { sourceMaps: true, keptMaps: input.keptMaps }),
         ...(input.kind === 'workflow' && { workflowFunction: true }),
@@ -298,7 +319,7 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
 }
 
 export interface BuiltFunction {
-  readonly spec: FunctionSpec;
+  readonly spec: WorkerFunctionSpec;
   readonly dependencies: FunctionDependencies;
   /** The maps of this Function's own modules; empty unless the host asked for them. */
   readonly sourceMaps: SourceMapRef[];
@@ -522,18 +543,24 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
     }),
   };
   auditWasmLoader(name, input.patch, app.trace.patches);
-  auditFunctionSize(name, { modules, size }, input.deferSizeAudit === true);
+  const sources = {
+    app: await readFile(appFile, 'utf8'),
+    ...(edge !== undefined && { edge: await readFile(edge.outFile, 'utf8') }),
+    ...(linked !== undefined && { linked: await linkedSource(linked) }),
+  };
+  if (app.native.length > 0) {
+    const audit = input.nativeTargetAudit === true ? auditNodeFunction : auditNativePlacement;
+    audit(name, sources, dependencies, outputNameOf(input.projectDir, distDir));
+    throw new NativeFunctionRequired(app.native);
+  }
   auditNativeFunction({
     name,
-    sources: {
-      app: await readFile(appFile, 'utf8'),
-      ...(edge !== undefined && { edge: await readFile(edge.outFile, 'utf8') }),
-      ...(linked !== undefined && { linked: await linkedSource(linked) }),
-    },
+    sources,
     dependencies,
     output: outputNameOf(input.projectDir, distDir),
     entryTraces: input.entryTraces ?? [],
   });
+  auditFunctionSize(name, { modules, size }, input.deferSizeAudit === true);
   return {
     spec: {
       mainModule: RUNTIME_MODULE,

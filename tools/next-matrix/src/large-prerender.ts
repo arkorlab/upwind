@@ -13,6 +13,7 @@ import {
 
 import { type CaseProof, exercise, modulesOf, sha256 } from './large-prerender-worker.ts';
 import { failureOf, type Failure } from './twoslash-probes.ts';
+import { workerApp } from './worker-function.ts';
 
 const MIB = 1_048_576;
 const MAX_FUNCTION_BYTES = 67_108_864;
@@ -85,7 +86,7 @@ function requiredBody(prerender: Prerender | undefined): BlobRef {
 
 function selectedOutputs(bundle: DeploymentBundle, proof: Proof) {
   const primary = primaryPrerenders(bundle.prerenders);
-  const modules = new Set(bundle.functions.app.modules.map((module) => module.blob.sha256));
+  const modules = new Set(workerApp(bundle).modules.map((module) => module.blob.sha256));
   const candidates = bundle.prerenders.filter((entry) => entry.pathname.startsWith(PREFIX));
   proof.inventory = candidates.map((entry) => {
     return {
@@ -171,7 +172,7 @@ async function verifyOmitted(
   proof: Proof,
   selected: ReturnType<typeof selectedOutputs>['selected'],
 ): Promise<void> {
-  const modules = new Set(bundle.functions.app.modules.map((module) => module.blob.sha256));
+  const modules = new Set(workerApp(bundle).modules.map((module) => module.blob.sha256));
   const upload = bundleBlobs(bundle);
   const unique = new Map<string, number>();
   for (const { entry, kind } of selected) {
@@ -252,12 +253,12 @@ export async function largePrerenderHolds(
     const small = requiredBody(outputs.small);
     assert.ok(small.byteLength < MIB, 'Small-page control stays below the lower threshold');
     assert.ok(
-      bundle.functions.app.modules.some((module) => module.blob.sha256 === small.sha256),
+      workerApp(bundle).modules.some((module) => module.blob.sha256 === small.sha256),
       'Small-page control remains shipped',
     );
     proof.stage = 'function-size';
     proof.functionSize = recordedSize(dependencies);
-    proof.moduleBytes = bundle.functions.app.modules.reduce(
+    proof.moduleBytes = workerApp(bundle).modules.reduce(
       (total, module) => total + module.blob.byteLength,
       0,
     );

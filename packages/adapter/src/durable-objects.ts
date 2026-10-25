@@ -10,7 +10,7 @@ import {
   durableObjectDeclarationsSchema,
   DURABLE_OBJECT_EXPORT,
   type FunctionModule,
-  type FunctionSpec,
+  type WorkerFunctionSpec,
   type SourceMapRef,
 } from '@stayingupwind/core/bundle';
 import { UPWIND_DURABLE_OBJECTS_ENV } from '@stayingupwind/core/paas';
@@ -307,7 +307,7 @@ export async function buildDurableObjectFunctions(input: {
   readonly sourceMaps?: SourceMapsOption;
   readonly distDir?: string;
 }): Promise<{
-  functions: Readonly<Record<string, FunctionSpec>>;
+  functions: Readonly<Record<string, WorkerFunctionSpec>>;
   sourceMaps: SourceMapRef[];
   dependencies: Readonly<Record<string, FunctionDependencies>>;
 }> {
@@ -333,15 +333,15 @@ export async function buildWorkerClassFunctions(
   built: readonly BundledDurableObject[],
   settings: { readonly label: string; readonly moduleName: string },
 ): Promise<{
-  functions: Readonly<Record<string, FunctionSpec>>;
+  functions: Readonly<Record<string, WorkerFunctionSpec>>;
   sourceMaps: SourceMapRef[];
   dependencies: Readonly<Record<string, FunctionDependencies>>;
 }> {
   const sourceMaps: SourceMapRef[] = [];
   const dependencies: Record<string, FunctionDependencies> = {};
-  const functions: Record<string, FunctionSpec> = Object.create(null) as Record<
+  const functions: Record<string, WorkerFunctionSpec> = Object.create(null) as Record<
     string,
-    FunctionSpec
+    WorkerFunctionSpec
   >;
   for (const object of built) {
     const modules: FunctionModule[] = [
@@ -418,7 +418,7 @@ export async function durableObjectParts(input: {
       | typeof CONTAINER_SPLIT_BUNDLE_VERSION;
     durableObjects?: DurableObjectDeclaration[];
   };
-  functions: { durableObjects?: Readonly<Record<string, FunctionSpec>> };
+  functions: { durableObjects?: Readonly<Record<string, WorkerFunctionSpec>> };
   sourceMaps: SourceMapRef[];
   dependencies: Readonly<Record<string, FunctionDependencies>>;
 }> {

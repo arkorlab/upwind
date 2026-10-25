@@ -2,6 +2,17 @@ import type { Argument, Node, Program } from '@oxc-project/types';
 import type { OutputChunk } from 'rolldown';
 import { parseAst } from 'rolldown/parseAst';
 
+import {
+  type DynamicLoad,
+  type Visit,
+  describeDynamicLoad,
+  isNode,
+  isStatement,
+  pushChildren,
+} from './load-visits.ts';
+
+export type { DynamicLoad } from './load-visits.ts';
+
 /**
  * The uses of the loader the bundler could not follow, found in each module as Rolldown
  * rendered it into the chunk — after it followed what it could.
@@ -45,35 +56,6 @@ import { parseAst } from 'rolldown/parseAst';
  * and never `require.bind`, which makes a loader rather than loading.
  */
 
-/** A use of the loader the bundler could not follow, in the module that makes it. */
-export interface DynamicLoad {
-  readonly file: string;
-  /**
-   * The line of the use in the module as Rolldown rendered it into the chunk — its statements
-   * as Rolldown printed them, which is not the file's own layout.
-   */
-  readonly line: number;
-  /** The call, or the assignment or statement that keeps the loader. */
-  readonly text: string;
-  /** Whether the code handles the load's failure itself (see above). */
-  readonly guarded: boolean;
-}
-
-/**
- * As much of a use as the record shows: enough for the whole of the longest statement the audit
- * reads to the end, the require hook's resolver (`isRequireHookResolver`, in `dependencies.ts`),
- * whose 91 characters 80 cut inside `require.resolve`, where it reads as `require` kept.
- */
-const DYNAMIC_LOAD_TEXT = 100;
-
-/** A node on the way down: the visit it is under, by which field, and the statement it is in. */
-interface Visit {
-  readonly node: Node;
-  readonly up: Visit | undefined;
-  readonly key: string | undefined;
-  readonly statement: Node;
-}
-
 /** What a use of the loader is reported by. */
 interface Use {
   readonly node: Node;
@@ -94,14 +76,6 @@ function namesOneModule(argument: Argument | undefined): boolean {
     return typeof argument.value === 'string';
   }
   return argument.type === 'TemplateLiteral' && argument.expressions.length === 0;
-}
-
-function isNode(value: unknown): value is Node {
-  return typeof value === 'object' && value !== null && 'type' in value;
-}
-
-function isStatement(node: Node): boolean {
-  return node.type.endsWith('Statement') || node.type.endsWith('Declaration');
 }
 
 /** Where an identifier names a member, a key or a label, whatever its field, not a binding. */
@@ -706,26 +680,6 @@ function useAt(visit: Visit): Use | undefined {
 }
 
 /** Put every node under `visit` — each field that is one, or a list of them — on `pending`. */
-function pushChildren(visit: Visit, pending: Visit[]): void {
-  const { node } = visit;
-  const statement = isStatement(node) ? node : visit.statement;
-  for (const [key, value] of Object.entries(node)) {
-    // A parent link, when the parser adds one, would lead back up.
-    if (key === 'parent') {
-      continue;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        if (isNode(item)) {
-          pending.push({ node: item, up: visit, key, statement });
-        }
-      }
-    } else if (isNode(value)) {
-      pending.push({ node: value, up: visit, key, statement });
-    }
-  }
-}
-
 /**
  * The uses of the loader in `program` the bundler could not follow, in source order. Walked
  * with a stack of its own: a module of Next.js's runtime is megabytes of syntax, and a
@@ -744,20 +698,39 @@ function usesIn(program: Program): Use[] {
   return found.toSorted((a, b) => a.node.start - b.node.start);
 }
 
-/** A use as the record takes it: where it is, and as much of the text as the record shows. */
-function describe(file: string, code: string, use: Use): DynamicLoad {
-  const { start } = use.text;
-  return {
-    file,
-    line: code.slice(0, use.node.start).split('\n').length,
-    text: code.slice(start, Math.min(use.text.end, start + DYNAMIC_LOAD_TEXT)),
-    guarded: use.guarded,
-  };
-}
-
 /** The uses in one module as rendered; JavaScript by then, whatever the module was written in. */
 export function dynamicLoadsOf(file: string, code: string): DynamicLoad[] {
-  return usesIn(parseAst(code, { lang: 'js' }, file)).map((use) => describe(file, code, use));
+  return usesIn(parseAst(code, { lang: 'js' }, file)).map((use) =>
+    describeDynamicLoad(file, code, use),
+  );
+}
+
+/** Reuse the existing optional-operation proof for native capability classification. */
+export function nativeOperationGuards(
+  program: Program,
+): ReadonlyMap<number, 'plain' | 'ambiguous'> {
+  const guarded = new Map<number, 'plain' | 'ambiguous'>();
+  const pending: Visit[] = [{ node: program, up: undefined, key: undefined, statement: program }];
+  for (let visit = pending.pop(); visit !== undefined; visit = pending.pop()) {
+    if (visit.node.type === 'CallExpression') {
+      if (inGuardedBlock(visit)) guarded.set(visit.node.start, 'plain');
+      else {
+        for (let at = visit; at.up !== undefined; at = at.up) {
+          if (runsLater(at.up, at.key)) break;
+          if (
+            at.key === 'block' &&
+            at.up.node.type === 'TryStatement' &&
+            at.up.node.handler !== null
+          ) {
+            guarded.set(visit.node.start, 'ambiguous');
+            break;
+          }
+        }
+      }
+    }
+    pushChildren(visit, pending);
+  }
+  return guarded;
 }
 
 /** Every use of the loader the bundler could not follow, in every module rendered into `chunk`. */

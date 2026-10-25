@@ -6,7 +6,10 @@ import type { EntryModule } from './function.ts';
  * Keep every route lazy. An external output's route module is normalized once, on its first
  * load, so Next.js reads its manifests from the same VFS mount the adapter gives them.
  */
-export function appEntrySource(entries: readonly EntryModule[], paths: BuildPaths): string {
+export function appEntrySource(
+  entries: readonly EntryModule[],
+  paths: Pick<BuildPaths, 'external' | 'runtimeDistDir'>,
+): string {
   const table = entries
     .map((entry) => {
       const key = jsLiteral(entry.id);

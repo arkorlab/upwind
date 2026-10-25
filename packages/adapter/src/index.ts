@@ -8,6 +8,7 @@ import {
   type DurableObjectDeclaration,
   type CloudflareWorkflowDeclaration,
   deploymentBundleSchema,
+  isNodeContainerFunction,
   ONE_PASS_BUNDLE_VERSION,
   travelsWithFunction,
 } from '@stayingupwind/core/bundle';
@@ -379,7 +380,11 @@ async function onBuildComplete(
   };
   await writeFile(path.join(outDir, DEPENDENCIES_FILE), JSON.stringify(dependencies, null, 2));
   await rm(path.join(outDir, 'work'), { recursive: true, force: true });
-  if (functions.built.length > 1 || functions.bodiesLeftOut !== undefined) {
+  if (
+    functions.built.length > 1 ||
+    functions.bodiesLeftOut !== undefined ||
+    functions.built.some((each) => isNodeContainerFunction(each.built.spec))
+  ) {
     // The modules of the Function the build weighed before it split, and of the Functions it laid
     // out with every page body before leaving the large ones out, are blobs nothing names.
     await blobs.prune(new Set(bundleBlobs(bundle).keys()));

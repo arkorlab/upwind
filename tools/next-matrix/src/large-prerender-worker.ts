@@ -15,6 +15,7 @@ import {
 } from 'miniflare';
 
 import { failureOf, type Failure } from './twoslash-probes.ts';
+import { workerApp } from './worker-function.ts';
 
 const REQUEST_MS = 30_000;
 const CLEANUP_MS = 5000;
@@ -114,7 +115,7 @@ interface EmittedModule {
 }
 
 export async function modulesOf(bundle: DeploymentBundle, out: string): Promise<EmittedModule[]> {
-  const spec = bundle.functions.app;
+  const spec = workerApp(bundle);
   const modules = await Promise.all(
     spec.modules.map(async (module) => {
       const bytes = await readFile(path.join(out, 'blobs', module.blob.sha256));
@@ -287,8 +288,8 @@ export async function exercise(input: Exercise): Promise<CaseProof> {
       name: 'large-prerender-fixture',
       modulesRoot: '/bundle',
       modules: input.modules,
-      compatibilityDate: bundle.functions.app.compatibilityDate,
-      compatibilityFlags: bundle.functions.app.compatibilityFlags,
+      compatibilityDate: workerApp(bundle).compatibilityDate,
+      compatibilityFlags: workerApp(bundle).compatibilityFlags,
       bindings: {
         NODE_ENV: 'production',
         NEXT_DEPLOYMENT_ID: bundle.deploymentId,

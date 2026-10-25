@@ -354,7 +354,8 @@ const ALLOWED_BUILTINS: ReadonlySet<string> = new Set([
   'zlib',
 ]);
 
-function isAllowedExternal(specifier: string): boolean {
+function isAllowedExternal(specifier: string, native = false): boolean {
+  if (native) return isBuiltin(specifier);
   return (
     [
       'cloudflare:email',
@@ -526,15 +527,21 @@ export function auditFunctionSize(kind: string, upload: FunctionUpload, deferred
 }
 
 /** What would fail the Function in one of its bundles: the source as rendered, and its record. */
-function problemsIn(source: string, bundle: BundleDependencies, output: string): string[] {
+function problemsIn(
+  source: string,
+  bundle: BundleDependencies,
+  output: string,
+  mode: 'worker' | 'node-placement' | 'node' = 'worker',
+): string[] {
+  const native = mode !== 'worker';
   const problems: string[] = [];
-  for (const [pattern, what] of FORBIDDEN_IN_APP) {
+  for (const [pattern, what] of native ? [] : FORBIDDEN_IN_APP) {
     if (pattern.test(source)) {
       problems.push(`${what} survived bundling (${String(pattern)})`);
     }
   }
   for (const external of bundle.externals) {
-    if (!isAllowedExternal(external)) {
+    if (!isAllowedExternal(external, native)) {
       problems.push(
         `${external} is imported but not known to be provided by the deployment runtime`,
       );
@@ -550,7 +557,7 @@ function problemsIn(source: string, bundle: BundleDependencies, output: string):
   }
   for (const dynamic of bundle.dynamicRequires) {
     const left = guarded.get(dynamic) ?? 0;
-    if (left > 0) {
+    if (left > 0 && mode !== 'node') {
       guarded.set(dynamic, left - 1);
     } else if (!isAllowedDynamicLoad(dynamic, output)) {
       problems.push(`a load the bundler could not follow: ${dynamic}`);
@@ -566,12 +573,42 @@ export function auditFunction(
   dependencies: FunctionDependencies,
   output = NAMED_OUTPUT,
 ): void {
-  const problems = problemsIn(sources.app, dependencies, output);
+  auditTarget(kind, sources, dependencies, { output, mode: 'worker' });
+}
+
+/** Native proof permits real Node built-ins, never unrelated unresolved/dynamic loads. */
+export function auditNodeFunction(
+  kind: string,
+  sources: Parameters<typeof auditFunction>[1],
+  dependencies: FunctionDependencies,
+  output = NAMED_OUTPUT,
+): void {
+  auditTarget(kind, sources, dependencies, { output, mode: 'node' });
+}
+
+/** Guard-admitted Worker-only routes may be separated before the final strict Node target audit. */
+export function auditNativePlacement(
+  kind: string,
+  sources: Parameters<typeof auditFunction>[1],
+  dependencies: FunctionDependencies,
+  output = NAMED_OUTPUT,
+): void {
+  auditTarget(kind, sources, dependencies, { output, mode: 'node-placement' });
+}
+
+function auditTarget(
+  kind: string,
+  sources: Parameters<typeof auditFunction>[1],
+  dependencies: FunctionDependencies,
+  target: { output: string; mode: 'worker' | 'node-placement' | 'node' },
+): void {
+  const { output, mode } = target;
+  const problems = problemsIn(sources.app, dependencies, output, mode);
   if (sources.edge !== undefined && dependencies.edge !== undefined) {
-    problems.push(...problemsIn(sources.edge, dependencies.edge, output));
+    problems.push(...problemsIn(sources.edge, dependencies.edge, output, mode));
   }
   if (sources.linked !== undefined && dependencies.linked !== undefined) {
-    problems.push(...problemsIn(sources.linked, dependencies.linked, output));
+    problems.push(...problemsIn(sources.linked, dependencies.linked, output, mode));
   }
   if (problems.length > 0) {
     const list = problems.map((problem) => `  - ${problem}`).join('\n');

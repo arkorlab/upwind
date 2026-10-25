@@ -12,7 +12,12 @@ import { checkStack, type LocalStack, startStack, type StackOptions } from '@sta
 
 import { authLayout } from '../auth/layout.ts';
 import { readSecrets, reservedNames } from '../deploy/env.ts';
-import { AUTH_SECRETS, BUNDLE_PATH, carriesCacheHost } from '../deploy/preflight.ts';
+import {
+  assertWorkerCliBundle,
+  AUTH_SECRETS,
+  BUNDLE_PATH,
+  carriesCacheHost,
+} from '../deploy/preflight.ts';
 import { shippedStackScripts } from '../deploy/shipped.ts';
 import type { PreviewOptions } from './args.ts';
 import { failedChecks } from './checks.ts';
@@ -67,6 +72,7 @@ async function readBuild(projectDir: string): Promise<Build | undefined> {
       `${BUNDLE_PATH} in ${projectDir} is no bundle this upwind reads (${parsed.error.message}); build it again with \`upwind build\``,
     );
   }
+  assertWorkerCliBundle(parsed.data);
   return { bundleDir: path.dirname(file), bundle: parsed.data };
 }
 

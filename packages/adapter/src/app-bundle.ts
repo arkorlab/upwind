@@ -24,6 +24,8 @@ import type { WasmCollector } from './wasm.ts';
 
 /** What the app bundle is built against: the rewrites it applies, and what it may resolve. */
 export interface AppBundleContext {
+  /** Analysis-only native markers; never present in a published Worker. */
+  readonly nativeCapabilities?: RolldownPlugin | undefined;
   readonly patch: PatchContext;
   readonly wasm: WasmCollector;
   /** Compose the maps the build already wrote through into this bundle's own. */
@@ -72,6 +74,7 @@ export function appBundlePlugins(
   sinks: AppBundleSinks,
 ): RolldownPlugin[] {
   return [
+    ...(context.nativeCapabilities === undefined ? [] : [context.nativeCapabilities]),
     globalObjectPlugin(),
     ...(context.pageRuntime === undefined ? [] : [pageRuntimeReactPlugin(context.pageRuntime)]),
     patchesPlugin(PATCHES, context.patch, (applied) => {

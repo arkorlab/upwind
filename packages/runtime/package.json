@@ -18,7 +18,11 @@
   "exports": {
     "./bundle-blobs": "./src/bundle-blobs.ts",
     "./cache-host": "./src/cache/host.ts",
-    "./function": "./src/function.ts"
+    "./function": "./src/function.ts",
+    "./node-container": "./src/node-container.ts",
+    "./node-environment": "./src/node-environment.ts",
+    "./node-http-bridge": "./src/node-http-bridge.ts",
+    "./node-resources": "./src/node-resources.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

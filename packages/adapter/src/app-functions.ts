@@ -1,5 +1,6 @@
 import {
   type Entrypoint,
+  isNodeContainerFunction,
   ONE_PASS_SPLIT_BUNDLE_VERSION,
   packPrerenders,
   type Prerender,
@@ -13,10 +14,18 @@ import type { BuildContext, RouteCode, ShippedBlob } from './collect.ts';
 import { auditFunctionSize } from './dependencies.ts';
 import type { EdgeInstrumentation } from './edge-instrumentation.ts';
 import type { EdgeEntry } from './edge.ts';
-import { buildFunction, type BuiltFunction, type EntryModule } from './function.ts';
+import {
+  buildFunction,
+  type BuildFunctionInput,
+  type BuiltFunction,
+  type EntryModule,
+} from './function.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import type { TextModule } from './manifests.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
+import { nativeFunctionLayout } from './native-layout.ts';
+import { NativeFunctionRequired } from './native-loads.ts';
+import type { NodeBuiltFunction } from './node-function.ts';
 import { type BodiesLeftOut, withinTheLimit } from './page-body-layout.ts';
 import type { PatchContext } from './patches/index.ts';
 import type { PlanBudget } from './plan.ts';
@@ -196,7 +205,7 @@ function distinct<B extends { readonly sha256: string }>(blobs: readonly B[]): B
 }
 
 /** What an app Function holding `held` — or every route — is made of. */
-function partsOf(
+export function partsOf(
   context: FunctionsContext,
   held: HeldRoutes | undefined,
 ): {
@@ -250,12 +259,12 @@ function partsOf(
  * An app Function: every route's, or — for a build that split its routes — the ones `held` names,
  * with the middleware's code, which every app Function carries to run whenever the edge did not.
  */
-export async function buildAppFunction(
+export async function appFunctionInput(
   context: FunctionsContext,
   runtimeManifest: string,
   held: HeldRoutes | undefined,
   deferSizeAudit: boolean,
-): Promise<BuiltFunction> {
+): Promise<BuildFunctionInput> {
   const { ctx, middleware, hook } = context;
   const parts = partsOf(context, held);
   const edgeEntries = [...parts.edge, ...middleware.edge];
@@ -264,7 +273,7 @@ export async function buildAppFunction(
     [...parts.wasm, ...middleware.wasm, ...hook.wasm],
     edgeEntries,
   );
-  return buildFunction({
+  return {
     kind: 'app',
     ...(held !== undefined && held.name !== PRIMARY_FUNCTION && { name: held.name }),
     projectDir: ctx.projectDir,
@@ -290,7 +299,16 @@ export async function buildAppFunction(
     deferSizeAudit,
     workflowSdk: context.workflowSdk,
     previewData: context.previewData,
-  });
+  };
+}
+
+export async function buildAppFunction(
+  context: FunctionsContext,
+  runtimeManifest: string,
+  held: HeldRoutes | undefined,
+  deferSizeAudit: boolean,
+): Promise<BuiltFunction> {
+  return buildFunction(await appFunctionInput(context, runtimeManifest, held, deferSizeAudit));
 }
 
 /**
@@ -339,10 +357,13 @@ export async function buildMiddlewareFunction(
 }
 
 /** The app Functions a build made, by name, the first (`app`) first. */
-export interface AppFunctions<M> {
+export interface AppFunctions<
+  M,
+  B extends BuiltFunction | NodeBuiltFunction = BuiltFunction | NodeBuiltFunction,
+> {
   /** What every Function's `runtime.json` holds: the build's, with each route placed where split. */
   readonly runtimeManifest: M;
-  readonly built: readonly { readonly name: string; readonly built: BuiltFunction }[];
+  readonly built: readonly { readonly name: string; readonly built: B }[];
   /** The plan, as the build's record keeps it, when the routes were split. */
   readonly plan: Record<string, unknown> | undefined;
   /**
@@ -389,9 +410,14 @@ export async function appFunctionsOf<
   runtimeManifest: M,
   budget: PlanBudget | undefined,
 ): Promise<AppFunctions<M>> {
-  return withinTheLimit(context, (layout, weighOnly) =>
-    layOutAppFunctions({ ...context, ...layout }, runtimeManifest, budget, weighOnly),
-  );
+  try {
+    return await withinTheLimit(context, (layout, weighOnly) =>
+      layOutAppFunctions({ ...context, ...layout }, runtimeManifest, budget, weighOnly),
+    );
+  } catch (error) {
+    if (!(error instanceof NativeFunctionRequired)) throw error;
+    return nativeFunctionLayout(context, runtimeManifest, { budget, loads: error.loads });
+  }
 }
 
 /**
@@ -399,7 +425,7 @@ export async function appFunctionsOf<
  * as `deferSizeAudit` leaves the one Function's to the plan: what is past the limit is then a reason
  * to lay them out again rather than a failure, and what is finally uploaded is held to the limit.
  */
-async function layOutAppFunctions<
+export async function layOutAppFunctions<
   M extends {
     readonly v: number;
     readonly entrypoints: readonly Entrypoint[];
@@ -410,14 +436,14 @@ async function layOutAppFunctions<
   runtimeManifest: M,
   budget: PlanBudget | undefined,
   weighOnly: boolean,
-): Promise<AppFunctions<M>> {
+): Promise<AppFunctions<M, BuiltFunction>> {
   const single = await buildAppFunction(
     context,
     runtimeManifestJson(runtimeManifest),
     undefined,
     budget !== undefined || weighOnly,
   );
-  const whole: AppFunctions<M> = {
+  const whole: AppFunctions<M, BuiltFunction> = {
     runtimeManifest,
     built: [{ name: PRIMARY_FUNCTION, built: single }],
     plan: undefined,
@@ -489,7 +515,9 @@ export function reportSplit(built: AppFunctions<unknown>['built']): void {
     return;
   }
   const each = built.map(({ name, built: one }) => {
-    const { bytes, codeBytes } = weighs(one);
+    if (isNodeContainerFunction(one.spec))
+      return `${name} (Node Container, ${mib(one.spec.artifact.byteLength)} artifact)`;
+    const { bytes, codeBytes } = weighs(one as BuiltFunction);
     return `${name} (${mib(bytes)}, ${mib(codeBytes)} of code)`;
   });
   console.log(

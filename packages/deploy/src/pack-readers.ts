@@ -1,4 +1,9 @@
-import type { DeploymentBundle, FunctionSpec } from '@stayingupwind/core/bundle';
+import {
+  type DeploymentBundle,
+  type FunctionSpec,
+  type WorkerFunctionSpec,
+  isNodeContainerFunction,
+} from '@stayingupwind/core/bundle';
 import type { ApprovedPackReaderRollout, ScopePackReaders } from '@stayingupwind/host/cache';
 
 /** Every immutable bundle Function, including one a custom host might let reach the same scope. */
@@ -34,7 +39,7 @@ function hasControlCharacter(name: string): boolean {
 }
 
 /** An uploaded module cannot alias or override the audited main module or one of its imports. */
-function unambiguousModules(spec: FunctionSpec): boolean {
+function unambiguousModules(spec: WorkerFunctionSpec): boolean {
   const seen = new Set<string>();
   for (const module of spec.modules) {
     const parts = module.name.split('/');
@@ -70,6 +75,7 @@ export function scopePackReadersOf(
   if (byDigest.size !== approved.functions.length) return undefined;
   const consumers: ScopePackReaders['consumers'] = [];
   for (const [name, spec] of consumersOf(bundle)) {
+    if (isNodeContainerFunction(spec)) return undefined;
     if (!unambiguousModules(spec)) return undefined;
     const modules = spec.modules.filter((module) => module.name === spec.mainModule);
     const main = modules[0];

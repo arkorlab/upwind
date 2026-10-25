@@ -6,6 +6,8 @@ import {
   type DeploymentBundle,
   deploymentBundleSchema,
   type FunctionSpec,
+  isNodeContainerFunction,
+  type WorkerFunctionSpec,
 } from '@stayingupwind/core/bundle';
 
 import { authLayout } from '../auth/layout.ts';
@@ -32,6 +34,20 @@ import { CRON_SECRET } from './workers/protocol.ts';
 
 /** Where `upwind build` writes the deployment bundle, in the project. */
 export const BUNDLE_PATH = '.arkor/bundle.json';
+
+/** This CLI owns Worker uploads only; hosted image provisioning is a separate capability. */
+export function workerCliFunction(spec: FunctionSpec): WorkerFunctionSpec {
+  if (isNodeContainerFunction(spec)) {
+    throw new Error(
+      'Native-dependent Functions require a Container-capable host. Automatic Container image construction and deployment are not supported by this CLI yet.',
+    );
+  }
+  return spec;
+}
+
+export function assertWorkerCliBundle(bundle: DeploymentBundle): void {
+  for (const [, spec] of appFunctions(bundle)) workerCliFunction(spec);
+}
 
 /** What Cloudflare holds a Worker to, unpacked — 64 MiB; `dependencies.ts` in the adapter splits by it. */
 const MAX_WORKER_BYTES = 67_108_864;
@@ -100,10 +116,12 @@ export async function readBundle(projectDir: string): Promise<{
       `${BUNDLE_PATH} is not a deployment bundle this version reads: ${parsed.error.message}`,
     );
   }
+  assertWorkerCliBundle(parsed.data);
   return { bundleDir, bundle: parsed.data };
 }
 
-function functionBytes(spec: FunctionSpec): number {
+function functionBytes(input: FunctionSpec): number {
+  const spec = workerCliFunction(input);
   let total = 0;
   for (const module of spec.modules) {
     total += module.blob.byteLength;
@@ -112,7 +130,8 @@ function functionBytes(spec: FunctionSpec): number {
 }
 
 /** Whether any module of the Function carries the cache host's mark. */
-export async function carriesCacheHost(bundleDir: string, spec: FunctionSpec): Promise<boolean> {
+export async function carriesCacheHost(bundleDir: string, input: FunctionSpec): Promise<boolean> {
+  const spec = workerCliFunction(input);
   for (const module of spec.modules) {
     if (module.type !== 'esm' && module.type !== 'commonjs') {
       continue;
@@ -188,7 +207,8 @@ function beyondLimits(bundle: DeploymentBundle, input: CheckInput): string[] {
   if (bundle.functions.middleware !== undefined) {
     specs.push(['middleware', bundle.functions.middleware]);
   }
-  for (const [name, spec] of specs) {
+  for (const [name, candidate] of specs) {
+    const spec = workerCliFunction(candidate);
     if (spec.modules.some((module) => module.name === METADATA_PART)) {
       problems.push(
         `the ${name} Function has a module called \`${METADATA_PART}\`, which a Worker's upload keeps for its own configuration`,

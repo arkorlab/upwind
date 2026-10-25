@@ -7,6 +7,8 @@ import {
   type DeploymentBundle,
   type FunctionModuleType,
   type FunctionSpec,
+  type WorkerFunctionSpec,
+  isNodeContainerFunction,
   PRIMARY_FUNCTION,
 } from '@stayingupwind/core/bundle';
 import type { AppRuntime } from '@stayingupwind/core/manifest';
@@ -78,7 +80,7 @@ function jsonModule(name: string, text: string): LocalModule {
  * A module as the build named it, or a refusal: bytes that are not the blob its bundle names are
  * not what a deploy would upload, and a stack that ran them would prove nothing of the build.
  */
-function moduleOf(blobs: string, module: FunctionSpec['modules'][number]): LocalModule {
+function moduleOf(blobs: string, module: WorkerFunctionSpec['modules'][number]): LocalModule {
   const bytes = readFileSync(path.join(blobs, module.blob.sha256));
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   if (bytes.byteLength !== module.blob.byteLength || sha256 !== module.blob.sha256) {
@@ -129,6 +131,11 @@ function functionWorker(
   spec: FunctionSpec,
   bindings: FunctionBindings,
 ): LocalWorker {
+  if (isNodeContainerFunction(spec)) {
+    throw new Error(
+      `${name} requires a native Node Container, which this local stack does not run`,
+    );
+  }
   const main = spec.modules.filter((module) => module.name === spec.mainModule);
   // One module of the name, or a module the deploy would not run would run here in its place.
   if (main.length !== 1) {
