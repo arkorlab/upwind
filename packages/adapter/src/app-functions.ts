@@ -6,6 +6,7 @@ import {
   PRIMARY_FUNCTION,
 } from '@stayingupwind/core/bundle';
 import type { AdapterOutput } from 'next';
+import { INSTRUMENTATION_HOOK_FILENAME } from 'next/dist/lib/constants.js';
 
 import type { BlobStore } from './blobs.ts';
 import type { BuildContext, RouteCode, ShippedBlob } from './collect.ts';
@@ -70,6 +71,13 @@ export interface HookParts {
   readonly chunks: readonly string[];
   readonly wasm: readonly string[];
   readonly assets: Readonly<Record<string, string>>;
+}
+
+/** The same file gate as the instrumentation patch: absent hooks explain no Function's refusal. */
+function hookEntryTraces(hook: HookParts): NativeAddonEntryTrace[] {
+  return hook.file === undefined
+    ? []
+    : [{ id: INSTRUMENTATION_HOOK_FILENAME, assets: hook.assets }];
 }
 
 /** Everything a Function of this build is built from, whichever routes it holds. */
@@ -264,7 +272,7 @@ export async function buildAppFunction(
     outDir: context.outDir,
     patch: await patchFor(context, [...parts.chunks, ...middleware.chunks], wasm),
     entries: [...parts.modules, ...middleware.node],
-    entryTraces: [...parts.routes, ...middlewareEntryTraces(middleware)],
+    entryTraces: [...parts.routes, ...middlewareEntryTraces(middleware), ...hookEntryTraces(hook)],
     edgeEntries,
     edgeInstrumentation: context.edgeInstrumentation,
     wasm: wasm.collector,
@@ -307,7 +315,7 @@ export async function buildMiddlewareFunction(
     outDir: context.outDir,
     patch: await patchFor(context, middleware.chunks, wasm),
     entries: middleware.node,
-    entryTraces: middlewareEntryTraces(middleware),
+    entryTraces: [...middlewareEntryTraces(middleware), ...hookEntryTraces(hook)],
     edgeEntries: middleware.edge,
     edgeInstrumentation: context.edgeInstrumentation,
     wasm: wasm.collector,

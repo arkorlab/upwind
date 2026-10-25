@@ -1,4 +1,5 @@
 import type { AdapterOutput } from 'next';
+import { INSTRUMENTATION_HOOK_FILENAME } from 'next/dist/lib/constants.js';
 import { AdapterOutputType } from 'next/dist/shared/lib/constants.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,6 +13,7 @@ import { BlobStore } from '../src/blobs.ts';
 import type { BuildContext, RouteCode } from '../src/collect.ts';
 import { AuditError } from '../src/dependencies.ts';
 import { buildFunction, type BuildFunctionInput } from '../src/function.ts';
+import { nativeAddonAuditError } from '../src/native-addons.ts';
 
 /** Hold assembly at its existing bundler boundary: these assertions concern owned inputs alone. */
 vi.mock(import('../src/function.ts'), async (importOriginal) => {
@@ -22,6 +24,8 @@ vi.mock(import('../src/function.ts'), async (importOriginal) => {
 const REFUSAL = new AuditError('the original graph audit refusal');
 const MIDDLEWARE = '/_middleware';
 const MIDDLEWARE_ASSETS = { 'node_modules/middleware/addon.node': '/project/middleware.node' };
+const HOOK_FILE = '/project/.next/server/instrumentation.js';
+const HOOK_ASSETS = { 'node_modules/instrumentation/addon.node': '/project/instrumentation.node' };
 
 function route(id: string): RouteCode {
   return {
@@ -113,6 +117,12 @@ function observed(): Pick<BuildFunctionInput, 'kind' | 'entries' | 'edgeEntries'
   };
 }
 
+function inputAt(index: number): BuildFunctionInput {
+  const input = vi.mocked(buildFunction).mock.calls[index]?.[0];
+  if (input === undefined) throw new Error('no Function was assembled');
+  return input;
+}
+
 describe('native diagnostic trace ownership during Function assembly', () => {
   beforeEach(() => {
     vi.mocked(buildFunction).mockReset().mockRejectedValue(REFUSAL);
@@ -166,4 +176,78 @@ describe('native diagnostic trace ownership during Function assembly', () => {
     await expect(buildMiddlewareFunction(context, '{}')).resolves.toBeUndefined();
     expect(buildFunction).not.toHaveBeenCalled();
   });
+
+  it.each(['nodejs', 'edge'] as const)(
+    'attributes hook-only native traces to the app and %s middleware that carry the hook',
+    async (runtime) => {
+      const parts = middleware(runtime);
+      if (parts.output === undefined) throw new Error('no middleware output');
+      const base = contextOf({ ...parts, output: { ...parts.output, assets: {} } });
+      const context: FunctionsContext = {
+        ...base,
+        routes: base.routes.map((entry) => ({ ...entry, assets: {} })),
+        hook: { file: HOOK_FILE, chunks: [], wasm: [], assets: HOOK_ASSETS },
+      };
+      const own = context.routes[0]!;
+
+      await expect(
+        buildAppFunction(context, '{}', { name: 'app-2', routes: new Set(['/owned']) }, false),
+      ).rejects.toBe(REFUSAL);
+      await expect(buildMiddlewareFunction(context, '{}')).rejects.toBe(REFUSAL);
+      const app = inputAt(0);
+      const middlewareInput = inputAt(1);
+      const hook = { id: INSTRUMENTATION_HOOK_FILENAME, assets: HOOK_ASSETS };
+
+      expect({
+        appHook: app.patch.instrumentation,
+        appTraces: app.entryTraces,
+        middlewareHook: middlewareInput.patch.instrumentation,
+        middlewareTraces: middlewareInput.entryTraces,
+      }).toStrictEqual({
+        appHook: HOOK_FILE,
+        appTraces: [own, { id: MIDDLEWARE, assets: {} }, hook],
+        middlewareHook: HOOK_FILE,
+        middlewareTraces: [{ id: MIDDLEWARE, assets: {} }, hook],
+      });
+      const appFailure = nativeAddonAuditError(REFUSAL, app.entryTraces ?? []);
+      const middlewareFailure = nativeAddonAuditError(REFUSAL, middlewareInput.entryTraces ?? []);
+      const tracedHook = '"instrumentation": "node_modules/instrumentation/addon.node"';
+
+      expect({ app: appFailure.cause, middleware: middlewareFailure.cause }).toStrictEqual({
+        app: REFUSAL,
+        middleware: REFUSAL,
+      });
+      expect({
+        app: appFailure.message.includes(tracedHook),
+        middleware: middlewareFailure.message.includes(tracedHook),
+      }).toStrictEqual({ app: true, middleware: true });
+    },
+  );
+
+  it.each(['app', 'middleware'] as const)(
+    'does not attribute leftover hook assets to the %s Function when no hook is carried',
+    async (kind) => {
+      const context: FunctionsContext = {
+        ...contextOf(middleware('nodejs')),
+        hook: { file: undefined, chunks: [], wasm: [], assets: HOOK_ASSETS },
+      };
+
+      await expect(
+        kind === 'app'
+          ? buildAppFunction(context, '{}', { name: 'app-2', routes: new Set(['/owned']) }, false)
+          : buildMiddlewareFunction(context, '{}'),
+      ).rejects.toBe(REFUSAL);
+      const input = inputAt(0);
+      const traces =
+        kind === 'app'
+          ? [context.routes[0]!, { id: MIDDLEWARE, assets: MIDDLEWARE_ASSETS }]
+          : [{ id: MIDDLEWARE, assets: MIDDLEWARE_ASSETS }];
+
+      expect(input.patch.instrumentation).toBeUndefined();
+      expect(input.entryTraces).toStrictEqual(traces);
+      expect(nativeAddonAuditError(REFUSAL, input.entryTraces ?? []).message).not.toContain(
+        'node_modules/instrumentation/addon.node',
+      );
+    },
+  );
 });
