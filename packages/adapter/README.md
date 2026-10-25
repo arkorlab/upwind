@@ -753,6 +753,47 @@ registration, bundled source and its dependency paths. The CLI uses this to star
 modules in its local runtime. The adapter's default export also reads downloaded declarations from
 `UPWIND_DURABLE_OBJECTS`, which is the local build input rather than a storage registration command.
 
+### Container-enabled objects
+
+A registration may also carry a host-owned `container` definition:
+
+```ts
+{
+  name: 'JOBS',
+  module: 'src/objects/jobs.ts',
+  className: 'Jobs',
+  container: {
+    image: { dockerfile: 'container/Dockerfile', buildContext: '.' },
+    instanceType: 'lite',
+    maxInstances: 3,
+  },
+}
+```
+
+For an existing image, use `image: { reference: 'registry.example/jobs:release' }`.
+Dockerfile and context paths are project-relative; an omitted context means the Dockerfile's
+directory. `@stayingupwind/core/bundle` exports `ContainerDefinition` and
+`containerDefinitionSchema`. Fixed instance sizes are `lite`, `basic`, and `standard-1` through
+`standard-4`; the host applies its own instance and account limits.
+
+This definition uses Cloudflare's `default` scheduling policy. The host prepares a digest-pinned
+image separately, provisions the Container application against the owner's namespace, and keeps the
+source definition and its optional `definitionRevision` sealed together. The adapter copies source
+metadata unchanged and does not run Docker or include the image in a Next.js Function. Container
+bundles use version 7, or 8 when app Functions are split; ordinary objects retain versions 5 and 6.
+An older host refuses the version instead of silently publishing a namespace without its Container.
+
+Classes can use the native `this.ctx.container` API or extend `Container` from
+`@cloudflare/containers`. With this policy, `ctx.container.start()` takes no image or instance-size
+options. Starting returns before the process is ready, so a class that forwards requests must check
+its listening port first. Runtime image selection belongs to a different scheduling policy and is
+not part of this definition. See Cloudflare's
+[Container API](https://developers.cloudflare.com/containers/api/durable-object-container/).
+
+The application's `durableObject(name)` accessor remains a native namespace. Nothing starts an
+instance during bundling or namespace publication; an application's explicit call is what reaches
+its object and Container. The deployment's ordinary Next.js serving path gains no lookup or proxy.
+
 ## Route gates
 
 A build declares, in `UPWIND_ROUTE_GATES`, a gate for each of the routes whose every answer is to be
