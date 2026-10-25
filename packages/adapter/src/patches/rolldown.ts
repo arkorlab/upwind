@@ -8,6 +8,7 @@ import { buildPaths } from '../build-paths.ts';
 import { arkorWasmGlobal, type WasmCollector } from '../wasm.ts';
 import {
   isStubbedModule,
+  NODE_MODULE_MODULE,
   NODE_VM_MODULE,
   PREVIEW_DATA_MODULE,
   stubSourceFor,
@@ -88,9 +89,10 @@ function stubModule(id: string): { code: string; moduleType: 'js' } {
  * Module-loader hooks have nothing to hook in a Function, and resolve to an empty module; an
  * optional module of a feature the platform does not run resolves to one that says so; a module
  * workerd cannot load resolves to the adapter's own copy, and `node:process`, which its `require`
- * does not find, to the global it is (`loader-hooks.ts`). In the workflow Function alone,
- * `node:vm` as the server chunks import it resolves to a module that throws when called; in a
- * build with no Pages Router route, so does the library that verifies preview data.
+ * does not find, to the global it is — and `node:module` to workerd's own, with a `createRequire`
+ * whose `require` finds it too (`loader-hooks.ts`). In the workflow Function alone, `node:vm` as
+ * the server chunks import it resolves to a module that throws when called; in a build with no
+ * Pages Router route, so does the library that verifies preview data.
  */
 export function stubPlugin(
   onStubbed?: (specifier: string) => void,
@@ -101,9 +103,14 @@ export function stubPlugin(
     name: 'arkor-stubs',
     resolveId: {
       filter: {
-        id: /^(?:require|import)-in-the-middle|^critters$|compiled\/(?:raw-body|ws|jsonwebtoken)$|^(?:node:)?(?:process|vm)$/u,
+        id: /^(?:require|import)-in-the-middle|^critters$|compiled\/(?:raw-body|ws|jsonwebtoken)$|^(?:node:)?(?:module|process|vm)$/u,
       },
       handler(source, importer) {
+        // What a stub requires is the module it stands in front of: the `node:module` stub's own
+        // require of `node:module` is workerd's, not the stub again.
+        if (importer?.startsWith(STUB_ID_PREFIX) === true) {
+          return null;
+        }
         if (
           !isStubbedModule(source) &&
           !(workflowFunction && isWorkflowVmImport(source, importer)) &&
@@ -112,7 +119,8 @@ export function stubPlugin(
           return null;
         }
         onStubbed?.(source);
-        return `${STUB_ID_PREFIX}${source}`;
+        // Both spellings of `node:module` are one module, as they are one object under Node.js.
+        return `${STUB_ID_PREFIX}${NODE_MODULE_MODULE.test(source) ? 'node:module' : source}`;
       },
     },
     load: {
