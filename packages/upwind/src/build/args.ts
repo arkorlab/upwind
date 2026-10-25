@@ -2,7 +2,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 /**
- * What `upwind build` understands: a directory, and nothing else.
+ * What `upwind build` understands: a directory and the runtime target.
  *
  * `next build`'s own flags — `--debug`, `--profile`, `--no-lint` — are not forwarded. They are not
  * quietly accepted either: `parseArgs` in strict mode refuses what this does not implement, so a flag
@@ -18,6 +18,7 @@ import { parseArgs } from 'node:util';
 export interface BuildOptions {
   /** The application's directory: what `next build [dir]` would have been given. */
   readonly projectDir: string;
+  readonly target?: 'cloudflare' | 'node' | undefined;
 }
 
 /** What `upwind build` was asked for: an answer about itself, or a build of this directory. */
@@ -41,6 +42,7 @@ export function parseBuildRequest(args: readonly string[]): BuildRequest {
     options: {
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
+      target: { type: 'string' },
     },
     allowPositionals: true,
     strict: true,
@@ -54,5 +56,14 @@ export function parseBuildRequest(args: readonly string[]): BuildRequest {
       `\`upwind build\` takes at most one directory, and was given ${positionals.length}`,
     );
   }
-  return { answer: undefined, options: { projectDir: path.resolve(positionals[0] ?? '.') } };
+  if (values.target !== undefined && values.target !== 'cloudflare' && values.target !== 'node') {
+    throw new Error('`--target` must be `cloudflare` or `node`');
+  }
+  return {
+    answer: undefined,
+    options: {
+      projectDir: path.resolve(positionals[0] ?? '.'),
+      ...(values.target !== undefined && { target: values.target }),
+    },
+  };
 }

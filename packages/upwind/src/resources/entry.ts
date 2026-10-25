@@ -1,6 +1,4 @@
 import { PROJECT_DIR_ENV } from './entry-path.ts';
-import { startLocalResources } from './local.ts';
-import { installNextResourceCacheLoader } from './next-cache-loader.ts';
 
 /**
  * The process that renders a build's pages, with its project's storage published before it runs
@@ -15,6 +13,8 @@ import { installNextResourceCacheLoader } from './next-cache-loader.ts';
  * `__NEXT_PRERENDER_CLIENT_ASSET_SUFFIX` in the environment of the prerender workers and of nothing
  * else, so it is what this reads — and if a later Next.js stops setting it, the build says it found
  * no storage rather than doing something stranger.
+ * A native target chosen in next.config is published before these workers fork. Its inherited
+ * preload imports neither the storage runtime nor its cache loader.
  *
  * It is one process because `upwind build` asks the adapter to render in one (`experimental.cpus`).
  * Several renderers would be several runtimes over one directory: they could all read it, and the
@@ -32,7 +32,12 @@ import { installNextResourceCacheLoader } from './next-cache-loader.ts';
 /** Set by `createStaticWorker`, in the workers that prerender and in no other process. */
 const PRERENDER_WORKER_ENV = '__NEXT_PRERENDER_CLIENT_ASSET_SUFFIX';
 
-if (process.env[PRERENDER_WORKER_ENV] !== undefined) {
+if (
+  process.env[PRERENDER_WORKER_ENV] !== undefined &&
+  process.env['UPWIND_BUILD_TARGET'] !== 'node'
+) {
+  const { startLocalResources } = await import('./local.ts');
+  const { installNextResourceCacheLoader } = await import('./next-cache-loader.ts');
   installNextResourceCacheLoader();
   await startLocalResources(process.env[PROJECT_DIR_ENV] ?? process.cwd(), {
     // This process is ended by the pool that started it — `SIGTERM`, half a second after it asks —

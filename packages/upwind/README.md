@@ -217,6 +217,43 @@ way. A build whose environment names an adapter (`NEXT_ADAPTER_PATH`) or a host
 another version than `upwind` is built without the host, and says so: the host is `upwind`'s own,
 made for the runtime of its version.
 
+## Native Node.js
+
+```bash
+upwind build --target=node
+upwind start [directory] --port 3000 --hostname 0.0.0.0
+```
+
+The native target emits `.arkor/node/` and runs on Node.js 24.10 or later. An explicit adapter
+`target` conflicting with the CLI's target fails the build. Cloudflare remains the default.
+Node builds neither start local Cloudflare storage nor include Workers-only compatibility patches.
+
+`start` accepts `-p, --port` (`PORT`, otherwise 3000), `-H, --hostname` (otherwise `0.0.0.0`),
+`--origin`, `--cache-dir`, and repeated `--env-file` arguments. Existing environment variables
+win over environment files; a later file wins over an earlier one. With `--origin`, the application
+sees that public origin even behind a TLS-terminating proxy. Client forwarding and internal control
+headers are removed at the public boundary. Without it, the direct HTTP request's Host is used.
+
+The artifact can be relocated and started with `node server.mjs`. For direct execution set `PORT`,
+`UPWIND_NODE_HOSTNAME`, `UPWIND_NODE_ORIGIN`, or `UPWIND_NODE_CACHE_DIR` as needed. The writable cache
+defaults to `.upwind/node-cache/<deploymentId>/`, relative to the original working directory (the
+project directory for `upwind start`), outside the immutable artifact. When direct execution starts
+inside the artifact, the default instead uses its parent's `.upwind/node-cache/`. Persist that directory across
+restarts. One process owns a deployment cache; a second process opening it is refused. Rebuilding
+creates a new immutable deployment and a distinct cache scope. Native addons must match the runtime's
+OS, architecture, and Node ABI.
+
+Routing, middleware/proxy, PPR streaming, Server Actions, RSC, ISR and tag invalidation use the shared
+runtime. Images retain its original-source fallback. Cloudflare storage, Durable Objects, Containers,
+Cloudflare Workflows, hosted Workflow Worlds, route gates, host cron jobs, and edge CSP nonce handling
+are unavailable on this target and are rejected when declared. Project instrumentation remains
+available. This target does not connect a Cloudflare edge to a Node origin or coordinate caches
+between servers.
+
+On SIGINT or SIGTERM the server stops accepting requests and drains accepted responses, handler work,
+`waitUntil` tasks and cache writes for up to 30 seconds. A crash or the shutdown deadline can still
+interrupt application work; the task group is not a durable queue.
+
 ## Storage during a build
 
 A page can read the project's own storage while it prerenders — `generateStaticParams` pulling its

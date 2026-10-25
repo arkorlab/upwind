@@ -18,6 +18,7 @@ import type { Entry, EntryTables } from './entries.ts';
 import { NEVER_STORED, render404 } from './error-pages.ts';
 import { stripPlatformHeaders } from './incoming.ts';
 import { type FailureAnswer, invokeNodeHandler, type Run } from './node-bridge.ts';
+import { fetchRewrite } from './rewrite-fetch.ts';
 import type { Store } from './store.ts';
 
 /**
@@ -167,7 +168,7 @@ export async function externalRewrite(request: Request, target: URL): Promise<Re
   headers.delete('host');
   let response: Response;
   try {
-    response = await fetch(target, {
+    response = await fetchRewrite(target, {
       method: request.method,
       headers,
       body: request.body,
