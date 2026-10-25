@@ -54,7 +54,7 @@ function normalPage(pathname: string): string {
 }
 function definition(file: string, pathname: string): NodeManifestPagesDefinition {
   const page = normalPage(pathname);
-  const value: NodeManifestPagesDefinition = Object.freeze({
+  const value = Object.freeze<NodeManifestPagesDefinition>({
     [DEFINITION]: true,
     file,
     page,
