@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
+import { assertGlobalContextRead, normalizedGlobalInspection } from './node-closure-globals.ts';
+import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
 import {
   declaration,
   identifier,
@@ -115,6 +117,7 @@ class FactoryProjection {
   }[] = [];
   private exports: NodeManifestTurbopackExports = { kind: 'commonjs' };
   private registered = false;
+  private normalizedGlobal = false;
 
   constructor(
     source: NodeManifestTurbopackSource,
@@ -374,6 +377,16 @@ class FactoryProjection {
     return true;
   }
 
+  private specialOperation(member: Node, visit: Visit, name: string | undefined): boolean {
+    if (name === 'g' && this.mode === 'dependencies') {
+      assertGlobalContextRead(member, visit, this.parents);
+      this.edit(member, 'globalThis');
+      this.normalizedGlobal = true;
+      return true;
+    }
+    return (name === 'r' || name === 'l') && this.bound(member, visit, name);
+  }
+
   private operation(visit: Visit): void {
     const member = visit.node;
     if (member.type !== 'MemberExpression' || !this.ownIdentifier(member['object'], visit)) return;
@@ -381,7 +394,7 @@ class FactoryProjection {
     const name = propertyName(member);
     const owner = member['object'];
     this.allowedContext.add(owner);
-    if ((name === 'r' || name === 'l') && this.bound(member, visit, name)) return;
+    if (this.specialOperation(member, visit, name)) return;
     const call = this.parents.get(member)?.parent;
     if (call?.type !== 'CallExpression' || call['callee'] !== member || call['optional'] === true)
       escapedContextMethod(name, call);
@@ -479,6 +492,14 @@ class FactoryProjection {
       end = edit.start;
     }
     code += `\n${this.append.join('\n')}`;
+    if (this.normalizedGlobal) {
+      const inspection = normalizedGlobalInspection(code);
+      const failure = dynamicNodeClosureRefusal(
+        'upwind-turbopack-global-inspection.js',
+        inspection,
+      );
+      if (failure !== undefined) refuse(failure);
+    }
     const sha256 = createHash('sha256').update(code).digest('hex');
     return {
       mode: this.mode,

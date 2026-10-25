@@ -1,6 +1,7 @@
 import { parseAst } from 'rolldown/parseAst';
 
 import { isNode, listOf, type Node, type Scope, scopeOpenedBy } from './lexical-scope.ts';
+import { globalPatternRefusal } from './node-closure-globals.ts';
 import { hostObjectOf } from './node-closure-hosts.ts';
 
 export { originalNodeHostLoaderRefusal } from './node-original-host-proof.ts';
@@ -487,6 +488,8 @@ function importRefusal(node: Node, imports: ReadonlyMap<Node, Origin>): string |
 
 function loaderRefusal(visit: Visit, imports: ReadonlyMap<Node, Origin>): string | undefined {
   const { node, scopes } = visit;
+  const globalPattern = globalPatternRefusal(node, scopes);
+  if (globalPattern !== undefined) return globalPattern;
   if (isReference(visit) && isGlobalCompiler(node, scopes))
     return 'an unproved JavaScript code compiler';
   if (isNamespaceRebinding(visit, imports)) return 'an unproved rebound Node loader namespace';
