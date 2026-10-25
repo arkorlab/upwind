@@ -134,6 +134,7 @@ describe('what looks at scope signals as it is routed', () => {
 
   it.each([
     { pathname: '/unknown' },
+    { pathname: '/unknown', method: 'HEAD' },
     { pathname: '/_next/data/build/index.json' },
     { pathname: '/', mode: 'passthrough' as const },
     { pathname: '/', generations: false },
