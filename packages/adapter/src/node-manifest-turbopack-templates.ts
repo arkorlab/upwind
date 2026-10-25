@@ -10,6 +10,10 @@ import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node } from './lexical-scope.ts';
 import { NodeManifestAlpha } from './node-manifest-alpha.ts';
 import {
+  nodeManifestCoalescedPagesInspection,
+  type NodeManifestCoalescedPagesProfile,
+} from './node-manifest-coalesced-pages.ts';
+import {
   declaration,
   identifier,
   propertyName,
@@ -30,6 +34,7 @@ import type {
   NodeManifestTemplateImport,
   NodeManifestTemplateProof,
 } from './node-manifest-templates.ts';
+import type { NodeManifestTurbopackConsumerInput } from './node-manifest-turbopack-consumers.ts';
 import {
   projectNodeManifestTurbopackFactory,
   type NodeManifestTurbopackProjection,
@@ -78,6 +83,11 @@ export interface NodeManifestTurbopackTemplateInput {
     readonly page: string;
     readonly pathname: string;
   };
+  /** Private, original-source-bound inspection only; never a physical source identity. */
+  readonly coalesced?: {
+    readonly profile: NodeManifestCoalescedPagesProfile;
+    readonly owner: NodeManifestTurbopackConsumerInput;
+  };
 }
 interface Template {
   readonly file: string;
@@ -92,6 +102,7 @@ interface Context {
   readonly template: Template;
   readonly input: NodeManifestTurbopackTemplateInput;
   readonly expected: boolean;
+  readonly namespace?: string;
 }
 function refuse(reason: string): never {
   throw new AuditError(
@@ -106,14 +117,25 @@ function program(code: string): Node {
   if (!isNode(value)) return refuse('program');
   return value;
 }
-function checkedProjection(
-  input: NodeManifestTurbopackTemplateInput,
-): NodeManifestTurbopackProjection {
+function checkedProjection(input: NodeManifestTurbopackTemplateInput): {
+  readonly projection: NodeManifestTurbopackProjection;
+  readonly namespace?: string;
+} {
+  if (input.coalesced !== undefined) {
+    if (input.route.kind !== 'pages') return refuse('coalesced route kind');
+    const derived = nodeManifestCoalescedPagesInspection(
+      input.coalesced.profile,
+      input.coalesced.owner,
+      input.projection,
+      { ...input.route, kind: 'pages' },
+    );
+    return { projection: derived.projection, namespace: derived.namespace };
+  }
   const id = input.projection.moduleId;
   const proof = projectNodeManifestTurbopackFactory(input.projection.original, id);
   if (JSON.stringify(proof) !== JSON.stringify(input.projection)) refuse('projection provenance');
   if (proof.boundRuntimeInputs.length > 0) refuse('unmodeled bound runtime input');
-  return proof;
+  return { projection: proof };
 }
 async function templateOf(input: NodeManifestTurbopackTemplateInput): Promise<Template> {
   const profile = PROFILES[input.route.kind];
@@ -194,7 +216,7 @@ function contextOf(
   value: Node,
   template: Template,
   input: NodeManifestTurbopackTemplateInput,
-  expected: boolean,
+  options: { readonly expected: boolean; readonly namespace?: string },
 ): Context {
   const visits = new Map(visitTree(value).map((visit) => [visit.node, visit]));
   const fields = constructorFields(value, input);
@@ -202,7 +224,8 @@ function contextOf(
     program: value,
     template,
     input,
-    expected,
+    expected: options.expected,
+    ...(options.namespace !== undefined && { namespace: options.namespace }),
     visits,
     fields,
     slots: slotBindings(fields, visits),
@@ -237,7 +260,29 @@ function nextToken(file: string, sha256: string | undefined, context: Context): 
     refuse('changed protected import');
   return `next:${relative}`;
 }
+function namespaceToken(node: Node, context: Context): string | undefined {
+  if (context.namespace !== undefined) {
+    if (
+      !context.expected &&
+      identifier(node) &&
+      node.name === context.namespace &&
+      origin(node, context.visits) === undefined
+    )
+      return 'slot:VAR_USERLAND';
+    const parent = context.visits.get(node)?.parent;
+    if (
+      context.expected &&
+      parent?.type === 'VariableDeclarator' &&
+      parent['init'] === node &&
+      context.slots.get(parent) === 'VAR_USERLAND'
+    )
+      return 'slot:VAR_USERLAND';
+  }
+  return undefined;
+}
 function importToken(node: Node, context: Context): string | undefined {
+  const namespace = namespaceToken(node, context);
+  if (namespace !== undefined) return namespace;
   if (
     node.type !== 'CallExpression' ||
     !identifier(node['callee']) ||
@@ -412,12 +457,18 @@ function assertExports(
 export async function assertNodeManifestTurbopackTemplateConsumer(
   input: NodeManifestTurbopackTemplateInput,
 ): Promise<NodeManifestTemplateProof> {
-  const projection = checkedProjection(input);
-  assertStrictFactory(projection);
+  // A derived view cannot manufacture strictness for the physical factory.
+  assertStrictFactory(input.projection);
+  const checked = checkedProjection(input);
+  const projection = checked.projection;
   const primary = await templateOf(input);
-  const actual = contextOf(program(projection.source.code), primary, input, false);
+  const options = checked.namespace === undefined ? {} : { namespace: checked.namespace };
+  const actual = contextOf(program(projection.source.code), primary, input, {
+    ...options,
+    expected: false,
+  });
   const template = expectedScalars(primary, actual);
-  const expected = contextOf(template.program, template, input, true);
+  const expected = contextOf(template.program, template, input, { ...options, expected: true });
   const actualView = view(actual, projection);
   const expectedView = view(expected);
   if (JSON.stringify(actualView.alpha.body()) !== JSON.stringify(expectedView.alpha.body()))

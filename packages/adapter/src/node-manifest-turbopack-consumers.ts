@@ -14,8 +14,9 @@ import {
   type NodeManifestBoundStage,
   type NodeManifestBoundConsumerProof,
 } from './node-manifest-bound-batch.ts';
+import { assertCoalescedPagesConsumer } from './node-manifest-coalesced-consumer.ts';
+import type { NodeManifestCoalescedImport } from './node-manifest-coalesced-pages.ts';
 import type { NodeManifestConsumerImport } from './node-manifest-consumers.ts';
-import { directExternalNamespace } from './node-manifest-external-forwarder.ts';
 import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
 import { inspectNodeManifestReachability } from './node-manifest-reachability.ts';
 import {
@@ -24,11 +25,14 @@ import {
   type NodeManifestRuntimeCallerProof,
 } from './node-manifest-runtime-callers.ts';
 import {
-  nodeManifestRuntimeCohortLookup,
   prepareNodeManifestRuntimeGraphs,
   type NodeManifestRuntimeCohort,
   type NodeManifestRuntimeProfile,
 } from './node-manifest-runtime-cohort.ts';
+import {
+  nodeManifestCoalescedImports,
+  nodeManifestTemplateImports,
+} from './node-manifest-template-imports.ts';
 import type { NodeManifestTemplateImport } from './node-manifest-templates.ts';
 import {
   type NodeManifestTurbopackBootGraph,
@@ -37,6 +41,7 @@ import {
   type NodeManifestTurbopackGraphFile,
   type NodeManifestTurbopackSealedEntry,
 } from './node-manifest-turbopack-graph.ts';
+import { forwarded, knownRuntimeCaller } from './node-manifest-turbopack-parents.ts';
 import { assertNodeManifestTurbopackTemplateConsumer } from './node-manifest-turbopack-templates.ts';
 import { projectNodeManifestTurbopackFactory } from './node-manifest-turbopack.ts';
 
@@ -75,31 +80,6 @@ type Role = 'class' | 'factory' | 'route-exports';
 function refuse(reason: string): never {
   throw new AuditError(
     `Unproved Next.js Turbopack manifest chain ${reason}; refusing native publication`,
-  );
-}
-
-function forwarded(factory: NodeManifestTurbopackGraphFactory): string | undefined {
-  const own = factory.projection.exports;
-  const specifier =
-    own.kind === 'namespace' ? own.specifier : directExternalNamespace(factory.projection);
-  if (specifier === undefined) return undefined;
-  const edges = factory.imports.filter((edge) => edge.specifier === specifier);
-  return edges.length === 1 ? edges[0]?.target : refuse('ambiguous namespace forwarder');
-}
-
-/** The runtime's own table-closure edge is not an external runtime API consumer. */
-function knownRuntimeCaller(
-  source: string,
-  edge: NodeManifestTurbopackGraphFile['imports'][number],
-  context: {
-    readonly boots: ReadonlySet<string>;
-    readonly cohort: NodeManifestRuntimeCohort | undefined;
-  },
-): boolean {
-  return (
-    source === edge.target ||
-    context.boots.has(source) ||
-    (context.cohort !== undefined && nodeManifestRuntimeCohortLookup(context.cohort, source, edge))
   );
 }
 
@@ -328,26 +308,11 @@ class TurbopackConsumers {
   private templateImports(
     factory: NodeManifestTurbopackGraphFactory,
   ): readonly NodeManifestTemplateImport[] {
-    const imports = new Map<string, NodeManifestTemplateImport>();
-    for (const edge of factory.imports) {
-      const unwrapped = this.unwrapped(edge.target);
-      const target = this.factories.get(unwrapped)?.physicalId ?? unwrapped;
-      const source = this.input.sources.find((candidate) => candidate.id === target);
-      if (source === undefined) return refuse('unproved route template import identity');
-      const imported = {
-        specifier: edge.specifier,
-        file: source.file,
-        sha256: source.source.sha256,
-      };
-      const previous = imports.get(edge.specifier);
-      if (
-        previous !== undefined &&
-        (previous.file !== imported.file || previous.sha256 !== imported.sha256)
-      )
-        refuse('ambiguous route template import');
-      imports.set(edge.specifier, imported);
-    }
-    return [...imports.values()];
+    return nodeManifestTemplateImports({
+      factory,
+      sources: this.input.sources,
+      target: (id) => this.importTarget(id),
+    });
   }
 
   private async consumer(factory: NodeManifestTurbopackGraphFactory): Promise<void> {
@@ -364,12 +329,35 @@ class TurbopackConsumers {
     }
     const kind = this.producerKind();
     if (kind === 'app-page') this.appPageConsumer(factory, route);
+    else if (kind === 'pages' && factory.projection.mode === 'dependencies')
+      await assertCoalescedPagesConsumer({
+        owner: this.input,
+        graphs: this.allGraphs,
+        factory,
+        imports: this.coalescedImports(factory),
+        route: { page: route.page, pathname: route.pathname },
+      });
     else
       await assertNodeManifestTurbopackTemplateConsumer({
         projection: factory.projection,
         imports: this.templateImports(factory),
         route: { kind, page: route.page, pathname: route.pathname },
       });
+  }
+
+  private coalescedImports(
+    factory: NodeManifestTurbopackGraphFactory,
+  ): readonly NodeManifestCoalescedImport[] {
+    return nodeManifestCoalescedImports({
+      factory,
+      sources: this.input.sources,
+      target: (id) => this.importTarget(id),
+    });
+  }
+
+  private importTarget(id: string): string {
+    const target = this.unwrapped(id);
+    return this.factories.get(target)?.physicalId ?? target;
   }
 
   private async fixedFactory(factory: NodeManifestTurbopackGraphFactory): Promise<void> {
@@ -449,7 +437,13 @@ class TurbopackConsumers {
     for (const parent of parents) {
       const incoming = this.factories.get(parent);
       if (incoming === undefined) refuse('unknown protected consumer');
-      const factory = this.strictFactory(incoming);
+      const route = this.routes.get(incoming.id);
+      const coalesced =
+        role === 'factory' &&
+        this.producerKind() === 'pages' &&
+        route?.kind === 'pages' &&
+        incoming.projection.cacheInitializers.length === 1;
+      const factory = coalesced ? incoming : this.strictFactory(incoming);
       await this.visitParent(factory, id, role);
     }
     this.visiting.delete(id);
