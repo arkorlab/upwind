@@ -95,6 +95,35 @@ describe('ordinary Turbopack internal cache ownership', () => {
     expect(() => graph(original.code, '2')).toThrow('entry module is not initially registered');
   });
 
+  it.each([
+    '0,ctx.v(42,"internal");const ns=ctx.i("internal");',
+    'ctx.v(42,"internal"),0;const ns=ctx.i("internal");',
+    '(0,(ctx.v(42,"internal"),0)),0;const ns=ctx.i("internal");',
+  ])('retains an ordinary write in a top-level comma expression: %s', (body) => {
+    const original = chunk(body);
+    const projection = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
+
+    expect(projection.cacheInitializers.map((entry) => entry.id)).toStrictEqual(['internal']);
+    expect(projection.imports).toStrictEqual([]);
+    expect(projection.exports).toStrictEqual({ kind: 'commonjs' });
+    expect(projection.source.code).toContain(body);
+    expect(original).toStrictEqual(chunk(body));
+    expect(() => projectNodeManifestTurbopackFactory(original, 1)).toThrow(
+      'dynamic or foreign export target',
+    );
+  });
+
+  it('preserves ordered writes and distinct numeric and string keys inside commas', () => {
+    const original = chunk('(ctx.v(42,2),(ctx.v(7,"2"),0));const a=ctx.i(2);const b=ctx.r("2");');
+    const projection = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
+
+    expect(projection.cacheInitializers.map((entry) => entry.id)).toStrictEqual([2, '2']);
+    expect(
+      projection.cacheInitializers.map(({ start, end }) => original.code.slice(start, end)),
+    ).toStrictEqual(['ctx.v(42,2)', 'ctx.v(7,"2")']);
+    expect(graph(original.code).factories).toHaveLength(1);
+  });
+
   it('deduplicates the identical original initializer when a factory has multiple registered aliases', () => {
     const original =
       'module.exports=[1,"alias",((ctx)=>{ctx.v(42,"internal");ctx.i("internal");})];';
@@ -118,6 +147,14 @@ describe('ordinary Turbopack internal cache ownership', () => {
     ['expression write', 'consume(ctx.v(42,"internal"));'],
     ['duplicate write', 'ctx.v(42,"internal");ctx.n({answer:42},"internal");'],
     ['write self read', 'ctx.v(ctx.i("internal"),"internal");'],
+    ['conditional comma write', 'flag&&(0,ctx.v(42,"internal"));'],
+    ['conditional comma operand', '0,(flag?ctx.v(42,"internal"):0);'],
+    ['returned comma write', 'return 0,ctx.v(42,"internal");'],
+    ['call-argument comma write', 'consume((0,ctx.v(42,"internal")));'],
+    ['deferred comma write', 'function later(){0,ctx.v(42,"internal");}'],
+    ['block comma write', '{0,ctx.v(42,"internal");}'],
+    ['duplicate comma write', 'ctx.v(42,"internal"),ctx.v(7,"internal");'],
+    ['read before comma write', 'const ns=ctx.i("internal");0,ctx.v(42,"internal");'],
   ])('refuses %s rather than inferring activation or cyclic initialization', (_name, body) => {
     expect(() => projectNodeManifestTurbopackFactory(chunk(body), 1, 'dependencies')).toThrow(
       'Unproved Next.js Turbopack cache initializer',

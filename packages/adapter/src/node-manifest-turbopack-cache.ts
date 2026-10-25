@@ -1,5 +1,5 @@
 import { AuditError } from './dependencies.ts';
-import type { Node } from './lexical-scope.ts';
+import { listOf, type Node } from './lexical-scope.ts';
 import type { Visit } from './node-manifest-consumer-ast.ts';
 import type {
   NodeManifestTurbopackCacheInitializer,
@@ -27,10 +27,26 @@ export class TurbopackCacheInitializers {
     this.parents = parents;
   }
 
+  private topLevelWrite(call: Node): boolean {
+    let expression = call;
+    let parent = this.parents.get(expression)?.parent;
+    // Only comma operands preserve unconditional evaluation in their original order.
+    while (
+      parent?.type === 'SequenceExpression' &&
+      listOf(parent, 'expressions').includes(expression)
+    ) {
+      expression = parent;
+      parent = this.parents.get(expression)?.parent;
+    }
+    return (
+      parent?.type === 'ExpressionStatement' &&
+      parent['expression'] === expression &&
+      this.parents.get(parent)?.parent === this.body
+    );
+  }
+
   add(id: NodeManifestTurbopackModuleId, call: Node): void {
-    const parent = this.parents.get(call)?.parent;
-    if (parent?.type !== 'ExpressionStatement' || this.parents.get(parent)?.parent !== this.body)
-      refuse('is not an unconditional top-level write');
+    if (!this.topLevelWrite(call)) refuse('is not an unconditional top-level write');
     if (this.entries.has(id)) refuse('has multiple writes');
     this.entries.set(id, Object.freeze({ id, start: call.start, end: call.end }));
   }
