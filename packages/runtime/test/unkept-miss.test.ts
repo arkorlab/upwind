@@ -82,13 +82,13 @@ function deployment(): Store {
   } as unknown as Store;
 }
 
-type CacheEntryCallback = (entry: unknown, meta: { url: string | undefined }) => unknown;
-
 /**
  * Next.js in minimal mode, for a page that postpones: a capture where one is asked for, its resume
  * where it is handed the state, and the static part alone where it is asked as it comes.
  */
 async function postponing(input: InvokeInput): Promise<Response> {
+  type CacheEntryCallback = (entry: unknown, meta: { url: string | undefined }) => unknown;
+
   const meta = input.requestMeta;
   const onCacheEntry = meta['onCacheEntry'] as CacheEntryCallback | undefined;
   if (onCacheEntry !== undefined) {

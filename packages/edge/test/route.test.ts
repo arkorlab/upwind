@@ -95,18 +95,6 @@ describe('a deployment with no application Worker', () => {
   });
 });
 
-/** What reaches a request's or a response's body, or locks it. */
-type BodyAccess =
-  | 'arrayBuffer'
-  | 'blob'
-  | 'body'
-  | 'bodyUsed'
-  | 'bytes'
-  | 'clone'
-  | 'formData'
-  | 'json'
-  | 'text';
-
 /** The standalone host, keeping `HOST_SESSION` as its own (`HostCredentials`). */
 function credentialedHost(): EdgeHost {
   return { ...standaloneHost(env), credentials: { cookies: [HOST_SESSION], headers: [] } };
@@ -437,6 +425,18 @@ describe('the routing a host composes', () => {
    * the client's.
    */
   it('shows an observer the request without its body, and the answer only to read', () => {
+    /** What reaches a request's or a response's body, or locks it. */
+    type BodyAccess =
+      | 'arrayBuffer'
+      | 'blob'
+      | 'body'
+      | 'bodyUsed'
+      | 'bytes'
+      | 'clone'
+      | 'formData'
+      | 'json'
+      | 'text';
+
     type Shown = Parameters<ObservePassthrough>[0];
     type Told = NonNullable<Parameters<PassthroughObservation['finish']>[0]>;
 

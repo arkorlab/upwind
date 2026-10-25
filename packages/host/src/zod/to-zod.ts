@@ -47,7 +47,7 @@ function paramsOf(message: string | undefined): { readonly message: string } | u
 
 function refineParams(check: Extract<Check, { kind: 'refine' }>): z.core.$ZodCustomParams {
   return {
-    ...(check.message !== undefined && { message: check.message }),
+    ...(check.message !== undefined && { error: check.message }),
     ...(check.path !== undefined && { path: [...check.path] }),
   };
 }

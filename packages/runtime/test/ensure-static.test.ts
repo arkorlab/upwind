@@ -112,10 +112,10 @@ function deployment(ensureStatic: boolean): Store {
   } as unknown as Store;
 }
 
-type CacheEntryCallback = (entry: unknown, meta: { url: string | undefined }) => unknown;
-
 /** Next.js in minimal mode: a render captured where one is asked for; a resume says what it resumed. */
 async function rendering(call: InvokeInput): Promise<Response> {
+  type CacheEntryCallback = (entry: unknown, meta: { url: string | undefined }) => unknown;
+
   const meta = call.requestMeta;
   const onCacheEntry = meta['onCacheEntry'] as CacheEntryCallback | undefined;
   if (onCacheEntry !== undefined) {
