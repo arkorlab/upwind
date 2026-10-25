@@ -24,11 +24,17 @@ import { projectWith } from '../deploy/project.ts';
 const ANSWER = 'answered by the preview';
 const SERVE_MS = 120_000;
 
-/** A project with a build of one Function that answers every request, the cache host in it. */
-async function builtProject(): Promise<string> {
+/** What a Function answers every request with, unless the test gives it a handler of its own. */
+const ANSWERING = `fetch() { return new Response(${JSON.stringify(ANSWER)}); }`;
+
+/**
+ * A project with a build of one Function, the cache host in it: answering every request, or as the
+ * handler given does, and configured as the test says.
+ */
+async function builtProject(handler = ANSWERING, config?: unknown): Promise<string> {
   const dir = projectDir();
-  projectWith({ dir, adapterVersion: await ownVersion() });
-  const source = `${CACHE_HOST_SOURCE}\nexport default { fetch() { return new Response(${JSON.stringify(ANSWER)}); } };`;
+  projectWith({ dir, adapterVersion: await ownVersion(), config });
+  const source = `${CACHE_HOST_SOURCE}\nexport default { ${handler} };`;
   const main = moduleOf(dir, 'index.mjs', 'esm', source);
   writeBundle(dir, bundleOf(functionOf([main])));
   return dir;
@@ -82,6 +88,36 @@ describe('`upwind preview`', () => {
 
       expect([status, body]).toStrictEqual([200, ANSWER]);
       await expect(fetch(site)).rejects.toThrow('fetch failed');
+    },
+    SERVE_MS,
+  );
+
+  it(
+    "binds the storage deploy.storage names, each a store of the preview's own",
+    async () => {
+      // A query the database answers, and a write the namespace reads back.
+      const handler = `async fetch(request, env) {
+        const row = await env.ORDERS.prepare('select 41 + 1 as answer').first();
+        await env.SESSIONS.put('seen', 'yes');
+        return new Response(String(row.answer) + ' ' + (await env.SESSIONS.get('seen')));
+      }`;
+      const dir = await builtProject(handler, {
+        file: undefined,
+        deploy: { storage: { ORDERS: 'd1', SESSIONS: 'kv' } },
+      });
+      const served = Promise.withResolvers<URL>();
+      const asked = askedOnce(served.promise);
+
+      await expect(
+        runPreview(optionsFor(dir), {
+          stopped: asked,
+          serving: (stack) => {
+            served.resolve(stack.url);
+          },
+        }),
+      ).resolves.toBe(0);
+
+      await expect(asked).resolves.toMatchObject({ status: 200, body: '42 yes' });
     },
     SERVE_MS,
   );

@@ -1,9 +1,10 @@
-import { adapterReader } from '../deploy/config.ts';
+import { adapterReader, type StorageBinding } from '../deploy/config.ts';
 
 /**
  * What a preview takes of the project's `deploy` section, read as a deploy reads it — through the
  * project's own adapter, which has to be this command's version — so that a preview serves the
- * build as the project would have it deployed: the same secrets, nonce, hostnames and checks.
+ * build as the project would have it deployed: the same secrets, nonce, hostnames and checks, the
+ * same storage bound under the same names, and images transformed where a deploy has them be.
  *
  * The name the project would have on an account is not read: a preview reaches none, and whether a
  * deploy would take the project is `upwind deploy --dry-run`'s to say.
@@ -22,10 +23,11 @@ export interface PreviewSettings {
   /** The paths a deploy asks before it switches to a deployment. */
   readonly checks: readonly string[];
   /**
-   * What a deploy gives a project that a preview does not yet, for it to say so: the storage it
-   * binds, by name, and images it transforms. The cron jobs it fires are the build's to say.
+   * `deploy.storage`: each store by the name its Functions bind it under, and its kind. A preview
+   * binds a store of its own of each, empty, and gone when it stops.
    */
-  readonly storage: readonly string[];
+  readonly storage: readonly StorageBinding[];
+  /** `deploy.images`: whether the edge transforms what `/_next/image` asks for. */
   readonly images: boolean;
 }
 
@@ -49,7 +51,7 @@ export async function readPreviewSettings(projectDir: string): Promise<PreviewSe
           },
     hostnames: deploy.hostnames ?? [],
     checks: deploy.checks ?? DEFAULT_CHECKS,
-    storage: Object.keys(deploy.storage ?? {}),
+    storage: Object.entries(deploy.storage ?? {}).map(([name, kind]) => ({ name, kind })),
     images: deploy.images ?? false,
   };
 }

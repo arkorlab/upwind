@@ -298,10 +298,17 @@ nothing, so a change is seen once the project is built again, and it deploys not
   that asks its own site by one of them reaches this preview rather than the deployment; and each of
   `deploy.checks` is asked once the preview serves. The Functions are given those secrets and
   nothing else of this machine's environment: no `.env` file is read for them.
-- **What a deployment has that a preview does not yet is said, not left to be found.** The storage
-  `deploy.storage` names is not bound, an image is answered as it is rather than transformed, and no
-  cron job fires. A Function built without the runtime cache's host — by an older upwind, or by a
-  plain `next build` — is served with every cache read a miss, and said to be.
+- **The storage `deploy.storage` names is bound under the same names**, each a D1 database, KV
+  namespace or R2 bucket of the preview's own: empty as it starts, as a new deployment's is, and gone
+  when it stops. Nothing of `.upwind/`, which `upwind dev` keeps, is read.
+- **`deploy.images` has the edge transform images** as Cloudflare Images does for a deployment, here
+  by Miniflare's Images binding: the same widths and formats, in bytes of its own encoder. Without
+  it, each image is answered as it is.
+- **What a preview would serve otherwise than the project is, is said, not left to be found.** A
+  build older than files of the project — its sources, its configuration, an `.env` file, the
+  lockfile an upgrade rewrote — is served as it was built, and the files are named. So is a Function
+  built without the runtime cache's host, by an older upwind or a plain `next build`: every cache
+  read of it is a miss. And no cron job fires.
 - **`--check` asks the build once and ends**, for a job in CI: every route and file of the build, as
   a deployment's edge has to answer it, and each of `deploy.checks`, as a deploy asks it before it
   switches. It ends with `1` where anything answered otherwise, and listens on a free port unless

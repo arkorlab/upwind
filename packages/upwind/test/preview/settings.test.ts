@@ -42,7 +42,10 @@ describe("a preview's settings", () => {
       cspNonce: { mode: 'enforce', strictDynamic: true },
       hostnames: ['shop.example.com'],
       checks: ['/', '/api/health'],
-      storage: ['UPWIND_D1', 'CACHE'],
+      storage: [
+        { name: 'UPWIND_D1', kind: 'd1' },
+        { name: 'CACHE', kind: 'kv' },
+      ],
       images: true,
     });
   });
