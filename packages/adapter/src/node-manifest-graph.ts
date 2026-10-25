@@ -316,7 +316,9 @@ class ConsumerGraph {
     if (route === undefined) {
       if (turbopackKind(child) === undefined) {
         const caller = JSON.stringify(relative.slice(0, MAX_CALLER_LABEL_CHARACTERS));
-        return refuse(`consumer is not a sealed route entry (${child.kind} through ${caller})`);
+        return refuse(
+          `consumer is not a sealed route entry (${child.kind} ${child.relative} through ${caller})`,
+        );
       }
       await this.turbopack(child);
       return undefined;
