@@ -190,21 +190,21 @@ function invokedCapability(
 }
 
 function capabilityReceiver(node: Node, context: WorkerContext): Node {
-  let receiver: Node | undefined;
-  if (node.type === 'MemberExpression') receiver = node.object;
-  else if (node.type === 'AwaitExpression') receiver = node.argument;
-  return receiver !== undefined && workerOrigin(receiver, context) !== undefined
-    ? capabilityReceiver(receiver, context)
-    : node;
+  let receiver = node;
+  while (receiver.type === 'MemberExpression' || receiver.type === 'AwaitExpression') {
+    const inner = receiver.type === 'MemberExpression' ? receiver.object : receiver.argument;
+    if (workerOrigin(inner, context) === undefined) break;
+    receiver = inner;
+  }
+  return receiver;
 }
 
 function returnedCapability(node: Node, context: WorkerContext): Node | undefined {
   let value: Node | undefined;
   if (node.type === 'ReturnStatement') value = node.argument ?? undefined;
   if (node.type === 'ArrowFunctionExpression' && node.expression) value = node.body;
-  return value !== undefined && workerOrigin(value, context) !== undefined
-    ? capabilityReceiver(value, context)
-    : undefined;
+  if (value === undefined || workerOrigin(value, context) === undefined) return undefined;
+  return capabilityReceiver(value, context);
 }
 
 export async function nativeWorkerEdit(
