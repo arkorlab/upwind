@@ -23,9 +23,12 @@ export interface NativeLoad {
 }
 
 export class NativeFunctionRequired extends Error {
-  constructor(readonly loads: readonly NativeLoad[]) {
+  readonly loads: readonly NativeLoad[];
+
+  constructor(loads: readonly NativeLoad[]) {
     super('This Function requires a native Node.js runtime');
     this.name = 'NativeFunctionRequired';
+    this.loads = loads;
   }
 }
 
@@ -292,7 +295,10 @@ async function ownedBinary(
  * An analysis-only marker survives exactly where the loader survives tree shaking. It never goes
  * into a published Worker or a Node artifact. Native modules remain real files in the latter.
  */
-export function nativeLoadsPlugin(traces: readonly NativeAddonEntryTrace[]): {
+export function nativeLoadsPlugin(
+  traces: readonly NativeAddonEntryTrace[],
+  options: { readonly nodeTarget?: boolean } = {},
+): {
   readonly plugin: Plugin;
   retained(chunk: OutputChunk): Promise<readonly NativeLoad[]>;
 } {
@@ -432,7 +438,13 @@ export function nativeLoadsPlugin(traces: readonly NativeAddonEntryTrace[]): {
             ) {
               // An unchanged operation whose failure is handled by the existing precise guard
               // remains on the old Worker path; its complete Worker graph still has to pass audit.
-              if (guards.get(node.start) === 'plain') continue;
+              if (guards.get(node.start) === 'plain') {
+                if (options.nodeTarget === true)
+                  throw new AuditError(
+                    'A guarded process.dlopen is unclassified on the Node target',
+                  );
+                continue;
+              }
               if (guards.has(node.start))
                 throw new AuditError('A guarded process.dlopen has no proved Worker-safe fallback');
               if (

@@ -291,10 +291,10 @@ async function exerciseAll(input: ExerciseInput, cases: CaseProof[]): Promise<vo
   const lanes = input.edgeHosts
     ? ([
         ['middleware', input.bundle.functions.middleware],
-        ['app', input.workerApp(bundle)],
-        ['app-edge', input.workerApp(bundle)],
+        ['app', workerApp(input.bundle)],
+        ['app-edge', workerApp(input.bundle)],
       ] as const)
-    : ([['app-edge', input.workerApp(bundle)]] as const);
+    : ([['app-edge', workerApp(input.bundle)]] as const);
   const selectedCases = input.edgeHosts
     ? [
         'normal',

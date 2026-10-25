@@ -25,10 +25,12 @@ describe('native child constructor classification', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  async function classify(source: string, commonjs = false) {
+  async function classify(source: string, commonjs = false, nodeTarget = false) {
     const importer = commonjs ? path.join(directory, 'entry.cjs') : entry;
     await writeFile(importer, source);
-    const proof = nativeLoadsPlugin([{ id: '/native', assets: { entry: importer, binary } }]);
+    const proof = nativeLoadsPlugin([{ id: '/native', assets: { entry: importer, binary } }], {
+      nodeTarget,
+    });
     await using build = await rolldown({
       input: importer,
       platform: 'neutral',
@@ -89,4 +91,13 @@ describe('native child constructor classification', () => {
       await expect(classify(source, true)).rejects.toBeInstanceOf(AuditError);
     },
   );
+
+  it('keeps the old plain guarded Worker fallback but refuses it during strict Node recheck', async () => {
+    const source =
+      "try { process.dlopen(module, './optional.node'); } catch { module.exports = { fallback: true }; }\n";
+    const worker = await classify(source, true);
+
+    expect(worker).toEqual([]);
+    await expect(classify(source, true, true)).rejects.toThrow('unclassified on the Node target');
+  });
 });

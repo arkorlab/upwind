@@ -207,7 +207,9 @@ async function bundleApp(
     appEntrySource(input.entries, buildPaths(input.projectDir, input.patch.distDir)),
   );
   // The middleware's Function, with the page runtime as React alone where that is enough.
-  const native = nativeLoadsPlugin(input.entryTraces ?? []);
+  const native = nativeLoadsPlugin(input.entryTraces ?? [], {
+    nodeTarget: input.nativeTargetAudit === true,
+  });
   const { chunk, sinks } =
     input.kind === 'middleware'
       ? await withPageRuntimeAsReact(
