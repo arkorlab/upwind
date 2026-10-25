@@ -47,12 +47,10 @@ export async function assertRetainedNativeWorkerCapability(
   const bindings = nativeBindings(program);
   const guards = options.nodeTarget ? undefined : nativeOperationGuards(program);
   if (
-    retainedWorkerCapabilityNodes(
-      tree,
-      bindings,
-      renderedWorkerRequires(chunk, tree, bindings),
+    retainedWorkerCapabilityNodes(tree, bindings, renderedWorkerRequires(chunk, tree, bindings), {
       guards,
-    ).length > 0
+      nodeTarget: options.nodeTarget,
+    }).length > 0
   )
     throw new AuditError('A retained Node Worker has unclassified owned native child dependencies');
 }

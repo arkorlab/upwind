@@ -46,10 +46,10 @@ describe('bounded original child-marker diagnostics', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  async function classify(source: string, extension = 'mjs') {
+  async function classify(source: string, extension = 'mjs', nodeTarget = false) {
     entry = path.join(directory, `entry.${extension}`);
     await writeFile(entry, source);
-    const proof = nativeLoadsPlugin([{ id: '/native', assets: { entry, binary } }]);
+    const proof = nativeLoadsPlugin([{ id: '/native', assets: { entry, binary } }], { nodeTarget });
     await using build = await rolldown({
       input: entry,
       platform: 'neutral',
@@ -125,10 +125,10 @@ describe('bounded original child-marker diagnostics', () => {
     ).toStrictEqual(['analysisSha256', 'end', 'kind', 'sourceSha256', 'start']);
   });
 
-  it('identifies the current scalar-only compiler import thunk refusal for separate policy review', async () => {
+  it('identifies the scalar-only compiler namespace return during strict Node recheck', async () => {
     const source =
       "module.exports=[1,ctx=>{const ns=ctx.x('node:worker_threads',()=>require('node:worker_threads'));ctx.v(ns.isMainThread);}];";
-    const diagnostic = await classify(source);
+    const diagnostic = await classify(source, 'mjs', true);
 
     expect(diagnostic.value.kind).toBe('return');
     expect(diagnostic.value.sourceSha256).toBe(createHash('sha256').update(source).digest('hex'));

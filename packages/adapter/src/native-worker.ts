@@ -14,6 +14,13 @@ interface WorkerContext {
   readonly bindings: NativeBindings;
   readonly imports: ReadonlyMap<Node, WorkerOrigin>;
   readonly requires?: ReadonlySet<Node> | undefined;
+  readonly nodeTarget?: boolean | undefined;
+  readonly tree?: readonly Node[] | undefined;
+}
+
+interface RetainedWorkerOptions {
+  readonly nodeTarget: boolean;
+  readonly guards?: ReadonlyMap<number, 'plain' | 'ambiguous'> | undefined;
 }
 
 function importedWorkers(
@@ -274,7 +281,18 @@ function returnedCapability(node: Node, context: WorkerContext): Node | undefine
   let value: Node | undefined;
   if (node.type === 'ReturnStatement') value = node.argument ?? undefined;
   if (node.type === 'ArrowFunctionExpression' && node.expression) value = node.body;
-  if (value === undefined || workerOrigin(value, context) === undefined) return undefined;
+  if (value === undefined) return undefined;
+  const origin = workerOrigin(value, context);
+  if (origin === undefined) return undefined;
+  // A Worker-only namespace is workerd's stub. This never relaxes the strict Node closure.
+  if (
+    context.nodeTarget === false &&
+    isNamespace(origin) &&
+    context.tree !== undefined &&
+    unmodifiedWorkerSource(value, context) &&
+    !workerWasMutated(context.tree, context)
+  )
+    return undefined;
   return capabilityReceiver(value, context);
 }
 
@@ -433,11 +451,21 @@ export function retainedWorkerCapabilityNodes(
   tree: readonly Node[],
   bindings: NativeBindings,
   requires?: ReadonlySet<Node>,
-  guards?: ReadonlyMap<number, 'plain' | 'ambiguous'>,
+  options?: RetainedWorkerOptions,
 ): readonly Node[] {
-  const context = { bindings, imports: workerImports(tree), requires };
+  const context = {
+    bindings,
+    imports: workerImports(tree),
+    requires,
+    tree,
+    nodeTarget: options?.nodeTarget,
+  };
   return tree.filter((node) => {
-    if (handledWorkerConstructor(node, context, tree, guards)) return false;
+    if (
+      options?.nodeTarget === false &&
+      handledWorkerConstructor(node, context, tree, options.guards)
+    )
+      return false;
     if (returnedCapability(node, context) !== undefined || exportedCapability(node, context))
       return true;
     return (
@@ -466,7 +494,12 @@ export async function nativeWorkerEdit(
     markChild(binaries: readonly string[], site: NativeWorkerSite): string;
   },
 ): Promise<NativeEdit | undefined> {
-  const capability = { bindings: context.bindings, imports: workerImports(context.tree) };
+  const capability = {
+    bindings: context.bindings,
+    imports: workerImports(context.tree),
+    tree: context.tree,
+    nodeTarget: context.nodeTarget,
+  };
   if (
     !context.nodeTarget &&
     handledWorkerConstructor(node, capability, context.tree, context.guards)

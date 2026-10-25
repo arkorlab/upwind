@@ -140,7 +140,6 @@ describe('native child constructor classification', () => {
     "import {Worker} from 'node:worker_threads';function getWorker(){return Worker;}export const worker=new (getWorker())('source',{eval:true});",
     "const threads=require('node:worker_threads');exports.getWorker=function(){return threads.Worker;};",
     "const {Worker:Thread}=await import('worker_threads');export const getWorker=()=>Thread;",
-    "const threads=await import('node:worker_threads');export function getNamespace(){return threads;}",
     "export const getNamespace=()=>import('node:worker_threads');",
     "import threads from 'node:worker_threads';export function getWorker(key){return threads[key];}",
     "import threads from 'node:worker_threads';export function getWorker(){return threads[consume(threads)];}",
