@@ -139,7 +139,9 @@ are testing: with it set, they expect the adapter's answers; without it, the bui
 `.github/workflows/deploy-tests.yaml` is the same thing on a runner, dispatched by hand. Its `tests`
 input takes upstream paths, or `all` for everything the manifest allows; `shards` cuts `all` into that
 many pieces (upstream's own `-g n/total`), and `only` runs one piece on its own, for taking a slice again
-after it was cut short.
+after it was cut short. On the runner's targets nothing is shared, so a run is cut as finely as the
+workflow cuts — 64 pieces unless `shards` says otherwise, all at once — and every night both targets run
+the whole manifest that way. What follows is a host's.
 
 **Queueing behind one project, a full run is bounded by two of GitHub's limits at once**, and they pull in
 opposite directions. The manifest selects around 1,100 suites, about six hundred of which deploy — the
@@ -147,7 +149,7 @@ rest declare `skipDeployment` upstream and pass in a couple of seconds. A shard 
 about three minutes of its own setup, and must stay under the 6 hours a job may execute; the last shard
 waits for the other `n - 1` of those, and must start within the 24 hours a job may sit in the queue before
 it is cancelled. Measured: a full pass in six shards took 11h41m, about two hours a shard, the last one
-starting nine and three-quarter hours in — which is why the default is `6`, with room on both sides.
+starting nine and three-quarter hours in — which is why a host's default is `6`, with room on both sides.
 
 A settle is paid by every deploying suite: at its one-minute ceiling, about six hundred minutes across the
 run, a hundred or so a shard — about four hours a shard at most, at six, still inside both limits. A host
