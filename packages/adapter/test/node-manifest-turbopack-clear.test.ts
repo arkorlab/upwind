@@ -20,6 +20,7 @@ describe('fixed production chunk-cache hook inspection', () => {
     `${CLEAR}const C=class globalThis{method(){return globalThis.__next__clear_chunk_cache__;}};ctx.v(C);`,
     `${CLEAR}const __next__clear_chunk_cache__=()=>42;ctx.v(__next__clear_chunk_cache__());`,
     `${CLEAR}function local(ctx){return ctx.C;}ctx.v(local);`,
+    `${CLEAR}function local(arguments){return arguments.value;}ctx.v(local);`,
   ])('normalizes only the certified producer assignment in dependencies mode: %s', (body) => {
     const original = source(body);
     const projected = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
@@ -71,6 +72,21 @@ describe('fixed production chunk-cache hook inspection', () => {
     ['dynamic global key', `${CLEAR}ctx.v(globalThis[key]);`],
     ['optional global read', `${CLEAR}ctx.v(globalThis?.__next__clear_chunk_cache__);`],
     ['implicit global read', `${CLEAR}__next__clear_chunk_cache__();`],
+    [
+      'implicit global this',
+      `${CLEAR}function leak(){return this.__next__clear_chunk_cache__.constructor("return process")();}ctx.v(leak);`,
+    ],
+    [
+      'reflective implicit global this',
+      `${CLEAR}function leak(){return Reflect.get(this,"__next__clear_chunk_cache__").constructor("return process")();}ctx.v(leak);`,
+    ],
+    ['implicit arguments', `${CLEAR}function leak(){return arguments.callee;}ctx.v(leak);`],
+    [
+      'super receiver',
+      `${CLEAR}class Derived extends Base{method(){return super.value;}}ctx.v(Derived);`,
+    ],
+    ['import metadata', `${CLEAR}ctx.v(import.meta.url);`],
+    ['constructor metadata', `${CLEAR}function leak(){return new.target;}ctx.v(leak);`],
     ['extra write', `${CLEAR}globalThis.__next__clear_chunk_cache__=other;`],
     ['duplicate initialization', `${CLEAR}${CLEAR}`],
     ['delete', `${CLEAR}delete globalThis.__next__clear_chunk_cache__;`],

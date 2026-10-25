@@ -11,6 +11,11 @@ import {
 
 const CLEAR_SLOT = '__next__clear_chunk_cache__';
 const METADATA_OPERATORS: ReadonlySet<string> = new Set(['!', 'typeof', 'void']);
+const IMPLICIT_RECEIVERS: ReadonlySet<string> = new Set([
+  'MetaProperty',
+  'Super',
+  'ThisExpression',
+]);
 
 interface ContextBinding {
   readonly name: string;
@@ -109,6 +114,13 @@ function assertSlotUses(input: ClearProjectionInput, assignment: Node): void {
   for (const visit of input.visits) {
     const node = visit.node;
     if (!reference(visit)) continue;
+    if (
+      IMPLICIT_RECEIVERS.has(node.type) ||
+      (identifier(node) &&
+        node.name === 'arguments' &&
+        declaration('arguments', visit.scopes) === undefined)
+    )
+      refuse('implicit receiver or metadata escape');
     if (
       identifier(node) &&
       node.name === CLEAR_SLOT &&
