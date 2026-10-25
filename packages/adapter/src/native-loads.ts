@@ -35,7 +35,7 @@ export interface NativeLoad {
 export class NativeFunctionRequiredError extends Error {
   readonly loads: readonly NativeLoad[];
 
-  constructor(loads: readonly NativeLoad[], options: ErrorOptions) {
+  constructor(loads: readonly NativeLoad[], options: ErrorOptions = {}) {
     super('This Function requires a native Node.js runtime', options);
     this.name = 'NativeFunctionRequiredError';
     this.loads = loads;

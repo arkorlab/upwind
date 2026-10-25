@@ -60,6 +60,7 @@ describe('physical Node artifact byte and mode preservation', () => {
   });
 
   it('retains the BOM when a real cache-write patch changes a copied Next file', () => {
+    // eslint-disable-next-line no-template-curly-in-string -- Compiled JavaScript source deliberately retains its runtime template expression.
     const source =
       '\u{FEFF}const key=`cache-set-${id}`;cache[key]=previous.then(()=>write).finally(done);const warning="Failed to set fetch cache";';
     const bytes = new TextEncoder().encode(source);

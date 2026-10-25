@@ -144,11 +144,12 @@ async function bundleNode(
   });
   if (
     unresolved.length > 0 ||
-    result.output.some(
-      (chunk) =>
+    result.output.some((chunk) => {
+      return (
         chunk.type === 'chunk' &&
-        chunk.imports.some((name) => name.startsWith(CLOUDFLARE_IMPORT_PREFIX)),
-    )
+        chunk.imports.some((name) => name.startsWith(CLOUDFLARE_IMPORT_PREFIX))
+      );
+    })
   ) {
     throw new AuditError('Node Function runtime has an unsupported or unresolved platform import');
   }
@@ -215,11 +216,12 @@ async function bundleNodeInstrumentation(
   });
   if (
     unresolved.length > 0 ||
-    result.output.some(
-      (chunk) =>
+    result.output.some((chunk) => {
+      return (
         chunk.type === 'chunk' &&
-        chunk.imports.some((name) => name.startsWith(CLOUDFLARE_IMPORT_PREFIX)),
-    )
+        chunk.imports.some((name) => name.startsWith(CLOUDFLARE_IMPORT_PREFIX))
+      );
+    })
   ) {
     throw new AuditError('Host instrumentation cannot be represented by a Node Function artifact');
   }
