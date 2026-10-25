@@ -42,9 +42,10 @@ describe('combined local native class capabilities', () => {
         },
       },
     });
-    const { workers } = options;
+    const workers = options.workers;
+    const expectedSocketPath: unknown = expect.any(String);
 
-    expect(options).toHaveProperty('containerEngine.localDocker.socketPath', expect.any(String));
+    expect(options.containerEngine).toHaveProperty('localDocker.socketPath', expectedSocketPath);
     expect(workers).toHaveLength(3);
 
     for (const worker of workers) {
@@ -59,11 +60,8 @@ describe('combined local native class capabilities', () => {
       });
     }
 
-    const objectWorker = workers.find((worker) => worker.config.name === 'upwind-object-OBJECT');
-
-    expect(objectWorker).toMatchObject({
+    expect(workers.find((worker) => worker.config.name === 'upwind-object-OBJECT')).toMatchObject({
       config: {
-        name: 'upwind-object-OBJECT',
         exports: {
           UpwindDurableObject: {
             type: 'durable-object',
