@@ -9,7 +9,11 @@ import { AuditError } from './dependencies.ts';
 import type { BuildFunctionInput } from './function.ts';
 import type { NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
-import { nodePackageName, preserveNodePackageSubpaths } from './node-package-subpaths.ts';
+import {
+  nodePackageMain,
+  nodePackageName,
+  preserveNodePackageSubpaths,
+} from './node-package-subpaths.ts';
 import { originalNodeSpecifiers } from './node-source-specifiers.ts';
 
 const MAX_FILE_BYTES = 134_217_728;
@@ -235,7 +239,6 @@ async function packageSubpathAliases(
   pkg: string,
   context: PackageAliasContext,
 ): Promise<void> {
-  if (specifier === pkg) return;
   const file = path.join(directory, PACKAGE_MANIFEST);
   await preserveNodePackageSubpaths({
     directory,
@@ -386,10 +389,7 @@ async function relativeMain(
     typeof metadata.main !== 'string'
   )
     return undefined;
-  const main = path.resolve(logical, metadata.main);
-  if (beneath(logical, main) === undefined)
-    throw new AuditError('A relative package entry escapes its closed physical directory');
-  return main;
+  return nodePackageMain(logical, metadata.main);
 }
 
 function resolveRelative(file: string, specifier: string): string | undefined {
@@ -439,9 +439,10 @@ async function relativeAliases(
   const resolved = resolveRelative(file, specifier);
   if (resolved === undefined) return;
   context.layout.nameOf(logical);
-  const roots = [logical, path.join(logical, 'index')];
+  const roots: string[] = specifier === '.' ? [] : [logical];
   const main = await relativeMain(logical, context);
   if (main !== undefined) roots.push(main, path.join(main, 'index'));
+  roots.push(path.join(logical, 'index'));
   await relativeDirectoryAlias(logical, context);
   for (const root of roots)
     for (const suffix of COMMONJS_SUFFIXES)

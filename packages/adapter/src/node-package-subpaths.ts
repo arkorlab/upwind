@@ -1,6 +1,7 @@
 import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
+import { beneath } from './build-paths.ts';
 import { AuditError } from './dependencies.ts';
 
 const MAX_DEPTH = 8;
@@ -30,6 +31,15 @@ export function nodePackageName(specifier: string): string | undefined {
     return undefined;
   const parts = specifier.split('/');
   return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
+
+export function nodePackageMain(directory: string, target: string): string {
+  if (path.isAbsolute(target))
+    throw new AuditError('An absolute Node package entry cannot be relocated into an artifact');
+  const main = path.resolve(directory, target);
+  if (beneath(directory, main) === undefined)
+    throw new AuditError('A relative package entry escapes its closed physical directory');
+  return main;
 }
 
 function safeRelative(target: string): boolean {
@@ -68,25 +78,43 @@ function exportTargets(value: unknown): readonly string[] {
   return [...targets];
 }
 
-/** Only captured package metadata and exact subpath entries establish these lookup candidates. */
+function exportEntry(exports: unknown, relative: string): unknown {
+  if (relative === '.') {
+    if (!record(exports)) return exports;
+    const keys = Object.keys(exports);
+    if (keys.every((key) => !key.startsWith('.'))) return exports;
+    if (keys.some((key) => !key.startsWith('.'))) refuse();
+  }
+  if (!record(exports) || !Object.hasOwn(exports, relative)) refuse();
+  return exports[relative];
+}
+
+/** Captured metadata establishes root exports/main/index or exact subpath lookup candidates. */
 export function nodePackageSubpaths(
   specifier: string,
   packageName: string,
   metadata: unknown,
-): PackageSubpaths | undefined {
-  if (specifier === packageName) return undefined;
-  const relative = `.${specifier.slice(packageName.length)}`;
-  if (!safeRelative(relative)) refuse();
+): PackageSubpaths {
+  const relative = specifier === packageName ? '.' : `.${specifier.slice(packageName.length)}`;
+  if (relative !== '.' && !safeRelative(relative)) refuse();
   if (!record(metadata) || metadata['exports'] === undefined || metadata['exports'] === null)
     return { exact: false, targets: [relative] };
-  const exports = metadata['exports'];
-  if (!record(exports) || !Object.hasOwn(exports, relative)) refuse();
-  return { exact: true, targets: exportTargets(exports[relative]) };
+  return { exact: true, targets: exportTargets(exportEntry(metadata['exports'], relative)) };
 }
 function missingTarget(error: unknown): boolean {
   return (
     error instanceof Error && 'code' in error && ['ENOENT', 'ENOTDIR'].includes(String(error.code))
   );
+}
+
+async function isFilePackageRoot(
+  directory: string,
+  specifier: string,
+  packageName: string,
+): Promise<boolean> {
+  const file = (await stat(directory)).isFile();
+  if (file && specifier !== packageName) refuse();
+  return file;
 }
 
 /** Restore candidate aliases inside the canonical package, not below its root symlink. */
@@ -98,11 +126,11 @@ export async function preserveNodePackageSubpaths(input: {
   readonly relativeAlias: (target: string) => Promise<void>;
   readonly exactAlias: (target: string) => Promise<void>;
 }): Promise<void> {
-  if (input.specifier === input.packageName) return;
+  // The caller already proved ownership of this canonical package root, including file roots.
+  if (await isFilePackageRoot(input.directory, input.specifier, input.packageName)) return;
   const metadata: unknown =
     input.metadata === undefined ? undefined : JSON.parse(new TextDecoder().decode(input.metadata));
   const subpaths = nodePackageSubpaths(input.specifier, input.packageName, metadata);
-  if (subpaths === undefined) return;
   for (const target of subpaths.targets) {
     if (!subpaths.exact) {
       await input.relativeAlias(target);

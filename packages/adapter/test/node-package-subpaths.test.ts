@@ -59,12 +59,16 @@ describe('closed physical bare package subpaths', () => {
       readonly direct?: boolean;
       readonly code?: string;
       readonly entryFile?: string;
+      readonly root?: boolean;
+      readonly packageName?: string;
+      readonly main?: string;
     } = {},
   ) {
     const filename = options.filename ?? 'addon.cjs';
+    const packageName = options.packageName ?? 'pkg';
     const dependency =
       options.direct === true
-        ? path.join(project, 'node_modules/pkg')
+        ? path.join(project, 'node_modules', packageName)
         : path.join(directory, 'repository/store/pkg');
     const target = path.join(dependency, 'build', filename);
     const logical = path.join(dependency, filename);
@@ -74,8 +78,9 @@ describe('closed physical bare package subpaths', () => {
     await writeFile(
       path.join(dependency, 'package.json'),
       JSON.stringify({
-        name: 'pkg',
+        name: packageName,
         ...(options.exports !== undefined && { exports: options.exports }),
+        ...(options.main !== undefined && { main: options.main }),
       }),
     );
     await writeFile(
@@ -83,8 +88,13 @@ describe('closed physical bare package subpaths', () => {
       filename.endsWith('.node') ? new Uint8Array([0, 1]) : 'module.exports=42;',
     );
     await symlink(path.relative(dependency, target), logical);
-    if (options.direct !== true) await symlink(dependency, path.join(project, 'node_modules/pkg'));
-    const specifier = `pkg/${options.subpath ?? filename}`;
+    const packageAlias = path.join(project, 'node_modules', packageName);
+    if (options.direct !== true) {
+      await mkdir(path.dirname(packageAlias), { recursive: true });
+      await symlink(dependency, packageAlias);
+    }
+    const specifier =
+      options.root === true ? packageName : `${packageName}/${options.subpath ?? filename}`;
     await writeFile(entry, options.code ?? `module.exports=require(${JSON.stringify(specifier)});`);
     return {
       entry,
@@ -131,6 +141,147 @@ describe('closed physical bare package subpaths', () => {
       target: physical.nameOf(own.target),
     });
     expect(resolved).toBe(path.join(archive, physical.nameOf(own.target)));
+  });
+
+  it.each([
+    { exports: './addon.cjs' },
+    { filename: 'addon.node', exports: './addon.node' },
+    { exports: { '.': './addon.cjs' } },
+    { exports: { node: './addon.cjs', default: './addon.cjs' } },
+    { main: './addon.cjs' },
+    { filename: 'index.js' },
+    { exports: './addon.cjs', packageName: '@scope/pkg' },
+    { exports: './addon.cjs', direct: true },
+  ])('preserves a root entrypoint and its selected internal alias for %j', async (options) => {
+    const own = await fixture({ ...options, root: true });
+    const physical = await nodePhysicalFiles(own.build, []);
+    const archive = path.join(directory, 'archive');
+    await staged(physical, archive);
+    const resolved = createRequire(path.join(archive, physical.nameOf(own.entry))).resolve(
+      own.specifier,
+    );
+
+    expect(resolved).toBe(path.join(archive, physical.nameOf(own.target)));
+    expect(physical.links).toContainEqual({
+      path: physical.nameOf(own.logical),
+      target: physical.nameOf(own.target),
+    });
+  });
+
+  it('preserves the main directory alias before an index fallback to the same canonical file', async () => {
+    const own = await fixture({ root: true, filename: 'index.js', main: 'lib' });
+    await symlink('./build', path.join(own.dependency, 'lib'));
+    const physical = await nodePhysicalFiles(own.build, []);
+    const archive = path.join(directory, 'archive');
+    await staged(physical, archive);
+    const resolved = createRequire(path.join(archive, physical.nameOf(own.entry))).resolve('pkg');
+
+    expect(resolved).toBe(path.join(archive, physical.nameOf(own.target)));
+    expect(physical.links).toContainEqual({
+      path: 'project/store/pkg/lib/index.js',
+      target: physical.nameOf(own.target),
+    });
+    expect(physical.links).not.toContainEqual({
+      path: physical.nameOf(own.logical),
+      target: physical.nameOf(own.target),
+    });
+  });
+
+  it('does not select an unused sibling file alias for a package-root directory lookup', async () => {
+    const own = await fixture({ root: true, main: './addon.cjs' });
+    const sibling = `${own.dependency}.js`;
+    await symlink(path.relative(path.dirname(sibling), own.target), sibling);
+    const physical = await nodePhysicalFiles(own.build, []);
+    const archive = path.join(directory, 'archive');
+    await staged(physical, archive);
+    const resolved = createRequire(path.join(archive, physical.nameOf(own.entry))).resolve('pkg');
+
+    expect(resolved).toBe(path.join(archive, physical.nameOf(own.target)));
+    expect(physical.links).toContainEqual({
+      path: physical.nameOf(own.logical),
+      target: physical.nameOf(own.target),
+    });
+    expect(physical.links).not.toContainEqual({
+      path: physical.nameOf(sibling),
+      target: physical.nameOf(own.target),
+    });
+  });
+
+  it('preserves an already-closed file-backed package root without looking for child metadata', async () => {
+    const entry = path.join(project, 'entry.cjs');
+    const target = path.join(directory, 'repository/store/pkg.cjs');
+    await mkdir(path.dirname(target), { recursive: true });
+    await mkdir(path.join(project, 'node_modules'), { recursive: true });
+    await writeFile(entry, "module.exports=require('pkg');");
+    await writeFile(target, 'module.exports=42;');
+    await symlink(target, path.join(project, 'node_modules/pkg'));
+    const physical = await nodePhysicalFiles(input(project, entry, [entry, target]), []);
+    const archive = path.join(directory, 'archive');
+    await staged(physical, archive);
+    const resolved = createRequire(path.join(archive, physical.nameOf(entry))).resolve('pkg');
+
+    expect(resolved).toBe(path.join(archive, physical.nameOf(target)));
+    expect(physical.links).toStrictEqual([
+      { path: 'project/app/node_modules/pkg', target: physical.nameOf(target) },
+    ]);
+  });
+
+  it.each([
+    { import: './import.mjs' },
+    { '.': { import: './import.mjs' } },
+    { '.': { import: './import.mjs', require: './addon.cjs' } },
+  ])(
+    'keeps root import-only and conditional exports without a require-condition guess: %j',
+    async (exports) => {
+      const own = await fixture({
+        root: true,
+        exports,
+        code: "export {value} from 'pkg';",
+        entryFile: 'entry.mjs',
+      });
+      const imported = path.join(own.dependency, 'build/import.mjs');
+      const alias = path.join(own.dependency, 'import.mjs');
+      await writeFile(imported, 'export const value=42;');
+      await symlink('./build/import.mjs', alias);
+      const physical = await nodePhysicalFiles(
+        input(project, own.entry, [own.entry, own.target, imported]),
+        [],
+      );
+      const archive = path.join(directory, 'archive');
+      await staged(physical, archive);
+      const archivedAlias = path.join(archive, physical.nameOf(alias));
+
+      expect(physical.links).toContainEqual({
+        path: physical.nameOf(alias),
+        target: physical.nameOf(imported),
+      });
+      await expect(realpath(archivedAlias)).resolves.toBe(
+        path.join(archive, physical.nameOf(imported)),
+      );
+    },
+  );
+
+  it.each([{ exports: './addon.cjs' }, { main: './addon.cjs' }, { filename: 'index.js' }])(
+    'refuses an unowned canonical target behind a root entry alias for %j',
+    async (options) => {
+      const own = await fixture({ ...options, root: true });
+      const anchor = path.join(own.dependency, 'anchor.cjs');
+      await writeFile(anchor, 'module.exports=43;');
+
+      await expect(
+        nodePhysicalFiles(input(project, own.entry, [own.entry, anchor]), []),
+      ).rejects.toThrow('outside its closed trace');
+    },
+  );
+
+  it('refuses a nonportable absolute main even when it currently points inside the package', async () => {
+    const own = await fixture({ root: true });
+    await writeFile(
+      path.join(own.dependency, 'package.json'),
+      JSON.stringify({ name: 'pkg', main: own.logical }),
+    );
+
+    await expect(nodePhysicalFiles(own.build, [])).rejects.toThrow('absolute Node package entry');
   });
 
   it('preserves a subpath reached through an internal directory symlink', async () => {
@@ -273,6 +424,13 @@ describe('closed physical bare package subpaths', () => {
 });
 
 describe('bounded exact export candidates', () => {
+  it.each([['./addon.cjs'], { '.': './addon.cjs', import: './other.mjs' }, { './*': './build/*' }])(
+    'refuses unproved or malformed root export topology %j',
+    (exports) => {
+      expect(() => nodePackageSubpaths('pkg', 'pkg', { exports })).toThrow('unproved');
+    },
+  );
+
   it('preserves an exact key ahead of unrelated wildcard mappings', () => {
     expect(
       nodePackageSubpaths('pkg/api', 'pkg', {
