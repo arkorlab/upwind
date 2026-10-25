@@ -10,6 +10,7 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import { nodeManifestNextPatchFlags } from './node-manifest-patch-flag.ts';
 
 const GLOBAL_AUTHORITIES: ReadonlySet<string> = new Set([
   '__proto__',
@@ -426,15 +427,23 @@ function assertGlobalVisit(
 }
 
 /** An inert arrow preserves factory-body return syntax without adding a named inspection binding. */
-export function normalizedGlobalInspection(code: string): string {
+export function normalizedGlobalInspection(
+  code: string,
+  options: { readonly nextPatchFlag?: boolean } = {},
+): string {
   const wrapped = `(()=>{\n${code}\n});`;
   const program: unknown = parseAst(wrapped);
   if (!isNode(program)) refuse('global inspection parser');
   const visits = visitTree(program);
   const parents = new Map(visits.map((visit) => [visit.node, visit]));
   const slots = new GlobalSlots(visits, parents);
+  const patchFlags =
+    options.nextPatchFlag === true
+      ? nodeManifestNextPatchFlags({ visits, parents })
+      : new Set<Node>();
   for (const visit of visits) {
     slots.assert(visit);
+    if (patchFlags.has(visit.node)) continue;
     assertGlobalVisit(visit, parents, slots);
   }
   return wrapped;

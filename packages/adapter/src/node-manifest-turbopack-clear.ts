@@ -8,6 +8,7 @@ import {
   reference,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import { nodeManifestNextPatchFlags } from './node-manifest-patch-flag.ts';
 
 const CLEAR_SLOT = '__next__clear_chunk_cache__';
 const METADATA_OPERATORS: ReadonlySet<string> = new Set(['!', 'typeof', 'void']);
@@ -123,6 +124,7 @@ function assertNamespaceUse(visit: Visit, assignment: Node): void {
 }
 
 function assertSlotUses(input: ClearProjectionInput, assignment: Node): void {
+  const patchFlags = nodeManifestNextPatchFlags(input);
   for (const visit of input.visits) {
     const node = visit.node;
     if (!reference(visit)) continue;
@@ -139,7 +141,11 @@ function assertSlotUses(input: ClearProjectionInput, assignment: Node): void {
       declaration(CLEAR_SLOT, visit.scopes) === undefined
     )
       refuse('implicit global slot read');
-    if (globalNamespace(visit, input.context)) assertNamespaceUse(visit, assignment);
+    if (
+      globalNamespace(visit, input.context) &&
+      (visit.parent === undefined || !patchFlags.has(visit.parent))
+    )
+      assertNamespaceUse(visit, assignment);
   }
 }
 

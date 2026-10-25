@@ -497,10 +497,9 @@ class FactoryProjection {
     }
     code += `\n${this.append.join('\n')}`;
     if (this.normalizedGlobal) {
-      const inspection = normalizedGlobalInspection(code);
       const failure = dynamicNodeClosureRefusal(
         'upwind-turbopack-global-inspection.js',
-        inspection,
+        normalizedGlobalInspection(code, { nextPatchFlag: this.clearMembers.size > 0 }),
       );
       if (failure !== undefined) refuse(failure);
     }
