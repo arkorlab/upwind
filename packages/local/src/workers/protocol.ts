@@ -82,6 +82,19 @@ export const BACKSTAGE_ROUTES = {
 } as const;
 /** The nonce the bytes or the policies sent are to carry, and the setting it goes in by. */
 export const NONCE_PARAMS = { nonce: 'nonce', mode: 'mode', strict: 'strict' } as const;
+/**
+ * What the stack says, on the answer of a route's gate it forwards to (`../gates.ts`), where the
+ * gate could not be reached at all — and why. The edge Worker (`./edge.ts`) turns such an answer
+ * into the failure it stands for, as a deployed edge's binding to a gate that cannot answer fails:
+ * so the edge answers that the gate is unavailable, and the name goes no further.
+ */
+export const GATE_UNREACHABLE_HEADER = 'x-upwind-local-gate-unreachable';
+/**
+ * The URL a Worker of the stack addressed a request it sends a service the stack answers in Node
+ * to (`nodeService`, in `../miniflare.ts`): the loopback the request travels on to Node keeps its
+ * path and its host, and not its URL's scheme. Taken off before the service is handed the request.
+ */
+export const NODE_URL_HEADER = 'x-upwind-local-url';
 
 /** A document's policies, each by its header's name: the two a nonce goes in, as far as it has them. */
 export type NoncedPolicies = Readonly<Record<string, string>>;

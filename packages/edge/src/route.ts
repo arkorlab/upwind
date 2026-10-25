@@ -2,39 +2,28 @@ import type { AppRuntime, ProjectManifest } from '@stayingupwind/core/manifest';
 import { MIDDLEWARE_DONE_HEADER } from '@stayingupwind/core/paas';
 import {
   classifyRequest,
-  EDGE_BYPASS_COOKIE,
   type ForwardingContext,
-  getCookieValue,
-  parseCookieHeader,
   PatternBudgetExceededError,
   type RequestClass,
-  serializeCookieHeader,
 } from '@stayingupwind/core/request';
-import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { resolvePolicy } from '@stayingupwind/host/delivery';
 
 import type { EdgeBindings } from './bindings.ts';
 import { transferInvalidations } from './cache/condemned.ts';
 import { lookAtScopeBehind } from './cache/scope-signal.ts';
-import {
-  classificationReadsCredentials,
-  CLASSIFIED_HEADER_PREFIXES,
-  CLASSIFIED_HEADERS,
-  STATIC_CLASSIFIED_HEADERS,
-} from './classification-credentials.ts';
 import { manifestForClassification, servedAtEdge } from './classification.ts';
 import type { EdgeHost } from './edge-host.ts';
 import type { EdgeRuntime } from './edge-runtime.ts';
-import { passthroughHeaders } from './forwarding.ts';
 import { answerAsset } from './handlers/asset-answer.ts';
 import { routeHostedFallbackPage } from './handlers/fallback-page.ts';
+import { type GateInput, routeThroughGate } from './handlers/gate.ts';
 import { routeHostedDocument } from './handlers/hosted-document.ts';
 import {
   dispatchedFor,
   type MiddlewareOutcome,
   type MiddlewareTiming,
 } from './handlers/middleware.ts';
-import { observeMetric } from './handlers/observer.ts';
+import { gateObservation, observeTerminal } from './handlers/observer.ts';
 import {
   finishObserved,
   type ObservePassthrough,
@@ -49,9 +38,10 @@ import {
 } from './handlers/passthrough.ts';
 import { safeDiagnosticField, serviceUnavailableResponse } from './handlers/responses.ts';
 import { routeHostedBody } from './handlers/route-body.ts';
-import { routingReadsFor } from './handlers/routing-headers.ts';
+import { headersToClassify } from './handlers/routing-headers.ts';
 import { routeHostedStaticPage } from './handlers/static-page.ts';
 import { hostedFirst } from './hosted-first.ts';
+import type { EdgeMetric } from './observability/metrics.ts';
 import { withPatternBudget } from './pattern-budget.ts';
 import {
   type DeferredRoutingInput,
@@ -136,10 +126,11 @@ function afterPolicy<T>(
 }
 
 async function afterDeferredPolicy<T>(
-  input: DeferredRoutingInput,
+  input: DeferredRoutingInput & GateObservationInput,
   serve: (ready: RoutingInput) => Promise<T>,
 ): Promise<T> {
-  return serve(await input.policyReady());
+  const ready = await input.policyReady();
+  return serve(input.gatePassed === undefined ? ready : { ...ready, host: input.host });
 }
 
 /**
@@ -231,81 +222,6 @@ function passthroughFor(
   return observed.finish === undefined ? forwarding : finishObserved(forwarding, observed.finish);
 }
 
-/**
- * A copy of `headers` with the host's credentials taken off, keeping the edge's own cookie
- * (`EDGE_BYPASS_COOKIE`) where the visitor sent it. The edge's recovery sets it for the edge, which
- * turns the visitor's next request away from the shell for it, and forwarding takes it off what
- * any application is handed (`sanitizePassthroughHeaders`). Taken off here with the `cookie`
- * header whole, or by its name, it would leave a visitor whose page broke on the same shell again.
- */
-function withoutCredentials(headers: Headers, credentials: HostCredentials): Headers {
-  const copy = withoutHostCredentials(new Headers(headers), credentials);
-  const own = getCookieValue(headers.get('cookie'), EDGE_BYPASS_COOKIE);
-  const left = copy.get('cookie');
-  if (own !== undefined && getCookieValue(left, EDGE_BYPASS_COOKIE) === undefined) {
-    const pairs = [...parseCookieHeader(left), { name: EDGE_BYPASS_COOKIE, value: own }];
-    copy.set('cookie', serializeCookieHeader(pairs));
-  }
-  return copy;
-}
-
-/** The classifier reads these before routing; removing one would admit a request it must pass on. */
-function keptForClassification(name: string, headers: Headers): boolean {
-  if (name === 'cookie') {
-    return getCookieValue(headers.get('cookie'), EDGE_BYPASS_COOKIE) !== undefined;
-  }
-  return (
-    (name !== 'host' &&
-      name !== 'x-real-ip' &&
-      (CLASSIFIED_HEADERS.has(name) || STATIC_CLASSIFIED_HEADERS.has(name))) ||
-    CLASSIFIED_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix))
-  );
-}
-
-/**
- * The headers a request is classified on (`classifyRequest`), and its route's conditions are judged
- * on where no middleware runs (`requestAsLeft`): the class of a member served from its record, what
- * a route is not served a prerender under. The application's conditions among them are judged
- * without the host's own credentials (`withoutHostCredentials`), as the middleware's matchers are
- * (`routedHeaders`): the application's routing is never handed them, so a `missing` that names one
- * holds for every request, and a `has` that names one for none. Removing credentials copies only
- * where a condition can read one (`routingReadsFor`), not for any condition at all: Next.js writes
- * one on `rsc` into every build with a deployment id.
- *
- * What the classification reads by name besides — a router's headers, a navigation's, draft mode's
- * cookies — is read on the same headers, and a host that keeps one of those as its own has them
- * copied for that alone (`classificationReadsCredentials`): Next.js is never handed it either.
- * Every forwarding field read by the manifest (`routingReadsFor`) takes its forwarded value,
- * including the public country header the forwarder supplies. The client markers used by
- * classification, including the recovery cookie, stay as they came (`keptForClassification`).
- */
-function headersToClassify(
-  manifest: ProjectManifest | undefined,
-  headers: Headers,
-  credentials: HostCredentials,
-  forwarding: ForwardingContext,
-): Headers {
-  const kept = credentials.cookies.length > 0 || credentials.headers.length > 0;
-  const routing = manifest === undefined ? undefined : routingReadsFor(manifest, credentials);
-  const staticPages = manifest?.staticPages !== undefined || manifest?.pagesFallbacks !== undefined;
-  const copied =
-    kept && (classificationReadsCredentials(credentials, staticPages) || routing?.reads === true);
-  const classified = copied ? withoutCredentials(headers, credentials) : headers;
-  const fields = routing?.forwardedFields ?? [];
-  if (fields.length === 0) return classified;
-  let forwarded: Headers | undefined;
-  let routed = classified;
-  for (const name of fields) {
-    if (keptForClassification(name, headers)) continue;
-    forwarded ??= passthroughHeaders(headers, forwarding, credentials);
-    if (routed === headers) routed = new Headers(classified);
-    const value = forwarded.get(name);
-    if (value === null) routed.delete(name);
-    else routed.set(name, value);
-  }
-  return routed;
-}
-
 /** Serve the pointer's manifest as soon as the answer's required reads have arrived. */
 export function serveFromPointer(input: PointerRequest, reads?: PointerReads): Promise<Response> {
   return servePointerRequest(input, routeRequest, reads);
@@ -367,7 +283,26 @@ export function routeRequest(input: ManifestRoutingInput): Promise<Response> {
   return withPatternBudget(() => routeWithBudget(input));
 }
 
-async function routeWithBudget(input: ManifestRoutingInput): Promise<Response> {
+interface GateObservationInput {
+  readonly gatePassed?: (() => void) | undefined;
+}
+
+type GateObservedRoutingInput = GateObservationInput & ManifestRoutingInput;
+
+/** One request keeps its gate's dispatch even where later routing falls back on a pattern budget. */
+function countedGateInput(input: ManifestRoutingInput): GateObservedRoutingInput {
+  if (
+    input.state.manifest?.gates === undefined ||
+    input.state.validated ||
+    (input.request.method !== 'GET' && input.request.method !== 'HEAD')
+  )
+    return input;
+  const observed = gateObservation(input.host);
+  return { ...input, host: observed.host, gatePassed: observed.passed };
+}
+
+async function routeWithBudget(initial: ManifestRoutingInput): Promise<Response> {
+  const input = countedGateInput(initial);
   try {
     return await routeWithinBudget(input);
   } catch (error) {
@@ -378,7 +313,7 @@ async function routeWithBudget(input: ManifestRoutingInput): Promise<Response> {
   }
 }
 
-function routeWithinBudget(input: ManifestRoutingInput): Promise<Response> {
+function routeWithinBudget(input: GateObservedRoutingInput): Promise<Response> {
   const { request, url, state } = input;
   const forwarding = forwardingFor(request, input.host.sharedDomain, url.hostname);
   const passthrough = (
@@ -415,31 +350,7 @@ function routeWithinBudget(input: ManifestRoutingInput): Promise<Response> {
   // sending it there would arrive straight back here and go round again. The same whichever
   // hostname it came in on.
   if (notDeployed(state)) {
-    observeMetric(input.host, {
-      projectId: state.projectId,
-      kind: 'passthrough',
-      pathname: url.pathname,
-      shellStrategy: '',
-      shellSource: '',
-      outcomeKind: NOT_DEPLOYED,
-      colo: coloOf(request) ?? '',
-      originCacheHeader: '',
-      manifestId: state.manifestId,
-      policyId: state.policy.id,
-      encoding: '',
-      ttfbInternalMs: 0,
-      shellLookupMs: 0,
-      originFirstByteMs: 0,
-      originTotalMs: 0,
-      shellBytes: 0,
-      suffixBytes: 0,
-      recovery: 0,
-      retry: 0,
-      assetHit: 0,
-      subrequests: 0,
-      pointerLookupMs: input.timings.pointerMs,
-      manifestLookupMs: input.timings.manifestMs,
-    });
+    observeTerminalFor(input, url.pathname, NOT_DEPLOYED);
     return Promise.resolve(serviceUnavailableResponse(NOT_DEPLOYED));
   }
   // The core classifier decides which non-read requests are Actions and which are other methods;
@@ -455,7 +366,85 @@ function routeWithinBudget(input: ManifestRoutingInput): Promise<Response> {
     });
     return passthrough(passthroughReason(classification));
   }
-  return routeWithManifest(input, forwarding);
+  // A request of a route the build declared a gate for is the gate's to answer first, before any
+  // other decision of the edge's (`handlers/gate.ts`). A deployment that declares none is asked
+  // this, and nothing more.
+  const { manifest } = state;
+  if (manifest?.gates === undefined) {
+    return routeWithManifest(input, forwarding);
+  }
+  return routeThroughGate(gateInputOf(input, manifest, forwarding), () =>
+    routeGatedManifest(input, forwarding),
+  );
+}
+
+/** A later routing fallback stays inside any admitted gate's response boundary. */
+async function routeGatedManifest(
+  input: ManifestRoutingInput,
+  forwarding: ForwardingContext,
+): Promise<Response> {
+  try {
+    return await routeWithManifest(input, forwarding);
+  } catch (error) {
+    if (error instanceof PatternBudgetExceededError) {
+      return passthroughFor(input, PATTERN_BUDGET);
+    }
+    throw error;
+  }
+}
+
+/** The same request context accompanies every terminal routing outcome. */
+function observeTerminalFor(
+  input: ManifestRoutingInput,
+  pathname: string,
+  outcomeKind: string,
+  extra?: Partial<EdgeMetric>,
+): void {
+  const { request, state } = input;
+  observeTerminal(input.host, {
+    projectId: state.projectId,
+    pathname,
+    outcomeKind,
+    colo: coloOf(request) ?? '',
+    manifestId: state.manifestId,
+    policyId: state.policy.id,
+    pointerLookupMs: input.timings.pointerMs,
+    manifestLookupMs: input.timings.manifestMs,
+    ...extra,
+  });
+}
+
+/** What a request of a deployment that declares a gate brings to it (`routeThroughGate`). */
+function gateInputOf(
+  input: GateObservedRoutingInput,
+  manifest: ProjectManifest,
+  forwarding: ForwardingContext,
+): GateInput {
+  const { request, url, host, state } = input;
+  return {
+    request,
+    url,
+    manifest,
+    // Read as the classification reads the request (`headersToClassify`), so the route the gate is
+    // asked about is the route the request would be served.
+    routedHeaders: headersToClassify(manifest, request.headers, host.credentials, forwarding),
+    host,
+    forwarding,
+    validated: state.validated,
+    privateDelivery: state.privateDelivery,
+    cspReportingPath: state.app === undefined ? undefined : state.cspReportingPath,
+    cspNonce: state.cspNonce
+      ? { mode: state.cspNonceMode, strictDynamic: state.cspStrictDynamic }
+      : undefined,
+    now: input.runtime.now,
+    passed: input.gatePassed,
+    terminal: (response, route, elapsed, dispatched): void => {
+      observeTerminalFor(input, route ?? url.pathname, `gate-${String(response.status)}`, {
+        originFirstByteMs: elapsed,
+        subrequests: Number(dispatched),
+      });
+    },
+  };
 }
 
 /**

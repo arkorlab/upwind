@@ -4,6 +4,7 @@ import {
   dynamicRouting,
   edgeServablePrerenders,
   foldedHeaderRulesOf,
+  gatedPathnamesOf,
   headerRulesOf,
   placedRoutes,
   type Prerender,
@@ -21,6 +22,7 @@ import { KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
 import type { DeploymentFingerprint } from '@stayingupwind/core/deployment';
 import {
   type AppRuntime,
+  type BuildProjectManifestInput,
   buildProjectManifest,
   computeManifestId,
   MAX_MANIFEST_BYTES,
@@ -233,6 +235,19 @@ function foreignFunctions(input: AssembleManifestInput): string | undefined {
 }
 
 /**
+ * The routes the build declares a gate for, and the pathnames Next.js resolves exactly that are of
+ * each (`gatedPathnamesOf`): what the edge finds a request's gate by before it serves the request
+ * anything; the dynamic routes that land on one name it themselves (`dynamicRouting`). Nothing for
+ * a build that declares none.
+ */
+function gatesOf(
+  bundle: DeploymentBundle,
+): Pick<BuildProjectManifestInput, 'gates' | 'gatedPathnames'> {
+  const { gates } = bundle;
+  return gates === undefined ? {} : { gates, gatedPathnames: gatedPathnamesOf(bundle) };
+}
+
+/**
  * Why the Functions handed in leave out one the build places routes in (`placedRoutes`), or
  * `undefined` where they name each. The edge reaches a Function only by the name `app.functions`
  * gives it, whether the manifest sends a request there or the first Function answers that the route
@@ -267,20 +282,12 @@ export function unsupportedNext(
   return `next ${nextVersion} is outside the versions deployed (>=${min.join('.')} <${max.join('.')})`;
 }
 
-/** Declared gates need an edge that asks them before any route is served. */
-export function unsupportedGates(bundle: Pick<DeploymentBundle, 'gates'>): string | undefined {
-  return bundle.gates === undefined
-    ? undefined
-    : 'the edge does not yet serve route gates; remove UPWIND_ROUTE_GATES until it does';
-}
-
 /** Why a build cannot be represented by what this edge serves. */
 function manifestRefusal(input: AssembleManifestInput): string | undefined {
   return (
     foreignFingerprint(input.bundle, input.fingerprint) ??
     foreignFunctions(input) ??
     unreachableFunctions(input) ??
-    unsupportedGates(input.bundle) ??
     unsupportedNext(input)
   );
 }
@@ -399,6 +406,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     ...((context.pagesData.size > 0 || pagesFallbacks.length > 0) && {
       pagesDataUnder: { basePath: bundle.config.basePath, buildId: bundle.buildId },
     }),
+    ...gatesOf(bundle),
     ...(cached && { cache: { keySchemaVersion: KEY_SCHEMA_VERSION, scopeId: input.deploymentId } }),
   });
   const { manifest, serialized } = fitBuildTags(built);

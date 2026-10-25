@@ -5,8 +5,8 @@ import type { EdgeBindings } from '../bindings.ts';
 /**
  * What the edge reads of its environment where it serves one site on its own account
  * (`./standalone`): the stores every host binds (`EdgeBindings`), the hostnames it is routed, the
- * pointer that names what it serves, and the deployment's Functions by name. One edge serves one
- * site, so nothing here is shared between sites.
+ * pointer that names what it serves, and the deployment's Functions and gates by name. One edge
+ * serves one site, so nothing here is shared between sites.
  */
 export interface StandaloneEnv extends EdgeBindings {
   /**
@@ -48,4 +48,10 @@ export interface StandaloneEnv extends EdgeBindings {
     | undefined;
   /** Each Function of the deployment, bound by the name the pointer gives it (`functionBinding`). */
   readonly [binding: `APP__${string}`]: Fetcher | undefined;
+  /**
+   * Each gate the deployment's routes are asked of, bound by its name (`gateBinding`). A gate the
+   * manifest names and this edge is not bound to answers no request of its routes: each is told the
+   * gate is unavailable.
+   */
+  readonly [binding: `GATE__${string}`]: Fetcher | undefined;
 }
