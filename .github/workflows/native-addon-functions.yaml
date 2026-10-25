@@ -32,6 +32,8 @@ jobs:
         run: pnpm exec vitest run --project adapter packages/adapter/test/native-container-integration.test.ts
         env:
           UPWIND_NATIVE_FUNCTION_INTEGRATION: '1'
+      - name: Verify failure diagnostic filesystem boundaries
+        run: pnpm exec vitest run --project adapter packages/adapter/test/native-next-diagnostics.test.ts
       - name: Check out the unchanged Next.js 16.4.3 native fixture
         shell: bash
         run: |
@@ -46,3 +48,11 @@ jobs:
           test "$(git -C "$fixture_source" rev-parse HEAD)" = 29bbeab09981148ade186e8599ecdede15abc281
       - name: Build and invoke the official native fixture and fallback path
         run: node tools/native-addon-next-ci.mts "$RUNNER_TEMP/upwind-official-native-next/test/e2e/prerender-native-module"
+      - name: Retain bounded public fixture JavaScript after failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-next-compiled-js-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/upwind-native-next-diagnostics
+          if-no-files-found: warn
+          retention-days: 1

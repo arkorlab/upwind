@@ -25,6 +25,7 @@ import {
   materializeNativeArtifact,
   type NativeFixtureIdentity,
 } from './native-addon-next-artifact.mts';
+import { retainNativeNextDiagnostics } from './native-addon-next-diagnostics.mts';
 import { NativeNextProcesses, pause } from './native-addon-next-process.mts';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -185,7 +186,6 @@ async function prepare(source: string, directory: string, env: NodeJS.ProcessEnv
   const installedJson: unknown = JSON.parse(await readFile(installedFile, 'utf8'));
   const installed = record(installedJson);
   assert.equal(installed['version'], NEXT_VERSION, 'The fixture installed a different Next.js');
-  await processes.command(['exec', 'next', 'build'], directory, { env });
 }
 
 async function bodyOf(response: Response): Promise<string> {
@@ -322,6 +322,43 @@ function cancel(): void {
   processes.interrupt();
 }
 
+async function finish(input: {
+  readonly directory: string;
+  readonly fixture: string;
+  readonly runnerTemp: string;
+  readonly failed: boolean;
+  readonly validated: boolean;
+}): Promise<void> {
+  try {
+    const closed = await processes.cleanup();
+    if (closed && input.failed && input.validated) {
+      try {
+        const summary = await retainNativeNextDiagnostics(input.fixture, input.runnerTemp);
+        console.warn(JSON.stringify({ kind: 'public-fixture-js-diagnostics', ...summary }));
+      } catch {
+        console.warn('Public fixture JavaScript diagnostics were unavailable');
+      }
+    }
+    try {
+      // eslint-disable-next-line security/detect-possible-timing-attacks -- A local cleanup ownership marker, never a remotely observable authentication check.
+      if ((await readFile(path.join(BUNDLE_ROOT, OWNER_MARKER), 'utf8')) === TOKEN) {
+        const names = await readdir(BUNDLE_ROOT);
+        for (const name of names)
+          await rm(path.join(BUNDLE_ROOT, name), { recursive: true, force: true });
+      }
+    } finally {
+      await rm(input.directory, { recursive: true, force: true });
+    }
+    assert.ok(closed, 'CI process group cleanup failed');
+  } catch (error) {
+    if (!input.failed) throw error;
+    console.warn('CI cleanup encountered a failure after the original control error');
+  } finally {
+    process.off('SIGTERM', cancel);
+    process.off('SIGINT', cancel);
+  }
+}
+
 async function main(): Promise<void> {
   assert.equal(process.env['CI'], 'true', 'This helper runs only in isolated Linux CI');
   assert.equal(process.platform, 'linux');
@@ -350,6 +387,9 @@ async function main(): Promise<void> {
   await writeFile(path.join(BUNDLE_ROOT, OWNER_MARKER), TOKEN, { flag: 'wx' });
   const temporaryRoot = await realpath(runnerTemp);
   const directory = await mkdtemp(path.join(temporaryRoot, 'upwind-native-next-'));
+  const fixture = path.join(directory, 'fixture');
+  let failed = false;
+  let validated = false;
   process.once('SIGTERM', cancel);
   process.once('SIGINT', cancel);
   try {
@@ -357,25 +397,19 @@ async function main(): Promise<void> {
     const globalConfig = path.join(directory, 'global.npmrc');
     await writeFile(config, 'registry=https://registry.npmjs.org\n');
     await writeFile(globalConfig, 'registry=https://registry.npmjs.org\n');
-    const fixture = path.join(directory, 'fixture');
     await mkdir(fixture);
     const env = environment(config, globalConfig);
     await prepare(await realpath(source), fixture, env);
+    validated = true;
+    await processes.command(['exec', 'next', 'build'], fixture, { env });
     const identity = await materializeNativeArtifact(fixture, BUNDLE_ROOT, NODE_VERSION);
     await smoke(identity, env);
     assert.ok(!processes.interrupted, 'The CI control was interrupted');
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    const closed = await processes.cleanup();
-    // eslint-disable-next-line security/detect-possible-timing-attacks -- A local cleanup ownership marker, never a remotely observable authentication check.
-    if ((await readFile(path.join(BUNDLE_ROOT, OWNER_MARKER), 'utf8')) === TOKEN) {
-      const names = await readdir(BUNDLE_ROOT);
-      for (const name of names)
-        await rm(path.join(BUNDLE_ROOT, name), { recursive: true, force: true });
-    }
-    await rm(directory, { recursive: true, force: true });
-    process.off('SIGTERM', cancel);
-    process.off('SIGINT', cancel);
-    assert.ok(closed, 'CI process group cleanup failed');
+    await finish({ directory, fixture, runnerTemp: temporaryRoot, failed, validated });
   }
   console.log(
     JSON.stringify({
