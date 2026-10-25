@@ -20,6 +20,7 @@ import {
 } from './node-manifest-turbopack-async.ts';
 import { TurbopackCacheInitializers } from './node-manifest-turbopack-cache.ts';
 import { nodeManifestClearProjection } from './node-manifest-turbopack-clear.ts';
+import { turbopackDependencyOperation } from './node-manifest-turbopack-dependency-operations.ts';
 import { originalTurbopackImports } from './node-manifest-turbopack-imports.ts';
 import {
   defaultExportTarget,
@@ -339,6 +340,16 @@ class FactoryProjection {
   }
 
   private specialOperation(member: Node, visit: Visit, name: string | undefined): boolean {
+    const dependency = turbopackDependencyOperation(visit, {
+      mode: this.mode,
+      context: { name: this.context, scope: this.scope },
+      factoryIds: this.factory.ids,
+    });
+    if (dependency !== undefined) {
+      for (const [node, imported] of dependency.imports) this.imports.set(node, imported);
+      if (dependency.opaqueExports) this.exports = { kind: 'opaque' };
+      return true;
+    }
     const unbound = unboundTurbopackRequire(visit, {
       mode: this.mode,
       parents: this.parents,
