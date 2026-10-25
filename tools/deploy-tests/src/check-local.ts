@@ -78,7 +78,9 @@ async function hook(name: string, appDir: string, target: Target): Promise<strin
   }, HOOK_MS);
   try {
     const code = await new Promise<number | null>((resolve, reject) => {
-      child.once('exit', resolve);
+      // `close` rather than `exit`: once the streams are closed too, so nothing of what the hook
+      // printed is still on its way when it is read (Sentry).
+      child.once('close', resolve);
       child.once('error', reject);
     });
     assert.equal(code, 0, `${name} exited ${String(code)}`);
