@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IncomingMessage } from 'node:http';
 import { gzipSync } from 'node:zlib';
 
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { closeNodeHttpBridge, invokeNodeHandler } from '../src/node-http-bridge.ts';
 
@@ -13,7 +13,49 @@ async function bodyOf(request: IncomingMessage): Promise<string> {
 }
 
 describe('real Node HTTP bridge', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   afterAll(closeNodeHttpBridge);
+
+  it('observes handler and fallback exceptions without leaking either through the client response', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {
+      // Observe the expected synthetic failures without writing them to the test process's logs.
+    });
+    const handlerFailure = new Error('private synthetic handler cause');
+    const fallbackFailure = new Error('private synthetic fallback cause');
+    const held: Promise<unknown>[] = [];
+    const response = await invokeNodeHandler({
+      request: new Request('https://example.test/action', { method: 'POST' }),
+      requestMeta: {},
+      waitUntil: (promise) => {
+        held.push(promise);
+      },
+      handler: () => Promise.reject(handlerFailure),
+      onFailure: () => Promise.reject(fallbackFailure),
+    });
+    const body = await response.text();
+    const headers = JSON.stringify(Array.from(response.headers));
+    await Promise.all(held);
+
+    expect({
+      status: response.status,
+      body,
+      handlerInHeaders: headers.includes(handlerFailure.message),
+      fallbackInHeaders: headers.includes(fallbackFailure.message),
+    }).toStrictEqual({
+      status: 500,
+      body: 'Internal Server Error',
+      handlerInHeaders: false,
+      fallbackInHeaders: false,
+    });
+    expect(logged).toHaveBeenCalledTimes(2);
+    expect(logged).toHaveBeenNthCalledWith(1, 'next-runtime: error page failed', fallbackFailure);
+    expect(logged).toHaveBeenNthCalledWith(2, 'next-runtime: handler failed', handlerFailure);
+    expect(logged.mock.calls[0]?.[1]).toBe(fallbackFailure);
+    expect(logged.mock.calls[1]?.[1]).toBe(handlerFailure);
+  });
 
   it('preserves raw Node handler compression bytes and their wire headers', async () => {
     const encoded = gzipSync('raw Node handler response');
@@ -155,6 +197,9 @@ describe('real Node HTTP bridge', () => {
   });
 
   it('uses the route error handler and ends a callback-only invocation without hanging', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {
+      // The route intentionally fails before its successful error handler answers.
+    });
     const held: Promise<unknown>[] = [];
     const common = {
       request: new Request('https://example.test/'),

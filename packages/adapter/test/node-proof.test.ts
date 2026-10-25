@@ -205,7 +205,11 @@ describe('original physical Node Function proof', () => {
       "const {createRequire}=require('node:module');exports.native=()=>require('./addon.node');exports.other=name=>createRequire(__filename)(name);\n",
     );
 
-    await expect(proveNodeFunction(input())).rejects.toThrow('unproved Node');
+    const refused = proveNodeFunction(input());
+
+    await expect(refused).rejects.toThrow('unproved Node');
+    await expect(refused).rejects.toThrow('".next/server/entry.cjs"');
+    await expect(refused).rejects.not.toThrow(directory);
   });
 
   it('refuses a retained unexpanded Turbopack external reference', async () => {

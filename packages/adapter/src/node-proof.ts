@@ -28,6 +28,7 @@ import { turbopackRuntimePatch } from './patches/turbopack-runtime.ts';
 const BYTES_PER_MEBIBYTE = 1_048_576;
 const MAX_SOURCE_MEBIBYTES = 128;
 const MAX_SOURCE_BYTES = MAX_SOURCE_MEBIBYTES * BYTES_PER_MEBIBYTE;
+const MAX_DIAGNOSTIC_FILE_CHARACTERS = 240;
 const ROLLDOWN_RUNTIME_MODULE = '\0rolldown/runtime.js';
 // These expose the original Node graph. No Worker-specific code or dependency is substituted.
 const GRAPH_LINKS = [turbopackRuntimePatch, instrumentationPatch, cacheHandlersPatch];
@@ -132,13 +133,27 @@ function originalNodeGraphPlugin(input: NodeProofInput, graph: OriginalNodeGraph
   };
 }
 
-function assertRetainedClosures(chunk: OutputChunk): void {
+function retainedFileIdentity(projectDir: string, file: string): string {
+  if (!path.isAbsolute(file)) return JSON.stringify('[non-physical module]');
+  const relative = path.relative(projectDir, file).split(path.sep).join('/');
+  const bounded =
+    relative.length > MAX_DIAGNOSTIC_FILE_CHARACTERS
+      ? `${relative.slice(0, MAX_DIAGNOSTIC_FILE_CHARACTERS)}…`
+      : relative;
+  return JSON.stringify(bounded);
+}
+
+function assertRetainedClosures(projectDir: string, chunk: OutputChunk): void {
   const modules = Object.entries(chunk.modules);
   for (const [file, module] of modules) {
     if (module.code === null || isNodeProofCompilerModule(file)) continue;
     const refusal = dynamicNodeClosureRefusal(file, module.code);
-    if (refusal !== undefined)
-      throw new AuditError(`Original Node graph has ${refusal}; refusing native publication`);
+    if (refusal !== undefined) {
+      const identity = retainedFileIdentity(projectDir, file);
+      throw new AuditError(
+        `Original Node graph has ${refusal} in ${identity}; refusing native publication`,
+      );
+    }
   }
 }
 
@@ -228,7 +243,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) throw new AuditError('Original Node graph produced no proof chunk');
-  assertRetainedClosures(chunk);
+  assertRetainedClosures(input.projectDir, chunk);
   const retained = await native.retained(chunk);
   if (retained.length === 0)
     throw new AuditError('The original Node graph has no retained, owned native capability');

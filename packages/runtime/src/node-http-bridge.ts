@@ -49,8 +49,9 @@ async function answerFailure(
     const run: Run = input.run ?? ((work) => work());
     try {
       await run(() => onFailure(request, response));
-    } catch {
-      // The original failure remains a failed response; no secondary error is exposed.
+    } catch (failure) {
+      // eslint-disable-next-line no-console -- Keep the same private failure observation as the Worker bridge.
+      console.error('next-runtime: error page failed', failure);
     }
     if (response.writableEnded) return;
   }
@@ -83,6 +84,8 @@ async function invoke(
     }
   } catch (error) {
     await answerFailure(input, request, response, error);
+    // eslint-disable-next-line no-console -- The client receives only a generic failure; monitoring retains its cause.
+    console.error('next-runtime: handler failed', error);
   }
 }
 
