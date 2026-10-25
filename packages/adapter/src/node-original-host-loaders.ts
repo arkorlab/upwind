@@ -136,7 +136,12 @@ export function originalHostLoadersPlugin(sources: ReadonlyMap<string, OriginalS
         if (node.type !== 'CallExpression' || !identifier(node.callee, MARKER)) continue;
         const id = stringOf(node.arguments[0]);
         const site = id === undefined ? undefined : markers.get(id);
-        if (site === undefined || node.arguments.length !== MARKER_ARGUMENTS || node.optional)
+        if (
+          id === undefined ||
+          site === undefined ||
+          node.arguments.length !== MARKER_ARGUMENTS ||
+          node.optional
+        )
           throw new AuditError('Malformed or unregistered original host analysis marker');
         callees.add(node.callee);
         retained.set(id, site);
