@@ -48,8 +48,7 @@ export function nodeManifestRuntimeCallerSources(
   for (const caller of inventory.callers) {
     const source = sources.find((candidate) => candidate.id === caller.id);
     if (
-      source === undefined ||
-      source.file !== caller.file ||
+      source?.file !== caller.file ||
       source.source.sha256 !== caller.sha256 ||
       !inventory.retained.includes(caller.id)
     )
@@ -242,11 +241,7 @@ export function proveNodeManifestRuntimeCallers(input: {
   const callers: NodeManifestRuntimeCallerProof['callers'][number][] = [];
   for (const caller of input.inventory.callers) {
     const source = input.sources.find((candidate) => candidate.id === caller.id);
-    if (
-      source === undefined ||
-      source.file !== caller.file ||
-      source.source.sha256 !== caller.sha256
-    )
+    if (source?.file !== caller.file || source.source.sha256 !== caller.sha256)
       refuse('caller source binding');
     const runtimeIds = new Set(
       source.imports.filter((edge) => graphs.has(edge.target)).map((edge) => edge.target),

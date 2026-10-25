@@ -86,6 +86,14 @@ function returned(
   return isNode(value) ? { node: fn, value } : undefined;
 }
 
+function pathHasControl(text: string): boolean {
+  for (const character of text) {
+    const point = character.codePointAt(0) ?? 0;
+    if (point === DELETE_CODE_POINT || point < MIN_PATH_CODE_POINT) return true;
+  }
+  return false;
+}
+
 function pathLiteral(value: unknown): string | undefined {
   if (!isNode(value) || value.type !== 'Literal' || typeof value['value'] !== 'string')
     return undefined;
@@ -93,10 +101,7 @@ function pathLiteral(value: unknown): string | undefined {
   return text.length > 0 &&
     Buffer.byteLength(text) <= MAX_CHUNK_PATH_BYTES &&
     !/[\\?#]/u.test(text) &&
-    [...text].every((character) => {
-      const point = character.codePointAt(0) ?? 0;
-      return point >= MIN_PATH_CODE_POINT && point !== DELETE_CODE_POINT;
-    }) &&
+    !pathHasControl(text) &&
     text.split('/').every((part) => part.length > 0 && part !== '.' && part !== '..')
     ? text
     : undefined;

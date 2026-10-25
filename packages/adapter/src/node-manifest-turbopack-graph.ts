@@ -371,14 +371,13 @@ export function nodeManifestTurbopackBootGraph(input: {
   const runtimeId = resolved(entry, boot.runtimeSpecifier);
   const runtime = sources.get(runtimeId);
   if (runtime === undefined) refuse('missing physical runtime source');
-  const runtimeIds =
+  const runtimeIds = new Set(
     input.runtimeCohort === undefined
-      ? new Set([runtimeId])
-      : new Set(
-          nodeManifestRuntimeCohortSources(input.runtimeCohort, input.sources).map(
-            (identity) => identity.id,
-          ),
-        );
+      ? [runtimeId]
+      : nodeManifestRuntimeCohortSources(input.runtimeCohort, input.sources).map(
+          (identity) => identity.id,
+        ),
+  );
   if (!runtimeIds.has(runtimeId)) refuse('runtime outside certified cohort');
   // Runtime certification is deliberately a separate source obligation. The graph result
   // never grants a manifest exemption merely because a file calls itself a runtime.

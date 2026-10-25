@@ -109,14 +109,12 @@ function profileFor(
   caller: NodeManifestRuntimeCallers['callers'][number],
   profiles: readonly NodeManifestRuntimeProfile[],
 ): NodeManifestRuntimeProfile {
-  const matching =
-    caller.role === 'input-entry'
-      ? profiles.filter(
-          (profile) => profile.file === caller.file && caller.ownerIds.includes(profile.pathname),
-        )
-      : profiles.filter(
-          (profile) => profile.kind === 'pages' && caller.ownerIds.includes(profile.pathname),
-        );
+  const matching = profiles.filter((profile) => {
+    return (
+      (caller.role === 'input-entry' ? profile.file === caller.file : profile.kind === 'pages') &&
+      caller.ownerIds.includes(profile.pathname)
+    );
+  });
   const profile = matching[0];
   if (profile === undefined) return refuse('unsealed boot producer profile');
   if (!PROFILE_KINDS.has(profile.kind)) refuse('unknown boot producer profile');
@@ -232,16 +230,17 @@ export function nodeManifestRuntimeCohortSources(
   sources: readonly NodeManifestTurbopackGraphFile[],
 ): readonly RuntimeIdentity[] {
   if (!CERTIFIED.has(cohort)) refuse('uncertified cohort');
-  for (const identity of [...cohort.runtimes, ...cohort.boots]) {
-    const source = sources.find((candidate) => candidate.id === identity.id);
-    if (
-      source === undefined ||
-      source.file !== identity.file ||
-      source.source.sha256 !== identity.sha256 ||
-      JSON.stringify(source.imports) !== identity.imports
-    )
-      refuse('cohort source binding');
-    checkedSource(source);
+  for (const identities of [cohort.runtimes, cohort.boots]) {
+    for (const identity of identities) {
+      const source = sources.find((candidate) => candidate.id === identity.id);
+      if (
+        source?.file !== identity.file ||
+        source.source.sha256 !== identity.sha256 ||
+        JSON.stringify(source.imports) !== identity.imports
+      )
+        refuse('cohort source binding');
+      checkedSource(source);
+    }
   }
   return cohort.runtimes;
 }
@@ -249,7 +248,7 @@ export function nodeManifestRuntimeCohortSources(
 function assertProtectedProfiles(
   entries: readonly NodeManifestTurbopackSealedEntry[],
   profiles: readonly NodeManifestRuntimeProfile[],
-  assetPrefix: string | undefined,
+  assetPrefix = '/',
 ): void {
   for (const entry of entries) {
     const matching = profiles.filter(
@@ -260,7 +259,7 @@ function assertProtectedProfiles(
       profile === undefined ||
       matching.length !== 1 ||
       profile.kind !== (entry.kind ?? 'app-page') ||
-      (profile.assetPrefix ?? '/') !== (assetPrefix ?? '/')
+      (profile.assetPrefix ?? '/') !== assetPrefix
     )
       refuse('protected runtime producer profile');
   }
