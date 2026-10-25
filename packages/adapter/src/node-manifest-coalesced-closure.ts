@@ -211,11 +211,7 @@ class ClosureScanner {
       !this.mutable.unmodified(visit.node as unknown as AstNode, visit.node.name, true)
     )
       return false;
-    const body = root['body'];
-    return (
-      (FUNCTIONS.has(root.type) && isNode(body) && within(visit.node, body)) ||
-      this.deferred(visit, root)
-    );
+    return this.deferredRoot(visit, root);
   }
 
   private capture(visit: Visit, root: Node): void {
@@ -274,6 +270,14 @@ class ClosureScanner {
     return false;
   }
 
+  private deferredRoot(visit: Visit, root: Node): boolean {
+    const body = root['body'];
+    return (
+      (FUNCTIONS.has(root.type) && isNode(body) && within(visit.node, body)) ||
+      this.deferred(visit, root)
+    );
+  }
+
   private assertUse(visit: Visit, node: CoalescedPagesDeclaration): void {
     const owner = [...this.owned].find((candidate) => within(visit.node, candidate));
     if (owner === undefined) {
@@ -313,11 +317,24 @@ class ClosureScanner {
     return current;
   }
 
+  private deferredOrdinaryImport(
+    visit: Visit,
+    declaration: CoalescedPagesDeclaration,
+    owner: CoalescedPagesDeclaration | undefined,
+  ): boolean {
+    const initial = declaration['init'];
+    const imported = isNode(initial) ? this.imports.get(initial) : undefined;
+    if (imported?.protected !== false) return false;
+    const root = owner ?? this.input.tableValues.find((candidate) => within(visit.node, candidate));
+    return root !== undefined && this.deferredRoot(visit, root);
+  }
+
   private assertNoEscape(
     visit: Visit,
     declaration: CoalescedPagesDeclaration,
     owner: CoalescedPagesDeclaration | undefined,
   ): void {
+    if (this.deferredOrdinaryImport(visit, declaration, owner)) return;
     if (
       declaration.type === 'VariableDeclarator' &&
       isNode(declaration['init']) &&

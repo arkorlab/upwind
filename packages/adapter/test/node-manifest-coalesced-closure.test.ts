@@ -144,6 +144,31 @@ describe('whole-original coalesced Pages lexical closure', () => {
   });
 
   it.each([
+    '()=>({driver:addon.default})',
+    '()=>addon',
+    '()=>addon.default',
+    '()=>ctx.i(11).consume(addon.default)',
+  ])('keeps a sealed ordinary import available inside deferred userland: %s', (value) => {
+    expect(owned('const addon=ctx.i(10)', value)).toStrictEqual(['addon']);
+  });
+
+  it('closes an imported native driver passed by captured asynchronous userland', () => {
+    expect(
+      owned('const addon=ctx.i(10),api=ctx.i(11),Page=async()=>api.open({driver:addon.default})'),
+    ).toStrictEqual(['addon', 'api', 'Page']);
+  });
+
+  it.each([
+    'const addon=ctx.i(999),Page=()=>({driver:addon.default})',
+    'const addon=ctx.i(10);consume(addon);const Page=()=>addon.default',
+    'const addon=ctx.i(10),value={driver:addon.default},Page=()=>value',
+    'const addon=ctx.i(10),Page=()=>{addon.default=effect;return addon}',
+    'const addon=ctx.i(10),helper=()=>42,Page=()=>addon.consume(helper)',
+  ])('keeps protected, eager, mutated and unaudited captured escapes refused: %s', (before) => {
+    expect(() => owned(before)).toThrow('coalesced Pages closure');
+  });
+
+  it.each([
     '()=>JSON.stringify({page:42})',
     'function Page(){return JSON.stringify({page:42})}',
     '()=>{console.log("page");return 42}',
