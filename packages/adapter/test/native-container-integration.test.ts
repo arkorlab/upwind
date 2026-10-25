@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { appFunctionsOf, type FunctionsContext } from '../src/app-functions.ts';
 import { BlobStore } from '../src/blobs.ts';
 import type { BuildContext, RouteCode } from '../src/collect.ts';
+import { instrumentationOf } from '../src/instrumentation.ts';
 
 const execute = promisify(execFile);
 const ENABLED = process.env['UPWIND_NATIVE_FUNCTION_INTEGRATION'] === '1';
@@ -138,6 +139,25 @@ async function contextOf(directory: string): Promise<FunctionsContext> {
   ];
   const blobs = new BlobStore(outDir);
   await blobs.init();
+  const ownHook = path.join(server, 'instrumentation.js');
+  const hostHook = path.join(directory, 'host-hook.cjs');
+  await writeFile(
+    ownHook,
+    "exports.register=async()=>{globalThis.__upwindHookCalls.push(require('./instrumentation-dependency.cjs'))};\n",
+  );
+  await writeFile(
+    path.join(server, 'instrumentation-dependency.cjs'),
+    "module.exports='project';\n",
+  );
+  await writeFile(
+    `${ownHook}.nft.json`,
+    JSON.stringify({ version: 1, files: ['instrumentation-dependency.cjs'] }),
+  );
+  await writeFile(hostHook, "exports.register=async()=>{globalThis.__upwindHookCalls=['host']};\n");
+  const hook = await instrumentationOf(distDir, outDir, false, {
+    hosts: [hostHook],
+    repoRoot: directory,
+  });
   return {
     ctx: {
       projectDir: directory,
@@ -151,7 +171,7 @@ async function contextOf(directory: string): Promise<FunctionsContext> {
     sourceMaps: undefined,
     keptMaps: undefined,
     manifests: [],
-    hook: { file: undefined, chunks: [], wasm: [], assets: {} },
+    hook,
     edgeInstrumentation: undefined,
     cacheHandlers: undefined,
     middleware: { output: undefined, node: [], edge: [], chunks: [], wasm: [] },
@@ -228,6 +248,17 @@ describe.skipIf(!ENABLED)('Linux native Function artifact integration', () => {
     };
 
     expect(selected.modules).toHaveLength(1);
+    const instrumentation = await execute(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        "import {createRequire} from 'node:module';const require=createRequire(import.meta.url);await require('/bundle/upwind/instrumentation.cjs').register();console.log(JSON.stringify(globalThis.__upwindHookCalls));",
+      ],
+      { timeout: 5000, maxBuffer: 1024 },
+    );
+
+    expect(instrumentation.stdout.trim()).toBe('["host","project"]');
     child = spawn(process.execPath, ['/bundle/upwind/server.mjs'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {

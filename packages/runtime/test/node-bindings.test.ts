@@ -31,6 +31,43 @@ const config = {
 };
 
 describe('Node delegated bindings', () => {
+  it('keeps a double-slash service path on the sealed broker origin with body and sanitized headers', async () => {
+    transport.fetch.mockClear();
+    transport.fetch.mockResolvedValueOnce(new Response('sealed'));
+    const binding = nodeCapabilityFetcher(config.capabilities.services.SEARCH, true);
+    await binding.fetch('https://service.example//attacker.example/path?q=1', {
+      method: 'POST',
+      body: 'private request body',
+      headers: { 'x-upwind-control-token': 'spoofed', 'x-custom': 'kept' },
+    });
+    const [input, options] = transport.fetch.mock.calls[0]!;
+    const forwarded = input as Request;
+    const url = new URL(forwarded.url);
+
+    expect({
+      origin: url.origin,
+      path: url.pathname,
+      query: url.search,
+      method: forwarded.method,
+      body: await forwarded.text(),
+      original: forwarded.headers.get('x-upwind-service-url'),
+      control: forwarded.headers.get('x-upwind-control-token'),
+      custom: forwarded.headers.get('x-custom'),
+      redirect: options?.redirect,
+    }).toEqual({
+      origin: config.capabilities.services.SEARCH,
+      path: '//attacker.example/path',
+      query: '?q=1',
+      method: 'POST',
+      body: 'private request body',
+      original: 'https://service.example//attacker.example/path?q=1',
+      control: null,
+      custom: 'kept',
+      redirect: 'manual',
+    });
+    transport.fetch.mockClear();
+  });
+
   it('publishes a declared HTTP service alias beginning with an underscore', () => {
     const parsed = parseNodeRuntimeConfiguration(
       JSON.stringify({

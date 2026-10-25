@@ -18,6 +18,8 @@ export interface NodePhysicalFiles {
   readonly files: NodeArchiveFile[];
   readonly links: readonly { readonly path: string; readonly target: string }[];
   readonly cwd: string;
+  /** The original compiled project hook, distinct from the generated host composition. */
+  readonly instrumentation: string | undefined;
   nameOf(file: string): string;
 }
 
@@ -120,7 +122,18 @@ export async function nodePhysicalFiles(
   for (const load of native) {
     assertRelativeTopology(await realpath(load.importer), await realpath(load.binary), nameOf);
   }
+  let instrumentation: string | undefined;
+  if (input.patch.instrumentation !== undefined) {
+    try {
+      instrumentation = await realpath(
+        path.join(input.patch.distDir, 'server', 'instrumentation.js'),
+      );
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+    }
+  }
   const sourceFiles = new Set([
+    ...(instrumentation === undefined ? [] : [instrumentation]),
     ...input.entries.map((entry) => entry.filePath),
     ...(input.entryTraces ?? []).flatMap((trace) => Object.values(trace.assets)),
     ...input.files.map((file) => file.filePath),
@@ -239,6 +252,7 @@ export async function nodePhysicalFiles(
     })),
     links: emitted,
     cwd,
+    instrumentation,
     nameOf,
   };
 }

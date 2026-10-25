@@ -167,12 +167,16 @@ export async function externalRewrite(request: Request, target: URL): Promise<Re
   headers.delete('host');
   let response: Response;
   try {
-    response = await fetch(target, {
+    const init: RequestInit & { duplex?: 'half' } = {
       method: request.method,
       headers,
       body: request.body,
       redirect: 'manual',
-    });
+    };
+    // Native Node requires this for an existing Request's streamed body. Workerd accepts it too;
+    // the stream is forwarded directly, with the same single fetch and no buffering or preflight.
+    if (request.body !== null) init.duplex = 'half';
+    response = await fetch(target, init);
   } catch {
     releaseStream(request.body, 'rewrite failed: handler body unused');
     // A name that does not resolve, a refused connection, a handshake that failed: the target is

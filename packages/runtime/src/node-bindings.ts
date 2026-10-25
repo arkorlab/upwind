@@ -117,7 +117,9 @@ export function nodeCapabilityFetcher(
     fetch: (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const request = new Request(input, init);
       const source = new URL(request.url);
-      const target = new URL(`${source.pathname}${source.search}`, origin);
+      const target = new URL(origin);
+      target.pathname = source.pathname;
+      target.search = source.search;
       const forwarded = new Request(target, request);
       for (const name of [...forwarded.headers.keys()]) {
         if (name.startsWith('x-upwind-')) forwarded.headers.delete(name);

@@ -151,11 +151,22 @@ async function bundleNode(
 /** Host hooks are Node bundles; project hooks retain their original physical module graph. */
 async function bundleNodeInstrumentation(
   input: BuildFunctionInput,
-  settings: { outFile: string; nameOf: (file: string) => string },
+  settings: {
+    outFile: string;
+    nameOf: (file: string) => string;
+    instrumentation: string | undefined;
+  },
 ): Promise<void> {
   if (input.patch.instrumentation === undefined) return;
+  const entry = await realpath(input.patch.instrumentation);
+  if (entry === settings.instrumentation) {
+    await writeFile(
+      settings.outFile,
+      `globalThis.AsyncLocalStorage??=require('node:async_hooks').AsyncLocalStorage;module.exports=require(${jsLiteral(`/bundle/${settings.nameOf(entry)}`)});`,
+    );
+    return;
+  }
   const unresolved: string[] = [];
-  const root = path.resolve(input.repoRoot ?? input.projectDir);
   await using bundle = await rolldown({
     input: input.patch.instrumentation,
     platform: 'node',
@@ -164,18 +175,11 @@ async function bundleNodeInstrumentation(
     plugins: [
       {
         name: 'upwind-node-instrumentation-project-files',
-        resolveId(source) {
+        async resolveId(source) {
           if (!path.isAbsolute(source)) return null;
-          const relative = path.relative(root, source);
-          if (
-            relative !== '' &&
-            !relative.startsWith(`..${path.sep}`) &&
-            relative !== '..' &&
-            !path.isAbsolute(relative)
-          ) {
-            // The generated composed hook itself is the input, not a project module to externalize.
-            if (source === input.patch.instrumentation) return null;
-            return { id: `/bundle/${settings.nameOf(source)}`, external: true };
+          const physical = await realpath(source);
+          if (physical === settings.instrumentation) {
+            return { id: `/bundle/${settings.nameOf(physical)}`, external: true };
           }
           return null;
         },
@@ -241,7 +245,11 @@ export async function buildNodeFunction(
   await mkdir(work, { recursive: true });
   if (input.patch.instrumentation !== undefined) {
     const hook = path.join(work, 'instrumentation.cjs');
-    await bundleNodeInstrumentation(input, { outFile: hook, nameOf: physical.nameOf });
+    await bundleNodeInstrumentation(input, {
+      outFile: hook,
+      nameOf: physical.nameOf,
+      instrumentation: physical.instrumentation,
+    });
     add('upwind/instrumentation.cjs', new Uint8Array(await readFile(hook)));
   }
   const patchContext = {
