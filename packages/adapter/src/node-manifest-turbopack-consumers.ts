@@ -7,9 +7,14 @@ import {
   type NodeManifestAppPageFactoryImport,
 } from './node-manifest-app-page-factory.ts';
 import {
-  assertNodeManifestConsumer,
-  type NodeManifestConsumerImport,
-} from './node-manifest-consumers.ts';
+  assertStandaloneNodeBoundConsumers,
+  certifyNodeManifestBoundConsumer,
+  stageNodeManifestBoundProof,
+  type NodeManifestBoundBatch,
+  type NodeManifestBoundStage,
+  type NodeManifestBoundConsumerProof,
+} from './node-manifest-bound-batch.ts';
+import type { NodeManifestConsumerImport } from './node-manifest-consumers.ts';
 import { directExternalNamespace } from './node-manifest-external-forwarder.ts';
 import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
 import { inspectNodeManifestReachability } from './node-manifest-reachability.ts';
@@ -43,6 +48,7 @@ export interface NodeManifestTurbopackConsumerInput {
   readonly entries: readonly NodeManifestTurbopackSealedEntry[];
   readonly runtimeCallers?: NodeManifestRuntimeCallers | undefined;
   readonly runtimeProfiles?: readonly NodeManifestRuntimeProfile[] | undefined;
+  readonly boundBatch?: NodeManifestBoundBatch | undefined;
   readonly producer: {
     readonly id: string;
     readonly file: string;
@@ -59,6 +65,8 @@ export interface NodeManifestTurbopackConsumerProof {
   readonly terminals: readonly (NodeManifestTurbopackSealedEntry & { readonly id: string })[];
   readonly files: readonly { readonly file: string; readonly sha256: string }[];
   readonly compilerSources: readonly { readonly file: string; readonly sha256: string }[];
+  /** Provisional only: the outer graph must commit its SDK terminal walk and close the batch. */
+  readonly boundStage?: NodeManifestBoundStage | undefined;
   /** The outer graph must still visit every terminal's actual importers through the SDK root. */
   readonly requiresSdkNormalization: true;
 }
@@ -121,6 +129,7 @@ class TurbopackConsumers {
   private readonly visiting = new Set<string>();
   private readonly routes = new Map<string, NodeManifestTurbopackSealedEntry>();
   private readonly runtimeConsumers = new Set<string>();
+  private readonly boundConsumers = new Map<string, NodeManifestBoundConsumerProof>();
   private readonly strictFactories = new Map<string, NodeManifestTurbopackGraphFactory>();
   private readonly certifiedFactories = new Map<string, NodeManifestAppPageFactoryProof>();
   private readonly callerProof: NodeManifestRuntimeCallerProof | undefined;
@@ -305,22 +314,15 @@ class TurbopackConsumers {
     const imports = factory.imports
       .map((edge) => this.descriptor(edge))
       .filter((entry) => entry !== undefined);
-    const bindings = factory.projection.boundRuntimeInputs;
-    const required = bindings.filter((binding) => binding.kind === 'require');
-    const chunks = bindings.filter((binding) => binding.kind === 'loadChunk');
-    if (bindings.length !== 2 || required.length !== 1 || chunks.length !== 1)
-      refuse('unproved bound runtime callbacks');
-    const requireInput = required[0];
-    const loadChunkInput = chunks[0];
-    if (requireInput === undefined || loadChunkInput === undefined)
-      refuse('missing bound runtime callbacks');
-    assertNodeManifestConsumer({
-      source: factory.projection.source,
+    const proof = certifyNodeManifestBoundConsumer({
+      factory,
+      context: this.input,
+      cohort: this.runtimeCohort,
       imports,
       route,
-      runtimeInputs: { require: requireInput.identifier, loadChunk: loadChunkInput.identifier },
     });
     this.runtimeConsumers.add(factory.id);
+    this.boundConsumers.set(factory.id, proof);
   }
 
   private templateImports(
@@ -486,14 +488,18 @@ class TurbopackConsumers {
       this.input.producer.kind === APP_PAGE_CLASS ? 'class' : 'factory',
     );
     this.assertAdditionalCallerRoles();
-    for (const factory of this.factories.values()) {
-      if (
-        factory.projection.boundRuntimeInputs.length > 0 &&
-        !this.runtimeConsumers.has(factory.id)
-      )
-        refuse('bound runtime callback escapes a sealed consumer');
-    }
+    assertStandaloneNodeBoundConsumers(this.input, this.factories.values(), this.runtimeConsumers);
     if (this.terminals.size === 0) refuse('missing protected SDK route terminal');
+    const boundStage =
+      this.input.boundBatch === undefined
+        ? undefined
+        : stageNodeManifestBoundProof({
+            batch: this.input.boundBatch,
+            consumer: this.input,
+            cohort: this.runtimeCohort,
+            factories: [...this.factories.values()],
+            certified: [...this.boundConsumers.values()],
+          });
     return {
       terminals: [...this.terminals.values()],
       files: this.proofFiles(),
@@ -507,6 +513,7 @@ class TurbopackConsumers {
           }),
         ).values(),
       ],
+      ...(boundStage !== undefined && { boundStage }),
       requiresSdkNormalization: true,
     };
   }

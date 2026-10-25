@@ -10,6 +10,11 @@ import type { EntryModule } from './function.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
 import { manifestRuntimeAssetPrefix } from './node-asset-prefix.ts';
 import {
+  assertNodeManifestBoundBatch,
+  commitNodeManifestBoundStage,
+  createNodeManifestBoundBatch,
+} from './node-manifest-bound-batch.ts';
+import {
   assertNodeManifestConsumer,
   type NodeManifestConsumerImport,
 } from './node-manifest-consumers.ts';
@@ -248,6 +253,7 @@ class ConsumerGraph {
   private readonly pages = new Set<string>();
   private readonly compilerSources = new Map<string, ManifestGraphFile>();
   private readonly turbopackProducers = new Set<string>();
+  private readonly boundBatch = createNodeManifestBoundBatch();
   private runtimeRoot: string | undefined;
 
   constructor(
@@ -358,6 +364,7 @@ class ConsumerGraph {
       sources,
       entries,
       runtimeCallers,
+      boundBatch: this.boundBatch,
       runtimeProfiles: [...this.routes.values()].map((route) => {
         return {
           file: route.file,
@@ -374,6 +381,8 @@ class ConsumerGraph {
       await this.visit({ id: terminal.id, relative: '', kind: ROUTE_EXPORTS });
       if (kind === 'app-page') this.pages.add(terminal.page);
     }
+    if (proof.boundStage === undefined) refuse('missing bound proof stage');
+    commitNodeManifestBoundStage(this.boundBatch, proof.boundStage);
     for (const source of proof.files) this.files.set(source.file, source);
     for (const runtime of proof.compilerSources) this.compilerSources.set(runtime.file, runtime);
     this.runtimeRoot = rootDir;
@@ -454,6 +463,10 @@ class ConsumerGraph {
     return [...this.pages];
   }
 
+  assertBoundProofs(): void {
+    assertNodeManifestBoundBatch(this.boundBatch);
+  }
+
   sources(): readonly ManifestGraphFile[] {
     return [...this.files.values()];
   }
@@ -482,6 +495,7 @@ export async function proveManifestConsumerGraph(
   const routes = sealedRoutes(input, normalization);
   const consumers = new ConsumerGraph(input, graph, evaluator.root, { routes, normalization });
   await consumers.visit({ id: evaluator.id, relative: EVALUATOR, kind: 'evaluator' });
+  consumers.assertBoundProofs();
   const runtimeRootDir = consumers.runtimeRootDir();
   const sealedNormalization =
     runtimeRootDir === undefined
