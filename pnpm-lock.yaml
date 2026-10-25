@@ -277,6 +277,7 @@ catalogs:
       version: 4.6.7
 
 overrides:
+  '@opentelemetry/api': 1.9.1
   undici@>=7.0.0 <7.30.1: 7.30.1
   sharp@>=0.35.0 <0.35.5: 0.35.5
   source-map-js@>=1.0.0 <1.2.2: 1.2.2

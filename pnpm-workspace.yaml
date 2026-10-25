@@ -101,6 +101,9 @@ strictPeerDependencies: true
 # pinned; these dependencies do not run on a deployed Function's request path.
 # Zod v4's bounded collection validation is patched for CVE-2023-54404 in 4.6.6.
 overrides:
+  # API 1.10 splits the facade from its global state, so Turbopack's embedded copies escape
+  # the adapter's whole-module deduplication. Keep one API initializer per Function.
+  '@opentelemetry/api': 1.9.1
   # GHSA-4qv8-2p9j-2685 and GHSA-f72v-6w45-q472 are fixed within v7.
   'undici@>=7.0.0 <7.30.1': 7.30.1
   'sharp@>=0.35.0 <0.35.5': 0.35.5
