@@ -15,7 +15,6 @@ describe("a preview's settings", () => {
       hostnames: [],
       checks: ['/'],
       storage: [],
-      localStorage: { kv: [], r2: [], d1: [] },
       images: false,
     });
   });
@@ -43,8 +42,10 @@ describe("a preview's settings", () => {
       cspNonce: { mode: 'enforce', strictDynamic: true },
       hostnames: ['shop.example.com'],
       checks: ['/', '/api/health'],
-      storage: ['UPWIND_D1', 'CACHE'],
-      localStorage: { kv: ['CACHE'], r2: [], d1: ['UPWIND_D1'] },
+      storage: [
+        { name: 'UPWIND_D1', kind: 'd1' },
+        { name: 'CACHE', kind: 'kv' },
+      ],
       images: true,
     });
   });

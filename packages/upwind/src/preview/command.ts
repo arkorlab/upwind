@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { constants } from 'node:os';
 import path from 'node:path';
@@ -8,15 +8,23 @@ import {
   type DeploymentBundle,
   deploymentBundleSchema,
 } from '@stayingupwind/core/bundle';
-import { checkStack, type LocalStack, startStack, type StackOptions } from '@stayingupwind/local';
+import {
+  checkStack,
+  type LocalStack,
+  type LocalStorage,
+  startStack,
+  type StackOptions,
+} from '@stayingupwind/local';
 
 import { authLayout } from '../auth/layout.ts';
+import type { StorageBinding, StorageKind } from '../deploy/config.ts';
 import { readSecrets, reservedNames } from '../deploy/env.ts';
 import { AUTH_SECRETS, BUNDLE_PATH, carriesCacheHost } from '../deploy/preflight.ts';
 import { shippedStackScripts } from '../deploy/shipped.ts';
 import type { PreviewOptions } from './args.ts';
 import { failedChecks } from './checks.ts';
 import { type PreviewSettings, readPreviewSettings } from './settings.ts';
+import { changedSinceBuild } from './staleness.ts';
 
 /**
  * `upwind preview`: the build `upwind build` left, served on this machine as a deployment of it is
@@ -25,9 +33,11 @@ import { type PreviewSettings, readPreviewSettings } from './settings.ts';
  * builds nothing, and deploys nothing: it listens on this machine's loopback alone.
  *
  * What a deployment is given that the build does not say comes from the project's `deploy` section,
- * as a deploy reads it: the secrets, the nonce, the hostnames the site is reached on, and the paths
- * a deploy asks before it switches. What a deploy gives that a preview does not yet — storage,
- * images transformed, cron jobs fired — is said rather than left to be found.
+ * as a deploy reads it: the secrets, the nonce, the hostnames the site is reached on, the paths a
+ * deploy asks before it switches, the storage its Functions bind — each a store of the preview's
+ * own, empty — and whether the edge transforms images. What a deploy does that a preview does not
+ * yet — cron jobs fired — is said rather than left to be found, and so is a build older than the
+ * project it serves.
  */
 
 /** What a run waits on and is told of, where a test runs it: in place of a signal, the stack. */
@@ -93,6 +103,34 @@ function answering(port: number): Promise<boolean> {
   });
 }
 
+/**
+ * What a build older than the project would serve otherwise than the project is: said of the files
+ * changed since it was written, as far as their times say. Nothing where none is newer.
+ */
+async function staleness(projectDir: string, build: Build): Promise<string | undefined> {
+  let builtAt: number;
+  try {
+    builtAt = (await stat(path.join(build.bundleDir, path.basename(BUNDLE_PATH)))).mtimeMs;
+  } catch {
+    return undefined;
+  }
+  const { count, named } = await changedSinceBuild(projectDir, builtAt);
+  if (count === 0) {
+    return undefined;
+  }
+  const more = count - named.length;
+  const rest = more > 0 ? ` and ${String(more)} more` : '';
+  const listed = named.join(', ') + rest;
+  return `the build is older than ${String(count)} ${count === 1 ? 'file' : 'files'} of the project (${listed}), and serves them as they were before; build it again with \`upwind build\``;
+}
+
+/** The stores of `deploy.storage`, by kind, as a stack binds them. */
+function storageOf(bindings: readonly StorageBinding[]): LocalStorage {
+  const named = (kind: StorageKind): string[] =>
+    bindings.filter((binding) => binding.kind === kind).map(({ name }) => name);
+  return { kv: named('kv'), r2: named('r2'), d1: named('d1') };
+}
+
 /** What a preview serves otherwise than a deployment would, or than the project may expect. */
 async function warningsOf(
   projectDir: string,
@@ -101,6 +139,10 @@ async function warningsOf(
   secrets: ReadonlyMap<string, string>,
 ): Promise<string[]> {
   const warnings: string[] = [];
+  const stale = await staleness(projectDir, build);
+  if (stale !== undefined) {
+    warnings.push(stale);
+  }
   for (const [name, spec] of appFunctions(build.bundle)) {
     if (!(await carriesCacheHost(build.bundleDir, spec))) {
       warnings.push(
@@ -108,18 +150,14 @@ async function warningsOf(
       );
     }
   }
-  if (settings.storage.length > 0 && (build.bundle.cloudflareWorkflows?.length ?? 0) === 0) {
+  if (settings.storage.length > 0) {
+    const named = settings.storage.map(({ name, kind }) => `${name} (${kind})`).join(', ');
     warnings.push(
-      `deploy.storage names ${settings.storage.join(', ')}, and a preview binds no storage yet: the Functions find none of it`,
+      `the storage deploy.storage names — ${named} — is bound to stores of the preview's own, empty as it starts and gone when it stops`,
     );
   }
   if ((build.bundle.crons?.length ?? 0) > 0) {
     warnings.push('the project declares cron jobs, and a preview fires none of them');
-  }
-  if (settings.images) {
-    warnings.push(
-      'deploy.images is set, and a preview transforms no image: each is answered as it is',
-    );
   }
   const signsIn = authLayout(projectDir) !== undefined;
   if (signsIn && AUTH_SECRETS.every((name) => (secrets.get(name) ?? '') === '')) {
@@ -286,7 +324,7 @@ export async function runPreview(options: PreviewOptions, io: PreviewIo = {}): P
     files: options.envFiles,
     names: settings.secrets,
     env: process.env,
-    reserved: reservedNames(settings.storage.map((name) => ({ name }))),
+    reserved: reservedNames(settings.storage),
   });
   if (options.port !== 0 && (await answering(options.port))) {
     console.error(
@@ -304,8 +342,9 @@ export async function runPreview(options: PreviewOptions, io: PreviewIo = {}): P
     env: Object.fromEntries(secrets),
     hostnames: settings.hostnames,
     cspNonce: settings.cspNonce,
+    storage: storageOf(settings.storage),
+    images: settings.images,
     scripts: await shippedStackScripts(),
-    ...((build.bundle.cloudflareWorkflows?.length ?? 0) > 0 && { storage: settings.localStorage }),
     log,
   };
   return options.check ? check(stackOptions, settings) : serve(stackOptions, settings, io);

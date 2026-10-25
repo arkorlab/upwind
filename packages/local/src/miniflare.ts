@@ -69,6 +69,11 @@ export interface LocalWorker {
   /** Each namespace by the class the Worker exports, kept in SQLite. */
   readonly durableObjects?: Readonly<Record<string, string>> | undefined;
   /**
+   * The name of an Images binding, transforming on this machine — Miniflare's own, which resizes
+   * and encodes with `sharp` — rather than by Cloudflare Images.
+   */
+  readonly images?: string | undefined;
+  /**
    * Reached from outside the stack: on these addresses (the IPv4 loopback, when it names none), at
    * this port on each, or on a free one when it names none.
    */
@@ -351,6 +356,7 @@ function v4Options(worker: LocalWorker): V4WorkerOptions {
     d1Databases: { ...worker.d1Databases },
     ...(worker.workflows !== undefined && { workflows: { ...worker.workflows } }),
     durableObjects: durableObjectOptions(worker.durableObjects),
+    ...(worker.images !== undefined && { images: { binding: worker.images } }),
     ...(sockets.length > 0 && { unsafeDirectSockets: sockets }),
   };
 }
