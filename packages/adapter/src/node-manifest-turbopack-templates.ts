@@ -109,8 +109,7 @@ function program(code: string): Node {
 function checkedProjection(
   input: NodeManifestTurbopackTemplateInput,
 ): NodeManifestTurbopackProjection {
-  const id = input.projection.factory.ids[0];
-  if (id === undefined) return refuse('factory identity');
+  const id = input.projection.moduleId;
   const proof = projectNodeManifestTurbopackFactory(input.projection.original, id);
   if (JSON.stringify(proof) !== JSON.stringify(input.projection)) refuse('projection provenance');
   if (proof.boundRuntimeInputs.length > 0) refuse('unmodeled bound runtime input');

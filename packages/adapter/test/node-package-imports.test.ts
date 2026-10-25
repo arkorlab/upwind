@@ -101,6 +101,19 @@ describe('closed physical package import aliases', () => {
     expect(archivedMetadata).toBe(originalMetadata);
   });
 
+  it('preserves Node 24 exact slash-prefixed package imports after relocation', async () => {
+    const own = await fixture({ '#/dep': 'dep' }, "module.exports=require('#/dep');");
+    const physical = await nodePhysicalFiles(own.build, []);
+    const archive = path.join(directory, 'archive');
+    await staged(physical, archive);
+    const resolved = createRequire(path.join(archive, physical.nameOf(own.entry))).resolve('#/dep');
+
+    expect(resolved).toBe(path.join(archive, physical.nameOf(own.target)));
+    expect(physical.links).toStrictEqual([
+      { path: 'project/app/node_modules/dep', target: 'project/store/dep' },
+    ]);
+  });
+
   it('does not create an orphan alias from an unused imports map or canonical trace alone', async () => {
     const own = await fixture({ '#dep': 'dep' }, 'module.exports=42;');
     const physical = await nodePhysicalFiles(own.build, []);

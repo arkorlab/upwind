@@ -1,9 +1,16 @@
+import { isBuiltin } from 'node:module';
+
 import { AuditError } from './dependencies.ts';
+import {
+  certifyNodeManifestAppPageFactory,
+  type NodeManifestAppPageFactoryProof,
+  type NodeManifestAppPageFactoryImport,
+} from './node-manifest-app-page-factory.ts';
 import {
   assertNodeManifestConsumer,
   type NodeManifestConsumerImport,
 } from './node-manifest-consumers.ts';
-import { APP_PAGE_FACTORY } from './node-manifest-framework.ts';
+import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
 import type { NodeManifestTemplateImport } from './node-manifest-templates.ts';
 import {
   nodeManifestTurbopackEntryGraph,
@@ -26,7 +33,12 @@ export interface NodeManifestTurbopackConsumerInput {
     readonly id: string;
     readonly file: string;
     readonly sha256: string;
-    readonly kind?: 'app-page-factory' | 'pages-class' | 'app-route-class' | 'pages-api-class';
+    readonly kind?:
+      | 'app-page-factory'
+      | 'app-page-class'
+      | 'pages-class'
+      | 'app-route-class'
+      | 'pages-api-class';
   };
 }
 export interface NodeManifestTurbopackConsumerProof {
@@ -35,7 +47,7 @@ export interface NodeManifestTurbopackConsumerProof {
   /** The outer graph must still visit every terminal's actual importers through the SDK root. */
   readonly requiresSdkNormalization: true;
 }
-type Role = 'factory' | 'route-exports';
+type Role = 'class' | 'factory' | 'route-exports';
 
 function refuse(reason: string): never {
   throw new AuditError(
@@ -64,6 +76,7 @@ class TurbopackConsumers {
   private readonly routes = new Map<string, NodeManifestTurbopackSealedEntry>();
   private readonly runtimeConsumers = new Set<string>();
   private readonly strictFactories = new Map<string, NodeManifestTurbopackGraphFactory>();
+  private readonly certifiedFactories = new Map<string, NodeManifestAppPageFactoryProof>();
 
   constructor(input: NodeManifestTurbopackConsumerInput) {
     this.input = input;
@@ -102,11 +115,10 @@ class TurbopackConsumers {
 
   private producerKind(): 'app-page' | 'pages' | 'app-route' | 'pages-api' {
     const kind = this.input.producer.kind ?? APP_PAGE_FACTORY;
-    if (kind === APP_PAGE_FACTORY) return 'app-page';
+    if (kind === APP_PAGE_FACTORY || kind === APP_PAGE_CLASS) return 'app-page';
     if (kind === 'pages-class') return 'pages';
     if (kind === 'pages-api-class') return 'pages-api';
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Preserve fail-closed validation at this runtime boundary.
     return kind === 'app-route-class' ? 'app-route' : refuse('unknown protected producer role');
   }
 
@@ -161,7 +173,19 @@ class TurbopackConsumers {
     readonly specifier: string;
     readonly target: string;
   }): NodeManifestConsumerImport | undefined {
-    if (this.unwrapped(edge.target) !== this.input.producer.id) return undefined;
+    const target = this.unwrapped(edge.target);
+    const proof = this.certifiedFactories.get(target);
+    if (proof !== undefined)
+      return {
+        specifier: edge.specifier,
+        file: proof.file,
+        sha256: proof.sha256,
+        kind: APP_PAGE_FACTORY,
+        exportName: 'createAppPageEntrypoint',
+        certifiedFactory: proof,
+      };
+    if (target !== this.input.producer.id || this.input.producer.kind === APP_PAGE_CLASS)
+      return undefined;
     return {
       specifier: edge.specifier,
       file: this.input.producer.file,
@@ -234,13 +258,30 @@ class TurbopackConsumers {
       });
   }
 
+  private async fixedFactory(factory: NodeManifestTurbopackGraphFactory): Promise<void> {
+    const physical = this.input.sources.find((source) => source.id === factory.physicalId);
+    if (physical === undefined) return refuse('missing fixed factory source');
+    const imports: NodeManifestAppPageFactoryImport[] = factory.imports
+      .filter((edge) => isBuiltin(edge.target))
+      .map((edge) => ({ specifier: edge.specifier, builtin: edge.target }));
+    const physicalImports = this.templateImports({
+      ...factory,
+      imports: factory.imports.filter((edge) => !isBuiltin(edge.target)),
+    });
+    const proof = await certifyNodeManifestAppPageFactory({
+      file: physical.file,
+      projection: factory.projection,
+      imports: [...physicalImports, ...imports],
+    });
+    this.certifiedFactories.set(factory.id, proof);
+  }
+
   private strictFactory(
     factory: NodeManifestTurbopackGraphFactory,
   ): NodeManifestTurbopackGraphFactory {
     const previous = this.strictFactories.get(factory.id);
     if (previous !== undefined) return previous;
-    const id = factory.projection.factory.ids[0];
-    if (id === undefined) return refuse('missing protected factory identity');
+    const id = factory.projection.moduleId;
     const projection = projectNodeManifestTurbopackFactory(factory.projection.original, id);
     if (
       JSON.stringify(projection.imports) !== JSON.stringify(factory.projection.imports) ||
@@ -264,6 +305,22 @@ class TurbopackConsumers {
     return found;
   }
 
+  private async visitParent(
+    factory: NodeManifestTurbopackGraphFactory,
+    id: string,
+    role: Role,
+  ): Promise<void> {
+    if (forwarded(factory) === id) await this.visit(factory.id, role);
+    else if (role === 'class') {
+      await this.fixedFactory(factory);
+      await this.visit(factory.id, 'factory');
+    } else {
+      if (role !== 'factory') refuse('route class/handler used outside normalization');
+      await this.consumer(factory);
+      await this.visit(factory.id, 'route-exports');
+    }
+  }
+
   private async visit(id: string, role: Role): Promise<void> {
     const complete = this.complete.get(id);
     if (complete !== undefined) {
@@ -279,12 +336,7 @@ class TurbopackConsumers {
       const incoming = this.factories.get(parent);
       if (incoming === undefined) refuse('unknown protected consumer');
       const factory = this.strictFactory(incoming);
-      if (forwarded(factory) === id) await this.visit(parent, role);
-      else {
-        if (role !== 'factory') refuse('route class/handler used outside normalization');
-        await this.consumer(factory);
-        await this.visit(parent, 'route-exports');
-      }
+      await this.visitParent(factory, id, role);
     }
     this.visiting.delete(id);
     this.complete.set(id, role);
@@ -297,7 +349,10 @@ class TurbopackConsumers {
       producer.source.sha256 !== this.input.producer.sha256
     )
       refuse('producer source binding');
-    await this.visit(this.input.producer.id, 'factory');
+    await this.visit(
+      this.input.producer.id,
+      this.input.producer.kind === APP_PAGE_CLASS ? 'class' : 'factory',
+    );
     for (const factory of this.factories.values()) {
       if (
         factory.projection.boundRuntimeInputs.length > 0 &&

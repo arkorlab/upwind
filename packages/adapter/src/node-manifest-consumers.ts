@@ -4,6 +4,10 @@ import { parseAst } from 'rolldown/parseAst';
 
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
 import {
+  isCertifiedNodeManifestAppPageFactory,
+  type NodeManifestAppPageFactoryProof,
+} from './node-manifest-app-page-factory.ts';
+import {
   assertArgument,
   declaration,
   getterExport,
@@ -37,6 +41,7 @@ export interface NodeManifestConsumerImport {
   readonly sha256: string;
   readonly kind: 'app-page-factory' | 'app-page-class' | 'route-class' | 'evaluator';
   readonly exportName: string;
+  readonly certifiedFactory?: NodeManifestAppPageFactoryProof;
 }
 
 export interface NodeManifestConsumerInput {
@@ -82,6 +87,13 @@ class Consumer {
   }
 
   private reviewed(entry: NodeManifestConsumerImport): void {
+    if (
+      entry.kind === 'app-page-factory' &&
+      entry.exportName === PRODUCER_EXPORT &&
+      entry.certifiedFactory !== undefined &&
+      isCertifiedNodeManifestAppPageFactory(entry.certifiedFactory, entry)
+    )
+      return;
     if (
       entry.kind !== 'app-page-factory' ||
       entry.exportName !== PRODUCER_EXPORT ||

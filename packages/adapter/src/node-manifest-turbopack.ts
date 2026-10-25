@@ -32,6 +32,8 @@ export type NodeManifestTurbopackExports =
   | { readonly kind: 'namespace'; readonly specifier: string };
 export interface NodeManifestTurbopackProjection {
   readonly mode: 'strict' | 'dependencies';
+  /** Runtime identity selected from this factory's possibly merged registration group. */
+  readonly moduleId: NodeManifestTurbopackModuleId;
   readonly original: NodeManifestTurbopackSource;
   readonly factory: NodeManifestTurbopackFactory;
   /** Inspection only. Never write these bytes into the physical Node artifact. */
@@ -213,5 +215,8 @@ export function projectNodeManifestTurbopackFactory(
     candidate.ids.includes(id),
   );
   if (factory === undefined) return refuseTurbopack('unknown module id');
-  return projectTurbopackFactory(source, factory, checkedTurbopackProgram(source), mode);
+  return projectTurbopackFactory(source, factory, checkedTurbopackProgram(source), {
+    mode,
+    moduleId: id,
+  });
 }

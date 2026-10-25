@@ -143,6 +143,7 @@ function bootRuntime(statement: unknown): {
   return { name: only['id'].name, runtimeSpecifier: specifier, publicPath: source };
 }
 
+// eslint-disable-next-line sonarjs/function-return-type -- Next.js ModuleId preserves runtime-distinct number and string Map keys.
 function exportedModule(statement: unknown, name: string): NodeManifestTurbopackModuleId {
   if (!isNode(statement) || statement.type !== 'ExpressionStatement')
     return refuse('entry export statement');
@@ -275,11 +276,9 @@ function factoryRecords(tables: readonly NodeManifestTurbopackGraphFile[]): Read
   >();
   for (const table of tables) {
     for (const factory of nodeManifestTurbopackFactories(table.source)) {
-      const firstId = factory.ids[0];
-      if (firstId === undefined) refuse('empty factory identity');
-      const projection = projectNodeManifestTurbopackFactory(table.source, firstId, 'dependencies');
       for (const id of factory.ids) {
         if (factories.has(id)) refuse('duplicate module id across loaded chunks');
+        const projection = projectNodeManifestTurbopackFactory(table.source, id, 'dependencies');
         factories.set(id, { physical: table, projection });
       }
     }

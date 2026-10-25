@@ -74,6 +74,27 @@ function replaceFile(
 }
 
 describe('next Turbopack route topology', () => {
+  it('binds a separate selected export identity to each merged factory ID', () => {
+    const own = replaceFile(
+      fixture(),
+      CHUNK,
+      `module.exports=[1,"1",((ctx)=>{var ns=ctx.i(2);ctx.n(ns,"1");}),2,((ctx)=>{var ns=ctx.x(${jsLiteral(SPECIFIER)},()=>require(${jsLiteral(SPECIFIER)}));ctx.n(ns);})];`,
+    );
+    const graph = nodeManifestTurbopackEntryGraph(own);
+
+    expect(
+      graph.factories.slice(0, 2).map((factory) => {
+        return {
+          moduleId: factory.projection.moduleId,
+          exports: factory.projection.exports,
+        };
+      }),
+    ).toStrictEqual([
+      { moduleId: 1, exports: { kind: 'commonjs' } },
+      { moduleId: '1', exports: { kind: 'namespace', specifier: 'turbopack:2' } },
+    ]);
+  });
+
   it('recognizes the complete fixed entry producer without executing its runtime', () => {
     expect(inspectNodeManifestTurbopackEntry(source(BOOT))).toStrictEqual({
       runtimeSpecifier: '../../chunks/[turbopack]_runtime.js',

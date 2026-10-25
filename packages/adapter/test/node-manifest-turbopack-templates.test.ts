@@ -33,6 +33,20 @@ async function runtimeConstructor(
 }
 
 describe('projected fixed Next Pages and AppRoute template bodies', () => {
+  it('rechecks the selected runtime ID rather than the first ID of a merged registration', async () => {
+    const own = await projectedTemplateFixture('pages-api');
+    const changed = reprojectTemplateFixture(
+      own,
+      own.projection.original.code.replace('module.exports=[1,', 'module.exports=["opposite",1,'),
+    );
+
+    expect(changed.projection.moduleId).toBe(1);
+    await expect(assertNodeManifestTurbopackTemplateConsumer(changed)).resolves.toMatchObject({
+      kind: 'pages-api',
+      requiresRuntimeNormalization: true,
+    });
+  });
+
   it.each(['pages', 'app-route'] as const)(
     'certifies the actual published %s body after real context import/export projection',
     async (kind) => {

@@ -31,6 +31,13 @@ const BOUND_PREFIX = '__upwind_turbopack_bound_';
 const BOUND_KINDS = { l: 'loadChunk', r: 'require' } as const;
 const EXTERNAL_INTEROP_ARITY = 3;
 const MAX_MODULE_ID_BYTES = 16_384;
+const MAX_GETTER_EXPORT_ARGUMENTS = 3;
+const MAX_VALUE_EXPORT_ARGUMENTS = 2;
+
+interface ProjectionSelection {
+  readonly mode: 'strict' | 'dependencies';
+  readonly moduleId: NodeManifestTurbopackModuleId;
+}
 
 function refuse(reason: string): never {
   throw new AuditError(
@@ -39,6 +46,7 @@ function refuse(reason: string): never {
 }
 
 /** Fixed Next ModuleId is an untagged number/string; the runtime stores exact keys in a Map. */
+// eslint-disable-next-line sonarjs/function-return-type -- Next.js ModuleId preserves runtime-distinct number and string Map keys.
 export function turbopackModuleId(node: unknown): NodeManifestTurbopackModuleId | undefined {
   if (!isNode(node) || node.type !== 'Literal') return undefined;
   const value = node['value'];
@@ -121,6 +129,28 @@ function externalThunk(args: readonly unknown[]): Node {
   return only['argument'];
 }
 
+function defaultExportTarget(value: unknown, visit: Visit): boolean {
+  if (value === undefined) return true;
+  if (!isNode(value)) return false;
+  if (
+    value.type === 'Literal' &&
+    value['value'] === null &&
+    !('regex' in value) &&
+    !('bigint' in value)
+  )
+    return true;
+  if (identifier(value) && value.name === 'undefined')
+    return declaration('undefined', visit.scopes) === undefined;
+  const argument = value['argument'];
+  return (
+    value.type === 'UnaryExpression' &&
+    value['operator'] === 'void' &&
+    isNode(argument) &&
+    argument.type === 'Literal' &&
+    argument['value'] === 0
+  );
+}
+
 class FactoryProjection {
   private readonly source: NodeManifestTurbopackSource;
   private readonly factory: NodeManifestTurbopackFactory;
@@ -131,6 +161,7 @@ class FactoryProjection {
   private readonly visits: readonly Visit[];
   private readonly parents: ReadonlyMap<Node, Visit>;
   private readonly mode: 'strict' | 'dependencies';
+  private readonly moduleId: NodeManifestTurbopackModuleId;
   private readonly allowedContext = new Set<Node>();
   private readonly edits = new Map<Node, Edit>();
   private readonly imports = new Map<Node, NodeManifestTurbopackImport>();
@@ -146,10 +177,11 @@ class FactoryProjection {
     source: NodeManifestTurbopackSource,
     factory: NodeManifestTurbopackFactory,
     program: Node,
-    mode: 'strict' | 'dependencies',
+    selection: ProjectionSelection,
   ) {
     this.source = source;
-    this.mode = mode;
+    this.mode = selection.mode;
+    this.moduleId = selection.moduleId;
     this.factory = factory;
     const all = visitTree(program);
     const found = all.find(({ node }) => {
@@ -241,17 +273,44 @@ class FactoryProjection {
     this.edit(call, `require(${JSON.stringify(specifier)})`);
   }
 
-  private getterExports(call: Node): void {
+  private exportModule(value: unknown, visit: Visit): NodeManifestTurbopackModuleId {
+    if (defaultExportTarget(value, visit)) return this.moduleId;
+    const target = turbopackModuleId(value);
+    if (target === undefined || !this.factory.ids.includes(target))
+      return refuse('dynamic or foreign export target');
+    return target;
+  }
+
+  private dynamicExports(value: unknown): void {
+    if (!isNode(value) || value.type !== 'Literal' || typeof value['value'] !== 'boolean')
+      refuse('dynamic export flag');
+    if (value['value'] === true && this.mode === 'strict') refuse('dynamic protected exports');
+  }
+
+  private selectedExport(call: Node, visit: Visit, getters: boolean): boolean {
+    const args = listOf(call, 'arguments');
+    const maximum = getters ? MAX_GETTER_EXPORT_ARGUMENTS : MAX_VALUE_EXPORT_ARGUMENTS;
+    if (
+      args.length === 0 ||
+      args.length > maximum ||
+      args.some((arg) => !isNode(arg) || arg.type === 'SpreadElement')
+    )
+      refuse('export registration arguments');
+    const target = this.exportModule(args[1], visit);
+    if (getters && args.length === MAX_GETTER_EXPORT_ARGUMENTS) this.dynamicExports(args[2]);
+    return target === this.moduleId;
+  }
+
+  private getterExports(call: Node, visit: Visit): void {
+    if (!this.selectedExport(call, visit, true)) return;
     if (this.mode === 'dependencies') {
-      if (listOf(call, 'arguments').length !== 1) refuse('export registration arguments');
       this.exports = { kind: 'opaque' };
       return;
     }
     this.topLevel(call);
     const args = listOf(call, 'arguments');
     const table = args[0];
-    if (args.length !== 1 || !isNode(table) || table.type !== 'ArrayExpression')
-      refuse('export registration arguments');
+    if (!isNode(table) || table.type !== 'ArrayExpression') refuse('export registration arguments');
     const entries = listOf(table, 'elements');
     const names = new Set<string>();
     for (let index = 0; index < entries.length; index += 2) {
@@ -276,7 +335,7 @@ class FactoryProjection {
     const binding = declaration(value.name, visit.scopes)?.node;
     const init = binding?.type === 'VariableDeclarator' ? binding['init'] : undefined;
     const imported = isNode(init) ? this.imports.get(init) : undefined;
-    if (imported === undefined || args.length !== 1) return undefined;
+    if (imported === undefined) return undefined;
     const statements = listOf(this.body, 'body').filter((statement) => {
       return (
         !isNode(statement) ||
@@ -301,10 +360,10 @@ class FactoryProjection {
   }
 
   private namespaceExports(call: Node, visit: Visit): void {
+    if (!this.selectedExport(call, visit, false)) return;
     const imported = this.namespaceIdentity(call, visit);
     if (imported === undefined) {
       if (this.mode === 'strict') refuse('namespace forwarding identity');
-      if (listOf(call, 'arguments').length !== 1) refuse('namespace forwarding arguments');
       this.exports = { kind: 'opaque' };
       return;
     }
@@ -362,7 +421,7 @@ class FactoryProjection {
         break;
       }
       case 's': {
-        this.getterExports(call);
+        this.getterExports(call, visit);
         break;
       }
       case undefined: {
@@ -445,6 +504,7 @@ class FactoryProjection {
     const sha256 = createHash('sha256').update(code).digest('hex');
     return {
       mode: this.mode,
+      moduleId: this.moduleId,
       original: this.source,
       factory: this.factory,
       source: { code, sha256 },
@@ -460,7 +520,7 @@ export function projectTurbopackFactory(
   source: NodeManifestTurbopackSource,
   factory: NodeManifestTurbopackFactory,
   program: Node,
-  mode: 'strict' | 'dependencies',
+  selection: ProjectionSelection,
 ): NodeManifestTurbopackProjection {
-  return new FactoryProjection(source, factory, program, mode).project();
+  return new FactoryProjection(source, factory, program, selection).project();
 }

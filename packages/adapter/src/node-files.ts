@@ -274,7 +274,6 @@ function packageImportTarget(metadata: Record<string, unknown>, specifier: strin
     !packageRecord(imports) ||
     !Object.hasOwn(imports, specifier) ||
     !/^#[\w./-]+$/u.test(specifier) ||
-    specifier.startsWith('#/') ||
     specifier.endsWith('/')
   )
     throw new AuditError(

@@ -97,8 +97,9 @@ interface RouteLocation {
 }
 
 function turbopackKind(child: ProtectedModule, sha256: string): SealedRoute['kind'] | undefined {
-  // A compiled AppPage namespace exposes class authority, not the fixed template factory.
-  if (child.kind === APP_PAGE_CLASS) return undefined;
+  // Class authority remains a distinct role until a whole fixed producer body is certified.
+  if (child.kind === APP_PAGE_CLASS)
+    return reviewedFrameworkSource(child.relative) === sha256 ? 'app-page' : undefined;
   if (child.kind === APP_PAGE_FACTORY) {
     return child.relative === 'dist/build/templates/app-page-runtime.js' &&
       reviewedFrameworkSource(child.relative) === sha256
@@ -357,7 +358,8 @@ class ConsumerGraph {
     const kind = turbopackKind(child, producer.sha256);
     if (kind === undefined) refuse('unknown projected route constructor');
     const entries = [...this.routes.values()].filter((route) => route.kind === kind);
-    const producerKind = TURBOPACK_PRODUCER_KINDS[kind];
+    const producerKind =
+      child.kind === APP_PAGE_CLASS ? APP_PAGE_CLASS : TURBOPACK_PRODUCER_KINDS[kind];
     const proof = await proveNodeManifestTurbopackConsumers({
       rootDir,
       distDir,

@@ -74,6 +74,115 @@ describe('next Turbopack manifest factory projections', () => {
     });
   });
 
+  it('projects each merged runtime ID separately and never exports another ID as the selected namespace', () => {
+    const original = source(
+      'module.exports=[1,"1",((ctx)=>{var ns=ctx.i(2);ctx.n(ns,"1");}),2,((ctx)=>{})];',
+    );
+    const numeric = projectNodeManifestTurbopackFactory(original, 1);
+    const text = projectNodeManifestTurbopackFactory(original, '1');
+
+    expect([numeric.moduleId, text.moduleId]).toStrictEqual([1, '1']);
+    expect([numeric.exports, text.exports]).toStrictEqual([
+      { kind: 'commonjs' },
+      { kind: 'namespace', specifier: 'turbopack:2' },
+    ]);
+    expect(numeric.source.code).toContain('ctx.n(ns,"1")');
+    expect(text.source.code).not.toContain('ctx.n(');
+  });
+
+  it('selects only its own merged getter registration and keeps other-ID code inspected', () => {
+    const original = source(
+      'module.exports=[1,"1",((ctx)=>{ctx.s(["numeric",()=>numeric],1);ctx.s(["text",()=>text],"1",false);const numeric=1;const text=2;})];',
+    );
+    const numeric = projectNodeManifestTurbopackFactory(original, 1);
+    const text = projectNodeManifestTurbopackFactory(original, '1');
+
+    expect([numeric.exports, text.exports]).toStrictEqual([
+      { kind: 'getters', names: ['numeric'] },
+      { kind: 'getters', names: ['text'] },
+    ]);
+    expect(numeric.source.code).toContain('ctx.s(["text",()=>text],"1",false)');
+    expect(text.source.code).toContain('ctx.s(["numeric",()=>numeric],1)');
+  });
+
+  it.each(['null', 'undefined', 'void 0'])(
+    'uses only the genuine %s nullish sentinel as the selected export ID',
+    (target) => {
+      const original = source(
+        `module.exports=[1,"other",((ctx)=>{var ns=ctx.i(2);ctx.v(ns,${target});}),2,((ctx)=>{})];`,
+      );
+      const projected = projectNodeManifestTurbopackFactory(original, 'other');
+
+      expect(projected.moduleId).toBe('other');
+      expect(projected.exports).toStrictEqual({ kind: 'namespace', specifier: 'turbopack:2' });
+    },
+  );
+
+  it.each([
+    'ctx.v(42,"other");',
+    'ctx.n({answer:42},"other");',
+    'ctx.s(["answer",()=>calculate()],"other",true);',
+  ])('keeps ordinary owned-target export values opaque: %s', (body) => {
+    const original = source(`module.exports=[1,"other",((ctx)=>{${body}})];`);
+    const selected = projectNodeManifestTurbopackFactory(original, 'other', 'dependencies');
+    const opposite = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
+
+    expect([selected.exports, opposite.exports]).toStrictEqual([
+      { kind: 'opaque' },
+      { kind: 'commonjs' },
+    ]);
+  });
+
+  it.each([
+    'ctx.s(["value",()=>value],foreign);',
+    'ctx.s(["value",()=>value],/literal/);',
+    'ctx.s(["value",()=>value],0n);',
+    'ctx.n(value,3);',
+    'ctx.v(value,"unknown");',
+    'const undefined=1;ctx.v(value,undefined);',
+    'ctx.n(value,void sideEffect());',
+    'ctx.s(["value",()=>value],null,flag);',
+    'ctx.v(...values);',
+    'ctx.s(["value",()=>value],1,...flags);',
+    'ctx.v(value,1,false);',
+  ])('refuses unknown, effectful, foreign or ambiguous export targets: %s', (body) => {
+    const original = source(`module.exports=[1,"other",((ctx)=>{${body}})];`);
+
+    expect(() => projectNodeManifestTurbopackFactory(original, 1, 'dependencies')).toThrow(
+      'Unproved Next.js',
+    );
+  });
+
+  it('keeps all imports and loader refusals in other-ID export bodies', () => {
+    const original = source(
+      'module.exports=[1,"other",((ctx)=>{ctx.s(["value",()=>ctx.i(2)],"other");}),2,((ctx)=>{})];',
+    );
+    const projected = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
+    const unknown = source(
+      'module.exports=[1,"other",((ctx)=>{ctx.s(["value",()=>ctx.r(dynamic)],"other");})];',
+    );
+
+    expect(projected.imports).toStrictEqual([
+      { kind: 'import', specifier: 'turbopack:2', targetId: 2 },
+    ]);
+    expect(() => projectNodeManifestTurbopackFactory(unknown, 1, 'dependencies')).toThrow(
+      'Unproved Next.js',
+    );
+  });
+
+  it('refuses dynamic protected namespaces even for an owned opposite-ID registration', () => {
+    const original = source(
+      'module.exports=[1,"other",((ctx)=>{ctx.s(["value",()=>value],"other",true);})];',
+    );
+
+    expect(() => projectNodeManifestTurbopackFactory(original, 1)).toThrow(
+      'dynamic protected exports',
+    );
+    expect(() => projectNodeManifestTurbopackFactory(original, 'other')).toThrow(
+      'dynamic protected exports',
+    );
+  });
+
   it('preserves numeric and string Map keys through registration and projected imports', () => {
     const original = source(
       'module.exports=[1,((ctx)=>{ctx.v(42);}),"1",((ctx)=>{var own=ctx.i(1);var other=ctx.r("1");})];',
