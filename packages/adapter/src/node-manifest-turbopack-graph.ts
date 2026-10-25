@@ -7,6 +7,11 @@ import { parseAst } from 'rolldown/parseAst';
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node } from './lexical-scope.ts';
 import { identifier, propertyName, stringOf } from './node-manifest-consumer-ast.ts';
+import {
+  nodeManifestRuntimeCohortLookup,
+  nodeManifestRuntimeCohortSources,
+  type NodeManifestRuntimeCohort,
+} from './node-manifest-runtime-cohort.ts';
 import { assertTurbopackCacheOwners } from './node-manifest-turbopack-cache.ts';
 import {
   nodeManifestTurbopackFactories,
@@ -44,8 +49,7 @@ export interface NodeManifestTurbopackGraphFactory {
   readonly projection: NodeManifestTurbopackProjection;
   readonly imports: readonly { readonly specifier: string; readonly target: string }[];
 }
-export interface NodeManifestTurbopackEntryGraph {
-  readonly entry: NodeManifestTurbopackSealedEntry;
+export interface NodeManifestTurbopackBootGraph {
   readonly physicalId: string;
   readonly runtimeId: string;
   readonly exportedId: string;
@@ -55,6 +59,9 @@ export interface NodeManifestTurbopackEntryGraph {
   readonly runtime: NodeManifestTurbopackGraphFile;
   /** Topology alone is never a manifest exemption or an SDK normalization terminal. */
   readonly requiresReviewedRuntime: true;
+}
+export interface NodeManifestTurbopackEntryGraph extends NodeManifestTurbopackBootGraph {
+  readonly entry: NodeManifestTurbopackSealedEntry;
   readonly requiresSdkNormalization: true;
 }
 
@@ -250,6 +257,8 @@ function factoryId(physical: string, id: NodeManifestTurbopackModuleId): string 
 function runtimeTables(
   runtime: NodeManifestTurbopackGraphFile,
   sources: ReadonlyMap<string, NodeManifestTurbopackGraphFile>,
+  runtimeIds: ReadonlySet<string>,
+  cohort: NodeManifestRuntimeCohort | undefined,
 ): readonly NodeManifestTurbopackGraphFile[] {
   const tables = new Map<string, NodeManifestTurbopackGraphFile>();
   for (const edge of runtime.imports) {
@@ -257,6 +266,11 @@ function runtimeTables(
     // Closing the runtime's dynamic chunk lookup can include its own physical module. Its
     // production body has a separate proof obligation; it is never a registration table.
     if (edge.target === runtime.id) continue;
+    if (runtimeIds.has(edge.target)) {
+      if (cohort === undefined || !nodeManifestRuntimeCohortLookup(cohort, runtime.id, edge))
+        refuse('unproved cross-runtime table edge');
+      continue;
+    }
     const table = sources.get(edge.target);
     if (table === undefined) refuse('unclosed runtime table target');
     tables.set(table.id, table);
@@ -341,20 +355,30 @@ function factoryRecords(
   return result;
 }
 
-export function nodeManifestTurbopackEntryGraph(input: {
+export function nodeManifestTurbopackBootGraph(input: {
   readonly distDir: string;
   readonly sources: readonly NodeManifestTurbopackGraphFile[];
-  readonly entry: NodeManifestTurbopackSealedEntry;
-}): NodeManifestTurbopackEntryGraph {
+  readonly file: string;
+  readonly runtimeCohort?: NodeManifestRuntimeCohort | undefined;
+}): NodeManifestTurbopackBootGraph {
   const sources = byId(input.sources);
-  const entry = input.sources.find((source) => source.file === input.entry.file);
+  const entry = input.sources.find((source) => source.file === input.file);
   if (entry === undefined) return refuse('missing sealed route source');
   const boot = inspectNodeManifestTurbopackEntry(entry.source);
-  if (path.resolve(input.distDir, boot.publicPath) !== input.entry.file)
+  if (path.resolve(input.distDir, boot.publicPath) !== input.file)
     refuse('route bootstrap public path mismatch');
   const runtimeId = resolved(entry, boot.runtimeSpecifier);
   const runtime = sources.get(runtimeId);
   if (runtime === undefined) refuse('missing physical runtime source');
+  const runtimeIds =
+    input.runtimeCohort === undefined
+      ? new Set([runtimeId])
+      : new Set(
+          nodeManifestRuntimeCohortSources(input.runtimeCohort, input.sources).map(
+            (identity) => identity.id,
+          ),
+        );
+  if (!runtimeIds.has(runtimeId)) refuse('runtime outside certified cohort');
   // Runtime certification is deliberately a separate source obligation. The graph result
   // never grants a manifest exemption merely because a file calls itself a runtime.
   const initialChunks = boot.chunks.map((chunk) => {
@@ -362,12 +386,12 @@ export function nodeManifestTurbopackEntryGraph(input: {
     const target = input.sources.find((source) => source.file === file);
     if (target === undefined || runtime.imports.every((edge) => edge.target !== target.id))
       refuse('unclosed loaded chunk');
-    if (target.id === runtime.id) refuse('runtime used as a factory table');
+    if (runtimeIds.has(target.id)) refuse('runtime used as a factory table');
     return target.id;
   });
   // ctx.l can load a deferred table not present among initial R.c calls. Close the
   // entire rewritten runtime table, not just the entry's initial loading cohort.
-  const tables = runtimeTables(runtime, sources);
+  const tables = runtimeTables(runtime, sources, runtimeIds, input.runtimeCohort);
   const factories = factoryRecords(tables);
   assertTurbopackCacheOwners([...factories.values()], new Set(factories.keys()));
   const logicalIds = new Map<string, NodeManifestTurbopackModuleId>();
@@ -406,7 +430,6 @@ export function nodeManifestTurbopackEntryGraph(input: {
     return targetOf(id);
   };
   return {
-    entry: input.entry,
     physicalId: entry.id,
     runtimeId,
     exportedId: initialTargetOf(boot.exportedId),
@@ -415,6 +438,18 @@ export function nodeManifestTurbopackEntryGraph(input: {
     factories: modules,
     runtime,
     requiresReviewedRuntime: true,
+  };
+}
+
+export function nodeManifestTurbopackEntryGraph(input: {
+  readonly distDir: string;
+  readonly sources: readonly NodeManifestTurbopackGraphFile[];
+  readonly entry: NodeManifestTurbopackSealedEntry;
+  readonly runtimeCohort?: NodeManifestRuntimeCohort | undefined;
+}): NodeManifestTurbopackEntryGraph {
+  return {
+    ...nodeManifestTurbopackBootGraph({ ...input, file: input.entry.file }),
+    entry: input.entry,
     requiresSdkNormalization: true,
   };
 }

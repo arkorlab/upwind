@@ -11,21 +11,26 @@ import {
   type NodeManifestConsumerImport,
 } from './node-manifest-consumers.ts';
 import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
-import { reachableNodeManifestFactories } from './node-manifest-reachability.ts';
+import { inspectNodeManifestReachability } from './node-manifest-reachability.ts';
 import {
   proveNodeManifestRuntimeCallers,
   type NodeManifestRuntimeCallers,
   type NodeManifestRuntimeCallerProof,
 } from './node-manifest-runtime-callers.ts';
+import {
+  nodeManifestRuntimeCohortLookup,
+  prepareNodeManifestRuntimeGraphs,
+  type NodeManifestRuntimeCohort,
+  type NodeManifestRuntimeProfile,
+} from './node-manifest-runtime-cohort.ts';
 import type { NodeManifestTemplateImport } from './node-manifest-templates.ts';
 import {
-  nodeManifestTurbopackEntryGraph,
+  type NodeManifestTurbopackBootGraph,
   type NodeManifestTurbopackEntryGraph,
   type NodeManifestTurbopackGraphFactory,
   type NodeManifestTurbopackGraphFile,
   type NodeManifestTurbopackSealedEntry,
 } from './node-manifest-turbopack-graph.ts';
-import { assertNodeManifestTurbopackRuntime } from './node-manifest-turbopack-runtime.ts';
 import { assertNodeManifestTurbopackTemplateConsumer } from './node-manifest-turbopack-templates.ts';
 import { projectNodeManifestTurbopackFactory } from './node-manifest-turbopack.ts';
 
@@ -36,6 +41,7 @@ export interface NodeManifestTurbopackConsumerInput {
   readonly sources: readonly NodeManifestTurbopackGraphFile[];
   readonly entries: readonly NodeManifestTurbopackSealedEntry[];
   readonly runtimeCallers?: NodeManifestRuntimeCallers | undefined;
+  readonly runtimeProfiles?: readonly NodeManifestRuntimeProfile[] | undefined;
   readonly producer: {
     readonly id: string;
     readonly file: string;
@@ -51,6 +57,7 @@ export interface NodeManifestTurbopackConsumerInput {
 export interface NodeManifestTurbopackConsumerProof {
   readonly terminals: readonly (NodeManifestTurbopackSealedEntry & { readonly id: string })[];
   readonly files: readonly { readonly file: string; readonly sha256: string }[];
+  readonly compilerSources: readonly { readonly file: string; readonly sha256: string }[];
   /** The outer graph must still visit every terminal's actual importers through the SDK root. */
   readonly requiresSdkNormalization: true;
 }
@@ -70,13 +77,26 @@ function forwarded(factory: NodeManifestTurbopackGraphFactory): string | undefin
 }
 
 /** The runtime's own table-closure edge is not an external runtime API consumer. */
-function knownRuntimeCaller(source: string, target: string, boots: ReadonlySet<string>): boolean {
-  return source === target || boots.has(source);
+function knownRuntimeCaller(
+  source: string,
+  edge: NodeManifestTurbopackGraphFile['imports'][number],
+  context: {
+    readonly boots: ReadonlySet<string>;
+    readonly cohort: NodeManifestRuntimeCohort | undefined;
+  },
+): boolean {
+  return (
+    source === edge.target ||
+    context.boots.has(source) ||
+    (context.cohort !== undefined && nodeManifestRuntimeCohortLookup(context.cohort, source, edge))
+  );
 }
 
 class TurbopackConsumers {
   private readonly input: NodeManifestTurbopackConsumerInput;
   private readonly graphs: readonly NodeManifestTurbopackEntryGraph[];
+  private readonly allGraphs: readonly NodeManifestTurbopackBootGraph[];
+  private readonly runtimeCohort: NodeManifestRuntimeCohort | undefined;
   private readonly factories = new Map<string, NodeManifestTurbopackGraphFactory>();
   private readonly incoming = new Map<string, Set<string>>();
   private readonly terminals = new Map<
@@ -90,6 +110,7 @@ class TurbopackConsumers {
   private readonly strictFactories = new Map<string, NodeManifestTurbopackGraphFactory>();
   private readonly certifiedFactories = new Map<string, NodeManifestAppPageFactoryProof>();
   private readonly callerProof: NodeManifestRuntimeCallerProof | undefined;
+  private reachabilityFallback: ReturnType<typeof inspectNodeManifestReachability>['fallback'];
 
   constructor(input: NodeManifestTurbopackConsumerInput) {
     this.input = input;
@@ -100,19 +121,16 @@ class TurbopackConsumers {
     }
     if (new Set(input.entries.map((entry) => entry.file)).size !== input.entries.length)
       refuse('duplicate sealed entry');
-    this.graphs = input.entries.map((entry) =>
-      nodeManifestTurbopackEntryGraph({ distDir: input.distDir, sources: input.sources, entry }),
-    );
-    for (const graph of this.graphs) {
-      assertNodeManifestTurbopackRuntime({
-        source: graph.runtime.source,
-        file: graph.runtime.file,
-        distDir: input.distDir,
-        rootDir: input.rootDir,
-        ...(input.assetPrefix !== undefined && { assetPrefix: input.assetPrefix }),
-      });
+    const prepared = prepareNodeManifestRuntimeGraphs({
+      ...input,
+      inventory: input.runtimeCallers,
+      profiles: input.runtimeProfiles,
+    });
+    this.graphs = prepared.graphs;
+    this.allGraphs = prepared.allGraphs;
+    this.runtimeCohort = prepared.cohort;
+    for (const graph of this.allGraphs)
       for (const factory of graph.factories) this.register(factory);
-    }
     for (const graph of this.graphs) {
       const terminal = this.unwrapped(graph.exportedId);
       const previous = this.routes.get(terminal);
@@ -128,7 +146,7 @@ class TurbopackConsumers {
         ? undefined
         : proveNodeManifestRuntimeCallers({
             inventory: input.runtimeCallers,
-            graphs: this.graphs,
+            graphs: this.allGraphs,
             sources: input.sources,
             distDir: input.distDir,
           });
@@ -137,13 +155,14 @@ class TurbopackConsumers {
   }
 
   private restrictProtectedIncoming(): void {
-    const reached = reachableNodeManifestFactories({
+    const { reached, fallback } = inspectNodeManifestReachability({
       factories: [...this.factories.values()],
       graphs: this.graphs,
       callers: this.callerProof?.callers ?? [],
       physicalIds: new Set(this.input.sources.map((source) => source.id)),
-      runtimeIds: new Set(this.graphs.map((graph) => graph.runtimeId)),
+      runtimeIds: new Set(this.allGraphs.map((graph) => graph.runtimeId)),
     });
+    this.reachabilityFallback = fallback;
     if (reached === undefined) return;
     const reachable = new Set(reached);
     for (const [target, parents] of this.incoming) {
@@ -210,7 +229,7 @@ class TurbopackConsumers {
 
   private assertPhysicalCallers(): void {
     const tables = new Set([...this.factories.values()].map((factory) => factory.physicalId));
-    const runtimes = new Set(this.graphs.map((graph) => graph.runtimeId));
+    const runtimes = new Set(this.allGraphs.map((graph) => graph.runtimeId));
     const boots = new Set([
       ...this.graphs.map((graph) => graph.physicalId),
       ...(this.callerProof?.callers.map((caller) => caller.id) ?? []),
@@ -219,7 +238,10 @@ class TurbopackConsumers {
       for (const edge of source.imports) {
         if (tables.has(edge.target) && !runtimes.has(source.id))
           refuse('unknown physical factory-table caller');
-        if (runtimes.has(edge.target) && !knownRuntimeCaller(source.id, edge.target, boots))
+        if (
+          runtimes.has(edge.target) &&
+          !knownRuntimeCaller(source.id, edge, { boots, cohort: this.runtimeCohort })
+        )
           refuse('unknown runtime API caller');
         if (edge.target === this.input.producer.id && !tables.has(source.id))
           refuse('uncertified physical producer caller');
@@ -317,7 +339,13 @@ class TurbopackConsumers {
 
   private async consumer(factory: NodeManifestTurbopackGraphFactory): Promise<void> {
     const route = this.routes.get(factory.id);
-    if (route === undefined) refuse('consumer without a sealed route');
+    if (route === undefined) {
+      const reason =
+        this.reachabilityFallback === undefined
+          ? ''
+          : `; reachability fallback: ${this.reachabilityFallback}`;
+      refuse(`consumer without a sealed route${reason}`);
+    }
     const kind = this.producerKind();
     if (kind === 'app-page') this.appPageConsumer(factory, route);
     else
@@ -414,7 +442,7 @@ class TurbopackConsumers {
 
   private proofFiles(): NodeManifestTurbopackConsumerProof['files'] {
     const files = new Map<string, { readonly file: string; readonly sha256: string }>();
-    for (const graph of this.graphs) {
+    for (const graph of this.allGraphs) {
       const ids = new Set([
         graph.physicalId,
         graph.runtimeId,
@@ -455,6 +483,16 @@ class TurbopackConsumers {
     return {
       terminals: [...this.terminals.values()],
       files: this.proofFiles(),
+      compilerSources: [
+        ...new Map(
+          this.allGraphs.map((graph) => {
+            return [
+              graph.runtime.file,
+              { file: graph.runtime.file, sha256: graph.runtime.source.sha256 },
+            ];
+          }),
+        ).values(),
+      ],
       requiresSdkNormalization: true,
     };
   }

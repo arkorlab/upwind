@@ -4,7 +4,10 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { jsLiteral } from '../src/codegen.ts';
-import { reachableNodeManifestFactories } from '../src/node-manifest-reachability.ts';
+import {
+  inspectNodeManifestReachability,
+  reachableNodeManifestFactories,
+} from '../src/node-manifest-reachability.ts';
 import { certifyNodeManifestRuntimeCallers } from '../src/node-manifest-runtime-callers.ts';
 import {
   proveNodeManifestTurbopackConsumers,
@@ -39,18 +42,25 @@ function factory(
 }
 
 type Reachability = Parameters<typeof reachableNodeManifestFactories>[0];
-function reachable(
+function reachabilityInput(
   factories: Reachability['factories'],
   options: Partial<Omit<Reachability, 'factories'>> = {},
-) {
-  return reachableNodeManifestFactories({
+): Reachability {
+  return {
     factories,
     graphs: [{ exportedId: 'entry', evaluations: [] }],
     callers: [],
     physicalIds: new Set(),
     runtimeIds: new Set(),
     ...options,
-  });
+  };
+}
+
+function reachable(
+  factories: Reachability['factories'],
+  options: Partial<Omit<Reachability, 'factories'>> = {},
+) {
+  return reachableNodeManifestFactories(reachabilityInput(factories, options));
 }
 
 async function pagesFixture(): Promise<NodeManifestTurbopackConsumerInput> {
@@ -176,6 +186,20 @@ describe('closed static manifest reachability', () => {
         callers: [{ id: 'boot', file: 'boot', sha256: 'source', invoked: ['caller'] }],
       }),
     ).toStrictEqual(['caller', 'child', 'entry', 'evaluated']);
+
+    const inspected = inspectNodeManifestReachability(
+      reachabilityInput(factories, {
+        graphs: [{ exportedId: 'entry', evaluations: ['evaluated'] }],
+        callers: [{ id: 'boot', file: 'boot', sha256: 'source', invoked: ['caller'] }],
+      }),
+    );
+
+    expect(inspected).toStrictEqual({
+      reached: ['caller', 'child', 'entry', 'evaluated'],
+      fallback: undefined,
+    });
+    expect(Object.isFrozen(inspected)).toBe(true);
+    expect(Object.isFrozen(inspected.reached)).toBe(true);
   });
 
   it('keeps all selected IDs of an executed merged factory even when its other export is unused', () => {
@@ -188,12 +212,13 @@ describe('closed static manifest reachability', () => {
   });
 
   it.each([
-    'missing-seed',
-    'missing-edge',
-    'runtime-edge',
-    'bound-runtime',
-    'empty-seeds',
-  ] as const)('keeps conservative all-factory analysis for %s', (mode) => {
+    ['missing-seed', 'unregistered-seed'],
+    ['missing-edge', 'unresolved-import'],
+    ['runtime-edge', 'open-runtime-import'],
+    ['bound-runtime', 'reachable-bound-runtime'],
+    ['empty-seeds', 'no-seeds'],
+    ['duplicate-factory', 'duplicate-factory'],
+  ] as const)('keeps conservative all-factory analysis for %s', (mode, fallback) => {
     const entry = factory('entry', [{ specifier: 'target', target: 'target' }]);
     const bound = projectNodeManifestTurbopackFactory(
       source('module.exports=[1,(ctx)=>{const input={require:ctx.r.bind(ctx)};ctx.v(42);}];'),
@@ -209,10 +234,26 @@ describe('closed static manifest reachability', () => {
       },
       'bound-runtime': { factories: [{ ...factory('entry'), projection: bound }], options: {} },
       'empty-seeds': { factories: [factory('entry')], options: { graphs: [] } },
+      'duplicate-factory': { factories: [factory('entry'), factory('entry')], options: {} },
     };
     const input = inputs[mode];
 
     expect(reachable(input.factories, input.options)).toBeUndefined();
+    expect(
+      inspectNodeManifestReachability(reachabilityInput(input.factories, input.options)),
+    ).toStrictEqual({ reached: undefined, fallback });
+  });
+
+  it('returns no partial set or source identities when an unregistered seed forces all factories', () => {
+    const result = inspectNodeManifestReachability(
+      reachabilityInput([factory('entry')], {
+        graphs: [{ exportedId: 'private-looking/module-path', evaluations: ['entry'] }],
+      }),
+    );
+
+    expect(result).toStrictEqual({ reached: undefined, fallback: 'unregistered-seed' });
+    expect(JSON.stringify(result)).toBe('{"fallback":"unregistered-seed"}');
+    expect(Object.isFrozen(result)).toBe(true);
   });
 
   it('allows only closed physical or builtin dependencies without treating them as factory IDs', () => {
@@ -280,7 +321,7 @@ describe('protected Pages consumer reachability', () => {
   });
 
   it.each([
-    [true, 'sealed route'],
+    [true, 'sealed route; reachability fallback: reachable-bound-runtime'],
     [false, 'bound runtime callback escapes'],
   ] as const)(
     'keeps the open runtime callback conservative when reachable=%s',

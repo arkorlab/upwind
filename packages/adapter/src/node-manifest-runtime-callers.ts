@@ -5,7 +5,7 @@ import { AuditError } from './dependencies.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
 import {
   inspectNodeManifestTurbopackEntry,
-  type NodeManifestTurbopackEntryGraph,
+  type NodeManifestTurbopackBootGraph,
   type NodeManifestTurbopackGraphFile,
 } from './node-manifest-turbopack-graph.ts';
 
@@ -38,6 +38,25 @@ const SHARED_ROLES = [
   ['_app.js', 'pages-app'],
   ['_document.js', 'pages-document'],
 ] as const;
+
+/** Return only the immutable inventory after checking its current physical source bindings. */
+export function nodeManifestRuntimeCallerSources(
+  inventory: NodeManifestRuntimeCallers,
+  sources: readonly NodeManifestTurbopackGraphFile[],
+): NodeManifestRuntimeCallers['callers'] {
+  if (!CERTIFIED.has(inventory)) refuse('uncertified caller inventory');
+  for (const caller of inventory.callers) {
+    const source = sources.find((candidate) => candidate.id === caller.id);
+    if (
+      source === undefined ||
+      source.file !== caller.file ||
+      source.source.sha256 !== caller.sha256 ||
+      !inventory.retained.includes(caller.id)
+    )
+      refuse('caller source binding');
+  }
+  return inventory.callers;
+}
 
 function refuse(reason: string): never {
   throw new AuditError(`Unproved Next.js runtime caller ${reason}; refusing native publication`);
@@ -175,7 +194,7 @@ export async function certifyNodeManifestRuntimeCallers(
 function callerProof(input: {
   readonly caller: RuntimeCaller;
   readonly source: NodeManifestTurbopackGraphFile;
-  readonly graph: NodeManifestTurbopackEntryGraph;
+  readonly graph: NodeManifestTurbopackBootGraph;
   readonly sources: readonly NodeManifestTurbopackGraphFile[];
   readonly distDir: string;
 }): NodeManifestRuntimeCallerProof['callers'][number] {
@@ -215,7 +234,7 @@ function callerProof(input: {
 export function proveNodeManifestRuntimeCallers(input: {
   readonly inventory: NodeManifestRuntimeCallers;
   readonly sources: readonly NodeManifestTurbopackGraphFile[];
-  readonly graphs: readonly NodeManifestTurbopackEntryGraph[];
+  readonly graphs: readonly NodeManifestTurbopackBootGraph[];
   readonly distDir: string;
 }): NodeManifestRuntimeCallerProof {
   if (!CERTIFIED.has(input.inventory)) refuse('uncertified caller inventory');

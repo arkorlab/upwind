@@ -34,10 +34,7 @@ import {
   type NodeManifestTemplateImport,
 } from './node-manifest-templates.ts';
 import { proveNodeManifestTurbopackConsumers } from './node-manifest-turbopack-consumers.ts';
-import {
-  inspectNodeManifestTurbopackEntry,
-  type NodeManifestTurbopackGraphFile,
-} from './node-manifest-turbopack-graph.ts';
+import { type NodeManifestTurbopackGraphFile } from './node-manifest-turbopack-graph.ts';
 
 const MAX_SOURCE_MEBIBYTES = 128;
 const BYTES_PER_MEBIBYTE = 1_048_576;
@@ -361,6 +358,14 @@ class ConsumerGraph {
       sources,
       entries,
       runtimeCallers,
+      runtimeProfiles: [...this.routes.values()].map((route) => {
+        return {
+          file: route.file,
+          pathname: route.pathname,
+          kind: route.kind,
+          assetPrefix: manifestRuntimeAssetPrefix(this.input.clientAssetPrefix, route.kind),
+        };
+      }),
       producer: { id: child.id, file: producer.file, sha256: producer.sha256, kind: producerKind },
     });
     // The source helper's boot terminals are not proof terminals: every actual physical
@@ -370,21 +375,7 @@ class ConsumerGraph {
       if (kind === 'app-page') this.pages.add(terminal.page);
     }
     for (const source of proof.files) this.files.set(source.file, source);
-    for (const entry of entries) {
-      const own = sources.find((source) => source.file === entry.file);
-      if (own === undefined) refuse('missing certified boot source');
-      const boot = inspectNodeManifestTurbopackEntry(own.source);
-      const targets = new Set(
-        own.imports
-          .filter((edge) => edge.specifier === boot.runtimeSpecifier)
-          .map((edge) => edge.target),
-      );
-      if (targets.size !== 1) refuse('ambiguous certified runtime source');
-      const target = targets.values().next().value;
-      const runtime = sources.find((source) => source.id === target);
-      if (runtime === undefined) refuse('missing certified runtime source');
-      this.compilerSources.set(runtime.file, { file: runtime.file, sha256: runtime.source.sha256 });
-    }
+    for (const runtime of proof.compilerSources) this.compilerSources.set(runtime.file, runtime);
     this.runtimeRoot = rootDir;
     this.turbopackProducers.add(child.id);
   }
