@@ -31,6 +31,8 @@ package layout and binary bytes. `upwind/links.json` describes bounded internal 
 to restore during image preparation; the archive contains no symlink entries. `upwind/native.json`
 names only the proved, selected native modules and their hashes. The archive retains other regular
 owned trace files without rewriting their selection logic.
+Package aliases have independent limits of 100,000 entries and 16 MiB of UTF-8 JSON metadata.
+Both limits are checked before the artifact is published.
 The host verifies the artifact,
 Node ABI and Linux x64 glibc target before publishing it. Worker loader hooks, process substitutes
 and native shims are not applied to Node files. The existing shared cache and request runtime is

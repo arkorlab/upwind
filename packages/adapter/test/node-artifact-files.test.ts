@@ -43,6 +43,42 @@ function fixture(files: NodeArchiveFile[]): NodeArtifactFiles {
 }
 
 describe('physical Node artifact byte and mode preservation', () => {
+  it('allows link metadata larger than the small native-module inventory budget', async () => {
+    const files = fixture([]);
+    Object.assign(files.physical, {
+      links: Array.from({ length: 9000 }, (_unused, index) => {
+        return {
+          path: `project/node_modules/addon-${index}`,
+          target: `project/node_modules/.pnpm/${'pkg-'.repeat(24)}${index}/node_modules/addon-${index}`,
+        };
+      }),
+    });
+    await files.addNativeMetadata();
+
+    expect(files.files.get('upwind/links.json')?.bytes.byteLength).toBeGreaterThan(1_048_576);
+  });
+
+  it('rejects oversized UTF-8 link metadata before adding artifact metadata', async () => {
+    const files = fixture([]);
+    Object.assign(files.physical, {
+      links: [{ path: 'project/alias', target: `project/${'é'.repeat(8_388_608)}` }],
+    });
+
+    await expect(files.addNativeMetadata()).rejects.toThrow('16 MiB byte limit');
+    expect(files.files.has('upwind/links.json')).toBe(false);
+    expect(files.files.has('upwind/native.json')).toBe(false);
+  });
+
+  it('rejects too many aliases before serializing metadata', async () => {
+    const files = fixture([]);
+    Object.assign(files.physical, {
+      links: Array.from({ length: 100_001 }, () => ({ path: 'project/a', target: 'project/b' })),
+    });
+
+    await expect(files.addNativeMetadata()).rejects.toThrow('100,000 alias limit');
+    expect(files.files.has('upwind/links.json')).toBe(false);
+  });
+
   it.each([
     { label: 'UTF-8 BOM', prefix: [0xef, 0xbb, 0xbf] },
     { label: 'non-UTF-8 comment bytes', prefix: [0x2f, 0x2f, 0x20, 0xff] },

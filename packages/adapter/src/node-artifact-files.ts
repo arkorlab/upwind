@@ -22,6 +22,8 @@ import { resourceCacheBridgePatch } from './patches/resource-cache-bridge.ts';
 
 /** Only shared-cache/render semantics. No Worker loader, VM, native, fs or process substitutes. */
 const NODE_PATCHES = [fetchCacheWaitUntilPatch, resourceCacheBridgePatch];
+const MAX_PACKAGE_LINKS = 100_000;
+const MAX_LINK_METADATA_BYTES = 16_777_216;
 const ELF_HEADER_BYTES = 64;
 const ELF_MAGIC_START = 0x7f;
 const ELF_MAGIC_E = 0x45;
@@ -204,6 +206,11 @@ export class NodeArtifactFiles {
   }
 
   async addNativeMetadata(): Promise<void> {
+    if (this.physical.links.length > MAX_PACKAGE_LINKS)
+      throw new AuditError('Node package link metadata exceeds its 100,000 alias limit');
+    const links = JSON.stringify({ links: this.physical.links });
+    if (Buffer.byteLength(links, 'utf8') > MAX_LINK_METADATA_BYTES)
+      throw new AuditError('Node package link metadata exceeds its 16 MiB byte limit');
     const modules: { path: string; sha256: string }[] = [];
     const binaries = new Set(await Promise.all(this.native.map((load) => realpath(load.binary))));
     for (const binary of binaries) {
@@ -215,7 +222,7 @@ export class NodeArtifactFiles {
       modules.push({ path: filename, sha256: await sha256Hex(bytes) });
     }
     this.text('upwind/native.json', JSON.stringify({ modules }));
-    this.text('upwind/links.json', JSON.stringify({ links: this.physical.links }));
+    this.text('upwind/links.json', links);
     this.text('runtime.json', this.input.runtimeManifest);
   }
 
