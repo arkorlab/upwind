@@ -70,6 +70,21 @@ function nativeElf(bytes: Uint8Array): void {
   }
 }
 
+/** Resolve only the three exact runtime-owned module identities, from any runtime subdirectory. */
+export function nodeRuntimeAlias(
+  source: string,
+  importer: string | undefined,
+  runtime: string,
+): string | undefined {
+  if (importer === undefined || !source.startsWith('.')) return undefined;
+  const owner = path.relative(runtime, path.resolve(importer));
+  if (owner === '..' || owner.startsWith(`..${path.sep}`) || path.isAbsolute(owner))
+    return undefined;
+  const resolved = path.relative(runtime, path.resolve(path.dirname(importer), source));
+  if (!/^(?:environment|node-bridge|resources)\.(?:ts|js)$/u.test(resolved)) return undefined;
+  return path.basename(resolved, path.extname(resolved));
+}
+
 function nodeAliases(input: BuildFunctionInput): Plugin {
   const runtime = path.dirname(
     fileURLToPath(import.meta.resolve('@stayingupwind/runtime/function')),
@@ -86,14 +101,8 @@ function nodeAliases(input: BuildFunctionInput): Plugin {
       if (source === 'arkor:edge') return { id: './edge.cjs', external: true };
       if (source === 'arkor:wasm') return { id: './wasm.mjs', external: true };
       if (source === 'arkor:cache-host') return input.cacheHostModule ?? '\0upwind-node-no-cache';
-      if (
-        importer !== undefined &&
-        path.dirname(importer) === runtime &&
-        /^\.\/(?:environment|node-bridge|resources)\.(?:ts|js)$/u.test(source)
-      ) {
-        return aliases[path.basename(source, path.extname(source))] ?? null;
-      }
-      return null;
+      const target = nodeRuntimeAlias(source, importer, runtime);
+      return target === undefined ? null : (aliases[target] ?? null);
     },
     load(id) {
       return id === '\0upwind-node-no-cache'
