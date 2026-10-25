@@ -1,3 +1,5 @@
+import assert from 'node:assert/strict';
+
 import { parseAst } from 'rolldown/parseAst';
 import { describe, expect, it } from 'vitest';
 
@@ -230,7 +232,9 @@ describe('whole-original coalesced Pages lexical closure', () => {
 
   it('rejects copied value nodes that do not belong to the actual original AST', () => {
     const input = authoredInput('const Page=()=>42');
-    const copied = { ...input.tableValues[0] };
+    const value = input.tableValues[0];
+    assert.ok(value, 'Expected an authored original value');
+    const copied = { ...value };
 
     expect(() => assertCoalescedPagesClosure({ ...input, tableValues: [copied] })).toThrow(
       'original value identity',
