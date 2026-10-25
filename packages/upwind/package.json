@@ -1,7 +1,7 @@
 {
   "name": "upwind",
   "version": "0.4.0",
-  "description": "The upwind CLI: `upwind dev` runs a Next.js development server behind upwind's own front door, which answers `/__upwind` itself.",
+  "description": "The upwind CLI: `upwind dev` runs a Next.js development server behind upwind's own front door, which answers `/__upwind` itself; `upwind build` writes the deployment bundle, `upwind preview` serves it on this machine as it is served deployed, and `upwind deploy` deploys it to a Cloudflare account of your own.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
@@ -33,6 +33,8 @@
   "dependencies": {
     "@stayingupwind/core": "workspace:*",
     "miniflare": "catalog:",
+    "rolldown": "catalog:",
+    "tldts": "catalog:",
     "wrangler": "catalog:"
   },
   "devDependencies": {
@@ -44,7 +46,6 @@
     "@stayingupwind/local": "workspace:*",
     "@types/node": "catalog:",
     "next": "catalog:",
-    "rolldown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

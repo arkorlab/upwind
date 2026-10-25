@@ -97,7 +97,7 @@ function packOf(name: string): string {
 }
 
 /** The fixture, copied as one version: its home page saying which, installed from the packs. */
-async function copyFixture(out: string, version: Version): Promise<string> {
+export async function copyFixture(out: string, version: Version): Promise<string> {
   const dir = path.join(out, version);
   await cp(FIXTURE, dir, { recursive: true, filter: (source) => isSource(source) });
   const page = path.join(dir, 'app', 'page.js');
@@ -133,8 +133,8 @@ async function copyFixture(out: string, version: Version): Promise<string> {
   return dir;
 }
 
-/** Pack the packages, then copy, install and build each version. */
-export async function buildAll(out: string): Promise<void> {
+/** The packages an application installs, packed into `out/packages`, where a copy names them. */
+export async function packAll(out: string): Promise<void> {
   const packs = path.join(out, 'packages');
   await mkdir(packs, { recursive: true });
   for (const name of PACKAGES) {
@@ -150,6 +150,11 @@ export async function buildAll(out: string): Promise<void> {
       ROOT,
     );
   }
+}
+
+/** Pack the packages, then copy, install and build each version. */
+export async function buildAll(out: string): Promise<void> {
+  await packAll(out);
   for (const version of VERSIONS) {
     const dir = await copyFixture(out, version);
     say(`installing and building ${version}`);

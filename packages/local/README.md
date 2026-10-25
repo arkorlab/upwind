@@ -60,3 +60,4 @@ Each of `--env-file`, `--kv`, `--r2` and `--d1` may be given more than once.
 | `deploymentFunctions`            | A build's Functions as Workers, bound as a deploy binds them                                                             |
 | `bundleWorker`, `assertHostOnly` | One of the stack's Workers bundled as `wrangler deploy` bundles one, and the check that it holds nothing of a host's own |
 | `agentTarget`                    | The deploy target that deploys a build to a stack, through the stack's deploy agent                                      |
+| `bundleStackScripts`             | The stack's own Workers, bundled ahead of time, for `startStack`'s `scripts` where upwind's sources are not              |

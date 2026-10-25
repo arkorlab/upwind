@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { StackScripts } from '@stayingupwind/local';
+
 /**
  * The code a deploy carries with it: five Workers it puts on an account beside the build's
  * Functions, and the runtime cache's host, which a build bundles into every Function.
@@ -45,10 +47,21 @@ export interface ShippedFile {
   readonly sha256: string;
 }
 
+/**
+ * The Workers of the stack `upwind preview` serves a build on, of its own: its edge, its agent and
+ * the router of what its Functions fetch. The cache's three it runs are the deploy's (`workers`),
+ * which the stack bundles the same way from the same sources (`scripts/shipped.ts` holds the two to
+ * the same bytes).
+ */
+export const PREVIEW_ROLES = ['edge', 'agent', 'outbound'] as const;
+export type PreviewRole = (typeof PREVIEW_ROLES)[number];
+
 /** What `dist/shipped/manifest.json` says. */
 export interface ShippedManifest {
   readonly workers: Readonly<Record<WorkerRole, ShippedFile>>;
   readonly cacheHost: ShippedFile;
+  /** Read as possibly absent: a manifest without it is of an install that is not whole. */
+  readonly preview?: Readonly<Record<PreviewRole, ShippedFile>> | undefined;
 }
 
 export const SHIPPED_MANIFEST_FILE = 'manifest.json';
@@ -168,7 +181,7 @@ export async function shippedWorkers(): Promise<Record<WorkerRole, WorkerScript>
   return dir === undefined ? bundleWorkers() : workersShipped(dir);
 }
 
-/** The cache host a build for a deploy names: the one shipped, or the sources' own. */
+/** The cache host a build names: the one shipped, or the sources' own. */
 export async function shippedCacheHost(): Promise<CacheHostSource> {
   const dir = shippedDir();
   if (dir === undefined) {
@@ -176,4 +189,41 @@ export async function shippedCacheHost(): Promise<CacheHostSource> {
   }
   const { cacheHost } = await shippedManifest(dir);
   return { kind: 'bundle', path: path.join(dir, cacheHost.file), sha256: cacheHost.sha256 };
+}
+
+/** A shipped Worker's script, refused where it is not the one the manifest names. */
+async function scriptShipped(dir: string, shipped: ShippedFile, what: string): Promise<string> {
+  const script = await readFile(path.join(dir, shipped.file), 'utf8');
+  if (sha256Of(script) !== shipped.sha256) {
+    throw new Error(
+      `the shipped ${what} Worker is not the one its manifest names; reinstall upwind`,
+    );
+  }
+  return script;
+}
+
+/**
+ * The Workers the stack of `upwind preview` runs: the ones this command ships, or nothing where it
+ * runs from its sources, which the stack then bundles itself. Never the sources where something is
+ * shipped: a published command has none to bundle, and a manifest without the preview's Workers is
+ * of an install that is not whole.
+ */
+export async function shippedStackScripts(): Promise<StackScripts | undefined> {
+  const dir = shippedDir();
+  if (dir === undefined) {
+    return undefined;
+  }
+  const { workers, preview } = await shippedManifest(dir);
+  if (preview === undefined) {
+    throw new Error('the shipped manifest names no Worker of a preview; reinstall upwind');
+  }
+  const [edge, agent, outbound, cache, cacheRead, prefetch] = await Promise.all([
+    scriptShipped(dir, preview.edge, 'preview edge'),
+    scriptShipped(dir, preview.agent, 'preview agent'),
+    scriptShipped(dir, preview.outbound, 'preview outbound'),
+    scriptShipped(dir, workers.cache, 'cache'),
+    scriptShipped(dir, workers['cache-read'], 'cache-read'),
+    scriptShipped(dir, workers.prefetch, 'prefetch'),
+  ]);
+  return { edge, agent, outbound, cache, cacheRead, prefetch };
 }
