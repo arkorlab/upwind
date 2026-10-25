@@ -6,7 +6,8 @@ import type { MiniflareOptions } from 'miniflare';
 
 import { type LocalAi, localAiBinding } from './local-ai.ts';
 import type { LocalStorageEntry } from './local-bindings.ts';
-import type { LocalDurableObject } from './local-objects.ts';
+import { containerEngine } from './local-containers.ts';
+import { type LocalDurableObject, ownerName } from './local-objects.ts';
 import type { LocalCloudflareWorkflow } from './local-workflows.ts';
 
 /**
@@ -46,10 +47,6 @@ const RUNTIME_TYPES = {
 
 function workflowWorkerName(name: string): string {
   return `upwind-workflow-${name}`;
-}
-
-function ownerName(name: string): string {
-  return `upwind-object-${name}`;
 }
 
 type LocalBinding =
@@ -102,6 +99,7 @@ export function runtimeOptions(projectDir: string, input: LocalRuntimeOptions): 
   );
   return {
     resourcePersistencePath: path.join(projectDir, PERSIST_DIR),
+    ...containerEngine(objects),
     workers: [
       {
         config: {
@@ -165,6 +163,9 @@ export function runtimeOptions(projectDir: string, input: LocalRuntimeOptions): 
               [DURABLE_OBJECT_EXPORT]: {
                 type: DURABLE_OBJECT_KIND,
                 storage: 'sqlite',
+                ...(object.containerImageName !== undefined && {
+                  container: { imageName: object.containerImageName },
+                }),
               } as const,
             },
             env,

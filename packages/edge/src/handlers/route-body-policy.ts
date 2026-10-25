@@ -1,3 +1,5 @@
+import { NEXT_URL_HEADER, RSC_VARY } from '@stayingupwind/core/request';
+
 /** A transport filter must not erase an owner's denial of shared route-body delivery. */
 const PRIVACY_HEADERS: ReadonlySet<string> = new Set([
   'cache-control',
@@ -10,8 +12,16 @@ const PRIVACY_HEADERS: ReadonlySet<string> = new Set([
   'surrogate-control',
   'vary',
 ]);
-/** Identity bytes do not vary by compression; the record carries no other request-field key. */
-const INVARIANT_VARY: ReadonlySet<string> = new Set(['accept-encoding']);
+/**
+ * Identity bytes ignore compression. Every shared route-body request has no router protocol
+ * fields: their presence, even empty, is rejected before and after middleware. Keep those Vary
+ * names on the response, while unknown request fields still require a keyed Function answer.
+ */
+const INVARIANT_VARY: ReadonlySet<string> = new Set([
+  'accept-encoding',
+  ...RSC_VARY.split(', '),
+  NEXT_URL_HEADER,
+]);
 
 /** A local veto, read before Connection options remove those fields from middleware headers. */
 export function connectionRefusesSharing(headers: Pick<Headers, 'get'>): boolean {

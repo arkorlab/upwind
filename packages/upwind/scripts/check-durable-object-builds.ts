@@ -3,6 +3,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
+  CONTAINER_BUNDLE_VERSION,
+  CONTAINER_SPLIT_BUNDLE_VERSION,
   type DurableObjectDeclaration,
   durableObjectDeclarationsSchema,
 } from '@stayingupwind/core/bundle';
@@ -32,12 +34,29 @@ export async function checkDefinitionRevision(
   const blobs = new BlobStore(outDir);
   await blobs.init();
   const revised = { ...declaration, definitionRevision: 17 };
+  const container = {
+    image: { dockerfile: 'container/Dockerfile', buildContext: '.' },
+    instanceType: 'lite' as const,
+    maxInstances: 3,
+  };
   const input = { projectDir: project, outDir, blobs };
   for (const split of [false, true]) {
     const baseline = await durableObjectParts({ ...input, split, declarations: [declaration] });
     const parts = await durableObjectParts({ ...input, split, declarations: [revised] });
     assert.deepEqual(parts.bundle.durableObjects, [revised]);
     assert.deepEqual(parts.functions, baseline.functions);
+    const withContainer = { ...revised, container };
+    const containerParts = await durableObjectParts({
+      ...input,
+      split,
+      declarations: [withContainer],
+    });
+    assert.equal(
+      containerParts.bundle.v,
+      split ? CONTAINER_SPLIT_BUNDLE_VERSION : CONTAINER_BUNDLE_VERSION,
+    );
+    assert.deepEqual(containerParts.bundle.durableObjects, [withContainer]);
+    assert.deepEqual(containerParts.functions, baseline.functions);
   }
   for (const definitionRevision of [-1, 0, NON_INTEGER_REVISION, Number.MAX_SAFE_INTEGER + 1, '17'])
     assert.ok(

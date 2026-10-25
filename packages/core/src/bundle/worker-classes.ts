@@ -2,10 +2,7 @@ import {
   CLOUDFLARE_WORKFLOW_BUNDLE_VERSION,
   CLOUDFLARE_WORKFLOW_SPLIT_BUNDLE_VERSION,
 } from './cloudflare-workflows.ts';
-import {
-  DURABLE_OBJECT_BUNDLE_VERSION,
-  DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
-} from './durable-objects.ts';
+import { durableObjectBundleIssue } from './durable-objects.ts';
 import type { DeploymentBundle } from './schema.ts';
 
 /** Definitions must match their independently packaged executable Functions and version gate. */
@@ -23,31 +20,11 @@ export function workerClassIssues(bundle: DeploymentBundle): string[] {
 }
 
 function durableObjectIssues(bundle: DeploymentBundle): string[] {
-  const declarations = bundle.durableObjects ?? [];
-  const functions = Object.keys(bundle.functions.durableObjects ?? {});
-  const carriesObjects = declarations.length > 0;
-  const objectVersion = [
-    CLOUDFLARE_WORKFLOW_BUNDLE_VERSION,
-    CLOUDFLARE_WORKFLOW_SPLIT_BUNDLE_VERSION,
-    DURABLE_OBJECT_BUNDLE_VERSION,
-    DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
-  ].includes(bundle.v);
-  if (
-    (carriesObjects && !objectVersion) ||
-    (!carriesObjects &&
-      (bundle.v === DURABLE_OBJECT_BUNDLE_VERSION ||
-        bundle.v === DURABLE_OBJECT_SPLIT_BUNDLE_VERSION)) ||
-    declarations.length !== functions.length ||
-    declarations.some(
-      (entry) => !Object.hasOwn(bundle.functions.durableObjects ?? {}, entry.name),
-    ) ||
-    (!carriesObjects &&
-      (bundle.durableObjects !== undefined || bundle.functions.durableObjects !== undefined))
-  ) {
-    return ['Durable Object declarations and Functions must match, at bundle version 5, 6, 7 or 8'];
-  }
-
-  return [];
+  const workflowVersion =
+    bundle.v === CLOUDFLARE_WORKFLOW_BUNDLE_VERSION ||
+    bundle.v === CLOUDFLARE_WORKFLOW_SPLIT_BUNDLE_VERSION;
+  const message = durableObjectBundleIssue(bundle, workflowVersion);
+  return message === undefined ? [] : [message];
 }
 
 function cloudflareWorkflowIssues(bundle: DeploymentBundle): string[] {
@@ -66,7 +43,7 @@ function cloudflareWorkflowIssues(bundle: DeploymentBundle): string[] {
       (bundle.cloudflareWorkflows !== undefined ||
         bundle.functions.cloudflareWorkflows !== undefined))
   ) {
-    return ['Cloudflare Workflow declarations and Functions must match, at bundle version 7 or 8'];
+    return ['Cloudflare Workflow declarations and Functions must match, at bundle version 9 or 10'];
   }
   return [];
 }

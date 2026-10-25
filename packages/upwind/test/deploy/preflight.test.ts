@@ -61,7 +61,7 @@ describe('checking a build before a deploy', () => {
     writeBundle(
       dir,
       bundleOf(app, {
-        v: 7,
+        v: 9,
         routerReferences: 'one-pass',
         cloudflareWorkflows: [{ name: 'JOBS', module: 'jobs.ts', className: 'Job' }],
         functions: { app, cloudflareWorkflows: { JOBS: app } },

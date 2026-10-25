@@ -16,7 +16,7 @@ const fn = {
 };
 function bundle() {
   return {
-    v: 7,
+    v: 9,
     deploymentId: createId('dpl'),
     nextVersion: '16.4.2',
     buildId: 'build',
@@ -84,6 +84,73 @@ describe('cloudflare Workflow bundle and resource contracts', () => {
         .success,
     ).toBe(false);
   });
+
+  it('keeps Container configuration on Durable Object declarations', () => {
+    expect(
+      cloudflareWorkflowDeclarationsSchema.safeParse([
+        {
+          ...declaration,
+          container: {
+            image: { reference: 'alpine:3.22' },
+            instanceType: 'lite',
+            maxInstances: 1,
+          },
+        },
+      ]).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    { v: 7, split: false, workflows: false },
+    { v: 8, split: true, workflows: false },
+    { v: 9, split: false, workflows: true },
+    { v: 10, split: true, workflows: true },
+  ])(
+    'keeps Container and Workflow capabilities distinct at version $v',
+    ({ v, split, workflows }) => {
+      const input = bundle();
+      const objects = [
+        {
+          ...declaration,
+          name: 'COMPUTE',
+          container: {
+            image: { reference: 'alpine:3.22' },
+            instanceType: 'lite',
+            maxInstances: 1,
+          },
+        },
+      ];
+      const configured = {
+        ...input,
+        v,
+        cloudflareWorkflows: workflows ? input.cloudflareWorkflows : undefined,
+        durableObjects: objects,
+        entrypoints: split
+          ? [{ id: 'app/run/route', kind: 'app-route', pathname: '/run', function: 'app-2' }]
+          : [],
+        functions: {
+          app: input.functions.app,
+          ...(split && { split: { 'app-2': fn } }),
+          durableObjects: { COMPUTE: fn },
+          ...(workflows && { cloudflareWorkflows: input.functions.cloudflareWorkflows }),
+        },
+      };
+      const parsed = deploymentBundleSchema.parse(configured);
+
+      expect(parsed.v).toBe(v);
+      expect(parsed.durableObjects).toStrictEqual(objects);
+      expect(
+        deploymentBundleSchema.safeParse({
+          ...configured,
+          cloudflareWorkflows: input.cloudflareWorkflows,
+          functions: {
+            ...configured.functions,
+            cloudflareWorkflows: input.functions.cloudflareWorkflows,
+          },
+        }).success,
+      ).toBe(workflows);
+    },
+  );
 
   it('requires a matching new-version artifact map and includes every workflow blob', () => {
     const input = bundle();

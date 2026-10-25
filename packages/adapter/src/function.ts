@@ -17,7 +17,6 @@ import { type BlobStore, contentTypeFor } from './blobs.ts';
 import { buildPaths } from './build-paths.ts';
 import {
   auditTracedFiles,
-  auditFunction,
   auditFunctionSize,
   bundled,
   bundleDependencies,
@@ -34,6 +33,7 @@ import { APP_MODULE } from './generated-modules.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import { bundleLinkedExternals, type LinkedExternals } from './linked-externals.ts';
 import type { TextModule } from './manifests.ts';
+import { auditNativeFunction, type NativeAddonEntryTrace } from './native-addons.ts';
 import { type PageRuntimeRequire, withPageRuntimeAsReact } from './page-runtime-react.ts';
 import { auditExternalPagesApiDist } from './patches/external-pages-api-dist.ts';
 import {
@@ -108,6 +108,8 @@ export interface BuildFunctionInput {
   readonly outDir: string;
   readonly patch: PatchContext;
   readonly entries: readonly EntryModule[];
+  /** Existing route traces used only to explain a rejected app graph, never to admit one. */
+  readonly entryTraces?: readonly NativeAddonEntryTrace[] | undefined;
   /** The entrypoints `next build` put on the edge runtime; they go into a bundle of their own. */
   readonly edgeEntries: readonly EdgeEntry[];
   readonly edgeInstrumentation?: EdgeInstrumentation | undefined;
@@ -521,16 +523,17 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
   };
   auditWasmLoader(name, input.patch, app.trace.patches);
   auditFunctionSize(name, { modules, size }, input.deferSizeAudit === true);
-  auditFunction(
+  auditNativeFunction({
     name,
-    {
+    sources: {
       app: await readFile(appFile, 'utf8'),
       ...(edge !== undefined && { edge: await readFile(edge.outFile, 'utf8') }),
       ...(linked !== undefined && { linked: await linkedSource(linked) }),
     },
     dependencies,
-    outputNameOf(input.projectDir, distDir),
-  );
+    output: outputNameOf(input.projectDir, distDir),
+    entryTraces: input.entryTraces ?? [],
+  });
   return {
     spec: {
       mainModule: RUNTIME_MODULE,

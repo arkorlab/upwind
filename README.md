@@ -413,6 +413,12 @@ See the [SDK guide](packages/sdk/README.md#durable-objects) for class and reques
 If the host supplies `definitionRevision`, keep that positive safe integer in each registration.
 The adapter returns it unchanged for publication checks without changing the class or namespace.
 
+Hosts can also attach a Cloudflare Container to an object's namespace, from a Dockerfile or an
+existing image. The class uses `ctx.container` or `@cloudflare/containers`; Next.js reads its native
+namespace through the same SDK accessor, with no added serving hop. Configuration is host-owned;
+see the [adapter contract](packages/adapter/README.md#container-enabled-objects) and
+[local Docker setup](packages/upwind/README.md#local-containers).
+
 ## ⏰ Scheduled work
 
 ```ts

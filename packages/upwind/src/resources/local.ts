@@ -12,6 +12,7 @@ import type { Miniflare, MiniflareOptions } from 'miniflare';
 import { guardListeners } from './listeners.ts';
 import { type LocalAi, prepareLocalAi, type RemoteAiCredentials } from './local-ai.ts';
 import { localEntries, type LocalStorageEntry } from './local-bindings.ts';
+import { prepareLocalContainers } from './local-containers.ts';
 import { failedOwnerNames, runtimeStartupFailure } from './local-failure.ts';
 import { localObjects } from './local-objects.ts';
 import {
@@ -27,7 +28,7 @@ import {
   localWorkflowBridge,
 } from './local-workflows.ts';
 import { publishResources } from './publish.ts';
-import { disposeLocalResources } from './shutdown.ts';
+import { discardAi, disposeLocalResources } from './shutdown.ts';
 import { sourceChanges } from './watch-sources.ts';
 
 /**
@@ -164,6 +165,16 @@ const NOTHING_STARTED: LocalResources = {
 
 function noSourceChanges(): boolean {
   return false;
+}
+
+/** Local object and Container configuration without additional Workflow declarations. */
+export function localRuntimeOptions(
+  projectDir: string,
+  entries: readonly LocalStorageEntry[],
+  objects: LocalRuntimeOptions['objects'],
+  ai: LocalAi,
+): MiniflareOptions {
+  return runtimeOptions(projectDir, { entries, objects, ai, workflows: [] });
 }
 
 /** The local runtime, started. Its module is loaded here and not at the top of this one. */
@@ -491,16 +502,6 @@ async function letGo(
   }
 }
 
-async function discardAi(ai: LocalAi): Promise<void> {
-  try {
-    await ai.dispose();
-  } catch {
-    console.warn(
-      'upwind: could not finish remote AI cleanup; retrying local storage without AI bindings',
-    );
-  }
-}
-
 /**
  * Start a project's local storage and publish it, or say why there is none.
  *
@@ -530,7 +531,7 @@ export async function startLocalResources(
   const versions = new Map<string, string>();
   let sourcesChanged = noSourceChanges;
   try {
-    const objects = await localObjects(
+    const bundledObjects = await localObjects(
       projectDir,
       watchedFiles,
       versions,
@@ -538,13 +539,19 @@ export async function startLocalResources(
     );
     const workflows = independentLocalWorkflows(
       await localWorkflows(projectDir, watchedFiles, versions, options.mode ?? 'development'),
-      objects.map((object) => object.declaration.name),
+      bundledObjects.map((object) => object.declaration.name),
     );
-    sourcesChanged = sourceChanges(versions);
     options.signal?.throwIfAborted();
     // A rejected storage claim must not authenticate or create a remote AI session.
     release = await claimStorage(path.join(projectDir, PERSIST_DIR));
     options.signal?.throwIfAborted();
+    const objects = await prepareLocalContainers(
+      projectDir,
+      bundledObjects,
+      { files: watchedFiles, versions },
+      options.signal === undefined ? {} : { signal: options.signal },
+    );
+    sourcesChanged = sourceChanges(versions);
     ai = await prepareLocalAi(
       [
         ...objects.map((object) => object.declaration.name),

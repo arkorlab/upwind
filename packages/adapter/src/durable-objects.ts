@@ -2,6 +2,8 @@ import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
+  CONTAINER_BUNDLE_VERSION,
+  CONTAINER_SPLIT_BUNDLE_VERSION,
   type DurableObjectDeclaration,
   DURABLE_OBJECT_BUNDLE_VERSION,
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
@@ -409,7 +411,11 @@ export async function durableObjectParts(input: {
   readonly distDir?: string;
 }): Promise<{
   bundle: {
-    v?: typeof DURABLE_OBJECT_BUNDLE_VERSION | typeof DURABLE_OBJECT_SPLIT_BUNDLE_VERSION;
+    v?:
+      | typeof DURABLE_OBJECT_BUNDLE_VERSION
+      | typeof DURABLE_OBJECT_SPLIT_BUNDLE_VERSION
+      | typeof CONTAINER_BUNDLE_VERSION
+      | typeof CONTAINER_SPLIT_BUNDLE_VERSION;
     durableObjects?: DurableObjectDeclaration[];
   };
   functions: { durableObjects?: Readonly<Record<string, FunctionSpec>> };
@@ -431,9 +437,14 @@ export async function durableObjectParts(input: {
   if (declarations.length === 0)
     return { bundle: {}, functions: {}, sourceMaps: [], dependencies: {} };
   const built = await buildDurableObjectFunctions({ ...input, declarations });
+  const hasContainers = declarations.some((declaration) => declaration.container !== undefined);
+  const version = hasContainers ? CONTAINER_BUNDLE_VERSION : DURABLE_OBJECT_BUNDLE_VERSION;
+  const splitVersion = hasContainers
+    ? CONTAINER_SPLIT_BUNDLE_VERSION
+    : DURABLE_OBJECT_SPLIT_BUNDLE_VERSION;
   return {
     bundle: {
-      v: input.split ? DURABLE_OBJECT_SPLIT_BUNDLE_VERSION : DURABLE_OBJECT_BUNDLE_VERSION,
+      v: input.split ? splitVersion : version,
       durableObjects: declarations,
     },
     functions: { durableObjects: built.functions },
