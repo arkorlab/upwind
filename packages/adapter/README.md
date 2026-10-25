@@ -900,3 +900,7 @@ to the Function, as it does without a gate. Nor is a gated route an image the op
 anything is fetched or kept — what it optimizes is kept for every visitor, and a gated route's
 every answer is its gate's. An image of a gated route is marked `unoptimized`, so that the browser
 asks for it at its route, of its gate.
+
+Accepted validation requests keep this restriction: bypassing a route's admission gate to prove a
+candidate does not make that route a source for the image optimizer. Validate such an image at its own
+route rather than through `/_next/image`.
