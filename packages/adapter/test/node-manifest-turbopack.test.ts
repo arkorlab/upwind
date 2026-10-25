@@ -42,17 +42,19 @@ describe('next Turbopack manifest factory projections', () => {
     );
     const projected = projectNodeManifestTurbopackFactory(original, 1);
     const parsed: unknown = parseAst(projected.source.code);
-    const exported = expect.objectContaining({ type: 'Literal', value: name });
-    const specifier = expect.objectContaining({ exported });
-    const declaration = expect.objectContaining({
+    const exported: unknown = expect.objectContaining({ type: 'Literal', value: name });
+    const specifier: unknown = expect.objectContaining({ exported });
+    const declaration: unknown = expect.objectContaining({
       type: 'ExportNamedDeclaration',
       specifiers: [specifier],
     });
 
+    const body: unknown = expect.arrayContaining([declaration]);
+
     expect(projected.exports).toStrictEqual({ kind: 'getters', names: [name] });
     expect(projected.original).toStrictEqual(original);
     expect(projected.source.code).not.toMatch(/[<>\u{2028}\u{2029}]/u);
-    expect(parsed).toMatchObject({ body: expect.arrayContaining([declaration]) });
+    expect(parsed).toMatchObject({ body });
   });
 
   it('keeps a named class self-reference separate from the outer factory context', () => {

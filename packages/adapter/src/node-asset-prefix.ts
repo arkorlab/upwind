@@ -3,7 +3,7 @@ export function nextClientAssetPrefix(config: {
   readonly assetPrefix?: string | undefined;
   readonly basePath?: string | undefined;
 }): string {
-  const prefix = config.assetPrefix === undefined ? (config.basePath ?? '') : config.assetPrefix;
+  const prefix = config.assetPrefix ?? config.basePath ?? '';
   let end = prefix.length;
   while (end > 0 && prefix[end - 1] === '/') end -= 1;
   return `${prefix.slice(0, end)}/_next/`;
