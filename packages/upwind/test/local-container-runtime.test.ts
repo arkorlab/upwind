@@ -17,11 +17,14 @@ export class ${DURABLE_OBJECT_EXPORT} extends DurableObject {
   const container=this.ctx.container;
   if(!container) throw new Error('Container binding missing');
   if(!container.running) container.start();
+  const url=new URL(request.url);url.protocol='http:';url.host='container';
+  const forwarded=new Request(url,request);forwarded.headers.delete('host');
+  let lastError;
   for(let attempt=0;attempt<300;attempt++) {
-   try { return await container.getTcpPort(8080).fetch(request); }
-   catch { await new Promise(resolve=>setTimeout(resolve,100)); }
+   try { return await container.getTcpPort(8080).fetch(forwarded); }
+   catch(error) { lastError=error; await new Promise(resolve=>setTimeout(resolve,100)); }
   }
-  throw new Error('Container did not start');
+  throw new Error('Container did not start: '+String(lastError));
  }
 }`;
 

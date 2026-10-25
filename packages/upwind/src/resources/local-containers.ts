@@ -131,3 +131,13 @@ export async function prepareLocalContainers(
   }
   return prepared;
 }
+
+/** The image CLI and runtime must address the same explicitly selected Docker engine. */
+export function containerEngine(objects: readonly LocalDurableObject[]): {
+  containerEngine?: string;
+} {
+  const engine = process.env['DOCKER_HOST'];
+  return engine !== undefined && objects.some((object) => object.containerImageName !== undefined)
+    ? { containerEngine: engine }
+    : {};
+}

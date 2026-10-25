@@ -19,9 +19,9 @@ import {
   type RemoteAiCredentials,
 } from './local-ai.ts';
 import { localEntries, type LocalStorageEntry } from './local-bindings.ts';
-import { prepareLocalContainers } from './local-containers.ts';
+import { containerEngine, prepareLocalContainers } from './local-containers.ts';
 import { failedOwnerNames, runtimeStartupFailure } from './local-failure.ts';
-import { type LocalDurableObject, localObjects } from './local-objects.ts';
+import { type LocalDurableObject, localObjects, ownerName } from './local-objects.ts';
 import { publishResources } from './publish.ts';
 import { discardAi, disposeLocalResources } from './shutdown.ts';
 import { sourceChanges } from './watch-sources.ts';
@@ -195,10 +195,6 @@ function noSourceChanges(): boolean {
   return false;
 }
 
-function ownerName(name: string): string {
-  return `upwind-object-${name}`;
-}
-
 type LocalBinding =
   | ReturnType<typeof localAiBinding>
   | { type: 'd1' | 'kv'; id: string }
@@ -234,6 +230,7 @@ export function localRuntimeOptions(
   );
   return {
     resourcePersistencePath: path.join(projectDir, PERSIST_DIR),
+    ...containerEngine(objects),
     workers: [
       {
         config: {

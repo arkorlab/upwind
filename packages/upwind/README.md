@@ -454,3 +454,6 @@ Editing a Dockerfile or its `.dockerignore` restarts development and rebuilds th
 `upwind dev` after changing other files in the build context. Docker failure makes only the affected
 namespace unavailable; ordinary objects and D1, KV and R2 remain usable. No remote Container is
 started by local image preparation.
+
+For a nondefault local Docker socket, set `DOCKER_HOST` to the same engine used by the Docker CLI.
+Container-enabled local namespaces use this socket; ordinary local resources require no Docker engine.

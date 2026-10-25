@@ -130,3 +130,8 @@ export async function localObjects(
     return [];
   }
 }
+
+/** Stable local worker identity for a native class owner. */
+export function ownerName(name: string): string {
+  return `upwind-object-${name}`;
+}
