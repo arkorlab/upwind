@@ -3,10 +3,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { rolldown, type OutputChunk } from 'rolldown';
+import { parseAst } from 'rolldown/parseAst';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { NativeAddonEntryTrace } from '../src/native-addons.ts';
+import { nativeBindings, walk } from '../src/native-ast.ts';
 import { nativeLoadsPlugin } from '../src/native-loads.ts';
+import { renderedWorkerRequires } from '../src/native-worker-requires.ts';
+import { hasRetainedWorkerCapability } from '../src/native-worker.ts';
 
 interface FixtureOptions {
   readonly format?: 'esm' | 'cjs';
@@ -14,6 +18,21 @@ interface FixtureOptions {
   readonly orphanOnly?: boolean;
   readonly importerOnly?: boolean;
   readonly commonjsHelper?: boolean;
+  readonly inspect?: ((chunk: OutputChunk) => void) | undefined;
+}
+
+function inspectedChunk(chunk: OutputChunk) {
+  const program = parseAst(chunk.code);
+  const tree = walk(program);
+  const bindings = nativeBindings(program);
+  const requires = renderedWorkerRequires(chunk, tree, bindings);
+  return { requires, capability: hasRetainedWorkerCapability(tree, bindings, requires) };
+}
+
+function compilerRequireText(chunk: OutputChunk): string {
+  const declaration = [...inspectedChunk(chunk).requires][0];
+  if (declaration === undefined) throw new Error('Expected the actual compiler helper');
+  return chunk.code.slice(declaration.start, declaration.end);
 }
 
 describe('retained Worker capabilities through source reexports', () => {
@@ -62,7 +81,25 @@ describe('retained Worker capabilities through source reexports', () => {
     const output = await build.generate({ format: options.format ?? 'esm' });
     const chunk = output.output.find((item): item is OutputChunk => item.type === 'chunk');
     if (chunk === undefined) throw new Error('The authored reexport fixture has no chunk');
+    options.inspect?.(chunk);
     return await proof.retained(chunk);
+  }
+
+  async function authoredPrimitiveChunk(): Promise<OutputChunk> {
+    let rendered: OutputChunk | undefined;
+    await classify(
+      "const threads=require('node:worker_threads');module.exports={value:threads.isMainThread};",
+      "import helper from './bridge.cjs';export const value=helper.value;",
+      {
+        commonjsHelper: true,
+        nativeOwned: false,
+        inspect(chunk) {
+          rendered = chunk;
+        },
+      },
+    );
+    if (rendered === undefined) throw new Error('The authored primitive fixture has no chunk');
+    return rendered;
   }
 
   const constructors = [
@@ -125,6 +162,148 @@ describe('retained Worker capabilities through source reexports', () => {
     await expect(classify(bridge, code, { commonjsHelper: true, format: 'cjs' })).rejects.toThrow(
       'unclassified owned native child',
     );
+  });
+
+  it('refuses a CommonJS object exporting a known Worker constructor', async () => {
+    const bridge =
+      "const threads=require('node:worker_threads');module.exports={Worker:threads.Worker};";
+    const code =
+      "import helper from './bridge.cjs';export const start=()=>new helper.Worker('source',{eval:true});";
+
+    await expect(classify(bridge, code, { commonjsHelper: true })).rejects.toThrow(
+      'unclassified owned native child',
+    );
+  });
+
+  it.each([
+    "const threads=require('node:worker_threads');module.exports={'Worker':threads.Worker};",
+    "const {Worker}=require('node:worker_threads');const result={Worker};module.exports=result;",
+    "const threads=require('node:worker_threads');module.exports={Worker:threads.Worker.prototype.constructor};",
+  ])('checks literal object handoffs in both output formats: %s', async (bridge) => {
+    const code =
+      "import helper from './bridge.cjs';export const start=()=>new helper.Worker('source',{eval:true});";
+
+    await expect(classify(bridge, code, { commonjsHelper: true })).rejects.toThrow(
+      'unclassified owned native child',
+    );
+    await expect(classify(bridge, code, { commonjsHelper: true, format: 'cjs' })).rejects.toThrow(
+      'unclassified owned native child',
+    );
+  });
+
+  it('refuses a constructor recovered from the actual Worker prototype', async () => {
+    const bridge = "export {Worker} from 'node:worker_threads';";
+    const code =
+      "import {Worker} from './bridge.mjs';export const start=()=>new Worker.prototype.constructor('source',{eval:true});";
+
+    await expect(classify(bridge, code)).rejects.toThrow('unclassified owned native child');
+  });
+
+  it.each([
+    "export const start=()=>new Worker['prototype']['constructor']('source',{eval:true});",
+    "const {prototype}=Worker;const {constructor:Thread}=prototype;export const start=()=>new Thread('source',{eval:true});",
+    "export function start(key){return new Worker.prototype[key]('source',{eval:true});}",
+    'export const prototype=Worker.prototype;',
+    "const create=Worker.prototype.constructor.bind(null);export const start=()=>new create('source',{eval:true});",
+  ])('retains only finite constructor and prototype capability origins: %s', async (code) => {
+    await expect(
+      classify(
+        "export {Worker} from 'node:worker_threads';",
+        `import {Worker} from './bridge.mjs';${code}`,
+      ),
+    ).rejects.toThrow('unclassified owned native child');
+  });
+
+  it.each([
+    'export const value=[Worker.name,Worker.length,typeof Worker];',
+    'const {name,length}=Worker;export {name,length};',
+    'const prototype=Worker.prototype;export const value=prototype.constructor.name;',
+    'const local={Worker};export const value=[local.Worker.name,local.Worker.length];',
+    "export function local(Worker){return new Worker.prototype.constructor('ordinary');}",
+  ])('keeps scalar metadata and genuine local prototype shadows separate: %s', async (code) => {
+    await expect(
+      classify(
+        "export {Worker} from 'node:worker_threads';",
+        `import {Worker} from './bridge.mjs';${code}`,
+      ),
+    ).resolves.toStrictEqual([]);
+  });
+
+  it('keeps CommonJS scalar metadata separate from an exported Worker capability', async () => {
+    const bridge =
+      "const threads=require('node:worker_threads');module.exports={name:threads.Worker.name,length:threads.Worker.length,type:typeof threads.Worker};";
+    const code = "import helper from './bridge.cjs';export const value=helper.name;";
+
+    await expect(classify(bridge, code, { commonjsHelper: true })).resolves.toStrictEqual([]);
+  });
+
+  it('requires actual compiler module metadata rather than an application helper name or body', async () => {
+    const chunk = await authoredPrimitiveChunk();
+    const original = inspectedChunk(chunk);
+    const impostor = inspectedChunk({ ...chunk, modules: {} });
+
+    expect(original.requires.size).toBe(1);
+    expect(original.capability).toBe(false);
+    expect(impostor.requires.size).toBe(0);
+    expect(impostor.capability).toBe(false);
+  });
+
+  it.each([
+    '__require=globalThis.custom;',
+    'require=globalThis.custom;',
+    'const require=globalThis.custom;',
+  ])('rejects changed compiler helper or global require bindings: %s', async (code) => {
+    const chunk = await authoredPrimitiveChunk();
+    const inspection = inspectedChunk({ ...chunk, code: `${chunk.code}\n${code}` });
+
+    expect(inspection.requires.size).toBe(0);
+    expect(inspection.capability).toBe(false);
+  });
+
+  it('does not grant compiler helper origin to a same-named local parameter', async () => {
+    const chunk = await authoredPrimitiveChunk();
+    const code = `${chunk.code}\nexport function local(__require){return __require('node:worker_threads').Worker;}`;
+
+    expect(inspectedChunk({ ...chunk, code }).capability).toBe(false);
+  });
+
+  it('rejects ambiguous duplicate rendered declaration ownership', async () => {
+    const chunk = await authoredPrimitiveChunk();
+    const text = compilerRequireText(chunk);
+    const code = `${chunk.code}\nexport function local(){var ${text};return 42;}`;
+
+    expect(inspectedChunk({ ...chunk, code }).requires.size).toBe(0);
+  });
+
+  it.each([{ nativeOwned: false }, { orphanOnly: true }])(
+    'keeps object handoffs without retained native ownership separate: %j',
+    async (options) => {
+      const bridge =
+        "const threads=require('node:worker_threads');module.exports={Worker:threads.Worker};";
+      const code =
+        "import helper from './bridge.cjs';export const start=()=>new helper.Worker('source',{eval:true});";
+
+      await expect(
+        classify(bridge, code, { ...options, commonjsHelper: true }),
+      ).resolves.toStrictEqual([]);
+    },
+  );
+
+  it.each([
+    "import {helper} from './bridge.mjs';export const safe=42;",
+    "import {Worker} from 'node:worker_threads';function unused(){return new Worker.prototype.constructor('source',{eval:true});}export const safe=42;",
+  ])('keeps dead object exports and prototype constructors prunable: %s', async (code) => {
+    const bridge = "import {Worker} from 'node:worker_threads';export const helper={Worker};";
+
+    await expect(classify(bridge, code)).resolves.toStrictEqual([]);
+  });
+
+  it('does not confuse a local CommonJS object constructor with the builtin Worker', async () => {
+    const bridge = 'const threads={Worker:class{}};module.exports={Worker:threads.Worker};';
+    const code =
+      "import helper from './bridge.cjs';export const start=()=>new helper.Worker('ordinary');";
+
+    await expect(classify(bridge, code, { commonjsHelper: true })).resolves.toStrictEqual([]);
   });
 
   it('accepts source ownership carried by the existing importer-only metadata', async () => {

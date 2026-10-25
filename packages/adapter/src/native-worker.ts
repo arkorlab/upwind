@@ -1,17 +1,19 @@
 import type { Node } from '@oxc-project/types';
 
 import type { NativeAddonEntryTrace } from './native-addons.ts';
-import { type NativeBindings, stringOf, workerModule } from './native-ast.ts';
+import { type NativeBindings, required, stringOf } from './native-ast.ts';
 import type { NativeEdit } from './native-operations.ts';
 import { ownedNativeFiles } from './native-ownership.ts';
 
-type WorkerOrigin = 'constructor' | 'namespace' | 'module' | 'promise' | 'ambiguous';
+type WorkerOrigin = 'constructor' | 'prototype' | 'namespace' | 'module' | 'promise' | 'ambiguous';
 const IMPORTS = new WeakMap<readonly Node[], ReadonlyMap<Node, WorkerOrigin>>();
+const CONSTRUCTOR_METHODS: ReadonlySet<string> = new Set(['apply', 'bind', 'call', 'constructor']);
 const PROMISE_METHODS: ReadonlySet<string> = new Set(['catch', 'finally', 'then']);
 const WORKER_MODULES: ReadonlySet<string> = new Set(['node:worker_threads', 'worker_threads']);
 interface WorkerContext {
   readonly bindings: NativeBindings;
   readonly imports: ReadonlyMap<Node, WorkerOrigin>;
+  readonly requires?: ReadonlySet<Node> | undefined;
 }
 
 function importedWorkers(
@@ -49,12 +51,23 @@ function memberKey(member: Extract<Node, { type: 'MemberExpression' }>): string 
   return member.property.type === 'Identifier' ? member.property.name : undefined;
 }
 
+function constructorMember(
+  owner: 'constructor' | 'prototype',
+  key: string | undefined,
+): WorkerOrigin | undefined {
+  if (key === undefined) return 'ambiguous';
+  if (owner === 'prototype') return key === 'constructor' ? 'constructor' : undefined;
+  if (key === 'prototype') return 'prototype';
+  return CONSTRUCTOR_METHODS.has(key) ? 'ambiguous' : undefined;
+}
+
 function memberOrigin(
   member: Extract<Node, { type: 'MemberExpression' }>,
   owner: WorkerOrigin | undefined,
 ): WorkerOrigin | undefined {
   if (owner === 'ambiguous') return owner;
   const property = memberKey(member);
+  if (owner === 'constructor' || owner === 'prototype') return constructorMember(owner, property);
   if (owner === 'promise')
     return property === undefined || PROMISE_METHODS.has(property) ? 'ambiguous' : undefined;
   if (!isNamespace(owner)) return undefined;
@@ -74,6 +87,7 @@ function propertyOrigin(
       : property.key.name;
   if (owner === 'promise')
     return key === undefined || PROMISE_METHODS.has(key) ? 'ambiguous' : undefined;
+  if (owner === 'constructor' || owner === 'prototype') return constructorMember(owner, key);
   if (!isNamespace(owner)) return 'ambiguous';
   if (key === undefined) return 'ambiguous';
   if (key === 'Worker') return 'constructor';
@@ -144,6 +158,17 @@ function declaredOrigin(
   return stableOrigin(found, node, context);
 }
 
+function workerRequire(node: Node, context: WorkerContext): boolean {
+  if (node.type !== 'CallExpression' || node.callee.type !== 'Identifier') return false;
+  const source = node.arguments.length === 1 ? stringOf(node.arguments[0]) : undefined;
+  if (!WORKER_MODULES.has(source ?? '')) return false;
+  const name = node.callee.name;
+  const declaration = context.bindings.lookup(node.callee, name);
+  if (!context.bindings.unmodified(node.callee, name, false)) return false;
+  if (declaration === undefined) return required(node) !== undefined;
+  return declaration !== null && context.requires?.has(declaration) === true;
+}
+
 function workerOrigin(
   node: Node,
   context: WorkerContext,
@@ -158,8 +183,7 @@ function workerOrigin(
     const origin = workerOrigin(node.argument, context, next);
     return origin === 'promise' ? 'module' : origin;
   }
-  if (workerModule(node) && context.bindings.lookup(node, 'require') === undefined)
-    return 'namespace';
+  if (workerRequire(node, context)) return 'namespace';
   if (node.type === 'MemberExpression')
     return memberOrigin(node, workerOrigin(node.object, context, next));
   return undefined;
@@ -209,7 +233,7 @@ function exportedPattern(pattern: Node, context: WorkerContext): boolean {
   let value = pattern;
   while (value.type === 'AssignmentPattern' || value.type === 'RestElement')
     value = value.type === 'AssignmentPattern' ? value.left : value.argument;
-  if (value.type === 'Identifier') return workerOrigin(value, context) !== undefined;
+  if (value.type === 'Identifier') return handedOffCapability(value, context);
   if (value.type === 'ArrayPattern')
     return value.elements.some((element) => element !== null && exportedPattern(element, context));
   if (value.type === 'ObjectPattern')
@@ -219,11 +243,45 @@ function exportedPattern(pattern: Node, context: WorkerContext): boolean {
   return false;
 }
 
+function objectInitializer(value: Node, context: WorkerContext): Node | undefined {
+  if (value.type !== 'Identifier') return undefined;
+  const declaration = context.bindings.lookup(value, value.name);
+  if (
+    declaration?.type !== 'VariableDeclarator' ||
+    declaration.init === null ||
+    declaration.id.type !== 'Identifier'
+  )
+    return undefined;
+  return declaration.init;
+}
+
+function handoffValues(node: Node, context: WorkerContext): readonly Node[] {
+  if (node.type === 'ObjectExpression')
+    return node.properties.map((property) =>
+      property.type === 'Property' ? property.value : property.argument,
+    );
+  const initializer = objectInitializer(node, context);
+  return initializer === undefined ? [] : [initializer];
+}
+
+function handedOffCapability(value: Node, context: WorkerContext): boolean {
+  const seen = new Set<Node>();
+  const pending: Node[] = [value];
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    if (seen.has(node)) continue;
+    seen.add(node);
+    if (workerOrigin(node, context) !== undefined) return true;
+    const values = handoffValues(node, context);
+    pending.push(...values);
+  }
+  return false;
+}
+
 function exportedCapability(node: Node, context: WorkerContext): boolean {
   if (node.type === 'ExportAllDeclaration') return WORKER_MODULES.has(stringOf(node.source) ?? '');
   if (node.type === 'ExportDefaultDeclaration')
-    return workerOrigin(node.declaration, context) !== undefined;
-  if (node.type === 'AssignmentExpression') return workerOrigin(node.right, context) !== undefined;
+    return handedOffCapability(node.declaration, context);
+  if (node.type === 'AssignmentExpression') return handedOffCapability(node.right, context);
   if (node.type !== 'ExportNamedDeclaration') return false;
   if (node.source !== null) {
     if (!WORKER_MODULES.has(stringOf(node.source) ?? '')) return false;
@@ -239,15 +297,16 @@ function exportedCapability(node: Node, context: WorkerContext): boolean {
     declared.declarations.some((item) => exportedPattern(item.id, context))
   )
     return true;
-  return node.specifiers.some((specifier) => workerOrigin(specifier.local, context) !== undefined);
+  return node.specifiers.some((specifier) => handedOffCapability(specifier.local, context));
 }
 
 /** Inspect only the tree-shaken chunk; exports receive no eager source marker. */
 export function hasRetainedWorkerCapability(
   tree: readonly Node[],
   bindings: NativeBindings,
+  requires?: ReadonlySet<Node>,
 ): boolean {
-  const context = { bindings, imports: workerImports(tree) };
+  const context = { bindings, imports: workerImports(tree), requires };
   return tree.some((node) => {
     if (returnedCapability(node, context) !== undefined || exportedCapability(node, context))
       return true;

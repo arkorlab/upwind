@@ -7,6 +7,7 @@ import { AuditError } from './dependencies.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
 import { nativeBindings } from './native-ast.ts';
 import { ownedNativeFiles } from './native-ownership.ts';
+import { renderedWorkerRequires } from './native-worker-requires.ts';
 import { hasRetainedWorkerCapability } from './native-worker.ts';
 
 function nativeTraceFiles(trace: NativeAddonEntryTrace): ReadonlySet<string> {
@@ -40,8 +41,9 @@ export async function assertRetainedNativeWorkerCapability(
   tree: readonly Node[],
   traces: readonly NativeAddonEntryTrace[],
 ): Promise<void> {
+  const bindings = nativeBindings(program);
   if (
-    hasRetainedWorkerCapability(tree, nativeBindings(program)) &&
+    hasRetainedWorkerCapability(tree, bindings, renderedWorkerRequires(chunk, tree, bindings)) &&
     (await retainedNativeSource(chunk, traces))
   )
     throw new AuditError('A retained Node Worker has unclassified owned native child dependencies');
