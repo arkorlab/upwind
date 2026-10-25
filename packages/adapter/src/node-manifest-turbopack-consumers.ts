@@ -95,6 +95,17 @@ function knownRuntimeCaller(
   );
 }
 
+function physicalBoots(
+  graphs: readonly NodeManifestTurbopackEntryGraph[],
+  proof: NodeManifestRuntimeCallerProof | undefined,
+): ReadonlySet<string> {
+  const boots = new Set(graphs.map((graph) => graph.physicalId));
+  if (proof !== undefined) {
+    for (const caller of proof.callers) boots.add(caller.id);
+  }
+  return boots;
+}
+
 class TurbopackConsumers {
   private readonly input: NodeManifestTurbopackConsumerInput;
   private readonly graphs: readonly NodeManifestTurbopackEntryGraph[];
@@ -233,10 +244,7 @@ class TurbopackConsumers {
   private assertPhysicalCallers(): void {
     const tables = new Set([...this.factories.values()].map((factory) => factory.physicalId));
     const runtimes = new Set(this.allGraphs.map((graph) => graph.runtimeId));
-    const boots = new Set([
-      ...this.graphs.map((graph) => graph.physicalId),
-      ...(this.callerProof?.callers.map((caller) => caller.id) ?? []),
-    ]);
+    const boots = physicalBoots(this.graphs, this.callerProof);
     for (const source of this.input.sources) {
       for (const edge of source.imports) {
         if (tables.has(edge.target) && !runtimes.has(source.id))
