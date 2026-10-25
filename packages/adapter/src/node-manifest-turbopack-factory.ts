@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { jsLiteral } from './codegen.ts';
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
 import { assertGlobalContextRead, normalizedGlobalInspection } from './node-closure-globals.ts';
@@ -200,7 +201,7 @@ class FactoryProjection {
     if (this.mode === 'dependencies' && this.cache.reads(id, call)) return;
     const specifier = turbopackModuleSpecifier(id);
     this.imports.set(call, { kind, specifier, targetId: id });
-    this.edit(call, `require(${JSON.stringify(specifier)})`);
+    this.edit(call, `require(${jsLiteral(specifier)})`);
   }
 
   private external(call: Node, visit: Visit): void {
@@ -218,7 +219,7 @@ class FactoryProjection {
     )
       refuse('external require identity');
     this.imports.set(call, { kind: 'external', specifier });
-    this.edit(call, `require(${JSON.stringify(specifier)})`);
+    this.edit(call, `require(${jsLiteral(specifier)})`);
   }
 
   // eslint-disable-next-line sonarjs/function-return-type -- Next.js ModuleId preserves runtime-distinct number and string Map keys.
@@ -298,7 +299,7 @@ class FactoryProjection {
       const value = getterOf(entries[index + 1]);
       const local = `${GETTER_PREFIX}${names.size}`;
       this.append.push(
-        `const ${local}=${this.text(value)};export {${local} as ${JSON.stringify(name)}};`,
+        `const ${local}=${this.text(value)};export {${local} as ${jsLiteral(name)}};`,
       );
     }
     if (names.size === 0) refuse('empty export registration');

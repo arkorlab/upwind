@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { parseAst } from 'rolldown/parseAst';
 import { describe, expect, it } from 'vitest';
 
 import { jsLiteral } from '../src/codegen.ts';
@@ -34,6 +35,26 @@ function chunk(body = CALLER): NodeManifestTurbopackSource {
 }
 
 describe('next Turbopack manifest factory projections', () => {
+  it('preserves export-name data while escaping characters unsafe in generated source', () => {
+    const name = '</script>\u{2028}\u{2029}';
+    const original = source(
+      `module.exports=[1,(ctx)=>{const value=42;ctx.s([${jsLiteral(name)},()=>value]);}];`,
+    );
+    const projected = projectNodeManifestTurbopackFactory(original, 1);
+    const parsed: unknown = parseAst(projected.source.code);
+    const exported = expect.objectContaining({ type: 'Literal', value: name });
+    const specifier = expect.objectContaining({ exported });
+    const declaration = expect.objectContaining({
+      type: 'ExportNamedDeclaration',
+      specifiers: [specifier],
+    });
+
+    expect(projected.exports).toStrictEqual({ kind: 'getters', names: [name] });
+    expect(projected.original).toStrictEqual(original);
+    expect(projected.source.code).not.toMatch(/[<>\u{2028}\u{2029}]/u);
+    expect(parsed).toMatchObject({ body: expect.arrayContaining([declaration]) });
+  });
+
   it('keeps a named class self-reference separate from the outer factory context', () => {
     const original = source(
       'module.exports=[1,(ctx)=>{const C=class ctx{method(){return ctx;}};ctx.v(C);}];',
