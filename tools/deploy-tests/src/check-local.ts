@@ -28,6 +28,13 @@ const FIXTURE = path.join(REPO, 'fixtures', 'next-minimal');
 const TARGETS = ['cloudflare', 'node'] as const satisfies readonly Target[];
 /** What the fixture's home page says. */
 const HOME = '<p>next-minimal</p>';
+/**
+ * A route of the fixture's own that only its Function answers, and what it answers a GET with: the
+ * body Next.js's own parser makes of an empty request, a string with nothing in it, as `next start`
+ * answers it too.
+ */
+const API = '/api/ping';
+const API_ANSWER = { body: '' };
 /** A hook builds the fixture, installs first: minutes, not seconds. */
 const HOOK_MS = 900_000;
 /** How long a stopped server may take to let its port go. */
@@ -106,6 +113,11 @@ async function checkTarget(target: Target, root: string): Promise<void> {
     const home = await fetch(url);
     assert.equal(home.status, OK, `/ was answered ${String(home.status)}`);
     assert.ok((await home.text()).includes(HOME), '/ is not the fixture');
+    // A prerendered page can be served without the application's code running at all: a route only
+    // its Function answers proves the Function is reached too (greptile).
+    const api = await fetch(new URL(API, url));
+    assert.equal(api.status, OK, `${API} was answered ${String(api.status)}`);
+    assert.deepEqual(await api.json(), API_ANSWER, `${API} did not answer as the fixture does`);
 
     const logs = await hook('e2e-logs.sh', appDir, target);
     assert.match(logs, /^BUILD_ID: \S+$/mu, 'the logs name no build id');

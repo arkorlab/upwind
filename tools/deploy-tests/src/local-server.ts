@@ -169,7 +169,9 @@ export async function serveLocally(input: LocalServeInput): Promise<string> {
   writeFileSync(envFile, JSON.stringify(application), { mode: PRIVATE_FILE_MODE });
   const { args, ready } = commandOf(target, projectDir, envFile);
   const logFile = path.join(appDir, RUNTIME_LOG);
-  const output = openSync(logFile, 'a');
+  // Each server's own log, begun afresh: a server started again in the same directory would otherwise
+  // find the address an earlier one said, and wait on a port nothing serves any more (greptile).
+  const output = openSync(logFile, 'w');
   let child: ChildProcess;
   try {
     // A group of its own (`detached`), so that the cleanup hook stops what it started — workerd under
