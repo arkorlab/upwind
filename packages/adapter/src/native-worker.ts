@@ -447,6 +447,12 @@ export function retainedWorkerCapabilityNodes(
   });
 }
 
+export interface NativeWorkerSite {
+  readonly kind: 'call' | 'constructor' | 'return';
+  readonly start: number;
+  readonly end: number;
+}
+
 export async function nativeWorkerEdit(
   node: Node,
   context: {
@@ -457,7 +463,7 @@ export async function nativeWorkerEdit(
     readonly bindings: NativeBindings;
     readonly nodeTarget: boolean;
     readonly guards: ReadonlyMap<number, 'plain' | 'ambiguous'>;
-    markChild(binaries: readonly string[]): string;
+    markChild(binaries: readonly string[], site: NativeWorkerSite): string;
   },
 ): Promise<NativeEdit | undefined> {
   const capability = { bindings: context.bindings, imports: workerImports(context.tree) };
@@ -472,9 +478,17 @@ export async function nativeWorkerEdit(
   if (target === undefined) return undefined;
   const binaries = await ownedNativeFiles(context.importer, context.traces);
   if (binaries.length === 0) return undefined;
+  let kind: NativeWorkerSite['kind'] = 'return';
+  if (node.type === 'NewExpression') kind = 'constructor';
+  else if (node.type === 'CallExpression') kind = 'call';
+  const site: NativeWorkerSite = {
+    end: target.end,
+    kind,
+    start: target.start,
+  };
   return {
     start: target.start,
     end: target.end,
-    text: `(${context.markChild(binaries)},${context.source.slice(target.start, target.end)})`,
+    text: `(${context.markChild(binaries, site)},${context.source.slice(target.start, target.end)})`,
   };
 }

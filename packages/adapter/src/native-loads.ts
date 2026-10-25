@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 
 import type { Node } from '@oxc-project/types';
@@ -17,7 +18,7 @@ import {
 } from './native-operations.ts';
 import { nativeSourceAnalysis } from './native-source-parser.ts';
 import { assertRetainedNativeWorkerCapability } from './native-worker-retained.ts';
-import { nativeWorkerEdit } from './native-worker.ts';
+import { nativeWorkerEdit, type NativeWorkerSite } from './native-worker.ts';
 
 const MARKER = '__UPWIND_NATIVE_CAPABILITY__';
 const CHILD_MARKER = '__UPWIND_NATIVE_WORKER_CHILD__';
@@ -41,6 +42,44 @@ interface NativeLoadsOptions {
   readonly nodeTarget?: boolean;
   /** A genuine native load becomes a placement error before any Worker artifact can be returned. */
   readonly placementProbe?: boolean;
+}
+
+interface WorkerSourceIdentity {
+  readonly analysisSha256: string;
+  /** Input to this transform, before native markers; earlier analysis plugins may have run. */
+  readonly sourceSha256: string;
+}
+interface WorkerSiteDiagnostic extends NativeWorkerSite, WorkerSourceIdentity {}
+interface NativeChild {
+  readonly binaries: readonly string[];
+  readonly site: WorkerSiteDiagnostic;
+}
+
+function workerSourceIdentity(source: string, analysis: string): WorkerSourceIdentity {
+  const sourceSha256 = createHash('sha256').update(source).digest('hex');
+  return {
+    analysisSha256:
+      source === analysis ? sourceSha256 : createHash('sha256').update(analysis).digest('hex'),
+    sourceSha256,
+  };
+}
+
+function childSiteMarker(
+  source: string,
+  analysis: string,
+  mark: (binaries: readonly string[], site: WorkerSiteDiagnostic) => string,
+): (binaries: readonly string[], site: NativeWorkerSite) => string {
+  let identity: WorkerSourceIdentity | undefined;
+  return (binaries, site) => {
+    identity ??= workerSourceIdentity(source, analysis);
+    return mark(binaries, {
+      analysisSha256: identity.analysisSha256,
+      end: site.end,
+      kind: site.kind,
+      sourceSha256: identity.sourceSha256,
+      start: site.start,
+    });
+  };
 }
 
 function isPlacementSignal(options: NativeLoadsOptions, retained: readonly NativeLoad[]): boolean {
@@ -129,7 +168,7 @@ export function nativeLoadsPlugin(
     Object.values(trace.assets).some((file) => file.endsWith('.node')),
   );
   const loads = new Map<string, NativeLoad | Error>();
-  const children = new Map<string, readonly string[]>();
+  const children = new Map<string, NativeChild>();
   let ordinal = 0;
   function nextId(): string {
     const id = String(ordinal);
@@ -141,9 +180,9 @@ export function nativeLoadsPlugin(
     loads.set(id, load);
     return `${MARKER}(${JSON.stringify(id)})`;
   }
-  function markChild(binaries: readonly string[]): string {
+  function markChild(binaries: readonly string[], site: WorkerSiteDiagnostic): string {
     const id = nextId();
-    children.set(id, binaries);
+    children.set(id, { binaries, site });
     return `${CHILD_MARKER}(${JSON.stringify(id)})`;
   }
   return {
@@ -176,7 +215,7 @@ export function nativeLoadsPlugin(
           traces,
           tree,
           bindings,
-          markChild,
+          markChild: childSiteMarker(source, analysis.code, markChild),
           nodeTarget: options.nodeTarget === true,
           guards: context.guards,
         };
@@ -209,9 +248,10 @@ export function nativeLoadsPlugin(
       );
       for (const node of tree) {
         if (node.type !== 'CallExpression' || !identifier(node.callee, CHILD_MARKER)) continue;
-        if (!children.has(markerId(node))) throw new AuditError('Unrecognized native child marker');
+        const child = children.get(markerId(node));
+        if (child === undefined) throw new AuditError('Unrecognized native child marker');
         throw new AuditError(
-          'A retained Node Worker has unclassified owned native child dependencies',
+          `A retained Node Worker has unclassified owned native child dependencies; analysis site ${JSON.stringify(child.site)}`,
         );
       }
       if (candidates && !isPlacementSignal(options, retained))
