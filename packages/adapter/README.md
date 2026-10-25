@@ -418,6 +418,21 @@ renamed with it (above): its functions and classes keep their names, and its var
 parameters are renamed short. A cache module that reads its own functions' parameter names, through
 `Function.prototype.toString()`, would read renamed ones and not work.
 
+### Native Node.js addons
+
+A native package used only by build tooling runs in the Node.js build process; it does not need
+Workers support. A native package retained in a server entry is different: Workers cannot load a
+Node.js `.node` addon through
+[`process.dlopen`](https://github.com/cloudflare/workerd/blob/d0c519786437b6b79dc79caddc35641762fbba57/src/node/internal/public_process.ts#L270-L275).
+An existing graph-audit refusal also names the server entries whose Next.js traces include native
+addons, when those traces are available. This context is bounded and does not replace the original
+audit error or prove that a traced addon was invoked.
+
+A prerendered response alone does not make its server entry build-only. The Adapter API records
+[bypass, revalidation and fallback conditions separately from static compute](https://nextjs.org/docs/app/api-reference/adapters/output-types);
+Draft Mode or a later render can still need that entry. The adapter keeps those runtime contracts
+and the graph audit. It does not remove an entry or substitute native exports to make a build pass.
+
 ## Type declarations a Function carries
 
 A server module that runs TypeScript while it answers, such as Twoslash or a documentation renderer,
