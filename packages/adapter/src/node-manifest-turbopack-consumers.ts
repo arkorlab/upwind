@@ -146,8 +146,13 @@ class TurbopackConsumers {
     });
     if (reached === undefined) return;
     const reachable = new Set(reached);
-    for (const [target, parents] of this.incoming)
-      this.incoming.set(target, parents.intersection(reachable));
+    for (const [target, parents] of this.incoming) {
+      const included = new Set<string>();
+      for (const parent of parents) {
+        if (reachable.has(parent)) included.add(parent);
+      }
+      this.incoming.set(target, included);
+    }
   }
 
   private producerKind(): 'app-page' | 'pages' | 'app-route' | 'pages-api' {
