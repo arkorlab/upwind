@@ -218,6 +218,7 @@ class FactoryProjection {
     this.edit(call, `require(${JSON.stringify(specifier)})`);
   }
 
+  // eslint-disable-next-line sonarjs/function-return-type -- Next.js ModuleId preserves runtime-distinct number and string Map keys.
   private staticExportModule(value: unknown, visit: Visit): NodeManifestTurbopackModuleId {
     if (defaultExportTarget(value, visit)) return this.moduleId;
     const target = turbopackModuleId(value);
@@ -231,7 +232,7 @@ class FactoryProjection {
   private dynamicExports(value: unknown): void {
     if (!isNode(value) || value.type !== 'Literal' || typeof value['value'] !== 'boolean')
       refuse('dynamic export flag');
-    if (value['value'] === true && this.mode === 'strict') refuse('dynamic protected exports');
+    if (value['value'] && this.mode === 'strict') refuse('dynamic protected exports');
   }
 
   private exportTarget(call: Node, visit: Visit, getters: boolean): NodeManifestTurbopackModuleId {

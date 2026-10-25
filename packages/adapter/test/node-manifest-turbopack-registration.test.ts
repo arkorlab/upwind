@@ -110,7 +110,10 @@ describe('first grouping array in fixed Node factory registration', () => {
     const factories = nodeManifestTurbopackFactories(original);
     const projection = projectNodeManifestTurbopackFactory(original, 1, 'dependencies');
 
-    expect(original.code.slice(factories[0]?.start, factories[0]?.end)).toBe('(ctx)=>{ctx.v(42);}');
+    expect(factories.map(({ start, end }) => original.code.slice(start, end))).toStrictEqual([
+      '(ctx)=>{ctx.v(42);}',
+      '(ctx)=>{}',
+    ]);
     expect({
       moduleId: projection.moduleId,
       mode: projection.mode,

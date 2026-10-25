@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import { jsLiteral } from '../src/codegen.ts';
+import { AuditError } from '../src/dependencies.ts';
 import {
   inspectNodeManifestTurbopackEntry,
   nodeManifestTurbopackEntryGraph,
@@ -73,7 +74,107 @@ function replaceFile(
   };
 }
 
+function addDeferredTable(
+  own: ReturnType<typeof fixture>,
+  name: string,
+  code: string,
+): ReturnType<typeof fixture> {
+  const file = `${DIST}/server/chunks/${name}.js`;
+  return {
+    ...own,
+    sources: [
+      ...own.sources.map((record) => {
+        return record.file === RUNTIME
+          ? { ...record, imports: [...record.imports, { specifier: file, target: file }] }
+          : record;
+      }),
+      { id: file, file, source: source(code), imports: [] },
+    ],
+  };
+}
+
+function graphFailure(own: ReturnType<typeof fixture>): Error {
+  try {
+    nodeManifestTurbopackEntryGraph(own);
+  } catch (error) {
+    if (error instanceof Error) return error;
+    throw error;
+  }
+  throw new Error('Expected graph refusal');
+}
+
 describe('next Turbopack route topology', () => {
+  it('rejects the complete graph with independent bounded reasons from initial and deferred tables', () => {
+    let own = replaceFile(
+      fixture(),
+      CHUNK,
+      'module.exports=[1,(ctx)=>{ctx.i(999);},2,(ctx)=>{ctx.r(secret);},3,(ctx)=>{ctx.r(secret);}];',
+    );
+    own = addDeferredTable(own, 'private-table-name', 'module.exports=[4,(ctx)=>{ctx.c(1);}];');
+    own = addDeferredTable(
+      own,
+      'registration',
+      'const privateText="do-not-print-this";module.exports=[5,(ctx)=>{}];',
+    );
+    const error = graphFailure(own);
+
+    expect(error).toBeInstanceOf(AuditError);
+    expect(error.message).toContain('4 failures; 3 reasons shown; 0 omitted failures');
+    expect(error.message).toContain(
+      '2x Unproved Next.js Turbopack manifest dynamic or invalid module id',
+    );
+    expect(error.message).toContain('unreviewed context method');
+    expect(error.message).toContain(
+      'registration statements (count 2; first types VariableDeclaration,ExpressionStatement)',
+    );
+    expect(error.message).not.toMatch(
+      /secret|private-table-name|privateText|do-not-print-this|999/u,
+    );
+    expect(error.message).not.toContain('unregistered module dependency');
+  });
+
+  it('caps distinct structural diagnostics while preserving refusal of every failed projection', () => {
+    const bodies = [
+      'ctx.r(dynamic);',
+      'ctx.r(1,2);',
+      'const escaped=ctx;',
+      'ctx.c(1);',
+      'ctx.v();',
+      'ctx.v(1,dynamic);',
+      'ctx.v(1,true);',
+      'if(flag)ctx.v(1,900);',
+      'ctx.v(1,900);ctx.v(2,900);',
+      'ctx?.v(1);',
+      'const escaped=ctx.r;',
+      'ctx.x(dynamic,()=>require("private-package"));',
+      'import(dynamic);',
+      'require(dynamic);',
+      'ctx.r.bind({});',
+      'module.exports=1;',
+    ];
+    const factories = bodies.map((body, index) => `${index + 2},(ctx)=>{${body}}`);
+    const own = replaceFile(
+      fixture(),
+      CHUNK,
+      `module.exports=[1,(ctx)=>{},${factories.join(',')}];`,
+    );
+    const error = graphFailure(own);
+
+    expect(error).toBeInstanceOf(AuditError);
+    expect(error.message).toContain('16 failures; 12 reasons shown; 4 omitted failures');
+    expect(error.message.length).toBeLessThan(4000);
+    expect(error.message).not.toContain('private-package');
+  });
+
+  it('does not turn an unknown parser failure into a partial controlled protocol report', () => {
+    const invalid = replaceFile(fixture(), CHUNK, 'module.exports=[1,(ctx)=>{ctx.r(dynamic);}];');
+    const error = graphFailure(addDeferredTable(invalid, 'unparseable', 'module.exports=[;'));
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(AuditError);
+    expect(error.message).not.toContain('reasons shown');
+  });
+
   it('binds a separate selected export identity to each merged factory ID', () => {
     const own = replaceFile(
       fixture(),

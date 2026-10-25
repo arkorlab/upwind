@@ -115,11 +115,24 @@ class TurbopackConsumers {
 
   private producerKind(): 'app-page' | 'pages' | 'app-route' | 'pages-api' {
     const kind = this.input.producer.kind ?? APP_PAGE_FACTORY;
-    if (kind === APP_PAGE_FACTORY || kind === APP_PAGE_CLASS) return 'app-page';
-    if (kind === 'pages-class') return 'pages';
-    if (kind === 'pages-api-class') return 'pages-api';
-
-    return kind === 'app-route-class' ? 'app-route' : refuse('unknown protected producer role');
+    switch (kind) {
+      case APP_PAGE_FACTORY:
+      case APP_PAGE_CLASS: {
+        return 'app-page';
+      }
+      case 'pages-class': {
+        return 'pages';
+      }
+      case 'pages-api-class': {
+        return 'pages-api';
+      }
+      case 'app-route-class': {
+        return 'app-route';
+      }
+      default: {
+        return refuse('unknown protected producer role');
+      }
+    }
   }
 
   private register(factory: NodeManifestTurbopackGraphFactory): void {

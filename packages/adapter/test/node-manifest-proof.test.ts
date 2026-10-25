@@ -325,10 +325,11 @@ describe('original Node manifest operation proof', () => {
     current.graph.importers.set(file, [current.route]);
     current.graph.imports.set(file, [{ specifier: current.caller, target: current.caller }]);
     current.graph.imports.set(current.route, [{ specifier: file, target: file }]);
+    current.graph.imports.set(current.evaluator, []);
 
-    await expect(proveNodeManifests(current.input, current.graph)).rejects.toThrow(
-      'consumer is not a sealed route entry',
-    );
+    await expect(
+      proveNodeManifests({ ...current.input, rootDir: directory }, current.graph),
+    ).rejects.toThrow('runtime bootstrap declaration');
   });
 
   it('certifies only the reviewed operation and binds its unchanged physical data', async () => {

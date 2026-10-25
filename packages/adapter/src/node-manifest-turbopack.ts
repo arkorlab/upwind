@@ -55,6 +55,7 @@ export interface NodeManifestTurbopackProjection {
   readonly requiresReviewedRuntime: true;
 }
 const COMMONJS_PARAMETERS = 3;
+const MAX_STATEMENT_DIAGNOSTIC_TYPES = 4;
 
 function refuseTurbopack(reason: string): never {
   throw new AuditError(
@@ -115,7 +116,12 @@ function registration(program: Node): Node {
   if (strictStatement(statements[0])) statements = statements.slice(1);
   const only = statements[0];
   if (statements.length !== 1 || !isNode(only) || only.type !== 'ExpressionStatement')
-    return refuseTurbopack('registration statements');
+    return refuseTurbopack(
+      `registration statements (count ${statements.length}; first types ${statements
+        .slice(0, MAX_STATEMENT_DIAGNOSTIC_TYPES)
+        .map((statement) => (isNode(statement) ? statement.type : 'missing'))
+        .join(',')})`,
+    );
   let expression = only['expression'];
   if (!isNode(expression)) return refuseTurbopack('registration expression');
   if (expression.type === 'CallExpression') expression = strictWrapper(expression, false);

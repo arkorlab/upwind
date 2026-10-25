@@ -65,9 +65,9 @@ describe('ordinary Turbopack internal cache ownership', () => {
     expect(projection.source.code).toContain('const ns=ctx.i("internal")');
     expect(projection.cacheInitializers).toHaveLength(1);
     expect(initializer?.id).toBe('internal');
-    expect(original.code.slice(initializer?.start, initializer?.end)).toBe(
-      INITIALIZER.slice(0, -1),
-    );
+    expect(
+      projection.cacheInitializers.map(({ start, end }) => original.code.slice(start, end)),
+    ).toStrictEqual([INITIALIZER.slice(0, -1)]);
     expect(Object.isFrozen(projection.cacheInitializers)).toBe(true);
     expect(Object.isFrozen(initializer)).toBe(true);
   });

@@ -43,7 +43,7 @@ const CLASS_SOURCES = [
 const FACTORY = 'createAppPageEntrypoint';
 const MAX_SOURCE_BYTES = 134_217_728;
 const DEFINE_PROPERTY_ARGUMENTS = 3;
-const certified = new WeakSet<WeakKey>();
+const certified = new WeakSet();
 
 export type NodeManifestAppPageFactoryImport =
   | NodeManifestTemplateImport
@@ -183,7 +183,7 @@ function exportsOf(
 
 interface ImportView {
   readonly root: string;
-  readonly require: NodeRequire;
+  readonly require: NodeJS.Require;
   readonly imports?: ReadonlyMap<string, NodeManifestAppPageFactoryImport>;
   readonly visits: ReadonlyMap<Node, ReturnType<typeof visitTree>[number]>;
   readonly closed: Map<string, NodeManifestAppPageFactoryImport>;

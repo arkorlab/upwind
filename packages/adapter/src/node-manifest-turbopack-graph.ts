@@ -261,30 +261,81 @@ function runtimeTables(
   return [...tables.values()];
 }
 
-function factoryRecords(tables: readonly NodeManifestTurbopackGraphFile[]): ReadonlyMap<
-  NodeManifestTurbopackModuleId,
-  {
-    readonly physical: NodeManifestTurbopackGraphFile;
-    readonly projection: NodeManifestTurbopackProjection;
+const MAX_DIAGNOSTIC_REASONS = 12;
+const MAX_DIAGNOSTIC_MESSAGE_LENGTH = 320;
+const PROTOCOL_SUFFIX = '; refusing native publication';
+const PROTOCOL_PREFIXES = [
+  'Unproved Next.js Turbopack manifest ',
+  'Unproved Next.js Turbopack cache initializer ',
+];
+
+/** Only our bounded structural protocol errors are safe to combine; never parser error text. */
+class FactoryDiagnostics {
+  private readonly reasons = new Map<string, number>();
+  private failures = 0;
+  private omitted = 0;
+
+  capture(error: unknown): void {
+    if (
+      !(error instanceof AuditError) ||
+      error.message.length > MAX_DIAGNOSTIC_MESSAGE_LENGTH ||
+      PROTOCOL_PREFIXES.every((prefix) => !error.message.startsWith(prefix)) ||
+      !error.message.endsWith(PROTOCOL_SUFFIX)
+    )
+      throw error;
+    this.failures += 1;
+    const count = this.reasons.get(error.message);
+    if (count !== undefined) this.reasons.set(error.message, count + 1);
+    else if (this.reasons.size < MAX_DIAGNOSTIC_REASONS) this.reasons.set(error.message, 1);
+    else this.omitted += 1;
   }
-> {
-  const factories = new Map<
-    NodeManifestTurbopackModuleId,
-    {
-      readonly physical: NodeManifestTurbopackGraphFile;
-      readonly projection: NodeManifestTurbopackProjection;
-    }
-  >();
+
+  assertNone(): void {
+    if (this.failures === 0) return;
+    const reasons = [...this.reasons].map(([reason, count]) => `${count}x ${reason}`).join(' | ');
+    throw new AuditError(
+      `Unproved Next.js Turbopack manifest diagnostics (${this.failures} failures; ${this.reasons.size} reasons shown; ${this.omitted} omitted failures): ${reasons}`,
+    );
+  }
+}
+
+interface FactoryRecord {
+  readonly physical: NodeManifestTurbopackGraphFile;
+  readonly projection: NodeManifestTurbopackProjection;
+}
+
+function factoryRecords(
+  tables: readonly NodeManifestTurbopackGraphFile[],
+): ReadonlyMap<NodeManifestTurbopackModuleId, FactoryRecord> {
+  const records: [NodeManifestTurbopackModuleId, FactoryRecord][] = [];
+  const diagnostics = new FactoryDiagnostics();
   for (const table of tables) {
-    for (const factory of nodeManifestTurbopackFactories(table.source)) {
+    let factories: ReturnType<typeof nodeManifestTurbopackFactories>;
+    try {
+      factories = nodeManifestTurbopackFactories(table.source);
+    } catch (error) {
+      diagnostics.capture(error);
+      continue;
+    }
+    for (const factory of factories) {
       for (const id of factory.ids) {
-        if (factories.has(id)) refuse('duplicate module id across loaded chunks');
-        const projection = projectNodeManifestTurbopackFactory(table.source, id, 'dependencies');
-        factories.set(id, { physical: table, projection });
+        try {
+          const projection = projectNodeManifestTurbopackFactory(table.source, id, 'dependencies');
+          records.push([id, { physical: table, projection }]);
+        } catch (error) {
+          diagnostics.capture(error);
+        }
       }
     }
   }
-  return factories;
+  // No successful subset may reach duplicate/owner checks or become a usable graph.
+  diagnostics.assertNone();
+  const result = new Map<NodeManifestTurbopackModuleId, FactoryRecord>();
+  for (const [id, record] of records) {
+    if (result.has(id)) refuse('duplicate module id across loaded chunks');
+    result.set(id, record);
+  }
+  return result;
 }
 
 export function nodeManifestTurbopackEntryGraph(input: {
