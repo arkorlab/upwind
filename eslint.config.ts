@@ -34,7 +34,7 @@ const NODE_ONLY_FILES = [
   ...CLI_FILES,
   'packages/auth/scripts/**/*.ts',
   'packages/sdk/scripts/**/*.ts',
-  'tools/**/*.ts',
+  'tools/**/*.{ts,mts}',
   // What runs a local stack: Node, around the Workers it bundles.
   'packages/local/src/*.ts',
   'packages/local/test/**/*.ts',
@@ -500,7 +500,7 @@ export default defineConfig([
   // output. The paths they touch are under a directory they made themselves, or under a package
   // they just fetched — neither is a literal anyone could have written here.
   {
-    files: ['tools/**/*.ts'],
+    files: ['tools/**/*.{ts,mts}'],
     rules: {
       'no-console': 'off',
       'security/detect-non-literal-fs-filename': 'off',

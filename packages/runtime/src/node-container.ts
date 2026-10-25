@@ -3,7 +3,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 
 import { nodeFunctionEnv, nodeRuntimeConfiguration } from './node-bindings.ts';
 import { changesSomething, closeNodeHttpBridge } from './node-http-bridge.ts';
-import { messageHeaders, messageRequest, sendWebResponse } from './node-http.ts';
+import {
+  messageHeaders,
+  messageRequest,
+  removeNodeControlHeaders,
+  sendWebResponse,
+} from './node-http.ts';
 import { NodeLifetime, type NodeTaskSnapshot } from './node-lifetime.ts';
 
 const CONTROL_HEADER = 'x-upwind-control-token';
@@ -109,7 +114,7 @@ async function application(
   request.once('aborted', disconnected);
   try {
     const headers = messageHeaders(request);
-    for (const name of [...headers.keys()]) if (name.startsWith('x-upwind-')) headers.delete(name);
+    removeNodeControlHeaders(headers);
     headers.set('host', url.host);
     const incoming = messageRequest(request, url.href, headers, abort.signal);
     const answer = await entry.fetch(incoming, nodeFunctionEnv(), {
@@ -159,7 +164,9 @@ export async function startNodeContainer(options: {
       lifetime.startDraining();
       const drained = await lifetime.drain(DRAIN_MS);
       await new Promise<void>((resolve) => {
-        server.close(() => resolve());
+        server.close(() => {
+          resolve();
+        });
         server.closeAllConnections();
       });
       await closeNodeHttpBridge();
@@ -169,12 +176,12 @@ export async function startNodeContainer(options: {
     })();
     return closing;
   };
-  const terminate = (): void => {
+  function terminate(): void {
     // eslint-disable-next-line unicorn/prefer-await -- Signal handlers cannot return a shutdown promise to Node.
     close().catch(() => {
       process.exitCode = 1;
     });
-  };
+  }
   process.once('SIGTERM', terminate);
   process.once('SIGINT', terminate);
   const address = server.address();

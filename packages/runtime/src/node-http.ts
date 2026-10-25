@@ -15,6 +15,14 @@ const HOP_HEADERS = new Set([
   'upgrade',
 ]);
 
+/** Snapshot names before deletion so consecutive internal headers are all removed. */
+export function removeNodeControlHeaders(headers: Headers): void {
+  const names = Array.from(headers.keys());
+  for (const name of names) {
+    if (name.startsWith('x-upwind-')) headers.delete(name);
+  }
+}
+
 export function messageHeaders(message: IncomingMessage): Headers {
   const headers = new Headers();
   for (let index = 0; index + 1 < message.rawHeaders.length; index += 2) {

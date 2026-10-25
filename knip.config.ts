@@ -13,7 +13,11 @@ const config: KnipConfig = {
   workspaces: {
     // `playwright` is installed and run inside the Next.js checkout the deploy-tests workflow makes,
     // which is not a dependency of this repository and never will be.
-    '.': { ignoreBinaries: ['playwright'] },
+    '.': {
+      ignoreBinaries: ['playwright'],
+      // CI invokes the pinned official native fixture control directly.
+      entry: ['tools/native-addon-next-ci.mts'],
+    },
     'packages/adapter': {},
     // Three entry points, and `exports` names the `dist` they are built into — the same arrangement
     // as the SDK below, and named here for the same reason.

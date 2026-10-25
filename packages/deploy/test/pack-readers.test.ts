@@ -98,6 +98,7 @@ function approval(): ApprovedPackReaderRollout {
 describe('a trusted pack-reader rollout applied to an immutable bundle', () => {
   it('keeps native artifact readers on the existing cache contract until separately approved', () => {
     const value = bundle();
+
     expect(
       scopePackReadersOf(
         {

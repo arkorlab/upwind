@@ -63,8 +63,8 @@ describe('canonical Node Function archive', () => {
     ];
     const archive = nodeArtifactArchive(input);
 
-    expect(archive).toEqual(nodeArtifactArchive(input.toReversed()));
-    expect(filesOf(archive).map(({ name }) => name)).toEqual([
+    expect(archive).toStrictEqual(nodeArtifactArchive(input.toReversed()));
+    expect(filesOf(archive).map(({ name }) => name)).toStrictEqual([
       'project/cafe\u0301.txt',
       'project/caf\u00e9.txt',
     ]);
@@ -82,8 +82,8 @@ describe('canonical Node Function archive', () => {
     const archive = nodeArtifactArchive(input);
     const files = filesOf(archive);
 
-    expect(archive).toEqual(nodeArtifactArchive(input.toReversed()));
-    expect(files).toEqual([
+    expect(archive).toStrictEqual(nodeArtifactArchive(input.toReversed()));
+    expect(files).toStrictEqual([
       {
         name: 'project/native/addon.node',
         mode: 0o644,
@@ -117,7 +117,7 @@ describe('canonical Node Function archive', () => {
         bytes: [...file.bytes],
         validChecksum: file.validChecksum,
       })),
-    ).toEqual([{ name, bytes: [7], validChecksum: true }]);
+    ).toStrictEqual([{ name, bytes: [7], validChecksum: true }]);
   });
 
   it.each([

@@ -1,6 +1,9 @@
 import * as z from '../schema/index.ts';
 import { blobRefSchema } from './blob.ts';
 
+const MAX_ARTIFACT_PATH_LENGTH = 240;
+const MAX_NATIVE_ARTIFACT_BYTES = 268_435_456;
+
 export const functionModuleTypeSchema = z.enum(['esm', 'commonjs', 'text', 'json', 'wasm', 'data']);
 export type FunctionModuleType = z.infer<typeof functionModuleTypeSchema>;
 
@@ -14,7 +17,8 @@ export type FunctionModule = z.infer<typeof functionModuleSchema>;
 
 /** A Function as it will be uploaded: its modules, entry, and the runtime it was built for. */
 export const workerFunctionSchema = z.object({
-  runtime: z.literal(undefined).optional(),
+  // An empty enum is JSON-Schema representable and refuses every explicit runtime value.
+  runtime: z.enum([] as const).optional(),
   mainModule: z.string().min(1),
   modules: z.array(functionModuleSchema),
   compatibilityDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
@@ -26,7 +30,7 @@ export type WorkerFunctionSpec = z.infer<typeof workerFunctionSchema>;
 export const nodeArtifactPathSchema = z
   .string()
   .min(1)
-  .max(240)
+  .max(MAX_ARTIFACT_PATH_LENGTH)
   .refine((value) => {
     return (
       !value.startsWith('/') &&
@@ -45,13 +49,13 @@ export const nodeContainerAbiSchema = z.strictObject({
 
 export const nodeContainerFunctionSchema = z.strictObject({
   runtime: z.literal('node-container'),
-  artifact: blobRefSchema.refine(
-    (ref) =>
+  artifact: blobRefSchema.refine((ref) => {
+    return (
       ref.contentType === 'application/gzip' &&
       ref.byteLength > 0 &&
-      ref.byteLength <= 256 * 1024 * 1024,
-    'expected a tar.gz artifact of at most 256 MiB',
-  ),
+      ref.byteLength <= MAX_NATIVE_ARTIFACT_BYTES
+    );
+  }, 'expected a tar.gz artifact of at most 256 MiB'),
   entrypoint: nodeArtifactPathSchema,
   abi: nodeContainerAbiSchema,
 });

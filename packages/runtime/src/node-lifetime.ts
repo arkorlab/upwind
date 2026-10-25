@@ -16,7 +16,7 @@ export class NodeLifetime {
     const settled = (): void => {
       this.#settled(promise);
     };
-    // eslint-disable-next-line unicorn/prefer-await -- Register lifetime without blocking a streaming response.
+    // eslint-disable-next-line promise/catch-or-return, unicorn/prefer-await -- Both outcomes settle lifetime without blocking the streaming response.
     promise.then(settled, settled);
   };
 
@@ -59,15 +59,19 @@ export class NodeLifetime {
   async drain(timeoutMs: number): Promise<boolean> {
     if (this.#idle()) return true;
     return await new Promise<boolean>((resolve) => {
-      const done = (drained: boolean): void => {
+      const idle = this.#idle.bind(this);
+      const forget = this.#changed.delete.bind(this.#changed);
+      const timer = setTimeout(() => {
+        done(false);
+      }, timeoutMs);
+      function done(drained: boolean): void {
         clearTimeout(timer);
-        this.#changed.delete(changed);
+        forget(changed);
         resolve(drained);
-      };
-      const changed = (): void => {
-        if (this.#idle()) done(true);
-      };
-      const timer = setTimeout(() => done(false), timeoutMs);
+      }
+      function changed(): void {
+        if (idle()) done(true);
+      }
       this.#changed.add(changed);
       changed();
     });

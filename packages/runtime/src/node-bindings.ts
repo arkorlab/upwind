@@ -1,6 +1,8 @@
 import type { FunctionEnv } from '@stayingupwind/core/paas';
 
 import { nativeFetch } from './cache/native.ts';
+import { fetchedResponse } from './node-fetch-response.ts';
+import { removeNodeControlHeaders } from './node-http.ts';
 
 /** No platform credential is carried into the application process. */
 export interface NodeRuntimeConfiguration {
@@ -22,7 +24,10 @@ const MAX_TEXT_LENGTH = 1024;
 const MIN_CONTROL_TOKEN_LENGTH = 32;
 const DELEGATED = 'delegated';
 const HOST = /^[a-f0-9]{32}\.[a-f0-9]{32}\.arkor\.internal$/u;
-const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
+const NAME = /^[A-Za-z_]\w{0,127}$/u;
+const INVALID_CONFIGURATION = 'invalid Node runtime configuration';
+const INVALID_CAPABILITY = 'invalid Node runtime capability';
+const BOOTSTRAP_ENV = 'ARKOR_NODE_RUNTIME';
 const RESERVED_SERVICE_NAMES: ReadonlySet<string> = new Set([
   '__proto__',
   'constructor',
@@ -62,7 +67,7 @@ function validateCapabilities(caps: unknown): void {
   }
   for (const key of ['cacheWrite', 'cacheRead', 'prefetch', 'monitor']) {
     if (caps[key] !== undefined && !capability(caps[key])) {
-      throw new Error('invalid Node runtime capability');
+      throw new Error(INVALID_CAPABILITY);
     }
   }
   if (caps['cacheRead'] !== undefined && caps['cacheWrite'] === undefined) {
@@ -94,25 +99,29 @@ function identity(value: Record<string, unknown>): boolean {
 /** Reject malformed bootstrap input before evaluating any application module. */
 export function parseNodeRuntimeConfiguration(raw: string | undefined): NodeRuntimeConfiguration {
   if (raw === undefined || raw.length > MAX_CONFIGURATION_BYTES) {
-    throw new Error('invalid Node runtime configuration');
+    throw new Error(INVALID_CONFIGURATION);
   }
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
-    throw new Error('invalid Node runtime configuration');
+    throw new Error(INVALID_CONFIGURATION);
   }
-  if (!record(value) || !identity(value)) throw new Error('invalid Node runtime configuration');
+  if (!record(value) || !identity(value)) throw new Error(INVALID_CONFIGURATION);
   validateCapabilities(value['capabilities']);
   return value as unknown as NodeRuntimeConfiguration;
 }
 
 /** A Fetcher facade uses captured native fetch, never Next's patched fetch/data cache. */
+async function fetchCapability(request: Request): Promise<Response> {
+  return fetchedResponse(await nativeFetch(request, { redirect: 'manual' }), request.method);
+}
+
 export function nodeCapabilityFetcher(
   origin: string,
   service = false,
 ): { readonly fetch: typeof fetch } {
-  if (!capability(origin)) throw new Error('invalid Node runtime capability');
+  if (!capability(origin)) throw new Error(INVALID_CAPABILITY);
   return Object.freeze({
     fetch: (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const request = new Request(input, init);
@@ -121,22 +130,23 @@ export function nodeCapabilityFetcher(
       target.pathname = source.pathname;
       target.search = source.search;
       const forwarded = new Request(target, request);
-      for (const name of [...forwarded.headers.keys()]) {
-        if (name.startsWith('x-upwind-')) forwarded.headers.delete(name);
-      }
+      removeNodeControlHeaders(forwarded.headers);
       if (service) {
         if (source.protocol !== 'http:' && source.protocol !== 'https:') {
           throw new Error('invalid Node service URL');
         }
         forwarded.headers.set('x-upwind-service-url', source.href);
       }
-      return nativeFetch(forwarded, { redirect: 'manual' });
+      return fetchCapability(forwarded);
     },
   });
 }
 
 export function createNodeFunctionEnv(config: NodeRuntimeConfiguration): FunctionEnv {
-  const env: Record<string, unknown> = { ...process.env };
+  const env: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (name !== BOOTSTRAP_ENV) env[name] = value;
+  }
   const caps = config.capabilities;
   env['ARKOR_RUNTIME'] = 'node-container';
   env['NEXT_DEPLOYMENT_ID'] = config.deploymentId;
@@ -163,15 +173,19 @@ export function createNodeFunctionEnv(config: NodeRuntimeConfiguration): Functio
   return Object.freeze(env);
 }
 
-let configuration: NodeRuntimeConfiguration | undefined;
-let environment: FunctionEnv | undefined;
+const cached: {
+  configuration: NodeRuntimeConfiguration | undefined;
+  environment: FunctionEnv | undefined;
+} = { configuration: undefined, environment: undefined };
 
 export function nodeRuntimeConfiguration(): NodeRuntimeConfiguration {
-  configuration ??= parseNodeRuntimeConfiguration(process.env['ARKOR_NODE_RUNTIME']);
-  return configuration;
+  const raw = process.env[BOOTSTRAP_ENV];
+  Reflect.deleteProperty(process.env, BOOTSTRAP_ENV);
+  cached.configuration ??= parseNodeRuntimeConfiguration(raw);
+  return cached.configuration;
 }
 
 export function nodeFunctionEnv(): FunctionEnv {
-  environment ??= createNodeFunctionEnv(nodeRuntimeConfiguration());
-  return environment;
+  cached.environment ??= createNodeFunctionEnv(nodeRuntimeConfiguration());
+  return cached.environment;
 }

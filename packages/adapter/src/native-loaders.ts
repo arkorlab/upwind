@@ -13,6 +13,8 @@ const LOADER_BLOBS: Readonly<Record<string, readonly string[]>> = {
   bindings: ['727413a19969f773d01a2d18f8f42d892cf8fabe', FIXTURE_BINDINGS],
   'node-gyp-build': [NODE_GYP_RUNTIME, NODE_GYP_INDEX],
 };
+const KIB = 1024;
+const MAX_PACKAGE_METADATA_BYTES = 128 * KIB;
 const NODE_GYP_SELECTORS = [
   'PREBUILDS_ONLY',
   'npm_config_arch',
@@ -22,32 +24,53 @@ const NODE_GYP_SELECTORS = [
   'ELECTRON_RUN_AS_NODE',
 ];
 
-export class UnreviewedNativeLoader extends AuditError {}
-
-async function blobOf(file: string): Promise<string> {
-  const source = await readFile(file);
-  return createHash('sha1').update(`blob ${source.byteLength}\0`).update(source).digest('hex');
+export class UnreviewedNativeLoaderError extends AuditError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnreviewedNativeLoaderError';
+  }
 }
 
-async function reviewedLoader(name: string, importer: string): Promise<string> {
+export interface NativeLoaderSource {
+  readonly file: string;
+  readonly sha256: string;
+  readonly gitBlob: string;
+}
+
+async function loaderSource(file: string): Promise<NativeLoaderSource> {
+  const canonical = await realpath(file);
+  const source = await readFile(canonical);
+  // eslint-disable-next-line sonarjs/hashing -- SHA-1 is the immutable upstream Git blob identifier, never an authentication digest.
+  const gitBlob = createHash('sha1')
+    .update(`blob ${source.byteLength}\0`)
+    .update(source)
+    .digest('hex');
+  return { file: canonical, sha256: createHash('sha256').update(source).digest('hex'), gitBlob };
+}
+
+async function reviewedLoader(
+  name: string,
+  importer: string,
+): Promise<{ identity: string; sources: readonly NativeLoaderSource[] }> {
   const require = createRequire(importer);
   if (name === 'node-gyp-build' && 'addon' in require)
     throw new AuditError('Custom native resolution is unsupported');
   const resolved = require.resolve(name);
-  const blob = await blobOf(resolved);
-  if (!LOADER_BLOBS[name]?.includes(blob)) {
-    throw new UnreviewedNativeLoader(
+  const source = await loaderSource(resolved);
+  const blob = source.gitBlob;
+  if (LOADER_BLOBS[name]?.includes(blob) !== true) {
+    throw new UnreviewedNativeLoaderError(
       `@stayingupwind/adapter: ${name} has an unreviewed native loader; its dynamic loads cannot be classified`,
     );
   }
-  if (
-    name === 'node-gyp-build' &&
-    blob === NODE_GYP_INDEX &&
-    (await blobOf(path.join(path.dirname(resolved), 'node-gyp-build.js'))) !== NODE_GYP_RUNTIME
-  ) {
-    throw new UnreviewedNativeLoader('unreviewed node-gyp-build runtime');
+  const sources = [source];
+  if (name === 'node-gyp-build' && blob === NODE_GYP_INDEX) {
+    const runtime = await loaderSource(path.join(path.dirname(resolved), 'node-gyp-build.js'));
+    if (runtime.gitBlob !== NODE_GYP_RUNTIME)
+      throw new UnreviewedNativeLoaderError('unreviewed node-gyp-build runtime');
+    sources.push(runtime);
   }
-  return blob;
+  return { identity: blob, sources };
 }
 
 async function packageRoot(file: string): Promise<string> {
@@ -66,7 +89,7 @@ export async function nativeLoaderSelectorKeys(importer: string): Promise<readon
   const keys = [...NODE_GYP_SELECTORS];
   try {
     const bytes = await readFile(path.join(path.dirname(importer), 'package.json'));
-    if (bytes.byteLength > 128 * 1024)
+    if (bytes.byteLength > MAX_PACKAGE_METADATA_BYTES)
       throw new AuditError('Native package metadata exceeds its limit');
     const metadata: unknown = JSON.parse(bytes.toString('utf8'));
     if (
@@ -131,8 +154,8 @@ export async function nativeLoaderBinary(input: {
   value: string;
   importer: string;
   traces: readonly NativeAddonEntryTrace[];
-}): Promise<string> {
-  const identity = await reviewedLoader(input.kind, input.importer);
+}): Promise<{ binary: string; sources: readonly NativeLoaderSource[] }> {
+  const { identity, sources } = await reviewedLoader(input.kind, input.importer);
   const owned = new Set(
     await Promise.all(
       input.traces
@@ -161,5 +184,5 @@ export async function nativeLoaderBinary(input: {
     throw new AuditError(
       'native loader binary selection is not a single proved target; refusing publication',
     );
-  return binary;
+  return { binary, sources };
 }

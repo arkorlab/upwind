@@ -535,7 +535,8 @@ function problemsIn(
 ): string[] {
   const native = mode !== 'worker';
   const problems: string[] = [];
-  for (const [pattern, what] of native ? [] : FORBIDDEN_IN_APP) {
+  const forbidden = native ? [] : FORBIDDEN_IN_APP;
+  for (const [pattern, what] of forbidden) {
     if (pattern.test(source)) {
       problems.push(`${what} survived bundling (${String(pattern)})`);
     }

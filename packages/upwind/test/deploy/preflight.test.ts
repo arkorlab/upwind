@@ -56,6 +56,7 @@ describe('checking a build before a deploy', () => {
         },
       }),
     );
+
     await expect(
       preflight({ projectDir: dir, settings: SETTINGS, secrets: NO_SECRETS }),
     ).rejects.toThrow(/Container-capable host/u);

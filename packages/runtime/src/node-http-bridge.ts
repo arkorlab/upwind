@@ -22,6 +22,7 @@ const DISPATCH_HEADER = 'x-upwind-node-dispatch';
 const HTTP_FORBIDDEN = 403;
 const HTTP_INTERNAL_ERROR = 500;
 const HTTP_NO_CONTENT = 204;
+const HANDLER_FAILED = 'Node handler failed';
 
 export function changesSomething(method: string): boolean {
   return !SAFE_METHODS.has(method);
@@ -54,7 +55,7 @@ async function answerFailure(
     if (response.writableEnded) return;
   }
   if (response.headersSent) {
-    response.destroy(error instanceof Error ? error : new Error('Node handler failed'));
+    response.destroy(error instanceof Error ? error : new Error(HANDLER_FAILED));
     return;
   }
   response.statusCode = HTTP_INTERNAL_ERROR;
@@ -90,14 +91,14 @@ function retainHandler(input: InvokeInput, response: ServerResponse, handled: Pr
     input.waitUntil(handled);
     return;
   }
-  const forget = (): void => {
+  function forget(): void {
     response.off('finish', finished);
     response.off('close', forget);
-  };
-  const finished = (): void => {
+  }
+  function finished(): void {
     forget();
     input.waitUntil(handled);
-  };
+  }
   response.once('finish', finished);
   response.once('close', forget);
   // eslint-disable-next-line unicorn/prefer-await -- Do not await completion before streaming the response.
@@ -107,6 +108,14 @@ function retainHandler(input: InvokeInput, response: ServerResponse, handled: Pr
 interface Dispatch {
   readonly input: InvokeInput;
   readonly url: string;
+}
+
+function removeDispatchHeader(request: IncomingMessage): void {
+  Reflect.deleteProperty(request.headers, DISPATCH_HEADER);
+  for (let index = request.rawHeaders.length - 2; index >= 0; index -= 2) {
+    if (request.rawHeaders[index]?.toLowerCase() === DISPATCH_HEADER)
+      request.rawHeaders.splice(index, 2);
+  }
 }
 
 class NodeBridge {
@@ -122,17 +131,15 @@ class NodeBridge {
       return;
     }
     this.#dispatches.delete(token as string);
-    delete request.headers[DISPATCH_HEADER];
-    for (let index = request.rawHeaders.length - 2; index >= 0; index -= 2) {
-      if (request.rawHeaders[index]?.toLowerCase() === DISPATCH_HEADER)
-        request.rawHeaders.splice(index, 2);
-    }
+    removeDispatchHeader(request);
     request.url = dispatch.url;
     singleRedirectLocation(response);
     const handled = invoke(dispatch.input, request, response);
     retainHandler(dispatch.input, response, handled);
     // eslint-disable-next-line unicorn/prefer-await -- The handler owns the streaming response independently.
-    handled.catch(() => response.destroy(new Error('Node handler failed')));
+    handled.catch(() => {
+      response.destroy(new Error(HANDLER_FAILED));
+    });
   };
 
   #listen(): Promise<number> {
@@ -169,7 +176,9 @@ class NodeBridge {
           path: '/',
           method: input.request.method,
           headers,
-          ...(changesSomething(input.request.method) ? {} : { signal: input.request.signal }),
+          ...(changesSomething(input.request.method)
+            ? undefined
+            : { signal: input.request.signal }),
         });
         outgoing.once('error', reject);
         outgoing.once('response', (incoming) => {
@@ -184,11 +193,14 @@ class NodeBridge {
         if (input.request.body === null) {
           outgoing.end();
         } else {
-          // eslint-disable-next-line unicorn/prefer-await -- Headers may arrive before a streamed request body ends.
-          pipeline(
+          const bodyTask = pipeline(
             Readable.fromWeb(input.request.body as unknown as NodeReadableStream<Uint8Array>),
             outgoing,
-          ).catch(() => outgoing.destroy(new Error('Node request body failed')));
+          );
+          // eslint-disable-next-line unicorn/prefer-await -- Headers may arrive before a streamed request body ends.
+          bodyTask.catch(() => {
+            outgoing.destroy(new Error('Node request body failed'));
+          });
         }
       });
     } finally {
@@ -200,7 +212,10 @@ class NodeBridge {
     const server = this.#server;
     if (server === undefined) return;
     await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error === undefined ? resolve() : reject(error)));
+      server.close((error) => {
+        if (error === undefined) resolve();
+        else reject(error);
+      });
       server.closeAllConnections();
     });
     this.#server = undefined;

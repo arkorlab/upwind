@@ -30,7 +30,7 @@ describe('native Function ownership', () => {
       route('/worker'),
     ];
 
-    expect([...nativeRouteOwners(routes, load('/native'), new Set())]).toEqual([
+    expect([...nativeRouteOwners(routes, load('/native'), new Set())]).toStrictEqual([
       '/native',
       '/also-native',
     ]);
@@ -44,7 +44,7 @@ describe('native Function ownership', () => {
       route('/app'),
     ];
 
-    expect([...nativeRouteOwners(routes, load('/blog/[slug]'), new Set())]).toEqual([
+    expect([...nativeRouteOwners(routes, load('/blog/[slug]'), new Set())]).toStrictEqual([
       '/blog/[slug]',
       '/',
       '/api/revalidate',
@@ -58,7 +58,7 @@ describe('native Function ownership', () => {
 
       expect([
         ...nativeRouteOwners(routes, load(shared), new Set(['/_middleware', '/_not-found'])),
-      ]).toEqual(routes.map((entry) => entry.id));
+      ]).toStrictEqual(routes.map((entry) => entry.id));
     },
   );
 

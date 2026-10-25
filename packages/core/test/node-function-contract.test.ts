@@ -21,9 +21,10 @@ function nativeBundle(): DeploymentBundle {
   return { ...fixtureBundle(), v: 11, routerReferences: 'one-pass', functions: { app: NODE } };
 }
 
-describe('Node Function bundle contract', () => {
+describe('node Function bundle contract', () => {
   it('keeps ordinary Worker JSON unchanged and refuses unknown runtime discriminators', () => {
     const app = fixtureBundle().functions.app;
+
     expect(JSON.stringify(workerFunctionSchema.parse(app))).toBe(JSON.stringify(app));
     expect(workerFunctionSchema.safeParse({ ...app, runtime: 'other' }).success).toBe(false);
     expect(isNodeContainerFunction(app)).toBe(false);
@@ -31,9 +32,11 @@ describe('Node Function bundle contract', () => {
 
   it('requires an explicit supported version before a host can accept a native artifact', () => {
     expect(deploymentBundleSchema.safeParse(nativeBundle()).success).toBe(true);
+
     for (const v of [1, 3, 5, 7, 9]) {
       expect(deploymentBundleSchema.safeParse({ ...nativeBundle(), v }).success).toBe(false);
     }
+
     expect(
       deploymentBundleSchema.safeParse({ ...fixtureBundle(), v: 11, routerReferences: 'one-pass' })
         .success,
@@ -52,6 +55,7 @@ describe('Node Function bundle contract', () => {
       functions: { ...original.functions, split: { 'app-2': NODE } },
     };
     const result = deploymentBundleSchema.parse(split);
+
     expect(isNodeContainerFunction(result.functions.app)).toBe(false);
     expect(isNodeContainerFunction(result.functions.split!['app-2']!)).toBe(true);
     expect(deploymentBundleSchema.safeParse({ ...split, v: 11 }).success).toBe(false);
@@ -71,7 +75,8 @@ describe('Node Function bundle contract', () => {
 
   it('collects the archive and refuses conflicting lengths across archive and public files', () => {
     const bundle = nativeBundle();
-    expect(bundleBlobs(bundle).get(NODE.artifact.sha256)).toEqual(NODE.artifact);
+
+    expect(bundleBlobs(bundle).get(NODE.artifact.sha256)).toStrictEqual(NODE.artifact);
     expect(
       deploymentBundleSchema.safeParse({
         ...bundle,

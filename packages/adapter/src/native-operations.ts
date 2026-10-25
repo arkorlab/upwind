@@ -1,0 +1,222 @@
+import { createRequire } from 'node:module';
+import path from 'node:path';
+
+import type { Node } from '@oxc-project/types';
+
+import { AuditError } from './dependencies.ts';
+import type { NativeAddonEntryTrace } from './native-addons.ts';
+import {
+  binds,
+  identifier,
+  nativePath,
+  required,
+  stringOf,
+  unchangedBinding,
+  unassignedIdentifier,
+} from './native-ast.ts';
+import { nativeLoaderBinary, UnreviewedNativeLoaderError } from './native-loaders.ts';
+import type { NativeLoad } from './native-loads.ts';
+import { ownedBinary } from './native-ownership.ts';
+
+type Call = Extract<Node, { type: 'CallExpression' }>;
+const DLOPEN_ARGUMENTS = 2;
+export interface NativeOperationContext {
+  readonly importer: string;
+  readonly traces: readonly NativeAddonEntryTrace[];
+  readonly tree: readonly Node[];
+  readonly guards: ReadonlyMap<number, 'plain' | 'ambiguous'>;
+  readonly nodeTarget: boolean;
+  mark(load: NativeLoad | Error): string;
+}
+export interface NativeEdit {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+}
+type Candidate = Pick<NativeLoad, 'kind' | 'binary' | 'loaderSources'>;
+
+function directNative(call: Call, context: NativeOperationContext): Candidate | undefined {
+  const specifier = required(call);
+  if (specifier === undefined || !specifier.endsWith('.node')) return undefined;
+  if (path.isAbsolute(specifier))
+    throw new AuditError('Absolute native imports are not relocatable');
+  if (context.guards.has(call.start))
+    throw new AuditError('A guarded native load has no proved Worker-safe representation');
+  return { kind: 'direct', binary: createRequire(context.importer).resolve(specifier) };
+}
+
+function loaderArgument(
+  call: Call,
+  kind: 'bindings' | 'node-gyp-build',
+  tree: readonly Node[],
+): string {
+  if (call.arguments.length !== 1)
+    throw new AuditError('Native loader requires a statically known argument');
+  const value = stringOf(call.arguments[0]);
+  if (kind === 'bindings' && value === undefined)
+    throw new AuditError('Native loader requires a statically known argument');
+  if (
+    kind === 'node-gyp-build' &&
+    (!identifier(call.arguments[0], '__dirname') || binds(tree, '__dirname'))
+  )
+    throw new AuditError('Native loader requires a statically known argument');
+  return value ?? '';
+}
+
+async function loaderNative(
+  call: Call,
+  context: NativeOperationContext,
+): Promise<Candidate | undefined> {
+  if (call.callee.type !== 'CallExpression') return undefined;
+  const kind = required(call.callee);
+  if (!isNativeLoader(kind)) return undefined;
+  if (context.guards.has(call.start))
+    throw new AuditError(
+      'A guarded native loader is ambiguous; refusing automatic backend selection',
+    );
+  const selected = await nativeLoaderBinary({
+    kind,
+    value: loaderArgument(call, kind, context.tree),
+    importer: context.importer,
+    traces: context.traces,
+  });
+  return { kind, binary: selected.binary, loaderSources: selected.sources };
+}
+
+function isNativeLoader(value: string | undefined): value is 'bindings' | 'node-gyp-build' {
+  return ['bindings', 'node-gyp-build'].includes(value ?? '');
+}
+
+function isDlopenForm(call: Call): boolean {
+  if (call.callee.type !== 'MemberExpression' || call.callee.computed) return false;
+  return identifier(call.callee.object, 'process') && identifier(call.callee.property, 'dlopen');
+}
+
+function isDlopen(call: Call, tree: readonly Node[]): boolean {
+  return isDlopenForm(call) && !binds(tree, 'process') && unchangedBinding(tree, 'process');
+}
+
+function namesNativeFile(value: string | undefined): boolean {
+  return value !== undefined && value.endsWith('.node');
+}
+
+/** Keep non-loading AST nodes off the asynchronous filesystem proof path. */
+export function isNativeOperation(node: Node): boolean {
+  switch (node.type) {
+    case 'ImportDeclaration':
+      return typeof node.source.value === 'string' && namesNativeFile(node.source.value);
+    case 'ImportExpression':
+      return namesNativeFile(stringOf(node.source));
+    case 'CallExpression':
+      if (namesNativeFile(required(node))) return true;
+      if (node.callee.type === 'CallExpression') return isNativeLoader(required(node.callee));
+      return isDlopenForm(node);
+    default:
+      return false;
+  }
+}
+
+function assertDlopenArguments(call: Call, tree: readonly Node[]): void {
+  const moduleKnown =
+    identifier(call.arguments[0], 'module') &&
+    !binds(tree, 'module') &&
+    unassignedIdentifier(tree, 'module');
+  const directoryKnown = !binds(tree, '__dirname') && unassignedIdentifier(tree, '__dirname');
+  if (call.arguments.length !== DLOPEN_ARGUMENTS || !moduleKnown || !directoryKnown)
+    throw new AuditError(
+      'custom process.dlopen flags, shadowed module objects or directories are unsupported',
+    );
+}
+
+function dlopenNative(call: Call, context: NativeOperationContext): Candidate | undefined {
+  if (!isDlopen(call, context.tree)) return undefined;
+  if (context.guards.get(call.start) === 'plain') {
+    if (context.nodeTarget)
+      throw new AuditError('A guarded process.dlopen is unclassified on the Node target');
+    return undefined;
+  }
+  if (context.guards.has(call.start))
+    throw new AuditError('A guarded process.dlopen has no proved Worker-safe fallback');
+  assertDlopenArguments(call, context.tree);
+  const binary = nativePath(call.arguments[1], context.importer, context.tree);
+  if (binary === undefined || !binary.endsWith('.node'))
+    throw new AuditError('process.dlopen has no statically known native binary');
+  return { kind: 'dlopen', binary };
+}
+
+async function callNative(
+  call: Call,
+  context: NativeOperationContext,
+): Promise<NativeLoad | undefined> {
+  const candidate =
+    directNative(call, context) ??
+    (await loaderNative(call, context)) ??
+    dlopenNative(call, context);
+  if (candidate === undefined) return undefined;
+  const owners = await ownedBinary(candidate.binary, context.importer, context.traces);
+  return { ...candidate, importer: context.importer, owners };
+}
+
+async function importNative(
+  specifier: string,
+  context: NativeOperationContext,
+): Promise<NativeLoad> {
+  const binary = createRequire(context.importer).resolve(specifier);
+  const owners = await ownedBinary(binary, context.importer, context.traces);
+  return { kind: 'direct', importer: context.importer, binary, owners, esm: true };
+}
+
+function declarationSource(
+  node: Extract<Node, { type: 'ImportDeclaration' }>,
+  proof: string,
+  local: string,
+): string {
+  const declarations = node.specifiers.map((specifier) => {
+    const member =
+      specifier.type === 'ImportSpecifier'
+        ? `[${JSON.stringify(specifier.imported.type === 'Identifier' ? specifier.imported.name : specifier.imported.value)}]`
+        : '';
+    return `const ${specifier.local.name}=${local}${member};`;
+  });
+  return `const ${local}=${proof};${declarations.join('')}`;
+}
+
+async function operationSource(
+  node: Node,
+  context: NativeOperationContext,
+  local: () => string,
+): Promise<string | undefined> {
+  if (
+    node.type === 'ImportDeclaration' &&
+    typeof node.source.value === 'string' &&
+    node.source.value.endsWith('.node')
+  ) {
+    const proof = context.mark(await importNative(node.source.value, context));
+    return declarationSource(node, proof, local());
+  }
+  if (node.type === 'ImportExpression') {
+    const specifier = stringOf(node.source);
+    if (specifier === undefined || !specifier.endsWith('.node')) return undefined;
+    return `Promise.resolve(${context.mark(await importNative(specifier, context))})`;
+  }
+  if (node.type !== 'CallExpression') return undefined;
+  const load = await callNative(node, context);
+  return load === undefined ? undefined : context.mark(load);
+}
+
+/** Refusals are deferred until their operation survives tree shaking, as the proof requires. */
+export async function nativeOperationEdit(
+  node: Node,
+  context: NativeOperationContext,
+  local: () => string,
+): Promise<NativeEdit | undefined> {
+  try {
+    const text = await operationSource(node, context, local);
+    return text === undefined ? undefined : { start: node.start, end: node.end, text };
+  } catch (error) {
+    if (error instanceof UnreviewedNativeLoaderError) return undefined;
+    if (!(error instanceof Error)) throw error;
+    const text = context.mark(error) + (node.type === 'ImportDeclaration' ? ';' : '');
+    return { start: node.start, end: node.end, text };
+  }
+}

@@ -1,4 +1,4 @@
-import { readFile, mkdir, realpath, writeFile, readdir } from 'node:fs/promises';
+import { readFile, mkdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -6,22 +6,22 @@ import { sha256Hex } from '@stayingupwind/core/artifact';
 import type { NodeContainerFunctionSpec, SourceMapRef } from '@stayingupwind/core/bundle';
 import { rolldown, type Plugin } from 'rolldown';
 
-import { appEntrySource } from './app-entry.ts';
 import { jsLiteral } from './codegen.ts';
 import { AuditError, type FunctionDependencies } from './dependencies.ts';
 import { bundleEdge } from './edge.ts';
-import { buildFunction, type BuildFunctionInput } from './function.ts';
+import type { BuildFunctionInput } from './function.ts';
 import { nativeLoaderSelectorKeys } from './native-loaders.ts';
-import { NativeFunctionRequired, type NativeLoad } from './native-loads.ts';
+import type { NativeLoad } from './native-loads.ts';
 import { nodeArtifactArchive } from './node-archive.ts';
+import { NodeArtifactFiles } from './node-artifact-files.ts';
 import { nodePhysicalFiles } from './node-files.ts';
+import {
+  assertNodeProofFiles,
+  isNodeProofCompilerModule,
+  nodeProofSource,
+  proveNodeFunction,
+} from './node-proof.ts';
 import { nodeSourceMaps } from './node-source-maps.ts';
-import { fetchCacheWaitUntilPatch } from './patches/fetch-cache-wait-until.ts';
-import { instrumentationPatch } from './patches/instrumentation.ts';
-import { resourceCacheBridgePatch } from './patches/resource-cache-bridge.ts';
-
-/** Only shared-cache/render semantics. No Worker loader, VM, native, fs or process substitutes. */
-const NODE_PATCHES = [fetchCacheWaitUntilPatch, instrumentationPatch, resourceCacheBridgePatch];
 
 export interface NodeBuiltFunction {
   readonly spec: NodeContainerFunctionSpec;
@@ -54,23 +54,7 @@ function assertNativeAbi(): NodeContainerFunctionSpec['abi'] {
   };
 }
 
-function nativeElf(bytes: Uint8Array): void {
-  if (
-    bytes.byteLength < 64 ||
-    bytes[0] !== 0x7f ||
-    bytes[1] !== 0x45 ||
-    bytes[2] !== 0x4c ||
-    bytes[3] !== 0x46 ||
-    bytes[4] !== 2 ||
-    bytes[5] !== 1 ||
-    bytes[18] !== 62 ||
-    bytes[19] !== 0
-  ) {
-    throw new AuditError('Native Function binary is not a Linux x64 ELF object');
-  }
-}
-
-/** Resolve only the three exact runtime-owned module identities, from any runtime subdirectory. */
+/** Resolve only the four exact runtime-owned module identities, from any runtime subdirectory. */
 export function nodeRuntimeAlias(
   source: string,
   importer: string | undefined,
@@ -81,7 +65,8 @@ export function nodeRuntimeAlias(
   if (owner === '..' || owner.startsWith(`..${path.sep}`) || path.isAbsolute(owner))
     return undefined;
   const resolved = path.relative(runtime, path.resolve(path.dirname(importer), source));
-  if (!/^(?:environment|node-bridge|resources)\.(?:ts|js)$/u.test(resolved)) return undefined;
+  if (!/^(?:environment|fetch-response|node-bridge|resources)\.(?:ts|js)$/u.test(resolved))
+    return undefined;
   return path.basename(resolved, path.extname(resolved));
 }
 
@@ -91,6 +76,9 @@ function nodeAliases(input: BuildFunctionInput): Plugin {
   );
   const aliases: Readonly<Record<string, string>> = {
     environment: fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-environment')),
+    'fetch-response': fileURLToPath(
+      import.meta.resolve('@stayingupwind/runtime/node-fetch-response'),
+    ),
     'node-bridge': fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-http-bridge')),
     resources: fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-resources')),
   };
@@ -114,7 +102,7 @@ function nodeAliases(input: BuildFunctionInput): Plugin {
 
 async function bundleNode(
   input: BuildFunctionInput,
-  settings: { entry: string; outFile: string; service?: boolean },
+  settings: { entry: string; outFile: string },
 ): Promise<void> {
   const unresolved: string[] = [];
   await using bundle = await rolldown({
@@ -162,20 +150,21 @@ async function bundleNodeInstrumentation(
   input: BuildFunctionInput,
   settings: {
     outFile: string;
-    nameOf: (file: string) => string;
+    nameOf: (this: void, file: string) => string;
     instrumentation: string | undefined;
   },
-): Promise<void> {
-  if (input.patch.instrumentation === undefined) return;
+): Promise<ReadonlyMap<string, string>> {
+  if (input.patch.instrumentation === undefined) return new Map();
   const entry = await realpath(input.patch.instrumentation);
   if (entry === settings.instrumentation) {
     await writeFile(
       settings.outFile,
       `globalThis.AsyncLocalStorage??=require('node:async_hooks').AsyncLocalStorage;module.exports=require(${jsLiteral(`/bundle/${settings.nameOf(entry)}`)});`,
     );
-    return;
+    return new Map();
   }
   const unresolved: string[] = [];
+  const originals = new Map<string, string>();
   await using bundle = await rolldown({
     input: input.patch.instrumentation,
     platform: 'node',
@@ -191,6 +180,16 @@ async function bundleNodeInstrumentation(
             return { id: `/bundle/${settings.nameOf(physical)}`, external: true };
           }
           return null;
+        },
+        load: {
+          filter: { id: /\.(?:[cm]?[jt]sx?|json)$/u },
+          async handler(id) {
+            if (!path.isAbsolute(id)) return null;
+            const file = await realpath(id);
+            const bytes = await nodeProofSource(file);
+            originals.set(file, await sha256Hex(bytes));
+            return { code: bytes.toString('utf8') };
+          },
         },
       },
     ],
@@ -213,23 +212,46 @@ async function bundleNodeInstrumentation(
   ) {
     throw new AuditError('Host instrumentation cannot be represented by a Node Function artifact');
   }
+  const modules = result.output.flatMap((chunk) =>
+    chunk.type === 'chunk'
+      ? Object.keys(chunk.modules).filter((id) => !isNodeProofCompilerModule(id))
+      : [],
+  );
+  return new Map(
+    await Promise.all(
+      modules.map(async (id) => {
+        if (!path.isAbsolute(id))
+          throw new AuditError('Node instrumentation contains an unproved virtual module');
+        const file = await realpath(id);
+        const hash = originals.get(file);
+        if (hash === undefined)
+          throw new AuditError('Node instrumentation has no original physical source proof');
+        return [file, hash] as const;
+      }),
+    ),
+  );
 }
 
-/** A separate physical artifact; app modules are never passed through the Worker patch bundle. */
-export async function buildNodeFunction(
-  input: BuildFunctionInput,
+function assertNativeSelection(
   selected: readonly NativeLoad[],
-): Promise<NodeBuiltFunction> {
-  if (selected.length === 0)
-    throw new AuditError('A Node Function requires a retained, owned native load');
-  let native: readonly NativeLoad[];
-  try {
-    await buildFunction({ ...input, nativeTargetAudit: true });
-    throw new AuditError('The final Node Function has no required native capability');
-  } catch (error) {
-    if (!(error instanceof NativeFunctionRequired)) throw error;
-    native = error.loads;
-  }
+  native: readonly NativeLoad[],
+): void {
+  const missing = selected.some((load) => {
+    return !native.some((original) => {
+      return (
+        original.kind === load.kind &&
+        original.importer === load.importer &&
+        original.binary === load.binary
+      );
+    });
+  });
+  if (missing)
+    throw new AuditError(
+      'Worker placement selected a native load absent from the original Node graph',
+    );
+}
+
+function assertNodeTarget(input: BuildFunctionInput, native: readonly NativeLoad[]): void {
   if (native.some((load) => load.esm === true))
     throw new AuditError(
       'Node.js cannot import a .node file as an ES module; use a Node-compatible CommonJS native entry',
@@ -240,151 +262,121 @@ export async function buildNodeFunction(
     throw new AuditError(
       'Native Functions currently require the shared platform cache handlers; custom handler closures are not supported',
     );
-  const abi = assertNativeAbi();
-  const physical = await nodePhysicalFiles(input, native);
-  const files = new Map(physical.files.map((file) => [file.name, file]));
-  const add = (name: string, bytes: Uint8Array): void => {
-    const previous = files.get(name);
-    if (previous !== undefined && Buffer.compare(previous.bytes, bytes) !== 0)
-      throw new AuditError('Node artifact generated metadata conflicts with a physical input');
-    files.set(name, { name, bytes });
-  };
-  const text = (name: string, value: string): void => add(name, new TextEncoder().encode(value));
-  const work = path.join(input.outDir, 'work', `node-${input.name ?? input.kind}`);
-  await mkdir(work, { recursive: true });
-  if (input.patch.instrumentation !== undefined) {
-    const hook = path.join(work, 'instrumentation.cjs');
-    await bundleNodeInstrumentation(input, {
-      outFile: hook,
-      nameOf: physical.nameOf,
-      instrumentation: physical.instrumentation,
-    });
-    add('upwind/instrumentation.cjs', new Uint8Array(await readFile(hook)));
-  }
-  const patchContext = {
-    ...input.patch,
-    instrumentation:
-      input.patch.instrumentation === undefined ? undefined : '/bundle/upwind/instrumentation.cjs',
-  };
-  // Apply cache semantics to copied Next files only; the original output remains unchanged.
-  for (const file of physical.files) {
-    const original = file.name.startsWith('project/')
-      ? path.join(input.repoRoot ?? input.projectDir, file.name.slice('project/'.length))
-      : undefined;
-    if (original === undefined || !/\.(?:c|m)?js$/u.test(original)) continue;
-    let contents = new TextDecoder().decode(file.bytes);
-    for (const patch of NODE_PATCHES) {
-      if (patch.target.test(original) && (patch.marker === undefined || patch.marker(contents)))
-        contents = patch.apply(contents, original, patchContext).contents;
-    }
-    files.set(file.name, { ...file, bytes: new TextEncoder().encode(contents) });
-  }
-  const modules: { path: string; sha256: string }[] = [];
-  for (const binary of new Set(await Promise.all(native.map((load) => realpath(load.binary))))) {
-    const filename = physical.nameOf(binary);
-    const bytes = files.get(filename)?.bytes;
-    if (bytes === undefined)
-      throw new AuditError('Selected native binary was omitted from the Node artifact');
-    nativeElf(bytes);
-    modules.push({ path: filename, sha256: await sha256Hex(bytes) });
-  }
-  text('upwind/native.json', JSON.stringify({ modules }));
-  text('upwind/links.json', JSON.stringify({ links: physical.links }));
-  text('runtime.json', input.runtimeManifest);
-  // Next's production entry reads the original JSON manifests from its real dist directory.
-  for (const dir of [input.patch.distDir, path.join(input.patch.distDir, 'server')]) {
-    for (const item of await readdir(dir, { withFileTypes: true })) {
-      if (item.isFile() && item.name.endsWith('.json') && !item.name.endsWith('.nft.json')) {
-        const file = path.join(dir, item.name);
-        add(physical.nameOf(file), new Uint8Array(await readFile(file)));
-      }
-    }
-  }
-  for (const manifest of input.manifests) text(manifest.name, manifest.contents);
-  // Web entry inline assets and runtime compatibility data retain their existing /bundle names.
-  for (const file of input.files) add(file.name, new Uint8Array(await readFile(file.filePath)));
-  for (const blob of input.blobs) add(`blobs/${blob.sha256}`, blob.bytes);
-  const dist = physical.nameOf(input.patch.distDir);
-  const table = await Promise.all(
-    input.entries.map(async (entry) => {
-      const file = physical.nameOf(await realpath(entry.filePath));
-      return { id: entry.id, filePath: `/bundle/${file}` };
-    }),
-  );
-  text(
-    'upwind/app.cjs',
-    `globalThis.AsyncLocalStorage ??= require('node:async_hooks').AsyncLocalStorage;\n${appEntrySource(table, { external: true, runtimeDistDir: `/bundle/${dist}` })}`,
-  );
-  if (input.edgeEntries.length > 0) {
-    const edge = await bundleEdge({
-      kind: 'node-edge',
-      projectDir: input.projectDir,
-      distDir: input.patch.distDir,
-      workDir: work,
-      entries: input.edgeEntries,
-      instrumentation: input.edgeInstrumentation,
-    });
-    if (edge.trace.externals.some((name) => name.startsWith('cloudflare:')))
-      throw new AuditError(
-        'Native Function Edge instrumentation requires unsupported platform bindings',
-      );
-    add('upwind/edge.cjs', new Uint8Array(await readFile(edge.outFile)));
-  } else text('upwind/edge.cjs', 'module.exports={entries:{}};');
-  const wasm = input.wasm.modules.map((module) => {
-    const name = `upwind/wasm/${module.sha256}.wasm`;
-    add(name, module.bytes);
-    return `const m_${module.sha256}=new WebAssembly.Module(readFileSync(new URL(${jsLiteral(`./wasm/${module.sha256}.wasm`)},import.meta.url)));${module.globals.map((global) => `globalThis[${jsLiteral(global)}]??=m_${module.sha256};`).join('')}`;
+}
+
+async function addNodeInstrumentation(
+  files: NodeArtifactFiles,
+  work: string,
+): Promise<ReadonlyMap<string, string>> {
+  if (files.input.patch.instrumentation === undefined) return new Map();
+  const hook = path.join(work, 'instrumentation.cjs');
+  const originals = await bundleNodeInstrumentation(files.input, {
+    outFile: hook,
+    nameOf: files.physical.nameOf,
+    instrumentation: files.physical.instrumentation,
   });
-  text('upwind/wasm.mjs', `import {readFileSync} from 'node:fs';${wasm.join('\n')}`);
+  files.add('upwind/instrumentation.cjs', new Uint8Array(await readFile(hook)));
+  return originals;
+}
+
+async function addNodeEdge(files: NodeArtifactFiles, work: string): Promise<void> {
+  if (files.input.edgeEntries.length === 0) {
+    files.text('upwind/edge.cjs', 'module.exports={entries:{}};');
+    return;
+  }
+  const edge = await bundleEdge({
+    kind: 'node-edge',
+    projectDir: files.input.projectDir,
+    distDir: files.input.patch.distDir,
+    workDir: work,
+    entries: files.input.edgeEntries,
+    instrumentation: files.input.edgeInstrumentation,
+  });
+  if (edge.trace.externals.some((name) => name.startsWith('cloudflare:')))
+    throw new AuditError(
+      'Native Function Edge instrumentation requires unsupported platform bindings',
+    );
+  files.add('upwind/edge.cjs', new Uint8Array(await readFile(edge.outFile)));
+}
+
+async function addNodeRuntime(files: NodeArtifactFiles, work: string): Promise<void> {
   const runtime = path.join(work, 'function.mjs');
-  await bundleNode(input, {
+  await bundleNode(files.input, {
     entry: fileURLToPath(import.meta.resolve('@stayingupwind/runtime/function')),
     outFile: runtime,
   });
-  add('upwind/function.mjs', new Uint8Array(await readFile(runtime)));
-  const serverSource = path.join(work, 'server-source.mjs');
-  const selectors = [
-    ...new Set(
-      (
-        await Promise.all(
-          native
-            .filter((load) => load.kind === 'node-gyp-build')
-            .map((load) => nativeLoaderSelectorKeys(load.importer)),
-        )
-      ).flat(),
-    ),
-  ];
-  await writeFile(
-    serverSource,
-    [
-      "import {env as runtimeEnv} from 'node:process';",
-      `import {startNodeContainer} from ${jsLiteral(fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-container')))};`,
-      "runtimeEnv.NODE_ENV='production';runtimeEnv.NEXT_RUNTIME='nodejs';",
-      `if(${JSON.stringify(selectors)}.some(key=>Boolean(runtimeEnv[key])))throw new Error('Native loader environment overrides are unsupported');`,
-      `process.chdir(${jsLiteral(`/bundle/${physical.cwd}`)});`,
-      "const {default:entry}=await import('./function.mjs');",
-      'await startNodeContainer({entry,port:8080});',
-    ].join('\n'),
+  files.add('upwind/function.mjs', new Uint8Array(await readFile(runtime)));
+}
+
+async function nativeSelectors(native: readonly NativeLoad[]): Promise<string[]> {
+  const loaders = native.filter((load) => load.kind === 'node-gyp-build');
+  const selectors = await Promise.all(
+    loaders.map((load) => nativeLoaderSelectorKeys(load.importer)),
   );
+  return [...new Set(selectors.flat())];
+}
+
+async function serverSource(files: NodeArtifactFiles): Promise<string> {
+  const selectors = await nativeSelectors(files.native);
+  const module = fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-container'));
+  const containerModule = jsLiteral(module);
+  const cwd = jsLiteral(`/bundle/${files.physical.cwd}`);
+  return [
+    "import {env as runtimeEnv} from 'node:process';",
+    `import {startNodeContainer} from ${containerModule};`,
+    "runtimeEnv.NODE_ENV='production';runtimeEnv.NEXT_RUNTIME='nodejs';",
+    `if(${JSON.stringify(selectors)}.some(key=>Boolean(runtimeEnv[key])))throw new Error('Native loader environment overrides are unsupported');`,
+    `process.chdir(${cwd});`,
+    "const {default:entry}=await import('./function.mjs');",
+    'await startNodeContainer({entry,port:8080});',
+  ].join('\n');
+}
+
+async function addNodeServer(files: NodeArtifactFiles, work: string): Promise<void> {
+  const source = path.join(work, 'server-source.mjs');
+  await writeFile(source, await serverSource(files));
   const server = path.join(work, 'server.mjs');
-  await bundleNode(input, { entry: serverSource, outFile: server, service: true });
-  add('upwind/server.mjs', new Uint8Array(await readFile(server)));
-  const archive = nodeArtifactArchive([...files.values()]);
+  await bundleNode(files.input, { entry: source, outFile: server });
+  files.add('upwind/server.mjs', new Uint8Array(await readFile(server)));
+}
+
+/** A separate physical artifact; app modules are never passed through the Worker patch bundle. */
+export async function buildNodeFunction(
+  input: BuildFunctionInput,
+  selected: readonly NativeLoad[],
+): Promise<NodeBuiltFunction> {
+  if (selected.length === 0)
+    throw new AuditError('A Node Function requires a retained, owned native load');
+  const proof = await proveNodeFunction(input);
+  const native = proof.native;
+  assertNativeSelection(selected, native);
+  assertNodeTarget(input, native);
+  const abi = assertNativeAbi();
+  const physical = await nodePhysicalFiles(input, native);
+  const files = new NodeArtifactFiles(input, physical, native);
+  const work = path.join(input.outDir, 'work', `node-${input.name ?? input.kind}`);
+  await mkdir(work, { recursive: true });
+  const instrumentation = await addNodeInstrumentation(files, work);
+  assertNodeProofFiles(proof, physical, instrumentation);
+  files.rewriteNextFiles();
+  await files.addNativeMetadata();
+  await files.addNextManifests();
+  await files.addPlatformFiles();
+  await files.addAppEntry();
+  await addNodeEdge(files, work);
+  files.addWasm();
+  await addNodeRuntime(files, work);
+  await addNodeServer(files, work);
+  const archive = nodeArtifactArchive([...files.files.values()]);
   const artifact = await input.blobStore.put(archive, 'application/gzip');
   return {
     spec: { runtime: 'node-container', artifact, entrypoint: 'upwind/server.mjs', abi },
-    sourceMaps: await nodeSourceMaps(input, physical.files, files),
-    inputs: physical.files.map((file) => ({ file: file.name, bytes: file.bytes.byteLength })),
+    sourceMaps: await nodeSourceMaps(input, physical.files, files.files),
+    inputs: physical.files.map((file) => {
+      return { file: file.name, bytes: file.bytes.byteLength };
+    }),
     dependencies: {
-      buildOutput: [],
-      packages: {},
-      other: [],
-      externals: [],
-      stubs: [],
-      patches: [],
-      dynamicRequires: [],
-      wasmModules: [],
-      modules: [],
+      ...proof.dependencies,
       size: { bytes: archive.byteLength, gzipBytes: archive.byteLength },
     },
   };

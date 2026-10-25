@@ -24,7 +24,7 @@ import type { TextModule } from './manifests.ts';
 import { instrumentationEntryTraces } from './native-addon-entries.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
 import { nativeFunctionLayout } from './native-layout.ts';
-import { NativeFunctionRequired } from './native-loads.ts';
+import { NativeFunctionRequiredError } from './native-loads.ts';
 import type { NodeBuiltFunction } from './node-function.ts';
 import { type BodiesLeftOut, withinTheLimit } from './page-body-layout.ts';
 import type { PatchContext } from './patches/index.ts';
@@ -410,14 +410,19 @@ export async function appFunctionsOf<
   runtimeManifest: M,
   budget: PlanBudget | undefined,
 ): Promise<AppFunctions<M>> {
-  try {
-    return await withinTheLimit(context, (layout, weighOnly) =>
-      layOutAppFunctions({ ...context, ...layout }, runtimeManifest, budget, weighOnly),
-    );
-  } catch (error) {
-    if (!(error instanceof NativeFunctionRequired)) throw error;
-    return nativeFunctionLayout(context, runtimeManifest, { budget, loads: error.loads });
-  }
+  return withinTheLimit(context, async (layout, weighOnly): Promise<AppFunctions<M>> => {
+    const selected = { ...context, ...layout };
+    try {
+      return await layOutAppFunctions(selected, runtimeManifest, budget, weighOnly);
+    } catch (error) {
+      if (!(error instanceof NativeFunctionRequiredError)) throw error;
+      return nativeFunctionLayout(selected, runtimeManifest, {
+        budget,
+        loads: error.loads,
+        weighOnly,
+      });
+    }
+  });
 }
 
 /**

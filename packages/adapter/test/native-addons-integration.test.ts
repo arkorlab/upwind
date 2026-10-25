@@ -16,9 +16,9 @@ import { bundleRuntimeModule, type RuntimeBundleInput } from '../src/runtime-bun
  */
 vi.mock(import('../src/runtime-bundle.ts'), () => {
   return {
-    bundleRuntimeModule: vi.fn((input: RuntimeBundleInput) =>
-      writeFile(input.outFile, 'export default {};\n'),
-    ),
+    bundleRuntimeModule: vi.fn((input: RuntimeBundleInput) => {
+      return writeFile(input.outFile, 'export default {};\n');
+    }),
   };
 });
 

@@ -59,13 +59,14 @@ describe('proved native loader selection', () => {
   it('binds the reviewed source and selects Release before Debug', async () => {
     await writeFile(release, new Uint8Array([1]));
     await writeFile(debug, new Uint8Array([2]));
-    const binary = await selected([release, debug]);
+    const { binary } = await selected([release, debug]);
+    // eslint-disable-next-line sonarjs/hashing -- SHA-1 identifies the pinned upstream Git blob, not an authentication digest.
     const blob = createHash('sha1')
       .update(`blob ${Buffer.byteLength(REVIEWED_NODE_GYP)}\0`)
       .update(REVIEWED_NODE_GYP)
       .digest('hex');
 
-    expect({ binary, blob }).toEqual({
+    expect({ binary, blob }).toStrictEqual({
       binary: release,
       blob: '76b96e107474cdd79394262b65ac286db36353e8',
     });

@@ -2,41 +2,55 @@ import { describe, expect, it } from 'vitest';
 
 import { NodeLifetime } from '../src/node-lifetime.ts';
 
-describe('Node container lifetime', () => {
+describe('node container lifetime', () => {
   it('keeps requests and tasks until both settle, including tasks registered by tasks', async () => {
     const lifetime = new NodeLifetime();
     const end = lifetime.beginRequest();
-    const first = Promise.withResolvers<void>();
-    const second = Promise.withResolvers<void>();
-    const initial = first.promise.then(() => {
+    const first = Promise.withResolvers<undefined>();
+    const second = Promise.withResolvers<undefined>();
+    async function initialTask(): Promise<void> {
+      await first.promise;
       lifetime.waitUntil(second.promise);
-    });
+    }
+    const initial = initialTask();
     lifetime.waitUntil(initial);
     const drained = lifetime.drain(1000);
-    first.resolve();
+    first.resolve(undefined);
     await initial;
     end();
 
-    expect(lifetime.snapshot()).toEqual({ activeRequests: 0, backgroundTasks: 1, draining: false });
+    expect(lifetime.snapshot()).toStrictEqual({
+      activeRequests: 0,
+      backgroundTasks: 1,
+      draining: false,
+    });
 
-    second.resolve();
+    second.resolve(undefined);
 
-    expect(await drained).toBe(true);
-    expect(lifetime.snapshot()).toEqual({ activeRequests: 0, backgroundTasks: 0, draining: false });
+    await expect(drained).resolves.toBe(true);
+    expect(lifetime.snapshot()).toStrictEqual({
+      activeRequests: 0,
+      backgroundTasks: 0,
+      draining: false,
+    });
   });
 
   it('reports a bounded incomplete drain without dropping unfinished work', async () => {
     const lifetime = new NodeLifetime();
-    const task = Promise.withResolvers<void>();
+    const task = Promise.withResolvers<undefined>();
     lifetime.waitUntil(task.promise);
     lifetime.startDraining();
 
-    expect(await lifetime.drain(0)).toBe(false);
-    expect(lifetime.snapshot()).toEqual({ activeRequests: 0, backgroundTasks: 1, draining: true });
+    await expect(lifetime.drain(0)).resolves.toBe(false);
+    expect(lifetime.snapshot()).toStrictEqual({
+      activeRequests: 0,
+      backgroundTasks: 1,
+      draining: true,
+    });
 
-    task.resolve();
+    task.resolve(undefined);
 
-    expect(await lifetime.drain(1000)).toBe(true);
+    await expect(lifetime.drain(1000)).resolves.toBe(true);
   });
 
   it('accounts for rejected background tasks without an unhandled rejection or double request end', async () => {
@@ -46,7 +60,11 @@ describe('Node container lifetime', () => {
     end();
     end();
 
-    expect(await lifetime.drain(1000)).toBe(true);
-    expect(lifetime.snapshot()).toEqual({ activeRequests: 0, backgroundTasks: 0, draining: false });
+    await expect(lifetime.drain(1000)).resolves.toBe(true);
+    expect(lifetime.snapshot()).toStrictEqual({
+      activeRequests: 0,
+      backgroundTasks: 0,
+      draining: false,
+    });
   });
 });

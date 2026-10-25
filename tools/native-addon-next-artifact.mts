@@ -14,6 +14,24 @@ import {
 const MAX_TAR = 1_073_741_824;
 const MAX_FILES = 100_000;
 const BLOCK = 512;
+const MAX_NAME_CHARACTERS = 240;
+const OCTAL_BASE = 8;
+const FILE_MODE = 0o644;
+const EXECUTABLE_MODE = 0o755;
+const NAME_OFFSET = 0;
+const NAME_SIZE = 100;
+const MODE_OFFSET = 100;
+const MODE_SIZE = 8;
+const LENGTH_OFFSET = 124;
+const LENGTH_SIZE = 12;
+const CHECKSUM_OFFSET = 148;
+const CHECKSUM_SIZE = 8;
+const TYPE_OFFSET = 156;
+const MAGIC_OFFSET = 257;
+const MAGIC_SIZE = 6;
+const PREFIX_OFFSET = 345;
+const PREFIX_SIZE = 155;
+const CHECKSUM_SPACE = 0x20;
 
 function record(value: unknown): Record<string, unknown> {
   assert(
@@ -25,7 +43,7 @@ function record(value: unknown): Record<string, unknown> {
 
 function inside(name: unknown): string {
   assert(
-    typeof name === 'string' && name.length > 0 && name.length <= 240,
+    typeof name === 'string' && name.length > 0 && name.length <= MAX_NAME_CHARACTERS,
     'Invalid artifact name',
   );
   assert(!name.startsWith('/') && !/[\\:\p{Cc}]/u.test(name), 'Invalid artifact path');
@@ -42,6 +60,12 @@ interface Member {
   readonly mode: number;
 }
 
+export interface NativeFixtureIdentity {
+  readonly deploymentId: string;
+  readonly functionName: string;
+  readonly buildId: string;
+}
+
 function field(header: Buffer, offset: number, size: number): string {
   return (
     new TextDecoder('utf-8', { fatal: true })
@@ -53,7 +77,7 @@ function field(header: Buffer, offset: number, size: number): string {
 function octal(header: Buffer, offset: number, size: number): number {
   const text = field(header, offset, size).trim();
   assert(/^[0-7]+$/u.test(text), 'Invalid tar number');
-  return Number.parseInt(text, 8);
+  return Number.parseInt(text, OCTAL_BASE);
 }
 
 function members(bytes: Buffer): Member[] {
@@ -64,10 +88,16 @@ function members(bytes: Buffer): Member[] {
   while (offset + BLOCK <= tar.length) {
     const header = tar.subarray(offset, offset + BLOCK);
     if (header.every((byte) => byte === 0)) break;
-    assert.equal(field(header, 257, 6), 'ustar', 'Only canonical USTAR is accepted');
-    assert.equal(field(header, 156, 1), '0', 'Only regular tar files are accepted');
-    const prefix = field(header, 345, 155);
-    const name = inside(`${prefix === '' ? '' : `${prefix}/`}${field(header, 0, 100)}`);
+    assert.equal(
+      field(header, MAGIC_OFFSET, MAGIC_SIZE),
+      'ustar',
+      'Only canonical USTAR is accepted',
+    );
+    assert.equal(field(header, TYPE_OFFSET, 1), '0', 'Only regular tar files are accepted');
+    const prefix = field(header, PREFIX_OFFSET, PREFIX_SIZE);
+    const name = inside(
+      `${prefix === '' ? '' : `${prefix}/`}${field(header, NAME_OFFSET, NAME_SIZE)}`,
+    );
     assert(!names.has(name), 'Duplicate tar member');
     for (const old of names)
       assert(
@@ -75,17 +105,17 @@ function members(bytes: Buffer): Member[] {
         'Tar file/directory conflict',
       );
     names.add(name);
-    const expected = octal(header, 148, 8);
+    const expected = octal(header, CHECKSUM_OFFSET, CHECKSUM_SIZE);
     const checked = Buffer.from(header);
-    checked.fill(0x20, 148, 156);
+    checked.fill(CHECKSUM_SPACE, CHECKSUM_OFFSET, CHECKSUM_OFFSET + CHECKSUM_SIZE);
     assert.equal(
       checked.reduce((sum, byte) => sum + byte, 0),
       expected,
       'Tar checksum mismatch',
     );
-    const size = octal(header, 124, 12);
-    const mode = octal(header, 100, 8);
-    assert(mode === 0o644 || mode === 0o755, 'Unexpected artifact executable bits');
+    const size = octal(header, LENGTH_OFFSET, LENGTH_SIZE);
+    const mode = octal(header, MODE_OFFSET, MODE_SIZE);
+    assert(mode === FILE_MODE || mode === EXECUTABLE_MODE, 'Unexpected artifact executable bits');
     assert(
       Number.isSafeInteger(size) && offset + BLOCK + size <= tar.length,
       'Truncated tar member',
@@ -135,7 +165,7 @@ export async function materializeNativeArtifact(
   directory: string,
   bundleRoot: string,
   nodeVersion: string,
-): Promise<{ deploymentId: string; functionName: string; buildId: string }> {
+): Promise<NativeFixtureIdentity> {
   const bundle = deploymentBundleSchema.parse(
     JSON.parse(await readFile(path.join(directory, '.arkor/bundle.json'), 'utf8')),
   );

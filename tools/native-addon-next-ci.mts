@@ -6,7 +6,7 @@
  * toolchain/Python for node-gyp. Run after the SDK's normal build. This is not a hosted measurement.
  */
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   lstat,
@@ -21,7 +21,11 @@ import {
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { materializeNativeArtifact } from './native-addon-next-artifact.mts';
+import {
+  materializeNativeArtifact,
+  type NativeFixtureIdentity,
+} from './native-addon-next-artifact.mts';
+import { NativeNextProcesses, pause } from './native-addon-next-process.mts';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const NEXT_VERSION = '16.4.3';
@@ -29,15 +33,14 @@ const NEXT_COMMIT = '29bbeab09981148ade186e8599ecdede15abc281';
 const NODE_VERSION = '24.22.1';
 const PNPM_VERSION = '12.14.0';
 const REACT_VERSION = '19.3.0';
-const MAX_BUILD_MS = 900_000;
-const CLOSE_MS = 35_000;
-const KILL_MS = 5000;
 const PROBE_MS = 30_000;
 const POLL_MS = 100;
 const MAX_BODY = 2_097_152;
+const TOKEN_BYTES = 32;
+const HTTP_OK = 200;
 const BUNDLE_ROOT = '/bundle';
 const OWNER_MARKER = '.upwind-native-next-ci-owner';
-const TOKEN = randomBytes(32).toString('base64url');
+const TOKEN = randomBytes(TOKEN_BYTES).toString('base64url');
 const PINNED_FILES: Readonly<Record<string, string>> = {
   '.npmrc': '951a2b6e795f12e7e5e47a7ce71ab649cbb6e614',
   'bindings/index.js': 'fd4a2e414af0b19ae18ef43baed3eaa37a918db5',
@@ -63,6 +66,15 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function compareNames(left: string, right: string): number {
+  return Number(left > right) - Number(left < right);
+}
+
+function gitBlob(bytes: Buffer): string {
+  // eslint-disable-next-line sonarjs/hashing -- This reproduces a pinned public Git blob identifier, not a security digest or credential.
+  return createHash('sha1').update(`blob ${bytes.byteLength}\0`).update(bytes).digest('hex');
+}
+
 async function inventory(directory: string, prefix = ''): Promise<string[]> {
   const files: string[] = [];
   for (const item of await readdir(path.join(directory, prefix), { withFileTypes: true })) {
@@ -79,16 +91,13 @@ async function inventory(directory: string, prefix = ''): Promise<string[]> {
 
 async function copyFixture(source: string, target: string): Promise<void> {
   assert.deepEqual(
-    (await inventory(source)).toSorted(),
-    Object.keys(PINNED_FILES).toSorted(),
+    (await inventory(source)).toSorted(compareNames),
+    Object.keys(PINNED_FILES).toSorted(compareNames),
     'Official fixture inventory changed',
   );
   for (const [name, expected] of Object.entries(PINNED_FILES)) {
     const bytes = await readFile(path.join(source, name));
-    const blob = createHash('sha1')
-      .update(`blob ${bytes.byteLength}\0`)
-      .update(bytes)
-      .digest('hex');
+    const blob = gitBlob(bytes);
     assert.equal(blob, expected, `Official fixture source changed: ${name}`);
     await mkdir(path.dirname(path.join(target, name)), { recursive: true });
     await writeFile(path.join(target, name), bytes, { flag: 'wx' });
@@ -96,7 +105,7 @@ async function copyFixture(source: string, target: string): Promise<void> {
 }
 
 function environment(userConfig: string, globalConfig: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
+  return {
     PATH: process.env['PATH'],
     HOME: process.env['HOME'],
     TMPDIR: process.env['TMPDIR'],
@@ -106,85 +115,9 @@ function environment(userConfig: string, globalConfig: string): NodeJS.ProcessEn
     npm_config_globalconfig: globalConfig,
     npm_config_registry: 'https://registry.npmjs.org',
   };
-  return env;
 }
 
-function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (child.pid === undefined) return;
-  try {
-    process.kill(-child.pid, signal);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-  }
-}
-
-function alive(child: ChildProcess): boolean {
-  if (child.pid === undefined) return false;
-  try {
-    process.kill(-child.pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
-}
-
-function pause(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
-}
-
-async function stop(child: ChildProcess): Promise<void> {
-  signalGroup(child, 'SIGTERM');
-  const deadline = Date.now() + CLOSE_MS;
-  while (alive(child) && Date.now() < deadline) await pause(POLL_MS);
-  if (alive(child)) signalGroup(child, 'SIGKILL');
-  const hardDeadline = Date.now() + KILL_MS;
-  while (alive(child) && Date.now() < hardDeadline) await pause(POLL_MS);
-  assert(!alive(child), 'A CI child process group survived cleanup');
-}
-
-const children = new Set<ChildProcess>();
-let interrupted = false;
-
-async function command(
-  binary: string,
-  args: readonly string[],
-  cwd: string,
-  options: { env: NodeJS.ProcessEnv; capture?: boolean },
-): Promise<string> {
-  assert(!interrupted, 'The CI control was interrupted');
-  const child = spawn(binary, args, {
-    cwd,
-    env: options.env,
-    detached: true,
-    stdio: options.capture === true ? ['ignore', 'pipe', 'inherit'] : 'inherit',
-  });
-  children.add(child);
-  let output = '';
-  child.stdout?.on('data', (chunk: Buffer) => {
-    output += chunk.toString();
-    if (output.length > MAX_BODY) signalGroup(child, 'SIGKILL');
-  });
-  const deadline = setTimeout(() => {
-    signalGroup(child, 'SIGKILL');
-  }, MAX_BUILD_MS);
-  try {
-    const code = await new Promise<number | null>((resolve, reject) => {
-      child.once('error', reject);
-      child.once('exit', (exitCode) => {
-        resolve(exitCode);
-      });
-    });
-    assert.equal(code, 0, 'The isolated native fixture command failed');
-    return output;
-  } finally {
-    clearTimeout(deadline);
-    await stop(child);
-    children.delete(child);
-  }
-}
+const processes = new NativeNextProcesses();
 
 async function prepare(source: string, directory: string, env: NodeJS.ProcessEnv): Promise<void> {
   await copyFixture(source, directory);
@@ -231,13 +164,18 @@ async function prepare(source: string, directory: string, env: NodeJS.ProcessEnv
     { flag: 'wx' },
   );
   assert.equal(
-    (await command('pnpm', ['--version'], directory, { env, capture: true })).trim(),
+    (await processes.command(['--version'], directory, { env, capture: true })).trim(),
     PNPM_VERSION,
     'Use the SDK pinned package manager',
   );
-  await command(
-    'pnpm',
-    ['install', '--no-frozen-lockfile', '--registry=https://registry.npmjs.org'],
+  await processes.command(
+    [
+      'install',
+      '--no-frozen-lockfile',
+      '--registry=https://registry.npmjs.org',
+      // pnpm 12 approves file dependencies by resolved identity, after the fixture blob check.
+      '--allow-build=native-addon@file:native-addon',
+    ],
     directory,
     { env },
   );
@@ -245,13 +183,13 @@ async function prepare(source: string, directory: string, env: NodeJS.ProcessEnv
     JSON.parse(await readFile(path.join(directory, 'node_modules/next/package.json'), 'utf8')),
   );
   assert.equal(installed['version'], NEXT_VERSION, 'The fixture installed a different Next.js');
-  await command('pnpm', ['exec', 'next', 'build'], directory, { env });
+  await processes.command(['exec', 'next', 'build'], directory, { env });
 }
 
 async function bodyOf(response: Response): Promise<string> {
-  if (response.status !== 200) {
+  if (response.status !== HTTP_OK) {
     await response.body?.cancel();
-    assert.equal(response.status, 200, 'The native Function did not answer successfully');
+    assert.equal(response.status, HTTP_OK, 'The native Function did not answer successfully');
   }
   const reader = response.body?.getReader();
   assert(reader !== undefined);
@@ -277,7 +215,7 @@ function request(pathname: string, data = false): Promise<Response> {
     headers: {
       'x-upwind-control-token': TOKEN,
       'x-upwind-request-url': `https://native-ci.test${pathname}`,
-      ...(data && { 'x-nextjs-data': '1' }),
+      ...(data ? { 'x-nextjs-data': '1' } : undefined),
     },
     redirect: 'manual',
     signal: AbortSignal.timeout(PROBE_MS),
@@ -293,7 +231,18 @@ function nextData(html: string): Record<string, unknown> {
   return record(JSON.parse(html.slice(content + 1, end)));
 }
 
-function expected(slug: string) {
+interface PageProperties {
+  readonly params: { readonly slug: string };
+  readonly blog: true;
+  readonly contextAware: true;
+  readonly users: readonly {
+    readonly id: number;
+    readonly first_name: string;
+    readonly last_name: string;
+  }[];
+}
+
+function expected(slug: string): PageProperties {
   return {
     params: { slug },
     blog: true,
@@ -305,11 +254,34 @@ function expected(slug: string) {
   };
 }
 
-async function smoke(
-  identity: { deploymentId: string; functionName: string; buildId: string },
-  env: NodeJS.ProcessEnv,
-): Promise<void> {
-  assert(!interrupted, 'The CI control was interrupted');
+async function waitForReady(child: ChildProcess): Promise<void> {
+  let failed = false;
+  child.once('error', () => {
+    failed = true;
+  });
+  const deadline = performance.now() + PROBE_MS;
+  let ready = false;
+  while (performance.now() < deadline && child.exitCode === null && !failed) {
+    try {
+      const remaining = Math.max(1, Math.ceil(deadline - performance.now()));
+      const response = await fetch('http://127.0.0.1:8080/__upwind/ready', {
+        headers: { 'x-upwind-control-token': TOKEN },
+        signal: AbortSignal.timeout(remaining),
+      });
+      const answer = record(JSON.parse(await bodyOf(response)));
+      ready =
+        performance.now() <= deadline && response.status === HTTP_OK && answer['ready'] === true;
+      if (ready) break;
+    } catch {
+      /* A cold Node process may not have bound its port yet. */
+    }
+    await pause(Math.min(POLL_MS, Math.max(0, deadline - performance.now())));
+  }
+  assert(ready && !failed, 'The emitted Node Function did not become ready');
+}
+
+async function smoke(identity: NativeFixtureIdentity, env: NodeJS.ProcessEnv): Promise<void> {
+  assert(!processes.interrupted, 'The CI control was interrupted');
   const runtime = {
     v: 1,
     deploymentId: identity.deploymentId,
@@ -317,40 +289,14 @@ async function smoke(
     controlToken: TOKEN,
     capabilities: { services: {} },
   };
-  const child = spawn(process.execPath, [path.join(BUNDLE_ROOT, 'upwind/server.mjs')], {
-    cwd: BUNDLE_ROOT,
-    env: {
-      ...env,
-      NODE_ENV: 'production',
-      NEXT_RUNTIME: 'nodejs',
-      ARKOR_NODE_RUNTIME: JSON.stringify(runtime),
-    },
-    detached: true,
-    stdio: 'inherit',
-  });
-  children.add(child);
-  let startError: Error | undefined;
-  child.once('error', (error) => {
-    startError = error;
+  const child = processes.start(path.join(BUNDLE_ROOT, 'upwind/server.mjs'), BUNDLE_ROOT, {
+    ...env,
+    NODE_ENV: 'production',
+    NEXT_RUNTIME: 'nodejs',
+    ARKOR_NODE_RUNTIME: JSON.stringify(runtime),
   });
   try {
-    const deadline = Date.now() + PROBE_MS;
-    let ready = false;
-    while (Date.now() < deadline && child.exitCode === null && startError === undefined) {
-      try {
-        const response = await fetch('http://127.0.0.1:8080/__upwind/ready', {
-          headers: { 'x-upwind-control-token': TOKEN },
-          signal: AbortSignal.timeout(PROBE_MS),
-        });
-        ready =
-          response.status === 200 && record(JSON.parse(await bodyOf(response)))['ready'] === true;
-        if (ready) break;
-      } catch {
-        /* A cold Node process may not have bound its port yet. */
-      }
-      await pause(POLL_MS);
-    }
-    assert(ready && startError === undefined, 'The emitted Node Function did not become ready');
+    await waitForReady(child);
     const first = nextData(await bodyOf(await request('/blog/first')));
     assert.deepEqual(record(first['props'])['pageProps'], expected('first'));
     // Browser fallback fetches this exact Pages data route after receiving its initial shell.
@@ -367,8 +313,7 @@ async function smoke(
     );
     assert.deepEqual(second['pageProps'], expected('second'));
   } finally {
-    await stop(child);
-    children.delete(child);
+    await processes.stop(child);
   }
 }
 
@@ -398,9 +343,7 @@ async function main(): Promise<void> {
   await writeFile(path.join(BUNDLE_ROOT, OWNER_MARKER), TOKEN, { flag: 'wx' });
   const directory = await mkdtemp(path.join(await realpath(runnerTemp), 'upwind-native-next-'));
   const cancel = (): void => {
-    interrupted = true;
-    process.exitCode = 1;
-    for (const child of children) signalGroup(child, 'SIGKILL');
+    processes.interrupt();
   };
   process.once('SIGTERM', cancel);
   process.once('SIGINT', cancel);
@@ -415,9 +358,9 @@ async function main(): Promise<void> {
     await prepare(await realpath(source), fixture, env);
     const identity = await materializeNativeArtifact(fixture, BUNDLE_ROOT, NODE_VERSION);
     await smoke(identity, env);
-    assert(!interrupted, 'The CI control was interrupted');
+    assert(!processes.interrupted, 'The CI control was interrupted');
   } finally {
-    const closed = await Promise.allSettled([...children].map(stop));
+    const closed = await processes.cleanup();
     if ((await readFile(path.join(BUNDLE_ROOT, OWNER_MARKER), 'utf8')) === TOKEN) {
       for (const name of await readdir(BUNDLE_ROOT))
         await rm(path.join(BUNDLE_ROOT, name), { recursive: true, force: true });
@@ -425,10 +368,7 @@ async function main(): Promise<void> {
     await rm(directory, { recursive: true, force: true });
     process.off('SIGTERM', cancel);
     process.off('SIGINT', cancel);
-    assert(
-      closed.every((result) => result.status === 'fulfilled'),
-      'CI process group cleanup failed',
-    );
+    assert(closed, 'CI process group cleanup failed');
   }
   console.log(
     JSON.stringify({

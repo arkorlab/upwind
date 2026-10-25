@@ -705,6 +705,17 @@ export function dynamicLoadsOf(file: string, code: string): DynamicLoad[] {
   );
 }
 
+function nativeGuard(visit: Visit): 'plain' | 'ambiguous' | undefined {
+  if (visit.node.type !== 'CallExpression') return undefined;
+  if (inGuardedBlock(visit)) return 'plain';
+  for (let at = visit; at.up !== undefined; at = at.up) {
+    if (runsLater(at.up, at.key)) break;
+    if (at.key === 'block' && at.up.node.type === 'TryStatement' && at.up.node.handler !== null)
+      return 'ambiguous';
+  }
+  return undefined;
+}
+
 /** Reuse the existing optional-operation proof for native capability classification. */
 export function nativeOperationGuards(
   program: Program,
@@ -712,22 +723,8 @@ export function nativeOperationGuards(
   const guarded = new Map<number, 'plain' | 'ambiguous'>();
   const pending: Visit[] = [{ node: program, up: undefined, key: undefined, statement: program }];
   for (let visit = pending.pop(); visit !== undefined; visit = pending.pop()) {
-    if (visit.node.type === 'CallExpression') {
-      if (inGuardedBlock(visit)) guarded.set(visit.node.start, 'plain');
-      else {
-        for (let at = visit; at.up !== undefined; at = at.up) {
-          if (runsLater(at.up, at.key)) break;
-          if (
-            at.key === 'block' &&
-            at.up.node.type === 'TryStatement' &&
-            at.up.node.handler !== null
-          ) {
-            guarded.set(visit.node.start, 'ambiguous');
-            break;
-          }
-        }
-      }
-    }
+    const guard = nativeGuard(visit);
+    if (guard !== undefined) guarded.set(visit.node.start, guard);
     pushChildren(visit, pending);
   }
   return guarded;

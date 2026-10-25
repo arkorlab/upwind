@@ -42,16 +42,23 @@ describe('native physical module relocation', () => {
     } as unknown as BuildFunctionInput;
   }
 
-  it('refuses a relative import from external distDir into the repository when relocation changes its meaning', async () => {
-    const entry = path.join(output, 'server/entry.cjs');
-    const target = path.join(project, 'shared.cjs');
-    await writeFile(entry, "module.exports=require('../../repository/app/shared.cjs');\n");
-    await writeFile(target, 'module.exports=42;\n');
+  it.each([
+    "module.exports=require('../../repository/app/shared.cjs');\n",
+    'module.exports=require(`../../repository/app/shared.cjs`);\n',
+    'module.exports=()=>import(`../../repository/app/shared.cjs`);\n',
+  ])(
+    'refuses an external distDir relative import whose relocation changes its meaning: %s',
+    async (source) => {
+      const entry = path.join(output, 'server/entry.cjs');
+      const target = path.join(project, 'shared.cjs');
+      await writeFile(entry, source);
+      await writeFile(target, 'module.exports=42;\n');
 
-    await expect(nodePhysicalFiles(input(entry, [entry, target]), [])).rejects.toThrow(
-      'relocation changes',
-    );
-  });
+      await expect(nodePhysicalFiles(input(entry, [entry, target]), [])).rejects.toThrow(
+        'relocation changes',
+      );
+    },
+  );
 
   it('refuses a relative native binary lookup crossing the same relocation boundary', async () => {
     const entry = path.join(output, 'server/entry.cjs');
@@ -73,7 +80,7 @@ describe('native physical module relocation', () => {
     await writeFile(target, 'module.exports=42;\n');
     const physical = await nodePhysicalFiles(input(entry, [entry, target]), []);
 
-    expect(physical.files.map((file) => file.name)).toEqual(
+    expect(physical.files.map((file) => file.name)).toStrictEqual(
       expect.arrayContaining([
         'project/app/.upwind-build/server/entry.cjs',
         'project/app/.upwind-build/server/chunk.cjs',
@@ -92,7 +99,7 @@ describe('native physical module relocation', () => {
       { kind: 'dlopen', importer: entry, binary, owners: ['/native'] },
     ]);
 
-    expect(physical.files.map((file) => file.name)).toEqual(
+    expect(physical.files.map((file) => file.name)).toStrictEqual(
       expect.arrayContaining([
         'project/app/entry.cjs',
         'project/app/shared.cjs',
@@ -101,7 +108,11 @@ describe('native physical module relocation', () => {
     );
   });
 
-  it('retains a proved bare-package symlink alias', async () => {
+  it.each([
+    "module.exports=require('pkg');\n",
+    'module.exports=require(`pkg`);\n',
+    'module.exports=()=>import(`pkg`);\n',
+  ])('retains a proved bare-package symlink alias: %s', async (source) => {
     const entry = path.join(project, 'entry.cjs');
     const packageRoot = path.join(repository, 'store/pkg');
     const target = path.join(packageRoot, 'index.js');
@@ -109,7 +120,7 @@ describe('native physical module relocation', () => {
     await mkdir(path.join(project, 'node_modules'), { recursive: true });
     await writeFile(path.join(packageRoot, 'package.json'), '{"name":"pkg","main":"index.js"}\n');
     await writeFile(target, 'module.exports=42;\n');
-    await writeFile(entry, "module.exports=require('pkg');\n");
+    await writeFile(entry, source);
     await symlink(packageRoot, path.join(project, 'node_modules/pkg'));
     const physical = await nodePhysicalFiles(input(entry, [entry, target]), []);
 
@@ -117,5 +128,71 @@ describe('native physical module relocation', () => {
       path: 'project/app/node_modules/pkg',
       target: 'project/store/pkg',
     });
+  });
+
+  it.each([
+    { label: 'import-only', exports: { '.': { import: './import.mjs' } } },
+    {
+      label: 'conditional import/require',
+      exports: { '.': { import: './import.mjs', require: './require.cjs' } },
+    },
+  ])('preserves a canonical-only NFT package alias for $label exports', async (profile) => {
+    const entry = path.join(project, 'entry.mjs');
+    const packageRoot = path.join(repository, 'store/actual-package');
+    const imported = path.join(packageRoot, 'import.mjs');
+    const required = path.join(packageRoot, 'require.cjs');
+    const metadata = path.join(packageRoot, 'package.json');
+    await mkdir(packageRoot, { recursive: true });
+    await mkdir(path.join(project, 'node_modules'), { recursive: true });
+    await writeFile(
+      metadata,
+      JSON.stringify({ name: 'actual-package', type: 'module', exports: profile.exports }),
+    );
+    await writeFile(imported, 'export const value=42;\n');
+    await writeFile(required, 'module.exports={value:43};\n');
+    await writeFile(entry, "export {value} from 'alias-package';\n");
+    await symlink(packageRoot, path.join(project, 'node_modules/alias-package'));
+    // NFT has physical paths only; neither a logical alias nor an exported package.json is needed.
+    const physical = await nodePhysicalFiles(input(entry, [entry, imported, required]), []);
+
+    expect(physical.links).toContainEqual({
+      path: 'project/app/node_modules/alias-package',
+      target: 'project/store/actual-package',
+    });
+    expect(physical.files.map((file) => file.name)).toStrictEqual(
+      expect.arrayContaining([
+        'project/store/actual-package/import.mjs',
+        'project/store/actual-package/require.cjs',
+        'project/store/actual-package/package.json',
+      ]),
+    );
+  });
+
+  it('does not skip an existing unowned package for a later traced package', async () => {
+    const entry = path.join(project, 'entry.mjs');
+    const first = path.join(repository, 'store/unowned');
+    const later = path.join(repository, 'store/owned');
+    const target = path.join(later, 'index.mjs');
+    await mkdir(first, { recursive: true });
+    await mkdir(later, { recursive: true });
+    await mkdir(path.join(project, 'node_modules'), { recursive: true });
+    await mkdir(path.join(repository, 'node_modules'), { recursive: true });
+    await writeFile(
+      path.join(first, 'package.json'),
+      '{"type":"module","exports":{"import":"./index.mjs"}}\n',
+    );
+    await writeFile(path.join(first, 'index.mjs'), 'export const value=0;\n');
+    await writeFile(
+      path.join(later, 'package.json'),
+      '{"type":"module","exports":{"import":"./index.mjs"}}\n',
+    );
+    await writeFile(target, 'export const value=42;\n');
+    await writeFile(entry, "export {value} from 'pkg';\n");
+    await symlink(first, path.join(project, 'node_modules/pkg'));
+    await symlink(later, path.join(repository, 'node_modules/pkg'));
+
+    await expect(nodePhysicalFiles(input(entry, [entry, target]), [])).rejects.toThrow(
+      'first existing Node package target is outside its closed trace',
+    );
   });
 });

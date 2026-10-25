@@ -14,7 +14,9 @@ describe('native child constructor classification', () => {
   let binary: string;
 
   beforeEach(async () => {
-    directory = await realpath(await mkdtemp(path.join(tmpdir(), 'upwind-native-worker-child-')));
+    const prefix = path.join(tmpdir(), 'upwind-native-worker-child-');
+    const temporary = await mkdtemp(prefix);
+    directory = await realpath(temporary);
     entry = path.join(directory, 'entry.mjs');
     binary = path.join(directory, 'addon.node');
     await writeFile(binary, new Uint8Array([0, 1, 2]));
@@ -71,7 +73,7 @@ describe('native child constructor classification', () => {
     async (source) => {
       const loads = await classify(source);
 
-      expect(loads).toEqual([]);
+      expect(loads).toStrictEqual([]);
     },
   );
 
@@ -80,7 +82,7 @@ describe('native child constructor classification', () => {
       "import threads from 'node:worker_threads'; export const channel = new threads['BroadcastChannel']('messages');\n",
     );
 
-    expect(loads).toEqual([]);
+    expect(loads).toStrictEqual([]);
   });
 
   it.each(['join', 'resolve'])(
@@ -97,7 +99,7 @@ describe('native child constructor classification', () => {
       "try { process.dlopen(module, './optional.node'); } catch { module.exports = { fallback: true }; }\n";
     const worker = await classify(source, true);
 
-    expect(worker).toEqual([]);
+    expect(worker).toStrictEqual([]);
     await expect(classify(source, true, true)).rejects.toThrow('unclassified on the Node target');
   });
 });

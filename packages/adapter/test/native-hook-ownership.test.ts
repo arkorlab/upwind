@@ -66,8 +66,8 @@ describe('native project instrumentation ownership', () => {
     expect({
       importers: traces[0]?.importers,
       assets: Object.values(traces[0]?.assets ?? {}),
-    }).toEqual({ importers: [hook.file, own], assets: [binary] });
-    expect({ loads: observedLoads, functions: owners }).toEqual({
+    }).toStrictEqual({ importers: [hook.file, own], assets: [binary] });
+    expect({ loads: observedLoads, functions: owners }).toStrictEqual({
       loads: [{ kind: 'direct', binary, owners: ['instrumentation'] }],
       functions: ['/one', '/two'],
     });

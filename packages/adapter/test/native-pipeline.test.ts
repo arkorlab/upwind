@@ -19,7 +19,9 @@ describe('native proof through the production app bundle pipeline', () => {
   let binary: string;
 
   beforeEach(async () => {
-    directory = await realpath(await mkdtemp(path.join(tmpdir(), 'upwind-native-pipeline-')));
+    const prefix = path.join(tmpdir(), 'upwind-native-pipeline-');
+    const temporary = await mkdtemp(prefix);
+    directory = await realpath(temporary);
     distDir = path.join(directory, '.next');
     await mkdir(path.join(distDir, 'server'), { recursive: true });
     entry = path.join(directory, 'app-entry.cjs');
@@ -56,7 +58,7 @@ describe('native proof through the production app bundle pipeline', () => {
       wasm: [],
       linked: new Set(),
     };
-    const build = await rolldown(
+    await using build = await rolldown(
       appBundleOptions(
         directory,
         entry,
@@ -74,21 +76,17 @@ describe('native proof through the production app bundle pipeline', () => {
         sinks,
       ),
     );
-    try {
-      // These are the actual writeAppBundle output settings, including production compression.
-      const output = await build.generate({
-        format: 'cjs',
-        codeSplitting: false,
-        banner: FUNCTION_BANNER,
-        minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
-        comments: { legal: false },
-      });
-      const chunk = output.output.find((item): item is OutputChunk => item.type === 'chunk');
-      if (chunk === undefined) throw new Error('The pipeline fixture produced no chunk');
-      return { code: chunk.code, loads: await proof.retained(chunk), chunk, proof };
-    } finally {
-      await build.close();
-    }
+    // These are the actual writeAppBundle output settings, including production compression.
+    const output = await build.generate({
+      format: 'cjs',
+      codeSplitting: false,
+      banner: FUNCTION_BANNER,
+      minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
+      comments: { legal: false },
+    });
+    const chunk = output.output.find((item): item is OutputChunk => item.type === 'chunk');
+    if (chunk === undefined) throw new Error('The pipeline fixture produced no chunk');
+    return { code: chunk.code, loads: await proof.retained(chunk), chunk, proof };
   }
 
   it('retains an owned native call inside an asynchronous lazy route handler', async () => {
@@ -97,7 +95,7 @@ describe('native proof through the production app bundle pipeline', () => {
     );
 
     expect(output.code).toContain('__UPWIND_NATIVE_CAPABILITY__');
-    expect(output.loads).toEqual([
+    expect(output.loads).toStrictEqual([
       { kind: 'direct', importer: native, binary, owners: ['/native'] },
     ]);
   });
@@ -108,7 +106,7 @@ describe('native proof through the production app bundle pipeline', () => {
     );
 
     expect(output.code).not.toContain('__UPWIND_NATIVE_CAPABILITY__');
-    expect(output.loads).toEqual([]);
+    expect(output.loads).toStrictEqual([]);
   });
 
   it.each([

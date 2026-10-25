@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { isNodeContainerFunction } from '@stayingupwind/core/bundle';
+import {
+  isNodeContainerFunction,
+  type FunctionSpec,
+  type NodeContainerFunctionSpec,
+} from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -190,7 +194,9 @@ async function contextOf(directory: string): Promise<FunctionsContext> {
 
 async function stop(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
-  const stopped = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  const stopped = new Promise<void>((resolve) => {
+    child.once('exit', () => resolve());
+  });
   child.kill('SIGTERM');
   const kill = setTimeout(() => child.kill('SIGKILL'), 2000);
   try {
@@ -200,7 +206,13 @@ async function stop(child: ChildProcess): Promise<void> {
   }
 }
 
-describe.skipIf(!ENABLED)('Linux native Function artifact integration', () => {
+function nativeArtifact(spec: FunctionSpec | undefined): NodeContainerFunctionSpec {
+  if (spec === undefined || !isNodeContainerFunction(spec))
+    throw new Error('No native artifact was produced');
+  return spec;
+}
+
+describe.skipIf(!ENABLED)('linux native Function artifact integration', () => {
   let directory: string | undefined;
   let child: ChildProcess | undefined;
 
@@ -209,7 +221,8 @@ describe.skipIf(!ENABLED)('Linux native Function artifact integration', () => {
     if (directory !== undefined) await rm(directory, { recursive: true, force: true });
     // This opt-in CI job creates /bundle as an empty, dedicated extraction root.
     if (ENABLED) {
-      for (const file of await readdir('/bundle'))
+      const files = await readdir('/bundle');
+      for (const file of files)
         await rm(path.join('/bundle', file), { recursive: true, force: true });
     }
   });
@@ -225,6 +238,7 @@ describe.skipIf(!ENABLED)('Linux native Function artifact integration', () => {
     const native = functions.built.find((entry) => isNodeContainerFunction(entry.built.spec));
 
     const primarySpec = primary?.built.spec;
+
     expect({
       version: functions.runtimeManifest.v,
       worker: primarySpec?.runtime,
@@ -233,13 +247,13 @@ describe.skipIf(!ENABLED)('Linux native Function artifact integration', () => {
         primarySpec !== undefined &&
         !isNodeContainerFunction(primarySpec) &&
         primarySpec.modules.some((module) => module.name === 'edge.cjs'),
-    }).toEqual({ version: 12, worker: undefined, nativeName: 'app-2', edgeOnWorker: true });
-    if (native === undefined || !isNodeContainerFunction(native.built.spec))
-      throw new Error('No native artifact was produced');
+    }).toStrictEqual({ version: 12, worker: undefined, nativeName: 'app-2', edgeOnWorker: true });
+
+    const node = nativeArtifact(native?.built.spec);
     const archive = path.join(directory, 'native.tar.gz');
     await writeFile(
       archive,
-      await readFile(path.join(context.outDir, 'blobs', native.built.spec.artifact.sha256)),
+      await readFile(path.join(context.outDir, 'blobs', node.artifact.sha256)),
     );
     await mkdir('/bundle', { recursive: true });
     await execute('tar', ['--no-same-owner', '-xzf', archive, '-C', '/bundle'], { timeout: 5000 });
@@ -248,6 +262,7 @@ describe.skipIf(!ENABLED)('Linux native Function artifact integration', () => {
     };
 
     expect(selected.modules).toHaveLength(1);
+
     const instrumentation = await execute(
       process.execPath,
       [
@@ -259,6 +274,7 @@ describe.skipIf(!ENABLED)('Linux native Function artifact integration', () => {
     );
 
     expect(instrumentation.stdout.trim()).toBe('["host","project"]');
+
     child = spawn(process.execPath, ['/bundle/upwind/server.mjs'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
@@ -266,12 +282,13 @@ describe.skipIf(!ENABLED)('Linux native Function artifact integration', () => {
         ARKOR_NODE_RUNTIME: JSON.stringify({
           v: 1,
           deploymentId: manifest.deploymentId,
-          functionName: native.name,
+          functionName: native?.name,
           controlToken: CONTROL,
           capabilities: { services: {} },
         }),
       },
     });
+
     await expect
       .poll(
         async () => {
@@ -291,6 +308,7 @@ describe.skipIf(!ENABLED)('Linux native Function artifact integration', () => {
         { timeout: 15_000, interval: 100 },
       )
       .toBe(200);
+
     const response = await fetch(ADDRESS, {
       headers: {
         'x-upwind-control-token': CONTROL,
@@ -303,7 +321,8 @@ describe.skipIf(!ENABLED)('Linux native Function artifact integration', () => {
       status: response.status,
       body: await response.text(),
       dist: response.headers.get('x-native-dist'),
-    }).toEqual({ status: 200, body: 'native-function-real', dist: '/bundle/project/.next' });
+    }).toStrictEqual({ status: 200, body: 'native-function-real', dist: '/bundle/project/.next' });
+
     const other = await fetch(ADDRESS, {
       headers: {
         'x-upwind-control-token': CONTROL,
@@ -313,6 +332,7 @@ describe.skipIf(!ENABLED)('Linux native Function artifact integration', () => {
     });
 
     expect(other.status).toBe(421);
+
     await other.body?.cancel();
   }, 90_000);
 });

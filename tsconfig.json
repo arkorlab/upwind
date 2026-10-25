@@ -5,5 +5,12 @@
     "types": ["node"],
     "allowImportingTsExtensions": true
   },
-  "include": ["eslint.config.ts", "knip.config.ts", "vitest.config.ts", "types/**/*.d.ts"]
+  "include": [
+    "eslint.config.ts",
+    "knip.config.ts",
+    "vitest.config.ts",
+    "types/**/*.d.ts",
+    "tools/native-addon-next-ci.mts",
+    "tools/native-addon-next-artifact.mts"
+  ]
 }

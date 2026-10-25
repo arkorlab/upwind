@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const transport = vi.hoisted(() => ({ fetch: vi.fn<typeof fetch>() }));
-vi.mock('../src/cache/native.ts', () => ({ nativeFetch: transport.fetch }));
+vi.mock(import('../src/cache/native.ts'), () => ({ nativeFetch: transport.fetch }));
 
 import {
   createNodeFunctionEnv,
@@ -30,7 +30,45 @@ const config = {
   },
 };
 
-describe('Node delegated bindings', () => {
+describe('node delegated bindings', () => {
+  it('omits the private bootstrap payload from an application environment snapshot', () => {
+    vi.stubEnv('ARKOR_NODE_RUNTIME', JSON.stringify(config));
+    try {
+      const env = createNodeFunctionEnv(config);
+      const dump = JSON.stringify(env);
+
+      expect(Object.hasOwn(env, 'ARKOR_NODE_RUNTIME')).toBe(false);
+      expect(dump.includes(config.controlToken)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(['gzip', 'br'])(
+    'normalizes decoded %s capability responses with one native fetch',
+    async (encoding) => {
+      transport.fetch.mockClear();
+      transport.fetch.mockResolvedValueOnce(
+        new Response('decoded capability', {
+          headers: { 'content-encoding': encoding, 'content-length': '123', 'x-origin': 'kept' },
+        }),
+      );
+      const result = await nodeCapabilityFetcher(config.capabilities.cacheWrite).fetch(
+        'http://cache.test/value',
+      );
+
+      expect(transport.fetch).toHaveBeenCalledTimes(1);
+      expect({
+        encoding: result.headers.get('content-encoding'),
+        length: result.headers.get('content-length'),
+        origin: result.headers.get('x-origin'),
+      }).toStrictEqual({ encoding: null, length: null, origin: 'kept' });
+      await expect(result.text()).resolves.toBe('decoded capability');
+
+      transport.fetch.mockClear();
+    },
+  );
+
   it('keeps a double-slash service path on the sealed broker origin with body and sanitized headers', async () => {
     transport.fetch.mockClear();
     transport.fetch.mockResolvedValueOnce(new Response('sealed'));
@@ -54,7 +92,7 @@ describe('Node delegated bindings', () => {
       control: forwarded.headers.get('x-upwind-control-token'),
       custom: forwarded.headers.get('x-custom'),
       redirect: options?.redirect,
-    }).toEqual({
+    }).toStrictEqual({
       origin: config.capabilities.services.SEARCH,
       path: '//attacker.example/path',
       query: '?q=1',
@@ -80,7 +118,7 @@ describe('Node delegated bindings', () => {
     expect({
       fetch: typeof (env['_API'] as { fetch: unknown }).fetch,
       resources: env['ARKOR_RESOURCES'],
-    }).toEqual({ fetch: 'function', resources: '[{"name":"_API","type":"service"}]' });
+    }).toStrictEqual({ fetch: 'function', resources: '[{"name":"_API","type":"service"}]' });
   });
 
   it.each(['__proto__', 'constructor', 'prototype', 'ARKOR_CACHE', 'NEXT_DEPLOYMENT_ID'])(
@@ -106,7 +144,7 @@ describe('Node delegated bindings', () => {
       monitorToken: env['ARKOR_MONITOR_TOKEN'],
       resources: env['ARKOR_RESOURCES'],
       service: typeof (env['SEARCH'] as { fetch: unknown }).fetch,
-    }).toEqual({
+    }).toStrictEqual({
       deployment: 'synthetic-deployment',
       cacheToken: 'delegated',
       monitorToken: 'delegated',
@@ -119,7 +157,7 @@ describe('Node delegated bindings', () => {
     const withoutCache = { ...config, capabilities: { services: {} } };
     const env = createNodeFunctionEnv(parseNodeRuntimeConfiguration(JSON.stringify(withoutCache)));
 
-    expect({ write: env['ARKOR_CACHE'], read: env['ARKOR_CACHE_READ'] }).toEqual({
+    expect({ write: env['ARKOR_CACHE'], read: env['ARKOR_CACHE_READ'] }).toStrictEqual({
       write: undefined,
       read: undefined,
     });
@@ -170,7 +208,7 @@ describe('Node delegated bindings', () => {
       control: request.headers.get('x-upwind-control-token'),
       custom: request.headers.get('x-custom'),
       redirect: options?.redirect,
-    }).toEqual({
+    }).toStrictEqual({
       url: 'http://eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.arkor.internal/items?q=1',
       method: 'POST',
       body: 'query',
@@ -179,6 +217,6 @@ describe('Node delegated bindings', () => {
       custom: 'kept',
       redirect: 'manual',
     });
-    expect(await result.text()).toBe('service');
+    await expect(result.text()).resolves.toBe('service');
   });
 });

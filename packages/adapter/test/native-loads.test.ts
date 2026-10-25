@@ -41,7 +41,9 @@ describe('retained native capability proof', () => {
   let binary: string;
 
   beforeEach(async () => {
-    directory = await realpath(await mkdtemp(path.join(tmpdir(), 'upwind-native-load-proof-')));
+    const prefix = path.join(tmpdir(), 'upwind-native-load-proof-');
+    const temporary = await mkdtemp(prefix);
+    directory = await realpath(temporary);
     entry = path.join(directory, 'entry.cjs');
     binary = path.join(directory, 'addon.node');
     // These bytes are never imported or executed; this suite only bundles and audits source.
@@ -59,33 +61,29 @@ describe('retained native capability proof', () => {
   async function bundled(source: string, traces?: readonly NativeAddonEntryTrace[]) {
     await writeFile(entry, source);
     const proof = nativeLoadsPlugin(traces ?? [{ id: '/native', assets: { entry, binary } }]);
-    const build = await rolldown({
+    await using build = await rolldown({
       input: entry,
       platform: 'neutral',
       plugins: [proof.plugin],
       external: ['node:path', 'path'],
     });
-    try {
-      const output = await build.generate({ format: 'cjs', exports: 'auto' });
-      const chunk = output.output.find((item): item is OutputChunk => item.type === 'chunk');
-      if (chunk === undefined) throw new Error('The authored fixture produced no chunk');
-      return { chunk, loads: await proof.retained(chunk) };
-    } finally {
-      await build.close();
-    }
+    const output = await build.generate({ format: 'cjs', exports: 'auto' });
+    const chunk = output.output.find((item): item is OutputChunk => item.type === 'chunk');
+    if (chunk === undefined) throw new Error('The authored fixture produced no chunk');
+    return { chunk, loads: await proof.retained(chunk) };
   }
 
   it('classifies a retained direct native load only for the same owning importer and binary', async () => {
     const { loads } = await bundled("module.exports = () => require('./addon.node');\n");
 
-    expect(loads).toEqual([{ kind: 'direct', importer: entry, binary, owners: ['/native'] }]);
+    expect(loads).toStrictEqual([{ kind: 'direct', importer: entry, binary, owners: ['/native'] }]);
   });
 
   it('does not route a dead native load or build-only trace to a Container', async () => {
     const dead = await bundled("if (false) require('./addon.node'); module.exports = 42;\n");
     const traced = await bundled('module.exports = 42;\n');
 
-    expect({ dead: dead.loads, traced: traced.loads }).toEqual({ dead: [], traced: [] });
+    expect({ dead: dead.loads, traced: traced.loads }).toStrictEqual({ dead: [], traced: [] });
   });
 
   it('leaves a guarded node-gyp-build fallback untouched when no trace names a native binary', async () => {
@@ -104,9 +102,9 @@ describe('retained native capability proof', () => {
       [{ id: '/wasm', assets: { entry } }],
     );
 
-    expect(loads).toEqual([]);
+    expect(loads).toStrictEqual([]);
     expect(chunk.code).not.toContain('__UPWIND_NATIVE_');
-    expect(() => auditFunction('app', { app: chunk.code }, dependencies(chunk))).not.toThrow();
+    expect(() => auditFunction('app', { app: chunk.code }, dependencies(chunk))).not.toThrow(Error);
   });
 
   it('refuses a guarded direct native import rather than choosing a backend from its fallback', async () => {
@@ -122,9 +120,9 @@ describe('retained native capability proof', () => {
       "const path=require('node:path'); try { process.dlopen(module,path.join(__dirname,'addon.node')); } catch {} module.exports={wasm:true};\n",
     );
 
-    expect(loads).toEqual([]);
+    expect(loads).toStrictEqual([]);
     expect(chunk.code).toContain('dlopen');
-    expect(() => auditFunction('app', { app: chunk.code }, dependencies(chunk))).not.toThrow();
+    expect(() => auditFunction('app', { app: chunk.code }, dependencies(chunk))).not.toThrow(Error);
   });
 
   it('refuses native attribution from an unrelated route trace', async () => {
@@ -141,7 +139,7 @@ describe('retained native capability proof', () => {
   it('leaves a generic dynamic loader unclassified and subject to the unchanged audit', async () => {
     const { chunk, loads } = await bundled('module.exports = (binary) => require(binary);\n');
 
-    expect(loads).toEqual([]);
+    expect(loads).toStrictEqual([]);
     expect(() => auditFunction('app', { app: chunk.code }, dependencies(chunk))).toThrow(
       AuditError,
     );
@@ -163,7 +161,7 @@ describe('retained native capability proof', () => {
       "const path = require('node:path'); process.dlopen(module, path.join(__dirname, 'addon.node')); module.exports = 42;\n",
     );
 
-    expect(loads).toEqual([{ kind: 'dlopen', importer: entry, binary, owners: ['/native'] }]);
+    expect(loads).toStrictEqual([{ kind: 'dlopen', importer: entry, binary, owners: ['/native'] }]);
   });
 
   it.each([
@@ -172,7 +170,7 @@ describe('retained native capability proof', () => {
   ])('never attributes a shadowed process or require binding to native Node', async (source) => {
     const { loads } = await bundled(source);
 
-    expect(loads).toEqual([]);
+    expect(loads).toStrictEqual([]);
   });
 
   it.each([
@@ -184,6 +182,7 @@ describe('retained native capability proof', () => {
   });
 
   it('recognizes the byte-pinned official bindings fixture only with the owned calling package binary', async () => {
+    // eslint-disable-next-line sonarjs/hashing -- SHA-1 identifies the pinned upstream Git blob, not an authentication digest.
     const blob = createHash('sha1')
       .update(`blob ${Buffer.byteLength(REVIEWED_BINDINGS)}\0`)
       .update(REVIEWED_BINDINGS)
@@ -203,8 +202,20 @@ describe('retained native capability proof', () => {
     ]);
 
     expect(blob).toBe('fd4a2e414af0b19ae18ef43baed3eaa37a918db5');
-    expect(loads).toEqual([
-      { kind: 'bindings', importer: entry, binary: selected, owners: ['/native'] },
+    expect(loads).toStrictEqual([
+      {
+        kind: 'bindings',
+        importer: entry,
+        binary: selected,
+        owners: ['/native'],
+        loaderSources: [
+          {
+            file: path.join(loader, 'index.js'),
+            gitBlob: blob,
+            sha256: createHash('sha256').update(REVIEWED_BINDINGS).digest('hex'),
+          },
+        ],
+      },
     ]);
   });
 
@@ -236,7 +247,7 @@ describe('retained native capability proof', () => {
     );
     const { chunk, loads } = await bundled("module.exports = require('bindings')('addon');\n");
 
-    expect(loads).toEqual([]);
+    expect(loads).toStrictEqual([]);
     expect(() => auditFunction('app', { app: chunk.code }, dependencies(chunk))).toThrow(
       AuditError,
     );

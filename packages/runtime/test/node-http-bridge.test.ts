@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IncomingMessage } from 'node:http';
+import { gzipSync } from 'node:zlib';
 
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
@@ -11,9 +12,35 @@ async function bodyOf(request: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString();
 }
 
-afterAll(closeNodeHttpBridge);
-
 describe('real Node HTTP bridge', () => {
+  afterAll(closeNodeHttpBridge);
+
+  it('preserves raw Node handler compression bytes and their wire headers', async () => {
+    const encoded = gzipSync('raw Node handler response');
+    const held: Promise<unknown>[] = [];
+    const response = await invokeNodeHandler({
+      request: new Request('https://example.test/compressed'),
+      requestMeta: {},
+      waitUntil: (promise) => {
+        held.push(promise);
+      },
+      handler: (_request, output) => {
+        output.setHeader('content-encoding', 'gzip');
+        output.setHeader('content-length', String(encoded.byteLength));
+        output.end(encoded);
+        return Promise.resolve();
+      },
+    });
+
+    expect({
+      encoding: response.headers.get('content-encoding'),
+      length: response.headers.get('content-length'),
+    }).toStrictEqual({ encoding: 'gzip', length: String(encoded.byteLength) });
+    expect(Buffer.from(await response.arrayBuffer())).toStrictEqual(encoded);
+
+    await Promise.all(held);
+  });
+
   it('closes the real handler server through a separately evaluated service module copy', async () => {
     vi.resetModules();
     const first = await import('../src/node-http-bridge.ts');
@@ -35,7 +62,7 @@ describe('real Node HTTP bridge', () => {
     });
 
     expect(first.invokeNodeHandler).not.toBe(second.invokeNodeHandler);
-    expect(await response.text()).toBe('separate module');
+    await expect(response.text()).resolves.toBe('separate module');
 
     await Promise.all(held);
     await second.closeNodeHttpBridge();
@@ -75,8 +102,8 @@ describe('real Node HTTP bridge', () => {
       },
     });
 
-    expect(await response.text()).toBe('written');
-    expect(observed).toEqual([
+    await expect(response.text()).resolves.toBe('written');
+    expect(observed).toStrictEqual([
       {
         scope: 'request-A',
         url: '/rewritten?from=action',
@@ -85,14 +112,14 @@ describe('real Node HTTP bridge', () => {
         metadata: { synthetic: true },
       },
     ]);
-    expect(response.headers.getSetCookie()).toEqual(['first=1; Path=/', 'second=2; Path=/']);
+    expect(response.headers.getSetCookie()).toStrictEqual(['first=1; Path=/', 'second=2; Path=/']);
     expect(response.headers.get('location')).toBe('/last');
 
     await Promise.all(held);
   });
 
   it('delivers the first body bytes before the handler and its mutation task finish', async () => {
-    const release = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<undefined>();
     const held: Promise<unknown>[] = [];
     let completed = false;
     const response = await invokeNodeHandler({
@@ -116,7 +143,7 @@ describe('real Node HTTP bridge', () => {
       expect(completed).toBe(false);
       expect(held).toHaveLength(1);
     } finally {
-      release.resolve();
+      release.resolve(undefined);
     }
     const last = await reader.read();
 
@@ -151,11 +178,11 @@ describe('real Node HTTP bridge', () => {
       handler: () => Promise.resolve(),
     });
 
-    expect({ status: failed.status, body: await failed.text() }).toEqual({
+    expect({ status: failed.status, body: await failed.text() }).toStrictEqual({
       status: 503,
       body: 'route fallback',
     });
-    expect({ status: captured.status, body: await captured.text() }).toEqual({
+    expect({ status: captured.status, body: await captured.text() }).toStrictEqual({
       status: 204,
       body: '',
     });
@@ -164,7 +191,7 @@ describe('real Node HTTP bridge', () => {
   });
 
   it('retains an accepted mutation when its response consumer disconnects', async () => {
-    const release = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<undefined>();
     const held: Promise<unknown>[] = [];
     let committed = false;
     const response = await invokeNodeHandler({
@@ -187,7 +214,7 @@ describe('real Node HTTP bridge', () => {
       expect(committed).toBe(false);
       expect(held).toHaveLength(1);
     } finally {
-      release.resolve();
+      release.resolve(undefined);
     }
     await Promise.all(held);
 

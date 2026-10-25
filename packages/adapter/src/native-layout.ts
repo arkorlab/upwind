@@ -6,7 +6,6 @@ import {
   NATIVE_FUNCTION_BUNDLE_VERSION,
   NATIVE_FUNCTION_SPLIT_BUNDLE_VERSION,
 } from '@stayingupwind/core/bundle';
-import { INSTRUMENTATION_HOOK_FILENAME } from 'next/dist/lib/constants.js';
 
 import {
   appFunctionInput,
@@ -19,6 +18,7 @@ import {
 } from './app-functions.ts';
 import type { RouteCode } from './collect.ts';
 import { AuditError } from './dependencies.ts';
+import { INSTRUMENTATION_NATIVE_OWNER } from './native-addon-entries.ts';
 import type { NativeLoad } from './native-loads.ts';
 import { buildNodeFunction } from './node-function.ts';
 import type { PlanBudget } from './plan.ts';
@@ -33,11 +33,11 @@ export function nativeRouteOwners(
   const ids = new Set(routes.map((route) => route.id));
   const native = new Set(loads.flatMap((load) => load.owners));
   if (
-    [...native].some((id) => !ids.has(id) && id !== INSTRUMENTATION_HOOK_FILENAME && !every.has(id))
+    [...native].some((id) => !ids.has(id) && id !== INSTRUMENTATION_NATIVE_OWNER && !every.has(id))
   ) {
     throw new AuditError('A native capability has an unknown Function owner');
   }
-  if ([...native].some((id) => id === INSTRUMENTATION_HOOK_FILENAME || every.has(id))) return ids;
+  if ([...native].some((id) => id === INSTRUMENTATION_NATIVE_OWNER || every.has(id))) return ids;
   const files = new Set(
     routes
       .filter((route) => native.has(route.id))
@@ -66,7 +66,11 @@ export async function nativeFunctionLayout<
 >(
   context: FunctionsContext,
   manifest: M,
-  options: { readonly budget: PlanBudget | undefined; readonly loads: readonly NativeLoad[] },
+  options: {
+    readonly budget: PlanBudget | undefined;
+    readonly loads: readonly NativeLoad[];
+    readonly weighOnly: boolean;
+  },
 ): Promise<AppFunctions<M>> {
   const every = everyFunction(context.ctx.config.basePath);
   const native = nativeRouteOwners(context.routes, options.loads, every);
@@ -105,7 +109,12 @@ export async function nativeFunctionLayout<
     manifests: pieces.manifests,
     shipped: context.shipped.filter((blob) => carriesBlob(blob, workerIds, known)),
   };
-  const planned = await layOutAppFunctions(workerContext, manifest, options.budget, false);
+  const planned = await layOutAppFunctions(
+    workerContext,
+    manifest,
+    options.budget,
+    options.weighOnly,
+  );
   if (planned.built.length + 1 > MAX_APP_FUNCTIONS)
     throw new AuditError('Native Function placement exceeds the app Function limit');
   const name = `app-${planned.built.length + 1}`;
@@ -133,7 +142,12 @@ export async function nativeFunctionLayout<
     );
     built.push({
       name: worker.name,
-      built: await buildAppFunction(context, json, { name: worker.name, routes: held }, false),
+      built: await buildAppFunction(
+        context,
+        json,
+        { name: worker.name, routes: held },
+        options.weighOnly,
+      ),
     });
   }
   const held = new Set(
