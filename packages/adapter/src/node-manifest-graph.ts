@@ -7,6 +7,7 @@ import { beneath } from './build-paths.ts';
 import { jsLiteral } from './codegen.ts';
 import { AuditError } from './dependencies.ts';
 import type { EntryModule } from './function.ts';
+import type { NativeAddonEntryTrace } from './native-addons.ts';
 import { manifestRuntimeAssetPrefix } from './node-asset-prefix.ts';
 import {
   assertNodeManifestConsumer,
@@ -22,6 +23,12 @@ import {
   ROUTE_EXPORTS,
   type ManifestProtectedKind,
 } from './node-manifest-framework.ts';
+import {
+  nodeManifestNormalization,
+  type NodeManifestNormalization,
+} from './node-manifest-normalization.ts';
+import { certifyNodeManifestRuntimeCallers } from './node-manifest-runtime-callers.ts';
+export type { NodeManifestNormalization } from './node-manifest-normalization.ts';
 import {
   assertNodeManifestTemplateConsumer,
   type NodeManifestTemplateImport,
@@ -61,21 +68,12 @@ export interface ManifestModuleGraph {
   readonly retained: ReadonlySet<string>;
   readonly rendered?: ReadonlyMap<string, string> | undefined;
 }
-export interface NodeManifestNormalization {
-  readonly entries: readonly {
-    readonly id: string;
-    readonly filePath: string;
-    readonly canonicalFilePath: string;
-  }[];
-  readonly distDir: string;
-  readonly canonicalDistDir: string;
-  readonly runtimeRootDir?: string;
-}
 export interface ManifestGraphInput {
   readonly distDir: string;
   readonly rootDir?: string;
   readonly clientAssetPrefix?: string | undefined;
   readonly entries?: readonly EntryModule[] | undefined;
+  readonly entryTraces?: readonly NativeAddonEntryTrace[] | undefined;
   readonly runtimeManifest?: string | undefined;
   readonly instrumentation?: string | undefined;
   readonly analysisEntry?: string | undefined;
@@ -145,26 +143,6 @@ function metadataEntries(input: ManifestGraphInput): readonly Record<string, unk
   const entries: unknown[] = value[ENTRYPOINTS];
   if (entries.some((entry) => !record(entry))) refuse(OPAQUE_ROUTE_METADATA);
   return entries.filter((entry) => record(entry));
-}
-async function normalizationOf(input: ManifestGraphInput): Promise<NodeManifestNormalization> {
-  if (input.entries === undefined || input.entries.length === 0)
-    refuse('missing sealed entry inventory');
-  const entries: NodeManifestNormalization['entries'][number][] = [];
-  const ids = new Set<string>();
-  const paths = new Set<string>();
-  for (const entry of input.entries) {
-    const canonicalFilePath = await realpath(entry.filePath);
-    if (ids.has(entry.id) || paths.has(canonicalFilePath)) refuse('duplicate sealed route');
-    ids.add(entry.id);
-    paths.add(canonicalFilePath);
-    entries.push(Object.freeze({ id: entry.id, filePath: entry.filePath, canonicalFilePath }));
-  }
-  const distDir = path.resolve(input.distDir);
-  return Object.freeze({
-    entries: Object.freeze(entries),
-    distDir,
-    canonicalDistDir: await realpath(distDir),
-  });
 }
 function sealedRoutes(
   input: ManifestGraphInput,
@@ -266,6 +244,7 @@ class ConsumerGraph {
   private readonly graph: ManifestModuleGraph;
   private readonly root: string;
   private readonly routes: ReadonlyMap<string, SealedRoute>;
+  private readonly normalization: NodeManifestNormalization;
   private readonly files = new Map<string, ManifestGraphFile>();
   private readonly complete = new Set<string>();
   private readonly visiting = new Set<string>();
@@ -278,12 +257,16 @@ class ConsumerGraph {
     input: ManifestGraphInput,
     graph: ManifestModuleGraph,
     root: string,
-    routes: ReadonlyMap<string, SealedRoute>,
+    sealed: {
+      readonly routes: ReadonlyMap<string, SealedRoute>;
+      readonly normalization: NodeManifestNormalization;
+    },
   ) {
     this.input = input;
     this.graph = graph;
     this.root = root;
-    this.routes = routes;
+    this.routes = sealed.routes;
+    this.normalization = sealed.normalization;
   }
 
   private terminal(parent: string, child: ProtectedModule, code: string): boolean {
@@ -362,12 +345,22 @@ class ConsumerGraph {
     const entries = [...this.routes.values()].filter((route) => route.kind === kind);
     const producerKind =
       child.kind === APP_PAGE_CLASS ? APP_PAGE_CLASS : TURBOPACK_PRODUCER_KINDS[kind];
+    const runtimeCallers = await certifyNodeManifestRuntimeCallers({
+      rootDir: this.input.rootDir,
+      distDir,
+      entries: this.normalization.entries,
+      routes: [...this.routes.values()],
+      entryTraces: this.input.entryTraces ?? [],
+      sources,
+      retained: this.graph.retained,
+    });
     const proof = await proveNodeManifestTurbopackConsumers({
       rootDir,
       distDir,
       assetPrefix: manifestRuntimeAssetPrefix(this.input.clientAssetPrefix, kind),
       sources,
       entries,
+      runtimeCallers,
       producer: { id: child.id, file: producer.file, sha256: producer.sha256, kind: producerKind },
     });
     // The source helper's boot terminals are not proof terminals: every actual physical
@@ -494,9 +487,9 @@ export async function proveManifestConsumerGraph(
   readonly pages: readonly string[];
   readonly approvedCompilerSources: readonly ManifestGraphFile[];
 }> {
-  const normalization = await normalizationOf(input);
+  const normalization = await nodeManifestNormalization(input);
   const routes = sealedRoutes(input, normalization);
-  const consumers = new ConsumerGraph(input, graph, evaluator.root, routes);
+  const consumers = new ConsumerGraph(input, graph, evaluator.root, { routes, normalization });
   await consumers.visit({ id: evaluator.id, relative: EVALUATOR, kind: 'evaluator' });
   const runtimeRootDir = consumers.runtimeRootDir();
   const sealedNormalization =

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { appEntrySource } from '../src/app-entry.ts';
 import { jsLiteral } from '../src/codegen.ts';
+import type { NativeAddonEntryTrace } from '../src/native-addons.ts';
 import { proveNodeManifests } from '../src/node-manifest-proof.ts';
 import { projectedTemplateFixture } from './fixtures/node-manifest-turbopack-template.ts';
 
@@ -109,6 +110,7 @@ async function fixture(directory: string) {
   const importers = new Map<string, string[]>([...sources.keys()].map((id) => [id, []]));
   for (const [from, edges] of imports)
     for (const edge of edges) importers.get(edge.target)?.push(from);
+  const entryTraces: NativeAddonEntryTrace[] = [{ id: '/native', assets: { manifest } }];
   return {
     runtime,
     chunk,
@@ -125,7 +127,7 @@ async function fixture(directory: string) {
       runtimeManifest: JSON.stringify({
         entrypoints: [{ id: '/native', kind: 'app-page', pathname: '/native' }],
       }),
-      entryTraces: [{ id: '/native', assets: { manifest } }],
+      entryTraces,
       manifests: [
         {
           name: '.next/server/app/native/page_client-reference-manifest.json',
@@ -316,6 +318,34 @@ async function compilerPrefix(
   own.sources.set(own.runtime, { file: own.runtime, sha256: digest(changed) });
 }
 
+async function sharedPagesCaller(own: Awaited<ReturnType<typeof fixture>>, name = '_app') {
+  const file = path.join(own.input.distDir, `server/pages/${name}.js`);
+  const code = `var R=require("../chunks/[turbopack]_runtime.js")("server/pages/${name}.js");R.c("server/chunks/app.js");module.exports=R.m(3).exports;`;
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, code);
+  own.sources.set(file, { file, sha256: digest(code) });
+  own.imports.set(file, [{ specifier: '../chunks/[turbopack]_runtime.js', target: own.runtime }]);
+  own.graph.importers.set(file, []);
+  own.graph.importers.get(own.runtime)?.push(file);
+  own.graph.retained.add(file);
+  const chunk = (await readFile(own.chunk, 'utf8')).replace(
+    'module.exports=[',
+    'module.exports=[3,((ctx)=>{ctx.v(function Shared(){return null;});}),',
+  );
+  await writeFile(own.chunk, chunk);
+  own.sources.set(own.chunk, { file: own.chunk, sha256: digest(chunk) });
+  return { file, assets: { [path.relative(own.input.rootDir, file)]: file } };
+}
+
+async function unownedSharedFixture(directory: string, mode: string) {
+  const own = await templateFixture(directory, mode === 'API owner' ? 'pages-api' : 'pages');
+  const shared = await sharedPagesCaller(own, mode === 'trace-only _error' ? '_error' : '_app');
+  if (mode !== 'no trace owner')
+    own.input.entryTraces = [{ id: own.input.entries[0]!.id, assets: shared.assets }];
+  if (mode === 'unretained caller') own.graph.retained.delete(shared.file);
+  return own;
+}
+
 describe('sealed Turbopack producers through the real manifest proof entry', () => {
   let directory: string;
 
@@ -328,6 +358,34 @@ describe('sealed Turbopack producers through the real manifest proof entry', () 
   afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
   });
+
+  it.each(['_app', '_document'])(
+    'admits trace-owned retained Pages %s without extending route or compiler authority',
+    async (name) => {
+      const own = await templateFixture(directory, 'pages');
+      const shared = await sharedPagesCaller(own, name);
+      own.input.entryTraces = [{ id: own.input.entries[0]!.id, assets: shared.assets }];
+      const proof = await proveNodeManifests(own.input, own.graph);
+
+      expect(proof.normalization?.entries.map((entry) => entry.filePath)).toStrictEqual([
+        own.entry,
+      ]);
+      expect(proof.approvedCompilerSources).toStrictEqual([own.sources.get(own.runtime)]);
+      expect(proof.codeSources.some((source) => source.file === shared.file)).toBe(true);
+      expect(proof.inspectionCode(shared.file, 'eval("unproved")')).toBe('eval("unproved")');
+    },
+  );
+
+  it.each(['no trace owner', 'unretained caller', 'trace-only _error', 'API owner'] as const)(
+    'preserves all-source runtime caller refusal for %s',
+    async (mode) => {
+      const own = await unownedSharedFixture(directory, mode);
+
+      await expect(proveNodeManifests(own.input, own.graph)).rejects.toThrow(
+        'unknown runtime API caller',
+      );
+    },
+  );
 
   it.each(PREFIX_PROFILES)(
     'propagates trusted client config through the complete %s manifest proof',

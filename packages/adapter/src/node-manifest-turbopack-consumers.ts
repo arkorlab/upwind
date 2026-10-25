@@ -11,6 +11,11 @@ import {
   type NodeManifestConsumerImport,
 } from './node-manifest-consumers.ts';
 import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
+import {
+  proveNodeManifestRuntimeCallers,
+  type NodeManifestRuntimeCallers,
+  type NodeManifestRuntimeCallerProof,
+} from './node-manifest-runtime-callers.ts';
 import type { NodeManifestTemplateImport } from './node-manifest-templates.ts';
 import {
   nodeManifestTurbopackEntryGraph,
@@ -29,6 +34,7 @@ export interface NodeManifestTurbopackConsumerInput {
   readonly assetPrefix?: string | undefined;
   readonly sources: readonly NodeManifestTurbopackGraphFile[];
   readonly entries: readonly NodeManifestTurbopackSealedEntry[];
+  readonly runtimeCallers?: NodeManifestRuntimeCallers | undefined;
   readonly producer: {
     readonly id: string;
     readonly file: string;
@@ -82,6 +88,7 @@ class TurbopackConsumers {
   private readonly runtimeConsumers = new Set<string>();
   private readonly strictFactories = new Map<string, NodeManifestTurbopackGraphFactory>();
   private readonly certifiedFactories = new Map<string, NodeManifestAppPageFactoryProof>();
+  private readonly callerProof: NodeManifestRuntimeCallerProof | undefined;
 
   constructor(input: NodeManifestTurbopackConsumerInput) {
     this.input = input;
@@ -115,6 +122,15 @@ class TurbopackConsumers {
         refuse('ambiguous sealed factory route');
       this.routes.set(terminal, graph.entry);
     }
+    this.callerProof =
+      input.runtimeCallers === undefined
+        ? undefined
+        : proveNodeManifestRuntimeCallers({
+            inventory: input.runtimeCallers,
+            graphs: this.graphs,
+            sources: input.sources,
+            distDir: input.distDir,
+          });
     this.assertPhysicalCallers();
   }
 
@@ -174,7 +190,10 @@ class TurbopackConsumers {
   private assertPhysicalCallers(): void {
     const tables = new Set([...this.factories.values()].map((factory) => factory.physicalId));
     const runtimes = new Set(this.graphs.map((graph) => graph.runtimeId));
-    const boots = new Set(this.graphs.map((graph) => graph.physicalId));
+    const boots = new Set([
+      ...this.graphs.map((graph) => graph.physicalId),
+      ...(this.callerProof?.callers.map((caller) => caller.id) ?? []),
+    ]);
     for (const source of this.input.sources) {
       for (const edge of source.imports) {
         if (tables.has(edge.target) && !runtimes.has(source.id))
@@ -184,6 +203,18 @@ class TurbopackConsumers {
         if (edge.target === this.input.producer.id && !tables.has(source.id))
           refuse('uncertified physical producer caller');
       }
+    }
+  }
+
+  private assertAdditionalCallerRoles(): void {
+    if (this.callerProof === undefined) return;
+    const protectedBoots = new Set(this.graphs.map((graph) => graph.physicalId));
+    for (const caller of this.callerProof.callers) {
+      if (protectedBoots.has(caller.id)) continue;
+      if (
+        caller.invoked.some((id) => this.complete.has(id) || this.complete.has(this.unwrapped(id)))
+      )
+        refuse('additional runtime caller consumes protected route authority');
     }
   }
 
@@ -360,25 +391,7 @@ class TurbopackConsumers {
     this.complete.set(id, role);
   }
 
-  async prove(): Promise<NodeManifestTurbopackConsumerProof> {
-    const producer = this.input.sources.find((source) => source.id === this.input.producer.id);
-    if (
-      producer?.file !== this.input.producer.file ||
-      producer.source.sha256 !== this.input.producer.sha256
-    )
-      refuse('producer source binding');
-    await this.visit(
-      this.input.producer.id,
-      this.input.producer.kind === APP_PAGE_CLASS ? 'class' : 'factory',
-    );
-    for (const factory of this.factories.values()) {
-      if (
-        factory.projection.boundRuntimeInputs.length > 0 &&
-        !this.runtimeConsumers.has(factory.id)
-      )
-        refuse('bound runtime callback escapes a sealed consumer');
-    }
-    if (this.terminals.size === 0) refuse('missing protected SDK route terminal');
+  private proofFiles(): NodeManifestTurbopackConsumerProof['files'] {
     const files = new Map<string, { readonly file: string; readonly sha256: string }>();
     for (const graph of this.graphs) {
       const ids = new Set([
@@ -391,9 +404,36 @@ class TurbopackConsumers {
           files.set(source.file, { file: source.file, sha256: source.source.sha256 });
       }
     }
+    if (this.callerProof !== undefined) {
+      for (const caller of this.callerProof.callers)
+        files.set(caller.file, { file: caller.file, sha256: caller.sha256 });
+    }
+    return [...files.values()];
+  }
+
+  async prove(): Promise<NodeManifestTurbopackConsumerProof> {
+    const producer = this.input.sources.find((source) => source.id === this.input.producer.id);
+    if (
+      producer?.file !== this.input.producer.file ||
+      producer.source.sha256 !== this.input.producer.sha256
+    )
+      refuse('producer source binding');
+    await this.visit(
+      this.input.producer.id,
+      this.input.producer.kind === APP_PAGE_CLASS ? 'class' : 'factory',
+    );
+    this.assertAdditionalCallerRoles();
+    for (const factory of this.factories.values()) {
+      if (
+        factory.projection.boundRuntimeInputs.length > 0 &&
+        !this.runtimeConsumers.has(factory.id)
+      )
+        refuse('bound runtime callback escapes a sealed consumer');
+    }
+    if (this.terminals.size === 0) refuse('missing protected SDK route terminal');
     return {
       terminals: [...this.terminals.values()],
-      files: [...files.values()],
+      files: this.proofFiles(),
       requiresSdkNormalization: true,
     };
   }

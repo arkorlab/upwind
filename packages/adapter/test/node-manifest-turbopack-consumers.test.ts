@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { jsLiteral } from '../src/codegen.ts';
+import { certifyNodeManifestRuntimeCallers } from '../src/node-manifest-runtime-callers.ts';
 import {
   proveNodeManifestTurbopackConsumers,
   type NodeManifestTurbopackConsumerInput,
@@ -101,7 +102,106 @@ function runtimeSelfEdge(
   };
 }
 
+async function additionalCaller(input: NodeManifestTurbopackConsumerInput, exportedId = 3) {
+  const file = `${DIST}/server/pages/other.js`;
+  const changed = replaceFile(input, CHUNK, (code) =>
+    code.replace('module.exports=[', 'module.exports=[3,((ctx)=>{ctx.v(42);}),'),
+  );
+  const sources = [
+    ...changed.sources,
+    {
+      id: file,
+      file,
+      source: source(
+        `var R=require("../chunks/[turbopack]_runtime.js")("server/pages/other.js");R.c("server/chunks/app.js");module.exports=R.m(${exportedId}).exports;`,
+      ),
+      imports: [{ specifier: '../chunks/[turbopack]_runtime.js', target: RUNTIME }],
+    },
+  ];
+  const inventory = {
+    rootDir: input.rootDir,
+    distDir: input.distDir,
+    entries: [
+      { id: '/native', canonicalFilePath: ENTRY },
+      { id: '/other', canonicalFilePath: file },
+    ],
+    routes: [],
+    entryTraces: [],
+    sources,
+    retained: new Set(sources.map((item) => item.id)),
+  };
+  return {
+    ...changed,
+    sources,
+    inventory,
+    runtimeCallers: await certifyNodeManifestRuntimeCallers(inventory),
+  };
+}
+
 describe('next Turbopack protected producer chains', () => {
+  it('seals an owned boot of another route kind without adding protected terminals or compiler authority', async () => {
+    const input = await additionalCaller(await fixture());
+    const proof = await proveNodeManifestTurbopackConsumers(input);
+
+    expect(proof.terminals).toStrictEqual([
+      { id: ENTRY, file: ENTRY, page: '/native/page', pathname: '/native' },
+    ]);
+    expect(proof.files.map((file) => file.file)).toStrictEqual([
+      ENTRY,
+      RUNTIME,
+      CHUNK,
+      `${DIST}/server/pages/other.js`,
+    ]);
+  });
+
+  it.each(['unowned', 'unretained'] as const)(
+    'still refuses an %s physical runtime caller',
+    async (mode) => {
+      const input = await additionalCaller(await fixture());
+      const inventory = {
+        ...input.inventory,
+        entries: input.inventory.entries.slice(0, 1),
+        retained:
+          mode === 'unretained' ? new Set([CHUNK, ENTRY, RUNTIME]) : input.inventory.retained,
+      };
+      const runtimeCallers = await certifyNodeManifestRuntimeCallers({
+        ...inventory,
+        entries: mode === 'unretained' ? input.inventory.entries : inventory.entries,
+      });
+
+      await expect(
+        proveNodeManifestTurbopackConsumers({ ...input, runtimeCallers }),
+      ).rejects.toThrow('unknown runtime API caller');
+    },
+  );
+
+  it.each([1, 2])('does not let a caller-only boot evaluate protected module %i', async (id) => {
+    const input = await additionalCaller(await fixture(), id);
+
+    await expect(proveNodeManifestTurbopackConsumers(input)).rejects.toThrow(
+      'additional runtime caller consumes protected route authority',
+    );
+  });
+
+  it('rejects copied inventories and caller source changes before granting a runtime edge', async () => {
+    const input = await additionalCaller(await fixture());
+    const changed = replaceFile(
+      input,
+      `${DIST}/server/pages/other.js`,
+      (code) => `${code}unknown();`,
+    );
+
+    await expect(
+      proveNodeManifestTurbopackConsumers({
+        ...input,
+        runtimeCallers: { ...input.runtimeCallers },
+      }),
+    ).rejects.toThrow('uncertified caller inventory');
+    await expect(proveNodeManifestTurbopackConsumers(changed)).rejects.toThrow(
+      'caller source binding',
+    );
+  });
+
   it('closes the complete consumer proof with only the sealed runtime exact self-edge added', async () => {
     const input = await fixture();
     const expected = await proveNodeManifestTurbopackConsumers(input);
