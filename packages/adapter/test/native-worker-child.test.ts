@@ -135,6 +135,43 @@ describe('native child constructor classification', () => {
     },
   );
 
+  it.each([
+    "import threads from 'node:worker_threads';const getWorker=()=>threads.Worker;export const worker=new (getWorker())('source',{eval:true});",
+    "import {Worker} from 'node:worker_threads';function getWorker(){return Worker;}export const worker=new (getWorker())('source',{eval:true});",
+    "const threads=require('node:worker_threads');exports.getWorker=function(){return threads.Worker;};",
+    "const {Worker:Thread}=await import('worker_threads');export const getWorker=()=>Thread;",
+    "const threads=await import('node:worker_threads');export function getNamespace(){return threads;}",
+    "export const getNamespace=()=>import('node:worker_threads');",
+    "import threads from 'node:worker_threads';export function getWorker(key){return threads[key];}",
+    "import threads from 'node:worker_threads';export function getWorker(){return threads[consume(threads)];}",
+    "import threads from 'node:worker_threads';export const getWorker=()=>threads[consume(threads)];",
+    "import threads from 'node:worker_threads';export async function getWorker(){return await threads[consume(threads)];}",
+    "export async function getWorker(){return (await import('node:worker_threads'))[consume()];}",
+  ])('refuses retained return-value escapes of known Worker capabilities: %s', async (source) => {
+    await expect(classify(source)).rejects.toThrow('unclassified owned native child');
+  });
+
+  it.each([
+    "import threads from 'node:worker_threads';export function getWorker(threads){return threads.Worker;}",
+    "import {Worker} from 'node:worker_threads';export const getWorker=(Worker)=>Worker;",
+    "import threads from 'node:worker_threads';export const getValue=()=>threads.isMainThread;",
+    "import threads from 'node:worker_threads';export function getChannel(){return threads.BroadcastChannel;}",
+    "import threads from 'node:worker_threads';const unused=()=>threads.Worker;export const safe=1;",
+    "import threads from 'node:worker_threads';function unused(){return threads.Worker;}export const safe=1;",
+    "import threads from 'node:worker_threads';function unused(){return threads[consume(threads)];}export const safe=1;",
+    "import threads from 'node:worker_threads';const unused=()=>threads[consume(threads)];export const safe=1;",
+    "import threads from 'node:worker_threads';async function unused(){return await threads[consume(threads)];}export const safe=1;",
+    "async function unused(){return (await import('node:worker_threads'))[consume()];}export const safe=1;",
+  ])('preserves shadows, selected values and pruned return escapes: %s', async (source) => {
+    await expect(classify(source)).resolves.toStrictEqual([]);
+  });
+
+  it('does not refuse a returned capability without an owned native binary', async () => {
+    const source = "import {Worker} from 'node:worker_threads';export const getWorker=()=>Worker;";
+
+    await expect(classify(source, false, false, false)).resolves.toStrictEqual([]);
+  });
+
   it('keeps the authored physical Node source unchanged after an analysis refusal', async () => {
     const source =
       "const threads=await import('node:worker_threads');export const value=Reflect.get(threads,'Worker');";

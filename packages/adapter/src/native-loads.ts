@@ -87,7 +87,12 @@ async function collectEdits(
 ): Promise<NativeEdit[]> {
   const edits: NativeEdit[] = [];
   for (const node of tree) {
-    if (node.type === 'CallExpression' || node.type === 'NewExpression') {
+    if (
+      node.type === 'CallExpression' ||
+      node.type === 'NewExpression' ||
+      node.type === 'ReturnStatement' ||
+      node.type === 'ArrowFunctionExpression'
+    ) {
       const child = await nativeWorkerEdit(node, worker);
       if (child !== undefined) {
         edits.push(child);

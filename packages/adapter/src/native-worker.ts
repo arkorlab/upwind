@@ -189,6 +189,24 @@ function invokedCapability(
   return undefined;
 }
 
+function capabilityReceiver(node: Node, context: WorkerContext): Node {
+  let receiver: Node | undefined;
+  if (node.type === 'MemberExpression') receiver = node.object;
+  else if (node.type === 'AwaitExpression') receiver = node.argument;
+  return receiver !== undefined && workerOrigin(receiver, context) !== undefined
+    ? capabilityReceiver(receiver, context)
+    : node;
+}
+
+function returnedCapability(node: Node, context: WorkerContext): Node | undefined {
+  let value: Node | undefined;
+  if (node.type === 'ReturnStatement') value = node.argument ?? undefined;
+  if (node.type === 'ArrowFunctionExpression' && node.expression) value = node.body;
+  return value !== undefined && workerOrigin(value, context) !== undefined
+    ? capabilityReceiver(value, context)
+    : undefined;
+}
+
 export async function nativeWorkerEdit(
   node: Node,
   context: {
@@ -200,11 +218,10 @@ export async function nativeWorkerEdit(
     markChild(binaries: readonly string[]): string;
   },
 ): Promise<NativeEdit | undefined> {
-  if (node.type !== 'CallExpression' && node.type !== 'NewExpression') return undefined;
-  const target = invokedCapability(node, {
-    bindings: context.bindings,
-    imports: workerImports(context.tree),
-  });
+  const capability = { bindings: context.bindings, imports: workerImports(context.tree) };
+  let target = returnedCapability(node, capability);
+  if (target === undefined && (node.type === 'CallExpression' || node.type === 'NewExpression'))
+    target = invokedCapability(node, capability);
   if (target === undefined) return undefined;
   const binaries = await ownedNativeFiles(context.importer, context.traces);
   if (binaries.length === 0) return undefined;
