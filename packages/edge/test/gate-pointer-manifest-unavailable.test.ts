@@ -134,7 +134,11 @@ type Case = (typeof CASES)[number];
 
 /** Each wire-contract variant is isolated from the fixture's other marker. */
 function pointerForMarker(pointer: EdgePointer, marker: Case['marker']): EdgePointer {
-  const selected = { ...pointer, selectedPolicy: 'builtin' as const };
+  const selected = {
+    ...pointer,
+    v: marker === 'hasGates' ? (2 as const) : (1 as const),
+    selectedPolicy: 'builtin' as const,
+  };
   Reflect.deleteProperty(selected, 'requiresGate');
   Reflect.deleteProperty(selected, 'hasGates');
   if (marker !== 'none') Reflect.set(selected, marker, true);

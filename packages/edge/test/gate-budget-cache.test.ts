@@ -188,7 +188,7 @@ async function routed(scenario: Scenario) {
     },
   };
   const pointer: EdgePointer = {
-    v: 1,
+    v: declared ? 2 : 1,
     projectId: 'site',
     originHost: 'site.example',
     mode: 'edge',

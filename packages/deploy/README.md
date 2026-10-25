@@ -39,6 +39,31 @@ step. It runs as a Worker or under Node.
 | `./fingerprint`  | A deployment's fingerprint, which the edge's deployment checks read                                         |
 | `./pointer`      | The pointer that has the edge serve a site from a deployment's manifest                                     |
 
+## Route-gated pointer compatibility
+
+A published manifest that declares route gates produces a version 2 pointer with `hasGates: true`.
+Ordinary and legacy ungated pointers remain version 1 with unchanged bytes. The pointer schema
+requires the version and marker together and retains its field schemas under `.shape`.
+
+An older reader rejects version 2 before routing the manifest or falling back to the application's
+Function. This protects a gated deployment when publishers move before readers, at the cost of an
+unavailable site on the old reader. It does not change pointer cache freshness or revoke an earlier
+ungated deployment while an edge still holds its earlier pointer. Roll out gate-capable readers
+first to preserve availability, and retain them while gated deployments are published.
+
+Hosts using the pure manifest modules must publish the same pointer boundary. A host copying
+`.shape` into its own schema also carries the version/marker consistency check: field schemas alone
+cannot retain an object refinement. Hosts whose pointers expose public service members require the
+new version if any reachable member is gated, and normalize a selected member's internal pointer
+to that member's gate requirement. Neither the bundle nor a one-reader probe proves a complete
+reader rollout. The consistency check runs when a pointer is parsed; it adds no capability request,
+authorization call or storage read.
+
+A legacy version 1 pointer carrying only `requiresGate: true` retains that independent marker and
+its fail-closed routing. It does not satisfy the version 2 contract: `hasGates: true` is still
+required there, and is forbidden on version 1. Existing publishers retain both markers when they
+publish a gated manifest as version 2.
+
 ## Prefetch service capabilities
 
 When supplying `prefetch` to `functionBindings`, also supply

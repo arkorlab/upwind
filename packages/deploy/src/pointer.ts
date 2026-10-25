@@ -57,7 +57,7 @@ export function edgePointerOf(
   now: number,
 ): Omit<EdgePointer, 'selectedPolicy'> {
   return {
-    v: 1,
+    v: payload.hasGates === true ? 2 : 1,
     projectId: site.projectId,
     originHost: site.originHost,
     mode: 'edge',
