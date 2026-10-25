@@ -108,7 +108,7 @@ async function warningsOf(
       );
     }
   }
-  if (settings.storage.length > 0) {
+  if (settings.storage.length > 0 && (build.bundle.cloudflareWorkflows?.length ?? 0) === 0) {
     warnings.push(
       `deploy.storage names ${settings.storage.join(', ')}, and a preview binds no storage yet: the Functions find none of it`,
     );
@@ -305,6 +305,7 @@ export async function runPreview(options: PreviewOptions, io: PreviewIo = {}): P
     hostnames: settings.hostnames,
     cspNonce: settings.cspNonce,
     scripts: await shippedStackScripts(),
+    ...((build.bundle.cloudflareWorkflows?.length ?? 0) > 0 && { storage: settings.localStorage }),
     log,
   };
   return options.check ? check(stackOptions, settings) : serve(stackOptions, settings, io);
