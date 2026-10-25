@@ -7,6 +7,7 @@ import { ownedNativeFiles } from './native-ownership.ts';
 
 type WorkerOrigin = 'constructor' | 'namespace' | 'module' | 'promise' | 'ambiguous';
 const IMPORTS = new WeakMap<readonly Node[], ReadonlyMap<Node, WorkerOrigin>>();
+const PROMISE_METHODS: ReadonlySet<string> = new Set(['catch', 'finally', 'then']);
 interface WorkerContext {
   readonly bindings: NativeBindings;
   readonly imports: ReadonlyMap<Node, WorkerOrigin>;
@@ -52,8 +53,10 @@ function memberOrigin(
   owner: WorkerOrigin | undefined,
 ): WorkerOrigin | undefined {
   if (owner === 'ambiguous') return owner;
-  if (!isNamespace(owner)) return undefined;
   const property = memberKey(member);
+  if (owner === 'promise')
+    return property === undefined || PROMISE_METHODS.has(property) ? 'ambiguous' : undefined;
+  if (!isNamespace(owner)) return undefined;
   if (owner === 'module' && property === 'default') return 'namespace';
   return property === 'Worker' || (property === undefined && member.computed)
     ? 'constructor'
@@ -64,12 +67,13 @@ function propertyOrigin(
   property: Extract<Node, { type: 'Property' }>,
   owner: WorkerOrigin,
 ): WorkerOrigin | undefined {
-  if (owner === 'promise') return undefined;
-  if (!isNamespace(owner)) return 'ambiguous';
   const key =
     property.computed || property.key.type !== 'Identifier'
       ? stringOf(property.key)
       : property.key.name;
+  if (owner === 'promise')
+    return key === undefined || PROMISE_METHODS.has(key) ? 'ambiguous' : undefined;
+  if (!isNamespace(owner)) return 'ambiguous';
   if (key === undefined) return 'ambiguous';
   if (key === 'Worker') return 'constructor';
   return owner === 'module' && key === 'default' ? 'namespace' : undefined;
@@ -163,14 +167,26 @@ function workerOrigin(
   return undefined;
 }
 
-/** Only the lexically imported Node constructor; mutated origins still require child-graph proof. */
-function nodeWorkerConstructor(
-  callee: Node,
-  tree: readonly Node[],
-  bindings: NativeBindings,
-): boolean {
-  const origin = workerOrigin(callee, { bindings, imports: workerImports(tree) });
-  return origin === 'constructor' || origin === 'ambiguous';
+function invokedCapability(
+  node: Extract<Node, { type: 'CallExpression' | 'NewExpression' }>,
+  context: WorkerContext,
+): Node | undefined {
+  if (node.callee.type === 'MemberExpression') {
+    const receiver = node.callee.object;
+    const owner = workerOrigin(receiver, context);
+    if (owner === 'constructor' || owner === 'ambiguous') return receiver;
+    const method = memberKey(node.callee);
+    if (owner === 'promise' && (method === undefined || PROMISE_METHODS.has(method)))
+      return receiver;
+  }
+  const origin = workerOrigin(node.callee, context);
+  if (origin === 'constructor' || origin === 'ambiguous')
+    return node.callee.type === 'MemberExpression' ? node.callee.object : node.callee;
+  for (const argument of node.arguments) {
+    const value = argument.type === 'SpreadElement' ? argument.argument : argument;
+    if (workerOrigin(value, context) !== undefined) return value;
+  }
+  return undefined;
 }
 
 export async function nativeWorkerEdit(
@@ -184,16 +200,17 @@ export async function nativeWorkerEdit(
     markChild(binaries: readonly string[]): string;
   },
 ): Promise<NativeEdit | undefined> {
-  if (
-    node.type !== 'NewExpression' ||
-    !nodeWorkerConstructor(node.callee, context.tree, context.bindings)
-  )
-    return undefined;
+  if (node.type !== 'CallExpression' && node.type !== 'NewExpression') return undefined;
+  const target = invokedCapability(node, {
+    bindings: context.bindings,
+    imports: workerImports(context.tree),
+  });
+  if (target === undefined) return undefined;
   const binaries = await ownedNativeFiles(context.importer, context.traces);
   if (binaries.length === 0) return undefined;
   return {
-    start: node.callee.start,
-    end: node.callee.end,
-    text: `(${context.markChild(binaries)},${context.source.slice(node.callee.start, node.callee.end)})`,
+    start: target.start,
+    end: target.end,
+    text: `(${context.markChild(binaries)},${context.source.slice(target.start, target.end)})`,
   };
 }

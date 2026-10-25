@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -27,12 +27,16 @@ describe('native child constructor classification', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  async function classify(source: string, commonjs = false, nodeTarget = false) {
+  async function classify(
+    source: string,
+    commonjs = false,
+    nodeTarget = false,
+    nativeOwned = true,
+  ) {
     const importer = commonjs ? path.join(directory, 'entry.cjs') : entry;
     await writeFile(importer, source);
-    const proof = nativeLoadsPlugin([{ id: '/native', assets: { entry: importer, binary } }], {
-      nodeTarget,
-    });
+    const assets = nativeOwned ? { entry: importer, binary } : { entry: importer };
+    const proof = nativeLoadsPlugin([{ id: '/native', assets }], { nodeTarget });
     await using build = await rolldown({
       input: importer,
       platform: 'neutral',
@@ -103,6 +107,76 @@ describe('native child constructor classification', () => {
       await expect(classify(source)).resolves.toStrictEqual([]);
     },
   );
+
+  it.each([
+    "export const pending=import('node:worker_threads').then(({Worker})=>new Worker('source',{eval:true}));",
+    "const pending=import('node:worker_threads');const alias=pending;export const value=alias.then(({Worker:Thread})=>new Thread('source',{eval:true}));",
+    "const pending=import('node:worker_threads');export const value=pending['then'](globalThis.consume);",
+    "const pending=import('node:worker_threads');export const value=pending.catch(globalThis.consume);",
+    "const pending=import('node:worker_threads');export const value=pending.finally(globalThis.consume);",
+    "const pending=import('node:worker_threads');export function start(key){return pending[key](globalThis.consume);}",
+    "const pending=import('node:worker_threads');const then=pending.then;export const value=then.call(pending,globalThis.consume);",
+    "const pending=import('node:worker_threads');const {then}=pending;export const value=then.call(pending,globalThis.consume);",
+    "const threads=await import('node:worker_threads');const Thread=Reflect.get(threads,'Worker');export const worker=new Thread('source',{eval:true});",
+    "import threads from 'node:worker_threads';export const worker=Reflect.construct(threads.Worker,['source',{eval:true}]);",
+    "import {Worker} from 'node:worker_threads';const Thread=Worker.bind(null);export const worker=new Thread('source',{eval:true});",
+    "import threads from 'node:worker_threads';export const worker=threads.Worker.call(null,'source',{eval:true});",
+    "import {Worker} from 'node:worker_threads';export const worker=Worker.apply(null,['source',{eval:true}]);",
+    "import threads from 'node:worker_threads';export const value=globalThis.consume(threads);",
+    "import {Worker} from 'node:worker_threads';export const value=globalThis.consume(Worker);",
+    "export const value=globalThis.consume(import('node:worker_threads'));",
+    "import threads from 'node:worker_threads';export const value=new globalThis.Consumer(threads);",
+    "import threads from 'node:worker_threads';export const value=globalThis.consume(...threads);",
+    "const threads=await import('node:worker_threads');export function start(Reflect){return Reflect.get(threads,'Worker');}",
+  ])(
+    'refuses retained capability handoff without claiming callback or call semantics: %s',
+    async (source) => {
+      await expect(classify(source)).rejects.toThrow('unclassified owned native child');
+    },
+  );
+
+  it('keeps the authored physical Node source unchanged after an analysis refusal', async () => {
+    const source =
+      "const threads=await import('node:worker_threads');export const value=Reflect.get(threads,'Worker');";
+
+    await expect(classify(source)).rejects.toThrow('unclassified owned native child');
+    await expect(readFile(entry, 'utf8')).resolves.toBe(source);
+  });
+
+  it.each([
+    "import threads from 'node:worker_threads';export function start(threads){return Reflect.get(threads,'Worker');}",
+    "const pending=import('node:worker_threads');export function start(pending){return pending.then(globalThis.consume);}",
+    "import {Worker} from 'node:worker_threads';export function start(Worker){return Worker.bind(null);}",
+    "import threads from 'node:worker_threads';export const value=globalThis.consume(threads.isMainThread);",
+    "import {Worker} from 'node:worker_threads';export const value=globalThis.consume(Worker.name);",
+    "import threads from 'node:worker_threads';export const value=threads.getEnvironmentData('key');",
+    "const threads={Worker:class {}};export const value=Reflect.get(threads,'Worker');",
+    "const loader={import:()=>Promise.resolve({Worker:class {}})};export const value=loader.import('node:worker_threads').then(globalThis.consume);",
+  ])(
+    'keeps lexical shadows and selected non-Worker values on their ordinary path: %s',
+    async (source) => {
+      await expect(classify(source)).resolves.toStrictEqual([]);
+    },
+  );
+
+  it.each([
+    "import threads from 'node:worker_threads';if(false)globalThis.consume(threads);export const safe=1;",
+    "import threads from 'node:worker_threads';function unused(){return Reflect.get(threads,'Worker');}export const safe=1;",
+    "function unused(){return import('node:worker_threads').then(globalThis.consume);}export const safe=1;",
+  ])(
+    'prunes unsupported handoff sites that do not survive the source bundle: %s',
+    async (source) => {
+      await expect(classify(source)).resolves.toStrictEqual([]);
+    },
+  );
+
+  it.each([
+    "export const value=import('node:worker_threads').then(({Worker})=>new Worker('source',{eval:true}));",
+    "const threads=await import('node:worker_threads');export const value=Reflect.get(threads,'Worker');",
+    "import {Worker} from 'node:worker_threads';export const value=Worker.bind(null);",
+  ])('does not add a native-child refusal when no native binary is owned: %s', async (source) => {
+    await expect(classify(source, false, false, false)).resolves.toStrictEqual([]);
+  });
 
   it.each([
     "const threads=require('node:worker_threads'); exports.helper=function(require,threads){return [require,threads];}; exports.start=()=>new threads.Worker('./child.js');\n",
