@@ -1,14 +1,33 @@
 # `@upwind-tools/deploy-tests`
 
-Runs Next.js's own deploy-mode test suite against this adapter, by deploying each test application to a
-host over that host's public API and letting the host serve it.
+Runs Next.js's own deploy-mode test suite against this adapter: each test application is built and
+served by the whole of what serves a deployment of it — on a host, deployed over that host's public API,
+or on this machine, on Cloudflare's runtime or on Node.js's (below).
 
-This is the only honest way to run that suite against an adapter. What the adapter produces is a
+That is the only honest way to run that suite against an adapter. What the adapter produces is a
 deployment bundle; serving one — its static files, its prerendered shells, the routing in front of the
-Function — is the host's half of the contract. A harness that stood the bundle's Function up on its own
+Function — is the other half of the contract. A harness that stood the bundle's Function up on its own
 would answer `404` for every `/_next/static/…`, and a page without its chunks never hydrates: measured
-on a host's private harness, 240 of 944 suites failed for that one reason and nothing else. So a real
+on a host's private harness, 240 of 944 suites failed for that one reason and nothing else. So a whole
 deployment it is.
+
+## Where the applications are served
+
+`ADAPTER_TEST_TARGET` names it:
+
+| Target           | What serves each application                                                                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `host` (default) | A host, deployed to over its public API: the variables below                                                                                                       |
+| `cloudflare`     | Cloudflare's runtime, on this machine: the local stack `upwind preview` serves on — the edge, the runtime cache, the prefetch Worker and the Functions, on workerd |
+| `node`           | Node.js, on this machine: the native server `upwind start` runs                                                                                                    |
+
+The two on this machine need no credential and no project. For `cloudflare`, the build is the one
+`upwind deploy` makes — the runtime cache's host in every Function, the prefetch segments left to the
+prefetch Worker — and the edge transforms images, as one bound to Cloudflare Images does. For `node`, the
+build is `upwind build --target=node`'s. The deploy hook starts the server as a process of its own,
+which outlives the hook and logs to `.adapter-runtime.log` (the logs hook prints it), and the cleanup
+hook stops it. Each application is served on a port of its own, so the suite may run several at once
+(`-c 2`).
 
 The lifecycle is the
 [documented contract](https://nextjs.org/docs/app/api-reference/adapters/testing-adapters): three
@@ -17,7 +36,7 @@ scripts, named to the suite through `NEXT_TEST_DEPLOY_SCRIPT_PATH`,
 modified and no expectation of theirs is rewritten: their `test/deploy-tests-manifest.json` decides
 which suites deploy mode selects.
 
-## What it needs
+## What a host needs
 
 | Variable                      | What it is                                                             |
 | ----------------------------- | ---------------------------------------------------------------------- |
@@ -143,10 +162,16 @@ application, a fake API, and the real scripts. It is what CI runs, and what keep
 (standard output, which variables a fixture's scripts can see, which file the build id comes from) and
 the order of the calls from breaking quietly between runs against a real host.
 
-**Serially, `-c 1`.** One project takes one fixture at a time, because a deployment replaces the
-project's environment and changes which deployment its requests reach; a second fixture deploying while the
-first is under test makes the _first_ fail, for a reason nothing in its own output explains. The deploy
-hook refuses rather than let that happen, and says which application holds the project.
+`pnpm check:deploy-tests-local [--target cloudflare|node]` runs the same hooks for real on this machine's
+targets, with no harness: `fixtures/next-minimal` copied, installed and built by the deploy hook, asked
+over HTTP, its markers read back through the logs hook, and its server gone after the cleanup hook. CI
+runs it for both targets on every pull request.
+
+**On a host, serially, `-c 1`.** One project takes one fixture at a time, because a deployment replaces
+the project's environment and changes which deployment its requests reach; a second fixture deploying while
+the first is under test makes the _first_ fail, for a reason nothing in its own output explains. The
+deploy hook refuses rather than let that happen, and says which application holds the project. On this
+machine nothing is shared, and the workflow runs two at a time.
 
 **Parallelism is bought with projects, one per shard.** `ADAPTER_TEST_PROJECT_IDS` holds them, separated
 by whitespace, and the count is how many shards the workflow runs at once — a shard takes the id at its

@@ -1,10 +1,17 @@
 name: Deploy tests
 
-# Next.js's own deploy-mode suite, against real deployments of what this adapter builds.
+# Next.js's own deploy-mode suite, against whole deployments of what this adapter builds: on a host
+# (`target: host`), or on the runner, on Cloudflare's runtime (`cloudflare`, a local stack on workerd)
+# or on Node.js's (`node`, the native server `upwind start` runs) — `tools/deploy-tests/README.md`.
 #
-# Apart from CI, and dispatched by hand, for two reasons. It needs credentials for a host, which a pull
-# request from a fork must never be given. And it deploys — each suite is an application installed, built,
-# uploaded and served, a minute of it at the least.
+# Apart from CI, for two reasons. On a host it needs credentials, which a pull request from a fork must
+# never be given. And every target deploys — each suite is an application installed, built and served, a
+# minute of it at the least. So it is dispatched by hand, and the two targets on the runner, which need
+# no credential, also run every night over the whole manifest. CI checks the hooks themselves on every
+# pull request (`check:deploy-tests`, `check:deploy-tests-local`).
+#
+# What follows of projects and queues is a host's: on the runner each application has a server of its
+# own, every shard runs at once, and each runs two suites at a time.
 #
 # **One project takes one fixture at a time.** Every deployment replaces the project's whole runtime
 # environment and changes which deployment the suite's requests reach, so two shards sharing a project would
@@ -26,8 +33,19 @@ name: Deploy tests
 # `only`.
 
 on:
+  # Every night, both targets on the runner over the whole manifest (`plan`).
+  schedule:
+    - cron: '23 17 * * *'
   workflow_dispatch:
     inputs:
+      target:
+        description: 'Where each application is served: a host, or the runner on Cloudflare or Node.js'
+        default: 'host'
+        type: choice
+        options:
+          - host
+          - cloudflare
+          - node
       nextjsRef:
         description: "Next.js ref to test against — inside the adapter's supported range"
         default: 'v16.4.3'
@@ -47,12 +65,23 @@ on:
         description: 'Run just this shard of that many — for taking a slice again on its own'
         default: ''
         type: string
+      concurrency:
+        description: 'Suites run at once in a shard (`-c`): 1 on a host, 2 on the runner when empty'
+        default: ''
+        type: string
 
 permissions: {}
 
-# Never two dispatches at once: they would be deploying into the same projects.
+env:
+  # The Next.js a night's run tests against: the one a dispatch defaults to (`nextjsRef`), which moves
+  # with it.
+  NIGHTLY_NEXTJS_REF: 'v16.4.3'
+  NIGHTLY_SHARDS: '16'
+
+# Never two runs on a host at once: they would be deploying into the same projects. The runner's
+# targets share nothing, and a night's run is a group of its own.
 concurrency:
-  group: deploy-tests
+  group: deploy-tests-${{ github.event_name == 'schedule' && 'nightly' || inputs.target }}
   cancel-in-progress: false
 
 jobs:
@@ -61,21 +90,45 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     outputs:
-      shards: ${{ steps.plan.outputs.shards }}
+      matrix: ${{ steps.plan.outputs.matrix }}
       total: ${{ steps.plan.outputs.total }}
       parallel: ${{ steps.plan.outputs.parallel }}
+      concurrency: ${{ steps.plan.outputs.concurrency }}
+      nextjs: ${{ steps.plan.outputs.nextjs }}
+      tests: ${{ steps.plan.outputs.tests }}
     steps:
       - name: Work out the shards
         id: plan
         env:
+          EVENT: ${{ github.event_name }}
+          TARGET: ${{ inputs.target }}
+          NEXTJS_REF: ${{ inputs.nextjsRef }}
           TESTS: ${{ inputs.tests }}
           SHARDS: ${{ inputs.shards }}
           ONLY: ${{ inputs.only }}
+          CONCURRENCY: ${{ inputs.concurrency }}
           # Counted, never printed: the count is not a project anybody can name, the ids are.
           PROJECT_IDS: ${{ secrets.ADAPTER_TEST_PROJECT_IDS }}
           PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
         run: |
           set -euo pipefail
+          # A night's run is both of the runner's targets over the whole manifest, cut as finely as
+          # `NIGHTLY_SHARDS` says; a dispatch is what it was asked for.
+          if [ "$EVENT" = 'schedule' ]; then
+            targets='cloudflare node'
+            TESTS='all'
+            SHARDS="$NIGHTLY_SHARDS"
+            ONLY=''
+            CONCURRENCY=''
+            nextjs="$NIGHTLY_NEXTJS_REF"
+          else
+            targets="$TARGET"
+            nextjs="$NEXTJS_REF"
+          fi
+          case "$targets" in
+            host | cloudflare | node | 'cloudflare node') ;;
+            *) echo "target must be host, cloudflare or node, not '$targets'" >&2; exit 1 ;;
+          esac
           selection="$(printf '%s' "$TESTS" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
           if [ -z "$selection" ]; then
             echo 'no tests were selected: name upstream paths, or `all` for the whole manifest' >&2
@@ -116,54 +169,89 @@ jobs:
           else
             shards="$(seq -s, 1 "$total" | sed 's/^/[/; s/$/]/')"
           fi
-          # The ids, split on whitespace by the shell itself: a pipeline that counts lines one way and
-          # picks one another way disagrees about a list that begins with a space, and then a shard is
-          # handed the empty string. `-f` with it, because the same unquoted expansion would otherwise
-          # also expand pathnames — an id holding `*`, `?` or `[` would be matched against whatever the
-          # runner's working directory happens to contain, and a match would quietly replace it.
-          # Carriage returns out first: the shell splits on space, tab and newline, so a list pasted from
-          # CRLF text leaves `\r` stuck to every id but the last. Two spellings of one project would then
-          # count as two projects here, while everything downstream trims it away — `$GITHUB_ENV` when it
-          # reads the line back, `required()` in `config.ts` before it asks the API — and two shards would
-          # be deploying into the one project the count said they were not.
-          ids="$(printf '%s' "${PROJECT_IDS:-$PROJECT_ID}" | tr -d '\r')"
-          set -f
-          # shellcheck disable=SC2086 -- splitting the list is the parse, and globbing is off above
-          set -- $ids
-          if [ "$#" -lt 1 ]; then
-            echo 'ADAPTER_TEST_PROJECT_IDS (or ADAPTER_TEST_PROJECT_ID) names no project' >&2
+          # How many suites a shard runs at once: one on a host, whose project takes one fixture at a
+          # time; two on the runner, where each application has a server of its own.
+          if [ -n "$CONCURRENCY" ]; then
+            concurrency="$(whole concurrency "$CONCURRENCY")"
+          elif [ "$targets" = 'host' ]; then
+            concurrency=1
+          else
+            concurrency=2
+          fi
+          if [ "$concurrency" -lt 1 ] || [ "$concurrency" -gt 8 ]; then
+            echo "concurrency must be between 1 and 8, not $concurrency" >&2
             exit 1
           fi
-          # Shards run at once only when every one of them has a project of its own. `max-parallel` caps
-          # how many jobs run, not which project each holds: with two ids and six shards it would start
-          # job 3 the moment job 2 ended, and job 3's project is job 1's, which is still deploying into
-          # it. Fewer ids than shards is therefore one at a time — slower, and not two fixtures taking
-          # each other's environment away.
-          #
-          # Counting them is not enough: a list long enough but with an id repeated — a paste gone wrong —
-          # would pass and then give two shards the same project. What has to be true is that the ids the
-          # shards would actually take are different projects, which is the first `total` of them, since
-          # that is where shard `k` looks when there are enough to go round.
-          distinct="$(printf '%s\n' "$@" | awk -v n="$total" 'NR <= n && !seen[$0]++ { c++ } END { print c + 0 }')"
-          if [ "$#" -ge "$total" ] && [ "$distinct" -eq "$total" ]; then
-            parallel="$total"
-          else
-            parallel=1
+          if [ "$targets" = 'host' ] && [ "$concurrency" -ne 1 ]; then
+            echo 'a project on a host takes one fixture at a time: concurrency must be 1 there' >&2
+            exit 1
+          fi
+          # The jobs: each target's shards, as the matrix takes them.
+          include=''
+          jobs=0
+          for target in $targets; do
+            for shard in $(printf '%s' "$shards" | tr -d '[]' | tr ',' ' '); do
+              include="${include:+$include,}{\"target\":\"$target\",\"shard\":$shard}"
+              jobs=$((jobs + 1))
+            done
+          done
+          # On the runner nothing is shared, and every job runs at once; on a host, as many as there
+          # are projects for (below).
+          parallel="$jobs"
+          if [ "$targets" = 'host' ]; then
+            # The ids, split on whitespace by the shell itself: a pipeline that counts lines one way and
+            # picks one another way disagrees about a list that begins with a space, and then a shard is
+            # handed the empty string. `-f` with it, because the same unquoted expansion would otherwise
+            # also expand pathnames — an id holding `*`, `?` or `[` would be matched against whatever the
+            # runner's working directory happens to contain, and a match would quietly replace it.
+            # Carriage returns out first: the shell splits on space, tab and newline, so a list pasted from
+            # CRLF text leaves `\r` stuck to every id but the last. Two spellings of one project would then
+            # count as two projects here, while everything downstream trims it away — `$GITHUB_ENV` when it
+            # reads the line back, `required()` in `config.ts` before it asks the API — and two shards would
+            # be deploying into the one project the count said they were not.
+            ids="$(printf '%s' "${PROJECT_IDS:-$PROJECT_ID}" | tr -d '\r')"
+            set -f
+            # shellcheck disable=SC2086 -- splitting the list is the parse, and globbing is off above
+            set -- $ids
+            if [ "$#" -lt 1 ]; then
+              echo 'ADAPTER_TEST_PROJECT_IDS (or ADAPTER_TEST_PROJECT_ID) names no project' >&2
+              exit 1
+            fi
+            # Shards run at once only when every one of them has a project of its own. `max-parallel` caps
+            # how many jobs run, not which project each holds: with two ids and six shards it would start
+            # job 3 the moment job 2 ended, and job 3's project is job 1's, which is still deploying into
+            # it. Fewer ids than shards is therefore one at a time — slower, and not two fixtures taking
+            # each other's environment away.
+            #
+            # Counting them is not enough: a list long enough but with an id repeated — a paste gone wrong —
+            # would pass and then give two shards the same project. What has to be true is that the ids the
+            # shards would actually take are different projects, which is the first `total` of them, since
+            # that is where shard `k` looks when there are enough to go round.
+            distinct="$(printf '%s\n' "$@" | awk -v n="$total" 'NR <= n && !seen[$0]++ { c++ } END { print c + 0 }')"
+            if [ "$#" -ge "$total" ] && [ "$distinct" -eq "$total" ]; then
+              parallel="$total"
+            else
+              parallel=1
+            fi
           fi
           {
-            echo "shards=$shards"
+            echo "matrix={\"include\":[$include]}"
             echo "total=$total"
             echo "parallel=$parallel"
+            echo "concurrency=$concurrency"
+            echo "nextjs=$nextjs"
+            echo "tests=$selection"
           } >>"$GITHUB_OUTPUT"
           # One shard asked for by name is one job: nothing of the rest of the split runs, so nothing
           # about how many could have run at once is true of it.
           if [ -n "$ONLY" ]; then
-            echo "$selection: shard $only of $total, on its own" >>"$GITHUB_STEP_SUMMARY"
+            echo "$targets, $selection: shard $only of $total, on its own" >>"$GITHUB_STEP_SUMMARY"
           else
-            echo "$selection in $total shard(s), $parallel at a time" >>"$GITHUB_STEP_SUMMARY"
+            echo "$targets, $selection in $total shard(s) each, $parallel at a time, $concurrency suite(s) at once in each" \
+              >>"$GITHUB_STEP_SUMMARY"
             # Said out loud, because one at a time where more was asked for is a list to fix rather than
             # a run to wonder about. Which ids, and how many, stay out of it.
-            if [ "$parallel" -lt "$total" ]; then
+            if [ "$parallel" -lt "$jobs" ]; then
               echo 'fewer projects than shards, or two shards on one project: they queue' \
                 >>"$GITHUB_STEP_SUMMARY"
             fi
@@ -171,6 +259,7 @@ jobs:
 
   deploy-tests:
     needs: plan
+    name: ${{ matrix.target }} ${{ matrix.shard }}/${{ needs.plan.outputs.total }}
     runs-on: ubuntu-latest
     # Under the six hours a job is allowed, with room for a slice that runs long to be reported rather
     # than cut off mid-suite.
@@ -182,8 +271,7 @@ jobs:
       # their own ground to cover.
       fail-fast: false
       max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
-      matrix:
-        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -193,7 +281,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: vercel/next.js
-          ref: ${{ inputs.nextjsRef }}
+          ref: ${{ needs.plan.outputs.nextjs }}
           path: nextjs
           fetch-depth: 25
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -220,6 +308,7 @@ jobs:
       # machine. What it removes is the ordinary way a secret escapes, which is something printing the
       # environment it was handed — and `nextjsRef` should name a tag for the same reason.
       - name: Put the token in a file
+        if: matrix.target == 'host'
         env:
           TOKEN: ${{ secrets.ARKOR_API_TOKEN }}
         run: |
@@ -229,6 +318,7 @@ jobs:
       # This shard's own project, by position in the list. Masked first: it is one word of a secret
       # rather than the secret, so nothing else would keep it out of a log.
       - name: Take a project for this shard
+        if: matrix.target == 'host'
         env:
           SHARD: ${{ matrix.shard }}
           PROJECT_IDS: ${{ secrets.ADAPTER_TEST_PROJECT_IDS }}
@@ -250,6 +340,7 @@ jobs:
       # id that names somebody else's application, is worth a minute's wait to learn about rather than
       # twenty minutes of building Next.js and then a suite that failed for a reason of its own.
       - name: Preflight
+        if: matrix.target == 'host'
         working-directory: adapter
         env:
           ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
@@ -279,8 +370,8 @@ jobs:
         working-directory: adapter
         run: pnpm --filter @stayingupwind/adapter build
 
-      # Serially (`-c 1`), with no retries: a retry would deploy the same fixture again and say nothing
-      # about why the first one failed. A suite that fails does not stop the rest — the runner carries on
+      # On a host serially (`-c 1`), on the runner two at a time, and with no retries: a retry would
+      # deploy the same fixture again and say nothing about why the first one failed. A suite that fails does not stop the rest — the runner carries on
       # and reports every one at the end, which is what makes a long run an inventory. Its own job
       # summary lists the failures, so a shard's findings are readable without opening the log.
       - name: Run the suite
@@ -306,20 +397,23 @@ jobs:
           NEXT_TEST_DEPLOY_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-deploy.sh
           NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-logs.sh
           NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-cleanup.sh
-          # The host to deploy to. Secrets rather than anything written down here: which host runs this
-          # suite is whoever dispatched it, and a project id in a log is a project somebody can name.
-          # The token itself is not among them — it is in the file named below, and this shard's project
-          # came from the step above through the environment.
-          ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
-          ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
+          # Where each application is served: a host, or this runner (`tools/deploy-tests/src/target.ts`).
+          ADAPTER_TEST_TARGET: ${{ matrix.target }}
+          # The host to deploy to, and nothing on the runner's targets. Secrets rather than anything
+          # written down here: which host runs this suite is whoever dispatched it, and a project id in a
+          # log is a project somebody can name. The token itself is not among them — it is in the file
+          # named below, and this shard's project came from the step above through the environment.
+          ARKOR_API_URL: ${{ matrix.target == 'host' && secrets.ARKOR_API_URL || '' }}
+          ARKOR_API_TOKEN_FILE: ${{ matrix.target == 'host' && format('{0}/deploy-token', runner.temp) || '' }}
           # How long the host takes to bring a deployment in for every request, which only whoever runs
           # the host knows; unset is "at once". A secret like the rest, so that it is not printed either.
-          ADAPTER_TEST_SETTLE_SECONDS: ${{ secrets.ADAPTER_TEST_SETTLE_SECONDS }}
+          ADAPTER_TEST_SETTLE_SECONDS: ${{ matrix.target == 'host' && secrets.ADAPTER_TEST_SETTLE_SECONDS || '' }}
           # Through the environment rather than into the command: the selection is a string this workflow
           # was handed, and a `run:` that interpolates one is a shell that was handed it too.
-          TESTS: ${{ inputs.tests }}
+          TESTS: ${{ needs.plan.outputs.tests }}
           SHARD: ${{ matrix.shard }}
           TOTAL: ${{ needs.plan.outputs.total }}
+          CONCURRENCY: ${{ needs.plan.outputs.concurrency }}
         # Paths are positional, after the flags, and `all` names none of them: with nothing positional
         # the runner takes everything its manifest allows. `-g` only where there is more than one piece,
         # since a single group is the whole list and asking for it warns about timing data it does not
@@ -336,4 +430,4 @@ jobs:
             paths="$TESTS"
           fi
           # shellcheck disable=SC2086 -- both are several words, or none, on purpose
-          node run-tests.js --type e2e -c 1 --retries 0 $group $paths
+          node run-tests.js --type e2e -c "$CONCURRENCY" --retries 0 $group $paths
