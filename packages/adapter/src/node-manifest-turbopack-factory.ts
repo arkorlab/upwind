@@ -11,7 +11,9 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import { TurbopackCacheInitializers } from './node-manifest-turbopack-cache.ts';
 import { originalTurbopackImports } from './node-manifest-turbopack-imports.ts';
+import { externalThunk, getterOf } from './node-manifest-turbopack-values.ts';
 import type {
   NodeManifestTurbopackExports,
   NodeManifestTurbopackFactory,
@@ -29,7 +31,6 @@ interface Edit {
 const GETTER_PREFIX = '__upwind_turbopack_getter_';
 const BOUND_PREFIX = '__upwind_turbopack_bound_';
 const BOUND_KINDS = { l: 'loadChunk', r: 'require' } as const;
-const EXTERNAL_INTEROP_ARITY = 3;
 const MAX_MODULE_ID_BYTES = 16_384;
 const MAX_GETTER_EXPORT_ARGUMENTS = 3;
 const MAX_VALUE_EXPORT_ARGUMENTS = 2;
@@ -65,70 +66,6 @@ export function turbopackModuleSpecifier(id: NodeManifestTurbopackModuleId): str
   return typeof id === 'number' ? `turbopack:${id}` : `turbopack:string:${JSON.stringify(id)}`;
 }
 
-function staticSelector(node: unknown): node is Node {
-  if (identifier(node)) return node.name !== 'arguments';
-  return (
-    isNode(node) &&
-    node.type === 'MemberExpression' &&
-    identifier(node['object']) &&
-    node['object'].name !== 'arguments' &&
-    propertyName(node) !== undefined
-  );
-}
-
-function getterOf(value: unknown): Node {
-  if (
-    !isNode(value) ||
-    value.type !== 'ArrowFunctionExpression' ||
-    value['async'] === true ||
-    value['generator'] === true ||
-    listOf(value, 'params').length > 0
-  )
-    return refuse('export getter');
-  let result = value['body'];
-  if (isNode(result) && result.type === 'BlockStatement') {
-    const statements = listOf(result, 'body');
-    const only = statements[0];
-    if (statements.length !== 1 || !isNode(only) || only.type !== 'ReturnStatement')
-      return refuse('export getter body');
-    result = only['argument'];
-  }
-  return staticSelector(result) ? result : refuse('export getter expression');
-}
-
-function externalThunk(args: readonly unknown[]): Node {
-  const thunk = args[1];
-  if (
-    (args.length !== 2 && args.length !== EXTERNAL_INTEROP_ARITY) ||
-    !isNode(thunk) ||
-    !['ArrowFunctionExpression', 'FunctionExpression'].includes(thunk.type) ||
-    thunk['async'] === true ||
-    thunk['generator'] === true ||
-    listOf(thunk, 'params').length > 0 ||
-    (thunk['id'] !== null && thunk['id'] !== undefined)
-  )
-    refuse('external require thunk');
-  const flag = args[2];
-  if (
-    args.length === EXTERNAL_INTEROP_ARITY &&
-    (!isNode(flag) || flag.type !== 'Literal' || typeof flag['value'] !== 'boolean')
-  )
-    refuse('external interop flag');
-  const body = thunk['body'];
-  if (!isNode(body)) return refuse('external thunk body');
-  if (body.type !== 'BlockStatement') return body;
-  const statements = listOf(body, 'body');
-  const only = statements[0];
-  if (
-    statements.length !== 1 ||
-    !isNode(only) ||
-    only.type !== 'ReturnStatement' ||
-    !isNode(only['argument'])
-  )
-    return refuse('external thunk body');
-  return only['argument'];
-}
-
 function defaultExportTarget(value: unknown, visit: Visit): boolean {
   if (value === undefined) return true;
   if (!isNode(value)) return false;
@@ -162,6 +99,7 @@ class FactoryProjection {
   private readonly parents: ReadonlyMap<Node, Visit>;
   private readonly mode: 'strict' | 'dependencies';
   private readonly moduleId: NodeManifestTurbopackModuleId;
+  private readonly cache: TurbopackCacheInitializers;
   private readonly allowedContext = new Set<Node>();
   private readonly edits = new Map<Node, Edit>();
   private readonly imports = new Map<Node, NodeManifestTurbopackImport>();
@@ -202,6 +140,7 @@ class FactoryProjection {
     this.scope = scope;
     this.visits = all.filter(({ node }) => node.start >= body.start && node.end <= body.end);
     this.parents = new Map(all.map((visit) => [visit.node, visit]));
+    this.cache = new TurbopackCacheInitializers(this.body, this.parents);
     if (scope.bindings.has(param.name)) refuse('mutated context parameter');
     if (
       this.visits.some(({ node }) => {
@@ -250,6 +189,7 @@ class FactoryProjection {
     if (args.length !== 1) refuse('module import arity');
     const id = turbopackModuleId(args[0]) ?? refuse('dynamic or invalid module id');
     if (declaration('require', visit.scopes) !== undefined) refuse('shadowed inspection require');
+    if (this.mode === 'dependencies' && this.cache.reads(id, call)) return;
     const specifier = turbopackModuleSpecifier(id);
     this.imports.set(call, { kind, specifier, targetId: id });
     this.edit(call, `require(${JSON.stringify(specifier)})`);
@@ -273,17 +213,13 @@ class FactoryProjection {
     this.edit(call, `require(${JSON.stringify(specifier)})`);
   }
 
-  private exportModule(value: unknown, visit: Visit): NodeManifestTurbopackModuleId {
+  private staticExportModule(value: unknown, visit: Visit): NodeManifestTurbopackModuleId {
     if (defaultExportTarget(value, visit)) return this.moduleId;
     const target = turbopackModuleId(value);
     if (target === undefined) {
       const shape = isNode(value) ? value.type : 'missing';
       return refuse(`dynamic or foreign export target (syntax ${shape})`);
     }
-    if (!this.factory.ids.includes(target))
-      return refuse(
-        `dynamic or foreign export target (${typeof target}; ${this.factory.ids.length} declared IDs)`,
-      );
     return target;
   }
 
@@ -293,7 +229,7 @@ class FactoryProjection {
     if (value['value'] === true && this.mode === 'strict') refuse('dynamic protected exports');
   }
 
-  private selectedExport(call: Node, visit: Visit, getters: boolean): boolean {
+  private exportTarget(call: Node, visit: Visit, getters: boolean): NodeManifestTurbopackModuleId {
     const args = listOf(call, 'arguments');
     const maximum = getters ? MAX_GETTER_EXPORT_ARGUMENTS : MAX_VALUE_EXPORT_ARGUMENTS;
     if (
@@ -302,9 +238,36 @@ class FactoryProjection {
       args.some((arg) => !isNode(arg) || arg.type === 'SpreadElement')
     )
       refuse('export registration arguments');
-    const target = this.exportModule(args[1], visit);
+    const target = this.staticExportModule(args[1], visit);
     if (getters && args.length === MAX_GETTER_EXPORT_ARGUMENTS) this.dynamicExports(args[2]);
+    return target;
+  }
+
+  private selectedExport(call: Node, visit: Visit, getters: boolean): boolean {
+    const target = this.exportTarget(call, visit, getters);
+    if (
+      !this.factory.ids.includes(target) &&
+      !(this.mode === 'dependencies' && this.cache.ownsWrite(target, call))
+    )
+      return refuse(
+        `dynamic or foreign export target (${typeof target}; ${this.factory.ids.length} declared IDs)`,
+      );
     return target === this.moduleId;
+  }
+
+  private cacheInitializers(): void {
+    if (this.mode !== 'dependencies') return;
+    for (const visit of this.visits) {
+      const member = visit.node;
+      if (member.type !== 'MemberExpression' || !this.ownIdentifier(member['object'], visit))
+        continue;
+      const name = propertyName(member);
+      if (name !== 's' && name !== 'n' && name !== 'v') continue;
+      const call = this.parents.get(member)?.parent;
+      if (call?.type !== 'CallExpression' || call['callee'] !== member) continue;
+      const target = this.exportTarget(call, visit, name === 's');
+      if (!this.factory.ids.includes(target)) this.cache.add(target, call);
+    }
   }
 
   private getterExports(call: Node, visit: Visit): void {
@@ -484,6 +447,7 @@ class FactoryProjection {
 
   project(): NodeManifestTurbopackProjection {
     this.assertCommonJsBindings();
+    this.cacheInitializers();
     for (const visit of this.visits) this.operation(visit);
     const originalImports = originalTurbopackImports(this.visits, this.parents, this.imports);
     this.forwardNamespaces();
@@ -515,6 +479,7 @@ class FactoryProjection {
       factory: this.factory,
       source: { code, sha256 },
       imports: [...this.imports.values(), ...originalImports],
+      cacheInitializers: this.cache.snapshot(),
       exports: this.exports,
       boundRuntimeInputs: this.boundRuntimeInputs,
       requiresReviewedRuntime: true,

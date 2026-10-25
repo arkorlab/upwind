@@ -17,6 +17,7 @@ import {
 } from '../src/node-manifest-app-page-factory.ts';
 import { identifier, stringOf, visitTree } from '../src/node-manifest-consumer-ast.ts';
 import { assertNodeManifestConsumer } from '../src/node-manifest-consumers.ts';
+import type { NodeManifestTemplateImport } from '../src/node-manifest-templates.ts';
 import { proveNodeManifestTurbopackConsumers } from '../src/node-manifest-turbopack-consumers.ts';
 import { projectNodeManifestTurbopackFactory } from '../src/node-manifest-turbopack.ts';
 
@@ -247,7 +248,7 @@ describe('fixed AppPage factory authority in an original Turbopack graph', () =>
       },
       ...(await Promise.all(
         [...own.imports.values()]
-          .filter((entry) => !('builtin' in entry))
+          .filter((entry): entry is NodeManifestTemplateImport => !('builtin' in entry))
           .map(async (entry) => {
             const code = await readFile(entry.file, 'utf8');
             return { id: entry.file, file: entry.file, source: source(code), imports: [] };

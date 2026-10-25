@@ -7,6 +7,7 @@ import { parseAst } from 'rolldown/parseAst';
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node } from './lexical-scope.ts';
 import { identifier, propertyName, stringOf } from './node-manifest-consumer-ast.ts';
+import { assertTurbopackCacheOwners } from './node-manifest-turbopack-cache.ts';
 import {
   nodeManifestTurbopackFactories,
   projectNodeManifestTurbopackFactory,
@@ -313,6 +314,7 @@ export function nodeManifestTurbopackEntryGraph(input: {
   // entire rewritten runtime table, not just the entry's initial loading cohort.
   const tables = runtimeTables(runtime, sources);
   const factories = factoryRecords(tables);
+  assertTurbopackCacheOwners([...factories.values()], new Set(factories.keys()));
   const logicalIds = new Map<string, NodeManifestTurbopackModuleId>();
   const targetOf = (id: NodeManifestTurbopackModuleId): string => {
     const target = factories.get(id);

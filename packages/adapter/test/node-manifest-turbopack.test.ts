@@ -137,8 +137,8 @@ describe('next Turbopack manifest factory projections', () => {
     'ctx.s(["value",()=>value],foreign);',
     'ctx.s(["value",()=>value],/literal/);',
     'ctx.s(["value",()=>value],0n);',
-    'ctx.n(value,3);',
-    'ctx.v(value,"unknown");',
+    'ctx.n(value,unknownTarget());',
+    'ctx.v(value,{id:"unknown"});',
     'const undefined=1;ctx.v(value,undefined);',
     'ctx.n(value,void sideEffect());',
     'ctx.s(["value",()=>value],null,flag);',
@@ -265,8 +265,8 @@ describe('next Turbopack manifest factory projections', () => {
     'ctx.v(42);ctx.c=other;',
     'ctx.v(42);require(dynamic);',
     'ctx.v(42);import(dynamic);',
-    'ctx.v(42,2);',
-    'ctx.s(["answer",()=>42],2);',
+    'ctx.v(42,unknownTarget);',
+    'ctx.s(["answer",()=>42],unknownTarget);',
   ])('preserves dependency-mode loader and context refusal: %s', (body) => {
     expect(() => projectNodeManifestTurbopackFactory(chunk(body), 1, 'dependencies')).toThrow(
       'Unproved Next.js',
