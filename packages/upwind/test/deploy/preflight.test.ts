@@ -44,6 +44,28 @@ describe('checking a build before a deploy', () => {
     expect(plan.projectedWorkers).toBe(1 * 7 + 5);
   });
 
+  it.each([
+    ['an app page', '/', 'app-page'],
+    ['an app route', '/api/private', 'app-route'],
+    ['a dynamic page', '/posts/[slug]', 'app-page'],
+  ] as const)('refuses %s whose route gate the command cannot bind', async (_, route, kind) => {
+    const dir = projectDir();
+    writeBundle(
+      dir,
+      bundleOf(deployableFunction(dir), {
+        entrypoints: [{ id: route, kind, pathname: route }],
+        gates: { [route]: 'members' },
+      }),
+    );
+    const plan = await preflight({ projectDir: dir, settings: SETTINGS, secrets: NO_SECRETS });
+
+    expect(plan.problems).toStrictEqual([
+      expect.stringContaining(
+        'the build declares route gates, which `upwind deploy` does not bind yet',
+      ),
+    ]);
+  });
+
   it('refuses a Function built without the runtime cache', async () => {
     const dir = projectDir();
     const plain = functionOf([moduleOf(dir, 'index.mjs', 'esm', 'export default {};')]);
