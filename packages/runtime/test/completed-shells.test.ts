@@ -134,13 +134,13 @@ function deployment(allowQuery: readonly string[] = ['nxtPlang', 'nxtPregion']):
   } as unknown as Store;
 }
 
-type CacheEntryCallback = (entry: unknown, meta: { url: string | undefined }) => unknown;
-
 /**
  * Next.js in minimal mode: a static render captured where one is asked for — the shell, with what
  * is left of the page postponed — its resume where it is handed the state, and nothing else.
  */
 async function rendering(call: InvokeInput): Promise<Response> {
+  type CacheEntryCallback = (entry: unknown, meta: { url: string | undefined }) => unknown;
+
   const meta = call.requestMeta;
   const onCacheEntry = meta['onCacheEntry'] as CacheEntryCallback | undefined;
   if (onCacheEntry !== undefined) {

@@ -263,14 +263,14 @@ interface Made {
   readonly cacheControl?: { readonly revalidate: number | false; readonly expire?: number };
 }
 
-type CacheCallback = (entry: unknown, meta: { url: string | undefined }) => Promise<boolean>;
-
 /**
  * Next.js rendering the page statically and handing its cache entry to the platform
  * (`onCacheEntry`), as it does for an App Router page whose lifetime lets it be kept: it answers
  * nothing itself, and the bridge ends the response it never wrote.
  */
 async function handOver(input: InvokeInput, made: Made = {}): Promise<Response> {
+  type CacheCallback = (entry: unknown, meta: { url: string | undefined }) => Promise<boolean>;
+
   const callback = input.requestMeta['onCacheEntryV2'] as CacheCallback | undefined;
   if (callback === undefined) {
     throw new Error('the render was handed no callback to hand its entry to');

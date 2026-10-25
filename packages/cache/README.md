@@ -24,6 +24,13 @@ so a host that runs only the standalone Worker, the gateways or the authority le
 The published package is TypeScript sources: `exports` names `.ts` files, and there is no build
 step. Its suites run inside workerd (`@cloudflare/vitest-plugin`).
 
+`./native` provides the same runtime `CacheHost` contract for a single Node.js server. It keeps
+the authority's SQLite database in a dedicated worker thread and its bodies in asynchronous local
+file storage, with an exclusive database owner, persistent tag revisions and the same lease,
+publication and retention logic. `./native-worker` is bundled beside the native server by the
+adapter. This path uses no Cloudflare runtime or service. Its suites run in the `native-cache`
+Vitest project.
+
 ## Entry points
 
 | Subpath                                                    | What it holds                                                                                                                        |

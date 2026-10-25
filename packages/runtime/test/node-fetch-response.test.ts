@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { fetchedResponse as workerResponse } from '../src/fetch-response.ts';
 import { fetchedResponse } from '../src/node-fetch-response.ts';
+import { fetchRewrite as workerFetchRewrite } from '../src/rewrite-fetch.ts';
 
 describe('native fetch content coding boundary', () => {
   it.each(['gzip', 'x-gzip', 'deflate', 'br', 'zstd', 'gzip, br'])(
@@ -57,11 +57,17 @@ describe('native fetch content coding boundary', () => {
     expect(fetchedResponse(response, method)).toBe(response);
   });
 
-  it('leaves Worker fetch semantics and raw compressed bodies unchanged', () => {
+  it('leaves Worker fetch semantics and raw compressed bodies unchanged', async () => {
     const response = new Response(new Uint8Array([1, 2, 3]), {
       headers: { 'content-encoding': 'gzip', 'content-length': '3' },
     });
 
-    expect(workerResponse(response, 'GET')).toBe(response);
+    const upstream = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
+    try {
+      await expect(workerFetchRewrite(new URL('https://origin.test/'), {})).resolves.toBe(response);
+      expect(response.bodyUsed).toBe(false);
+    } finally {
+      upstream.mockRestore();
+    }
   });
 });

@@ -66,7 +66,7 @@ export function nodeRuntimeAlias(
     return undefined;
   const resolved = path.relative(runtime, path.resolve(path.dirname(importer), source));
   if (
-    !/^(?:environment|fetch-response|node-bindings|node-bridge|resources)\.(?:ts|js)$/u.test(
+    !/^(?:environment|node-bindings|node-bridge|resources|rewrite-fetch)\.(?:ts|js)$/u.test(
       resolved,
     )
   )
@@ -80,8 +80,8 @@ function nodeAliases(input: BuildFunctionInput): Plugin {
   );
   const aliases: Readonly<Record<string, string>> = {
     environment: fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-environment')),
-    'fetch-response': fileURLToPath(
-      import.meta.resolve('@stayingupwind/runtime/node-fetch-response'),
+    'rewrite-fetch': fileURLToPath(
+      import.meta.resolve('@stayingupwind/runtime/node-rewrite-fetch'),
     ),
     'node-bridge': fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-http-bridge')),
     resources: fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-resources')),

@@ -211,12 +211,25 @@ export async function cacheHostEnv(
     return {};
   }
   const host = await cacheHostModuleFor(await shippedCacheHost(), projectDir, adapter);
-  return { [UPWIND_CACHE_HOST_MODULE_ENV]: host };
+  return {
+    [UPWIND_CACHE_HOST_MODULE_ENV]: host,
+    // A config-only native selection may remove this auto-host before workers inherit it.
+    UPWIND_BUILD_CACHE_HOST_MODULE: host,
+  };
 }
 
 /** The project's own `next build`, with the adapter named; what it exits with. */
 export async function spawnBuild(options: BuildOptions, run: BuildRun = {}): Promise<number> {
-  const vercel = run.forDeploy !== true && isVercelsOwnBuild();
+  const inherited = run.env ?? process.env;
+  const target =
+    options.target ?? run.extraEnv?.['UPWIND_BUILD_TARGET'] ?? inherited['UPWIND_BUILD_TARGET'];
+  if (target === 'node' && run.forDeploy === true) {
+    throw new Error(
+      'a native Node artifact is started with `upwind start`, not uploaded as Workers',
+    );
+  }
+  const native = target === 'node';
+  const vercel = run.forDeploy !== true && !native && isVercelsOwnBuild();
   if (vercel) {
     // Said rather than done quietly: what makes this command different from `next build` is the
     // adapter, and a run that names none has to be a run that says why. It says what *this* does and
@@ -257,8 +270,8 @@ export async function spawnBuild(options: BuildOptions, run: BuildRun = {}): Pro
       ? { [ADAPTER_PATH_ENV]: '' }
       : {
           [ADAPTER_PATH_ENV]: adapter,
-          ...(run.forDeploy !== true && storageEnv(options.projectDir)),
-          ...(await cacheHostEnv(options.projectDir, adapter, run)),
+          ...(!native && run.forDeploy !== true && storageEnv(options.projectDir)),
+          ...(!native && (await cacheHostEnv(options.projectDir, adapter, run))),
         };
   // Before the child, because the route it mounts has to be on disk when Next.js reads `app`. This
   // runs for a Vercel build too: what that build must not have is upwind's adapter and upwind's
@@ -273,7 +286,13 @@ export async function spawnBuild(options: BuildOptions, run: BuildRun = {}): Pro
   // a shell.
   const child = spawn(process.execPath, [command, 'build', options.projectDir], {
     cwd: options.projectDir,
-    env: { ...(run.env ?? process.env), ...adapterEnv, ...authEnv, ...run.extraEnv },
+    env: {
+      ...inherited,
+      ...adapterEnv,
+      ...authEnv,
+      ...run.extraEnv,
+      ...(options.target !== undefined && { UPWIND_BUILD_TARGET: options.target }),
+    },
     stdio: 'inherit',
   });
   // A signal this process is sent is the build's too. Without this, a `kill` on `upwind build` would

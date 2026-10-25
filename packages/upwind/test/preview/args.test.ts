@@ -16,7 +16,13 @@ describe('what `upwind preview` understands', () => {
   it('serves the directory here on 3000 when nothing else is said', () => {
     expect(parsePreviewRequest([])).toStrictEqual({
       answer: undefined,
-      options: { projectDir: process.cwd(), port: 3000, envFiles: [], check: false },
+      options: {
+        projectDir: process.cwd(),
+        port: 3000,
+        envFiles: [],
+        check: false,
+        crons: false,
+      },
     });
   });
 
@@ -42,6 +48,13 @@ describe('what `upwind preview` understands', () => {
     expect(parsePreviewRequest(['--check', '-p', '5000'])).toMatchObject({
       options: { check: true, port: 5000 },
     });
+  });
+
+  it('fires the cron jobs only where --crons asks, and never in a check', () => {
+    expect(parsePreviewRequest(['--crons'])).toMatchObject({ options: { crons: true } });
+    expect(() => parsePreviewRequest(['--crons', '--check'])).toThrow(
+      /--crons fires the cron jobs of a preview that serves, and --check serves nothing/u,
+    );
   });
 
   it('resolves the directory and each env file, in the order given', () => {

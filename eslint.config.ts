@@ -315,6 +315,8 @@ export default defineConfig([
       'unicorn/no-break-in-nested-loop': 'off', // `switch` inside parser loops is idiomatic
       'unicorn/no-non-function-verb-prefix': 'off', // zod schema names such as `createSiteRequestSchema` are nouns
       'unicorn/prefer-iterator-to-array': 'off', // `Iterator#toArray` is not in the ES2024 lib the tsconfigs name
+      // Small request-path predicates keep direct comparisons without allocating an array per call.
+      'unicorn/prefer-includes-over-repeated-comparisons': 'off',
       'unicorn/prefer-number-coercion': 'off', // `parseInt` with an explicit radix is intentional for tolerant header parsing
       'unicorn/consistent-boolean-name': 'off', // rejects idiomatic predicates (`startsWith`, `equals`)
       'unicorn/import-style': 'off',
@@ -563,6 +565,16 @@ export default defineConfig([
       'packages/upwind/src/deploy/workers/**/*.ts',
     ],
     rules: { 'import-x/no-nodejs-modules': 'error' },
+  },
+
+  // The native cache is explicitly Node-only. Worker thread messages are not window messages.
+  {
+    files: ['packages/cache/src/native/**/*.ts', 'packages/cache/test/native/**/*.ts'],
+    rules: {
+      'no-restricted-imports': 'off',
+      'import-x/no-nodejs-modules': 'off',
+      'unicorn/require-post-message-target-origin': 'off',
+    },
   },
 
   // This local Worker has nodejs_compat; its async context attributes only its own reads.

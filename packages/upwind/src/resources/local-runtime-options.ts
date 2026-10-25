@@ -49,13 +49,6 @@ function workflowWorkerName(name: string): string {
   return `upwind-workflow-${name}`;
 }
 
-type LocalBinding =
-  | ReturnType<typeof localAiBinding>
-  | { type: 'd1' | 'kv'; id: string }
-  | { type: 'r2'; name: string }
-  | { type: typeof DURABLE_OBJECT_KIND; worker: string; exportName: string }
-  | { type: 'workflow'; name: string; worker: string; exportName: string };
-
 export interface LocalRuntimeOptions {
   readonly entries: readonly LocalStorageEntry[];
   readonly objects: readonly LocalDurableObject[];
@@ -65,6 +58,13 @@ export interface LocalRuntimeOptions {
 
 /** Independent local worker modules share the same project resource identities. */
 export function runtimeOptions(projectDir: string, input: LocalRuntimeOptions): MiniflareOptions {
+  type LocalBinding =
+    | ReturnType<typeof localAiBinding>
+    | { type: 'd1' | 'kv'; id: string }
+    | { type: 'r2'; name: string }
+    | { type: typeof DURABLE_OBJECT_KIND; worker: string; exportName: string }
+    | { type: 'workflow'; name: string; worker: string; exportName: string };
+
   const { entries, objects, ai, workflows } = input;
   const env = Object.fromEntries<LocalBinding>(
     entries.map((entry): [string, LocalBinding] => {

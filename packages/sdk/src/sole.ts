@@ -11,12 +11,6 @@ import { type Published, type PublishedResource, read, unreadable } from './publ
  * loud: nothing to choose from, or more than one and no grounds to pick.
  */
 
-/** A method as it is reached through the stand-in below; its receiver is what matters. */
-type Method = (this: unknown, ...args: unknown[]) => unknown;
-
-/** Cloudflare's object, as much as anything here needs to know about it: something with methods. */
-type Reached = Record<string | symbol, unknown>;
-
 /** Every binding of one kind, in the order they were published. */
 function ofKind(published: Published, type: string): [string, PublishedResource][] {
   return Object.entries(published.resources).filter(([, resource]) => resource.type === type);
@@ -80,12 +74,18 @@ function soleOf(kind: Kind): unknown {
  * names — is `published()`'s to answer.
  */
 export function sole(kind: Kind): unknown {
+  /** Cloudflare's object, as much as anything here needs to know about it: something with methods. */
+  type Reached = Record<string | symbol, unknown>;
+
   let resolved: Reached | undefined;
   const reach = (): Reached => (resolved ??= soleOf(kind) as Reached);
   return new Proxy(
     {},
     {
       get: (_target, property) => {
+        /** A method as it is reached through the stand-in below; its receiver is what matters. */
+        type Method = (this: unknown, ...args: unknown[]) => unknown;
+
         const on = reach();
         const value: unknown = Reflect.get(on, property, on);
         // Bound to what it came from: these are Cloudflare's own objects, and their methods are

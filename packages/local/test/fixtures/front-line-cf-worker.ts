@@ -1,10 +1,10 @@
 import { frontLineCf } from '../../src/front-line-cf.ts';
 
 type CfRequest = Request & { readonly cf?: Readonly<Record<string, unknown>> };
-type CfInit = RequestInit & { readonly cf: Readonly<Record<string, unknown>> };
-
 /** The native incoming request, before and after the local front line reconstructs it. */
 export function receive(request: CfRequest): Response {
+  type CfInit = RequestInit & { readonly cf: Readonly<Record<string, unknown>> };
+
   const incoming = request.cf;
   const before = JSON.stringify(incoming);
   let legacyError: string | null = null;

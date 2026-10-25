@@ -51,10 +51,6 @@ export interface CacheControlDirectives {
   readonly repeatedFreshness: boolean;
 }
 
-type MutableDirectives = {
-  -readonly [Key in keyof CacheControlDirectives]: CacheControlDirectives[Key];
-};
-
 type BooleanDirective = 'public' | 'private' | 'noStore' | 'noCache' | 'immutable';
 const BOOLEAN_DIRECTIVES: ReadonlyMap<string, BooleanDirective> = new Map([
   ['immutable', 'immutable'],
@@ -92,6 +88,9 @@ function parseSeconds(argument: string | undefined): number | undefined {
 
 /** Parse the directives that admission cares about. */
 export function parseCacheControl(value: string | null): CacheControlDirectives {
+  type MutableDirectives = {
+    -readonly [Key in keyof CacheControlDirectives]: CacheControlDirectives[Key];
+  };
   const directives: MutableDirectives = {
     public: false,
     private: false,

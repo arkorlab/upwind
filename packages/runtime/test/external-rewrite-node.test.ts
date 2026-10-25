@@ -8,7 +8,7 @@ import { externalRewrite } from '../src/serve.ts';
 
 // This suite uses native Node HTTP/fetch. No Next render or Worker-only bridge is invoked.
 vi.mock(import('../src/node-bridge.ts'), () => ({ invokeNodeHandler: vi.fn() }));
-vi.mock(import('../src/fetch-response.ts'), () => import('../src/node-fetch-response.ts'));
+vi.mock(import('../src/rewrite-fetch.ts'), () => import('../src/node-rewrite-fetch.ts'));
 
 async function listen(server: Server): Promise<number> {
   await new Promise<void>((resolve, reject) => {

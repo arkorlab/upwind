@@ -1,5 +1,6 @@
 import { parseAst } from 'rolldown/parseAst';
 
+import { jsLiteral } from '../codegen.ts';
 import { type Patch, Rewrite } from './types.ts';
 
 /**
@@ -79,9 +80,8 @@ function isKeyCall(node: Node): boolean {
   );
 }
 
-/** How many calls of `Symbol.for` with the key a module makes: its copies of the singleton. */
-function keyCalls(source: string): number {
-  let calls = 0;
+/** Visit the real key calls, leaving comments and string examples out of the graph identity. */
+function visitKeyCalls(source: string, visit: (node: Node) => void): void {
   const walk = (value: unknown): void => {
     if (Array.isArray(value)) {
       for (const element of value) {
@@ -93,7 +93,7 @@ function keyCalls(source: string): number {
       return;
     }
     if (isKeyCall(value)) {
-      calls += 1;
+      visit(value);
     }
     for (const [key, child] of Object.entries(value)) {
       if (key !== 'type' && typeof child === 'object') {
@@ -102,7 +102,41 @@ function keyCalls(source: string): number {
     }
   };
   walk(parseAst(source));
+}
+
+/** How many calls of `Symbol.for` with the key a module makes: its copies of the singleton. */
+function keyCalls(source: string): number {
+  let calls = 0;
+  visitKeyCalls(source, () => {
+    calls += 1;
+  });
   return calls;
+}
+
+/**
+ * Graph isolation also applies when native Node loads Edge entries in its own realm. Rewrite
+ * only the argument of a real key call: an Edge chunk can contain application strings quoting
+ * the same expression, which remain application data. The Workers patch below keeps its own
+ * strict copy counts and unchanged Node-key policy.
+ */
+export function rekeyManifestsGraph(source: string, file: string, key: string): string {
+  const ranges: { readonly start: number; readonly end: number }[] = [];
+  visitKeyCalls(source, (node) => {
+    const [argument] = node['arguments'] as readonly Node[];
+    const start = argument?.['start'];
+    const end = argument?.['end'];
+    if (typeof start !== 'number' || typeof end !== 'number') {
+      throw new TypeError(`graph-manifests: the parser supplied no key range in ${file}`);
+    }
+    ranges.push({ start, end });
+  });
+  let contents = source;
+  const replacement = jsLiteral(key);
+  const ordered = ranges.toSorted((a, b) => b.start - a.start);
+  for (const range of ordered) {
+    contents = contents.slice(0, range.start) + replacement + contents.slice(range.end);
+  }
+  return contents;
 }
 
 export const graphManifestsPatch: Patch = {

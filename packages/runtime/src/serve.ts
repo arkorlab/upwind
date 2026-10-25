@@ -16,9 +16,9 @@ import { isDraftRequest } from './draft.ts';
 import { invokeEdgeHandler } from './edge-invoke.ts';
 import type { Entry, EntryTables } from './entries.ts';
 import { NEVER_STORED, render404 } from './error-pages.ts';
-import { fetchedResponse } from './fetch-response.ts';
 import { stripPlatformHeaders } from './incoming.ts';
 import { type FailureAnswer, invokeNodeHandler, type Run } from './node-bridge.ts';
+import { fetchRewrite } from './rewrite-fetch.ts';
 import type { Store } from './store.ts';
 
 /**
@@ -168,16 +168,12 @@ export async function externalRewrite(request: Request, target: URL): Promise<Re
   headers.delete('host');
   let response: Response;
   try {
-    const init: RequestInit & { duplex?: 'half' } = {
+    response = await fetchRewrite(target, {
       method: request.method,
       headers,
       body: request.body,
       redirect: 'manual',
-    };
-    // Native Node requires this for an existing Request's streamed body. Workerd accepts it too;
-    // the stream is forwarded directly, with the same single fetch and no buffering or preflight.
-    if (request.body !== null) init.duplex = 'half';
-    response = fetchedResponse(await fetch(target, init), request.method);
+    });
   } catch {
     releaseStream(request.body, 'rewrite failed: handler body unused');
     // A name that does not resolve, a refused connection, a handshake that failed: the target is

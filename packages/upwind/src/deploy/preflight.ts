@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -100,6 +101,11 @@ export async function readBundle(projectDir: string): Promise<{
   readonly bundleDir: string;
   readonly bundle: DeploymentBundle;
 }> {
+  if (existsSync(path.join(projectDir, '.arkor/node/manifest.json'))) {
+    throw new Error(
+      'this is a native Node artifact; use `upwind start`, or rebuild for Cloudflare before deploying',
+    );
+  }
   const bundleFile = path.join(projectDir, BUNDLE_PATH);
   const bundleDir = path.dirname(bundleFile);
   let raw: string;

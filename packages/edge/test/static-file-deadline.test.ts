@@ -15,9 +15,8 @@ const FILE_PATH = '/stored-manual.txt';
 const FILE_BODY = 'the shipped manual';
 const READ_MS = 2000;
 
-type BucketRead = (key: string, options?: R2GetOptions) => Promise<R2ObjectBody | null>;
-
 async function fixture(blobWorker?: BlobWorker) {
+  type BucketRead = (key: string, options?: R2GetOptions) => Promise<R2ObjectBody | null>;
   const site = await seedSite({ document: pprDocument(), files: { [FILE_PATH]: FILE_BODY } });
   const file = site.manifest.staticFiles?.[FILE_PATH];
   if (file === undefined) throw new Error('the fixture must ship its file');

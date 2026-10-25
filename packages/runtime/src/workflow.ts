@@ -19,9 +19,9 @@
 
 const DEFAULT_ENGINE = 'quickjs';
 
-type Compile = typeof WebAssembly.compile;
-
 function answerCompiledModules(): void {
+  type Compile = typeof WebAssembly.compile;
+
   const compile: Compile = WebAssembly.compile.bind(WebAssembly);
   const passThrough = async (
     source: Parameters<Compile>[0],

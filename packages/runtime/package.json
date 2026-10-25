@@ -10,6 +10,7 @@
   },
   "files": [
     "src",
+    "NATIVE.md",
     "LICENSE-APACHE",
     "LICENSE-MIT",
     "NOTICE"
@@ -19,10 +20,11 @@
     "./bundle-blobs": "./src/bundle-blobs.ts",
     "./cache-host": "./src/cache/host.ts",
     "./function": "./src/function.ts",
+    "./native": "./src/native/index.ts",
     "./node-bindings": "./src/node-bindings.ts",
     "./node-container": "./src/node-container.ts",
     "./node-environment": "./src/node-environment.ts",
-    "./node-fetch-response": "./src/node-fetch-response.ts",
+    "./node-rewrite-fetch": "./src/node-rewrite-fetch.ts",
     "./node-http-bridge": "./src/node-http-bridge.ts",
     "./node-resources": "./src/node-resources.ts"
   },

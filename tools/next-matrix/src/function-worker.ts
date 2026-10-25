@@ -6,7 +6,6 @@ import type { MiniflareOptions, MiniflareWorkerConfig } from 'miniflare';
 
 import { workerSpec } from './worker-function.ts';
 
-type Modules = NonNullable<MiniflareWorkerConfig['manifest']>['modules'];
 type Bindings = NonNullable<MiniflareWorkerConfig['env']>;
 
 /**
@@ -21,6 +20,7 @@ export async function functionWorker(
   env: Bindings = {},
 ): Promise<NonNullable<MiniflareOptions['workers']>[number]> {
   const spec = workerSpec(input);
+  type Modules = NonNullable<MiniflareWorkerConfig['manifest']>['modules'];
   const modules: Modules = {};
   for (const module of spec.modules) {
     const bytes = await readFile(path.join(out, 'blobs', module.blob.sha256));
