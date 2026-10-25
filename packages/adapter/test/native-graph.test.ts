@@ -43,7 +43,6 @@ function loadGraph(source: string, context: Context): Graph {
     require: (name: string) => unknown,
     module: { exports: Record<string, unknown> },
   ) => void;
-
   const storage = new AsyncLocalStorage<{ readonly route: string; readonly page: string }>();
   const unitStorage = new AsyncLocalStorage<unknown>();
   const load = (specifier: string): unknown => {

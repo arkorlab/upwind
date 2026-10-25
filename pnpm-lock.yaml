@@ -699,6 +699,9 @@ importers:
       '@stayingupwind/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@stayingupwind/local':
+        specifier: workspace:*
+        version: link:../../packages/local
     devDependencies:
       '@types/node':
         specifier: 'catalog:'

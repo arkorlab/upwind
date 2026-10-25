@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import type { DeploymentBundle } from '@stayingupwind/core/bundle';
+import { type DeploymentBundle, deploymentBundleSchema } from '@stayingupwind/core/bundle';
 import { compareCodeUnits } from '@stayingupwind/core/util';
 import { blobObjectKey, bundleObjectKey } from '@stayingupwind/host/storage';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -437,6 +437,47 @@ describe('`upwind rollback` on an account', () => {
 
   const rollBack = (dir: string, to?: string) =>
     runRollback({ projectDir: dir, to }, account().credentials, account().io);
+
+  it('refuses a kept route gate named before staging or publishing it', async () => {
+    const dir = await deployableProject(PROJECT);
+    const { first, second } = await twoDeployed(dir);
+    const gated = { ...first, gates: { '/': 'members' } };
+
+    expect(deploymentBundleSchema.safeParse(gated).success).toBe(true);
+
+    await spoilBundle(first.deploymentId, JSON.stringify(gated));
+    const live = liveVersion(account());
+    const versions = scriptOn(account(), NAMES.edge).versions.length;
+
+    await expect(rollBack(dir, first.deploymentId)).resolves.toBe(1);
+    expect(liveVersion(account())).toBe(live);
+    expect(servedBy(account(), NAMES.edge)).toBe(second.deploymentId);
+    expect(scriptOn(account(), NAMES.edge).versions).toHaveLength(versions);
+    expect(held.errors).toContainEqual(expect.stringContaining('route gates'));
+    expect(held.errors).toContainEqual(
+      expect.stringContaining('`upwind rollback` does not bind yet'),
+    );
+  });
+
+  it('passes over a kept route gate to an earlier deployment the command can bind', async () => {
+    const dir = await deployableProject(PROJECT);
+    const [one, two] = await threeDeployed(dir);
+
+    expect(two).toBeDefined();
+
+    const gated = { ...two, gates: { '/': 'members' } };
+
+    expect(deploymentBundleSchema.safeParse(gated).success).toBe(true);
+
+    await spoilBundle(two?.deploymentId, JSON.stringify(gated));
+    const versions = scriptOn(account(), NAMES.edge).versions.length;
+
+    await expect(rollBack(dir)).resolves.toBe(0);
+    expect(servedBy(account(), NAMES.edge)).toBe(one?.deploymentId);
+    expect(scriptOn(account(), NAMES.edge).versions).toHaveLength(versions + 1);
+    expect(held.warnings).toContainEqual(expect.stringContaining('route gates'));
+    expect(held.errors).toStrictEqual([]);
+  });
 
   it('passes over a deployment whose staging is refused, and refuses it named', async () => {
     const dir = await deployableProject(PROJECT);
