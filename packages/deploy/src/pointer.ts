@@ -11,6 +11,8 @@ export interface EdgePointerPayload {
   readonly policyId: string;
   /** The deployment's Functions; absent for a site whose pointer sends requests to an origin. */
   readonly app?: AppRuntime | undefined;
+  /** The manifest declares route gates; retained even when that manifest cannot be read. */
+  readonly hasGates?: true | undefined;
   readonly cspNonce: boolean;
   readonly cspNonceMode?: CspNonceMode | undefined;
   readonly cspStrictDynamic?: boolean | undefined;
@@ -65,6 +67,7 @@ export function edgePointerOf(
     deployment: payload.fingerprint,
     ...cspNoncePointerFields(payload.cspNonce, payload.cspNonceMode, payload.cspStrictDynamic),
     ...(payload.app !== undefined && { app: payload.app }),
+    ...(payload.hasGates === true && { hasGates: true as const }),
     // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
     updatedAt: new Date(now).toISOString(),
   };

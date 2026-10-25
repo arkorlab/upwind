@@ -391,6 +391,12 @@ export const edgePointerSchema = z.object({
    */
   app: appRuntimeSchema.optional(),
   /**
+   * This deployment declares route gates. Only `true` is written, so an ungated or legacy pointer
+   * keeps its existing bytes. Without its manifest the edge cannot know which reads need admission,
+   * and answers them unavailable rather than forwarding them around their gates.
+   */
+  hasGates: z.literal(true).optional(),
+  /**
    * Routes of this pointer's manifest the edge does not split for now: each goes to the
    * deployment's Worker whole, a passthrough with the reason `demoted`, until its `until`. The rest
    * of the manifest is served from the edge as ever.
