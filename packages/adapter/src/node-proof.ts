@@ -121,7 +121,11 @@ function linkedSource(
   let contents = code;
   for (const patch of GRAPH_LINKS) {
     if (!patch.target.test(id) || (patch.marker !== undefined && !patch.marker(contents))) continue;
-    const result = patch.apply(contents, id, input.patch);
+    // Raw Node loads each original chunk with its own CommonJS coordinates. Worker-only
+    // copy substitution must not change the physical sources this analysis inspects.
+    const context =
+      patch === turbopackRuntimePatch ? { ...input.patch, copies: undefined } : input.patch;
+    const result = patch.apply(contents, id, context);
     graph.patches.push({ patch: patch.name, file: id, result });
     contents = result.contents;
   }
