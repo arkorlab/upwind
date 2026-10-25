@@ -21,6 +21,7 @@ import {
 } from './function.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import type { TextModule } from './manifests.ts';
+import { instrumentationEntryTraces } from './native-addon-entries.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
 import { nativeFunctionLayout } from './native-layout.ts';
 import { NativeFunctionRequired } from './native-loads.ts';
@@ -79,12 +80,6 @@ export interface HookParts {
   readonly chunks: readonly string[];
   readonly wasm: readonly string[];
   readonly assets: Readonly<Record<string, string>>;
-}
-
-/** The same file gate as the instrumentation patch: absent hooks explain no Function's refusal. */
-function hookEntryTraces(hook: HookParts): NativeAddonEntryTrace[] {
-  // A diagnostic label for the public instrumentation.js|ts convention, independent of Next imports.
-  return hook.file === undefined ? [] : [{ id: 'instrumentation', assets: hook.assets }];
 }
 
 /** Everything a Function of this build is built from, whichever routes it holds. */
@@ -279,7 +274,11 @@ export async function appFunctionInput(
     outDir: context.outDir,
     patch: await patchFor(context, [...parts.chunks, ...middleware.chunks], wasm),
     entries: [...parts.modules, ...middleware.node],
-    entryTraces: [...parts.routes, ...middlewareEntryTraces(middleware), ...hookEntryTraces(hook)],
+    entryTraces: [
+      ...parts.routes,
+      ...middlewareEntryTraces(middleware),
+      ...(await instrumentationEntryTraces(hook, ctx.distDir)),
+    ],
     edgeEntries,
     edgeInstrumentation: context.edgeInstrumentation,
     wasm: wasm.collector,
@@ -331,7 +330,10 @@ export async function buildMiddlewareFunction(
     outDir: context.outDir,
     patch: await patchFor(context, middleware.chunks, wasm),
     entries: middleware.node,
-    entryTraces: [...middlewareEntryTraces(middleware), ...hookEntryTraces(hook)],
+    entryTraces: [
+      ...middlewareEntryTraces(middleware),
+      ...(await instrumentationEntryTraces(hook, ctx.distDir)),
+    ],
     edgeEntries: middleware.edge,
     edgeInstrumentation: context.edgeInstrumentation,
     wasm: wasm.collector,

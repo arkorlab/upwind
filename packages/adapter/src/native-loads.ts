@@ -8,6 +8,7 @@ import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
 import { nativeOperationGuards } from './dynamic-loads.ts';
+import { entryOwnsImporter } from './native-addon-entries.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
 import { nativeLoaderBinary, UnreviewedNativeLoader } from './native-loaders.ts';
 
@@ -57,7 +58,16 @@ function walk(node: Node): Node[] {
 }
 
 function stringOf(node: Node | undefined): string | undefined {
-  return node?.type === 'Literal' && typeof node.value === 'string' ? node.value : undefined;
+  if (node?.type === 'Literal' && typeof node.value === 'string') return node.value;
+  if (node?.type === 'TemplateLiteral' && node.expressions.length === 0)
+    return node.quasis[0]?.value.cooked ?? undefined;
+  return undefined;
+}
+
+function markerId(node: Extract<Node, { type: 'CallExpression' }>): string {
+  const id = node.arguments.length === 1 ? stringOf(node.arguments[0]) : undefined;
+  if (id === undefined) throw new AuditError('Malformed native capability marker');
+  return id;
 }
 
 function identifier(node: Node | undefined, name: string): boolean {
@@ -202,12 +212,7 @@ async function ownedNativeFiles(
   const original = await realpath(importer);
   const files = new Set<string>();
   for (const trace of traces) {
-    const sources = await Promise.all(
-      Object.values(trace.assets)
-        .filter((file) => /\.(?:c|m)?js$/u.test(file))
-        .map((file) => realpath(file)),
-    );
-    if (!sources.includes(original)) continue;
+    if (!(await entryOwnsImporter(trace, original))) continue;
     for (const file of Object.values(trace.assets))
       if (file.endsWith('.node')) files.add(await realpath(file));
   }
@@ -272,10 +277,7 @@ async function ownedBinary(
   const owners: string[] = [];
   for (const trace of traces) {
     const files = Object.values(trace.assets);
-    const sources = await Promise.all(
-      files.filter((file) => /\.(?:c|m)?js$/u.test(file)).map((file) => realpath(file)),
-    );
-    if (!sources.includes(original)) continue;
+    if (!(await entryOwnsImporter(trace, original))) continue;
     for (const file of files) {
       if (file.endsWith('.node') && (await realpath(file)) === actual) {
         owners.push(trace.id);
@@ -490,8 +492,7 @@ export function nativeLoadsPlugin(
       const ids = new Set(
         tree.flatMap((node) => {
           if (node.type !== 'CallExpression' || !identifier(node.callee, MARKER)) return [];
-          const id = stringOf(node.arguments[0]);
-          return id === undefined ? [] : [id];
+          return [markerId(node)];
         }),
       );
       const retained = await Promise.all(
@@ -504,8 +505,7 @@ export function nativeLoadsPlugin(
       );
       for (const node of tree) {
         if (node.type !== 'CallExpression' || !identifier(node.callee, CHILD_MARKER)) continue;
-        const id = stringOf(node.arguments[0]);
-        const binaries = id === undefined ? undefined : children.get(id);
+        const binaries = children.get(markerId(node));
         if (binaries === undefined) throw new AuditError('Unrecognized native child marker');
         throw new AuditError(
           'A retained Node Worker has unclassified owned native child dependencies',
