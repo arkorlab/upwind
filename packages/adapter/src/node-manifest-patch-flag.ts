@@ -112,6 +112,7 @@ function discarded(value: Node, input: PatchFlagInput): boolean {
   let current = value;
   let parent = input.parents.get(current)?.parent;
   while (parent?.type === 'SequenceExpression' && listOf(parent, 'expressions').includes(current)) {
+    if (listOf(parent, 'expressions').at(-1) !== current) return true;
     current = parent;
     parent = input.parents.get(current)?.parent;
   }

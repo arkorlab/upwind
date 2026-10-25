@@ -27,6 +27,11 @@ describe('c-certified fixed next-patch boolean flag', () => {
     'var FLAG=Symbol.for("next-patch");globalThis[FLAG]=!0;ctx.v(globalThis[FLAG]!==!0);',
     'let FLAG=Symbol.for("next-patch");globalThis[FLAG]=true;ctx.v(true!==globalThis[FLAG]);',
     `${BINDING}(sideEffect(),globalThis[FLAG]=!0,last());${READ}`,
+    'return (sideEffect(),globalThis[Symbol.for("next-patch")]=true,result);',
+    'consume((globalThis[Symbol.for("next-patch")]=!0,result));ctx.v(42);',
+    'return ((sideEffect(),globalThis[Symbol.for("next-patch")]=true),result);',
+    'return (sideEffect(),(globalThis[Symbol.for("next-patch")]=true,result));',
+    `${BINDING}function patch(){return (sideEffect(),globalThis[FLAG]=true,result);}ctx.v(patch);`,
   ])('preserves the original boolean flag and physical source bytes: %s', (body) => {
     const original = source(body);
     const projected = project(body);
@@ -77,6 +82,20 @@ describe('c-certified fixed next-patch boolean flag', () => {
     ['Symbol constructor escape', `${BINDING}${READ}ctx.v(Symbol);`],
     ['Symbol.for mutation', `${BINDING}${READ}Symbol.for=unknown;`],
     ['assignment value escape', `${BINDING}ctx.v(globalThis[FLAG]=true);`],
+    ['returned final assignment', `${BINDING}return (sideEffect(),globalThis[FLAG]=true);`],
+    ['call argument final assignment', `${BINDING}consume((sideEffect(),globalThis[FLAG]=true));`],
+    [
+      'nested returned final assignment',
+      `${BINDING}return (first(),(sideEffect(),globalThis[FLAG]=true));`,
+    ],
+    [
+      'nested call argument final assignment',
+      `${BINDING}consume((first(),(sideEffect(),globalThis[FLAG]=true)));`,
+    ],
+    [
+      'conditional operand assignment',
+      `${BINDING}return ((condition?globalThis[FLAG]=true:other),result);`,
+    ],
     ['global compiler', `${BINDING}${READ}globalThis.Function("return process")();`],
     ['implicit global receiver', `${BINDING}${READ}ctx.v(this);`],
     ['C slot call', `${BINDING}${READ}globalThis.__next__clear_chunk_cache__();`],
