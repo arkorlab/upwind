@@ -16,9 +16,9 @@ import { bundleRuntimeModule, type RuntimeBundleInput } from '../src/runtime-bun
  */
 vi.mock(import('../src/runtime-bundle.ts'), () => {
   return {
-    bundleRuntimeModule: vi.fn((input: RuntimeBundleInput) => {
-      return writeFile(input.outFile, 'export default {};\n');
-    }),
+    bundleRuntimeModule: vi.fn((input: RuntimeBundleInput) =>
+      writeFile(input.outFile, 'export default {};\n'),
+    ),
   };
 });
 
@@ -108,7 +108,9 @@ describe('native trace context through real app Function assembly', () => {
     expect(failure.message).toContain('binary');
     expect(failure.message).toContain(NATIVE_CONTEXT);
     expect(failure.message).toContain(`"${ROUTE}": "${NATIVE_ASSET}"`);
-    expect(bundleRuntimeModule).toHaveBeenCalledOnce();
+    expect(bundleRuntimeModule).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ kind: 'app', name: 'app', edge: false, wasm: false }),
+    );
   });
 
   it('preserves the same real audit refusal when no retained route traces a native addon', async () => {
@@ -119,6 +121,8 @@ describe('native trace context through real app Function assembly', () => {
     expect(failure.message).toContain(ORIGINAL_REFUSAL);
     expect(failure.message).toContain('binary');
     expect(failure.message).not.toContain(NATIVE_CONTEXT);
-    expect(bundleRuntimeModule).toHaveBeenCalledOnce();
+    expect(bundleRuntimeModule).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ kind: 'app', name: 'app', edge: false, wasm: false }),
+    );
   });
 });
