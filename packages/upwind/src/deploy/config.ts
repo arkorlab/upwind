@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 import { ADAPTER_PACKAGE } from '../dev/adapter.ts';
 import { resolveFromProject } from '../dev/next-app.ts';
-import { ownVersion, packageVersion } from '../manifest.ts';
+import { moduleVersion, ownVersion } from '../manifest.ts';
 import { projectNameFromPackage, PROJECT_NAME } from './names.ts';
 
 /**
@@ -46,7 +46,7 @@ export interface DeploySettings {
 /** What `deploy.keep` is when the configuration does not say. */
 export const DEFAULT_KEEP = 5;
 
-interface AdapterConfig {
+export interface AdapterConfig {
   readonly file: string | undefined;
   readonly deploy?:
     | {
@@ -71,33 +71,15 @@ interface AdapterConfig {
 
 type ReadProjectConfig = (projectDir: string) => Promise<AdapterConfig>;
 
-/** The manifest of the package a resolved module belongs to: the nearest one up from it. */
-async function manifestOf(module: string): Promise<string | undefined> {
-  let at = path.dirname(module);
-  for (;;) {
-    const candidate = path.join(at, 'package.json');
-    if ((await packageVersion(candidate)) !== undefined) {
-      return candidate;
-    }
-    const up = path.dirname(at);
-    if (up === at) {
-      return undefined;
-    }
-    at = up;
-  }
-}
-
 /** The project's adapter's reader of its configuration, refused if it is not this command's version. */
-async function adapterReader(projectDir: string): Promise<ReadProjectConfig> {
+export async function adapterReader(projectDir: string): Promise<ReadProjectConfig> {
   const adapter = resolveFromProject(projectDir, ADAPTER_PACKAGE);
   if (adapter === undefined) {
     throw new Error(
       `${ADAPTER_PACKAGE} is not installed in ${projectDir}, and a deployment is built with it — install it`,
     );
   }
-  const manifest = await manifestOf(adapter);
-  const adapterVersion = manifest === undefined ? undefined : await packageVersion(manifest);
-  const version = await ownVersion();
+  const [adapterVersion, version] = await Promise.all([moduleVersion(adapter), ownVersion()]);
   if (adapterVersion === undefined || adapterVersion !== version) {
     throw new Error(
       `${ADAPTER_PACKAGE} ${adapterVersion ?? '(unknown version)'} is installed in ${projectDir}, and this is upwind ${version ?? '(unknown version)'} — install the same version of both`,

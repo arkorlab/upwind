@@ -10,6 +10,7 @@
   },
   "files": [
     "src",
+    "NATIVE.md",
     "LICENSE-APACHE",
     "LICENSE-MIT",
     "NOTICE"
@@ -18,7 +19,8 @@
   "exports": {
     "./bundle-blobs": "./src/bundle-blobs.ts",
     "./cache-host": "./src/cache/host.ts",
-    "./function": "./src/function.ts"
+    "./function": "./src/function.ts",
+    "./native": "./src/native/index.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

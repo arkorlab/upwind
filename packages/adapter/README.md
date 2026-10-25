@@ -1,5 +1,32 @@
 # @stayingupwind/adapter
 
+## Native Node deployments
+
+`upwind build --target=node` selects a native Node.js deployment instead of the default Cloudflare
+deployment. A project can also export `createAdapter({ target: 'node' })` from its adapter module.
+An explicit adapter target that conflicts with `UPWIND_BUILD_TARGET` fails the build.
+
+The resulting `.arkor/node/` directory contains `server.mjs`, a dedicated `manifest.json`, the
+shared routing/runtime code, build outputs and traced Node dependencies. Run it with `upwind start`
+or `node .arkor/node/server.mjs`. The directory can be moved independently of the application's
+source and installed packages, on the same operating system and architecture as its native addons.
+It requires neither Cloudflare bindings nor a Workers emulator. Environment files are not copied;
+give secrets to the server at runtime.
+
+The native build retains Node's module loader and native addons. It does not apply Workers-only
+module stubs, task-scheduler rewrites or upload-size limits. Static files still pass through the
+shared router and middleware. PPR, RSC, Server Actions and revalidation use the same runtime
+contracts as the Cloudflare build; image requests retain the runtime's source-image fallback.
+
+Native deployments use one process and a persistent local cache. Cloudflare Durable Objects,
+Containers, Workflows and storage bindings, host route gates, scheduled jobs and edge CSP nonces
+are not emulated. A build that requires those capabilities fails with a diagnostic. Host-added
+instrumentation and a host Workflow World are currently unsupported; the application's own
+Next.js instrumentation is preserved.
+`cacheHostModule` is rejected for the native target, whose persistent local cache is configured by
+the server's cache-directory option. Function split budgets apply to Cloudflare deployments;
+every native route runs in the same process.
+
 Bundles declare `aiInference: 1` at the top level when their runtime supports publishing inference-only
 AI service bindings. The marker is independent of the bundle version and resource manifest version.
 A host must require it before publishing an AI-enabled deployment, including an uploaded bundle.
@@ -418,6 +445,21 @@ renamed with it (above): its functions and classes keep their names, and its var
 parameters are renamed short. A cache module that reads its own functions' parameter names, through
 `Function.prototype.toString()`, would read renamed ones and not work.
 
+### Native Node.js addons
+
+A native package used only by build tooling runs in the Node.js build process; it does not need
+Workers support. A native package retained in a server entry is different: Workers cannot load a
+Node.js `.node` addon through
+[`process.dlopen`](https://github.com/cloudflare/workerd/blob/d0c519786437b6b79dc79caddc35641762fbba57/src/node/internal/public_process.ts#L270-L275).
+An existing graph-audit refusal also names the server entries whose Next.js traces include native
+addons, when those traces are available. This context is bounded and does not replace the original
+audit error or prove that a traced addon was invoked.
+
+A prerendered response alone does not make its server entry build-only. The Adapter API records
+[bypass, revalidation and fallback conditions separately from static compute](https://nextjs.org/docs/app/api-reference/adapters/output-types);
+Draft Mode or a later render can still need that entry. The adapter keeps those runtime contracts
+and the graph audit. It does not remove an entry or substitute native exports to make a build pass.
+
 ## Type declarations a Function carries
 
 A server module that runs TypeScript while it answers, such as Twoslash or a documentation renderer,
@@ -753,6 +795,82 @@ registration, bundled source and its dependency paths. The CLI uses this to star
 modules in its local runtime. The adapter's default export also reads downloaded declarations from
 `UPWIND_DURABLE_OBJECTS`, which is the local build input rather than a storage registration command.
 
+### Container-enabled objects
+
+A registration may also carry a host-owned `container` definition:
+
+```ts
+{
+  name: 'JOBS',
+  module: 'src/objects/jobs.ts',
+  className: 'Jobs',
+  container: {
+    image: { dockerfile: 'container/Dockerfile', buildContext: '.' },
+    instanceType: 'lite',
+    maxInstances: 3,
+  },
+}
+```
+
+For an existing image, use `image: { reference: 'registry.example/jobs:release' }`.
+Dockerfile and context paths are project-relative; an omitted context means the Dockerfile's
+directory. `@stayingupwind/core/bundle` exports `ContainerDefinition` and
+`containerDefinitionSchema`. Fixed instance sizes are `lite`, `basic`, and `standard-1` through
+`standard-4`; the host applies its own instance and account limits.
+
+This definition uses Cloudflare's `default` scheduling policy. The host prepares a digest-pinned
+image separately, provisions the Container application against the owner's namespace, and keeps the
+source definition and its optional `definitionRevision` sealed together. The adapter copies source
+metadata unchanged and does not run Docker or include the image in a Next.js Function. Without
+Workflow declarations, Container bundles use version 7, or 8 when app Functions are split; ordinary
+objects retain versions 5 and 6.
+An older host refuses the version instead of silently publishing a namespace without its Container.
+
+Classes can use the native `this.ctx.container` API or extend `Container` from
+`@cloudflare/containers`. With this policy, `ctx.container.start()` takes no image or instance-size
+options. Starting returns before the process is ready, so a class that forwards requests must check
+its listening port first. Runtime image selection belongs to a different scheduling policy and is
+not part of this definition. See Cloudflare's
+[Container API](https://developers.cloudflare.com/containers/api/durable-object-container/).
+
+The application's `durableObject(name)` accessor remains a native namespace. Nothing starts an
+instance during bundling or namespace publication; an application's explicit call is what reaches
+its object and Container. The deployment's ordinary Next.js serving path gains no lookup or proxy.
+
+## Cloudflare Workflows
+
+Pass `cloudflareWorkflows: [{ name, module, className, definitionRevision? }]` to `createAdapter`.
+These are host registrations. Module paths are relative to the application directory and must resolve
+inside it, including through symlinks. The registered named class export should extend Cloudflare's
+`WorkflowEntrypoint`; bundling checks missing imports and exports before anything is deployed.
+
+Each declaration produces `functions.cloudflareWorkflows[name]`, with main module
+`cloudflare-workflow.mjs` exporting the class as `UpwindCloudflareWorkflow`. Top-level
+`cloudflareWorkflows` carries the exact registrations. Modules, WebAssembly, source maps and dependency
+reports use the same content-addressed format as other Functions. The native class is built separately
+from the application's routes and introduces no page-routing or request-time lookup.
+
+Next.js bundles with these artifacts use version 9, or 10 with split app Functions. Durable Objects,
+including Container-enabled objects, and the Workflow SDK may coexist with them. A bundle without Cloudflare Workflows keeps its
+existing version. `bundleBlobs` includes every Workflow artifact.
+
+Other framework hosts can call the exported `buildCloudflareWorkflowFunctions({ projectDir, outDir,
+declarations, sourceMaps? })`. It writes blobs beneath `outDir/blobs` and returns `functions`, checked
+`declarations`, `sourceMaps` and `dependencies` without writing a deployment bundle. The lower-level
+`bundleCloudflareWorkflows(projectDir, declarations, options?)` returns bundled class source and watched
+inputs for local tools. Neither entry point needs a Next.js build or credentials.
+
+The host supplies execution, private scoped Workflow bindings, resource adapters, ownership checks,
+and immutable code/environment retention while instances remain active. It must reject a bundle whose
+registrations differ from its sealed deployment configuration. The standard Worker Loader accepts
+data and service capabilities; native storage bindings need host resource adapters when executing in
+a Dynamic Worker. See [Dynamic Workflows](https://developers.cloudflare.com/dynamic-workers/usage/dynamic-workflows/)
+and [Worker Loader environments](https://developers.cloudflare.com/dynamic-workers/api-reference/#env-object).
+
+The default adapter and local CLI read downloaded registrations from
+`UPWIND_CLOUDFLARE_WORKFLOWS` when explicit adapter registrations are absent. This is a build input,
+not a request to create a remote Workflow.
+
 ## Route gates
 
 A build declares, in `UPWIND_ROUTE_GATES`, a gate for each of the routes whose every answer is to be
@@ -771,7 +889,9 @@ served with no gate asked. A rewrite to the optimizer that leaves the source to 
 in what its rule captured, may have it fetch any. The edge runs a middleware itself only for the
 requests it serves as documents; one it hands on runs the middleware in the Function, where a
 rewrite onto a gated route reaches that route with no gate asked, so no build with a middleware
-declares a gate. Nor may a rule of the routing ask for a header the edge takes off what it hands the
+declares a gate. Hosts that publish through `buildProjectManifest` have the same restriction,
+independently of their adapter. Structural manifest parsing does not perform this publication
+check. Nor may a rule of the routing ask for a header the edge takes off what it hands the
 Function or writes there itself — a forwarding header, `host`, `via`, a hop's own, the platform's —
 as the edge would judge the rule on what the visitor sent and the router on what it is handed.
 Nor may a prerendered page be served as a gated route and as another: its own, and a class ahead of
@@ -796,10 +916,27 @@ The host binds a gate under each name, and its edge asks the route's gate about 
 page's props — before it serves the request anything. An answer that says `x-upwind-gate: pass` has
 the request served as though there were no gate, with its answer kept from shared caches even
 where the application permits public caching: the gate admitted this visitor alone. The browser's
-own cache directives remain. Any other is the answer, kept nowhere. A gate that
-cannot be reached is a `503`, never what was kept of the route. A request of any other method goes
+own cache directives remain. That restriction also applies when a routing pattern exceeds its
+allowance after admission and the Function answers the fallback. Any other is the answer, kept nowhere. A gate that
+cannot be reached is a `503`, never what was kept of the route. A publisher also carries
+`hasGates: true` on the deployment's pointer. If its routing manifest cannot be read, every `GET`
+and `HEAD` is answered `503`: without the routing table the edge cannot prove that the request is
+of an ungated route. The marker is retained whenever the same deployment's pointer is rebuilt;
+an ungated or legacy pointer omits it and keeps its existing fallback behavior. A gated pointer uses
+version 2 together with `hasGates: true`; an ungated pointer keeps version 1 and its existing bytes.
+A reader that knows only version 1 rejects the entire gated pointer before routing or Function
+fallback. A new reader refuses a version 2 pointer without the marker, or a version 1 pointer with
+it. Hosts composing their own pointer schema preserve this pairing; those selecting public service
+members also require a gate-capable pointer version when any reachable member is gated. During a
+mixed rollout an old reader serves none of the newly gated deployment, so deploy gate-capable
+readers first to preserve availability. A legacy `requiresGate`-only version 1 pointer retains that
+independent admission marker without acquiring `hasGates` or version 2. A request of any other method goes
 to the Function, as it does without a gate. Nor is a gated route an image the optimizer may take:
 `/_next/image` answers a source of one `400`, as it answers a source that is no image, before
 anything is fetched or kept — what it optimizes is kept for every visitor, and a gated route's
 every answer is its gate's. An image of a gated route is marked `unoptimized`, so that the browser
 asks for it at its route, of its gate.
+
+Accepted validation requests keep this restriction: bypassing a route's admission gate to prove a
+candidate does not make that route a source for the image optimizer. Validate such an image at its own
+route rather than through `/_next/image`.

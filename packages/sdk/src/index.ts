@@ -10,6 +10,14 @@
  * published, under the names it published them as; `published()` is how to see that list.
  */
 
-export { ai, blob, d1, durableObject, kv, service } from './named.ts';
+export { ai, blob, d1, durableObject, kv, service, workflow } from './named.ts';
 export type { AiInference } from './ai-inference.ts';
 export { published, type Published, type PublishedResource } from './published.ts';
+
+export type {
+  CloudflareWorkflow,
+  CloudflareWorkflowInstance,
+  CloudflareWorkflowBatchResult,
+  CloudflareWorkflowBridge,
+  CloudflareWorkflowRequest,
+} from './workflow-binding.ts';

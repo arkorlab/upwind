@@ -42,8 +42,6 @@ type Schedule = (callback: Callback, ...args: unknown[]) => ImmediateHandle;
 interface ImmediateOptions {
   readonly signal?: AbortSignal | undefined;
 }
-type TimeoutHandle = Parameters<typeof clearTimeout>[0];
-
 export interface TaskScheduler {
   readonly taskTimer: (callback: Callback, delayMs: number, ...args: unknown[]) => TaskTimer;
   /** The immediates scheduled and not yet run. */
@@ -179,6 +177,8 @@ class Scheduler implements TaskScheduler {
   readonly pendingImmediates = (): number => this.#scope().pendingImmediates();
 
   constructor() {
+    type TimeoutHandle = Parameters<typeof globalThis.clearTimeout>[0];
+
     const { clearImmediate, clearTimeout } = native;
     const schedule: Schedule = (callback, ...args) => {
       const scope = this.#scope();

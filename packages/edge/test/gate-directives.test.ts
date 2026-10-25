@@ -99,6 +99,10 @@ const POLICY: DeliveryPolicy = {
 };
 const STATUS = { ok: 200, unprocessable: 422, unavailable: 503, failed: 500 } as const;
 const PRIVATE = 'private, no-store';
+/** A header's value the costly route's pattern spends a request's whole budget testing. */
+/** The header the costly route's pattern tests. */
+const COSTLY_HEADER = 'x-costly';
+const COSTLY_VALUE = 'a'.repeat(4096);
 
 /** The head of the page a gate keeps for the route, one boundary left to its resume. */
 const GATE_HTML =
@@ -178,6 +182,11 @@ interface Settings {
   readonly memory?: EdgeMemory;
   /** How far the host's clock is set on once the gate is asked: not at all, unless said. */
   readonly clockSet?: number;
+  /**
+   * The route bypassed for a header its pattern tests at a cost past what a request may spend
+   * testing the application's patterns (`budgetPatterns`).
+   */
+  readonly costly?: true;
 }
 
 /** The route's own record: complete in itself, fresh, as the runtime cache wrote it. */
@@ -254,15 +263,26 @@ function manifestOf(
   site: { readonly manifest: ProjectManifest },
   settings: Settings,
 ): ProjectManifest {
-  const cached = cachedManifest(site.manifest, settings.complete === true);
+  const cached = cachedManifest(
+    site.manifest,
+    settings.complete === true,
+    settings.costly === true,
+  );
   const classed =
     settings.classless === undefined ? cached : classlessManifest(cached, settings.classless.gated);
   const exact = settings.exact === undefined ? classed : exactManifest(classed, settings.exact);
   return settings.variant === undefined ? exact : variantManifest(exact, settings.variant);
 }
 
-/** The gated site's manifest, its route an entry of the runtime cache's scope, complete or not. */
-function cachedManifest(manifest: ProjectManifest, complete: boolean): ProjectManifest {
+/**
+ * The gated site's manifest, its route an entry of the runtime cache's scope, complete or not —
+ * and, where `costly`, bypassed for a header a pattern tests at a cost past the request's budget.
+ */
+function cachedManifest(
+  manifest: ProjectManifest,
+  complete: boolean,
+  costly = false,
+): ProjectManifest {
   const route = manifest.routes[POST];
   if (route === undefined) throw new Error('the site has no post route');
   return {
@@ -276,6 +296,7 @@ function cachedManifest(manifest: ProjectManifest, complete: boolean): ProjectMa
           kind: 'app-page',
           delivery: complete ? 'complete' : 'resume',
         },
+        ...(costly && { bypassFor: [{ type: 'header', key: COSTLY_HEADER, value: 'a+a+' }] }),
       },
     },
   };
@@ -954,6 +975,20 @@ describe('a shell its gate answers with', () => {
     expect(debug).toContain(`;route=${exact};`);
     expect(dispatched.map(({ headers }) => headers.get(GATE_RESUME_HEADER))).toStrictEqual([TOKEN]);
     expect(recordReads + shellReads).toBe(0);
+  });
+
+  /**
+   * A shell whose routing spends what the request may spend testing the application's patterns is
+   * routed as a pass would be, to the Function, inside the gate's answer — kept from shared caches as
+   * a pass's is — and not answered by the fallback outside the gate.
+   */
+  it('is routed as a pass inside the gate where its routing spends the pattern budget', async () => {
+    const request = navigation('/posts/abc', { headers: { [COSTLY_HEADER]: COSTLY_VALUE } });
+    const { response, body } = await served(request, () => gateShell(), { costly: true });
+
+    expect(body).toBe('from the Function');
+    expect(response.headers.get(EDGE_DEBUG_HEADER) ?? '').toContain('pattern-budget');
+    expect(response.headers.get('cache-control')).toBe('private, max-age=60');
   });
 
   /**

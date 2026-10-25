@@ -64,8 +64,15 @@ export interface LocalWorker {
   readonly kvNamespaces?: Readonly<Record<string, string>> | undefined;
   readonly r2Buckets?: Readonly<Record<string, string>> | undefined;
   readonly d1Databases?: Readonly<Record<string, string>> | undefined;
+  /** Native local Workflow capabilities, targeting a class in a dedicated Worker. */
+  readonly workflows?: Readonly<NonNullable<V4WorkerOptions['workflows']>> | undefined;
   /** Each namespace by the class the Worker exports, kept in SQLite. */
   readonly durableObjects?: Readonly<Record<string, string>> | undefined;
+  /**
+   * The name of an Images binding, transforming on this machine — Miniflare's own, which resizes
+   * and encodes with `sharp` — rather than by Cloudflare Images.
+   */
+  readonly images?: string | undefined;
   /**
    * Reached from outside the stack: on these addresses (the IPv4 loopback, when it names none), at
    * this port on each, or on a free one when it names none.
@@ -347,7 +354,9 @@ function v4Options(worker: LocalWorker): V4WorkerOptions {
     kvNamespaces: { ...worker.kvNamespaces },
     r2Buckets: { ...worker.r2Buckets },
     d1Databases: { ...worker.d1Databases },
+    ...(worker.workflows !== undefined && { workflows: { ...worker.workflows } }),
     durableObjects: durableObjectOptions(worker.durableObjects),
+    ...(worker.images !== undefined && { images: { binding: worker.images } }),
     ...(sockets.length > 0 && { unsafeDirectSockets: sockets }),
   };
 }

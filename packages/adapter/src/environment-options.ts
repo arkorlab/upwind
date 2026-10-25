@@ -10,9 +10,9 @@ interface EnvironmentOptions {
 }
 
 /**
- * What the default export is configured with: nothing, unless `upwind deploy` runs the build and
- * names the runtime cache's host (`UPWIND_CACHE_HOST_MODULE_ENV`) — the one option a project that
- * names this adapter in its `next.config` cannot be given any other way.
+ * What the default export is configured with: nothing, unless `upwind build` or `upwind deploy`
+ * runs the build and names the runtime cache's host (`UPWIND_CACHE_HOST_MODULE_ENV`) — the one
+ * option a project that names this adapter in its `next.config` cannot be given any other way.
  */
 export function environmentOptions(): EnvironmentOptions {
   const cacheHostModule = process.env[UPWIND_CACHE_HOST_MODULE_ENV];

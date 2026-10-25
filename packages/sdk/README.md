@@ -1,5 +1,38 @@
 # @stayingupwind/sdk
 
+## Cloudflare Workflows
+
+Use a published Workflow capability by name, or select the sole Workflow through the subpath:
+
+```ts
+import workflow from '@stayingupwind/sdk/workflow';
+// Multiple Workflows: import { workflow } from '@stayingupwind/sdk'; workflow('JOBS')
+
+const run = await workflow.create({ params: { orderId: 'order-42' } });
+console.log(run.id); // A synchronous string, including when the host uses RPC.
+await run.status();
+await run.sendEvent({ type: 'approved', payload: true });
+```
+
+`workflow<Params>(name)` returns `undefined` for an absent name or a different capability kind.
+The default accessor resolves lazily and requires exactly one published Workflow. Lookup and import
+make no request. Operations call a private host binding scoped to the project's Workflow; application
+code supplies no account credentials, tenant identifier, deployment selector or provider resource ID.
+
+The exported `CloudflareWorkflow` and `CloudflareWorkflowInstance` types cover `create`, `get`,
+`createBatch`, and instance `status`, `pause`, `resume`, `restart`, `terminate`, `sendEvent` and `delete`.
+Batch creation accepts the current `{ count, params }` or `{ instances }` object forms and returns
+`{ created, errors }`; the deprecated array form returns an array of handles, skipping existing or
+repeated IDs. Object-form errors distinguish existing IDs (`10405`) from repeats in the same batch
+(`10415`), following the [native API](https://developers.cloudflare.com/workflows/build/workers-api/#createbatch).
+Termination and restart
+options are forwarded to the host. Ownership checks, instance retention and availability are the
+host's responsibility. Native streaming subscriptions and batch deletion are not part of this client.
+
+Workflow source uses Cloudflare's `WorkflowEntrypoint`, `WorkflowEvent` and `WorkflowStep`, with
+`step.do`, sleeps and event waits. The class is bundled independently from application routes. This
+capability is separate from the `workflow` package's `"use workflow"` API.
+
 An application's own resource and service bindings, with nothing to configure in the SDK.
 
 ```ts

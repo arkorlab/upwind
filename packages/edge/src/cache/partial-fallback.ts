@@ -58,9 +58,6 @@ type Standing = 'none' | 'fresh' | 'stale';
 /** What the next read of a completion is timed by: what the isolate holds, or a failed last read. */
 type Due = Standing | 'failed';
 
-/** A read's end, for the next one's timing: an absence extended, another answer, or a failure. */
-type Outcome = 'absent' | 'answered' | 'failed';
-
 interface Recent {
   /** When the isolate's last read of the completion began. */
   readonly startedAt: number;
@@ -221,6 +218,9 @@ function refresh(
   standing: Standing,
   settings: RuntimeCacheSettings,
 ): void {
+  /** A read's end, for the next one's timing: an absence extended, another answer, or a failure. */
+  type Outcome = 'absent' | 'answered' | 'failed';
+
   let state = reads.get(edge.runtime.memory);
   if (state === undefined) {
     state = {

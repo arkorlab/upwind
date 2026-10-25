@@ -60,6 +60,7 @@ export {
   rewritePassthroughResponseHeaders,
   sanitizeContinuationHeaders,
   sanitizePassthroughHeaders,
+  handedOnAsSent,
 } from './headers.ts';
 export {
   effectiveReferrerPolicy,

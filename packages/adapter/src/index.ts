@@ -1,18 +1,17 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 
 import {
   bundleBlobs,
   type DeploymentBundle,
   type DurableObjectDeclaration,
+  type CloudflareWorkflowDeclaration,
   deploymentBundleSchema,
   ONE_PASS_BUNDLE_VERSION,
   travelsWithFunction,
 } from '@stayingupwind/core/bundle';
 import { STATIC_PAGES_FALLBACK_PRIVACY } from '@stayingupwind/core/cache';
 import { SECURITY_RELEASE_URL, securityFloorOf } from '@stayingupwind/core/next';
-import { UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
 import type { AdapterOutput, NextAdapter } from 'next';
 
 import {
@@ -23,6 +22,11 @@ import {
   reportSplit,
 } from './app-functions.ts';
 import { BlobStore } from './blobs.ts';
+import {
+  type BuildConfig,
+  configureBuildSourceMaps,
+  renderInOneProcessForStorage,
+} from './build-config.ts';
 import { assertBuildPaths } from './build-paths.ts';
 import { bundleConfig } from './bundle-config.ts';
 import { cacheHandlersModule } from './cache-handlers.ts';
@@ -41,7 +45,6 @@ import {
   tracedWasm,
 } from './collect.ts';
 import { reserveUpwindPrefix } from './dev-prefix.ts';
-import { durableObjectParts } from './durable-objects.ts';
 import {
   checkedEdgeInstrumentationModules,
   edgeInstrumentationOf,
@@ -50,11 +53,13 @@ import type { EdgeEntry } from './edge.ts';
 import { ensureStaticRoutes } from './ensure-static.ts';
 import { environmentOptions } from './environment-options.ts';
 import { exists } from './fs.ts';
+import { dependencyRecord } from './function-report.ts';
 import { type BuiltFunction, type EntryModule, middlewareManifest } from './function.ts';
 import { declaredGates } from './gates.ts';
 import { instrumentationOf, writeClientInstrumentation } from './instrumentation.ts';
-import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
+import { readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
+import { publishNativeBuildTarget, runtimeTargetOf, type RuntimeTarget } from './native/target.ts';
 import { checkPageBodyHost, type UnshippedPrerenderBodies } from './page-bodies.ts';
 import { collectPageBodies } from './page-body-layout.ts';
 import { readProjectConfig } from './project-config.ts';
@@ -64,6 +69,7 @@ import { buildSplitBudget, checkSplitOptions, type SplitOptions } from './split.
 import { collectStaticFiles, rewriteTargetFiles } from './static-files.ts';
 import { staticPagesRuntimeFields } from './static-pages.ts';
 import { type TracedFile, tracedFiles } from './traced-files.ts';
+import { workerClassParts } from './worker-class-functions.ts';
 import {
   buildWorkflowFunction,
   warnOfNoWorld,
@@ -317,13 +323,12 @@ async function onBuildComplete(
       files: files.workflow,
     }),
   );
-  const objects = await durableObjectParts({
+  const objects = await workerClassParts({
     projectDir: ctx.projectDir,
     outDir,
     blobs,
-    declarations: options.durableObjects,
+    options,
     split: functions.built.length > 1,
-    sourceMaps: options.sourceMaps,
     distDir: ctx.distDir,
   });
   const sourceMaps = [
@@ -430,18 +435,6 @@ function bundleFunctions(
   };
 }
 
-/** What went into each Function, by its name, and the plan where the routes were split. */
-function dependencyRecord(
-  functions: AppFunctions<unknown>,
-  middleware: BuiltFunction | undefined,
-): Record<string, unknown> {
-  return {
-    ...Object.fromEntries(functions.built.map((each) => [each.name, each.built.dependencies])),
-    ...(middleware !== undefined && { middleware: middleware.dependencies }),
-    ...(functions.plan !== undefined && { plan: functions.plan }),
-  };
-}
-
 /**
  * What a reader of the build is told once it is written, rather than in the middle of it.
  *
@@ -522,8 +515,12 @@ function middlewarePlacement(middleware: AdapterOutput['MIDDLEWARE'] | undefined
 
 /** What a host configures the adapter with; a build given none produces a bundle with no cache. */
 export interface AdapterOptions {
+  /** The runtime built into this deployment; Cloudflare remains the default. */
+  readonly target?: RuntimeTarget | undefined;
   /** Host registrations whose class code is built separately from every Next.js Function. */
   readonly durableObjects?: readonly DurableObjectDeclaration[] | undefined;
+  /** Host-owned Cloudflare Workflow registrations, built independently of application routes. */
+  readonly cloudflareWorkflows?: readonly CloudflareWorkflowDeclaration[] | undefined;
   /**
    * The module the runtime's cache reads and writes through, as an absolute path — what
    * `arkor:cache-host` resolves to, bundled into the app Function's runtime. The middleware
@@ -724,58 +721,6 @@ async function injectClientInstrumentation(
   config.instrumentationClientInject = [...own, entry];
 }
 
-/** The config `modifyConfig` is handed, as Next.js declares it. */
-type BuildConfig = Parameters<NonNullable<NextAdapter['modifyConfig']>>[0];
-
-/**
- * That the line below has been said already, where the next process to say it can see.
- *
- * A build loads its config more than once and in more than one process, and that is a line worth
- * reading exactly once. The environment is what those processes share.
- */
-const SAID_ENV = 'UPWIND_LOCAL_RESOURCES_SAID';
-
-/**
- * Next.js's own default for `experimental.cpus`, which is always set by the time a config is handed
- * over — so "the project chose this" means "not this".
- *
- * The same expression `defaultConfig` uses (`server/config-shared`), and the same test Next.js makes
- * of it when it decides whether a count is a user override (`getNumberOfWorkers` in `build/index`).
- * Read out of a copy of Next.js it would be an import into internals; written here it is one line
- * that is wrong only if Next.js changes its default, and then the worst of it is a build that leaves
- * the count alone.
- */
-function defaultCpus(): number {
-  return Math.max(1, (Number(process.env['CIRCLE_NODE_TOTAL']) || os.cpus().length) - 1);
-}
-
-/**
- * Render this build's pages in one process, because its storage can only be in one.
- *
- * Only for a build that has local storage in it, which is `upwind build` in a project that reads
- * storage and nothing else (`UPWIND_LOCAL_RESOURCES_ENV` says why one process). It is a real cost —
- * page data is collected by one worker rather than several — so it is said out loud rather than done
- * quietly, and a project that has asked for a worker count of its own keeps it: whoever wrote that
- * line knows something this does not.
- */
-function renderInOneProcessForStorage(config: BuildConfig): void {
-  const chosen = config.experimental.cpus;
-  if (
-    process.env[UPWIND_LOCAL_RESOURCES_ENV] !== '1' ||
-    (chosen !== undefined && chosen !== defaultCpus())
-  ) {
-    return;
-  }
-  config.experimental.cpus = 1;
-  if (process.env[SAID_ENV] === '1') {
-    return;
-  }
-  process.env[SAID_ENV] = '1';
-  console.log(
-    "@stayingupwind/adapter: this build has the project's local storage in it, so its pages are rendered in one process. Set `experimental.cpus` yourself to decide otherwise — a page that reads storage while it prerenders then fails in every process but one.",
-  );
-}
-
 /**
  * The adapter, as a host configures it.
  *
@@ -790,6 +735,12 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
  * a bundle should read the bundle.
  */
 export function createAdapter(options: AdapterOptions = {}): NextAdapter {
+  const target = runtimeTargetOf(options.target);
+  if (target === 'node' && options.cacheHostModule !== undefined) {
+    throw new Error(
+      '@stayingupwind/adapter: the node target uses its persistent local cache; remove cacheHostModule or select the cloudflare target',
+    );
+  }
   checkSplitOptions(options.functions?.split);
   checkPageBodyHost(options.unshippedPrerenderBodies, options.cacheHostModule);
   const edgeHosts = checkedEdgeInstrumentationModules(options.edgeInstrumentationModules);
@@ -812,30 +763,19 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
           config.rewrites = reserved;
         }
       } else if (phase === 'phase-production-build') {
+        // The CLI cannot inspect a custom adapter's target before loading next.config. Publish
+        // the choice now so forked prerender workers skip any inherited Cloudflare preload.
+        if (target === 'node') publishNativeBuildTarget();
         // Content-addressed `/_next/static/immutable/*`: shared across deployments, cached
         // forever. Asked for unconditionally. Before 16.4 Next.js refuses it for a static export,
         // turning the option off in `finalizeConfig` after this hook has run; such a build's
         // assets are recognized from the build's own `onMatch` rule instead (see
         // `immutableByBuild`).
         config.supportsImmutableAssets = true;
-        renderInOneProcessForStorage(config);
+        if (target === 'cloudflare') renderInOneProcessForStorage(config);
         // The Workflow SDK's own Worlds stay out of the Functions: neither can run there.
-        await aliasBuiltinWorlds(config, projectDir, OUT_DIR_NAME);
-        if (carriesMaps(options.sourceMaps)) {
-          // Both halves, because a stack has both in it: a page's frames are in the browser
-          // chunks, and a render's are in the server ones. What keeps the browser maps from being
-          // served is `onBuildComplete`, which takes them out of the static files.
-          config.productionBrowserSourceMaps = true;
-          config.experimental.serverSourceMaps = true;
-          // And what keeps them at all, where the project's own hook would take them away first.
-          // `compiler` is `{}` among Next.js's defaults, but asked of rather than assumed: this
-          // adapter takes a Next.js as old as 16.2, and an absent one has no hook to wrap anyway.
-          const compiler = config.compiler as BuildConfig['compiler'] | undefined;
-          const kept = keepMapsThrough(compiler?.runAfterProductionCompile);
-          if (compiler !== undefined && kept !== undefined) {
-            compiler.runAfterProductionCompile = kept;
-          }
-        }
+        if (target === 'cloudflare') await aliasBuiltinWorlds(config, projectDir, OUT_DIR_NAME);
+        configureBuildSourceMaps(config, options.sourceMaps);
         if (options.clientInstrumentationSource !== undefined) {
           await injectClientInstrumentation(
             config,
@@ -846,15 +786,29 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
       }
       return config;
     },
-    onBuildComplete: (ctx) => onBuildComplete(ctx, options, edgeHosts),
+    async onBuildComplete(ctx) {
+      if (target === 'node') {
+        const { emitNativeDeployment } = await import('./native/emit.ts');
+        await emitNativeDeployment(ctx, options);
+        return;
+      }
+      await onBuildComplete(ctx, options, edgeHosts);
+    },
   };
 }
 
 // `NEXT_ADAPTER_PATH` and `adapterPath` name a module whose default export is the adapter; this
 // one is configured with what the environment says, which is nothing outside `upwind deploy`.
-// eslint-disable-next-line import-x/no-default-export, unicorn/no-top-level-side-effects
+// eslint-disable-next-line import-x/no-default-export
 export default createAdapter(environmentOptions());
 
 export { bundleDurableObjects, type BundledDurableObject } from './durable-objects.ts';
 // What `upwind deploy` reads the project's configuration with: the reader its build uses.
 export { type DeployConfig, readProjectConfig, type UpwindConfig } from './project-config.ts';
+export type { RuntimeTarget } from './native/target.ts';
+
+export {
+  bundleCloudflareWorkflows,
+  buildCloudflareWorkflowFunctions,
+  type BundledCloudflareWorkflow,
+} from './cloudflare-workflows.ts';

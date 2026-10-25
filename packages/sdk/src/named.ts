@@ -10,6 +10,7 @@ import type {
 import { type AiInference, inference } from './ai-inference.ts';
 import { AI, BLOB, D1, type Kind, KV, DURABLE_OBJECT } from './kinds.ts';
 import { read, unreadable } from './published.ts';
+import { type CloudflareWorkflow, workflowBinding } from './workflow-binding.ts';
 
 /**
  * Storage by the name it was bound under.
@@ -71,4 +72,10 @@ export function ai(name: string): AiInference | undefined {
 /** The native service binding published under this name, or nothing. No request is made. */
 export function service(name: string): Fetcher | undefined {
   return byName(name, { type: 'service' }) as Fetcher | undefined;
+}
+
+/** A project-scoped Cloudflare Workflow capability; no request is made during lookup. */
+export function workflow<Params = unknown>(name: string): CloudflareWorkflow<Params> | undefined {
+  const binding = byName(name, { type: 'workflow' });
+  return binding === undefined ? undefined : workflowBinding<Params>(binding);
 }

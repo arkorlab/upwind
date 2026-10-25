@@ -189,7 +189,7 @@ describe('the runner Sentry reads its random values in, under Node.js', () => {
 /**
  * The same under workerd, which is where the SDK's own runner fails: one Worker with the runtime's
  * runner installed and one without, each making IDs with `@sentry/core` in two requests at once.
- * `setUpSdk` is `prepareSafeIdGeneratorContext` of `@sentry/nextjs` (10.74 to 11.4.0), as it sets
+ * `setUpSdk` is `prepareSafeIdGeneratorContext` of `@sentry/nextjs` (10.74 to 11.9.0), as it sets
  * its runner up: one snapshot for the isolate, replaced by a snapshot of wherever a read is made
  * once the one it has cannot be entered.
  */

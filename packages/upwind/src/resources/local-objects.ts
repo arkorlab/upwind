@@ -15,6 +15,8 @@ export interface LocalDurableObject {
   readonly source: string;
   readonly inputs: readonly string[];
   readonly wasmModules?: readonly { readonly name: string; readonly bytes: Uint8Array }[];
+  /** A prepared local Docker image, attached only to this class's native runtime export. */
+  readonly containerImageName?: string;
 }
 
 /** The file a bundler's error is in: esbuild's `location.file`, or Rolldown's `loc.file` or `id`. */
@@ -127,4 +129,9 @@ export async function localObjects(
     warnBuildFailure(projectDir, error, watchedFiles, versions);
     return [];
   }
+}
+
+/** Stable local worker identity for a native class owner. */
+export function ownerName(name: string): string {
+  return `upwind-object-${name}`;
 }

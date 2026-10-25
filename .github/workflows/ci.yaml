@@ -10,9 +10,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  containers:
+    name: Native Container startup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Start a real image through the local native namespace
+        run: pnpm exec vitest run --project upwind packages/upwind/test/local-container-runtime.test.ts
+        env:
+          UPWIND_CONTAINER_INTEGRATION: '1'
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -44,6 +60,7 @@ jobs:
       - run: pnpm check:deploy-tests
       # Native namespaces, SQLite storage and source isolation without a Next.js build.
       - run: pnpm check:durable-objects
+      - run: pnpm check:cloudflare-workflows
       # Inference contract and local capability isolation, without remote AI calls.
       - run: pnpm check:ai
       # The agent rules `create-upwind` writes are still the ones Next.js writes. Text copied out of
@@ -271,6 +288,59 @@ jobs:
       - run: node probe.mts
         working-directory: fixtures/next-local
       - run: pnpm local:check --dir fixtures/next-local
+
+  # `upwind preview` as it is installed: the packages packed, a copy of the deploy fixture installed
+  # from the packs and built with `upwind build`, and the command run from that copy — the stack's
+  # Workers the ones it ships, not bundled from this repository's sources.
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Before packing, as the deploy workflow's build: the adapter's `exports` name its `dist/`.
+      - run: pnpm build
+      # Checked once, then served, asked and stopped.
+      - run: pnpm check:preview --out "$RUNNER_TEMP/preview"
+
+  # The deploy-tests hooks on the runner's targets, for real (`tools/deploy-tests/src/check-local.ts`):
+  # `fixtures/next-minimal` installed, built and served by the deploy hook on Cloudflare's runtime or on
+  # Node.js's, asked, its markers read back by the logs hook, and its server stopped by the cleanup hook.
+  # What the nightly suite runs on, checked on every pull request without Next.js's own checkout.
+  deploy-tests-local:
+    name: deploy-tests hooks (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [cloudflare, node]
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `dist`, because that is the adapter the hook names, as a release hands it to a project.
+      - run: pnpm --filter @stayingupwind/adapter build
+      - run: pnpm check:deploy-tests-local --target "$TARGET"
+        env:
+          TARGET: ${{ matrix.target }}
 
   website:
     runs-on: ubuntu-latest

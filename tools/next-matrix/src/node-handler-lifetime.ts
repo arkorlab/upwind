@@ -106,7 +106,12 @@ async function responseOutcome(
 }
 
 /** Run the actual bridge in workerd; the observer is an in-process service, never the network. */
-async function exercise(bridge: string, tasks: string, lane: Lane): Promise<void> {
+async function exercise(
+  bridge: string,
+  tasks: string,
+  invocation: string,
+  lane: Lane,
+): Promise<void> {
   const release = Promise.withResolvers<undefined>();
   const producer = Promise.withResolvers<undefined>();
   const producerEntered = Promise.withResolvers<undefined>();
@@ -120,6 +125,7 @@ async function exercise(bridge: string, tasks: string, lane: Lane): Promise<void
         { type: 'ESModule', path: '/lifetime/worker.mjs', contents: WORKER },
         { type: 'ESModule', path: '/lifetime/node-bridge.mjs', contents: bridge },
         { type: 'ESModule', path: '/lifetime/tasks.mjs', contents: tasks },
+        { type: 'ESModule', path: '/lifetime/invocation.ts', contents: invocation },
       ],
       // The Function pins these in packages/adapter/src/function.ts.
       compatibilityDate: '2026-09-15',
@@ -223,6 +229,9 @@ const source = await readFile(path.join(ROOT, 'packages/runtime/src/node-bridge.
 assert.equal(source.split(HOLD).length, 2, 'the bridge lifetime boundary moved');
 const previous = source.replace(HOLD, () => GUARDED_HOLD);
 const tasks = compiled(await readFile(path.join(ROOT, 'packages/runtime/src/tasks.ts'), 'utf8'));
+const invocation = compiled(
+  await readFile(path.join(ROOT, 'packages/runtime/src/invocation.ts'), 'utf8'),
+);
 const lanes: Lane[] = [];
 const failures: {
   readonly kind: Lane['kind'];
@@ -244,7 +253,7 @@ await mkdir(directory, { recursive: true });
 async function collect(bridge: string, lane: Lane): Promise<void> {
   lanes.push(lane);
   try {
-    await exercise(bridge, tasks, lane);
+    await exercise(bridge, tasks, invocation, lane);
   } catch (error) {
     failures.push({
       kind: lane.kind,

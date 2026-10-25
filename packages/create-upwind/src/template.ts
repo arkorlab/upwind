@@ -62,8 +62,11 @@ export async function retellReadme(target: string, manager: PackageManager): Pro
   const written = await readFile(readme, 'utf8');
   // Replacement functions, not strings: what a manager's command is has no `$` in it, and a
   // replacement that is taken for a pattern is a bug nobody would look for here.
+  // The longer before the shorter: `pnpm preview --check` is `pnpm preview` with an argument.
   const retold = written
     .replaceAll('pnpm dev', () => runCommand(manager, 'dev'))
-    .replaceAll('pnpm build', () => runCommand(manager, 'build'));
+    .replaceAll('pnpm build', () => runCommand(manager, 'build'))
+    .replaceAll('pnpm preview --check', () => runCommand(manager, 'preview', '--check'))
+    .replaceAll('pnpm preview', () => runCommand(manager, 'preview'));
   await writeFile(readme, retold);
 }

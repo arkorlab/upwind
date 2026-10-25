@@ -1,6 +1,11 @@
 import { RESOURCE_CHANGES_SERVICE_BINDING } from '../paas/resource-changes.ts';
 import { RESOURCES_MANIFEST_BINDING } from '../paas/resources-constants.ts';
 import * as z from '../schema/index.ts';
+import {
+  CONTAINER_BUNDLE_VERSION,
+  CONTAINER_SPLIT_BUNDLE_VERSION,
+  containerDefinitionSchema,
+} from './containers.ts';
 
 const MAX_NAME_LENGTH = 64;
 const MAX_MODULE_LENGTH = 1024;
@@ -40,6 +45,8 @@ export const durableObjectDeclarationSchema = z.strictObject({
     .refine((value) => value !== 'default', 'a named export rather than the default export'),
   /** Opaque host metadata, copied unchanged into the bundle; it does not select namespace identity. */
   definitionRevision: z.number().int().positive().optional(),
+  /** Host-owned default-policy Container configuration; class code uses the native namespace. */
+  container: containerDefinitionSchema.optional(),
 });
 export type DurableObjectDeclaration = z.infer<typeof durableObjectDeclarationSchema>;
 
@@ -55,3 +62,41 @@ export const durableObjectDeclarationsSchema = z
 export const DURABLE_OBJECT_EXPORT = 'UpwindDurableObject';
 export const DURABLE_OBJECT_BUNDLE_VERSION = 5;
 export const DURABLE_OBJECT_SPLIT_BUNDLE_VERSION = 6;
+
+/** Declarations, class Functions and version must all describe the same namespace capabilities.
+ * Workflow versions may carry either kind of object alongside their required Workflow classes.
+ */
+export function durableObjectBundleIssue(
+  bundle: {
+    readonly v: number;
+    readonly durableObjects?: readonly DurableObjectDeclaration[] | undefined;
+    readonly functions: { readonly durableObjects?: Readonly<Record<string, unknown>> | undefined };
+  },
+  workflowVersion = false,
+): string | undefined {
+  const declarations = bundle.durableObjects ?? [];
+  const functions = Object.keys(bundle.functions.durableObjects ?? {});
+  const carriesObjects = declarations.length > 0;
+  const objectVersion = [
+    CONTAINER_BUNDLE_VERSION,
+    CONTAINER_SPLIT_BUNDLE_VERSION,
+    DURABLE_OBJECT_BUNDLE_VERSION,
+    DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
+  ].includes(bundle.v);
+  const carriesContainers = declarations.some((entry) => entry.container !== undefined);
+  const containerVersion = [CONTAINER_BUNDLE_VERSION, CONTAINER_SPLIT_BUNDLE_VERSION].includes(
+    bundle.v,
+  );
+  if (
+    (!workflowVersion &&
+      (objectVersion !== carriesObjects || containerVersion !== carriesContainers)) ||
+    declarations.length !== functions.length ||
+    declarations.some(
+      (entry) => !Object.hasOwn(bundle.functions.durableObjects ?? {}, entry.name),
+    ) ||
+    (!carriesObjects &&
+      (bundle.durableObjects !== undefined || bundle.functions.durableObjects !== undefined))
+  )
+    return 'Durable Object declarations and Functions must match, at bundle version 5 through 10; Containers require 7 through 10';
+  return undefined;
+}

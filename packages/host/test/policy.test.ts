@@ -97,6 +97,7 @@ describe('deliveryPolicySchema', () => {
       'cspStrictDynamic',
       'cacheApi',
       'app',
+      'hasGates',
       'demotedRoutes',
       'updatedAt',
     ]);

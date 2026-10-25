@@ -7,6 +7,12 @@ A build served on one machine as it is served deployed. `startStack` runs, under
 - the prefetch Worker;
 - the build's Functions, bound as a deploy binds them.
 
+Builds with native Cloudflare Workflows also run their verified class artifacts in dedicated
+execution Workers. App Functions use the scoped SDK bridge, and the Workflow Workers receive the
+application's environment, explicit local KV/R2/D1 stores and declared Workflow bindings. Native
+steps, retries, sleeps, events and instance controls execute in Miniflare. Workflow code stays out
+of page Functions, and builds without Workflows add no execution Workers or bindings.
+
 They run over stores of the stack's own, which go when it is disposed. The build is deployed to the
 stack by the same assembly any deploy uses (`deployBundle`, from `@stayingupwind/deploy`), so the
 manifest the edge serves by is the one a deployment of that build would have.
@@ -40,14 +46,15 @@ pnpm local:check --dir <app> [options]
 - `check` asks the stack once for every prerendered route, every file of the build and every app
   Function, and exits non-zero where an answer is not what a deployment would give.
 
-| Option                                                     | What it does                                                                                       |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `--env-file <file>`                                        | Gives the Functions the variables a `.env` file holds; a later file's value of a name wins         |
-| `--kv <name>`, `--r2 <name>`, `--d1 <name>`                | Binds an empty store of that kind under the name given, for an application whose host gives it one |
-| `--delivery-policy <id\|file>`                             | Serves under a built-in delivery policy, or the policy a file holds                                |
-| `--csp-nonce enforce\|report-only`, `--csp-strict-dynamic` | Has the edge mint a nonce for each document, with `'strict-dynamic'` beside it where asked         |
-| `--prover-agent <agent>`                                   | The user agent a check asks as                                                                     |
-| `--hostname <host>`                                        | The hostname a check names the site by; the stack is still reached at its own socket               |
+| Option                                                     | What it does                                                                                        |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `--env-file <file>`                                        | Gives the Functions the variables a `.env` file holds; a later file's value of a name wins          |
+| `--kv <name>`, `--r2 <name>`, `--d1 <name>`                | Binds an empty store of that kind under the name given, for an application whose host gives it one  |
+| `--images`                                                 | Has the edge transform images, as an edge bound to Cloudflare Images does, with Miniflare's binding |
+| `--delivery-policy <id\|file>`                             | Serves under a built-in delivery policy, or the policy a file holds                                 |
+| `--csp-nonce enforce\|report-only`, `--csp-strict-dynamic` | Has the edge mint a nonce for each document, with `'strict-dynamic'` beside it where asked          |
+| `--prover-agent <agent>`                                   | The user agent a check asks as                                                                      |
+| `--hostname <host>`                                        | The hostname a check names the site by; the stack is still reached at its own socket                |
 
 Each of `--env-file`, `--kv`, `--r2` and `--d1` may be given more than once.
 
@@ -60,3 +67,4 @@ Each of `--env-file`, `--kv`, `--r2` and `--d1` may be given more than once.
 | `deploymentFunctions`            | A build's Functions as Workers, bound as a deploy binds them                                                             |
 | `bundleWorker`, `assertHostOnly` | One of the stack's Workers bundled as `wrangler deploy` bundles one, and the check that it holds nothing of a host's own |
 | `agentTarget`                    | The deploy target that deploys a build to a stack, through the stack's deploy agent                                      |
+| `bundleStackScripts`             | The stack's own Workers, bundled ahead of time, for `startStack`'s `scripts` where upwind's sources are not              |

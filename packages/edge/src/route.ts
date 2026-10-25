@@ -377,7 +377,7 @@ function routeWithinBudget(input: GateObservedRoutingInput): Promise<Response> {
   };
   return routeThroughGate(gateInputOf(input, manifest, forwarding, observe), (directive) => {
     return directive === undefined
-      ? routeWithManifest(input, forwarding)
+      ? routeGatedManifest(input, forwarding)
       : routeAsDirected(input, manifest, forwarding, directive);
   });
 }
@@ -400,7 +400,7 @@ function routeAsDirected(
       capture: directive,
     });
   }
-  return routeGateShell(input, manifest, forwarding, directive);
+  return insideGate(input, () => routeGateShell(input, manifest, forwarding, directive));
 }
 
 /**
@@ -454,6 +454,33 @@ function routeGateShell(
         passthroughFor(ready, reason, middleware, { route, waited }),
     });
   });
+}
+
+/** A later routing fallback stays inside any admitted gate's response boundary. */
+function routeGatedManifest(
+  input: ManifestRoutingInput,
+  forwarding: ForwardingContext,
+): Promise<Response> {
+  return insideGate(input, () => routeWithManifest(input, forwarding));
+}
+
+/**
+ * What `route` answers of a request its gate admitted, kept inside the gate's response boundary: a
+ * pattern budget spent on the way is a pass to the Function, as the gate's pass is, not an answer
+ * of the fallback outside it — a gate's shell routed as much as its pass.
+ */
+async function insideGate(
+  input: ManifestRoutingInput,
+  route: () => Promise<Response>,
+): Promise<Response> {
+  try {
+    return await route();
+  } catch (error) {
+    if (error instanceof PatternBudgetExceededError) {
+      return passthroughFor(input, PATTERN_BUDGET);
+    }
+    throw error;
+  }
 }
 
 /** The same request context accompanies every terminal routing outcome. */

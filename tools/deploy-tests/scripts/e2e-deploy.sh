@@ -2,13 +2,24 @@
 # Deploy hook for Next.js's own deploy-mode test suite (`NEXT_TEST_DEPLOY_SCRIPT_PATH`).
 #
 # The suite's harness runs this with the working directory set to an isolated copy of the test
-# application. It builds that application through this adapter, hands the bundle to a host over the
-# host's public API, and prints the URL the host serves it on — the only thing allowed on standard
-# output.
+# application. It builds that application through this adapter and has it served — by a host, over the
+# host's public API, or on this machine on Cloudflare's runtime or on Node.js's (`ADAPTER_TEST_TARGET`,
+# `src/target.ts`) — and prints the URL it is served on: the only thing allowed on standard output.
 set -euo pipefail
 
 # Where everything is, from this script's own place rather than from one another.
 tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Where the application is served: a host (the default), or this machine — Cloudflare's runtime, by a
+# local stack on workerd, or Node.js's, by the native server `upwind start` runs.
+target="${ADAPTER_TEST_TARGET:-host}"
+case "$target" in
+  host | cloudflare | node) ;;
+  *)
+    echo 'ADAPTER_TEST_TARGET must be host, cloudflare or node when set' >&2
+    exit 1
+    ;;
+esac
 
 # Select only the install step. The harness's build and its appended pnpm post-build stay unchanged.
 install_manager="${ADAPTER_TEST_INSTALL_MANAGER-pnpm}"
@@ -71,6 +82,25 @@ export NEXT_DEPLOYMENT_ID="${NEXT_DEPLOYMENT_ID:-$(
 # the client. Without it every page the suite opens is waited on for ten seconds.
 export NEXT_PRIVATE_TEST_MODE=e2e
 
+# What a build for the target is told beside the adapter, through the environment its default export
+# reads. For Cloudflare's runtime, what `upwind deploy` builds with: the runtime cache's host in every
+# Function — this checkout's own, as `upwind build` names it from its sources — and the prefetch segments
+# left out of them, for the prefetch Worker to serve. For Node.js, the native target, which writes
+# `.arkor/node/` instead of Workers. A host builds as it always did: with the adapter alone.
+case "$target" in
+  cloudflare)
+    export UPWIND_CACHE_HOST_MODULE="${adapter_dir}/packages/cache/src/function/host.ts"
+    export UPWIND_UNSHIPPED_OUTPUTS=prefetch-segments
+    if [ ! -f "$UPWIND_CACHE_HOST_MODULE" ]; then
+      echo "no runtime cache host at ${UPWIND_CACHE_HOST_MODULE}" >&2
+      exit 1
+    fi
+    ;;
+  node)
+    export UPWIND_BUILD_TARGET=node
+    ;;
+esac
+
 # Everything below runs the application's own code — its install scripts, its build, its `post-build` —
 # and none of it is ours. So it runs without this tool's configuration in the environment: the token
 # that deploys the bundle has no business inside a fixture's `package.json` scripts, and a fixture that
@@ -89,7 +119,7 @@ export NEXT_PRIVATE_TEST_MODE=e2e
 # where pnpm 10 leaves it alone. `handle-non-hoisted-swc-helpers`, which pins npm, failed on it.
 fixture() {
   env -u ARKOR_API_URL -u ARKOR_API_TOKEN -u ARKOR_API_TOKEN_FILE -u ADAPTER_TEST_PROJECT_ID \
-    -u ADAPTER_TEST_SETTLE_SECONDS -u ADAPTER_TEST_INSTALL_MANAGER \
+    -u ADAPTER_TEST_SETTLE_SECONDS -u ADAPTER_TEST_INSTALL_MANAGER -u ADAPTER_TEST_TARGET \
     COREPACK_ENABLE_STRICT=0 COREPACK_DEFAULT_TO_LATEST=0 "$@"
 }
 
@@ -148,7 +178,9 @@ fixture env PATH="$PWD/node_modules/.bin:$PATH" sh -c "$build_command" 2>&1 |
 #
 # The bundle is beside the project the build built: here, or, in a workspace whose build script builds
 # one of its packages (`pnpm run --dir apps/web build`), in that package. The tool finds it, and the
-# deployment below reads the same one.
+# deployment below reads the same one. A build for Node.js writes no bundle: its native artifact's
+# `.arkor/node/runtime.json` says the same of it — the build id, the deployment, the static files — and
+# is what the tool names for that target.
 bundle_file="$(node "${tool_dir}/src/main.ts" bundle)"
 bundle_says() {
   node -p "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))$1" "$bundle_file"
@@ -195,9 +227,10 @@ immutable_assets="$(
   cat .adapter-build-output.log
 } >.adapter-build.log
 
-# The deployment. The URL it prints is this script's only standard output; its account of what it did
-# goes to standard error as it happens, and into a file for the logs hook as well — the arrangement the
-# build's output has above, for the same reason.
+# The deployment — on a host, or a server of this machine's that outlives this script, whose own output
+# goes to `.adapter-runtime.log` for the logs hook. The URL it prints is this script's only standard
+# output; its account of what it did goes to standard error as it happens, and into a file for the logs
+# hook as well — the arrangement the build's output has above, for the same reason.
 #
 # Standard error is the channel that reaches the suite's log when a fixture fails. The harness quotes
 # this script's standard output in its error, which is the URL's alone and so empty on a failure, and the

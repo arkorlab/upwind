@@ -44,6 +44,16 @@ const SCOPE = 'dpl_icon';
 const BODY = new Uint8Array([137, 80, 78, 71, 0, 255, 128, 10]);
 const REPLACEMENT = new Uint8Array([137, 80, 78, 71, 1, 254, 127, 10]);
 const MIDDLEWARE_TOOK_MS = 240;
+/** Next.js base-server.ts setVaryHeader, including its interception-only Next-URL member. */
+const METADATA_VARY =
+  'RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-URL';
+const ROUTER_VARY_FIELDS = [
+  'rsc',
+  'next-router-state-tree',
+  'next-router-prefetch',
+  'next-router-segment-prefetch',
+  'next-url',
+];
 /**
  * What the application's Function answers a body with, and what an anonymous request is handed on
  * when the edge passes it through: the application's own `public` stands (decided 2026-10-22).
@@ -84,6 +94,7 @@ async function fixture(
     readonly split?: boolean;
     readonly withoutDispatcher?: boolean;
     readonly allowHeader?: string[];
+    readonly bodyContentType?: string;
   } = {},
 ) {
   const sha256 = await sha256Hex(BODY);
@@ -97,7 +108,11 @@ async function fixture(
     response: 'complete',
     compute: 'static',
     renderingMode: 'STATIC',
-    body: { sha256, byteLength: BODY.byteLength, contentType: 'image/png' },
+    body: {
+      sha256,
+      byteLength: BODY.byteLength,
+      contentType: options.bodyContentType ?? 'image/png',
+    },
     initialStatus: 200,
     initialHeaders: { 'content-type': 'image/png', ...options.initialHeaders },
     initialRevalidate: 1,
@@ -446,10 +461,27 @@ describe('the host serves complete route-body generations', () => {
     expect(test.dispatch).not.toHaveBeenCalled();
   });
 
+  it('serves a real build-seeded metadata body with router Vary and its recorded PNG type', async () => {
+    const test = await fixture({
+      initialHeaders: { vary: METADATA_VARY },
+      bodyContentType: 'application/octet-stream',
+    });
+    const response = await routed(test);
+
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(BODY);
+    expect(response.headers.get('content-type')).toBe('image/png');
+    expect(response.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate');
+    expect(response.headers.get('vary')).toBe(METADATA_VARY);
+    expect(test.fallback).not.toHaveBeenCalled();
+    expect(test.dispatch).not.toHaveBeenCalled();
+
+    await test.drain();
+  });
+
   it.each(BODY_CONTROLS)(
     'rejects even an empty original body control before reading a record: %s',
     async (name) => {
-      const test = await fixture();
+      const test = await fixture({ initialHeaders: { vary: METADATA_VARY } });
       const get = vi.spyOn(env.CACHE_STATE, 'get');
       const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
       const response = await test.serve({ headers: { [name.toUpperCase()]: '' } });
@@ -462,29 +494,38 @@ describe('the host serves complete route-body generations', () => {
     },
   );
 
-  it('retains a classified-only control veto', async () => {
-    const test = await fixture();
-    const request = new Request('https://site.example/icon');
-    const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
-    const response = await routeHostedBody({
-      request,
-      url: new URL(request.url),
-      edge: test.edge,
-      manifest: test.manifest,
-      entry: test.entry,
-      classifiedHeaders: new Headers({ 'x-next-revalidated-tags': '' }),
-      passthrough: test.fallback,
-    });
+  it.each([...ROUTER_VARY_FIELDS, 'x-next-revalidated-tags'])(
+    'retains a classified-only control veto with router Vary: %s',
+    async (name) => {
+      const test = await fixture({ initialHeaders: { vary: METADATA_VARY } });
+      const request = new Request('https://site.example/icon');
+      const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+      const response = await routeHostedBody({
+        request,
+        url: new URL(request.url),
+        edge: test.edge,
+        manifest: test.manifest,
+        entry: test.entry,
+        classifiedHeaders: new Headers({ [name]: '' }),
+        passthrough: test.fallback,
+      });
 
-    await expect(response.text()).resolves.toBe('Function');
-    expect(memory).not.toHaveBeenCalled();
-    expect(test.dispatch).not.toHaveBeenCalled();
-  });
+      await expect(response.text()).resolves.toBe('Function');
+      expect(memory).not.toHaveBeenCalled();
+      expect(test.dispatch).not.toHaveBeenCalled();
+    },
+  );
 
-  it.each(['x-matched-path', 'x-next-revalidated-tags', 'x-next-revalidate-tag-token'])(
+  it.each([
+    'x-matched-path',
+    'x-next-revalidated-tags',
+    'x-next-revalidate-tag-token',
+    ...ROUTER_VARY_FIELDS,
+  ])(
     'keeps original control evidence when classification strips a host credential: %s',
     async (name) => {
       const test = await fixture({
+        initialHeaders: { vary: METADATA_VARY },
         credentials: { cookies: [], headers: [name, 'authorization'] },
       });
       const get = vi.spyOn(env.CACHE_STATE, 'get');
@@ -500,10 +541,16 @@ describe('the host serves complete route-body generations', () => {
     },
   );
 
-  it.each(['x-matched-path', 'x-next-revalidated-tags', 'x-next-revalidate-tag-token'])(
+  it.each([
+    'x-matched-path',
+    'x-next-revalidated-tags',
+    'x-next-revalidate-tag-token',
+    ...ROUTER_VARY_FIELDS,
+  ])(
     'keeps a middleware control veto before credential forwarding removes it: %s',
     async (name) => {
       const test = await fixture({
+        initialHeaders: { vary: METADATA_VARY },
         credentials: { cookies: [], headers: [name] },
         middlewareHeaders: {
           'x-middleware-override-headers': name,
@@ -1156,6 +1203,26 @@ describe('the host serves complete route-body generations', () => {
   });
 
   it.each([
+    { 'cache-control': 'private' },
+    { 'cache-control': 'no-store' },
+    { 'set-cookie': 'visitor=1' },
+    { connection: 'vary' },
+    { 'content-encoding': 'gzip' },
+    { 'content-range': 'bytes 0-1/2' },
+  ])(
+    'keeps a stored privacy or transport veto beside known router Vary: %j',
+    async (headers: Readonly<Record<string, string>>) => {
+      const test = await fixture({ initialHeaders: { vary: METADATA_VARY, ...headers } });
+      const response = await test.serve();
+
+      await expect(response.text()).resolves.toBe('Function');
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+      expect(test.fallback).toHaveBeenCalledTimes(1);
+      expect(test.dispatch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
     { cookie: 'visitor=1' },
     { authorization: 'Bearer visitor' },
     { range: 'bytes=0-1' },
@@ -1431,22 +1498,37 @@ describe('the host serves complete route-body generations', () => {
     expect(get).not.toHaveBeenCalled();
   });
 
-  it.each(varyCases(['Accept-Language', 'Accept-Encoding, aCcEpT-LaNgUaGe']))(
-    'does not share an unkeyed variant from $layer: $vary',
-    async ({ layer, vary }) => {
-      const test = await varyFixture(layer, vary);
+  it.each(
+    varyCases([
+      'Accept-Language',
+      'Accept-Encoding, aCcEpT-LaNgUaGe',
+      `${METADATA_VARY}, Origin`,
+      `${METADATA_VARY}, Cookie`,
+      `${METADATA_VARY}, Accept-Language`,
+      `${METADATA_VARY}, *`,
+      'Next-Action',
+    ]),
+  )('does not share an unkeyed variant from $layer: $vary', async ({ layer, vary }) => {
+    const test = await varyFixture(layer, vary);
 
-      const response = await test.serve({ headers: { 'accept-language': 'fr' } });
+    const response = await test.serve({ headers: { 'accept-language': 'fr' } });
 
-      await expect(response.text()).resolves.toBe('Function');
-      expect(test.fallback).toHaveBeenCalledTimes(1);
+    await expect(response.text()).resolves.toBe('Function');
+    expect(test.fallback).toHaveBeenCalledTimes(1);
 
-      await test.drain();
-    },
-  );
+    await test.drain();
+  });
 
-  it.each(varyCases(['Accept-Encoding', 'aCcEpT-EnCoDiNg']))(
-    'keeps serving identity bytes with compression Vary from $layer: $vary',
+  it.each(
+    varyCases([
+      'Accept-Encoding',
+      'aCcEpT-EnCoDiNg',
+      METADATA_VARY,
+      `${METADATA_VARY}, Accept-Encoding`,
+      'rSc, nExT-uRl',
+    ]),
+  )(
+    'keeps identity bytes with absent router protocol or compression Vary from $layer: $vary',
     async ({ layer, vary }) => {
       const test = await varyFixture(layer, vary);
 
@@ -1455,6 +1537,7 @@ describe('the host serves complete route-body generations', () => {
       expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(BODY);
       expect(test.fallback).not.toHaveBeenCalled();
       expect(response.headers.get('content-encoding')).toBeNull();
+      expect(response.headers.get('vary')).toBe(vary);
       expect(test.dispatch).toHaveBeenCalledTimes(layer === 'middleware' ? 1 : 0);
 
       await test.drain();

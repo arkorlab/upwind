@@ -125,6 +125,32 @@ describe('the Functions of a deployment, on a local stack', () => {
     ]);
   });
 
+  it('refuses unmatched native Workflow declarations or artifacts before starting Workers', () => {
+    const dir = buildDir();
+    const app = spec([module(dir, 'index.mjs', 'esm', 'export default { fetch() {} };')]);
+    const definition = {
+      name: 'JOBS',
+      module: 'jobs.ts',
+      // eslint-disable-next-line unicorn/no-keyword-prefix -- Matches the host registration field.
+      className: 'Job',
+    };
+
+    expect(() => {
+      return deploymentFunctions(
+        dir,
+        { deploymentId: DEPLOYMENT_ID, cloudflareWorkflows: [definition], functions: { app } },
+        BINDINGS,
+      );
+    }).toThrow('Cloudflare Workflow registrations and artifacts differ');
+    expect(() => {
+      return deploymentFunctions(
+        dir,
+        { deploymentId: DEPLOYMENT_ID, functions: { app, cloudflareWorkflows: { JOBS: app } } },
+        BINDINGS,
+      );
+    }).toThrow('Cloudflare Workflow registrations and artifacts differ');
+  });
+
   it('refuses a module whose bytes are not the blob it names, a build that runs workflows or has Durable Objects, and a missing main module', () => {
     const dir = buildDir();
     const named = module(dir, 'index.mjs', 'esm', 'export default {};');

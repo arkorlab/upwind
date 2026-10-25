@@ -19,7 +19,6 @@ import {
 } from '../src/page-body-layout.ts';
 import { carriesBlob } from '../src/split.ts';
 
-type Output = PrerenderCollection['outputs']['prerenders'][number];
 const BASE_PATH = '/docs';
 const ROUTE = '/docs/items/[id]';
 const ENTRY: Entrypoint = { id: ROUTE, kind: 'app-page', pathname: ROUTE };
@@ -63,6 +62,7 @@ async function uploaded(outDir: string): Promise<{ sha256: string; bytes: Buffer
 }
 
 describe('the page bodies a build starts from', () => {
+  type Output = PrerenderCollection['outputs']['prerenders'][number];
   let directory: string;
 
   beforeEach(async () => {

@@ -123,6 +123,12 @@ export {
 } from './static-files.ts';
 
 export {
+  type ContainerDefinition,
+  containerDefinitionSchema,
+  CONTAINER_BUNDLE_VERSION,
+  CONTAINER_SPLIT_BUNDLE_VERSION,
+} from './containers.ts';
+export {
   type DurableObjectDeclaration,
   durableObjectDeclarationSchema,
   durableObjectDeclarationsSchema,
@@ -132,6 +138,15 @@ export {
 } from './durable-objects.ts';
 
 export { edgeServableRouteBodies } from './route-bodies.ts';
+
+export {
+  type CloudflareWorkflowDeclaration,
+  cloudflareWorkflowDeclarationSchema,
+  cloudflareWorkflowDeclarationsSchema,
+  CLOUDFLARE_WORKFLOW_EXPORT,
+  CLOUDFLARE_WORKFLOW_BUNDLE_VERSION,
+  CLOUDFLARE_WORKFLOW_SPLIT_BUNDLE_VERSION,
+} from './cloudflare-workflows.ts';
 
 export {
   edgeServableStaticPages,

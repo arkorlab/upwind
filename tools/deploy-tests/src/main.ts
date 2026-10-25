@@ -1,9 +1,11 @@
-import { bundleFile, bundleProject } from './bundle-project.ts';
+import { buildFile, bundleProject } from './bundle-project.ts';
 import { claimProject, releaseProject } from './claim.ts';
 import { createClient } from './client.ts';
 import { readConfig, readProjectConfig } from './config.ts';
 import { deployFixture, preflight } from './deploy.ts';
 import { hookDeadline, hookOver, hookSignal } from './hook.ts';
+import { serveLocally, stopLocally } from './local-server.ts';
+import { isLocal, targetOf } from './target.ts';
 
 /**
  * The commands the three hooks of Next.js's deploy-mode contract are made of.
@@ -12,6 +14,10 @@ import { hookDeadline, hookOver, hookSignal } from './hook.ts';
  *   node src/main.ts bundle [directory]     print the bundle the build here wrote
  *   node src/main.ts deploy [directory]     deploy the application here; print its URL
  *   node src/main.ts release [directory]    give the project back (the cleanup hook)
+ *
+ * Where a deployment goes is `ADAPTER_TEST_TARGET`'s to say (`target.ts`): a host over its public API,
+ * or a server of this machine's, on Cloudflare's runtime or on Node.js's — which `deploy` starts, and
+ * `release` stops.
  *
  * The contract reserves standard output for the URL, so everything else this says goes to standard
  * error — including every failure. The deploy hook passes it on to the suite's log as it happens, which
@@ -69,11 +75,38 @@ async function main(argv: readonly string[]): Promise<void> {
   const [first, directory] = argv;
   const command = commandOf(first);
   const appDir = directory ?? process.cwd();
+  const target = targetOf();
   if (command === 'bundle') {
     // Where the deploy hook reads the build's markers from: the package the build wrote it in, in a
-    // workspace (`bundleProject`). Nothing of the host's is asked, so no configuration is read.
-    process.stdout.write(`${bundleFile(await bundleProject(appDir))}\n`);
+    // workspace (`bundleProject`) — its bundle, or for Node.js its native artifact's description.
+    // Nothing of the host's is asked, so no configuration is read.
+    const projectDir = await bundleProject(appDir, process.env['NEXT_DEPLOYMENT_ID'], target);
+    process.stdout.write(`${buildFile(projectDir, target)}\n`);
     return;
+  }
+  if (isLocal(target)) {
+    // Served on this machine: no host to ask, no project to claim, no credential to read.
+    switch (command) {
+      case 'preflight': {
+        say(`nothing to check before a run on ${target}: no host is asked`);
+        return;
+      }
+      case 'release': {
+        await stopLocally(appDir);
+        return;
+      }
+      case 'deploy': {
+        const url = await serveLocally({
+          appDir,
+          target,
+          log: say,
+          deadline: hookDeadline(process.env),
+        });
+        // The one thing on standard output: the harness reads it as the deployment's URL.
+        process.stdout.write(`${url}\n`);
+        return;
+      }
+    }
   }
   if (command === 'release') {
     // No token asked for: giving the project back is a file on this machine, and a cleanup hook that

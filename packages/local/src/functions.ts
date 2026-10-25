@@ -14,6 +14,7 @@ import type { ServiceBinding, TextBinding } from '@stayingupwind/deploy/bindings
 
 import { jsonImportsOf } from './json-imports.ts';
 import type { LocalModule, LocalWorker, ModuleType } from './miniflare.ts';
+import { cloudflareWorkflowWorkers } from './workflows.ts';
 
 /**
  * Each kind of module a Function holds, as Miniflare runs it. A `json` module has no form there — a
@@ -39,6 +40,8 @@ export interface FunctionBindings {
   readonly services: readonly ServiceBinding[];
   /** The application's own stores, each binding by the id of the store the stack keeps for it. */
   readonly stores?: FunctionStores | undefined;
+  /** Customer variables available to native Workflow classes; platform bindings stay out. */
+  readonly workflowText?: readonly TextBinding[] | undefined;
 }
 
 export interface FunctionStores {
@@ -51,6 +54,8 @@ export interface DeploymentFunctions {
   /** The Functions as the deployment's manifest and pointer name them. */
   readonly app: AppRuntime;
   readonly workers: readonly LocalWorker[];
+  /** Native execution and SDK bridges; none participates in the application's routing. */
+  readonly backgroundWorkers?: readonly LocalWorker[];
 }
 
 /**
@@ -179,7 +184,10 @@ function functionWorker(
  */
 export function deploymentFunctions(
   bundleDir: string,
-  bundle: Pick<DeploymentBundle, 'deploymentId' | 'durableObjects' | 'functions'>,
+  bundle: Pick<
+    DeploymentBundle,
+    'deploymentId' | 'durableObjects' | 'cloudflareWorkflows' | 'functions'
+  >,
   bindings: FunctionBindings,
 ): DeploymentFunctions {
   if (bundle.functions.workflow !== undefined) {
@@ -200,16 +208,18 @@ export function deploymentFunctions(
     );
   }
   const blobs = path.join(bundleDir, 'blobs');
+  const workflows = cloudflareWorkflowWorkers(blobs, bundle, bindings, functionWorker);
+  const appBindings = workflows?.bindings ?? bindings;
   const apps = appFunctions(bundle).map(([name, spec]) => {
     const scriptName = `${SCRIPT_PREFIX}${name}`;
     return { name, scriptName, spec };
   });
-  const workers = apps.map((app) => functionWorker(blobs, app.scriptName, app.spec, bindings));
+  const workers = apps.map((app) => functionWorker(blobs, app.scriptName, app.spec, appBindings));
   const split = apps.filter((app) => app.name !== PRIMARY_FUNCTION);
   const { middleware } = bundle.functions;
   const middlewareScriptName = `${SCRIPT_PREFIX}${MIDDLEWARE}`;
   if (middleware !== undefined) {
-    workers.push(functionWorker(blobs, middlewareScriptName, middleware, bindings));
+    workers.push(functionWorker(blobs, middlewareScriptName, middleware, appBindings));
   }
   return {
     app: {
@@ -221,5 +231,6 @@ export function deploymentFunctions(
       }),
     },
     workers,
+    ...(workflows !== undefined && { backgroundWorkers: workflows.workers }),
   };
 }

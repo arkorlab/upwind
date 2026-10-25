@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -62,7 +63,7 @@ const CACHE_HOST_MARK = 'upwind-cache-host-artifacts-v1';
  * The variables a project's auth reads its secret from where its configuration names none, any one
  * of which will do (`@stayingupwind/auth`'s `secret.ts`).
  */
-const AUTH_SECRETS = ['AUTH_SECRET', 'BETTER_AUTH_SECRET', 'BETTER_AUTH_SECRETS'];
+export const AUTH_SECRETS = ['AUTH_SECRET', 'BETTER_AUTH_SECRET', 'BETTER_AUTH_SECRETS'];
 
 export interface Preflight {
   readonly bundleDir: string;
@@ -84,6 +85,11 @@ export async function readBundle(projectDir: string): Promise<{
   readonly bundleDir: string;
   readonly bundle: DeploymentBundle;
 }> {
+  if (existsSync(path.join(projectDir, '.arkor/node/manifest.json'))) {
+    throw new Error(
+      'this is a native Node artifact; use `upwind start`, or rebuild for Cloudflare before deploying',
+    );
+  }
   const bundleFile = path.join(projectDir, BUNDLE_PATH);
   const bundleDir = path.dirname(bundleFile);
   let raw: string;
@@ -112,7 +118,7 @@ function functionBytes(spec: FunctionSpec): number {
 }
 
 /** Whether any module of the Function carries the cache host's mark. */
-async function carriesCacheHost(bundleDir: string, spec: FunctionSpec): Promise<boolean> {
+export async function carriesCacheHost(bundleDir: string, spec: FunctionSpec): Promise<boolean> {
   for (const module of spec.modules) {
     if (module.type !== 'esm' && module.type !== 'commonjs') {
       continue;
@@ -136,6 +142,14 @@ interface CheckInput {
 /** What the build has that this command cannot run yet: workflows, Durable Objects, gates. */
 function unsupported(bundle: DeploymentBundle): string[] {
   const problems: string[] = [];
+  if (
+    (bundle.cloudflareWorkflows?.length ?? 0) > 0 ||
+    Object.keys(bundle.functions.cloudflareWorkflows ?? {}).length > 0
+  ) {
+    problems.push(
+      'the build has Cloudflare Workflows, which require a host that provisions a scoped Workflow execution service',
+    );
+  }
   if (bundle.functions.workflow !== undefined) {
     problems.push(
       'the build runs workflows, and a self-hosted deployment runs no workflow World yet',

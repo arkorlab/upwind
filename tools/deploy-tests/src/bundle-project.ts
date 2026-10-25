@@ -3,13 +3,19 @@ import path from 'node:path';
 
 import { type DeploymentBundle, deploymentBundleSchema } from '@stayingupwind/core/bundle';
 
+import type { Target } from './target.ts';
+
 /**
  * Where a build's bundle is: `.arkor/` beside the project the adapter built, which is the application
- * itself, or, in a workspace whose build script builds one of its packages, that package.
+ * itself, or, in a workspace whose build script builds one of its packages, that package. A build for
+ * the Node.js target writes no bundle but a native artifact beneath it, `.arkor/node/`, described by
+ * its `runtime.json`, which says the same of the build: its build id, deployment and static files.
  */
 
 const BUNDLE_DIRECTORY = '.arkor';
 const BUNDLE_FILE = 'bundle.json';
+const NATIVE_DIRECTORY = 'node';
+const NATIVE_RUNTIME_FILE = 'runtime.json';
 const BLOBS_DIRECTORY = 'blobs';
 /** How far below the application a workspace package is looked for: `apps/web`, `packages/a/b`. */
 const WORKSPACE_DEPTH = 3;
@@ -17,6 +23,13 @@ const DEPENDENCIES = 'node_modules';
 
 export function bundleFile(projectDir: string): string {
   return path.join(projectDir, BUNDLE_DIRECTORY, BUNDLE_FILE);
+}
+
+/** What describes the build a target serves: its bundle, or, for Node.js, its native artifact's. */
+export function buildFile(projectDir: string, target: Target): string {
+  return target === 'node'
+    ? path.join(projectDir, BUNDLE_DIRECTORY, NATIVE_DIRECTORY, NATIVE_RUNTIME_FILE)
+    : bundleFile(projectDir);
 }
 
 export function blobFile(projectDir: string, sha256: string): string {
@@ -40,13 +53,15 @@ export async function readBundle(projectDir: string): Promise<DeploymentBundle> 
 export async function bundleProject(
   appDir: string,
   deploymentId: string | undefined = process.env['NEXT_DEPLOYMENT_ID'],
+  target: Target = 'host',
 ): Promise<string> {
+  const file = (dir: string): string => buildFile(dir, target);
   const candidates = [
-    ...((await isFile(bundleFile(appDir))) ? [appDir] : []),
-    ...(await bundlesBelow(appDir, WORKSPACE_DEPTH)),
+    ...((await isFile(file(appDir))) ? [appDir] : []),
+    ...(await bundlesBelow(appDir, WORKSPACE_DEPTH, file)),
   ];
   const named = await Promise.all(
-    candidates.map(async (dir) => ({ dir, id: await deploymentOf(dir) })),
+    candidates.map(async (dir) => ({ dir, id: await deploymentOf(file(dir)) })),
   );
   const found = named
     .filter(({ id }) => deploymentId === undefined || id === deploymentId)
@@ -62,7 +77,7 @@ export async function bundleProject(
     const elsewhere =
       candidates.length === 0 ? '' : ` (found: ${where(candidates)}, each of another deployment)`;
     throw new Error(
-      `the build wrote no bundle${of}: no ${path.join(BUNDLE_DIRECTORY, BUNDLE_FILE)} in ${appDir} or in a package of it${elsewhere}`,
+      `the build wrote no bundle${of}: no ${path.relative(appDir, file(appDir))} in ${appDir} or in a package of it${elsewhere}`,
     );
   }
   throw new Error(
@@ -70,10 +85,10 @@ export async function bundleProject(
   );
 }
 
-/** The deployment a bundle says it is; `undefined` for one that does not read as a bundle at all. */
-async function deploymentOf(projectDir: string): Promise<string | undefined> {
+/** The deployment a build says it is; `undefined` for one that does not read as one at all. */
+async function deploymentOf(described: string): Promise<string | undefined> {
   try {
-    const { deploymentId } = JSON.parse(await readFile(bundleFile(projectDir), 'utf8')) as {
+    const { deploymentId } = JSON.parse(await readFile(described, 'utf8')) as {
       deploymentId?: unknown;
     };
     return typeof deploymentId === 'string' ? deploymentId : undefined;
@@ -91,7 +106,11 @@ async function isFile(file: string): Promise<boolean> {
 }
 
 /** The packages below `directory` that hold a bundle, `depth` levels down at most. */
-async function bundlesBelow(directory: string, depth: number): Promise<string[]> {
+async function bundlesBelow(
+  directory: string,
+  depth: number,
+  file: (dir: string) => string,
+): Promise<string[]> {
   if (depth === 0) {
     return [];
   }
@@ -107,8 +126,8 @@ async function bundlesBelow(directory: string, depth: number): Promise<string[]>
       .map(async (entry) => {
         const dir = path.join(directory, entry.name);
         // On down past a bundle, too: one nested in a package is a second candidate, not none.
-        const nested = await bundlesBelow(dir, depth - 1);
-        return (await isFile(bundleFile(dir))) ? [dir, ...nested] : nested;
+        const nested = await bundlesBelow(dir, depth - 1, file);
+        return (await isFile(file(dir))) ? [dir, ...nested] : nested;
       }),
   );
   return below.flat();

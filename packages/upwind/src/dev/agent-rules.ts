@@ -37,9 +37,6 @@ interface WriteResult {
   readonly claudeMd?: AgentFileResult;
 }
 
-/** What a function of somebody else's may start returning without telling anyone. */
-type Awaitable<T> = PromiseLike<T> | T;
-
 /**
  * Both places an export of a CommonJS module of the project's can arrive, for one name.
  *
@@ -165,6 +162,9 @@ function written(result: WriteResult | undefined): readonly string[] {
 
 export async function ensureAgentRules(projectDir: string): Promise<void> {
   try {
+    /** What a function of somebody else's may start returning without telling anyone. */
+    type Awaitable<T> = PromiseLike<T> | T;
+
     // Cheapest first, in the order that ends the ordinary runs soonest. Agent detection is a handful
     // of environment variables and one `access`, and a developer at a keyboard stops there.
     const getAgentName = await functionFromProject<() => Promise<string | null>>(

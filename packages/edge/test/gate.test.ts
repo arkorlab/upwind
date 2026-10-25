@@ -9,7 +9,7 @@ import {
   GATE_ROUTE_HEADER,
   GATE_URL_HEADER,
 } from '@stayingupwind/host/bindings';
-import type { EdgePointer } from '@stayingupwind/host/delivery';
+import { DEFAULT_DELIVERY_POLICY, type EdgePointer } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -17,8 +17,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EdgeGates, EdgeHost } from '../src/edge-host.ts';
 import { GATE_TIMEOUT_MS } from '../src/handlers/gate.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
+import { manifestStateFromPointer } from '../src/preview/state.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
-import { serveFromPointer } from '../src/route.ts';
+import { routeRequest, serveFromPointer } from '../src/route.ts';
 import {
   gateBinding,
   handleStandalone,
@@ -1035,6 +1036,7 @@ function png(): Response {
 async function imaged(
   source: string,
   site: Omit<SiteOptions, 'document'> = GATED,
+  validated = false,
 ): Promise<{
   readonly response: Response;
   readonly body: string;
@@ -1042,7 +1044,11 @@ async function imaged(
   readonly functionAsked: readonly string[];
   readonly fetched: readonly string[];
 }> {
-  const { pointer } = await seedSite({ document: pprDocument(), ...site, images: IMAGES });
+  const { manifest, pointer } = await seedSite({
+    document: pprDocument(),
+    ...site,
+    images: IMAGES,
+  });
   const { gates, asked } = gatesAnswering(() => passing());
   const functionAsked: string[] = [];
   const fetched: string[] = [];
@@ -1062,18 +1068,41 @@ async function imaged(
     headers: { accept: 'image/webp,image/*,*/*;q=0.8', 'sec-fetch-dest': 'image' },
   });
   const ctx = createExecutionContext();
-  const response = await serveFromPointer({
+  const shared = {
     request,
     url: new URL(request.url),
     env,
     ctx,
     runtime,
     host: hostWith(gates),
-    pointer,
-    pointerMs: 0,
-    privateDelivery: false,
-    cspReportingPath: undefined,
-  });
+  };
+  const response = await (validated
+    ? routeRequest({
+        ...shared,
+        state: {
+          ...manifestStateFromPointer({
+            runtime,
+            pointer,
+            stored: { kind: 'found', value: manifest },
+            pathname: shared.url.pathname,
+            privateDelivery: false,
+            cspReportingPath: undefined,
+          }),
+          policy: DEFAULT_DELIVERY_POLICY,
+          cacheApi: false,
+          validated: true,
+          passthroughReason: 'validation',
+          demotedRoutes: undefined,
+        },
+        timings: { pointerMs: undefined, manifestMs: 0, middlewareMs: undefined },
+      })
+    : serveFromPointer({
+        ...shared,
+        pointer,
+        pointerMs: 0,
+        privateDelivery: false,
+        cspReportingPath: undefined,
+      }));
   const body = await response.text();
   await waitOnExecutionContext(ctx);
   return { response, body, asked, functionAsked, fetched };
@@ -1097,6 +1126,23 @@ describe('an image the optimizer is asked for', () => {
       expect(functionAsked).toStrictEqual([]);
       expect(fetched).toStrictEqual([]);
     }
+  });
+
+  /** Validation bypasses route admission and keeps the optimizer's source restrictions. */
+  it('keeps a gated source unsupported under accepted validation', async () => {
+    const { response, body, asked, functionAsked, fetched } = await imaged(
+      '/posts/abc',
+      GATED,
+      true,
+    );
+
+    expect(response.status).toBe(400);
+    expect(body).toBe('"url" parameter is valid but internal response is invalid');
+    expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=image-source-gated');
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(asked).toStrictEqual([]);
+    expect(functionAsked).toStrictEqual([]);
+    expect(fetched).toStrictEqual([]);
   });
 
   /**

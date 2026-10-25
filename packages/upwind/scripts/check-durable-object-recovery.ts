@@ -77,7 +77,9 @@ export async function checkProbeFailure(
     if (native) {
       assert.equal(reads, 2);
       assert.ok(d1('UPWIND_D1'));
-      assert.ok(warnings.some((message) => message.includes('without Durable Object namespaces')));
+      assert.ok(
+        warnings.some((message) => message.includes('without native worker registrations')),
+      );
     } else {
       assert.equal(reads, early ? 0 : 1);
       assert.equal(d1('UPWIND_D1'), undefined);

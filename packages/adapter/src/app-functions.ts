@@ -15,6 +15,7 @@ import type { EdgeEntry } from './edge.ts';
 import { buildFunction, type BuiltFunction, type EntryModule } from './function.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import type { TextModule } from './manifests.ts';
+import type { NativeAddonEntryTrace } from './native-addons.ts';
 import { type BodiesLeftOut, withinTheLimit } from './page-body-layout.ts';
 import type { PatchContext } from './patches/index.ts';
 import type { PlanBudget } from './plan.ts';
@@ -55,12 +56,26 @@ export interface MiddlewareParts {
   readonly wasm: readonly string[];
 }
 
+/** Only the middleware graph actually carried by this Function can explain its audit refusal. */
+function middlewareEntryTraces(middleware: MiddlewareParts): NativeAddonEntryTrace[] {
+  const { output } = middleware;
+  if (output === undefined) return [];
+  const entries = output.runtime === 'edge' ? middleware.edge : middleware.node;
+  return entries.map(({ id }) => ({ id, assets: output.assets }));
+}
+
 /** The instrumentation hook and what it reaches (`instrumentationOf`): every Function runs it. */
 export interface HookParts {
   readonly file: string | undefined;
   readonly chunks: readonly string[];
   readonly wasm: readonly string[];
   readonly assets: Readonly<Record<string, string>>;
+}
+
+/** The same file gate as the instrumentation patch: absent hooks explain no Function's refusal. */
+function hookEntryTraces(hook: HookParts): NativeAddonEntryTrace[] {
+  // A diagnostic label for the public instrumentation.js|ts convention, independent of Next imports.
+  return hook.file === undefined ? [] : [{ id: 'instrumentation', assets: hook.assets }];
 }
 
 /** Everything a Function of this build is built from, whichever routes it holds. */
@@ -183,6 +198,7 @@ function partsOf(
   context: FunctionsContext,
   held: HeldRoutes | undefined,
 ): {
+  routes: readonly RouteCode[];
   modules: readonly EntryModule[];
   edge: readonly EdgeEntry[];
   chunks: readonly string[];
@@ -193,6 +209,7 @@ function partsOf(
 } {
   if (held === undefined) {
     return {
+      routes: context.routes,
       modules: context.modules,
       edge: context.edgeEntries,
       chunks: context.chunks,
@@ -208,6 +225,7 @@ function partsOf(
   // What every Function holds besides its routes, whose traces name what it reads as theirs do.
   const base = [...(output === undefined ? [] : [output]), { assets: context.hook.assets }];
   return {
+    routes: own,
     modules: own.flatMap((route) => (route.module === undefined ? [] : [route.module])),
     edge: own.flatMap((route) => (route.edge === undefined ? [] : [route.edge])),
     chunks: [...new Set(own.flatMap((route) => route.chunks))],
@@ -252,6 +270,7 @@ export async function buildAppFunction(
     outDir: context.outDir,
     patch: await patchFor(context, [...parts.chunks, ...middleware.chunks], wasm),
     entries: [...parts.modules, ...middleware.node],
+    entryTraces: [...parts.routes, ...middlewareEntryTraces(middleware), ...hookEntryTraces(hook)],
     edgeEntries,
     edgeInstrumentation: context.edgeInstrumentation,
     wasm: wasm.collector,
@@ -294,6 +313,7 @@ export async function buildMiddlewareFunction(
     outDir: context.outDir,
     patch: await patchFor(context, middleware.chunks, wasm),
     entries: middleware.node,
+    entryTraces: [...middlewareEntryTraces(middleware), ...hookEntryTraces(hook)],
     edgeEntries: middleware.edge,
     edgeInstrumentation: context.edgeInstrumentation,
     wasm: wasm.collector,

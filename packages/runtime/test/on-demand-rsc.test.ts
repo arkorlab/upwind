@@ -308,14 +308,14 @@ function fallbackRuntime(test: ReturnType<typeof cache>, mode: string): CacheRun
   return mode === 'no-cache' ? undefined : test.runtime;
 }
 
-type CacheCallback = (entry: unknown, meta: { url: string }) => boolean | Promise<boolean>;
-
 /** The simulated Next bridge owns these opaque bytes; SDK code must preserve them unchanged. */
 async function capture(
   input: InvokeInput,
   flight: Uint8Array,
   postponed?: string,
 ): Promise<Response> {
+  type CacheCallback = (entry: unknown, meta: { url: string }) => boolean | Promise<boolean>;
+
   const callback = input.requestMeta['onCacheEntryV2'] as CacheCallback | undefined;
   if (callback === undefined) throw new Error('the static render supplied no capture callback');
 
