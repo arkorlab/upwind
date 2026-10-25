@@ -1,26 +1,37 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 
 import type { ContainerDefinition } from '@stayingupwind/core/bundle';
 
 import type { LocalDurableObject } from './local-objects.ts';
 import { watchFile } from './watch-sources.ts';
 
-const execute = promisify(execFile);
 const BUILD_TIMEOUT_MS = 900_000;
-const MAX_OUTPUT_BYTES = 4_194_304;
+const MAX_ERROR_BYTES = 16_384;
 const LOCAL_TAG_LENGTH = 24;
 
 type DockerCommand = (args: readonly string[], signal?: AbortSignal) => Promise<void>;
 
 async function docker(args: readonly string[], signal?: AbortSignal): Promise<void> {
-  await execute('docker', [...args], {
-    timeout: BUILD_TIMEOUT_MS,
-    maxBuffer: MAX_OUTPUT_BYTES,
-    ...(signal !== undefined && { signal }),
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('docker', [...args], {
+      timeout: BUILD_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(signal !== undefined && { signal }),
+    });
+    let tail = Buffer.alloc(0);
+    const retain = (chunk: Buffer): void => {
+      tail = Buffer.concat([tail, chunk]).subarray(-MAX_ERROR_BYTES);
+    };
+    child.stdout.on('data', retain);
+    child.stderr.on('data', retain);
+    child.once('error', reject);
+    child.once('close', (code, termination) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Docker failed (${termination ?? code}): ${tail.toString('utf8')}`));
+    });
   });
 }
 

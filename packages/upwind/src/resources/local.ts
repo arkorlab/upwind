@@ -205,7 +205,7 @@ type LocalBinding =
   | { type: 'r2'; name: string }
   | { type: typeof DURABLE_OBJECT_KIND; worker: string; exportName: string };
 
-function runtimeOptions(
+export function localRuntimeOptions(
   projectDir: string,
   entries: readonly LocalStorageEntry[],
   objects: readonly LocalDurableObject[],
@@ -577,7 +577,7 @@ function startAndPublish(
   const done = (async (): Promise<Miniflare> => {
     let runtime: Miniflare | undefined;
     try {
-      runtime = await startRuntime(runtimeOptions(projectDir, entries, objects, ai));
+      runtime = await startRuntime(localRuntimeOptions(projectDir, entries, objects, ai));
     } finally {
       // Either way, and before anything slower: a runtime, or the news that there will not be one.
       arrived.resolve(runtime);
