@@ -16,10 +16,12 @@ export {
   type FunctionBindings,
 } from './functions.ts';
 export {
+  bundleStackScripts,
   type CspNonceSetting,
   type LocalStack,
   type LocalStorage,
   type StackOptions,
+  type StackScripts,
   startStack,
 } from './stack.ts';
 export { agentTarget } from './target.ts';

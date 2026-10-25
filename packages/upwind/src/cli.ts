@@ -11,8 +11,9 @@ import { ownVersion } from './manifest.ts';
  * `upwind` — the command in front of a Next.js application.
  *
  * `dev` runs the project's development server behind upwind's own front door; `build` runs the
- * project's build with the adapter named; `deploy` builds it for, and deploys it to, a Cloudflare
- * account of the developer's own, and `destroy` deletes what `deploy` made there. Each runs the
+ * project's build with the adapter named; `preview` serves that build on this machine as a
+ * deployment serves it; `deploy` builds it for, and deploys it to, a Cloudflare account of the
+ * developer's own, and `destroy` deletes what `deploy` made there. Each runs the
  * project's own Next.js: this CLI decides nothing about an application beyond where its platform
  * is.
  *
@@ -31,20 +32,22 @@ const USAGE = `upwind — the front door of a Next.js application
 Usage
   upwind dev [directory]
   upwind build [directory]
+  upwind preview [directory]
   upwind deploy [directory]
   upwind deployments [directory]
   upwind rollback [directory] [--to <deployment>] [--env-file <file>]...
   upwind destroy [directory] --yes
 
 Options
-  -p, --port <port>      Port to listen on, \`dev\` only (default: $PORT, else 3000)
+  -p, --port <port>      Port to listen on, \`dev\` and \`preview\` (default: $PORT, else 3000)
   -H, --hostname <host>  Hostname to bind, \`dev\` only (default: every interface)
       --remote-ai        Enable declared Workers AI bindings using your Cloudflare account, \`dev\` only
+      --check            Ask the build once and stop, rather than serve it, \`preview\` only
       --dry-run          Say what a deploy would do and change nothing, \`deploy\` only
       --build-only       Build for a deploy and stop, \`deploy\` only
       --prebuilt         Deploy what --build-only built, \`deploy\` only
-      --env-file <file>  Secrets for the deployment's Functions, for \`deploy\`; CRON_SECRET, for
-                         \`rollback\`; may repeat
+      --env-file <file>  Secrets for the Functions, for \`deploy\` and \`preview\`; CRON_SECRET,
+                         for \`rollback\`; may repeat
       --keep <n>         Deployments kept to roll back to, \`deploy\` only (default: 5)
       --message <text>   What the deployment is noted as, \`deploy\` only
       --reset-cache-key  Give the runtime cache a new key, \`deploy\` only
@@ -61,6 +64,11 @@ Options
 \`upwind build\` runs the project's own \`next build\` with the deployment adapter named, which
 writes the deployment bundle under .arkor/. On Vercel (VERCEL set, NEXT_ADAPTER_PATH not) it
 names no adapter and writes no bundle: the build there is Vercel's.
+
+\`upwind preview\` serves the bundle \`upwind build\` wrote on this machine, as a deployment of
+it is served: the edge in front, the runtime cache behind it, and the build's Functions. It
+builds nothing and deploys nothing, and listens on the loopback alone. \`--check\` asks every
+route and file of the build once, and the paths deploy.checks names, and ends.
 
 \`upwind deploy\` builds the project and deploys it to a Cloudflare account of your own: the
 edge in front, the runtime cache behind it, each deployment's Functions as Workers of their own,
@@ -102,6 +110,27 @@ async function build(rest: readonly string[]): Promise<void> {
     return;
   }
   await runBuild(request.options);
+}
+
+/**
+ * `upwind preview`. Its stack loaded only when asked for: it runs the bundler's parser and
+ * Miniflare, which no other command needs. The Cloudflare credentials come out of the environment
+ * as they do for `deploy`, before the project's configuration runs: a preview reaches no account,
+ * and hands its Functions nothing of one.
+ */
+async function preview(rest: readonly string[]): Promise<void> {
+  const { takeCredentials } = await import('./deploy/credentials.ts');
+  takeCredentials();
+  const { parsePreviewRequest } = await import('./preview/args.ts');
+  const request = orFail(() => parsePreviewRequest(rest));
+  if (request.answer !== undefined) {
+    await answer(request.answer);
+    return;
+  }
+  const { runPreview } = await import('./preview/command.ts');
+  // Ended rather than returned from: a stack let go may still hold a socket or a timer of its own
+  // for a moment, and nothing is waiting on it. Miniflare's exit hook stops its runtime as it ends.
+  process.exit(await runPreview(request.options));
 }
 
 /**
@@ -201,6 +230,10 @@ async function main(): Promise<void> {
     await build(rest);
     return;
   }
+  if (command === 'preview') {
+    await preview(rest);
+    return;
+  }
   if (command === 'deploy') {
     await deploy(rest);
     return;
@@ -219,7 +252,7 @@ async function main(): Promise<void> {
   }
   if (command !== 'dev') {
     fail(
-      `unknown command \`${command}\`; the commands are \`dev\`, \`build\`, \`deploy\`, \`deployments\`, \`rollback\` and \`destroy\``,
+      `unknown command \`${command}\`; the commands are \`dev\`, \`build\`, \`preview\`, \`deploy\`, \`deployments\`, \`rollback\` and \`destroy\``,
     );
   }
   await dev(rest, argv);

@@ -171,6 +171,15 @@ bundle under `.arkor/` is `@stayingupwind/adapter`'s work and the build is Next.
 missing was the thing `upwind dev` already does, which is to say _which_ adapter, resolved from the
 project rather than from wherever this CLI is installed.
 
+The adapter is also told of the runtime cache's host, which goes into every Function the build
+writes, as it goes into a deployment's: where a runtime cache is bound — under `upwind preview`, or
+deployed by `upwind deploy` — a Function reads and writes it through that host, and without one,
+every read is a miss. Where none is bound, the host finds nothing to reach and stays out of the
+way. A build whose environment names an adapter (`NEXT_ADAPTER_PATH`) or a host
+(`UPWIND_CACHE_HOST_MODULE`) of its own is left as the environment says, and one whose adapter is of
+another version than `upwind` is built without the host, and says so: the host is `upwind`'s own,
+made for the runtime of its version.
+
 ## Storage during a build
 
 A page can read the project's own storage while it prerenders — `generateStaticParams` pulling its
@@ -201,10 +210,12 @@ export default {
 };
 ```
 
-— gets the same bundle from a plain `next build`, from CI, or from any other tool that runs one.
-What `upwind build` adds is that a project which has _not_ written that line still builds a bundle,
-and that a project with no adapter installed is refused rather than left with a build that quietly
-produced none.
+— gets the same bundle from a plain `next build`, from CI, or from any other tool that runs one,
+but for the runtime cache's host, which `upwind build` names through the environment: a Function
+built without it is served by `upwind preview` with every cache read a miss, and refused by
+`upwind deploy`. What `upwind build` adds is that a project which has _not_ written that line still
+builds a bundle, and that a project with no adapter installed is refused rather than left with a
+build that quietly produced none.
 
 ## On Vercel
 
@@ -239,6 +250,39 @@ export default {
 
 And `NEXT_ADAPTER_PATH` still wins, for the build that means it: a job that runs on Vercel to produce
 a bundle rather than a Vercel deployment names the adapter in the environment and gets one.
+
+## `upwind preview`
+
+```bash
+pnpm upwind build
+pnpm upwind preview
+```
+
+The build `upwind build` left under `.arkor/`, served on this machine as a deployment of it is
+served — the edge in front, the runtime cache behind it, the Worker a Function reads the files its
+build left out of it from, and the build's Functions — under one Miniflare, at
+`http://localhost:3000/`. It is to `upwind build` what `next start` is to `next build`: it builds
+nothing, so a change is seen once the project is built again, and it deploys nothing.
+
+- **The project's `deploy` section is read as a deploy reads it.** The secrets `deploy.secrets` names
+  are read from the environment, and each `--env-file` adds its variables, refused where a deploy
+  would refuse them; `deploy.cspNonce` is the edge's; `deploy.hostnames` are the site, so a Function
+  that asks its own site by one of them reaches this preview rather than the deployment; and each of
+  `deploy.checks` is asked once the preview serves. The Functions are given those secrets and
+  nothing else of this machine's environment: no `.env` file is read for them.
+- **What a deployment has that a preview does not yet is said, not left to be found.** The storage
+  `deploy.storage` names is not bound, an image is answered as it is rather than transformed, and no
+  cron job fires. A Function built without the runtime cache's host — by an older upwind, or by a
+  plain `next build` — is served with every cache read a miss, and said to be.
+- **`--check` asks the build once and ends**, for a job in CI: every route and file of the build, as
+  a deployment's edge has to answer it, and each of `deploy.checks`, as a deploy asks it before it
+  switches. It ends with `1` where anything answered otherwise, and listens on a free port unless
+  `--port` names one.
+- **It listens on the loopback alone**: on `--port`, else `$PORT`, else 3000. A port something
+  answers on already is refused rather than moved from. Ctrl-C stops it; a second stops it at once.
+
+Whether a deploy would take the project — its name on an account, the account's limits — is not a
+preview's to say; `upwind deploy --dry-run` says it.
 
 ## `upwind deploy`
 
@@ -400,19 +444,21 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
 ```
 upwind dev [directory]
 upwind build [directory]
+upwind preview [directory]
 upwind deploy [directory]
 upwind deployments [directory]
 upwind rollback [directory] [--to <deployment>] [--env-file <file>]...
 upwind destroy [directory] --yes
 
-  -p, --port <port>      Port to listen on, `dev` only (default: $PORT, else 3000)
+  -p, --port <port>      Port to listen on, `dev` and `preview` (default: $PORT, else 3000)
   -H, --hostname <host>  Hostname to bind, `dev` only (default: every interface)
       --remote-ai        Enable declared Workers AI bindings, `dev` only
+      --check            Ask the build once and stop, rather than serve it, `preview` only
       --dry-run          Say what a deploy would do and change nothing, `deploy` only
       --build-only       Build for a deploy and stop, `deploy` only
       --prebuilt         Deploy what --build-only built, `deploy` only
-      --env-file <file>  Secrets for the deployment's Functions, for `deploy`; CRON_SECRET, for
-                         `rollback`; may repeat
+      --env-file <file>  Secrets for the Functions, for `deploy` and `preview`; CRON_SECRET,
+                         for `rollback`; may repeat
       --keep <n>         Deployments kept to roll back to, `deploy` only (default: 5)
       --message <text>   What the deployment is noted as, `deploy` only
       --reset-cache-key  Give the runtime cache a new key, `deploy` only
@@ -424,7 +470,8 @@ upwind destroy [directory] --yes
       --                 Everything after this is the directory, even `--help`
 ```
 
-A port already in use moves up, up to ten times, as `next dev` does. `next dev`'s other flags —
+Under `upwind dev`, a port already in use moves up, up to ten times, as `next dev` does; `upwind
+preview` refuses one, as `next start` does. `next dev`'s other flags —
 `--experimental-https`, `--inspect`, `--turbopack`, `--webpack` — are refused rather than quietly
 ignored; the bundler is Next.js's own default, which is Turbopack, and which is the only one
 `@stayingupwind/adapter` can build. `next build`'s own flags are not forwarded either: a project that

@@ -62,7 +62,7 @@ const CACHE_HOST_MARK = 'upwind-cache-host-artifacts-v1';
  * The variables a project's auth reads its secret from where its configuration names none, any one
  * of which will do (`@stayingupwind/auth`'s `secret.ts`).
  */
-const AUTH_SECRETS = ['AUTH_SECRET', 'BETTER_AUTH_SECRET', 'BETTER_AUTH_SECRETS'];
+export const AUTH_SECRETS = ['AUTH_SECRET', 'BETTER_AUTH_SECRET', 'BETTER_AUTH_SECRETS'];
 
 export interface Preflight {
   readonly bundleDir: string;
@@ -112,7 +112,7 @@ function functionBytes(spec: FunctionSpec): number {
 }
 
 /** Whether any module of the Function carries the cache host's mark. */
-async function carriesCacheHost(bundleDir: string, spec: FunctionSpec): Promise<boolean> {
+export async function carriesCacheHost(bundleDir: string, spec: FunctionSpec): Promise<boolean> {
   for (const module of spec.modules) {
     if (module.type !== 'esm' && module.type !== 'commonjs') {
       continue;
