@@ -123,6 +123,30 @@ function inputAt(index: number): BuildFunctionInput {
   return input;
 }
 
+function middlewareWithoutAssets(runtime: 'edge' | 'nodejs'): MiddlewareParts {
+  const parts = middleware(runtime);
+  if (parts.output === undefined) throw new Error('no middleware output');
+  return { ...parts, output: { ...parts.output, assets: {} } };
+}
+
+function buildWithoutHook(
+  context: FunctionsContext,
+  kind: 'app' | 'middleware',
+): ReturnType<typeof buildMiddlewareFunction> {
+  return kind === 'app'
+    ? buildAppFunction(context, '{}', { name: 'app-2', routes: new Set(['/owned']) }, false)
+    : buildMiddlewareFunction(context, '{}');
+}
+
+function tracesWithoutHook(
+  context: FunctionsContext,
+  kind: 'app' | 'middleware',
+): NonNullable<BuildFunctionInput['entryTraces']> {
+  return kind === 'app'
+    ? [context.routes[0]!, { id: MIDDLEWARE, assets: MIDDLEWARE_ASSETS }]
+    : [{ id: MIDDLEWARE, assets: MIDDLEWARE_ASSETS }];
+}
+
 describe('native diagnostic trace ownership during Function assembly', () => {
   beforeEach(() => {
     vi.mocked(buildFunction).mockReset().mockRejectedValue(REFUSAL);
@@ -180,9 +204,7 @@ describe('native diagnostic trace ownership during Function assembly', () => {
   it.each(['nodejs', 'edge'] as const)(
     'attributes hook-only native traces to the app and %s middleware that carry the hook',
     async (runtime) => {
-      const parts = middleware(runtime);
-      if (parts.output === undefined) throw new Error('no middleware output');
-      const base = contextOf({ ...parts, output: { ...parts.output, assets: {} } });
+      const base = contextOf(middlewareWithoutAssets(runtime));
       const context: FunctionsContext = {
         ...base,
         routes: base.routes.map((entry) => ({ ...entry, assets: {} })),
@@ -193,7 +215,9 @@ describe('native diagnostic trace ownership during Function assembly', () => {
       await expect(
         buildAppFunction(context, '{}', { name: 'app-2', routes: new Set(['/owned']) }, false),
       ).rejects.toBe(REFUSAL);
+
       await expect(buildMiddlewareFunction(context, '{}')).rejects.toBe(REFUSAL);
+
       const app = inputAt(0);
       const middlewareInput = inputAt(1);
       const hook = { id: INSTRUMENTATION_HOOK_FILENAME, assets: HOOK_ASSETS };
@@ -209,6 +233,7 @@ describe('native diagnostic trace ownership during Function assembly', () => {
         middlewareHook: HOOK_FILE,
         middlewareTraces: [{ id: MIDDLEWARE, assets: {} }, hook],
       });
+
       const appFailure = nativeAddonAuditError(REFUSAL, app.entryTraces ?? []);
       const middlewareFailure = nativeAddonAuditError(REFUSAL, middlewareInput.entryTraces ?? []);
       const tracedHook = '"instrumentation": "node_modules/instrumentation/addon.node"';
@@ -217,6 +242,7 @@ describe('native diagnostic trace ownership during Function assembly', () => {
         app: REFUSAL,
         middleware: REFUSAL,
       });
+
       expect({
         app: appFailure.message.includes(tracedHook),
         middleware: middlewareFailure.message.includes(tracedHook),
@@ -232,19 +258,15 @@ describe('native diagnostic trace ownership during Function assembly', () => {
         hook: { file: undefined, chunks: [], wasm: [], assets: HOOK_ASSETS },
       };
 
-      await expect(
-        kind === 'app'
-          ? buildAppFunction(context, '{}', { name: 'app-2', routes: new Set(['/owned']) }, false)
-          : buildMiddlewareFunction(context, '{}'),
-      ).rejects.toBe(REFUSAL);
+      await expect(buildWithoutHook(context, kind)).rejects.toBe(REFUSAL);
+
       const input = inputAt(0);
-      const traces =
-        kind === 'app'
-          ? [context.routes[0]!, { id: MIDDLEWARE, assets: MIDDLEWARE_ASSETS }]
-          : [{ id: MIDDLEWARE, assets: MIDDLEWARE_ASSETS }];
+      const traces = tracesWithoutHook(context, kind);
 
       expect(input.patch.instrumentation).toBeUndefined();
+
       expect(input.entryTraces).toStrictEqual(traces);
+
       expect(nativeAddonAuditError(REFUSAL, input.entryTraces ?? []).message).not.toContain(
         'node_modules/instrumentation/addon.node',
       );
