@@ -18,6 +18,10 @@ import {
   TurbopackAsyncProjection,
   nodeManifestAsyncMetadata,
 } from './node-manifest-turbopack-async.ts';
+import {
+  turbopackBoundRuntimeInput,
+  TURBOPACK_BOUND_PREFIX as BOUND_PREFIX,
+} from './node-manifest-turbopack-bound.ts';
 import { TurbopackCacheInitializers } from './node-manifest-turbopack-cache.ts';
 import { nodeManifestClearProjection } from './node-manifest-turbopack-clear.ts';
 import { turbopackDependencyOperation } from './node-manifest-turbopack-dependency-operations.ts';
@@ -46,8 +50,6 @@ interface Edit {
   readonly code: string;
 }
 const GETTER_PREFIX = '__upwind_turbopack_getter_';
-const BOUND_PREFIX = '__upwind_turbopack_bound_';
-const BOUND_KINDS = { l: 'loadChunk', r: 'require' } as const;
 const MAX_GETTER_EXPORT_ARGUMENTS = 3;
 const MAX_VALUE_EXPORT_ARGUMENTS = 2;
 
@@ -315,33 +317,28 @@ class FactoryProjection {
   }
 
   private bound(member: Node, visit: Visit, name: 'r' | 'l'): boolean {
-    const bind = this.parents.get(member)?.parent;
-    const call = bind === undefined ? undefined : this.parents.get(bind)?.parent;
-    const owner = call === undefined ? undefined : this.parents.get(call)?.parent;
-    if (
-      bind?.type !== 'MemberExpression' ||
-      bind['object'] !== member ||
-      propertyName(bind) !== 'bind' ||
-      call?.type !== 'CallExpression' ||
-      call['callee'] !== bind ||
-      owner?.type !== 'Property' ||
-      owner['value'] !== call ||
-      propertyName(owner) !== BOUND_KINDS[name]
-    )
-      return false;
-    const args = listOf(call, 'arguments');
-    const arg = args[0];
-    if (args.length !== 1 || !this.ownIdentifier(arg, visit)) refuse('bound context identity');
-    this.allowedContext.add(arg);
-    const binding = `${BOUND_PREFIX}${name}`;
-    this.boundRuntimeInputs.push({ kind: BOUND_KINDS[name], identifier: binding });
-    this.edit(call, binding);
+    const bound = turbopackBoundRuntimeInput({
+      member,
+      name,
+      visit,
+      visits: this.visits,
+      parents: this.parents,
+      body: this.body,
+      context: { name: this.context, scope: this.scope },
+    });
+    if (bound === undefined) return false;
+    this.allowedContext.add(bound.receiver);
+    this.boundRuntimeInputs.push({ kind: bound.kind, identifier: bound.identifier });
+    this.edit(bound.call, bound.identifier);
     return true;
   }
 
   private specialOperation(member: Node, visit: Visit, name: string | undefined): boolean {
     const dependency = turbopackDependencyOperation(visit, {
       mode: this.mode,
+      factory: this.node,
+      body: this.body,
+      parents: this.parents,
       context: { name: this.context, scope: this.scope },
       factoryIds: this.factory.ids,
     });

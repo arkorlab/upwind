@@ -26,6 +26,7 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import { assertNodeManifestRuntimeInputs } from './node-manifest-runtime-inputs.ts';
 
 const PRODUCER_SUFFIX = '/dist/build/templates/app-page-runtime.js';
 // Published next@16.4.3, registry-integrity-verified source. Producer TS:
@@ -173,15 +174,7 @@ class Consumer {
     assertArgument(call, this.input.route);
     const expected = this.input.runtimeInputs;
     if (expected === undefined) return;
-    const argument = listOf(call, 'arguments')[0];
-    if (!isNode(argument)) refuse('runtime callback argument');
-    for (const name of ['require', 'loadChunk'] as const) {
-      const property = listOf(argument, 'properties').find(
-        (value) => isNode(value) && propertyName(value) === name,
-      );
-      const value = isNode(property) ? property['value'] : undefined;
-      if (!identifier(value) || value.name !== expected[name]) refuse('runtime callback binding');
-    }
+    assertNodeManifestRuntimeInputs({ call, expected, visits: this.visits, parents: this.byNode });
   }
 
   private callOrigin(value: Node, scopes: readonly Scope[], seen: Set<Node>): Origin | undefined {

@@ -2,6 +2,10 @@ import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
 import { identifier, propertyName, type Visit } from './node-manifest-consumer-ast.ts';
 import {
+  reexportNamespaceId,
+  type NamespaceReexportInput,
+} from './node-manifest-reexport-namespace.ts';
+import {
   defaultExportTarget,
   turbopackModuleId,
   turbopackModuleSpecifier,
@@ -11,7 +15,7 @@ import type {
   NodeManifestTurbopackModuleId,
 } from './node-manifest-turbopack.ts';
 
-interface DependencyOperationInput {
+interface DependencyOperationInput extends NamespaceReexportInput {
   readonly mode: 'strict' | 'dependencies';
   readonly context: { readonly name: string; readonly scope: Scope };
   readonly factoryIds: readonly NodeManifestTurbopackModuleId[];
@@ -57,7 +61,10 @@ function groupNames(entries: readonly unknown[], names: Set<string>): void {
   }
 }
 
-function compactImports(call: Node): readonly (readonly [Node, NodeManifestTurbopackImport])[] {
+function compactImports(
+  call: Node,
+  input: DependencyOperationInput,
+): readonly (readonly [Node, NodeManifestTurbopackImport])[] {
   const table = listOf(call, 'arguments')[0];
   if (!isNode(table) || table.type !== 'ArrayExpression') return refuse('table is not literal');
   const entries = listOf(table, 'elements');
@@ -65,7 +72,7 @@ function compactImports(call: Node): readonly (readonly [Node, NodeManifestTurbo
   const imports: (readonly [Node, NodeManifestTurbopackImport])[] = [];
   for (let index = 0; index < entries.length;) {
     const head = entries[index];
-    const id = turbopackModuleId(head);
+    const id = turbopackModuleId(head) ?? reexportNamespaceId(head, input);
     if (id === undefined || !isNode(head)) refuse('has an unknown namespace or module ID');
     index += 1;
     const start = index;
@@ -98,7 +105,7 @@ function compactReexports(visit: Visit, input: DependencyOperationInput): Depend
     const target = turbopackModuleId(args[1]);
     if (target === undefined || !input.factoryIds.includes(target)) refuse('export target');
   }
-  return Object.freeze({ imports: compactImports(call), opaqueExports: true });
+  return Object.freeze({ imports: compactImports(call, input), opaqueExports: true });
 }
 
 /** Dependency inspection only; neither operation certifies any protected export selector. */

@@ -23,7 +23,8 @@ function registration(body: string, ids = '1') {
 function project(body: string) {
   return projectNodeManifestTurbopackFactory(registration(body), 1, 'dependencies');
 }
-function graph(body: string, dependencies: readonly NodeManifestTurbopackModuleId[] = [2]) {
+function graph(body: string) {
+  const dependencies: readonly NodeManifestTurbopackModuleId[] = [2];
   const children = dependencies.map((id) => `${jsLiteral(id)},((ctx)=>{ctx.v(42);})`).join(',');
   return nodeManifestTurbopackEntryGraph({
     distDir: DIST,
