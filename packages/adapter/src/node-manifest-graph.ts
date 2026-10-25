@@ -24,6 +24,7 @@ import {
   frameworkParent,
   reviewedFrameworkSource,
   reviewedRouteConstructorSource,
+  ROUTE_CLASS,
   ROUTE_EXPORTS,
   type ManifestProtectedKind,
 } from './node-manifest-framework.ts';
@@ -34,6 +35,10 @@ import {
 import { sealedRoutes, type SealedRoute } from './node-manifest-routes.ts';
 import { certifyNodeManifestRuntimeCallers } from './node-manifest-runtime-callers.ts';
 import type { NodeManifestRuntimeProfile } from './node-manifest-runtime-cohort.ts';
+import {
+  completedNodeRouteRewriteApproval,
+  type NodeRouteRewriteApproval,
+} from './node-route-rewrite-approval.ts';
 export type { NodeManifestNormalization } from './node-manifest-normalization.ts';
 import {
   assertNodeManifestTemplateConsumer,
@@ -56,6 +61,11 @@ const TURBOPACK_PRODUCER_KINDS = {
 export interface ManifestGraphFile {
   readonly file: string;
   readonly sha256: string;
+}
+/** Exact class sources whose entire consumer chain reached the controlled Node entry. */
+export interface ManifestRouteSource extends ManifestGraphFile {
+  readonly root: string;
+  readonly relative: string;
 }
 export interface ManifestGraphEdge {
   readonly specifier: string;
@@ -157,6 +167,7 @@ class ConsumerGraph {
   private readonly visiting = new Set<string>();
   private readonly pages = new Set<string>();
   private readonly compilerSources = new Map<string, ManifestGraphFile>();
+  private readonly routeSources = new Map<string, ManifestRouteSource>();
   private readonly turbopackProducers = new Set<string>();
   private readonly boundBatch = createNodeManifestBoundBatch();
   private runtimeRoot: string | undefined;
@@ -385,6 +396,15 @@ class ConsumerGraph {
     }
     this.visiting.delete(child.id);
     this.complete.add(child.id);
+    if (child.kind === ROUTE_CLASS || child.kind === APP_PAGE_CLASS) {
+      const source = sourceOf(this.graph, child.id);
+      if (reviewedFrameworkSource(child.relative) !== source.sha256)
+        refuse('changed completed route source');
+      this.routeSources.set(
+        source.file,
+        Object.freeze({ ...source, root: this.root, relative: child.relative }),
+      );
+    }
   }
 
   certifiedPages(): readonly string[] {
@@ -403,6 +423,10 @@ class ConsumerGraph {
     return [...this.compilerSources.values()];
   }
 
+  approvedRouteSources(): readonly ManifestRouteSource[] {
+    return Object.freeze([...this.routeSources.values()]);
+  }
+
   runtimeRootDir(): string | undefined {
     return this.runtimeRoot;
   }
@@ -418,6 +442,8 @@ export async function proveManifestConsumerGraph(
   readonly normalization: NodeManifestNormalization;
   readonly pages: readonly string[];
   readonly approvedCompilerSources: readonly ManifestGraphFile[];
+  readonly approvedRouteSources: readonly ManifestRouteSource[];
+  readonly routeRewriteApproval: NodeRouteRewriteApproval;
   readonly metadataFiles: readonly ManifestGraphFile[];
 }> {
   const normalization = await nodeManifestNormalization(input);
@@ -435,14 +461,22 @@ export async function proveManifestConsumerGraph(
           entries: Object.freeze(normalization.entries.map((entry) => Object.freeze({ ...entry }))),
           runtimeRootDir,
         });
+  const finalNormalization =
+    sealed.files.length === 0
+      ? sealedNormalization
+      : Object.freeze({ ...sealedNormalization, metadataFiles: sealed.files });
   return {
     files: consumers.sources(),
     metadataFiles: sealed.files,
-    normalization:
-      sealed.files.length === 0
-        ? sealedNormalization
-        : Object.freeze({ ...sealedNormalization, metadataFiles: sealed.files }),
+    normalization: finalNormalization,
     pages: consumers.certifiedPages(),
     approvedCompilerSources: consumers.approvedCompilerSources(),
+    approvedRouteSources: consumers.approvedRouteSources(),
+    routeRewriteApproval: completedNodeRouteRewriteApproval({
+      graph,
+      context: input,
+      normalization: finalNormalization,
+      routes: consumers.approvedRouteSources(),
+    }),
   };
 }

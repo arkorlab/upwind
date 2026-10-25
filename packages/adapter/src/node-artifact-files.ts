@@ -10,13 +10,18 @@ import type { BuildFunctionInput } from './function.ts';
 import type { NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
 import type { NodePhysicalFiles } from './node-files.ts';
+import {
+  assertNodeNextRewriteArchive,
+  rewriteCertifiedNodeNextFile,
+  sealNodeInstrumentationBundle,
+  type NodeNextRewriteProof,
+} from './node-next-rewrite-proof.ts';
 import type { NodeFunctionProof } from './node-proof.ts';
 import { fetchCacheWaitUntilPatch } from './patches/fetch-cache-wait-until.ts';
-import { instrumentationPatch } from './patches/instrumentation.ts';
 import { resourceCacheBridgePatch } from './patches/resource-cache-bridge.ts';
 
 /** Only shared-cache/render semantics. No Worker loader, VM, native, fs or process substitutes. */
-const NODE_PATCHES = [fetchCacheWaitUntilPatch, instrumentationPatch, resourceCacheBridgePatch];
+const NODE_PATCHES = [fetchCacheWaitUntilPatch, resourceCacheBridgePatch];
 const ELF_HEADER_BYTES = 64;
 const ELF_MAGIC_START = 0x7f;
 const ELF_MAGIC_E = 0x45;
@@ -97,17 +102,31 @@ function wasmSource(module: BuildFunctionInput['wasm']['modules'][number]): stri
 function rewrittenNextFile(
   file: NodeArchiveFile,
   input: BuildFunctionInput,
-  patchContext: BuildFunctionInput['patch'],
+  settings: {
+    readonly patchContext: BuildFunctionInput['patch'];
+    readonly physical: NodePhysicalFiles;
+    readonly proof: NodeNextRewriteProof | undefined;
+  },
 ): NodeArchiveFile | undefined {
-  const original = file.name.startsWith('project/')
-    ? path.join(input.repoRoot ?? input.projectDir, file.name.slice('project/'.length))
-    : undefined;
+  const { physical, proof, patchContext } = settings;
+  const original =
+    physical.sourcePaths.get(file.name) ??
+    (file.name.startsWith('project/')
+      ? path.join(input.repoRoot ?? input.projectDir, file.name.slice('project/'.length))
+      : undefined);
   if (original === undefined || !/\.[cm]?js$/u.test(original)) return undefined;
   const source = Buffer.from(file.bytes).toString('utf8');
-  let contents = source;
-  for (const patch of NODE_PATCHES) {
-    if (patch.target.test(original) && (patch.marker === undefined || patch.marker(contents)))
-      contents = patch.apply(contents, original, patchContext).contents;
+  const certified = rewriteCertifiedNodeNextFile(proof, input, {
+    file: original,
+    name: file.name,
+    code: source,
+  });
+  let contents = certified ?? source;
+  if (certified === undefined) {
+    for (const patch of NODE_PATCHES) {
+      if (patch.target.test(original) && (patch.marker === undefined || patch.marker(contents)))
+        contents = patch.apply(contents, original, patchContext).contents;
+    }
   }
   if (contents === source) return undefined;
   return { ...file, bytes: new TextEncoder().encode(contents) };
@@ -116,6 +135,7 @@ function rewrittenNextFile(
 /** Physical app files plus explicit generated metadata, all constructed during the build. */
 export class NodeArtifactFiles {
   #normalizedEntry: string | undefined;
+  readonly #nextRewrites: NodeNextRewriteProof | undefined;
   readonly files: Map<string, NodeArchiveFile>;
   readonly input: BuildFunctionInput;
   readonly physical: NodePhysicalFiles;
@@ -125,10 +145,12 @@ export class NodeArtifactFiles {
     input: BuildFunctionInput,
     physical: NodePhysicalFiles,
     native: readonly NativeLoad[],
+    nextRewrites?: NodeNextRewriteProof,
   ) {
     this.input = input;
     this.physical = physical;
     this.native = native;
+    this.#nextRewrites = nextRewrites;
     this.files = new Map(physical.files.map((file) => [file.name, file]));
   }
 
@@ -156,9 +178,29 @@ export class NodeArtifactFiles {
           : '/bundle/upwind/instrumentation.cjs',
     };
     for (const file of this.physical.files) {
-      const rewritten = rewrittenNextFile(file, this.input, patchContext);
+      const rewritten = rewrittenNextFile(file, this.input, {
+        patchContext,
+        physical: this.physical,
+        proof: this.#nextRewrites,
+      });
       if (rewritten !== undefined) this.files.set(file.name, rewritten);
     }
+  }
+
+  sealInstrumentation(originals: ReadonlyMap<string, string>, bytes: Uint8Array): void {
+    sealNodeInstrumentationBundle(this.#nextRewrites, this.input, this.physical, {
+      originals,
+      bytes,
+    });
+  }
+
+  async assertNextRewrites(): Promise<void> {
+    await assertNodeNextRewriteArchive(
+      this.#nextRewrites,
+      this.input,
+      this.files,
+      this.physical.nameOf,
+    );
   }
 
   async addNativeMetadata(): Promise<void> {

@@ -15,6 +15,7 @@ import type { NativeLoad } from './native-loads.ts';
 import { nodeArtifactArchive } from './node-archive.ts';
 import { NodeArtifactFiles } from './node-artifact-files.ts';
 import { nodePhysicalFiles } from './node-files.ts';
+import { nodeProjectInstrumentationSource } from './node-next-rewrite-proof.ts';
 import {
   assertNodeProofFiles,
   isNodeProofCompilerModule,
@@ -168,11 +169,7 @@ async function bundleNodeInstrumentation(
   if (input.patch.instrumentation === undefined) return new Map();
   const entry = await realpath(input.patch.instrumentation);
   if (entry === settings.instrumentation) {
-    const projectHook = jsLiteral(`/bundle/${settings.nameOf(entry)}`);
-    await writeFile(
-      settings.outFile,
-      `globalThis.AsyncLocalStorage??=require('node:async_hooks').AsyncLocalStorage;module.exports=require(${projectHook});`,
-    );
+    await writeFile(settings.outFile, nodeProjectInstrumentationSource(settings.nameOf(entry)));
     return new Map();
   }
   const unresolved: string[] = [];
@@ -180,6 +177,9 @@ async function bundleNodeInstrumentation(
   await using bundle = await rolldown({
     input: input.patch.instrumentation,
     platform: 'node',
+    transform: {
+      define: { 'process.env.NODE_ENV': '"production"', 'process.env.NEXT_RUNTIME': '"nodejs"' },
+    },
     resolve: { conditionNames: ['node', 'default'] },
     external: [/^node:/u],
     plugins: [
@@ -290,7 +290,9 @@ async function addNodeInstrumentation(
     nameOf: files.physical.nameOf,
     instrumentation: files.physical.instrumentation,
   });
-  files.add('upwind/instrumentation.cjs', new Uint8Array(await readFile(hook)));
+  const bytes = new Uint8Array(await readFile(hook));
+  files.sealInstrumentation(originals, bytes);
+  files.add('upwind/instrumentation.cjs', bytes);
   return originals;
 }
 
@@ -373,7 +375,7 @@ export async function buildNodeFunction(
   assertNodeTarget(input, native);
   const abi = assertNativeAbi();
   const physical = await nodePhysicalFiles(input, native, proof.normalization?.metadataFiles);
-  const files = new NodeArtifactFiles(input, physical, native);
+  const files = new NodeArtifactFiles(input, physical, native, proof.nextRewrites);
   const work = path.join(input.outDir, 'work', `node-${input.name ?? input.kind}`);
   await mkdir(work, { recursive: true });
   const instrumentation = await addNodeInstrumentation(files, work);
@@ -388,6 +390,7 @@ export async function buildNodeFunction(
   await addNodeRuntime(files, work);
   await addNodeServer(files, work);
   await files.assertAppEntryNormalization(proof.normalization);
+  await files.assertNextRewrites();
   const archiveFiles = [...files.files.values()];
   const archive = nodeArtifactArchive(archiveFiles);
   const bytes = archiveFiles.reduce((total, file) => total + file.bytes.byteLength, 0);

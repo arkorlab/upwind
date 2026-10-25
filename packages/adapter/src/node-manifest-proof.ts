@@ -14,8 +14,10 @@ import {
   proveManifestConsumerGraph,
   type ManifestGraphInput,
   type ManifestModuleGraph,
+  type ManifestRouteSource,
   type NodeManifestNormalization,
 } from './node-manifest-graph.ts';
+import type { NodeRouteRewriteApproval } from './node-route-rewrite-approval.ts';
 
 const MAX_MANIFEST_BYTES = 33_554_432;
 const MAX_PACKAGE_BYTES = 65_536;
@@ -39,6 +41,9 @@ export interface NodeManifestProof {
   readonly codeSources: readonly ManifestProofFile[];
   /** Exact raw compiler runtimes, only after their complete caller/route/SDK-root proof closes. */
   readonly approvedCompilerSources: readonly ManifestProofFile[];
+  /** Completed class/caller proof; separate from compiler and VM authority. */
+  readonly approvedRouteSources?: readonly ManifestRouteSource[];
+  readonly routeRewriteApprovals?: readonly NodeRouteRewriteApproval[];
   readonly normalization?: NodeManifestNormalization | undefined;
   /** Inspection only: never returned to Rolldown or copied into the physical Node artifact. */
   inspectionCode(file: string, code: string): string;
@@ -312,6 +317,21 @@ function inspectedEvaluator(code: string): string {
   return `${code.slice(0, operation.start)}undefined${code.slice(operation.end)}`;
 }
 
+function mergeRouteSources(
+  target: Map<string, ManifestRouteSource>,
+  sources: readonly ManifestRouteSource[],
+): void {
+  for (const source of sources) {
+    const previous = target.get(source.file);
+    if (
+      previous !== undefined &&
+      (previous.root !== source.root || previous.sha256 !== source.sha256)
+    )
+      refuse('conflicting completed route source');
+    target.set(source.file, source);
+  }
+}
+
 /** Certify the one reviewed VM operation over sealed, owned, generated client-manifest data. */
 export async function proveNodeManifests(
   input: ManifestProofInput,
@@ -329,6 +349,8 @@ export async function proveNodeManifests(
   const files = new Map<string, ManifestProofFile>();
   const codeSources = new Map<string, ManifestProofFile>();
   const compilerSources = new Map<string, ManifestProofFile>();
+  const routeSources = new Map<string, ManifestRouteSource>();
+  const routeRewriteApprovals: NodeRouteRewriteApproval[] = [];
   let normalization: NodeManifestNormalization | undefined;
   const pages = new Set<string>();
   for (const [id, evaluator] of evaluators) {
@@ -347,6 +369,8 @@ export async function proveNodeManifests(
     for (const source of consumers.metadataFiles) files.set(source.file, source);
     for (const source of consumers.approvedCompilerSources)
       compilerSources.set(source.file, source);
+    mergeRouteSources(routeSources, consumers.approvedRouteSources);
+    routeRewriteApprovals.push(consumers.routeRewriteApproval);
     files.set(evaluator.file, evaluator);
     codeSources.set(evaluator.file, evaluator);
     files.set(metadata.file, metadata);
@@ -360,6 +384,8 @@ export async function proveNodeManifests(
     files: [...files.values()],
     codeSources: [...codeSources.values()],
     approvedCompilerSources: [...compilerSources.values()],
+    approvedRouteSources: Object.freeze([...routeSources.values()]),
+    routeRewriteApprovals: Object.freeze(routeRewriteApprovals),
     ...(normalization !== undefined && { normalization }),
     inspectionCode: (file, code) => (approved.has(file) ? inspectedEvaluator(code) : code),
   };

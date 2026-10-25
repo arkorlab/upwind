@@ -19,12 +19,20 @@ import { dynamicLoadsOf } from './dynamic-loads.ts';
 import type { BuildFunctionInput } from './function.ts';
 import { nativeLoadsPlugin, type NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
+import { nodeCachePolicyPatch } from './node-cache-policy.ts';
 import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
 import type { ManifestGraphEdge, NodeManifestNormalization } from './node-manifest-graph.ts';
 import { proveNodeManifests, type NodeManifestProof } from './node-manifest-proof.ts';
+import {
+  certifyNodeNextRewrites,
+  approvedNodeCompilerModules,
+  assertCertifiedNodeRuntimePatches,
+  nodeNextRewriteMetadata,
+  nodeNextRewriteNormalization,
+  type NodeNextRewriteProof,
+} from './node-next-rewrite-proof.ts';
 import { originalHostLoadersPlugin } from './node-original-host-loaders.ts';
 import { assertRawNodeSource } from './node-source-runtime.ts';
-import { cacheHandlersPatch } from './patches/cache-handlers.ts';
 import { instrumentationPatch } from './patches/instrumentation.ts';
 import type { AppliedPatch } from './patches/rolldown.ts';
 import { turbopackRuntimePatch } from './patches/turbopack-runtime.ts';
@@ -35,7 +43,7 @@ const MAX_SOURCE_BYTES = MAX_SOURCE_MEBIBYTES * BYTES_PER_MEBIBYTE;
 const MAX_DIAGNOSTIC_FILE_CHARACTERS = 240;
 const ROLLDOWN_RUNTIME_MODULE = '\0rolldown/runtime.js';
 // These expose the original Node graph. No Worker-specific code or dependency is substituted.
-const GRAPH_LINKS = [turbopackRuntimePatch, instrumentationPatch, cacheHandlersPatch];
+const GRAPH_LINKS = [turbopackRuntimePatch, instrumentationPatch, nodeCachePolicyPatch];
 
 type NodeProofInput = Partial<
   Pick<BuildFunctionInput, 'manifests' | 'runtimeManifest' | 'repoRoot' | 'clientAssetPrefix'>
@@ -68,6 +76,7 @@ export interface NodeFunctionProof {
   readonly files: readonly OriginalNodeSource[];
   readonly dependencies: FunctionDependencies;
   readonly normalization?: NodeManifestNormalization | undefined;
+  readonly nextRewrites?: NodeNextRewriteProof;
 }
 
 function digest(bytes: Uint8Array): string {
@@ -230,62 +239,6 @@ async function assertRetainedSourceBytes(
   }
 }
 
-function approvedCompilerModules(
-  chunk: OutputChunk,
-  graph: OriginalNodeGraph,
-  manifests: NodeManifestProof,
-): ReadonlySet<string> {
-  const retained = new Map<string, Set<string>>();
-  const code = new Map(manifests.codeSources.map((source) => [source.file, source.sha256]));
-  const approved = new Map(
-    manifests.approvedCompilerSources.map((source) => [source.file, source.sha256]),
-  );
-  const modules = new Set<string>();
-  for (const [id, module] of Object.entries(chunk.modules)) {
-    if (module.code === null) continue;
-    const source = graph.sources.get(id);
-    if (source === undefined) continue;
-    const hashes = retained.get(source.file) ?? new Set<string>();
-    hashes.add(source.sha256);
-    retained.set(source.file, hashes);
-    if (approved.get(source.file) === source.sha256) modules.add(id);
-  }
-  // Deferred executable targets must have passed the ordinary original-closure audit too.
-  // Generated manifest data has a separate inert-data proof.
-  for (const source of manifests.codeSources) {
-    if (retained.get(source.file)?.has(source.sha256) !== true)
-      throw new AuditError('Reviewed Next.js code was not retained by the original Node graph');
-  }
-  for (const source of manifests.approvedCompilerSources) {
-    if (code.get(source.file) !== source.sha256)
-      throw new AuditError('Reviewed compiler runtime lacks its original code-source proof');
-  }
-  return modules;
-}
-
-function assertCertifiedRuntimePatches(
-  projectDir: string,
-  chunk: OutputChunk,
-  graph: OriginalNodeGraph,
-  compilerModules: ReadonlySet<string>,
-): void {
-  for (const applied of graph.patches) {
-    const module = chunk.modules[applied.file];
-    if (
-      module === undefined ||
-      applied.patch !== turbopackRuntimePatch.name ||
-      module.code === null
-    )
-      continue;
-    if (!compilerModules.has(applied.file)) {
-      const identity = retainedFileIdentity(projectDir, applied.file);
-      throw new AuditError(
-        `Original Node graph has an uncertified Turbopack runtime rewrite in ${identity}; refusing native publication`,
-      );
-    }
-  }
-}
-
 function assertRetainedClosures(
   projectDir: string,
   chunk: OutputChunk,
@@ -415,6 +368,18 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) throw new AuditError('Original Node graph produced no proof chunk');
   await assertRetainedSourceBytes(chunk, graph);
+  const manifestGraph = {
+    sources: graph.sources,
+    importers: graph.importers,
+    imports: graph.imports,
+    roots: graph.roots,
+    rendered: new Map(
+      Object.entries(chunk.modules).flatMap(([id, module]) =>
+        module.code === null ? [] : [[id, module.code] as const],
+      ),
+    ),
+    retained: new Set(Object.keys(chunk.modules)),
+  };
   const manifests = await proveNodeManifests(
     {
       distDir: input.patch.distDir,
@@ -427,21 +392,19 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
       instrumentation: input.patch.instrumentation,
       analysisEntry: entryFile,
     },
-    {
-      sources: graph.sources,
-      importers: graph.importers,
-      imports: graph.imports,
-      roots: graph.roots,
-      rendered: new Map(
-        Object.entries(chunk.modules).flatMap(([id, module]) =>
-          module.code === null ? [] : [[id, module.code] as const],
-        ),
-      ),
-      retained: new Set(Object.keys(chunk.modules)),
-    },
+    manifestGraph,
   );
-  const compilerModules = approvedCompilerModules(chunk, graph, manifests);
-  assertCertifiedRuntimePatches(input.projectDir, chunk, graph, compilerModules);
+  const compilerModules = approvedNodeCompilerModules(chunk.modules, graph.sources, manifests);
+  assertCertifiedNodeRuntimePatches(chunk.modules, graph.patches, compilerModules, (file) =>
+    retainedFileIdentity(input.projectDir, file),
+  );
+  const nextRewrites = await certifyNodeNextRewrites(
+    input,
+    manifestGraph,
+    graph.patches,
+    manifests,
+  );
+  const rewriteMetadata = nodeNextRewriteMetadata(nextRewrites);
   const retainedHost = hostLoaders
     .retained(chunk)
     .find((site) => !compilerModules.has(site.importer));
@@ -462,16 +425,17 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     dependencies,
     outputNameOf(input.projectDir, input.patch.distDir),
   );
-  const files = includingLoaderSources(
-    retainedSources(chunk, graph, entryFile),
-    retained,
-    manifests.files,
-  );
+  const files = includingLoaderSources(retainedSources(chunk, graph, entryFile), retained, [
+    ...manifests.files,
+    ...rewriteMetadata,
+  ]);
+  const normalization = nodeNextRewriteNormalization(nextRewrites, manifests.normalization);
   return {
     native: retained,
     files,
     dependencies,
-    ...(manifests.normalization !== undefined && { normalization: manifests.normalization }),
+    nextRewrites,
+    ...(normalization !== undefined && { normalization }),
   };
 }
 
