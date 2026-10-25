@@ -208,7 +208,7 @@ class ClosureScanner {
       call['callee'] !== member ||
       call['optional'] === true ||
       (visit.node.name === 'process' && listOf(call, 'arguments').length > 0) ||
-      !this.mutable.unmodified(visit.node as unknown as AstNode, visit.node.name, true)
+      !this.mutable.unmodified(visit.node, visit.node.name, true)
     )
       return false;
     return this.deferredRoot(visit, root);
