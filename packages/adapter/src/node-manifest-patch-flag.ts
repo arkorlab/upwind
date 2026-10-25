@@ -1,5 +1,6 @@
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
+import { hostObjectOf } from './node-closure-hosts.ts';
 import {
   declaration,
   identifier,
@@ -17,6 +18,7 @@ interface SymbolBinding {
   readonly scope: Scope;
   readonly node: Node;
 }
+const MAX_SYMBOL_KEY_BYTES = 16_384;
 
 function refuse(): never {
   throw new AuditError('Unproved Next.js patch-fetch boolean flag; refusing native publication');
@@ -44,7 +46,7 @@ function actualGlobal(visit: Visit): boolean {
   );
 }
 
-function patchSymbol(value: unknown, scopes: readonly Scope[]): value is Node {
+function registrySymbol(value: unknown, scopes: readonly Scope[]): value is Node {
   if (!isNode(value) || value.type !== 'CallExpression' || value['optional'] === true) return false;
   const callee = value['callee'];
   const args = listOf(value, 'arguments');
@@ -61,7 +63,17 @@ function patchSymbol(value: unknown, scopes: readonly Scope[]): value is Node {
     args.length === 1 &&
     isNode(argument) &&
     argument.type === 'Literal' &&
-    argument['value'] === 'next-patch'
+    typeof argument['value'] === 'string' &&
+    Buffer.byteLength(argument['value']) <= MAX_SYMBOL_KEY_BYTES
+  );
+}
+
+function patchSymbol(value: unknown, scopes: readonly Scope[]): value is Node {
+  return (
+    registrySymbol(value, scopes) &&
+    listOf(value, 'arguments').some(
+      (argument) => isNode(argument) && argument['value'] === 'next-patch',
+    )
   );
 }
 
@@ -162,8 +174,56 @@ function assertBindingUses(
   }
 }
 
+function writesMember(member: Node, parent: Node | undefined): boolean {
+  if (parent === undefined) return false;
+  if (
+    ['AssignmentExpression', 'AssignmentPattern', 'ForInStatement', 'ForOfStatement'].includes(
+      parent.type,
+    )
+  )
+    return parent['left'] === member;
+  if (parent.type === 'UpdateExpression') return parent['argument'] === member;
+  if (parent.type === 'UnaryExpression')
+    return parent['operator'] === 'delete' && parent['argument'] === member;
+  return parent.type === 'ArrayPattern' || parent.type === 'RestElement';
+}
+
+function destructuredTarget(
+  member: Node,
+  parent: Node | undefined,
+  input: PatchFlagInput,
+): boolean {
+  return (
+    parent?.type === 'Property' &&
+    parent['value'] === member &&
+    input.parents.get(parent)?.parent?.type === 'ObjectPattern'
+  );
+}
+
+function readonlyAsyncIterator(member: Node | undefined, input: PatchFlagInput): boolean {
+  if (
+    member?.type !== 'MemberExpression' ||
+    member['computed'] === true ||
+    member['optional'] === true ||
+    propertyName(member) !== 'asyncIterator'
+  )
+    return false;
+  const parent = input.parents.get(member)?.parent;
+  if (writesMember(member, parent)) return false;
+  if (parent?.type === 'MemberExpression' && parent['object'] === member) return false;
+  if (parent !== undefined && parent['callee'] === member) return false;
+  if (parent?.type === 'TaggedTemplateExpression' && parent['tag'] === member) return false;
+  return !destructuredTarget(member, parent, input);
+}
+
 function assertSymbolUses(input: PatchFlagInput, calls: ReadonlySet<Node>): void {
   for (const visit of input.visits) {
+    if (
+      visit.node.type === 'MemberExpression' &&
+      propertyName(visit.node) === 'Symbol' &&
+      hostObjectOf(visit.node['object'], visit.scopes) === 'global'
+    )
+      refuse();
     if (
       !identifier(visit.node) ||
       visit.node.name !== 'Symbol' ||
@@ -173,7 +233,13 @@ function assertSymbolUses(input: PatchFlagInput, calls: ReadonlySet<Node>): void
       continue;
     const member = visit.parent;
     const call = member === undefined ? undefined : input.parents.get(member)?.parent;
-    if (call === undefined || !calls.has(call) || call['callee'] !== member) refuse();
+    if (readonlyAsyncIterator(member, input)) continue;
+    if (
+      call === undefined ||
+      call['callee'] !== member ||
+      (!calls.has(call) && !registrySymbol(call, visit.scopes))
+    )
+      refuse();
   }
 }
 

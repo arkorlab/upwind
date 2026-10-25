@@ -50,6 +50,54 @@ describe('c-certified fixed next-patch boolean flag', () => {
   });
 
   it.each([
+    'const value=Symbol.for("next.resume-data-cache.fallback-params");ctx.v(value);',
+    'const value=Symbol.for("next.resume-data-cache.runtime-data");ctx.v(value);',
+    'const value=Symbol.for("next.resume-data-cache.session-data");ctx.v(value);',
+    'const value=Symbol.for("@next/request-insights-store");ctx.v(value);',
+    'const value=Symbol.asyncIterator;ctx.v(value);',
+    'ctx.v({[Symbol.asyncIterator]:async function*(){}});',
+    'function local(Symbol){return Symbol.for(dynamic);}ctx.v(local);',
+  ])(
+    'coexists with primitive Symbol creation or readonly metadata without granting a slot: %s',
+    (other) => {
+      const body = `${BINDING}${READ}${other}`;
+      const projected = project(body);
+
+      expect(projected.original).toStrictEqual(source(body));
+      expect(projected.source.code.trim()).toBe(`void 0;${body}`);
+    },
+  );
+
+  it.each([
+    'const value=Symbol.for(dynamic);ctx.v(value);',
+    'const value=Symbol.for("tag",other);ctx.v(value);',
+    'const value=Symbol.for({toString(){return "tag"}});ctx.v(value);',
+    'const value=Symbol["for"]("tag");ctx.v(value);',
+    'const value=Symbol?.for("tag");ctx.v(value);',
+    'const value=Symbol.for;ctx.v(value);',
+    'Symbol.for=unknown;',
+    'Symbol=unknown;',
+    'globalThis.Symbol.for=unknown;',
+    'const value=globalThis.Symbol;ctx.v(value);',
+    'Symbol.asyncIterator=unknown;',
+    'delete Symbol.asyncIterator;',
+    'Symbol.asyncIterator++;',
+    '[Symbol.asyncIterator]=values;',
+    '({value:Symbol.asyncIterator}=other);',
+    'Symbol.asyncIterator();',
+    'ctx.v(Symbol.asyncIterator.constructor);',
+    'ctx.v(globalThis[Symbol.asyncIterator]===true);',
+    'globalThis[Symbol.for("next.resume-data-cache.runtime-data")]=true;',
+    'const globalStore=globalThis;globalStore[Symbol.for("@next/request-insights-store")]??=new Store();',
+    'Reflect.set(Symbol,"for",unknown);',
+  ])(
+    'does not turn benign Symbol coexistence into constructor, mutation or global-slot authority: %s',
+    (other) => {
+      expect(() => project(`${BINDING}${READ}${other}`)).toThrow('Unproved Next.js');
+    },
+  );
+
+  it.each([
     ['unknown registry key', `${BINDING.replace('next-patch', 'unknown')}${READ}`],
     ['unknown global key', 'ctx.v(globalThis[unknown]===true);'],
     ['string instead of symbol', 'ctx.v(globalThis["next-patch"]===true);'],
