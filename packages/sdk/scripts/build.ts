@@ -28,7 +28,16 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const OUT_DIR = path.join(ROOT, 'dist');
 
 /** The entry points `exports` names, and the only names `dist` is entered through. */
-const ENTRIES = ['index', 'db', 'kv', 'blob', 'durable-object', 'ai', 'service'] as const;
+const ENTRIES = [
+  'index',
+  'db',
+  'kv',
+  'blob',
+  'durable-object',
+  'ai',
+  'service',
+  'workflow',
+] as const;
 
 async function modules(): Promise<number> {
   const build = await rolldown({

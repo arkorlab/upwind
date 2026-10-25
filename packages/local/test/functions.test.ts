@@ -125,6 +125,36 @@ describe('the Functions of a deployment, on a local stack', () => {
     ]);
   });
 
+  it('refuses native Workflow declarations or artifacts before starting application Workers', () => {
+    const dir = buildDir();
+    const app = spec([module(dir, 'index.mjs', 'esm', 'export default { fetch() {} };')]);
+    const definition = {
+      name: 'JOBS',
+      module: 'jobs.ts',
+      // eslint-disable-next-line unicorn/no-keyword-prefix -- Matches the host registration field.
+      className: 'Job',
+    };
+
+    expect(() => {
+      return deploymentFunctions(
+        dir,
+        { deploymentId: DEPLOYMENT_ID, cloudflareWorkflows: [definition], functions: { app } },
+        BINDINGS,
+      );
+    }).toThrow(
+      'has Cloudflare Workflows, and a local stack runs no scoped Workflow execution service',
+    );
+    expect(() => {
+      return deploymentFunctions(
+        dir,
+        { deploymentId: DEPLOYMENT_ID, functions: { app, cloudflareWorkflows: { JOBS: app } } },
+        BINDINGS,
+      );
+    }).toThrow(
+      'has Cloudflare Workflows, and a local stack runs no scoped Workflow execution service',
+    );
+  });
+
   it('refuses a module whose bytes are not the blob it names, a build that runs workflows or has Durable Objects, and a missing main module', () => {
     const dir = buildDir();
     const named = module(dir, 'index.mjs', 'esm', 'export default {};');

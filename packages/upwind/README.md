@@ -1,5 +1,33 @@
 # upwind
 
+## Local Cloudflare Workflows
+
+Hosts can provide downloaded registrations through `UPWIND_CLOUDFLARE_WORKFLOWS`:
+
+```sh
+export UPWIND_CLOUDFLARE_WORKFLOWS='[{"name":"JOBS","module":"src/jobs.ts","className":"Job"}]'
+upwind dev
+```
+
+The registered class extends `WorkflowEntrypoint` from `cloudflare:workers`. Upwind bundles it
+independently from application pages and starts it in Miniflare with the project's local D1, KV, R2,
+Durable Objects and declared Workflows in `this.env`. Native steps, sleeps, retries, event waits and
+instance controls execute locally; state uses the project's `.upwind` persistence directory. No remote
+Workflow or account credential is needed. Source changes restart the local runtime.
+
+Application code uses `workflow('JOBS')` from `@stayingupwind/sdk` or the sole accessor from
+`@stayingupwind/sdk/workflow`, with the same scoped bridge protocol used by a supporting host.
+Import and lookup never start a run. Keep run creation in explicit actions or API handlers when it
+should not execute during prerendering. The standalone `upwind deploy` command rejects these bundles
+until its host provisions Workflow execution; it does not silently omit their classes.
+
+### 日本語
+
+`UPWIND_CLOUDFLARE_WORKFLOWS` にホストから取得した登録を渡すと、Cloudflare の
+`WorkflowEntrypoint` クラスを Miniflare で実行します。ステップ、スリープ、イベント待機、
+インスタンス操作とローカルストレージを利用でき、リモートリソースの作成や認証情報は不要です。
+通常のページ配信とは独立してクラスをビルドし、SDK のインポートや名前の参照だけでは実行を開始しません。
+
 ## Workers AI
 
 AI bindings are explicit capabilities. Declare their names as a JSON array:

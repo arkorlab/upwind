@@ -794,8 +794,9 @@ directory. `@stayingupwind/core/bundle` exports `ContainerDefinition` and
 This definition uses Cloudflare's `default` scheduling policy. The host prepares a digest-pinned
 image separately, provisions the Container application against the owner's namespace, and keeps the
 source definition and its optional `definitionRevision` sealed together. The adapter copies source
-metadata unchanged and does not run Docker or include the image in a Next.js Function. Container
-bundles use version 7, or 8 when app Functions are split; ordinary objects retain versions 5 and 6.
+metadata unchanged and does not run Docker or include the image in a Next.js Function. Without
+Workflow declarations, Container bundles use version 7, or 8 when app Functions are split; ordinary
+objects retain versions 5 and 6.
 An older host refuses the version instead of silently publishing a namespace without its Container.
 
 Classes can use the native `this.ctx.container` API or extend `Container` from
@@ -808,6 +809,40 @@ not part of this definition. See Cloudflare's
 The application's `durableObject(name)` accessor remains a native namespace. Nothing starts an
 instance during bundling or namespace publication; an application's explicit call is what reaches
 its object and Container. The deployment's ordinary Next.js serving path gains no lookup or proxy.
+
+## Cloudflare Workflows
+
+Pass `cloudflareWorkflows: [{ name, module, className, definitionRevision? }]` to `createAdapter`.
+These are host registrations. Module paths are relative to the application directory and must resolve
+inside it, including through symlinks. The registered named class export should extend Cloudflare's
+`WorkflowEntrypoint`; bundling checks missing imports and exports before anything is deployed.
+
+Each declaration produces `functions.cloudflareWorkflows[name]`, with main module
+`cloudflare-workflow.mjs` exporting the class as `UpwindCloudflareWorkflow`. Top-level
+`cloudflareWorkflows` carries the exact registrations. Modules, WebAssembly, source maps and dependency
+reports use the same content-addressed format as other Functions. The native class is built separately
+from the application's routes and introduces no page-routing or request-time lookup.
+
+Next.js bundles with these artifacts use version 9, or 10 with split app Functions. Durable Objects,
+including Container-enabled objects, and the Workflow SDK may coexist with them. A bundle without Cloudflare Workflows keeps its
+existing version. `bundleBlobs` includes every Workflow artifact.
+
+Other framework hosts can call the exported `buildCloudflareWorkflowFunctions({ projectDir, outDir,
+declarations, sourceMaps? })`. It writes blobs beneath `outDir/blobs` and returns `functions`, checked
+`declarations`, `sourceMaps` and `dependencies` without writing a deployment bundle. The lower-level
+`bundleCloudflareWorkflows(projectDir, declarations, options?)` returns bundled class source and watched
+inputs for local tools. Neither entry point needs a Next.js build or credentials.
+
+The host supplies execution, private scoped Workflow bindings, resource adapters, ownership checks,
+and immutable code/environment retention while instances remain active. It must reject a bundle whose
+registrations differ from its sealed deployment configuration. The standard Worker Loader accepts
+data and service capabilities; native storage bindings need host resource adapters when executing in
+a Dynamic Worker. See [Dynamic Workflows](https://developers.cloudflare.com/dynamic-workers/usage/dynamic-workflows/)
+and [Worker Loader environments](https://developers.cloudflare.com/dynamic-workers/api-reference/#env-object).
+
+The default adapter and local CLI read downloaded registrations from
+`UPWIND_CLOUDFLARE_WORKFLOWS` when explicit adapter registrations are absent. This is a build input,
+not a request to create a remote Workflow.
 
 ## Route gates
 

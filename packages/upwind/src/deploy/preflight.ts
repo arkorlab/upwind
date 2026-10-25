@@ -136,6 +136,14 @@ interface CheckInput {
 /** What the build has that a self-hosted deployment cannot run yet: workflows, Durable Objects. */
 function unsupported(bundle: DeploymentBundle): string[] {
   const problems: string[] = [];
+  if (
+    (bundle.cloudflareWorkflows?.length ?? 0) > 0 ||
+    Object.keys(bundle.functions.cloudflareWorkflows ?? {}).length > 0
+  ) {
+    problems.push(
+      'the build has Cloudflare Workflows, which require a host that provisions a scoped Workflow execution service',
+    );
+  }
   if (bundle.functions.workflow !== undefined) {
     problems.push(
       'the build runs workflows, and a self-hosted deployment runs no workflow World yet',

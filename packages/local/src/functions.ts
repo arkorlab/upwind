@@ -179,9 +179,20 @@ function functionWorker(
  */
 export function deploymentFunctions(
   bundleDir: string,
-  bundle: Pick<DeploymentBundle, 'deploymentId' | 'durableObjects' | 'functions'>,
+  bundle: Pick<
+    DeploymentBundle,
+    'deploymentId' | 'durableObjects' | 'cloudflareWorkflows' | 'functions'
+  >,
   bindings: FunctionBindings,
 ): DeploymentFunctions {
+  if (
+    (bundle.cloudflareWorkflows?.length ?? 0) > 0 ||
+    Object.keys(bundle.functions.cloudflareWorkflows ?? {}).length > 0
+  ) {
+    throw new Error(
+      `${bundle.deploymentId} has Cloudflare Workflows, and a local stack runs no scoped Workflow execution service`,
+    );
+  }
   if (bundle.functions.workflow !== undefined) {
     throw new Error(
       `${bundle.deploymentId} runs workflows, and a local stack runs no workflow World for it`,

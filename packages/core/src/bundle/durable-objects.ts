@@ -63,12 +63,17 @@ export const DURABLE_OBJECT_EXPORT = 'UpwindDurableObject';
 export const DURABLE_OBJECT_BUNDLE_VERSION = 5;
 export const DURABLE_OBJECT_SPLIT_BUNDLE_VERSION = 6;
 
-/** Declarations, class Functions and version must all describe the same namespace capabilities. */
-export function durableObjectBundleIssue(bundle: {
-  readonly v: number;
-  readonly durableObjects?: readonly DurableObjectDeclaration[] | undefined;
-  readonly functions: { readonly durableObjects?: Readonly<Record<string, unknown>> | undefined };
-}): string | undefined {
+/** Declarations, class Functions and version must all describe the same namespace capabilities.
+ * Workflow versions may carry either kind of object alongside their required Workflow classes.
+ */
+export function durableObjectBundleIssue(
+  bundle: {
+    readonly v: number;
+    readonly durableObjects?: readonly DurableObjectDeclaration[] | undefined;
+    readonly functions: { readonly durableObjects?: Readonly<Record<string, unknown>> | undefined };
+  },
+  workflowVersion = false,
+): string | undefined {
   const declarations = bundle.durableObjects ?? [];
   const functions = Object.keys(bundle.functions.durableObjects ?? {});
   const carriesObjects = declarations.length > 0;
@@ -83,8 +88,8 @@ export function durableObjectBundleIssue(bundle: {
     bundle.v,
   );
   if (
-    objectVersion !== carriesObjects ||
-    containerVersion !== carriesContainers ||
+    (!workflowVersion && objectVersion !== carriesObjects) ||
+    (!workflowVersion && containerVersion !== carriesContainers) ||
     declarations.length !== functions.length ||
     declarations.some(
       (entry) => !Object.hasOwn(bundle.functions.durableObjects ?? {}, entry.name),
@@ -92,6 +97,6 @@ export function durableObjectBundleIssue(bundle: {
     (!carriesObjects &&
       (bundle.durableObjects !== undefined || bundle.functions.durableObjects !== undefined))
   )
-    return 'Durable Object declarations and Functions must match, at bundle version 5 through 8; Containers require 7 or 8';
+    return 'Durable Object declarations and Functions must match, at bundle version 5 through 10; Containers require 7 through 10';
   return undefined;
 }
