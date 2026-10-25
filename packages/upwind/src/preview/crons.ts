@@ -19,6 +19,11 @@ import { fireCronJobs } from '../deploy/workers/cron-jobs.ts';
 
 /** The longest a timer waits at once: Node's own bound, past which it would fire at once. */
 const MAX_TIMER_MS = 2_147_483_647;
+/**
+ * How late a firing may run: within the minute it was scheduled for, as a trigger's is. Later, it
+ * is one a sleeping machine missed, and not made up.
+ */
+const FIRING_WINDOW_MS = 60_000;
 
 export interface CronJobsInput {
   readonly jobs: readonly CronJob[];
@@ -58,10 +63,15 @@ export function startCronJobs(input: CronJobsInput): RunningCronJobs {
   // The jobs as a deployed edge holds them, by trigger: here each schedule is its own.
   const table = JSON.stringify(Object.fromEntries(grouped));
   // What the edge's firing sends to the site's first hostname goes to the preview instead, as a
-  // visitor's request would: through its edge, and not following a redirect.
+  // visitor's request would: through its edge, and not following a redirect. The path is set on the
+  // preview's URL rather than resolved against it: a job's path can normalize to one that starts
+  // `//`, which resolved would name another host, and be sent the secret (Codex, greptile, Sentry).
   const send = (request: Request): Promise<Response> => {
     const { pathname, search } = new URL(request.url);
-    return fetchImpl(new URL(`${pathname}${search}`, input.site), {
+    const target = new URL(input.site);
+    target.pathname = pathname;
+    target.search = search;
+    return fetchImpl(target, {
       headers: request.headers,
       redirect: 'manual',
       signal: stopping.signal,
@@ -94,11 +104,13 @@ export function startCronJobs(input: CronJobsInput): RunningCronJobs {
         arm(schedule, expression, at);
         return;
       }
-      void fire(schedule).catch(() => {
-        // Each job's answer, or why there was none, is `fireCronJobs`'s to say.
-      });
-      // From now, where a sleeping machine woke late: a missed firing is not made up, as a
-      // trigger's is not.
+      // A firing whose minute went by while the machine slept is not made up, as a trigger's is
+      // not (Codex, greptile); nor is any after it, which the next one is counted from now past.
+      if (now() < at + FIRING_WINDOW_MS) {
+        void fire(schedule).catch(() => {
+          // Each job's answer, or why there was none, is `fireCronJobs`'s to say.
+        });
+      }
       const following = nextFireAfter(expression, Math.max(at, now()));
       if (following !== undefined) {
         arm(schedule, expression, following);

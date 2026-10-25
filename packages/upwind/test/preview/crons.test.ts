@@ -123,6 +123,47 @@ describe("a preview's cron jobs", () => {
     await running.stop();
   });
 
+  it('send each to the preview, whatever host its path normalizes to look like', async () => {
+    // A path the schema takes, which normalizes to one that starts `//`.
+    const running = startCronJobs({
+      jobs: [{ path: '/a/..//elsewhere.example/task', schedule: '*/5 * * * *' }],
+      site: SITE,
+      secret: 'cron-secret',
+      fetchImpl,
+    });
+
+    await vi.advanceTimersByTimeAsync(90_000);
+
+    expect(asked.map(({ url }) => url)).toStrictEqual([
+      'http://localhost:3000//elsewhere.example/task',
+    ]);
+
+    await running.stop();
+  });
+
+  it('make up no firing a sleeping machine missed, and fire the next one', async () => {
+    const running = startCronJobs({
+      jobs: [{ path: '/daily', schedule: '0 13 * * *' }],
+      site: SITE,
+      secret: undefined,
+      fetchImpl,
+    });
+    const today = Date.UTC(2026, 9, 26, 13, 0, 0);
+    const tomorrow = Date.UTC(2026, 9, 27, 13, 0, 0);
+
+    // The machine sleeps through 13:00 and wakes at 18:00, when the timer runs at last.
+    vi.setSystemTime(Date.UTC(2026, 9, 26, 18, 0, 0));
+    await vi.advanceTimersByTimeAsync(today - START);
+
+    expect(asked).toStrictEqual([]);
+
+    await vi.advanceTimersByTimeAsync(tomorrow - Date.now());
+
+    expect(asked.map(({ at }) => at)).toStrictEqual([tomorrow]);
+
+    await running.stop();
+  });
+
   it('fire nothing once stopped', async () => {
     const running = startCronJobs({
       jobs: [{ path: '/every-minute', schedule: '* * * * *' }],
