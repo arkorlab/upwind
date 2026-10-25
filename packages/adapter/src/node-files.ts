@@ -9,6 +9,7 @@ import { AuditError } from './dependencies.ts';
 import type { BuildFunctionInput } from './function.ts';
 import type { NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
+import { nodePackageName, preserveNodePackageSubpaths } from './node-package-subpaths.ts';
 import { originalNodeSpecifiers } from './node-source-specifiers.ts';
 
 const MAX_FILE_BYTES = 134_217_728;
@@ -38,18 +39,6 @@ interface PhysicalSources {
   readonly files: Map<string, Uint8Array>;
   readonly executable: Set<string>;
   readonly originals: Map<string, string>;
-}
-
-function packageName(specifier: string): string | undefined {
-  if (
-    specifier.startsWith('.') ||
-    specifier.startsWith('/') ||
-    specifier.includes(':') ||
-    specifier.startsWith('#')
-  )
-    return undefined;
-  const parts = specifier.split('/');
-  return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -225,16 +214,37 @@ async function packageAliases(
   if (isBuiltin(specifier)) return true;
   if (path.isAbsolute(specifier) || specifier.startsWith('file:'))
     throw new AuditError('Absolute Node module imports cannot be relocated into an artifact');
-  const pkg = packageName(specifier);
+  const pkg = nodePackageName(specifier);
   if (pkg === undefined) return false;
   const require = createRequire(file);
   // Search paths are independent of exports conditions. Import-only packages may forbid both
   // require(pkg) and require(pkg/package.json), but still need their original physical alias.
   const searches = require.resolve.paths(pkg) ?? [];
   for (const search of searches) {
-    if (await recordPackageAlias(path.join(search, pkg), context)) return true;
+    const alias = path.join(search, pkg);
+    if (!(await recordPackageAlias(alias, context))) continue;
+    await packageSubpathAliases(await realpath(alias), specifier, pkg, context);
+    return true;
   }
   return false;
+}
+
+async function packageSubpathAliases(
+  directory: string,
+  specifier: string,
+  pkg: string,
+  context: PackageAliasContext,
+): Promise<void> {
+  if (specifier === pkg) return;
+  const file = path.join(directory, PACKAGE_MANIFEST);
+  await preserveNodePackageSubpaths({
+    directory,
+    specifier,
+    packageName: pkg,
+    metadata: context.sources.files.get(context.layout.nameOf(file)),
+    relativeAlias: (target) => relativeAliases(file, target, context),
+    exactAlias: (target) => relativePackageImport(file, target, context),
+  });
 }
 
 function packageRecord(value: unknown): value is Record<string, unknown> {
@@ -335,7 +345,7 @@ async function packageImports(
       throw new AuditError('Node package import has an unproved builtin target');
     return;
   }
-  const pkg = packageName(target);
+  const pkg = nodePackageName(target);
   const segments = target.split('/');
   if (
     pkg === undefined ||

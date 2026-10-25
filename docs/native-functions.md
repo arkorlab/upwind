@@ -46,9 +46,14 @@ executed from its original file must use syntax the target Node runtime can exec
 Raw JSX and TypeScript features requiring transformation, such as enums, need compilation first.
 Raw TypeScript under an archived `node_modules` directory also requires compilation.
 
-Package import aliases support exact `package.json` mappings to literal relative files or external
-packages. Conditional, pattern and chained mappings are refused before publication until their
-resolution can be proved without changing the original package metadata.
+Package `imports` aliases (`#name`) support exact `package.json` mappings to literal relative files
+or external packages. Conditional, pattern and chained mappings are refused before publication
+until their resolution can be proved without changing the original package metadata.
+
+Bare package subpaths preserve proved internal aliases for direct lookups and exact `exports`
+entries with bounded literal condition targets. Export patterns, target arrays and unclosed
+symlink targets are refused. An unused conditional symlink can also cause refusal when its target
+is outside the closed trace. Package metadata remains unchanged.
 
 The first backend supports plain environment values, shared cache access and delegated HTTP
 services. Native storage bindings, Durable Objects, Cloudflare Workflows, custom cache-handler
