@@ -1,10 +1,24 @@
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node } from './lexical-scope.ts';
-import { declaration, identifier, propertyName, type Visit } from './node-manifest-consumer-ast.ts';
+import {
+  declaration,
+  identifier,
+  propertyName,
+  stringOf,
+  type Visit,
+} from './node-manifest-consumer-ast.ts';
 import type { NodeManifestTurbopackModuleId } from './node-manifest-turbopack.ts';
 
 const EXTERNAL_INTEROP_ARITY = 3;
 const MAX_MODULE_ID_BYTES = 16_384;
+const GETTER_BINDING_WIDTH = 2;
+const VALUE_BINDING_WIDTH = 3;
+
+interface ExportBinding {
+  readonly name: string;
+  readonly value: Node;
+  readonly kind: 'getter' | 'value';
+}
 
 /** Fixed Next ModuleId is an untagged number/string; the runtime stores exact keys in a Map. */
 // eslint-disable-next-line sonarjs/function-return-type -- Next.js ModuleId preserves runtime-distinct number and string Map keys.
@@ -65,7 +79,7 @@ function staticSelector(node: unknown): node is Node {
   );
 }
 
-export function getterOf(value: unknown): Node {
+function getterOf(value: unknown): Node {
   if (
     !isNode(value) ||
     value.type !== 'ArrowFunctionExpression' ||
@@ -83,6 +97,26 @@ export function getterOf(value: unknown): Node {
     result = only['argument'];
   }
   return staticSelector(result) ? result : refuse('export getter expression');
+}
+
+/** Fixed EsmBindings use name/getter pairs or name/0/value triples, with no setters here. */
+export function exportBindings(table: unknown): readonly ExportBinding[] {
+  if (!isNode(table) || table.type !== 'ArrayExpression') refuse('export registration arguments');
+  const entries = listOf(table, 'elements');
+  const names = new Set<string>();
+  const bindings: ExportBinding[] = [];
+  for (let index = 0; index < entries.length;) {
+    const name = stringOf(entries[index]);
+    if (name === undefined || names.has(name)) refuse('export name');
+    names.add(name);
+    const tag = entries[index + 1];
+    const direct = isNode(tag) && tag.type === 'Literal' && tag['value'] === 0;
+    const value = direct ? entries[index + GETTER_BINDING_WIDTH] : getterOf(tag);
+    if (!staticSelector(value)) refuse('export value expression');
+    bindings.push({ name, value, kind: direct ? 'value' : 'getter' });
+    index += direct ? VALUE_BINDING_WIDTH : GETTER_BINDING_WIDTH;
+  }
+  return bindings.length === 0 ? refuse('empty export registration') : bindings;
 }
 
 export function externalThunk(args: readonly unknown[]): Node {

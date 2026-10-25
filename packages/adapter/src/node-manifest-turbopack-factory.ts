@@ -23,8 +23,8 @@ import { nodeManifestClearProjection } from './node-manifest-turbopack-clear.ts'
 import { originalTurbopackImports } from './node-manifest-turbopack-imports.ts';
 import {
   defaultExportTarget,
+  exportBindings,
   externalThunk,
-  getterOf,
   turbopackModuleId,
   turbopackModuleSpecifier,
 } from './node-manifest-turbopack-values.ts';
@@ -254,24 +254,17 @@ class FactoryProjection {
       return;
     }
     this.topLevel(call);
-    const args = listOf(call, 'arguments');
-    const table = args[0];
-    if (!isNode(table) || table.type !== 'ArrayExpression') refuse('export registration arguments');
-    const entries = listOf(table, 'elements');
-    const names = new Set<string>();
-    for (let index = 0; index < entries.length; index += 2) {
-      const name = stringOf(entries[index]);
-      if (name === undefined || names.has(name)) refuse('export name');
-      names.add(name);
-      const value = getterOf(entries[index + 1]);
-      const local = `${GETTER_PREFIX}${names.size}`;
-      this.append.push(
-        `const ${local}=${this.text(value)};export {${local} as ${jsLiteral(name)}};`,
-      );
+    const bindings = exportBindings(listOf(call, 'arguments')[0]);
+    const captures: string[] = [];
+    for (const [index, binding] of bindings.entries()) {
+      const local = `${GETTER_PREFIX}${index + 1}`;
+      const capture = `const ${local}=${this.text(binding.value)}`;
+      if (binding.kind === 'value') captures.push(capture);
+      else this.append.push(`${capture};`);
+      this.append.push(`export {${local} as ${jsLiteral(binding.name)}};`);
     }
-    if (names.size === 0) refuse('empty export registration');
-    this.exports = { kind: 'getters', names: [...names] };
-    this.edit(call, 'void 0');
+    this.exports = { kind: 'getters', names: bindings.map((binding) => binding.name) };
+    this.edit(call, captures.length === 0 ? 'void 0' : captures.join(';'));
   }
 
   private namespaceIdentity(call: Node, visit: Visit): NodeManifestTurbopackImport | undefined {

@@ -8,9 +8,11 @@ import {
   getterValue,
   identifier,
   propertyName,
+  reference,
   stringOf,
   swcHeader,
   visitTree,
+  type Visit,
 } from './node-manifest-consumer-ast.ts';
 
 const GETTER_PREFIX = '__upwind_turbopack_getter_';
@@ -180,52 +182,96 @@ function noOp(node: unknown): boolean {
     value['value'] === 0
   );
 }
-function projectedSelector(
-  statement: unknown,
-  next: unknown,
-): { readonly name: string | undefined; readonly value: unknown } | undefined {
+interface ProjectedCapture {
+  readonly statement: Node;
+  readonly variable: Node;
+  readonly local: Node;
+  readonly value: Node;
+  alias?: Node;
+}
+function projectedCapture(statement: unknown): ProjectedCapture | undefined {
   const declarations =
     isNode(statement) && statement.type === 'VariableDeclaration'
       ? listOf(statement, 'declarations')
       : [];
-  const variable = declarations[0];
+  const variable = declarations.find((value) => {
+    const local = isNode(value) ? value['id'] : undefined;
+    return identifier(local) && local.name.startsWith(GETTER_PREFIX);
+  });
   const local = isNode(variable) ? variable['id'] : undefined;
   if (!identifier(local) || !local.name.startsWith(GETTER_PREFIX)) return undefined;
-  const specifiers =
-    isNode(next) && next.type === 'ExportNamedDeclaration' ? listOf(next, 'specifiers') : [];
-  const exported = specifiers[0];
   if (
     !isNode(statement) ||
-    !isNode(next) ||
+    !isNode(variable) ||
     declarations.length !== 1 ||
     statement['kind'] !== 'const' ||
-    (next['source'] !== null && next['source'] !== undefined) ||
-    specifiers.length !== 1 ||
-    !isNode(exported) ||
-    !identifier(exported['local']) ||
-    exported['local'].name !== local.name
+    !isNode(variable['init'])
   )
     return refuse('projected selector declaration');
+  return { statement, variable, local, value: variable['init'] };
+}
+function projectedAlias(
+  statement: unknown,
+  captures: ReadonlyMap<Node, ProjectedCapture>,
+  visits: ReadonlyMap<Node, Visit>,
+): { readonly name: string | undefined; readonly capture: ProjectedCapture } | undefined {
+  if (!isNode(statement) || statement.type !== 'ExportNamedDeclaration') return undefined;
+  const specifiers = listOf(statement, 'specifiers');
+  const exported = specifiers[0];
+  const local = isNode(exported) ? exported['local'] : undefined;
+  if (statement['source'] !== null && statement['source'] !== undefined)
+    return refuse('projected selector alias source');
+  if (specifiers.length !== 1 || !isNode(exported) || !identifier(local))
+    return refuse('projected selector alias');
+  const visit = visits.get(local);
+  const binding = visit === undefined ? undefined : declaration(local.name, visit.scopes)?.node;
+  const capture = binding === undefined ? undefined : captures.get(binding);
+  if (capture === undefined || capture.alias !== undefined)
+    return refuse('projected selector binding');
+  capture.alias = local;
   const name = identifier(exported['exported'])
     ? exported['exported'].name
     : stringOf(exported['exported']);
-  return { name, value: isNode(variable) ? variable['init'] : undefined };
+  return { name, capture };
+}
+function assertCaptureUses(
+  captures: ReadonlyMap<Node, ProjectedCapture>,
+  visits: readonly Visit[],
+): void {
+  for (const visit of visits) {
+    const node = visit.node;
+    if (!identifier(node) || !node.name.startsWith(GETTER_PREFIX)) continue;
+    const binding = declaration(node.name, visit.scopes)?.node;
+    const capture = binding === undefined ? undefined : captures.get(binding);
+    if (capture?.local === node || (capture?.alias === node && reference(visit))) continue;
+    return refuse('projected selector shadow, mutation or extra use');
+  }
 }
 /** Only selectors emitted by the recomputed Turbopack projector may use this scaffold. */
 export function projectedTemplateExports(program: Node): ManifestTemplateExports {
   const body = listOf(program, 'body');
   const fields = new Map<string, Node>();
   const kept: unknown[] = [];
-  for (let index = 0; index < body.length; index += 1) {
-    const statement = body[index];
-    if (noOp(statement)) continue;
-    const selected = projectedSelector(statement, body[index + 1]);
-    if (selected === undefined) kept.push(statement);
-    else {
-      add(fields, selected.name, selected.value);
-      index += 1;
-    }
+  const captures = new Map<Node, ProjectedCapture>();
+  const statements = new Set<Node>();
+  for (const statement of body) {
+    const capture = projectedCapture(statement);
+    if (capture === undefined) continue;
+    captures.set(capture.variable, capture);
+    statements.add(capture.statement);
   }
+  const all = visitTree(program);
+  const visits = new Map(all.map((visit) => [visit.node, visit]));
+  for (const statement of body) {
+    if (noOp(statement) || (isNode(statement) && statements.has(statement))) continue;
+    const selected = projectedAlias(statement, captures, visits);
+    if (selected === undefined) kept.push(statement);
+    else add(fields, selected.name, selected.capture.value);
+  }
+  for (const capture of captures.values()) {
+    if (capture.alias === undefined) return refuse('missing projected selector alias');
+  }
+  assertCaptureUses(captures, all);
   if (fields.size === 0) return refuse('missing projected exports');
   return { body: kept, fields };
 }
