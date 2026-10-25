@@ -9,7 +9,7 @@ import {
   scopeOpenedBy,
 } from './lexical-scope.ts';
 
-type Builtin = 'module' | 'process' | 'vm';
+type Builtin = 'child_process' | 'module' | 'process' | 'vm';
 interface Origin {
   readonly builtin: Builtin;
   readonly member?: string;
@@ -55,10 +55,27 @@ const VM_COMPILERS = new Set([
   'runInNewContext',
   'runInThisContext',
 ]);
+const CHILD_PROCESS_EXECUTORS = new Set([
+  'ChildProcess',
+  '_forkChild',
+  'exec',
+  'execFile',
+  'execFileSync',
+  'execSync',
+  'fork',
+  'spawn',
+  'spawnSync',
+]);
 
-function identifier(node: unknown, name?: string): node is Node {
+function identifier(
+  node: unknown,
+  name?: string,
+): node is Node & { readonly type: 'Identifier'; readonly name: string } {
   return (
-    isNode(node) && node.type === 'Identifier' && (name === undefined || node['name'] === name)
+    isNode(node) &&
+    node.type === 'Identifier' &&
+    typeof node['name'] === 'string' &&
+    (name === undefined || node['name'] === name)
   );
 }
 
@@ -86,7 +103,9 @@ function memberOf(node: Node): string | undefined {
 
 function builtinOf(specifier: string | undefined): Builtin | undefined {
   const name = specifier?.replace(/^node:/u, '');
-  return name === 'module' || name === 'process' || name === 'vm' ? name : undefined;
+  return name === 'child_process' || name === 'module' || name === 'process' || name === 'vm'
+    ? name
+    : undefined;
 }
 
 function bindingOf(
@@ -167,6 +186,8 @@ function forbidden(origin: Origin | undefined): boolean {
   if (origin?.member === undefined) return false;
   if (origin.member === '*') return true;
   switch (origin.builtin) {
+    case 'child_process':
+      return CHILD_PROCESS_EXECUTORS.has(origin.member);
     case 'module':
       return MODULE_LOADERS.has(origin.member);
     case 'process':
@@ -327,10 +348,20 @@ function isReference({ parent, key }: Visit): boolean {
   return true;
 }
 
-function moduleEscapes(visit: Visit, imports: ReadonlyMap<Node, Origin>): boolean {
+function namespaceEscapes(
+  visit: Visit,
+  imports: ReadonlyMap<Node, Origin>,
+  builtin: 'child_process' | 'module',
+): boolean {
   if (!['Identifier', 'CallExpression', 'MemberExpression'].includes(visit.node.type)) return false;
   const origin = originOf(visit.node, visit.scopes, imports);
-  if (origin?.builtin !== 'module' || origin.member !== undefined || !isReference(visit))
+  if (origin?.builtin !== builtin || origin.member !== undefined || !isReference(visit))
+    return false;
+  if (
+    builtin === 'child_process' &&
+    (visit.parent?.type === 'ExpressionStatement' ||
+      (visit.parent?.type === 'UnaryExpression' && visit.parent['operator'] === 'typeof'))
+  )
     return false;
   // A namespace alias remains tracked. All other exports/calls/returns would hand out a loader.
   return !(
@@ -413,7 +444,14 @@ function loaderRefusal(visit: Visit, imports: ReadonlyMap<Node, Origin>): string
     return 'an unproved Node module loader or code compiler';
   if (node.type === 'ImportExpression' && builtinOf(stringOf(node['source'])) !== undefined)
     return 'an unproved dynamically imported Node loader namespace';
-  if (moduleEscapes(visit, imports)) return 'an unproved Node Module namespace escape';
+  if (
+    (node.type === 'ExportNamedDeclaration' || node.type === 'ExportAllDeclaration') &&
+    builtinOf(stringOf(node['source'])) === 'child_process'
+  )
+    return 'an unproved Node child-process namespace escape';
+  if (namespaceEscapes(visit, imports, 'module')) return 'an unproved Node Module namespace escape';
+  if (namespaceEscapes(visit, imports, 'child_process'))
+    return 'an unproved Node child-process namespace escape';
   return undefined;
 }
 
