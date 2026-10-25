@@ -15,6 +15,7 @@ import { resolvePolicy } from '@stayingupwind/host/delivery';
 
 import type { EdgeBindings } from './bindings.ts';
 import { transferInvalidations } from './cache/condemned.ts';
+import { lookAtScopeBehind } from './cache/scope-signal.ts';
 import {
   classificationReadsCredentials,
   CLASSIFIED_HEADER_PREFIXES,
@@ -80,6 +81,8 @@ const FALLBACK_PRIVACY = 3;
 /** A probe of one app Worker of a split deployment (`fn`, signed): that Worker's to answer. */
 const FUNCTION_PROBE = 'function-probe';
 const NOT_DEPLOYED = 'not-deployed';
+/** Next.js's own paths, the build's files chief among them: nothing under them is judged by a tag. */
+const NEXT_OWN_PATHS = '/_next/';
 
 /** A request routed by the edge, with what it knows of the project and what it waited on for it. */
 export interface RoutingInput {
@@ -450,6 +453,27 @@ function routeWithinBudget(input: ManifestRoutingInput): Promise<Response> {
   return routeWithManifest(input, forwarding);
 }
 
+/**
+ * Begin the request's look at where its scope stands (`lookAtScopeBehind`), beside what it reads and
+ * waited for by none of it. What the edge serves from a record is judged by what this isolate knows
+ * of the scope, and so is what it hands to the scope's Functions, which are told where the scope
+ * stands as this isolate knows it (`withScopeRevision`): a page Next.js routes there itself — behind
+ * a rewrite the edge stays out of — or a route handler reads no record here, and is no less one an
+ * invalidation reaches. Not for a path of Next.js's own, nor for a validation, which proves the
+ * build and reads nothing of the cache; a file the build shipped and an optimized image are answered
+ * before this (`hostedFirst`), and a request of another method is handed on before its manifest is
+ * in (`routeWithinBudget`).
+ */
+function lookAtScopeOf(input: ManifestRoutingInput, scopeId: string): void {
+  if (input.state.validated || input.url.pathname.startsWith(NEXT_OWN_PATHS)) {
+    return;
+  }
+  lookAtScopeBehind(
+    { app: input.state.app, ctx: input.ctx, host: input.host, runtime: input.runtime },
+    scopeId,
+  );
+}
+
 /** Read the policy only once the request is known to need an edge strategy. */
 function routeWithManifest(
   input: ManifestRoutingInput,
@@ -463,6 +487,7 @@ function routeWithManifest(
       state.app?.deploymentId,
       state.manifest.cache.scopeId,
     );
+    lookAtScopeOf(input, state.manifest.cache.scopeId);
   }
   if (state.mode !== EDGE_MODE || state.manifest === undefined) {
     // This pointer field is opaque; internal middleware reasons retain their structured fields.
