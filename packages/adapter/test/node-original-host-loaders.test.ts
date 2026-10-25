@@ -66,6 +66,8 @@ describe('retained original CommonJS host-loader sites', () => {
       'unused host-child function',
       'function unused(){return module.children[0]}module.exports=42;',
     ],
+    ['dead search-path mutation', "if(false)module.paths.unshift('/another');module.exports=42;"],
+    ['unused search-path replacement', 'function unused(){module.paths=[]}module.exports=42;'],
   ])('does not refuse a %s removed by compression', async (_title, source) => {
     const { chunk, proof } = await bundleSource(source);
 
@@ -146,6 +148,25 @@ describe('retained original CommonJS host-loader sites', () => {
   );
 
   it.each([
+    ['prepend', "module.paths.unshift('/another');module.exports=42;"],
+    ['replacement', 'module.paths=[];module.exports=42;'],
+    ['index write', "module.paths[0]='/another';module.exports=42;"],
+    ['length write', 'module.paths.length=0;module.exports=42;'],
+    ['export', 'exports.paths=module.paths;'],
+    ['array alias', "const paths=module.paths;paths.push('/another');module.exports=42;"],
+    ['destructuring', "const {paths}=module;paths.push('/another');module.exports=42;"],
+    ['parent mutation', "module.parent.paths.unshift('/another');module.exports=42;"],
+    ['deletion', 'delete module.paths;module.exports=42;'],
+    ['loop assignment', 'for(module.paths of values){}module.exports=42;'],
+    ['pattern assignment', '({paths:module.paths}=value);module.exports=42;'],
+  ])('tracks a retained loader search-path %s as unresolved authority', async (_title, source) => {
+    const { chunk, proof } = await bundleSource(source);
+
+    expect(proof.retained(chunk).length).toBeGreaterThan(0);
+    await expect(readFile(entry, 'utf8')).resolves.toBe(source);
+  });
+
+  it.each([
     ['metadata', 'exports.filename=module.filename;'],
     ['ordinary exports', 'module.exports={value:42};'],
     ['destructured exports', 'const {exports:target}=module;target.value=42;'],
@@ -166,6 +187,15 @@ describe('retained original CommonJS host-loader sites', () => {
     ['global host metadata', 'exports.filename=globalThis.module.filename;'],
     ['ignored host read', 'module;module.exports=42;'],
     ['child-count metadata', 'exports.count=module.children.length;'],
+    ['path-count metadata', 'exports.count=module.paths.length;'],
+    ['first search-path metadata', 'exports.first=module.paths[0];'],
+    ['computed search-path metadata', "exports.first=module.paths['0'];"],
+    ['aliased host path metadata', 'const current=module;exports.count=current.paths.length;'],
+    [
+      'shadowed path state',
+      "const module={paths:[]};module.paths.unshift('/local');exports.value=42;",
+    ],
+    ['parameter path state', "exports.run=module=>module.paths.unshift('/local');"],
   ])('leaves genuine local shadows and %s unmarked', async (_title, source) => {
     const { chunk, proof } = await bundleSource(source);
 

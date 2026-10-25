@@ -1,12 +1,36 @@
+import { readFile, realpath } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
-import { assertNodeManifestTurbopackTemplateConsumer } from '../src/node-manifest-turbopack-templates.ts';
+import {
+  assertNodeManifestTurbopackTemplateConsumer,
+  type NodeManifestTurbopackTemplateInput,
+} from '../src/node-manifest-turbopack-templates.ts';
 import {
   changeOriginalTemplateFixture,
   manifestTemplateSource,
   projectedTemplateFixture,
   reprojectTemplateFixture,
 } from './fixtures/node-manifest-turbopack-template.ts';
+
+async function runtimeConstructor(
+  own: NodeManifestTurbopackTemplateInput,
+  runtime: string,
+): Promise<NodeManifestTurbopackTemplateInput> {
+  const original = own.imports.find((entry) => entry.file.endsWith('/module.compiled.js'));
+  if (original === undefined) throw new Error('Expected published constructor dependency');
+  const file = await realpath(
+    fileURLToPath(import.meta.resolve(`next/dist/compiled/next-server/${runtime}`)),
+  );
+  const sha256 = manifestTemplateSource(await readFile(file, 'utf8')).sha256;
+  const specifier = 'sealed:runtime-constructor';
+  const imports = own.imports.map((entry) =>
+    entry === original ? { specifier, file, sha256 } : entry,
+  );
+  const code = own.projection.original.code.replaceAll(original.specifier, () => specifier);
+  return { ...reprojectTemplateFixture(own, code), imports };
+}
 
 describe('projected fixed Next Pages and AppRoute template bodies', () => {
   it.each(['pages', 'app-route'] as const)(
@@ -153,6 +177,71 @@ describe('projected fixed Next Pages and AppRoute template bodies', () => {
 
     await expect(assertNodeManifestTurbopackTemplateConsumer(changed)).rejects.toThrow(
       'changed protected export selector',
+    );
+  });
+
+  it.each([
+    ['pages', 'pages.runtime.prod.js'],
+    ['pages', 'pages-turbo.runtime.prod.js'],
+    ['pages-api', 'pages-api.runtime.prod.js'],
+    ['pages-api', 'pages-api-turbo.runtime.prod.js'],
+    ['app-route', 'app-route.runtime.prod.js'],
+    ['app-route', 'app-route-turbo.runtime.prod.js'],
+    ['app-route', 'app-route-experimental.runtime.prod.js'],
+    ['app-route', 'app-route-turbo-experimental.runtime.prod.js'],
+  ] as const)('accepts the projected %s class namespace from %s', async (kind, runtime) => {
+    const own = await runtimeConstructor(await projectedTemplateFixture(kind), runtime);
+
+    await expect(assertNodeManifestTurbopackTemplateConsumer(own)).resolves.toMatchObject({
+      kind,
+      pathname: own.route.pathname,
+      requiresRuntimeNormalization: true,
+    });
+  });
+
+  it.each(['hash', 'profile', 'source-path', 'reflection'] as const)(
+    'refuses a projected runtime constructor with an unproved %s',
+    async (scenario) => {
+      const runtime =
+        scenario === 'profile' ? 'pages-api.runtime.prod.js' : 'pages.runtime.prod.js';
+      const own = await runtimeConstructor(await projectedTemplateFixture('pages'), runtime);
+      const imports = own.imports.map((entry) => {
+        if (entry.specifier !== 'sealed:runtime-constructor') return entry;
+        if (scenario === 'hash')
+          return { ...entry, sha256: manifestTemplateSource('changed').sha256 };
+        if (scenario === 'source-path') return { ...entry, file: '/unreviewed/runtime.js' };
+        return entry;
+      });
+      const changed =
+        scenario === 'reflection'
+          ? reprojectTemplateFixture(
+              own,
+              own.projection.original.code.replace(
+                '_modulecompiled.PagesRouteModule',
+                "_modulecompiled['PagesRouteModule']",
+              ),
+            )
+          : own;
+
+      await expect(
+        assertNodeManifestTurbopackTemplateConsumer({ ...changed, imports }),
+      ).rejects.toThrow('Unproved Next.js Turbopack route template');
+    },
+  );
+
+  it('keeps the projected PagesAPI request metadata pin after a direct constructor alias is proved', async () => {
+    const own = await runtimeConstructor(
+      await projectedTemplateFixture('pages-api'),
+      'pages-api.runtime.prod.js',
+    );
+    const imports = own.imports.map((entry) => {
+      return entry.specifier.endsWith('/request-meta')
+        ? { ...entry, sha256: manifestTemplateSource('changed metadata').sha256 }
+        : entry;
+    });
+
+    await expect(assertNodeManifestTurbopackTemplateConsumer({ ...own, imports })).rejects.toThrow(
+      'changed protected import',
     );
   });
 });

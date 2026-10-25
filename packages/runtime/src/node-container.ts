@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { nodeFunctionEnv, nodeRuntimeConfiguration } from './node-bindings.ts';
 import { changesSomething, closeNodeHttpBridge } from './node-http-bridge.ts';
@@ -128,12 +128,25 @@ async function application(
   }
 }
 
+function closeHttpServer(server: Server): Promise<void> {
+  return new Promise<void>((resolve) => {
+    server.close(() => {
+      resolve();
+    });
+    server.closeAllConnections();
+  });
+}
+
 /** Import this module before importing the bundled Function, so broker fetch is native Node fetch. */
-export async function startNodeContainer(options: {
-  readonly entry: NodeContainerEntry;
-  readonly port?: number;
-}): Promise<NodeContainerServer> {
+export async function startNodeContainer(
+  options: (
+    | { readonly entry: NodeContainerEntry }
+    | { readonly loadEntry: () => Promise<NodeContainerEntry> }
+  ) & { readonly port?: number },
+): Promise<NodeContainerServer> {
   const config = nodeRuntimeConfiguration();
+  // Consume private bootstrap environment before a Function or its hooks can evaluate.
+  const entry = 'loadEntry' in options ? await options.loadEntry() : options.entry;
   const lifetime = new NodeLifetime();
   const server = createServer((request, response) => {
     if (!authorized(request.headers[CONTROL_HEADER], config.controlToken)) {
@@ -144,7 +157,7 @@ export async function startNodeContainer(options: {
     const work =
       request.headers[URL_HEADER] === undefined
         ? control(request, response, lifetime)
-        : application(options.entry, request, response, lifetime);
+        : application(entry, request, response, lifetime);
     // eslint-disable-next-line unicorn/prefer-await -- node:http owns the response stream's lifetime.
     work.catch(() => {
       if (response.headersSent) response.destroy();
@@ -163,12 +176,7 @@ export async function startNodeContainer(options: {
     closing ??= (async (): Promise<boolean> => {
       lifetime.startDraining();
       const drained = await lifetime.drain(DRAIN_MS);
-      await new Promise<void>((resolve) => {
-        server.close(() => {
-          resolve();
-        });
-        server.closeAllConnections();
-      });
+      await closeHttpServer(server);
       await closeNodeHttpBridge();
       process.off('SIGTERM', terminate);
       process.off('SIGINT', terminate);

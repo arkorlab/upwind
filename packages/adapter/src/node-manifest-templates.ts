@@ -15,6 +15,10 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import {
+  manifestConstructorImport,
+  reviewedRouteConstructorSource,
+} from './node-manifest-framework.ts';
 
 const MAX_TEMPLATE_BYTES = 131_072;
 const PAGE_TEMPLATE_SHA = '74447861b9e7809dbac55efc1cb6b6c6365b2f8ea290679c7493b8f08f56990a';
@@ -105,14 +109,12 @@ function digest(bytes: Uint8Array | string): string {
 async function templateOf(input: NodeManifestTemplateInput): Promise<Template> {
   const profile = TEMPLATE_PROFILES[input.route.kind];
   const relative = profile.module;
-  const expected = profile.moduleSha;
-  const classes = input.imports.filter((entry) =>
-    entry.file.replaceAll('\\', '/').endsWith(`/${relative}`),
-  );
+  const classes = input.imports
+    .map((entry) => manifestConstructorImport(entry.file, entry.sha256))
+    .filter((entry) => entry?.module === relative);
   const module = classes[0];
-  if (module === undefined || classes.length !== 1 || module.sha256 !== expected)
-    refuse('constructor identity');
-  const root = module.file.slice(0, -relative.length - 1);
+  if (module === undefined || classes.length !== 1) refuse('constructor identity');
+  const root = module.root;
   const file = await realpath(path.join(root, 'dist/build/templates', `${input.route.kind}.js`));
   if (beneath(root, file) === undefined) refuse('template source path');
   const info = await stat(file);
@@ -155,6 +157,13 @@ function canonicalNextImport(
 ): string {
   const relative = beneath(context.template.root, file)?.split(path.sep).join('/');
   if (relative === undefined) return refuse('external framework dependency');
+  const constructor =
+    sha256 === undefined ? undefined : reviewedRouteConstructorSource(relative, sha256);
+  if (constructor !== undefined) {
+    if (constructor.module !== TEMPLATE_PROFILES[context.input.route.kind].module)
+      refuse('constructor profile');
+    return `next:${constructor.module}`;
+  }
   const expected = PROTECTED_DEPENDENCIES.get(relative);
   if (expected !== undefined && sha256 !== expected && !context.expected)
     refuse('changed protected dependency');

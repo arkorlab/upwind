@@ -92,6 +92,24 @@ async function input(
   return { source: source(code), imports, route };
 }
 
+async function runtimeConstructor(
+  own: NodeManifestTemplateInput,
+  runtime: string,
+): Promise<NodeManifestTemplateInput> {
+  const original = own.imports.find((entry) => entry.file.endsWith('/module.compiled.js'));
+  if (original === undefined) throw new Error('Expected published constructor dependency');
+  const file = await realpath(
+    fileURLToPath(import.meta.resolve(`next/dist/compiled/next-server/${runtime}`)),
+  );
+  const awaitedRuntimeBytes = await readFile(file);
+  const specifier = 'sealed:runtime-constructor';
+  const imports = own.imports.map((entry) =>
+    entry === original ? { specifier, file, sha256: digest(awaitedRuntimeBytes) } : entry,
+  );
+  const code = own.source.code.replaceAll(original.specifier, () => specifier);
+  return { ...own, imports, source: source(code) };
+}
+
 const REFUSAL_REPLACEMENTS = {
   route: ["page: '/blog/[slug]'", "page: '/other'"],
   constructor: ['new _modulecompiled.PagesRouteModule', 'new _modulecompiled.OtherRouteModule'],
@@ -233,6 +251,64 @@ describe('finite original Next.js route template consumers', () => {
 
   it('binds the PagesAPI metadata consumer to its exact published implementation', async () => {
     const own = await input('pages-api');
+    const imports = own.imports.map((entry) => {
+      return entry.specifier.endsWith('/request-meta')
+        ? { ...entry, sha256: digest('changed metadata') }
+        : entry;
+    });
+
+    await expect(assertNodeManifestTemplateConsumer({ ...own, imports })).rejects.toThrow(
+      'changed protected dependency',
+    );
+  });
+
+  it.each([
+    ['pages', 'pages.runtime.prod.js'],
+    ['pages', 'pages-turbo.runtime.prod.js'],
+    ['pages-api', 'pages-api.runtime.prod.js'],
+    ['pages-api', 'pages-api-turbo.runtime.prod.js'],
+    ['app-route', 'app-route.runtime.prod.js'],
+    ['app-route', 'app-route-turbo.runtime.prod.js'],
+    ['app-route', 'app-route-experimental.runtime.prod.js'],
+    ['app-route', 'app-route-turbo-experimental.runtime.prod.js'],
+  ] as const)('accepts the reviewed %s class namespace from %s', async (kind, runtime) => {
+    const own = await runtimeConstructor(await input(kind), runtime);
+
+    await expect(assertNodeManifestTemplateConsumer(own)).resolves.toMatchObject({
+      kind,
+      pathname: own.route.pathname,
+      requiresRuntimeNormalization: true,
+    });
+  });
+
+  it.each(['hash', 'profile', 'source-path', 'reflection'] as const)(
+    'refuses a direct runtime constructor with an unproved %s',
+    async (scenario) => {
+      const runtime =
+        scenario === 'profile' ? 'pages-api.runtime.prod.js' : 'pages.runtime.prod.js';
+      const own = await runtimeConstructor(await input('pages'), runtime);
+      const imports = own.imports.map((entry) => {
+        if (entry.specifier !== 'sealed:runtime-constructor') return entry;
+        if (scenario === 'hash') return { ...entry, sha256: digest('changed runtime') };
+        if (scenario === 'source-path') return { ...entry, file: '/unreviewed/runtime.js' };
+        return entry;
+      });
+      const code =
+        scenario === 'reflection'
+          ? own.source.code.replace(
+              '_modulecompiled.PagesRouteModule',
+              "_modulecompiled['PagesRouteModule']",
+            )
+          : own.source.code;
+
+      await expect(
+        assertNodeManifestTemplateConsumer({ ...own, imports, source: source(code) }),
+      ).rejects.toThrow('Unproved Next.js route template');
+    },
+  );
+
+  it('keeps the PagesAPI request metadata pin after a direct constructor alias is proved', async () => {
+    const own = await runtimeConstructor(await input('pages-api'), 'pages-api.runtime.prod.js');
     const imports = own.imports.map((entry) => {
       return entry.specifier.endsWith('/request-meta')
         ? { ...entry, sha256: digest('changed metadata') }

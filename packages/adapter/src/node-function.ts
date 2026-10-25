@@ -348,8 +348,7 @@ async function serverSource(files: NodeArtifactFiles): Promise<string> {
     "runtimeEnv.NODE_ENV='production';runtimeEnv.NEXT_RUNTIME='nodejs';",
     `if(${JSON.stringify(selectors)}.some(key=>Boolean(runtimeEnv[key])))throw new Error('Native loader environment overrides are unsupported');`,
     `process.chdir(${cwd});`,
-    "const {default:entry}=await import('./function.mjs');",
-    'await startNodeContainer({entry,port:8080});',
+    "await startNodeContainer({loadEntry:async()=>{const {default:entry}=await import('./function.mjs');return entry;},port:8080});",
   ].join('\n');
 }
 

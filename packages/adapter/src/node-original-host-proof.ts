@@ -7,8 +7,10 @@ import { hostPropertyName, isCommonJsHost } from './node-closure-hosts.ts';
 import { reference, visitTree, type Visit } from './node-manifest-consumer-ast.ts';
 
 const HOST_LOADERS: ReadonlySet<string> = new Set(['_compile', 'constructor', 'load', 'require']);
-const HOST_VALUE_MEMBERS: ReadonlySet<string> = new Set(['children', 'parent']);
+const HOST_ARRAY_MEMBERS: ReadonlySet<string> = new Set(['children', 'paths']);
+const HOST_VALUE_MEMBERS: ReadonlySet<string> = new Set(['children', 'parent', 'paths']);
 const METADATA_UNARY: ReadonlySet<string> = new Set(['!', 'typeof', 'void']);
+const ARRAY_INDEX = /^(?:0|[1-9]\d*)$/u;
 const ASSIGNMENT_PATTERNS: ReadonlySet<string> = new Set([
   'ArrayPattern',
   'AssignmentPattern',
@@ -121,11 +123,26 @@ function isWriteTarget(node: Node, byNode: ReadonlyMap<Node, Visit>): boolean {
   return false;
 }
 
-function hostChildren(visit: Visit, byNode: ReadonlyMap<Node, Visit>): Node | undefined {
+function isPathIndex(node: Node): boolean {
+  const property = node['property'];
+  if (node['computed'] !== true || !isNode(property) || property.type !== 'Literal') return false;
+  const value = property['value'];
+  return typeof value === 'number'
+    ? Number.isSafeInteger(value) && value >= 0
+    : typeof value === 'string' && ARRAY_INDEX.test(value);
+}
+
+function isArrayMetadata(node: Node, name: string): boolean {
+  if (hostPropertyName(node) === 'length') return true;
+  return name === 'paths' && isPathIndex(node);
+}
+
+function hostArray(visit: Visit, byNode: ReadonlyMap<Node, Visit>): Node | undefined {
   const node = visit.node;
+  const name = hostPropertyName(node);
   if (
     node.type !== 'MemberExpression' ||
-    hostPropertyName(node) !== 'children' ||
+    !HOST_ARRAY_MEMBERS.has(name ?? '') ||
     !isCommonJsHost(node['object'], visit.scopes)
   )
     return undefined;
@@ -133,10 +150,11 @@ function hostChildren(visit: Visit, byNode: ReadonlyMap<Node, Visit>): Node | un
   if (
     parent?.type === 'MemberExpression' &&
     parent['object'] === node &&
-    hostPropertyName(parent) === 'length' &&
+    isArrayMetadata(parent, name ?? '') &&
     !isWriteTarget(parent, byNode)
   )
     return undefined;
+  if (isWriteTarget(node, byNode) && isNode(node['object'])) return node['object'];
   return memberExpression(node, parent);
 }
 
@@ -167,7 +185,7 @@ function originalSites(
   for (const visit of visits) {
     const expression =
       hostExpression(visit.node, visit.parent, visit.scopes) ??
-      hostChildren(visit, byNode) ??
+      hostArray(visit, byNode) ??
       hostEscape(visit, byNode, nativeOperands);
     if (expression !== undefined)
       sites.set(`${visit.node.start}:${visit.node.end}:${expression.start}:${expression.end}`, {

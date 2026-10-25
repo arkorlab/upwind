@@ -13,12 +13,10 @@ import {
 } from './node-manifest-consumers.ts';
 import {
   APP_PAGE_FACTORY,
-  APP_ROUTE_MODULE,
   EVALUATOR,
   frameworkParent,
-  PAGES_MODULE,
-  PAGES_API_MODULE,
   reviewedFrameworkSource,
+  reviewedRouteConstructorSource,
   ROUTE_EXPORTS,
   type ManifestProtectedKind,
 } from './node-manifest-framework.ts';
@@ -97,11 +95,14 @@ interface RouteLocation {
   readonly shared: boolean;
 }
 
-function turbopackKind(child: ProtectedModule): SealedRoute['kind'] | undefined {
-  if (child.kind === APP_PAGE_FACTORY) return 'app-page';
-  if (child.relative === PAGES_MODULE) return 'pages';
-  if (child.relative === PAGES_API_MODULE) return 'pages-api';
-  return child.relative === APP_ROUTE_MODULE ? 'app-route' : undefined;
+function turbopackKind(child: ProtectedModule, sha256: string): SealedRoute['kind'] | undefined {
+  if (child.kind === APP_PAGE_FACTORY) {
+    return child.relative === 'dist/build/templates/app-page-runtime.js' &&
+      reviewedFrameworkSource(child.relative) === sha256
+      ? 'app-page'
+      : undefined;
+  }
+  return reviewedRouteConstructorSource(child.relative, sha256)?.kind;
 }
 
 function refuse(reason: string): never {
@@ -314,7 +315,7 @@ class ConsumerGraph {
     if (child.kind === ROUTE_EXPORTS) return refuse('unknown consumer or export escape');
     const route = this.routes.get(source.file);
     if (route === undefined) {
-      if (turbopackKind(child) === undefined) {
+      if (turbopackKind(child, sourceOf(this.graph, child.id).sha256) === undefined) {
         const caller = JSON.stringify(relative.slice(0, MAX_CALLER_LABEL_CHARACTERS));
         return refuse(
           `consumer is not a sealed route entry (${child.kind} ${child.relative} through ${caller})`,
@@ -326,9 +327,8 @@ class ConsumerGraph {
     if (child.kind === APP_PAGE_FACTORY && route.kind === 'app-page') {
       this.appPage(parent, child, { source, code, route });
     } else if (
-      (child.relative === PAGES_MODULE && route.kind === 'pages') ||
-      (child.relative === APP_ROUTE_MODULE && route.kind === 'app-route') ||
-      (child.relative === PAGES_API_MODULE && route.kind === 'pages-api')
+      route.kind !== 'app-page' &&
+      turbopackKind(child, sourceOf(this.graph, child.id).sha256) === route.kind
     ) {
       await this.template(parent, { source, code, route });
     } else return refuse('unknown consumer or export escape');
@@ -355,7 +355,7 @@ class ConsumerGraph {
     const distDir = await realpath(this.input.distDir);
     const sources = await this.turbopackSources();
     const producer = sourceOf(this.graph, child.id);
-    const kind = turbopackKind(child);
+    const kind = turbopackKind(child, producer.sha256);
     if (kind === undefined) refuse('unknown projected route constructor');
     const entries = [...this.routes.values()].filter((route) => route.kind === kind);
     const producerKind = TURBOPACK_PRODUCER_KINDS[kind];

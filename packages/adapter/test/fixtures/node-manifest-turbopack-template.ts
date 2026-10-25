@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { parseAst } from 'rolldown/parseAst';
 
+import { jsLiteral } from '../../src/codegen.ts';
 import { isNode, listOf, type Node } from '../../src/lexical-scope.ts';
 import { stringOf, visitTree } from '../../src/node-manifest-consumer-ast.ts';
 import { swcTemplateExports } from '../../src/node-manifest-template-exports.ts';
@@ -90,7 +91,7 @@ async function externalImport(
   state.edits.push({
     start: node.start,
     end: node.end,
-    code: `runtimeContext.x(${JSON.stringify(specifier)},()=>require(${JSON.stringify(specifier)}))`,
+    code: `runtimeContext.x(${jsLiteral(specifier)},()=>require(${jsLiteral(specifier)}))`,
   });
 }
 async function importRecords(parsed: Node, file: string): Promise<Imports> {
@@ -144,7 +145,7 @@ export async function projectedTemplateFixture(kind: NodeManifestTurbopackTempla
   const statements = editedStatements(code, view.body, edits);
   const fields: string[] = [];
   for (const [name, value] of view.fields)
-    fields.push(`${JSON.stringify(name)},()=>${code.slice(value.start, value.end)}`);
+    fields.push(`${jsLiteral(name)},()=>${code.slice(value.start, value.end)}`);
   statements.splice(1, 0, `runtimeContext.s([${fields.join(',')}]);`);
   const original = manifestTemplateSource(`module.exports=[1,(runtimeContext)=>{${statements.join('\n')}}];`);
   return { projection: projectNodeManifestTurbopackFactory(original, 1), imports: imported, route };

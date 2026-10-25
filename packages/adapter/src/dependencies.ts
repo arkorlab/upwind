@@ -368,6 +368,14 @@ function isAllowedExternal(specifier: string, native = false): boolean {
   );
 }
 
+type AuditMode = 'worker' | 'node-placement' | 'node';
+
+function isAllowedTargetExternal(specifier: string, mode: AuditMode): boolean {
+  if (mode === 'node-placement')
+    return isAllowedExternal(specifier, true) || isAllowedExternal(specifier);
+  return isAllowedExternal(specifier, mode === 'node');
+}
+
 /**
  * The uses of the loader Next.js's own code makes that the bundler could not follow, known — as
  * the built-ins above are — to be reached only where they work: the Turbopack runtime's
@@ -531,7 +539,7 @@ function problemsIn(
   source: string,
   bundle: BundleDependencies,
   output: string,
-  mode: 'worker' | 'node-placement' | 'node' = 'worker',
+  mode: AuditMode = 'worker',
 ): string[] {
   const native = mode !== 'worker';
   const problems: string[] = [];
@@ -542,7 +550,7 @@ function problemsIn(
     }
   }
   for (const external of bundle.externals) {
-    if (!isAllowedExternal(external, native)) {
+    if (!isAllowedTargetExternal(external, mode)) {
       problems.push(
         `${external} is imported but not known to be provided by the deployment runtime`,
       );
@@ -601,7 +609,7 @@ function auditTarget(
   kind: string,
   sources: Parameters<typeof auditFunction>[1],
   dependencies: FunctionDependencies,
-  target: { output: string; mode: 'worker' | 'node-placement' | 'node' },
+  target: { output: string; mode: AuditMode },
 ): void {
   const { output, mode } = target;
   const problems = problemsIn(sources.app, dependencies, output, mode);

@@ -1,3 +1,4 @@
+/* eslint-disable unicorn/prefer-dispose -- This server exposes close() with a drain result, not an async-disposal method. */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { startNodeContainer, type NodeContainerServer } from '../src/node-container.ts';
@@ -31,6 +32,26 @@ describe('node container HTTP service', () => {
 
   afterAll(() => {
     vi.unstubAllEnvs();
+  });
+
+  it('consumes bootstrap configuration before evaluating the lazy application entry', async () => {
+    vi.stubEnv('ARKOR_NODE_RUNTIME', CONFIGURATION);
+    const observations: unknown[] = [];
+    const server = await startNodeContainer({
+      port: 0,
+      loadEntry: () => {
+        observations.push(process.env['ARKOR_NODE_RUNTIME']);
+        return Promise.resolve({ fetch: () => Promise.resolve(new Response('loaded')) });
+      },
+    });
+    try {
+      const ready = await internal(server, '/__upwind/ready');
+
+      expect(observations).toStrictEqual([undefined]);
+      await expect(ready.json()).resolves.toStrictEqual({ v: 1, ready: true });
+    } finally {
+      await server.close();
+    }
   });
 
   it('authenticates controls and preserves public routes spelling a control pathname', async () => {

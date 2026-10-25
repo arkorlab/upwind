@@ -144,7 +144,50 @@ async function fixture(directory: string) {
   };
 }
 
-async function templateFixture(directory: string, kind: 'pages' | 'app-route' | 'pages-api') {
+interface DirectRuntimeFixture {
+  readonly root: string;
+  readonly publishedRoot: string;
+  readonly module: string;
+  readonly compiled: string;
+  readonly evaluator: string;
+  readonly code: string;
+  readonly external: readonly { readonly specifier: string; readonly target: string }[];
+  put(file: string, code: string | Uint8Array): Promise<string>;
+}
+
+async function selectDirectRuntime(
+  own: Awaited<ReturnType<typeof fixture>>,
+  context: DirectRuntimeFixture,
+  runtime: string | undefined,
+): Promise<void> {
+  if (runtime === undefined) return;
+  const wrapper = path.join(context.root, context.module);
+  const selected = path.join(context.root, runtime);
+  const bytes = await readFile(path.join(context.publishedRoot, runtime));
+  await context.put(selected, bytes);
+  const code = context.code.replaceAll(jsLiteral(wrapper), () => jsLiteral(selected));
+  await context.put(own.chunk, code);
+  own.imports.set(
+    own.chunk,
+    context.external.map((imported) =>
+      imported.target === wrapper ? { specifier: selected, target: selected } : imported,
+    ),
+  );
+  own.sources.delete(wrapper);
+  own.imports.delete(wrapper);
+  const old = path.join(context.root, context.compiled);
+  if (old !== selected) {
+    own.sources.delete(old);
+    own.imports.delete(old);
+  }
+  own.imports.set(selected, [{ specifier: context.evaluator, target: context.evaluator }]);
+}
+
+async function templateFixture(
+  directory: string,
+  kind: 'pages' | 'app-route' | 'pages-api',
+  directRuntime?: string,
+) {
   const own = await fixture(directory);
   const projected = await projectedTemplateFixture(kind);
   const published = await realpath(
@@ -234,6 +277,11 @@ async function templateFixture(directory: string, kind: 'pages' | 'app-route' | 
   ]);
   own.imports.set(entry, [{ specifier: runtimeSpecifier, target: own.runtime }]);
   own.imports.set(own.analysisEntry, [{ specifier: entry, target: entry }]);
+  await selectDirectRuntime(
+    own,
+    { root, publishedRoot, module, compiled, evaluator, code, external, put },
+    directRuntime,
+  );
   own.graph.importers.clear();
   for (const file of own.sources.keys()) own.graph.importers.set(file, []);
   for (const [from, edges] of own.imports)
@@ -316,6 +364,38 @@ describe('sealed Turbopack producers through the real manifest proof entry', () 
       'unproved SDK entry terminal',
     );
   });
+
+  it.each([
+    ['pages', 'dist/compiled/next-server/pages.runtime.prod.js'],
+    ['pages', 'dist/compiled/next-server/pages-turbo.runtime.prod.js'],
+    ['pages-api', 'dist/compiled/next-server/pages-api.runtime.prod.js'],
+    ['pages-api', 'dist/compiled/next-server/pages-api-turbo.runtime.prod.js'],
+    ['app-route', 'dist/compiled/next-server/app-route.runtime.prod.js'],
+    ['app-route', 'dist/compiled/next-server/app-route-turbo.runtime.prod.js'],
+    ['app-route', 'dist/compiled/next-server/app-route-experimental.runtime.prod.js'],
+    ['app-route', 'dist/compiled/next-server/app-route-turbo-experimental.runtime.prod.js'],
+  ] as const)(
+    'closes a %s constructor directly from selected runtime %s',
+    async (kind, runtime) => {
+      const own = await templateFixture(directory, kind, runtime);
+      const proof = await proveNodeManifests(own.input, own.graph);
+
+      expect(proof.normalization?.runtimeRootDir).toBe(directory);
+      expect(proof.approvedCompilerSources).toStrictEqual([own.sources.get(own.runtime)]);
+    },
+  );
+
+  it.each([
+    ['different constructor family', 'dist/compiled/next-server/app-route.runtime.prod.js'],
+    ['unreviewed AppPage class path', 'dist/compiled/next-server/app-page.runtime.prod.js'],
+  ])(
+    'refuses direct runtime with %s even when its bytes are a known Next source',
+    async (_name, runtime) => {
+      const own = await templateFixture(directory, 'pages', runtime);
+
+      await expect(proveNodeManifests(own.input, own.graph)).rejects.toThrow('Unproved Next.js');
+    },
+  );
 
   it('refuses a second physical importer that escapes the SDK normalization terminal', async () => {
     const own = await fixture(directory);

@@ -141,3 +141,48 @@ export function frameworkParent(parent: string, child: string): ManifestProtecte
 export function reviewedFrameworkSource(relative: string): string | undefined {
   return REVIEWED.get(relative);
 }
+
+export interface ManifestConstructorIdentity {
+  readonly kind: 'pages' | 'pages-api' | 'app-route';
+  /** Canonical wrapper namespace exported by the exact selected runtime. */
+  readonly module: string;
+  /** Actual reviewed physical source suffix, never replaced with the canonical wrapper path. */
+  readonly relative: string;
+}
+
+const ROUTE_CONSTRUCTORS = [
+  { kind: 'pages', module: PAGES_MODULE, runtimes: PAGES_RUNTIMES },
+  { kind: 'pages-api', module: PAGES_API_MODULE, runtimes: PAGES_API_RUNTIMES },
+  { kind: 'app-route', module: APP_ROUTE_MODULE, runtimes: ROUTE_RUNTIMES },
+] as const;
+
+/** The pinned wrappers directly export these selected, pinned production namespaces. */
+export function reviewedRouteConstructorSource(
+  relative: string,
+  sha256: string,
+): ManifestConstructorIdentity | undefined {
+  for (const profile of ROUTE_CONSTRUCTORS) {
+    const expected =
+      relative === profile.module ? REVIEWED.get(profile.module) : profile.runtimes.get(relative);
+    if (expected !== undefined && expected === sha256)
+      return Object.freeze({ kind: profile.kind, module: profile.module, relative });
+  }
+  return undefined;
+}
+
+export function manifestConstructorImport(
+  file: string,
+  sha256: string,
+): (ManifestConstructorIdentity & { readonly root: string }) | undefined {
+  const normalized = file.replaceAll('\\', '/');
+  for (const profile of ROUTE_CONSTRUCTORS) {
+    const candidates = [profile.module, ...profile.runtimes.keys()];
+    for (const relative of candidates) {
+      if (!normalized.endsWith(`/${relative}`)) continue;
+      const identity = reviewedRouteConstructorSource(relative, sha256);
+      if (identity === undefined) return undefined;
+      return Object.freeze({ ...identity, root: normalized.slice(0, -relative.length - 1) || '/' });
+    }
+  }
+  return undefined;
+}

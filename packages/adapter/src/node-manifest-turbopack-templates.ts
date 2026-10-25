@@ -18,6 +18,10 @@ import {
   type Visit,
 } from './node-manifest-consumer-ast.ts';
 import {
+  manifestConstructorImport,
+  reviewedRouteConstructorSource,
+} from './node-manifest-framework.ts';
+import {
   projectedTemplateExports,
   swcTemplateExports,
   type ManifestTemplateExports,
@@ -114,13 +118,12 @@ function checkedProjection(
 }
 async function templateOf(input: NodeManifestTurbopackTemplateInput): Promise<Template> {
   const profile = PROFILES[input.route.kind];
-  const imports = input.imports.filter((entry) =>
-    entry.file.replaceAll('\\', '/').endsWith(`/${profile.module}`),
-  );
+  const imports = input.imports
+    .map((entry) => manifestConstructorImport(entry.file, entry.sha256))
+    .filter((entry) => entry?.module === profile.module);
   const imported = imports[0];
-  if (imported === undefined || imports.length !== 1 || imported.sha256 !== profile.moduleSha)
-    refuse('constructor import identity');
-  const root = imported.file.slice(0, -profile.module.length - 1);
+  if (imported === undefined || imports.length !== 1) refuse('constructor import identity');
+  const root = imported.root;
   const file = await realpath(path.join(root, 'dist/build/templates', `${input.route.kind}.js`));
   if (beneath(root, file) === undefined) return refuse('template source path');
   const info = await stat(file);
@@ -223,6 +226,13 @@ function slotOf(node: Node, context: Context): string | undefined {
 function nextToken(file: string, sha256: string | undefined, context: Context): string {
   const relative = beneath(context.template.root, file)?.split(path.sep).join('/');
   if (relative === undefined) return refuse('framework namespace path');
+  const constructor =
+    sha256 === undefined ? undefined : reviewedRouteConstructorSource(relative, sha256);
+  if (constructor !== undefined) {
+    if (constructor.module !== PROFILES[context.input.route.kind].module)
+      refuse('constructor profile');
+    return `next:${constructor.module}`;
+  }
   const expected = PROTECTED_IMPORTS.get(relative);
   if (expected !== undefined && sha256 !== expected && !context.expected)
     refuse('changed protected import');
