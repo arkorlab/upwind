@@ -315,6 +315,8 @@ export default defineConfig([
       'unicorn/no-break-in-nested-loop': 'off', // `switch` inside parser loops is idiomatic
       'unicorn/no-non-function-verb-prefix': 'off', // zod schema names such as `createSiteRequestSchema` are nouns
       'unicorn/prefer-iterator-to-array': 'off', // `Iterator#toArray` is not in the ES2024 lib the tsconfigs name
+      // Small request-path predicates keep direct comparisons without allocating an array per call.
+      'unicorn/prefer-includes-over-repeated-comparisons': 'off',
       'unicorn/prefer-number-coercion': 'off', // `parseInt` with an explicit radix is intentional for tolerant header parsing
       'unicorn/consistent-boolean-name': 'off', // rejects idiomatic predicates (`startsWith`, `equals`)
       'unicorn/import-style': 'off',

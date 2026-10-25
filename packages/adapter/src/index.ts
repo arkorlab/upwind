@@ -843,7 +843,7 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
 
 // `NEXT_ADAPTER_PATH` and `adapterPath` name a module whose default export is the adapter; this
 // one is configured with what the environment says, which is nothing outside `upwind deploy`.
-// eslint-disable-next-line import-x/no-default-export, unicorn/no-top-level-side-effects
+// eslint-disable-next-line import-x/no-default-export
 export default createAdapter(environmentOptions());
 
 export { bundleDurableObjects, type BundledDurableObject } from './durable-objects.ts';

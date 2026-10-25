@@ -9,7 +9,6 @@ import { STANDALONE_AUTHORITY } from './host.ts';
  * `CacheScope` keeps no history beside it, and the entrypoint whatever deploys a site seeds and
  * retires its scopes through (`CacheControl`).
  */
-// eslint-disable-next-line unicorn/no-top-level-side-effects -- A Worker's entry is loaded for its default export, which is the call that builds it.
 export default createCacheWorker(createGatewayApp(STANDALONE_AUTHORITY));
 
 export const CacheControl = cacheControl(STANDALONE_AUTHORITY);

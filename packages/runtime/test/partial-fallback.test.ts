@@ -304,9 +304,8 @@ function streaming(...chunks: string[]): Response {
   );
 }
 
-type CacheCallback = (entry: unknown, meta: { url: string }) => boolean | Promise<boolean>;
-
 async function capture(input: InvokeInput, postponed?: string): Promise<Response> {
+  type CacheCallback = (entry: unknown, meta: { url: string }) => boolean | Promise<boolean>;
   const callback = input.requestMeta['onCacheEntryV2'] as CacheCallback | undefined;
   if (callback === undefined) throw new Error('the static render supplied no capture callback');
   await callback(

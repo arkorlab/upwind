@@ -4,7 +4,6 @@ import path from 'node:path';
 import type { FunctionSpec } from '@stayingupwind/core/bundle';
 import type { MiniflareOptions, MiniflareWorkerConfig } from 'miniflare';
 
-type Modules = NonNullable<MiniflareWorkerConfig['manifest']>['modules'];
 type Bindings = NonNullable<MiniflareWorkerConfig['env']>;
 
 /**
@@ -18,6 +17,7 @@ export async function functionWorker(
   out: string,
   env: Bindings = {},
 ): Promise<NonNullable<MiniflareOptions['workers']>[number]> {
+  type Modules = NonNullable<MiniflareWorkerConfig['manifest']>['modules'];
   const modules: Modules = {};
   for (const module of spec.modules) {
     const bytes = await readFile(path.join(out, 'blobs', module.blob.sha256));
