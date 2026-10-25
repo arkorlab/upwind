@@ -2,15 +2,14 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import { createRequire, isBuiltin } from 'node:module';
 import path from 'node:path';
 
-import type { Node } from '@oxc-project/types';
 import { compareCodeUnits } from '@stayingupwind/core/util';
-import { parseAst } from 'rolldown/parseAst';
 
 import { beneath } from './build-paths.ts';
 import { AuditError } from './dependencies.ts';
 import type { BuildFunctionInput } from './function.ts';
 import type { NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
+import { originalNodeSpecifiers } from './node-source-specifiers.ts';
 
 const MAX_FILE_BYTES = 134_217_728;
 const EXECUTABLE_BITS = 0o111;
@@ -37,55 +36,6 @@ interface PhysicalSources {
   readonly files: Map<string, Uint8Array>;
   readonly executable: Set<string>;
   readonly originals: Map<string, string>;
-}
-
-function staticString(node: Node | undefined): string | undefined {
-  if (node?.type === 'Literal' && typeof node.value === 'string') return node.value;
-  if (node?.type === 'TemplateLiteral' && node.expressions.length === 0)
-    return node.quasis[0]?.value.cooked ?? undefined;
-  return undefined;
-}
-
-function specifierIn(node: Node): string | undefined {
-  if (
-    node.type === 'CallExpression' &&
-    node.callee.type === 'Identifier' &&
-    node.callee.name === 'require'
-  )
-    return staticString(node.arguments[0]);
-  if (
-    (node.type === 'ImportDeclaration' ||
-      node.type === 'ExportAllDeclaration' ||
-      node.type === 'ExportNamedDeclaration') &&
-    node.source !== null
-  )
-    return staticString(node.source);
-  return node.type === 'ImportExpression' ? staticString(node.source) : undefined;
-}
-
-function astChildren(node: Node): Node[] {
-  const children: Node[] = [];
-  for (const value of Object.values(node)) {
-    const values: unknown[] = Array.isArray(value) ? value : [value];
-    for (const child of values) {
-      if (typeof child === 'object' && child !== null && 'type' in child)
-        children.push(child as Node);
-    }
-  }
-  return children;
-}
-
-function strings(node: Node): string[] {
-  const found: string[] = [];
-  const pending = [node];
-  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
-    const specifier = specifierIn(current);
-    if (specifier !== undefined) found.push(specifier);
-    // Match the original source-order walk, without a recursive stack for large compiled files.
-    const children = astChildren(current).toReversed();
-    for (const child of children) pending.push(child);
-  }
-  return found;
 }
 
 function packageName(specifier: string): string | undefined {
@@ -208,17 +158,6 @@ async function physicalSources(
     await packageMetadata(canonical, layout, sources.files);
   }
   return sources;
-}
-
-function sourceSpecifiers(file: string, bytes: Uint8Array | undefined): string[] {
-  if (!/\.[cm]?js$/u.test(file)) return [];
-  try {
-    return strings(parseAst(new TextDecoder().decode(bytes)));
-  } catch {
-    // NFT also names client/source files as data. The retained server graph was already parsed
-    // and audited; a data file is not evidence of another runtime import edge.
-    return [];
-  }
 }
 
 function assertSpecifierTopology(file: string, specifier: string, layout: PhysicalLayout): void {
@@ -378,7 +317,7 @@ async function relativeAliases(
   if (resolved === undefined) return;
   const roots = [logical, path.join(logical, 'index')];
   const main = await relativeMain(logical, context);
-  if (main !== undefined) roots.push(main);
+  if (main !== undefined) roots.push(main, path.join(main, 'index'));
   await relativeDirectoryAlias(logical, context);
   for (const root of roots)
     for (const suffix of COMMONJS_SUFFIXES)
@@ -393,7 +332,7 @@ async function moduleAliases(
 ): Promise<void> {
   const context = { sources, layout, links };
   for (const [file, name] of sources.originals) {
-    const specifiers = new Set(sourceSpecifiers(file, sources.files.get(name)));
+    const specifiers = new Set(originalNodeSpecifiers(file, sources.files.get(name)));
     for (const specifier of specifiers) {
       assertSpecifierTopology(file, specifier, layout);
       await relativeAliases(file, specifier, context);

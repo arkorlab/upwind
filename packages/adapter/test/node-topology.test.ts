@@ -230,4 +230,33 @@ describe('native physical module relocation', () => {
       'first existing Node package target is outside its closed trace',
     );
   });
+
+  it('preserves a relative package whose main names a directory index', async () => {
+    const entry = path.join(project, 'entry.cjs');
+    const metadata = path.join(project, 'pkg/package.json');
+    const target = path.join(project, 'pkg/lib/index.js');
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(metadata, '{"main":"lib"}');
+    await writeFile(target, 'module.exports=42;');
+    await writeFile(entry, "module.exports=require('./pkg');");
+    const physical = await nodePhysicalFiles(input(entry, [entry, target]), []);
+
+    expect(physical.files.map((file) => file.name)).toContain('project/app/pkg/lib/index.js');
+  });
+
+  it.each([
+    "if(false)require('./unused.js');",
+    "if(true){}else require('./unused.js');",
+    "false&&require('./unused.js');",
+    "true||require('./unused.js');",
+    "const unused=false?require('./unused.js'):0;",
+  ])('does not require a physical alias for a statically impossible load: %s', async (dead) => {
+    const entry = path.join(project, 'entry.cjs');
+    const unused = path.join(project, 'unused.js');
+    await writeFile(unused, 'module.exports=42;');
+    await writeFile(entry, `module.exports=42;${dead}`);
+    const physical = await nodePhysicalFiles(input(entry, [entry]), []);
+
+    expect(physical.files.map((file) => file.name)).not.toContain('project/app/unused.js');
+  });
 });
