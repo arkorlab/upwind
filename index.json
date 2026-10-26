@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "sequence": 41,
-  "publishedAt": "2026-10-26T14:30:20.410Z",
+  "sequence": 42,
+  "publishedAt": "2026-10-26T18:59:54.538Z",
   "attempts": [
     {
       "runId": "38903941806",
@@ -1150,6 +1150,34 @@
       "status": "success",
       "sequence": 41,
       "result": "runs/40340004431-1.json"
+    },
+    {
+      "runId": "40382587593",
+      "runAttempt": 1,
+      "startedAt": "2026-10-26T18:59:11.373Z",
+      "finishedAt": "2026-10-26T18:59:34.541Z",
+      "source": {
+        "repository": "arkorlab/upwind",
+        "workflow": ".github/workflows/benchmark.yaml",
+        "ref": "refs/heads/main",
+        "sha": "a37c7bdc38c768260e576807b4ee8d4fddc75e6d",
+        "runUrl": "https://github.com/arkorlab/upwind/actions/runs/40382587593",
+        "runner": {
+          "os": "Linux",
+          "arch": "X64",
+          "imageOS": "ubuntu24",
+          "imageVersion": "20261023.334.3",
+          "node": "v24.22.1"
+        }
+      },
+      "protocol": 2,
+      "targets": {
+        "vercel": "https://stayingupwind.vercel.app/",
+        "arkor": "https://www.stayingupwind.com/"
+      },
+      "status": "success",
+      "sequence": 42,
+      "result": "runs/40382587593-1.json"
     }
   ]
 }
