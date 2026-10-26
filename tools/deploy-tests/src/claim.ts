@@ -1,9 +1,10 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
   constants,
   existsSync,
   fstatSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -94,7 +95,9 @@ function readClaim(entry: string): string {
     const uid = process.getuid?.();
     if (
       !stat.isFile() ||
-      stat.nlink !== 1 ||
+      // One private staging alias can survive a crash immediately after publication.
+      stat.nlink < 1 ||
+      stat.nlink > 2 ||
       stat.size > MAX_CLAIM_BYTES ||
       stat.ino !== before.ino ||
       stat.dev !== before.dev ||
@@ -116,20 +119,7 @@ function readClaim(entry: string): string {
   }
 }
 
-function writeClaim(entry: string, appDir: string): void {
-  const value = path.resolve(appDir);
-  if (Buffer.byteLength(value) > MAX_CLAIM_BYTES)
-    throw new Error('Deployment claim path is too long');
-  let fd: number;
-  try {
-    // Exclusive creation refuses symlinks without truncating anything, including on Windows.
-    fd = openSync(entry, 'wx', CLAIM_MODE);
-  } catch (error) {
-    if (!hasCode(error, 'EEXIST')) throw error;
-    if (readClaim(entry) !== value)
-      throw new Error(`Conflicting deployment claim: ${entry}`, { cause: error });
-    return;
-  }
+function writePendingClaim(fd: number, value: string): void {
   try {
     writeFileSync(fd, value);
   } catch (error) {
@@ -138,11 +128,34 @@ function writeClaim(entry: string, appDir: string): void {
     } catch {
       // Preserve the write failure even if closing the descriptor also fails.
     }
-    // This entry was exclusively created above. Close before unlinking for Windows as well.
-    letGo(entry);
     throw error;
   }
   closeSync(fd);
+}
+
+function writeClaim(entry: string, appDir: string): void {
+  const value = path.resolve(appDir);
+  if (Buffer.byteLength(value) > MAX_CLAIM_BYTES)
+    throw new Error('Deployment claim path is too long');
+  // Incomplete files live outside owners, so even a process exit cannot publish an empty claim.
+  const pending = path.join(path.dirname(path.dirname(entry)), 'pending');
+  privateDirectory(pending);
+  const staged = path.join(pending, randomUUID());
+  // Exclusive creation refuses symlinks without truncating anything, including on Windows.
+  const fd = openSync(staged, 'wx', CLAIM_MODE);
+  try {
+    writePendingClaim(fd, value);
+    try {
+      // Linking publishes the complete, closed file and never replaces another claimant's entry.
+      linkSync(staged, entry);
+    } catch (error) {
+      if (!hasCode(error, 'EEXIST')) throw error;
+      if (readClaim(entry) !== value)
+        throw new Error(`Conflicting deployment claim: ${entry}`, { cause: error });
+    }
+  } finally {
+    letGo(staged);
+  }
 }
 
 function digestOf(value: string): string {
@@ -195,7 +208,7 @@ export function claimProject(config: ProjectConfig, appDir: string): void {
       letGo(mine);
       throw error;
     }
-    // An empty claim may still be in the tiny interval between exclusive open and its write.
+    // Legacy writers could expose an empty claim before writing; keep those claims fail-closed.
     if (claimed === '' || existsSync(claimed)) {
       held.push(claimed || entry);
     } else {
