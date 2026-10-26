@@ -48,53 +48,86 @@ function literalTruthiness(node: Node): boolean | undefined {
 }
 
 type EnvironmentTruth = ReturnType<typeof nodeSourceEnvironment>;
-
-function truthiness(node: Node, environment: EnvironmentTruth): boolean | undefined {
-  return literalTruthiness(node) ?? environment(node);
+interface Visit {
+  readonly node: Node;
+  readonly alternative: boolean;
+}
+export interface NodeSpecifierInventory {
+  readonly required: readonly string[];
+  /** Non-authoritative layout hints only; these never extend the traced source closure. */
+  readonly alternatives: readonly string[];
 }
 
-function conditionalBranch(node: Node, environment: EnvironmentTruth): Node[] | undefined {
+function visits(nodes: readonly Node[], alternative: boolean): Visit[] {
+  return nodes.map((node) => ({ node, alternative }));
+}
+
+function conditionalBranch(visit: Visit, environment: EnvironmentTruth): Visit[] | undefined {
+  const { node, alternative } = visit;
   if (node.type !== 'IfStatement' && node.type !== 'ConditionalExpression') return undefined;
-  // Only primitive literals and the two pure, fixed Node environment reads can omit a branch.
-  const truth = truthiness(node.test, environment);
+  const literal = literalTruthiness(node.test);
+  const truth = literal ?? environment(node.test);
   if (truth === undefined) return undefined;
   const selected = truth ? node.consequent : node.alternate;
-  return selected === null ? [] : [selected];
+  const found = selected === null ? [] : visits([selected], alternative);
+  const other = truth ? node.alternate : node.consequent;
+  // Literal-dead code stays dead. Only a fixed-environment omission supplies layout hints.
+  if (literal === undefined && other !== null) found.push({ node: other, alternative: true });
+  return found;
 }
 
-function children(node: Node, environment: EnvironmentTruth): Node[] {
-  const selected = conditionalBranch(node, environment);
-  if (selected !== undefined) return selected;
-  if (node.type === 'LogicalExpression') {
-    const truth = truthiness(node.left, environment);
-    if ((truth === false && node.operator === '&&') || (truth === true && node.operator === '||'))
-      return [node.left];
+function logicalBranch(visit: Visit, environment: EnvironmentTruth): Visit[] | undefined {
+  const { node, alternative } = visit;
+  if (node.type !== 'LogicalExpression') return undefined;
+  const literal = literalTruthiness(node.left);
+  const truth = literal ?? environment(node.left);
+  if ((truth === false && node.operator === '&&') || (truth === true && node.operator === '||')) {
+    const found = visits([node.left], alternative);
+    if (literal === undefined) found.push({ node: node.right, alternative: true });
+    return found;
   }
+  return undefined;
+}
+
+function children(visit: Visit, environment: EnvironmentTruth): Visit[] {
+  const { node, alternative } = visit;
+  const selected = conditionalBranch(visit, environment) ?? logicalBranch(visit, environment);
+  if (selected !== undefined) return selected;
   const found: Node[] = [];
   for (const value of Object.values(node)) {
     const values: unknown[] = Array.isArray(value) ? value : [value];
     for (const child of values) if (nodeValue(child)) found.push(child);
   }
-  return found;
+  return visits(found, alternative);
 }
 
 /** Physical alias discovery omits only statically impossible branches; closure audit is separate. */
-export function originalNodeSpecifiers(file: string, bytes: Uint8Array | undefined): string[] {
-  if (!/\.[cm]?[jt]s$/u.test(file)) return [];
+export function originalNodeSpecifierInventory(
+  file: string,
+  bytes: Uint8Array | undefined,
+): NodeSpecifierInventory {
+  if (!/\.[cm]?[jt]s$/u.test(file)) return { required: [], alternatives: [] };
   try {
-    const found: string[] = [];
+    const required: string[] = [];
+    const alternatives: string[] = [];
     const analysis = nativeSourceAnalysis(new TextDecoder().decode(bytes), file);
     const bindings = nativeBindings(analysis.program);
     const environment = nodeSourceEnvironment(analysis.program);
-    const pending: Node[] = [analysis.program];
-    for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    const pending: Visit[] = [{ node: analysis.program, alternative: false }];
+    for (let visit = pending.pop(); visit !== undefined; visit = pending.pop()) {
+      const { node, alternative } = visit;
       const specifier = specifierIn(node, bindings);
-      if (specifier !== undefined) found.push(specifier);
-      for (const child of children(node, environment).toReversed()) pending.push(child);
+      if (specifier !== undefined) (alternative ? alternatives : required).push(specifier);
+      for (const child of children(visit, environment).toReversed()) pending.push(child);
     }
-    return found;
+    return { required, alternatives };
   } catch {
     // NFT includes source/client data too. Retained executable sources are independently audited.
-    return [];
+    return { required: [], alternatives: [] };
   }
+}
+
+/** Default production dependency discovery remains strict and excludes alternative-only hints. */
+export function originalNodeSpecifiers(file: string, bytes: Uint8Array | undefined): string[] {
+  return [...originalNodeSpecifierInventory(file, bytes).required];
 }

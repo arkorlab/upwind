@@ -33,6 +33,8 @@ export interface NativeLoad {
   readonly kind: 'direct' | 'dlopen' | 'bindings' | 'node-gyp-build';
   readonly importer: string;
   readonly binary: string;
+  /** Original proved dlopen filename, when its regular binary resolves through a symlink. */
+  readonly binaryAlias?: string | undefined;
   readonly owners: readonly string[];
   readonly esm?: true;
   readonly loaderSources?: readonly NativeLoaderSource[] | undefined;
@@ -243,7 +245,12 @@ export function nativeLoadsPlugin(
           const load = loads.get(id);
           if (load === undefined) throw new AuditError('unrecognized native capability marker');
           if (load instanceof Error) throw load;
-          return { ...load, binary: await realpath(load.binary) };
+          const binary = await realpath(load.binary);
+          return {
+            ...load,
+            binary,
+            ...(load.kind === 'dlopen' && load.binary !== binary && { binaryAlias: load.binary }),
+          };
         }),
       );
       for (const node of tree) {

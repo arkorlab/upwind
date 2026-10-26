@@ -33,6 +33,8 @@ names only the proved, selected native modules and their hashes. The archive ret
 owned trace files without rewriting their selection logic.
 Package aliases have independent limits of 100,000 entries and 16 MiB of UTF-8 JSON metadata.
 Both limits are checked before the artifact is published.
+Proved `process.dlopen` binary lookups retain their original internal aliases as well as canonical
+binary files; changed targets, relocation mismatches and alias conflicts are refused.
 The host verifies the artifact,
 Node ABI and Linux x64 glibc target before publishing it. Worker loader hooks, process substitutes
 and native shims are not applied to Node files. The existing shared cache and request runtime is
@@ -55,10 +57,14 @@ until their resolution can be proved without changing the original package metad
 Bare package subpaths preserve proved internal aliases for direct lookups and exact `exports`
 entries with bounded literal condition targets. Export patterns, target arrays and unclosed
 symlink targets are refused. An unused conditional symlink can also cause refusal when its target
-is outside the closed trace. Package metadata remains unchanged.
+is outside the closed trace. Package metadata remains unchanged. Environment-pruned dependency
+branches can contribute aliases only to already closed targets; these layout hints never add source
+files or weaken required dependency checks.
 
 The first backend supports plain environment values, shared cache access and delegated HTTP
-services. Native storage bindings, Durable Objects, Cloudflare Workflows, custom cache-handler
+services. A host can also provide the optional, scoped `ARKOR_OIDC.token({ audience })` facade.
+Only audience options cross that broker; the Worker retains deployment identity and issuer access.
+This capability does not provide arbitrary RPC or additional native bindings. Native storage bindings, Durable Objects, Cloudflare Workflows, custom cache-handler
 closures and unproved native loaders are refused. The direct CLI and local Miniflare stack also
 refuse artifacts they cannot execute. These errors preserve the application's runtime contract.
 

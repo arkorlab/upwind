@@ -1,12 +1,61 @@
 import { describe, expect, it } from 'vitest';
 
-import { originalNodeSpecifiers } from '../src/node-source-specifiers.ts';
+import {
+  originalNodeSpecifierInventory,
+  originalNodeSpecifiers,
+} from '../src/node-source-specifiers.ts';
 
 function specifiers(code: string, extension = 'cjs'): string[] {
   return originalNodeSpecifiers(`/project/entry.${extension}`, new TextEncoder().encode(code));
 }
 
 describe('original Node physical dependency discovery', () => {
+  it('keeps env-pruned layout hints separate from the unchanged required production inventory', () => {
+    const raw = new TextEncoder().encode(
+      [
+        `require('./mutator.cjs');`,
+        `if(process.env.NODE_ENV!=='production')require('./alternate.cjs');else require('./required.cjs');`,
+        `process.env.NEXT_RUNTIME==='nodejs'||import('alternate-package');`,
+        `if(false)require('primitive-dead');`,
+      ].join('\n'),
+    );
+    const before = new Uint8Array(raw);
+
+    expect(originalNodeSpecifierInventory('/project/entry.cjs', raw)).toStrictEqual({
+      required: ['./mutator.cjs', './required.cjs'],
+      alternatives: ['./alternate.cjs', 'alternate-package'],
+    });
+    expect(originalNodeSpecifiers('/project/entry.cjs', raw)).toStrictEqual([
+      './mutator.cjs',
+      './required.cjs',
+    ]);
+    expect(raw).toStrictEqual(before);
+  });
+
+  it('keeps nested literal-dead code excluded and explores both env alternatives only as hints', () => {
+    const raw = new TextEncoder().encode(
+      `if(process.env.NODE_ENV!=='production'){if(false)require('never');if(process.env.NEXT_RUNTIME==='nodejs')require('first');else require('second');}`,
+    );
+
+    expect(originalNodeSpecifierInventory('/project/entry.cjs', raw)).toStrictEqual({
+      required: [],
+      alternatives: ['first', 'second'],
+    });
+  });
+
+  it.each([
+    'settings.enabled',
+    'process.env.CUSTOM',
+    `(effect(),process.env.NODE_ENV==='production')`,
+  ])('never demotes an unproved condition to a layout-only hint: %s', (condition) => {
+    const raw = new TextEncoder().encode(`if(${condition})require('one');else require('two');`);
+
+    expect(originalNodeSpecifierInventory('/project/entry.cjs', raw)).toStrictEqual({
+      required: ['one', 'two'],
+      alternatives: [],
+    });
+  });
+
   it.each([
     'exports.label=require=>require("/label");',
     'function label(require){return require("/label");}',
