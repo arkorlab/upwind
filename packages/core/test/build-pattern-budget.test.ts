@@ -13,6 +13,7 @@ import {
 } from '../src/bundle/pattern-budget.ts';
 import { staticPagesPrivacyOf } from '../src/bundle/static-pages.ts';
 import { testWithin } from '../src/request/pattern-budget.ts';
+import { MAX_NESTING } from '../src/request/pattern-cost.ts';
 import { fallbackBundle } from './fallback-pages-fixtures.ts';
 import { fixtureBundle, staticPrerender } from './fixtures/bundle.ts';
 
@@ -26,6 +27,27 @@ describe('explicit build pattern allowances', () => {
     expect(patterns.exec('^/(?<slug>[^/]+)$', 'i', '/Foo')?.groups?.['slug']).toBe('Foo');
     expect(patterns.test('^/literal/a*a*a*a*!$', 'i', PATHNAME)).toBe(false);
   });
+
+  it.each([MAX_NESTING + 1, 800])(
+    'refuses payload heads nested %i levels before native matching',
+    (depth) => {
+      const suffix = String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
+      const source = `^${'(?:'.repeat(depth)}a${')'.repeat(depth)}${suffix}`;
+      const test = vi.spyOn(RegExp.prototype, 'test');
+      const exec = vi.spyOn(RegExp.prototype, 'exec');
+      try {
+        expect(() => new BuildPatternBudget().test(source, 'i', 'a')).toThrow(
+          BuildPatternBudgetExceededError,
+        );
+        expect(test.mock.contexts.filter((pattern) => pattern.source === source)).toHaveLength(0);
+        expect(exec.mock.contexts.filter((pattern) => pattern.source === source)).toHaveLength(0);
+      } finally {
+        test.mockRestore();
+
+        exec.mockRestore();
+      }
+    },
+  );
 
   it('charges successive affordable matches to the operation, independently of other operations', () => {
     const patterns = new BuildPatternBudget(48);

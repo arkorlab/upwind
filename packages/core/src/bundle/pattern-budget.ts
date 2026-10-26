@@ -2,10 +2,12 @@ import { payloadHeadOf, payloadHeadsOf } from '../paas/payload-matcher.ts';
 import {
   BUDGET,
   literalGate,
+  MAX_NESTING,
   patternCost,
   type PatternCost,
   stepsAt,
 } from '../request/pattern-cost.ts';
+import { nestingDepth } from '../request/pattern-tree.ts';
 import { localeMiddlewareSource } from './middleware-locale.ts';
 
 /** Independent of request routing: no assembly enables the edge's isolate-wide switch. */
@@ -123,13 +125,18 @@ export class BuildPatternBudget {
     return held.includes(gate.literal) ? Infinity : stepsAt(gate.cost, value.length);
   }
 
+  private payloadHead(pattern: RegExp, spend: Spend): RegExp | null {
+    spend.take(Math.max(1, pattern.source.length));
+    if (nestingDepth(pattern.source) > MAX_NESTING) throw new BuildPatternBudgetExceededError();
+    return payloadHeadOf(pattern);
+  }
+
   private splitHead(
     compiled: Compiled,
     value: string,
     spend: Spend,
   ): { head: RegExp | null; impossible: boolean } {
-    spend.take(Math.max(1, compiled.pattern.source.length));
-    const head = payloadHeadOf(compiled.pattern);
+    const head = this.payloadHead(compiled.pattern, spend);
     if (head !== null) return { head, impossible: false };
     const flags = compiled.pattern.ignoreCase ? 'i' : '';
     spend.take(Math.max(1, value.length) * SPLIT_WORK_PER_UNIT);
@@ -137,7 +144,7 @@ export class BuildPatternBudget {
       this.admitted(this.compiledFor(prefix, flags, spend), value, spend).test(value),
     );
     if (locale.kind === 'unsupported') return { head: null, impossible: false };
-    const proved = payloadHeadOf(this.compiledFor(locale.source, flags, spend).pattern);
+    const proved = this.payloadHead(this.compiledFor(locale.source, flags, spend).pattern, spend);
     return { head: proved, impossible: proved !== null && locale.kind === 'mismatch' };
   }
 
