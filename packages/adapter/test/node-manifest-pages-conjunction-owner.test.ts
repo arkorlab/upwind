@@ -38,9 +38,10 @@ async function fixture(directory: string) {
 function factoryWithModuleId(
   factories: ReadonlyMap<string, NodeManifestTurbopackGraphFactory>,
   moduleId: number,
-) {
+): NodeManifestTurbopackGraphFactory | undefined {
   for (const factory of factories.values())
     if (factory.projection.moduleId === moduleId) return factory;
+  return undefined;
 }
 
 describe('private Pages conjunction mint owner', () => {

@@ -10,7 +10,7 @@ import {
   HANDLER_REFERENCE_IDS,
 } from './node-manifest-handler-reference-factories.ts';
 
-export const HANDLER_REFERENCE_RUNTIME = 'next-16.4.3-public-pages';
+const HANDLER_REFERENCE_RUNTIME = 'next-16.4.3-public-pages';
 const streamSpecifier = 'node:stream';
 const nextRoot =
   '/work/node_modules/.pnpm/next@16.4.3_@types+node@24.19.2_react-dom@19.3.1_react@19.3.1__react@19.3.1/node_modules/next';
