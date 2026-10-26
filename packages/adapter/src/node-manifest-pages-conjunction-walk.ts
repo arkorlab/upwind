@@ -91,6 +91,12 @@ const PROOFS = new WeakMap<
   NodeManifestPagesConjunctionStage | undefined
 >();
 
+function sameMembers(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) return false;
+  for (const member of left) if (!right.has(member)) return false;
+  return true;
+}
+
 function refuse(reason: string): never {
   throw new AuditError(`Unproved Pages conjunction ${reason}; refusing native publication`);
 }
@@ -378,8 +384,7 @@ export class NodeManifestPagesConjunctionWalk {
       const observed = incoming.get(id);
       if (observed !== undefined) for (const parent of observed) supplied.add(parent);
     }
-    if (expected.size !== supplied.size || !expected.isSubsetOf(supplied))
-      return refuse('incomplete original incoming edges');
+    if (!sameMembers(expected, supplied)) return refuse('incomplete original incoming edges');
     const parents = Object.freeze([...expected]);
     group.incoming = incoming;
     group.expectedParents = parents;

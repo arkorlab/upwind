@@ -4,10 +4,15 @@ import { NODE_MANIFEST_HANDLER_PROFILES } from '../../src/node-manifest-handler-
 
 /** Provenance-only primary bytes. Never register these files in the executable fixture graph. */
 export async function copyHandlerSourcePins(root: string, publishedRoot: string): Promise<void> {
-  for (const profile of NODE_MANIFEST_HANDLER_PROFILES)
-    for (const pin of profile.sources) {
-      const destination = path.join(root, pin.relative);
-      await mkdir(path.dirname(destination), { recursive: true });
-      await writeFile(destination, await readFile(path.join(publishedRoot, pin.relative)));
-    }
+  const relativeFiles = new Set([
+    ...NODE_MANIFEST_HANDLER_PROFILES.flatMap((profile) => profile.sources.map((pin) => pin.relative)),
+    'dist/build/load-entrypoint.js',
+    'dist/build/templates/pages.js',
+    'dist/esm/build/templates/pages.js',
+  ]);
+  for (const relative of relativeFiles) {
+    const destination = path.join(root, relative);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, await readFile(path.join(publishedRoot, relative)));
+  }
 }
