@@ -11,6 +11,6 @@ export const FIXTURE_FILES = {
   'next.config.mjs': '0b6d88809a35b3cb0a2691051fdcc64b3bf25bc431d4eb6d23feba4e7659f192',
   'package.json': 'a4f57987141ef909711421b673e8f21cebc3821abc2a0ff0ccf05fb91bd941a6',
   'pages/index.js': '43d46bc45ca9057ea9b7ca3cd82bca4d02d574c6b8fa08dfc036148cf60aba0e',
-  'pnpm-lock.yaml': 'f090ca9688dacd34fcc72c9b27a694a0b2b1a4426185b5b0614a48f4ddb4bc50',
+  'pnpm-lock.yaml': '404a690b1c38fb8342c10604979b3e9c9eb48db09359c5a3647ed514630411b6',
   'pnpm-workspace.yaml': '88e934fe6ccbe96f25789faf958f3478625f934dd651b8968f3c33a4e1c88d31',
 } as const;

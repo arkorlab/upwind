@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { publicPagesCorpus } from '../../../tools/native-pages-handler-profile/format.mts';
+import { FIXTURE_FILES } from '../../../tools/native-pages-handler-profile/inputs.mts';
 import {
   matchReviewedPagesHandler,
   parsePagesHandlerProfile,
@@ -49,6 +50,20 @@ function fixture(): Record<string, unknown> {
 describe('independent Pages handler profile data boundary', () => {
   afterEach(async () => {
     for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  });
+
+  it('pins both lock documents with the leading pnpm boot-document marker', async () => {
+    const bytes = await readFile(
+      new URL(
+        '../../../tools/native-pages-handler-profile/fixture/pnpm-lock.yaml',
+        import.meta.url,
+      ),
+    );
+    const text = bytes.toString('utf8');
+
+    expect(text.startsWith('---\n')).toBe(true);
+    expect(text.match(/^---$/gmu)).toHaveLength(2);
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(FIXTURE_FILES['pnpm-lock.yaml']);
   });
 
   it('parses immutable unqualified data without granting authority from matching self-hashes', () => {
