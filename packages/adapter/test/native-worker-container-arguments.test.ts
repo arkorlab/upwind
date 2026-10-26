@@ -12,6 +12,8 @@ import { dynamicNodeClosureRefusal } from '../src/node-closure-proof.ts';
 
 const WORKER = "import {Worker} from 'node:worker_threads';";
 const THREADS = "import threads from 'node:worker_threads';";
+const SCALAR_CHOICE =
+  "const chosen=process.env.USE?require('node:worker_threads'):{isMainThread:true,threadId:0};";
 const MEMORY_HANDLE = '__rolldown_external_memory_handle__';
 const UNOWNED_TRACES: readonly NativeAddonEntryTrace[] = [
   { id: '/ordinary', assets: { entry: '/unused/ordinary.mjs' } },
@@ -245,6 +247,35 @@ describe('retained Worker capability containers in call arguments', () => {
     expect(sites(source, false)).toStrictEqual([]);
     expect(sites(source, true)).toStrictEqual([]);
     expect(sites(source)).toStrictEqual([]);
+  });
+
+  it.each([
+    'const {isMainThread:flag}=chosen;exports.check=()=>flag;',
+    'const {threadId:id}=chosen;exports.check=()=>id;',
+    'const {isMainThread:flag,threadId:id}=chosen;exports.check=()=>({flag,id});',
+    'const {isMainThread:flag}=chosen;const alias=flag;exports.check=()=>alias;',
+  ])('keeps genuinely proved scalar choices primitive through container expansion: %s', (use) => {
+    const source = SCALAR_CHOICE + use;
+
+    expect(sites(source, false)).toStrictEqual([]);
+    expect(sites(source, true)).toStrictEqual([]);
+    expect(sites(source)).toStrictEqual([]);
+    expect(dynamicNodeClosureRefusal('/authored/scalar.cjs', source)).toBeUndefined();
+  });
+
+  it.each([
+    'const {Worker:Thread}=chosen;exports.start=()=>new Thread("child.js");',
+    'const {[globalThis.key]:flag}=chosen;exports.check=()=>flag;',
+    'const {...rest}=chosen;exports.check=()=>rest.isMainThread;',
+    'let {isMainThread:flag}=chosen;flag=globalThis.other;exports.check=()=>flag;',
+    'chosen.isMainThread=globalThis.other;const {isMainThread:flag}=chosen;exports.check=()=>flag;',
+    'const alias=chosen;alias.threadId=globalThis.other;const {threadId:id}=chosen;exports.check=()=>id;',
+    'const {isMainThread:flag=true}=chosen;exports.check=()=>flag;',
+    'const {isMainThread:flag}=chosen;consume(chosen);exports.check=()=>flag;',
+    'const {ns}={ns:chosen};exports.check=()=>ns;',
+  ])('does not use scalar-rule reuse to exempt other choices or mutation: %s', (use) => {
+    expect(sites(SCALAR_CHOICE + use, false)).not.toStrictEqual([]);
+    expect(sites(SCALAR_CHOICE + use, true)).not.toStrictEqual([]);
   });
 
   it('keeps the original call node as the refusal site without changing source', () => {

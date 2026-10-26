@@ -435,7 +435,7 @@ export function retainedWorkerCapabilityNodes(
       returnedCapability(node, context) !== undefined ||
       exportedWorkerCapability(
         node,
-        { bindings, origin: (value) => workerOrigin(value, context) },
+        { ...context, origin: (value) => workerOrigin(value, context) },
         WORKER_MODULES,
       )
     )

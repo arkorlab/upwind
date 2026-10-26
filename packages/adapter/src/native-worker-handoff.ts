@@ -2,7 +2,7 @@ import type { Node } from '@oxc-project/types';
 
 import { AuditError } from './dependencies.ts';
 import { type NativeBindings, stringOf } from './native-ast.ts';
-import { nativeWorkerValues } from './native-worker-branches.ts';
+import { nativeWorkerValues, scalarWorkerBinding } from './native-worker-branches.ts';
 
 const MAX_MEMBER_STEPS = 1024;
 const MAX_MEMBER_DEPTH = 32;
@@ -22,6 +22,7 @@ const CAPABILITY_KEYS: ReadonlySet<string> = new Set([
 interface HandoffContext {
   readonly bindings: NativeBindings;
   readonly origin: (node: Node) => string | undefined;
+  readonly tree?: readonly Node[] | undefined;
   readonly selecting?: ReadonlySet<Node>;
 }
 
@@ -237,6 +238,11 @@ function identifierSelections(
 ): SelectedBindingValues | undefined {
   if (node.type !== 'Identifier') return undefined;
   const declaration = context.bindings.lookup(node, node.name);
+  if (
+    declaration?.type === 'VariableDeclarator' &&
+    scalarWorkerBinding(declaration, node.name, context)
+  )
+    return undefined;
   return declaration?.type === 'VariableDeclarator'
     ? selectedBindingValues(declaration, node.name, context)
     : undefined;
