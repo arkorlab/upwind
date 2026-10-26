@@ -49,7 +49,10 @@ export function nativeRouteOwners(
   for (const route of routes) {
     if (
       (route.module !== undefined && files.has(route.module.filePath)) ||
-      (pages && (route.kind === 'pages' || route.kind === 'pages-api'))
+      (pages &&
+        route.module !== undefined &&
+        route.edge === undefined &&
+        (route.kind === 'pages' || route.kind === 'pages-api'))
     )
       native.add(route.id);
   }

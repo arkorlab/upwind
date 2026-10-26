@@ -139,6 +139,22 @@ function route(id: string, kind: RouteCode['kind'] = 'app-route', file = id): Ro
   };
 }
 
+function edgeRoute(id: string, kind: RouteCode['kind']): RouteCode {
+  return {
+    ...route(id, kind),
+    module: undefined,
+    edge: {
+      id,
+      entryKey: id,
+      handlerExport: 'handler',
+      files: [],
+      wasm: [],
+      inlineAssets: [],
+      env: {},
+    },
+  };
+}
+
 function load(...owners: string[]): NativeLoad[] {
   return [
     { kind: 'direct', importer: '/project/loader.cjs', binary: '/project/addon.node', owners },
@@ -172,6 +188,33 @@ describe('native Function ownership', () => {
       '/',
       '/api/revalidate',
     ]);
+  });
+
+  it.each(['pages', 'pages-api'] as const)(
+    'keeps an independent Edge %s route outside the native Pages unit',
+    (kind) => {
+      const edge = edgeRoute('/edge', kind);
+      const routes = [route('/blog', 'pages'), route('/api/revalidate', 'pages-api'), edge];
+
+      expect([...nativeRouteOwners(routes, load('/blog'), new Set())]).toStrictEqual([
+        '/blog',
+        '/api/revalidate',
+      ]);
+      expect(edge.module).toBeUndefined();
+      expect(edge.edge).toBeDefined();
+    },
+  );
+
+  it('still refuses an explicit native requirement on an Edge route before building', async () => {
+    const edge = edgeRoute('/edge', 'pages-api');
+
+    await expect(
+      nativeFunctionLayout(context([edge]), manifest([edge]), {
+        budget: undefined,
+        loads: load(edge.id),
+        weighOnly: false,
+      }),
+    ).rejects.toThrow('move an Edge-runtime entrypoint');
   });
 
   it.each(['instrumentation', '/_middleware', '/_not-found'])(
