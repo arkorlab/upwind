@@ -20,6 +20,7 @@ import {
   documentFromBuild,
   notFound,
   postponedOf,
+  afterRouting,
   staticFileResponse,
 } from './documents.ts';
 import { deferredEntryFor, entryFor, hasEntry } from './entries.ts';
@@ -200,6 +201,25 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
 }
 
 /**
+ * The request for an image's source, as a request of its own: routed afresh, its middleware run for
+ * its own path or not at all. Nothing of what the image request's routing came to carries over — the
+ * edge asks for a source as an anonymous request of its own (`fetchImageSource`) — so a source the
+ * middleware never ran for is not answered as one it gated, nor under a status it never named.
+ */
+function sourceInput(input: RoutedInput, source: Request): RoutedInput {
+  return {
+    ...input,
+    request: source,
+    initURL: source.url,
+    middlewareRan: undefined,
+    middlewareHeaders: undefined,
+    askedHeaders: undefined,
+    rewriteStatus: undefined,
+    routingHeaders: undefined,
+  };
+}
+
+/**
  * The source `/_next/image` names, unresized; the edge does the optimizing. The request is what
  * routing resolved — a rewrite may have led here. A path of the application is routed in full,
  * its middleware included: what protects `/private/avatar.png` protects it behind the optimizer
@@ -251,7 +271,7 @@ async function serveImageSource(
   if (routed.source !== undefined) {
     source.headers.set(ROUTED_HEADER, routed.source);
   }
-  const answered = await handleFull({ ...input, request: source, initURL: source.url }, store);
+  const answered = await handleFull(sourceInput(input, source), store);
   // A source another app Function holds is that Function's to fetch: the request for the image goes
   // there whole, and its source is local when it arrives (`answerResolved`).
   if (misdirectedTo(answered) !== undefined) {
@@ -355,7 +375,11 @@ async function routeAndServe(
       // request's own, which the request hands over as it is copied.
       ...(bodies.handler !== request.body && { body: bodies.handler, duplex: 'half' }),
     }),
-    ...(trace.invoked && { middlewareRan: true }),
+    // What this routing came to, each set whatever the input said: a request routed within another
+    // — an image's source — is not the outer one's, and its middleware may not have run for it.
+    middlewareRan: trace.invoked ? true : undefined,
+    middlewareHeaders: trace.invoked ? trace.responseHeaders : undefined,
+    askedHeaders: requestHeaders,
   };
   if (routed.externalRewrite !== undefined) {
     return withRoutingHeaders(
@@ -429,12 +453,17 @@ async function answerResolved(
     const image = await serveImageSource(forwarded, store, images, routed);
     return misdirectedTo(image) === undefined ? withRoutingHeaders(image, routed.headers) : image;
   }
-  return withRewriteStatus(
-    store,
-    resolved.route,
-    withRoutingHeaders(await serveResolved(forwarded, store, resolved, url), routed.headers),
-    routed.status,
+  // The status this routing named, and the headers it collected: never an outer request's.
+  const asked: RoutedInput = {
+    ...forwarded,
+    rewriteStatus: routed.status,
+    routingHeaders: routed.headers,
+  };
+  const answer = withRoutingHeaders(
+    await serveResolved(asked, store, resolved, url),
+    routed.headers,
   );
+  return afterRouting(asked, withRewriteStatus(store, resolved.route, answer, routed.status));
 }
 
 /**

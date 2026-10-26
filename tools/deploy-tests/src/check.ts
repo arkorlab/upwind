@@ -11,6 +11,7 @@ import {
   OUTPUT_DIRECTORY_BUILD_ID,
   writeApplication,
 } from './check-application.ts';
+import { type CheckGroup, selectCheckGroups } from './check-groups.ts';
 import { installManagerScenarios } from './check-install-manager.ts';
 import { checkLifecycle, lifecycleScenarios } from './check-lifecycle.ts';
 import { nativeConfigScenario, ordinaryNodeOptions } from './check-native-config.ts';
@@ -382,7 +383,7 @@ async function suiteEnvScenario(
   }
 }
 
-async function main(): Promise<void> {
+async function main(groups: readonly CheckGroup[]): Promise<void> {
   const workDir = mkdtempSync(path.join(os.tmpdir(), 'upwind-deploy-tests-check-'));
   const appDir = path.join(workDir, 'application');
   mkdirSync(appDir);
@@ -453,7 +454,7 @@ async function main(): Promise<void> {
       );
     }
   };
-  try {
+  const hostChecks = async (): Promise<void> => {
     const deployed = await hook(DEPLOY_HOOK);
     const deployedAt = performance.now();
     const logs = await hook('e2e-logs.sh');
@@ -596,40 +597,28 @@ async function main(): Promise<void> {
     );
 
     await ownUrlScenarios(deploymentId, appDir, env);
-    await nativeConfigScenario({
-      deploymentId,
-      appDir,
-      env,
-      deploy: (dir, hookEnv) => bounded(DEPLOY_HOOK, dir, hookEnv),
-      holds,
-    });
-    await suiteEnvScenario(deploymentId, appDir, env);
+  };
+  const scenario = {
+    deploymentId,
+    appDir,
+    workDir,
+    env,
+    deploy: (dir: string, hookEnv: NodeJS.ProcessEnv) => bounded(DEPLOY_HOOK, dir, hookEnv),
+    said: (error: unknown) => (error instanceof HookFailureError ? error.said : undefined),
+    holds,
+  };
+  try {
+    if (groups.includes('host')) await hostChecks();
+    if (groups.includes('environment')) {
+      await nativeConfigScenario(scenario);
+      await suiteEnvScenario(deploymentId, appDir, env);
+    }
     // End this fixture's lifetime before another fake host can reuse an earlier one's port.
     rmSync(appDir, { recursive: true, force: true });
-    await lifecycleScenarios({
-      deploymentId,
-      workDir,
-      env,
-      deploy: (dir, hookEnv) => bounded(DEPLOY_HOOK, dir, hookEnv),
-      holds,
-    });
-    await installManagerScenarios({
-      deploymentId,
-      workDir,
-      env,
-      deploy: (dir, hookEnv) => bounded(DEPLOY_HOOK, dir, hookEnv),
-      said: (error) => (error instanceof HookFailureError ? error.said : undefined),
-      holds,
-    });
-    await workspaceScenario({
-      deploymentId,
-      workDir,
-      env,
-      deploy: (dir, hookEnv) => bounded(DEPLOY_HOOK, dir, hookEnv),
-      said: (error) => (error instanceof HookFailureError ? error.said : undefined),
-      holds,
-    });
-    await readinessScenario(holds);
+    if (groups.includes('lifecycle-workspace')) await lifecycleScenarios(scenario);
+    if (groups.includes('install-manager')) await installManagerScenarios(scenario);
+    if (groups.includes('lifecycle-workspace')) await workspaceScenario(scenario);
+    if (groups.includes('environment')) await readinessScenario(holds);
   } finally {
     harness.kill();
     host.close();
@@ -638,4 +627,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+await main(selectCheckGroups(process.argv.slice(2)));

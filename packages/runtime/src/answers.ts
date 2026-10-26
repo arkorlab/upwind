@@ -10,9 +10,11 @@ import {
   renderAppPage,
   renderCaptured,
 } from './cache/capture.ts';
+import { servable } from './cache/servable.ts';
 import { foundDynamic } from './dynamic-misses.ts';
 import type { GenerationSource } from './generation-source.ts';
 import { invokeNodeHandler } from './node-bridge.ts';
+import { withHeadersChanged } from './reframe.ts';
 import {
   answerHeaders,
   PAGES_DATA,
@@ -84,9 +86,9 @@ export function answerWith(input: RoutedInput, handler: NodeHandler, answer: Ans
 
 /** `response`, saying what came of the regeneration behind it (`CACHE_OUTCOME_HEADER`). */
 export function withOutcome(response: Response, outcome: string): Response {
-  const headers = new Headers(response.headers);
-  headers.set(CACHE_OUTCOME_HEADER, outcome);
-  return new Response(response.body, { status: response.status, headers });
+  return withHeadersChanged(response, (headers) => {
+    headers.set(CACHE_OUTCOME_HEADER, outcome);
+  });
 }
 
 /** The output of a render a want names, as the render captured it. */
@@ -129,6 +131,25 @@ export async function answerFromRender(
     headers: render.headers,
     cache: 'MISS',
   });
+}
+
+/**
+ * The visitor's answer from the render this isolate is publishing of the entry — the page every
+ * request after its publish is answered with, already made — and told so; `undefined` where there
+ * is none, where it is not one a visitor may be answered with, or where it has no output the
+ * request wants.
+ */
+export async function answerFromPublishing(
+  input: RoutedInput,
+  handler: NodeHandler,
+  render: CapturedRender | undefined,
+  want: Want,
+): Promise<Response | undefined> {
+  if (render === undefined || !servable(render.status, render.headers)) {
+    return undefined;
+  }
+  const answered = await answerFromRender(input, handler, render, want);
+  return answered === undefined ? undefined : withOutcome(answered, 'publishing');
 }
 
 /**

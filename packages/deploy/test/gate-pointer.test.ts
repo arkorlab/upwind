@@ -103,4 +103,28 @@ describe('gate admission survives the independent pointer', () => {
     expect(Object.hasOwn(pointer, 'hasGates')).toBe(false);
     expect(edgePointerSchema.safeParse({ ...pointer, hasGates: false }).success).toBe(false);
   });
+
+  it('retains a requiresGate-only legacy pointer without accepting it as unmarked version two', () => {
+    const pointer = edgePointerOf(
+      SITE,
+      {
+        fingerprint: FINGERPRINT,
+        manifestId: 'manifest',
+        policyId: DEFAULT_DELIVERY_POLICY.id,
+        app: APP,
+        requiresGate: true,
+        cspNonce: false,
+      },
+      NOW_MS,
+    );
+
+    expect(pointer.v).toBe(1);
+    expect(Object.hasOwn(pointer, 'hasGates')).toBe(false);
+
+    const parsed = edgePointerSchema.parse(pointer);
+
+    expect(parsed.requiresGate).toBe(true);
+    expect(JSON.stringify(parsed)).toBe(JSON.stringify(pointer));
+    expect(edgePointerSchema.safeParse({ ...pointer, v: 2 }).success).toBe(false);
+  });
 });

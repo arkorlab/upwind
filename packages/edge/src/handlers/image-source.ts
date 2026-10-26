@@ -26,6 +26,7 @@ import { dnsSpelling, isUnderAnyDomain } from '@stayingupwind/host/domains';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { headersAfterMiddleware } from './hosted-route.ts';
+import { withImagePatternRequests } from './image-pattern-requests.ts';
 import { sourceUnder } from './image-source-identity.ts';
 import { imageWithin, releaseLateSource } from './image-stream.ts';
 import { decideMiddleware, type MiddlewareContinued, middlewareMatches } from './middleware.ts';
@@ -508,7 +509,8 @@ async function fetchBlob(
       return readBlob(local, source.file, dispatches, left());
     }
     case 'continue': {
-      const shipped = shippedAfterMiddleware(local, source, request, outcome);
+      const ship = () => shippedAfterMiddleware(local, source, request, outcome);
+      const shipped = withImagePatternRequests(dispatches, ship);
       if (shipped === undefined) {
         return fetchLocal(local, rewrittenRequest(edge, request, outcome), {
           earlier: dispatches,

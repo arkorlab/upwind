@@ -2,7 +2,7 @@ import type { ResolveRoutesResult } from '@next/routing';
 import { isPagesDataPathname } from '@stayingupwind/core/bundle';
 import { releaseStream } from '@stayingupwind/core/util';
 
-import { notFound } from './documents.ts';
+import { afterRouting, notFound } from './documents.ts';
 import { notFoundData } from './pages-not-found.ts';
 import { missesInPlainText, redirectResponse, withRoutingHeaders } from './routing.ts';
 import { plainNotFoundResponse, type RoutedInput } from './serve.ts';
@@ -56,5 +56,11 @@ export async function unrouted(
     releaseStream(forwarded.request.body, 'plain not found: handler body unused');
     return withRoutingHeaders(plainNotFoundResponse(), routed.resolvedHeaders);
   }
-  return withRoutingHeaders(await notFound(forwarded, store, at), routed.resolvedHeaders);
+  // The not-found document as `answerResolved` answers a route: made for an input that says what
+  // routing collected, and said over by the host after routing's headers are on it (`afterRouting`).
+  const asked: RoutedInput = { ...forwarded, routingHeaders: routed.resolvedHeaders };
+  return afterRouting(
+    asked,
+    withRoutingHeaders(await notFound(asked, store, at), routed.resolvedHeaders),
+  );
 }

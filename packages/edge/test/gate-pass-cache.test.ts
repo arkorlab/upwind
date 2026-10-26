@@ -4,15 +4,15 @@ import { env } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 
 import { type GateInput, routeThroughGate } from '../src/handlers/gate.ts';
-import { forwardingFor } from '../src/request-context.ts';
+import { forwardingFor, type IncomingRequest } from '../src/request-context.ts';
 import { standaloneHost } from '../src/standalone/index.ts';
 
 const PATH = '/gated';
 const ORIGIN = 'https://site.example';
 const GENERATED_AT = '2026-10-24T00:00:00.000Z';
 
-function input(validated = false, declared = true) {
-  const request = new Request<unknown, IncomingRequestCfProperties>(`${ORIGIN}${PATH}`);
+function input(validated = false, declared = true): GateInput {
+  const request: IncomingRequest = new Request(`${ORIGIN}${PATH}`);
   const original = standaloneHost(env);
   const host = {
     ...original,
@@ -44,7 +44,14 @@ function input(validated = false, declared = true) {
     cspReportingPath: undefined,
     cspNonce: undefined,
     passed: vi.fn(),
-  } satisfies GateInput;
+  };
+}
+
+/** The mock gate installed by the fixture, observed without borrowing a host method. */
+function gateSpy(host: GateInput['host']) {
+  const gates = host.gates;
+  if (gates === undefined) throw new Error('the fixture has no gate');
+  return vi.spyOn(gates, 'answer');
 }
 
 describe('a response served after a gate passes', () => {
@@ -77,11 +84,11 @@ describe('a response served after a gate passes', () => {
       Promise.resolve(new Response('held bytes', { headers })),
     );
 
+    const overrides = Object.keys(headers).filter((header) => header !== 'cache-control');
+
     expect(answer.headers.get('cache-control')).toBe('private, max-age=60');
 
-    for (const name of Object.keys(headers)) {
-      if (name === 'cache-control') continue;
-
+    for (const name of overrides) {
       expect(answer.headers.has(name)).toBe(false);
     }
 
@@ -105,11 +112,12 @@ describe('a response served after a gate passes', () => {
   ] as const)('retains existing delivery for a %s request', async (_name, validated, declared) => {
     const asked = input(validated, declared);
     const original = new Response('public bytes', { headers: { 'cache-control': 'public' } });
+    const gate = gateSpy(asked.host);
     const answer = await routeThroughGate(asked, () => Promise.resolve(original));
 
     expect(answer).toBe(original);
     expect(answer.headers.get('cache-control')).toBe('public');
-    expect(asked.host.gates.answer).not.toHaveBeenCalled();
+    expect(gate).not.toHaveBeenCalled();
     expect(asked.passed).not.toHaveBeenCalled();
 
     await answer.arrayBuffer();

@@ -164,7 +164,8 @@ rest declare `skipDeployment` upstream and pass in a couple of seconds. A shard 
 about three minutes of its own setup, and must stay under the 6 hours a job may execute; the last shard
 waits for the other `n - 1` of those, and must start within the 24 hours a job may sit in the queue before
 it is cancelled. Measured: a full pass in six shards took 11h41m, about two hours a shard, the last one
-starting nine and three-quarter hours in — which is why a host's default is `6`, with room on both sides.
+starting nine and three-quarter hours in — which is why a host of fewer than six projects is cut into `6`,
+with room on both sides.
 
 A settle is paid by every deploying suite: at its one-minute ceiling, about six hundred minutes across the
 run, a hundred or so a shard — about four hours a shard at most, at six, still inside both limits. A host
@@ -172,12 +173,18 @@ that gives each deployment a URL of its own costs none of it (below).
 
 Given a project per shard, none of that applies: the jobs all start at once, the queue limit never comes
 near, and the run is one shard long. That is the section below, and it is the answer for a run much longer
-than the measured one rather than a different number of shards.
+than the measured one rather than a different number of shards — and, with six projects or more, the
+default.
 
 Without a host at all, `pnpm check:deploy-tests` runs the three hooks against a fake one: a fake
 application, a fake API, and the real scripts. It is what CI runs, and what keeps the shell contract
 (standard output, which variables a fixture's scripts can see, which file the build id comes from) and
 the order of the calls from breaking quietly between runs against a real host.
+
+`pnpm check:deploy-tests --group <host|environment|lifecycle-workspace|install-manager>` runs one
+independent group. CI runs these groups on separate runners, each with its own applications, fake
+hosts, deployment claims and harness process. Without `--group`, every scenario runs in its original
+order. Poll intervals, settle checks and timeouts are the same for grouped and complete runs.
 
 `pnpm check:deploy-tests-local [--target cloudflare|node]` runs the same hooks for real on this machine's
 targets, with no harness: `fixtures/next-minimal` copied, installed and built by the deploy hook, asked
@@ -196,7 +203,10 @@ by whitespace, and the count is how many shards the workflow runs at once — a 
 own position, so nothing is pooled and no two shards share a project. Fewer ids than shards is a slower
 run rather than a broken one: the extra shards queue behind the ids that exist. Six projects turn a
 day-long serial run into an afternoon, and they are made on the dashboard, since the public API deploys
-into a project and does not create one.
+into a project and does not create one. Unless `shards` says otherwise, a run of `all` on a host is cut
+into a shard a project — the ids in order, up to the first that repeats, at most 32 (`HOST_SHARDS`) — and
+every shard runs at once; under six projects it is six shards, one after another. A slice taken again
+with `only` names the run's `shards` as well, since the split follows the list.
 
 **A project's run still under way is waited for.** A host deploys one run of a project at a time and
 refuses the next finalize while one is going (`run_in_progress`). That run is the previous fixture's —

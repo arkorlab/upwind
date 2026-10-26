@@ -504,7 +504,9 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
   again, it goes further back: a deployment gone back to is no newer for it. One that cannot be
   published again — whose cache scope a stopped cleanup retired, whose bundle the bucket no longer
   keeps or this version cannot read, or whose staging or publishing is refused otherwise — is
-  passed over, or, named, refused, saying why: deploy its build again instead. Where every one tried
+  passed over, or, named, refused, saying why: deploy its build again instead. A kept build declaring
+  route gates is refused before staging or publishing it, because this command binds none of its
+  gates. Where every one tried
   is passed over, the rollback is refused, saying why of each. So is one deployed before
   `--reset-cache-key` gave the runtime cache a new key: its Functions hold a token of the key before.
   Nothing of it is built: its bundle, kept in the bucket, is published again against the live

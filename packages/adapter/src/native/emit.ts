@@ -33,6 +33,7 @@ import { carriesMaps } from '../source-maps.ts';
 import { collectStaticFiles } from '../static-files.ts';
 import { staticPagesRuntimeFields } from '../static-pages.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from '../throwing-globals.ts';
+import { EDGE_ANSWER_SOURCE, EDGE_ANSWER_WRAPPER } from './edge-answer.ts';
 import {
   NATIVE_EDGE_WEB_GLOBALS,
   NATIVE_EDGE_WEB_OBJECT,
@@ -156,6 +157,7 @@ function edgeModuleSource(entries: readonly EdgeEntry[], pathOf: (file: string) 
   return [
     "const fs = require('node:fs');",
     "const path = require('node:path');",
+    EDGE_ANSWER_SOURCE,
     ...(inline.length === 0
       ? []
       : [
@@ -186,7 +188,7 @@ function edgeModuleSource(entries: readonly EdgeEntry[], pathOf: (file: string) 
         '    if (config !== undefined) config.trustHostHeader = true;',
         `    const entry = globalThis._ENTRIES?.[${jsLiteral(entry.entryKey)}];`,
         '    if (entry === undefined) throw new Error("upwind: Edge entry registered no handler");',
-        `    return { handler: entry[${jsLiteral(entry.handlerExport)}] };`,
+        `    return { handler: ${EDGE_ANSWER_WRAPPER}(entry[${jsLiteral(entry.handlerExport)}]) };`,
         '  },',
       ].join('\n');
     }),

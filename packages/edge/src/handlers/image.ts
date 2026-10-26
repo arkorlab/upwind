@@ -34,6 +34,7 @@ import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { IMAGE_OPTIMIZER_HEADERS, layImageConfiguredUnder } from './configured-headers.ts';
 import { lookupCache, storeCache } from './image-cache.ts';
+import { addImagePatternRequests } from './image-pattern-requests.ts';
 import {
   fetchImageSource,
   type ImageSource,
@@ -352,7 +353,13 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
     // As Next.js falls back when its encoder fails: the source itself, for its minimum lifetime.
     // The stream went to the service, so the source is asked for once more — and looked at once
     // more, since what it answers now need not be what it answered before.
-    const again = await fetchJudged(input, imageSource);
+    let again: Judged;
+    try {
+      again = await fetchJudged(input, imageSource);
+    } catch (sourceError) {
+      addImagePatternRequests(sourceError, spent);
+      throw sourceError;
+    }
     if (again.kind === 'error') {
       return { kind: 'error', error: { ...again.error, requests: spent + again.error.requests } };
     }

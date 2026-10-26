@@ -17,7 +17,9 @@ import { invokeEdgeHandler } from './edge-invoke.ts';
 import type { Entry, EntryTables } from './entries.ts';
 import { NEVER_STORED, render404 } from './error-pages.ts';
 import { stripPlatformHeaders } from './incoming.ts';
+import { keptItsLength } from './kept-length.ts';
 import { type FailureAnswer, invokeNodeHandler, type Run } from './node-bridge.ts';
+import { withHeadersChanged } from './reframe.ts';
 import { fetchRewrite } from './rewrite-fetch.ts';
 import type { Store } from './store.ts';
 
@@ -78,8 +80,35 @@ export interface RoutedInput extends HandleInput {
    * Whether a middleware ran for the request. The edge answers a build-owned file or record no
    * longer as everyone's when one did — it may have read the request's cookies — and a host that
    * answers by the edge's rules (the native target) needs to know it as the edge does.
+   *
+   * This and the fields below are what this request's own routing came to, set by it: a request
+   * routed within another — an image's source (`serveImageSource`) — starts without the outer one's.
    */
   readonly middlewareRan?: true | undefined;
+  /**
+   * What the middleware set on its answer, where it ran and let the request on: what the edge reads
+   * apart from the rules' to answer a file as it does (`middlewareCacheControl`, `entityTagOf`) —
+   * its own `ETag` and `Cache-Control` — where routing's merge of the two no longer tells them apart.
+   */
+  readonly middlewareHeaders?: Headers | undefined;
+  /**
+   * The request's headers as routing judged them, before a middleware changed them: what the edge
+   * judges `next.config`'s header rules by (`headerRulesFor`), and what routing laid the rules'
+   * headers by.
+   */
+  readonly askedHeaders?: Headers | undefined;
+  /**
+   * The status a rewrite named, which the answer is given after it is made (`withRewriteStatus`).
+   * The edge judges a file's validators and ranges under it (`underRewriteStatus`), and so does a
+   * host that answers by the edge's rules.
+   */
+  readonly rewriteStatus?: number | undefined;
+  /**
+   * What routing collected to lay on the answer once it is made (`withRoutingHeaders`): the rules'
+   * headers and the middleware's, as the router merged them. A host that answers a file by the edge's
+   * rules judges it by what it will carry: the `Last-Modified` it is given, a cookie beside it.
+   */
+  readonly routingHeaders?: Headers | undefined;
 }
 
 export { initUrlOf, resumeUrl, stripPlatformHeaders } from './incoming.ts';
@@ -365,19 +394,15 @@ export function withInvalidatedTags(response: Response, invalidated: Invalidated
   if (response.status === 0 || (!said && tags.size === 0)) {
     return response;
   }
-  const headers = new Headers(response.headers);
-  headers.delete(INVALIDATED_TAGS_HEADER);
-  headers.delete(INVALIDATED_REVISION_HEADER);
-  if (tags.size > 0) {
-    headers.set(INVALIDATED_TAGS_HEADER, invalidatedTagsValue(tags));
-    if (revision !== undefined) {
-      headers.set(INVALIDATED_REVISION_HEADER, String(revision));
+  return withHeadersChanged(response, (headers) => {
+    headers.delete(INVALIDATED_TAGS_HEADER);
+    headers.delete(INVALIDATED_REVISION_HEADER);
+    if (tags.size > 0) {
+      headers.set(INVALIDATED_TAGS_HEADER, invalidatedTagsValue(tags));
+      if (revision !== undefined) {
+        headers.set(INVALIDATED_REVISION_HEADER, String(revision));
+      }
     }
-  }
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
   });
 }
 
@@ -399,6 +424,10 @@ export const WRITES_LAND_WITHIN_MS = 2000;
  * are committed — so the response goes without one, and its end is the stream's. It is made from
  * the response itself, which keeps what a runtime holds of one beside its status and headers: on
  * workerd, a body the application encoded itself (`encodeBody: 'manual'`).
+ *
+ * But a shipped file a host sends as the edge sends one keeps its length (`keepsItsLength`): the
+ * edge answers a file with it whatever the request wrote, and nothing of the file waits on a write.
+ * Its end still waits for them, as every answer's does.
  */
 export async function withWritesLanded(
   response: Response,
@@ -414,6 +443,8 @@ export async function withWritesLanded(
     }),
   );
   const held = new Response(body, response);
-  held.headers.delete('content-length');
+  if (!keptItsLength(response)) {
+    held.headers.delete('content-length');
+  }
   return held;
 }

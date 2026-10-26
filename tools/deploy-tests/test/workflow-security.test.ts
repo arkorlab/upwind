@@ -7,6 +7,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 /* eslint-disable sonarjs/no-os-command-from-path -- integration fixtures run the installed Git, GPG, and Bash using only private temporary files. */
 
+/** `count` different projects of a host, as `ADAPTER_TEST_PROJECT_IDS` lists them. */
+function projects(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => `project-${String(index + 1)}`);
+}
+
 describe('workflow security', () => {
   const repository = path.resolve(import.meta.dirname, '../../..');
   const script = path.join(repository, '.github/scripts/verify-release.sh');
@@ -182,11 +187,13 @@ describe('workflow security', () => {
     });
   });
 
-  function plan(ref: string) {
-    const workflow = readFileSync(
-      path.join(repository, '.github/workflows/deploy-tests.yaml'),
-      'utf8',
-    );
+  function deployTestsWorkflow(): string {
+    return readFileSync(path.join(repository, '.github/workflows/deploy-tests.yaml'), 'utf8');
+  }
+
+  /** The plan step run as a dispatch of `ref` asks, with `asked` in place of what a test changes. */
+  function plan(ref: string, asked: Readonly<Record<string, string>> = {}) {
+    const workflow = deployTestsWorkflow();
     const marker = '        run: |\n';
     const step = workflow
       .slice(workflow.indexOf(marker) + marker.length)
@@ -210,9 +217,17 @@ describe('workflow security', () => {
         CONCURRENCY: '',
         GITHUB_OUTPUT: output,
         GITHUB_STEP_SUMMARY: path.join(base, 'summary'),
+        ...asked,
       },
     });
     return { ...result, output };
+  }
+
+  /** The most shards a host's whole manifest is cut into unasked, as the workflow sets it. */
+  function hostShards(): number {
+    const set = /^ {2}HOST_SHARDS: '(\d+)'$/mu.exec(deployTestsWorkflow())?.[1];
+    if (set === undefined) throw new Error('the workflow sets no HOST_SHARDS');
+    return Number(set);
   }
 
   it.each(['v16.4.3\nmatrix={}', 'v16.4.3\rtotal=1', 'v16.4.3\r\nparallel=256', ''])(
@@ -232,6 +247,49 @@ describe('workflow security', () => {
     expect(result.status).toBe(0);
     expect(readFileSync(result.output, 'utf8')).toContain('nextjs=v16.4.3\n');
     expect(readFileSync(result.output, 'utf8')).toContain('total=1\nparallel=1\nconcurrency=2\n');
+  });
+
+  it.each([
+    { listed: 'five projects', ids: projects(5), total: 6, parallel: 1 },
+    { listed: 'sixteen projects', ids: projects(16), total: 16, parallel: 16 },
+    {
+      listed: 'an id repeated eighth',
+      ids: [...projects(7), 'project-1', 'project-8'],
+      total: 7,
+      parallel: 7,
+    },
+  ])(
+    'cuts a host’s whole manifest into a shard a project when no shards are asked for: $listed',
+    ({ ids, total, parallel }) => {
+      const result = plan('v16.4.3', {
+        TARGET: 'host',
+        SHARDS: '',
+        PROJECT_IDS: ids.join(' '),
+        PROJECT_ID: '',
+        HOST_SHARDS: String(hostShards()),
+      });
+
+      expect(result.status).toBe(0);
+      expect(readFileSync(result.output, 'utf8')).toContain(
+        `total=${String(total)}\nparallel=${String(parallel)}\nconcurrency=1\n`,
+      );
+    },
+  );
+
+  it('cuts a host’s whole manifest into no more shards than the workflow’s HOST_SHARDS', () => {
+    const most = hostShards();
+    const result = plan('v16.4.3', {
+      TARGET: 'host',
+      SHARDS: '',
+      PROJECT_IDS: projects(most + 8).join(' '),
+      PROJECT_ID: '',
+      HOST_SHARDS: String(most),
+    });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(result.output, 'utf8')).toContain(
+      `total=${String(most)}\nparallel=${String(most)}\nconcurrency=1\n`,
+    );
   });
 
   it('pins every downstream release checkout to the verification output', () => {
