@@ -575,6 +575,11 @@ async function answerUnavailable(
  * from its render as soon as that is set. The uploads and the commit behind the render are round
  * trips to the host, and until they had settled each request of the isolate was answered with the
  * generation the render replaces, for as long as those took.
+ *
+ * Answered from the render, it is still the standing generation's slot: the edge serves a stale
+ * record as everyone's whatever is regenerating it (`serveCurrentPage`), and a host with no edge in
+ * front of it judges the render's answer by that generation as well (`offeredFromGeneration`), the
+ * render's own headers then judged with the rest of the answer once routing is done.
  */
 async function answerFromStanding(
   job: Job,
@@ -586,10 +591,10 @@ async function answerFromStanding(
     current.validity === 'stale'
       ? answeringAtOnce(job.runtime, 'stale', current.entryId)?.render
       : undefined;
-  return (
-    (await answerFromPublishing(job.input, job.target.handler, publishing, want)) ??
-    answerFromGeneration(job, current, source, want)
-  );
+  const ours = await answerFromPublishing(job.input, job.target.handler, publishing, want);
+  return ours === undefined
+    ? answerFromGeneration(job, current, source, want)
+    : offeredFromGeneration(job.input, current, source.representation, ours);
 }
 
 /**

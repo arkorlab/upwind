@@ -38,12 +38,12 @@ import {
   REVALIDATE_CACHE_CONTROL,
 } from '@stayingupwind/core/request';
 
-import { nowMs } from '../cache/clock.ts';
-import { type CurrentGeneration, currentGeneration } from '../cache/current.ts';
+import type { CurrentGeneration } from '../cache/current.ts';
 import type { FirstPublish } from '../delivery.ts';
 import type { Representation } from '../representations.ts';
 import type { RoutedInput } from '../serve.ts';
 import { getStore, type Store } from '../store.ts';
+import { FIRST_RECORD_MS, firstRecord, letGo, within } from './first-record.ts';
 
 /**
  * The edge's rules for what goes out as everyone's, for a host with no edge in front of it: the
@@ -334,120 +334,6 @@ export function offeredFromGeneration(
 }
 
 /**
- * How long the first data of a member waits for its generation, from the answer made: the edge's
- * own window (`FOREGROUND_RECORD_READ_MS`, `static-page-capture.ts`), which it opens once the
- * Function's answer is in.
- */
-const FIRST_RECORD_MS = 10_000;
-/** How many times the record is read meanwhile, at the most (`MAX_FIRST_MEMBER_READS`). */
-const FIRST_RECORD_READS = 6;
-/** The pause before the second read, doubled before each after it (`FIRST_MEMBER_RETRY_MS`). */
-const FIRST_RECORD_RETRY_MS = 250;
-
-/** `operation`'s value, held so that a value of `undefined` is told from none. */
-async function valued<T>(operation: Promise<T>): Promise<{ readonly value: T }> {
-  return { value: await operation };
-}
-
-/** `operation`'s value, or `undefined` once the window closes or the visitor goes first. */
-async function within<T>(
-  operation: Promise<T>,
-  until: number,
-  signal: AbortSignal,
-): Promise<{ readonly value: T } | undefined> {
-  const remaining = until - performance.now();
-  if (remaining <= 0 || signal.aborted) return undefined;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let onAbort: (() => void) | undefined;
-  try {
-    return await Promise.race([
-      valued(operation),
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => {
-          resolve(undefined);
-        }, remaining);
-        onAbort = () => {
-          resolve(undefined);
-        };
-        signal.addEventListener('abort', onAbort, { once: true });
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
-  }
-}
-
-/** Whether a pause of `milliseconds` ran its course, the window open and the visitor still there. */
-async function pausedFor(
-  milliseconds: number,
-  until: number,
-  signal: AbortSignal,
-): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const paused = await within(
-      new Promise<true>((resolve) => {
-        timer = setTimeout(() => {
-          resolve(true);
-        }, milliseconds);
-      }),
-      until,
-      signal,
-    );
-    return paused !== undefined;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Whether a publish settled as a generation (`PublishOutcome`): one refused or failed may not be. */
-function publishedOne(settled: unknown): boolean {
-  return (
-    typeof settled === 'object' &&
-    settled !== null &&
-    (settled as { readonly kind?: unknown }).kind === 'published'
-  );
-}
-
-/**
- * The entry's generation once there is one, within the window and while the visitor stays.
- *
- * The publish this isolate makes is waited for first, as the edge waits for the Function's answer,
- * which waits for it (`holdFirstPublish`) — bounded here, where the edge's wait is the Function's
- * own: a cache that stalls keeps no visitor from the answer made for them. A publish that settled
- * any other way than as a generation leaves one read: the commit may have landed all the same, or
- * another attempt's in its place, and the record says which. Otherwise the record is read as the
- * edge reads it for a first member (`confirmedPairedPage`): again while it is absent, after a pause
- * doubled each time, a few times at the most.
- */
-async function firstRecord(
-  input: RoutedInput,
-  first: FirstPublish,
-): Promise<CurrentGeneration | undefined> {
-  const until = performance.now() + FIRST_RECORD_MS;
-  const { signal } = input.request;
-  let reads = FIRST_RECORD_READS;
-  if (first.published !== undefined) {
-    const settled = await within(first.published, until, signal);
-    if (settled === undefined) return undefined;
-    if (!publishedOne(settled.value)) reads = 1;
-  }
-  let delay = FIRST_RECORD_RETRY_MS;
-  for (let read = 1; ; read += 1) {
-    const lookup = await within(
-      currentGeneration(first.runtime, first.descriptor, nowMs(), input.waitUntil),
-      until,
-      signal,
-    );
-    if (lookup === undefined) return undefined;
-    if (lookup.value.kind === 'generation') return lookup.value.current;
-    if (read >= reads || !(await pausedFor(delay, until, signal))) return undefined;
-    delay *= 2;
-  }
-}
-
-/**
  * The data of a member whose first generation is in the making. The edge has the member rendered,
  * then reads the record for a while, and shares the props from the generation once it is committed
  * and agrees (`capturePairedPageData`, `dataPage`); otherwise the visitor keeps the answer made for
@@ -472,14 +358,23 @@ export async function offeredOncePublished(
   ) {
     return answer;
   }
-  const current = await firstRecord(input, first);
-  const recorded = current === undefined ? undefined : await first.fromRecord(current);
-  if (recorded?.headers.has(OFFER) !== true) {
-    await recorded?.body?.cancel();
+  const until = performance.now() + FIRST_RECORD_MS;
+  const current = await firstRecord(input, first, until);
+  if (current === undefined) return answer;
+  // The generation's answer reads its output from the cache: within the same window, and only
+  // while the visitor waits, with the answer made for them ready all the while (greptile).
+  const reading = first.fromRecord(current);
+  const recorded = await within(reading, until, input.request.signal);
+  if (recorded === undefined) {
+    input.waitUntil(letGo(reading));
+    return answer;
+  }
+  if (recorded.value?.headers.has(OFFER) !== true) {
+    await recorded.value?.body?.cancel();
     return answer;
   }
   await answer.body?.cancel();
-  return recorded;
+  return recorded.value;
 }
 
 /**

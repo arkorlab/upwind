@@ -698,6 +698,26 @@ describe('a member’s first data, held for its first generation', () => {
     expect(currentGeneration).not.toHaveBeenCalled();
   });
 
+  it('answers with the data made for the visitor where the generation’s own output does not come in time', async () => {
+    const input = routed(MEMBER_DATA);
+    vi.mocked(currentGeneration).mockResolvedValue(generation);
+    // The generation's answer reads its output from the cache, which never answers.
+    const first = firstPublish(input, {
+      published: Promise.resolve({ kind: 'published' }),
+      fromRecord: vi.fn(() => Promise.withResolvers<Response | undefined>().promise),
+    });
+
+    const answer = heldFor(native, input, first);
+    await vi.advanceTimersByTimeAsync(9999);
+
+    await expect(pending(answer)).resolves.toBe(true);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect((await answer).headers.get('cache-control')).toBe(VISITOR);
+    expect(first.fromRecord).toHaveBeenCalledTimes(1);
+  });
+
   it('holds nothing for data a rewrite led to from another name, or on Workers', async () => {
     const rewritten = routed('/_next/data/build/alias.json');
     const input = routed(MEMBER_DATA);
