@@ -19,9 +19,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { encodedScopeId } from '../src/cache/scope-identity.ts';
 import type { EdgeHost } from '../src/edge-host.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
+import type { PolicyLookup } from '../src/preview/manifest.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
+import { kvShellStrategy } from '../src/strategies/shell-kv.ts';
 import { htmlResponse, navigation, pprDocument, seedSite } from './helpers/site.ts';
 
 const POLICY = {
@@ -30,7 +32,13 @@ const POLICY = {
   runtimeCache: { ...DEFAULT_RUNTIME_CACHE_SETTINGS, generations: 'on' as const },
 };
 
-async function fixture() {
+async function fixture({
+  cold = false,
+  policyReady,
+}: {
+  readonly cold?: boolean;
+  readonly policyReady?: Promise<undefined>;
+} = {}) {
   const document = pprDocument();
   const site = await seedSite({ document });
   const scopeId = crypto.randomUUID();
@@ -63,7 +71,7 @@ async function fixture() {
     dispatchApp: () => Promise.resolve(htmlResponse(document.suffix)),
   });
   const shell = manifest.routes['/']!.shell;
-  runtime.memory.shells.set(shell.sha256, document.shell, document.shell.byteLength);
+  if (!cold) runtime.memory.shells.set(shell.sha256, document.shell, document.shell.byteLength);
   const ctx = createExecutionContext();
   const opened = vi.spyOn(caches, 'open');
   const serve = ({
@@ -78,6 +86,19 @@ async function fixture() {
     readonly generations?: boolean;
   } = {}) => {
     const request = navigation(pathname, { method });
+    const lookup: PolicyLookup = {
+      kind: 'found',
+      source: 'exact',
+      policy: {
+        ...POLICY,
+        ...(cold && { shell: { ...POLICY.shell, cacheApiLayer: false } }),
+        runtimeCache: {
+          ...POLICY.runtimeCache,
+          generations: generations ? 'on' : 'off',
+          ...(cold && { cacheApiMaxAgeMs: 0 }),
+        },
+      },
+    };
     return serveFromPointer(
       {
         request,
@@ -93,14 +114,8 @@ async function fixture() {
       },
       {
         manifestLookup: Promise.resolve({ kind: 'found', value: manifest }),
-        policyLookup: Promise.resolve({
-          kind: 'found',
-          source: 'exact',
-          policy: {
-            ...POLICY,
-            runtimeCache: { ...POLICY.runtimeCache, generations: generations ? 'on' : 'off' },
-          },
-        }),
+        policyLookup:
+          policyReady === undefined ? Promise.resolve(lookup) : policyReady.then(() => lookup),
       },
     );
   };
@@ -189,6 +204,62 @@ describe('what looks at scope signals as it is routed', () => {
       expect(signalOpens).toHaveLength(2);
     } finally {
       subject.release.resolve(undefined);
+      await waitOnExecutionContext(subject.ctx);
+    }
+  });
+
+  it('reads a cold build shell beside its record while the scope authority is still out', async () => {
+    const policy = Promise.withResolvers<undefined>();
+    const record = Promise.withResolvers<ArrayBuffer | null>();
+    const recordEntered = Promise.withResolvers<undefined>();
+    const open = caches.open.bind(caches);
+    const subject = await fixture({ cold: true, policyReady: policy.promise });
+    const signalCache = await open(subject.signalCache);
+    subject.opened.mockImplementation((name) =>
+      name === subject.signalCache ? Promise.resolve(signalCache) : open(name),
+    );
+    vi.spyOn(signalCache, 'match').mockResolvedValue(undefined);
+    vi.spyOn(signalCache, 'put').mockResolvedValue(undefined);
+    // Preserve the binding, viewed through the array-buffer overload the record loader calls.
+    const records: {
+      get(
+        key: string,
+        options: { type: 'arrayBuffer'; cacheTtl?: number },
+      ): Promise<ArrayBuffer | null>;
+    } = env.CACHE_STATE;
+    vi.spyOn(records, 'get').mockImplementation(() => {
+      recordEntered.resolve(undefined);
+      return record.promise;
+    });
+    const shellReads = vi.spyOn(kvShellStrategy, 'getShell');
+    const loading = subject.serve();
+    try {
+      // The signal cache answers at once. An early routing look can therefore register its
+      // outstanding authority question while the document still waits for its policy.
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      policy.resolve(undefined);
+      await recordEntered.promise;
+      await subject.entered.promise;
+
+      // KV has not answered the record, and the authority is not released. The build's shell
+      // must already be read beside that record rather than wait for its missing result.
+      expect(shellReads).toHaveBeenCalledTimes(1);
+
+      record.resolve(null);
+      const response = await loading;
+
+      await expect(response.text()).resolves.toBe(
+        subject.document.shellText + subject.document.suffixText,
+      );
+      expect(subject.scopeSignals).toHaveBeenCalledTimes(1);
+    } finally {
+      policy.resolve(undefined);
+      record.resolve(null);
+      subject.release.resolve(undefined);
+      const response = await loading;
+      if (!response.bodyUsed) await response.body?.cancel();
       await waitOnExecutionContext(subject.ctx);
     }
   });
