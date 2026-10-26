@@ -1,5 +1,9 @@
 import type { DynamicRoute } from '../manifest/schema.ts';
-import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
+import {
+  BuildPatternBudget,
+  BuildPatternBudgetExceededError,
+  type BuildPatternMatcher,
+} from './pattern-budget.ts';
 import type { DeploymentBundle } from './schema.ts';
 import { isTemplate, routerSpellings } from './spelling.ts';
 
@@ -12,13 +16,14 @@ import { isTemplate, routerSpellings } from './spelling.ts';
 export function filesystemPagesOf(
   bundle: DeploymentBundle,
   dynamicRoutes: readonly DynamicRoute[],
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
 ): string[] {
-  const patterns = compiledRules(dynamicRoutes);
   const matched = (pathname: string): boolean => {
-    return patterns.some((compiled) => {
+    return dynamicRoutes.some((route) => {
       try {
-        return patternOf(compiled).test(pathname);
-      } catch {
+        return patterns.test(route.sourceRegex, '', pathname);
+      } catch (error) {
+        if (error instanceof BuildPatternBudgetExceededError) throw error;
         return true;
       }
     });

@@ -1,4 +1,6 @@
 import {
+  BuildPatternBudget,
+  type BuildPatternMatcher,
   type DeploymentBundle,
   edgeServableRouteBodies,
   functionOfPrerender,
@@ -17,11 +19,12 @@ export async function routeBodiesOf(
   bundle: DeploymentBundle,
   scopeId: string,
   enabled = true,
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
 ): Promise<RouteBodyEntry[]> {
   if (!enabled) return [];
   const placed = placedRoutes(bundle.entrypoints);
   const bodies: RouteBodyEntry[] = [];
-  for (const prerender of edgeServableRouteBodies(bundle)) {
+  for (const prerender of edgeServableRouteBodies(bundle, patterns)) {
     const { entryId } = await deriveEntry(scopeId, {
       kind: 'app-route',
       route: prerender.route,

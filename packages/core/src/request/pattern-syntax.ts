@@ -216,6 +216,9 @@ function escapeAt(pattern: string, index: number): Atom | undefined {
     return { end: index + 2, matches: () => false };
   }
   const literal = escapedCharacter(pattern, index);
+  // An unread legacy octal token must stop the analysis, not leave its remaining digits
+  // behind as purported mandatory literals used to bypass the execution budget.
+  if (letter === '0' && /\d/u.test(pattern[index + 2] ?? '')) return undefined;
   return literal === undefined
     ? { end: index + 2, matches: () => true }
     : { end: literal.end, matches: (character) => character === literal.char };

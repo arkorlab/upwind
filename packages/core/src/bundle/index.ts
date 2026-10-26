@@ -161,3 +161,10 @@ export {
   staticPagesMembersOf,
   type StaticFallbackPage,
 } from './fallback-pages.ts';
+
+export {
+  BuildPatternBudget,
+  BuildPatternBudgetExceededError,
+  BUILD_PATTERN_BUDGET,
+  type BuildPatternMatcher,
+} from './pattern-budget.ts';

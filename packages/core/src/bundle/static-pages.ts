@@ -1,5 +1,6 @@
 import { STATIC_PAGES_FALLBACK_PRIVACY } from '../cache/static-page-version.ts';
 import { staticPageHeadersAllowSharing } from '../cache/static-pages.ts';
+import { type BuildPatternMatcher, nativeBuildPatterns } from './pattern-budget.ts';
 import type { Prerender } from './schema.ts';
 import {
   completePrerenders,
@@ -53,7 +54,11 @@ function ordinaryPath(bundle: ServingBundle, pathname: string): boolean {
   );
 }
 
-function publicHtml(bundle: ServingBundle, page: Prerender): boolean {
+function publicHtml(
+  bundle: ServingBundle,
+  page: Prerender,
+  patterns: BuildPatternMatcher,
+): boolean {
   if (page.body?.contentType.split(';', 1)[0]?.trim().toLowerCase() !== 'text/html') return false;
   const initial: [string, string][] = [];
   if (page.initialHeaders !== undefined) {
@@ -62,7 +67,10 @@ function publicHtml(bundle: ServingBundle, page: Prerender): boolean {
       for (const value of list) initial.push([name, value]);
     }
   }
-  return staticPageHeadersAllowSharing([...initial, ...prerenderResponseHeaders(bundle, page)]);
+  return staticPageHeadersAllowSharing([
+    ...initial,
+    ...prerenderResponseHeaders(bundle, page, patterns),
+  ]);
 }
 
 function privacyVersion(bundle: ServingBundle, page: Prerender): 1 | 2 | undefined {
@@ -82,7 +90,10 @@ function privacyVersion(bundle: ServingBundle, page: Prerender): 1 | 2 | undefin
 }
 
 /** Compute the actual build members and their proof versions once for publication. */
-export function staticPagesPrivacyOf(bundle: ServingBundle): ReadonlyMap<Prerender, 1 | 2> {
+export function staticPagesPrivacyOf(
+  bundle: ServingBundle,
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
+): ReadonlyMap<Prerender, 1 | 2> {
   const admitted = new Map<Prerender, 1 | 2>();
   if (
     (bundle.staticPagesPrivacy !== 1 &&
@@ -97,7 +108,7 @@ export function staticPagesPrivacyOf(bundle: ServingBundle): ReadonlyMap<Prerend
       .map((entry) => entry.pathname),
   );
   const primary = primaryPrerenders(bundle.prerenders);
-  for (const page of completePrerenders(bundle)) {
+  for (const page of completePrerenders(bundle, patterns)) {
     const version = privacyVersion(bundle, page);
     if (
       version !== undefined &&
@@ -106,7 +117,7 @@ export function staticPagesPrivacyOf(bundle: ServingBundle): ReadonlyMap<Prerend
       primary.get(page.id)?.id === page.id &&
       ordinaryPath(bundle, page.pathname) &&
       ordinaryPath(bundle, page.route) &&
-      publicHtml(bundle, page)
+      publicHtml(bundle, page, patterns)
     )
       admitted.set(page, version);
   }

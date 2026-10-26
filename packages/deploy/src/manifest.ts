@@ -1,5 +1,8 @@
 import type { EncodedShellRef } from '@stayingupwind/core/artifact';
 import {
+  BuildPatternBudget,
+  BuildPatternBudgetExceededError,
+  type BuildPatternMatcher,
   type DeploymentBundle,
   dynamicRouting,
   edgeServablePrerenders,
@@ -296,11 +299,12 @@ function manifestPrerendersOf(
   bundle: DeploymentBundle,
   servable: Parameters<typeof edgeServablePrerenders>[1],
   cached: boolean,
+  patterns: BuildPatternMatcher,
 ): Prerender[] {
-  const prerenders = new Set(edgeServablePrerenders(bundle, servable));
+  const prerenders = new Set(edgeServablePrerenders(bundle, servable, patterns));
   if (cached) {
-    for (const page of staticPagesMembersOf(bundle).keys()) prerenders.add(page);
-    for (const page of staticFallbackPagesOf(bundle)) prerenders.add(page);
+    for (const page of staticPagesMembersOf(bundle, patterns).keys()) prerenders.add(page);
+    for (const page of staticFallbackPagesOf(bundle, patterns)) prerenders.add(page);
   }
   return [...prerenders];
 }
@@ -313,6 +317,19 @@ function manifestPrerendersOf(
  * that judged the version itself when the deployment came in says so (`nextVersionJudged`).
  */
 export async function assembleManifest(input: AssembleManifestInput): Promise<AssembledManifest> {
+  try {
+    return await assembleWithin(input, new BuildPatternBudget());
+  } catch (error) {
+    if (error instanceof BuildPatternBudgetExceededError)
+      return { kind: 'refused', reason: error.message };
+    throw error;
+  }
+}
+
+async function assembleWithin(
+  input: AssembleManifestInput,
+  patterns: BuildPatternBudget,
+): Promise<AssembledManifest> {
   const { bundle } = input;
   const refusal = manifestRefusal(input);
   if (refusal !== undefined) {
@@ -321,19 +338,23 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   // The scope is the deployment; the same derivation the seed used names each entry.
   const cached = input.runtimeCache !== false;
   const servable = routedPages(input.runtimeCache);
-  const resumable = new Set(resumablePrerenders(bundle).map((prerender) => prerender.id));
-  const prerenders = routePrerendersOf(manifestPrerendersOf(bundle, servable, cached), {
+  const resumable = new Set(resumablePrerenders(bundle, patterns).map((prerender) => prerender.id));
+  const prerenders = routePrerendersOf(manifestPrerendersOf(bundle, servable, cached, patterns), {
     bundle,
+    patterns,
     resumable,
   });
-  const caches = cached ? await routeCachesOf(bundle, input.deploymentId, prerenders) : new Map();
-  const routeBodies = await routeBodiesOf(bundle, input.deploymentId, cached);
-  const staticPages = await staticPagesOf(bundle, input.deploymentId, cached);
-  const pagesFallbacks = pagesFallbacksOf(bundle, cached, input.encodings);
+  const caches = cached
+    ? await routeCachesOf(bundle, input.deploymentId, prerenders, patterns)
+    : new Map();
+  const routeBodies = await routeBodiesOf(bundle, input.deploymentId, cached, patterns);
+  const staticPages = await staticPagesOf(bundle, input.deploymentId, cached, patterns);
+  const pagesFallbacks = pagesFallbacksOf(bundle, cached, input.encodings, patterns);
   const middlewareMatchers = middlewareMatchersOf(bundle);
   const rules = headerRulesOf(bundle);
   const context: ManifestContext = {
     bundle,
+    patterns,
     placed: placedRoutes(bundle.entrypoints),
     encodings: input.encodings,
     preloads: input.preloads,
@@ -364,12 +385,12 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   const foldedHeaderRules = foldedHeaderRulesOf(bundle)?.map((rule) =>
     documentHeaderRule(rule, context.recoverySource),
   );
-  const staticFiles = staticFilesOf(bundle, input.previous);
+  const staticFiles = staticFilesOf(bundle, input.previous, patterns);
   const staticFileLocales = staticFileLocalesOf(bundle);
   const staticFileAssetPrefix = staticFileAssetPrefixOf(bundle);
   // What the router reads of a path as written, which no page or file is found by decoding.
   const spelledPrefix = spelledPrefixOf(bundle);
-  const routing = dynamicRouting(bundle, routeKeys);
+  const routing = dynamicRouting(bundle, routeKeys, patterns);
   const built = buildProjectManifest({
     projectId: input.projectId,
     runId: input.runId,

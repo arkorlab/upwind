@@ -1,5 +1,6 @@
 import type { Check, Payload } from './checks.ts';
 import { messageOf, type RefineParams, Schema } from './schema.ts';
+import { templateMatcher } from './template-match.ts';
 import type { Primitive, TemplateOutput } from './types.ts';
 
 export class StringSchema extends Schema<string, string, undefined, undefined> {
@@ -86,11 +87,20 @@ export class TemplateLiteralSchema<Out extends string = string> extends Schema<
   /** The parts as they were given, for a reader that rebuilds the schema elsewhere. */
   readonly parts: readonly TemplatePart[];
   readonly pattern: RegExp;
+  private readonly matchesValue: (input: string) => boolean;
 
   constructor(parts: readonly TemplatePart[]) {
     super();
     this.parts = [...parts];
     this.pattern = patternOf(parts);
+    this.matchesValue = templateMatcher(
+      parts.map((part) => (part instanceof StringSchema ? undefined : String(part))),
+    );
+  }
+
+  /** Only the template's type check; chained refinements are applied separately. */
+  matches(input: string): boolean {
+    return this.matchesValue(input);
   }
 
   parseType(payload: Payload): Payload {
@@ -100,7 +110,7 @@ export class TemplateLiteralSchema<Out extends string = string> extends Schema<
       return payload;
     }
     this.pattern.lastIndex = 0;
-    if (!this.pattern.test(input)) {
+    if (!this.matches(input)) {
       payload.issues.push({
         input,
         code: 'invalid_format',

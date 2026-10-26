@@ -6,6 +6,7 @@ import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
 import { testWithin } from '../request/pattern-budget.ts';
 import { pageRoutes, type PageRoute } from './page-routes.ts';
 import { pagesDataPathnameUnder } from './pages-data.ts';
+import { type BuildPatternMatcher, nativeBuildPatterns } from './pattern-budget.ts';
 import type { Entrypoint, Prerender, Route } from './schema.ts';
 import {
   beforeFilesPhases,
@@ -25,6 +26,7 @@ export interface StaticFallbackPage {
 
 type Member = StaticFallbackPage & { readonly kind: 'member' };
 interface Admission {
+  readonly patterns: BuildPatternMatcher | undefined;
   readonly members: Map<Prerender, Member>;
   readonly byPath: Map<string, Member>;
   readonly fallbacks: Map<string, Prerender>;
@@ -34,6 +36,7 @@ interface Admission {
   readonly outputs: ReadonlyMap<string, readonly Prerender[]>;
 }
 const admissions = new WeakMap<ServingBundle, Admission>();
+const buildAdmissions = new WeakMap<BuildPatternMatcher, WeakMap<ServingBundle, Admission>>();
 const PRIVACY_VERSION = 3;
 const HTTP_OK = 200;
 const NO_MEMBERS: ReadonlyMap<Prerender, Member> = new Map();
@@ -98,6 +101,7 @@ function publicOutput(
   bundle: ServingBundle,
   page: Prerender,
   type: 'text/html' | 'application/json',
+  patterns: BuildPatternMatcher | undefined,
 ): boolean {
   const check =
     type === 'text/html' ? staticPageHeadersAllowSharing : staticPageDataHeadersAllowSharing;
@@ -106,7 +110,10 @@ function publicOutput(
     page.body.byteLength > 0 &&
     page.body.contentType.split(';', 1)[0]?.trim().toLowerCase() === type &&
     (page.initialStatus === undefined || page.initialStatus === HTTP_OK) &&
-    check([...headers(page), ...prerenderResponseHeaders(bundle, page)])
+    check([
+      ...headers(page),
+      ...prerenderResponseHeaders(bundle, page, patterns ?? nativeBuildPatterns),
+    ])
   );
 }
 
@@ -144,11 +151,20 @@ function owns(admission: Admission, route: string, pathname: string, built: bool
   )
     return false;
   const early = compiledRules(admission.reserved, 'i');
-  if (early.some((rule) => testWithin(patternOf(rule), pathname))) return false;
+  if (
+    early.some(
+      (rule) =>
+        admission.patterns?.test(rule.rule.sourceRegex, rule.flags, pathname) ??
+        testWithin(patternOf(rule), pathname),
+    )
+  )
+    return false;
   if (admission.exact.has(pathname)) return false;
   if (!built && admission.outputs.has(pathname)) return false;
-  const first = compiledRules(admission.pages).find((rule) =>
-    testWithin(patternOf(rule), pathname),
+  const first = compiledRules(admission.pages).find(
+    (rule) =>
+      admission.patterns?.test(rule.rule.sourceRegex, rule.flags, pathname) ??
+      testWithin(patternOf(rule), pathname),
   );
   return (
     first?.rule.template === route &&
@@ -157,7 +173,10 @@ function owns(admission: Admission, route: string, pathname: string, built: bool
   );
 }
 
-function emptyAdmission(bundle: ServingBundle): Admission {
+function emptyAdmission(
+  bundle: ServingBundle,
+  patterns: BuildPatternMatcher | undefined,
+): Admission {
   const outputs = new Map<string, Prerender[]>();
   for (const page of bundle.prerenders) {
     const group = outputs.get(page.pathname);
@@ -173,6 +192,7 @@ function emptyAdmission(bundle: ServingBundle): Admission {
   const reserved = beforeFilesPhases(bundle);
   reserved.push(...bundle.routing.afterFiles);
   return {
+    patterns,
     members: new Map(),
     byPath: new Map(),
     fallbacks: new Map(),
@@ -215,7 +235,7 @@ function safeFallback(
     page.parentFallbackMode === undefined &&
     (page.initialRevalidate === undefined || lifetime(page)) &&
     ordinaryOutput(page, params) &&
-    publicOutput(bundle, page, 'text/html')
+    publicOutput(bundle, page, 'text/html', admission.patterns)
   );
 }
 
@@ -236,7 +256,7 @@ function pairedData(
     data.response !== undefined ||
     data.compute !== undefined ||
     !ordinaryOutput(data, params) ||
-    !publicOutput(bundle, data, 'application/json') ||
+    !publicOutput(bundle, data, 'application/json', admission.patterns) ||
     data.initialRevalidate !== page.initialRevalidate ||
     data.initialExpiration !== page.initialExpiration
   )
@@ -264,7 +284,7 @@ function memberFor(
     admission.outputs.get(page.pathname)?.length !== 1 ||
     !page.parentFallbackMode.endsWith('.html') ||
     !ordinaryOutput(page, params) ||
-    !publicOutput(bundle, page, 'text/html') ||
+    !publicOutput(bundle, page, 'text/html', admission.patterns) ||
     !lifetime(page) ||
     !owns(admission, page.route, page.pathname, true)
   )
@@ -275,11 +295,19 @@ function memberFor(
     : { kind: 'member', page, params, dataPathname, privacy: PRIVACY_VERSION };
 }
 
-function admissionFor(bundle: ServingBundle): Admission {
-  const held = admissions.get(bundle);
+function admissionFor(bundle: ServingBundle, patterns?: BuildPatternMatcher): Admission {
+  let cache = admissions;
+  if (patterns !== undefined) {
+    let scoped = buildAdmissions.get(patterns);
+    if (scoped === undefined) {
+      scoped = new WeakMap();
+      buildAdmissions.set(patterns, scoped);
+    }
+    cache = scoped;
+  }
+  const held = cache.get(bundle);
   if (held !== undefined) return held;
-  const admission = emptyAdmission(bundle);
-  admissions.set(bundle, admission);
+  const admission = emptyAdmission(bundle, patterns);
   if (
     bundle.staticPagesPrivacy !== PRIVACY_VERSION ||
     !reproducesDynamicRouting(bundle) ||
@@ -287,8 +315,10 @@ function admissionFor(bundle: ServingBundle): Admission {
     bundle.config.basePath !== '' ||
     bundle.config.trailingSlash ||
     bundle.config['output'] === 'export'
-  )
+  ) {
+    cache.set(bundle, admission);
     return admission;
+  }
   const primaries = primaryPrerenders(bundle.prerenders);
   const sources = uniqueSources(bundle);
   for (const page of bundle.prerenders) {
@@ -305,15 +335,24 @@ function admissionFor(bundle: ServingBundle): Admission {
       admission.byPath.set(page.pathname, member);
     }
   }
+  cache.set(bundle, admission);
   return admission;
 }
 
-export function staticPagesMembersOf(bundle: ServingBundle): ReadonlyMap<Prerender, Member> {
-  return bundle.staticPagesPrivacy === PRIVACY_VERSION ? admissionFor(bundle).members : NO_MEMBERS;
-}
-export function staticFallbackPagesOf(bundle: ServingBundle): readonly Prerender[] {
+export function staticPagesMembersOf(
+  bundle: ServingBundle,
+  patterns?: BuildPatternMatcher,
+): ReadonlyMap<Prerender, Member> {
   return bundle.staticPagesPrivacy === PRIVACY_VERSION
-    ? [...admissionFor(bundle).fallbacks.values()]
+    ? admissionFor(bundle, patterns).members
+    : NO_MEMBERS;
+}
+export function staticFallbackPagesOf(
+  bundle: ServingBundle,
+  patterns?: BuildPatternMatcher,
+): readonly Prerender[] {
+  return bundle.staticPagesPrivacy === PRIVACY_VERSION
+    ? [...admissionFor(bundle, patterns).fallbacks.values()]
     : NO_FALLBACKS;
 }
 export function staticFallbackPageFor(

@@ -1,5 +1,7 @@
 import { type EncodedShellRef, shellEncodingsOf } from '@stayingupwind/core/artifact';
 import {
+  BuildPatternBudget,
+  type BuildPatternMatcher,
   type DeploymentBundle,
   functionOfPrerender,
   partialFallbackUpgradeOf,
@@ -65,15 +67,18 @@ function isTemplate(pathname: string): boolean {
  * answers is a question about two patterns that nothing here can settle. Any matcher at all takes
  * its hints, which is the same answer as for the every-path matcher a build usually has.
  */
-function middlewareCovers(matchers: readonly MiddlewareMatcher[], pathname: string): boolean {
+function middlewareCovers(
+  matchers: readonly MiddlewareMatcher[],
+  pathname: string,
+  patterns: BuildPatternMatcher,
+): boolean {
   if (isTemplate(pathname)) {
     return matchers.length > 0;
   }
   // The flags `middlewareApplies` runs them under at the edge: case-insensitive, as Next.js
   // matches them, and without the unicode flag, as it compiled them. A route this read as
   // uncovered and the edge reads as covered is a route with hints nothing there will use.
-  // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-  return matchers.some((matcher) => new RegExp(matcher.sourceRegex, 'i').test(pathname));
+  return matchers.some((matcher) => patterns.test(matcher.sourceRegex, 'i', pathname));
 }
 
 /**
@@ -84,6 +89,7 @@ function middlewareCovers(matchers: readonly MiddlewareMatcher[], pathname: stri
 function policyRulesCovering(
   rules: readonly HeaderRule[],
   pathname: string,
+  patterns: BuildPatternMatcher,
 ): readonly HeaderRule[] {
   if (isTemplate(pathname)) {
     return rules;
@@ -92,8 +98,7 @@ function policyRulesCovering(
     // A concrete page already folds unconditional rules in order, including later overrides.
     if (rule.has === undefined && rule.missing === undefined) return false;
     // As the edge judges them (`documentHeaderRulesFor`): case-insensitive, without the unicode flag.
-    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-    return new RegExp(rule.sourceRegex, 'i').test(pathname);
+    return patterns.test(rule.sourceRegex, 'i', pathname);
   });
 }
 
@@ -160,6 +165,7 @@ function policyHeadersOf(
   rule: HeaderRule,
   bundle: DeploymentBundle,
   prerender: Prerender,
+  patterns: BuildPatternMatcher,
 ): Record<string, string> | undefined {
   if (isTemplate(prerender.pathname)) {
     const unresolved = Object.entries(rule.headers).some(
@@ -180,6 +186,7 @@ function policyHeadersOf(
         },
       },
       { ...prerender, initialHeaders: {} },
+      patterns,
     ),
   );
 }
@@ -199,9 +206,15 @@ function withoutRuledOut(
   const rules = policyRulesCovering(
     context.policyRules,
     routePathnameOf(context.bundle, prerender),
+    context.patterns ?? new BuildPatternBudget(),
   );
   for (const rule of rules) {
-    const possible = policyHeadersOf(rule, context.bundle, prerender);
+    const possible = policyHeadersOf(
+      rule,
+      context.bundle,
+      prerender,
+      context.patterns ?? new BuildPatternBudget(),
+    );
     if (possible === undefined) return [];
     kept = withoutForbidden(kept, { ...headers, ...possible });
   }
@@ -210,6 +223,7 @@ function withoutRuledOut(
 
 /** What every route entry of one deployment is built from, beside the prerender itself. */
 export interface ManifestContext {
+  readonly patterns?: BuildPatternMatcher;
   readonly bundle: DeploymentBundle;
   /**
    * The app Worker each route outside the first is in, for a bundle split across several; empty for
@@ -269,11 +283,13 @@ function recordedHeaders(
 /** The same final construction gate for route entries and their optional cache metadata. */
 function mayBeRoute(
   prerender: Prerender,
-  context: Pick<ManifestContext, 'bundle' | 'resumable'>,
+  context: Pick<ManifestContext, 'bundle' | 'resumable' | 'patterns'>,
 ): prerender is Prerender & { readonly body: NonNullable<Prerender['body']> } {
   if (prerender.body === undefined) return false;
   // A recovery hash cannot relax sandbox flags; complete documents need no continuation.
-  const policy = shellHeaders(context.bundle, prerender)['content-security-policy'];
+  const policy = shellHeaders(context.bundle, prerender, context.patterns)[
+    'content-security-policy'
+  ];
   return (
     policy === undefined ||
     !context.resumable.has(prerender.id) ||
@@ -284,8 +300,9 @@ function mayBeRoute(
 /** Resolve construction eligibility and the last winner for each pathname before tag allocation. */
 export function routePrerendersOf(
   prerenders: readonly Prerender[],
-  context: Pick<ManifestContext, 'bundle' | 'resumable'>,
+  context: Pick<ManifestContext, 'bundle' | 'resumable' | 'patterns'>,
 ): Prerender[] {
+  context = { ...context, patterns: context.patterns ?? new BuildPatternBudget() };
   const named = new Map<string, Prerender>();
   for (const prerender of prerenders) {
     if (mayBeRoute(prerender, context)) {
@@ -299,11 +316,12 @@ export function routeEntryOf(
   prerender: Prerender,
   context: ManifestContext,
 ): RouteEntry | undefined {
+  context = { ...context, patterns: context.patterns ?? new BuildPatternBudget() };
   if (!mayBeRoute(prerender, context)) {
     return undefined;
   }
   const { bundle } = context;
-  const built = shellHeaders(bundle, prerender);
+  const built = shellHeaders(bundle, prerender, context.patterns);
   const shellEncodings = shellEncodingsOf(context.encodings.get(prerender.body.sha256) ?? []);
   const cache = context.caches.get(prerender.id);
   const headers = recordedHeaders(built, cache, context.recoverySource);
@@ -319,7 +337,11 @@ export function routeEntryOf(
   // The spelling a request asks for the page by, behind the slash where the application keeps its
   // pages there; a class shell under its template. The matchers are asked about that request.
   const pathname = routePathnameOf(bundle, prerender);
-  const named = middlewareCovers(context.matchers, pathname)
+  const named = middlewareCovers(
+    context.matchers,
+    pathname,
+    context.patterns ?? new BuildPatternBudget(),
+  )
     ? []
     : (context.preloads[prerender.body.sha256] ?? []);
   // And what the route's own policies forbid or quieten goes out with it: a hint replayed as a
@@ -425,14 +447,15 @@ export async function routeCachesOf(
   bundle: DeploymentBundle,
   scopeId: string,
   manifested: readonly Prerender[],
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
 ): Promise<ReadonlyMap<string, RouteCache>> {
   const caches = new Map<string, RouteCache>();
   const buildTags = new BuildTagBudget();
   const included = new Set(manifested.map((prerender) => prerender.id));
   const context = { scopeId, generatedAt: bundleGeneratedAtMs(bundle) };
-  for (const prerender of cachePrerendersOf(bundle)) {
+  for (const prerender of cachePrerendersOf(bundle, patterns)) {
     if (!included.has(prerender.id)) continue;
-    const seeded = await seedRouteFor(bundle, prerender, context);
+    const seeded = await seedRouteFor(bundle, prerender, context, patterns);
     // A route handler's entry is the Worker's alone: no manifest route names it.
     if (seeded?.cache !== undefined) {
       caches.set(prerender.id, buildTags.fit(seeded.cache));
