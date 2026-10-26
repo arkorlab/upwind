@@ -291,7 +291,13 @@ export class NativeAuthority implements CacheHost {
   }
 
   #seed(): Promise<void> {
-    return seedNativeCache(this.#options, this.#files, this.#pipeline, () => this.#settle().done);
+    return seedNativeCache(
+      this.#options,
+      this.#files,
+      this.#pipeline,
+      () => this.#settle().done,
+      this.#limits.maxArtifactBytes,
+    );
   }
 
   async startAttempt(request: AttemptRequest): Promise<AttemptOutcome> {

@@ -118,6 +118,7 @@ export class ObjectSchema<
     payload: Payload,
     ctx: ParseContext,
   ): Payload {
+    if (ctx.stopOnIssue === true && payload.issues.length > 0) return payload;
     const { keys } = this.parsing();
     const unrecognized: string[] = [];
     let seen = 0;
@@ -135,6 +136,7 @@ export class ObjectSchema<
       }
       if (this.unknownKeys === 'strict') {
         unrecognized.push(key);
+        if (ctx.stopOnIssue === true) break;
       } else if (key !== '__proto__') {
         // Taken as it is: a loose object's other keys are zod's `unknown()`, present by being here.
         output[key] = input[key];
@@ -170,7 +172,7 @@ export class ObjectSchema<
     let seen = payload.issues.length;
     for (const field of this.parsing().fields) {
       if (ctx.abortEarly && payload.issues.length !== seen) {
-        if (aborted(payload.issues, seen)) {
+        if (ctx.stopOnIssue === true || aborted(payload.issues, seen)) {
           break;
         }
         seen = payload.issues.length;

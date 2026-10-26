@@ -1,3 +1,5 @@
+import { UPWIND_AUTH_LOCAL_DEV_ENV } from '@stayingupwind/core/paas';
+
 /**
  * The environment, as this package reads it.
  *
@@ -17,6 +19,11 @@
 export function envValue(name: string): string | undefined {
   const value = process.env[name];
   return value === undefined || value === '' ? undefined : value;
+}
+
+/** A loopback-bound upwind dev listener attests this; an ordinary Next server does not. */
+export function isLocalDevelopment(): boolean {
+  return !isProduction() && envValue(UPWIND_AUTH_LOCAL_DEV_ENV) === '1';
 }
 
 /**

@@ -76,7 +76,11 @@ export class ArraySchema<E extends Typed = Typed> extends Schema<
         payload.issues.push(...prefixIssues(index, result.issues));
       }
       output.push(result.value);
-      if (ctx.abortEarly && result.issues.length > 0 && aborted(result.issues)) {
+      if (
+        ctx.abortEarly &&
+        result.issues.length > 0 &&
+        (ctx.stopOnIssue === true || aborted(result.issues))
+      ) {
         break;
       }
     }
@@ -171,7 +175,11 @@ export class RecordSchema<
       const result = value.run({ value: input[key], issues: [] }, ctx);
       payload.issues.push(...prefixIssues(key, result.issues));
       output[outKey] = result.value;
-      if (ctx.abortEarly && aborted(result.issues)) {
+      if (
+        ctx.abortEarly &&
+        result.issues.length > 0 &&
+        (ctx.stopOnIssue === true || aborted(result.issues))
+      ) {
         break;
       }
     }

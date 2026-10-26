@@ -1,7 +1,3 @@
-import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-
 import { KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
 import type { SeedScopeInput } from '@stayingupwind/host/cache';
 
@@ -10,28 +6,23 @@ import { applySeedScope, needsSeedVerification, planSeedEntries } from '../scope
 import { isRefusal, refuse } from '../scope/state.ts';
 import type { CacheFiles } from './files.ts';
 import type { NativeCacheWorkerOptions } from './protocol.ts';
+import { readSeedArtifact, validateSeedArtifact } from './seed-artifact.ts';
 
 const SEED_BATCH_SIZE = 200;
 
 async function copyBuildArtifacts(
   options: NativeCacheWorkerOptions,
   files: CacheFiles,
+  maximumArtifactBytes: number,
 ): Promise<void> {
   const seed = options.seed;
   if (seed === undefined) return;
   for (const entry of seed.entries) {
     for (const output of entry.generation.outputs) {
       for (const artifact of output.artifacts) {
+        validateSeedArtifact(artifact, maximumArtifactBytes);
         if (await files.blobs.exists(artifact.storageRef)) continue;
-        // The build's own SHA-256 names this file, never a public URL or request path.
-        // eslint-disable-next-line security/detect-non-literal-fs-filename
-        const bytes = await readFile(path.join(seed.blobsDirectory, artifact.sha256));
-        if (
-          bytes.byteLength !== artifact.byteLength ||
-          createHash('sha256').update(bytes).digest('hex') !== artifact.sha256
-        ) {
-          throw new Error('native cache build artifact does not match its digest');
-        }
+        const bytes = await readSeedArtifact(seed.blobsDirectory, artifact, maximumArtifactBytes);
         await files.blobs.write(artifact.storageRef, bytes, artifact.contentType);
       }
     }
@@ -44,6 +35,7 @@ export async function seedNativeCache(
   files: CacheFiles,
   pipeline: MutationPipeline,
   settle: () => Promise<void>,
+  maximumArtifactBytes: number,
 ): Promise<void> {
   const scope: SeedScopeInput['scope'] = {
     scopeId: options.scopeId,
@@ -61,7 +53,7 @@ export async function seedNativeCache(
   if (outcome.kind === 'conflict') throw new Error(`native cache: ${outcome.reason}`);
   const seed = options.seed;
   if (seed === undefined) return;
-  await copyBuildArtifacts(options, files);
+  await copyBuildArtifacts(options, files, maximumArtifactBytes);
   for (let offset = 0; offset < seed.entries.length; offset += SEED_BATCH_SIZE) {
     const result = await pipeline.run(
       Date.now(),

@@ -4,36 +4,20 @@ import { Schema } from '@stayingupwind/core/schema';
  * A value from outside the host, checked against its schema at a cost that stays near the size of
  * what was sent.
  *
- * `safeParse` does not stop at the first thing wrong: it goes through the whole value and records
- * an issue for every element and every field that fails. A body that repeats `{}` through an array
- * of objects costs an issue for each field each of them lacks: 256 KiB of it against the cache
- * commit's schema was measured building about 220 MiB of them in an isolate that runs zod as the
- * Workers runtime does, uncompiled, before a spread of them overran the stack — past the 128 MB an
- * isolate holds, from a body the size of a small image. `.max()` on the array does not help: zod
- * measures an array only once every element has been checked. `validate` runs the same checks,
- * stops at the first element or field that fails outright, and answers only whether one did — a
- * tenth of a mebibyte for the same body. So a long value is asked `validate` first, and parsed only
- * once it has passed. A schema of core's validator (`@stayingupwind/core/schema`) is taken here as
- * well as zod's: its `safeParse` and `validate` answer as zod's do.
+ * Core schemas stop at the first refused child or check, including continuable failures, and
+ * return the parsed value from that same run on success. Even a tiny body can otherwise expand
+ * into thousands of issues, so collecting every issue is never appropriate for these boundaries.
  *
- * Asked twice, a value that passes runs every check, default and refinement of the schema twice.
- * One of core's validator is asked once instead: a run as `validate` runs, which stops only at a
- * failure, went through the whole of a value that has none, and made what `safeParse` would have.
- * zod has no such run to ask for, so one of zod's is asked both, and has to be a schema whose
- * checks answer the same each time they are run.
- *
- * `validate` is not a bound of its own. zod's walks a record to its end, and either goes on past a
- * check that lets parsing go on — a string too short, a pattern not matched — as `safeParse` does;
- * what those cost is held only by how far the body was read.
+ * Legacy zod schemas expose no equivalent one-pass operation here. A longer body is first asked
+ * whether it validates, then parsed only after it passes; its checks must give the same answer
+ * on both runs. Their small-body diagnostics are bounded by the response renderer as well.
  */
 
 const KIB = 1024;
 const LISTED_KIB = 4;
 /**
- * The longest body a refusal lists the issues of. What the list costs grows with the body: a
- * commit whose outputs are `{}`, each lacking eight fields, was measured at 11 MiB for 4 KiB, half
- * what `JSON.parse` of a mebibyte of `[{},{},…]` costs on its own (22 MiB). A body written by hand
- * and got wrong comes nowhere near it.
+ * The longest body whose refusal includes a diagnostic. Core schemas report the first problem;
+ * longer bodies are refused without rendering it.
  */
 export const MAX_LISTED_BYTES = LISTED_KIB * KIB;
 
@@ -71,8 +55,6 @@ export type BoundedParse<T> =
   | { readonly success: false; readonly error: ParseFailure | undefined };
 
 const UNLISTED = { success: false, error: undefined } as const;
-/** How `validate` runs one of core's schemas: stopping at the first thing that fails outright. */
-const AS_VALIDATED = { abortEarly: true } as const;
 
 /**
  * `value` as `schema` parses it, asked of `validate` first: a value it refuses is refused without
@@ -80,8 +62,8 @@ const AS_VALIDATED = { abortEarly: true } as const;
  */
 export function safeParseValidated<T>(schema: CheckingSchema<T>, value: unknown): BoundedParse<T> {
   if (schema instanceof Schema) {
-    const run = schema.run({ value, issues: [] }, AS_VALIDATED);
-    return run.issues.length === 0 ? { success: true, data: run.value as T } : UNLISTED;
+    const parsed = schema.safeParseFirst(value);
+    return parsed.success ? { success: true, data: parsed.data as T } : UNLISTED;
   }
   if (!schema.validate(value)) {
     return UNLISTED;
@@ -93,8 +75,8 @@ export function safeParseValidated<T>(schema: CheckingSchema<T>, value: unknown)
 }
 
 /**
- * `value` as `schema` parses it: what `safeParse` answers for a body of up to `MAX_LISTED_BYTES`,
- * whose issues are cheap to list, and for a longer one what `safeParseValidated` answers.
+ * Parse a core schema once with first-problem diagnostics for a short body, and no diagnostic for
+ * a longer one. Legacy zod schemas retain their validation-first path for longer bodies.
  */
 export function safeParseBounded<T>(
   schema: CheckingSchema<T>,
@@ -102,6 +84,10 @@ export function safeParseBounded<T>(
   /** How long the body was, in bytes or in UTF-16 code units: its structure is ASCII either way. */
   length: number,
 ): BoundedParse<T> {
+  if (schema instanceof Schema) {
+    const parsed = schema.safeParseFirst(value);
+    return (parsed.success || length <= MAX_LISTED_BYTES ? parsed : UNLISTED) as BoundedParse<T>;
+  }
   return length <= MAX_LISTED_BYTES ? schema.safeParse(value) : safeParseValidated(schema, value);
 }
 

@@ -13,6 +13,7 @@ import type { NoUndefined, OptIn, OptOut, TypeMarks } from './types.ts';
 
 const PARSE: ParseContext = { abortEarly: false };
 const VALIDATE: ParseContext = { abortEarly: true };
+const FIRST_ISSUE: ParseContext = { abortEarly: true, stopOnIssue: true };
 const NO_CHECKS: readonly Check[] = Object.freeze([]);
 
 /** What a refinement or a check is told besides its rule: a message, and for a refinement a path. */
@@ -74,8 +75,38 @@ export abstract class Schema<
 
   /** The schema's type, then its checks. */
   run(payload: Payload, ctx: ParseContext): Payload {
+    if (ctx.shared !== undefined) return this.runShared(payload, ctx);
     const result = this.parseType(payload, ctx);
-    return this.checks.length === 0 ? result : runChecks(result, this.checks);
+    return this.checks.length === 0 ? result : runChecks(result, this.checks, ctx);
+  }
+
+  private runShared(payload: Payload, ctx: ParseContext): Payload {
+    const input = payload.value;
+    const shared = ctx.shared;
+    if (
+      shared !== undefined &&
+      typeof input === 'object' &&
+      input !== null &&
+      shared.inputs.has(input)
+    ) {
+      let results = shared.results.get(input);
+      if (results?.has(this) === true) {
+        payload.value = results.get(this);
+        return payload;
+      }
+      const parsed = this.parseType(payload, ctx);
+      const result = this.checks.length === 0 ? parsed : runChecks(parsed, this.checks, ctx);
+      if (result.issues.length === 0) {
+        if (results === undefined) {
+          results = new Map();
+          shared.results.set(input, results);
+        }
+        results.set(this, result.value);
+      }
+      return result;
+    }
+    const result = this.parseType(payload, ctx);
+    return this.checks.length === 0 ? result : runChecks(result, this.checks, ctx);
   }
 
   /** A copy of this schema with `checks` in place of its own. */
@@ -164,6 +195,26 @@ export abstract class Schema<
     return result.issues.length === 0
       ? { success: true, data: result.value as Out }
       : failure(result.issues);
+  }
+
+  /** Parse once, stopping at the first refused child or check, including continuable issues. */
+  safeParseFirst(value: unknown): SafeParseResult<Out> {
+    const result = this.run({ value, issues: [] }, FIRST_ISSUE);
+    return result.issues.length === 0
+      ? { success: true, data: result.value as Out }
+      : failure(result.issues);
+  }
+
+  /** Preserve selected shared inputs after checking each against each schema once, within this call. */
+  parseShared(value: unknown, inputs: WeakSet<object>): Out {
+    const result = this.run(
+      { value, issues: [] },
+      { abortEarly: true, stopOnIssue: true, shared: { inputs, results: new WeakMap() } },
+    );
+    if (result.issues.length > 0) {
+      throw new SchemaError(result.issues.map((issue) => finalizeIssue(issue)));
+    }
+    return result.value as Out;
   }
 
   /**

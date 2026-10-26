@@ -167,7 +167,7 @@ function namesPlaces(version: unknown): boolean {
  * object. A manifest without `tables`, or of a version before them (`namesPlaces`), is handed back
  * as it is, and so is anything that is not a manifest at all, for the schema to refuse.
  */
-export function fromStoredManifest(parsed: unknown): unknown {
+export function fromStoredManifest(parsed: unknown, sharedInputs?: WeakSet<object>): unknown {
   if (!isRecord(parsed) || !isRecord(parsed['tables']) || !namesPlaces(parsed['schemaVersion'])) {
     return parsed;
   }
@@ -177,6 +177,13 @@ export function fromStoredManifest(parsed: unknown): unknown {
     conditions: tableOf(stored, 'conditions'),
     preloads: tableOf(stored, 'preloads'),
   };
+  if (sharedInputs !== undefined) {
+    for (const table of [tables.headers, tables.conditions, tables.preloads]) {
+      for (const value of table) {
+        if (typeof value === 'object' && value !== null) sharedInputs.add(value);
+      }
+    }
+  }
   const listed = manifest['routes'];
   const routes = isRecord(listed)
     ? Object.fromEntries(
