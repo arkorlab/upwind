@@ -7,7 +7,7 @@ import { withClock } from '../src/cache/clock.ts';
 import type { CurrentGeneration } from '../src/cache/current.ts';
 import type { FetchLike } from '../src/cache/host.ts';
 import { type CacheRuntime, createCacheRuntime } from '../src/cache/runtime.ts';
-import { offeredFromGeneration } from '../src/delivery.ts';
+import { offeredFromGeneration, standingShared } from '../src/delivery.ts';
 import { type GenerationSource, serveFromGeneration } from '../src/generations.ts';
 import { invokeNodeHandler } from '../src/node-bridge.ts';
 import type { RoutedInput } from '../src/serve.ts';
@@ -16,9 +16,11 @@ import { type FakeAuthority, fakeAuthority } from './authority.ts';
 
 /**
  * What a stale generation's visitor is answered with while this isolate regenerates it, as a host
- * with no edge in front of it decides it (`delivery.ts`): the render that regeneration is publishing
- * stands in the generation's slot, and is offered by that generation, as the generation's own answer
- * is. The edge serves the standing record as everyone's whatever regenerates it (`serveCurrentPage`).
+ * with no edge in front of it decides it (`delivery.ts`). The edge serves the standing record as it
+ * is, bytes and headers alike, to a request it may answer as everyone's (`serveCurrentPage`), and
+ * leaves the rest to the Function, which answers them from the render — as the visitor's. So does
+ * the runtime: the standing generation, offered by itself, where it is everyone's
+ * (`standingShared`); the render otherwise, offered by nothing, never by the record it replaces.
  */
 
 function nodeBridge(): { invokeNodeHandler: Mock } {
@@ -34,6 +36,7 @@ vi.mock(import('../src/delivery.ts'), async (importOriginal) => {
   const original = await importOriginal();
   return {
     ...original,
+    standingShared: vi.fn(() => false),
     offeredFromGeneration: vi.fn(
       (
         _input: RoutedInput,
@@ -188,34 +191,57 @@ async function settle(pending: readonly Promise<unknown>[]): Promise<void> {
   }
 }
 
-describe('a stale generation’s visitor, answered from the render regenerating it', () => {
+/** The feed asked for twice while its regeneration's commit is held back, and what each was answered. */
+async function askedTwiceWhileRegenerating(): Promise<{
+  readonly first: Response | undefined;
+  readonly firstText: string | undefined;
+  readonly second: Response | undefined;
+  readonly secondText: string | undefined;
+}> {
+  const authority = fakeAuthority(SCOPE);
+  await keptFeed(authority);
+  const commit = commitsHeldBack(authority.fetchImpl);
+  const runtime = runtimeFor(commit.fetchImpl);
+  vi.mocked(invokeNodeHandler).mockResolvedValue(
+    Response.json({ feed: 'regenerated' }, { headers: { 'cache-control': ISR } }),
+  );
+  const now = T0 + 61 * SECOND;
+  const first = await served(runtime, now);
+  const firstText = await first.response?.text();
+  await commit.arrived;
+  const second = await served(runtime, now);
+  const secondText = await second.response?.text();
+  commit.release();
+  await settle([...first.pending, ...second.pending]);
+  return { first: first.response, firstText, second: second.response, secondText };
+}
+
+describe('a stale generation’s visitor while this isolate regenerates it', () => {
   afterEach(() => {
     vi.mocked(invokeNodeHandler).mockReset();
     vi.mocked(offeredFromGeneration).mockClear();
+    vi.mocked(standingShared).mockReset();
   });
 
-  it('is offered by the generation the render stands in for, as its own answer is', async () => {
-    const authority = fakeAuthority(SCOPE);
-    await keptFeed(authority);
-    const commit = commitsHeldBack(authority.fetchImpl);
-    const runtime = runtimeFor(commit.fetchImpl);
-    vi.mocked(invokeNodeHandler).mockResolvedValue(
-      Response.json({ feed: 'regenerated' }, { headers: { 'cache-control': ISR } }),
-    );
-    const now = T0 + 61 * SECOND;
+  it('is answered from the render, offered by nothing, where the standing generation is not everyone’s', async () => {
+    vi.mocked(standingShared).mockReturnValue(false);
 
-    const first = await served(runtime, now);
-    const stale = await first.response?.text();
-    await commit.arrived;
-    const second = await served(runtime, now);
-    const answered = await second.response?.text();
-    commit.release();
-    await settle([...first.pending, ...second.pending]);
+    const { first, firstText, second, secondText } = await askedTwiceWhileRegenerating();
 
-    expect(stale).toBe('{"feed":"kept"}');
-    expect(first.response?.headers.get(OFFERED_BY)).toBe('generation-1 route-body');
-    expect(answered).toBe('{"feed":"regenerated"}');
-    expect(second.response?.headers.get(CACHE_OUTCOME_HEADER)).toBe('publishing');
-    expect(second.response?.headers.get(OFFERED_BY)).toBe('generation-1 route-body');
+    expect(firstText).toBe('{"feed":"kept"}');
+    expect(first?.headers.get(OFFERED_BY)).toBe('generation-1 route-body');
+    expect(secondText).toBe('{"feed":"regenerated"}');
+    expect(second?.headers.get(CACHE_OUTCOME_HEADER)).toBe('publishing');
+    expect(second?.headers.has(OFFERED_BY)).toBe(false);
+  });
+
+  it('is answered from the standing generation, offered by it, where that generation is everyone’s', async () => {
+    vi.mocked(standingShared).mockReturnValue(true);
+
+    const { second, secondText } = await askedTwiceWhileRegenerating();
+
+    expect(secondText).toBe('{"feed":"kept"}');
+    expect(second?.headers.has(CACHE_OUTCOME_HEADER)).toBe(false);
+    expect(second?.headers.get(OFFERED_BY)).toBe('generation-1 route-body');
   });
 });

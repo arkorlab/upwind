@@ -32,6 +32,18 @@ export function offeredFromGeneration(
   return answer;
 }
 
+/**
+ * Whether a stale generation is answered as it stands, as everyone's, rather than from the render
+ * this isolate is regenerating it with. The edge decides it before a request reaches a Function:
+ * it serves the standing record as everyone's where it may (`serveCurrentPage`), and leaves the
+ * rest to the Function, which answers them from the render, as the visitor's. So on Workers, never.
+ */
+export const standingShared: (
+  input: RoutedInput,
+  current: CurrentGeneration,
+  representation: Representation,
+) => boolean = () => false;
+
 /** An entry's first generation in the making, and how the runtime answers from it once made. */
 export interface FirstPublish {
   readonly runtime: CacheRuntime;
