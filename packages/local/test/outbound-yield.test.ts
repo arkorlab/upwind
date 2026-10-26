@@ -22,6 +22,13 @@ const START_MS = 60_000;
 const SPIN_MS = 3000;
 /** How long a request from outside may take while the loop runs. */
 const ANSWER_MS = 2000;
+/** How often the loop's state is asked for. */
+const POLL_MS = 50;
+
+interface LoopState {
+  readonly spins: number;
+  readonly ended: string;
+}
 
 async function spinningWorkers(): Promise<RunningWorkers> {
   const outbound = await bundleWorker(
@@ -105,17 +112,29 @@ describe("a Function fetching its own site without pause, in the stack's backgro
 
         await expect(started.text()).resolves.toBe('spinning');
 
-        const during = await fetch(new URL('/state', url), {
-          signal: AbortSignal.timeout(ANSWER_MS),
-        });
-        const { spins } = (await during.json()) as { readonly spins: number };
-        await sleep(SPIN_MS + ANSWER_MS);
-        const after = await fetch(new URL('/state', url), {
-          signal: AbortSignal.timeout(ANSWER_MS),
-        });
+        // Asked until the loop is seen running, each answer in time — the stack answering others
+        // while the loop goes on — and then until the loop's own timer has ended it. Asked once, the
+        // state could come before the loop's first fetch returned (greptile).
+        const stateUntil = async (done: (state: LoopState) => boolean): Promise<LoopState> => {
+          const end = Date.now() + SPIN_MS + ANSWER_MS;
+          for (;;) {
+            const answer = await fetch(new URL('/state', url), {
+              signal: AbortSignal.timeout(ANSWER_MS),
+            });
+            const state = (await answer.json()) as LoopState;
+            if (done(state) || Date.now() > end) {
+              return state;
+            }
+            await sleep(POLL_MS);
+          }
+        };
 
-        expect(spins).toBeGreaterThan(0);
-        await expect(after.json()).resolves.toMatchObject({ ended: 'TimeoutError' });
+        const during = await stateUntil((state) => state.spins > 0);
+        const after = await stateUntil((state) => state.ended !== 'running');
+
+        expect(during).toMatchObject({ ended: 'running' });
+        expect(during.spins).toBeGreaterThan(0);
+        expect(after).toMatchObject({ ended: 'TimeoutError' });
       } finally {
         await running.dispose();
       }
