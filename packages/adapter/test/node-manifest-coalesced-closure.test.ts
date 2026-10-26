@@ -89,6 +89,21 @@ function owned(before: string, value = 'Page', after = '', forbidden: readonly s
 
 describe('whole-original coalesced Pages lexical closure', () => {
   it.each([
+    '()=>{label:{break label;}return 42;}',
+    '()=>{loop:for(let n=0;n<2;n++){if(n===0)continue loop;break loop;}return 42;}',
+    '()=>{outer:for(let n=0;n<2;n++){inner:for(let m=0;m<2;m++){break outer;}}return 42;}',
+  ])('does not treat statement labels as captured values: %s', (value) => {
+    expect(owned('', value)).toStrictEqual([]);
+  });
+
+  it.each([
+    '()=>{label:{break label;}return label;}',
+    '()=>{loop:for(let n=0;n<2;n++){break loop;}return loop;}',
+  ])('still rejects a free value sharing a statement label: %s', (value) => {
+    expect(() => owned('', value)).toThrow('unproved global capture');
+  });
+
+  it.each([
     '()=>42',
     'function Page(n){return n?Page(n-1):42;}',
     'async function Page(){return 42;}',

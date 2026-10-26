@@ -274,6 +274,11 @@ export function reference(visit: Visit): boolean {
     return false;
   if (key === 'id' && parent.type === 'VariableDeclarator') return false;
   if (
+    key === 'label' &&
+    ['BreakStatement', 'ContinueStatement', 'LabeledStatement'].includes(parent.type)
+  )
+    return false;
+  if (
     ['ArrowFunctionExpression', 'FunctionDeclaration', 'FunctionExpression'].includes(
       parent.type,
     ) &&
