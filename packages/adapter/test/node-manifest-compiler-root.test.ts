@@ -19,7 +19,6 @@ import {
   assertCurrentNodeManifestCompilerRoot,
   certifyNodeManifestCompilerRoot,
   nodeManifestCompilerRoot,
-  type NodeManifestCompilerRootInput,
 } from '../src/node-manifest-compiler-root.ts';
 
 describe('persisted compiler root path basis', () => {
@@ -66,8 +65,8 @@ describe('persisted compiler root path basis', () => {
   async function stored(value: unknown = manifest()): Promise<void> {
     await writeFile(file, JSON.stringify(value));
   }
-  async function certified(actual: NodeManifestCompilerRootInput = input) {
-    const proof = await certifyNodeManifestCompilerRoot(actual);
+  async function certified() {
+    const proof = await certifyNodeManifestCompilerRoot(input);
     assert.isDefined(proof);
     return proof;
   }

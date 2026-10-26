@@ -36,7 +36,7 @@ function row(
   imports: readonly NodeManifestHandlerImportData[],
 ): NodeManifestHandlerFingerprintRowData {
   const whole = HANDLER_REFERENCE_FACTORIES[factoryName];
-  if (whole === undefined || !whole.factory.ids.includes(moduleId))
+  if (whole?.factory.ids.includes(moduleId) !== true)
     throw new Error('Invalid fixed handler reference row');
   return {
     mode: 'fingerprint',

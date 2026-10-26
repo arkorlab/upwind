@@ -59,8 +59,7 @@ function portTarget(
       refuse('resolution');
   const first = entries[0];
   if (
-    first === undefined ||
-    first.target.kind !== 'module' ||
+    first?.target.kind !== 'module' ||
     first.target.runtime !== row.runtime ||
     first.target.moduleId !== port.id
   )
@@ -179,8 +178,7 @@ class Comparison {
     for (const [ordinal, ref] of left.entries()) {
       const act = right[ordinal];
       if (
-        act === undefined ||
-        ref.specifier !== act.specifier ||
+        ref.specifier !== act?.specifier ||
         ref.targetId !== undefined ||
         act.targetId !== undefined
       )

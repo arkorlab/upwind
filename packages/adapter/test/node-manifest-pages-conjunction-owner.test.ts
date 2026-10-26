@@ -2,7 +2,7 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { afterEach, assert, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { nodeManifestPagesConjunctionIncoming } from '../src/node-manifest-pages-conjunction-incoming.ts';
 import { NodeManifestPagesConjunctionWalk } from '../src/node-manifest-pages-conjunction-walk.ts';
@@ -53,6 +53,7 @@ describe('private Pages conjunction mint owner', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(directory, { recursive: true, force: true });
   });
 
@@ -79,7 +80,9 @@ describe('private Pages conjunction mint owner', () => {
     const forged = { consumerOwner: Object.freeze({ identity: Symbol('forged private owner') }) };
 
     expect(() => {
-      Reflect.apply(NodeManifestPagesConjunctionWalk.prototype.stage, forged, [subset]);
+      Reflect.apply(vi.spyOn(NodeManifestPagesConjunctionWalk.prototype, 'stage'), forged, [
+        subset,
+      ]);
     }).toThrow('uncertified private consumer owner');
   });
 

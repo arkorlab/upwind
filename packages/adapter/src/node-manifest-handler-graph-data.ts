@@ -202,7 +202,7 @@ function identity(row: ReferenceRowData): void {
   if (
     !text(row.physicalId) ||
     !/^[a-f\d]{64}$/u.test(whole.originalSha256) ||
-    whole.version !== 1 ||
+    ![1].includes(whole.version) ||
     !Number.isSafeInteger(factory.start) ||
     !Number.isSafeInteger(factory.end) ||
     factory.start < 0 ||

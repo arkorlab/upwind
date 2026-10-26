@@ -51,7 +51,7 @@ export function nodeManifestHandlerActualData(
 
   function registration(id: string): NodeManifestTurbopackGraphFactory | undefined {
     const members = nodeManifestPassMembers(input.pass, id);
-    if (members === undefined || members.length !== 1) return undefined;
+    if (members?.length !== 1) return undefined;
     const row = rows.get(members[0] ?? '');
     return row?.runtimeId === runtime ? row : undefined;
   }
@@ -125,15 +125,14 @@ export function nodeManifestHandlerActualData(
     row: NodeManifestTurbopackGraphFactory,
   ): NodeManifestHandlerRowData | undefined {
     const original = sources.get(row.physicalId);
-    if (original === undefined || original.source !== row.projection.original) return undefined;
+    if (original?.source !== row.projection.original) return undefined;
     if (createHash('sha256').update(original.source.code).digest('hex') !== original.source.sha256)
       return undefined;
     physical.set(original.id, original);
     for (const id of row.projection.factory.ids) {
       const sibling = selected(id);
       if (
-        sibling === undefined ||
-        sibling.physicalId !== row.physicalId ||
+        sibling?.physicalId !== row.physicalId ||
         sibling.projection.factory.start !== row.projection.factory.start ||
         sibling.projection.factory.end !== row.projection.factory.end
       )

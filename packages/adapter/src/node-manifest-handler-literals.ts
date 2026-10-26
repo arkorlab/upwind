@@ -28,7 +28,7 @@ export function nodeManifestHandlerLiteralValues(input: {
   const actual: { readonly key: string; readonly value: string }[] = [];
   for (const slot of input.profile.literalSlots) {
     if (
-      slot.origin.kind !== 'compiler-relative-next-source-directory-with-trailing-slash' ||
+      !['compiler-relative-next-source-directory-with-trailing-slash'].includes(slot.origin.kind) ||
       input.profile.sources.every((pin) => pin.relative !== slot.origin.relative)
     )
       return;

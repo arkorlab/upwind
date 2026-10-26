@@ -1,3 +1,4 @@
+import { copyHandlerSourcePins } from './node-manifest-handler-source-pins.ts';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -25,6 +26,7 @@ async function proofFixture(directory: string) {
   );
   const publishedRoot = path.resolve(path.dirname(published), '../..');
   const root = path.join(directory, 'node_modules/next');
+  await copyHandlerSourcePins(root, publishedRoot);
   const sources = new Map<string, { readonly file: string; readonly sha256: string }>();
   const imports = new Map<string, { readonly specifier: string; readonly target: string }[]>();
   const put = async (file: string, code: string | Uint8Array): Promise<string> => {
@@ -192,6 +194,7 @@ async function templateFixture(
   );
   const publishedRoot = path.resolve(path.dirname(published), '../..');
   const root = path.join(directory, 'node_modules/next');
+  await copyHandlerSourcePins(root, publishedRoot);
   const evaluator = path.join(root, 'dist/server/load-manifest.external.js');
   for (const file of own.sources.keys()) {
     if (file === own.entry || (file !== evaluator && file.startsWith(`${root}/`))) {

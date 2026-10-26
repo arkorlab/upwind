@@ -92,7 +92,9 @@ describe('private Pages handler source integration', () => {
     // This observer calls the genuine implementation; it supplies no proof or success result.
     const observed = vi.spyOn(handlerContext, 'qualifyNodeManifestHandlerContext');
     const proof = await proveNodeManifests(own.input, own.graph);
-    const contexts = await Promise.all(observed.mock.results.map((result) => result.value));
+    const contexts = await Promise.all(
+      observed.mock.results.map((result) => (result.type === 'return' ? result.value : undefined)),
+    );
 
     expect(contexts.some((context) => context !== undefined)).toBe(true);
     expect(proof.routeRewriteApprovals).toHaveLength(1);
@@ -103,9 +105,13 @@ describe('private Pages handler source integration', () => {
     const own = await pagesConjunctionChainFixture(directory);
     const observed = vi.spyOn(handlerContext, 'qualifyNodeManifestHandlerContext');
     await proveNodeManifests(own.input, own.graph);
-    const context = (await Promise.all(observed.mock.results.map((result) => result.value))).find(
-      (value) => value !== undefined,
-    );
+    const context = (
+      await Promise.all(
+        observed.mock.results.map((result) =>
+          result.type === 'return' ? result.value : undefined,
+        ),
+      )
+    ).find((value) => value !== undefined);
     assert(context !== undefined, 'Expected the genuine private context');
 
     await expect(handlerContext.assertCurrentNodeManifestHandlerContext(context)).rejects.toThrow(
@@ -142,19 +148,19 @@ describe('private Pages handler source integration', () => {
   it.each([
     {
       name: 'cleared',
-      mutate(proof: Parameters<typeof handlerMetadata.commitNodeManifestHandlerMetadata>[0]) {
+      mutate: (proof: Parameters<typeof handlerMetadata.commitNodeManifestHandlerMetadata>[0]) => {
         Reflect.set(proof, 'helperMetadataFiles', undefined);
       },
     },
     {
       name: 'substituted equal empty',
-      mutate(proof: Parameters<typeof handlerMetadata.commitNodeManifestHandlerMetadata>[0]) {
+      mutate: (proof: Parameters<typeof handlerMetadata.commitNodeManifestHandlerMetadata>[0]) => {
         Reflect.set(proof, 'helperMetadataFiles', Object.freeze([]));
       },
     },
     {
       name: 'forged nonempty',
-      mutate(proof: Parameters<typeof handlerMetadata.commitNodeManifestHandlerMetadata>[0]) {
+      mutate: (proof: Parameters<typeof handlerMetadata.commitNodeManifestHandlerMetadata>[0]) => {
         Reflect.set(
           proof,
           'helperMetadataFiles',
@@ -277,14 +283,14 @@ describe('private Pages handler source integration', () => {
   it.each([
     {
       name: 'binding',
-      change(own: Awaited<ReturnType<typeof pending>>) {
+      change: (own: Awaited<ReturnType<typeof pending>>) => {
         own.input.compilerRootBinding = { ...own.compilerRootBinding };
         return Promise.resolve();
       },
     },
     {
       name: 'proof',
-      async change(own: Awaited<ReturnType<typeof pending>>) {
+      change: async (own: Awaited<ReturnType<typeof pending>>) => {
         const proof = await certifyNodeManifestCompilerRoot(own.compilerRootBinding.input);
         assert(proof !== undefined);
         own.compilerRootBinding.proof = proof;
@@ -292,7 +298,7 @@ describe('private Pages handler source integration', () => {
     },
     {
       name: 'input',
-      change(own: Awaited<ReturnType<typeof pending>>) {
+      change: (own: Awaited<ReturnType<typeof pending>>) => {
         own.compilerRootBinding.input = { ...own.compilerRootBinding.input };
         return Promise.resolve();
       },

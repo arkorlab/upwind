@@ -378,7 +378,7 @@ export class NodeManifestPagesConjunctionWalk {
       const observed = incoming.get(id);
       if (observed !== undefined) for (const parent of observed) supplied.add(parent);
     }
-    if (expected.size !== supplied.size || [...expected].some((parent) => !supplied.has(parent)))
+    if (expected.size !== supplied.size || !expected.isSubsetOf(supplied))
       return refuse('incomplete original incoming edges');
     const parents = Object.freeze([...expected]);
     group.incoming = incoming;

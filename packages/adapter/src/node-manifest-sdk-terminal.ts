@@ -211,7 +211,7 @@ async function checkedTerminal(scope: NodeManifestSdkTerminalScope, parent: stri
   if (
     edges === undefined ||
     edges.length === 0 ||
-    !state.graph.importers.get(child.id)?.includes(parent)
+    state.graph.importers.get(child.id)?.includes(parent) !== true
   )
     return refuse('missing resolved SDK terminal edge');
   const code = await checkedCode(source);

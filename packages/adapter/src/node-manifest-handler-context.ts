@@ -98,7 +98,9 @@ function rowPointers(row: NodeManifestTurbopackGraphFactory): readonly unknown[]
 function pointers(input: ContextInput): readonly unknown[] {
   const binding = input.owned.input.compilerRootBinding;
   return [
-    ...Object.values(input),
+    input.owned,
+    input.consumerOwner,
+    input.pass,
     input.owned.input.sources,
     input.owned.input.producer,
     input.owned.input.sdkTerminalScope,
@@ -215,8 +217,8 @@ export async function qualifyNodeManifestHandlerContext(
   const pins = new Map<NodeManifestHandlerProfile, readonly NodeManifestHandlerFile[]>();
   for (const profile of NODE_MANIFEST_HANDLER_PROFILES) {
     if (
-      profile.version !== 1 ||
-      profile.exportName !== 'getHandler' ||
+      ![1].includes(profile.version) ||
+      !['getHandler'].includes(profile.exportName) ||
       profile.declaredExport.length === 0 ||
       profile.sources.every((pin) => {
         return !(
@@ -387,8 +389,7 @@ interface MetadataBinding {
 function metadataState(context: NodeManifestHandlerContext, binding: MetadataBinding): State {
   const state = CONTEXTS.get(context);
   if (
-    state === undefined ||
-    state.input.consumerOwner !== binding.consumerOwner ||
+    state?.input.consumerOwner !== binding.consumerOwner ||
     state.input.owned !== binding.owned ||
     state.metadata === undefined ||
     state.metadata !== binding.metadata
