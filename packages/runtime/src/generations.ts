@@ -19,6 +19,7 @@ import {
 
 import { afterBody } from './after-body.ts';
 import {
+  answerFromPublishing,
   answerFromRender,
   answerWith,
   documentWant,
@@ -35,6 +36,7 @@ import { requestContext } from './cache/context.ts';
 import { type CurrentGeneration, currentGeneration } from './cache/current.ts';
 import { generationClassShell } from './cache/generation-tags.ts';
 import type { AttemptReason } from './cache/host.ts';
+import { answeringAtOnce } from './cache/publishing.ts';
 import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
@@ -292,20 +294,11 @@ async function answerFromJob(
   }
   // The render this isolate is publishing of the entry, or has just published: the page the requests
   // after its publish are answered with, already made.
-  if (
-    (outcome.kind === 'busy' || outcome.kind === 'superseded') &&
-    outcome.publishing !== undefined &&
-    servable(outcome.publishing.status, outcome.publishing.headers)
-  ) {
-    const answered = await answerFromRender(
-      job.input,
-      job.target.handler,
-      outcome.publishing,
-      want,
-    );
-    if (answered !== undefined) {
-      return withOutcome(answered, 'publishing');
-    }
+  const publishing =
+    outcome.kind === 'busy' || outcome.kind === 'superseded' ? outcome.publishing : undefined;
+  const ours = await answerFromPublishing(job.input, job.target.handler, publishing, want);
+  if (ours !== undefined) {
+    return ours;
   }
   // A later generation the host holds, whose record its answer carried and this isolate now holds
   // (`RegenerationOutcome.current`): the usual path answers with it, as with any record read.
@@ -612,7 +605,7 @@ export async function serveFromGeneration(
     }
     return (await answerFromJob(job, outcome, want)) ?? renderRequest(job, source.url);
   }
-  const answer = await answerFromGeneration(job, lookup.current, source, want);
+  const answer = await answerFromStanding(job, lookup.current, source, want);
   // A stale one is regenerated once the answer has gone out in full, as it is behind a resume the
   // edge dispatched (`withBackgroundRegeneration`). Begun at once, the regeneration rendered on
   // this isolate beside the visitor's own render — their resume, where the page has one — and the
@@ -633,6 +626,31 @@ export async function serveFromGeneration(
     behind();
   }
   return answer;
+}
+
+/**
+ * The visitor's answer from the entry's generation, fresh or stale (`answerFromGeneration`) — or,
+ * for a stale one this isolate is regenerating already, from the render that regeneration is
+ * publishing, once it is made and where it may answer at once (`answeringAtOnce`): the page every
+ * request after the publish is answered with, as Next.js answers the requests after a revalidation
+ * from its render as soon as that is set. The uploads and the commit behind the render are round
+ * trips to the host, and until they had settled each request of the isolate was answered with the
+ * generation the render replaces, for as long as those took.
+ */
+async function answerFromStanding(
+  job: Job,
+  current: CurrentGeneration,
+  source: GenerationSource,
+  want: Want,
+): Promise<Response | undefined> {
+  const publishing =
+    current.validity === 'stale'
+      ? answeringAtOnce(job.runtime, 'stale', current.entryId)?.render
+      : undefined;
+  return (
+    (await answerFromPublishing(job.input, job.target.handler, publishing, want)) ??
+    answerFromGeneration(job, current, source, want)
+  );
 }
 
 /**

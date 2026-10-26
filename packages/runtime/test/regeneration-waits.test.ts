@@ -5,10 +5,10 @@ import {
   type RouteEntryDescriptor,
 } from '@stayingupwind/core/cache';
 import { CACHE_OUTCOME_HEADER } from '@stayingupwind/core/paas';
-import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
+import { afterEach, assert, describe, expect, it, type Mock, vi } from 'vitest';
 
 import type { NodeHandler } from '../src/app-module.ts';
-import { withClock } from '../src/cache/clock.ts';
+import { nowMs, withClock } from '../src/cache/clock.ts';
 import { withRequestContext } from '../src/cache/context.ts';
 import { configureCacheHandlers, PlatformFetchCache } from '../src/cache/handlers.ts';
 import type { FetchLike } from '../src/cache/host.ts';
@@ -24,7 +24,9 @@ import { requestKeeping } from './request-context.ts';
  * What a visitor waits for while the entry they asked for is regenerated, against an authority in
  * memory: the render made for them and nothing after it. The uploads and the commit go on behind
  * the answer; the tag delta is pulled beside the lease; a stale generation is regenerated once its
- * answer has gone out in full.
+ * answer has gone out in full, and its visitors are answered from that regeneration's render as
+ * soon as it is made. The generation a render publishes is stamped with the moment it was made, not
+ * the moment its commit is asked for.
  */
 
 function nodeBridge(): { invokeNodeHandler: Mock } {
@@ -217,6 +219,57 @@ function holding(
       gate.resolve(true);
     },
   };
+}
+
+/**
+ * `inner`, every commit held back before the authority hears of it until released: a publish under
+ * way, whose generation the authority does not hold yet.
+ */
+function commitsHeldBack(inner: FetchLike): {
+  fetchImpl: FetchLike;
+  arrived: Promise<unknown>;
+  release: () => void;
+} {
+  const gate = Promise.withResolvers<true>();
+  const arrived = Promise.withResolvers<true>();
+  return {
+    fetchImpl: async (request) => {
+      if (isCall(request, 'POST', '/commit')) {
+        arrived.resolve(true);
+        await gate.promise;
+      }
+      return inner(request);
+    },
+    arrived: arrived.promise,
+    release: () => {
+      gate.resolve(true);
+    },
+  };
+}
+
+/** The feed as a route handler answers it, read from the entry's generation. */
+const FEED_SOURCE: GenerationSource = {
+  route: FEED.route,
+  pathname: FEED.pathname,
+  url: FEED.pathname,
+  representation: 'route-body',
+  onMiss: 'build',
+};
+
+/** The feed's generation made at `T0`, a minute's lifetime, kept by the authority. */
+async function keptFeed(authority: FakeAuthority): Promise<void> {
+  await authority.record(
+    FEED,
+    {
+      cacheTimestamp: T0,
+      policy: policyFromCacheControl({ revalidate: 60, expire: 3600 }),
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      tags: [],
+    },
+    encoder.encode('{"feed":"kept"}'),
+    'build',
+  );
 }
 
 /** A render that is the response, as a Pages Router page's is, made afresh for every call. */
@@ -738,29 +791,11 @@ describe('what a visitor waits for while an entry is regenerated', () => {
    */
   it('regenerates a stale generation once its answer has gone out in full', async () => {
     const authority = fakeAuthority(SCOPE);
-    await authority.record(
-      FEED,
-      {
-        cacheTimestamp: T0,
-        policy: policyFromCacheControl({ revalidate: 60, expire: 3600 }),
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-        tags: [],
-      },
-      encoder.encode('{"feed":"kept"}'),
-      'build',
-    );
+    await keptFeed(authority);
     const runtime = runtimeFor(authority.fetchImpl);
     vi.mocked(invokeNodeHandler).mockResolvedValue(
       Response.json({ feed: 'regenerated' }, { headers: { 'cache-control': ISR } }),
     );
-    const source: GenerationSource = {
-      route: FEED.route,
-      pathname: FEED.pathname,
-      url: FEED.pathname,
-      representation: 'route-body',
-      onMiss: 'build',
-    };
     const now = T0 + 61 * SECOND;
 
     const pending: Promise<unknown>[] = [];
@@ -769,7 +804,7 @@ describe('what a visitor waits for while an entry is regenerated', () => {
       const response = await serveFromGeneration(
         routed(runtime, FEED.pathname, pending),
         store,
-        source,
+        FEED_SOURCE,
         handler,
       );
       const asked = [...authority.calls];
@@ -782,5 +817,102 @@ describe('what a visitor waits for while an entry is regenerated', () => {
     expect(before).toStrictEqual([expect.stringMatching(/\/record$/u)]);
     expect(authority.commits).toHaveLength(1);
     expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * As Next.js answers the requests after a revalidation from its render as soon as that is set.
+   * Answered from the generation it replaces until the commit was in, a page stayed as it was for
+   * the round trips of the uploads and the commit past the moment the next one was made.
+   */
+  it('answers a stale generation’s visitor from the render regenerating it, while its commit is out', async () => {
+    const authority = fakeAuthority(SCOPE);
+    await keptFeed(authority);
+    const commit = commitsHeldBack(authority.fetchImpl);
+    const runtime = runtimeFor(commit.fetchImpl);
+    vi.mocked(invokeNodeHandler).mockResolvedValue(
+      Response.json({ feed: 'regenerated' }, { headers: { 'cache-control': ISR } }),
+    );
+    const store = storeOf(FEED.route, 'app-route');
+    const now = T0 + 61 * SECOND;
+
+    const first = await serve(runtime, store, FEED_SOURCE, now);
+    const stale = await first.response?.text();
+    await commit.arrived;
+    const second = await serve(runtime, store, FEED_SOURCE, now);
+    const answered = await second.response?.text();
+    commit.release();
+    await settle([...first.pending, ...second.pending]);
+
+    expect(stale).toBe('{"feed":"kept"}');
+    expect(answered).toBe('{"feed":"regenerated"}');
+    expect(second.response?.headers.get(CACHE_OUTCOME_HEADER)).toBe('publishing');
+    expect(authority.commits).toHaveLength(1);
+    expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The render answers only where it may at once, as it answers a regeneration of the isolate's.
+   */
+  it('answers a stale generation’s visitor from that generation past a hold of the view the render read against', async () => {
+    const authority = fakeAuthority(SCOPE);
+    await keptFeed(authority);
+    const commit = commitsHeldBack(authority.fetchImpl);
+    const runtime = runtimeFor(commit.fetchImpl);
+    vi.mocked(invokeNodeHandler).mockResolvedValue(
+      Response.json({ feed: 'regenerated' }, { headers: { 'cache-control': ISR } }),
+    );
+    const store = storeOf(FEED.route, 'app-route');
+    const now = T0 + 61 * SECOND;
+
+    const first = await serve(runtime, store, FEED_SOURCE, now);
+    await first.response?.text();
+    await commit.arrived;
+    const second = await serve(runtime, store, FEED_SOURCE, now + runtime.holdMs);
+    const answered = await second.response?.text();
+    commit.release();
+    await settle([...first.pending, ...second.pending]);
+
+    expect(answered).toBe('{"feed":"kept"}');
+    expect(second.response?.headers.has(CACHE_OUTCOME_HEADER)).toBe(false);
+  });
+
+  /**
+   * As Next.js stamps an entry once its render is set (`lastModified`). Stamped once the uploads
+   * had landed, a generation stayed fresh past its lifetime for as long as they took — and short of
+   * its `expire` for a visitor answered from the render meanwhile.
+   */
+  it('stamps the generation with the moment its render was made, not once its uploads have landed', async () => {
+    const authority = fakeAuthority(SCOPE);
+    let uploadsAsked: number | undefined;
+    const slowUploads: FetchLike = async (request) => {
+      // An upload, alone or in a batch.
+      if (new URL(request.url).pathname.includes('/artifacts')) {
+        uploadsAsked ??= nowMs();
+        await new Promise((resolve) => {
+          setTimeout(resolve, 50);
+        });
+      }
+      return authority.fetchImpl(request);
+    };
+    // The wall clock, which moves on while the uploads are out, rather than a request's own.
+    const runtime = createCacheRuntime({ env: ENV, now: nowMs, fetchImpl: slowUploads });
+    assert(runtime !== undefined);
+    vi.mocked(invokeNodeHandler).mockImplementation(rendering);
+
+    const pending: Promise<unknown>[] = [];
+    await serveFromGeneration(
+      routed(runtime, POST.url, pending),
+      storeOf(POST.route, 'pages'),
+      POST,
+      handler,
+    );
+    await settle(pending);
+
+    const generation = authority.commits[0]?.generation;
+
+    expect(uploadsAsked).toBeDefined();
+    expect(generation?.cacheTimestamp).toBeLessThanOrEqual(uploadsAsked ?? 0);
+    // The commit still says when it was asked for.
+    expect(generation?.producedAt).toBeGreaterThan(generation?.cacheTimestamp ?? Infinity);
   });
 });
