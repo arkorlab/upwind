@@ -155,8 +155,9 @@ async function fixture(
   return { sources, tables, boots, cohort, scope, graph };
 }
 function viewOf(own: Awaited<ReturnType<typeof fixture>>, graph = own.graph()) {
-  assert.isDefined(graph.registrationIndex);
-  return nodeManifestRegistrationView(graph.registrationIndex, own.sources);
+  const index = graph.registrationIndex;
+  assert.isDefined(index);
+  return nodeManifestRegistrationView(index, own.sources);
 }
 
 describe('complete runtime-local registration alternatives', () => {
@@ -182,11 +183,12 @@ describe('complete runtime-local registration alternatives', () => {
   it('does not permit an installed group without an actual member in the current initial table set', async () => {
     const own = await fixture();
     const graph = own.graph();
-    assert.isDefined(graph.registrationIndex);
+    const index = graph.registrationIndex;
+    assert.isDefined(index);
 
-    expect(() =>
-      nodeManifestInitialRegistration(graph.registrationIndex, own.sources, 7, new Set()),
-    ).toThrow('not initially registered');
+    expect(() => nodeManifestInitialRegistration(index, own.sources, 7, new Set())).toThrow(
+      'not initially registered',
+    );
   });
 
   it('preserves the complete typed merged vector rather than sharing number/string keys', async () => {
@@ -322,12 +324,13 @@ describe('complete runtime-local registration alternatives', () => {
   it('rejects copied indexes and same-content replacement source arrays', async () => {
     const own = await fixture();
     const graph = own.graph();
-    assert.isDefined(graph.registrationIndex);
+    const index = graph.registrationIndex;
+    assert.isDefined(index);
 
-    expect(() => nodeManifestRegistrationView({ ...graph.registrationIndex }, own.sources)).toThrow(
+    expect(() => nodeManifestRegistrationView({ ...index }, own.sources)).toThrow(
       'stale registration index',
     );
-    expect(() => nodeManifestRegistrationView(graph.registrationIndex, [...own.sources])).toThrow(
+    expect(() => nodeManifestRegistrationView(index, [...own.sources])).toThrow(
       'stale registration index',
     );
   });
@@ -341,12 +344,13 @@ describe('complete runtime-local registration alternatives', () => {
   it('invalidates an index when original source or actual import edges change', async () => {
     const own = await fixture();
     const graph = own.graph();
-    assert.isDefined(graph.registrationIndex);
+    const index = graph.registrationIndex;
+    assert.isDefined(index);
     const table = own.tables[0];
     assert.isDefined(table);
     Object.assign(table, { imports: [{ specifier: 'changed', target: 'changed' }] });
 
-    expect(() => nodeManifestRegistrationView(graph.registrationIndex, own.sources)).toThrow(
+    expect(() => nodeManifestRegistrationView(index, own.sources)).toThrow(
       'stale registration index',
     );
   });
