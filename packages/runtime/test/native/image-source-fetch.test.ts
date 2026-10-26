@@ -74,20 +74,26 @@ describe('native image source destinations', () => {
     expect(callback).toHaveBeenCalledExactlyOnceWith(null, addresses);
   });
 
-  it.each(['127.0.0.1', '10.0.0.1', '169.254.169.254', '::1', '::ffff:127.0.0.1'])(
-    'rejects DNS answers containing %s before connecting',
-    (address) => {
-      const callback = vi.fn();
-      guardedImageLookup((_hostname, _options, resolved) => {
-        resolved(null, [
-          { address: '8.8.8.8', family: 4 },
-          { address, family: address.includes(':') ? 6 : 4 },
-        ]);
-      })('images.example', { all: true }, callback);
+  it.each([
+    '127.0.0.1',
+    '10.0.0.1',
+    '169.254.169.254',
+    '::1',
+    '::ffff:127.0.0.1',
+    'fe80::1%en0',
+    '::ffff:127.0.0.1%2',
+    'not-an-address',
+  ])('rejects DNS answers containing %s before connecting', (address) => {
+    const callback = vi.fn();
+    guardedImageLookup((_hostname, _options, resolved) => {
+      resolved(null, [
+        { address: '8.8.8.8', family: 4 },
+        { address, family: address.includes(':') ? 6 : 4 },
+      ]);
+    })('images.example', { all: true }, callback);
 
-      expect(callback).toHaveBeenCalledExactlyOnceWith(expect.any(ImageDestinationError), []);
-    },
-  );
+    expect(callback).toHaveBeenCalledExactlyOnceWith(expect.any(ImageDestinationError), []);
+  });
 
   it('rejects a rebound address on a later connection', () => {
     let calls = 0;

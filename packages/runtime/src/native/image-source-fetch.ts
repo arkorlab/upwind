@@ -37,6 +37,15 @@ function failure(error: unknown): Error {
     : new Error('image source request failed', { cause: error });
 }
 
+function forbiddenAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 0) return true;
+  // A zone index selects an interface, not a different IPv6 address. It must not hide a
+  // link-local or mapped local range when getaddrinfo includes one in a socket's DNS answer.
+  const hostname = family === IPV6_FAMILY ? `[${address.split('%', 1)[0] ?? ''}]` : address;
+  return isLocalAddress(hostname);
+}
+
 /** Validate the socket's own resolution, so there is no second lookup a rebinding can change. */
 export function guardedImageLookup(resolve: ResolveAddresses = lookup): LookupFunction {
   return (hostname, options, callback) => {
@@ -45,12 +54,7 @@ export function guardedImageLookup(resolve: ResolveAddresses = lookup): LookupFu
         callback(error, []);
         return;
       }
-      if (
-        addresses.length === 0 ||
-        addresses.some(({ address }) =>
-          isLocalAddress(isIP(address) === IPV6_FAMILY ? `[${address}]` : address),
-        )
-      ) {
+      if (addresses.length === 0 || addresses.some(({ address }) => forbiddenAddress(address))) {
         callback(new ImageDestinationError(), []);
         return;
       }
