@@ -15,6 +15,7 @@ import type { NodePhysicalLayout as PhysicalLayout } from './node-physical-layou
 import {
   originalNodeSpecifierInventory,
   type NodeSpecifierInventory,
+  type NodeSourceSpecifier,
 } from './node-source-specifiers.ts';
 
 const PACKAGE_MANIFEST = 'package.json';
@@ -92,7 +93,9 @@ interface PackageAliasContext {
   readonly layout: PhysicalLayout;
   readonly sources: NodeModuleAliasSources;
   readonly links: Map<string, string>;
+  readonly kind: NodeSourceSpecifier['kind'];
 }
+type ModuleAliasContext = Omit<PackageAliasContext, 'kind'>;
 
 function ownsDirectory(sources: NodeModuleAliasSources, target: string): boolean {
   for (const file of sources.originals.keys()) if (beneath(target, file) !== undefined) return true;
@@ -166,6 +169,15 @@ async function bareFileAlias(
   return false;
 }
 
+async function packageDirectory(alias: string): Promise<boolean> {
+  try {
+    return (await stat(alias)).isDirectory();
+  } catch (error) {
+    if (!absentRelativePath(error)) throw error;
+    return false;
+  }
+}
+
 async function packageAliases(
   file: string,
   specifier: string,
@@ -191,7 +203,9 @@ async function packageAliases(
   const searches = require.resolve.paths(pkg) ?? [];
   for (const search of searches) {
     const alias = path.join(search, pkg);
-    if (await bareFileAlias(alias, specifier, pkg, context)) return true;
+    if (context.kind === 'require' && (await bareFileAlias(alias, specifier, pkg, context)))
+      return true;
+    if (context.kind === 'import' && !(await packageDirectory(alias))) continue;
     if (!(await recordPackageAlias(alias, context))) continue;
     await packageSubpathAliases(await realpath(alias), specifier, pkg, context);
     return true;
@@ -408,9 +422,11 @@ async function relativeAliases(
 
 async function moduleAlias(
   file: string,
-  specifier: string,
-  context: PackageAliasContext,
+  load: NodeSourceSpecifier,
+  input: ModuleAliasContext,
 ): Promise<void> {
+  const { specifier, kind } = load;
+  const context = { ...input, kind };
   assertSpecifierTopology(file, specifier, context.layout);
   await relativeAliases(file, specifier, context);
   await packageImports(file, specifier, context);
@@ -419,13 +435,13 @@ async function moduleAlias(
 
 async function alternativeAlias(
   file: string,
-  specifier: string,
-  context: PackageAliasContext,
+  load: NodeSourceSpecifier,
+  context: ModuleAliasContext,
   hierarchy: NodeAliasCompatibility,
 ): Promise<void> {
   const staged = new Map<string, string>();
   try {
-    await moduleAlias(file, specifier, { ...context, links: staged });
+    await moduleAlias(file, load, { ...context, links: staged });
   } catch (error) {
     if (!unprovedHint(error)) throw error;
     return;
@@ -442,6 +458,10 @@ async function alternativeAlias(
   }
 }
 
+function uniqueLoads(loads: readonly NodeSourceSpecifier[]): Map<string, NodeSourceSpecifier> {
+  return new Map(loads.map((load) => [`${load.kind}:${load.specifier}`, load]));
+}
+
 export async function nodeModuleAliases(
   sources: NodeModuleAliasSources,
   layout: PhysicalLayout,
@@ -456,16 +476,15 @@ export async function nodeModuleAliases(
   }
   // Complete every strict lookup first; no later layout hint can overwrite a required link.
   for (const { file, inventory } of inventories) {
-    const required = new Set(inventory.required);
-    for (const specifier of required) await moduleAlias(file, specifier, context);
+    for (const load of uniqueLoads(inventory.required).values())
+      await moduleAlias(file, load, context);
   }
   // Trace and native lookup evidence is required too; its failures are never optional hints.
   await collectRequiredAliases?.();
   const hierarchy = new NodeAliasCompatibility(links);
   for (const { file, inventory } of inventories) {
-    const required = new Set(inventory.required);
-    const alternatives = new Set(inventory.alternatives);
-    for (const specifier of alternatives)
-      if (!required.has(specifier)) await alternativeAlias(file, specifier, context, hierarchy);
+    const required = uniqueLoads(inventory.required);
+    for (const [key, load] of uniqueLoads(inventory.alternatives))
+      if (!required.has(key)) await alternativeAlias(file, load, context, hierarchy);
   }
 }

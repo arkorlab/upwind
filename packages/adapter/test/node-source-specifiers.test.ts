@@ -10,6 +10,60 @@ function specifiers(code: string, extension = 'cjs'): string[] {
 }
 
 describe('original Node physical dependency discovery', () => {
+  it('retains the original load kind for every import form and CommonJS require', () => {
+    const raw = new TextEncoder().encode(
+      [
+        `import 'side-effect';`,
+        `import {value} from 'named';`,
+        `export * from 'export-all';`,
+        `export {value as other} from 'export-named';`,
+        `export const dynamic=()=>import('dynamic');`,
+        `export const commonjs=()=>require('commonjs');`,
+      ].join('\n'),
+    );
+
+    expect(originalNodeSpecifierInventory('/project/entry.mjs', raw)).toStrictEqual({
+      required: [
+        { specifier: 'side-effect', kind: 'import' },
+        { specifier: 'named', kind: 'import' },
+        { specifier: 'export-all', kind: 'import' },
+        { specifier: 'export-named', kind: 'import' },
+        { specifier: 'dynamic', kind: 'import' },
+        { specifier: 'commonjs', kind: 'require' },
+      ],
+      alternatives: [],
+    });
+  });
+
+  it('keeps both load kinds for the same required and alternative specifier', () => {
+    const raw = new TextEncoder().encode(
+      `require('dep');import('dep');if(process.env.NODE_ENV!=='production'){require('dep');import('dep');}`,
+    );
+
+    expect(originalNodeSpecifierInventory('/project/entry.cjs', raw)).toStrictEqual({
+      required: [
+        { specifier: 'dep', kind: 'require' },
+        { specifier: 'dep', kind: 'import' },
+      ],
+      alternatives: [
+        { specifier: 'dep', kind: 'require' },
+        { specifier: 'dep', kind: 'import' },
+      ],
+    });
+    expect(originalNodeSpecifiers('/project/entry.cjs', raw)).toStrictEqual(['dep', 'dep']);
+  });
+
+  it('does not turn createRequire or shadowed loaders into a new recognized CommonJS kind', () => {
+    const raw = new TextEncoder().encode(
+      `import {createRequire} from 'node:module';const require=createRequire(import.meta.url);require('dep');`,
+    );
+
+    expect(originalNodeSpecifierInventory('/project/entry.mjs', raw)).toStrictEqual({
+      required: [{ specifier: 'node:module', kind: 'import' }],
+      alternatives: [],
+    });
+  });
+
   it('keeps env-pruned layout hints separate from the unchanged required production inventory', () => {
     const raw = new TextEncoder().encode(
       [
@@ -22,8 +76,14 @@ describe('original Node physical dependency discovery', () => {
     const before = new Uint8Array(raw);
 
     expect(originalNodeSpecifierInventory('/project/entry.cjs', raw)).toStrictEqual({
-      required: ['./mutator.cjs', './required.cjs'],
-      alternatives: ['./alternate.cjs', 'alternate-package'],
+      required: [
+        { specifier: './mutator.cjs', kind: 'require' },
+        { specifier: './required.cjs', kind: 'require' },
+      ],
+      alternatives: [
+        { specifier: './alternate.cjs', kind: 'require' },
+        { specifier: 'alternate-package', kind: 'import' },
+      ],
     });
     expect(originalNodeSpecifiers('/project/entry.cjs', raw)).toStrictEqual([
       './mutator.cjs',
@@ -39,7 +99,10 @@ describe('original Node physical dependency discovery', () => {
 
     expect(originalNodeSpecifierInventory('/project/entry.cjs', raw)).toStrictEqual({
       required: [],
-      alternatives: ['first', 'second'],
+      alternatives: [
+        { specifier: 'first', kind: 'require' },
+        { specifier: 'second', kind: 'require' },
+      ],
     });
   });
 
@@ -51,7 +114,10 @@ describe('original Node physical dependency discovery', () => {
     const raw = new TextEncoder().encode(`if(${condition})require('one');else require('two');`);
 
     expect(originalNodeSpecifierInventory('/project/entry.cjs', raw)).toStrictEqual({
-      required: ['one', 'two'],
+      required: [
+        { specifier: 'one', kind: 'require' },
+        { specifier: 'two', kind: 'require' },
+      ],
       alternatives: [],
     });
   });

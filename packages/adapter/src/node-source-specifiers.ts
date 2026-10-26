@@ -11,22 +11,35 @@ function staticString(node: Node | undefined): string | undefined {
   return undefined;
 }
 
-function specifierIn(node: Node, bindings: NativeBindings): string | undefined {
+export interface NodeSourceSpecifier {
+  readonly specifier: string;
+  readonly kind: 'require' | 'import';
+}
+
+function sourceSpecifier(
+  node: Node | undefined,
+  kind: NodeSourceSpecifier['kind'],
+): NodeSourceSpecifier | undefined {
+  const specifier = staticString(node);
+  return specifier === undefined ? undefined : { specifier, kind };
+}
+
+function specifierIn(node: Node, bindings: NativeBindings): NodeSourceSpecifier | undefined {
   if (
     node.type === 'CallExpression' &&
     node.callee.type === 'Identifier' &&
     node.callee.name === 'require' &&
     bindings.lookup(node.callee, 'require') === undefined
   )
-    return staticString(node.arguments[0]);
+    return sourceSpecifier(node.arguments[0], 'require');
   if (
     (node.type === 'ImportDeclaration' ||
       node.type === 'ExportAllDeclaration' ||
       node.type === 'ExportNamedDeclaration') &&
     node.source !== null
   )
-    return staticString(node.source);
-  return node.type === 'ImportExpression' ? staticString(node.source) : undefined;
+    return sourceSpecifier(node.source, 'import');
+  return node.type === 'ImportExpression' ? sourceSpecifier(node.source, 'import') : undefined;
 }
 
 function nodeValue(value: unknown): value is Node {
@@ -53,9 +66,9 @@ interface Visit {
   readonly alternative: boolean;
 }
 export interface NodeSpecifierInventory {
-  readonly required: readonly string[];
+  readonly required: readonly NodeSourceSpecifier[];
   /** Non-authoritative layout hints only; these never extend the traced source closure. */
-  readonly alternatives: readonly string[];
+  readonly alternatives: readonly NodeSourceSpecifier[];
 }
 
 function visits(nodes: readonly Node[], alternative: boolean): Visit[] {
@@ -108,8 +121,8 @@ export function originalNodeSpecifierInventory(
 ): NodeSpecifierInventory {
   if (!/\.[cm]?[jt]s$/u.test(file)) return { required: [], alternatives: [] };
   try {
-    const required: string[] = [];
-    const alternatives: string[] = [];
+    const required: NodeSourceSpecifier[] = [];
+    const alternatives: NodeSourceSpecifier[] = [];
     const analysis = nativeSourceAnalysis(new TextDecoder().decode(bytes), file);
     const bindings = nativeBindings(analysis.program);
     const environment = nodeSourceEnvironment(analysis.program);
@@ -129,5 +142,5 @@ export function originalNodeSpecifierInventory(
 
 /** Default production dependency discovery remains strict and excludes alternative-only hints. */
 export function originalNodeSpecifiers(file: string, bytes: Uint8Array | undefined): string[] {
-  return [...originalNodeSpecifierInventory(file, bytes).required];
+  return originalNodeSpecifierInventory(file, bytes).required.map((load) => load.specifier);
 }
