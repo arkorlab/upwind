@@ -339,6 +339,7 @@ async function routeAndServe(
       // request's own, which the request hands over as it is copied.
       ...(bodies.handler !== request.body && { body: bodies.handler, duplex: 'half' }),
     }),
+    ...(trace.invoked && { middlewareRan: true }),
   };
   if (routed.externalRewrite !== undefined) {
     return withRoutingHeaders(

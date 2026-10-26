@@ -74,6 +74,12 @@ export interface RoutedInput extends HandleInput {
    * a rewrite leads to — whose own regeneration no one has begun.
    */
   readonly regenerated?: RouteEntryDescriptor | undefined;
+  /**
+   * Whether a middleware ran for the request. The edge answers a build-owned file or record no
+   * longer as everyone's when one did — it may have read the request's cookies — and a host that
+   * answers by the edge's rules (the native target) needs to know it as the edge does.
+   */
+  readonly middlewareRan?: true | undefined;
 }
 
 export { initUrlOf, resumeUrl, stripPlatformHeaders } from './incoming.ts';
