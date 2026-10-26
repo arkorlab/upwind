@@ -1,7 +1,16 @@
+import type { Node as AstNode } from '@oxc-project/types';
 import { parseAst } from 'rolldown/parseAst';
 
 import { isNode, listOf, type Node } from './lexical-scope.ts';
-import { identifier, propertyName, stringOf, visitTree } from './node-manifest-consumer-ast.ts';
+import { nativeBindings } from './native-ast.ts';
+import {
+  declaration,
+  identifier,
+  propertyName,
+  reference,
+  stringOf,
+  visitTree,
+} from './node-manifest-consumer-ast.ts';
 import {
   projectNodeManifestTurbopackFactory,
   turbopackModuleId,
@@ -35,6 +44,73 @@ function strictDirective(value: unknown): boolean {
     (expression['raw'] === '"use strict"' || expression['raw'] === "'use strict'")
   );
 }
+function exportValue(statement: unknown, module: string): Node | undefined {
+  if (!isNode(statement) || statement.type !== 'ExpressionStatement') return undefined;
+  const value = statement['expression'];
+  return isNode(value) &&
+    value.type === 'AssignmentExpression' &&
+    value['operator'] === '=' &&
+    member(value['left'], module, 'exports') &&
+    isNode(value['right'])
+    ? value['right']
+    : undefined;
+}
+function soleAliasRead(factory: Node, variable: Node, exported: Node, name: string): boolean {
+  const visits = visitTree(factory);
+  const use = visits.find((visit) => visit.node === exported);
+  if (
+    use === undefined ||
+    declaration(name, use.scopes)?.node !== variable ||
+    !nativeBindings(factory as unknown as AstNode).unmodified(
+      variable as unknown as AstNode,
+      name,
+      true,
+    )
+  )
+    return false;
+  for (const visit of visits)
+    if (
+      identifier(visit.node) &&
+      visit.node.name === name &&
+      reference(visit) &&
+      declaration(name, visit.scopes)?.node === variable &&
+      visit.node !== exported
+    )
+      return false;
+  return true;
+}
+function aliasInitializer(
+  factory: Node,
+  statement: unknown,
+  exported: Node,
+  parameters: readonly string[],
+): Node | undefined {
+  // Evaluating module.exports after the call is not equivalent for a sloppy ordinary
+  // function whose module parameter can be replaced through mapped arguments.
+  if (
+    factory.type !== 'ArrowFunctionExpression' ||
+    factory['async'] === true ||
+    !isNode(statement) ||
+    statement.type !== 'VariableDeclaration' ||
+    statement['kind'] !== 'var' ||
+    listOf(statement, 'declarations').length !== 1 ||
+    !identifier(exported)
+  )
+    return undefined;
+  const variable = listOf(statement, 'declarations')[0];
+  const local = isNode(variable) ? variable['id'] : undefined;
+  const init = isNode(variable) ? variable['init'] : undefined;
+  if (
+    !isNode(variable) ||
+    variable.type !== 'VariableDeclarator' ||
+    !identifier(local) ||
+    parameters.includes(local.name) ||
+    exported.name !== local.name ||
+    !isNode(init)
+  )
+    return undefined;
+  return soleAliasRead(factory, variable, exported, local.name) ? init : undefined;
+}
 function assignment(
   node: Node,
 ): { readonly kind: 'external' | 'require'; readonly call: Node } | undefined {
@@ -50,17 +126,18 @@ function assignment(
   if (context === undefined || module === undefined || !isNode(node['body'])) return undefined;
   const statements = listOf(node['body'], 'body');
   const body = strictDirective(statements[0]) ? statements.slice(1) : statements;
-  const only = body[0];
-  if (body.length !== 1 || !isNode(only) || only.type !== 'ExpressionStatement') return undefined;
-  const value = only['expression'];
-  if (
-    !isNode(value) ||
-    value.type !== 'AssignmentExpression' ||
-    value['operator'] !== '=' ||
-    !member(value['left'], module.name, 'exports')
-  )
-    return undefined;
-  const call = value['right'];
+  if (body.length !== 1 && body.length !== 2) return undefined;
+  const value = exportValue(body.at(-1), module.name);
+  if (value === undefined) return undefined;
+  const call =
+    body.length === 1
+      ? value
+      : aliasInitializer(
+          node,
+          body[0],
+          value,
+          params.map((param) => param.name),
+        );
   if (!isNode(call) || call.type !== 'CallExpression' || call['optional'] === true)
     return undefined;
   if (member(call['callee'], context.name, 'x')) return { kind: 'external', call };
