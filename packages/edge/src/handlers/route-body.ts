@@ -1,4 +1,9 @@
-import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
+import {
+  bodyHeaders,
+  bodyTypeAllowed,
+  narrowCacheControl,
+  noTransform,
+} from '@stayingupwind/core/bundle';
 import {
   type ConfiguredHeaders,
   isReserved,
@@ -7,10 +12,10 @@ import {
 import {
   classifyRequest,
   EDGE_DEBUG_HEADER,
-  filterStoredResponseHeaders,
   hasRouteBodyControlHeader,
   manifestIdPrefix,
-  SHARED_CACHE_CONTROL_HEADERS,
+  removeSharedCacheOverrides,
+  policyRefusesSharing,
 } from '@stayingupwind/core/request';
 import { runtimeCacheOf, type RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
@@ -26,12 +31,7 @@ import { serveHostedFile } from './hosted-static-file.ts';
 import { handedHeaders } from './middleware.ts';
 import { observeMetric, observeServed } from './observer.ts';
 import { PATTERN_BUDGET, type PassthroughWait } from './passthrough.ts';
-import {
-  carriesApplicationCredentials,
-  mergeScopedMiddlewareHeaders,
-  removeSharedCacheOverrides,
-} from './responses.ts';
-import { policyRefusesSharing } from './route-body-policy.ts';
+import { carriesApplicationCredentials, mergeScopedMiddlewareHeaders } from './responses.ts';
 
 /** Only the host's manifest and authority record permit sharing; a Function's answer never does. */
 export interface RouteBodyInput extends HostedGateInput {
@@ -45,16 +45,10 @@ export interface RouteBodyInput extends HostedGateInput {
 }
 
 const HTTP_OK = 200;
-const REVALIDATE = 'public, max-age=0, must-revalidate';
-const GATED_CACHE_CONTROL = 'private, max-age=0, must-revalidate';
-const CACHE_CONTROL = 'cache-control';
-const NO_TRANSFORM = 'no-transform';
-const CACHE_CONTROL_FIELDS = [CACHE_CONTROL, ...SHARED_CACHE_CONTROL_HEADERS];
 const CONTENT_TYPE = 'content-type';
 const CONTENT_ENCODING = 'content-encoding';
 const CONTENT_RANGE = 'content-range';
 const SET_COOKIE = 'set-cookie';
-const ROUTE_BODY = 'route-body';
 const BODY_UNSHAREABLE = 'route-body-unshareable';
 const ENTITY_HEADERS: ReadonlySet<string> = new Set([
   'accept-ranges',
@@ -72,120 +66,12 @@ const CONDITIONAL_HEADERS = [
   'if-modified-since',
   'if-unmodified-since',
 ] as const;
-function bodyTypeAllowed(contentType: string): boolean {
-  const type = contentType.split(';', 1)[0]?.trim().toLowerCase();
-  return (
-    type !== undefined &&
-    type !== '' &&
-    !type.includes(',') &&
-    type !== 'text/html' &&
-    type !== 'application/xhtml+xml'
-  );
-}
-
 function configuredRefusesSharing(configured: ConfiguredHeaders): boolean {
   const fields = new Map<string, string>();
   for (const [name, value] of Object.entries(configured.headers)) {
     fields.set(name.toLowerCase(), value);
   }
   return policyRefusesSharing({ get: (name) => fields.get(name) ?? null });
-}
-
-function noTransformDirective(value: string | null): boolean {
-  return (
-    value?.split(',').some((directive) => directive.trim().toLowerCase() === NO_TRANSFORM) === true
-  );
-}
-
-function noTransform(headers: Pick<Headers, 'get'>): boolean {
-  return CACHE_CONTROL_FIELDS.some((name) => noTransformDirective(headers.get(name)));
-}
-
-/** A middleware's admission is visitor-specific; safe owner policy otherwise keeps its value. */
-function narrowCacheControl(
-  headers: Headers,
-  middleware: TimedContinue | undefined,
-  untransformed: boolean,
-): void {
-  const existing = headers.get(CACHE_CONTROL);
-  // A stored prohibition alone does not supply the missing browser revalidation policy.
-  const policyMissing =
-    existing === null ||
-    existing.split(',').every((part) => {
-      const directive = part.trim().toLowerCase();
-      return directive === '' || directive === NO_TRANSFORM;
-    });
-  const ungated = policyMissing ? REVALIDATE : existing;
-  const policy = middleware === undefined ? ungated : GATED_CACHE_CONTROL;
-  headers.set(
-    CACHE_CONTROL,
-    `${policy}${untransformed && !noTransformDirective(policy) ? ', no-transform' : ''}`,
-  );
-}
-
-function bodyArtifact(pack: DecodedGenerationPack) {
-  const { header, html: body } = pack;
-  const artifact = header.artifacts.find(
-    (item) => item.role === ROUTE_BODY && item.representationKey === ROUTE_BODY,
-  );
-  if (
-    artifact?.encoding !== 'identity' ||
-    artifact.sha256 !== header.htmlSha256 ||
-    artifact.byteLength !== body.byteLength ||
-    !bodyTypeAllowed(artifact.contentType)
-  ) {
-    return;
-  }
-  return artifact;
-}
-
-/** A verified pack of another representation cannot be reinterpreted as this route's body. */
-function bodyHeaders(pack: DecodedGenerationPack, entry: RouteBodyEntry): Headers | undefined {
-  const { header, html: body } = pack;
-  if (
-    header.kind !== 'app-route' ||
-    header.route !== entry.route ||
-    header.pathname !== entry.pathname ||
-    header.entryId !== entry.entryId ||
-    header.status !== HTTP_OK ||
-    pack.postponed !== undefined
-  ) {
-    return undefined;
-  }
-  const artifact = bodyArtifact(pack);
-  if (artifact === undefined) return undefined;
-  let headers: Headers;
-  try {
-    headers = new Headers(header.headers);
-  } catch {
-    return undefined;
-  }
-  const contentType = headers.get(CONTENT_TYPE) ?? artifact.contentType;
-  if (!bodyTypeAllowed(contentType) || headers.has(SET_COOKIE) || policyRefusesSharing(headers)) {
-    return undefined;
-  }
-  // Packs admit a header map, not transport semantics. Check vetoes before filtering their evidence.
-  const cacheControl = headers.get(CACHE_CONTROL);
-  const untransformed = noTransform(headers);
-  headers = new Headers(filterStoredResponseHeaders(headers));
-  if (cacheControl !== null) headers.set(CACHE_CONTROL, cacheControl);
-  if (untransformed && !noTransformDirective(cacheControl)) {
-    headers.set(
-      CACHE_CONTROL,
-      cacheControl === null || cacheControl === ''
-        ? NO_TRANSFORM
-        : `${cacheControl}, ${NO_TRANSFORM}`,
-    );
-  }
-  try {
-    headers.set(CONTENT_TYPE, contentType);
-  } catch {
-    return undefined;
-  }
-  headers.delete(CONTENT_ENCODING);
-  headers.delete('accept-ranges');
-  headers.set('content-length', String(body.byteLength));
-  return headers;
 }
 
 function applicationCredentials(input: RouteBodyInput, headers: Headers): boolean {
@@ -421,7 +307,7 @@ function serveCurrentBody(
     noTransform(answered) ||
     (middleware !== undefined && noTransform(middleware.responseHeaders));
   removeSharedCacheOverrides(answered);
-  narrowCacheControl(answered, middleware, untransformed);
+  narrowCacheControl(answered, middleware !== undefined, untransformed);
   answered.set(
     EDGE_DEBUG_HEADER,
     `route-body;src=${decision.source};cache=${decision.validity};m=${manifestIdPrefix(edge.manifestId)}`,

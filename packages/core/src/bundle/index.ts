@@ -171,3 +171,10 @@ export {
   resumablePrerenders,
   shellHeaders,
 } from './build-serving.ts';
+export {
+  bodyHeaders,
+  bodyTypeAllowed,
+  narrowCacheControl,
+  noTransform,
+} from './route-body-record.ts';
+export { htmlType, pageDataArtifact, pageHeaders } from './static-page-record.ts';

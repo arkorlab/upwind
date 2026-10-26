@@ -18,6 +18,7 @@ export {
   middlewareApplies,
   mergeMiddlewareResponseHeaders,
   type MiddlewareResult,
+  onLoopbackOrigin,
   readMiddlewareResponse,
 } from './middleware.ts';
 export {

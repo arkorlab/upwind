@@ -69,6 +69,13 @@ on:
         description: 'Suites run at once in a shard (`-c`): 1 on a host, 2 on the runner when empty'
         default: ''
         type: string
+      cache:
+        description: 'On a host: the adapter alone (`none`), or the runtime cache a host serves behind its own edge (`hosted`)'
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - hosted
 
 permissions: {}
 
@@ -100,6 +107,7 @@ jobs:
       concurrency: ${{ steps.plan.outputs.concurrency }}
       nextjs: ${{ steps.plan.outputs.nextjs }}
       tests: ${{ steps.plan.outputs.tests }}
+      cache: ${{ steps.plan.outputs.cache }}
     steps:
       - name: Work out the shards
         id: plan
@@ -111,6 +119,7 @@ jobs:
           SHARDS: ${{ inputs.shards }}
           ONLY: ${{ inputs.only }}
           CONCURRENCY: ${{ inputs.concurrency }}
+          CACHE: ${{ inputs.cache }}
           # Counted, never printed: the count is not a project anybody can name, the ids are.
           PROJECT_IDS: ${{ secrets.ADAPTER_TEST_PROJECT_IDS }}
           PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
@@ -202,6 +211,20 @@ jobs:
             echo 'a project on a host takes one fixture at a time: concurrency must be 1 there' >&2
             exit 1
           fi
+          # The runtime cache a host's builds are given: none but on a host, where the runner's targets
+          # serve a cache of their own or none (`tools/deploy-tests/scripts/e2e-deploy.sh`). A night's
+          # run names none.
+          cache="${CACHE:-none}"
+          case "$cache" in
+            none) ;;
+            hosted)
+              if [ "$targets" != 'host' ]; then
+                echo 'cache hosted is for a host: the targets on the runner serve their own' >&2
+                exit 1
+              fi
+              ;;
+            *) echo "cache must be none or hosted, not '$cache'" >&2; exit 1 ;;
+          esac
           # The jobs: each target's shards, as the matrix takes them.
           include=''
           jobs=0
@@ -257,6 +280,7 @@ jobs:
             echo "concurrency=$concurrency"
             echo "nextjs=$nextjs"
             echo "tests=$selection"
+            echo "cache=$cache"
           } >>"$GITHUB_OUTPUT"
           # One shard asked for by name is one job: nothing of the rest of the split runs, so nothing
           # about how many could have run at once is true of it.
@@ -271,6 +295,11 @@ jobs:
               echo 'fewer projects than shards, or two shards on one project: they queue' \
                 >>"$GITHUB_STEP_SUMMARY"
             fi
+          fi
+          # Said as well, since a cached build answers caching suites a release's adapter fails.
+          if [ "$cache" = hosted ]; then
+            echo 'every Function built with the runtime cache a host serves behind its own edge' \
+              >>"$GITHUB_STEP_SUMMARY"
           fi
 
   deploy-tests:
@@ -415,6 +444,8 @@ jobs:
           NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-cleanup.sh
           # Where each application is served: a host, or this runner (`tools/deploy-tests/src/target.ts`).
           ADAPTER_TEST_TARGET: ${{ matrix.target }}
+          # The runtime cache a host's builds are given, as the plan read it (`e2e-deploy.sh`).
+          ADAPTER_TEST_CACHE: ${{ needs.plan.outputs.cache }}
           # The host to deploy to, and nothing on the runner's targets. Secrets rather than anything
           # written down here: which host runs this suite is whoever dispatched it, and a project id in a
           # log is a project somebody can name. The token itself is not among them — it is in the file

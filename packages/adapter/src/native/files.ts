@@ -57,6 +57,24 @@ export async function nativeTraceFiles(file: string): Promise<string[]> {
   return files;
 }
 
+/**
+ * An output's asset sources, but for the links Next.js stages for a cross-root symlink
+ * (`build/adapter/synthetic-symlinks.ts`, in `<distDir>/adapter/synthetic_symlinks`). Such a link
+ * is the trace's own link written again for an output that places each asset at its destination: its
+ * target is relative to the destination's directory (`next_additional_roots/<root>/…`), so where it
+ * is staged it leads nowhere, and resolving it failed the build. The native output places nothing at a
+ * destination — it keeps the original tree — and the trace that made the staged link is one it reads
+ * (`nativeTraceFiles`), so the link it stands for, and the files that link leads to in the additional
+ * root, are copied as they are.
+ */
+export function nativeAssetSources(
+  assets: Readonly<Record<string, string>>,
+  distDir: string,
+): string[] {
+  const staged = path.resolve(distDir, 'adapter', 'synthetic_symlinks');
+  return Object.values(assets).filter((source) => path.dirname(path.resolve(source)) !== staged);
+}
+
 /** A common parent keeps every native relative import and symlink relocatable. */
 function commonParent(files: readonly string[]): string {
   let root = path.dirname(files[0] ?? path.resolve('.'));

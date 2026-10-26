@@ -32,6 +32,7 @@
     "./function": "./src/function/cache-host.ts",
     "./function/bundle-blobs": "./src/function/bundle-blobs.ts",
     "./function/host": "./src/function/host.ts",
+    "./function/hosted": "./src/function/hosted.ts",
     "./gateway": "./src/gateway/app.ts",
     "./gateway/token": "./src/gateway/token.ts",
     "./host": "./src/authority-host.ts",

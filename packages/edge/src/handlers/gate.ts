@@ -4,6 +4,8 @@ import {
   type ForwardingContext,
   PatternBudgetExceededError,
   RSC_HEADER,
+  keptByNobody,
+  unsharedUnlessPublic,
 } from '@stayingupwind/core/request';
 import { isHtmlContentType, releaseStream, withDeadline } from '@stayingupwind/core/util';
 import {
@@ -31,12 +33,7 @@ import {
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { decompressLive } from './live-compression.ts';
 import { headerRulesAsRouted } from './middleware.ts';
-import {
-  forwardedResponse,
-  keptByNobody,
-  serviceUnavailableResponse,
-  unsharedUnlessPublic,
-} from './responses.ts';
+import { forwardedResponse, serviceUnavailableResponse } from './responses.ts';
 
 /**
  * A request of a route the build declared a gate for (`ProjectManifest.gates`), asked of that gate
