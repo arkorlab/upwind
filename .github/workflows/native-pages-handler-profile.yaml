@@ -1,0 +1,42 @@
+name: Independent public Pages handler profile
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/native-pages-handler-profile.yaml'
+      - 'tools/native-pages-handler-profile-ci.mts'
+      - 'tools/native-pages-handler-profile/**'
+      - 'packages/adapter/src/node-pages-handler-profile.ts'
+      - 'packages/adapter/test/node-pages-handler-profile.test.ts'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: independent-pages-profile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  produce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 12.15.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+      - name: Independently compile fixed public inputs twice without network
+        run: node tools/native-pages-handler-profile-ci.mts
+      - name: Retain unqualified public source corpus for separate review
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: UNQUALIFIED-public-pages-handler
+          path: ${{ runner.temp }}/independent-pages-handler-profile/UNQUALIFIED.json
+          if-no-files-found: error
+          retention-days: 1
