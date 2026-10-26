@@ -24,7 +24,7 @@ import { edgeJudgesHeaderRules, stripPlatformHeaders } from './incoming.ts';
 import { escapedNameOf, namesWithSpellings, prerenderedName } from './name-spellings.ts';
 import type { Resolved } from './outputs.ts';
 import { misdirectedTo } from './placement.ts';
-import { withHeadersChanged } from './reframe.ts';
+import { withHeadersChanged, withStatus } from './reframe.ts';
 import {
   AFTER_FILES,
   BEFORE_FILES,
@@ -298,10 +298,10 @@ export function withRewriteStatus(
     return response;
   }
   if (!NULL_BODY_STATUSES.has(status)) {
-    return new Response(response.body, { status, headers: response.headers });
+    return withStatus(response, status, response.body);
   }
   releaseStream(response.body, 'rewrite status: no body');
-  return new Response(null, { status, headers: response.headers });
+  return withStatus(response, status, null);
 }
 
 /** A redirect routing decided, whether from a rule or the middleware, with everything else it set. */

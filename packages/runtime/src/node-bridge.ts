@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { handleAsNodeRequest } from 'cloudflare:node';
 
 import { changesSomething, type InvokeInput, type Run } from './invocation.ts';
+import { sentAsEncoded } from './reframe.ts';
 import { runWithTaskScheduler } from './tasks.ts';
 
 /**
@@ -345,7 +346,8 @@ function asWritten(response: Response): Response {
     headers: response.headers,
     ...(coded && { encodeBody: 'manual' }),
   };
-  return new Response(response.body, init);
+  const written = new Response(response.body, init);
+  return coded ? sentAsEncoded(written) : written;
 }
 
 export async function invokeNodeHandler(input: InvokeInput): Promise<Response> {

@@ -28,7 +28,7 @@ const TEXT = 'compressed by the route itself';
 const WORKER = `
 import { gzipSync } from 'node:zlib';
 import { invokeNodeHandler } from ${JSON.stringify(BRIDGE)};
-import { withHeadersChanged } from ${JSON.stringify(REFRAME)};
+import { withHeadersChanged, withStatus } from ${JSON.stringify(REFRAME)};
 
 const handlers = {
   // A route that compresses its own answer and says so, as Node.js's server sends it as written.
@@ -55,10 +55,12 @@ export default {
       requestMeta: {},
       waitUntil: (promise) => ctx.waitUntil(promise),
     });
-    // As the runtime's answers are made again on the way out, each with a header of its own.
-    return url.searchParams.has('changed')
+    // As the runtime's answers are made again on the way out, each with a header of its own, and
+    // under the status a rewrite names.
+    const changed = url.searchParams.has('changed')
       ? withHeadersChanged(response, (headers) => { headers.set('x-changed', '1'); })
       : response;
+    return url.searchParams.has('restated') ? withStatus(changed, 404, changed.body) : changed;
   },
 };
 `;
@@ -127,7 +129,7 @@ describe('a Node.js answer as workerd sends it', () => {
     return { coding: response.headers.get('content-encoding'), text };
   }
 
-  it.each(['/coded', '/coded?changed'])(
+  it.each(['/coded', '/coded?changed', '/coded?restated', '/coded?changed&restated'])(
     'sends a body the route compressed itself once, under its own coding (%s)',
     async (path) => {
       await expect(decodedOnce(path)).resolves.toStrictEqual({ coding: 'gzip', text: TEXT });
