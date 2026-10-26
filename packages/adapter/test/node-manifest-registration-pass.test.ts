@@ -249,12 +249,12 @@ describe('scoped immutable registration passes', () => {
 
   it('rejects stale original source/index before any scoped callback starts', async () => {
     const own = await fixture();
-    const called = vi.fn();
+    const called = vi.fn<() => void>();
     Object.assign(own.table.source, { code: 'module.exports=[];' });
 
-    expect(() => withNodeManifestRegistrationPass(own.views, called)).toThrow(
-      'stale registration index',
-    );
+    expect(() => {
+      withNodeManifestRegistrationPass(own.views, called);
+    }).toThrow('stale registration index');
     expect(called).toHaveBeenCalledTimes(0);
     expect(() => nodeManifestRegistrationMembers(own.views, own.graphs[0]!.exportedId)).toThrow(
       'stale registration index',

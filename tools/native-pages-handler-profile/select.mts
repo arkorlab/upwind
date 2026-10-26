@@ -418,9 +418,9 @@ function issueAt(visit: Visit, resolved: Resolved, scope: Scope): Reason | undef
   if (!identifier(node) || !reference(visit)) return undefined;
   if (inside) return closedIdentifier(visit, resolved, scope) ? undefined : CAPTURE;
   const alias = matchingAlias(visit, resolved);
-  return alias !== undefined && node !== alias.use && node !== alias.binding.declaration?.['id']
-    ? 'escaping-function-binding'
-    : undefined;
+  if (alias === undefined || node === alias.use || node === alias.binding.declaration?.['id'])
+    return undefined;
+  return 'escaping-function-binding';
 }
 function functionIssue(resolved: Resolved, analysis: Analysis): Reason | undefined {
   const fnVisit = analysis.byNode.get(resolved.fn);

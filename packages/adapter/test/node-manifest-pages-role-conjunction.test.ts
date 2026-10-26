@@ -67,7 +67,7 @@ async function fixture(options: Options = {}) {
   const producer: NodeManifestTurbopackGraphFile = {
     id: PRODUCER,
     file: PRODUCER.replace('/pages/', () => `/${kind}/`),
-    source: source(options.changedCode ? `${primary}\n` : primary),
+    source: source(options.changedCode === true ? `${primary}\n` : primary),
     imports: [],
   };
   const alternate = {
@@ -78,7 +78,7 @@ async function fixture(options: Options = {}) {
   const callbacks = options.callbacks ?? [callback('n', true), callback('n')];
   const ids = options.ids ?? [1, '1'];
   const tables = TABLES.map((file, index) => {
-    const registered = index === 1 && options.singleton ? [2] : ids;
+    const registered = index === 1 && options.singleton === true ? [2] : ids;
     return {
       id: file,
       file,
@@ -220,7 +220,7 @@ describe('pending all-variant Pages producer source conjunction', () => {
 
   it('certifies numeric and string selected IDs separately without promoting callback aliases', async () => {
     const own = await fixture();
-    const numberInput = roleInput(own, 1);
+    const numberInput = roleInput(own);
     const stringInput = roleInput(own, '1');
     const numeric = checked(numberInput);
     const string = checked(stringInput);

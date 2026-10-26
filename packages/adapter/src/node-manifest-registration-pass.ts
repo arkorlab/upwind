@@ -37,7 +37,7 @@ function refuse(reason: string): never {
 }
 function stateOf(pass: NodeManifestRegistrationPass): State {
   const state = PASSES.get(pass);
-  if (state === undefined || !state.active) return refuse('inactive or uncertified scope');
+  if (state?.active !== true) return refuse('inactive or uncertified scope');
   return state;
 }
 function begin(proof: NodeManifestRegistrationViews): NodeManifestRegistrationPass {
