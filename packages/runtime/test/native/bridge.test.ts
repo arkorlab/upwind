@@ -266,6 +266,30 @@ describe('native Node bridge', () => {
     assert.equal(await response.text(), 'received');
   });
 
+  it.each(['DELETE', 'OPTIONS', 'PATCH', 'PUT', 'POST'])(
+    'carries a body on %s whole, and leaves the socket fit for the next call',
+    async (method) => {
+      const bridge = fixture();
+      const body = JSON.stringify({ method });
+      const echo = input(
+        async (req, res) => {
+          res.end(await textOf(req));
+        },
+        { request: new Request('https://app.test/route', { method, body }) },
+      );
+
+      const response = await bridge.invokeNodeHandler(echo);
+
+      assert.equal(await response.text(), body);
+      const next = await bridge.invokeNodeHandler(
+        input(async (req, res) => {
+          res.end(`${String(req.method)} ${String(req.url)}`);
+        }),
+      );
+      assert.equal(await next.text(), 'GET /original?q=1');
+    },
+  );
+
   it('invokes the handler before the upload finishes', async () => {
     const bridge = fixture();
     const entered = gate();
