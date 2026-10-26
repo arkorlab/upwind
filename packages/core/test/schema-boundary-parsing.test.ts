@@ -46,7 +46,7 @@ describe('boundary parsing', () => {
 
     const strict = z.strictObject({}).safeParseFirst({ a: true, b: true });
 
-    expect(strict.error?.issues[0]?.keys).toStrictEqual(['a']);
+    expect(strict.error?.issues[0]?.['keys']).toStrictEqual(['a']);
   });
 });
 
