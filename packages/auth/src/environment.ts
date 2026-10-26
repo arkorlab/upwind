@@ -23,7 +23,10 @@ export function envValue(name: string): string | undefined {
 
 /** A loopback-bound upwind dev listener attests this; an ordinary Next server does not. */
 export function isLocalDevelopment(): boolean {
-  return !isProduction() && envValue(UPWIND_AUTH_LOCAL_DEV_ENV) === '1';
+  return (
+    (process.env as { NODE_ENV?: string }).NODE_ENV === 'development' &&
+    envValue(UPWIND_AUTH_LOCAL_DEV_ENV) === '1'
+  );
 }
 
 /**
@@ -47,9 +50,8 @@ export function isLocalDevelopment(): boolean {
  * name makes it an ordinary property read, and an ordinary property read is what compiles to the
  * expression the bundler is looking for.
  *
- * Anything that is not exactly `production` is not production, which is the safe direction for what
- * this decides: whether upwind may stand in for an OAuth provider, create tables, or let a run
- * without a signing key answer at all.
+ * Only the exact production value enables production guards. The identity issuer separately
+ * requires the exact development value and the listener's local-development attestation above.
  */
 export function isProduction(): boolean {
   return (process.env as { NODE_ENV?: string }).NODE_ENV === 'production';

@@ -49,6 +49,26 @@ describe('the development identity issuer boundary', () => {
     },
   );
 
+  it.each([
+    { nodeEnv: 'development', allowed: true },
+    { nodeEnv: 'test', allowed: false },
+    { nodeEnv: undefined, allowed: false },
+    { nodeEnv: 'unexpected', allowed: false },
+    { nodeEnv: 'production', allowed: false },
+    { nodeEnv: '', allowed: false },
+  ])(
+    'requires exact development mode even with a local marker: $nodeEnv',
+    ({ nodeEnv, allowed }) => {
+      vi.stubEnv('NODE_ENV', nodeEnv);
+      vi.stubEnv(UPWIND_AUTH_LOCAL_DEV_ENV, '1');
+      vi.stubEnv('AUTH_SECRET', undefined);
+      vi.stubEnv('BETTER_AUTH_SECRET', undefined);
+
+      expect(isLocalDevelopment()).toBe(allowed);
+      expect(isZeroConfig({})).toBe(allowed);
+    },
+  );
+
   it('fails closed outside the attested development listener and keeps real authentication configured', () => {
     vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv(UPWIND_AUTH_LOCAL_DEV_ENV, undefined);
