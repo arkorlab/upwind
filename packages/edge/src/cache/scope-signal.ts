@@ -28,10 +28,11 @@ import { encodedScopeId } from './scope-identity.ts';
  * before the answer is kept leave the question to it, rather than each asking the same — though the
  * Cache API has no compare-and-set, so isolates that claim it in the same moment both ask.
  *
- * No request waits for a look. One begins as the request is routed, beside its reads, and what it
- * brings is in force as soon as it lands: for the request itself where it lands before a record is
- * judged or the request handed on, and for the requests after it otherwise — the trade a record
- * held past its hold makes, staleness bounded in requests rather than a wait before the first byte.
+ * No request waits for a look. One begins when the request reads a generation or is handed to the
+ * Function, beside its reads. What it brings is in force as soon as it lands: for the request
+ * itself where it lands before a record is judged or the request handed on, and for the requests
+ * after it otherwise — the trade a record held past its hold makes, staleness bounded in requests
+ * rather than a wait before the first byte.
  * A request the edge only hands to the scope's Functions begins one as a request it serves from a
  * record does: what those Functions read is judged against the tags they know of, and an
  * invalidation made through another isolate reaches them only as the isolate in front of them
@@ -125,9 +126,9 @@ const lookedAt = new WeakMap<ExecutionContext, string>();
 
 /**
  * Begin a look at where `scopeId` stands behind the request (`lookAtScope`), once for the request
- * however many of its routes and reads ask (`lookedAt`): as it is routed (`routeWithManifest`), and
- * as it reads a generation the routing began none for. Nothing where the host keeps no signals, nor
- * before the deployment has Workers to tell.
+ * however many of its routes and reads ask (`lookedAt`): as it reads a generation, and as it is
+ * handed to the Function whole or as a continuation (`passthroughFor`, `resumeContinuation`).
+ * Nothing where the host keeps no signals, nor before the deployment has Workers to tell.
  */
 export function lookAtScopeBehind(
   edge: Pick<EdgeContext, 'app' | 'ctx' | 'host' | 'runtime'>,

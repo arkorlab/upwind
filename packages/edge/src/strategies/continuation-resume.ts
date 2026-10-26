@@ -12,6 +12,7 @@ import {
 import { NEXT_RESUME_HEADER } from '@stayingupwind/core/request';
 import type { ContinuationHandle, ContinuationStart } from '@stayingupwind/host/delivery';
 
+import { lookAtScopeBehind } from '../cache/scope-signal.ts';
 import { buildResumeRequest } from '../forwarding.ts';
 import { fetchUpstream } from '../handlers/upstream.ts';
 import type { EdgeContext } from './context.ts';
@@ -98,6 +99,15 @@ export const resumeContinuation = {
   start(input: ContinuationStart<EdgeContext>): ContinuationHandle {
     const controller = new AbortController();
     const upstream = resumeRequest(input, controller.signal);
+    // Shell-only documents read no generation and never use passthroughFor. Their shell read
+    // has already started before this dispatch, so checking here cannot suppress its preload.
+    if (
+      !input.ctx.validated &&
+      input.manifest.cache !== undefined &&
+      (input.request.method === 'GET' || input.request.method === 'HEAD')
+    ) {
+      lookAtScopeBehind(input.ctx, input.manifest.cache.scopeId);
+    }
     return {
       // The Worker the shell's route is in, for a deployment split across several.
       response: fetchUpstream(input.ctx.runtime, input.ctx.app, upstream, {

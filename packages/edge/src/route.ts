@@ -148,6 +148,7 @@ function passthroughFor(
   middleware?: MiddlewareOutcome & Partial<MiddlewareTiming>,
   { route, waited }: Counted = {},
 ): Promise<Response> {
+  lookAtScopeOf(input);
   const { servedAgain } = input;
   const manifestReady = 'manifestReady' in input ? input.manifestReady : undefined;
   const passthrough: PassthroughInput = {
@@ -448,20 +449,27 @@ function gateInputOf(
 }
 
 /**
- * Begin the request's look at where its scope stands (`lookAtScopeBehind`), beside what it reads and
- * waited for by none of it. What the edge serves from a record is judged by what this isolate knows
- * of the scope, and so is what it hands to the scope's Functions, which are told where the scope
- * stands as this isolate knows it (`withScopeRevision`): a page Next.js routes there itself — behind
- * a rewrite the edge stays out of — or a route handler reads no record here, and is no less one an
- * invalidation reaches, nor is a Pages Router page's data. Not for another path of Next.js's own,
- * nor for a validation, which proves the build and reads nothing of the cache; a file the build
- * shipped and an optimized image are answered before this (`hostedFirst`), and a request of another
- * method is handed on before its manifest is in (`routeWithinBudget`).
+ * Begin the scope's look behind a request handed to the Function without reading a generation:
+ * a page behind a rewrite, a route handler, or a Pages Router page's data. A document that reads a
+ * generation begins its look there, after its policy is ready, so the question does not suppress
+ * the build shell's read beside a cold record (`startRecordRead`). Neither waits for the look.
+ * Not for another path of Next.js's own, a validation, or a non-read method. No manifest is read
+ * for this: a GET or HEAD already has it, and a request of another method is left alone.
  */
-function lookAtScopeOf(input: ManifestRoutingInput, scopeId: string): void {
+function lookAtScopeOf(input: ManifestRoutingInput): void {
+  const { request, state } = input;
+  const scopeId = state.manifest?.cache?.scopeId;
+  if (
+    scopeId === undefined ||
+    state.validated ||
+    state.function !== undefined ||
+    (request.method !== 'GET' && request.method !== 'HEAD')
+  ) {
+    return;
+  }
   const { pathname } = input.url;
   const nextOwn = pathname.startsWith(NEXT_OWN_PATHS) && !pathname.startsWith(PAGES_DATA_PATHS);
-  if (nextOwn || input.state.validated) {
+  if (nextOwn) {
     return;
   }
   lookAtScopeBehind(
@@ -483,7 +491,6 @@ function routeWithManifest(
       state.app?.deploymentId,
       state.manifest.cache.scopeId,
     );
-    lookAtScopeOf(input, state.manifest.cache.scopeId);
   }
   if (state.mode !== EDGE_MODE || state.manifest === undefined) {
     // This pointer field is opaque; internal middleware reasons retain their structured fields.
