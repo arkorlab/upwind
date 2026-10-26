@@ -92,8 +92,8 @@ describe('private Pages handler source integration', () => {
     // This observer calls the genuine implementation; it supplies no proof or success result.
     const observed = vi.spyOn(handlerContext, 'qualifyNodeManifestHandlerContext');
     const proof = await proveNodeManifests(own.input, own.graph);
-    const contexts = observed.mock.results.map((result) =>
-      result.type === 'return' ? result.value : undefined,
+    const contexts = observed.mock.settledResults.map((result) =>
+      result.type === 'fulfilled' ? result.value : undefined,
     );
 
     expect(contexts.some((context) => context !== undefined)).toBe(true);
@@ -105,8 +105,8 @@ describe('private Pages handler source integration', () => {
     const own = await pagesConjunctionChainFixture(directory);
     const observed = vi.spyOn(handlerContext, 'qualifyNodeManifestHandlerContext');
     await proveNodeManifests(own.input, own.graph);
-    const context = observed.mock.results
-      .map((result) => (result.type === 'return' ? result.value : undefined))
+    const context = observed.mock.settledResults
+      .map((result) => (result.type === 'fulfilled' ? result.value : undefined))
       .find((value) => value !== undefined);
     assert(context !== undefined, 'Expected the genuine private context');
 
