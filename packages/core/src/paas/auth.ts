@@ -40,6 +40,9 @@ export const UPWIND_AUTH_BASE_PATH = '/__upwind/auth';
  */
 export const UPWIND_AUTH_SECRET_ENV = 'UPWIND_AUTH_SECRET';
 
+/** Set by the dev listener only after its actual bind address is known to be loopback. */
+export const UPWIND_AUTH_LOCAL_DEV_ENV = 'UPWIND_AUTH_LOCAL_DEV';
+
 /**
  * Is `pathname` the authentication base path, or a path under it?
  *

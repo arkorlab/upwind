@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { handleAsNodeRequest } from 'cloudflare:node';
 
 import { changesSomething, type InvokeInput, type Run } from './invocation.ts';
+import { sentAsEncoded } from './reframe.ts';
 import { runWithTaskScheduler } from './tasks.ts';
 
 /**
@@ -314,8 +315,43 @@ class Bridge {
 
 const bridge = new Bridge();
 
+/**
+ * The reason workerd's `node:http` server gives a status nobody named: its `ServerResponse` starts
+ * with it, and a handler that never calls `writeHead` answers under it. Node.js's names the status's
+ * own reason (`STATUS_CODES`).
+ */
+const UNNAMED_REASON = 'unknown';
+
+/**
+ * The handler's answer as Node.js's server would send it. workerd's `node:http` server makes the
+ * `Response` with the default `encodeBody: 'automatic'`, under which workerd encodes a body to the
+ * `content-encoding` it goes out with; so a handler that compresses its own body and says so — a
+ * route that gzips its answer — went out compressed twice, and a client that decoded it once read
+ * gzip. Node.js's server writes the bytes as they are, and so does this: `'manual'` wherever the
+ * handler named a coding, the body untouched. And a reason nobody named is left unnamed, for the
+ * status's own to be sent in its place, as the answers made from this one keep its reason
+ * (`withHeadersChanged`). Any other answer is the one it was.
+ */
+function asWritten(response: Response): Response {
+  const coding = response.headers.get('content-encoding');
+  const coded = coding !== null && coding.trim().toLowerCase() !== 'identity';
+  const unnamed = response.statusText === UNNAMED_REASON;
+  if (!coded && !unnamed) {
+    return response;
+  }
+  // workerd's own member of `ResponseInit`, which the DOM's type does not know.
+  const init: ResponseInit & { readonly encodeBody?: 'manual' } = {
+    status: response.status,
+    ...(!unnamed && { statusText: response.statusText }),
+    headers: response.headers,
+    ...(coded && { encodeBody: 'manual' }),
+  };
+  const written = new Response(response.body, init);
+  return coded ? sentAsEncoded(written) : written;
+}
+
 export async function invokeNodeHandler(input: InvokeInput): Promise<Response> {
   const target = new URL(input.request.url);
   const dispatch: Dispatch = { input, url: input.url ?? `${target.pathname}${target.search}` };
-  return handleAsNodeRequest(bridge.port(), input.request, undefined, dispatch);
+  return asWritten(await handleAsNodeRequest(bridge.port(), input.request, undefined, dispatch));
 }

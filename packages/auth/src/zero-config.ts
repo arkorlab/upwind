@@ -1,6 +1,6 @@
 import type { BetterAuthOptions } from 'better-auth';
 
-import { envValue, isProduction } from './environment.ts';
+import { envValue, isLocalDevelopment } from './environment.ts';
 import { hasConfiguredSecret } from './secret.ts';
 
 /**
@@ -110,7 +110,7 @@ function credentialsInOptions(options: BetterAuthOptions): boolean {
  * rather than to make it appear to work.
  */
 export function isZeroConfig(options: BetterAuthOptions): boolean {
-  if (isProduction() || hasConfiguredSecret(options)) {
+  if (!isLocalDevelopment() || hasConfiguredSecret(options)) {
     return false;
   }
   return !credentialsInOptions(options) && !credentialsInEnvironment(options);

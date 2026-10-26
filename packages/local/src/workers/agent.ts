@@ -6,17 +6,31 @@ import { AGENT_ROUTES, METADATA_HEADER } from './protocol.ts';
 /**
  * What deploys to the stack, on the stack's side of a socket: the edge's namespace and the bucket,
  * read and written as a deploy reads and writes them, and the cache authority's control entrypoint,
- * called as a deploy calls it. Local only: nothing here asks who is calling.
+ * called as a deploy calls it. Only the host deployment client holds this stack's credential.
  */
 interface AgentEnv {
+  readonly DEPLOY_AGENT_TOKEN: string;
   readonly EDGE_STATE: KVNamespace;
   readonly ARTIFACTS: R2Bucket;
   readonly CACHE_CONTROL: DeployCache;
 }
 
 const HTTP_NO_CONTENT = 204;
+const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
 const HTTP_METHOD_NOT_ALLOWED = 405;
+const ENCODER = new TextEncoder();
+
+/** The local management Worker uses workerd's synchronous constant-time WebCrypto extension. */
+function authorized(request: Request, token: string): boolean {
+  const received = request.headers.get('authorization');
+  if (!token || received === null) return false;
+  const expected = `Bearer ${token}`;
+  if (received.length !== expected.length) return false;
+  const a = ENCODER.encode(received);
+  const b = ENCODER.encode(expected);
+  return a.byteLength === b.byteLength && crypto.subtle.timingSafeEqual(a, b);
+}
 
 function empty(status: number): Response {
   return new Response(null, { status });
@@ -95,6 +109,9 @@ async function seed(request: Request, env: AgentEnv, pathname: string): Promise<
 
 export default {
   fetch(request, env): Promise<Response> {
+    if (!authorized(request, env.DEPLOY_AGENT_TOKEN)) {
+      return Promise.resolve(empty(HTTP_UNAUTHORIZED));
+    }
     const { pathname } = new URL(request.url);
     if (pathname.startsWith(AGENT_ROUTES.kv)) {
       return kv(request, env, decodeURIComponent(pathname.slice(AGENT_ROUTES.kv.length)));

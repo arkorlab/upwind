@@ -42,9 +42,10 @@ export interface PendingRecordLookup {
 }
 
 /**
- * How long a document waits for its record before the build's own shell answers instead. The
- * Function answers a document itself only where the edge could not serve the shell; the record is
- * a bonus there, not a wait the visitor should notice.
+ * How long a document waits for its record before the build's own shell answers instead — or the
+ * render this isolate is publishing of the entry, where it has one (`generations.ts`). The Function
+ * answers a document itself only where the edge could not serve the shell; the record is a bonus
+ * there, not a wait the visitor should notice.
  */
 const RECORD_DEADLINE_MS = 200;
 

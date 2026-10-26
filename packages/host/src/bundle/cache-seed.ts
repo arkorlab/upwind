@@ -1,4 +1,6 @@
 import {
+  BuildPatternBudget,
+  type BuildPatternMatcher,
   type DeploymentBundle,
   type EntrypointKind,
   pagesDataPathnameUnder,
@@ -91,7 +93,10 @@ interface BundleIndex {
  */
 const INDEXES = new WeakMap<DeploymentBundle, BundleIndex>();
 
-function indexOf(bundle: DeploymentBundle): BundleIndex {
+function indexOf(
+  bundle: DeploymentBundle,
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+): BundleIndex {
   const held = INDEXES.get(bundle);
   if (held !== undefined) {
     return held;
@@ -112,9 +117,9 @@ function indexOf(bundle: DeploymentBundle): BundleIndex {
     }
   }
   const staticPages = new Map<Prerender, 1 | 2 | typeof FALLBACK_PRIVACY>(
-    staticPagesPrivacyOf(bundle),
+    staticPagesPrivacyOf(bundle, patterns),
   );
-  for (const [prerender] of staticPagesMembersOf(bundle))
+  for (const [prerender] of staticPagesMembersOf(bundle, patterns))
     staticPages.set(prerender, FALLBACK_PRIVACY);
   const index = { kinds, prerenders, staticPages };
   INDEXES.set(bundle, index);
@@ -318,9 +323,10 @@ export async function seedRouteFor(
   bundle: DeploymentBundle,
   prerender: Prerender,
   ctx: SeedContext,
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
 ): Promise<SeededRoute | undefined> {
   const { body } = prerender;
-  if (body === undefined || indexOf(bundle).kinds.get(prerender.route) === 'pages-api') {
+  if (body === undefined || indexOf(bundle, patterns).kinds.get(prerender.route) === 'pages-api') {
     return undefined;
   }
   const kind = prerenderEntryKind(bundle, prerender);
@@ -331,7 +337,7 @@ export async function seedRouteFor(
   };
   const derived = await deriveEntry(ctx.scopeId, descriptor);
   const generationId = await buildGenerationIdFor(ctx.scopeId, derived.entryId);
-  const responseHeaders = prerenderResponseHeaders(bundle, prerender);
+  const responseHeaders = prerenderResponseHeaders(bundle, prerender, patterns);
   const headers = generationResponseHeaders(
     kind,
     prerender.initialStatus ?? HTTP_OK,

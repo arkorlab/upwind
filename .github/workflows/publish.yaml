@@ -69,11 +69,15 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      tag-object: ${{ steps.release.outputs.tag-object }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
-          # The tag object itself, and enough history to prove where the tag stands.
+          # Signer policy and verification code must come from the reviewed default branch.
+          ref: refs/heads/${{ github.event.repository.default_branch || 'main' }}
+          # Enough history to prove the verified commit stands on this exact policy revision.
           fetch-depth: 0
       # For `node`, below, to be the version this repository is written for rather than whichever
       # one the runner image happens to carry.
@@ -81,46 +85,11 @@ jobs:
         with:
           node-version: 24
 
-      - name: The tag carries a signature from a key this repository names
+      - name: Verify the signed tag and freeze its commit
+        id: release
         env:
           TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          # Only a tag object can be signed. A lightweight tag is a name pointing at a commit, and
-          # `verify-tag` on one says nothing at all — so refuse it by its type first.
-          if [ "$(git cat-file -t "refs/tags/${TAG}")" != tag ]; then
-            echo "::error::${TAG} is not an annotated tag object, so it carries no signature"
-            exit 1
-          fi
-          # The runner's keyring starts empty and ends holding exactly the keys this file names, so a
-          # good signature over the tag is a signature by one of them and by nobody else.
-          gpg --batch --quiet --import .github/release-signers.asc
-          # Read into a variable rather than piped into `grep -q`: a quiet grep leaves the pipeline
-          # the moment it matches, and under `pipefail` the SIGPIPE that gives the writer would fail
-          # this step on the good signature it just found.
-          status="$(git verify-tag --raw "${TAG}" 2>&1 || true)"
-          printf '%s\n' "${status}"
-          case "${status}" in
-            *'[GNUPG:] GOODSIG'*) ;;
-            *)
-              echo "::error::${TAG} carries no good signature from a key in .github/release-signers.asc"
-              exit 1
-              ;;
-          esac
-
-      - name: The tag stands on the default branch
-        env:
-          TAG: ${{ inputs.tag }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
-        run: |
-          set -euo pipefail
-          # A signature says who made the tag, not what it names. This says the tree being published
-          # is one that went through the branch every change is reviewed on.
-          git fetch --no-tags --quiet origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
-          if ! git merge-base --is-ancestor "refs/tags/${TAG}^{commit}" "refs/remotes/origin/${DEFAULT_BRANCH}"; then
-            echo "::error::${TAG} does not stand on ${DEFAULT_BRANCH}"
-            exit 1
-          fi
+        run: bash .github/scripts/verify-release.sh
 
       # Asked here, where nothing has been published yet, and asked again in the draft job, which is
       # the one that has to tell a draft from a published release. A tag whose release has already
@@ -266,7 +235,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.verify.outputs.commit }}
+      - name: The checkout is the verified release commit
+        env:
+          VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
+          VERIFIED_TAG_OBJECT: ${{ needs.verify.outputs.tag-object }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$VERIFIED_COMMIT"
+          test "$(git ls-remote --refs origin "refs/tags/${TAG}" | cut -f1)" = "$VERIFIED_TAG_OBJECT"
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -438,7 +416,7 @@ jobs:
           pnpm --recursive publish "$@"
 
   provenance:
-    needs: publish
+    needs: [verify, publish]
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
     # Seven packages, each given the ten minutes the comment below explains, and room to say so. The
@@ -451,8 +429,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
-      # For `npm` to be a version that reads a field out of a packument by name.
+          ref: ${{ needs.verify.outputs.commit }}
+      - name: The checkout is the verified release commit
+        env:
+          VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
+          VERIFIED_TAG_OBJECT: ${{ needs.verify.outputs.tag-object }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$VERIFIED_COMMIT"
+          test "$(git ls-remote --refs origin "refs/tags/${TAG}" | cut -f1)" = "$VERIFIED_TAG_OBJECT"
+      # Trusted inline JSON readers inspect metadata without executing checked-out modules.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -466,19 +453,27 @@ jobs:
           set -euo pipefail
           version="${TAG#v}"
           for manifest in packages/*/package.json; do
-            if [ "$(node -p "require('./${manifest}').private === true")" = true ]; then
+            if [ "$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).private === true' "$manifest")" = true ]; then
               continue
             fi
-            name="$(node -p "require('./${manifest}').name")"
+            name="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).name' "$manifest")"
+            metadata_url="$(node -p '
+              "https://registry.npmjs.org/" + encodeURIComponent(process.argv[1]) + "/" + encodeURIComponent(process.argv[2])
+            ' "$name" "$version")"
             predicate=''
-            # Give the registry time to agree with itself. It needs more than it sounds like: on the
-            # first release, two of the three packages then published were readable at once and the third answered
-            # 404 for its whole document for nine minutes — while its attestation endpoint was
-            # already serving. So this waits ten, and the failure below means what it says.
+            # Give the registry time to agree with itself. On the first release one package's
+            # attestation endpoint served for nine minutes before its version metadata caught up.
             for _ in $(seq 20); do
-              # `--prefer-online`: a cached packument from before the publish would read as a
-              # release with no attestation, which is the one wrong answer this must not give.
-              predicate="$(npm view --prefer-online "${name}@${version}" dist.attestations.provenance.predicateType 2>/dev/null || true)"
+              # Read metadata as data: no package-manager config, hooks, or local modules.
+              predicate="$(
+                curl --disable -fsS --connect-timeout 5 --max-time 20 --max-filesize 1048576 \
+                  "$metadata_url" 2>/dev/null |
+                  node -e '
+                    const metadata = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+                    const predicate = metadata.dist?.attestations?.provenance?.predicateType;
+                    if (typeof predicate === "string") process.stdout.write(predicate);
+                  ' 2>/dev/null || true
+              )"
               if [ -n "${predicate}" ]; then
                 break
               fi
@@ -492,7 +487,7 @@ jobs:
           done
 
   draft:
-    needs: provenance
+    needs: [verify, provenance]
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -503,7 +498,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.verify.outputs.commit }}
+      - name: The checkout is the verified release commit
+        env:
+          VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
+          VERIFIED_TAG_OBJECT: ${{ needs.verify.outputs.tag-object }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$VERIFIED_COMMIT"
+          test "$(git ls-remote --refs origin "refs/tags/${TAG}" | cut -f1)" = "$VERIFIED_TAG_OBJECT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24

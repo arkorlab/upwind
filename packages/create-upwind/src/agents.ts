@@ -1,5 +1,4 @@
-import { writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -75,23 +74,9 @@ export async function writeAgentRules(target: string): Promise<void> {
  * not written to at all. Called after the install and before the first commit, so that a correction
  * is in the first commit rather than arriving as a change to it.
  *
- * Resolved from the project and called through, the same way `upwind`'s `src/dev/agent-rules.ts`
- * does it at dev time — duplicated deliberately: the two live in different packages, neither depends
- * on the other, and sharing thirty lines would mean one of them reaching across the workspace.
- *
- * There is one layout this cannot read, and it is a supported one. A Yarn Plug'n'Play install writes
- * no `node_modules` at all: packages stay zipped in Yarn's cache, reachable only through the runtime
- * `.pnp.cjs` sets up, and this scaffolder is a plain Node process that spawned `yarn install` as a
- * child rather than running under it. So `createRequire().resolve()` answers `MODULE_NOT_FOUND`, and
- * even resolving through `.pnp.cjs` by hand would hand back a path inside a zip that plain `fs`
- * cannot open. Reaching it would mean running this through the project's own manager — `yarn node` —
- * which is a child process and a script to quote, for a correction that is a no-op in every release
- * where the block has not changed. It is not done, and it is not hidden either: `asked` is false and
- * the caller says so.
- *
- * `upwind dev` is under no such handicap, because `yarn dev` runs it *inside* the runtime — resolution
- * and the dynamic `import` both work there — so a Yarn project is corrected on its first dev run
- * instead of at its first commit.
+ * Only the dependency mapping installed at `target/node_modules/next` is trusted here. That path
+ * may be pnpm's symlink into its store. An absent mapping (including plain Node outside Yarn PnP)
+ * keeps the static rules: ancestor module lookup must never execute an unrelated package.
  *
  * Never fatal. `--skip-install` leaves nothing to ask, an older Next.js may not have the module, and
  * a project that starts with this release's wording is a long way from a project with none.
@@ -100,9 +85,22 @@ export async function writeAgentRules(target: string): Promise<void> {
  */
 export async function refreshAgentRules(target: string): Promise<boolean> {
   try {
-    const entry = createRequire(path.join(target, 'package.json')).resolve(
-      'next/dist/server/lib/generate-agent-files.js',
+    const nextRoot = await realpath(path.join(target, 'node_modules/next'));
+    const manifest: unknown = JSON.parse(
+      await readFile(path.join(nextRoot, 'package.json'), 'utf8'),
     );
+    if (
+      manifest === null ||
+      typeof manifest !== 'object' ||
+      !('name' in manifest) ||
+      manifest.name !== 'next'
+    ) {
+      return false;
+    }
+    const entry = await realpath(path.join(nextRoot, 'dist/server/lib/generate-agent-files.js'));
+    const relative = path.relative(nextRoot, entry);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+      return false;
     const module = (await import(pathToFileURL(entry).href)) as Record<string, unknown> & {
       default?: Record<string, unknown>;
     };

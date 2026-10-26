@@ -21,6 +21,11 @@ const SET_COOKIE_HEADER = 'set-cookie';
  * (`server/async-storage/request-store.ts`, `mergeMiddlewareCookies`).
  */
 export const MIDDLEWARE_SET_COOKIE_HEADER = 'x-middleware-set-cookie';
+/**
+ * The hostnames Next.js's `NextURL` spells `localhost` (`REGEX_LOCALHOST_HOSTNAME`,
+ * `server/web/next-url.ts`): an IPv4 loopback address, IPv6's, and the name itself.
+ */
+const LOOPBACK_HOSTNAME = /^(?:127(?:\.(?:25[0-5]|2[0-4]\d|[01]?\d{1,2})){3}|\[::1\]|localhost)$/u;
 /** Middleware-protocol headers that never reach a client. */
 const PROTOCOL_HEADERS: ReadonlySet<string> = new Set([
   'content-length',
@@ -145,6 +150,34 @@ function responseHeadersOf(response: Response): Headers {
 }
 
 /**
+ * `target` moved onto `request`'s origin, where the two name the same loopback server spelled two
+ * ways; `undefined` where they are origins apart.
+ *
+ * A middleware reads the URL it was handed as `NextURL` has it, every loopback host spelled
+ * `localhost`, so one on a site reached at `127.0.0.1` that rewrites to `new URL('/b', request.url)`
+ * names `http://localhost:<port>/b`. Next.js's router compares that with the URL it handed the
+ * middleware in the same spelling, and renders it as a rewrite on the same server; read as another
+ * origin, it was proxied back to the same server by name. The scheme and the port are the same or it
+ * is another server; anything else of `target` is kept, its path as it is.
+ *
+ * Asked only of a target whose origin already differs, so a rewrite on the request's own origin, and
+ * every request on a public host, costs nothing more.
+ */
+export function onLoopbackOrigin(target: URL, request: URL): URL | undefined {
+  if (
+    target.protocol !== request.protocol ||
+    target.port !== request.port ||
+    !LOOPBACK_HOSTNAME.test(target.hostname) ||
+    !LOOPBACK_HOSTNAME.test(request.hostname)
+  ) {
+    return undefined;
+  }
+  const moved = new URL(target);
+  moved.hostname = request.hostname;
+  return moved;
+}
+
+/**
  * Read what a middleware Function's response asks for.
  *
  * `requestUrl` is the request the middleware was given; a rewrite is resolved against it, and a
@@ -169,9 +202,14 @@ export function readMiddlewareResponse(
   const setCookie = response.headers.get(MIDDLEWARE_SET_COOKIE_HEADER) ?? undefined;
   // A rewrite to another origin finishes the request before the `Location` below is read, which is
   // the order Next.js reads them in and therefore the order the edge reads them in.
-  const target = rewrite === null ? undefined : new URL(rewrite, requestUrl);
-  if (target !== undefined && target.origin !== requestUrl.origin) {
-    return { kind: 'external-rewrite', url: target, requestHeaders: forwarded, responseHeaders };
+  const named = rewrite === null ? undefined : new URL(rewrite, requestUrl);
+  // The same loopback server spelled another way is the request's own origin (`onLoopbackOrigin`).
+  const target =
+    named === undefined || named.origin === requestUrl.origin
+      ? named
+      : onLoopbackOrigin(named, requestUrl);
+  if (named !== undefined && target === undefined) {
+    return { kind: 'external-rewrite', url: named, requestHeaders: forwarded, responseHeaders };
   }
   // A `Location` is the middleware's answer whatever the status: on a redirect status Next.js
   // finishes with the redirect, and on any other status it finishes with the middleware's body and

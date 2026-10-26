@@ -16,6 +16,24 @@ import {
 const HASH = "'sha256-abc='";
 
 describe('allowInlineScriptHash', () => {
+  it('does not activate a source separated by non-ASCII whitespace', () => {
+    for (const space of ['\u{A0}', '\u{2003}', '\u{FEFF}']) {
+      expect(allowInlineScriptHash(`default-src 'none'; script-src ${space}*`, HASH)).toBe(
+        `default-src 'none'; script-src 'none' ${HASH}`,
+      );
+    }
+  });
+
+  it('honors the first directive and only ASCII whitespace', () => {
+    expect(allowInlineScriptHash("script-src\t'self'; SCRIPT-SRC *", HASH)).toBe(
+      `script-src 'self' ${HASH}`,
+    );
+    expect(allowInlineScriptHash("default-src 'none'; \vscript-src *", HASH)).toBe(
+      `default-src 'none'; script-src 'none' ${HASH}`,
+    );
+    expect(allowInlineScriptHash('script-src \v*', HASH)).toBe(`script-src \v* ${HASH}`);
+  });
+
   it('leaves a policy that already allows inline scripts alone', () => {
     const csp = "default-src 'self'; script-src 'self' 'unsafe-inline'";
 
