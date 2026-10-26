@@ -3,6 +3,7 @@ import type {
   NodeManifestHandlerReferenceGraphData,
 } from './node-manifest-handler-graph.ts';
 import { NEXT_16_4_3_HANDLER_REFERENCE } from './node-manifest-handler-reference.ts';
+import { NEXT_16_4_3_UNMINIFIED_HANDLER_REFERENCE } from './node-manifest-handler-unminified-reference.ts';
 
 export const NODE_MANIFEST_HANDLER_MODULE = 'dist/server/route-modules/pages/pages-handler.js';
 export const NODE_MANIFEST_HANDLER_SHA256 =
@@ -41,4 +42,5 @@ function immutable<T>(value: T): T {
 /** Static, deeply frozen qualification boundary. Comparison DATA cannot populate this registry. */
 export const NODE_MANIFEST_HANDLER_PROFILES: readonly NodeManifestHandlerProfile[] = immutable([
   NEXT_16_4_3_HANDLER_REFERENCE,
+  NEXT_16_4_3_UNMINIFIED_HANDLER_REFERENCE,
 ]);

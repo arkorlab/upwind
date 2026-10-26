@@ -68,6 +68,7 @@ describe('private Pages handler source integration', () => {
   it('freezes the qualified static catalog and does not read missing root metadata for an unrelated native graph', async () => {
     expect(NODE_MANIFEST_HANDLER_PROFILES.map((profile) => profile.name)).toStrictEqual([
       'next-16.4.3-public-pages-handler',
+      'next-16.4.3-public-pages-server-minification-off',
     ]);
     expect(
       NODE_MANIFEST_HANDLER_PROFILES.every((profile) => {
