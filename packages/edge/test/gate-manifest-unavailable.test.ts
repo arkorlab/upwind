@@ -1,6 +1,5 @@
 import { serializeManifest } from '@stayingupwind/core/manifest';
-import { GATE_ANSWER_HEADER, GATE_PASS } from '@stayingupwind/host/bindings';
-import { kvManifestKey } from '@stayingupwind/host/storage';
+import { EDGE_DEBUG_HEADER } from '@stayingupwind/core/request';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -11,151 +10,228 @@ import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import { htmlResponse, navigation, pprDocument, seedSite } from './helpers/site.ts';
 
-const PATH = '/private';
-const NAME = 'checker';
-const SECRET = 'the application was dispatched';
-type Fault = 'missing' | 'unavailable' | 'corrupt' | 'durable' | 'none';
+const PRIVATE_PATH = '/private';
+const FALLBACK = 'the application answered without the gate';
+const READ_MS = 2000;
+const HEDGE_MS = 50;
 
-/** The manifest's two existing reads, not a new lookup for admission information. */
-function bindingsFor(fault: Fault, manifestId: string, serialized: string): EdgeBindings {
-  if (fault === 'none') return env;
-  return {
-    ...env,
-    EDGE_STATE: {
-      get: (key: string) => {
-        if (key !== kvManifestKey(manifestId)) return env.EDGE_STATE.get(key, 'arrayBuffer');
-        if (fault === 'unavailable' || fault === 'durable')
-          return Promise.reject(new Error('KV is unavailable'));
-        return Promise.resolve(
-          fault === 'corrupt' ? new TextEncoder().encode('not its manifest').buffer : null,
-        );
-      },
-    } as unknown as KVNamespace,
-    ARTIFACTS: {
-      get: () => {
-        if (fault === 'unavailable') return Promise.reject(new Error('R2 is unavailable'));
-        if (fault !== 'durable') return Promise.resolve(null);
-        const response = new Response(serialized);
-        return Promise.resolve({
-          size: new TextEncoder().encode(serialized).byteLength,
-          body: response.body,
-          arrayBuffer: () => response.arrayBuffer(),
-        } as unknown as R2ObjectBody);
-      },
-    } as unknown as R2Bucket,
-  };
-}
+const CASES = [
+  {
+    name: 'missing metadata rejects a gated GET',
+    gated: true,
+    method: 'GET',
+    backend: 'missing',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+  },
+  {
+    name: 'missing metadata rejects a gated HEAD',
+    gated: true,
+    method: 'HEAD',
+    backend: 'missing',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+  },
+  {
+    name: 'failed metadata rejects a gated GET',
+    gated: true,
+    method: 'GET',
+    backend: 'failed',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+  },
+  {
+    name: 'failed metadata rejects a gated HEAD',
+    gated: true,
+    method: 'HEAD',
+    backend: 'failed',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+  },
+  {
+    name: 'metadata deadline rejects a gated GET',
+    gated: true,
+    method: 'GET',
+    backend: 'stalled',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+  },
+  {
+    name: 'metadata deadline rejects a gated HEAD',
+    gated: true,
+    method: 'HEAD',
+    backend: 'stalled',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+  },
+  {
+    name: 'missing metadata preserves an ungated GET fallback',
+    gated: false,
+    method: 'GET',
+    backend: 'missing',
+    status: 200,
+    gates: 0,
+    dispatches: 1,
+  },
+  {
+    name: 'metadata deadline preserves an ungated GET fallback',
+    gated: false,
+    method: 'GET',
+    backend: 'stalled',
+    status: 200,
+    gates: 0,
+    dispatches: 1,
+  },
+  {
+    name: 'a present manifest still asks the gate before the application',
+    gated: true,
+    method: 'GET',
+    backend: 'found',
+    status: 403,
+    gates: 1,
+    dispatches: 0,
+  },
+  {
+    name: 'a gated POST dispatches before a stalled manifest',
+    gated: true,
+    method: 'POST',
+    backend: 'stalled',
+    status: 200,
+    gates: 0,
+    dispatches: 1,
+  },
+  // Deliberate marker/manifest mismatch: supplemental hardening, not an existing gate baseline.
+  {
+    name: 'a required gate rejects a present manifest with no gate map',
+    gated: false,
+    requireGateMarker: true,
+    method: 'GET',
+    backend: 'found',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+  },
+] as const;
 
-async function routed(input: {
-  readonly method: 'GET' | 'HEAD' | 'POST';
-  readonly gated: boolean;
-  readonly fault: Fault;
-  readonly pass?: boolean;
-}) {
-  const document = pprDocument(SECRET);
+type Case = (typeof CASES)[number];
+
+async function fixture(row: Case) {
   const site = await seedSite({
-    document,
-    pathname: PATH,
-    ...(input.gated && { gates: { [PATH]: NAME }, gatedPathnames: { [PATH]: PATH } }),
+    document: pprDocument(),
+    pathname: PRIVATE_PATH,
+    ...(row.gated && {
+      gates: { [PRIVATE_PATH]: 'authorization' },
+      gatedPathnames: { [PRIVATE_PATH]: PRIVATE_PATH },
+    }),
   });
-  const dispatch = vi.fn(() => Promise.resolve(htmlResponse(document.suffix)));
-  const gate = vi.fn(() => {
-    return Promise.resolve(
-      input.pass === true
-        ? new Response(null, { headers: { [GATE_ANSWER_HEADER]: GATE_PASS } })
-        : new Response('denied', { status: 403 }),
-    );
+  const bytes = new TextEncoder().encode(serializeManifest(site.manifest));
+  const owned = bytes.buffer;
+  if (!(owned instanceof ArrayBuffer)) throw new TypeError('owned manifest buffer required');
+  const kv = Promise.withResolvers<ArrayBuffer | null>();
+  const bucket = Promise.withResolvers<R2ObjectBody | null>();
+  const get = vi.fn((): Promise<ArrayBuffer | null> => {
+    if (row.backend === 'failed') return Promise.reject(new Error('KV unavailable'));
+    if (row.backend === 'found') return Promise.resolve(owned);
+    if (row.backend === 'stalled') return kv.promise;
+    return Promise.resolve(null);
   });
-  const bindings = bindingsFor(input.fault, site.manifestId, serializeManifest(site.manifest));
+  const getObject = vi.fn((): Promise<R2ObjectBody | null> => {
+    if (row.backend === 'failed') return Promise.reject(new Error('R2 unavailable'));
+    return row.backend === 'stalled' ? bucket.promise : Promise.resolve(null);
+  });
+  const bindings: EdgeBindings = {
+    ...env,
+    EDGE_STATE: { get } as unknown as KVNamespace,
+    ARTIFACTS: { get: getObject } as unknown as R2Bucket,
+  };
+  const gate = vi.fn(() => Promise.resolve(new Response('denied', { status: 403 })));
+  const dispatch = vi.fn(() => Promise.resolve(htmlResponse(FALLBACK)));
   const runtime = standaloneRuntime(env, {
     memory: createEdgeMemory(() => Date.now()),
     dispatchApp: dispatch,
   });
   const ctx = createExecutionContext();
-  const request = navigation(PATH, { method: input.method });
-  try {
-    const response = await serveFromPointer({
-      request,
-      url: new URL(request.url),
-      env: bindings,
-      runtime,
-      ctx,
-      host: { ...standaloneHost(env), gates: { answer: gate } },
-      pointer: { ...site.pointer, selectedPolicy: 'builtin' },
-      pointerMs: 0,
-      privateDelivery: false,
-      cspReportingPath: undefined,
-    });
-    const body = await response.text();
-    return { response, body, dispatch, gate };
-  } finally {
-    await waitOnExecutionContext(ctx);
-  }
+  const request = navigation(PRIVATE_PATH, { method: row.method });
+  return {
+    ctx,
+    gate,
+    dispatch,
+    release: (): void => {
+      kv.resolve(null);
+      bucket.resolve(null);
+    },
+    serve: (): Promise<Response> => {
+      return serveFromPointer({
+        request,
+        url: new URL(request.url),
+        env: bindings,
+        runtime,
+        ctx,
+        host: { ...standaloneHost(env), gates: { answer: gate } },
+        pointer: {
+          ...site.pointer,
+          ...('requireGateMarker' in row && { requiresGate: true as const }),
+          selectedPolicy: 'builtin',
+        },
+        pointerMs: 0,
+        privateDelivery: false,
+        cspReportingPath: undefined,
+      });
+    },
+  };
 }
 
-describe('a gated deployment whose manifest cannot be read', () => {
-  afterEach(() => vi.restoreAllMocks());
+function prepareClock(row: Case): void {
+  if (row.backend === 'stalled') vi.useFakeTimers();
+}
 
-  it.each(['GET', 'HEAD'] as const)(
-    'fails closed on %s after each storage failure',
-    async (method) => {
-      vi.spyOn(console, 'warn').mockReturnValue();
-      for (const fault of ['missing', 'unavailable', 'corrupt'] as const) {
-        const result = await routed({ method, gated: true, fault });
+async function advanceBackendClock(row: Case): Promise<void> {
+  if (row.backend !== 'stalled') return;
+  const elapsed = row.method === 'POST' ? 0 : READ_MS + HEDGE_MS + 1;
+  await vi.advanceTimersByTimeAsync(elapsed);
+}
 
-        expect(result.response.status).toBe(503);
-        expect(result.response.headers.get('cache-control')).toContain('no-store');
-        expect(result.response.headers.get('x-arkor-edge')).toBe(
-          'error;reason=gate-manifest-unavailable',
-        );
-        expect(result.body).not.toContain(SECRET);
-        expect(result.dispatch).not.toHaveBeenCalled();
-        expect(result.gate).not.toHaveBeenCalled();
-      }
-    },
-  );
+async function releaseSubject(
+  subject: Awaited<ReturnType<typeof fixture>>,
+  answering: Promise<Response>,
+): Promise<void> {
+  subject.release();
+  const response = await answering;
+  if (!response.bodyUsed) await response.body?.cancel();
+  await waitOnExecutionContext(subject.ctx);
+}
 
-  it.each(['GET', 'HEAD'] as const)(
-    'retains ungated %s fallback during an outage',
-    async (method) => {
-      vi.spyOn(console, 'warn').mockReturnValue();
-      const result = await routed({ method, gated: false, fault: 'unavailable' });
-
-      expect(result.response.status).toBe(200);
-      expect(result.dispatch).toHaveBeenCalledTimes(1);
-      expect(result.gate).not.toHaveBeenCalled();
-    },
-  );
-
-  it('keeps a non-read request on its existing application path', async () => {
-    vi.spyOn(console, 'warn').mockReturnValue();
-    const result = await routed({ method: 'POST', gated: true, fault: 'unavailable' });
-
-    expect(result.response.status).toBe(200);
-    expect(result.dispatch).toHaveBeenCalledTimes(1);
-    expect(result.gate).not.toHaveBeenCalled();
+describe('a gated deployment whose cold manifest cannot be read', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it.each(['GET', 'HEAD'] as const)(
-    'still asks the gate for %s when durable fallback succeeds',
-    async (method) => {
-      vi.spyOn(console, 'warn').mockReturnValue();
-      const result = await routed({ method, gated: true, fault: 'durable' });
+  it.each(CASES)('$name', async (row) => {
+    const subject = await fixture(row);
+    vi.spyOn(console, 'warn').mockReturnValue();
+    prepareClock(row);
+    const answering = subject.serve();
+    try {
+      await advanceBackendClock(row);
+      const response = await answering;
+      const gateUnavailable =
+        response.headers.get(EDGE_DEBUG_HEADER) === 'error;reason=gate-unavailable';
 
-      expect(result.response.status).toBe(403);
-      expect(result.gate).toHaveBeenCalledTimes(1);
-      expect(result.dispatch).not.toHaveBeenCalled();
-    },
-  );
+      expect(response.status).toBe(row.status);
+      expect(subject.gate).toHaveBeenCalledTimes(row.gates);
+      expect(subject.dispatch).toHaveBeenCalledTimes(row.dispatches);
+      expect(gateUnavailable).toBe(row.status === 503);
 
-  it.each(['GET', 'HEAD'] as const)(
-    'still dispatches an admitted %s with its manifest available',
-    async (method) => {
-      const result = await routed({ method, gated: true, fault: 'none', pass: true });
-
-      expect(result.response.status).toBe(200);
-      expect(result.gate).toHaveBeenCalledTimes(1);
-      expect(result.dispatch).toHaveBeenCalledTimes(1);
-    },
-  );
+      await response.body?.cancel();
+    } finally {
+      await releaseSubject(subject, answering);
+    }
+  });
 });

@@ -6,6 +6,8 @@ import type { CspNonceMode, EdgePointer } from '@stayingupwind/host/delivery';
 export interface EdgePointerPayload {
   readonly fingerprint: DeploymentFingerprint;
   readonly manifestId: string;
+  /** Whether the manifest this pointer names declares at least one route gate. */
+  readonly requiresGate?: boolean | undefined;
   readonly policyId: string;
   /** The deployment's Functions; absent for a site whose pointer sends requests to an origin. */
   readonly app?: AppRuntime | undefined;
@@ -60,6 +62,7 @@ export function edgePointerOf(
     originHost: site.originHost,
     mode: 'edge',
     manifestId: payload.manifestId,
+    ...(payload.requiresGate === true && { requiresGate: true }),
     policyId: payload.policyId,
     deployment: payload.fingerprint,
     ...cspNoncePointerFields(payload.cspNonce, payload.cspNonceMode, payload.cspStrictDynamic),

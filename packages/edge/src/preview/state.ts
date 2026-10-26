@@ -39,6 +39,8 @@ export interface PreviewState {
   readonly privateDelivery: boolean;
   readonly manifestId: string;
   readonly manifest: ProjectManifest | undefined;
+  /** The pointer names a gated deployment, even when its manifest cannot be read. */
+  readonly requiresGate?: boolean | undefined;
   /** The Workers the deployment runs as; `undefined` until the first one has activated. */
   readonly app: AppRuntime | undefined;
   readonly policy: DeliveryPolicy;
@@ -129,6 +131,7 @@ export function manifestStateFromPointer(
     mode: manifest === undefined || suspect ? 'passthrough' : pointer.mode,
     manifestId: pointer.manifestId ?? '',
     manifest,
+    ...(pointer.requiresGate === true && { requiresGate: true }),
     app: pointer.app,
     cspNonce: pointer.cspNonce ?? false,
     cspNonceMode: pointer.cspNonce === true ? (pointer.cspNonceMode ?? 'enforce') : 'enforce',

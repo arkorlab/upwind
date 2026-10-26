@@ -663,20 +663,21 @@ describe('a route gate the command cannot bind', () => {
       // A missing refusal stops at the first lock request rather than uploading any Worker.
       remote.fail({ method: 'POST', path: '/r2/buckets' }, 400);
 
-      await expect(
-        deployToAccount({
-          scope: {
-            client: createCloudflareClient({ apiToken: 'token', fetch: remote.fetch }),
-            accountId: 'account-1',
-          },
-          settings,
-          plan,
-          secrets,
-          message: undefined,
-          resetCacheKey: false,
-          fetch: remote.fetch,
-        }),
-      ).rejects.toThrow('the build declares route gates, which `upwind deploy` does not bind yet');
+      const deployed = deployToAccount({
+        scope: {
+          client: createCloudflareClient({ apiToken: 'token', fetch: remote.fetch }),
+          accountId: 'account-1',
+        },
+        settings,
+        plan,
+        secrets,
+        message: undefined,
+        resetCacheKey: false,
+        fetch: remote.fetch,
+      });
+
+      await expect(deployed).rejects.toThrow('route gates');
+      await expect(deployed).rejects.toThrow('`upwind deploy` does not bind yet');
 
       expect({
         remoteCalls: remote.requests.length + remote.workersDevRequests.length,

@@ -889,7 +889,9 @@ served with no gate asked. A rewrite to the optimizer that leaves the source to 
 in what its rule captured, may have it fetch any. The edge runs a middleware itself only for the
 requests it serves as documents; one it hands on runs the middleware in the Function, where a
 rewrite onto a gated route reaches that route with no gate asked, so no build with a middleware
-declares a gate. Nor may a rule of the routing ask for a header the edge takes off what it hands the
+declares a gate. Hosts that publish through `buildProjectManifest` have the same restriction,
+independently of their adapter. Structural manifest parsing does not perform this publication
+check. Nor may a rule of the routing ask for a header the edge takes off what it hands the
 Function or writes there itself — a forwarding header, `host`, `via`, a hop's own, the platform's —
 as the edge would judge the rule on what the visitor sent and the router on what it is handed.
 Nor may a prerendered page be served as a gated route and as another: its own, and a class ahead of
@@ -927,9 +929,14 @@ fallback. A new reader refuses a version 2 pointer without the marker, or a vers
 it. Hosts composing their own pointer schema preserve this pairing; those selecting public service
 members also require a gate-capable pointer version when any reachable member is gated. During a
 mixed rollout an old reader serves none of the newly gated deployment, so deploy gate-capable
-readers first to preserve availability. A request of any other method goes
+readers first to preserve availability. A legacy `requiresGate`-only version 1 pointer retains that
+independent admission marker without acquiring `hasGates` or version 2. A request of any other method goes
 to the Function, as it does without a gate. Nor is a gated route an image the optimizer may take:
 `/_next/image` answers a source of one `400`, as it answers a source that is no image, before
 anything is fetched or kept — what it optimizes is kept for every visitor, and a gated route's
 every answer is its gate's. An image of a gated route is marked `unoptimized`, so that the browser
 asks for it at its route, of its gate.
+
+Accepted validation requests keep this restriction: bypassing a route's admission gate to prove a
+candidate does not make that route a source for the image optimizer. Validate such an image at its own
+route rather than through `/_next/image`.

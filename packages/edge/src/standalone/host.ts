@@ -2,6 +2,7 @@ import { GATE_ROUTE_HEADER, gateBinding } from '@stayingupwind/host/bindings';
 
 import { encodedScopeId } from '../cache/scope-identity.ts';
 import type { EdgeGates, EdgeHost } from '../edge-host.ts';
+import { fetchedGateBodies } from '../handlers/gate-body-encoding.ts';
 import type { StandaloneEnv } from './env.ts';
 import { isFetcher } from './runtime.ts';
 
@@ -68,7 +69,7 @@ export class GateNotBoundError extends Error {
  * the request with the route it is of said on it (`GATE_ROUTE_HEADER`).
  */
 function boundGates(env: StandaloneEnv): EdgeGates {
-  return {
+  return fetchedGateBodies({
     answer: async (name, request, route): Promise<Response> => {
       const gate: unknown = Reflect.get(env, gateBinding(name));
       if (!isFetcher(gate)) {
@@ -78,7 +79,7 @@ function boundGates(env: StandaloneEnv): EdgeGates {
       headers.set(GATE_ROUTE_HEADER, route);
       return gate.fetch(new Request(request, { headers }));
     },
-  };
+  });
 }
 
 /** What a standalone edge records of what it observes (`EdgeHost.observer`): nothing. */

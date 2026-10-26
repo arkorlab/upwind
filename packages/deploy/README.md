@@ -59,6 +59,11 @@ to that member's gate requirement. Neither the bundle nor a one-reader probe pro
 reader rollout. The consistency check runs when a pointer is parsed; it adds no capability request,
 authorization call or storage read.
 
+A legacy version 1 pointer carrying only `requiresGate: true` retains that independent marker and
+its fail-closed routing. It does not satisfy the version 2 contract: `hasGates: true` is still
+required there, and is forbidden on version 1. Existing publishers retain both markers when they
+publish a gated manifest as version 2.
+
 ## Prefetch service capabilities
 
 When supplying `prefetch` to `functionBindings`, also supply
