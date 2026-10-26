@@ -1,9 +1,14 @@
 import { createHash } from 'node:crypto';
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
-  readFileSync,
+  readSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -51,6 +56,86 @@ import type { ProjectConfig } from './config.ts';
  */
 
 const DIGEST_CHARACTERS = 16;
+/** A path-sized claim, bounded like the tool's other local policy files. */
+const MAX_CLAIM_BYTES = 65_536;
+const GROUP_AND_OTHER_PERMISSIONS = 0o077;
+const CLAIM_MODE = 0o600;
+
+function hasCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code;
+}
+
+function privateDirectory(dir: string): void {
+  try {
+    mkdirSync(dir, { mode: 0o700 });
+  } catch (error) {
+    if (!hasCode(error, 'EEXIST')) throw error;
+  }
+  const stat = lstatSync(dir);
+  const uid = process.getuid?.();
+  // eslint-disable-next-line no-bitwise -- POSIX permission bits express group and other access.
+  const privateMode = (stat.mode & GROUP_AND_OTHER_PERMISSIONS) === 0;
+  if (!stat.isDirectory() || (uid !== undefined && (!privateMode || stat.uid !== uid))) {
+    throw new Error(`Unsafe deployment claim directory: ${dir}`);
+  }
+}
+
+function readClaim(entry: string): string {
+  const before = lstatSync(entry);
+  if (!before.isFile()) throw new Error(`Unsafe deployment claim: ${entry}`);
+  const flags =
+    process.platform === 'win32'
+      ? constants.O_RDONLY
+      : // eslint-disable-next-line no-bitwise -- operating-system file flags are combined as a mask.
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+  const fd = openSync(entry, flags);
+  try {
+    const stat = fstatSync(fd);
+    const uid = process.getuid?.();
+    if (
+      !stat.isFile() ||
+      stat.nlink !== 1 ||
+      stat.size > MAX_CLAIM_BYTES ||
+      stat.ino !== before.ino ||
+      stat.dev !== before.dev ||
+      (uid !== undefined && stat.uid !== uid)
+    ) {
+      throw new Error(`Unsafe deployment claim: ${entry}`);
+    }
+    const bytes = Buffer.alloc(MAX_CLAIM_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync(fd, bytes, length, bytes.length - length, null);
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > MAX_CLAIM_BYTES) throw new Error(`Deployment claim is too large: ${entry}`);
+    return bytes.subarray(0, length).toString('utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function writeClaim(entry: string, appDir: string): void {
+  const value = path.resolve(appDir);
+  if (Buffer.byteLength(value) > MAX_CLAIM_BYTES)
+    throw new Error('Deployment claim path is too long');
+  let fd: number;
+  try {
+    // Exclusive creation refuses symlinks without truncating anything, including on Windows.
+    fd = openSync(entry, 'wx', CLAIM_MODE);
+  } catch (error) {
+    if (!hasCode(error, 'EEXIST')) throw error;
+    if (readClaim(entry) !== value)
+      throw new Error(`Conflicting deployment claim: ${entry}`, { cause: error });
+    return;
+  }
+  try {
+    writeFileSync(fd, value);
+  } finally {
+    closeSync(fd);
+  }
+}
 
 function digestOf(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, DIGEST_CHARACTERS);
@@ -61,7 +146,14 @@ function ownersDir(config: ProjectConfig): string {
   // The origin rather than the spelling: `https://h` and `https://h/` name one host, and two runs
   // that wrote them differently would each think they had the project to themselves.
   const digest = digestOf(`${new URL(config.baseUrl).origin}\n${config.projectId}`);
-  return path.join(os.tmpdir(), `upwind-deploy-claims-${digest}`, 'owners');
+  const user = process.getuid?.() ?? digestOf(os.userInfo().username);
+  const root = path.join(os.tmpdir(), `upwind-deploy-claims-user-${String(user)}`);
+  privateDirectory(root);
+  const project = path.join(root, digest);
+  privateDirectory(project);
+  const owners = path.join(project, 'owners');
+  privateDirectory(owners);
+  return owners;
 }
 
 function entryFor(config: ProjectConfig, appDir: string): string {
@@ -79,9 +171,8 @@ function letGo(entry: string): void {
 /** Take the project for this fixture, or say which application already has it. */
 export function claimProject(config: ProjectConfig, appDir: string): void {
   const dir = ownersDir(config);
-  mkdirSync(dir, { recursive: true });
   const mine = entryFor(config, appDir);
-  writeFileSync(mine, path.resolve(appDir));
+  writeClaim(mine, appDir);
   const held: string[] = [];
   for (const name of readdirSync(dir)) {
     const entry = path.join(dir, name);
@@ -90,13 +181,15 @@ export function claimProject(config: ProjectConfig, appDir: string): void {
     }
     let claimed: string;
     try {
-      claimed = readFileSync(entry, 'utf8').trim();
-    } catch {
-      // Being written, or just removed. Either way this run has nothing to read from it.
-      continue;
+      claimed = readClaim(entry);
+    } catch (error) {
+      if (hasCode(error, 'ENOENT')) continue;
+      letGo(mine);
+      throw error;
     }
-    if (claimed !== '' && existsSync(claimed)) {
-      held.push(claimed);
+    // An empty claim may still be in the tiny interval between exclusive open and its write.
+    if (claimed === '' || existsSync(claimed)) {
+      held.push(claimed || entry);
     } else {
       // The application is gone, so the claim holds nothing; the entry's own name says which it was.
       letGo(entry);
