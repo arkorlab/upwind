@@ -3,12 +3,16 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { parseAst } from 'rolldown/parseAst';
-import { afterEach, assert, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { jsLiteral } from '../src/codegen.ts';
 import { isNode, listOf } from '../src/lexical-scope.ts';
 import { proveNodeManifests } from '../src/node-manifest-proof.ts';
-import { certifyNodeManifestTemplateHelperImport } from '../src/node-manifest-template-helpers.ts';
+import {
+  certifyNodeManifestTemplateHelperImport,
+  currentNodeManifestTemplateHelperImport,
+  nodeManifestTemplateHelperMember,
+} from '../src/node-manifest-template-helpers.ts';
 import { assertNodeManifestTurbopackTemplateConsumer } from '../src/node-manifest-turbopack-templates.ts';
 import { projectNodeManifestTurbopackFactory } from '../src/node-manifest-turbopack.ts';
 import { manifestTemplateProofFixture } from './fixtures/node-manifest-turbopack-proof.ts';
@@ -98,6 +102,14 @@ async function fixture(
     imports: [...original.imports.filter((entry) => entry !== known), descriptor],
   };
   return { input, descriptor, owner, target, consumer, physical, proofInput, known };
+}
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+function currentImport(own: Fixture): boolean {
+  return currentNodeManifestTemplateHelperImport(own.descriptor.helper, {
+    ...own.descriptor,
+    owner: own.owner,
+    projection: own.input.projection,
+  });
 }
 
 describe('opaque selected Pages helper imports', () => {
@@ -277,6 +289,161 @@ describe('opaque selected Pages helper imports', () => {
     own.consumer.imports = own.consumer.imports.map((edge) => ({ ...edge, target: 'wrong' }));
 
     expect(certifyNodeManifestTemplateHelperImport(own.proofInput)).toBeUndefined();
+  });
+
+  it.each([
+    ['source bytes with unchanged SHA', (own: Fixture) => own.physical.source, 'code', 'changed'],
+    ['physical file', (own: Fixture) => own.physical, 'file', '/other/chunk.js'],
+    ['target identity', (own: Fixture) => own.target, 'id', 'other-helper'],
+    ['target projection', (own: Fixture) => own.target, 'projection', {}],
+    [
+      'cache initializer inventory',
+      (own: Fixture) => own.target.projection,
+      'cacheInitializers',
+      [],
+    ],
+    ['bound input inventory', (own: Fixture) => own.target.projection, 'boundRuntimeInputs', []],
+    ['control owner', (own: Fixture) => own.proofInput, 'owner', {}],
+    ['control specifier', (own: Fixture) => own.proofInput, 'specifier', 'turbopack:other'],
+  ] as const)(
+    'rechecks %s on every lookup and accepts only the restored original',
+    async (_name, select, key, replacement) => {
+      const own = await fixture();
+      const object = select(own);
+      const previous = Object.getOwnPropertyDescriptor(object, key);
+      assert(previous !== undefined);
+
+      expect(currentImport(own)).toBe(true);
+
+      Reflect.set(object, key, replacement);
+
+      expect(currentImport(own)).toBe(false);
+
+      Object.defineProperty(object, key, previous);
+
+      expect(currentImport(own)).toBe(true);
+    },
+  );
+
+  it('checks nested actual import mutations and extra source/control keys', async () => {
+    const own = await fixture();
+    const edge = own.consumer.imports[0];
+    assert(edge !== undefined);
+    const target = edge.target;
+
+    edge.target = 'changed';
+
+    expect(currentImport(own)).toBe(false);
+
+    edge.target = target;
+
+    expect(currentImport(own)).toBe(true);
+
+    for (const object of [own.proofInput, own.physical.source]) {
+      Reflect.set(object, 'unexpected', true);
+
+      expect(currentImport(own)).toBe(false);
+
+      Reflect.deleteProperty(object, 'unexpected');
+
+      expect(currentImport(own)).toBe(true);
+    }
+  });
+
+  it('never invokes control getters or source toJSON while minting or checking freshness', async () => {
+    const own = await fixture();
+    let invoked = false;
+    const unsafe = { ...own.proofInput };
+    Object.defineProperty(unsafe, 'consumer', {
+      get() {
+        invoked = true;
+        return own.consumer;
+      },
+    });
+
+    expect(() => certifyNodeManifestTemplateHelperImport(unsafe)).toThrow(
+      'original source identity',
+    );
+    expect(invoked).toBe(false);
+
+    Object.defineProperty(own.physical.source, 'toJSON', {
+      configurable: true,
+      value() {
+        invoked = true;
+        return {};
+      },
+    });
+
+    expect(() => certifyNodeManifestTemplateHelperImport(own.proofInput)).toThrow(
+      'original source identity',
+    );
+    expect(currentImport(own)).toBe(false);
+    expect(invoked).toBe(false);
+
+    Reflect.deleteProperty(own.physical.source, 'toJSON');
+
+    expect(currentImport(own)).toBe(true);
+  });
+
+  it('rejects source accessors without running them and preserves unexpected assertion errors', async () => {
+    const own = await fixture();
+    const previous = Object.getOwnPropertyDescriptor(own.physical.source, 'code');
+    assert(previous !== undefined);
+    let invoked = false;
+    Object.defineProperty(own.physical.source, 'code', {
+      configurable: true,
+      get() {
+        invoked = true;
+        return '';
+      },
+    });
+
+    expect(currentImport(own)).toBe(false);
+    expect(invoked).toBe(false);
+
+    Object.defineProperty(own.physical.source, 'code', previous);
+
+    expect(currentImport(own)).toBe(true);
+
+    const failure = new Error('authored unexpected descriptor failure');
+    const descriptor = Object.getOwnPropertyDescriptor;
+    const inspection = vi
+      .spyOn(Object, 'getOwnPropertyDescriptor')
+      .mockImplementation((item, key) => {
+        if (item === own.proofInput) throw failure;
+        return descriptor(item, key);
+      });
+    try {
+      expect(() => currentImport(own)).toThrow(failure);
+    } finally {
+      inspection.mockRestore();
+    }
+
+    expect(currentImport(own)).toBe(true);
+  });
+
+  it('preserves descriptor and member identity checks after freshness succeeds', async () => {
+    const own = await fixture();
+    const input = { ...own.descriptor, owner: own.owner, projection: own.input.projection };
+
+    expect(currentNodeManifestTemplateHelperImport(own.descriptor.helper, input)).toBe(true);
+
+    for (const changed of [
+      { ...input, file: '/other.js' },
+      { ...input, sha256: '0'.repeat(64) },
+      { ...input, specifier: 'turbopack:other' },
+      { ...input, owner: { ...own.owner } },
+      { ...input, projection: { ...input.projection } },
+    ]) {
+      expect(currentNodeManifestTemplateHelperImport(own.descriptor.helper, changed)).toBe(false);
+      expect(
+        nodeManifestTemplateHelperMember(own.descriptor.helper, { ...changed, exportName: 'k' }),
+      ).toBeUndefined();
+    }
+
+    expect(
+      nodeManifestTemplateHelperMember(own.descriptor.helper, { ...input, exportName: 'k' }),
+    ).toMatchObject({ name: 'RouteKind' });
   });
 
   it.each(['RouteKind.PAGES="other";', 'const escaped=RouteKind;'])(

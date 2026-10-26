@@ -5,6 +5,15 @@ import {
 } from './node-manifest-handler-context.ts';
 import { certifyNodeManifestHoist, nodeManifestHoistMember } from './node-manifest-hoist.ts';
 import {
+  assertNodeManifestIdentity,
+  assertNodeManifestOwnIdentity,
+  captureNodeManifestIdentity,
+  captureNodeManifestOwnIdentity,
+  NodeManifestIdentityError,
+  type NodeManifestIdentitySnapshot,
+  type NodeManifestOwnIdentitySnapshot,
+} from './node-manifest-identity-snapshot.ts';
+import {
   certifyNodeManifestRouteKind,
   nodeManifestRouteKindMember,
 } from './node-manifest-route-kind.ts';
@@ -46,19 +55,13 @@ interface StoredImport {
   readonly targetOriginal: NodeManifestTurbopackProjection['original'];
   readonly physical: NodeManifestTurbopackGraphFile;
   readonly physicalSource: NodeManifestTurbopackGraphFile['source'];
-  readonly fingerprint: string;
+  readonly control: NodeManifestOwnIdentitySnapshot;
+  readonly controlRoots: readonly unknown[];
+  readonly identity: NodeManifestIdentitySnapshot;
+  readonly identityRoots: readonly unknown[];
   readonly handlerContext: NodeManifestHandlerContext | undefined;
 }
 const IMPORTS = new WeakMap<NodeManifestTemplateHelperImport, StoredImport>();
-
-function identity(input: HelperInput): string {
-  return JSON.stringify({
-    consumer: input.consumer,
-    physical: input.physical,
-    specifier: input.specifier,
-    target: input.target,
-  });
-}
 
 function actualEdge(input: HelperInput): boolean {
   const edges = input.consumer.imports.filter((edge) => edge.specifier === input.specifier);
@@ -81,6 +84,12 @@ function actualEdge(input: HelperInput): boolean {
 export function certifyNodeManifestTemplateHelperImport(
   input: HelperInput,
 ): NodeManifestTemplateHelperImport | undefined {
+  const controlRoots = Object.freeze([input]);
+  const control = captureNodeManifestOwnIdentity(controlRoots);
+  const identityRoots = Object.freeze([input.consumer, input.target, input.physical]);
+  const identity = captureNodeManifestIdentity(identityRoots);
+  assertNodeManifestOwnIdentity(control, controlRoots);
+  assertNodeManifestIdentity(identity, identityRoots);
   if (!actualEdge(input)) return undefined;
   const proof = Object.freeze<NodeManifestTemplateHelperImport>({
     kind: 'selected Pages helper import',
@@ -96,7 +105,10 @@ export function certifyNodeManifestTemplateHelperImport(
     targetOriginal: input.target.projection.original,
     physical: input.physical,
     physicalSource: input.physical.source,
-    fingerprint: identity(input),
+    control,
+    controlRoots,
+    identity,
+    identityRoots,
     handlerContext: input.handlerContext,
   });
   return proof;
@@ -108,9 +120,15 @@ function current(
   projection: NodeManifestTurbopackProjection,
 ): StoredImport | undefined {
   const stored = IMPORTS.get(proof);
+  if (stored?.owner !== owner || stored.consumerProjection !== projection) return undefined;
+  try {
+    assertNodeManifestOwnIdentity(stored.control, stored.controlRoots);
+    assertNodeManifestIdentity(stored.identity, stored.identityRoots);
+  } catch (error) {
+    if (error instanceof NodeManifestIdentityError) return undefined;
+    throw error;
+  }
   if (
-    stored?.owner !== owner ||
-    stored.consumerProjection !== projection ||
     stored.input.owner !== stored.owner ||
     stored.input.consumer !== stored.consumer ||
     stored.input.target !== stored.target ||
@@ -120,12 +138,21 @@ function current(
     stored.consumer.projection.original !== stored.consumerOriginal ||
     stored.target.projection !== stored.targetProjection ||
     stored.target.projection.original !== stored.targetOriginal ||
-    stored.physical.source !== stored.physicalSource ||
-    stored.fingerprint !== identity(stored.input) ||
-    !actualEdge(stored.input)
+    stored.physical.source !== stored.physicalSource
   )
     return undefined;
   return stored;
+}
+
+function descriptorMatches(
+  stored: StoredImport,
+  input: { readonly specifier: string; readonly file: string; readonly sha256: string },
+): boolean {
+  return (
+    stored.input.specifier === input.specifier &&
+    stored.physical.file === input.file &&
+    stored.physical.source.sha256 === input.sha256
+  );
 }
 
 /** A present connection proof cannot fall back to forged physical descriptor metadata. */
@@ -140,11 +167,7 @@ export function currentNodeManifestTemplateHelperImport(
   },
 ): boolean {
   const stored = current(proof, input.owner, input.projection);
-  return (
-    stored?.input.specifier === input.specifier &&
-    stored.physical.file === input.file &&
-    stored.physical.source.sha256 === input.sha256
-  );
+  return stored !== undefined && descriptorMatches(stored, input);
 }
 
 /** No physical Next path or compiler privilege is minted for the actual build chunk. */
@@ -161,8 +184,7 @@ export function nodeManifestTemplateHelperMember(
   },
 ): NodeManifestTemplateHelperMember | undefined {
   const stored = current(proof, input.owner, input.projection);
-  if (stored === undefined || !currentNodeManifestTemplateHelperImport(proof, input))
-    return undefined;
+  if (stored === undefined || !descriptorMatches(stored, input)) return undefined;
   const selected = { owner: stored.owner, factory: stored.target, exportName: input.exportName };
   const kind = certifyNodeManifestRouteKind(selected);
   if (kind !== undefined && nodeManifestRouteKindMember(kind, selected) === 'RouteKind')
