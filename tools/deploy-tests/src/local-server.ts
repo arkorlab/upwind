@@ -171,7 +171,7 @@ function accepts(url: URL): Promise<boolean> {
  * (`instrumentation-hook`), and a `GET /` of this tool's ran the root layout and the middleware ahead
  * of them.
  */
-async function accepting(url: string, end: number): Promise<void> {
+export async function accepting(url: string, end: number): Promise<void> {
   const address = new URL(url);
   while (Date.now() < end) {
     if (await accepts(address)) {

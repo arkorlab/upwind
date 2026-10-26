@@ -14,6 +14,7 @@ import {
 import { installManagerScenarios } from './check-install-manager.ts';
 import { checkLifecycle, lifecycleScenarios } from './check-lifecycle.ts';
 import { nativeConfigScenario, ordinaryNodeOptions } from './check-native-config.ts';
+import { readinessScenario } from './check-readiness.ts';
 import { NEXT_JS_STACK, sameEnvironment, stackSizeScenario } from './check-stack-size.ts';
 import { workspaceScenario } from './check-workspace.ts';
 import { fakeHost, type FakeHost } from './fake-host.ts';
@@ -624,6 +625,7 @@ async function main(): Promise<void> {
       said: (error) => (error instanceof HookFailureError ? error.said : undefined),
       holds,
     });
+    await readinessScenario(holds);
   } finally {
     harness.kill();
     host.close();
