@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -17,6 +18,10 @@ const STOP_MS = 35_000;
 const REQUEST_MS = 20_000;
 const HTTP_OK = 200;
 const HTTP_SEE_OTHER = 303;
+const HTTP_NOT_MODIFIED = 304;
+/** The width `/_next/image` is asked for the fixture's `native.png`, one of the default sizes. */
+const NATIVE_IMAGE_WIDTH = 64;
+const WEBP = 'image/webp';
 const HOME_MARKER = 'upwind-native-home';
 const SERVING = /upwind: native server listening on (http:\/\/\S+)/u;
 
@@ -162,6 +167,35 @@ async function cached(site: URL): Promise<string> {
   const response = await get(site, '/api/cached');
   const data = (await response.json()) as { readonly value: string };
   return data.value;
+}
+
+/**
+ * `/_next/image` resized and re-encoded by the `sharp` the artifact carries — the server here runs
+ * away from the installation the build copied it from — and a client holding it answered 304.
+ */
+async function images(site: URL, installed: string): Promise<void> {
+  const source = new Uint8Array(await (await get(site, '/native.png')).arrayBuffer());
+  const asked = new URL(`/_next/image?url=%2Fnative.png&w=${NATIVE_IMAGE_WIDTH}&q=75`, site);
+  const accept = { accept: WEBP };
+  const response = await fetch(asked, { headers: accept, signal: AbortSignal.timeout(REQUEST_MS) });
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  assert.equal(response.status, HTTP_OK, `${asked.pathname} returned ${String(response.status)}`);
+  assert.equal(response.headers.get('content-type'), WEBP, 'the image must be re-encoded');
+  // Read with the installation's own `sharp`, which the fixture depends on.
+  const read = createRequire(path.join(installed, 'package.json'))('sharp') as (
+    input: Uint8Array,
+  ) => { metadata(): Promise<{ readonly width?: number }> };
+  const { width } = await read(bytes).metadata();
+  assert.equal(width, NATIVE_IMAGE_WIDTH, 'the image must be resized');
+  assert.ok(bytes.byteLength < source.byteLength, 'the image must be smaller than its source');
+  const tag = response.headers.get('etag');
+  assert.ok(tag !== null, 'the image must carry an entity tag');
+  const held = await fetch(asked, {
+    headers: { ...accept, 'if-none-match': tag },
+    signal: AbortSignal.timeout(REQUEST_MS),
+  });
+  await held.body?.cancel();
+  assert.equal(held.status, HTTP_NOT_MODIFIED, 'a client holding the image must be answered 304');
 }
 
 async function rewrites(site: URL): Promise<void> {
@@ -349,6 +383,7 @@ async function probe(out: string, source: string | undefined): Promise<void> {
     await basicRoutes(first.site, actionMarker);
     await ownPort(first.site);
     await rewrites(first.site);
+    await images(first.site, installed);
     await ppr(first.site, () => {
       dynamic.released = true;
       for (const response of dynamic.pending) response.end('released');
