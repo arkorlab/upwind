@@ -15,6 +15,7 @@ import {
   EDGE_DEBUG_HEADER,
   NO_STORE_CACHE_CONTROL,
   NULL_BODY_STATUSES,
+  validatorMatches,
 } from '@stayingupwind/core/request';
 import {
   type BoundedBody,
@@ -27,7 +28,6 @@ import {
 import { type TransformImage, transformMode } from '../edge-runtime.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
-import { validatorMatches } from '../strategies/asset-upstream.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { IMAGE_OPTIMIZER_HEADERS, layImageConfiguredUnder } from './configured-headers.ts';
 import { lookupCache, storeCache } from './image-cache.ts';

@@ -12,6 +12,9 @@ import {
   NULL_BODY_STATUSES,
   RSC_HEADER,
   RSC_VARY,
+  clientHolds,
+  preconditionFails,
+  requestedRange,
 } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
@@ -36,7 +39,6 @@ import {
   safeDiagnosticField,
   serviceUnavailableResponse,
 } from './responses.ts';
-import { clientHolds, preconditionFails, requestedRange } from './static-file-conditions.ts';
 
 /**
  * A file the build shipped, served from storage without asking anyone.

@@ -25,6 +25,16 @@ export {
   type RequestClass,
 } from './classify.ts';
 export { anyConditionHolds } from './conditions.ts';
+export { listsTag } from './entity-tags.ts';
+export { httpDateMs } from './http-date.ts';
+export {
+  type ByteRange,
+  clientHolds,
+  preconditionFails,
+  requestedRange,
+  unmodifiedSince,
+  validatorMatches,
+} from './preconditions.ts';
 export {
   budgetPatterns,
   createPatternBudget,

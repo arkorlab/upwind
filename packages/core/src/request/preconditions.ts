@@ -1,14 +1,23 @@
-import type { BlobRange } from '../preview/blobs.ts';
-import { httpDateMs, unmodifiedSince, validatorMatches } from '../strategies/asset-upstream.ts';
-import { listsTag } from '../strategies/entity-tags.ts';
+import { listsTag } from './entity-tags.ts';
+import { httpDateMs } from './http-date.ts';
 
 /**
- * What a request's preconditions and range make of the answer the edge gives with a shipped file.
+ * What a request's preconditions and range make of an answer: the edge's with a shipped file, or a
+ * cache's that holds one.
  *
- * The edge is the file's origin here, in the place of Next.js's file server (`send`), so it judges
+ * A host is a shipped file's origin, in the place of Next.js's file server (`send`), so it judges
  * them as an origin does, in the order RFC 9110 gives them (§13.2.2): a precondition the file fails
  * first, ahead of a validator the client holds and of a range; the range last.
  */
+
+/** One range of a file's bytes, as offsets into it. */
+export interface ByteRange {
+  readonly start: number;
+  /** Inclusive. */
+  readonly end: number;
+}
+
+const IF_NONE_MATCH = 'if-none-match';
 
 /** One range of bytes; several, or another unit, are answered with the whole file, as allowed. */
 const SINGLE_BYTE_RANGE = /^bytes=(?<start>\d*)-(?<end>\d*)$/u;
@@ -55,7 +64,7 @@ export function clientHolds(
   tag: string,
   lastModified: () => string | null,
 ): boolean {
-  if (request.headers.has('if-none-match')) {
+  if (request.headers.has(IF_NONE_MATCH)) {
     return validatorMatches(request, tag);
   }
   return request.headers.has('if-modified-since') && unmodifiedSince(request, lastModified());
@@ -86,7 +95,7 @@ export function requestedRange(
   request: Request,
   tag: string,
   length: number,
-): BlobRange | null | undefined {
+): ByteRange | null | undefined {
   const range = request.headers.get('range');
   if (range === null || request.method !== 'GET') {
     return undefined;
@@ -114,4 +123,31 @@ export function requestedRange(
   const start = Number(groups['start']);
   const end = groups['end'] === '' ? length - 1 : Math.min(Number(groups['end']), length - 1);
   return start >= length || start > end ? null : { start, end };
+}
+
+/** Whether the request's `If-None-Match` names the entity tag the response would carry (`listsTag`). */
+export function validatorMatches(request: Request, etag: string | null): boolean {
+  const ifNoneMatch = request.headers.get(IF_NONE_MATCH);
+  return ifNoneMatch !== null && listsTag(ifNoneMatch, etag);
+}
+
+/**
+ * Whether a request that asks by date, with no `If-None-Match`, asks of an answer last modified no
+ * later than the date it names: one the client already holds (RFC 9110 §13.1.3). Not judged where
+ * either is no HTTP-date, or the answer names no modification date: the whole answer goes, as to a
+ * request that asked nothing.
+ */
+export function unmodifiedSince(request: Request, lastModified: string | null): boolean {
+  const since = request.headers.get('if-modified-since');
+  if (
+    since === null ||
+    lastModified === null ||
+    request.headers.has(IF_NONE_MATCH) ||
+    (request.method !== 'GET' && request.method !== 'HEAD')
+  ) {
+    return false;
+  }
+  const sinceMs = httpDateMs(since);
+  const modifiedMs = httpDateMs(lastModified);
+  return sinceMs !== undefined && modifiedMs !== undefined && modifiedMs <= sinceMs;
 }
