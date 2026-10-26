@@ -47,10 +47,15 @@ Node ABI and Linux x64 glibc target before publishing it. Worker loader hooks, p
 and native shims are not applied to Node files. The existing shared cache and request runtime is
 retained through a Node transport, rather than replaced with an independent `next start` cache.
 
-The original Next.js manifest consumers and Turbopack runtime are currently verified against
-Next.js 16.4.3. Changed compiler or template shapes are refused until their source contracts are
-reviewed. This restriction applies to native Node artifacts; ordinary Worker output keeps its
-existing version support.
+The original Next.js manifest consumers and Turbopack runtime target Next.js 16.4.3. Changed
+compiler or template shapes are refused until their source contracts are reviewed. Qualification
+of the official native fixture remains incomplete: its default Turbopack build currently stops
+at the original-factory strictness check, before the emitted Function is invoked. Next.js tracks
+[minification losing strict mode](https://github.com/vercel/next.js/issues/100617) upstream.
+CI retains that failure and runs a separate diagnostic with server minification disabled;
+that diagnostic does not establish default-build or hosted compatibility. The adapter leaves
+the project's minification setting unchanged. These restrictions apply to native Node artifacts;
+ordinary Worker output keeps its existing version support.
 
 Hook TypeScript is analyzed after compiler lowering and can be bundled as JavaScript. A dependency
 executed from its original file must use syntax the target Node runtime can execute directly.
