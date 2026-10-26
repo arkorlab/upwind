@@ -5,6 +5,7 @@ import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/pro
 import { createServer, type ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { gzipSync } from 'node:zlib';
@@ -16,6 +17,8 @@ const ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const START_MS = 30_000;
 const STOP_MS = 35_000;
 const REQUEST_MS = 20_000;
+/** How often a kept image is asked for again, until it is answered from what was kept. */
+const KEPT_POLL_MS = 100;
 const HTTP_OK = 200;
 const HTTP_SEE_OTHER = 303;
 const HTTP_NOT_MODIFIED = 304;
@@ -196,6 +199,31 @@ async function images(site: URL, installed: string): Promise<void> {
   });
   await held.body?.cancel();
   assert.equal(held.status, HTTP_NOT_MODIFIED, 'a client holding the image must be answered 304');
+  await keptImage(asked, accept, { tag, bytes });
+}
+
+/**
+ * The image kept on the server's disk once made (`runtime/src/native/image-cache.ts`), and asked for
+ * again: answered from what was kept, its tag and bytes the ones made. Kept once the answer has gone
+ * out, so asked for again until it is, for a while.
+ */
+async function keptImage(
+  asked: URL,
+  headers: Readonly<Record<string, string>>,
+  made: { readonly tag: string; readonly bytes: Uint8Array },
+): Promise<void> {
+  const end = Date.now() + REQUEST_MS;
+  for (;;) {
+    const again = await fetch(asked, { headers, signal: AbortSignal.timeout(REQUEST_MS) });
+    const bytes = new Uint8Array(await again.arrayBuffer());
+    if (again.headers.get('x-nextjs-cache') === 'HIT') {
+      assert.equal(again.headers.get('etag'), made.tag, 'a kept image must keep its entity tag');
+      assert.deepEqual(bytes, made.bytes, 'a kept image must be the one made');
+      return;
+    }
+    assert.ok(Date.now() < end, 'the image was never answered from what the server kept');
+    await sleep(KEPT_POLL_MS);
+  }
 }
 
 async function rewrites(site: URL): Promise<void> {
