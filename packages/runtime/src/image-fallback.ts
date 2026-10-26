@@ -20,7 +20,7 @@ import {
   releaseStream,
 } from '@stayingupwind/core/util';
 
-import type { KeptImage } from './image-cache.ts';
+import type { ImageCacheInput, KeptImage } from './image-cache.ts';
 import { encodeImage, type EncodedImage, holdsImage } from './image-encoder.ts';
 import { ImageDestinationError } from './image-source-error.ts';
 import { fetchImageSource } from './image-source-fetch.ts';
@@ -92,6 +92,32 @@ export function imageFallback(
     return { kind: 'response', response: refusal(HTTP_BAD_REQUEST, parsed.errorMessage) };
   }
   return { kind: parsed.params.isAbsolute ? 'remote' : 'local', params: parsed.params };
+}
+
+/**
+ * What the target keeps the image a request asks for under, and when it may keep it
+ * (`image-cache.ts`): read off the request as routing left it — whether a middleware had a say on it —
+ * and the deployment that answers the application's own paths. On Workers nothing is kept, and the
+ * opener given this waits on nothing.
+ */
+export function imageCacheInputOf(
+  input: {
+    readonly request: Request;
+    readonly middlewareRan?: true | undefined;
+    readonly waitUntil: (promise: Promise<unknown>) => void;
+  },
+  deployment: { readonly deploymentId: string },
+  params: ImageRequestParams,
+  images: ImagesConfig,
+): ImageCacheInput {
+  return {
+    request: input.request,
+    params,
+    images,
+    deploymentId: deployment.deploymentId,
+    middlewareRan: input.middlewareRan === true,
+    waitUntil: input.waitUntil,
+  };
 }
 
 /**

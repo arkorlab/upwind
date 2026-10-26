@@ -44,6 +44,7 @@ import { openImageCache } from './image-cache.ts';
 import {
   applicationHosts,
   fetchRemoteSource,
+  imageCacheInputOf,
   imageFallback,
   sourceRequest,
   sourceResponse,
@@ -240,21 +241,10 @@ async function serveImageSource(
     return fallback.response;
   }
   const { params } = fallback;
-  // Kept, where the target keeps the images it makes, under what the image is made of and for, and
-  // looked up before its source is asked for, as the edge looks one up (`image-cache.ts`). On
-  // Workers nothing is kept, and nothing is waited on.
-  const opening = openImageCache({
-    request,
-    params,
-    images,
-    deploymentId: store.manifest.deploymentId,
-    middlewareRan: input.middlewareRan === true,
-    waitUntil: input.waitUntil,
-  });
+  // Looked up before its source is asked for, where the target keeps images (`image-cache.ts`).
+  const opening = openImageCache(imageCacheInputOf(input, store.manifest, params, images));
   const slot = opening === undefined ? undefined : await opening;
-  if (slot?.hit !== undefined) {
-    return slot.hit;
-  }
+  if (slot?.hit !== undefined) return slot.hit;
   const keep = slot?.keep;
   if (fallback.kind === 'remote') {
     const remote = await fetchRemoteSource({

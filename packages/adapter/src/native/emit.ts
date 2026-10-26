@@ -42,13 +42,14 @@ import {
 import { imageEncoderFiles } from './encoder-files.ts';
 import { copyNativeFiles, nativeAssetSources, nativeTraceFiles } from './files.ts';
 import { nativeEdgeGraphPlugin } from './graph.ts';
+import { type ImageCacheField, imageCacheField } from './image-cache-field.ts';
 
 const MIDDLEWARE_ID = '/_middleware';
 const SERVER_FILE = 'server.mjs';
 const CACHE_WORKER_FILE = 'cache-worker.mjs';
 
 /** A separate format prevents an older Workers uploader from mistaking this for its bundle. */
-export interface NativeDeploymentManifest {
+export interface NativeDeploymentManifest extends ImageCacheField {
   readonly format: 'upwind-node';
   readonly v: 1;
   readonly deploymentId: string;
@@ -57,8 +58,6 @@ export interface NativeDeploymentManifest {
   readonly generatedAt: string;
   readonly projectDir: string;
   readonly distDir: string;
-  /** `images.maximumDiskCacheSize`, where set: the most bytes of images kept (`image-cache.ts`). */
-  readonly imageCacheBytes?: number;
 }
 
 async function filesUnder(directory: string): Promise<string[]> {
@@ -488,7 +487,6 @@ export async function emitNativeDeployment(
     directories: [ctx.repoRoot, ctx.projectDir, ctx.distDir],
     outDir,
   });
-  const imageCacheBytes = images && ctx.config.images.maximumDiskCacheSize;
   const manifest: NativeDeploymentManifest = {
     format: 'upwind-node',
     v: 1,
@@ -498,7 +496,7 @@ export async function emitNativeDeployment(
     generatedAt,
     projectDir: layout.pathOf(ctx.projectDir),
     distDir: layout.pathOf(ctx.distDir),
-    ...(imageCacheBytes !== undefined && { imageCacheBytes }),
+    ...imageCacheField(ctx, images),
   };
   // A static export still needs a real cwd, even though none of its route modules are loaded.
   await mkdir(path.join(outDir, manifest.projectDir), { recursive: true });
