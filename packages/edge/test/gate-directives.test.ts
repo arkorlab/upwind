@@ -99,9 +99,9 @@ const POLICY: DeliveryPolicy = {
 };
 const STATUS = { ok: 200, unprocessable: 422, unavailable: 503, failed: 500 } as const;
 const PRIVATE = 'private, no-store';
-/** A header's value the costly route's pattern spends a request's whole budget testing. */
 /** The header the costly route's pattern tests. */
 const COSTLY_HEADER = 'x-costly';
+/** A header's value the costly route's pattern spends a request's whole budget testing. */
 const COSTLY_VALUE = 'a'.repeat(4096);
 
 /** The head of the page a gate keeps for the route, one boundary left to its resume. */
@@ -576,6 +576,22 @@ describe('a gate that decides a request that takes a shell alone', () => {
       [1, 0, 0, 0, 1],
     );
     expect(payload.body).toBe('from the Function');
+  });
+
+  /**
+   * What goes on unasked is answered as the gate's pass would have it answered: kept from shared
+   * caches, as the request before it, which asked the gate, was — whatever the Function said of
+   * keeping it.
+   */
+  it('keeps what goes on unasked from shared caches as its pass is kept', async () => {
+    const memory = createEdgeMemory(() => NOW);
+    const first = await served(unsaidRequest(), documentsPassing, { memory });
+    const again = await served(unsaidRequest(), documentsPassing, { memory });
+
+    expect([first, again].map(({ asked }) => asked.length)).toStrictEqual([1, 0]);
+    expect(
+      [first, again].map(({ response }) => response.headers.get('cache-control')),
+    ).toStrictEqual(['private, max-age=60', 'private, max-age=60']);
   });
 
   /** The authority's own request for a shell says so, for its gate alone lets it through as one. */

@@ -621,10 +621,7 @@ async function throughGate(
     // A directive is a pass the edge acts on: the handler downstream counts the request, as a pass's,
     // and what it answers this visitor is kept from shared caches as a pass's answer is.
     input.passed?.();
-    const response = await routed(answer);
-    const admitted = new Response(response.body, response);
-    unsharedUnlessPublic(admitted.headers, false);
-    return admitted;
+    return unshared(await routed(answer));
   }
   const elapsed = (input.now?.() ?? started) - started;
   input.terminal?.(answer, gate.route, elapsed, input.host.gates !== undefined);
@@ -670,8 +667,9 @@ function documentGateOf(input: GateInput, gate: RouteGate): string | undefined {
  * Whether `gate` is one that said it decides a request that takes a shell alone, and the request
  * is none the edge would serve one for — a `HEAD`, the router's payload, a prefetch, a crawler's
  * or a client's GET that says nothing of itself — nor one that says it is to be captured
- * (`GATE_CAPTURE_HEADER`), which only its gate lets through as one. It goes on unasked, as it
- * would with no gate: what the gate would answer it, without the round trip to the gate.
+ * (`GATE_CAPTURE_HEADER`), which only its gate lets through as one. It goes on unasked, as the
+ * gate's pass would have it: routed as with no gate, and kept from shared caches as a pass's answer
+ * is (`unshared`), without the round trip to the gate.
  */
 function goesOnUnasked(input: GateInput, gate: RouteGate): boolean {
   const { request } = input;
@@ -701,9 +699,22 @@ export function routeThroughGate(
     input.terminal?.(gate, undefined, 0, false);
     return Promise.resolve(gate);
   }
-  return gate === undefined || goesOnUnasked(input, gate)
-    ? routed()
-    : throughGate(input, gate, routed);
+  if (gate === undefined) {
+    return routed();
+  }
+  return goesOnUnasked(input, gate) ? goneOnUnasked(routed) : throughGate(input, gate, routed);
+}
+
+/** A request that goes on unasked (`goesOnUnasked`), routed as with no gate and kept from shared caches. */
+async function goneOnUnasked(routed: () => Promise<Response>): Promise<Response> {
+  return unshared(await routed());
+}
+
+/** What the handler downstream answers a request its gate passes, kept from shared caches. */
+function unshared(response: Response): Response {
+  const admitted = new Response(response.body, response);
+  unsharedUnlessPublic(admitted.headers, false);
+  return admitted;
 }
 
 /** Content codings describe the input bytes and are removed once the gate's HTML is decoded. */
