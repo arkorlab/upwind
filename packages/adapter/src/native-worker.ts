@@ -392,6 +392,12 @@ export function retainedWorkerCapabilityNodes(
   };
   return retainedWorkerNodes(tree).filter((node) => {
     if (
+      (node.type === 'ClassDeclaration' || node.type === 'ClassExpression') &&
+      node.superClass !== null &&
+      ['ambiguous', 'constructor'].includes(workerOrigin(node.superClass, context) ?? '')
+    )
+      return true;
+    if (
       options?.nodeTarget === false &&
       workerScalarNamespaceArray(node, {
         tree,
