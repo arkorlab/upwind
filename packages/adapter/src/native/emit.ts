@@ -3,7 +3,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ONE_PASS_BUNDLE_VERSION, packPrerenders } from '@stayingupwind/core/bundle';
-import { STATIC_PAGES_FALLBACK_PRIVACY } from '@stayingupwind/core/cache';
 import { type Plugin, type ResolveIdResult, rolldown } from 'rolldown';
 
 import { BlobStore } from '../blobs.ts';
@@ -42,6 +41,7 @@ import {
 import { imageEncoderFiles } from './encoder-files.ts';
 import { copyNativeFiles, nativeAssetSources, nativeTraceFiles } from './files.ts';
 import { nativeEdgeGraphPlugin } from './graph.ts';
+import { NATIVE_RUNTIME_FIELDS } from './runtime-fields.ts';
 
 const MIDDLEWARE_ID = '/_middleware';
 const SERVER_FILE = 'server.mjs';
@@ -470,14 +470,7 @@ export async function emitNativeDeployment(
     staticFiles,
     ...(middleware !== undefined && { middleware: { matchers: middlewareMatchers(middleware) } }),
   };
-  // The server is its own host: what a publication tells the edge of the build, its bundle says to
-  // the runtime, which answers by the edge's rules (`native/delivery.ts`) and seeds its own cache
-  // with the privacy those rules read (`seedEntriesOf`).
-  const runtime = {
-    ...base,
-    routeBodyPrivacy: 2 as const,
-    staticPagesPrivacy: STATIC_PAGES_FALLBACK_PRIVACY,
-  };
+  const runtime = { ...base, ...NATIVE_RUNTIME_FIELDS };
   await writeFile(
     path.join(outDir, 'runtime.json'),
     JSON.stringify({ ...runtime, prerenders: packPrerenders(prerenders) }),
