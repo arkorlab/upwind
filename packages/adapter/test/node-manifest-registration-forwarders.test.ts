@@ -283,9 +283,9 @@ describe('finite independently checked registration forwarders', () => {
     expect(
       nodeManifestRegistrationProofFiles([runtimeGraph], own.input.sources, undefined),
     ).toHaveLength(own.input.sources.length);
-    expect(() => assertNodeManifestSingleRegistration(views, runtimeGraph.exportedId)).toThrow(
-      'grouped protected identity unsupported',
-    );
+    expect(() => {
+      assertNodeManifestSingleRegistration(views, runtimeGraph.exportedId);
+    }).toThrow('grouped protected identity unsupported');
 
     Object.assign(own.tables[0]?.source ?? {}, source(`${own.tables[0]?.source.code}\n`));
 
