@@ -238,10 +238,20 @@ describe('the native Edge bundle', () => {
     ])) as (header: string | null) => boolean;
 
     expect(
-      ['gzip', 'X-Gzip', 'deflate', 'br', 'gzip, br', 'compress', 'gzip, compress', 'identity'].map(
-        (header) => decodes(header),
-      ),
-    ).toStrictEqual([true, true, true, true, true, false, false, false]);
+      [
+        'gzip',
+        'X-Gzip',
+        ' deflate ',
+        'br',
+        'gzip, br',
+        'compress',
+        'gzip, compress',
+        'identity',
+        'gzip, identity',
+        'gzip,',
+        '',
+      ].map((header) => decodes(header)),
+    ).toStrictEqual([true, true, true, true, true, false, false, false, false, false, false]);
     expect(decodes(null)).toBe(false);
   });
 

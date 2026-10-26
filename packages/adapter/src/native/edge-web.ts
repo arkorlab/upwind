@@ -101,13 +101,12 @@ const EDGE_WEB_SOURCE = [
   '}));',
   // Whether Node.js's Fetch decodes a body under this `content-encoding`: every coding it names one
   // Fetch decodes — gzip, deflate, br, and zstd where Node.js has it — or the body is handed over as
-  // it came (Codex). Measured on Node.js 24: a list with any other coding in it is not decoded at all.
+  // it came (Codex). Measured on Node.js 24: a list with any other token in it is not decoded at all,
+  // `identity` and an empty token included (`gzip, identity`, `gzip,`), so none is left out of the
+  // judgement (Sentry); the case of a token and the space around it are not judged.
   'const DECODED_CODINGS = new Set(["gzip", "x-gzip", "deflate", "br", ...(typeof zlib.createZstdDecompress === "function" ? ["zstd"] : [])]);',
-  'const fetchDecodes = (header) => {',
-  '  if (header == null) return false;',
-  '  const codings = header.split(",").map((coding) => coding.trim().toLowerCase()).filter((coding) => coding !== "" && coding !== "identity");',
-  '  return codings.length > 0 && codings.every((coding) => DECODED_CODINGS.has(coding));',
-  '};',
+  'const fetchDecodes = (header) =>',
+  '  header != null && header.split(",").every((coding) => DECODED_CODINGS.has(coding.trim().toLowerCase()));',
   // The bodies Node.js's Fetch handed over decoded, under the `content-encoding` they arrived with:
   // an answer made of one says a coding its bytes no longer have (`edge-answer.ts`). Kept by the
   // stream, which an answer made again of the body — `new Response(answer.body, answer)` — carries
