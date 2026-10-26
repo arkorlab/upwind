@@ -2,11 +2,12 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { afterEach, assert, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { commitNodeManifestBoundStage } from '../src/node-manifest-bound-batch.ts';
 import { ROUTE_EXPORTS } from '../src/node-manifest-framework.ts';
 import { commitNodeManifestHandlerMetadata } from '../src/node-manifest-handler-metadata.ts';
+import * as sdkTerminal from '../src/node-manifest-sdk-terminal.ts';
 import {
   certifyNodeManifestSdkTerminal,
   prepareNodeManifestSdkTerminalScope,
@@ -44,6 +45,7 @@ describe('private handler metadata outer lifecycle', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(directory, { recursive: true, force: true });
   });
 
@@ -113,6 +115,48 @@ describe('private handler metadata outer lifecycle', () => {
     await expect(commitNodeManifestHandlerMetadata(own.proof, own.certificates)).rejects.toThrow(
       'changed original proof or metadata field',
     );
+  });
+
+  it('rejects a metadata getter before any proof field helper reads it', async () => {
+    const own = await fixture(directory);
+    commitNodeManifestBoundStage(own.batch, own.stage);
+    const original = own.proof.helperMetadataFiles;
+    let calls = 0;
+    Object.defineProperty(own.proof, 'helperMetadataFiles', {
+      get() {
+        calls += 1;
+        return original;
+      },
+    });
+
+    await expect(commitNodeManifestHandlerMetadata(own.proof, own.certificates)).rejects.toThrow(
+      'changed original proof or metadata field',
+    );
+    expect(calls).toBe(0);
+  });
+
+  it('rejects a getter installed after a genuine SDK certificate await without invoking it', async () => {
+    const own = await fixture(directory);
+    commitNodeManifestBoundStage(own.batch, own.stage);
+    const original = sdkTerminal.assertNodeManifestSdkTerminal;
+    const metadata = own.proof.helperMetadataFiles;
+    let calls = 0;
+    vi.spyOn(sdkTerminal, 'assertNodeManifestSdkTerminal').mockImplementationOnce(
+      async (...args) => {
+        await original(...args);
+        Object.defineProperty(own.proof, 'helperMetadataFiles', {
+          get() {
+            calls += 1;
+            return metadata;
+          },
+        });
+      },
+    );
+
+    await expect(commitNodeManifestHandlerMetadata(own.proof, own.certificates)).rejects.toThrow(
+      'changed original proof or metadata field',
+    );
+    expect(calls).toBe(0);
   });
 
   it('rechecks pinned producer filesystem bytes after the inner pass returned', async () => {

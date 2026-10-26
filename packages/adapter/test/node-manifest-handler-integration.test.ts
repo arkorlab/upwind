@@ -208,6 +208,30 @@ describe('private Pages handler source integration', () => {
     ).rejects.toThrow('copied, consumed or unstaged proof');
   });
 
+  it('checks the original metadata control wrapper before reading a newly installed getter', async () => {
+    const own = await pagesConjunctionChainFixture(directory);
+    const original = handlerMetadata.stageNodeManifestHandlerMetadata;
+    let calls = 0;
+    vi.spyOn(handlerMetadata, 'stageNodeManifestHandlerMetadata').mockImplementationOnce(
+      (input) => {
+        const proof = original(input);
+        const owned = input.owned;
+        Object.defineProperty(input, 'owned', {
+          get() {
+            calls += 1;
+            return owned;
+          },
+        });
+        return proof;
+      },
+    );
+
+    await expect(proveNodeManifests(own.input, own.graph)).rejects.toThrow(
+      'changed original proof or metadata field',
+    );
+    expect(calls).toBe(0);
+  });
+
   it('refuses an unqualified compiled getHandler even when its complete actual route chain is present', async () => {
     const own = await pagesConjunctionChainFixture(directory);
     const handler = path.join(own.root, 'dist/server/route-modules/pages/pages-handler.js');
@@ -331,7 +355,38 @@ describe('private Pages handler source integration', () => {
       },
     );
 
-    await expect(proveNodeManifests(own.input, own.graph)).rejects.toThrow('foreign source array');
+    await expect(proveNodeManifests(own.input, own.graph)).rejects.toThrow(
+      'changed private context sources or graph',
+    );
+  });
+
+  it('does not invoke a private wrapper getter installed during a genuine source await', async () => {
+    const own = await pagesConjunctionChainFixture(directory);
+    const observed = vi.spyOn(handlerContext, 'qualifyNodeManifestHandlerContext');
+    const original = handlerSources.checkedNodeManifestHandlerFile;
+    let calls = 0;
+    vi.spyOn(handlerSources, 'checkedNodeManifestHandlerFile').mockImplementationOnce(
+      async (file, sha256) => {
+        const proof = await original(file, sha256);
+        const input = observed.mock.calls.find(
+          ([value]) => value.owned.input.producer.kind === 'pages-class',
+        )?.[0];
+        assert(input !== undefined, 'Expected the genuine private Pages consumer');
+        const owned = input.owned;
+        Object.defineProperty(input, 'owned', {
+          get() {
+            calls += 1;
+            return owned;
+          },
+        });
+        return proof;
+      },
+    );
+
+    await expect(proveNodeManifests(own.input, own.graph)).rejects.toThrow(
+      'changed private context sources or graph',
+    );
+    expect(calls).toBe(0);
   });
 
   it('does not canonicalize an undeclared handler property on an otherwise pinned source', async () => {

@@ -12,6 +12,12 @@ import type {
   ManifestGraphFile,
 } from './node-manifest-graph.ts';
 import {
+  assertNodeManifestIdentity,
+  captureNodeManifestIdentity,
+  NodeManifestIdentityError,
+  type NodeManifestIdentitySnapshot,
+} from './node-manifest-identity-snapshot.ts';
+import {
   nodeManifestNormalization,
   type NodeManifestNormalization,
 } from './node-manifest-normalization.ts';
@@ -24,6 +30,8 @@ import type {
 const MAX_SOURCE_BYTES = 134_217_728;
 const SCOPE: unique symbol = Symbol('sealed SDK route terminal scope');
 const TERMINAL: unique symbol = Symbol('exact generated SDK route terminal');
+const PENDING_SOURCE = 'pending SDK original source binding';
+const STALE_SCOPE = 'stale or uncertified SDK terminal scope';
 export interface NodeManifestSdkTerminalScope {
   readonly [SCOPE]: true;
 }
@@ -34,13 +42,19 @@ interface Scope {
   readonly input: ManifestGraphInput;
   readonly graph: ManifestModuleGraph;
   readonly pointers: readonly unknown[];
-  readonly fingerprint: string;
+  readonly identity: NodeManifestIdentitySnapshot;
+  readonly identityRoots: readonly unknown[];
+  readonly pending: WeakMap<NodeManifestTurbopackConsumerInput, Pending>;
   readonly routes: ReadonlyMap<string, SealedRoute>;
   readonly metadata: readonly ManifestGraphFile[];
   readonly generated: string;
   readonly analysisEntry: string | undefined;
   readonly rootDir: string | undefined;
   readonly distDir: string;
+}
+interface Pending {
+  readonly identity: NodeManifestIdentitySnapshot;
+  readonly roots: readonly unknown[];
 }
 interface Child {
   readonly id: string;
@@ -82,8 +96,34 @@ export function assertNodeManifestPendingSdkContext(
   input: NodeManifestTurbopackConsumerInput,
 ): void {
   const state = current(scope);
+  const known = state.pending.get(input);
+  if (known !== undefined) {
+    assertPendingIdentity(known);
+    pendingBindings(state, input);
+    return;
+  }
+  // Capture before field reads: new input identities each require their own original hash proof.
+  const identityRoots = Object.freeze([input]);
+  const identity = captureNodeManifestIdentity(identityRoots);
+  pendingBindings(state, input);
+  for (const source of input.sources)
+    if (digest(source.source.code) !== source.source.sha256) refuse(PENDING_SOURCE);
+  const pending = Object.freeze({ identity, roots: identityRoots });
+  assertPendingIdentity(pending);
+  state.pending.set(input, pending);
+}
+function assertPendingIdentity(pending: Pending): void {
+  try {
+    assertNodeManifestIdentity(pending.identity, pending.roots);
+  } catch (error) {
+    if (error instanceof NodeManifestIdentityError) return refuse(PENDING_SOURCE);
+    throw error;
+  }
+}
+function pendingBindings(state: Scope, input: NodeManifestTurbopackConsumerInput): void {
   if (
-    input.sdkTerminalScope !== scope ||
+    input.sdkTerminalScope === undefined ||
+    SCOPES.get(input.sdkTerminalScope) !== state ||
     state.input.compilerRootBinding !== input.compilerRootBinding ||
     state.rootDir !== input.rootDir ||
     state.distDir !== input.distDir ||
@@ -96,33 +136,26 @@ export function assertNodeManifestPendingSdkContext(
     if (
       original?.file !== source.file ||
       original.sha256 !== source.source.sha256 ||
-      digest(source.source.code) !== original.sha256 ||
       state.graph.imports?.get(source.id) !== source.imports
     )
-      refuse('pending SDK original source binding');
+      refuse(PENDING_SOURCE);
   }
 }
-function fingerprint(input: ManifestGraphInput, graph: ManifestModuleGraph): string {
-  return digest(
-    JSON.stringify([
-      input,
-      [...graph.sources],
-      [...(graph.imports ?? [])],
-      [...graph.importers],
-      [...(graph.roots ?? [])],
-      [...graph.retained],
-      [...(graph.rendered ?? [])],
-    ]),
-  );
+function assertScopeIdentity(state: Scope, reason: string): void {
+  try {
+    assertNodeManifestIdentity(state.identity, state.identityRoots);
+  } catch (error) {
+    if (error instanceof NodeManifestIdentityError) return refuse(reason);
+    throw error;
+  }
 }
 function current(scope: NodeManifestSdkTerminalScope): Scope {
   const state = SCOPES.get(scope);
-  if (
-    state === undefined ||
-    state.pointers.some((value, index) => pointers(state.input, state.graph)[index] !== value) ||
-    state.fingerprint !== fingerprint(state.input, state.graph)
-  )
-    return refuse('stale or uncertified SDK terminal scope');
+  if (state === undefined) return refuse(STALE_SCOPE);
+  // Stored roots are private references. Snapshot first, before mutable field/pointer helpers.
+  assertScopeIdentity(state, STALE_SCOPE);
+  if (state.pointers.some((value, index) => pointers(state.input, state.graph)[index] !== value))
+    return refuse(STALE_SCOPE);
   return state;
 }
 async function checkedCode(source: ManifestGraphFile): Promise<string> {
@@ -157,8 +190,9 @@ export async function prepareNodeManifestSdkTerminalScope(
   readonly normalization: NodeManifestNormalization;
   readonly sealed: Awaited<ReturnType<typeof sealedRoutes>>;
 }> {
+  const identityRoots = Object.freeze([input, graph]);
+  const identity = captureNodeManifestIdentity(identityRoots);
   const originalPointers = pointers(input, graph);
-  const originalFingerprint = fingerprint(input, graph);
   const captured = Object.freeze({
     ...input,
     entries:
@@ -168,18 +202,24 @@ export async function prepareNodeManifestSdkTerminalScope(
   });
   const normalization = await nodeManifestNormalization(captured);
   const sealed = await sealedRoutes(captured, normalization);
+  try {
+    assertNodeManifestIdentity(identity, identityRoots);
+  } catch (error) {
+    if (error instanceof NodeManifestIdentityError)
+      return refuse('changed SDK terminal inputs while sealing');
+    throw error;
+  }
   const actualPointers = pointers(input, graph);
-  if (
-    originalPointers.some((value, index) => actualPointers[index] !== value) ||
-    originalFingerprint !== fingerprint(input, graph)
-  )
+  if (originalPointers.some((value, index) => actualPointers[index] !== value))
     return refuse('changed SDK terminal inputs while sealing');
   const scope = Object.freeze<NodeManifestSdkTerminalScope>({ [SCOPE]: true });
   SCOPES.set(scope, {
     input,
     graph,
     pointers: originalPointers,
-    fingerprint: originalFingerprint,
+    identity,
+    identityRoots,
+    pending: new WeakMap(),
     routes: new Map(
       [...sealed.routes].map(([file, route]) => [file, Object.freeze(structuredClone(route))]),
     ),

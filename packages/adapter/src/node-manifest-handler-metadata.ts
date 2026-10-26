@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import { AuditError } from './dependencies.ts';
 import { assertNodeManifestBoundStageCommitted } from './node-manifest-bound-batch.ts';
 import {
@@ -8,6 +6,15 @@ import {
   type NodeManifestHandlerContext,
   type NodeManifestHandlerOwnerBinding,
 } from './node-manifest-handler-context.ts';
+import {
+  captureNodeManifestIdentity,
+  assertNodeManifestIdentity,
+  captureNodeManifestOwnIdentity,
+  assertNodeManifestOwnIdentity,
+  NodeManifestIdentityError,
+  type NodeManifestIdentitySnapshot,
+  type NodeManifestOwnIdentitySnapshot,
+} from './node-manifest-identity-snapshot.ts';
 import {
   assertNodeManifestPassBinding,
   assertNodeManifestPassRows,
@@ -35,7 +42,10 @@ interface Input {
 interface Stage {
   readonly input: Input;
   readonly pointers: readonly unknown[];
-  readonly fingerprint: string;
+  readonly identity: NodeManifestIdentitySnapshot;
+  readonly identityRoots: readonly unknown[];
+  readonly control: NodeManifestOwnIdentitySnapshot;
+  readonly controlRoots: readonly unknown[];
   readonly rows: readonly NodeManifestTurbopackGraphFactory[];
   readonly terminals: NodeManifestTurbopackConsumerProof['terminals'];
   readonly files: ReadonlyMap<string, string>;
@@ -76,19 +86,6 @@ function pointers(input: Input): readonly unknown[] {
     ...owned.factories.values(),
   ];
 }
-function fingerprint(input: Input): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
-        input.proof,
-        input.owned.input,
-        input.owned.graphs,
-        [...input.owned.factories],
-        input.owned.cohort,
-      ]),
-    )
-    .digest('hex');
-}
 function binding(stage: Stage) {
   return {
     consumerOwner: stage.input.consumerOwner,
@@ -100,12 +97,19 @@ function current(proof: NodeManifestTurbopackConsumerProof): Stage {
   const stage = STAGED.get(proof);
   if (stage === undefined || !stage.pending || stage.input.proof !== proof)
     return refuse('copied, consumed or unstaged proof');
+  try {
+    assertNodeManifestOwnIdentity(stage.control, stage.controlRoots);
+    assertNodeManifestIdentity(stage.identity, stage.identityRoots);
+  } catch (error) {
+    if (error instanceof NodeManifestIdentityError)
+      return refuse('changed original proof or metadata field');
+    throw error;
+  }
   assertNodeManifestTurbopackConsumerOwner(stage.input.consumerOwner, stage.input.owned);
   const actual = pointers(stage.input);
   if (
     actual.length !== stage.pointers.length ||
-    actual.some((value, index) => value !== stage.pointers[index]) ||
-    fingerprint(stage.input) !== stage.fingerprint
+    actual.some((value, index) => value !== stage.pointers[index])
   )
     return refuse('changed original proof or metadata field');
   assertNodeManifestRegistrationRows(stage.input.owned.registrations, stage.rows);
@@ -116,7 +120,17 @@ function current(proof: NodeManifestTurbopackConsumerProof): Stage {
 
 /** Sole caller is the real private semantic walk, after Pages staging, inside its original pass. */
 export function stageNodeManifestHandlerMetadata(input: Input): NodeManifestTurbopackConsumerProof {
+  const controlRoots = Object.freeze([input]);
+  const control = captureNodeManifestOwnIdentity(controlRoots);
   assertNodeManifestTurbopackConsumerOwner(input.consumerOwner, input.owned);
+  const identityRoots = Object.freeze([
+    input.proof,
+    input.owned.input,
+    input.owned.graphs,
+    input.owned.factories,
+    input.owned.cohort,
+  ]);
+  const identity = captureNodeManifestIdentity(identityRoots);
   const rows = Object.freeze([...input.owned.factories.values()]);
   assertNodeManifestPassBinding(input.pass, input.owned.registrations);
   assertNodeManifestPassSources(input.pass, input.owned.input.sources);
@@ -136,7 +150,10 @@ export function stageNodeManifestHandlerMetadata(input: Input): NodeManifestTurb
   STAGED.set(input.proof, {
     input: captured,
     pointers: pointers(captured),
-    fingerprint: fingerprint(captured),
+    identity,
+    identityRoots,
+    control,
+    controlRoots,
     rows,
     terminals: Object.freeze(
       input.proof.terminals.map((terminal) => Object.freeze(structuredClone(terminal))),

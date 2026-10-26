@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 
 import { AuditError } from './dependencies.ts';
@@ -28,6 +27,15 @@ import {
   type NodeManifestHandlerFile,
   type NodeManifestHandlerDirectory,
 } from './node-manifest-handler-sources.ts';
+import {
+  captureNodeManifestIdentity,
+  assertNodeManifestIdentity,
+  captureNodeManifestOwnIdentity,
+  assertNodeManifestOwnIdentity,
+  NodeManifestIdentityError,
+  type NodeManifestIdentitySnapshot,
+  type NodeManifestOwnIdentitySnapshot,
+} from './node-manifest-identity-snapshot.ts';
 import {
   assertNodeManifestPassBinding,
   assertNodeManifestPassRows,
@@ -75,13 +83,16 @@ interface State {
   readonly captured: ContextInput;
   readonly rows: readonly NodeManifestTurbopackGraphFactory[];
   readonly pointers: readonly unknown[];
-  readonly fingerprint: string;
+  readonly identity: NodeManifestIdentitySnapshot;
+  readonly identityRoots: readonly unknown[];
+  readonly control: NodeManifestOwnIdentitySnapshot;
+  readonly controlRoots: readonly unknown[];
   readonly nextRoot: string;
   readonly directory: NodeManifestHandlerDirectory;
   readonly pins: ReadonlyMap<NodeManifestHandlerProfile, readonly NodeManifestHandlerFile[]>;
   readonly files: Map<string, NodeManifestHandlerFile>;
   readonly used: Map<string, NodeManifestTurbopackGraphFile>;
-  readonly consumers: Map<NodeManifestTurbopackGraphFactory, readonly unknown[]>;
+  readonly consumers: Map<NodeManifestTurbopackGraphFactory, NodeManifestIdentitySnapshot>;
   rootUsed: boolean;
   metadata: readonly { readonly file: string; readonly sha256: string }[] | undefined;
 }
@@ -112,20 +123,20 @@ function pointers(input: ContextInput): readonly unknown[] {
     ...input.owned.input.sources.flatMap((source) => [source, source.source, source.imports]),
   ];
 }
-function fingerprint(input: ContextInput): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
-        input.owned.input,
-        input.owned.graphs,
-        [...input.owned.factories],
-        input.owned.cohort,
-        NODE_MANIFEST_HANDLER_PROFILES,
-      ]),
-    )
-    .digest('hex');
+function assertSnapshots(
+  state: Pick<State, 'control' | 'controlRoots' | 'identity' | 'identityRoots'>,
+): void {
+  try {
+    assertNodeManifestOwnIdentity(state.control, state.controlRoots);
+    assertNodeManifestIdentity(state.identity, state.identityRoots);
+  } catch (error) {
+    if (error instanceof NodeManifestIdentityError)
+      return refuse('changed private context sources or graph');
+    throw error;
+  }
 }
 function ownedCurrent(state: State): void {
+  assertSnapshots(state);
   const { input, captured } = state;
   assertNodeManifestTurbopackConsumerOwner(input.consumerOwner, input.owned);
   const values = Object.values(input);
@@ -138,33 +149,34 @@ function ownedCurrent(state: State): void {
   const actual = pointers(input);
   if (
     actual.length !== state.pointers.length ||
-    actual.some((value, index) => value !== state.pointers[index]) ||
-    fingerprint(input) !== state.fingerprint
+    actual.some((value, index) => value !== state.pointers[index])
   )
     refuse('changed private context sources or graph');
   if (input.owned.cohort === undefined) refuse('missing current runtime cohort');
   nodeManifestRuntimeCohortSources(input.owned.cohort, input.owned.input.sources);
-  for (const [consumer, known] of state.consumers)
+  for (const [consumer, known] of state.consumers) {
+    try {
+      assertNodeManifestIdentity(known, [consumer]);
+    } catch (error) {
+      if (error instanceof NodeManifestIdentityError)
+        return refuse('changed actual template consumer');
+      throw error;
+    }
     if (
-      (input.owned.strictFactories.get(consumer.id) !== consumer &&
-        input.owned.factories.get(consumer.id) !== consumer) ||
-      [
-        consumer.projection,
-        consumer.projection.original,
-        consumer.imports,
-        JSON.stringify(consumer),
-      ].some((value, index) => value !== known[index])
+      input.owned.strictFactories.get(consumer.id) !== consumer &&
+      input.owned.factories.get(consumer.id) !== consumer
     )
       refuse('changed actual template consumer');
+  }
   const scope = input.owned.input.sdkTerminalScope;
   if (scope === undefined) refuse('missing pending SDK scope');
   assertNodeManifestPendingSdkContext(scope, input.owned.input);
 }
 function checked(state: State): void {
+  ownedCurrent(state);
   assertNodeManifestPassBinding(state.input.pass, state.input.owned.registrations);
   assertNodeManifestPassSources(state.input.pass, state.input.owned.input.sources);
   assertNodeManifestPassRows(state.input.pass, state.rows);
-  ownedCurrent(state);
 }
 function current(context: NodeManifestHandlerContext): State {
   const state = CONTEXTS.get(context);
@@ -177,7 +189,19 @@ function current(context: NodeManifestHandlerContext): State {
 export async function qualifyNodeManifestHandlerContext(
   input: ContextInput,
 ): Promise<NodeManifestHandlerContext | undefined> {
+  const controlRoots = Object.freeze([input]);
+  const control = captureNodeManifestOwnIdentity(controlRoots);
   assertNodeManifestTurbopackConsumerOwner(input.consumerOwner, input.owned);
+  const identityRoots = Object.freeze([
+    input.owned.input,
+    input.owned.graphs,
+    input.owned.factories,
+    input.owned.cohort,
+    NODE_MANIFEST_HANDLER_PROFILES,
+  ]);
+  const sourceIdentity = captureNodeManifestIdentity(identityRoots);
+  const snapshots = { control, controlRoots, identity: sourceIdentity, identityRoots };
+  assertSnapshots(snapshots);
   if (
     input.owned.input.producer.kind !== 'pages-class' ||
     input.owned.cohort === undefined ||
@@ -186,7 +210,6 @@ export async function qualifyNodeManifestHandlerContext(
     return undefined;
   const captured = Object.freeze({ ...input });
   const originalPointers = pointers(input);
-  const originalFingerprint = fingerprint(input);
   const rows = Object.freeze([...input.owned.factories.values()]);
   assertNodeManifestPassBinding(input.pass, input.owned.registrations);
   assertNodeManifestPassSources(input.pass, input.owned.input.sources);
@@ -208,6 +231,7 @@ export async function qualifyNodeManifestHandlerContext(
   const nextRoot = await realpath(identity.root);
   if (nextRoot !== identity.root) return refuse('ambiguous declared Next root');
   const directory = await checkedNodeManifestHandlerDirectory(nextRoot);
+  assertSnapshots(snapshots);
   const binding = input.owned.input.compilerRootBinding;
   if (
     binding !== undefined &&
@@ -238,7 +262,10 @@ export async function qualifyNodeManifestHandlerContext(
     captured,
     rows,
     pointers: originalPointers,
-    fingerprint: originalFingerprint,
+    control,
+    controlRoots,
+    identity: sourceIdentity,
+    identityRoots,
     nextRoot,
     directory,
     pins,
@@ -311,12 +338,7 @@ export function nodeManifestHandlerMember(
   if (actual === undefined) return undefined;
   for (const profile of profiles) {
     if (!matched(state, profile, actual)) continue;
-    state.consumers.set(input.consumer, [
-      input.consumer.projection,
-      input.consumer.projection.original,
-      input.consumer.imports,
-      JSON.stringify(input.consumer),
-    ]);
+    state.consumers.set(input.consumer, captureNodeManifestIdentity([input.consumer]));
     return { module: NODE_MANIFEST_HANDLER_MODULE, name: 'getHandler' };
   }
   return undefined;
@@ -387,15 +409,17 @@ interface MetadataBinding {
   readonly metadata: readonly { readonly file: string; readonly sha256: string }[] | undefined;
 }
 function metadataState(context: NodeManifestHandlerContext, binding: MetadataBinding): State {
+  captureNodeManifestOwnIdentity([binding]);
   const state = CONTEXTS.get(context);
+  if (state === undefined) return refuse('foreign metadata context binding');
+  ownedCurrent(state);
   if (
-    state?.input.consumerOwner !== binding.consumerOwner ||
+    state.input.consumerOwner !== binding.consumerOwner ||
     state.input.owned !== binding.owned ||
     state.metadata === undefined ||
     state.metadata !== binding.metadata
   )
     return refuse('foreign metadata context binding');
-  ownedCurrent(state);
   return state;
 }
 /** Assert only: the private metadata ledger must be minted inside the original active pass. */
