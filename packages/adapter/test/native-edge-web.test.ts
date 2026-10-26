@@ -68,6 +68,8 @@ function streamOfBody(): ReadableStream<Uint8Array> {
 describe('the native Edge bundle', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    // Whatever a module made of the two globals, as `stubGlobal` found them.
+    vi.unstubAllGlobals();
   });
 
   it("reproduces Node.js refusing a body Next.js's Edge code hands it without the option", async () => {
@@ -121,6 +123,51 @@ describe('the native Edge bundle', () => {
       [ORIGIN, plain],
     ]);
     expect(patched.mock.calls[1]?.[1]).toBe(plain);
+  });
+
+  it('calls the fetch a module kept when it installs its own over it', async () => {
+    const base = vi.fn<typeof fetch>().mockResolvedValue(new Response('ok'));
+    vi.stubGlobal('fetch', base);
+    const send = (await edgeModule(SNIPPET, true, [
+      snippetPlugin(
+        [
+          'const kept = fetch;',
+          'globalThis.fetch = (...args) => kept(...args);',
+          'module.exports = (url, init) => fetch(url, init);',
+        ].join('\n'),
+      ),
+    ])) as (url: string, init?: RequestInit) => Promise<Response>;
+    const body = streamOfBody();
+
+    await expect(send(ORIGIN, { method: 'POST', body })).resolves.toBeInstanceOf(Response);
+    expect(base.mock.calls).toStrictEqual([[ORIGIN, { method: 'POST', body, duplex: 'half' }]]);
+  });
+
+  it("keeps one fetch while the global stays, with what a patch hung on the global's", async () => {
+    vi.stubGlobal('fetch', Object.assign(vi.fn<typeof fetch>(), { __nextPatched: true }));
+    const read = (await edgeModule(SNIPPET, true, [
+      snippetPlugin('module.exports = () => fetch;'),
+    ])) as () => typeof fetch & { readonly __nextPatched?: boolean };
+
+    expect(read()).toBe(read());
+    expect(read().__nextPatched).toBe(true);
+  });
+
+  it('assigns the globals where a module assigns either name', async () => {
+    vi.stubGlobal('fetch', fetch);
+    vi.stubGlobal('Request', Request);
+    const assign = (await edgeModule(SNIPPET, true, [
+      snippetPlugin('module.exports = (f, R) => { fetch = f; Request = R; };'),
+    ])) as (replacementFetch: unknown, replacementRequest: unknown) => void;
+    const replacementFetch = vi.fn<typeof fetch>();
+    const replacementRequest = class {
+      readonly replaced = true;
+    };
+
+    assign(replacementFetch, replacementRequest);
+
+    expect(fetch).toBe(replacementFetch);
+    expect(Request).toBe(replacementRequest);
   });
 
   it('builds a module that assigns either global, as a polyfill may', async () => {
