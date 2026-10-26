@@ -241,8 +241,14 @@ class DiskImages {
   #limit: number | undefined;
   #indexed: Promise<void> | undefined;
   #sweeper: NodeJS.Timeout | undefined;
-  /** The look over the directory under way, which nothing waits on but the next. */
-  #sweeping: Promise<void> | undefined;
+  /**
+   * The turn of whatever changes the index from what it reads of the directory — a look over it, a
+   * write's count and what it lets go — taken one at a time (greptile): a look that read a file a
+   * write has let go since would count it again, and let another go in its place.
+   */
+  #turn: Promise<void> = Promise.resolve();
+  /** The images a read let go while a look over the directory was under way: not to be counted again. */
+  #letGoDuringLook: Set<string> | undefined;
 
   constructor(directory: string, maxBytes: number | undefined) {
     this.#directory = directory;
@@ -279,8 +285,23 @@ class DiskImages {
       await rm(partial, { force: true });
       throw error;
     }
-    this.#count(name, bytes.byteLength);
-    await this.#evict();
+    await this.#exclusive(async () => {
+      this.#count(name, bytes.byteLength);
+      await this.#evict();
+    });
+  }
+
+  /** `work`, in its turn: after whatever else changes the index has had its own. */
+  async #exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const before = this.#turn;
+    const done = Promise.withResolvers<undefined>();
+    this.#turn = done.promise;
+    try {
+      await before;
+      return await work();
+    } finally {
+      done.resolve(undefined);
+    }
   }
 
   /** `#write`, its failure said rather than thrown: what is kept is never what is answered. */
@@ -301,16 +322,14 @@ class DiskImages {
   async #firstSweep(): Promise<void> {
     await this.#sweep();
     this.#sweeper = setInterval(() => {
-      // One at a time: a look that outlasts the hour is waited on by the next.
-      this.#sweeping = this.#afterSweeping();
+      // In its turn, as every look is: one that outlasts the hour is waited on by the next. It says
+      // what it cannot do itself, and fails at nothing.
+      void this.#sweep().catch((error: unknown) => {
+        warn('image cache could not be looked over', { detail: detailOf(error) });
+      });
     }, SWEEP_INTERVAL_MS);
     // Nothing of the server waits on it.
     this.#sweeper.unref();
-  }
-
-  async #afterSweeping(): Promise<void> {
-    await this.#sweeping;
-    await this.#sweep();
   }
 
   /**
@@ -319,25 +338,32 @@ class DiskImages {
    * first, where they are not indexed already. Never fails: what it cannot do is said.
    */
   async #sweep(): Promise<void> {
-    try {
-      // eslint-disable-next-line security/detect-non-literal-fs-filename -- The server's own directory.
-      await mkdir(this.#directory, { recursive: true });
-      // eslint-disable-next-line security/detect-non-literal-fs-filename -- As above.
-      const names = await readdir(this.#directory);
-      const now = Date.now();
-      const found: Found[] = [];
-      for (const name of names) {
-        const kept = await this.#lookedAt(name, now);
-        if (kept !== undefined) found.push(kept);
+    await this.#exclusive(async () => {
+      const letGo = new Set<string>();
+      this.#letGoDuringLook = letGo;
+      try {
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- The server's own directory.
+        await mkdir(this.#directory, { recursive: true });
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- As above.
+        const names = await readdir(this.#directory);
+        const now = Date.now();
+        const found: Found[] = [];
+        for (const name of names) {
+          const kept = await this.#lookedAt(name, now);
+          if (kept !== undefined) found.push(kept);
+        }
+        found.sort((left, right) => left.written - right.written);
+        for (const { name, size } of found) {
+          // What a read let go after the look found it is gone, whatever the look read of it.
+          if (!this.#entries.has(name) && !letGo.has(name)) this.#count(name, size);
+        }
+        await this.#evict();
+      } catch (error) {
+        warn('image cache could not be looked over', { detail: detailOf(error) });
+      } finally {
+        this.#letGoDuringLook = undefined;
       }
-      found.sort((left, right) => left.written - right.written);
-      for (const { name, size } of found) {
-        if (!this.#entries.has(name)) this.#count(name, size);
-      }
-      await this.#evict();
-    } catch (error) {
-      warn('image cache could not be looked over', { detail: detailOf(error) });
-    }
+    });
   }
 
   /** One file of the directory, looked at: an image still to be kept, or `undefined`. */
@@ -403,6 +429,7 @@ class DiskImages {
 
   async #remove(name: string): Promise<void> {
     this.#forget(name);
+    this.#letGoDuringLook?.add(name);
 
     await rm(path.join(this.#directory, name), { force: true });
   }
@@ -421,7 +448,13 @@ class DiskImages {
     const entry = entryOf(bytes, key);
     if (entry === undefined) return undefined;
     if (entry.header.expiresAt <= Date.now()) {
-      await this.#remove(name);
+      // A miss whether or not it can be let go: a directory the server may read but not write
+      // to — mounted read-only, or another user's — answers from the source all the same (Codex).
+      try {
+        await this.#remove(name);
+      } catch (error) {
+        warn('image cache entry could not be let go', { detail: detailOf(error) });
+      }
       return undefined;
     }
     this.#touch(name);

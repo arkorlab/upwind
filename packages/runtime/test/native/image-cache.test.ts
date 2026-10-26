@@ -1,8 +1,10 @@
 /* eslint-disable security/detect-non-literal-fs-filename -- Every path belongs to a test-created directory. */
 import { createHash } from 'node:crypto';
+import type * as Fs from 'node:fs/promises';
 import { mkdtemp, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -25,6 +27,17 @@ import { loadSharp } from '../../src/native/image-encoder.ts';
 
 // As the native build swaps the modules in (`nativeModules`, `adapter/src/native/emit.ts`).
 vi.mock(import('../../src/image-encoder.ts'), () => import('../../src/native/image-encoder.ts'));
+
+// The file system as it is, but for what a test makes it do instead: refuse, or take its time.
+vi.mock(import('node:fs/promises'), async (original) => {
+  const fs = await original();
+  return {
+    ...fs,
+    readdir: vi.fn(fs.readdir) as unknown as typeof fs.readdir,
+    rm: vi.fn(fs.rm),
+    stat: vi.fn(fs.stat) as unknown as typeof fs.stat,
+  };
+});
 
 const PACKAGE_DIR = fileURLToPath(new URL('../..', import.meta.url));
 const HTTP_OK = 200;
@@ -133,6 +146,7 @@ describe('images the native target keeps', () => {
   afterEach(async () => {
     configureImageCache(undefined);
     vi.restoreAllMocks();
+    vi.useRealTimers();
     await rm(directory, { recursive: true, force: true });
   });
 
@@ -234,6 +248,63 @@ describe('images the native target keeps', () => {
 
     await expect(hitOf(inputOf())).resolves.toBeUndefined();
     await expect(stat(file)).rejects.toThrow('ENOENT');
+  });
+
+  it('answers an image past its lifetime from its source where it cannot be let go', async () => {
+    const now = Date.now();
+    await kept(inputOf());
+    vi.spyOn(Date, 'now').mockReturnValue(now + (IMAGE.maxAge + 1) * MS_PER_SECOND);
+    const refused = Object.assign(new Error('EROFS: read-only file system'), { code: 'EROFS' });
+    vi.mocked(rm).mockRejectedValueOnce(refused);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
+      // Said, as the test reads.
+    });
+
+    await expect(hitOf(inputOf())).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining('image cache entry could not be let go'),
+    );
+  });
+
+  it('counts nothing a write let go while the directory was looked over (greptile)', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] });
+    const image = { ...IMAGE, bytes: new Uint8Array(700) };
+    const first = inputOf({ params: { ...PARAMS, href: '/first.png' } });
+    const second = inputOf({ params: { ...PARAMS, href: '/second.png' } });
+    const third = inputOf({ params: { ...PARAMS, href: '/third.png' } });
+    // Two images and their headers fit; three do not.
+    configureImageCache({ directory, maxBytes: 2400 });
+    await kept(first, image);
+    await kept(second, image);
+    const firstName = path.basename(fileOf(first));
+    const secondName = path.basename(fileOf(second));
+    // The hour's look lists the first image before the second, and is held on the second's size
+    // once it has found the first: as a slow disk would hold it.
+    const held = Promise.withResolvers<undefined>();
+    const actual = await vi.importActual<typeof Fs>('node:fs/promises');
+    vi.mocked(readdir).mockImplementationOnce((() =>
+      Promise.resolve([firstName, secondName])) as unknown as typeof actual.readdir);
+    vi.mocked(stat).mockImplementation((async (file: string) => {
+      if (file.endsWith(secondName)) await held.promise;
+      return await actual.stat(file);
+    }) as unknown as typeof actual.stat);
+
+    vi.advanceTimersByTime(60 * 60 * MS_PER_SECOND);
+    await vi.waitFor(() => {
+      expect(vi.mocked(stat)).toHaveBeenCalledWith(path.join(directory, secondName));
+    });
+    // A third image kept meanwhile, which lets the one used longest ago, the first, go.
+    const slot = await slotOf(third);
+    slot.keep?.(image);
+    // What of the write runs before its turn has run: its file in place, and, out of turn, more.
+    await sleep(100);
+    held.resolve(undefined);
+    await settled();
+    await sleep(100);
+
+    await expect(hitOf(second)).resolves.toBeDefined();
+    await expect(hitOf(third)).resolves.toBeDefined();
+    await expect(hitOf(first)).resolves.toBeUndefined();
   });
 
   it('keeps nothing a middleware had a say on, but answers what was kept', async () => {
