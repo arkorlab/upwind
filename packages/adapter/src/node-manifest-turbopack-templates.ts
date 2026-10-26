@@ -1,9 +1,6 @@
-import { createHash } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-
-import { parseAst } from 'rolldown/parseAst';
 
 import { beneath } from './build-paths.ts';
 import { AuditError } from './dependencies.ts';
@@ -26,6 +23,14 @@ import {
   nodeManifestPagesPage,
   type NodeManifestPagesDefinition,
 } from './node-manifest-pages-definitions.ts';
+import { assertNodeManifestPagesEsmPorts } from './node-manifest-pages-esm-ports.ts';
+import {
+  nodeManifestPagesEsmTemplate,
+  nodeManifestTemplateDigest as digest,
+  nodeManifestTemplateExportNames,
+  nodeManifestTemplateProgram as program,
+} from './node-manifest-pages-esm.ts';
+import { nodeManifestTemplateDeclarationView } from './node-manifest-template-declarations.ts';
 import {
   projectedTemplateExports,
   swcTemplateExports,
@@ -104,6 +109,7 @@ interface Template {
   readonly file: string;
   readonly root: string;
   readonly program: Node;
+  readonly esm?: true;
 }
 interface Context {
   readonly program: Node;
@@ -119,14 +125,6 @@ function refuse(reason: string): never {
   throw new AuditError(
     `Unproved Next.js Turbopack route template ${reason}; refusing native publication`,
   );
-}
-function digest(code: string | Uint8Array): string {
-  return createHash('sha256').update(code).digest('hex');
-}
-function program(code: string): Node {
-  const value: unknown = parseAst(code);
-  if (!isNode(value)) return refuse('program');
-  return value;
 }
 function checkedProjection(input: NodeManifestTurbopackTemplateInput): {
   readonly projection: NodeManifestTurbopackProjection;
@@ -448,37 +446,20 @@ function view(
     projection?.exports.kind === 'getters'
       ? projectedTemplateExports(context.program)
       : swcTemplateExports(context.program);
+  const body = withoutStrict(exports.body);
   const alpha = new NodeManifestAlpha({
     original: context.program,
-    body: withoutStrict(exports.body),
+    body: context.template.esm
+      ? nodeManifestTemplateDeclarationView({ original: context.program, body })
+      : body,
     importToken: (node) => importToken(node, context),
   });
   return { alpha, exports };
 }
-function assertExports(
-  actual: ReturnType<typeof view>,
-  expected: ReturnType<typeof view>,
-  kind: NodeManifestTurbopackTemplateInput['route']['kind'],
-): readonly string[] {
-  const mandatory = kind === 'pages-api' ? ['handler'] : ['routeModule', 'handler'];
-  for (const required of mandatory)
-    if (!actual.exports.fields.has(required)) refuse('missing protected export');
-  for (const [name, selector] of actual.exports.fields) {
-    const known = expected.exports.fields.get(name);
-    if (
-      known === undefined ||
-      JSON.stringify(actual.alpha.shape(selector)) !== JSON.stringify(expected.alpha.shape(known))
-    )
-      refuse('changed protected export selector');
-  }
-  return [...actual.exports.fields.keys()];
-}
-
 /** Inspection only: alpha/scaffold views never replace original runtime or application bytes. */
 export async function assertNodeManifestTurbopackTemplateConsumer(
   input: NodeManifestTurbopackTemplateInput,
 ): Promise<NodeManifestTemplateProof> {
-  // A derived view cannot manufacture strictness for the physical factory.
   assertStrictFactory(input.projection);
   const checked = checkedProjection(input);
   const projection = checked.projection;
@@ -492,9 +473,23 @@ export async function assertNodeManifestTurbopackTemplateConsumer(
   const expected = contextOf(template.program, template, input, { ...options, expected: true });
   const actualView = view(actual, projection);
   const expectedView = view(expected);
-  if (JSON.stringify(actualView.alpha.body()) !== JSON.stringify(expectedView.alpha.body()))
-    refuse('changed handler or constructor body');
-  const exports = assertExports(actualView, expectedView, input.route.kind);
+  let exports: readonly string[];
+  if (JSON.stringify(actualView.alpha.body()) === JSON.stringify(expectedView.alpha.body()))
+    exports = nodeManifestTemplateExportNames(actualView, expectedView, input.route.kind);
+  else if (input.route.kind === 'pages') {
+    const esm = expectedScalars(await nodeManifestPagesEsmTemplate(primary.root), actual);
+    assertNodeManifestPagesEsmPorts({
+      program: actual.program,
+      projection: input.projection,
+      slots: actual.slots,
+      ...options,
+    });
+    const left = view({ ...actual, template: esm }, projection);
+    const right = view(contextOf(esm.program, esm, input, { ...options, expected: true }));
+    if (JSON.stringify(left.alpha.body()) !== JSON.stringify(right.alpha.body()))
+      refuse('changed ESM handler or constructor body');
+    exports = nodeManifestTemplateExportNames(left, right, input.route.kind);
+  } else refuse('changed handler or constructor body');
   return {
     kind: input.route.kind,
     page: templatePage(actual),
