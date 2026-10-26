@@ -1,4 +1,5 @@
-import { responseToMiddlewareResult } from '@next/routing';
+import { type MiddlewareResult, responseToMiddlewareResult } from '@next/routing';
+import { onLoopbackOrigin } from '@stayingupwind/core/paas';
 
 import { middlewareHandler } from './entries.ts';
 import { hasBody } from './incoming.ts';
@@ -15,6 +16,7 @@ export const MIDDLEWARE_ENTRY_ID = '/_middleware';
 const HTTP_OK = 200;
 /** What a Pages Router data URL ends in. */
 const DATA_SUFFIX = '.json';
+const REWRITE_HEADER = 'x-middleware-rewrite';
 
 export async function runMiddleware(
   input: HandleInput,
@@ -73,6 +75,26 @@ function middlewareUrl(url: URL, store: Store): URL {
 }
 
 /**
+ * A rewrite to the same loopback server spelled another way, kept on the request's own origin, as
+ * Next.js's router keeps it (`onLoopbackOrigin`): `@next/routing` compares the `localhost` a
+ * middleware's `NextURL` spells with the `127.0.0.1` a request came in on, and proxied the rewrite
+ * back to the same server by name. Said to the client as that router says it, relative to the
+ * request. Nothing is asked of a rewrite on the request's own origin.
+ */
+function keptOnLoopback(result: MiddlewareResult, url: URL): void {
+  const { rewrite } = result;
+  if (rewrite === undefined || rewrite.origin === url.origin) {
+    return;
+  }
+  const own = onLoopbackOrigin(rewrite, url);
+  if (own === undefined) {
+    return;
+  }
+  result.rewrite = own;
+  result.responseHeaders?.set(REWRITE_HEADER, `${own.pathname}${own.search}${own.hash}`);
+}
+
+/**
  * Run the middleware for the router and keep what it decided.
  *
  * `resolveRoutes` returns the response headers routing collected (a middleware's cookies among
@@ -98,6 +120,7 @@ export function middlewareInvoker(
       return {};
     }
     const result = responseToMiddlewareResult(response, ctx.headers, ctx.url);
+    keptOnLoopback(result, ctx.url);
     if (result.bodySent === true) {
       trace.response = response;
     }
