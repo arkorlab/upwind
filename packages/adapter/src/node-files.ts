@@ -181,8 +181,11 @@ export async function nodePhysicalFiles(
   for (const metadata of metadataFiles) owned.add(metadata.file);
   const sources = await physicalSources(owned, layout);
   const links = new Map<string, string>();
-  await nodeModuleAliases(sources, layout, links);
-  await traceAliases(input, layout, links);
+  await nodeModuleAliases(sources, layout, links, async () => {
+    await traceAliases(input, layout, links);
+    await nodeNativeAliases(native, sources, layout, links);
+  });
+  // Keep the native guard's final check after every optional layout transaction.
   await nodeNativeAliases(native, sources, layout, links);
   return {
     files: [...sources.files].map(([name, bytes]) => {

@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { beneath } from './build-paths.ts';
 import { AuditError } from './dependencies.ts';
+import { NodeAliasCompatibility } from './node-alias-compatibility.ts';
 import { nodePackageScope } from './node-package-scope.ts';
 import {
   nodePackageMain,
@@ -369,6 +370,7 @@ async function alternativeAlias(
   file: string,
   specifier: string,
   context: PackageAliasContext,
+  hierarchy: NodeAliasCompatibility,
 ): Promise<void> {
   const staged = new Map<string, string>();
   try {
@@ -377,18 +379,23 @@ async function alternativeAlias(
     if (!unprovedHint(error)) throw error;
     return;
   }
-  // Each staged link was proved by the same closed-target resolver. Never replace a required link.
+  // Preserve both exact links and every parent/child mapping, including staged siblings.
+  const pending = new NodeAliasCompatibility();
   for (const [alias, target] of staged) {
-    const previous = context.links.get(alias);
-    if (previous !== undefined && previous !== target) return;
+    if (!hierarchy.accepts(alias, target) || !pending.accepts(alias, target)) return;
+    pending.add(alias, target);
   }
-  for (const [alias, target] of staged) context.links.set(alias, target);
+  for (const [alias, target] of staged) {
+    context.links.set(alias, target);
+    hierarchy.add(alias, target);
+  }
 }
 
 export async function nodeModuleAliases(
   sources: NodeModuleAliasSources,
   layout: PhysicalLayout,
   links: Map<string, string>,
+  collectRequiredAliases?: () => Promise<void>,
 ): Promise<void> {
   const context = { sources, layout, links };
   const inventories: { file: string; inventory: NodeSpecifierInventory }[] = [];
@@ -401,10 +408,13 @@ export async function nodeModuleAliases(
     const required = new Set(inventory.required);
     for (const specifier of required) await moduleAlias(file, specifier, context);
   }
+  // Trace and native lookup evidence is required too; its failures are never optional hints.
+  await collectRequiredAliases?.();
+  const hierarchy = new NodeAliasCompatibility(links);
   for (const { file, inventory } of inventories) {
     const required = new Set(inventory.required);
     const alternatives = new Set(inventory.alternatives);
     for (const specifier of alternatives)
-      if (!required.has(specifier)) await alternativeAlias(file, specifier, context);
+      if (!required.has(specifier)) await alternativeAlias(file, specifier, context, hierarchy);
   }
 }
