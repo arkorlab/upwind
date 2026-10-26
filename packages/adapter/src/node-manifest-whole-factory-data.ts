@@ -303,9 +303,8 @@ export function nodeManifestWholeFactoryData(
   });
 }
 
-function canonicalJson(value: unknown): string {
-  const result = JSON.stringify(value, (_key, child: unknown) =>
+function canonicalJson(value: Readonly<Record<string, unknown>>): string {
+  return JSON.stringify(value, (_key, child: unknown) =>
     typeof child === 'bigint' ? { type: 'BigIntValue', decimal: child.toString() } : child,
   );
-  return result ?? refuse('canonical JSON');
 }
