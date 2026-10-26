@@ -13,9 +13,8 @@ import { isLocalAddress } from './local-address.ts';
  * Checked on the first destination and again on every redirect hop, because a host that answers
  * publicly is free to point somewhere else in a `Location`.
  *
- * Only literal addresses are judged. A name that resolves to a private address is not caught here
- * — nothing in a Function can see what a name resolves to before `fetch` follows it — and that is a
- * limit worth stating rather than papering over.
+ * This portable check judges literal addresses. The native image transport also validates the
+ * DNS results used by its sockets; Workers leave network transport to the platform.
  */
 export function allowedImageDestination(config: ImagesConfig, target: URL): boolean {
   return config.dangerouslyAllowLocalIP || !isLocalAddress(target.hostname);

@@ -76,11 +76,17 @@ interface ManagerCall {
   readonly token: boolean;
   readonly tokenFile: boolean;
   readonly manager: boolean;
+  readonly cache: boolean;
+  /** The runtime cache's host the command was told to build with (`UPWIND_CACHE_HOST_MODULE`). */
+  readonly cacheHost: string | null;
 }
 
 interface Scenario {
   readonly name: string;
   readonly manager: string | undefined;
+  /** `ADAPTER_TEST_CACHE`, and the target it is asked for on (`ADAPTER_TEST_TARGET`). */
+  readonly cache?: string;
+  readonly target?: string;
   readonly fails?: boolean;
   readonly version?: string;
   readonly installExit?: number;
@@ -113,6 +119,17 @@ const SCENARIOS: Scenario[] = [
     name: 'custom-age',
     manager: 'npm',
     config: { ...DEFAULT_CONFIG, 'min-release-age': 7 },
+    fails: true,
+  },
+  // The runtime cache a host's build is given: the hosted one where asked, and no build at all for a
+  // value the hook does not know, or for `hosted` on a target on this machine, which serves its own.
+  { name: 'hosted-cache', manager: undefined, cache: 'hosted' },
+  { name: 'unknown-cache', manager: undefined, cache: 'other', fails: true },
+  {
+    name: 'hosted-cache-on-cloudflare',
+    manager: undefined,
+    cache: 'hosted',
+    target: 'cloudflare',
     fails: true,
   },
 ];
@@ -243,7 +260,12 @@ function checkInterrupted(result: ScenarioResult, holds: Check): void {
   );
 }
 
-function checkSuccess(result: ScenarioResult, hostPort: number, holds: Check): void {
+function checkSuccess(
+  result: ScenarioResult,
+  hostPort: number,
+  hostedModule: string,
+  holds: Check,
+): void {
   const { dir, scenario, calls, failure, output } = result;
   const installs = calls.filter((call) => call.args[0] === 'install');
   const expectedArgs =
@@ -263,6 +285,13 @@ function checkSuccess(result: ScenarioResult, hostPort: number, holds: Check): v
     `${scenario.name}: build still uses pnpm and stdout stays the URL`,
     calls.some((call) => call.command === 'pnpm' && call.args.includes('run')) &&
       output?.stdout.trim() === `http://127.0.0.1:${String(hostPort)}`,
+  );
+  const cacheHost = scenario.cache === 'hosted' ? hostedModule : null;
+  holds(
+    `${scenario.name}: the build carries the runtime cache's host it was asked for, and no other`,
+    calls
+      .filter((call) => call.command === 'pnpm' && call.args.includes('run'))
+      .every((call) => call.cacheHost === cacheHost),
   );
 }
 
@@ -290,6 +319,8 @@ appendFileSync('manager-calls.jsonl', JSON.stringify({
   token: process.env.ARKOR_API_TOKEN !== undefined,
   tokenFile: process.env.ARKOR_API_TOKEN_FILE !== undefined,
   manager: process.env.ADAPTER_TEST_INSTALL_MANAGER !== undefined,
+  cache: process.env.ADAPTER_TEST_CACHE !== undefined,
+  cacheHost: process.env.UPWIND_CACHE_HOST_MODULE ?? null,
 }) + '\n');
 `;
   const npm = String.raw`${shared}
@@ -348,6 +379,10 @@ export async function installManagerScenarios(input: {
 }): Promise<void> {
   policyChecks(input.holds);
   const pnpm = pnpmOnPath();
+  const hostedModule = path.join(
+    input.env['ADAPTER_DIR'] ?? '',
+    'packages/cache/src/function/hosted.ts',
+  );
   for (const scenario of SCENARIOS) {
     const dir = path.join(input.workDir, `manager-${scenario.name}`);
     writeApplication(dir);
@@ -372,6 +407,8 @@ export async function installManagerScenarios(input: {
           ...input.env,
           PATH: `${bin}${path.delimiter}${input.env['PATH'] ?? ''}`,
           ADAPTER_TEST_INSTALL_MANAGER: scenario.manager,
+          ADAPTER_TEST_CACHE: scenario.cache,
+          ADAPTER_TEST_TARGET: scenario.target,
           ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
         });
       } catch (error) {
@@ -380,13 +417,13 @@ export async function installManagerScenarios(input: {
       const calls = callsFrom(dir);
       const result = { dir, scenario, calls, failure, output };
       input.holds(
-        `${scenario.name}: install commands see neither credentials nor the manager control`,
-        calls.every((call) => !call.token && !call.tokenFile && !call.manager),
+        `${scenario.name}: install commands see neither credentials nor the manager or cache control`,
+        calls.every((call) => !call.token && !call.tokenFile && !call.manager && !call.cache),
       );
       if (scenario.fails === true) {
         checkFailure(result, host.registered(), input.holds);
       } else {
-        checkSuccess(result, host.port, input.holds);
+        checkSuccess(result, host.port, hostedModule, input.holds);
       }
       input.holds(
         `${scenario.name}: config probe output stays private`,

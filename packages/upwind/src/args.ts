@@ -60,7 +60,7 @@ function portOf(value: string | undefined): number {
  */
 function hostnameOf(value: string | undefined): string | undefined {
   if (value === undefined) {
-    return undefined;
+    return '127.0.0.1';
   }
   return value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value;
 }

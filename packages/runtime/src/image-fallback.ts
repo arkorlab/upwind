@@ -18,6 +18,9 @@ import {
   releaseStream,
 } from '@stayingupwind/core/util';
 
+import { ImageDestinationError } from './image-source-error.ts';
+import { fetchImageSource } from './image-source-fetch.ts';
+
 /**
  * `/_next/image` reaching the Function itself.
  *
@@ -145,27 +148,34 @@ function redirectRefused(
 }
 
 async function fetchHop(
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch | undefined,
   url: URL,
   deadline: number,
+  dangerouslyAllowLocalIP: boolean,
 ): Promise<RemoteSource> {
   const remaining = Math.max(1, deadline - Date.now());
   try {
-    const response = await fetchImpl(url.href, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(remaining),
-    });
+    const signal = AbortSignal.timeout(remaining);
+    const response = await (fetchImpl === undefined
+      ? fetchImageSource(url, signal, dangerouslyAllowLocalIP)
+      : fetchImpl(url.href, { redirect: 'manual', signal }));
     return { kind: 'ok', response };
   } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      return {
+        kind: 'refused',
+        response: refusal(
+          HTTP_GATEWAY_TIMEOUT,
+          '"url" parameter is valid but upstream response timed out',
+        ),
+      };
+    }
     return {
       kind: 'refused',
-      response:
-        error instanceof Error && error.name === 'TimeoutError'
-          ? refusal(
-              HTTP_GATEWAY_TIMEOUT,
-              '"url" parameter is valid but upstream response timed out',
-            )
-          : refusal(HTTP_INTERNAL_ERROR, UPSTREAM_INVALID),
+      response: refusal(
+        error instanceof ImageDestinationError ? HTTP_BAD_REQUEST : HTTP_INTERNAL_ERROR,
+        UPSTREAM_INVALID,
+      ),
     };
   }
 }
@@ -186,7 +196,7 @@ export interface RemoteSourceInput {
  * it ask itself.
  */
 export async function fetchRemoteSource(input: RemoteSourceInput): Promise<RemoteSource> {
-  const { images, ownHosts, fetchImpl = fetch } = input;
+  const { images, ownHosts, fetchImpl } = input;
   const deadline = Date.now() + SOURCE_BUDGET_MS;
   let url = new URL(input.href);
   // The patterns name the hosts an application meant to allow, not where they point. Checked on
@@ -195,7 +205,7 @@ export async function fetchRemoteSource(input: RemoteSourceInput): Promise<Remot
     return { kind: 'refused', response: refusal(HTTP_BAD_REQUEST, UPSTREAM_INVALID) };
   }
   for (let hops = images.maximumRedirects; ; hops -= 1) {
-    const hop = await fetchHop(fetchImpl, url, deadline);
+    const hop = await fetchHop(fetchImpl, url, deadline, images.dangerouslyAllowLocalIP);
     if (hop.kind === 'refused') {
       return hop;
     }

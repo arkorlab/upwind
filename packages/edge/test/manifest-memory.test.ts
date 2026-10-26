@@ -1,5 +1,9 @@
 import { sha256HexOfText } from '@stayingupwind/core/artifact';
-import { buildProjectManifest, serializeManifest } from '@stayingupwind/core/manifest';
+import {
+  buildProjectManifest,
+  MAX_MANIFEST_BYTES,
+  serializeManifest,
+} from '@stayingupwind/core/manifest';
 import { EDGE_ISOLATE_BUDGET_BYTES, manifestCharge } from '@stayingupwind/host/delivery';
 import { kvManifestKey, r2ManifestKey } from '@stayingupwind/host/storage';
 import { env } from 'cloudflare:workers';
@@ -13,16 +17,18 @@ import { standaloneRuntime } from '../src/standalone/index.ts';
 const DATE = '2026-10-18T00:00:00.000Z';
 const ROUTES = 1000;
 const CONDITIONS = 600;
+const INLINE_CONDITIONS = 420;
 const BLOB_ORIGIN = 'https://manifest-copy.example';
 
 /** Valid route copies whose stored condition table is shared by the digest-vouched reader. */
-function storedMembers(): string {
+function storedMembers(shared = true): string {
+  const conditionCount = shared ? CONDITIONS : INLINE_CONDITIONS;
   const route = {
     sourceRegex: '^/([^/]+)$',
     members: {
       route: '/[id]',
       kind: 'app-page' as const,
-      bypassFor: Array.from({ length: CONDITIONS }, () => ({ type: 'host' as const })),
+      bypassFor: Array.from({ length: conditionCount }, () => ({ type: 'host' as const })),
     },
   };
   const manifest = buildProjectManifest({
@@ -35,10 +41,12 @@ function storedMembers(): string {
     app: { deploymentId: 'dpl_manifestMemory', scriptName: 'manifest-app' },
     dynamicRoutes: [route],
   });
-  return serializeManifest({
+  const listed = {
     ...manifest,
     dynamicRoutes: Array.from({ length: ROUTES }, () => route),
-  });
+  };
+  // Legacy documents have inline arrays; JSON gives every route its own physical conditions.
+  return shared ? serializeManifest(listed) : JSON.stringify(listed);
 }
 
 describe('the stored graph held under a manifest’s digest', () => {
@@ -96,12 +104,30 @@ describe('the stored graph held under a manifest’s digest', () => {
     },
   );
 
-  it('still refuses the separately cloned conditions read under a non-digest name', async () => {
+  it('preserves validated table references under a non-digest name', async () => {
     const manifestId = 'manifest-without-a-digest';
     await env.EDGE_STATE.put(kvManifestKey(manifestId), storedMembers());
     const memory = createEdgeMemory(() => Date.now());
     const runtime = standaloneRuntime(env, { memory });
 
+    const read = await getManifest(env, runtime, manifestId);
+
+    assert(read.kind === 'found');
+    const routes = read.value.dynamicRoutes;
+
+    expect(routes?.[0]?.members?.bypassFor).toBe(routes?.[1]?.members?.bypassFor);
+    expect(memory.manifests.get(manifestId)).toBe(read.value);
+  });
+
+  it('still refuses inline conditions whose distinct objects exceed the memory budget', async () => {
+    const manifestId = 'manifest-with-inline-conditions';
+    const serialized = storedMembers(false);
+
+    expect(new TextEncoder().encode(serialized).byteLength).toBeLessThan(MAX_MANIFEST_BYTES);
+
+    await env.EDGE_STATE.put(kvManifestKey(manifestId), serialized);
+    const memory = createEdgeMemory(() => Date.now());
+    const runtime = standaloneRuntime(env, { memory });
     const read = await getManifest(env, runtime, manifestId);
 
     expect(read.kind).toBe('missing');

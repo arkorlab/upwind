@@ -34,15 +34,19 @@ interface Directive {
 
 function parseCsp(value: string): Directive[] {
   const directives: Directive[] = [];
+  const seen = new Set<string>();
   for (const part of value.split(';')) {
-    const tokens = part
-      .trim()
-      .split(/\s+/u)
-      .filter((token) => token !== '');
+    // CSP ignores a directive containing non-ASCII code points. Unicode whitespace must never
+    // become an ASCII separator here: doing so can turn an ignored source into an allowed one.
+    if (/[\u{80}-\u{10FFFF}]/u.test(part)) continue;
+    const tokens = part.split(/[\t\n\f\r ]+/u).filter((token) => token !== '');
     const [name, ...sources] = tokens;
-    if (name !== undefined) {
-      directives.push({ name: name.toLowerCase(), sources });
-    }
+    if (name === undefined || !/^[\da-z-]+$/iu.test(name)) continue;
+    const lower = name.toLowerCase();
+    // Browsers use the first occurrence, even if a later one would allow more sources.
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    directives.push({ name: lower, sources });
   }
   return directives;
 }

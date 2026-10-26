@@ -1,4 +1,9 @@
-export { isUpwindAuthPath, UPWIND_AUTH_BASE_PATH, UPWIND_AUTH_SECRET_ENV } from './auth.ts';
+export {
+  isUpwindAuthPath,
+  UPWIND_AUTH_BASE_PATH,
+  UPWIND_AUTH_LOCAL_DEV_ENV,
+  UPWIND_AUTH_SECRET_ENV,
+} from './auth.ts';
 export { UPWIND_CACHE_HOST_MODULE_ENV, UPWIND_UNSHIPPED_OUTPUTS_ENV } from './deploy.ts';
 export {
   isUpwindInternalPath,
@@ -13,6 +18,7 @@ export {
   middlewareApplies,
   mergeMiddlewareResponseHeaders,
   type MiddlewareResult,
+  onLoopbackOrigin,
   readMiddlewareResponse,
 } from './middleware.ts';
 export {

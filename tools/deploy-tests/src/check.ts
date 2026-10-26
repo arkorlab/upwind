@@ -14,6 +14,7 @@ import {
 import { installManagerScenarios } from './check-install-manager.ts';
 import { checkLifecycle, lifecycleScenarios } from './check-lifecycle.ts';
 import { nativeConfigScenario, ordinaryNodeOptions } from './check-native-config.ts';
+import { readinessScenario } from './check-readiness.ts';
 import { NEXT_JS_STACK, sameEnvironment, stackSizeScenario } from './check-stack-size.ts';
 import { workspaceScenario } from './check-workspace.ts';
 import { fakeHost, type FakeHost } from './fake-host.ts';
@@ -408,6 +409,10 @@ async function main(): Promise<void> {
     NEXT_E2E_TEST_TIMEOUT: undefined,
     ADAPTER_TEST_HOOK_STARTED_MS: undefined,
     ADAPTER_TEST_INSTALL_MANAGER: undefined,
+    ADAPTER_TEST_CACHE: undefined,
+    // The hook sets it for a host's build only where a scenario asks for the cache, so the shell's
+    // is kept out: the check of which host a build carries would otherwise read the shell's.
+    UPWIND_CACHE_HOST_MODULE: undefined,
     ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
     ARKOR_API_TOKEN_FILE: tokenFile,
     ADAPTER_TEST_PROJECT_ID: 'p',
@@ -624,6 +629,7 @@ async function main(): Promise<void> {
       said: (error) => (error instanceof HookFailureError ? error.said : undefined),
       holds,
     });
+    await readinessScenario(holds);
   } finally {
     harness.kill();
     host.close();
