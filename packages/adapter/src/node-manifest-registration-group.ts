@@ -255,7 +255,7 @@ function registryFor(
   for (const edge of input.runtime.imports) {
     if (runtimes.has(edge.target) || isBuiltin(edge.target) || known.has(edge.target)) continue;
     const table = sources.get(edge.target);
-    if (table === undefined || table.file !== edge.specifier) return undefined;
+    if (table?.file !== edge.specifier) return undefined;
     known.add(table.id);
     for (const factory of nodeManifestTurbopackFactories(table.source)) {
       for (const id of factory.ids) {

@@ -31,12 +31,7 @@ function parentsOf(nodes: readonly Node[]): ReadonlyMap<Node, Node> {
 function isReference(node: Node, parent: Node | undefined): boolean {
   if (parent?.type === 'MemberExpression' && parent.property === node && !parent.computed)
     return false;
-  return !(
-    parent?.type === 'Property' &&
-    parent.key === node &&
-    !parent.computed &&
-    !parent.shorthand
-  );
+  return parent?.type !== 'Property' || parent.key !== node || parent.computed || parent.shorthand;
 }
 
 function isEnvironmentRead(node: Node, parents: ReadonlyMap<Node, Node>): boolean {
@@ -117,9 +112,9 @@ function knownValue(node: Node, bindings: NativeBindings, depth = 0): KnownValue
     return { environment: false, value: node.value };
   if (node.type === 'UnaryExpression' && node.operator === '!') {
     const argument = knownValue(node.argument, bindings, depth + 1);
-    return argument?.environment === true
-      ? { environment: true, value: !argument.value }
-      : undefined;
+    if (argument?.environment !== true) return undefined;
+    const truthy = Boolean(argument.value);
+    return { environment: true, value: !truthy };
   }
   if (node.type !== 'BinaryExpression' || (node.operator !== '===' && node.operator !== '!=='))
     return undefined;

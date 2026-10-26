@@ -437,7 +437,7 @@ describe('runtime-local original registration equality', () => {
   it.each(['source', 'range', 'edge'] as const)(
     'invalidates a stale certificate after current %s changes',
     async (kind) => {
-      const callback = external('node:path');
+      const callback = external();
       const edge = [{ specifier: 'node:path', target: 'node:path' }];
       const input = await fixture({ callbacks: [callback, callback], imports: [edge, edge] });
       const proof = certificate(input);

@@ -106,8 +106,8 @@ describe('independent Pages handler profile data boundary', () => {
     const changed = fixture();
     changed['files'] = [{ name: 'pages/index.js', sha256: DIGEST, source }];
     const duplicates = fixture();
-    const files = duplicates['files'];
-    duplicates['files'] = Array.isArray(files) ? [...files, ...files] : [];
+    const files: readonly unknown[] = Array.isArray(duplicates['files']) ? duplicates['files'] : [];
+    duplicates['files'] = [...files, ...files];
     const excessive = {
       ...fixture(),
       files: Array.from({ length: 257 }, () => ({ name: 'chunks/a.js', sha256: DIGEST, source })),
