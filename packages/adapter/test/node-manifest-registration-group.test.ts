@@ -354,15 +354,12 @@ describe('runtime-local original registration equality', () => {
   it.each([
     'ctx=>{"use strict";ctx.s(["x",0,42],99);ctx.v(42);}',
     'ctx=>{"use strict";function f(value){return 42;}ctx.v(f({require:ctx.r.bind(ctx)}));}',
-    'ctx=>{"use strict";const ns=ctx.i(1);ctx.n(ns);}',
-  ])(
-    'declines cache/bound/namespace families pending separate per-variant conjunctions',
-    async (callback) => {
-      expect(
-        certifyNodeManifestRegistrationGroup(await fixture({ callbacks: [callback, callback] })),
-      ).toBeUndefined();
-    },
-  );
+    '(ctx,module,exports)=>{"use strict";module.exports=ctx.i(1);}',
+  ])('declines cache/bound/unproved CommonJS families', async (callback) => {
+    expect(
+      certifyNodeManifestRegistrationGroup(await fixture({ callbacks: [callback, callback] })),
+    ).toBeUndefined();
+  });
 
   it('propagates failed ordinary projection instead of using a successful variant', async () => {
     const broken = 'ctx=>{"use strict";ctx.v(ctx.unknown());}';

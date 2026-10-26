@@ -194,6 +194,22 @@ export function assertNodeManifestSingleRegistration(
   if (checked(proof).grouped.has(id)) refuse('grouped protected identity unsupported');
 }
 
+function registrationTargets(
+  state: State,
+  id: string,
+  complete: ReadonlyMap<string, unknown>,
+): { readonly protected: boolean; readonly targets: readonly string[] } {
+  const targets: string[] = [];
+  const members = state.members.get(id) ?? [id];
+  for (const member of members) {
+    if (complete.has(member)) return { protected: true, targets };
+    const factory = state.rows.get(member);
+    const next = factory === undefined ? undefined : forwarded(factory);
+    if (next !== undefined) targets.push(next);
+  }
+  return { protected: false, targets };
+}
+
 /** Additional ordinary boots may touch a group, but cannot borrow any protected chain through it. */
 export function nodeManifestRegistrationTouchesProtected(
   proof: NodeManifestRegistrationViews,
@@ -201,18 +217,23 @@ export function nodeManifestRegistrationTouchesProtected(
   complete: ReadonlyMap<string, unknown>,
 ): boolean {
   const state = checked(proof);
-  const seen = new Set<string>();
-  const pending = [id];
-  for (let target = pending.pop(); target !== undefined; target = pending.pop()) {
-    if (seen.has(target)) refuse('cyclic namespace forwarding');
-    seen.add(target);
-    const members = state.members.get(target) ?? [target];
-    for (const member of members) {
-      if (complete.has(member)) return true;
-      const factory = state.rows.get(member);
-      const next = factory === undefined ? undefined : forwarded(factory);
-      if (next !== undefined) pending.push(next);
+  const active = new Set<string>();
+  const completed = new Set<string>();
+  const pending = [{ id, exit: false }];
+  for (let frame = pending.pop(); frame !== undefined; frame = pending.pop()) {
+    const target = frame.id;
+    if (frame.exit) {
+      active.delete(target);
+      completed.add(target);
+      continue;
     }
+    if (completed.has(target)) continue;
+    if (active.has(target)) refuse('cyclic namespace forwarding');
+    active.add(target);
+    pending.push({ id: target, exit: true });
+    const next = registrationTargets(state, target, complete);
+    if (next.protected) return true;
+    for (const child of next.targets) pending.push({ id: child, exit: false });
   }
   return false;
 }

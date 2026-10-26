@@ -13,6 +13,7 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import { nodeManifestRegistrationForwarder } from './node-manifest-registration-forwarders.ts';
 import {
   nodeManifestRuntimeCohortSources,
   type NodeManifestRuntimeCohort,
@@ -60,6 +61,7 @@ interface Original {
   readonly factory: Node;
   readonly scope: Scope;
   readonly visits: readonly Visit[];
+  readonly strict: boolean;
 }
 interface State {
   readonly ownerIdentity: symbol;
@@ -133,11 +135,11 @@ function originalOf(occurrence: NodeManifestRegistrationOccurrence): Original | 
   const parents = new Map(all.map((visit) => [visit.node, visit.parent]));
   let ancestor: Node | undefined = found.node;
   while (ancestor !== undefined && !hasStrictDirective(ancestor)) ancestor = parents.get(ancestor);
-  if (ancestor === undefined) return undefined;
   return {
     factory: found.node,
     scope,
     visits: all.filter(({ node }) => node.start >= factory.start && node.end <= factory.end),
+    strict: ancestor !== undefined,
   };
 }
 function bindingScope(name: string, visit: Visit): Scope | undefined {
@@ -287,11 +289,14 @@ function frozenProjection(projection: NodeManifestTurbopackProjection) {
       ids: Object.freeze([...projection.factory.ids]),
     }),
     imports: Object.freeze(projection.imports.map((item) => Object.freeze({ ...item }))),
-    exports: Object.freeze({ kind: 'opaque' as const }),
+    exports: Object.freeze({ ...projection.exports }),
     cacheInitializers: Object.freeze([]),
     boundRuntimeInputs: Object.freeze([]),
     asyncLoads: Object.freeze([]),
   });
+}
+function ordinaryIdentity(projection: NodeManifestTurbopackProjection): readonly unknown[] {
+  return [projection.moduleId, projection.source, projection.exports];
 }
 function inspectOccurrence(
   item: NodeManifestRegistrationOccurrence,
@@ -308,7 +313,12 @@ function inspectOccurrence(
   const projections = factory.ids.map((id) =>
     projectNodeManifestTurbopackFactory(physical.source, id, 'dependencies'),
   );
-  if (projections.some((projection) => !ordinary(projection))) return undefined;
+  const forwarders = projections.map((projection) =>
+    nodeManifestRegistrationForwarder(original.factory, projection),
+  );
+  const finite = forwarders.every((profile) => profile !== undefined);
+  if (!finite && (!original.strict || projections.some((projection) => !ordinary(projection))))
+    return undefined;
   const dependencies: string[] = [];
   for (const projection of projections) {
     for (const imported of projection.imports) {
@@ -318,9 +328,13 @@ function inspectOccurrence(
     }
   }
   const signature = JSON.stringify([
-    physical.source.code.slice(factory.start, factory.end),
+    finite
+      ? ['finite forwarder', forwarders]
+      : physical.source.code.slice(factory.start, factory.end),
     factory.ids,
-    projections.map((projection) => [projection.moduleId, projection.source, projection.exports]),
+    finite
+      ? projections.map((projection) => [projection.moduleId, projection.exports])
+      : projections.map((projection) => ordinaryIdentity(projection)),
     dependencies,
   ]);
   const ids = Object.freeze([...factory.ids]);
