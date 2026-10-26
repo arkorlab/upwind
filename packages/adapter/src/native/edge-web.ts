@@ -22,6 +22,12 @@ import type { Plugin } from 'rolldown';
  */
 const EDGE_WEB_BINDING = '__upwindEdgeWeb';
 
+/**
+ * The object's name in the Edge bundle, for its entry module to read off it whether a body is one
+ * Node.js's Fetch decoded (`decodedBody`, `edge-answer.ts`).
+ */
+export const NATIVE_EDGE_WEB_BINDING = EDGE_WEB_BINDING;
+
 const EDGE_WEB_MODULE = '\0upwind:native-edge-web';
 
 /** For `transform.define`: the Edge Runtime's `Request` and `fetch`, as properties of the object. */
@@ -91,15 +97,29 @@ const EDGE_WEB_SOURCE = [
   'const requestFor = keptFor((current) => new Proxy(current, {',
   '  construct: (target, args, newTarget) => Reflect.construct(target, withOption(args), newTarget),',
   '}));',
+  // The bodies Node.js's Fetch handed over decoded, under the `content-encoding` they arrived with:
+  // an answer made of one says a coding its bytes no longer have (`edge-answer.ts`). Kept by the
+  // stream, which an answer made again of the body — `new Response(answer.body, answer)` — carries
+  // on as it is.
+  'const decodedBodies = new WeakSet();',
+  'const noteDecoded = (response) => {',
+  '  const coding = response instanceof Response ? response.headers.get("content-encoding") : null;',
+  '  if (coding !== null && coding.trim().toLowerCase() !== "identity" && response.body !== null) decodedBodies.add(response.body);',
+  '  return response;',
+  '};',
   'const fetchFor = keptFor((current) => new Proxy(current, {',
   // Called as the bare name is, `fetch(…)` reads as a method of this object: not its `this`.
-  '  apply: (target, self, args) => Reflect.apply(target, self === upwindEdgeWeb ? undefined : self, withOption(args)),',
+  '  apply: (target, self, args) => {',
+  '    const answered = Reflect.apply(target, self === upwindEdgeWeb ? undefined : self, withOption(args));',
+  '    return answered instanceof Promise ? answered.then(noteDecoded) : answered;',
+  '  },',
   '}));',
   'export const upwindEdgeWeb = {',
   '  get Request() { return requestFor(globalThis.Request); },',
   '  set Request(value) { globalThis.Request = value; },',
   '  get fetch() { return fetchFor(globalThis.fetch); },',
   '  set fetch(value) { globalThis.fetch = value; },',
+  '  decodedBody: (body) => body != null && decodedBodies.has(body),',
   '};',
   '',
 ].join('\n');

@@ -2,22 +2,31 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { runInThisContext } from 'node:vm';
-import { brotliCompressSync, gzipSync } from 'node:zlib';
+import { brotliCompressSync, gunzipSync, gzipSync } from 'node:zlib';
 
 import { describe, expect, it } from 'vitest';
 
 import { EDGE_ANSWER_SOURCE, EDGE_ANSWER_WRAPPER } from '../src/native/edge-answer.ts';
+import { NATIVE_EDGE_WEB_BINDING } from '../src/native/edge-web.ts';
 
 type Context = Readonly<Record<string, unknown>>;
 type Handler = (request: Request, ctx: Context) => Promise<unknown>;
+
+/**
+ * The bodies the Edge bundle's `fetch` noted as decoded (`edge-web.ts`): the test's to say, in place
+ * of the object the bundle injects.
+ */
+const decoded = new WeakSet<ReadableStream>();
 
 /** The wrapper as the native Edge bundle's entry module defines it. */
 function edgeAnswer(handler: unknown): Handler {
   // eslint-disable-next-line sonarjs/code-eval -- This evaluates the adapter's own entry-module source, as the native Edge bundle runs it.
   const wrap = runInThisContext(
-    `(() => {\n${EDGE_ANSWER_SOURCE}\nreturn ${EDGE_ANSWER_WRAPPER};\n})()`,
-  ) as (handler: unknown) => Handler;
-  return wrap(handler);
+    `((${NATIVE_EDGE_WEB_BINDING}) => {\n${EDGE_ANSWER_SOURCE}\nreturn ${EDGE_ANSWER_WRAPPER};\n})`,
+  ) as (web: unknown) => (handler: unknown) => Handler;
+  return wrap({
+    decodedBody: (body: ReadableStream | null) => body !== null && decoded.has(body),
+  })(handler);
 }
 
 const REQUEST = new Request('http://localhost/api/proxy');
@@ -51,7 +60,20 @@ describe("the native Edge bundle's answers", () => {
     }
   });
 
-  it('drops how the body traveled, as `next start` does, and keeps the rest', async () => {
+  it('drops the coding of an answer made again of a body Fetch decoded', async () => {
+    const fetched = new Response(BODY, { headers: { 'content-encoding': 'gzip' } });
+    decoded.add(fetched.body!);
+    const handler = edgeAnswer(() =>
+      Promise.resolve(new Response(fetched.body, { status: 200, headers: fetched.headers })),
+    );
+
+    const answer = (await handler(REQUEST, {})) as Response;
+
+    expect(answer.headers.has('content-encoding')).toBe(false);
+    await expect(answer.text()).resolves.toBe(BODY);
+  });
+
+  it('drops how the body traveled, and keeps the rest', async () => {
     const handler = edgeAnswer(() => {
       return Promise.resolve(
         new Response(BODY, {
@@ -72,7 +94,9 @@ describe("the native Edge bundle's answers", () => {
 
     expect(answer.status).toBe(203);
     expect(answer.statusText).toBe('Non-Authoritative Information');
+    // The coding is the route's own, of bytes it made: it stays.
     expect([...answer.headers]).toStrictEqual([
+      ['content-encoding', 'br'],
       ['content-type', 'text/plain'],
       ['x-kept', 'yes'],
     ]);
@@ -86,16 +110,22 @@ describe("the native Edge bundle's answers", () => {
     await expect(handler(REQUEST, {})).resolves.toBe(plain);
   });
 
-  it('drops the coding of a body the answer compressed itself, as `next start` does', async () => {
+  it('keeps the coding of a body the route compressed itself, as it arrives deployed (Sentry)', async () => {
     const compressed = gzipSync(BODY);
-    const handler = edgeAnswer(() =>
-      Promise.resolve(new Response(compressed, { headers: { 'content-encoding': 'gzip' } })),
-    );
+    const handler = edgeAnswer(() => {
+      return Promise.resolve(
+        new Response(compressed, {
+          headers: { 'content-encoding': 'gzip', 'content-length': String(compressed.length) },
+        }),
+      );
+    });
 
     const answer = (await handler(REQUEST, {})) as Response;
+    const bytes = new Uint8Array(await answer.arrayBuffer());
 
-    expect(answer.headers.has('content-encoding')).toBe(false);
-    expect(new Uint8Array(await answer.arrayBuffer())).toStrictEqual(new Uint8Array(compressed));
+    expect(answer.headers.get('content-encoding')).toBe('gzip');
+    expect(answer.headers.has('content-length')).toBe(false);
+    expect(gunzipSync(bytes).toString()).toBe(BODY);
   });
 
   it('passes on what is not a response, and an export that is not a handler', async () => {
