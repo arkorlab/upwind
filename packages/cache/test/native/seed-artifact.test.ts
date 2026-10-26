@@ -1,4 +1,5 @@
 /* eslint-disable security/detect-non-literal-fs-filename -- Every path belongs to this suite's private temporary fixture directory. */
+import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
