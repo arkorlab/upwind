@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from 'node
 import os from 'node:os';
 import path from 'node:path';
 
+import { parseAst } from 'rolldown/parseAst';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { publicPagesCorpus } from '../../../tools/native-pages-handler-profile/format.mts';
@@ -50,6 +51,52 @@ function fixture(): Record<string, unknown> {
 describe('independent Pages handler profile data boundary', () => {
   afterEach(async () => {
     for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  });
+
+  it('pins a server-only public getHandler selection marker without qualifying a catalog', async () => {
+    const bytes = await readFile(
+      new URL(
+        '../../../tools/native-pages-handler-profile/fixture/pages/index.js',
+        import.meta.url,
+      ),
+    );
+    const program = parseAst(bytes.toString('utf8'));
+    const imported = program.body.find((statement) => {
+      return (
+        statement.type === 'ImportDeclaration' &&
+        statement.source.value === 'next/dist/server/route-modules/pages/pages-handler.js'
+      );
+    });
+    const exported = program.body.find((statement) => {
+      return (
+        statement.type === 'ExportNamedDeclaration' &&
+        statement.declaration?.type === 'FunctionDeclaration' &&
+        statement.declaration.id?.name === 'getServerSideProps'
+      );
+    });
+    const body =
+      exported?.type === 'ExportNamedDeclaration' &&
+      exported.declaration?.type === 'FunctionDeclaration'
+        ? (exported.declaration.body?.body ?? [])
+        : [];
+    const marker = body[0]?.type === 'ExpressionStatement' ? body[0].expression : undefined;
+
+    expect(imported?.type === 'ImportDeclaration' ? imported.specifiers : []).toMatchObject([
+      { type: 'ImportSpecifier', imported: { name: 'getHandler' }, local: { name: 'getHandler' } },
+    ]);
+    expect(marker).toMatchObject({
+      type: 'AssignmentExpression',
+      operator: '=',
+      left: {
+        type: 'MemberExpression',
+        computed: false,
+        object: { type: 'Identifier', name: 'globalThis' },
+        property: { type: 'Identifier', name: '__upwind_public_pages_get_handler__' },
+      },
+      right: { type: 'Identifier', name: 'getHandler' },
+    });
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(FIXTURE_FILES['pages/index.js']);
+    expect(matchReviewedPagesHandler(fixture())).toBeUndefined();
   });
 
   it('pins both lock documents with the leading pnpm boot-document marker', async () => {
