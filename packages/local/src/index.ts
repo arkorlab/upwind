@@ -26,3 +26,4 @@ export {
   startStack,
 } from './stack.ts';
 export { agentTarget } from './target.ts';
+export { type CheckShard } from './sharding.ts';

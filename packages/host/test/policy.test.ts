@@ -88,6 +88,7 @@ describe('deliveryPolicySchema', () => {
       'mode',
       'reason',
       'manifestId',
+      'requiresGate',
       'policyId',
       'selectedPolicy',
       'deployment',

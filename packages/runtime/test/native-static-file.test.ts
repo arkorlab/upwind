@@ -4,10 +4,11 @@ import { type FileHandle, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/pr
 import os from 'node:os';
 import path from 'node:path';
 
-import type { StaticFile } from '@stayingupwind/core/bundle';
+import type { Route, StaticFile } from '@stayingupwind/core/bundle';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { staticFileResponse } from '../src/native/static-file.ts';
+import { keptItsLength } from '../src/kept-length.ts';
+import { afterRouting, staticFileResponse } from '../src/native/static-file.ts';
 import type { RoutedInput } from '../src/serve.ts';
 import type { Store } from '../src/store.ts';
 
@@ -42,11 +43,35 @@ function requireResource<T>(value: T | undefined): T {
 }
 
 const digest = 'a'.repeat(64);
-const store = {
-  tryReadBlob: () => {
-    throw new Error('native static files must stream from disk');
-  },
-} as unknown as Store;
+
+/** A build whose `next.config` header rules are `rules`, ahead of the middleware. */
+function storeWith(rules: readonly Route[] = []): Store {
+  return {
+    manifest: { config: {}, routing: { beforeMiddleware: rules, afterFiles: [], onMatch: [] } },
+    tryReadBlob: () => {
+      throw new Error('native static files must stream from disk');
+    },
+  } as unknown as Store;
+}
+
+const store = storeWith();
+const FILE_PATTERN = String.raw`^/static\.js$`;
+
+/**
+ * The answer as routing lays what it collected on it (`withRoutingHeaders`): a cookie one more, any
+ * other header over the answer's own.
+ */
+function routed(answer: Response, laid: readonly (readonly [string, string])[]): Response {
+  const headers = new Headers(answer.headers);
+  for (const [name, value] of laid) {
+    if (name === 'set-cookie') {
+      headers.append(name, value);
+    } else {
+      headers.set(name, value);
+    }
+  }
+  return new Response(answer.body, { status: answer.status, headers });
+}
 
 function input(method: string, signal?: AbortSignal): RoutedInput {
   return {
@@ -56,6 +81,17 @@ function input(method: string, signal?: AbortSignal): RoutedInput {
     }),
   } as RoutedInput;
 }
+
+/** A read of the file, with the headers a client sent and whether a middleware ran for it. */
+function asked(headers: HeadersInit, middlewareRan = false, method = 'GET'): RoutedInput {
+  return {
+    request: new Request('https://fixture.test/static.js', { method, headers }),
+    ...(middlewareRan && { middlewareRan: true }),
+  } as RoutedInput;
+}
+
+const TAG = `"${digest}"`;
+const BODY = 'body';
 
 function file(byteLength: number, immutable = true): StaticFile {
   return {
@@ -143,5 +179,365 @@ describe('native static file delivery', () => {
       staticFileResponse(input('GET', controller.signal), store, file(0), 200),
     ).rejects.toThrow('visitor left');
     expect(open).not.toHaveBeenCalled();
+  });
+
+  describe('as the edge answers a file', () => {
+    beforeEach(async () => {
+      await writeFile(path.join(directory, 'blobs', digest), BODY);
+    });
+
+    it('names the file by its hash and length, and takes a range of it', async () => {
+      const response = await staticFileResponse(asked({}), store, file(4, false), 200);
+
+      expect(response?.status).toBe(200);
+      expect(Object.fromEntries(response?.headers ?? [])).toStrictEqual({
+        'accept-ranges': 'bytes',
+        'cache-control': 'public, max-age=0, must-revalidate',
+        'content-length': '4',
+        'content-type': 'text/javascript',
+        etag: TAG,
+      });
+      await expect(response?.text()).resolves.toBe(BODY);
+    });
+
+    it('answers HEAD with the length and tag a read would carry, reading nothing', async () => {
+      const response = await staticFileResponse(asked({}, false, 'HEAD'), store, file(4), 200);
+
+      expect(response?.body).toBeNull();
+      expect(response?.headers.get('content-length')).toBe('4');
+      expect(response?.headers.get('etag')).toBe(TAG);
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it.each([TAG, `W/${TAG}`, `"other", ${TAG}`, '*'])(
+      'answers 304 to an If-None-Match of %s, reading nothing',
+      async (validator) => {
+        const response = await staticFileResponse(
+          asked({ 'if-none-match': validator }),
+          store,
+          file(4),
+          200,
+        );
+
+        expect(response?.status).toBe(304);
+        expect(response?.body).toBeNull();
+        expect(response?.headers.get('etag')).toBe(TAG);
+        expect(response?.headers.has('content-length')).toBe(false);
+        expect(response?.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+        expect(open).not.toHaveBeenCalled();
+      },
+    );
+
+    it('answers 412 to an If-Match it fails, kept by nobody', async () => {
+      const response = await staticFileResponse(
+        asked({ 'if-match': '"other"' }),
+        store,
+        file(4),
+        200,
+      );
+
+      expect(response?.status).toBe(412);
+      expect(response?.body).toBeNull();
+      expect(response?.headers.get('cache-control')).toBe('private, no-store');
+      expect(response?.headers.has('content-length')).toBe(false);
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it('sends the one range asked, and only its bytes', async () => {
+      const response = await staticFileResponse(asked({ range: 'bytes=1-2' }), store, file(4), 200);
+
+      expect(response?.status).toBe(206);
+      expect(response?.headers.get('content-range')).toBe('bytes 1-2/4');
+      expect(response?.headers.get('content-length')).toBe('2');
+      await expect(response?.text()).resolves.toBe('od');
+    });
+
+    it('refuses a range no byte satisfies with 416, kept by nobody', async () => {
+      const response = await staticFileResponse(asked({ range: 'bytes=10-' }), store, file(4), 200);
+
+      expect(response?.status).toBe(416);
+      expect(response?.headers.get('content-range')).toBe('bytes */4');
+      expect(response?.headers.has('content-length')).toBe(false);
+      expect(response?.headers.get('cache-control')).toBe('private, no-store');
+    });
+
+    it('sends the whole file where If-Range names another entity, or names it weakly', async () => {
+      for (const condition of ['"other"', `W/${TAG}`]) {
+        const response = await staticFileResponse(
+          asked({ range: 'bytes=1-2', 'if-range': condition }),
+          store,
+          file(4),
+          200,
+        );
+
+        expect(response?.status).toBe(200);
+        await expect(response?.text()).resolves.toBe(BODY);
+      }
+    });
+
+    it('varies on what a router sent, where it asked for React Server Components', async () => {
+      const response = await staticFileResponse(asked({ rsc: '1' }), store, file(4), 200);
+
+      expect(response?.headers.get('vary')).toBe(
+        'rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch',
+      );
+
+      await response?.body?.cancel();
+    });
+
+    it('is held by the visitor alone where a middleware ran', async () => {
+      const response = await staticFileResponse(asked({}, true), store, file(4), 200);
+
+      expect(response?.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
+
+      await response?.body?.cancel();
+    });
+
+    it('judges no validator or range under the status a rewrite named, sending the file whole', async () => {
+      const response = await staticFileResponse(
+        { ...asked({ 'if-none-match': TAG, range: 'bytes=1-2' }), rewriteStatus: 404 },
+        store,
+        file(4),
+        200,
+      );
+
+      expect(response?.status).toBe(404);
+      expect(response?.headers.get('accept-ranges')).toBe('none');
+      await expect(response?.text()).resolves.toBe(BODY);
+    });
+
+    it('names no length under a bodyless status a rewrite named', async () => {
+      const response = await staticFileResponse(
+        { ...asked({}), rewriteStatus: 205 },
+        store,
+        file(4),
+        200,
+      );
+
+      expect(response?.status).toBe(205);
+      expect(response?.body).toBeNull();
+      expect(response?.headers.has('content-length')).toBe(false);
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it('keeps a refusal by nobody once routing has laid a lifetime on it', async () => {
+      const ask = asked({ 'if-match': '"other"' });
+      const refusal = requireResource(await staticFileResponse(ask, store, file(4), 200));
+
+      // A rule's own lifetime over the file's.
+      const kept = afterRouting(ask, routed(refusal, [['cache-control', 'public, max-age=60']]));
+
+      expect(kept.status).toBe(412);
+      expect(kept.headers.get('cache-control')).toBe('private, no-store');
+    });
+
+    it('leaves an answer that is not its own as routing left it', () => {
+      const other = new Response('page', { headers: { 'cache-control': 'public, max-age=60' } });
+
+      expect(afterRouting(asked({}), other)).toBe(other);
+      expect(other.headers.get('cache-control')).toBe('public, max-age=60');
+    });
+
+    it('says the bytes on the wire as the answer has them, whatever a rule laid on them', async () => {
+      const ask = asked({});
+      const answer = requireResource(await staticFileResponse(ask, store, file(4), 200));
+
+      const laid = afterRouting(
+        ask,
+        routed(answer, [
+          ['etag', '"rule"'],
+          ['content-length', '9'],
+          ['accept-ranges', 'none'],
+          ['content-range', 'bytes 0-1/9'],
+        ]),
+      );
+
+      expect(laid.headers.get('etag')).toBe(TAG);
+      expect(laid.headers.get('content-length')).toBe('4');
+      expect(laid.headers.get('accept-ranges')).toBe('bytes');
+      expect(laid.headers.has('content-range')).toBe(false);
+      expect(keptItsLength(laid)).toBe(true);
+      await expect(laid.text()).resolves.toBe(BODY);
+    });
+
+    it('judges a validator by the tag the middleware set in place of the file’s', async () => {
+      const ask: RoutedInput = {
+        ...asked({ 'if-none-match': '"mw"' }, true),
+        middlewareHeaders: new Headers({ etag: '"mw"' }),
+      };
+
+      const response = await staticFileResponse(ask, store, file(4), 200);
+
+      expect(response?.status).toBe(304);
+      expect(response?.headers.get('etag')).toBe('"mw"');
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it('judges a date by the Last-Modified routing lays on it, the build keeping none of the file’s', async () => {
+      const dated = {
+        routingHeaders: new Headers({ 'last-modified': 'Mon, 26 Oct 2026 00:00:00 GMT' }),
+      };
+
+      const unchanged = await staticFileResponse(
+        { ...asked({ 'if-modified-since': 'Mon, 26 Oct 2026 00:00:00 GMT' }), ...dated },
+        store,
+        file(4),
+        200,
+      );
+      const changed = await staticFileResponse(
+        { ...asked({ 'if-unmodified-since': 'Sun, 25 Oct 2026 00:00:00 GMT' }), ...dated },
+        store,
+        file(4),
+        200,
+      );
+
+      expect(unchanged?.status).toBe(304);
+      expect(changed?.status).toBe(412);
+    });
+
+    it('sends the type a rule gives the file, and neither type nor coding of the middleware’s', async () => {
+      const typed = storeWith([
+        { sourceRegex: FILE_PATTERN, headers: { 'content-type': 'text/plain' } },
+      ]);
+      const ask: RoutedInput = {
+        ...asked({}, true),
+        middlewareHeaders: new Headers({ 'content-type': 'image/png', 'content-encoding': 'gzip' }),
+      };
+      const answer = requireResource(await staticFileResponse(ask, typed, file(4), 200));
+
+      const laid = afterRouting(
+        ask,
+        routed(answer, [
+          ['content-type', 'image/png'],
+          ['content-encoding', 'gzip'],
+        ]),
+      );
+
+      expect(laid.headers.get('content-type')).toBe('text/plain');
+      expect(laid.headers.has('content-encoding')).toBe(false);
+
+      await laid.body?.cancel();
+    });
+
+    it('keeps the type and coding a rule laid where the middleware set neither, whether or not the edge reproduces the rule', async () => {
+      // A build the edge does not route (`i18n`): it reproduces none of the rules but a priority one
+      // (`headerRulesOf`), and the native router applies them all.
+      const localized = {
+        ...storeWith([
+          {
+            sourceRegex: FILE_PATTERN,
+            headers: { 'content-type': 'text/plain', 'content-encoding': 'br' },
+          },
+        ]),
+      };
+      Object.assign(localized.manifest.config, { i18n: { locales: ['en'], defaultLocale: 'en' } });
+      const ask = asked({});
+      const answer = requireResource(await staticFileResponse(ask, localized, file(4), 200));
+
+      const laid = afterRouting(
+        ask,
+        routed(answer, [
+          ['content-type', 'text/plain'],
+          ['content-encoding', 'br'],
+        ]),
+      );
+
+      expect(laid.headers.get('content-type')).toBe('text/plain');
+      expect(laid.headers.get('content-encoding')).toBe('br');
+
+      await laid.body?.cancel();
+    });
+
+    it('keeps what the middleware wrote of holding the file, where nothing makes it one visitor’s', async () => {
+      const ask: RoutedInput = {
+        ...asked({}, true),
+        middlewareHeaders: new Headers({ 'cache-control': 'public, max-age=5' }),
+      };
+      const answer = requireResource(await staticFileResponse(ask, store, file(4), 200));
+
+      // A rule laid over it after the middleware: the edge's last word is the middleware's still.
+      const laid = afterRouting(ask, routed(answer, [['cache-control', 'public, max-age=60']]));
+
+      expect(laid.headers.get('cache-control')).toBe('public, max-age=5');
+
+      await laid.body?.cancel();
+    });
+
+    it('holds the file for the visitor alone where a cookie sits beside the middleware’s word', async () => {
+      const laidOn = new Headers({ 'cache-control': 'public, max-age=5', 'set-cookie': 'a=1' });
+      const ask: RoutedInput = {
+        ...asked({}, true),
+        middlewareHeaders: laidOn,
+        routingHeaders: laidOn,
+      };
+      const answer = requireResource(await staticFileResponse(ask, store, file(4), 200));
+
+      const laid = afterRouting(
+        ask,
+        routed(answer, [
+          ['cache-control', 'public, max-age=5'],
+          ['set-cookie', 'a=1'],
+          ['cdn-cache-control', 'max-age=99'],
+        ]),
+      );
+
+      expect(laid.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
+      expect(laid.headers.has('cdn-cache-control')).toBe(false);
+      expect(laid.headers.get('set-cookie')).toBe('a=1');
+
+      await laid.body?.cancel();
+    });
+
+    it('holds the file for the visitor alone where a rule the request selected applied', async () => {
+      const conditioned = storeWith([
+        {
+          sourceRegex: FILE_PATTERN,
+          has: [{ type: 'header', key: 'x-variant' }],
+          headers: { 'cdn-cache-control': 'max-age=99', 'x-variant-seen': '1' },
+        },
+      ]);
+      const ask = asked({ 'x-variant': 'b' });
+      const answer = requireResource(await staticFileResponse(ask, conditioned, file(4), 200));
+
+      const laid = afterRouting(
+        ask,
+        routed(answer, [
+          ['cdn-cache-control', 'max-age=99'],
+          ['x-variant-seen', '1'],
+        ]),
+      );
+
+      expect(laid.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
+      expect(laid.headers.has('cdn-cache-control')).toBe(false);
+      expect(laid.headers.get('x-variant-seen')).toBe('1');
+
+      await laid.body?.cancel();
+    });
+
+    it('varies on what a router sent, past a Vary routing laid of its own', async () => {
+      const ask = asked({ rsc: '1' });
+      const answer = requireResource(await staticFileResponse(ask, store, file(4), 200));
+
+      const laid = afterRouting(ask, routed(answer, [['vary', 'accept']]));
+
+      expect(laid.headers.get('vary')).toBe(
+        'accept, rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch',
+      );
+
+      await laid.body?.cancel();
+    });
+
+    it('sends an error document whole under its status, judging no validator or range', async () => {
+      const response = await staticFileResponse(
+        asked({ 'if-none-match': TAG, range: 'bytes=1-2' }),
+        store,
+        file(4),
+        404,
+      );
+
+      expect(response?.status).toBe(404);
+      expect(response?.headers.get('accept-ranges')).toBe('none');
+      await expect(response?.text()).resolves.toBe(BODY);
+    });
   });
 });

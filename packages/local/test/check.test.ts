@@ -46,6 +46,7 @@ import {
   sanitizePassthroughHeaders,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
+import { compareCodeUnits } from '@stayingupwind/core/util';
 import {
   DEFAULT_DELIVERY_POLICY,
   DEFAULT_RUNTIME_CACHE_SETTINGS,
@@ -2301,6 +2302,199 @@ describe('what the check makes of the middleware', () => {
     if (state.bundleDir !== undefined) {
       await rm(state.bundleDir, { recursive: true, force: true });
     }
+  });
+
+  describe('a sharded check', () => {
+    it('owns every route, file, Function and middleware probe once, independently of insertion order', async () => {
+      const names = ['delta', 'alpha', 'charlie', 'bravo'];
+      const routes = await Promise.all(names.map((name) => routeOf(`/${name}`, FRONT)));
+      const files = Object.fromEntries(names.map((name) => [`/${name}.txt`, fileOf(name, TEXT)]));
+      const functions = names.map((name) => `app-${name}`);
+      answers.set(MISS, { status: 500, headers: { 'content-type': TEXT }, body: 'failed' });
+      state.middlewareProbe = { kind: 'responded', status: 500 };
+      const stack = withMiddleware(stackOf(routes, files, { functions }), [
+        { source: '/api/:path*', sourceRegex: '^/api(?:/(.*))?$' },
+      ]);
+      const original = JSON.stringify({ bundle: stack.bundle, manifest: stack.manifest });
+      const whole = await checkStack(stack);
+      const shares = await Promise.all(
+        [1, 2, 3, 4].map((index) => checkStack(stack, { shard: { index, total: 4 } })),
+      );
+      const expected = [
+        ...routes.map((route) => route.pathname),
+        ...Object.keys(files),
+        ...functions,
+        'middleware',
+      ];
+      const failedPaths = shares.flatMap((share) => share.failures.map((failure) => failure.path));
+
+      expect(whole.failures.map((failure) => failure.path)).toStrictEqual(expected);
+      expect(failedPaths.toSorted(compareCodeUnits)).toStrictEqual(
+        expected.toSorted(compareCodeUnits),
+      );
+      expect(shares.reduce((total, share) => total + share.checked, 0)).toBe(whole.checked);
+      expect(shares.every((share) => share.failures.length > 0)).toBe(true);
+      expect(JSON.stringify({ bundle: stack.bundle, manifest: stack.manifest })).toBe(original);
+
+      const reorderedFiles = Object.fromEntries(Object.entries(files).toReversed());
+      const reordered = withMiddleware(
+        stackOf(routes.toReversed(), reorderedFiles, {
+          functions: functions.toReversed(),
+        }),
+        [{ source: '/api/:path*', sourceRegex: '^/api(?:/(.*))?$' }],
+      );
+      for (const index of [1, 2, 3, 4]) {
+        const share = await checkStack(reordered, { shard: { index, total: 4 } });
+
+        expect(
+          share.failures.map((failure) => failure.path).toSorted(compareCodeUnits),
+        ).toStrictEqual(
+          shares[index - 1]?.failures.map((failure) => failure.path).toSorted(compareCodeUnits),
+        );
+      }
+    });
+
+    it('keeps complete browser, coding, router and deployment-id sequences with their owning item', async () => {
+      const route = await routeOf('/one', FRONT, { segments: { '/_tree': 'tree bytes' } });
+      const file = '/_next/static/chunk.js';
+      answers.set('/one', documentAnswer(FRONT, 'mw=miss;route=/one'));
+      partAnswers.set('/one|/_tree', segmentAnswer('tree bytes'));
+      answers.set(file, {
+        headers: { 'content-type': SCRIPT, 'cache-control': IMMUTABLE, 'x-arkor-edge': FILE_EDGE },
+        body: 'shipped script',
+      });
+      const stack = stackOf([route], { [file]: fileOf('shipped script', SCRIPT, true) });
+      const whole = await checkStack(stack);
+      const codings = new Map(codingsAsked);
+      const agentsSeen = new Map(agentsAsked);
+      const parts = [...partsAsked.keys()];
+      const deploymentQuery = queries.get(file);
+      codingsAsked.clear();
+      agentsAsked.clear();
+      partsAsked.clear();
+      queries.clear();
+      const owned = await checkStack(stack, { shard: { index: 1, total: 4 } });
+
+      expect(whole).toStrictEqual({ checked: 3, failures: [], skipped: [] });
+      expect(owned).toStrictEqual(whole);
+      expect(codingsAsked).toStrictEqual(codings);
+      expect(agentsAsked).toStrictEqual(agentsSeen);
+      expect([...partsAsked.keys()]).toStrictEqual(parts);
+      expect(parts).toContain('/one|/_tree');
+      expect(queries.get(file)).toBe(deploymentQuery);
+      expect(deploymentQuery).toBe('?dpl=dpl_site');
+    });
+
+    it("finishes an empty shard without requesting another shard's entries", async () => {
+      const route = await routeOf('/one', FRONT);
+      const stack = stackOf([route], { '/a.txt': fileOf('a', TEXT) });
+      for (const index of [2, 3, 4]) {
+        await expect(checkStack(stack, { shard: { index, total: 4 } })).resolves.toStrictEqual({
+          checked: 0,
+          failures: [],
+          skipped: [],
+        });
+      }
+
+      expect(codingsAsked.size).toBe(0);
+      expect(agentsAsked.size).toBe(0);
+      expect(partsAsked.size).toBe(0);
+    });
+
+    it.each([
+      {
+        label: 'header rules',
+        path: 'headerRules',
+        change: (stack: LocalStack): LocalStack => {
+          return {
+            ...stack,
+            manifest: { ...stack.manifest, headerRules: [] },
+          };
+        },
+      },
+      {
+        label: 'missing routes',
+        path: '/one',
+        change: (stack: LocalStack): LocalStack => {
+          return {
+            ...stack,
+            manifest: { ...stack.manifest, routes: {} },
+          };
+        },
+      },
+      {
+        label: 'missing files',
+        path: '/a.txt',
+        change: (stack: LocalStack): LocalStack => {
+          return {
+            ...stack,
+            manifest: { ...stack.manifest, staticFiles: {} },
+          };
+        },
+      },
+      {
+        label: 'deployment identity',
+        path: '?dpl=dpl_site',
+        change: (stack: LocalStack): LocalStack => {
+          return {
+            ...stack,
+            manifest: {
+              ...stack.manifest,
+              deployment: { ...stack.manifest.deployment, dplId: 'other' },
+            },
+          };
+        },
+      },
+      {
+        label: 'Function identity',
+        path: 'app',
+        change: (stack: LocalStack): LocalStack => {
+          return {
+            ...stack,
+            app: { ...stack.app, scriptName: 'other' },
+          };
+        },
+      },
+    ])(
+      'still rejects invalid $label in every shard, including empty ones',
+      async ({ path: failedAt, change }) => {
+        const route = await routeOf('/one', FRONT);
+        const stack = stackOf(
+          [route],
+          { '/a.txt': fileOf('a', TEXT) },
+          {
+            functions: ['app'],
+            headerRules: [{ sourceRegex: '^/one$', headers: { 'x-build': 'held' } }],
+          },
+        );
+        for (const index of [1, 2, 3, 4]) {
+          const result = await checkStack(change(stack), { shard: { index, total: 4 } });
+
+          expect(result.failures.map((failure) => failure.path)).toContain(failedAt);
+        }
+
+        for (const index of [2, 3, 4]) {
+          agentsAsked.clear();
+          await checkStack(change(stack), { shard: { index, total: 4 } });
+
+          expect(agentsAsked.size).toBe(0);
+        }
+      },
+    );
+
+    it.each([
+      { index: 0, total: 4 },
+      { index: 1, total: 0 },
+      { index: -1, total: 4 },
+      { index: 5, total: 4 },
+      { index: 1.5, total: 4 },
+      { index: 1, total: 4.5 },
+      { index: NaN, total: 4 },
+      { index: 1, total: Infinity },
+      { index: 1, total: Number.MAX_SAFE_INTEGER + 1 },
+    ])('rejects invalid shard $index/$total before reading the stack', async (shard) => {
+      await expect(checkStack({} as LocalStack, { shard })).rejects.toThrow(TypeError);
+    });
   });
 
   describe('a file it ran on', () => {
@@ -8930,6 +9124,9 @@ describe('what the check makes of the middleware', () => {
       });
     });
 
+    // Five checks of a stack in a row, each asking for every route and part it can reach: about
+    // three seconds here, and past the default five on a busy runner, where its probe then lands
+    // in the next test's state.
     it('asks the middleware on its own about a request its matchers cover, and fails where it fails', async () => {
       answers.set('/a.txt', {
         // Behind the middleware, which makes it one visitor's.
@@ -8985,7 +9182,7 @@ describe('what the check makes of the middleware', () => {
       expect(erred.failures).toStrictEqual([
         { path: 'middleware', reason: 'asked about /api as the edge asks it, answered 500' },
       ]);
-    });
+    }, 20_000);
 
     it.each([
       {

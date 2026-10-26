@@ -16,6 +16,7 @@ import {
   type TimedContinue,
 } from './hosted-gate.ts';
 import { serveHostedFile } from './hosted-static-file.ts';
+import { imagePatternRequests } from './image-pattern-requests.ts';
 import { gatedSourceRefusal } from './image-source.ts';
 import { handleImage, type ImageAnswerInput, refuseImage } from './image.ts';
 import {
@@ -23,6 +24,7 @@ import {
   type MiddlewareOutcome,
   type MiddlewareTiming,
 } from './middleware.ts';
+import { observeTerminal } from './observer.ts';
 import { PATTERN_BUDGET } from './passthrough.ts';
 
 export interface HostedImageInput extends HostedGateInput {
@@ -113,7 +115,21 @@ export async function routeHostedImage(input: HostedImageInput): Promise<Respons
     return await routeWithinBudget(input);
   } catch (error) {
     if (error instanceof PatternBudgetExceededError) {
-      return input.manifest.gates === undefined ? refused(input) : gateBudgetSpent();
+      if (input.manifest.gates === undefined) return refused(input);
+      const response = gateBudgetSpent();
+      const { edge } = input;
+      observeTerminal(edge.host, {
+        projectId: edge.projectId,
+        pathname: input.url.pathname,
+        outcomeKind: `gate-${String(response.status)}`,
+        colo: edge.colo ?? '',
+        manifestId: edge.manifestId,
+        policyId: edge.policy.id,
+        pointerLookupMs: edge.timings.pointerMs,
+        manifestLookupMs: edge.timings.manifestMs,
+        subrequests: imagePatternRequests(error),
+      });
+      return response;
     }
     throw error;
   }

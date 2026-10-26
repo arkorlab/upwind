@@ -244,7 +244,10 @@ creates a new immutable deployment and a distinct cache scope. Native addons mus
 OS, architecture, and Node ABI.
 
 Routing, middleware/proxy, PPR streaming, Server Actions, RSC, ISR and tag invalidation use the shared
-runtime. Images retain its original-source fallback. Cloudflare storage, Durable Objects, Containers,
+runtime. `/_next/image` resizes and re-encodes with `sharp`, as `next start` does: the build copies
+it, with its platform binding and `libvips`, from beside the project's `next` (of which it is an
+optional dependency) into the artifact. Without it, images are served as their sources are, and the
+server says so once. Transformations are not cached yet. Cloudflare storage, Durable Objects, Containers,
 Cloudflare Workflows, hosted Workflow Worlds, route gates, host cron jobs, and edge CSP nonce handling
 are unavailable on this target and are rejected when declared. Project instrumentation remains
 available. This target does not connect a Cloudflare edge to a Node origin or coordinate caches
@@ -501,7 +504,9 @@ CLOUDFLARE_API_TOKEN=… pnpm upwind rollback [--to dpl_…]
   again, it goes further back: a deployment gone back to is no newer for it. One that cannot be
   published again — whose cache scope a stopped cleanup retired, whose bundle the bucket no longer
   keeps or this version cannot read, or whose staging or publishing is refused otherwise — is
-  passed over, or, named, refused, saying why: deploy its build again instead. Where every one tried
+  passed over, or, named, refused, saying why: deploy its build again instead. A kept build declaring
+  route gates is refused before staging or publishing it, because this command binds none of its
+  gates. Where every one tried
   is passed over, the rollback is refused, saying why of each. So is one deployed before
   `--reset-cache-key` gave the runtime cache a new key: its Functions hold a token of the key before.
   Nothing of it is built: its bundle, kept in the bucket, is published again against the live

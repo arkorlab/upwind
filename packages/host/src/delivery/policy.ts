@@ -342,6 +342,11 @@ export const edgePointerSchema = z
      * reads none. A pointer in `edge` mode names one.
      */
     manifestId: z.string().optional(),
+    /**
+     * The legacy admission marker stays independent of the version-two hasGates contract. A
+     * requiresGate-only version-one pointer still fails closed when its manifest is unavailable.
+     */
+    requiresGate: z.literal(true).optional(),
     policyId: z.string().min(1),
     /**
      * The immutable policy this pointer selected, copied by its publisher beside its id so a cold

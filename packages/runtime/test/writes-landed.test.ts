@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RequestWrites } from '../src/cache/context.ts';
+import { keepsItsLength } from '../src/kept-length.ts';
 import { WRITES_LAND_WITHIN_MS, withWritesLanded } from '../src/serve.ts';
 
 // The bridge is Cloudflare's alone, and nothing here renders through it.
@@ -137,6 +138,28 @@ describe('a response ended after its request’s cache writes', () => {
     writes.add(deferred().promise);
 
     expect((await withWritesLanded(sized(), writes)).headers.has('content-length')).toBe(false);
+  });
+
+  /**
+   * A shipped file a host sends as the edge sends one keeps its length, as the edge answers a file
+   * whatever the request wrote; its end still waits for the writes.
+   */
+  it('keeps the length of an answer that goes out with it, and holds its end all the same', async () => {
+    const writes = new RequestWrites();
+    const write = deferred();
+    writes.add(write.promise);
+
+    const held = await withWritesLanded(keepsItsLength(sized()), writes);
+    const reader = held.body!.getReader();
+    await reader.read();
+    const end = reader.read();
+
+    expect(held.headers.get('content-length')).toBe('5');
+    await expect(settledYet(end)).resolves.toBe(false);
+
+    write.resolve();
+
+    await expect(end).resolves.toStrictEqual({ done: true, value: undefined });
   });
 
   it('keeps the status and the other headers', async () => {

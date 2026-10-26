@@ -5,11 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import {
-  CLOUDFLARE_WORKFLOW_BUNDLE_VERSION,
-  CLOUDFLARE_WORKFLOW_EXPORT,
-  CLOUDFLARE_WORKFLOW_SPLIT_BUNDLE_VERSION,
-} from '@stayingupwind/core/bundle';
+import { CLOUDFLARE_WORKFLOW_EXPORT } from '@stayingupwind/core/bundle';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { BlobStore } from '../src/blobs.ts';
@@ -102,12 +98,8 @@ describe('framework-independent Cloudflare Workflow artifacts', () => {
     const blobs = new BlobStore(input.outDir);
     await blobs.init();
 
-    expect((await cloudflareWorkflowParts({ ...input, blobs, split: false })).bundle.v).toBe(
-      CLOUDFLARE_WORKFLOW_BUNDLE_VERSION,
-    );
-    expect((await cloudflareWorkflowParts({ ...input, blobs, split: true })).bundle.v).toBe(
-      CLOUDFLARE_WORKFLOW_SPLIT_BUNDLE_VERSION,
-    );
+    expect((await cloudflareWorkflowParts({ ...input, blobs, split: false })).bundle.v).toBe(9);
+    expect((await cloudflareWorkflowParts({ ...input, blobs, split: true })).bundle.v).toBe(10);
     await expect(
       cloudflareWorkflowParts({ ...input, blobs, declarations: [], split: false }),
     ).resolves.toStrictEqual({ bundle: {}, functions: {}, sourceMaps: [], dependencies: {} });
