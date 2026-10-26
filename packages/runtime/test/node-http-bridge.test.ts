@@ -12,6 +12,12 @@ async function bodyOf(request: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString();
 }
 
+function framingHeaders(contentLength: string | null): Headers {
+  const headers = new Headers();
+  if (contentLength !== null) headers.set('content-length', contentLength);
+  return headers;
+}
+
 describe('real Node HTTP bridge', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -159,6 +165,110 @@ describe('real Node HTTP bridge', () => {
 
     await Promise.all(held);
   });
+
+  // Real loopback regression coverage belongs to the Node runtime CI suite, not source-only checks.
+  it.each([
+    { method: 'DELETE', contentLength: null },
+    { method: 'DELETE', contentLength: '0' },
+    { method: 'OPTIONS', contentLength: null },
+    { method: 'OPTIONS', contentLength: '0' },
+  ])(
+    'frames a streamed $method body independently of content-length=$contentLength',
+    async ({ method, contentLength }) => {
+      const chunks = ['first:α|', 'middle'.repeat(4096), '|last:終'];
+      const headers = framingHeaders(contentLength);
+      headers.set('content-type', 'text/plain; charset=utf-8');
+      const init: RequestInit & { duplex: 'half' } = {
+        method,
+        headers,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+            controller.close();
+          },
+        }),
+        duplex: 'half',
+      };
+      const request = new Request('https://example.test/streamed', init);
+      const held: Promise<unknown>[] = [];
+      const observed: unknown[] = [];
+      const response = await invokeNodeHandler({
+        request,
+        requestMeta: {},
+        waitUntil: (promise) => {
+          held.push(promise);
+        },
+        handler: async (incoming, output) => {
+          observed.push({
+            method: incoming.method,
+            length: incoming.headers['content-length'],
+            transfer: incoming.headers['transfer-encoding'],
+            body: await bodyOf(incoming),
+          });
+          output.end('received');
+        },
+      });
+
+      await expect(response.text()).resolves.toBe('received');
+      expect(observed).toStrictEqual([
+        {
+          method,
+          length: undefined,
+          transfer: 'chunked',
+          body: chunks.join(''),
+        },
+      ]);
+      expect(request.headers.get('content-length')).toBe(contentLength);
+      expect(request.headers.has('transfer-encoding')).toBe(false);
+
+      await Promise.all(held);
+    },
+  );
+
+  it.each([
+    { method: 'DELETE', contentLength: null },
+    { method: 'DELETE', contentLength: '0' },
+    { method: 'OPTIONS', contentLength: null },
+    { method: 'OPTIONS', contentLength: '0' },
+  ])(
+    'does not add streamed framing to a bodyless $method with length=$contentLength',
+    async ({ method, contentLength }) => {
+      const headers = framingHeaders(contentLength);
+      const request = new Request('https://example.test/bodyless', { method, headers });
+      const observed: unknown[] = [];
+      const held: Promise<unknown>[] = [];
+      const response = await invokeNodeHandler({
+        request,
+        requestMeta: {},
+        waitUntil: (promise) => {
+          held.push(promise);
+        },
+        handler: async (incoming, output) => {
+          observed.push({
+            method: incoming.method,
+            length: incoming.headers['content-length'],
+            transfer: incoming.headers['transfer-encoding'],
+            body: await bodyOf(incoming),
+          });
+          output.end('empty');
+        },
+      });
+
+      await expect(response.text()).resolves.toBe('empty');
+      expect(observed).toStrictEqual([
+        {
+          method,
+          length: contentLength ?? undefined,
+          transfer: undefined,
+          body: '',
+        },
+      ]);
+      expect(request.body).toBeNull();
+      expect(request.headers.get('content-length')).toBe(contentLength);
+
+      await Promise.all(held);
+    },
+  );
 
   it('delivers the first body bytes before the handler and its mutation task finish', async () => {
     const release = Promise.withResolvers<undefined>();

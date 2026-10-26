@@ -171,6 +171,10 @@ class NodeBridge {
     const headers = Object.fromEntries(input.request.headers);
     headers[DISPATCH_HEADER] = token;
     headers['host'] = input.request.headers.get('host') ?? source.host;
+    if (input.request.body !== null) {
+      Reflect.deleteProperty(headers, 'content-length');
+      headers['transfer-encoding'] = 'chunked';
+    }
     try {
       return await new Promise<Response>((resolve, reject) => {
         const outgoing = httpRequest({
