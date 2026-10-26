@@ -10,7 +10,10 @@ git check-ref-format "refs/tags/${TAG}"
 policy_commit="$(git rev-parse --verify 'HEAD^{commit}')"
 # A fully qualified ref cannot select a same-named branch. Freeze the object before verifying it.
 git fetch --no-tags --quiet origin "+refs/tags/${TAG}:refs/tags/${TAG}"
-tag_object="$(git rev-parse --verify "refs/tags/${TAG}^{tag}")"
+if ! tag_object="$(git rev-parse --verify "refs/tags/${TAG}^{tag}")"; then
+  echo '::error::release requires an annotated tag object' >&2
+  exit 1
+fi
 commit="$(git rev-parse --verify "${tag_object}^{commit}")"
 
 GNUPGHOME="$(mktemp -d "${RUNNER_TEMP}/release-keys.XXXXXXXX")"
@@ -18,8 +21,14 @@ export GNUPGHOME
 trap 'gpgconf --kill gpg-agent >/dev/null 2>&1 || true; rm -rf -- "$GNUPGHOME"' EXIT
 git show "${policy_commit}:.github/release-signers.asc" >"${GNUPGHOME}/signers.asc"
 gpg --batch --quiet --import "${GNUPGHOME}/signers.asc"
-git -c gpg.program=gpg -c gpg.format=openpgp verify-tag --raw "$tag_object"
-git merge-base --is-ancestor "$commit" "$policy_commit"
+if ! git -c gpg.program=gpg -c gpg.format=openpgp verify-tag --raw "$tag_object"; then
+  echo '::error::release tag signature is not trusted' >&2
+  exit 1
+fi
+if ! git merge-base --is-ancestor "$commit" "$policy_commit"; then
+  echo '::error::release tag is outside the trusted branch history' >&2
+  exit 1
+fi
 # Every subsequent package check uses the exact tree that passed both checks.
 git checkout --quiet --detach "$commit"
 test "$(git rev-parse HEAD)" = "$commit"

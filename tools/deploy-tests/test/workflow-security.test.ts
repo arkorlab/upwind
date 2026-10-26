@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -125,7 +125,11 @@ describe('workflow security', () => {
       const { work } = fixture();
       tag(work, 'v1.0.1', keyNames[1] ?? '');
 
-      expect(verify(work, 'v1.0.1').status).not.toBe(0);
+      const result = verify(work, 'v1.0.1');
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('release tag signature is not trusted');
+      expect(existsSync(result.output)).toBe(false);
     });
 
     it('refuses a trusted signer on a commit outside the default-branch snapshot', () => {
@@ -137,16 +141,31 @@ describe('workflow security', () => {
       tag(work, 'v1.0.2', keyNames[0] ?? '');
       git(work, 'checkout', 'main');
 
-      expect(verify(work, 'v1.0.2').status).not.toBe(0);
+      const result = verify(work, 'v1.0.2');
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('release tag is outside the trusted branch history');
+      expect(existsSync(result.output)).toBe(false);
     });
 
-    it('refuses lightweight tags and multiline input', () => {
+    it('refuses lightweight tags without publishing a release revision', () => {
       const { work } = fixture();
       git(work, 'tag', 'v1.0.3');
       git(work, 'push', 'origin', 'refs/tags/v1.0.3');
+      const result = verify(work, 'v1.0.3');
 
-      expect(verify(work, 'v1.0.3').status).not.toBe(0);
-      expect(verify(work, 'v1.0.3\ncommit=forged').status).not.toBe(0);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('release requires an annotated tag object');
+      expect(existsSync(result.output)).toBe(false);
+    });
+
+    it('refuses multiline tags before publishing any output', () => {
+      const { work } = fixture();
+      const result = verify(work, 'v1.0.3\ncommit=forged');
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('release tag must be a single line');
+      expect(existsSync(result.output)).toBe(false);
     });
   });
 
