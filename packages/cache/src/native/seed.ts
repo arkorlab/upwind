@@ -1,6 +1,7 @@
 import { KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
 import type { SeedScopeInput } from '@stayingupwind/host/cache';
 
+import { DEFAULT_CACHE_VARS } from '../env.ts';
 import type { MutationPipeline } from '../scope/mutation-pipeline.ts';
 import { applySeedScope, needsSeedVerification, planSeedEntries } from '../scope/seed.ts';
 import { isRefusal, refuse } from '../scope/state.ts';
@@ -9,20 +10,20 @@ import type { NativeCacheWorkerOptions } from './protocol.ts';
 import { readSeedArtifact, validateSeedArtifact } from './seed-artifact.ts';
 
 const SEED_BATCH_SIZE = 200;
+const MAXIMUM_ARTIFACT_BYTES = DEFAULT_CACHE_VARS.MAX_ARTIFACT_BYTES;
 
 async function copyBuildArtifacts(
   options: NativeCacheWorkerOptions,
   files: CacheFiles,
-  maximumArtifactBytes: number,
 ): Promise<void> {
   const seed = options.seed;
   if (seed === undefined) return;
   for (const entry of seed.entries) {
     for (const output of entry.generation.outputs) {
       for (const artifact of output.artifacts) {
-        validateSeedArtifact(artifact, maximumArtifactBytes);
+        validateSeedArtifact(artifact, MAXIMUM_ARTIFACT_BYTES);
         if (await files.blobs.exists(artifact.storageRef)) continue;
-        const bytes = await readSeedArtifact(seed.blobsDirectory, artifact, maximumArtifactBytes);
+        const bytes = await readSeedArtifact(seed.blobsDirectory, artifact, MAXIMUM_ARTIFACT_BYTES);
         await files.blobs.write(artifact.storageRef, bytes, artifact.contentType);
       }
     }
@@ -35,7 +36,6 @@ export async function seedNativeCache(
   files: CacheFiles,
   pipeline: MutationPipeline,
   settle: () => Promise<void>,
-  maximumArtifactBytes: number,
 ): Promise<void> {
   const scope: SeedScopeInput['scope'] = {
     scopeId: options.scopeId,
@@ -53,7 +53,7 @@ export async function seedNativeCache(
   if (outcome.kind === 'conflict') throw new Error(`native cache: ${outcome.reason}`);
   const seed = options.seed;
   if (seed === undefined) return;
-  await copyBuildArtifacts(options, files, maximumArtifactBytes);
+  await copyBuildArtifacts(options, files);
   for (let offset = 0; offset < seed.entries.length; offset += SEED_BATCH_SIZE) {
     const result = await pipeline.run(
       Date.now(),

@@ -1,5 +1,5 @@
 import { canonicalJson } from '../artifact/hash.ts';
-import { compareCodeUnits } from '../util/bytes.ts';
+import { compareCodeUnits, encodeUtf8 } from '../util/bytes.ts';
 import { type ProjectManifest, TABLES_SCHEMA_VERSION } from './schema.ts';
 
 /**
@@ -167,7 +167,7 @@ function namesPlaces(version: unknown): boolean {
  * object. A manifest without `tables`, or of a version before them (`namesPlaces`), is handed back
  * as it is, and so is anything that is not a manifest at all, for the schema to refuse.
  */
-export function fromStoredManifest(parsed: unknown, sharedInputs?: WeakSet<object>): unknown {
+export function fromStoredManifest(parsed: unknown, sharedInputs?: WeakSet<WeakKey>): unknown {
   if (!isRecord(parsed) || !isRecord(parsed['tables']) || !namesPlaces(parsed['schemaVersion'])) {
     return parsed;
   }
@@ -199,4 +199,18 @@ export function fromStoredManifest(parsed: unknown, sharedInputs?: WeakSet<objec
     routes,
     ...(dynamicRoutes !== undefined && { dynamicRoutes }),
   };
+}
+
+const MAX_UTF8_BYTES_PER_UNIT = 3;
+
+/** Bound serialized input before parsing; small manifests do not need a second encoded copy. */
+export function readManifestJson(json: string, maximumBytes: number): unknown {
+  if (
+    json.length > maximumBytes ||
+    (json.length > maximumBytes / MAX_UTF8_BYTES_PER_UNIT &&
+      encodeUtf8(json).byteLength > maximumBytes)
+  ) {
+    throw new Error(`a manifest may hold at most ${maximumBytes} bytes`);
+  }
+  return JSON.parse(json);
 }

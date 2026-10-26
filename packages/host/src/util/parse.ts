@@ -86,7 +86,7 @@ export function safeParseBounded<T>(
 ): BoundedParse<T> {
   if (schema instanceof Schema) {
     const parsed = schema.safeParseFirst(value);
-    return (parsed.success || length <= MAX_LISTED_BYTES ? parsed : UNLISTED) as BoundedParse<T>;
+    return parsed.success || length <= MAX_LISTED_BYTES ? parsed : UNLISTED;
   }
   return length <= MAX_LISTED_BYTES ? schema.safeParse(value) : safeParseValidated(schema, value);
 }

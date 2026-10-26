@@ -77,6 +77,7 @@ const STORES = { edgeState: 'edge-state', cacheState: 'cache-state', artifacts: 
 
 /** The date the stack's own Workers run at; each Function keeps the one its build gave it. */
 const COMPATIBILITY_DATE = '2026-09-15';
+const AGENT_TOKEN_BYTES = 32;
 /** HTTP's default port is absent from the stack URL's host. */
 const HTTP_DEFAULT_PORT = 80;
 /**
@@ -448,7 +449,7 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
   const gates = gateServices(options.gates, new Set(Object.values(bundle.gates ?? {})));
   // A key of the stack's own, gone with it: what the scope's token is signed with.
   const cacheTokenKey = `${crypto.randomUUID()}${crypto.randomUUID()}`;
-  const agentToken = randomBytes(32).toString('base64url');
+  const agentToken = randomBytes(AGENT_TOKEN_BYTES).toString('base64url');
   const token = await signCacheToken(cacheTokenKey, deploymentId, STANDALONE_NAMING);
   const { edge, cache, cacheRead, prefetch, agent, outbound } =
     options.scripts ?? (await bundleStackScripts());

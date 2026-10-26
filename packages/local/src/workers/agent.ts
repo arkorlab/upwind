@@ -19,6 +19,18 @@ const HTTP_NO_CONTENT = 204;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
 const HTTP_METHOD_NOT_ALLOWED = 405;
+const ENCODER = new TextEncoder();
+
+/** The local management Worker uses workerd's synchronous constant-time WebCrypto extension. */
+function authorized(request: Request, token: string): boolean {
+  const received = request.headers.get('authorization');
+  if (!token || received === null) return false;
+  const expected = `Bearer ${token}`;
+  if (received.length !== expected.length) return false;
+  const a = ENCODER.encode(received);
+  const b = ENCODER.encode(expected);
+  return a.byteLength === b.byteLength && crypto.subtle.timingSafeEqual(a, b);
+}
 
 function empty(status: number): Response {
   return new Response(null, { status });
@@ -97,12 +109,7 @@ async function seed(request: Request, env: AgentEnv, pathname: string): Promise<
 
 export default {
   fetch(request, env): Promise<Response> {
-    // This bearer is generated once with 256 bits of entropy and is never bound to app Workers.
-    // eslint-disable-next-line security/detect-possible-timing-attacks -- unguessable per-stack capability, checked before any operation.
-    if (
-      !env.DEPLOY_AGENT_TOKEN ||
-      request.headers.get('authorization') !== `Bearer ${env.DEPLOY_AGENT_TOKEN}`
-    ) {
+    if (!authorized(request, env.DEPLOY_AGENT_TOKEN)) {
       return Promise.resolve(empty(HTTP_UNAUTHORIZED));
     }
     const { pathname } = new URL(request.url);

@@ -118,21 +118,18 @@ export class ObjectSchema<
     payload: Payload,
     ctx: ParseContext,
   ): Payload {
-    if (ctx.stopOnIssue === true && payload.issues.length > 0) return payload;
+    if (
+      ctx.abortEarly &&
+      (ctx.stopOnIssue === true ? payload.issues.length > 0 : aborted(payload.issues))
+    )
+      return payload;
     const { keys } = this.parsing();
     const unrecognized: string[] = [];
-    let seen = 0;
     for (const key in input) {
       // A key the shape names is not unknown. Skipped before the early stop below is asked,
       // which cannot change what is found: the stop only waits for the next unknown key.
       if (keys.has(key)) {
         continue;
-      }
-      if (ctx.abortEarly && payload.issues.length !== seen) {
-        if (aborted(payload.issues, seen)) {
-          break;
-        }
-        seen = payload.issues.length;
       }
       if (this.unknownKeys === 'strict') {
         unrecognized.push(key);

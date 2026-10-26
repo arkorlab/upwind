@@ -20,21 +20,24 @@ describe('stored manifest parsing', () => {
       originHost: 'example.com',
       deployment: { assetSetHash: 'h', observedAt },
       app: { deploymentId: 'dpl_1', scriptName: 'app-1' },
-      routes: ['/a', '/b'].map((pathname) => ({
-        pathname,
-        status: 200,
-        shell: {
-          sha256: '0'.repeat(64),
-          byteLength: 1,
-          contentType: 'text/html',
-          encoding: 'identity' as const,
-        },
-        headers,
-        bypassFor,
-        preloads,
-      })),
+      routes: ['/a', '/b'].map((pathname) => {
+        return {
+          pathname,
+          status: 200,
+          shell: {
+            sha256: '0'.repeat(64),
+            byteLength: 1,
+            contentType: 'text/html',
+            encoding: 'identity' as const,
+          },
+          headers,
+          bypassFor,
+          preloads,
+        };
+      }),
     });
     const parsed = parseProjectManifest(serializeManifest(manifest));
+
     expect(parsed).toStrictEqual(manifest);
     expect(parsed.routes['/a']?.headers).toBe(parsed.routes['/b']?.headers);
     expect(parsed.routes['/a']?.bypassFor).toBe(parsed.routes['/b']?.bypassFor);

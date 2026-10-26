@@ -33,11 +33,11 @@ export async function readSeedArtifact(
     throw new Error('native cache build artifact is not a regular file of the declared length');
   }
   // Windows does not expose O_NOFOLLOW/O_NONBLOCK; verify the opened file's identity there too.
-  // eslint-disable-next-line no-bitwise -- operating-system file flags are combined as a mask.
   const flags =
     process.platform === 'win32'
       ? constants.O_RDONLY
-      : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+      : // eslint-disable-next-line no-bitwise -- operating-system file flags are combined as a mask.
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
   await using file = await open(filename, flags);
   const opened = await file.stat();
   if (

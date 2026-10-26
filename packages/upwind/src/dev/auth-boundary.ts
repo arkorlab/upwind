@@ -6,7 +6,9 @@ import { setEnv } from './env.ts';
 import type { Bound } from './listen.ts';
 
 const LOOPBACK = new BlockList();
-LOOPBACK.addSubnet('127.0.0.0', 8, 'ipv4');
+const IPV4_LOOPBACK_PREFIX = 8;
+const IPV4_FAMILY = 4;
+LOOPBACK.addSubnet('127.0.0.0', IPV4_LOOPBACK_PREFIX, 'ipv4');
 LOOPBACK.addAddress('::1', 'ipv6');
 
 /** Only the address the listening socket reports can enable the development identity issuer. */
@@ -16,7 +18,7 @@ export function localAuthEnvironment(bound: Pick<Bound, 'address'>): Record<stri
   const local =
     address !== undefined &&
     family !== 0 &&
-    LOOPBACK.check(address, family === 4 ? 'ipv4' : 'ipv6');
+    LOOPBACK.check(address, family === IPV4_FAMILY ? 'ipv4' : 'ipv6');
   // A remote bind must overwrite an inherited attestation from another dev process.
   return { [UPWIND_AUTH_LOCAL_DEV_ENV]: local ? '1' : '0' };
 }

@@ -1,8 +1,20 @@
-import { describe, expect, it, vi } from 'vitest';
+import { timingSafeEqual } from 'node:crypto';
 
-import agent from '../src/workers/agent.ts';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+interface Agent {
+  fetch: (request: Request, env: Record<string, unknown>) => Promise<Response>;
+}
+
+// This suite runs under Node; the Worker is typechecked separately with workerd's globals.
+const agentPath = '../src/workers/agent.ts';
+const { default: agent } = (await import(agentPath)) as { default: Agent };
 
 describe('the local deployment agent credential', () => {
+  beforeAll(() => vi.stubGlobal('crypto', { subtle: { timingSafeEqual } }));
+
+  afterAll(() => vi.unstubAllGlobals());
+
   it.each([
     ['GET', '/kv/key'],
     ['PUT', '/kv/key'],
@@ -18,8 +30,11 @@ describe('the local deployment agent credential', () => {
         method,
         ...(method !== 'GET' && { body: 'not JSON' }),
       });
+
       expect((await agent.fetch(request, env)).status).toBe(401);
+
       request.headers.set('authorization', 'Bearer another-stack');
+
       expect((await agent.fetch(request, env)).status).toBe(401);
     },
   );
@@ -33,8 +48,13 @@ describe('the local deployment agent credential', () => {
     const request = new Request('http://localhost/kv/key', {
       headers: { authorization: 'Bearer only-this-stack' },
     });
-    expect(await (await agent.fetch(request, env)).text()).toBe('value');
+
+    await expect((await agent.fetch(request, env)).text()).resolves.toBe('value');
     expect(get).toHaveBeenCalledExactlyOnceWith('key', 'arrayBuffer');
-    expect((await agent.fetch(request, {} as Parameters<typeof agent.fetch>[1])).status).toBe(401);
+
+    request.headers.set('authorization', 'Bearer only-this-stacx');
+
+    expect((await agent.fetch(request, env)).status).toBe(401);
+    expect((await agent.fetch(request, {})).status).toBe(401);
   });
 });

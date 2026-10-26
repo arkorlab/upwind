@@ -14,8 +14,8 @@ export interface ParseContext {
   readonly stopOnIssue?: boolean;
   /** Only explicitly shared inputs are memoized, for this parse alone. */
   readonly shared?: {
-    readonly inputs: WeakSet<object>;
-    readonly results: WeakMap<object, Map<object, unknown>>;
+    readonly inputs: WeakSet<WeakKey>;
+    readonly results: WeakMap<WeakKey, Map<WeakKey, unknown>>;
   };
 }
 

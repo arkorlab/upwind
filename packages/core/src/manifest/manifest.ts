@@ -3,7 +3,7 @@ import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
 import type { RouteGates, RouterReferences } from '../bundle/carried.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
-import { compareCodeUnits, encodeUtf8 } from '../util/bytes.ts';
+import { compareCodeUnits } from '../util/bytes.ts';
 import {
   escapedPathOf,
   memberValuesOf,
@@ -40,7 +40,7 @@ import {
 } from './schema.ts';
 import { spellsPrefixOf } from './spelled-prefix.ts';
 import { staticPageFields } from './static-pages.ts';
-import { fromStoredManifest, toStoredManifest } from './stored.ts';
+import { fromStoredManifest, readManifestJson, toStoredManifest } from './stored.ts';
 
 const PAGES_FALLBACK_PRIVACY = 3;
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 15_000;
@@ -336,15 +336,8 @@ export const MAX_MANIFEST_BYTES = MANIFEST_MIB * MIB;
 
 /** Parse and validate a manifest document, as stored or not (throws on schema violations). */
 export function parseProjectManifest(json: string): ProjectManifest {
-  // UTF-8 uses at most three bytes per UTF-16 unit; ordinary small manifests need no encoding.
-  if (
-    json.length > MAX_MANIFEST_BYTES ||
-    (json.length > MAX_MANIFEST_BYTES / 3 && encodeUtf8(json).byteLength > MAX_MANIFEST_BYTES)
-  ) {
-    throw new Error(`a manifest may hold at most ${MAX_MANIFEST_BYTES} bytes`);
-  }
-  const sharedInputs = new WeakSet<object>();
-  const manifest = fromStoredManifest(JSON.parse(json), sharedInputs);
+  const sharedInputs = new WeakSet();
+  const manifest = fromStoredManifest(readManifestJson(json, MAX_MANIFEST_BYTES), sharedInputs);
   return projectManifestSchema.parseShared(manifest, sharedInputs);
 }
 

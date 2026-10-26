@@ -70,16 +70,6 @@ export abstract class Schema<
     this.optout = optout;
   }
 
-  /** The schema's own type, before its checks. */
-  abstract parseType(payload: Payload, ctx: ParseContext): Payload;
-
-  /** The schema's type, then its checks. */
-  run(payload: Payload, ctx: ParseContext): Payload {
-    if (ctx.shared !== undefined) return this.runShared(payload, ctx);
-    const result = this.parseType(payload, ctx);
-    return this.checks.length === 0 ? result : runChecks(result, this.checks, ctx);
-  }
-
   private runShared(payload: Payload, ctx: ParseContext): Payload {
     const input = payload.value;
     const shared = ctx.shared;
@@ -105,6 +95,16 @@ export abstract class Schema<
       }
       return result;
     }
+    const result = this.parseType(payload, ctx);
+    return this.checks.length === 0 ? result : runChecks(result, this.checks, ctx);
+  }
+
+  /** The schema's own type, before its checks. */
+  abstract parseType(payload: Payload, ctx: ParseContext): Payload;
+
+  /** The schema's type, then its checks. */
+  run(payload: Payload, ctx: ParseContext): Payload {
+    if (ctx.shared !== undefined) return this.runShared(payload, ctx);
     const result = this.parseType(payload, ctx);
     return this.checks.length === 0 ? result : runChecks(result, this.checks, ctx);
   }
@@ -206,7 +206,7 @@ export abstract class Schema<
   }
 
   /** Preserve selected shared inputs after checking each against each schema once, within this call. */
-  parseShared(value: unknown, inputs: WeakSet<object>): Out {
+  parseShared(value: unknown, inputs: WeakSet<WeakKey>): Out {
     const result = this.run(
       { value, issues: [] },
       { abortEarly: true, stopOnIssue: true, shared: { inputs, results: new WeakMap() } },
