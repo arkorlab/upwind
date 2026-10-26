@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import * as shared from '../../src/delivery.ts';
+import { keepsItsLength, keptItsLength } from '../../src/kept-length.ts';
 import * as native from '../../src/native/delivery.ts';
 
 /**
@@ -114,6 +115,19 @@ describe('an answer the edge would pass on, on the native target', () => {
       [...response.headers.keys()].filter((name) => name.startsWith('x-arkor-')),
     ).toStrictEqual([]);
     await expect(response.text()).resolves.toBe('body');
+  });
+
+  it('hands on the very answer it left apart, for what its own module said of it by the object', () => {
+    // A file answer goes out with its length (`keepsItsLength`), said by the answer itself.
+    const file = keepsItsLength(
+      native.decidedApart(answer({ 'cache-control': 'public, max-age=0, must-revalidate' })),
+    );
+
+    const response = native.delivered(asked('/hello.txt', { cookie: 'session=1' }), file);
+
+    expect(response).toBe(file);
+    expect(keptItsLength(response)).toBe(true);
+    expect(response.headers.has('x-arkor-apart')).toBe(false);
   });
 
   it('marks nothing and keeps nothing on Workers', () => {

@@ -48,13 +48,15 @@ export function decidedApart(answer: Response): Response {
 
 /**
  * An answer decided apart, as its own rules left it — without the mark, which is the platform's —
- * or `undefined` for any other.
+ * or `undefined` for any other. The same answer, the mark taken off its own headers rather than off
+ * a copy: what a file answer's module said of it by the object itself (`keepsItsLength`, that it
+ * goes out with its length) stays with it. Its headers are its own to change: the mark was set on
+ * an answer made for it (`decidedApart`), and routing makes or changes the answer it hands on.
  */
 export function leftApart(answer: Response): Response | undefined {
   if (!answer.headers.has(APART)) return undefined;
-  const headers = new Headers(answer.headers);
-  headers.delete(APART);
-  return reframed(answer, headers);
+  answer.headers.delete(APART);
+  return answer;
 }
 
 export function handedOn(request: Request, headers: Headers): void {
