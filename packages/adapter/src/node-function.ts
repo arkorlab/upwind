@@ -17,6 +17,12 @@ import { NodeArtifactFiles } from './node-artifact-files.ts';
 import { nodePhysicalFiles } from './node-files.ts';
 import { nodeProjectInstrumentationSource } from './node-next-rewrite-proof.ts';
 import {
+  assertFinalOriginalNodeModes,
+  nodeOriginalModeMetadata,
+  nodeOriginalModeProofFiles,
+} from './node-original-load-mode-archive.ts';
+import { usePhysicalOriginalNodeModes } from './node-original-load-mode.ts';
+import {
   assertNodeProofFiles,
   isNodeProofCompilerModule,
   nodeProofSource,
@@ -369,12 +375,26 @@ export async function buildNodeFunction(
 ): Promise<NodeBuiltFunction> {
   if (selected.length === 0)
     throw new AuditError('A Node Function requires a retained, owned native load');
-  const proof = await proveNodeFunction(input);
-  const native = proof.native;
+  const originalProof = await proveNodeFunction(input);
+  const native = originalProof.native;
   assertNativeSelection(selected, native);
   assertNodeTarget(input, native);
   const abi = assertNativeAbi();
-  const physical = await nodePhysicalFiles(input, native, proof.normalization?.metadataFiles);
+  const preliminary = await nodePhysicalFiles(
+    input,
+    originalProof.native,
+    originalProof.normalization?.metadataFiles,
+  );
+  await usePhysicalOriginalNodeModes(originalProof.originalModes, preliminary.sourcePaths);
+  const proof = {
+    ...originalProof,
+    files: nodeOriginalModeProofFiles(originalProof.originalModes, originalProof.files),
+  };
+  const physical = await nodePhysicalFiles(
+    input,
+    native,
+    nodeOriginalModeMetadata(proof.originalModes, proof.normalization?.metadataFiles),
+  );
   const files = new NodeArtifactFiles(input, physical, native, proof.nextRewrites);
   const work = path.join(input.outDir, 'work', `node-${input.name ?? input.kind}`);
   await mkdir(work, { recursive: true });
@@ -391,6 +411,12 @@ export async function buildNodeFunction(
   await addNodeServer(files, work);
   await files.assertAppEntryNormalization(proof.normalization);
   await files.assertNextRewrites();
+  await assertFinalOriginalNodeModes(proof.originalModes, {
+    files: files.files,
+    sourcePaths: physical.sourcePaths,
+    links: physical.links,
+    nameOf: physical.nameOf,
+  });
   const archiveFiles = [...files.files.values()];
   const archive = nodeArtifactArchive(archiveFiles);
   const bytes = archiveFiles.reduce((total, file) => total + file.bytes.byteLength, 0);

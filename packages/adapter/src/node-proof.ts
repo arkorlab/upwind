@@ -18,7 +18,6 @@ import {
 import { dynamicLoadsOf } from './dynamic-loads.ts';
 import type { BuildFunctionInput } from './function.ts';
 import { nativeLoadsPlugin, type NativeLoad } from './native-loads.ts';
-import type { NodeArchiveFile } from './node-archive.ts';
 import { nodeCachePolicyPatch } from './node-cache-policy.ts';
 import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
 import type { ManifestGraphEdge, NodeManifestNormalization } from './node-manifest-graph.ts';
@@ -36,7 +35,9 @@ import {
   type NodeNextRewriteProof,
 } from './node-next-rewrite-proof.ts';
 import { originalHostLoadersPlugin } from './node-original-host-loaders.ts';
-import { assertRawNodeSource } from './node-source-runtime.ts';
+import { prepareOriginalNodeModes, type OriginalNodeModeScope } from './node-original-load-mode.ts';
+
+export { assertNodeProofFiles } from './node-original-load-mode-archive.ts';
 import { instrumentationPatch } from './patches/instrumentation.ts';
 import type { AppliedPatch } from './patches/rolldown.ts';
 import { turbopackRuntimePatch } from './patches/turbopack-runtime.ts';
@@ -69,16 +70,13 @@ interface OriginalNodeGraph {
   readonly patches: AppliedPatch[];
   readonly externals: Set<string>;
 }
-interface CopiedNodeSources {
-  readonly files: ReadonlyMap<string, Uint8Array>;
-  readonly nameOf: (file: string) => string;
-  readonly sourceNames: ReadonlyMap<string, string>;
-}
 
 export interface NodeFunctionProof {
   readonly native: readonly NativeLoad[];
   readonly files: readonly OriginalNodeSource[];
   readonly dependencies: FunctionDependencies;
+  /** Physical Node load-mode facts only; never framework, strictness, or rewrite authority. */
+  readonly originalModes: OriginalNodeModeScope;
   readonly normalization?: NodeManifestNormalization | undefined;
   readonly nextRewrites?: NodeNextRewriteProof;
 }
@@ -391,6 +389,15 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     ),
     retained: new Set(Object.keys(chunk.modules)),
   };
+  const originalModes = await prepareOriginalNodeModes(
+    {
+      rootDir: input.repoRoot ?? input.projectDir,
+      projectDir: input.projectDir,
+      distDir: input.patch.distDir,
+    },
+    manifestGraph,
+    [...manifestGraph.retained].filter((id) => !isNodeProofCompilerModule(id)),
+  );
   const manifests = await proveNodeManifests(
     {
       distDir: input.patch.distDir,
@@ -445,53 +452,10 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   await assertCurrentUsedNodeManifestHandlerCompilerRoot(compilerRootBinding, files);
   return {
     native: retained,
+    originalModes,
     files,
     dependencies,
     nextRewrites,
     ...(normalization !== undefined && { normalization }),
   };
-}
-
-function assertCopiedSource(
-  original: OriginalNodeSource,
-  copied: CopiedNodeSources,
-  bundledHash: string | undefined,
-): void {
-  if (bundledHash !== undefined) {
-    if (bundledHash !== original.sha256)
-      throw new AuditError('Original Node instrumentation changed after its source proof');
-    if (!copied.sourceNames.has(original.file)) return;
-  }
-  const name = copied.sourceNames.get(original.file) ?? copied.nameOf(original.file);
-  const bytes = copied.files.get(name);
-  if (bytes === undefined || digest(bytes) !== original.sha256)
-    throw new AuditError(
-      'Original Node graph source is absent or changed in its physical artifact',
-    );
-  assertRawNodeSource(name, bytes);
-}
-
-/** Compare original bytes before the explicit shared-cache/instrumentation artifact rewrites. */
-export function assertNodeProofFiles(
-  proof: Pick<NodeFunctionProof, 'files' | 'native'>,
-  physical: {
-    readonly files: readonly NodeArchiveFile[];
-    readonly nameOf: (file: string) => string;
-    readonly sourcePaths: ReadonlyMap<string, string>;
-  },
-  bundledInstrumentation: ReadonlyMap<string, string>,
-): void {
-  const files = new Map(physical.files.map((file) => [file.name, file.bytes]));
-  const sourceNames = new Map([...physical.sourcePaths].map(([name, file]) => [file, name]));
-  const copied: CopiedNodeSources = { files, nameOf: physical.nameOf, sourceNames };
-  const loaderFiles = new Set(
-    proof.native.flatMap((load) => (load.loaderSources ?? []).map((source) => source.file)),
-  );
-  for (const original of proof.files) {
-    // A loader executes from the physical Node graph, even if a host hook bundled it too.
-    const bundledHash = loaderFiles.has(original.file)
-      ? undefined
-      : bundledInstrumentation.get(original.file);
-    assertCopiedSource(original, copied, bundledHash);
-  }
 }
