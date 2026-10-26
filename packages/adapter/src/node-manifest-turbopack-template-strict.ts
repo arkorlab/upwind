@@ -2,14 +2,18 @@ import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node } from './lexical-scope.ts';
-import { stringOf, visitTree } from './node-manifest-consumer-ast.ts';
+import { visitTree } from './node-manifest-consumer-ast.ts';
 import type { NodeManifestTurbopackProjection } from './node-manifest-turbopack.ts';
 
 function templateStrict(node: unknown): boolean {
+  const expression = isNode(node) ? node['expression'] : undefined;
   return (
     isNode(node) &&
     node.type === 'ExpressionStatement' &&
-    stringOf(node['expression']) === 'use strict'
+    isNode(expression) &&
+    expression.type === 'Literal' &&
+    expression.start === node.start &&
+    (expression['raw'] === '"use strict"' || expression['raw'] === "'use strict'")
   );
 }
 
@@ -37,7 +41,14 @@ export function assertStrictFactory(projection: NodeManifestTurbopackProjection)
   while (node !== undefined) {
     if (node.type === 'Program' && templateStrict(listOf(node, 'body')[0])) return;
     const body = node['body'];
-    if (isNode(body) && body.type === 'BlockStatement' && templateStrict(listOf(body, 'body')[0]))
+    if (
+      ['ArrowFunctionExpression', 'FunctionDeclaration', 'FunctionExpression'].includes(
+        node.type,
+      ) &&
+      isNode(body) &&
+      body.type === 'BlockStatement' &&
+      templateStrict(listOf(body, 'body')[0])
+    )
       return;
     node = visits.get(node)?.parent;
   }

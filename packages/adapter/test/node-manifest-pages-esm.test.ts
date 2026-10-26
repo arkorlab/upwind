@@ -79,7 +79,7 @@ describe('fixed Pages ESM template inspection', () => {
       const input = mutatePagesEsmFixture(await pagesEsmFixture(), '"use strict";', directive);
 
       await expect(assertNodeManifestTurbopackTemplateConsumer(input)).rejects.toThrow(
-        'genuine original factory strictness',
+        'unproved factory strictness',
       );
     },
   );
