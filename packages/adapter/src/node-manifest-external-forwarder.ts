@@ -22,6 +22,8 @@ import {
 const COMMONJS_PARAMETERS = 3;
 const EXTERNAL_ARGUMENTS = 2;
 const EXTERNAL_INTEROP_ARGUMENTS = 3;
+const MAX_SELECTOR_STEPS = 32;
+const MAX_TEST_TERMS = 64;
 
 function member(value: unknown, object: string, property: string): boolean {
   return (
@@ -54,6 +56,55 @@ function exportValue(statement: unknown, module: string): Node | undefined {
     isNode(value['right'])
     ? value['right']
     : undefined;
+}
+function primitiveTruthiness(node: unknown): boolean | undefined {
+  if (!isNode(node) || node.type !== 'Literal' || 'regex' in node || 'bigint' in node)
+    return undefined;
+  const value = node['value'];
+  if (value === null || typeof value === 'boolean' || typeof value === 'string')
+    return Boolean(value);
+  return typeof value === 'number' && Number.isFinite(value) ? Boolean(value) : undefined;
+}
+function literalTest(node: unknown): boolean | undefined {
+  const terms =
+    isNode(node) && node.type === 'SequenceExpression' ? listOf(node, 'expressions') : [node];
+  if (terms.length === 0 || terms.length > MAX_TEST_TERMS) return undefined;
+  let result: boolean | undefined;
+  for (const term of terms) {
+    result = primitiveTruthiness(term);
+    if (result === undefined) return undefined;
+  }
+  return result;
+}
+function emptyBranch(node: unknown): boolean {
+  return (
+    node === null ||
+    (isNode(node) &&
+      (node.type === 'EmptyStatement' ||
+        (node.type === 'BlockStatement' && listOf(node, 'body').length === 0)))
+  );
+}
+function selectedChild(node: Node): unknown {
+  if (node.type === 'BlockStatement') {
+    const body = listOf(node, 'body');
+    return body.length === 1 ? body[0] : undefined;
+  }
+  if (node.type !== 'IfStatement') return undefined;
+  const truth = literalTest(node['test']);
+  if (truth === undefined || !emptyBranch(node[truth ? 'alternate' : 'consequent']))
+    return undefined;
+  return node[truth ? 'consequent' : 'alternate'];
+}
+function selectedExport(statement: unknown, module: string): Node | undefined {
+  if (!isNode(statement) || statement.type !== 'IfStatement') return exportValue(statement, module);
+  let current: unknown = statement;
+  for (let step = 0; step < MAX_SELECTOR_STEPS; step += 1) {
+    if (!isNode(current)) return undefined;
+    if (!['BlockStatement', 'IfStatement'].includes(current.type))
+      return exportValue(current, module);
+    current = selectedChild(current);
+  }
+  return undefined;
 }
 function soleAliasRead(factory: Node, variable: Node, exported: Node, name: string): boolean {
   const visits = visitTree(factory);
@@ -127,7 +178,10 @@ function assignment(
   const statements = listOf(node['body'], 'body');
   const body = strictDirective(statements[0]) ? statements.slice(1) : statements;
   if (body.length !== 1 && body.length !== 2) return undefined;
-  const value = exportValue(body.at(-1), module.name);
+  const value =
+    body.length === 1
+      ? selectedExport(body[0], module.name)
+      : exportValue(body.at(-1), module.name);
   if (value === undefined) return undefined;
   const call =
     body.length === 1
