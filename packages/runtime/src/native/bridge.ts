@@ -191,8 +191,16 @@ class NativeBridge implements NodeBridge {
         path: '/',
         method: input.request.method,
         agent: this.#agent,
-        // Application headers stay in the dispatch record. Connection framing belongs here.
-        headers: { [DISPATCH_HEADER]: id },
+        // Application headers stay in the dispatch record. Connection framing belongs here: a body
+        // is sent chunked whatever the method. Node.js chunks one by default only for the methods
+        // that usually carry one, so a DELETE's or an OPTIONS's went out unframed — the handler read
+        // it empty, and its bytes were left on the pooled socket for the next call to be parsed from.
+        // Chunked rather than a length: the stream's length is not known here, and the client's
+        // `content-length`, in the dispatch record, counts the bytes it sent, not the ones streamed.
+        headers: {
+          [DISPATCH_HEADER]: id,
+          ...(input.request.body !== null && { 'transfer-encoding': 'chunked' }),
+        },
       });
       this.#clients.add(client);
       let upload: Readable | undefined;
