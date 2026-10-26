@@ -100,6 +100,19 @@ run with Corepack's last known good pnpm, and pnpm 11 and 12 refuse such a proje
 version Next.js pins every other fixture to, from the Next.js checkout, as the workflow does:
 `corepack install -g "$(node -p "require('./package.json').packageManager")"`.
 
+### The runtime cache on a host
+
+A host's builds are the adapter alone unless `ADAPTER_TEST_CACHE=hosted` (the workflow's `cache`
+input) asks for the runtime cache a host serves behind an edge of its own: then
+`packages/cache/src/function/hosted.ts` goes into every Function the build writes. Where the host
+binds the application a cache, its Functions read and write it, and learn where its scope stands
+from the host's edge alone (`SCOPE_REVISION_HEADER`). They keep none of their own, as a standalone
+cache's do (`function/host.ts`, the `cloudflare` target's): one that asked the authority itself
+would learn of an invalidation whatever the edge in front of it said, and a suite would then pass
+whether that edge had told it or not. Where the host binds none, the host module finds nothing to
+reach, and every read is a miss, as without it. Unset, empty or `none` is the adapter alone; another
+value, or `hosted` for a target on this machine, fails before anything is built.
+
 ### Choosing the installer
 
 `ADAPTER_TEST_INSTALL_MANAGER=npm` selects npm for the isolated application's **install step**.
@@ -242,7 +255,9 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   data cache, no `use cache`, no page kept between requests and no regeneration seen. Every suite that
   asserts on caching or revalidation fails for that alone. A host that plugs its cache in
   (`createAdapter({ cacheHostModule })`) tests what it deploys by naming that adapter in
-  `NEXT_ADAPTER_PATH`, which the deploy hook then uses instead of its own.
+  `NEXT_ADAPTER_PATH`, which the deploy hook then uses instead of its own. A host that serves the
+  runtime cache behind its own edge can instead have this adapter carry its Function host
+  ([`ADAPTER_TEST_CACHE=hosted`](#the-runtime-cache-on-a-host)).
 - **A `next.config.ts` that Node.js loads itself is built the way Next.js's own CI builds it.** The
   suites under `next-config-ts-native-ts` and `-mts` await at the top level of their configs on
   purpose, and Next.js's CI builds them alone with Node.js's loader turned on

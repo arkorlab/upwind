@@ -408,6 +408,7 @@ async function main(): Promise<void> {
     NEXT_E2E_TEST_TIMEOUT: undefined,
     ADAPTER_TEST_HOOK_STARTED_MS: undefined,
     ADAPTER_TEST_INSTALL_MANAGER: undefined,
+    ADAPTER_TEST_CACHE: undefined,
     ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
     ARKOR_API_TOKEN_FILE: tokenFile,
     ADAPTER_TEST_PROJECT_ID: 'p',
