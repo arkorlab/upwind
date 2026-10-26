@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -102,6 +105,7 @@ jobs:
     needs: [check-static, lint, check-contracts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions: {}
     steps:
       - name: Require all checks
         env:
@@ -184,6 +188,7 @@ jobs:
     needs: [unit-tests, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions: {}
     steps:
       - name: Require all tests and integrations
         env:
@@ -372,6 +377,7 @@ jobs:
     needs: [local-check-shards]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions: {}
     steps:
       - name: Require all local stack shards
         env:
