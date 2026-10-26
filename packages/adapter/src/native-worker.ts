@@ -4,6 +4,7 @@ import type { NativeAddonEntryTrace } from './native-addons.ts';
 import { type NativeBindings, required, stringOf } from './native-ast.ts';
 import type { NativeEdit } from './native-operations.ts';
 import { ownedNativeFiles } from './native-ownership.ts';
+import { workerScalarNamespaceArray } from './native-worker-array-scalars.ts';
 import {
   nativeWorkerMemberKey as memberKey,
   nativeWorkerValues,
@@ -390,6 +391,17 @@ export function retainedWorkerCapabilityNodes(
     nodeTarget: options?.nodeTarget,
   };
   return retainedWorkerNodes(tree).filter((node) => {
+    if (
+      options?.nodeTarget === false &&
+      workerScalarNamespaceArray(node, {
+        tree,
+        bindings,
+        namespace: (value) =>
+          isNamespace(workerOrigin(value, context)) && unmodifiedWorkerSource(value, context),
+      }) &&
+      !workerSelectionWasMutated(tree, (value) => workerOrigin(value, context))
+    )
+      return false;
     if (
       options?.nodeTarget === false &&
       handledWorkerConstructor(node, context, tree, options.guards)
