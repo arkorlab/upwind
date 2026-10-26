@@ -20,6 +20,7 @@ import {
   releaseStream,
 } from '@stayingupwind/core/util';
 
+import type { KeptImage } from './image-cache.ts';
 import { encodeImage, type EncodedImage, holdsImage } from './image-encoder.ts';
 import { ImageDestinationError } from './image-source-error.ts';
 import { fetchImageSource } from './image-source-fetch.ts';
@@ -251,6 +252,12 @@ interface SourceResponseInput {
    * already, where the target answers a validator itself (`holdsImage`), with a 304.
    */
   readonly request: Request;
+  /**
+   * Keep the image made, where the target keeps the images it makes (`image-cache.ts`); on Workers
+   * none is given, and nothing more is done. An image kept carries an entity tag, as the edge's
+   * does: the source's own, or one of its bytes where it has none.
+   */
+  readonly keep?: ((image: KeptImage) => void) | undefined;
 }
 
 /** The source's bytes, whole, or the refusal they amount to. */
@@ -324,12 +331,17 @@ export async function sourceResponse(input: SourceResponseInput): Promise<Respon
     ? undefined
     : encodeImage({ bytes, upstreamType: contentType, params });
   const encoded = encoding === undefined ? undefined : await encoding;
-  // A transformation is tagged by its own bytes, as the edge tags one; a source keeps its own tag.
+  // A transformation is tagged by its own bytes, as the edge tags one; a source keeps its own tag,
+  // or, where it has none and the image is to be kept, is tagged by its bytes too, as the edge tags
+  // every image it keeps.
   const made =
     encoded?.kind === 'encoded'
       ? { ...encoded, etag: `"${await sha256Hex(encoded.bytes)}"` }
       : undefined;
-  return answered(input, { bytes, contentType }, made ?? encoded);
+  const sourceTag =
+    input.source.headers.get('etag') ??
+    (made !== undefined || input.keep === undefined ? undefined : `"${await sha256Hex(bytes)}"`);
+  return answered(input, { bytes, contentType, etag: sourceTag }, made ?? encoded);
 }
 
 /** A transformation the encoder made, with its entity tag. */
@@ -338,26 +350,36 @@ type Made = Extract<EncodedImage, { kind: 'encoded' }> & { readonly etag: string
 /** The image as it goes out: the encoder's, where it made one, else the source under its own type. */
 function answered(
   input: SourceResponseInput,
-  source: { readonly bytes: Uint8Array; readonly contentType: string },
+  source: {
+    readonly bytes: Uint8Array;
+    readonly contentType: string;
+    readonly etag: string | undefined;
+  },
   encoded: Made | EncodedImage | undefined,
 ): Response {
   const { params, images, request } = input;
   const failed = encoded?.kind === 'failed';
   const made = encoded !== undefined && 'etag' in encoded ? encoded : undefined;
   const bytes = made?.bytes ?? source.bytes;
+  const contentType = made?.contentType ?? source.contentType;
+  const etag = made?.etag ?? source.etag;
   const granted = upstreamMaxAge(input.source.headers.get('cache-control'));
+  // A source standing in for a transformation that failed is kept for the shortest lifetime the
+  // configuration allows, however build-hashed: a request after it may be given the one it stood
+  // in for (as Next.js falls back, and the edge marks `serviceFailed`).
+  const maxAge = failed ? images.minimumCacheTTL : Math.max(images.minimumCacheTTL, granted);
   const headers = imageResponseHeaders({
     href: params.href,
-    contentType: made?.contentType ?? source.contentType,
-    // A source standing in for a transformation that failed is kept for the shortest lifetime the
-    // configuration allows, however build-hashed: a request after it may be given the one it
-    // stood in for (as Next.js falls back, and the edge marks `serviceFailed`).
+    contentType,
     isStatic: params.isStatic && !failed,
-    maxAge: failed ? images.minimumCacheTTL : Math.max(images.minimumCacheTTL, granted),
-    etag: made?.etag ?? input.source.headers.get('etag') ?? undefined,
+    maxAge,
+    etag,
     config: images,
     cache: 'MISS',
   });
+  if (etag !== undefined && input.keep !== undefined) {
+    input.keep({ bytes, contentType, etag, maxAge, fallback: failed });
+  }
   if (holdsImage(request, headers.get('etag') ?? undefined)) {
     return new Response(null, { status: HTTP_NOT_MODIFIED, headers });
   }

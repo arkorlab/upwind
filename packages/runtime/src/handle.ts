@@ -39,6 +39,7 @@ import {
   requestChanges,
   type Routed,
 } from './handoff.ts';
+import { openImageCache } from './image-cache.ts';
 import {
   applicationHosts,
   fetchRemoteSource,
@@ -219,6 +220,22 @@ async function serveImageSource(
     return fallback.response;
   }
   const { params } = fallback;
+  // Kept, where the target keeps the images it makes, under what the image is made of and for, and
+  // looked up before its source is asked for, as the edge looks one up (`image-cache.ts`). On
+  // Workers nothing is kept, and nothing is waited on.
+  const opening = openImageCache({
+    request,
+    params,
+    images,
+    deploymentId: store.manifest.deploymentId,
+    middlewareRan: input.middlewareRan === true,
+    waitUntil: input.waitUntil,
+  });
+  const slot = opening === undefined ? undefined : await opening;
+  if (slot?.hit !== undefined) {
+    return slot.hit;
+  }
+  const keep = slot?.keep;
   if (fallback.kind === 'remote') {
     const remote = await fetchRemoteSource({
       href: params.href,
@@ -227,7 +244,7 @@ async function serveImageSource(
     });
     return remote.kind === 'refused'
       ? remote.response
-      : sourceResponse({ source: remote.response, params, images, internal: false, request });
+      : sourceResponse({ source: remote.response, params, images, internal: false, request, keep });
   }
   const source = sourceRequest(request, params.href);
   // Routed already, by the Function that handed the image here: answered from there.
@@ -240,7 +257,7 @@ async function serveImageSource(
   if (misdirectedTo(answered) !== undefined) {
     return answered;
   }
-  return sourceResponse({ source: answered, params, images, internal: true, request });
+  return sourceResponse({ source: answered, params, images, internal: true, request, keep });
 }
 
 /**

@@ -56,6 +56,8 @@ export interface NativeDeploymentManifest {
   readonly generatedAt: string;
   readonly projectDir: string;
   readonly distDir: string;
+  /** `images.maximumDiskCacheSize`, where set: the most bytes of images kept (`image-cache.ts`). */
+  readonly imageCacheBytes?: number;
 }
 
 async function filesUnder(directory: string): Promise<string[]> {
@@ -203,6 +205,7 @@ function nativeModules(runtimeRoot: string, cacheHost: string): Plugin {
   };
   const replacements = new Map([
     [path.join(runtimeRoot, 'environment.ts'), path.join(runtimeRoot, 'native/environment.ts')],
+    [path.join(runtimeRoot, 'image-cache.ts'), path.join(runtimeRoot, 'native/image-cache.ts')],
     [path.join(runtimeRoot, 'image-encoder.ts'), path.join(runtimeRoot, 'native/image-encoder.ts')],
     [
       path.join(runtimeRoot, 'image-source-fetch.ts'),
@@ -483,6 +486,7 @@ export async function emitNativeDeployment(
     directories: [ctx.repoRoot, ctx.projectDir, ctx.distDir],
     outDir,
   });
+  const imageCacheBytes = images && ctx.config.images.maximumDiskCacheSize;
   const manifest: NativeDeploymentManifest = {
     format: 'upwind-node',
     v: 1,
@@ -492,6 +496,7 @@ export async function emitNativeDeployment(
     generatedAt,
     projectDir: layout.pathOf(ctx.projectDir),
     distDir: layout.pathOf(ctx.distDir),
+    ...(imageCacheBytes !== undefined && { imageCacheBytes }),
   };
   // A static export still needs a real cwd, even though none of its route modules are loaded.
   await mkdir(path.join(outDir, manifest.projectDir), { recursive: true });
