@@ -252,6 +252,12 @@ export class NodeManifestPagesConjunctionWalk {
     return digest([this.input, this.graphs]);
   }
 
+  private existingGroup(id: string): Group | undefined {
+    for (const group of this.groups.values())
+      if (group.handle.registrationId === id || group.handle.members.includes(id)) return group;
+    return undefined;
+  }
+
   private group(id: string, scope: NodeManifestRegistrationPass): Group | undefined {
     this.assertPass(scope);
     const members = nodeManifestPassMembers(scope, id);
@@ -387,11 +393,6 @@ export class NodeManifestPagesConjunctionWalk {
     group.parents = Object.freeze([...parents]);
   }
 
-  private existingGroup(id: string): Group | undefined {
-    for (const group of this.groups.values())
-      if (group.handle.registrationId === id || group.handle.members.includes(id)) return group;
-    return undefined;
-  }
   has(id: string): boolean {
     return this.existingGroup(id) !== undefined;
   }
