@@ -33,7 +33,7 @@ import { carriesMaps } from '../source-maps.ts';
 import { collectStaticFiles } from '../static-files.ts';
 import { staticPagesRuntimeFields } from '../static-pages.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from '../throwing-globals.ts';
-import { copyNativeFiles, nativeTraceFiles } from './files.ts';
+import { copyNativeFiles, nativeAssetSources, nativeTraceFiles } from './files.ts';
 import { nativeEdgeGraphPlugin } from './graph.ts';
 
 const MIDDLEWARE_ID = '/_middleware';
@@ -90,9 +90,11 @@ async function nativeSources(ctx: BuildContext): Promise<string[]> {
     ...ctx.outputs.pagesApi,
     ...(ctx.outputs.middleware === undefined ? [] : [ctx.outputs.middleware]),
   ];
-  const sources = new Set(
-    outputs.flatMap((output) => [output.filePath, ...Object.values(output.assets)]),
-  );
+  const sources = new Set<string>();
+  for (const output of outputs) {
+    sources.add(output.filePath);
+    for (const source of nativeAssetSources(output.assets, ctx.distDir)) sources.add(source);
+  }
   const serverFiles = await filesUnder(path.join(ctx.distDir, 'server'));
   const manifests = await rootManifests(ctx.distDir);
   for (const file of serverFiles) sources.add(file);
