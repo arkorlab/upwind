@@ -39,8 +39,16 @@ describe('explicit build pattern allowances', () => {
         expect(() => new BuildPatternBudget().test(source, 'i', 'a')).toThrow(
           BuildPatternBudgetExceededError,
         );
-        expect(test.mock.contexts.filter((pattern) => pattern.source === source)).toHaveLength(0);
-        expect(exec.mock.contexts.filter((pattern) => pattern.source === source)).toHaveLength(0);
+        expect(
+          test.mock.contexts.filter(
+            (pattern) => pattern instanceof RegExp && pattern.source === source,
+          ),
+        ).toHaveLength(0);
+        expect(
+          exec.mock.contexts.filter(
+            (pattern) => pattern instanceof RegExp && pattern.source === source,
+          ),
+        ).toHaveLength(0);
       } finally {
         test.mockRestore();
 
