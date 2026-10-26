@@ -439,7 +439,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$VERIFIED_COMMIT"
           test "$(git ls-remote --refs origin "refs/tags/${TAG}" | cut -f1)" = "$VERIFIED_TAG_OBJECT"
-      # For `npm` to be a version that reads a field out of a packument by name.
+      # Trusted inline JSON readers inspect metadata without executing checked-out modules.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -453,19 +453,27 @@ jobs:
           set -euo pipefail
           version="${TAG#v}"
           for manifest in packages/*/package.json; do
-            if [ "$(node -p "require('./${manifest}').private === true")" = true ]; then
+            if [ "$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).private === true' "$manifest")" = true ]; then
               continue
             fi
-            name="$(node -p "require('./${manifest}').name")"
+            name="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).name' "$manifest")"
+            metadata_url="$(node -p '
+              "https://registry.npmjs.org/" + encodeURIComponent(process.argv[1]) + "/" + encodeURIComponent(process.argv[2])
+            ' "$name" "$version")"
             predicate=''
-            # Give the registry time to agree with itself. It needs more than it sounds like: on the
-            # first release, two of the three packages then published were readable at once and the third answered
-            # 404 for its whole document for nine minutes — while its attestation endpoint was
-            # already serving. So this waits ten, and the failure below means what it says.
+            # Give the registry time to agree with itself. On the first release one package's
+            # attestation endpoint served for nine minutes before its version metadata caught up.
             for _ in $(seq 20); do
-              # `--prefer-online`: a cached packument from before the publish would read as a
-              # release with no attestation, which is the one wrong answer this must not give.
-              predicate="$(npm view --prefer-online "${name}@${version}" dist.attestations.provenance.predicateType 2>/dev/null || true)"
+              # Read metadata as data: no package-manager config, hooks, or local modules.
+              predicate="$(
+                curl --disable -fsS --connect-timeout 5 --max-time 20 --max-filesize 1048576 \
+                  "$metadata_url" 2>/dev/null |
+                  node -e '
+                    const metadata = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+                    const predicate = metadata.dist?.attestations?.provenance?.predicateType;
+                    if (typeof predicate === "string") process.stdout.write(predicate);
+                  ' 2>/dev/null || true
+              )"
               if [ -n "${predicate}" ]; then
                 break
               fi
