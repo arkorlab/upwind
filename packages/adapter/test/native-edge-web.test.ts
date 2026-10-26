@@ -194,7 +194,7 @@ describe('the native Edge bundle', () => {
     expect(Request).toBe(replacementRequest);
   });
 
-  it('notes a body Fetch decoded, carried on into an answer made again of it, and no other', async () => {
+  it('notes a body Fetch decoded, carried on into a clone and an answer made again of it, and no other', async () => {
     const server = createServer((_request, response) => {
       response.writeHead(200, { 'content-encoding': 'gzip' });
       response.end(gzipSync(BODY));
@@ -208,11 +208,12 @@ describe('the native Edge bundle', () => {
           [
             'module.exports = async (url) => {',
             '  const fetched = await fetch(url);',
+            '  const copy = fetched.clone();',
             '  const again = new Response(fetched.body, fetched);',
             '  const made = new Response("made", { headers: { "content-encoding": "gzip" } });',
-            `  const noted = [${NATIVE_EDGE_WEB_BINDING}.decodedBody(fetched.body), ${NATIVE_EDGE_WEB_BINDING}.decodedBody(again.body), ${NATIVE_EDGE_WEB_BINDING}.decodedBody(made.body)];`,
-            '  await again.body.cancel();',
-            '  await made.body.cancel();',
+            `  const noted = [${NATIVE_EDGE_WEB_BINDING}.decodedBody(again.body), ${NATIVE_EDGE_WEB_BINDING}.decodedBody(copy.body), ${NATIVE_EDGE_WEB_BINDING}.decodedBody(made.body)];`,
+            // A clone's two streams are let go together: the source is cancelled once both are.
+            '  await Promise.all([again.body.cancel(), copy.body.cancel(), made.body.cancel()]);',
             '  return noted;',
             '};',
           ].join('\n'),
@@ -227,6 +228,21 @@ describe('the native Edge bundle', () => {
     } finally {
       server.close();
     }
+  });
+
+  it('says which codings Fetch decodes: all of a list, or none of it', async () => {
+    const decodes = (await edgeModule(SNIPPET, true, [
+      snippetPlugin(
+        `module.exports = (header) => ${NATIVE_EDGE_WEB_BINDING}.fetchDecodes(header);`,
+      ),
+    ])) as (header: string | null) => boolean;
+
+    expect(
+      ['gzip', 'X-Gzip', 'deflate', 'br', 'gzip, br', 'compress', 'gzip, compress', 'identity'].map(
+        (header) => decodes(header),
+      ),
+    ).toStrictEqual([true, true, true, true, true, false, false, false]);
+    expect(decodes(null)).toBe(false);
   });
 
   it('builds a module that assigns either global, as a polyfill may', async () => {

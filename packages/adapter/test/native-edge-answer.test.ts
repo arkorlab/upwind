@@ -12,6 +12,9 @@ import { NATIVE_EDGE_WEB_BINDING } from '../src/native/edge-web.ts';
 type Context = Readonly<Record<string, unknown>>;
 type Handler = (request: Request, ctx: Context) => Promise<unknown>;
 
+/** The codings Node.js's Fetch decodes, of those the tests send (`edge-web.ts` lists them all). */
+const CODINGS: ReadonlySet<string> = new Set(['br', 'gzip']);
+
 /**
  * The bodies the Edge bundle's `fetch` noted as decoded (`edge-web.ts`): the test's to say, in place
  * of the object the bundle injects.
@@ -26,6 +29,11 @@ function edgeAnswer(handler: unknown): Handler {
   ) as (web: unknown) => (handler: unknown) => Handler;
   return wrap({
     decodedBody: (body: ReadableStream | null) => body !== null && decoded.has(body),
+    // As Node.js's Fetch decodes: the codings `edge-web.ts` lists, all of them or none.
+    fetchDecodes: (header: string | null) => {
+      const codings = header?.split(',') ?? [];
+      return codings.length > 0 && codings.every((coding) => CODINGS.has(coding.trim()));
+    },
   })(handler);
 }
 
@@ -54,6 +62,26 @@ describe("the native Edge bundle's answers", () => {
       expect(answer.headers.get('content-encoding')).toBeNull();
       expect(answer.headers.get('content-length')).toBeNull();
       expect(answer.headers.get('content-type')).toBe('text/plain');
+      await expect(answer.text()).resolves.toBe(BODY);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('keeps the coding of a fetch passed on as it is where Fetch does not decode it (Codex)', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-encoding': 'compress' });
+      response.end(BODY);
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    try {
+      const { port } = server.address() as AddressInfo;
+      const handler = edgeAnswer(() => fetch(`http://127.0.0.1:${String(port)}/`));
+
+      const answer = (await handler(REQUEST, {})) as Response;
+
+      expect(answer.headers.get('content-encoding')).toBe('compress');
       await expect(answer.text()).resolves.toBe(BODY);
     } finally {
       server.close();

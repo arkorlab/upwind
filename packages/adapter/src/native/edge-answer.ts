@@ -9,8 +9,11 @@ import { NATIVE_EDGE_WEB_BINDING } from './edge-web.ts';
  * arrived with, and a client then fails to decode them again (`Decompression failed`).
  *
  * The coding is dropped where it no longer holds alone (Sentry): for an answer that is a `fetch`'s as
- * it is (`type` not `default`), or one made of a body Node.js's Fetch decoded — the Edge bundle's
- * `fetch` notes such a body (`decodedBody`, `edge-web.ts`), which an answer made again of it carries.
+ * it is (`type` not `default`) under a coding Fetch decodes (`fetchDecodes`; one it does not decode
+ * still describes the bytes, Codex), or one made of a body Node.js's Fetch decoded — the Edge
+ * bundle's `fetch` notes such a body (`decodedBody`, `edge-web.ts`), which an answer made again of
+ * it, or of a clone of it, carries. A body the application made anew of decoded bytes, piped
+ * through a stream of its own, is not known for one: its coding is kept, as the application left it.
  * One whose bytes the route compressed itself and says so keeps it, and arrives as it would deployed;
  * `next start` sends those bytes as if they were plain.
  *
@@ -30,7 +33,9 @@ export const EDGE_ANSWER_SOURCE = [
   'const DECODED_HEADERS = [...FRAMING_HEADERS, "content-encoding"];',
   'function edgeAnswerOf(response) {',
   '  if (!(response instanceof Response)) return response;',
-  `  const decoded = response.type !== "default" || ${NATIVE_EDGE_WEB_BINDING}.decodedBody(response.body);`,
+  // A fetch's answer as it is was decoded where Fetch decodes its coding; one made again, where its
+  // body is one Fetch decoded.
+  `  const decoded = response.type === "default" ? ${NATIVE_EDGE_WEB_BINDING}.decodedBody(response.body) : ${NATIVE_EDGE_WEB_BINDING}.fetchDecodes(response.headers.get("content-encoding"));`,
   '  const dropped = decoded ? DECODED_HEADERS : FRAMING_HEADERS;',
   '  if (!dropped.some((name) => response.headers.has(name))) return response;',
   '  const headers = new Headers(response.headers);',
