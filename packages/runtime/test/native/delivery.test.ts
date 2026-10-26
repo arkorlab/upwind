@@ -310,6 +310,40 @@ describe('answers by the edge’s rules on the native target', () => {
     );
   });
 
+  it('answers a stale ISR page as it stands for a request it is everyone’s for, and on Workers never', () => {
+    const stale = {
+      ...current('pages', {
+        entryId: 'isr-entry',
+        route: '/isr',
+        pathname: '/isr',
+        staticPagePrivacy: 2,
+        policy: {
+          revalidateAfter: { kind: 'finite', seconds: 60 },
+          expireAfter: { kind: 'unbounded' },
+          clientStale: { kind: 'unknown' },
+          source: 'build-output',
+        },
+      }),
+      validity: 'stale',
+    } as CurrentGeneration;
+    const invalidated = {
+      ...stale,
+      pack: {
+        ...stale.pack,
+        header: { ...stale.pack.header, invalidation: { revision: 1 } },
+      },
+    } as CurrentGeneration;
+    const standing = (input: RoutedInput, made = stale): boolean =>
+      native.standingShared(input, made, 'html');
+
+    expect(standing(routed('/isr'))).toBe(true);
+    expect(standing(routed('/isr', { headers: { cookie: 'a=1' } }))).toBe(false);
+    expect(standing(routed('/isr', {}, true))).toBe(false);
+    expect(standing(routed('/elsewhere'))).toBe(false);
+    expect(standing(routed('/isr'), invalidated)).toBe(false);
+    expect(shared.standingShared(routed('/isr'), stale, 'html')).toBe(false);
+  });
+
   it('keeps a page the visitor’s where a route ahead of the filesystem takes its request', () => {
     // A rewrite through another name and back, for a request that carries `x-hop`; a rule of that
     // other name, for the same request, lays a header no rule of the page's own name lays.
@@ -580,7 +614,7 @@ describe('a member’s first data, held for its first generation', () => {
   /** What the runtime knows of the first generation, its answer from the record the rules'. */
   function firstPublish(input: RoutedInput, given: Partial<FirstPublish>): FirstPublish {
     return {
-      runtime: {} as CacheRuntime,
+      runtime: { log: vi.fn() } as unknown as CacheRuntime,
       descriptor,
       published: undefined,
       elsewhere: false,
@@ -716,6 +750,53 @@ describe('a member’s first data, held for its first generation', () => {
 
     expect((await answer).headers.get('cache-control')).toBe(VISITOR);
     expect(first.fromRecord).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds nothing for data no shared cache may answer the request for', async () => {
+    const input = routed(MEMBER_DATA, { headers: { cookie: 'a=1' } });
+    vi.mocked(currentGeneration).mockResolvedValue(generation);
+
+    const answer = await heldFor(native, input, firstPublish(input, { elsewhere: true }));
+
+    expect(answer.headers.get('cache-control')).toBe(VISITOR);
+    expect(currentGeneration).not.toHaveBeenCalled();
+  });
+
+  it('answers with the data made for the visitor whatever fails of the wait, and says so', async () => {
+    const input = routed(MEMBER_DATA);
+    vi.mocked(currentGeneration).mockRejectedValueOnce(new Error('the cache is gone'));
+    const readFailed = firstPublish(input, { elsewhere: true });
+    const answerFailed = firstPublish(input, {
+      published: Promise.resolve({ kind: 'published' }),
+      fromRecord: vi.fn(() => Promise.reject(new Error('the output is gone'))),
+    });
+
+    const read = await heldFor(native, input, readFailed);
+    vi.mocked(currentGeneration).mockResolvedValue(generation);
+    const output = await heldFor(native, input, answerFailed);
+
+    expect(read.headers.get('cache-control')).toBe(VISITOR);
+    expect(output.headers.get('cache-control')).toBe(VISITOR);
+    expect(readFailed.runtime.log).toHaveBeenCalledWith('first data not shared', {
+      pathname: MEMBER,
+      detail: 'the cache is gone',
+    });
+    expect(answerFailed.runtime.log).toHaveBeenCalledWith('first data not shared', {
+      pathname: MEMBER,
+      detail: 'the output is gone',
+    });
+  });
+
+  it('begins no read for a visitor already gone', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const input = routed(MEMBER_DATA, { signal: controller.signal });
+    vi.mocked(currentGeneration).mockRejectedValue(new Error('read past the visitor'));
+
+    const answer = await heldFor(native, input, firstPublish(input, { elsewhere: true }));
+
+    expect(answer.headers.get('cache-control')).toBe(VISITOR);
+    expect(currentGeneration).not.toHaveBeenCalled();
   });
 
   it('holds nothing for data a rewrite led to from another name, or on Workers', async () => {

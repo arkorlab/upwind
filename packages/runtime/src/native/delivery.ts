@@ -251,12 +251,17 @@ function pageEntryOf(
   return page?.route === route ? { ...page, entryId } : undefined;
 }
 
-function pageOffered(
+/** What the runtime offers of an answer for a request: its kind, and the record's `Cache-Control`. */
+interface Offering {
+  readonly made: Offer;
+  readonly cacheControl: string | null;
+}
+
+function pageOffering(
   input: RoutedInput,
   current: CurrentGeneration,
   data: boolean,
-  answer: Response,
-): Response {
+): Offering | undefined {
   const { pack, validity, entryId } = current;
   const scopeId = input.cache?.scopeId;
   const store = getStore();
@@ -267,7 +272,7 @@ function pageOffered(
     input.middlewareRan === true ||
     !askedByName(input.request, store, entry.pathname, data)
   ) {
-    return answer;
+    return undefined;
   }
   // A build's own page is shared while fresh; an ISR page, or a member, stale as well, unless the
   // cache carries an invalidation of it (`pageDecisionAgrees`, and the edge's invalidated path).
@@ -276,43 +281,60 @@ function pageOffered(
     (validity !== 'fresh' && !(isr && validity === 'stale')) ||
     (isr && pack.header.invalidation !== undefined)
   ) {
-    return answer;
+    return undefined;
   }
   const headers = pageHeaders(pack, entry, scopeId);
-  if (headers === undefined) return answer;
+  if (headers === undefined) return undefined;
   if (!data) {
-    return offer(
-      answer,
-      { kind: PAGE, noTransform: headers.has(CACHE_CONTROL), gated: false },
-      headers.get(CACHE_CONTROL),
-    );
+    return {
+      made: { kind: PAGE, noTransform: headers.has(CACHE_CONTROL), gated: false },
+      cacheControl: headers.get(CACHE_CONTROL),
+    };
   }
-  if (pageDataArtifact(pack, entry, scopeId) === undefined) return answer;
-  return offer(
-    answer,
-    {
+  if (pageDataArtifact(pack, entry, scopeId) === undefined) return undefined;
+  return {
+    made: {
       kind: PAGE_DATA,
       noTransform: staticPageHasNoTransform(Object.entries(pack.header.headers)),
       gated: false,
     },
-    null,
-  );
+    cacheControl: null,
+  };
 }
 
-function bodyOffered(input: RoutedInput, current: CurrentGeneration, answer: Response): Response {
+function bodyOffering(input: RoutedInput, current: CurrentGeneration): Offering | undefined {
   const { pack, entryId } = current;
   const store = getStore();
   const admitted = admittedOf(store).bodies.get(pack.header.pathname);
   if (admitted === undefined || !askedByName(input.request, store, admitted.pathname, false)) {
-    return answer;
+    return undefined;
   }
   const headers = bodyHeaders(pack, { ...admitted, entryId });
-  if (headers === undefined) return answer;
-  return offer(
-    answer,
-    { kind: BODY, noTransform: noTransform(headers), gated: input.middlewareRan === true },
-    headers.get(CACHE_CONTROL),
-  );
+  return headers === undefined
+    ? undefined
+    : {
+        made: {
+          kind: BODY,
+          noTransform: noTransform(headers),
+          gated: input.middlewareRan === true,
+        },
+        cacheControl: headers.get(CACHE_CONTROL),
+      };
+}
+
+/** What the runtime offers of a generation's answer to `representation` for this request, if any. */
+function offeringFor(
+  input: RoutedInput,
+  current: CurrentGeneration,
+  representation: Representation,
+): Offering | undefined {
+  // A `HEAD` is the Function's on the edge: the build proves a `GET` representation.
+  if (input.request.method !== 'GET') return undefined;
+  const { kind } = current.pack.header;
+  if (kind === 'pages' && (representation === 'html' || representation === PAGES_DATA)) {
+    return pageOffering(input, current, representation === PAGES_DATA);
+  }
+  return kind === 'app-route' && representation === BODY ? bodyOffering(input, current) : undefined;
 }
 
 export function offeredFromGeneration(
@@ -321,16 +343,26 @@ export function offeredFromGeneration(
   representation: Representation,
   answer: Response,
 ): Response {
-  // A `HEAD` is the Function's on the edge: the build proves a `GET` representation.
-  if (input.request.method !== 'GET' || answer.status !== HTTP_OK) return answer;
-  const { kind } = current.pack.header;
-  if (kind === 'pages' && (representation === 'html' || representation === PAGES_DATA)) {
-    return pageOffered(input, current, representation === PAGES_DATA, answer);
-  }
-  if (kind === 'app-route' && representation === BODY) {
-    return bodyOffered(input, current, answer);
-  }
-  return answer;
+  const offering =
+    answer.status === HTTP_OK ? offeringFor(input, current, representation) : undefined;
+  return offering === undefined ? answer : offer(answer, offering.made, offering.cacheControl);
+}
+
+/**
+ * Whether the standing generation is everyone's for this request, as the edge would serve it
+ * (`serveCurrentPage`): offered, and the request one a shared cache may answer (`configuredFor`).
+ * Such a request is answered from the generation as it stands, bytes and headers alike, and never
+ * from the render regenerating it, which goes out as the visitor's only (`answerFromStanding`).
+ */
+export function standingShared(
+  input: RoutedInput,
+  current: CurrentGeneration,
+  representation: Representation,
+): boolean {
+  const offering = offeringFor(input, current, representation);
+  return (
+    offering !== undefined && configuredFor(getStore(), input.request, offering.made) !== undefined
+  );
 }
 
 /**
@@ -354,27 +386,44 @@ export async function offeredOncePublished(
     input.middlewareRan === true ||
     (first.published === undefined && !first.elsewhere) ||
     !askedByName(input.request, store, first.descriptor.pathname, true) ||
-    pageEntryOf(store, first.descriptor, '') === undefined
+    pageEntryOf(store, first.descriptor, '') === undefined ||
+    // A request no shared cache may answer is the visitor's whatever comes of the generation, and
+    // waits for nothing (Sentry).
+    configuredFor(store, input.request, { kind: PAGE_DATA, noTransform: false, gated: false }) ===
+      undefined
   ) {
     return answer;
   }
-  const until = performance.now() + FIRST_RECORD_MS;
-  const current = await firstRecord(input, first, until);
-  if (current === undefined) return answer;
-  // The generation's answer reads its output from the cache: within the same window, and only
-  // while the visitor waits, with the answer made for them ready all the while (greptile).
-  const reading = first.fromRecord(current);
-  const recorded = await within(reading, until, input.request.signal);
-  if (recorded === undefined) {
-    input.waitUntil(letGo(reading));
+  let reading: Promise<Response | undefined> | undefined;
+  try {
+    const until = performance.now() + FIRST_RECORD_MS;
+    const current = await firstRecord(input, first, until);
+    if (current === undefined) return answer;
+    // The generation's answer reads its output from the cache: within the same window, and only
+    // while the visitor waits, with the answer made for them ready all the while (greptile).
+    const started = first.fromRecord(current);
+    reading = started;
+    const recorded = await within(() => started, until, input.request.signal);
+    if (recorded === undefined) {
+      input.waitUntil(letGo(started));
+      return answer;
+    }
+    if (recorded.value?.headers.has(OFFER) !== true) {
+      await recorded.value?.body?.cancel();
+      return answer;
+    }
+    await answer.body?.cancel();
+    return recorded.value;
+  } catch (error) {
+    // The wait is a chance to share, not a part of the answer: the visitor has theirs whatever
+    // failed of it (coderabbit).
+    if (reading !== undefined) input.waitUntil(letGo(reading));
+    first.runtime.log('first data not shared', {
+      pathname: first.descriptor.pathname,
+      detail: error instanceof Error ? error.message : String(error),
+    });
     return answer;
   }
-  if (recorded.value?.headers.has(OFFER) !== true) {
-    await recorded.value?.body?.cancel();
-    return answer;
-  }
-  await answer.body?.cancel();
-  return recorded.value;
 }
 
 /**
@@ -414,7 +463,7 @@ export function offeredFromFallback(
   );
 }
 
-function offerOf(value: string): Offer | undefined {
+function offerIn(value: string): Offer | undefined {
   const [named, ...flags] = value.split(';');
   const kind = KINDS.find((each) => each === named);
   return kind === undefined
@@ -469,6 +518,23 @@ function configuredShares(configured: ConfiguredHeaders, made: Offer): boolean {
   )(set);
 }
 
+/**
+ * The rules of `next.config` laid on the request, where the request is one a shared cache may
+ * answer at all — no credential or condition (`requestShares`), no route that takes it elsewhere
+ * first (`reservedFor`), and rules that hold for everyone and permit sharing (`configuredShares`);
+ * `undefined` where it is not, and the answer is the visitor's whatever else is said of it.
+ */
+function configuredFor(store: Store, request: Request, made: Offer): ConfiguredHeaders | undefined {
+  if (
+    !requestShares(request, made.kind === BODY) ||
+    reservedFor(store, request, made.kind === PAGE_DATA)
+  ) {
+    return undefined;
+  }
+  const configured = headerRulesFor(admittedOf(store).rules, new URL(request.url), request.headers);
+  return configuredShares(configured, made) ? configured : undefined;
+}
+
 /** Shared as the edge shares it: its policy over the answer's, and the cache's own fields gone. */
 function shared(headers: Headers, made: Offer, configured: ConfiguredHeaders): boolean {
   const contentType = headers.get(CONTENT_TYPE) ?? '';
@@ -510,28 +576,19 @@ export function delivered(request: Request, answer: Response): Response {
   const { headers } = out;
   headers.delete(OFFER);
   headers.delete(OFFERED_CACHE_CONTROL);
-  const made = offerOf(value);
-  const store = getStore();
-  if (
-    made !== undefined &&
-    out.status === HTTP_OK &&
-    requestShares(request, made.kind === BODY) &&
-    !reservedFor(store, request, made.kind === PAGE_DATA)
-  ) {
-    const configured = headerRulesFor(
-      admittedOf(store).rules,
-      new URL(request.url),
-      request.headers,
-    );
-    if (configuredShares(configured, made)) {
-      const answered = new Headers(headers);
-      if (shared(answered, made, configured)) {
-        return new Response(out.body, {
-          status: out.status,
-          statusText: out.statusText,
-          headers: answered,
-        });
-      }
+  const made = offerIn(value);
+  const configured =
+    made === undefined || out.status !== HTTP_OK
+      ? undefined
+      : configuredFor(getStore(), request, made);
+  if (made !== undefined && configured !== undefined) {
+    const answered = new Headers(headers);
+    if (shared(answered, made, configured)) {
+      return new Response(out.body, {
+        status: out.status,
+        statusText: out.statusText,
+        headers: answered,
+      });
     }
   }
   // The visitor's, as the Function answers it on the edge — but for a `Cache-Control` routing laid

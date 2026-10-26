@@ -37,7 +37,7 @@ import { answeringAtOnce } from './cache/publishing.ts';
 import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
 import { servable } from './cache/servable.ts';
-import { offeredFromGeneration, offeredOncePublished } from './delivery.ts';
+import { offeredFromGeneration, offeredOncePublished, standingShared } from './delivery.ts';
 import { foundDynamic, rememberingDynamic } from './dynamic-misses.ts';
 import { nodeHandlerOf } from './entries.ts';
 import { outputOf } from './generation-outputs.ts';
@@ -576,10 +576,11 @@ async function answerUnavailable(
  * trips to the host, and until they had settled each request of the isolate was answered with the
  * generation the render replaces, for as long as those took.
  *
- * Answered from the render, it is still the standing generation's slot: the edge serves a stale
- * record as everyone's whatever is regenerating it (`serveCurrentPage`), and a host with no edge in
- * front of it judges the render's answer by that generation as well (`offeredFromGeneration`), the
- * render's own headers then judged with the rest of the answer once routing is done.
+ * But for a request the standing generation is everyone's for (`standingShared`): the edge serves
+ * it the standing record as it is, bytes and headers alike, whatever is regenerating it
+ * (`serveCurrentPage`), and only a request it leaves to the Function meets the render — as the
+ * visitor's. A render is never offered as everyone's by the record it is to replace: its bytes
+ * would go out under another generation's headers and admission (Codex, greptile).
  */
 async function answerFromStanding(
   job: Job,
@@ -588,13 +589,13 @@ async function answerFromStanding(
   want: Want,
 ): Promise<Response | undefined> {
   const publishing =
-    current.validity === 'stale'
+    current.validity === 'stale' && !standingShared(job.input, current, source.representation)
       ? answeringAtOnce(job.runtime, 'stale', current.entryId)?.render
       : undefined;
-  const ours = await answerFromPublishing(job.input, job.target.handler, publishing, want);
-  return ours === undefined
-    ? answerFromGeneration(job, current, source, want)
-    : offeredFromGeneration(job.input, current, source.representation, ours);
+  return (
+    (await answerFromPublishing(job.input, job.target.handler, publishing, want)) ??
+    answerFromGeneration(job, current, source, want)
+  );
 }
 
 /**

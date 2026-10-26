@@ -25,9 +25,14 @@ async function valued<T>(operation: Promise<T>): Promise<{ readonly value: T }> 
   return { value: await operation };
 }
 
-/** `operation`'s value, or `undefined` once the window closes or the visitor goes first. */
+/**
+ * What `start` comes to, or `undefined` once the window closes or the visitor goes first. Begun only
+ * while the window is open and the visitor there: an operation begun past them would be one nobody
+ * hears the end of, a failure of it with it (coderabbit). One that comes too late is still heard,
+ * by the race it was in.
+ */
 export async function within<T>(
-  operation: Promise<T>,
+  start: () => Promise<T>,
   until: number,
   signal: AbortSignal,
 ): Promise<{ readonly value: T } | undefined> {
@@ -37,7 +42,7 @@ export async function within<T>(
   let onAbort: (() => void) | undefined;
   try {
     return await Promise.race([
-      valued(operation),
+      valued(start()),
       new Promise<undefined>((resolve) => {
         timer = setTimeout(() => {
           resolve(undefined);
@@ -63,11 +68,13 @@ async function pausedFor(
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const paused = await within(
-      new Promise<true>((resolve) => {
-        timer = setTimeout(() => {
-          resolve(true);
-        }, milliseconds);
-      }),
+      () => {
+        return new Promise<true>((resolve) => {
+          timer = setTimeout(() => {
+            resolve(true);
+          }, milliseconds);
+        });
+      },
       until,
       signal,
     );
@@ -104,15 +111,16 @@ export async function firstRecord(
 ): Promise<CurrentGeneration | undefined> {
   const { signal } = input.request;
   let reads = FIRST_RECORD_READS;
-  if (first.published !== undefined) {
-    const settled = await within(first.published, until, signal);
+  const { published } = first;
+  if (published !== undefined) {
+    const settled = await within(() => published, until, signal);
     if (settled === undefined) return undefined;
     if (!publishedOne(settled.value)) reads = 1;
   }
   let delay = FIRST_RECORD_RETRY_MS;
   for (let read = 1; ; read += 1) {
     const lookup = await within(
-      currentGeneration(first.runtime, first.descriptor, nowMs(), input.waitUntil),
+      () => currentGeneration(first.runtime, first.descriptor, nowMs(), input.waitUntil),
       until,
       signal,
     );
