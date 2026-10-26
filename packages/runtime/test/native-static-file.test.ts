@@ -57,6 +57,17 @@ function input(method: string, signal?: AbortSignal): RoutedInput {
   } as RoutedInput;
 }
 
+/** A read of the file, with the headers a client sent and whether a middleware ran for it. */
+function asked(headers: HeadersInit, middlewareRan = false, method = 'GET'): RoutedInput {
+  return {
+    request: new Request('https://fixture.test/static.js', { method, headers }),
+    ...(middlewareRan && { middlewareRan: true }),
+  } as RoutedInput;
+}
+
+const TAG = `"${digest}"`;
+const BODY = 'body';
+
 function file(byteLength: number, immutable = true): StaticFile {
   return {
     pathname: '/static.js',
@@ -143,5 +154,131 @@ describe('native static file delivery', () => {
       staticFileResponse(input('GET', controller.signal), store, file(0), 200),
     ).rejects.toThrow('visitor left');
     expect(open).not.toHaveBeenCalled();
+  });
+
+  describe('as the edge answers a file', () => {
+    beforeEach(async () => {
+      await writeFile(path.join(directory, 'blobs', digest), BODY);
+    });
+
+    it('names the file by its hash and length, and takes a range of it', async () => {
+      const response = await staticFileResponse(asked({}), store, file(4, false), 200);
+
+      expect(response?.status).toBe(200);
+      expect(Object.fromEntries(response?.headers ?? [])).toStrictEqual({
+        'accept-ranges': 'bytes',
+        'cache-control': 'public, max-age=0, must-revalidate',
+        'content-length': '4',
+        'content-type': 'text/javascript',
+        etag: TAG,
+      });
+      await expect(response?.text()).resolves.toBe(BODY);
+    });
+
+    it('answers HEAD with the length and tag a read would carry, reading nothing', async () => {
+      const response = await staticFileResponse(asked({}, false, 'HEAD'), store, file(4), 200);
+
+      expect(response?.body).toBeNull();
+      expect(response?.headers.get('content-length')).toBe('4');
+      expect(response?.headers.get('etag')).toBe(TAG);
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it.each([TAG, `W/${TAG}`, `"other", ${TAG}`, '*'])(
+      'answers 304 to an If-None-Match of %s, reading nothing',
+      async (validator) => {
+        const response = await staticFileResponse(
+          asked({ 'if-none-match': validator }),
+          store,
+          file(4),
+          200,
+        );
+
+        expect(response?.status).toBe(304);
+        expect(response?.body).toBeNull();
+        expect(response?.headers.get('etag')).toBe(TAG);
+        expect(response?.headers.has('content-length')).toBe(false);
+        expect(response?.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+        expect(open).not.toHaveBeenCalled();
+      },
+    );
+
+    it('answers 412 to an If-Match it fails, kept by nobody', async () => {
+      const response = await staticFileResponse(
+        asked({ 'if-match': '"other"' }),
+        store,
+        file(4),
+        200,
+      );
+
+      expect(response?.status).toBe(412);
+      expect(response?.body).toBeNull();
+      expect(response?.headers.get('cache-control')).toBe('private, no-store');
+      expect(response?.headers.has('content-length')).toBe(false);
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it('sends the one range asked, and only its bytes', async () => {
+      const response = await staticFileResponse(asked({ range: 'bytes=1-2' }), store, file(4), 200);
+
+      expect(response?.status).toBe(206);
+      expect(response?.headers.get('content-range')).toBe('bytes 1-2/4');
+      expect(response?.headers.get('content-length')).toBe('2');
+      await expect(response?.text()).resolves.toBe('od');
+    });
+
+    it('refuses a range no byte satisfies with 416, kept by nobody', async () => {
+      const response = await staticFileResponse(asked({ range: 'bytes=10-' }), store, file(4), 200);
+
+      expect(response?.status).toBe(416);
+      expect(response?.headers.get('content-range')).toBe('bytes */4');
+      expect(response?.headers.has('content-length')).toBe(false);
+      expect(response?.headers.get('cache-control')).toBe('private, no-store');
+    });
+
+    it('sends the whole file where If-Range names another entity, or names it weakly', async () => {
+      for (const condition of ['"other"', `W/${TAG}`]) {
+        const response = await staticFileResponse(
+          asked({ range: 'bytes=1-2', 'if-range': condition }),
+          store,
+          file(4),
+          200,
+        );
+
+        expect(response?.status).toBe(200);
+        await expect(response?.text()).resolves.toBe(BODY);
+      }
+    });
+
+    it('varies on what a router sent, where it asked for React Server Components', async () => {
+      const response = await staticFileResponse(asked({ rsc: '1' }), store, file(4), 200);
+
+      expect(response?.headers.get('vary')).toBe(
+        'rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch',
+      );
+
+      await response?.body?.cancel();
+    });
+
+    it('is held by the visitor alone where a middleware ran', async () => {
+      const response = await staticFileResponse(asked({}, true), store, file(4), 200);
+
+      expect(response?.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
+
+      await response?.body?.cancel();
+    });
+
+    it('sends an error document whole under its status, judging no validator or range', async () => {
+      const response = await staticFileResponse(
+        asked({ 'if-none-match': TAG, range: 'bytes=1-2' }),
+        store,
+        file(4),
+        404,
+      );
+
+      expect(response?.status).toBe(404);
+      expect(response?.headers.get('accept-ranges')).toBe('none');
+      await expect(response?.text()).resolves.toBe(BODY);
+    });
   });
 });
