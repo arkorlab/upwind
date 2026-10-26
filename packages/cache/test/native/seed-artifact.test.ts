@@ -1,5 +1,4 @@
 /* eslint-disable security/detect-non-literal-fs-filename -- Every path belongs to this suite's private temporary fixture directory. */
-import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
@@ -29,7 +28,7 @@ describe('native seed artifact reads', () => {
 
   it('reads a digest-named regular file of its declared length', async () => {
     const location = await directory();
-    const bytes = Buffer.from('build artifact');
+    const bytes = new TextEncoder().encode('build artifact');
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     await writeFile(path.join(location, sha256), bytes);
 
