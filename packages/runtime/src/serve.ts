@@ -103,6 +103,12 @@ export interface RoutedInput extends HandleInput {
    * host that answers by the edge's rules.
    */
   readonly rewriteStatus?: number | undefined;
+  /**
+   * What routing collected to lay on the answer once it is made (`withRoutingHeaders`): the rules'
+   * headers and the middleware's, as the router merged them. A host that answers a file by the edge's
+   * rules judges it by what it will carry: the `Last-Modified` it is given, a cookie beside it.
+   */
+  readonly routingHeaders?: Headers | undefined;
 }
 
 export { initUrlOf, resumeUrl, stripPlatformHeaders } from './incoming.ts';

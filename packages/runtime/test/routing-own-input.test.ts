@@ -5,10 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppModule, WebHandler } from '../src/app-module.ts';
 import { handleRequest } from '../src/handle.ts';
 import type { RoutedInput } from '../src/serve.ts';
-import { staticFileResponse } from '../src/static-file.ts';
+import { afterRouting, staticFileResponse } from '../src/static-file.ts';
 import { getStore, type Store } from '../src/store.ts';
 
 /**
+ * What a request's routing hands the file it lands on: what that routing came to, and nothing of
+ * another's, and the same input the host's word after routing is said for (`afterRouting`).
+ *
  * An image's source, asked for by the image's own request: routed as a request of its own, as the
  * edge asks for one (`fetchImageSource`). What the image request's routing came to — its middleware
  * having run, what that middleware set, a status a rewrite named — is not the source's: a source no
@@ -39,13 +42,15 @@ vi.mock(import('../src/static-file.ts'), () => {
     staticFileResponse: vi.fn(() =>
       Promise.resolve(new Response(PNG, { headers: { 'content-type': 'image/png' } })),
     ),
-    afterRouting: (_input: RoutedInput, response: Response) => response,
+    afterRouting: vi.fn((_input: RoutedInput, response: Response) => response),
   };
 });
 
 const IMAGE_PATH = '/_next/image';
 const SOURCE = '/a.png';
 const MIDDLEWARE = '/_middleware';
+/** The not-found document the build wrote as a file (`notFound`). */
+const NOT_FOUND = '/404';
 const IMAGES: ImagesConfig = {
   path: IMAGE_PATH,
   basePath: '',
@@ -90,7 +95,10 @@ function deployment(): Store {
     pathnames: [IMAGE_PATH, SOURCE],
     slashSpellings: new Map(),
     dynamicRoutes: [],
-    staticFiles: new Map([[SOURCE, FILE]]),
+    staticFiles: new Map([
+      [NOT_FOUND, { ...FILE, pathname: NOT_FOUND }],
+      [SOURCE, FILE],
+    ]),
     shellsByRoute: new Map(),
     prerendersById: new Map(),
     prerendersByPathname: new Map(),
@@ -160,5 +168,32 @@ describe('an image’s source, asked for by the image’s own request', () => {
         rewriteStatus: undefined,
       },
     ]);
+  });
+
+  it('says the host’s word over a not-found file for the input it was made for', async () => {
+    const { app } = letThrough();
+
+    const response = await handleRequest({
+      app,
+      edge: { entries: {} },
+      request: new Request('https://app.test/missing'),
+      waitUntil: () => {
+        // Nothing is scheduled.
+      },
+    });
+    await response.body?.cancel();
+
+    const made = vi.mocked(staticFileResponse).mock.calls.map(([input, , file, status]) => {
+      return {
+        input,
+        pathname: file.pathname,
+        status,
+      };
+    });
+
+    expect(made.map(({ pathname, status }) => ({ pathname, status }))).toStrictEqual([
+      { pathname: NOT_FOUND, status: 404 },
+    ]);
+    expect(vi.mocked(afterRouting).mock.calls.map(([input]) => input)).toContain(made[0]?.input);
   });
 });

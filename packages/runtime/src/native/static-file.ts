@@ -36,9 +36,9 @@ import type { Store } from '../store.ts';
  * after it is made (`withRoutingHeaders`), as the application's router lays it. The edge lays them
  * first and then says what it says of a file over them: no rule names the bytes on the wire, no
  * middleware their type or coding, and how the answer is held is the edge's last word. So the answer
- * is judged here by what routing will lay on it — the middleware's `ETag`, a rule's or the
- * middleware's `Last-Modified` — and what it decided is said again once routing has spoken
- * (`afterRouting`).
+ * is judged here by what routing will lay on it (`routingHeaders`) — the middleware's `ETag`, the
+ * `Last-Modified` it will carry, a cookie beside it — and what it decided is said again once routing
+ * has spoken (`afterRouting`).
  */
 
 const DIGEST = /^[a-f\d]{64}$/u;
@@ -80,8 +80,10 @@ const UNSHARED_GATED: CacheControlOverride = { value: GATED_CACHE_CONTROL, unsha
  */
 interface FileAnswer {
   readonly entity: readonly (readonly [string, string])[];
-  readonly contentType: string;
-  readonly coding: string | undefined;
+  /** The type over the middleware's, where it set one: a rule's or the file's. */
+  readonly type: string | undefined;
+  /** The coding over the middleware's, where it set one: a rule's, or none (`null`). */
+  readonly coding: string | null | undefined;
   readonly cacheControl: CacheControlOverride | undefined;
   readonly refusal: boolean;
   readonly rsc: boolean;
@@ -128,7 +130,11 @@ function rulesOf(store: Store): Parameters<typeof headerRulesFor>[0] {
 
 /**
  * What `next.config`'s header rules set on the request, as the edge judges them for a file
- * (`configured`): against the request as routing judged it, before a middleware changed it.
+ * (`configured`): against the request as routing judged it, before a middleware changed it, and of
+ * the rules the edge reproduces (`headerRulesOf`). Read for what the edge reads them for and routing's
+ * merge does not tell: whether a rule the request selected applied (`conditioned`), and a rule's type
+ * or coding where the middleware set one too. What routing laid is read off what it collected
+ * (`routingHeaders`), which holds every rule it applied.
  */
 function configuredFor(input: RoutedInput, store: Store): ConfiguredHeaders {
   const { request } = input;
@@ -167,16 +173,12 @@ function entityTagOf({ input, file }: Judged): string {
 }
 
 /**
- * The `Last-Modified` the answer carries (`lastModifiedOf`): one the middleware or a rule gave it —
- * the middleware's laid over a rule's, as routing lays them — the build keeping no date of a file's
- * own, and the edge sending none.
+ * The `Last-Modified` the answer carries (`lastModifiedOf`): one the middleware or a rule gave it,
+ * as routing lays them (`routingHeaders`) — the build keeping no date of a file's own, and the edge
+ * sending none.
  */
-function lastModifiedOf({ input, configured }: Judged): string | null {
-  return (
-    input.middlewareHeaders?.get('last-modified') ??
-    configuredValue(configured, 'last-modified') ??
-    null
-  );
+function lastModifiedOf({ input }: Judged): string | null {
+  return input.routingHeaders?.get('last-modified') ?? null;
 }
 
 /**
@@ -188,9 +190,8 @@ function lastModifiedOf({ input, configured }: Judged): string | null {
  */
 function cacheControlFor({ input, configured }: Judged): CacheControlOverride | undefined {
   if (input.middlewareRan === true) {
-    const cookie =
-      configuredValue(configured, 'set-cookie') !== undefined ||
-      input.middlewareHeaders?.has('set-cookie') === true;
+    // A cookie the answer goes out with, whoever set it: read off what routing lays on it.
+    const cookie = input.routingHeaders?.has('set-cookie') === true;
     const own =
       cookie || configured.conditioned
         ? undefined
@@ -201,28 +202,46 @@ function cacheControlFor({ input, configured }: Judged): CacheControlOverride | 
 }
 
 /**
- * The file's answer, as the edge gives it (`fileHeaders`): its type — a rule's, where one sets it, but
- * never the middleware's — its length and entity tag, whether a range of it may be asked, and how it
- * is held: for a year where the build marked it immutable, revalidated at every use where it did not,
- * a rule's lifetime over either, and what the edge says over all of them (`cacheControlFor`). A router
- * asking for React Server Components and answered with the file is told the answer varies on what it
- * sent, as Next.js marks it (`setVaryHeader`).
+ * The file's answer, as the edge gives it (`fileHeaders`): its type, length and entity tag, whether a
+ * range of it may be asked, and how it is held — for a year where the build marked it immutable,
+ * revalidated at every use where it did not, and what the edge says over a rule's lifetime where it
+ * says anything (`cacheControlFor`). A router asking for React Server Components and answered with the
+ * file is told the answer varies on what it sent, as Next.js marks it (`setVaryHeader`). Routing lays
+ * a rule's type, coding and lifetime on it afterwards, as the edge lays them.
  */
 function fileHeaders(judged: Judged): Headers {
-  const { input, file, status, configured } = judged;
+  const { input, file, status } = judged;
   const holding = file.immutable ? IMMUTABLE_CACHE_CONTROL : REVALIDATE_CACHE_CONTROL;
   const headers = new Headers({
-    [CONTENT_TYPE]: configuredValue(configured, CONTENT_TYPE) ?? file.blob.contentType,
+    [CONTENT_TYPE]: file.blob.contentType,
     [CONTENT_LENGTH]: String(file.blob.byteLength),
     'accept-ranges': answersAsItself(status) ? 'bytes' : 'none',
     etag: entityTagOf(judged),
-    [CACHE_CONTROL]:
-      cacheControlFor(judged)?.value ?? configuredValue(configured, CACHE_CONTROL) ?? holding,
+    [CACHE_CONTROL]: cacheControlFor(judged)?.value ?? holding,
   });
   if (input.request.headers.get(RSC_HEADER) === '1') {
     headers.append('vary', RSC_VARY);
   }
   return headers;
+}
+
+/**
+ * The type and coding the answer is given over the middleware's, where it set them: the edge does not
+ * merge either into a file's answer (`UNMERGEABLE_RESPONSE_HEADERS`), so a rule's stands, or the
+ * file's type and no coding. Where the middleware set neither, what routing laid — a rule's — stands.
+ */
+function overMiddleware({ input, file, configured }: Judged): Pick<FileAnswer, 'type' | 'coding'> {
+  const set = input.middlewareHeaders;
+  return {
+    type:
+      set?.has(CONTENT_TYPE) === true
+        ? (configuredValue(configured, CONTENT_TYPE) ?? file.blob.contentType)
+        : undefined,
+    coding:
+      set?.has(CONTENT_ENCODING) === true
+        ? (configuredValue(configured, CONTENT_ENCODING) ?? null)
+        : undefined,
+  };
 }
 
 /** An answer from the manifest alone, before the file is known to be on disk to answer it. */
@@ -243,8 +262,7 @@ function made(judged: Judged, { response, refusal }: Unmade): Response {
       const value = headers.get(name);
       return value === null ? [] : [[name, value] as const];
     }),
-    contentType: headers.get(CONTENT_TYPE) ?? judged.file.blob.contentType,
-    coding: configuredValue(judged.configured, CONTENT_ENCODING),
+    ...overMiddleware(judged),
     cacheControl: cacheControlFor(judged),
     refusal,
     rsc: judged.input.request.headers.get(RSC_HEADER) === '1',
@@ -433,8 +451,8 @@ export async function staticFileResponse(
  *
  * - the bytes on the wire are described by the answer, whatever a rule set (`ENTITY_HEADERS`): its
  *   entity tag the middleware's or the file's, its length, its range, whether it takes one;
- * - its type is a rule's or the file's, and its coding a rule's or none: the middleware sets
- *   neither on a file (`UNMERGEABLE_RESPONSE_HEADERS`);
+ * - its type and coding are a rule's, as routing laid them, but where the middleware set them: the
+ *   edge merges neither of the middleware's into a file's answer (`UNMERGEABLE_RESPONSE_HEADERS`);
  * - a router that asked for React Server Components is told the answer varies on what it sent;
  * - how it is held is the edge's last word where it has one (`cacheControlFor`), and the lifetimes a
  *   rule or the middleware gave shared caches go with it where it keeps the answer from them;
@@ -455,10 +473,12 @@ export function afterRouting(input: RoutedInput, response: Response): Response {
   for (const [name, value] of answer.entity) {
     headers.set(name, value);
   }
-  headers.set(CONTENT_TYPE, answer.contentType);
-  if (answer.coding === undefined) {
+  if (answer.type !== undefined) {
+    headers.set(CONTENT_TYPE, answer.type);
+  }
+  if (answer.coding === null) {
     headers.delete(CONTENT_ENCODING);
-  } else {
+  } else if (answer.coding !== undefined) {
     headers.set(CONTENT_ENCODING, answer.coding);
   }
   if (answer.rsc) {

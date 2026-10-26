@@ -214,6 +214,7 @@ function sourceInput(input: RoutedInput, source: Request): RoutedInput {
     middlewareHeaders: undefined,
     askedHeaders: undefined,
     rewriteStatus: undefined,
+    routingHeaders: undefined,
   };
 }
 
@@ -436,11 +437,12 @@ async function answerResolved(
     const image = await serveImageSource(forwarded, store, images, routed);
     return misdirectedTo(image) === undefined ? withRoutingHeaders(image, routed.headers) : image;
   }
-  // The status this routing named, or none: never one an outer request's routing named.
-  const asked =
-    forwarded.rewriteStatus === routed.status
-      ? forwarded
-      : { ...forwarded, rewriteStatus: routed.status };
+  // The status this routing named, and the headers it collected: never an outer request's.
+  const asked: RoutedInput = {
+    ...forwarded,
+    rewriteStatus: routed.status,
+    routingHeaders: routed.headers,
+  };
   const answer = withRoutingHeaders(
     await serveResolved(asked, store, resolved, url),
     routed.headers,

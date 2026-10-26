@@ -373,23 +373,20 @@ describe('native static file delivery', () => {
       expect(open).not.toHaveBeenCalled();
     });
 
-    it('judges a date by the Last-Modified a rule set, the build keeping none of the file’s', async () => {
-      const dated = storeWith([
-        {
-          sourceRegex: FILE_PATTERN,
-          headers: { 'Last-Modified': 'Mon, 26 Oct 2026 00:00:00 GMT' },
-        },
-      ]);
+    it('judges a date by the Last-Modified routing lays on it, the build keeping none of the file’s', async () => {
+      const dated = {
+        routingHeaders: new Headers({ 'last-modified': 'Mon, 26 Oct 2026 00:00:00 GMT' }),
+      };
 
       const unchanged = await staticFileResponse(
-        asked({ 'if-modified-since': 'Mon, 26 Oct 2026 00:00:00 GMT' }),
-        dated,
+        { ...asked({ 'if-modified-since': 'Mon, 26 Oct 2026 00:00:00 GMT' }), ...dated },
+        store,
         file(4),
         200,
       );
       const changed = await staticFileResponse(
-        asked({ 'if-unmodified-since': 'Sun, 25 Oct 2026 00:00:00 GMT' }),
-        dated,
+        { ...asked({ 'if-unmodified-since': 'Sun, 25 Oct 2026 00:00:00 GMT' }), ...dated },
+        store,
         file(4),
         200,
       );
@@ -422,6 +419,35 @@ describe('native static file delivery', () => {
       await laid.body?.cancel();
     });
 
+    it('keeps the type and coding a rule laid where the middleware set neither, whether or not the edge reproduces the rule', async () => {
+      // A build the edge does not route (`i18n`): it reproduces none of the rules but a priority one
+      // (`headerRulesOf`), and the native router applies them all.
+      const localized = {
+        ...storeWith([
+          {
+            sourceRegex: FILE_PATTERN,
+            headers: { 'content-type': 'text/plain', 'content-encoding': 'br' },
+          },
+        ]),
+      };
+      Object.assign(localized.manifest.config, { i18n: { locales: ['en'], defaultLocale: 'en' } });
+      const ask = asked({});
+      const answer = requireResource(await staticFileResponse(ask, localized, file(4), 200));
+
+      const laid = afterRouting(
+        ask,
+        routed(answer, [
+          ['content-type', 'text/plain'],
+          ['content-encoding', 'br'],
+        ]),
+      );
+
+      expect(laid.headers.get('content-type')).toBe('text/plain');
+      expect(laid.headers.get('content-encoding')).toBe('br');
+
+      await laid.body?.cancel();
+    });
+
     it('keeps what the middleware wrote of holding the file, where nothing makes it one visitor’s', async () => {
       const ask: RoutedInput = {
         ...asked({}, true),
@@ -438,12 +464,11 @@ describe('native static file delivery', () => {
     });
 
     it('holds the file for the visitor alone where a cookie sits beside the middleware’s word', async () => {
+      const laidOn = new Headers({ 'cache-control': 'public, max-age=5', 'set-cookie': 'a=1' });
       const ask: RoutedInput = {
         ...asked({}, true),
-        middlewareHeaders: new Headers({
-          'cache-control': 'public, max-age=5',
-          'set-cookie': 'a=1',
-        }),
+        middlewareHeaders: laidOn,
+        routingHeaders: laidOn,
       };
       const answer = requireResource(await staticFileResponse(ask, store, file(4), 200));
 
