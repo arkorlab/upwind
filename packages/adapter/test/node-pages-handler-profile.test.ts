@@ -53,49 +53,102 @@ describe('independent Pages handler profile data boundary', () => {
     for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
   });
 
-  it('pins a server-only public getHandler selection marker without qualifying a catalog', async () => {
+  it('pins a marker-free dynamic public Pages input without qualifying a catalog', async () => {
     const bytes = await readFile(
       new URL(
-        '../../../tools/native-pages-handler-profile/fixture/pages/index.js',
+        '../../../tools/native-pages-handler-profile/fixture/pages/blog/[slug].js',
         import.meta.url,
       ),
     );
     const program = parseAst(bytes.toString('utf8'));
-    const imported = program.body.find((statement) => {
-      return (
-        statement.type === 'ImportDeclaration' &&
-        statement.source.value === 'next/dist/server/route-modules/pages/pages-handler.js'
-      );
-    });
-    const exported = program.body.find((statement) => {
-      return (
-        statement.type === 'ExportNamedDeclaration' &&
-        statement.declaration?.type === 'FunctionDeclaration' &&
-        statement.declaration.id?.name === 'getServerSideProps'
-      );
-    });
-    const body =
-      exported?.type === 'ExportNamedDeclaration' &&
-      exported.declaration?.type === 'FunctionDeclaration'
-        ? (exported.declaration.body?.body ?? [])
-        : [];
-    const marker = body[0]?.type === 'ExpressionStatement' ? body[0].expression : undefined;
+    const named = program.body.filter((statement) => statement.type === 'ExportNamedDeclaration');
 
-    expect(imported?.type === 'ImportDeclaration' ? imported.specifiers : []).toMatchObject([
-      { type: 'ImportSpecifier', imported: { name: 'getHandler' }, local: { name: 'getHandler' } },
-    ]);
-    expect(marker).toMatchObject({
-      type: 'AssignmentExpression',
-      operator: '=',
-      left: {
-        type: 'MemberExpression',
-        computed: false,
-        object: { type: 'Identifier', name: 'globalThis' },
-        property: { type: 'Identifier', name: '__upwind_public_pages_get_handler__' },
+    expect(program.body).toMatchObject([
+      {
+        type: 'ImportDeclaration',
+        source: { value: 'react' },
+        specifiers: [
+          {
+            type: 'ImportSpecifier',
+            imported: { name: 'createElement' },
+            local: { name: 'createElement' },
+          },
+        ],
       },
-      right: { type: 'Identifier', name: 'getHandler' },
+      { type: 'ExportNamedDeclaration', declaration: { id: { name: 'getStaticPaths' } } },
+      { type: 'ExportNamedDeclaration', declaration: { id: { name: 'getStaticProps' } } },
+      { type: 'ExportDefaultDeclaration', declaration: { id: { name: 'Page' } } },
+    ]);
+    expect(named[0]?.declaration).toMatchObject({
+      type: 'FunctionDeclaration',
+      params: [],
+      body: {
+        body: [
+          {
+            type: 'ReturnStatement',
+            argument: {
+              type: 'ObjectExpression',
+              properties: [
+                { key: { name: 'fallback' }, value: { type: 'Literal', value: true } },
+                {
+                  key: { name: 'paths' },
+                  value: {
+                    type: 'ArrayExpression',
+                    elements: [
+                      {
+                        properties: [
+                          {
+                            key: { name: 'params' },
+                            value: {
+                              properties: [{ key: { name: 'slug' }, value: { value: 'first' } }],
+                            },
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
     });
-    expect(createHash('sha256').update(bytes).digest('hex')).toBe(FIXTURE_FILES['pages/index.js']);
+    expect(named[1]?.declaration).toMatchObject({
+      type: 'FunctionDeclaration',
+      params: [{ type: 'ObjectPattern', properties: [{ key: { name: 'params' } }] }],
+      body: {
+        body: [
+          {
+            type: 'ReturnStatement',
+            argument: {
+              properties: [
+                {
+                  key: { name: 'props' },
+                  value: {
+                    properties: [
+                      {
+                        key: { name: 'slug' },
+                        value: {
+                          type: 'MemberExpression',
+                          computed: false,
+                          object: { name: 'params' },
+                          property: { name: 'slug' },
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect(Object.hasOwn(FIXTURE_FILES, 'pages/index.js')).toBe(false);
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(
+      FIXTURE_FILES['pages/blog/[slug].js'],
+    );
     expect(matchReviewedPagesHandler(fixture())).toBeUndefined();
   });
 
@@ -113,7 +166,7 @@ describe('independent Pages handler profile data boundary', () => {
     expect(createHash('sha256').update(bytes).digest('hex')).toBe(FIXTURE_FILES['pnpm-lock.yaml']);
   });
 
-  it('pins the separate dependency-bundled public input without granting helper identity', async () => {
+  it('pins default Pages dependency bundling without granting helper identity', async () => {
     const bytes = await readFile(
       new URL(
         '../../../tools/native-pages-handler-profile/fixture/next.config.mjs',
@@ -136,14 +189,7 @@ describe('independent Pages handler profile data boundary', () => {
       );
     });
 
-    expect(bundling).toMatchObject({
-      type: 'Property',
-      computed: false,
-      kind: 'init',
-      method: false,
-      shorthand: false,
-      value: { type: 'Literal', value: true },
-    });
+    expect(bundling).toBeUndefined();
     expect(createHash('sha256').update(bytes).digest('hex')).toBe(FIXTURE_FILES['next.config.mjs']);
     expect(matchReviewedPagesHandler(fixture())).toBeUndefined();
   });

@@ -8,9 +8,9 @@ export const SWC_INTEGRITY =
   'sha512-QymWvfUwDEC5/lpJOsxX5VAbyoR2D13+2Jsjz4be7gT4LPqEgdpkeLIR/HFfCLgKzoMhpJbp6I/JnogyNZHcaA==';
 export const FIXTURE_FILES = {
   'adapter.mjs': '2b8bb38444eb445e044a5d757a2ae3ba4db828b124a22bc73ed828c83bbc4321',
-  'next.config.mjs': '084c16dcd7bcbcd0647741f5699f158bc1ec36370152f4b60f5117919a060e63',
+  'next.config.mjs': '0b6d88809a35b3cb0a2691051fdcc64b3bf25bc431d4eb6d23feba4e7659f192',
   'package.json': 'a4f57987141ef909711421b673e8f21cebc3821abc2a0ff0ccf05fb91bd941a6',
-  'pages/index.js': '089014ef6658595553beb484e5b96ce3dcc1fd66d210a17f47cdc23f258c65b4',
+  'pages/blog/[slug].js': '65035beb49a70790076434c90fd9f8c12184e1da0fccf61e97346d8a544bf5c4',
   'pnpm-lock.yaml': '404a690b1c38fb8342c10604979b3e9c9eb48db09359c5a3647ed514630411b6',
   'pnpm-workspace.yaml': '88e934fe6ccbe96f25789faf958f3478625f934dd651b8968f3c33a4e1c88d31',
 } as const;
