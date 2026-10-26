@@ -25,8 +25,10 @@ The two on this machine need no credential and no project. For `cloudflare`, the
 `upwind deploy` makes — the runtime cache's host in every Function, the prefetch segments left to the
 prefetch Worker — and the edge transforms images, as one bound to Cloudflare Images does. For `node`, the
 build is `upwind build --target=node`'s. The deploy hook starts the server as a process of its own,
-which outlives the hook and logs to `.adapter-runtime.log` (the logs hook prints it), and the cleanup
-hook stops it. Each application is served on a port of its own, so the suite may run several at once
+which outlives the hook and logs to `.adapter-runtime.log`. The cleanup hook stops it and then prints
+the end of that log. The suite passes the cleanup hook's output into its own, which a run prints only
+for a failing suite, so a test that saw a 500 shows the server's stack too. The logs hook is called
+before the tests, so it cannot. Each application is served on a port of its own, so the suite may run several at once
 (`-c 2`).
 
 The lifecycle is the
@@ -166,7 +168,8 @@ the order of the calls from breaking quietly between runs against a real host.
 
 `pnpm check:deploy-tests-local [--target cloudflare|node]` runs the same hooks for real on this machine's
 targets, with no harness: `fixtures/next-minimal` copied, installed and built by the deploy hook, asked
-over HTTP, its markers read back through the logs hook, and its server gone after the cleanup hook. CI
+over HTTP, its markers read back through the logs hook, and its server gone after the cleanup hook,
+which prints what the server said. CI
 runs it for both targets on every pull request.
 
 **On a host, serially, `-c 1`.** One project takes one fixture at a time, because a deployment replaces

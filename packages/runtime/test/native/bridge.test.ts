@@ -266,6 +266,36 @@ describe('native Node bridge', () => {
     assert.equal(await response.text(), 'received');
   });
 
+  it.each(['DELETE', 'OPTIONS', 'PATCH', 'PUT', 'POST'])(
+    'carries a body on %s whole, and leaves the socket fit for the next call',
+    async (method) => {
+      const bridge = fixture();
+      const body = JSON.stringify({ method });
+      const ports: number[] = [];
+      const echo = input(
+        async (req, res) => {
+          ports.push(req.socket.remotePort!);
+          res.end(await textOf(req));
+        },
+        { request: new Request('https://app.test/route', { method, body }) },
+      );
+
+      const response = await bridge.invokeNodeHandler(echo);
+
+      assert.equal(await response.text(), body);
+      const next = await bridge.invokeNodeHandler(
+        input(async (req, res) => {
+          ports.push(req.socket.remotePort!);
+          res.end(`${String(req.method)} ${String(req.url)}`);
+        }),
+      );
+      assert.equal(await next.text(), 'GET /original?q=1');
+      // The same connection, taken up again: what the upload left on it was framed, and read.
+      assert.equal(ports.length, 2);
+      assert.equal(ports[0], ports[1]);
+    },
+  );
+
   it('invokes the handler before the upload finishes', async () => {
     const bridge = fixture();
     const entered = gate();
