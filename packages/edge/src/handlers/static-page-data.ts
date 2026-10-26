@@ -3,7 +3,13 @@ import {
   staticPageHasNoTransform,
 } from '@stayingupwind/core/cache';
 import type { ConfiguredHeaders } from '@stayingupwind/core/manifest';
-import { EDGE_DEBUG_HEADER, manifestIdPrefix } from '@stayingupwind/core/request';
+import {
+  EDGE_DEBUG_HEADER,
+  manifestIdPrefix,
+  varyOn,
+  removeSharedCacheOverrides,
+  REVALIDATE_CACHE_CONTROL,
+} from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 import type { RuntimeCacheSettings, ShellDeliveryStrategy } from '@stayingupwind/host/delivery';
 
@@ -15,9 +21,7 @@ import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { finishShellBody, loadShell, storageReadsOf } from '../strategies/shell-loader.ts';
 import { layStoredConfiguredOver } from './configured-headers.ts';
-import { varyOn } from './document-headers.ts';
 import { observeMetric, observeServed } from './observer.ts';
-import { removeSharedCacheOverrides } from './responses.ts';
 import { pageDataArtifact } from './static-page-record.ts';
 import type { StaticPageInput } from './static-page.ts';
 
@@ -74,10 +78,7 @@ export async function servePairedPageData(
     ...headers,
   ]);
   removeSharedCacheOverrides(headers);
-  headers.set(
-    'cache-control',
-    `public, max-age=0, must-revalidate${noTransform ? ', no-transform' : ''}`,
-  );
+  headers.set('cache-control', `${REVALIDATE_CACHE_CONTROL}${noTransform ? ', no-transform' : ''}`);
   const ref = {
     sha256: artifact.sha256,
     byteLength: artifact.byteLength,

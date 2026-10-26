@@ -10,17 +10,14 @@ import {
   PLATFORM_HEADER_PREFIX,
   unmodifiedSince,
   validatorMatches,
+  removeSharedCacheOverrides,
 } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import type { AssetKeepOutcome } from '@stayingupwind/host/delivery';
 
 import { applyCspReporting } from '../handlers/csp-reporting-headers.ts';
-import {
-  nominatedBy,
-  removeSharedCacheOverrides,
-  safeDiagnosticField,
-} from '../handlers/responses.ts';
+import { nominatedBy, safeDiagnosticField } from '../handlers/responses.ts';
 import type { EdgeContext } from './context.ts';
 
 /** Request headers forwarded for asset fetches: no cookies, no conditionals, no ranges. */

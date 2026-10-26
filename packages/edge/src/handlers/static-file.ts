@@ -15,6 +15,10 @@ import {
   clientHolds,
   preconditionFails,
   requestedRange,
+  keptByNobody,
+  removeSharedCacheOverrides,
+  GATED_CACHE_CONTROL,
+  REVALIDATE_CACHE_CONTROL,
 } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
@@ -33,9 +37,7 @@ import { layStoredConfiguredOver } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeRequestMetric } from './observer.ts';
 import {
-  keptByNobody,
   mergeScopedMiddlewareHeaders,
-  removeSharedCacheOverrides,
   safeDiagnosticField,
   serviceUnavailableResponse,
 } from './responses.ts';
@@ -91,7 +93,6 @@ const PRECONDITION_FAILED_STATUS = 412;
 const RANGE_NOT_SATISFIABLE_STATUS = 416;
 const ONE_YEAR_SECONDS = 31_536_000;
 const IMMUTABLE_CACHE_CONTROL = `public, max-age=${ONE_YEAR_SECONDS}, immutable`;
-const REVALIDATE_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
 const CONTENT_RANGE = 'content-range';
 const ACCEPT_RANGES = 'accept-ranges';
 /** What describes the bytes on the wire, which no rule may say otherwise about. */
@@ -110,7 +111,6 @@ const ENTITY_HEADERS: ReadonlySet<string> = new Set([
  * (`no-duplicate-headers-middleware`). A cookie beside it takes the decision back — a response
  * carrying one is one visitor's whatever else it says.
  */
-const GATED_CACHE_CONTROL = 'private, max-age=0, must-revalidate';
 
 /**
  * What the middleware said itself about holding this answer, where it said anything and nothing

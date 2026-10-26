@@ -16,6 +16,9 @@ import {
   NO_STORE_CACHE_CONTROL,
   NULL_BODY_STATUSES,
   validatorMatches,
+  keptByNobody,
+  removeSharedCacheOverrides,
+  GATED_CACHE_CONTROL,
 } from '@stayingupwind/core/request';
 import {
   type BoundedBody,
@@ -46,10 +49,8 @@ import { imageHrefForLog, transformWithin, withinBudget } from './image-transfor
 import type { MiddlewareContinued } from './middleware.ts';
 import { observeMetric, observeTransformed } from './observer.ts';
 import {
-  keptByNobody,
   mergeScopedMiddlewareHeaders,
   notModifiedResponse,
-  removeSharedCacheOverrides,
   safeDiagnosticField,
 } from './responses.ts';
 
@@ -124,7 +125,6 @@ const SERVICE_FAILED_HEADER = 'x-arkor-image-service-failed';
  * A result the middleware had a say on is what one visitor was allowed; a shared cache must not
  * hand it to the next. The visitor's own cache may keep it, revalidated.
  */
-const GATED_CACHE_CONTROL = 'private, max-age=0, must-revalidate';
 const UPSTREAM_INVALID = '"url" parameter is valid but upstream response is invalid';
 const INTERNAL_INVALID = '"url" parameter is valid but internal response is invalid';
 const CACHE_CONTROL_HEADER = 'cache-control';

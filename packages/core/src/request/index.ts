@@ -24,6 +24,12 @@ export {
   type PassthroughReason,
   type RequestClass,
 } from './classify.ts';
+export {
+  cacheDirectives,
+  keptByNobody,
+  removeSharedCacheOverrides,
+  unsharedUnlessPublic,
+} from './cache-control.ts';
 export { anyConditionHolds } from './conditions.ts';
 export { listsTag } from './entity-tags.ts';
 export { httpDateMs } from './http-date.ts';
@@ -77,5 +83,7 @@ export {
   metaReferrerPolicy,
   quietensASameOriginFetch,
 } from './referrer.ts';
+export { connectionRefusesSharing, policyRefusesSharing } from './route-body-policy.ts';
 export { computeRscCacheBustingParam, type RscCacheBustingInput } from './rsc.ts';
 export { STATIC_PAGE_PRIVATE_HEADERS } from './static-pages.ts';
+export { varyOn } from './vary.ts';

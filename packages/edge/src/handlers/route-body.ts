@@ -11,6 +11,10 @@ import {
   hasRouteBodyControlHeader,
   manifestIdPrefix,
   SHARED_CACHE_CONTROL_HEADERS,
+  removeSharedCacheOverrides,
+  policyRefusesSharing,
+  GATED_CACHE_CONTROL,
+  REVALIDATE_CACHE_CONTROL,
 } from '@stayingupwind/core/request';
 import { runtimeCacheOf, type RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
@@ -26,12 +30,7 @@ import { serveHostedFile } from './hosted-static-file.ts';
 import { handedHeaders } from './middleware.ts';
 import { observeMetric, observeServed } from './observer.ts';
 import { PATTERN_BUDGET, type PassthroughWait } from './passthrough.ts';
-import {
-  carriesApplicationCredentials,
-  mergeScopedMiddlewareHeaders,
-  removeSharedCacheOverrides,
-} from './responses.ts';
-import { policyRefusesSharing } from './route-body-policy.ts';
+import { carriesApplicationCredentials, mergeScopedMiddlewareHeaders } from './responses.ts';
 
 /** Only the host's manifest and authority record permit sharing; a Function's answer never does. */
 export interface RouteBodyInput extends HostedGateInput {
@@ -45,8 +44,6 @@ export interface RouteBodyInput extends HostedGateInput {
 }
 
 const HTTP_OK = 200;
-const REVALIDATE = 'public, max-age=0, must-revalidate';
-const GATED_CACHE_CONTROL = 'private, max-age=0, must-revalidate';
 const CACHE_CONTROL = 'cache-control';
 const NO_TRANSFORM = 'no-transform';
 const CACHE_CONTROL_FIELDS = [CACHE_CONTROL, ...SHARED_CACHE_CONTROL_HEADERS];
@@ -115,7 +112,7 @@ function narrowCacheControl(
       const directive = part.trim().toLowerCase();
       return directive === '' || directive === NO_TRANSFORM;
     });
-  const ungated = policyMissing ? REVALIDATE : existing;
+  const ungated = policyMissing ? REVALIDATE_CACHE_CONTROL : existing;
   const policy = middleware === undefined ? ungated : GATED_CACHE_CONTROL;
   headers.set(
     CACHE_CONTROL,

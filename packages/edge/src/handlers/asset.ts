@@ -1,4 +1,5 @@
 import type { AssetRejection } from '@stayingupwind/core/assets';
+import { keptByNobody } from '@stayingupwind/core/request';
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import type {
   AssetDeliveryStrategy,
@@ -10,7 +11,7 @@ import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { observeMetric } from './observer.ts';
-import { badGatewayResponse, keptByNobody } from './responses.ts';
+import { badGatewayResponse } from './responses.ts';
 import { dispatchesOfFailure } from './upstream.ts';
 
 export interface AssetInput {

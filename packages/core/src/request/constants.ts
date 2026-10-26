@@ -290,6 +290,16 @@ export const PASSTHROUGH_RESPONSE_HEADER_DENYLIST: readonly string[] = [
 /** Header value the edge sends for documents and everything that must not be cached. */
 export const NO_STORE_CACHE_CONTROL = 'private, no-store';
 export const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+/**
+ * What a host answers with what may change under the same URL — a file that is not hashed, a
+ * prerendered page or route body: any cache may keep it, and must ask again before handing it out.
+ */
+export const REVALIDATE_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
+/**
+ * The same, kept from shared caches: an answer that a middleware, or a rule with a condition, may
+ * have made one visitor's.
+ */
+export const GATED_CACHE_CONTROL = 'private, max-age=0, must-revalidate';
 export const CONTINUATION_ACCEPT =
   'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
 

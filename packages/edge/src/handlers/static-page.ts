@@ -1,6 +1,12 @@
 import { staticPageHeadersAllowSharing, staticPageHasNoTransform } from '@stayingupwind/core/cache';
 import type { ConfiguredHeaders, StaticPageEntry } from '@stayingupwind/core/manifest';
-import { classifyRequest, EDGE_DEBUG_HEADER, manifestIdPrefix } from '@stayingupwind/core/request';
+import {
+  classifyRequest,
+  EDGE_DEBUG_HEADER,
+  manifestIdPrefix,
+  removeSharedCacheOverrides,
+  REVALIDATE_CACHE_CONTROL,
+} from '@stayingupwind/core/request';
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { runtimeCacheOf, type RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
@@ -15,7 +21,6 @@ import { type HostedGateInput, serveAfterMiddleware, type TimedContinue } from '
 import { offTheEdge } from './hosted-route.ts';
 import { observeMetric, observeServed } from './observer.ts';
 import { PATTERN_BUDGET, type PassthroughWait } from './passthrough.ts';
-import { removeSharedCacheOverrides } from './responses.ts';
 import { htmlType, pageHeaders } from './static-page-record.ts';
 
 /** Only a sealed mapping and an independently proved current record authorize static HTML. */
@@ -32,7 +37,6 @@ export interface StaticPageInput extends HostedGateInput {
 const HTTP_OK = 200;
 const CACHE_CONTROL = 'cache-control';
 const CONTENT_TYPE = 'content-type';
-const REVALIDATE = 'public, max-age=0, must-revalidate';
 const ENTITY_HEADERS: ReadonlySet<string> = new Set([
   'accept-ranges',
   'content-encoding',
@@ -190,7 +194,7 @@ export function serveCurrentPage(
     });
   }
   removeSharedCacheOverrides(headers);
-  headers.set(CACHE_CONTROL, `${REVALIDATE}${noTransform ? ', no-transform' : ''}`);
+  headers.set(CACHE_CONTROL, `${REVALIDATE_CACHE_CONTROL}${noTransform ? ', no-transform' : ''}`);
   applyCspReporting(headers, edge.cspReportingPath);
   headers.set(
     EDGE_DEBUG_HEADER,
