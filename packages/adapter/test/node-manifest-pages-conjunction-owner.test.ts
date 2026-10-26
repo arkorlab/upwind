@@ -11,6 +11,7 @@ import { createNodeManifestRegistrationViews } from '../src/node-manifest-regist
 import { prepareNodeManifestRuntimeGraphs } from '../src/node-manifest-runtime-cohort.ts';
 import { prepareNodeManifestSdkTerminalScope } from '../src/node-manifest-sdk-terminal.ts';
 import { proveNodeManifestTurbopackConsumers } from '../src/node-manifest-turbopack-consumers.ts';
+import type { NodeManifestTurbopackGraphFactory } from '../src/node-manifest-turbopack-graph.ts';
 import { pagesConjunctionChainFixture } from './fixtures/node-manifest-pages-conjunction-chain.ts';
 
 async function fixture(directory: string) {
@@ -32,6 +33,14 @@ async function fixture(directory: string) {
     ),
   );
   return { own, input, prepared, registrations, factories };
+}
+
+function factoryWithModuleId(
+  factories: ReadonlyMap<string, NodeManifestTurbopackGraphFactory>,
+  moduleId: number,
+) {
+  for (const factory of factories.values())
+    if (factory.projection.moduleId === moduleId) return factory;
 }
 
 describe('private Pages conjunction mint owner', () => {
@@ -75,8 +84,8 @@ describe('private Pages conjunction mint owner', () => {
 
   it('derives both original template parents directly from the pass-bound complete rows', async () => {
     const own = await fixture(directory);
-    const first = own.factories.values().find((factory) => factory.projection.moduleId === 10);
-    const second = own.factories.values().find((factory) => factory.projection.moduleId === 11);
+    const first = factoryWithModuleId(own.factories, 10);
+    const second = factoryWithModuleId(own.factories, 11);
     const target = first?.imports.find((edge) => edge.specifier === 'turbopack:77')?.target;
     assert(
       first !== undefined && second !== undefined && target !== undefined,
@@ -98,7 +107,7 @@ describe('private Pages conjunction mint owner', () => {
   it('cannot derive a topology from a caller-selected subset of actual physical rows', async () => {
     const own = await fixture(directory);
     const subset = new Map(own.factories);
-    const second = subset.values().find((factory) => factory.projection.moduleId === 11);
+    const second = factoryWithModuleId(subset, 11);
     assert(second !== undefined, 'Expected the second actual template');
     subset.delete(second.id);
 

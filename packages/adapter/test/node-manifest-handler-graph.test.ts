@@ -86,9 +86,10 @@ function replaceRow(
     rows: value.rows.map((item, ordinal) => (ordinal === index ? { ...item, ...change } : item)),
   };
 }
-function rootRow(value: NodeManifestHandlerGraphData): NodeManifestHandlerRowData {
+function rootRow(value: NodeManifestHandlerReferenceGraphData): NodeManifestHandlerRowData {
   const found = value.rows[0];
-  if (found === undefined) throw new Error('Expected authored row');
+  if (found === undefined || found.mode === 'fingerprint')
+    throw new Error('Expected authored full row');
   return found;
 }
 function slotFixture(): NodeManifestHandlerGraphInput {

@@ -29,9 +29,9 @@ function program(code: string): Node {
   return value;
 }
 export function reprojectTemplateFixture<I extends NodeManifestTurbopackTemplateInput['imports']>(
-  input: NodeManifestTurbopackTemplateInput & { readonly imports: I },
+  input: Omit<NodeManifestTurbopackTemplateInput, 'imports'> & { readonly imports: I },
   code: string,
-): NodeManifestTurbopackTemplateInput & { readonly imports: I } {
+): Omit<NodeManifestTurbopackTemplateInput, 'imports'> & { readonly imports: I } {
   return { ...input, projection: projectNodeManifestTurbopackFactory(manifestTemplateSource(code), 1) };
 }
 interface Edit {
@@ -129,7 +129,7 @@ function editedStatements(
   }
   return statements;
 }
-export async function projectedTemplateFixture(kind: NodeManifestTurbopackTemplateInput['route']['kind']): Promise<NodeManifestTurbopackTemplateInput & { readonly imports: readonly NodeManifestTemplateImport[] }> {
+export async function projectedTemplateFixture(kind: NodeManifestTurbopackTemplateInput['route']['kind']): Promise<Omit<NodeManifestTurbopackTemplateInput, 'imports'> & { readonly imports: readonly NodeManifestTemplateImport[] }> {
   const file = await realpath(
     fileURLToPath(import.meta.resolve(`next/dist/build/templates/${kind}.js`)),
   );
@@ -152,10 +152,10 @@ export async function projectedTemplateFixture(kind: NodeManifestTurbopackTempla
   return { projection: projectNodeManifestTurbopackFactory(original, 1), imports: imported, route };
 }
 export function changeOriginalTemplateFixture<I extends NodeManifestTurbopackTemplateInput['imports']>(
-  input: NodeManifestTurbopackTemplateInput & { readonly imports: I },
+  input: Omit<NodeManifestTurbopackTemplateInput, 'imports'> & { readonly imports: I },
   before: string,
   after: string,
-): NodeManifestTurbopackTemplateInput & { readonly imports: I } {
+): Omit<NodeManifestTurbopackTemplateInput, 'imports'> & { readonly imports: I } {
   const code = input.projection.original.code.replace(before, () => after);
   if (code === input.projection.original.code) throw new Error('Expected primary-source mutation');
   return reprojectTemplateFixture(input, code);
