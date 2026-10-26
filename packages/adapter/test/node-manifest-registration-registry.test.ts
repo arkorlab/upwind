@@ -74,14 +74,14 @@ async function fixture(
       `module.exports=[${vector.map((id) => jsLiteral(id)).join(',')},${callback}];`,
     );
   });
-  const runtimeFiles = options.secondRuntime ? [RUNTIME, SECOND_RUNTIME] : [RUNTIME];
+  const runtimeFiles = options.secondRuntime === true ? [RUNTIME, SECOND_RUNTIME] : [RUNTIME];
   const boots = tables.map((table, index) => {
     const file = `${DIST}/server/pages/page-${index}.js`;
     return source(file, boot(file, RUNTIME, [table.file], options.vectors?.[index]?.[0] ?? 7), [
       { specifier: '../chunks/[turbopack]_runtime.js', target: RUNTIME },
     ]);
   });
-  if (options.secondRuntime) {
+  if (options.secondRuntime === true) {
     const file = `${DIST}/server/pages/other.js`;
     const code = boot(
       file,
@@ -95,11 +95,12 @@ async function fixture(
       ]),
     );
   }
-  const lookupOnly = options.lookupOnly
-    ? [source(`${DIST}/server/chunks/lookup-only.js`, `module.exports=[99,${ORDINARY}];`)]
-    : [];
+  const lookupOnly =
+    options.lookupOnly === true
+      ? [source(`${DIST}/server/chunks/lookup-only.js`, `module.exports=[99,${ORDINARY}];`)]
+      : [];
   const sources = [...boots, ...tables, ...lookupOnly];
-  if (options.metadataCollision) {
+  if (options.metadataCollision === true) {
     sources.push({
       ...source(`${ROOT}/collision.js`, 'module.exports=42;'),
       id: JSON.stringify([RUNTIME, 'registration', 'turbopack:7']),

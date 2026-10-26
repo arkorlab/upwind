@@ -652,5 +652,10 @@ export default defineConfig([
   },
 
   // Prettier last: it turns off every stylistic rule the formatter owns.
+  {
+    // This fixed public compiler input deliberately retains one server-only selection marker.
+    files: ['tools/native-pages-handler-profile/fixture/pages/index.js'],
+    rules: { 'unicorn/no-global-object-property-assignment': 'off' },
+  },
   prettierConfig,
 ]);

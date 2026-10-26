@@ -38,7 +38,7 @@ async function responseValue(response: Response): Promise<unknown> {
   let length = 0;
   let json = '';
   try {
-    while (true) {
+    for (;;) {
       const part = await reader.read();
       if (part.done) break;
       length += part.value.byteLength;
