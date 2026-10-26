@@ -1,0 +1,251 @@
+import type { Node } from '@oxc-project/types';
+import type { OutputChunk } from 'rolldown';
+import { parseAst } from 'rolldown/parseAst';
+import { describe, expect, it } from 'vitest';
+
+import type { NativeAddonEntryTrace } from '../src/native-addons.ts';
+import { nativeBindings, walk } from '../src/native-ast.ts';
+import { exportedWorkerCapability } from '../src/native-worker-handoff.ts';
+import { assertRetainedNativeWorkerCapability } from '../src/native-worker-retained.ts';
+import { retainedWorkerCapabilityNodes } from '../src/native-worker.ts';
+import { dynamicNodeClosureRefusal } from '../src/node-closure-proof.ts';
+
+const WORKER = "import {Worker} from 'node:worker_threads';";
+const THREADS = "import threads from 'node:worker_threads';";
+const MEMORY_HANDLE = '__rolldown_external_memory_handle__';
+const UNOWNED_TRACES: readonly NativeAddonEntryTrace[] = [
+  { id: '/ordinary', assets: { entry: '/unused/ordinary.mjs' } },
+  { id: '/orphan', assets: { binary: '/unused/orphan.node' } },
+];
+
+function sites(source: string, nodeTarget?: boolean): readonly Node[] {
+  const program = parseAst(source);
+  return retainedWorkerCapabilityNodes(
+    walk(program),
+    nativeBindings(program),
+    undefined,
+    nodeTarget === undefined ? undefined : { nodeTarget },
+  );
+}
+
+function ordinaryAliases(length: number): string {
+  const declarations = Array.from({ length }, (_, index) => {
+    const previous = index === 0 ? 'root' : `item${index - 1}`;
+    return `const item${index}=${previous};`;
+  });
+  return `const root={};${declarations.join('')}start(item${length - 1}.nested);`;
+}
+
+/** Authored metadata only; no compiler, module, function or child is executed. */
+function chunk(code: string): OutputChunk {
+  return {
+    [MEMORY_HANDLE]: () => ({ freed: false }),
+    type: 'chunk',
+    code,
+    name: 'authored',
+    isEntry: true,
+    exports: [],
+    fileName: 'authored.mjs',
+    modules: {},
+    imports: [],
+    dynamicImports: [],
+    facadeModuleId: null,
+    isDynamicEntry: false,
+    moduleIds: [],
+    map: null,
+    sourcemapFileName: null,
+    preliminaryFileName: 'authored.mjs',
+  };
+}
+
+describe('retained Worker capability containers in call arguments', () => {
+  it.each([
+    'function start({Thread}){return new Thread("child.js");}start({Thread:Worker});',
+    'function start({nested:{Thread}}){return new Thread("child.js");}start({nested:{Thread:Worker}});',
+    'function start(options){return new options.Thread("child.js");}const options={Thread:Worker};start(options);',
+    'const options={Thread:Worker};const alias=options;start(alias);',
+    'const options={nested:{Thread:Worker}};function start({Thread}){return new Thread("child.js");}start(options.nested);',
+    'const options={nested:{Thread:Worker}};const alias=options.nested;start(alias);',
+    'const options={one:{two:{Thread:Worker}}};const alias=options.one;start(alias.two);',
+    'const options={nested:{Thread:Worker}};start(options["nested"]);',
+    'const o={nested:{Thread:Worker}};start(o?.nested);',
+    `tag\`\${{Thread:Worker}}\`;`,
+    'function* source(){yield {Thread:Worker}}for(const {Thread} of source())new Thread("child.js");',
+    'try{throw {Thread:Worker}}catch({Thread}){new Thread("child.js")}',
+    'class Box{static opts={Thread:Worker}}start(Box.opts);',
+    'const {Thread}={Thread:Worker};new Thread("child.js");',
+    'const options={nested:{Thread:Worker}};const {nested:{Thread}}=options;new Thread("child.js");',
+    'const options={nested:{Thread:Worker}};const {nested}=options;start(nested);',
+    'const options={nested:{Thread:Worker}};const {[globalThis.key]:chosen}=options;start(chosen);',
+    'const options={nested:{Thread:Worker}};const {...rest}=options;start(rest);',
+    `const options={nested:{Thread:Worker}};tag\`\${options?.nested}\`;`,
+    'function* source(){yield* [{Thread:Worker}]}',
+    'const Box=class {opts={Thread:Worker}};start(new Box());',
+    'const options={nested:{Thread:Worker}};start(options[globalThis.key]);',
+    'const options={...{nested:{Thread:Worker}}};start(options.nested);',
+    'const options={flag:true,[globalThis.key]:{Thread:Worker}};start(options.flag);',
+    'const options={__proto__:{nested:{Thread:Worker}}};start(options.nested);',
+    'const options={"__proto__":{nested:{Thread:Worker}}};start(options.nested);',
+    'const options={Thread:Worker};start({...options});',
+    'start({nested:{...{Thread:Worker}}});',
+    'start({nested:[{Thread:Worker}]});',
+    'const options={Thread:Worker};start(choose?options:{});',
+    'start(choose?{Thread:Worker}:{});',
+    'start(choose&&{Thread:Worker});',
+    'start((effect(),{Thread:Worker}));',
+    'let chosen;start(chosen={Thread:Worker});',
+    'function start({Thread=class {}}={}){return new Thread("child.js");}start({Thread:Worker});',
+    'new Starter({Thread:Worker});',
+    'start.call(null,{Thread:Worker});',
+    'start(...[{Thread:Worker}]);',
+    'start({[globalThis.field]:Worker});',
+    'start({get Thread(){return Worker;}});',
+    'start({get nested(){return {Thread:Worker};}});',
+  ])('refuses a known container handoff without inferring the callee: %s', (use) => {
+    const source = WORKER + use;
+
+    expect(sites(source, false)).not.toStrictEqual([]);
+    expect(sites(source, true)).not.toStrictEqual([]);
+    expect(sites(source)).not.toStrictEqual([]);
+    expect(dynamicNodeClosureRefusal('/project/arguments.mjs', source)).toBe(
+      'an unproved Node Worker native-child closure',
+    );
+  });
+
+  it.each([
+    'start({Thread:class {}});',
+    'start({Worker:42,nested:{value:"Worker"}});',
+    'const options={Thread:class {}};const alias=options;start({...alias});',
+    'const options={nested:{Thread:Worker},flag:true};start(options.flag);',
+    'const options={nested:{Thread:Worker},flag:true};start(options?.flag);',
+    'const options={nested:{Thread:Worker},flag:true};const {flag}=options;start(flag);',
+    'const options={nested:{Thread:Worker},flag:true};const {flag:alias}=options;start(alias);',
+    'const options={nested:{Thread:Worker,flag:true}};const {nested:{flag}}=options;start(flag);',
+    'const {Thread}={Thread:class {}};new Thread("ordinary");',
+    'function local(Worker){const {Thread}={Thread:Worker};new Thread("ordinary")}',
+    `function local(Worker){tag\`\${{Thread:Worker}}\`}`,
+    'function* source(Worker){yield {Thread:Worker}}',
+    'function local(Worker){try{throw {Thread:Worker}}catch({Thread}){new Thread("ordinary")}}',
+    'function local(Worker){class Box{static opts={Thread:Worker}}start(Box.opts)}',
+    `tag\`\${{value:true}}\`;`,
+    'function* source(){yield {value:true}}',
+    'try{throw {value:true}}catch({value}){consume(value)}',
+    'class Box{static opts={value:true}}start(Box.opts);',
+    `const value=\`\${{Thread:Worker}}\`;consume(value);`,
+    `const value=\`\${{nested:{Thread:Worker}}}\`;consume(value);`,
+    `tag\`\${false?{Thread:Worker}:{}}\`;`,
+    'function* source(){yield false?{Thread:Worker}:{}}',
+    'try{throw false?{Thread:Worker}:{}}catch(value){consume(value)}',
+    'class Box{static opts=false?{Thread:Worker}:{}}start(Box.opts);',
+    'if(false){const {Thread}={Thread:Worker};new Thread("dead")}',
+    'const options={__proto__:{nested:{Thread:Worker}},flag:true};start(options.flag);',
+    'const options={nested:{Thread:class {}}};start(options.nested);',
+    'const options={nested:{Thread:class {}}};start(options[globalThis.key]);',
+    'const options={nested:{Thread:class {}},[globalThis.key]:true};start(options.nested);',
+    'const options={nested:false?{Thread:Worker}:{value:true}};start(options.nested);',
+    'const options={nested:{value:true},["__proto__"]:{Thread:Worker}};start(options.nested);',
+    'function local(Worker){const options={nested:{Thread:Worker}};start(options.nested);}',
+    'function local(Worker){start({Thread:Worker});}',
+    'function local(){const Worker=class {};start({Thread:Worker});}',
+    'try{throw null;}catch(Worker){start({Thread:Worker});}',
+    'start(false?{Thread:Worker}:{});',
+    'start(true?{}:{Thread:Worker});',
+    'start(false&&{Thread:Worker});',
+    'start((Worker,{Thread:class {}}));',
+    'if(false)start({Thread:Worker});',
+    'start({get Thread(){return class {};}});',
+    'start({get nested(){return false?{Thread:Worker}:{};}});',
+    'function local(Worker){start({get Thread(){return Worker;}});}',
+    'const left=right,right=left;start(left);',
+    'const left=right,right=left;start(left.nested);',
+    'function start({Thread=class {}}={}){return new Thread("ordinary");}start({});',
+  ])('preserves ordinary objects, scalar values, shadows and dead choices: %s', (use) => {
+    const source = WORKER + use;
+
+    expect(sites(source, false)).toStrictEqual([]);
+    expect(sites(source, true)).toStrictEqual([]);
+  });
+
+  it.each([
+    'start({main:threads.isMainThread,id:threads.threadId});',
+    'const options={main:threads.isMainThread};start(options);',
+    'const options={nested:{main:threads.isMainThread}};start(options.nested);',
+    'const options={one:{threads}};start(options.one.threads.isMainThread);',
+    'const options={one:{threads}};start(options?.one.threads.isMainThread);',
+    'const {isMainThread:main,threadId:id}=threads;start({main,id});',
+    'const {name}=threads.Worker;start({name});',
+    `tag\`\${{main:threads.isMainThread,id:threads.threadId}}\`;`,
+    'function* source(){yield {main:threads.isMainThread}}',
+    'try{throw {main:threads.isMainThread}}catch(value){consume(value)}',
+    'class Box{static opts={main:threads.isMainThread}}start(Box.opts);',
+    'const choice=choose?threads:{isMainThread:true};start({main:choice.isMainThread});',
+    'const values=[threads].map(ns=>ns.isMainThread);start({values});',
+    'function get(){return threads;}start(get);',
+    'start(()=>threads);',
+  ])('preserves existing Worker-safe scalar and direct callback namespace rules: %s', (use) => {
+    expect(sites(THREADS + use, false)).toStrictEqual([]);
+  });
+
+  it('keeps the original call node as the refusal site without changing source', () => {
+    const source = `${WORKER}start({Thread:Worker});`;
+    const program = parseAst(source);
+    const tree = walk(program);
+    const call = tree.find((node) => node.type === 'CallExpression');
+    const before = JSON.stringify(program);
+    const retained = retainedWorkerCapabilityNodes(tree, nativeBindings(program));
+
+    expect(retained).toContain(call);
+    expect(JSON.stringify(program)).toBe(before);
+    expect(call?.type).toBe('CallExpression');
+  });
+
+  it.each([
+    `const options={Thread:Worker};start(options${'.nested'.repeat(33)});`,
+    `const options={Thread:Worker,${Array.from({ length: 1025 }, () => '...{}').join(',')}};start(options.nested);`,
+  ])('refuses static member analysis beyond its finite bounds', (use) => {
+    expect(() => sites(WORKER + use, false)).toThrow(
+      'Worker container static member analysis exceeds its finite bounds',
+    );
+  });
+
+  it.each([
+    `const options={};start(options${'.nested'.repeat(33)});`,
+    `const options={${Array.from({ length: 1025 }, () => '...{}').join(',')}};start(options.nested);`,
+    `const options={${Array.from({ length: 1025 }, () => '...{main:threads.isMainThread,name:threads.Worker.name}').join(',')}};start(options.nested);`,
+    `const options={${Array.from({ length: 1025 }, () => '...{Thread:false?threads.Worker:null}').join(',')}};start(options.nested);`,
+    ordinaryAliases(40),
+  ])('preserves an over-limit ordinary container without a known carrier', (use) => {
+    expect(sites(THREADS + use, false)).toStrictEqual([]);
+    expect(sites(THREADS + use, true)).toStrictEqual([]);
+  });
+
+  it('preserves an over-limit ordinary alias chain in the container helper', () => {
+    const program = parseAst(ordinaryAliases(1025));
+    const call = walk(program).find((node) => node.type === 'CallExpression');
+
+    expect(
+      call &&
+        exportedWorkerCapability(
+          call,
+          {
+            bindings: nativeBindings(program),
+            origin: (node) =>
+              node.type === 'Identifier' && node.name === 'Worker' ? 'constructor' : undefined,
+          },
+          new Set(),
+        ),
+    ).toBe(false);
+  });
+
+  it.each(UNOWNED_TRACES)('preserves the independent owning-native gate for $id', async (trace) => {
+    const source = `${WORKER}start({Thread:Worker});`;
+    const program = parseAst(source);
+
+    await expect(
+      assertRetainedNativeWorkerCapability(chunk(source), program, walk(program), {
+        traces: [trace],
+        nodeTarget: false,
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
