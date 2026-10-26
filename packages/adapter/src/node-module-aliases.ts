@@ -1,4 +1,4 @@
-import { realpath, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { createRequire, isBuiltin } from 'node:module';
 import path from 'node:path';
 
@@ -132,6 +132,40 @@ async function recordPackageAlias(alias: string, context: PackageAliasContext): 
   }
 }
 
+async function packageHasExports(directory: string): Promise<boolean> {
+  try {
+    const bytes = await readFile(path.join(directory, PACKAGE_MANIFEST));
+    const metadata: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    return (
+      packageRecord(metadata) && metadata['exports'] !== undefined && metadata['exports'] !== null
+    );
+  } catch (error) {
+    if (!absentRelativePath(error)) throw error;
+    return false;
+  }
+}
+
+/** Package exports precede the CommonJS file candidates, which precede directory/main. */
+async function bareFileAlias(
+  alias: string,
+  specifier: string,
+  pkg: string,
+  context: PackageAliasContext,
+): Promise<boolean> {
+  // A package root file cannot satisfy a subpath, and exports may be import-only.
+  if (specifier !== pkg || (await packageHasExports(alias))) return false;
+  for (const suffix of COMMONJS_SUFFIXES) {
+    const logical = `${alias}${suffix}`;
+    try {
+      if (!(await stat(logical)).isFile()) continue;
+      return await recordPackageAlias(logical, context);
+    } catch (error) {
+      if (!absentRelativePath(error)) throw error;
+    }
+  }
+  return false;
+}
+
 async function packageAliases(
   file: string,
   specifier: string,
@@ -157,6 +191,7 @@ async function packageAliases(
   const searches = require.resolve.paths(pkg) ?? [];
   for (const search of searches) {
     const alias = path.join(search, pkg);
+    if (await bareFileAlias(alias, specifier, pkg, context)) return true;
     if (!(await recordPackageAlias(alias, context))) continue;
     await packageSubpathAliases(await realpath(alias), specifier, pkg, context);
     return true;
