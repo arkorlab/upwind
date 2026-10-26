@@ -150,6 +150,7 @@ class DeclarationView {
   body(): readonly unknown[] {
     for (const candidate of candidates(this.input.body)) this.assertBinding(candidate);
     return this.input.body.flatMap((statement) => {
+      if (isNode(statement) && statement.type === 'EmptyStatement') return [];
       if (!isNode(statement) || statement.type !== 'VariableDeclaration') return [statement];
       return listOf(statement, 'declarations').map((variable) => {
         const declarations = [variable];
