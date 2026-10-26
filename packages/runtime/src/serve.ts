@@ -17,6 +17,7 @@ import { invokeEdgeHandler } from './edge-invoke.ts';
 import type { Entry, EntryTables } from './entries.ts';
 import { NEVER_STORED, render404 } from './error-pages.ts';
 import { stripPlatformHeaders } from './incoming.ts';
+import { keptItsLength } from './kept-length.ts';
 import { type FailureAnswer, invokeNodeHandler, type Run } from './node-bridge.ts';
 import { fetchRewrite } from './rewrite-fetch.ts';
 import type { Store } from './store.ts';
@@ -420,6 +421,10 @@ export const WRITES_LAND_WITHIN_MS = 2000;
  * are committed — so the response goes without one, and its end is the stream's. It is made from
  * the response itself, which keeps what a runtime holds of one beside its status and headers: on
  * workerd, a body the application encoded itself (`encodeBody: 'manual'`).
+ *
+ * But a shipped file a host sends as the edge sends one keeps its length (`keepsItsLength`): the
+ * edge answers a file with it whatever the request wrote, and nothing of the file waits on a write.
+ * Its end still waits for them, as every answer's does.
  */
 export async function withWritesLanded(
   response: Response,
@@ -435,6 +440,8 @@ export async function withWritesLanded(
     }),
   );
   const held = new Response(body, response);
-  held.headers.delete('content-length');
+  if (!keptItsLength(response)) {
+    held.headers.delete('content-length');
+  }
   return held;
 }

@@ -20,6 +20,7 @@ import {
   varyOn,
 } from '@stayingupwind/core/request';
 
+import { keepsItsLength } from '../kept-length.ts';
 import type { RoutedInput } from '../serve.ts';
 import type { Store } from '../store.ts';
 
@@ -438,6 +439,8 @@ export async function staticFileResponse(
  * - how it is held is the edge's last word where it has one (`cacheControlFor`), and the lifetimes a
  *   rule or the middleware gave shared caches go with it where it keeps the answer from them;
  * - a refusal is kept by nobody, a cache keyed on the URL alone otherwise handing it on.
+ *
+ * Such an answer with a body goes out with its length, as the edge sends a file (`keepsItsLength`).
  */
 export function afterRouting(input: RoutedInput, response: Response): Response {
   const answer = fileAnswers.get(input);
@@ -472,5 +475,7 @@ export function afterRouting(input: RoutedInput, response: Response): Response {
   if (answer.refusal) {
     keptByNobody(headers);
   }
-  return response;
+  return response.body !== null && headers.has(CONTENT_LENGTH)
+    ? keepsItsLength(response)
+    : response;
 }

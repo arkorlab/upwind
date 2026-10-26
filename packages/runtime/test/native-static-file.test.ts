@@ -7,6 +7,7 @@ import path from 'node:path';
 import type { Route, StaticFile } from '@stayingupwind/core/bundle';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { keptItsLength } from '../src/kept-length.ts';
 import { afterRouting, staticFileResponse } from '../src/native/static-file.ts';
 import type { RoutedInput } from '../src/serve.ts';
 import type { Store } from '../src/store.ts';
@@ -355,6 +356,7 @@ describe('native static file delivery', () => {
       expect(laid.headers.get('content-length')).toBe('4');
       expect(laid.headers.get('accept-ranges')).toBe('bytes');
       expect(laid.headers.has('content-range')).toBe(false);
+      expect(keptItsLength(laid)).toBe(true);
       await expect(laid.text()).resolves.toBe(BODY);
     });
 
