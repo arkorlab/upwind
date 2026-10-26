@@ -13,7 +13,7 @@ import {
 import { checkStack } from './check.ts';
 import { environmentOf } from './environment.ts';
 import type { LocalGate } from './gates.ts';
-import { parseCheckShard } from './sharding.ts';
+import { type CheckShard, parseCheckShard } from './sharding.ts';
 import {
   type CspNonceSetting,
   deliveryPolicyRefusal,
@@ -174,20 +174,42 @@ function servedOf(values: ReturnType<typeof commandLine>['values']): Served {
     : { refused: `--csp-nonce is enforce or report-only, not ${asked}` };
 }
 
+/** A check's requested share, refused before any deployment options are read. */
+function shardOf(
+  value: string | undefined,
+  command: string | undefined,
+): { readonly shard: CheckShard | undefined } | { readonly refused: string } {
+  if (value === undefined) {
+    return { shard: undefined };
+  }
+  const shard = parseCheckShard(value);
+  return command === 'check' && shard !== null
+    ? { shard }
+    : { refused: '--shard needs index/total with 1 <= index <= total, and is only for check' };
+}
+
 /** What the command line asked of a deployment beside its build, its gates among it, or why not. */
 type Asked =
   | (Exclude<Served, { readonly refused: string }> & {
       readonly gates: Record<string, LocalGate>;
+      readonly shard: CheckShard | undefined;
     })
   | { readonly refused: string };
 
-function askedOf(values: ReturnType<typeof commandLine>['values']): Asked {
+function askedOf(
+  values: ReturnType<typeof commandLine>['values'],
+  command: string | undefined,
+): Asked {
+  const partition = shardOf(values.shard, command);
+  if ('refused' in partition) {
+    return partition;
+  }
   const served = servedOf(values);
   if ('refused' in served) {
     return served;
   }
   const named = gatesOf(values.gate ?? []);
-  return 'refused' in named ? named : { ...served, gates: named.gates };
+  return 'refused' in named ? named : { ...served, gates: named.gates, shard: partition.shard };
 }
 
 async function main(): Promise<number> {
@@ -203,12 +225,7 @@ async function main(): Promise<number> {
   const [command] = positionals;
   const port = values.port === undefined ? undefined : portOf(values.port);
   const hostname = values.hostname === undefined ? undefined : hostOf(values.hostname);
-  const shard = values.shard === undefined ? undefined : parseCheckShard(values.shard);
-  if (shard === null || (values.shard !== undefined && command !== 'check')) {
-    log(`--shard needs index/total with 1 <= index <= total, and is only for check\n${USAGE}`);
-    return 2;
-  }
-  const served = askedOf(values);
+  const served = askedOf(values, command);
   if ('refused' in served) {
     log(`${served.refused}\n${USAGE}`);
     return 2;
@@ -252,7 +269,7 @@ async function main(): Promise<number> {
     const { checked, failures, skipped } = await checkStack(stack, {
       proverAgent: values['prover-agent'],
       hostname,
-      shard,
+      shard: served.shard,
     });
     for (const { path: asked, reason } of skipped) {
       log(`${asked}: not judged, ${reason}`);

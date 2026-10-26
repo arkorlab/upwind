@@ -31,7 +31,7 @@ export function parseCheckShard(value: string): CheckShard | null {
     return null;
   }
   const [index, total] = value.split('/').map(Number);
-  const shard = { index: index ?? Number.NaN, total: total ?? Number.NaN };
+  const shard = { index: index ?? NaN, total: total ?? NaN };
   return validCheckShard(shard) ? shard : null;
 }
 

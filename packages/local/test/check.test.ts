@@ -46,6 +46,7 @@ import {
   sanitizePassthroughHeaders,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
+import { compareCodeUnits } from '@stayingupwind/core/util';
 import {
   DEFAULT_DELIVERY_POLICY,
   DEFAULT_RUNTIME_CACHE_SETTINGS,
@@ -2316,35 +2317,39 @@ describe('what the check makes of the middleware', () => {
       ]);
       const original = JSON.stringify({ bundle: stack.bundle, manifest: stack.manifest });
       const whole = await checkStack(stack);
-      const shares: CheckResult[] = [];
-      for (const index of [1, 2, 3, 4]) {
-        shares.push(await checkStack(stack, { shard: { index, total: 4 } }));
-      }
+      const shares = await Promise.all(
+        [1, 2, 3, 4].map((index) => checkStack(stack, { shard: { index, total: 4 } })),
+      );
       const expected = [
         ...routes.map((route) => route.pathname),
         ...Object.keys(files),
         ...functions,
         'middleware',
       ];
+      const failedPaths = shares.flatMap((share) => share.failures.map((failure) => failure.path));
 
       expect(whole.failures.map((failure) => failure.path)).toStrictEqual(expected);
-      expect(
-        shares.flatMap((share) => share.failures.map((failure) => failure.path)).toSorted(),
-      ).toStrictEqual(expected.toSorted());
+      expect(failedPaths.toSorted(compareCodeUnits)).toStrictEqual(
+        expected.toSorted(compareCodeUnits),
+      );
       expect(shares.reduce((total, share) => total + share.checked, 0)).toBe(whole.checked);
       expect(shares.every((share) => share.failures.length > 0)).toBe(true);
       expect(JSON.stringify({ bundle: stack.bundle, manifest: stack.manifest })).toBe(original);
 
+      const reorderedFiles = Object.fromEntries(Object.entries(files).toReversed());
       const reordered = withMiddleware(
-        stackOf(routes.toReversed(), Object.fromEntries(Object.entries(files).toReversed()), {
+        stackOf(routes.toReversed(), reorderedFiles, {
           functions: functions.toReversed(),
         }),
         [{ source: '/api/:path*', sourceRegex: '^/api(?:/(.*))?$' }],
       );
       for (const index of [1, 2, 3, 4]) {
         const share = await checkStack(reordered, { shard: { index, total: 4 } });
-        expect(share.failures.map((failure) => failure.path).toSorted()).toStrictEqual(
-          shares[index - 1]?.failures.map((failure) => failure.path).toSorted(),
+
+        expect(
+          share.failures.map((failure) => failure.path).toSorted(compareCodeUnits),
+        ).toStrictEqual(
+          shares[index - 1]?.failures.map((failure) => failure.path).toSorted(compareCodeUnits),
         );
       }
     });
@@ -2384,12 +2389,13 @@ describe('what the check makes of the middleware', () => {
       const route = await routeOf('/one', FRONT);
       const stack = stackOf([route], { '/a.txt': fileOf('a', TEXT) });
       for (const index of [2, 3, 4]) {
-        expect(await checkStack(stack, { shard: { index, total: 4 } })).toStrictEqual({
+        await expect(checkStack(stack, { shard: { index, total: 4 } })).resolves.toStrictEqual({
           checked: 0,
           failures: [],
           skipped: [],
         });
       }
+
       expect(codingsAsked.size).toBe(0);
       expect(agentsAsked.size).toBe(0);
       expect(partsAsked.size).toBe(0);
@@ -2399,45 +2405,55 @@ describe('what the check makes of the middleware', () => {
       {
         label: 'header rules',
         path: 'headerRules',
-        change: (stack: LocalStack): LocalStack => ({
-          ...stack,
-          manifest: { ...stack.manifest, headerRules: [] },
-        }),
+        change: (stack: LocalStack): LocalStack => {
+          return {
+            ...stack,
+            manifest: { ...stack.manifest, headerRules: [] },
+          };
+        },
       },
       {
         label: 'missing routes',
         path: '/one',
-        change: (stack: LocalStack): LocalStack => ({
-          ...stack,
-          manifest: { ...stack.manifest, routes: {} },
-        }),
+        change: (stack: LocalStack): LocalStack => {
+          return {
+            ...stack,
+            manifest: { ...stack.manifest, routes: {} },
+          };
+        },
       },
       {
         label: 'missing files',
         path: '/a.txt',
-        change: (stack: LocalStack): LocalStack => ({
-          ...stack,
-          manifest: { ...stack.manifest, staticFiles: {} },
-        }),
+        change: (stack: LocalStack): LocalStack => {
+          return {
+            ...stack,
+            manifest: { ...stack.manifest, staticFiles: {} },
+          };
+        },
       },
       {
         label: 'deployment identity',
         path: '?dpl=dpl_site',
-        change: (stack: LocalStack): LocalStack => ({
-          ...stack,
-          manifest: {
-            ...stack.manifest,
-            deployment: { ...stack.manifest.deployment, dplId: 'other' },
-          },
-        }),
+        change: (stack: LocalStack): LocalStack => {
+          return {
+            ...stack,
+            manifest: {
+              ...stack.manifest,
+              deployment: { ...stack.manifest.deployment, dplId: 'other' },
+            },
+          };
+        },
       },
       {
         label: 'Function identity',
         path: 'app',
-        change: (stack: LocalStack): LocalStack => ({
-          ...stack,
-          app: { ...stack.app, scriptName: 'other' },
-        }),
+        change: (stack: LocalStack): LocalStack => {
+          return {
+            ...stack,
+            app: { ...stack.app, scriptName: 'other' },
+          };
+        },
       },
     ])(
       'still rejects invalid $label in every shard, including empty ones',
@@ -2452,13 +2468,16 @@ describe('what the check makes of the middleware', () => {
           },
         );
         for (const index of [1, 2, 3, 4]) {
-          agentsAsked.clear();
           const result = await checkStack(change(stack), { shard: { index, total: 4 } });
 
           expect(result.failures.map((failure) => failure.path)).toContain(failedAt);
-          if (index > 1) {
-            expect(agentsAsked.size).toBe(0);
-          }
+        }
+
+        for (const index of [2, 3, 4]) {
+          agentsAsked.clear();
+          await checkStack(change(stack), { shard: { index, total: 4 } });
+
+          expect(agentsAsked.size).toBe(0);
         }
       },
     );
@@ -2470,8 +2489,8 @@ describe('what the check makes of the middleware', () => {
       { index: 5, total: 4 },
       { index: 1.5, total: 4 },
       { index: 1, total: 4.5 },
-      { index: Number.NaN, total: 4 },
-      { index: 1, total: Number.POSITIVE_INFINITY },
+      { index: NaN, total: 4 },
+      { index: 1, total: Infinity },
       { index: 1, total: Number.MAX_SAFE_INTEGER + 1 },
     ])('rejects invalid shard $index/$total before reading the stack', async (shard) => {
       await expect(checkStack({} as LocalStack, { shard })).rejects.toThrow(TypeError);
