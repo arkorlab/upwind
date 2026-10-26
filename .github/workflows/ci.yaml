@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -16,6 +19,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -26,11 +31,14 @@ jobs:
         run: pnpm exec vitest run --project upwind packages/upwind/test/local-container-runtime.test.ts
         env:
           UPWIND_CONTAINER_INTEGRATION: '1'
-  check:
+  check-static:
+    name: Typecheck and static checks
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -45,24 +53,12 @@ jobs:
       # order, so this is also what proves that order is right.
       - run: pnpm build
       - run: pnpm typecheck
-      # Type-aware linting of every package holds more than Node's default heap.
-      - run: pnpm lint
-        env:
-          NODE_OPTIONS: --max-old-space-size=8192
       - run: pnpm format
       - run: pnpm knip
       # Every rewrite of Next.js's output still finds what it insists on, in the version this
       # repository builds against. The whole supported range, and the canary, are the
       # `next-matrix` workflow's: they cost a download per version.
       - run: pnpm check:patches
-      # The deploy-mode hooks, against a host that is not one: no credential, no network. What a run
-      # against a real host would also prove, minus the part that needs one.
-      - run: pnpm check:deploy-tests
-      # Native namespaces, SQLite storage and source isolation without a Next.js build.
-      - run: pnpm check:durable-objects
-      - run: pnpm check:cloudflare-workflows
-      # Inference contract and local capability isolation, without remote AI calls.
-      - run: pnpm check:ai
       # The agent rules `create-upwind` writes are still the ones Next.js writes. Text copied out of
       # another project goes stale without saying so, and this one is compared byte for byte.
       - run: pnpm check:agent-rules
@@ -70,22 +66,100 @@ jobs:
       # (`tools/vocabulary`): each mention is annotated on the line that makes it.
       - run: pnpm check:vocabulary --format github
 
-  test:
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # For the same reason as in `check`: a suite that imports a package read through its `dist`
-      # resolves it to declarations that exist once this has run.
+      # Type-aware linting reads the SDK and auth declarations emitted by the build.
       - run: pnpm build
-      # Every suite, under one runner (`vitest.config.ts`), beside `check` rather than after it.
-      - run: pnpm test
+      - run: pnpm lint
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+  check-contracts:
+    name: Local runtime contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # The real deploy hooks against a fake host, without credentials or a remote deployment.
+      - run: pnpm check:deploy-tests
+      # Native namespaces, SQLite storage, workflows and capability isolation, all local.
+      - run: pnpm check:durable-objects
+      - run: pnpm check:cloudflare-workflows
+      - run: pnpm check:ai
+
+  # Preserve the existing check name and require success from every independent gate.
+  check:
+    if: ${{ always() }}
+    needs: [check-static, lint, check-contracts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require all checks
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$RESULTS"
+
+  unit-tests:
+    name: Unit tests (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Keep each project's environment and isolation; Vitest shards whole test files.
+      - run: pnpm build
+      - run: pnpm test --shard="$SHARD_INDEX/4"
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+
+  integration:
+    name: Build integrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Packing the generated application needs the same built packages as the unit suites.
+      - run: pnpm build
       # One real Next.js build plus an HTTP request through the emitted Function. The remaining
       # fixtures and Next.js releases stay in the scheduled matrix workflow.
       - name: External output integration
@@ -121,6 +195,18 @@ jobs:
           npm exec -- next typegen
           npm exec -- tsc --noEmit
 
+  test:
+    if: ${{ always() }}
+    needs: [unit-tests, integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require all tests and integrations
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$RESULTS"
+
   twoslash:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -133,6 +219,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -181,6 +268,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -224,6 +312,8 @@ jobs:
       WRANGLER_SEND_METRICS: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -263,16 +353,22 @@ jobs:
   # runtime cache and the prefetch Worker, and asked once for every document and file it
   # prerendered. The fixture is not a workspace package (as `tools/next-matrix` explains), so npm
   # installs it apart, with the Next.js it pins.
-  local-check:
-    name: local stack (next-local)
+  local-check-shards:
+    name: local stack shard (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     env:
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -286,8 +382,25 @@ jobs:
         working-directory: fixtures/next-local
       # What the check leaves unasked: what the fixture renders on request (its README).
       - run: node probe.mts
+        if: ${{ matrix.shard == 1 }}
         working-directory: fixtures/next-local
-      - run: pnpm local:check --dir fixtures/next-local
+      # Each shard keeps the entire deployment and every check within its assigned entries.
+      - run: pnpm local:check --dir fixtures/next-local --shard "$SHARD_INDEX/4"
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+
+  local-check:
+    name: local stack (next-local)
+    if: ${{ always() }}
+    needs: [local-check-shards]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require all local stack shards
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$RESULTS"
 
   # `upwind preview` as it is installed: the packages packed, a copy of the deploy fixture installed
   # from the packs and built with `upwind build`, and the command run from that copy — the stack's
@@ -301,6 +414,8 @@ jobs:
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -330,6 +445,8 @@ jobs:
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -355,6 +472,8 @@ jobs:
       WRANGLER_SEND_METRICS: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -402,6 +521,8 @@ jobs:
         working-directory: ${{ matrix.directory }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

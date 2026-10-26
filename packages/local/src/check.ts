@@ -41,6 +41,7 @@ import { exactRouteAt, servedOtherThan } from './landings.ts';
 import { middlewareProbeVerdict } from './middleware-probe.ts';
 import { missOf, probeVerdict } from './probe.ts';
 import { routeFollowUpFailure } from './route-follow-ups.ts';
+import { assertCheckShard, type CheckShard, keysInShard } from './sharding.ts';
 import { headBytesOf } from './shells.ts';
 import type { LocalStack } from './stack.ts';
 
@@ -122,6 +123,12 @@ export interface CheckOptions {
    * when starting the stack; a custom stack must include its origin in `LocalStack.siteOrigins`.
    */
   readonly hostname?: string | undefined;
+  /**
+   * One share of the routes, files and Functions, numbered from one. Each whole item's requests
+   * stay together, and every share still checks the complete manifest against the build. Omit to
+   * ask everything in the original order.
+   */
+  readonly shard?: CheckShard | undefined;
 }
 
 /**
@@ -207,11 +214,20 @@ async function routeOutcome(stack: CheckedStack, at: RouteAsked): Promise<[strin
 }
 
 /** Every prerendered route, asked for as validation asks for it (`routeOutcome`). */
-async function checkRoutes(stack: CheckedStack, tally: Tally, prover: string): Promise<void> {
+async function checkRoutes(
+  stack: CheckedStack,
+  tally: Tally,
+  prover: string,
+  shard: CheckShard | undefined,
+): Promise<void> {
   const { manifest } = stack;
   await unheldRoutes(stack, tally);
   const headBytes = await headBytesOf(stack);
+  const selected = keysInShard(Object.keys(manifest.routes), shard);
   for (const [key, route] of Object.entries(manifest.routes)) {
+    if (!selected.has(key)) {
+      continue;
+    }
     const pathname = validationPathnameFor(key, manifest);
     if (pathname === undefined) {
       tally.add(key, failed('no pathname of its own: each is claimed elsewhere'));
@@ -460,7 +476,12 @@ function assetsAt(bundle: CheckedStack['bundle']): string {
  * Kept files and previous bytes are refused above: deployment-transition maps are checked by
  * deployment tests rather than inferred from the manifest under check.
  */
-async function checkFiles(stack: CheckedStack, tally: Tally, prover: string): Promise<void> {
+async function checkFiles(
+  stack: CheckedStack,
+  tally: Tally,
+  prover: string,
+  shard: CheckShard | undefined,
+): Promise<void> {
   const { staticFiles = {} } = stack.manifest;
   unheldFiles(stack, tally);
   misnamedDeployment(stack, tally);
@@ -468,7 +489,14 @@ async function checkFiles(stack: CheckedStack, tally: Tally, prover: string): Pr
   // As the build's documents name it, not as the manifest under check says they do.
   const named = stack.bundle.deploymentId;
   const asked = Object.entries(staticFiles).filter(([, file]) => file.deploymentId === undefined);
+  const selected = keysInShard(
+    asked.map(([pathname]) => pathname),
+    shard,
+  );
   for (const [pathname, file] of asked) {
+    if (!selected.has(pathname)) {
+      continue;
+    }
     for (const at of spellingsOf(stack, pathname)) {
       // As a request names it: a file's name written in as it is may hold a `%` that starts no
       // escape, and another file may be named as that spells it, which the edge finds first. The
@@ -532,13 +560,25 @@ const MIDDLEWARE_FUNCTION = 'middleware';
  * Every app Function, answering a miss as validation's probe of each has it answer (`probe.ts`), and
  * the middleware's, asked once on its own (`middleware-probe.ts`).
  */
-async function checkFunctions(stack: CheckedStack, tally: Tally, prover: string): Promise<void> {
+async function checkFunctions(
+  stack: CheckedStack,
+  tally: Tally,
+  prover: string,
+  shard: CheckShard | undefined,
+): Promise<void> {
   misnamedFunctions(stack, tally);
   const miss = missOf(stack, prover);
+  const middleware = stack.app.middlewareScriptName !== undefined;
+  const selected = keysInShard(
+    [...stack.functions.map((name) => `function:${name}`), ...(middleware ? ['middleware'] : [])],
+    shard,
+  );
   for (const name of stack.functions) {
-    tally.add(name, await probeVerdict(stack, { name, miss, prover }));
+    if (selected.has(`function:${name}`)) {
+      tally.add(name, await probeVerdict(stack, { name, miss, prover }));
+    }
   }
-  if (stack.app.middlewareScriptName !== undefined) {
+  if (middleware && selected.has('middleware')) {
     tally.add(MIDDLEWARE_FUNCTION, await middlewareProbeVerdict(stack, prover));
   }
 }
@@ -599,13 +639,14 @@ export async function checkStack(
   stack: LocalStack,
   options: CheckOptions = {},
 ): Promise<CheckResult> {
+  assertCheckShard(options.shard);
   const prover = options.proverAgent ?? DEFAULT_PROVER_AGENT;
   const site = siteOf(stack, options.hostname);
   const checked: CheckedStack = { ...stack, site };
   const tally = new Tally();
   await misheldRules(checked, tally);
-  await checkRoutes(checked, tally, prover);
-  await checkFiles(checked, tally, prover);
-  await checkFunctions(checked, tally, prover);
+  await checkRoutes(checked, tally, prover, options.shard);
+  await checkFiles(checked, tally, prover, options.shard);
+  await checkFunctions(checked, tally, prover, options.shard);
   return { checked: tally.checked, failures: tally.failures, skipped: tally.skipped };
 }
