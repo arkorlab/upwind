@@ -76,8 +76,11 @@ describe('retained Worker capability containers in call arguments', () => {
     'const {Thread}={Thread:Worker};new Thread("child.js");',
     'const options={nested:{Thread:Worker}};const {nested:{Thread}}=options;new Thread("child.js");',
     'const options={nested:{Thread:Worker}};const {nested}=options;start(nested);',
+    'const options={nested:{Thread:Worker}};const {nested}=options;new nested.Thread("child.js");',
+    'const options={nested:{Thread:Worker}};options.marker=1;const {nested}=options;new nested.Thread("child.js");',
     'const options={nested:{Thread:Worker}};const {[globalThis.key]:chosen}=options;start(chosen);',
     'const options={nested:{Thread:Worker}};const {...rest}=options;start(rest);',
+    'const {...rest}={Thread:Worker};new rest.Thread("child.js");',
     `const options={nested:{Thread:Worker}};tag\`\${options?.nested}\`;`,
     'function* source(){yield* [{Thread:Worker}]}',
     'const Box=class {opts={Thread:Worker}};start(new Box());',
@@ -120,6 +123,7 @@ describe('retained Worker capability containers in call arguments', () => {
     'const options={nested:{Thread:Worker},flag:true};start(options?.flag);',
     'const options={nested:{Thread:Worker},flag:true};const {flag}=options;start(flag);',
     'const options={nested:{Thread:Worker},flag:true};const {flag:alias}=options;start(alias);',
+    'const options={nested:{Thread:Worker},flag:true};options.marker=1;const {flag}=options;start(flag);',
     'const options={nested:{Thread:Worker,flag:true}};const {nested:{flag}}=options;start(flag);',
     'const {Thread}={Thread:class {}};new Thread("ordinary");',
     'function local(Worker){const {Thread}={Thread:Worker};new Thread("ordinary")}',
@@ -173,6 +177,11 @@ describe('retained Worker capability containers in call arguments', () => {
     'const options={one:{threads}};start(options.one.threads.isMainThread);',
     'const options={one:{threads}};start(options?.one.threads.isMainThread);',
     'const {isMainThread:main,threadId:id}=threads;start({main,id});',
+    'const {ns}={ns:threads};export const check=()=>ns.isMainThread;',
+    'const {ns}={ns:threads};const alias=ns;export const check=()=>alias.threadId;',
+    'const {nested:{ns}}={nested:{ns:threads}};export const check=()=>ns.isMainThread;',
+    'const {ns}={ns:threads};export const get=()=>ns;',
+    'function local(threads){const {ns}={ns:threads};return ns.isMainThread}',
     'const {name}=threads.Worker;start({name});',
     `tag\`\${{main:threads.isMainThread,id:threads.threadId}}\`;`,
     'function* source(){yield {main:threads.isMainThread}}',
@@ -184,6 +193,58 @@ describe('retained Worker capability containers in call arguments', () => {
     'start(()=>threads);',
   ])('preserves existing Worker-safe scalar and direct callback namespace rules: %s', (use) => {
     expect(sites(THREADS + use, false)).toStrictEqual([]);
+  });
+
+  it.each([
+    'const {ns}={ns:threads};export const start=()=>new ns.Worker("child.js");',
+    'const {ns}={ns:threads};start(ns);',
+    'const {ns}={ns:threads};export const get=()=>ns[globalThis.key];',
+    'const options={ns:threads};options.ns=globalThis.other;const {ns}=options;export const check=()=>ns.isMainThread;',
+    'const {ns}={ns:threads};threads.isMainThread=globalThis.other;export const check=()=>ns.isMainThread;',
+    'let {ns}={ns:threads};ns=globalThis.other;export const check=()=>ns.isMainThread;',
+    'const {ns}=flag?{ns:threads}:{};export const check=()=>ns.isMainThread;',
+    'const {ns}={ns:threads,...globalThis.other};export const get=()=>ns;',
+    'const {ns}={ns:threads,get ns(){return globalThis.other}};export const get=()=>ns;',
+    'const {ns}={ns:threads,ns(){return 1}};export const get=()=>ns;',
+    'const {ns}={ns:threads,get [globalThis.key](){return 1}};export const get=()=>ns;',
+  ])(
+    'propagates genuine or ambiguous capability origins through the same selected alias: %s',
+    (use) => {
+      expect(sites(THREADS + use, false)).not.toStrictEqual([]);
+      expect(sites(THREADS + use, true)).not.toStrictEqual([]);
+    },
+  );
+
+  it.each([
+    'const threads=import("node:worker_threads");export const start=()=>new threads.Worker("ordinary");',
+    'const {Worker:Thread}=import("node:worker_threads");export const start=()=>new Thread("ordinary");',
+    'const threads=import("node:worker_threads");const {ns}={ns:threads};export const start=()=>new ns.Worker("ordinary");',
+    'const {Worker:Thread}=await Promise.resolve({Worker:class {}});export const start=()=>new Thread("ordinary");',
+    'const threads=await import("node:worker_threads");export const channel=new threads.BroadcastChannel("ordinary");',
+  ])('preserves the documented promise/scalar/non-Worker distinctions: %s', (source) => {
+    expect(sites(source, false)).toStrictEqual([]);
+    expect(sites(source, true)).toStrictEqual([]);
+  });
+
+  it('keeps a selected namespace return Worker-only and Node-strict', () => {
+    const source = `${THREADS}const {ns}={ns:threads};export const get=()=>ns;`;
+
+    expect(sites(source, false)).toStrictEqual([]);
+    expect(sites(source, true)).not.toStrictEqual([]);
+    expect(sites(source)).not.toStrictEqual([]);
+  });
+
+  it.each([
+    'const {ns}={ns:threads};export const check=()=>ns.isMainThread;',
+    'const {ns}={ns:threads};const alias=ns;export const check=()=>alias.threadId;',
+    'const {ns}={ns:threads,get other(){return 1}};export const check=()=>ns.threadId;',
+    'function local(threads){const {ns}={ns:threads};return ns.isMainThread}',
+  ])('keeps selected scalar namespace reads ordinary in every target mode: %s', (use) => {
+    const source = THREADS + use;
+
+    expect(sites(source, false)).toStrictEqual([]);
+    expect(sites(source, true)).toStrictEqual([]);
+    expect(sites(source)).toStrictEqual([]);
   });
 
   it('keeps the original call node as the refusal site without changing source', () => {

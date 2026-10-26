@@ -14,7 +14,11 @@ import {
   workerNodeMayExecute,
   workerSelectionWasMutated,
 } from './native-worker-branches.ts';
-import { exportedWorkerCapability } from './native-worker-handoff.ts';
+import {
+  exportedWorkerCapability,
+  selectedWorkerBindingOrigin,
+  selectedWorkerBindingValue,
+} from './native-worker-handoff.ts';
 
 type WorkerOrigin = 'constructor' | 'prototype' | 'namespace' | 'module' | 'promise' | 'ambiguous';
 const IMPORTS = new WeakMap<readonly Node[], ReadonlyMap<Node, WorkerOrigin>>();
@@ -167,12 +171,15 @@ function declaredOrigin(
   if (imported !== undefined) return stableOrigin(imported, node, context);
   if (declaration.type !== 'VariableDeclarator' || declaration.init === null) return undefined;
   const origin = workerOrigin(declaration.init, context, seen);
-  const scalar = scalarWorkerBinding(declaration, node.name, {
+  const selection = {
     ...context,
-    origin: (value) => workerOrigin(value, context, seen),
-  });
+    origin: (value: Node) => workerOrigin(value, context, seen),
+  };
+  if (scalarWorkerBinding(declaration, node.name, selection)) return undefined;
   const found =
-    origin === undefined || scalar ? undefined : bindingOrigin(declaration.id, node.name, origin);
+    origin === undefined
+      ? selectedWorkerBindingOrigin(declaration, node.name, selection)
+      : bindingOrigin(declaration.id, node.name, origin);
   return stableOrigin(found, node, context);
 }
 
@@ -200,7 +207,14 @@ function containerInitializer(
   const declaration = context.bindings.lookup(value, value.name);
   if (declaration?.type !== 'VariableDeclarator' || declaration.init === null) return undefined;
   const next = new Set([...seen, value]);
-  const found = containerInitializer(declaration.init, context, next);
+  const init =
+    declaration.id.type === 'Identifier'
+      ? declaration.init
+      : selectedWorkerBindingValue(declaration, value.name, {
+          ...context,
+          origin: (node) => workerOrigin(node, context, next),
+        });
+  const found = init === undefined ? undefined : containerInitializer(init, context, next);
   return found === undefined
     ? undefined
     : { ...found, stable: found.stable && context.bindings.unmodified(value, value.name, true) };
@@ -328,9 +342,13 @@ function unmodifiedWorkerBinding(
   const declared = context.bindings.lookup(value, value.name);
   if (declared === undefined || declared === null) return undefined;
   if (context.imports.has(declared)) return { kind: 'import' };
-  return declared.type === 'VariableDeclarator' && declared.init !== null
-    ? { kind: 'initializer', node: declared.init }
-    : undefined;
+  if (declared.type !== 'VariableDeclarator' || declared.init === null) return undefined;
+  const selection = { ...context, origin: (node: Node) => workerOrigin(node, context) };
+  const source =
+    declared.id.type === 'Identifier' || selection.origin(declared.init) !== undefined
+      ? declared.init
+      : selectedWorkerBindingValue(declared, value.name, selection);
+  return source === undefined ? undefined : { kind: 'initializer', node: source };
 }
 
 function unmodifiedWorkerSource(node: Node, context: WorkerContext): boolean {

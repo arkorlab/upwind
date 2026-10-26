@@ -22,6 +22,7 @@ const CAPABILITY_KEYS: ReadonlySet<string> = new Set([
 interface HandoffContext {
   readonly bindings: NativeBindings;
   readonly origin: (node: Node) => string | undefined;
+  readonly selecting?: ReadonlySet<Node>;
 }
 
 interface MemberSelection {
@@ -50,6 +51,9 @@ class StaticMemberValues {
   private readonly seen = new Map<Node, Set<string>>();
   private readonly result: Node[] = [];
   private steps = 0;
+  complete = true;
+  unmodified = true;
+  residual = false;
 
   constructor(value: Node, keys: MemberSelection['keys'], context: HandoffContext) {
     this.context = context;
@@ -72,18 +76,41 @@ class StaticMemberValues {
     node: Extract<Node, { type: 'ObjectExpression' }>,
     keys: MemberSelection['keys'],
   ): void {
-    const [key, ...remaining] = keys;
+    let matched = false;
     for (const property of node.properties) {
       if (property.type === 'SpreadElement') {
+        this.complete = false;
+        matched = true;
         this.add(property.argument, keys);
         continue;
       }
-      if (property.kind !== 'init' || property.method) continue;
-      const selected = dataKey(property);
-      if (selected === '__proto__' && !property.computed) this.add(property.value, keys);
-      if (key === undefined || selected === undefined || key === selected)
-        this.add(property.value, remaining);
+      if (this.property(property, keys)) matched = true;
     }
+    if (!matched) this.complete = false;
+  }
+
+  private property(
+    property: Extract<Node, { type: 'Property' }>,
+    keys: MemberSelection['keys'],
+  ): boolean {
+    const [key, ...remaining] = keys;
+    const selected = dataKey(property);
+    const matches = key === undefined || selected === undefined || key === selected;
+    if (property.kind !== 'init' || property.method) {
+      if (matches) this.complete = false;
+      return false;
+    }
+    let matched = false;
+    if (selected === '__proto__' && !property.computed) {
+      matched = true;
+      this.add(property.value, keys);
+    }
+    if (key === undefined || selected === undefined) this.complete = false;
+    if (matches) {
+      matched = true;
+      this.add(property.value, remaining);
+    }
+    return matched;
   }
 
   private expand({ node, keys }: MemberSelection): void {
@@ -108,8 +135,25 @@ class StaticMemberValues {
       this.array(node, keys);
       return;
     }
+    this.initializer(node, keys);
+  }
+
+  private initializer(node: Node, keys: MemberSelection['keys']): void {
     const initializer = objectInitializer(node, this.context);
-    if (initializer !== undefined) this.add(initializer, keys);
+    if (initializer === undefined) {
+      const selected = identifierSelections(node, this.context);
+      if (selected === undefined) this.complete = false;
+      else {
+        this.complete &&= selected.complete;
+        this.unmodified &&= selected.unmodified;
+        this.residual ||= selected.residual;
+        for (const value of selected.values) this.add(value, keys);
+      }
+    } else {
+      if (node.type === 'Identifier' && !this.context.bindings.unmodified(node, node.name, true))
+        this.unmodified = false;
+      this.add(initializer, keys);
+    }
   }
 
   private array(
@@ -134,8 +178,10 @@ class StaticMemberValues {
       else if (
         origin === 'ambiguous' ||
         item.keys.some((key) => key === undefined || CAPABILITY_KEYS.has(key))
-      )
+      ) {
+        this.residual = true;
         this.result.push(item.node);
+      } else this.complete = false;
     }
     return this.result;
   }
@@ -180,7 +226,20 @@ function containerValues(node: Node, context: HandoffContext): readonly Node[] {
       property.type === 'Property' ? property.value : property.argument,
     );
   const initializer = objectInitializer(node, context);
-  return initializer === undefined ? [] : [initializer];
+  return initializer === undefined
+    ? (identifierSelections(node, context)?.values ?? [])
+    : [initializer];
+}
+
+function identifierSelections(
+  node: Node,
+  context: HandoffContext,
+): SelectedBindingValues | undefined {
+  if (node.type !== 'Identifier') return undefined;
+  const declaration = context.bindings.lookup(node, node.name);
+  return declaration?.type === 'VariableDeclarator'
+    ? selectedBindingValues(declaration, node.name, context)
+    : undefined;
 }
 
 function hasContainerCarrier(value: Node, context: HandoffContext): boolean {
@@ -228,24 +287,80 @@ function patternValues(pattern: Node, keys: MemberSelection['keys']): readonly P
   return [];
 }
 
-function destructuredCarrier(pattern: Node, value: Node, context: HandoffContext): boolean {
-  if (!hasContainerCarrier(value, context)) return false;
-  const pending: PatternSelection[] = [{ pattern, keys: [] }];
+interface SelectedBindingValues {
+  readonly values: readonly Node[];
+  readonly complete: boolean;
+  readonly unmodified: boolean;
+  readonly residual: boolean;
+}
+
+function selectedBindingValues(
+  declaration: Extract<Node, { type: 'VariableDeclarator' }>,
+  name: string,
+  context: HandoffContext,
+): SelectedBindingValues | undefined {
+  const value = declaration.init;
+  if (
+    value === null ||
+    declaration.id.type === 'Identifier' ||
+    context.selecting?.has(declaration) === true
+  )
+    return undefined;
+  const selection = { ...context, selecting: new Set([...(context.selecting ?? []), declaration]) };
+  if (!hasContainerCarrier(value, selection)) return undefined;
+  const pending: PatternSelection[] = [{ pattern: declaration.id, keys: [] }];
+  const values: Node[] = [];
+  let complete = true;
+  let unmodified = true;
+  let residual = false;
   let steps = 0;
   for (let item = pending.pop(); item !== undefined; item = pending.pop()) {
     steps += 1;
     if (steps > MAX_MEMBER_STEPS || item.keys.length > MAX_MEMBER_DEPTH)
       throw new AuditError('Worker container static member analysis exceeds its finite bounds');
     if (item.pattern.type === 'Identifier') {
-      if (
-        new StaticMemberValues(value, item.keys, context)
-          .values()
-          .some((node) => handedOffCapability(node, context))
-      )
-        return true;
+      if (item.pattern.name !== name) continue;
+      const selected = new StaticMemberValues(value, item.keys, selection);
+      values.push(...selected.values());
+      complete &&= selected.complete;
+      unmodified &&= selected.unmodified;
+      residual ||= selected.residual;
     } else pending.push(...patternValues(item.pattern, item.keys));
   }
-  return false;
+  return { values, complete, unmodified, residual };
+}
+
+export function selectedWorkerBindingOrigin<Origin extends string>(
+  declaration: Extract<Node, { type: 'VariableDeclarator' }>,
+  name: string,
+  context: Omit<HandoffContext, 'origin'> & { readonly origin: (node: Node) => Origin | undefined },
+): Origin | 'ambiguous' | undefined {
+  const selected = selectedBindingValues(declaration, name, context);
+  let result: Origin | 'ambiguous' | undefined;
+  if (selected !== undefined) {
+    const origins = selected.values.map((value) => context.origin(value));
+    const uncertain = !selected.complete || !selected.unmodified || selected.residual;
+    if (origins.some((origin) => origin !== undefined))
+      result =
+        !uncertain && origins.every((origin) => origin === origins[0]) ? origins[0] : 'ambiguous';
+    else if (uncertain && selected.values.some((value) => hasContainerCarrier(value, context)))
+      result = 'ambiguous';
+  }
+  return result;
+}
+
+export function selectedWorkerBindingValue(
+  declaration: Extract<Node, { type: 'VariableDeclarator' }>,
+  name: string,
+  context: HandoffContext,
+): Node | undefined {
+  const selected = selectedBindingValues(declaration, name, context);
+  return selected?.complete === true &&
+    selected.unmodified &&
+    !selected.residual &&
+    selected.values.length === 1
+    ? selected.values[0]
+    : undefined;
 }
 
 function transferredValue(node: Node): Node | undefined {
@@ -267,12 +382,7 @@ function transferredWorkerCapability(node: Node, context: HandoffContext): boole
     return node.quasi.expressions.some((value) => handedOffCapability(value, context));
   const value = transferredValue(node);
   if (value !== undefined) return handedOffCapability(value, context);
-  return (
-    node.type === 'VariableDeclarator' &&
-    (node.id.type === 'ObjectPattern' || node.id.type === 'ArrayPattern') &&
-    node.init !== null &&
-    destructuredCarrier(node.id, node.init, context)
-  );
+  return false;
 }
 
 function handedOffCapability(value: Node, context: HandoffContext): boolean {
