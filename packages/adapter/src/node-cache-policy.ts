@@ -87,7 +87,7 @@ function assertNoConfiguredHandlers(code: string): void {
   const handlers = config.cacheHandlers;
   const configured = Boolean(handlers);
   if (!configured) return;
-  if (typeof handlers !== 'object' || Array.isArray(handlers))
+  if (handlers === null || typeof handlers !== 'object' || Array.isArray(handlers))
     refuse('invalid recorded cacheHandlers');
   if (Object.values(handlers).some(Boolean)) refuse('does not support configured cacheHandlers');
 }
