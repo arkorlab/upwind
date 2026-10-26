@@ -37,6 +37,8 @@ interface SetMember {
 }
 
 const HEX_RADIX = 16;
+const OCTAL_RADIX = 8;
+const MAX_LEADING_ZERO_OCTAL_DIGITS = 3;
 /** `\cA` … `\cZ` name the control character at the letter's code modulo 32. */
 const CONTROL_LETTER_MODULUS = 32;
 /** Characters that mean something unescaped, and so are never a literal where they stand. */
@@ -180,16 +182,25 @@ function codedEscape(pattern: string, index: number): Literal | undefined {
       };
 }
 
+/** Legacy leading-zero escapes consume at most three octal digits, including the first zero. */
+function leadingZeroOctal(pattern: string, index: number): Literal {
+  const start = index + 1;
+  const stop = Math.min(pattern.length, start + MAX_LEADING_ZERO_OCTAL_DIGITS);
+  let end = start + 1;
+  while (end < stop && /[0-7]/u.test(pattern[end] ?? '')) end += 1;
+  return {
+    char: String.fromCodePoint(Number.parseInt(pattern.slice(start, end), OCTAL_RADIX)),
+    end,
+  };
+}
+
 /**
  * The single character an escape stands for, when it stands for one. Any other letter or digit is
  * a class, an assertion, a backreference, or an escape this does not read.
  */
 function escapedCharacter(pattern: string, index: number): Literal | undefined {
   const letter = pattern[index + 1] ?? '';
-  // `\0` then a digit is an octal escape of more than one digit, not a NUL beside a digit.
-  if (letter === '0' && /\d/u.test(pattern[index + 2] ?? '')) {
-    return undefined;
-  }
+  if (letter === '0') return leadingZeroOctal(pattern, index);
   const control = CONTROL_ESCAPES[letter];
   if (control !== undefined) {
     return { char: control, end: index + 2 };

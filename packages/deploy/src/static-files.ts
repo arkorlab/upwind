@@ -1,4 +1,6 @@
 import {
+  BuildPatternBudget,
+  type BuildPatternMatcher,
   type DeploymentBundle,
   edgeServedRewrites,
   staticFileAssetPrefixOf,
@@ -289,12 +291,13 @@ function landingEntry(
 export function staticFilesOf(
   bundle: DeploymentBundle,
   previous: DeploymentBundle | undefined,
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
 ): Record<string, StaticFileEntry> {
   const prefix = staticFileAssetPrefixOf(bundle);
   const requestKeys = staticFileRequestKeysOf(bundle, previous);
   const files = requestKeys ? requestFiles(bundle, prefix) : ownFiles(bundle);
   // A rewrite to a file the Worker does not carry, served here under the path it is asked for.
-  for (const served of edgeServedRewrites(bundle)) {
+  for (const served of edgeServedRewrites(bundle, patterns)) {
     const entry = staticFileEntry(served.file, bundle.config.basePath);
     // Keep the destination's status explicit: the edge otherwise infers 404/500 from the alias.
     // And never immutable, whatever the file it names is: the name is the rewrite's, not a hash of

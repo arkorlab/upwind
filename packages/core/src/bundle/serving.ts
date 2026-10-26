@@ -9,11 +9,13 @@ import { type DynamicRouting, withFunctions } from './functions.ts';
 import { withGates } from './gates.ts';
 import { memberRoutesOf } from './member-routes.ts';
 import { pageRoutes } from './page-routes.ts';
+import { type BuildPatternMatcher, nativeBuildPatterns } from './pattern-matcher.ts';
 import { queryDependent } from './query.ts';
-import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
+import type { DeploymentBundle, Entrypoint, Prerender, Route } from './schema.ts';
+import { edgeServedRewrites } from './served-rewrites.ts';
 import { terminalShellsOf } from './shared-shell.ts';
 import { isTemplate, keepsTrailingSlash, requestedPathname, routerSpellings } from './spelling.ts';
-import { assetPrefixRewrite, travelsWithFunction } from './static-files.ts';
+import { assetPrefixRewrite } from './static-files.ts';
 
 /**
  * What of a deployment's build the edge serves, and under which headers: the prerenders with a
@@ -32,12 +34,6 @@ export type ServingBundle = Omit<
 >;
 
 const HTTP_OK = 200;
-/**
- * A path with nothing in it for a router to interpret: no parameter, no group, no wildcard. Only
- * such a source and destination say, at build time, exactly which request a rule answers and with
- * what — which is what `edgeServedRewrites` needs before it may answer one itself.
- */
-const LITERAL_PATHNAME = /^\/[^\s:(*?#[]*$/u;
 /** The entrypoint kinds whose code renders a document, rather than answering with a response. */
 const DOCUMENT_KINDS: ReadonlySet<string> = new Set(['app-page', 'pages']);
 
@@ -153,7 +149,11 @@ function isConditional(rule: Route): boolean {
  * a deployment id, and counted here it left no page of a build the edge does not route on the edge
  * at all.
  */
-function headersReproducible(bundle: ServingBundle, prerender: Prerender): boolean {
+function headersReproducible(
+  bundle: ServingBundle,
+  prerender: Prerender,
+  patterns: BuildPatternMatcher,
+): boolean {
   if (reproducesDynamicRouting(bundle)) {
     return true;
   }
@@ -164,8 +164,7 @@ function headersReproducible(bundle: ServingBundle, prerender: Prerender): boole
       !mayHoldForDocument(rule) ||
       // Compiled by Next.js for its own router, which runs them without the unicode flag, and
       // without regard to case (`claimedBeforeFiles`).
-      // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      !new RegExp(rule.sourceRegex, 'i').test(requestedPathname(bundle, prerender.pathname))
+      !patterns.test(rule.sourceRegex, 'i', requestedPathname(bundle, prerender.pathname))
     );
   });
 }
@@ -201,15 +200,18 @@ export function beforeFilesPhases(bundle: ServingBundle): Route[] {
  * the request the rule claims. A rule no document meets (`mayHoldForDocument`) claims no document
  * either way.
  */
-function claimedBeforeFiles(bundle: ServingBundle, prerender: Prerender): boolean {
+function claimedBeforeFiles(
+  bundle: ServingBundle,
+  prerender: Prerender,
+  patterns: BuildPatternMatcher,
+): boolean {
   return beforeFilesPhases(bundle).some((rule) => {
     return (
       (reproducesDynamicRouting(bundle) ? !isConditional(rule) : mayHoldForDocument(rule)) &&
       // Compiled by Next.js for its own router, which runs them without the unicode flag, and
       // without regard to case, as `mayRoutePath` matches them: a rule for `/Account` claims the
       // page at `/account`, and `.well-known`'s exemption from a slash redirect is any case's.
-      // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(rule.sourceRegex, 'i').test(requestedPathname(bundle, prerender.pathname))
+      patterns.test(rule.sourceRegex, 'i', requestedPathname(bundle, prerender.pathname))
     );
   });
 }
@@ -239,10 +241,13 @@ function pagesRoutes(bundle: ServingBundle): ReadonlySet<string> {
  * member it never saw is a loading page, not the page, which Next.js renders only at build — the
  * Function renders the member instead, and a runtime cache holds no generation of the class.
  */
-function generationIn(bundle: ServingBundle): (prerender: Prerender) => boolean {
+function generationIn(
+  bundle: ServingBundle,
+  patterns: BuildPatternMatcher,
+): (prerender: Prerender) => boolean {
   const edgeRuntime = edgeRuntimeRoutes(bundle);
   const pages = pagesRoutes(bundle);
-  const rewritten = new Set(edgeServedRewrites(bundle).map((served) => served.pathname));
+  const rewritten = new Set(edgeServedRewrites(bundle, patterns).map((served) => served.pathname));
   const isDocument = documentPrerenders(bundle.prerenders, bundle.entrypoints);
   return (prerender) => {
     return (
@@ -285,8 +290,11 @@ function localePickedPerRequest(bundle: ServingBundle): (prerender: Prerender) =
   return (prerender) => prerender.pathname === root;
 }
 
-function servableIn(bundle: ServingBundle): (prerender: Prerender) => boolean {
-  const generation = generationIn(bundle);
+function servableIn(
+  bundle: ServingBundle,
+  patterns: BuildPatternMatcher,
+): (prerender: Prerender) => boolean {
+  const generation = generationIn(bundle, patterns);
   const templates = reachableTemplates(bundle);
   const localePicked = localePickedPerRequest(bundle);
   return (prerender) => {
@@ -294,8 +302,8 @@ function servableIn(bundle: ServingBundle): (prerender: Prerender) => boolean {
       generation(prerender) &&
       (!isTemplate(prerender.pathname) || templates.has(prerender.pathname)) &&
       !localePicked(prerender) &&
-      !claimedBeforeFiles(bundle, prerender) &&
-      headersReproducible(bundle, prerender)
+      !claimedBeforeFiles(bundle, prerender, patterns) &&
+      headersReproducible(bundle, prerender, patterns)
     );
   };
 }
@@ -316,8 +324,11 @@ function resumableBy(
  * edge can resolve. A blocking page has no shell, and a shell with no postponed state cannot be
  * resumed (Next.js refuses to, vercel/next.js#98647) — both reach the deployment's Function.
  */
-export function resumablePrerenders(bundle: DeploymentBundle): Prerender[] {
-  return resumableBy(bundle, servableIn(bundle));
+export function resumablePrerenders(
+  bundle: DeploymentBundle,
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
+): Prerender[] {
+  return resumableBy(bundle, servableIn(bundle, patterns));
 }
 
 /**
@@ -336,6 +347,7 @@ function applicableHeaders(
   bundle: ServingBundle,
   prerender: Prerender,
   conditional: 'fold' | 'leave',
+  patterns: BuildPatternMatcher,
 ): Map<string, string> {
   const headers = new Map<string, string>();
   const recorded = Object.entries(prerender.initialHeaders ?? {});
@@ -349,8 +361,9 @@ function applicableHeaders(
     }
     // Compiled by Next.js for its own router, which runs them without the unicode flag, and
     // without regard to case: a rule for `/Shop/:slug` sets its headers on `/shop/x` too.
-    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-    const match = new RegExp(rule.sourceRegex, 'i').exec(
+    const match = patterns.exec(
+      rule.sourceRegex,
+      'i',
       requestedPathname(bundle, prerender.pathname),
     );
     if (match === null) {
@@ -386,8 +399,12 @@ function applicableHeaders(
  * for a header whose whole purpose is to change what the response does. Save a rule no document
  * meets: no request the edge answers with this page can be answered with the header.
  */
-function actsThroughHeaders(bundle: ServingBundle, prerender: Prerender): boolean {
-  const headers = applicableHeaders(bundle, prerender, 'fold');
+function actsThroughHeaders(
+  bundle: ServingBundle,
+  prerender: Prerender,
+  patterns: BuildPatternMatcher,
+): boolean {
+  const headers = applicableHeaders(bundle, prerender, 'fold', patterns);
   if (BEHAVIORAL_RESPONSE_HEADERS.some((name) => headers.has(name))) {
     return true;
   }
@@ -405,21 +422,25 @@ function actsThroughHeaders(bundle: ServingBundle, prerender: Prerender): boolea
 function completeBy(
   bundle: ServingBundle,
   eligible: (prerender: Prerender) => boolean,
+  patterns: BuildPatternMatcher,
 ): Prerender[] {
   return bundle.prerenders.filter((prerender) => {
     return (
       completeByItself(prerender) &&
       prerender.postponed === undefined &&
       !isInternalPage(bundle, prerender.pathname) &&
-      !actsThroughHeaders(bundle, prerender) &&
+      !actsThroughHeaders(bundle, prerender, patterns) &&
       (prerender.allowQuery === undefined || prerender.allowQuery.length === 0) &&
       eligible(prerender)
     );
   });
 }
 
-export function completePrerenders(bundle: ServingBundle): Prerender[] {
-  return completeBy(bundle, servableIn(bundle));
+export function completePrerenders(
+  bundle: ServingBundle,
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
+): Prerender[] {
+  return completeBy(bundle, servableIn(bundle, patterns), patterns);
 }
 
 export interface ServableOptions {
@@ -431,9 +452,12 @@ export interface ServableOptions {
 export function edgeServablePrerenders(
   bundle: DeploymentBundle,
   options: ServableOptions = {},
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): Prerender[] {
-  const resumable = resumablePrerenders(bundle);
-  return options.complete === true ? [...resumable, ...completePrerenders(bundle)] : resumable;
+  const resumable = resumablePrerenders(bundle, patterns);
+  return options.complete === true
+    ? [...resumable, ...completePrerenders(bundle, patterns)]
+    : resumable;
 }
 
 /**
@@ -533,13 +557,16 @@ function isHandlerOutput(prerender: Prerender, handlers: ReadonlySet<string>): b
     : prerender.routeType === 'route';
 }
 
-export function cacheablePrerenders(bundle: DeploymentBundle): Prerender[] {
-  const generation = generationIn(bundle);
+export function cacheablePrerenders(
+  bundle: DeploymentBundle,
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
+): Prerender[] {
+  const generation = generationIn(bundle, patterns);
   return [
     ...resumableBy(bundle, generation).filter(
       (prerender) => prerender.allowQuery === undefined || prerender.allowQuery.length === 0,
     ),
-    ...completeBy(bundle, generation),
+    ...completeBy(bundle, generation, patterns),
     ...terminalShellsOf(bundle.prerenders, generation),
     ...routeHandlerPrerenders(bundle),
   ];
@@ -592,110 +619,6 @@ function conditionsOf(route: Route): Pick<DynamicRoute, 'has' | 'missing'> {
 }
 
 /** A rewrite of `next.config` the edge answers itself, and the file of the build it answers with. */
-export interface ServedRewrite {
-  /** The rule this came from, so the routing it is taken out of can leave it out. */
-  readonly rule: Route;
-  /** What the visitor asks for. */
-  readonly pathname: string;
-  readonly file: StaticFile;
-}
-
-/** A rule that can change where this pathname goes, for at least one request. */
-function mayRoutePath(rule: Route, pathname: string): boolean {
-  if (rule.destination === undefined && rule.status === undefined) {
-    return false;
-  }
-  // Conditions cannot be settled at build time: an alias must be right for every request. Match
-  // the compiled pattern, including parameterized sources and Next.js's case-insensitive default.
-  // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-  return new RegExp(rule.sourceRegex, 'i').test(pathname);
-}
-
-/** The literal file a rule can name, before routing precedence is considered. */
-function rewriteCandidate(
-  rule: Route,
-  files: ReadonlyMap<string, StaticFile>,
-  basePath: string,
-): ServedRewrite | undefined {
-  const { source, destination } = rule;
-  if (
-    source === undefined ||
-    destination === undefined ||
-    rule.status !== undefined ||
-    isConditional(rule) ||
-    !LITERAL_PATHNAME.test(source) ||
-    !LITERAL_PATHNAME.test(destination)
-  ) {
-    return undefined;
-  }
-  const file = files.get(destination);
-  return file === undefined || travelsWithFunction(file, basePath)
-    ? undefined
-    : { rule, pathname: source, file };
-}
-
-/**
- * The rewrites the edge serves from its own storage rather than handing to the Function.
- *
- * A rewrite to a file too large to travel with the Function had nowhere to be answered: the Function
- * is where routing happens, and the file it resolves to is not in the manifest compiled into it,
- * so the request came back a miss while the edge held the bytes all along. Resolved here, once,
- * against the build — never at request time — and the edge serves the source pathname as the
- * static file it names.
- *
- * Only a rule that says at build time exactly what it answers qualifies: a literal source and
- * destination, no condition, no status, and no earlier rule that may claim its source. A
- * `beforeFiles` rewrite overrides an existing pathname, but must leave its destination alone for
- * the rest of that phase; an `afterFiles` rewrite is reached only when no file or exact route
- * claims its source. Conditions and rewrite chains stay with the router that can resolve them.
- */
-export function edgeServedRewrites(bundle: ServingBundle): ServedRewrite[] {
-  if (!reproducesDynamicRouting(bundle)) {
-    return [];
-  }
-  const { basePath } = bundle.config;
-  const files = new Map(bundle.staticFiles.map((file) => [file.pathname, file]));
-  // A page or a file is found under every spelling the router finds it by (`routerSpellings`):
-  // `/about/` is the page `/about`, and `/manual/` the file `/manual`, ahead of `afterFiles`.
-  const named = [...bundle.entrypoints, ...bundle.prerenders].map((output) => output.pathname);
-  const claimed = new Set(
-    [...files.keys(), ...named].flatMap((pathname) => routerSpellings(bundle, pathname)),
-  );
-  const served: ServedRewrite[] = [];
-  // Every earlier rule counts, including one serving a small file, a conditional rule and a
-  // redirect before middleware. Failing to promote one does not mean routing skipped it.
-  const earlier = [...bundle.routing.beforeMiddleware];
-  const phases = [
-    { rules: bundle.routing.beforeFiles, beforeFiles: true },
-    { rules: bundle.routing.afterFiles, beforeFiles: false },
-  ];
-  for (const phase of phases) {
-    for (const [index, rule] of phase.rules.entries()) {
-      const candidate = rewriteCandidate(rule, files, basePath);
-      const prior =
-        candidate !== undefined && earlier.some((route) => mayRoutePath(route, candidate.pathname));
-      earlier.push(rule);
-      if (
-        candidate === undefined ||
-        prior ||
-        (!phase.beforeFiles && claimed.has(candidate.pathname))
-      ) {
-        continue;
-      }
-      // Unlike afterFiles, beforeFiles keeps rewriting before checking the filesystem. A later
-      // rule can replace this destination, even though the build already contains a file there.
-      if (
-        phase.beforeFiles &&
-        phase.rules.slice(index + 1).some((route) => mayRoutePath(route, candidate.file.pathname))
-      ) {
-        continue;
-      }
-      served.push(candidate);
-    }
-  }
-  return served;
-}
-
 /**
  * What the edge needs to pick a dynamic route's class the way Next.js picks the route; for a
  * bundle whose routes are split across app Functions, which Function each route it picks is in;
@@ -708,6 +631,7 @@ export function edgeServedRewrites(bundle: ServingBundle): ServedRewrite[] {
 export function dynamicRouting(
   bundle: DeploymentBundle,
   routeKeys: ReadonlySet<string>,
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): DynamicRouting & {
   readonly trailingSlash?: boolean;
   readonly staticFileTrailingSlash?: boolean;
@@ -725,8 +649,12 @@ export function dynamicRouting(
   const membersOf = memberRoutesOf(bundle, {
     edgeRuntime: edgeRuntimeRoutes(bundle),
     isDocument: documentPrerenders(bundle.prerenders, bundle.entrypoints),
-    servable: (prerender) =>
-      !claimedBeforeFiles(bundle, prerender) && headersReproducible(bundle, prerender),
+    servable: (prerender) => {
+      return (
+        !claimedBeforeFiles(bundle, prerender, patterns) &&
+        headersReproducible(bundle, prerender, patterns)
+      );
+    },
   });
   // One for each page and one for each page's data, however the build collapsed them.
   const pages = pageRoutes(routing.dynamicRoutes, bundle.config.basePath);
@@ -754,7 +682,7 @@ export function dynamicRouting(
   // A beforeFiles alias replaces its rule ahead of the filesystem: reserving that rule would
   // send the request to the Function, which cannot carry the file. An afterFiles reservation only
   // guards dynamic matching; direct static-file classification and its gate run before it.
-  const aliases = edgeServedRewrites(bundle);
+  const aliases = edgeServedRewrites(bundle, patterns);
   const servedHere = new Set(aliases.map((served) => served.rule));
   // The asset prefix's rewrite lands a file under the prefix on the file the edge finds there
   // itself (`staticFileAssetPrefixOf`), so it does not claim such a file ahead of the filesystem;
@@ -797,7 +725,7 @@ export function dynamicRouting(
   const exact = new Set(
     [...pathnames, ...fileSpellings].filter((pathname) => !routeKeys.has(pathname)),
   );
-  const filesystemPages = filesystemPagesOf(bundle, dynamicRoutes);
+  const filesystemPages = filesystemPagesOf(bundle, dynamicRoutes, patterns);
   // The page each dynamic route lands on, or answers the data of, in their order.
   const landings = pages.map((page) => page.template ?? page.dataOf);
   const tables = { dynamicRoutes, reservedRoutes, exactPathnames: [...exact], filesystemPages };
@@ -839,14 +767,18 @@ function phasedHeaderRoutes(
 export function prerenderResponseHeaders(
   bundle: ServingBundle,
   prerender: Prerender,
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): Map<string, string> {
-  return applicableHeaders(bundle, prerender, 'leave');
+  return applicableHeaders(bundle, prerender, 'leave', patterns);
 }
 
 /** The response headers a shell is served with, as the application would have sent them. */
 export function shellHeaders(
   bundle: DeploymentBundle,
   prerender: Prerender,
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): Record<string, string> {
-  return filterShellResponseHeaders(prerenderResponseHeaders(bundle, prerender));
+  return filterShellResponseHeaders(prerenderResponseHeaders(bundle, prerender, patterns));
 }
+
+export { edgeServedRewrites, type ServedRewrite } from './served-rewrites.ts';

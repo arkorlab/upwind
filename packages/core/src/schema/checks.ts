@@ -10,6 +10,13 @@ export interface Payload {
 /** How a parse runs: `validate` stops at the first child that fails outright. */
 export interface ParseContext {
   readonly abortEarly: boolean;
+  /** Boundary parsing may stop even when an issue would normally let later checks run. */
+  readonly stopOnIssue?: boolean;
+  /** Only explicitly shared inputs are memoized, for this parse alone. */
+  readonly shared?: {
+    readonly inputs: WeakSet<WeakKey>;
+    readonly results: WeakMap<WeakKey, Map<WeakKey, unknown>>;
+  };
 }
 
 /** An issue as `superRefine`'s `ctx.addIssue` takes it. */
@@ -306,11 +313,13 @@ function refine(check: Extract<Check, { readonly kind: 'refine' }>, payload: Pay
 function superRefine(
   check: Extract<Check, { readonly kind: 'super_refine' }>,
   payload: Payload,
+  stopOnIssue: boolean,
 ): void {
   const ctx: RefinementContext = {
     value: payload.value,
     issues: payload.issues,
     addIssue(issue: RefinementIssue | string): void {
+      if (stopOnIssue && payload.issues.length > 0) return;
       if (typeof issue === 'string') {
         // No `continue`, as zod pushes it: the checks after it are skipped, except a length check,
         // which runs unless a failure said outright to stop, and this one does not.
@@ -336,7 +345,7 @@ function superRefine(
   assertSynchronous(check.fn(payload.value, ctx));
 }
 
-function runCheck(check: Check, payload: Payload): void {
+function runCheck(check: Check, payload: Payload, stopOnIssue: boolean): void {
   switch (check.kind) {
     case 'max_length':
     case 'min_length':
@@ -372,7 +381,7 @@ function runCheck(check: Check, payload: Payload): void {
       break;
     }
     case 'super_refine': {
-      superRefine(check, payload);
+      superRefine(check, payload, stopOnIssue);
       break;
     }
   }
@@ -394,9 +403,10 @@ function runsRegardless(check: Check): boolean {
  * outright, except that a length check still runs on any value with a length unless a failure said
  * to stop everything.
  */
-export function runChecks(payload: Payload, checks: readonly Check[]): Payload {
+export function runChecks(payload: Payload, checks: readonly Check[], ctx?: ParseContext): Payload {
   let isAborted = aborted(payload.issues);
   for (const check of checks) {
+    if (ctx?.stopOnIssue === true && payload.issues.length > 0) break;
     if (runsRegardless(check)) {
       if (explicitlyAborted(payload.issues) || !hasLength(payload.value)) {
         continue;
@@ -405,7 +415,7 @@ export function runChecks(payload: Payload, checks: readonly Check[]): Payload {
       continue;
     }
     const before = payload.issues.length;
-    runCheck(check, payload);
+    runCheck(check, payload, ctx?.stopOnIssue === true);
     if (!isAborted && payload.issues.length !== before) {
       isAborted = aborted(payload.issues, before);
     }

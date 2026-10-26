@@ -168,9 +168,16 @@ function wrapperOf(schema: s.WrapperSchema): z.ZodType {
 }
 
 function templateOf(schema: s.TemplateLiteralSchema): z.ZodType {
-  return z.templateLiteral(
-    schema.parts.map((part) => (part instanceof s.StringSchema ? z.string() : part)),
-  );
+  return z.string().superRefine((input, ctx) => {
+    if (!schema.matches(input)) {
+      ctx.addIssue({
+        code: 'invalid_format',
+        format: 'template_literal',
+        pattern: schema.pattern.source,
+        input,
+      });
+    }
+  });
 }
 
 /**
@@ -241,6 +248,7 @@ export function toZod<const S extends Typed>(schema: S): ZodOf<S> {
     const type = typeOf(core);
     // A string's checks are the string's own (`stringOf`), `url` and `datetime` among them.
     zod = core instanceof s.StringSchema ? type : withChecks(type, core.checks);
+    if (core instanceof s.TemplateLiteralSchema) zod = zod.meta({ pattern: core.pattern.source });
     MADE.set(schema, zod);
   }
   return zod as unknown as ZodOf<S>;

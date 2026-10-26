@@ -120,7 +120,7 @@ const MAX_ANALYZED_LENGTH = 4096;
  * Deeper than any pattern Next.js writes nests its groups, a few levels at most; past it nothing is
  * read, so that reading a pattern recurses no further than this does.
  */
-const MAX_NESTING = 32;
+export const MAX_NESTING = 32;
 
 /**
  * Where what follows a node ends, and succeeds: the pattern's end, where the match does, or a

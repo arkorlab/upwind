@@ -138,6 +138,10 @@ jobs:
             targets="$TARGET"
             nextjs="$NEXTJS_REF"
           fi
+          # Outputs are line-oriented records. Refuse input that could introduce another record.
+          case "$nextjs" in
+            '' | *$'\r'* | *$'\n'*) echo 'nextjsRef must be a nonempty single line' >&2; exit 1 ;;
+          esac
           case "$targets" in
             host | cloudflare | node | 'cloudflare node') ;;
             *) echo "target must be host, cloudflare or node, not '$targets'" >&2; exit 1 ;;

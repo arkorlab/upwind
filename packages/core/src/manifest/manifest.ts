@@ -40,7 +40,7 @@ import {
 } from './schema.ts';
 import { spellsPrefixOf } from './spelled-prefix.ts';
 import { staticPageFields } from './static-pages.ts';
-import { fromStoredManifest, toStoredManifest } from './stored.ts';
+import { fromStoredManifest, readManifestJson, toStoredManifest } from './stored.ts';
 
 const PAGES_FALLBACK_PRIVACY = 3;
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 15_000;
@@ -336,7 +336,9 @@ export const MAX_MANIFEST_BYTES = MANIFEST_MIB * MIB;
 
 /** Parse and validate a manifest document, as stored or not (throws on schema violations). */
 export function parseProjectManifest(json: string): ProjectManifest {
-  return projectManifestSchema.parse(fromStoredManifest(JSON.parse(json)));
+  const sharedInputs = new WeakSet();
+  const manifest = fromStoredManifest(readManifestJson(json, MAX_MANIFEST_BYTES), sharedInputs);
+  return projectManifestSchema.parseShared(manifest, sharedInputs);
 }
 
 /** The documents `next build` writes for an error, by the name they are shipped under. */
