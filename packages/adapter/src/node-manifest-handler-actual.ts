@@ -45,8 +45,9 @@ export function nodeManifestHandlerActualData(
   const visited = new Set<NodeManifestTurbopackGraphFactory>();
   const physical = new Map<string, NodeManifestTurbopackGraphFile>();
   const actual: NodeManifestHandlerRowData[] = [];
-  const runtime = input.root.runtimeId;
-  if (runtime === undefined || rows.get(input.root.id) !== input.root) return undefined;
+  const rootRuntime = input.root.runtimeId;
+  if (rootRuntime === undefined || rows.get(input.root.id) !== input.root) return undefined;
+  const runtime = rootRuntime;
 
   function registration(id: string): NodeManifestTurbopackGraphFactory | undefined {
     const members = nodeManifestPassMembers(input.pass, id);
@@ -151,7 +152,7 @@ export function nodeManifestHandlerActualData(
       operations: {
         cacheInitializers: projection.cacheInitializers,
         asyncLoads: projection.asyncLoads,
-        asyncLoader: projection.asyncLoader,
+        ...(projection.asyncLoader !== undefined && { asyncLoader: projection.asyncLoader }),
         boundRuntimeInputs: projection.boundRuntimeInputs,
       },
     };
