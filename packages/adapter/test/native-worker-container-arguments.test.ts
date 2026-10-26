@@ -79,6 +79,16 @@ describe('retained Worker capability containers in call arguments', () => {
     'const options={nested:{Thread:Worker}};const {nested:{Thread}}=options;new Thread("child.js");',
     'const options={nested:{Thread:Worker}};const {nested}=options;start(nested);',
     'const options={nested:{Thread:Worker}};const {nested}=options;new nested.Thread("child.js");',
+    'const {nested}={nested:{deep:{Thread:Worker}}};new nested.deep.Thread("child.js");',
+    'const {nested}={nested:{deep:{Thread:Worker}}};new nested["deep"]["Thread"]("child.js");',
+    'const {nested}={nested:{deep:{Thread:Worker}}};const copy=nested.deep;new copy.Thread("child.js");',
+    'const {nested}={nested:{deep:{Thread:Worker}}};const Thread=nested.deep.Thread.bind(null);new Thread("child.js");',
+    'const {nested}={nested:{deep:{Thread:Worker}}};class Child extends nested.deep.Thread{}new Child("child.js");',
+    'const {nested}={nested:{deep:{Thread:Worker}}};const Child=class extends nested.deep.Thread{};new Child("child.js");',
+    `const {nested}={nested:{deep:{Thread:Worker}}};nested.deep.Thread\`child.js\`;`,
+    'const {nested}={nested:{deep:{Thread:Worker}}};new nested[globalThis.key].Thread("child.js");',
+    'const options={nested:{deep:{Thread:Worker}}};options.marker=1;const {nested}=options;new nested.deep.Thread("child.js");',
+    'const {nested}={nested:{deep:{Thread:Worker,get Thread(){return globalThis.other}}}};new nested.deep.Thread("child.js");',
     'const options={nested:{Thread:Worker}};options.marker=1;const {nested}=options;new nested.Thread("child.js");',
     'const options={nested:{Thread:Worker}};const {[globalThis.key]:chosen}=options;start(chosen);',
     'const options={nested:{Thread:Worker}};const {...rest}=options;start(rest);',
@@ -123,6 +133,11 @@ describe('retained Worker capability containers in call arguments', () => {
     'const options={Thread:class {}};const alias=options;start({...alias});',
     'const options={nested:{Thread:Worker},flag:true};start(options.flag);',
     'const options={nested:{Thread:Worker},flag:true};start(options?.flag);',
+    'const {nested}={nested:{deep:{Thread:class {}}}};new nested.deep.Thread("ordinary");',
+    'function local(Worker){const {nested}={nested:{deep:{Thread:Worker}}};new nested.deep.Thread("ordinary")}',
+    'const {nested}=false?{nested:{deep:{Thread:Worker}}}:{nested:{deep:{Thread:class {}}}};new nested.deep.Thread("ordinary");',
+    'const {nested}={nested:{deep:{Thread:Worker,flag:true}}};new nested.deep.flag("ordinary");',
+    'const {nested}={nested:{deep:{Thread:Worker}}};new nested.deep.Thread.name.Worker("ordinary");',
     'const options={nested:{Thread:Worker},flag:true};const {flag}=options;start(flag);',
     'const options={nested:{Thread:Worker},flag:true};const {flag:alias}=options;start(alias);',
     'const options={nested:{Thread:Worker},flag:true};options.marker=1;const {flag}=options;start(flag);',
@@ -178,6 +193,10 @@ describe('retained Worker capability containers in call arguments', () => {
     'const options={nested:{main:threads.isMainThread}};start(options.nested);',
     'const options={one:{threads}};start(options.one.threads.isMainThread);',
     'const options={one:{threads}};start(options?.one.threads.isMainThread);',
+    'const {nested}={nested:{deep:{ns:threads}}};export const check=()=>nested.deep.ns.isMainThread;',
+    'const {nested}={nested:{deep:{ns:threads}}};new nested.deep.ns.BroadcastChannel("ordinary");',
+    'const {nested}={nested:{deep:{ns:threads}}};nested.deep.ns.getEnvironmentData("key");',
+    'const {nested}={nested:{deep:{ns:threads}}};new nested.deep.ns.isMainThread.Worker("ordinary");',
     'const {isMainThread:main,threadId:id}=threads;start({main,id});',
     'const {ns}={ns:threads};export const check=()=>ns.isMainThread;',
     'const {ns}={ns:threads};const alias=ns;export const check=()=>alias.threadId;',
@@ -221,6 +240,8 @@ describe('retained Worker capability containers in call arguments', () => {
     'const threads=import("node:worker_threads");export const start=()=>new threads.Worker("ordinary");',
     'const {Worker:Thread}=import("node:worker_threads");export const start=()=>new Thread("ordinary");',
     'const threads=import("node:worker_threads");const {ns}={ns:threads};export const start=()=>new ns.Worker("ordinary");',
+    'const pending=import("node:worker_threads");const {nested}={nested:{deep:{pending}}};export const start=()=>new nested.deep.pending.Worker("ordinary");',
+    'const pending=import("node:worker_threads");const {nested}={nested:{deep:{pending}}};export const start=()=>new nested.deep.pending.Worker.Worker("ordinary");',
     'const {Worker:Thread}=await Promise.resolve({Worker:class {}});export const start=()=>new Thread("ordinary");',
     'const threads=await import("node:worker_threads");export const channel=new threads.BroadcastChannel("ordinary");',
   ])('preserves the documented promise/scalar/non-Worker distinctions: %s', (source) => {
@@ -328,6 +349,45 @@ describe('retained Worker capability containers in call arguments', () => {
         ),
     ).toBe(false);
   });
+
+  it.each([
+    ['[Worker]', '0', true],
+    ['[Worker]', '99', false],
+    ['[,Worker]', '0', false],
+    ['[,Worker]', '1', true],
+    ['[...[],Worker]', '0', true],
+    ['[Worker]', 'globalThis.key', true],
+    ['[Worker]', '"map"', false],
+    ['[Worker]', '"length"', false],
+  ] as const)(
+    'selects original numeric array data without promoting methods: %s/%s',
+    (array, key, expected) => {
+      const program = parseAst(
+        `${WORKER}const options={array:${array}};new options.array[${key}]();`,
+      );
+      const tree = walk(program);
+      const bindings = nativeBindings(program);
+      const imported = tree.find((node) => node.type === 'ImportSpecifier');
+      const call = tree.find((node) => node.type === 'NewExpression');
+
+      expect(
+        call &&
+          exportedWorkerCapability(
+            call,
+            {
+              bindings,
+              tree,
+              origin: (node) => {
+                return node.type === 'Identifier' && bindings.lookup(node, node.name) === imported
+                  ? 'constructor'
+                  : undefined;
+              },
+            },
+            new Set(),
+          ),
+      ).toBe(expected);
+    },
+  );
 
   it.each(UNOWNED_TRACES)('preserves the independent owning-native gate for $id', async (trace) => {
     const source = `${WORKER}start({Thread:Worker});`;

@@ -7,18 +7,8 @@ import { nativeWorkerValues, scalarWorkerBinding } from './native-worker-branche
 const MAX_MEMBER_STEPS = 1024;
 const MAX_MEMBER_DEPTH = 32;
 const MAX_MEMBER_KEY = 240;
-const CAPABILITY_KEYS: ReadonlySet<string> = new Set([
-  'apply',
-  'bind',
-  'call',
-  'catch',
-  'constructor',
-  'default',
-  'finally',
-  'prototype',
-  'then',
-  'Worker',
-]);
+const CONSTRUCTOR_METHODS: ReadonlySet<string> = new Set(['apply', 'bind', 'call', 'constructor']);
+const PROMISE_METHODS: ReadonlySet<string> = new Set(['catch', 'finally', 'then']);
 interface HandoffContext {
   readonly bindings: NativeBindings;
   readonly origin: (node: Node) => string | undefined;
@@ -43,6 +33,27 @@ function dataKey(
   if (typeof value === 'string') name = value;
   else if (typeof value === 'number' && Number.isFinite(value)) name = String(value);
   return name !== undefined && name.length <= MAX_MEMBER_KEY ? name : undefined;
+}
+
+function residualMemberOrigin(origin: string, key: string): string | undefined {
+  if (origin === 'module' && key === 'default') return 'namespace';
+  if (origin === 'namespace' || origin === 'module')
+    return key === 'Worker' ? 'constructor' : undefined;
+  if (origin === 'promise') return PROMISE_METHODS.has(key) ? 'ambiguous' : undefined;
+  if (origin === 'prototype') return key === 'constructor' ? 'constructor' : undefined;
+  if (origin !== 'constructor') return 'ambiguous';
+  if (key === 'prototype') return 'prototype';
+  return CONSTRUCTOR_METHODS.has(key) ? 'ambiguous' : undefined;
+}
+
+function residualCapability(origin: string, keys: MemberSelection['keys']): boolean {
+  let selected: string | undefined = origin;
+  for (const key of keys) {
+    if (selected === undefined) return false;
+    if (selected === 'ambiguous' || key === undefined) return true;
+    selected = residualMemberOrigin(selected, key);
+  }
+  return selected !== undefined;
 }
 
 /** Select only original data nodes; accessors and callbacks are never invoked or interpreted. */
@@ -161,11 +172,22 @@ class StaticMemberValues {
     node: Extract<Node, { type: 'ArrayExpression' }>,
     keys: MemberSelection['keys'],
   ): void {
-    for (const value of node.elements) {
+    const [key, ...remaining] = keys;
+    let uncertain = false;
+    let matched = false;
+    for (const [index, value] of node.elements.entries()) {
       if (value === null) continue;
-      if (value.type === 'SpreadElement') this.add(value.argument, keys);
-      else this.add(value, keys.slice(1));
+      if (value.type === 'SpreadElement') {
+        this.complete = false;
+        uncertain = true;
+        matched = true;
+        this.add(value.argument, keys);
+      } else if (key === undefined || uncertain || key === String(index)) {
+        matched = true;
+        this.add(value, remaining);
+      }
     }
+    if (key === undefined || !matched) this.complete = false;
   }
 
   values(): readonly Node[] {
@@ -176,10 +198,7 @@ class StaticMemberValues {
       }
       const origin = this.context.origin(item.node);
       if (origin === undefined) this.expand(item);
-      else if (
-        origin === 'ambiguous' ||
-        item.keys.some((key) => key === undefined || CAPABILITY_KEYS.has(key))
-      ) {
+      else if (residualCapability(origin, item.keys)) {
         this.residual = true;
         this.result.push(item.node);
       } else this.complete = false;
@@ -373,19 +392,27 @@ function transferredValue(node: Node): Node | undefined {
   if (node.type === 'YieldExpression' || node.type === 'ThrowStatement')
     return node.argument ?? undefined;
   if (node.type === 'PropertyDefinition') return node.value ?? undefined;
+  if (node.type === 'ClassDeclaration' || node.type === 'ClassExpression')
+    return node.superClass ?? undefined;
   return undefined;
 }
 
 function transferredWorkerCapability(node: Node, context: HandoffContext): boolean {
   if (node.type === 'CallExpression' || node.type === 'NewExpression')
-    return node.arguments.some((argument) => {
-      return handedOffCapability(
-        argument.type === 'SpreadElement' ? argument.argument : argument,
-        context,
-      );
-    });
+    return (
+      handedOffCapability(node.callee, context) ||
+      node.arguments.some((argument) => {
+        return handedOffCapability(
+          argument.type === 'SpreadElement' ? argument.argument : argument,
+          context,
+        );
+      })
+    );
   if (node.type === 'TaggedTemplateExpression')
-    return node.quasi.expressions.some((value) => handedOffCapability(value, context));
+    return (
+      handedOffCapability(node.tag, context) ||
+      node.quasi.expressions.some((value) => handedOffCapability(value, context))
+    );
   const value = transferredValue(node);
   if (value !== undefined) return handedOffCapability(value, context);
   return false;
