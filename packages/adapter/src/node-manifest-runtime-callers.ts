@@ -3,7 +3,17 @@ import path from 'node:path';
 
 import { AuditError } from './dependencies.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
-import { nodeManifestInitialGraphRegistration } from './node-manifest-registration-views.ts';
+import {
+  assertNodeManifestPassBinding,
+  assertNodeManifestPassSources,
+  nodeManifestPassInitial,
+  withNodeManifestRegistrationPass,
+  type NodeManifestRegistrationPass,
+} from './node-manifest-registration-pass.ts';
+import {
+  createNodeManifestRegistrationViews,
+  type NodeManifestRegistrationViews,
+} from './node-manifest-registration-views.ts';
 import {
   inspectNodeManifestTurbopackEntry,
   type NodeManifestTurbopackBootGraph,
@@ -197,8 +207,9 @@ function callerProof(input: {
   readonly graph: NodeManifestTurbopackBootGraph;
   readonly sources: readonly NodeManifestTurbopackGraphFile[];
   readonly distDir: string;
+  readonly pass: NodeManifestRegistrationPass;
 }): NodeManifestRuntimeCallerProof['callers'][number] {
-  const { caller, source, graph, sources, distDir } = input;
+  const { caller, source, graph, sources, distDir, pass } = input;
   const boot = inspectNodeManifestTurbopackEntry(source.source);
   if (path.resolve(distDir, boot.publicPath) !== caller.file) refuse('boot public path');
   const edges = source.imports.filter((edge) => edge.specifier === boot.runtimeSpecifier);
@@ -216,7 +227,7 @@ function callerProof(input: {
   }
   const invoked = new Set<string>();
   for (const id of [...boot.evaluations, boot.exportedId]) {
-    invoked.add(nodeManifestInitialGraphRegistration(graph, sources, id, chunks));
+    invoked.add(nodeManifestPassInitial(pass, graph, id, chunks));
   }
   return Object.freeze({
     id: caller.id,
@@ -227,12 +238,30 @@ function callerProof(input: {
 }
 
 /** Every admitted caller must use the same already reviewed runtime and its complete factory table. */
-export function proveNodeManifestRuntimeCallers(input: {
+interface CallerProofInput {
   readonly inventory: NodeManifestRuntimeCallers;
   readonly sources: readonly NodeManifestTurbopackGraphFile[];
   readonly graphs: readonly NodeManifestTurbopackBootGraph[];
   readonly distDir: string;
-}): NodeManifestRuntimeCallerProof {
+  readonly registrations?: NodeManifestRegistrationViews | undefined;
+  readonly pass?: NodeManifestRegistrationPass | undefined;
+}
+export function proveNodeManifestRuntimeCallers(
+  input: CallerProofInput,
+): NodeManifestRuntimeCallerProof {
+  const registrations =
+    input.registrations ?? createNodeManifestRegistrationViews(input.graphs, input.sources);
+  if (input.pass !== undefined) {
+    assertNodeManifestPassBinding(input.pass, registrations);
+    return proveWithinPass(input, input.pass);
+  }
+  return withNodeManifestRegistrationPass(registrations, (pass) => proveWithinPass(input, pass));
+}
+function proveWithinPass(
+  input: CallerProofInput,
+  pass: NodeManifestRegistrationPass,
+): NodeManifestRuntimeCallerProof {
+  assertNodeManifestPassSources(pass, input.sources);
   if (!CERTIFIED.has(input.inventory)) refuse('uncertified caller inventory');
   const graphs = new Map(input.graphs.map((graph) => [graph.runtimeId, graph]));
   const callers: NodeManifestRuntimeCallerProof['callers'][number][] = [];
@@ -249,7 +278,7 @@ export function proveNodeManifestRuntimeCallers(input: {
     const graph = runtimeId === undefined ? undefined : graphs.get(runtimeId);
     if (graph === undefined) refuse('unknown boot runtime');
     callers.push(
-      callerProof({ caller, source, graph, sources: input.sources, distDir: input.distDir }),
+      callerProof({ caller, source, graph, sources: input.sources, distDir: input.distDir, pass }),
     );
   }
   return Object.freeze({ callers: Object.freeze(callers), retained: input.inventory.retained });

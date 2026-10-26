@@ -10,8 +10,6 @@ import {
   assertStandaloneNodeBoundConsumers,
   certifyNodeManifestBoundConsumer,
   stageNodeManifestBoundProof,
-  type NodeManifestBoundBatch,
-  type NodeManifestBoundStage,
   type NodeManifestBoundConsumerProof,
 } from './node-manifest-bound-batch.ts';
 import { assertCoalescedPagesConsumer } from './node-manifest-coalesced-consumer.ts';
@@ -20,22 +18,25 @@ import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
 import { nodeManifestPagesContextLeaf } from './node-manifest-pages-context-consumer.ts';
 import { inspectNodeManifestReachability } from './node-manifest-reachability.ts';
 import {
-  assertNodeManifestSingleRegistration,
+  assertNodeManifestPassSingle,
+  nodeManifestPassForwarded,
+  nodeManifestPassTouchesProtected,
+  withNodeManifestRegistrationPass,
+  withNodeManifestRegistrationPassAsync,
+  type NodeManifestRegistrationPass,
+} from './node-manifest-registration-pass.ts';
+import {
   createNodeManifestRegistrationViews,
   nodeManifestConsumerBoots,
-  nodeManifestRegistrationProofFiles,
-  nodeManifestRegistrationTouchesProtected,
   type NodeManifestRegistrationViews,
 } from './node-manifest-registration-views.ts';
 import {
   proveNodeManifestRuntimeCallers,
-  type NodeManifestRuntimeCallers,
   type NodeManifestRuntimeCallerProof,
 } from './node-manifest-runtime-callers.ts';
 import {
   prepareNodeManifestRuntimeGraphs,
   type NodeManifestRuntimeCohort,
-  type NodeManifestRuntimeProfile,
 } from './node-manifest-runtime-cohort.ts';
 import { nodeManifestRuntimeLookupTables } from './node-manifest-runtime-tables.ts';
 import {
@@ -43,46 +44,25 @@ import {
   nodeManifestTemplateImports,
 } from './node-manifest-template-imports.ts';
 import {
+  nodeManifestTurbopackProducerKind,
+  nodeManifestTurbopackProofFiles,
+  type NodeManifestTurbopackConsumerInput,
+  type NodeManifestTurbopackConsumerProof,
+} from './node-manifest-turbopack-consumer-input.ts';
+import {
   type NodeManifestTurbopackBootGraph,
   type NodeManifestTurbopackEntryGraph,
   type NodeManifestTurbopackGraphFactory,
-  type NodeManifestTurbopackGraphFile,
   type NodeManifestTurbopackSealedEntry,
 } from './node-manifest-turbopack-graph.ts';
-import { forwarded, knownRuntimeCaller } from './node-manifest-turbopack-parents.ts';
+import { knownRuntimeCaller } from './node-manifest-turbopack-parents.ts';
 import { assertNodeManifestTurbopackTemplateConsumer } from './node-manifest-turbopack-templates.ts';
 import { projectNodeManifestTurbopackFactory } from './node-manifest-turbopack.ts';
 
-export interface NodeManifestTurbopackConsumerInput {
-  readonly distDir: string;
-  readonly rootDir: string;
-  readonly assetPrefix?: string | undefined;
-  readonly sources: readonly NodeManifestTurbopackGraphFile[];
-  readonly entries: readonly NodeManifestTurbopackSealedEntry[];
-  readonly runtimeCallers?: NodeManifestRuntimeCallers | undefined;
-  readonly runtimeProfiles?: readonly NodeManifestRuntimeProfile[] | undefined;
-  readonly boundBatch?: NodeManifestBoundBatch | undefined;
-  readonly producer: {
-    readonly id: string;
-    readonly file: string;
-    readonly sha256: string;
-    readonly kind?:
-      | 'app-page-factory'
-      | 'app-page-class'
-      | 'pages-class'
-      | 'app-route-class'
-      | 'pages-api-class';
-  };
-}
-export interface NodeManifestTurbopackConsumerProof {
-  readonly terminals: readonly (NodeManifestTurbopackSealedEntry & { readonly id: string })[];
-  readonly files: readonly { readonly file: string; readonly sha256: string }[];
-  readonly compilerSources: readonly { readonly file: string; readonly sha256: string }[];
-  /** Provisional only: the outer graph must commit its SDK terminal walk and close the batch. */
-  readonly boundStage?: NodeManifestBoundStage | undefined;
-  /** The outer graph must still visit every terminal's actual importers through the SDK root. */
-  readonly requiresSdkNormalization: true;
-}
+export type {
+  NodeManifestTurbopackConsumerInput,
+  NodeManifestTurbopackConsumerProof,
+} from './node-manifest-turbopack-consumer-input.ts';
 type Role = 'class' | 'factory' | 'route-exports';
 
 function refuse(reason: string): never {
@@ -97,6 +77,10 @@ class TurbopackConsumers {
   private readonly allGraphs: readonly NodeManifestTurbopackBootGraph[];
   private readonly runtimeCohort: NodeManifestRuntimeCohort | undefined;
   private readonly registrations: NodeManifestRegistrationViews;
+  private readonly proofFiles: Pick<
+    NodeManifestTurbopackConsumerProof,
+    'files' | 'compilerSources'
+  >;
   private readonly factories = new Map<string, NodeManifestTurbopackGraphFactory>();
   private readonly incoming = new Map<string, Set<string>>();
   private readonly terminals = new Map<
@@ -111,12 +95,13 @@ class TurbopackConsumers {
   private readonly strictFactories = new Map<string, NodeManifestTurbopackGraphFactory>();
   private readonly helperOwner = Object.freeze({ identity: Symbol('Pages template helper owner') });
   private readonly certifiedFactories = new Map<string, NodeManifestAppPageFactoryProof>();
-  private readonly callerProof: NodeManifestRuntimeCallerProof | undefined;
+  private callerProof: NodeManifestRuntimeCallerProof | undefined;
+  private pass: NodeManifestRegistrationPass | undefined;
   private reachabilityFallback: ReturnType<typeof inspectNodeManifestReachability>['fallback'];
 
   constructor(input: NodeManifestTurbopackConsumerInput) {
     this.input = input;
-    const expectedKind = this.producerKind();
+    const expectedKind = nodeManifestTurbopackProducerKind(this.input);
     for (const entry of input.entries) {
       const kind = entry.kind ?? 'app-page';
       if (kind !== expectedKind) refuse('sealed route and constructor kind mismatch');
@@ -134,6 +119,18 @@ class TurbopackConsumers {
     this.registrations = createNodeManifestRegistrationViews(this.allGraphs, input.sources);
     for (const graph of this.allGraphs)
       for (const factory of graph.factories) this.register(factory);
+    this.proofFiles = withNodeManifestRegistrationPass(this.registrations, (pass) => {
+      this.pass = pass;
+      try {
+        this.initialize();
+        return nodeManifestTurbopackProofFiles(this.allGraphs, input.sources, this.callerProof);
+      } finally {
+        this.pass = undefined;
+      }
+    });
+  }
+
+  private initialize(): void {
     for (const graph of this.graphs) {
       const terminal = this.unwrapped(graph.exportedId);
       const previous = this.routes.get(terminal);
@@ -145,13 +142,15 @@ class TurbopackConsumers {
       this.routes.set(terminal, graph.entry);
     }
     this.callerProof =
-      input.runtimeCallers === undefined
+      this.input.runtimeCallers === undefined
         ? undefined
         : proveNodeManifestRuntimeCallers({
-            inventory: input.runtimeCallers,
+            inventory: this.input.runtimeCallers,
             graphs: this.allGraphs,
-            sources: input.sources,
-            distDir: input.distDir,
+            registrations: this.registrations,
+            pass: this.currentPass(),
+            sources: this.input.sources,
+            distDir: this.input.distDir,
           });
     this.assertPhysicalCallers();
     this.restrictProtectedIncoming();
@@ -165,6 +164,7 @@ class TurbopackConsumers {
       physicalIds: new Set(this.input.sources.map((source) => source.id)),
       runtimeIds: new Set(this.allGraphs.map((graph) => graph.runtimeId)),
       registrations: this.registrations,
+      pass: this.currentPass(),
     });
     this.reachabilityFallback = fallback;
     if (reached === undefined) return;
@@ -175,28 +175,6 @@ class TurbopackConsumers {
         if (reachable.has(parent)) included.add(parent);
       }
       this.incoming.set(target, included);
-    }
-  }
-
-  private producerKind(): 'app-page' | 'pages' | 'app-route' | 'pages-api' {
-    const kind = this.input.producer.kind ?? APP_PAGE_FACTORY;
-    switch (kind) {
-      case APP_PAGE_FACTORY:
-      case APP_PAGE_CLASS: {
-        return 'app-page';
-      }
-      case 'pages-class': {
-        return 'pages';
-      }
-      case 'pages-api-class': {
-        return 'pages-api';
-      }
-      case 'app-route-class': {
-        return 'app-route';
-      }
-      default: {
-        return refuse('unknown protected producer role');
-      }
     }
   }
 
@@ -219,16 +197,16 @@ class TurbopackConsumers {
   private unwrapped(id: string): string {
     const seen = new Set<string>();
     let current = id;
-    assertNodeManifestSingleRegistration(this.registrations, current);
+    assertNodeManifestPassSingle(this.currentPass(), current);
     while (this.factories.has(current)) {
       if (seen.has(current)) refuse('cyclic namespace forwarding');
       seen.add(current);
       const factory = this.factories.get(current);
       if (factory === undefined) return refuse('missing factory');
-      const next = forwarded(factory);
+      const next = nodeManifestPassForwarded(this.currentPass(), factory.id);
       if (next === undefined) return current;
       current = next;
-      assertNodeManifestSingleRegistration(this.registrations, current);
+      assertNodeManifestPassSingle(this.currentPass(), current);
     }
     return current;
   }
@@ -259,7 +237,7 @@ class TurbopackConsumers {
       if (protectedBoots.has(caller.id)) continue;
       if (
         caller.invoked.some((id) =>
-          nodeManifestRegistrationTouchesProtected(this.registrations, id, this.complete),
+          nodeManifestPassTouchesProtected(this.currentPass(), id, this.complete),
         )
       )
         refuse('additional runtime caller consumes protected route authority');
@@ -313,13 +291,13 @@ class TurbopackConsumers {
   private importInput(
     factory: NodeManifestTurbopackGraphFactory,
   ): Parameters<typeof nodeManifestTemplateImports>[0] {
-    assertNodeManifestSingleRegistration(this.registrations, factory.id);
+    assertNodeManifestPassSingle(this.currentPass(), factory.id);
     return {
       factory,
       sources: this.input.sources,
       target: (id) => this.importTarget(id),
       helper:
-        this.producerKind() === 'pages'
+        nodeManifestTurbopackProducerKind(this.input) === 'pages'
           ? { owner: this.helperOwner, factories: this.factories }
           : undefined,
     };
@@ -337,7 +315,7 @@ class TurbopackConsumers {
         `consumer without a sealed route${reason}; registration ${factory.projection.original.sha256}:${registration.start}-${registration.end}`,
       );
     }
-    const kind = this.producerKind();
+    const kind = nodeManifestTurbopackProducerKind(this.input);
     if (kind === 'app-page') this.appPageConsumer(factory, route);
     else if (kind === 'pages' && factory.projection.mode === 'dependencies')
       await assertCoalescedPagesConsumer({
@@ -385,7 +363,7 @@ class TurbopackConsumers {
   private strictFactory(
     factory: NodeManifestTurbopackGraphFactory,
   ): NodeManifestTurbopackGraphFactory {
-    assertNodeManifestSingleRegistration(this.registrations, factory.id);
+    assertNodeManifestPassSingle(this.currentPass(), factory.id);
     const previous = this.strictFactories.get(factory.id);
     if (previous !== undefined) return previous;
     const id = factory.projection.moduleId;
@@ -417,14 +395,15 @@ class TurbopackConsumers {
     id: string,
     role: Role,
   ): Promise<void> {
-    assertNodeManifestSingleRegistration(this.registrations, factory.id);
+    assertNodeManifestPassSingle(this.currentPass(), factory.id);
     if (
       role === 'factory' &&
       !this.routes.has(factory.id) &&
       nodeManifestPagesContextLeaf(factory, id, this.unwrapped(id), this.input)
     )
       return;
-    if (forwarded(factory) === id) await this.visit(factory.id, role);
+    if (nodeManifestPassForwarded(this.currentPass(), factory.id) === id)
+      await this.visit(factory.id, role);
     else if (role === 'class') {
       await this.fixedFactory(factory);
       await this.visit(factory.id, 'factory');
@@ -436,7 +415,7 @@ class TurbopackConsumers {
   }
 
   private async visit(id: string, role: Role): Promise<void> {
-    assertNodeManifestSingleRegistration(this.registrations, id);
+    assertNodeManifestPassSingle(this.currentPass(), id);
     const complete = this.complete.get(id);
     if (complete !== undefined) {
       if (complete !== role) refuse('conflicting protected export role');
@@ -453,7 +432,7 @@ class TurbopackConsumers {
       const route = this.routes.get(incoming.id);
       const coalesced =
         role === 'factory' &&
-        this.producerKind() === 'pages' &&
+        nodeManifestTurbopackProducerKind(this.input) === 'pages' &&
         route?.kind === 'pages' &&
         incoming.projection.cacheInitializers.length === 1;
       const factory = coalesced ? incoming : this.strictFactory(incoming);
@@ -463,7 +442,11 @@ class TurbopackConsumers {
     this.complete.set(id, role);
   }
 
-  async prove(): Promise<NodeManifestTurbopackConsumerProof> {
+  private currentPass(): NodeManifestRegistrationPass {
+    return this.pass ?? refuse('inactive registration walk');
+  }
+
+  private async proveWithinPass(): Promise<NodeManifestTurbopackConsumerProof> {
     const producer = this.input.sources.find((source) => source.id === this.input.producer.id);
     if (
       producer?.file !== this.input.producer.file ||
@@ -489,24 +472,20 @@ class TurbopackConsumers {
           });
     return {
       terminals: [...this.terminals.values()],
-      files: nodeManifestRegistrationProofFiles(
-        this.allGraphs,
-        this.input.sources,
-        this.callerProof,
-      ),
-      compilerSources: [
-        ...new Map(
-          this.allGraphs.map((graph) => {
-            return [
-              graph.runtime.file,
-              { file: graph.runtime.file, sha256: graph.runtime.source.sha256 },
-            ];
-          }),
-        ).values(),
-      ],
+      ...this.proofFiles,
       ...(boundStage !== undefined && { boundStage }),
       requiresSdkNormalization: true,
     };
+  }
+  async prove(): Promise<NodeManifestTurbopackConsumerProof> {
+    return await withNodeManifestRegistrationPassAsync(this.registrations, async (pass) => {
+      this.pass = pass;
+      try {
+        return await this.proveWithinPass();
+      } finally {
+        this.pass = undefined;
+      }
+    });
   }
 }
 

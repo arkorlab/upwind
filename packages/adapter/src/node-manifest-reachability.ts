@@ -3,10 +3,13 @@ import { isBuiltin } from 'node:module';
 import { compareCodeUnits } from '@stayingupwind/core/util';
 
 import {
-  assertNodeManifestRegistrationRows,
-  nodeManifestRegistrationMembers,
-  type NodeManifestRegistrationViews,
-} from './node-manifest-registration-views.ts';
+  assertNodeManifestPassBinding,
+  assertNodeManifestPassRows,
+  nodeManifestPassMembers,
+  withNodeManifestRegistrationPass,
+  type NodeManifestRegistrationPass,
+} from './node-manifest-registration-pass.ts';
+import { type NodeManifestRegistrationViews } from './node-manifest-registration-views.ts';
 import type { NodeManifestRuntimeCallerProof } from './node-manifest-runtime-callers.ts';
 import type {
   NodeManifestTurbopackEntryGraph,
@@ -20,6 +23,7 @@ interface ReachabilityInput {
   readonly physicalIds: ReadonlySet<string>;
   readonly runtimeIds: ReadonlySet<string>;
   readonly registrations?: NodeManifestRegistrationViews | undefined;
+  readonly pass?: NodeManifestRegistrationPass | undefined;
 }
 
 type ReachabilityFallback =
@@ -86,8 +90,7 @@ function registrationMembers(
   known: ReadonlyMap<string, NodeManifestTurbopackGraphFactory>,
   input: ReachabilityInput,
 ): readonly string[] | undefined {
-  if (input.registrations !== undefined)
-    return nodeManifestRegistrationMembers(input.registrations, id);
+  if (input.pass !== undefined) return nodeManifestPassMembers(input.pass, id);
   return known.has(id) ? [id] : undefined;
 }
 
@@ -122,10 +125,17 @@ function followRegistration(
 export function inspectNodeManifestReachability(
   input: ReachabilityInput,
 ): NodeManifestReachabilityResult {
+  if (input.pass !== undefined) assertNodeManifestPassBinding(input.pass, input.registrations);
+  else if (input.registrations !== undefined)
+    return withNodeManifestRegistrationPass(input.registrations, (pass) =>
+      inspectWithinPass({ ...input, pass }),
+    );
+  return inspectWithinPass(input);
+}
+function inspectWithinPass(input: ReachabilityInput): NodeManifestReachabilityResult {
   const factories = new Map(input.factories.map((factory) => [factory.id, factory]));
   if (factories.size !== input.factories.length) return allFactories('duplicate-factory');
-  if (input.registrations !== undefined)
-    assertNodeManifestRegistrationRows(input.registrations, input.factories);
+  if (input.pass !== undefined) assertNodeManifestPassRows(input.pass, input.factories);
   const pending = [
     ...input.graphs.flatMap((graph) => [graph.exportedId, ...graph.evaluations]),
     ...input.callers.flatMap((caller) => caller.invoked),

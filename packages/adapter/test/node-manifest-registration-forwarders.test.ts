@@ -9,6 +9,12 @@ import {
   certifyNodeManifestRegistrationGroup,
   nodeManifestRegistrationGroup,
 } from '../src/node-manifest-registration-group.ts';
+import {
+  assertNodeManifestPassSingle,
+  nodeManifestPassMembers,
+  nodeManifestPassTouchesProtected,
+  withNodeManifestRegistrationPass,
+} from '../src/node-manifest-registration-pass.ts';
 import { createNodeManifestRegistrationScope } from '../src/node-manifest-registration-registry.ts';
 import {
   assertNodeManifestSingleRegistration,
@@ -312,6 +318,23 @@ describe('finite independently checked registration forwarders', () => {
         new Map([[leaf.id, 'route']]),
       ),
     ).toBe(true);
+
+    withNodeManifestRegistrationPass(views, (pass) => {
+      expect(nodeManifestPassMembers(pass, runtimeGraph.exportedId)).toHaveLength(2);
+      expect(nodeManifestPassTouchesProtected(pass, runtimeGraph.exportedId, new Map())).toBe(
+        false,
+      );
+      expect(
+        nodeManifestPassTouchesProtected(
+          pass,
+          runtimeGraph.exportedId,
+          new Map([[leaf.id, 'route']]),
+        ),
+      ).toBe(true);
+      expect(() => {
+        assertNodeManifestPassSingle(pass, runtimeGraph.exportedId);
+      }).toThrow('grouped protected identity unsupported');
+    });
   });
 
   it('still refuses a genuine group-to-singleton-to-group forwarding cycle', async () => {
@@ -325,5 +348,11 @@ describe('finite independently checked registration forwarders', () => {
     expect(() =>
       nodeManifestRegistrationTouchesProtected(views, runtimeGraph.exportedId, new Map()),
     ).toThrow('cyclic namespace forwarding');
+
+    expect(() => {
+      withNodeManifestRegistrationPass(views, (pass) => {
+        nodeManifestPassTouchesProtected(pass, runtimeGraph.exportedId, new Map());
+      });
+    }).toThrow('cyclic namespace forwarding');
   });
 });
