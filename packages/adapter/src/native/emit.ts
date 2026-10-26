@@ -39,6 +39,7 @@ import {
   NATIVE_EDGE_WEB_OBJECT,
   nativeEdgeWebPlugin,
 } from './edge-web.ts';
+import { imageEncoderFiles } from './encoder-files.ts';
 import { copyNativeFiles, nativeAssetSources, nativeTraceFiles } from './files.ts';
 import { nativeEdgeGraphPlugin } from './graph.ts';
 
@@ -204,6 +205,7 @@ function nativeModules(runtimeRoot: string, cacheHost: string): Plugin {
   };
   const replacements = new Map([
     [path.join(runtimeRoot, 'environment.ts'), path.join(runtimeRoot, 'native/environment.ts')],
+    [path.join(runtimeRoot, 'image-encoder.ts'), path.join(runtimeRoot, 'native/image-encoder.ts')],
     [
       path.join(runtimeRoot, 'image-source-fetch.ts'),
       path.join(runtimeRoot, 'native/image-source-fetch.ts'),
@@ -450,6 +452,7 @@ export async function emitNativeDeployment(
   const id = deploymentId();
   const generatedAt = new Date().toISOString();
   const bypassToken = bypassTokenOf(ctx.outputs);
+  const images = await imagesConfig(ctx);
   const base = {
     v: ONE_PASS_BUNDLE_VERSION as number,
     routerReferences: 'one-pass' as const,
@@ -458,7 +461,7 @@ export async function emitNativeDeployment(
     buildId: ctx.buildId,
     nextVersion: ctx.nextVersion,
     generatedAt,
-    config: bundleConfig(ctx.config, await imagesConfig(ctx)),
+    config: bundleConfig(ctx.config, images),
     routing: bundleRouting(ctx.routing, middleware),
     ...(bypassToken !== undefined && { bypassToken }),
     entrypoints,
@@ -472,7 +475,13 @@ export async function emitNativeDeployment(
     JSON.stringify({ ...runtime, prerenders: packPrerenders(prerenders) }),
   );
   const layout = await copyNativeFiles({
-    files: exported ? [] : await nativeSources(ctx),
+    files: exported
+      ? []
+      : [
+          ...(await nativeSources(ctx)),
+          // The encoder `/_next/image` resizes with, where the build has an optimizer to answer it.
+          ...(images === undefined ? [] : await imageEncoderFiles(ctx.projectDir)),
+        ],
     directories: [ctx.repoRoot, ctx.projectDir, ctx.distDir],
     outDir,
   });
