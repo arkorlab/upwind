@@ -17,7 +17,11 @@ import {
   type ManifestRouteSource,
   type NodeManifestNormalization,
 } from './node-manifest-graph.ts';
-import type { NodeRouteRewriteApproval } from './node-route-rewrite-approval.ts';
+import {
+  combineNodeRouteRewriteApprovals,
+  type NodeRouteRewriteApproval,
+  type NodeRouteRewriteApprovalBinding,
+} from './node-route-rewrite-approval.ts';
 
 const MAX_MANIFEST_BYTES = 33_554_432;
 const MAX_PACKAGE_BYTES = 65_536;
@@ -350,8 +354,7 @@ export async function proveNodeManifests(
   const codeSources = new Map<string, ManifestProofFile>();
   const compilerSources = new Map<string, ManifestProofFile>();
   const routeSources = new Map<string, ManifestRouteSource>();
-  const routeRewriteApprovals: NodeRouteRewriteApproval[] = [];
-  let normalization: NodeManifestNormalization | undefined;
+  const routeBindings: NodeRouteRewriteApprovalBinding[] = [];
   const pages = new Set<string>();
   for (const [id, evaluator] of evaluators) {
     const evaluatorBytes = await boundedSource(evaluator.file, MAX_MANIFEST_BYTES);
@@ -360,7 +363,6 @@ export async function proveNodeManifests(
     const root = path.resolve(path.dirname(evaluator.file), '../..');
     const metadata = await packageSource(root);
     const consumers = await proveManifestConsumerGraph(input, graph, { id, root });
-    normalization = consumers.normalization;
     for (const page of consumers.pages) pages.add(page);
     for (const source of consumers.files) {
       files.set(source.file, source);
@@ -370,7 +372,10 @@ export async function proveNodeManifests(
     for (const source of consumers.approvedCompilerSources)
       compilerSources.set(source.file, source);
     mergeRouteSources(routeSources, consumers.approvedRouteSources);
-    routeRewriteApprovals.push(consumers.routeRewriteApproval);
+    routeBindings.push({
+      approval: consumers.routeRewriteApproval,
+      normalization: consumers.normalization,
+    });
     files.set(evaluator.file, evaluator);
     codeSources.set(evaluator.file, evaluator);
     files.set(metadata.file, metadata);
@@ -380,12 +385,17 @@ export async function proveNodeManifests(
     const scripts = await proveScripts(input, pages);
     for (const source of scripts) files.set(source.file, source);
   }
+  const { approvals, normalization } = combineNodeRouteRewriteApprovals({
+    bindings: routeBindings,
+    graph,
+    context: input,
+  });
   return {
     files: [...files.values()],
     codeSources: [...codeSources.values()],
     approvedCompilerSources: [...compilerSources.values()],
     approvedRouteSources: Object.freeze([...routeSources.values()]),
-    routeRewriteApprovals: Object.freeze(routeRewriteApprovals),
+    routeRewriteApprovals: approvals,
     ...(normalization !== undefined && { normalization }),
     inspectionCode: (file, code) => (approved.has(file) ? inspectedEvaluator(code) : code),
   };
