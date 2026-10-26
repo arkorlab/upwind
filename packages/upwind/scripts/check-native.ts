@@ -151,6 +151,13 @@ async function post(site: URL, pathname: string): Promise<void> {
   );
 }
 
+/** The port the application reads as its own: the one the server bound, though it was asked for 0. */
+async function ownPort(site: URL): Promise<void> {
+  const response = await get(site, '/api/port');
+  const data = (await response.json()) as { readonly port: string | null };
+  assert.equal(data.port, site.port, 'PORT must name the port the server bound');
+}
+
 async function cached(site: URL): Promise<string> {
   const response = await get(site, '/api/cached');
   const data = (await response.json()) as { readonly value: string };
@@ -340,6 +347,7 @@ async function probe(out: string, source: string | undefined): Promise<void> {
     const first = await runServer([path.join(native, 'server.mjs')], deployed, env);
     children.add(first);
     await basicRoutes(first.site, actionMarker);
+    await ownPort(first.site);
     await rewrites(first.site);
     await ppr(first.site, () => {
       dynamic.released = true;
@@ -398,6 +406,7 @@ async function probe(out: string, source: string | undefined): Promise<void> {
     );
     children.add(cli);
     assert.ok((await (await get(cli.site, '/')).text()).includes(HOME_MARKER));
+    await ownPort(cli.site);
     cli.child.kill('SIGTERM');
     await stopped(cli);
   } finally {
