@@ -10,6 +10,7 @@ import type {
   NodeManifestTurbopackBootGraph,
   NodeManifestTurbopackGraphFactory,
 } from './node-manifest-turbopack-graph.ts';
+import type { NodeManifestTurbopackTemplateImport } from './node-manifest-turbopack-template-import.ts';
 import { assertNodeManifestTurbopackTemplateConsumer } from './node-manifest-turbopack-templates.ts';
 
 /** This branch is only a sealed Pages consumer; it leaves the physical graph untouched. */
@@ -31,7 +32,9 @@ export async function assertCoalescedPagesConsumer(input: {
   const profile = certifyNodeManifestCoalescedPages({ ...input, graph, route });
   await assertNodeManifestTurbopackTemplateConsumer({
     projection: input.factory.projection,
-    imports: input.imports.filter((entry) => !('builtin' in entry)),
+    imports: input.imports.filter(
+      (entry): entry is NodeManifestTurbopackTemplateImport => !('builtin' in entry),
+    ),
     helperOwner: input.helperOwner,
     route,
     coalesced: { profile, owner: input.owner },

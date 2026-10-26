@@ -266,9 +266,7 @@ export class NodeManifestPagesConjunctionWalk {
         scope,
       });
     }
-    const found = this.groups
-      .values()
-      .find((group) => group.handle.members.includes(id) || group.handle.registrationId === id);
+    const found = this.existingGroup(id);
     if (found !== undefined) {
       if (found.scope !== scope) return refuse('different active walk');
       return found;
@@ -374,10 +372,7 @@ export class NodeManifestPagesConjunctionWalk {
       const observed = incoming.get(id);
       if (observed !== undefined) for (const parent of observed) supplied.add(parent);
     }
-    if (
-      expected.size !== supplied.size ||
-      expected.values().some((parent) => !supplied.has(parent))
-    )
+    if (expected.size !== supplied.size || [...expected].some((parent) => !supplied.has(parent)))
       return refuse('incomplete original incoming edges');
     const parents = Object.freeze([...expected]);
     group.incoming = incoming;
@@ -392,10 +387,13 @@ export class NodeManifestPagesConjunctionWalk {
     group.parents = Object.freeze([...parents]);
   }
 
+  private existingGroup(id: string): Group | undefined {
+    for (const group of this.groups.values())
+      if (group.handle.registrationId === id || group.handle.members.includes(id)) return group;
+    return undefined;
+  }
   has(id: string): boolean {
-    return this.groups
-      .values()
-      .some((group) => group.handle.registrationId === id || group.handle.members.includes(id));
+    return this.existingGroup(id) !== undefined;
   }
 
   imported(

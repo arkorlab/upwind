@@ -96,18 +96,20 @@ function graphIdentity(input: NodeManifestCoalescedPagesInput): string {
   });
 }
 function privilegedImports(input: NodeManifestCoalescedPagesInput): ReadonlySet<string> {
-  const identities = input.imports.flatMap((entry) => {
-    if ('builtin' in entry) return [];
-    if ('conjunction' in entry) {
-      const identity = nodeManifestPagesConjunctionIdentity(entry, {
-        owner: input.helperOwner,
-        projection: input.factory.projection,
-      });
-      return [{ ...identity, kind: 'pages' as const }];
-    }
-    const identity = manifestConstructorImport(entry.file, entry.sha256);
-    return identity?.kind === 'pages' ? [identity] : [];
-  });
+  const identities = input.imports.flatMap<{ readonly root: string; readonly module: string }>(
+    (entry) => {
+      if ('builtin' in entry) return [];
+      if ('conjunction' in entry) {
+        const identity = nodeManifestPagesConjunctionIdentity(entry, {
+          owner: input.helperOwner,
+          projection: input.factory.projection,
+        });
+        return [{ ...identity, kind: 'pages' as const }];
+      }
+      const identity = manifestConstructorImport(entry.file, entry.sha256);
+      return identity?.kind === 'pages' ? [identity] : [];
+    },
+  );
   const primary = identities[0];
   if (primary === undefined || identities.length !== 1) return refuse('pinned constructor root');
   const result = new Set<string>();
