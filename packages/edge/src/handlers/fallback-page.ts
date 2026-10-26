@@ -1,3 +1,4 @@
+import { pageHeaders } from '@stayingupwind/core/bundle';
 import {
   deriveEntry,
   staticPageDataHeadersAllowSharing,
@@ -46,7 +47,6 @@ import { handlePassthrough, PATTERN_BUDGET } from './passthrough.ts';
 import { chosenRendering, closedStream } from './segment.ts';
 import { capturePairedPageData, refreshMissingPairedPage } from './static-page-capture.ts';
 import { servePairedPageData } from './static-page-data.ts';
-import { pageHeaders } from './static-page-record.ts';
 import { requestAllowsSharing, serveCurrentPage, type StaticPageInput } from './static-page.ts';
 
 const FALLBACK_PRIVACY = 3;

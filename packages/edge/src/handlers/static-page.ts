@@ -1,3 +1,4 @@
+import { htmlType, pageHeaders } from '@stayingupwind/core/bundle';
 import { staticPageHeadersAllowSharing, staticPageHasNoTransform } from '@stayingupwind/core/cache';
 import type { ConfiguredHeaders, StaticPageEntry } from '@stayingupwind/core/manifest';
 import {
@@ -21,7 +22,6 @@ import { type HostedGateInput, serveAfterMiddleware, type TimedContinue } from '
 import { offTheEdge } from './hosted-route.ts';
 import { observeMetric, observeServed } from './observer.ts';
 import { PATTERN_BUDGET, type PassthroughWait } from './passthrough.ts';
-import { htmlType, pageHeaders } from './static-page-record.ts';
 
 /** Only a sealed mapping and an independently proved current record authorize static HTML. */
 export interface StaticPageInput extends HostedGateInput {

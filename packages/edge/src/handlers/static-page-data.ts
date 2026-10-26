@@ -1,3 +1,4 @@
+import { pageDataArtifact } from '@stayingupwind/core/bundle';
 import {
   staticPageDataHeadersAllowSharing,
   staticPageHasNoTransform,
@@ -22,7 +23,6 @@ import type { EdgeContext } from '../strategies/context.ts';
 import { finishShellBody, loadShell, storageReadsOf } from '../strategies/shell-loader.ts';
 import { layStoredConfiguredOver } from './configured-headers.ts';
 import { observeMetric, observeServed } from './observer.ts';
-import { pageDataArtifact } from './static-page-record.ts';
 import type { StaticPageInput } from './static-page.ts';
 
 const HTTP_OK = 200;
