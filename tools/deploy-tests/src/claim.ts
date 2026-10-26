@@ -132,9 +132,17 @@ function writeClaim(entry: string, appDir: string): void {
   }
   try {
     writeFileSync(fd, value);
-  } finally {
-    closeSync(fd);
+  } catch (error) {
+    try {
+      closeSync(fd);
+    } catch {
+      // Preserve the write failure even if closing the descriptor also fails.
+    }
+    // This entry was exclusively created above. Close before unlinking for Windows as well.
+    letGo(entry);
+    throw error;
   }
+  closeSync(fd);
 }
 
 function digestOf(value: string): string {

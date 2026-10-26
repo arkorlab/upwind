@@ -1,11 +1,13 @@
 import {
   chmodSync,
+  closeSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -14,6 +16,16 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { claimProject, releaseProject } from '../src/claim.ts';
+
+vi.mock(import('node:fs'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    closeSync: vi.fn(actual.closeSync),
+    unlinkSync: vi.fn(actual.unlinkSync),
+    writeFileSync: vi.fn(actual.writeFileSync),
+  };
+});
 
 describe('claim filesystem security', () => {
   let root: string;
@@ -36,6 +48,32 @@ describe('claim filesystem security', () => {
   });
 
   describe('private deployment claims', () => {
+    it('closes and removes a new claim after a failed write so another fixture can recover', () => {
+      const app = path.join(root, 'app');
+      const other = path.join(root, 'other');
+      mkdirSync(app);
+      mkdirSync(other);
+      const failure = Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+      vi.mocked(writeFileSync).mockImplementationOnce(() => {
+        throw failure;
+      });
+      const attempt = vi.fn(() => {
+        claimProject(config, app);
+      });
+
+      expect(attempt).toThrow(failure);
+      expect(attempt.mock.results[0]?.value).toBe(failure);
+      expect(readdirSync(owners())).toStrictEqual([]);
+
+      const closed = vi.mocked(closeSync).mock.invocationCallOrder.at(-1) ?? 0;
+      const unlinked = vi.mocked(unlinkSync).mock.invocationCallOrder.at(-1) ?? 0;
+
+      expect(closed).toBeLessThan(unlinked);
+      expect(() => {
+        claimProject(config, other);
+      }).not.toThrow();
+    });
+
     it('retains idempotent claims, rejects a competing fixture, and releases or expires claims', () => {
       const app = path.join(root, 'app');
       const other = path.join(root, 'other');
