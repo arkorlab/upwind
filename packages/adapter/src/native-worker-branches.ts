@@ -119,6 +119,29 @@ function scalarArm(
   }
   return undefined;
 }
+function writeChildren(target: Node): readonly Node[] {
+  if (target.type === 'ObjectPattern')
+    return target.properties.map((property) =>
+      property.type === 'Property' ? property.value : property.argument,
+    );
+  if (target.type === 'ArrayPattern') return target.elements.filter((element) => element !== null);
+  if (target.type === 'AssignmentPattern') return [target.left];
+  if (target.type === 'RestElement') return [target.argument];
+  if (target.type === 'VariableDeclaration') return target.declarations.map((entry) => entry.id);
+  return [];
+}
+
+function writtenObjects(target: Node): readonly Node[] {
+  const result: Node[] = [];
+  const pending = [target];
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    if (node.type === 'Identifier') result.push(node);
+    else if (node.type === 'MemberExpression') result.push(node.object);
+    else for (const child of writeChildren(node)) pending.push(child);
+  }
+  return result;
+}
+
 export function workerSelectionWasMutated(
   tree: readonly Node[],
   origin: ScalarContext['origin'],
@@ -137,10 +160,7 @@ export function workerSelectionWasMutated(
     )
       target = node.argument;
     return (
-      target !== undefined &&
-      walk(target).some(
-        (value) => origin(value.type === 'MemberExpression' ? value.object : value) !== undefined,
-      )
+      target !== undefined && writtenObjects(target).some((value) => origin(value) !== undefined)
     );
   });
 }

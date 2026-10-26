@@ -417,7 +417,8 @@ function exportedCapability(node: Node, context: WorkerContext): boolean {
   if (node.type === 'ExportAllDeclaration') return WORKER_MODULES.has(stringOf(node.source) ?? '');
   if (node.type === 'ExportDefaultDeclaration')
     return handedOffCapability(node.declaration, context);
-  if (node.type === 'AssignmentExpression') return handedOffCapability(node.right, context);
+  if (node.type === 'AssignmentExpression' || node.type === 'AssignmentPattern')
+    return handedOffCapability(node.right, context);
   if (node.type !== 'ExportNamedDeclaration') return false;
   if (node.source !== null) {
     if (!WORKER_MODULES.has(stringOf(node.source) ?? '')) return false;

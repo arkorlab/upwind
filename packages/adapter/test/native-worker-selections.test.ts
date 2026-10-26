@@ -50,6 +50,12 @@ describe('finite scalar fields of selected Worker namespaces', () => {
     'const {isMainThread:flag}=chosen;exports.check=()=>flag;',
     'const {threadId:id,isMainThread:flag}=chosen;exports.check=()=>id;',
     'exports.check=()=>chosen.isMainThread();',
+    'for(rows[chosen.threadId] of [1]){}exports.check=()=>chosen.isMainThread;',
+    'for(rows[chosen.threadId] in values){}exports.check=()=>chosen.isMainThread;',
+    'for({[chosen.threadId]:rows.value} of values){}exports.check=()=>chosen.isMainThread;',
+    'for({value:rows.value=chosen.isMainThread} of values){}exports.check=()=>chosen.threadId;',
+    '({value:rows.value=chosen.isMainThread}=value);exports.check=()=>chosen.threadId;',
+    'function check(flag=chosen.isMainThread){return flag;}exports.check=check;',
   ])('keeps only proved primitive fields ordinary: %s', (use) => {
     const source = SCALAR_CHOICE + use;
 
@@ -73,6 +79,10 @@ describe('finite scalar fields of selected Worker namespaces', () => {
     'for(chosen.threadId in globalThis.values){}exports.check=()=>chosen.threadId;',
     'let {isMainThread:flag}=chosen;for(flag of globalThis.values){}exports.check=()=>flag;',
     'let {threadId:id}=chosen;for(id in globalThis.values){}exports.check=()=>id;',
+    'const {value:Thread=chosen.Worker}=input;exports.start=()=>new Thread("source",{eval:true});',
+    'function start(Thread=chosen.Worker){return new Thread("source",{eval:true});}exports.start=start;',
+    'for({value:rows.value=chosen.Worker} of values){}exports.check=()=>chosen.threadId;',
+    'for({value:rows.value={Worker:chosen.Worker}} of values){}exports.check=()=>chosen.threadId;',
   ])('keeps unknown selections, patterns and mutations strict and terminating: %s', (use) => {
     const source = SCALAR_CHOICE + use;
 
