@@ -10,6 +10,7 @@ import {
   renderAppPage,
   renderCaptured,
 } from './cache/capture.ts';
+import { servable } from './cache/servable.ts';
 import { foundDynamic } from './dynamic-misses.ts';
 import type { GenerationSource } from './generation-source.ts';
 import { invokeNodeHandler } from './node-bridge.ts';
@@ -130,6 +131,25 @@ export async function answerFromRender(
     headers: render.headers,
     cache: 'MISS',
   });
+}
+
+/**
+ * The visitor's answer from the render this isolate is publishing of the entry — the page every
+ * request after its publish is answered with, already made — and told so; `undefined` where there
+ * is none, where it is not one a visitor may be answered with, or where it has no output the
+ * request wants.
+ */
+export async function answerFromPublishing(
+  input: RoutedInput,
+  handler: NodeHandler,
+  render: CapturedRender | undefined,
+  want: Want,
+): Promise<Response | undefined> {
+  if (render === undefined || !servable(render.status, render.headers)) {
+    return undefined;
+  }
+  const answered = await answerFromRender(input, handler, render, want);
+  return answered === undefined ? undefined : withOutcome(answered, 'publishing');
 }
 
 /**
