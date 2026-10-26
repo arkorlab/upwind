@@ -250,15 +250,28 @@ describe('bare aliases retain each original Node load kind', () => {
     );
   });
 
-  it('retains CommonJS lookup through an external package imports mapping', async () => {
+  it('retains package lookup through a CommonJS external package imports mapping', async () => {
     const own = await fixture(`require('#dep');`, 'cjs');
     await writeFile(path.join(project, 'package.json'), '{"imports":{"#dep":"dep"}}');
-    const files = [own.importer, own.sibling];
+    const files = [own.importer, own.packageFile, own.metadata];
     const physical = await nodePhysicalFiles(input(own.importer, files), []);
 
     expect(physical.links).toContainEqual({
-      path: physical.nameOf(`${own.logical}.js`),
-      target: physical.nameOf(own.sibling),
+      path: physical.nameOf(own.logical),
+      target: physical.nameOf(own.packageRoot),
     });
+    expect(physical.links.some((link) => link.path === physical.nameOf(`${own.logical}.js`))).toBe(
+      false,
+    );
+  });
+
+  it('refuses an unowned mapped package directory even when its bare file sibling is closed', async () => {
+    const own = await fixture(`require('#dep');`, 'cjs');
+    await writeFile(path.join(project, 'package.json'), '{"imports":{"#dep":"dep"}}');
+    const files = [own.importer, own.sibling];
+
+    await expect(nodePhysicalFiles(input(own.importer, files), [])).rejects.toThrow(
+      'first existing Node package target is outside its closed trace',
+    );
   });
 });
