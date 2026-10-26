@@ -105,11 +105,17 @@ async function responseOutcome(
   }
 }
 
+/** The bridge's own modules, compiled, beside the bridge under test. */
+interface BridgeModules {
+  readonly tasks: string;
+  readonly invocation: string;
+  readonly reframe: string;
+}
+
 /** Run the actual bridge in workerd; the observer is an in-process service, never the network. */
 async function exercise(
   bridge: string,
-  tasks: string,
-  invocation: string,
+  { tasks, invocation, reframe }: BridgeModules,
   lane: Lane,
 ): Promise<void> {
   const release = Promise.withResolvers<undefined>();
@@ -126,6 +132,7 @@ async function exercise(
         { type: 'ESModule', path: '/lifetime/node-bridge.mjs', contents: bridge },
         { type: 'ESModule', path: '/lifetime/tasks.mjs', contents: tasks },
         { type: 'ESModule', path: '/lifetime/invocation.ts', contents: invocation },
+        { type: 'ESModule', path: '/lifetime/reframe.ts', contents: reframe },
       ],
       // The Function pins these in packages/adapter/src/function.ts.
       compatibilityDate: '2026-09-15',
@@ -232,6 +239,9 @@ const tasks = compiled(await readFile(path.join(ROOT, 'packages/runtime/src/task
 const invocation = compiled(
   await readFile(path.join(ROOT, 'packages/runtime/src/invocation.ts'), 'utf8'),
 );
+const reframe = compiled(
+  await readFile(path.join(ROOT, 'packages/runtime/src/reframe.ts'), 'utf8'),
+);
 const lanes: Lane[] = [];
 const failures: {
   readonly kind: Lane['kind'];
@@ -253,7 +263,7 @@ await mkdir(directory, { recursive: true });
 async function collect(bridge: string, lane: Lane): Promise<void> {
   lanes.push(lane);
   try {
-    await exercise(bridge, tasks, invocation, lane);
+    await exercise(bridge, { tasks, invocation, reframe }, lane);
   } catch (error) {
     failures.push({
       kind: lane.kind,

@@ -12,6 +12,7 @@ import {
 
 import { asksForCapture } from './capture-invoke.ts';
 import type { Resolved } from './outputs.ts';
+import { withHeadersChanged } from './reframe.ts';
 import type { Store } from './store.ts';
 
 /**
@@ -159,12 +160,8 @@ export function withoutPlacementHeaders(response: Response): Response {
   ) {
     return response;
   }
-  const headers = new Headers(response.headers);
-  headers.delete(FUNCTION_HEADER);
-  headers.delete(ROUTED_HEADER);
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
+  return withHeadersChanged(response, (headers) => {
+    headers.delete(FUNCTION_HEADER);
+    headers.delete(ROUTED_HEADER);
   });
 }

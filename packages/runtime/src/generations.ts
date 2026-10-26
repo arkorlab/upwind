@@ -1,6 +1,5 @@
 import { pagesDataPathnameUnder } from '@stayingupwind/core/bundle';
 import {
-  type DecodedGenerationPack,
   type InvalidationState,
   normalizeRoutePathname,
   type RouteEntryDescriptor,
@@ -19,6 +18,7 @@ import {
 
 import { afterBody } from './after-body.ts';
 import {
+  answerFromPublishing,
   answerFromRender,
   answerWith,
   documentWant,
@@ -32,15 +32,16 @@ import {
 import type { NodeHandler } from './app-module.ts';
 import { nowMs } from './cache/clock.ts';
 import { requestContext } from './cache/context.ts';
-import { type CurrentGeneration, currentGeneration } from './cache/current.ts';
+import { type CurrentGeneration, type CurrentLookup, currentGeneration } from './cache/current.ts';
 import { generationClassShell } from './cache/generation-tags.ts';
 import type { AttemptReason } from './cache/host.ts';
+import { answeringAtOnce } from './cache/publishing.ts';
 import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
-import type { CacheRuntime } from './cache/runtime.ts';
 import { servable } from './cache/servable.ts';
 import { foundDynamic, rememberingDynamic } from './dynamic-misses.ts';
 import { nodeHandlerOf } from './entries.ts';
+import { outputOf } from './generation-outputs.ts';
 import type { GenerationSource } from './generation-source.ts';
 import { observationOf } from './incoming.ts';
 import {
@@ -57,7 +58,7 @@ import {
   upgradePathname,
   withPartialFallbackUpgrade,
 } from './partial-fallback.ts';
-import { PAGES_DATA, ROUTE_BODY, SEGMENT_PREFIX } from './representations.ts';
+import { SEGMENT_PREFIX } from './representations.ts';
 import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
 import { entrypointKindOf, findShell, isClassShell, type Store, variesOnQuery } from './store.ts';
@@ -292,20 +293,11 @@ async function answerFromJob(
   }
   // The render this isolate is publishing of the entry, or has just published: the page the requests
   // after its publish are answered with, already made.
-  if (
-    (outcome.kind === 'busy' || outcome.kind === 'superseded') &&
-    outcome.publishing !== undefined &&
-    servable(outcome.publishing.status, outcome.publishing.headers)
-  ) {
-    const answered = await answerFromRender(
-      job.input,
-      job.target.handler,
-      outcome.publishing,
-      want,
-    );
-    if (answered !== undefined) {
-      return withOutcome(answered, 'publishing');
-    }
+  const publishing =
+    outcome.kind === 'busy' || outcome.kind === 'superseded' ? outcome.publishing : undefined;
+  const ours = await answerFromPublishing(job.input, job.target.handler, publishing, want);
+  if (ours !== undefined) {
+    return ours;
   }
   // A later generation the host holds, whose record its answer carried and this isolate now holds
   // (`RegenerationOutcome.current`): the usual path answers with it, as with any record read.
@@ -363,61 +355,6 @@ export async function handleForeground(
 
 export function outcomeOn(response: Response, outcome: string): Response {
   return withOutcome(response, outcome);
-}
-
-async function readArtifact(
-  runtime: CacheRuntime,
-  artifactId: string,
-): Promise<Uint8Array | undefined> {
-  const remembered = runtime.artifactMemo.get(artifactId);
-  if (remembered !== undefined) {
-    return remembered;
-  }
-  const bytes = await runtime.host.readArtifact(artifactId);
-  if (bytes !== undefined) {
-    runtime.artifactMemo.set(artifactId, bytes);
-  }
-  return bytes;
-}
-
-/**
- * The bytes of one output of a generation: the record carries the primary one; a page's data is
- * the build's own for the build's generation, and an artifact of the host's for the rest.
- * `undefined` when the record does not lead to it.
- */
-async function outputOf(
-  runtime: CacheRuntime,
-  store: Store,
-  pack: DecodedGenerationPack,
-  source: GenerationSource,
-): Promise<Uint8Array | undefined> {
-  if (source.representation === 'html' || source.representation === ROUTE_BODY) {
-    return pack.html;
-  }
-  if (pack.header.source === 'build') {
-    // The build's generation names no artifacts of the host's: what the build shipped beside
-    // the document is read from the bundle, and what it shipped nothing for is not there at all.
-    if (source.representation !== PAGES_DATA) {
-      return undefined;
-    }
-    const twin =
-      source.dataPathname === undefined
-        ? undefined
-        : store.prerendersByPathname.get(source.dataPathname);
-    return twin?.body === undefined ? undefined : store.readBlob(twin.body.sha256);
-  }
-  const ref = pack.header.artifacts.find(
-    (item) => item.representationKey === source.representation,
-  );
-  try {
-    return ref === undefined ? undefined : await readArtifact(runtime, ref.artifactId);
-  } catch (error) {
-    runtime.log('generation output not read', {
-      pathname: source.pathname,
-      detail: error instanceof Error ? error.message : String(error),
-    });
-    return undefined;
-  }
 }
 
 /**
@@ -565,8 +502,8 @@ async function answerMiss(
  * served (stale, regenerated behind); expired, it is regenerated first, or rendered for a prefetch
  * and regenerated behind; missing, rendered now where the build made none. `undefined` leaves the
  * build's own output to answer: no generation where the build has one, a host out of reach (an
- * answer is still given, and the record asked for again on the next hold), a Pages Router class
- * shell, or an entry dynamic here.
+ * answer is still given, and the record asked for again on the next hold) where this isolate is
+ * publishing no regeneration of the entry, a Pages Router class shell, or an entry dynamic here.
  */
 export async function serveFromGeneration(
   input: RoutedInput,
@@ -591,10 +528,7 @@ export async function serveFromGeneration(
   // left is a render of the request as it came — the build's path, for an entry with no record.
   const once = !sameEntry(input.regenerated, descriptor);
   if (lookup.kind === 'none') return answerMiss(job, source, want, once);
-  if (once && lookup.kind === 'unavailable' && partialUpgrade(job)) {
-    return answerMiss({ ...job, pending: lookup.pending }, source, want, once);
-  }
-  if (lookup.kind !== 'generation') return renderCompletedRscForVisitor(job, source, once);
+  if (lookup.kind === 'unavailable') return answerUnavailable(job, lookup, { source, want, once });
   const { pack, validity } = lookup.current;
   if (validity === 'expired' && !once) {
     return renderRequest(job, source.url);
@@ -612,7 +546,7 @@ export async function serveFromGeneration(
     }
     return (await answerFromJob(job, outcome, want)) ?? renderRequest(job, source.url);
   }
-  const answer = await answerFromGeneration(job, lookup.current, source, want);
+  const answer = await answerFromStanding(job, lookup.current, source, want);
   // A stale one is regenerated once the answer has gone out in full, as it is behind a resume the
   // edge dispatched (`withBackgroundRegeneration`). Begun at once, the regeneration rendered on
   // this isolate beside the visitor's own render — their resume, where the page has one — and the
@@ -633,6 +567,67 @@ export async function serveFromGeneration(
     behind();
   }
   return answer;
+}
+
+/**
+ * What a request asks of an entry: where it reads it, what it wants of it, and whether it may
+ * regenerate it.
+ */
+interface Asked {
+  readonly source: GenerationSource;
+  readonly want: Want;
+  readonly once: boolean;
+}
+
+/**
+ * A visitor whose record did not come in time: a partial fallback's member, as one whose entry has
+ * no record is (`answerMiss`); otherwise from the render this isolate is publishing of the entry,
+ * where it may answer at once (`answeringAtOnce`) — the page every request after the publish is
+ * answered with — and only failing that from the build's own output, or a completed class render
+ * for an RSC navigation (`renderCompletedRscForVisitor`). A regeneration lets go of the record it
+ * replaces as its render is made, and the isolate's next request reads the host for it: answered
+ * with the build's page where that read was late, a visitor was sent a page older than the one the
+ * request before them was.
+ */
+async function answerUnavailable(
+  job: Job,
+  lookup: Extract<CurrentLookup, { readonly kind: 'unavailable' }>,
+  { source, want, once }: Asked,
+): Promise<Response | undefined> {
+  if (once && partialUpgrade(job)) {
+    return answerMiss({ ...job, pending: lookup.pending }, source, want, once);
+  }
+  // Asked as a request that found no record would ask: none came in time.
+  const publishing = answeringAtOnce(job.runtime, 'miss', lookup.entryId)?.render;
+  return (
+    (await answerFromPublishing(job.input, job.target.handler, publishing, want)) ??
+    renderCompletedRscForVisitor(job, source, once)
+  );
+}
+
+/**
+ * The visitor's answer from the entry's generation, fresh or stale (`answerFromGeneration`) — or,
+ * for a stale one this isolate is regenerating already, from the render that regeneration is
+ * publishing, once it is made and where it may answer at once (`answeringAtOnce`): the page every
+ * request after the publish is answered with, as Next.js answers the requests after a revalidation
+ * from its render as soon as that is set. The uploads and the commit behind the render are round
+ * trips to the host, and until they had settled each request of the isolate was answered with the
+ * generation the render replaces, for as long as those took.
+ */
+async function answerFromStanding(
+  job: Job,
+  current: CurrentGeneration,
+  source: GenerationSource,
+  want: Want,
+): Promise<Response | undefined> {
+  const publishing =
+    current.validity === 'stale'
+      ? answeringAtOnce(job.runtime, 'stale', current.entryId)?.render
+      : undefined;
+  return (
+    (await answerFromPublishing(job.input, job.target.handler, publishing, want)) ??
+    answerFromGeneration(job, current, source, want)
+  );
 }
 
 /**
