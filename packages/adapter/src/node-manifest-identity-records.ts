@@ -5,7 +5,7 @@ import { AuditError } from './dependencies.ts';
 const MAX_ROOTS = 32;
 const MAX_ENTRIES = 1_000_000;
 /** Capture standard intrinsics without binding them to a particular collection. */
-function intrinsic<T extends (this: unknown, ...args: never[]) => unknown>(
+function intrinsic<T extends () => unknown>(
   object: unknown,
   key: string,
   field: 'value' | 'get' = 'value',
