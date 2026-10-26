@@ -66,9 +66,14 @@ jobs:
       # (`tools/vocabulary`): each mention is annotated on the line that makes it.
       - run: pnpm check:vocabulary --format github
 
-  lint:
+  lint-shards:
+    name: Lint (${{ matrix.group }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [compiler-runtime, cache-local, remaining]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,9 +86,63 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Type-aware linting reads the SDK and auth declarations emitted by the build.
       - run: pnpm build
-      - run: pnpm lint
+      # These two prefixes and the complementary full-repository scan cover every lint target.
+      # Keep the same typed config in each process, including imported types from other packages.
+      - name: Lint compiler and runtime
+        if: ${{ matrix.group == 'compiler-runtime' }}
+        run: pnpm exec eslint packages/adapter packages/runtime --max-warnings 0
         env:
           NODE_OPTIONS: --max-old-space-size=8192
+      - name: Lint cache and local validation
+        if: ${{ matrix.group == 'cache-local' }}
+        run: pnpm exec eslint packages/cache packages/local --max-warnings 0
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+      - name: Lint all remaining files
+        if: ${{ matrix.group == 'remaining' }}
+        run: >-
+          pnpm lint
+          --ignore-pattern 'packages/adapter/**'
+          --ignore-pattern 'packages/runtime/**'
+          --ignore-pattern 'packages/cache/**'
+          --ignore-pattern 'packages/local/**'
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+  lint:
+    if: ${{ always() }}
+    needs: [lint-shards]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every lint partition
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$RESULTS"
+
+  deploy-hook-contracts:
+    name: Deploy hook contracts (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [host, environment, lifecycle-workspace, install-manager]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Each runner owns its fixtures, fake hosts and deployment-claim directory.
+      - run: pnpm check:deploy-tests --group "$CONTRACT_GROUP"
+        env:
+          CONTRACT_GROUP: ${{ matrix.group }}
 
   check-contracts:
     name: Local runtime contracts
@@ -100,8 +159,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      # The real deploy hooks against a fake host, without credentials or a remote deployment.
-      - run: pnpm check:deploy-tests
       # Native namespaces, SQLite storage, workflows and capability isolation, all local.
       - run: pnpm check:durable-objects
       - run: pnpm check:cloudflare-workflows
@@ -110,7 +167,7 @@ jobs:
   # Preserve the existing check name and require success from every independent gate.
   check:
     if: ${{ always() }}
-    needs: [check-static, lint, check-contracts]
+    needs: [check-static, lint, check-contracts, deploy-hook-contracts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -121,13 +178,13 @@ jobs:
         run: jq -e 'all(.[]; .result == "success")' <<< "$RESULTS"
 
   unit-tests:
-    name: Unit tests (${{ matrix.shard }}/4)
+    name: Unit tests (${{ matrix.shard }}/8)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -140,7 +197,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Keep each project's environment and isolation; Vitest shards whole test files.
       - run: pnpm build
-      - run: pnpm test --shard="$SHARD_INDEX/4"
+      - run: pnpm test --shard="$SHARD_INDEX/8"
         env:
           SHARD_INDEX: ${{ matrix.shard }}
 
@@ -354,7 +411,7 @@ jobs:
   # prerendered. The fixture is not a workspace package (as `tools/next-matrix` explains), so npm
   # installs it apart, with the Next.js it pins.
   local-check-shards:
-    name: local stack shard (${{ matrix.shard }}/4)
+    name: local stack shard (${{ matrix.shard }}/8)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -362,7 +419,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
@@ -385,7 +442,7 @@ jobs:
         if: ${{ matrix.shard == 1 }}
         working-directory: fixtures/next-local
       # Each shard keeps the entire deployment and every check within its assigned entries.
-      - run: pnpm local:check --dir fixtures/next-local --shard "$SHARD_INDEX/4"
+      - run: pnpm local:check --dir fixtures/next-local --shard "$SHARD_INDEX/8"
         env:
           SHARD_INDEX: ${{ matrix.shard }}
 

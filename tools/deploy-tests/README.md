@@ -179,6 +179,11 @@ application, a fake API, and the real scripts. It is what CI runs, and what keep
 (standard output, which variables a fixture's scripts can see, which file the build id comes from) and
 the order of the calls from breaking quietly between runs against a real host.
 
+`pnpm check:deploy-tests --group <host|environment|lifecycle-workspace|install-manager>` runs one
+independent group. CI runs these groups on separate runners, each with its own applications, fake
+hosts, deployment claims and harness process. Without `--group`, every scenario runs in its original
+order. Poll intervals, settle checks and timeouts are the same for grouped and complete runs.
+
 `pnpm check:deploy-tests-local [--target cloudflare|node]` runs the same hooks for real on this machine's
 targets, with no harness: `fixtures/next-minimal` copied, installed and built by the deploy hook, asked
 over HTTP, its markers read back through the logs hook, and its server gone after the cleanup hook,
