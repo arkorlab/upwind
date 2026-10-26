@@ -269,10 +269,39 @@ export function offeredFromGeneration(
   return answer;
 }
 
+/** How long the first data of a member waits for its generation (the edge's own read window). */
+const FIRST_RECORD_MS = 10_000;
+/** How often the cache is asked for it meanwhile. */
+const FIRST_RECORD_POLL_MS = 100;
+
+/** The entry's generation once there is one, before the deadline or the visitor's going. */
+async function firstRecord(
+  input: RoutedInput,
+  first: FirstPublish,
+  until: number,
+): Promise<CurrentGeneration | undefined> {
+  await first.published;
+  for (;;) {
+    const lookup = await currentGeneration(
+      first.runtime,
+      first.descriptor,
+      nowMs(),
+      input.waitUntil,
+    );
+    if (lookup.kind === 'generation') return lookup.current;
+    if (performance.now() >= until || input.request.signal.aborted) return undefined;
+    await new Promise((resolve) => {
+      setTimeout(resolve, FIRST_RECORD_POLL_MS);
+    });
+  }
+}
+
 /**
- * The data of a member a request is the first to render: the edge has the member rendered and
- * shares its props once their generation is committed and agrees (`capturePairedPageData`,
- * `dataPage`), so the answer here waits for the same commit before it is offered.
+ * The data of a member whose first generation is in the making. The edge has the member rendered,
+ * then reads the record for a while, and shares the props from the generation once it is committed
+ * and agrees (`capturePairedPageData`, `dataPage`); otherwise the visitor keeps the answer made for
+ * them. So does this: once the generation is there, its answer — offered by the rules above — goes
+ * in place of the render's.
  */
 export async function offeredOncePublished(
   input: RoutedInput,
@@ -289,11 +318,14 @@ export async function offeredOncePublished(
   ) {
     return answer;
   }
-  await first.published;
-  // Whatever the publish came to, what is shared is what the cache now holds of the entry, judged
-  // as any generation is: a refused or failed publish leaves none, and the answer the visitor's.
-  const lookup = await currentGeneration(first.runtime, first.descriptor, nowMs(), input.waitUntil);
-  return lookup.kind === 'generation' ? pageOffered(input, lookup.current, true, answer) : answer;
+  const current = await firstRecord(input, first, performance.now() + FIRST_RECORD_MS);
+  const recorded = current === undefined ? undefined : await first.fromRecord(current);
+  if (recorded?.headers.has(OFFER) !== true) {
+    await recorded?.body?.cancel();
+    return answer;
+  }
+  await answer.body?.cancel();
+  return recorded;
 }
 
 export function offeredFromFallback(

@@ -30,15 +30,17 @@ export function offeredFromGeneration(
   return answer;
 }
 
-/** A render the runtime is publishing as an entry's first generation, and how it reached it. */
+/** An entry's first generation in the making, and how the runtime answers from it once made. */
 export interface FirstPublish {
   readonly runtime: CacheRuntime;
   readonly descriptor: RouteEntryDescriptor;
-  /** Its publish: settled once the generation is committed, or is not to be. Never rejects. */
-  readonly published: Promise<unknown>;
+  /** Its publish, where this isolate makes it: settled once committed, or not to be. Never rejects. */
+  readonly published: Promise<unknown> | undefined;
+  /** The answer a generation gives, as from any record read (`answerFromGeneration`). */
+  readonly fromRecord: (current: CurrentGeneration) => Promise<Response | undefined>;
 }
 
-/** The answer the runtime makes from a render it is publishing as the entry's first generation. */
+/** The answer the runtime makes while an entry's first generation is in the making. */
 export function offeredOncePublished(
   _input: RoutedInput,
   _first: FirstPublish,
