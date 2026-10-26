@@ -9,7 +9,9 @@ import type { Store } from './store.ts';
 
 /**
  * Where a host that serves the build itself decides what of the runtime's answers goes out as
- * everyone's: a prerendered page, its data, a route handler's body, a page's loading fallback.
+ * everyone's: a prerendered page, its data, a route handler's body, a page's loading fallback — and,
+ * of everything else the application answered, how much of what it said of its keeping stands (the
+ * edge's passthrough: `unsharedUnlessPublic`).
  *
  * On Workers that host is the edge, which decides it before the request reaches a Function
  * (`static-page.ts`, `route-body.ts`, `fallback-page.ts` in the edge), and the Function answers every
@@ -59,6 +61,25 @@ export function offeredFromFallback(
 ): Response {
   return answer;
 }
+
+/**
+ * An answer of a kind the host decides by a rule of its own — a shipped file, an image — which the
+ * rule for whatever else the runtime answers (`delivered`) leaves as it is. On the edge these are
+ * answered before a request reaches the Function, by handlers of their own (`static-file.ts`,
+ * `image.ts`), and nothing is said of them here.
+ */
+export function decidedApart(answer: Response): Response {
+  return answer;
+}
+
+/**
+ * The request's headers as a middleware handed them on (`request` being the client's), for the
+ * host to judge whether what was asked carried anything of a visitor's in either. On Workers the
+ * edge judges it from the middleware it ran itself (`passthrough.ts`, `anonymous`).
+ */
+export const handedOn: (request: Request, headers: Headers) => void = () => {
+  // Nothing to keep: the edge decides.
+};
 
 /** The answer to the client's request, once everything of it is said. */
 export function delivered(_request: Request, answer: Response): Response {

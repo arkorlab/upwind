@@ -27,11 +27,15 @@ import {
 import {
   hasRouteBodyControlHeader,
   NO_STORE_CACHE_CONTROL,
+  NULL_BODY_STATUSES,
   PLATFORM_HEADER_PREFIX,
   policyRefusesSharing,
   removeSharedCacheOverrides,
   REVALIDATE_CACHE_CONTROL,
+  SHARED_CACHE_CONTROL_HEADERS,
+  unsharedUnlessPublic,
 } from '@stayingupwind/core/request';
+import { releaseStream } from '@stayingupwind/core/util';
 
 import { nowMs } from '../cache/clock.ts';
 import { type CurrentGeneration, currentGeneration } from '../cache/current.ts';
@@ -66,6 +70,15 @@ import { getStore, type Store } from '../store.ts';
  * decide (`delivered`): shared, or the visitor's `private, no-store` once more. The platform's
  * headers never reach a client (`writeNativeResponse`).
  *
+ * Whatever else the runtime answered goes out as the edge passes a Function's answer on
+ * (`passthrough.ts`, and its own answers for a middleware, `middleware.ts`): what the application
+ * said of its keeping stands for a shared cache only where it said `public` of itself, to a request
+ * that carried nothing of a visitor's — as the client sent it, and as a middleware handed it on —
+ * and the application set no cookie; otherwise `s-maxage` goes and the answer is the visitor's, and
+ * one that said nothing is kept by no one (`unsharedUnlessPublic`). Not a shipped file, nor an image,
+ * which the edge answers by handlers of their own: those are decided apart, before routing lays its
+ * headers over them (`decidedApart`), and go out as their own rules left them.
+ *
  * What the edge decides from its own machinery has its counterpart here: the generation the native
  * cache holds in place of one read from the edge's store, the visitor's own cookie and
  * authorization in place of the host's credentials, which there are none of. A response compressed
@@ -74,6 +87,8 @@ import { getStore, type Store } from '../store.ts';
 
 /** What the runtime offered of an answer: its kind, and what of it only the record said. */
 const OFFER = `${PLATFORM_HEADER_PREFIX}offer`;
+/** An answer of a kind decided by a rule of its own (`decidedApart`): a shipped file, an image. */
+const APART = `${PLATFORM_HEADER_PREFIX}apart`;
 /** The `Cache-Control` the offer left on the answer, for routing's own to be told from it. */
 const OFFERED_CACHE_CONTROL = `${PLATFORM_HEADER_PREFIX}offer-cache-control`;
 /** A page's data, as a request wants it (`PAGES_DATA`, read here without the module it is in). */
@@ -116,6 +131,9 @@ interface Admitted {
 }
 
 const admissions = new WeakMap<Store['manifest'], Admitted>();
+
+/** Each client's request as the middleware that ran for it handed it on (`handedOn`). */
+const handedRequests = new WeakMap<Request, Headers>();
 
 /**
  * The outputs the build lets be shared, as a deployment's manifest names them (`staticPagesOf`,
@@ -411,9 +429,72 @@ function shared(headers: Headers, made: Offer, configured: ConfiguredHeaders): b
   return true;
 }
 
+/** `answer` again under `headers`: its status and its body, but none for a status that has none. */
+function reframed(answer: Response, headers: Headers): Response {
+  const bodyless = NULL_BODY_STATUSES.has(answer.status);
+  if (bodyless) releaseStream(answer.body, 'a status with no body');
+  return new Response(bodyless ? null : answer.body, {
+    status: answer.status,
+    statusText: answer.statusText,
+    headers,
+  });
+}
+
+export function decidedApart(answer: Response): Response {
+  const headers = new Headers(answer.headers);
+  headers.set(APART, '1');
+  return reframed(answer, headers);
+}
+
+export function handedOn(request: Request, headers: Headers): void {
+  handedRequests.set(request, headers);
+}
+
+/**
+ * Whether headers a request carried hold nothing of a visitor's an answer could have been told by,
+ * as the edge judges them (`anonymousRequest`): no cookie and no `Authorization` — all the
+ * visitor's own here, a host having no credentials of its own to take off — and none of Next.js's
+ * control or router-protocol headers (`hasRouteBodyControlHeader`), which a navigation's payload is
+ * told apart from its document by. A validation, the edge's other case, is the edge's own.
+ */
+function carriesNothingOfAVisitor(headers: Headers): boolean {
+  return (
+    !headers.has('cookie') && !headers.has('authorization') && !hasRouteBodyControlHeader(headers)
+  );
+}
+
+/** As the client sent the request, and as the middleware that ran for it handed it on. */
+function anonymous(request: Request): boolean {
+  const handed = handedRequests.get(request);
+  return (
+    carriesNothingOfAVisitor(request.headers) &&
+    (handed === undefined || carriesNothingOfAVisitor(handed))
+  );
+}
+
+/**
+ * An answer as the edge passes on a Function's (`passthrough.ts`, `unsharedUnlessPublic`): the
+ * application's word that shared caches may keep it standing where it said `public`, to an
+ * anonymous request and with no cookie set; `s-maxage` gone and the answer the visitor's otherwise;
+ * no word, kept by no one. The same answer where none of that changes it.
+ */
+function passedOn(request: Request, answer: Response): Response {
+  const headers = new Headers(answer.headers);
+  unsharedUnlessPublic(headers, anonymous(request));
+  const unchanged =
+    headers.get(CACHE_CONTROL) === answer.headers.get(CACHE_CONTROL) &&
+    SHARED_CACHE_CONTROL_HEADERS.every((name) => !answer.headers.has(name));
+  return unchanged ? answer : reframed(answer, headers);
+}
+
 export function delivered(request: Request, answer: Response): Response {
+  if (answer.headers.has(APART)) {
+    const headers = new Headers(answer.headers);
+    headers.delete(APART);
+    return reframed(answer, headers);
+  }
   const value = answer.headers.get(OFFER);
-  if (value === null) return answer;
+  if (value === null) return passedOn(request, answer);
   const left = answer.headers.get(OFFERED_CACHE_CONTROL) ?? '';
   const out = new Response(answer.body, answer);
   const { headers } = out;
@@ -438,8 +519,9 @@ export function delivered(request: Request, answer: Response): Response {
     }
   }
   // The visitor's, as the Function answers it on the edge — but for a `Cache-Control` routing laid
-  // over the offer, which is what it would have laid over the visitor's too.
+  // over the offer, which is what it would have laid over the visitor's too — and passed on as the
+  // edge passes on the Function's answer.
   if ((headers.get(CACHE_CONTROL) ?? '') === left)
     headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
-  return out;
+  return passedOn(request, out);
 }
