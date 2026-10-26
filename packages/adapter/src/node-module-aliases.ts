@@ -1,10 +1,11 @@
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { createRequire, isBuiltin } from 'node:module';
 import path from 'node:path';
 
 import { beneath } from './build-paths.ts';
 import { AuditError } from './dependencies.ts';
 import { NodeAliasCompatibility } from './node-alias-compatibility.ts';
+import { nodePackageCandidate, nodePackageHasExports } from './node-package-lookup.ts';
 import { nodePackageScope } from './node-package-scope.ts';
 import {
   nodePackageMain,
@@ -135,16 +136,11 @@ async function recordPackageAlias(alias: string, context: PackageAliasContext): 
   }
 }
 
-async function packageHasExports(directory: string): Promise<boolean> {
+async function assertPackageLocation(alias: string, context: PackageAliasContext): Promise<void> {
   try {
-    const bytes = await readFile(path.join(directory, PACKAGE_MANIFEST));
-    const metadata: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    return (
-      packageRecord(metadata) && metadata['exports'] !== undefined && metadata['exports'] !== null
-    );
+    context.layout.nameOf(await realpath(alias));
   } catch (error) {
     if (!absentRelativePath(error)) throw error;
-    return false;
   }
 }
 
@@ -156,7 +152,7 @@ async function bareFileAlias(
   context: PackageAliasContext,
 ): Promise<boolean> {
   // A package root file cannot satisfy a subpath, and exports may be import-only.
-  if (specifier !== pkg || (await packageHasExports(alias))) return false;
+  if (specifier !== pkg || (await nodePackageHasExports(alias))) return false;
   for (const suffix of COMMONJS_SUFFIXES) {
     const logical = `${alias}${suffix}`;
     try {
@@ -167,15 +163,6 @@ async function bareFileAlias(
     }
   }
   return false;
-}
-
-async function packageDirectory(alias: string): Promise<boolean> {
-  try {
-    return (await stat(alias)).isDirectory();
-  } catch (error) {
-    if (!absentRelativePath(error)) throw error;
-    return false;
-  }
 }
 
 async function packageAliases(
@@ -205,7 +192,9 @@ async function packageAliases(
     const alias = path.join(search, pkg);
     if (context.kind === 'require' && (await bareFileAlias(alias, specifier, pkg, context)))
       return true;
-    if (context.kind === 'import' && !(await packageDirectory(alias))) continue;
+    if (context.kind === 'require') await assertPackageLocation(alias, context);
+    if (!(await nodePackageCandidate(file, alias, { specifier, kind: context.kind }, pkg)))
+      continue;
     if (!(await recordPackageAlias(alias, context))) continue;
     await packageSubpathAliases(await realpath(alias), specifier, pkg, context);
     return true;
