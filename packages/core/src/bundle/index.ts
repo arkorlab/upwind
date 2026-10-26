@@ -161,3 +161,10 @@ export {
   staticPagesMembersOf,
   type StaticFallbackPage,
 } from './fallback-pages.ts';
+export {
+  bodyHeaders,
+  bodyTypeAllowed,
+  narrowCacheControl,
+  noTransform,
+} from './route-body-record.ts';
+export { htmlType, pageDataArtifact, pageHeaders } from './static-page-record.ts';

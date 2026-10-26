@@ -1,3 +1,4 @@
+import { pageDataArtifact } from '@stayingupwind/core/bundle';
 import {
   decodeGenerationPack,
   kvGenerationKey,
@@ -22,7 +23,6 @@ import { adoptDecoded, type Read } from '../cache/generation-loader.ts';
 import { regenerationHeaders } from '../cache/regenerate.ts';
 import type { EdgeMemory } from '../memory/caches.ts';
 import { handlePassthrough } from './passthrough.ts';
-import { pageDataArtifact } from './static-page-record.ts';
 import type { StaticPageInput } from './static-page.ts';
 
 const KIB = 1024;
