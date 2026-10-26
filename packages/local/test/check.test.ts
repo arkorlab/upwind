@@ -9124,6 +9124,9 @@ describe('what the check makes of the middleware', () => {
       });
     });
 
+    // Five checks of a stack in a row, each asking for every route and part it can reach: about
+    // three seconds here, and past the default five on a busy runner, where its probe then lands
+    // in the next test's state.
     it('asks the middleware on its own about a request its matchers cover, and fails where it fails', async () => {
       answers.set('/a.txt', {
         // Behind the middleware, which makes it one visitor's.
@@ -9179,7 +9182,7 @@ describe('what the check makes of the middleware', () => {
       expect(erred.failures).toStrictEqual([
         { path: 'middleware', reason: 'asked about /api as the edge asks it, answered 500' },
       ]);
-    });
+    }, 20_000);
 
     it.each([
       {
