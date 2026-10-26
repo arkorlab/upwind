@@ -14,12 +14,9 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import { inspectExportBindings } from './node-manifest-export-probe.ts';
 import type { NodeManifestTurbopackGraphFactory } from './node-manifest-turbopack-graph.ts';
-import {
-  defaultExportTarget,
-  exportBindings,
-  singleDirectExportValue,
-} from './node-manifest-turbopack-values.ts';
+import { defaultExportTarget, singleDirectExportValue } from './node-manifest-turbopack-values.ts';
 import { projectNodeManifestTurbopackFactory } from './node-manifest-turbopack.ts';
 
 // next@16.4.3 helpers.js SHA256 b9dd74a9ba684af8c21a7204d79c63f08683e22cf5e49d4e133ab5e2d9149b03.
@@ -213,7 +210,8 @@ function exportedFunction(input: NodeManifestHoistInput, original: Original): Se
   if (inline !== undefined) return { fn: inline, selector: inline, inline: true };
   const direct = singleDirectExportValue(args[0], input.exportName);
   if (direct !== undefined && !identifier(direct)) return refuse('actual export member');
-  const bindings = exportBindings(args[0]);
+  const bindings = inspectExportBindings(args[0]);
+  if (bindings === undefined) return refuse('unsupported export table');
   const only = bindings[0];
   if (bindings.length !== 1 || only?.name !== input.exportName || !identifier(only.value))
     return refuse('actual export member');

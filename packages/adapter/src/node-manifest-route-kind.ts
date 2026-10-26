@@ -9,11 +9,11 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import { inspectExportBindings } from './node-manifest-export-probe.ts';
 import { reviewedRouteKindInitializer } from './node-manifest-route-kind-value.ts';
 import type { NodeManifestTurbopackGraphFactory } from './node-manifest-turbopack-graph.ts';
 import {
   defaultExportTarget,
-  exportBindings,
   singleDirectExportValue,
   turbopackModuleId,
 } from './node-manifest-turbopack-values.ts';
@@ -129,7 +129,7 @@ function exportValue(
     return undefined;
   const direct = singleDirectExportValue(args[0], input.exportName);
   if (direct !== undefined && !identifier(direct)) return undefined;
-  const binding = exportBindings(args[0]).find((entry) => entry.name === input.exportName);
+  const binding = inspectExportBindings(args[0])?.find((entry) => entry.name === input.exportName);
   if (binding === undefined) return undefined;
   const variable = selectedVariable(binding.value, body, visits);
   return variable !== undefined && (binding.kind === 'getter' || variable.end < visit.node.start)
