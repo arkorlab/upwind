@@ -139,7 +139,8 @@ function route(id: string, kind: RouteCode['kind'] = 'app-route', file = id): Ro
   };
 }
 
-function edgeRoute(id: string, kind: RouteCode['kind']): RouteCode {
+function edgeRoute(kind: RouteCode['kind']): RouteCode {
+  const id = '/edge';
   return {
     ...route(id, kind),
     module: undefined,
@@ -193,7 +194,7 @@ describe('native Function ownership', () => {
   it.each(['pages', 'pages-api'] as const)(
     'keeps an independent Edge %s route outside the native Pages unit',
     (kind) => {
-      const edge = edgeRoute('/edge', kind);
+      const edge = edgeRoute(kind);
       const routes = [route('/blog', 'pages'), route('/api/revalidate', 'pages-api'), edge];
 
       expect([...nativeRouteOwners(routes, load('/blog'), new Set())]).toStrictEqual([
@@ -206,7 +207,7 @@ describe('native Function ownership', () => {
   );
 
   it('still refuses an explicit native requirement on an Edge route before building', async () => {
-    const edge = edgeRoute('/edge', 'pages-api');
+    const edge = edgeRoute('pages-api');
 
     await expect(
       nativeFunctionLayout(context([edge]), manifest([edge]), {

@@ -4,18 +4,30 @@ import { AuditError } from './dependencies.ts';
 
 const MAX_ROOTS = 32;
 const MAX_ENTRIES = 1_000_000;
-const MAP_ENTRIES = new Map<unknown, unknown>().entries;
-const MAP_NEXT = new Map<unknown, unknown>().entries().next;
-const SET_VALUES = new Set<unknown>().values;
-const SET_NEXT = new Set<unknown>().values().next;
-const MAP_SIZE: ((this: unknown) => unknown) | undefined = Object.getOwnPropertyDescriptor(
-  Map.prototype,
-  'size',
-)?.get;
-const SET_SIZE: ((this: unknown) => unknown) | undefined = Object.getOwnPropertyDescriptor(
-  Set.prototype,
-  'size',
-)?.get;
+/** Capture standard intrinsics without binding them to a particular collection. */
+function intrinsic<T extends (this: unknown, ...args: never[]) => unknown>(
+  object: unknown,
+  key: string,
+  field: 'value' | 'get' = 'value',
+): T {
+  const ownDescriptor = Object.getOwnPropertyDescriptor(object, key);
+  const value: unknown =
+    ownDescriptor === undefined ? undefined : Reflect.get(ownDescriptor, field);
+  if (typeof value !== 'function') throw new TypeError('Missing collection intrinsic');
+  return value as T;
+}
+const MAP_ENTRIES = intrinsic<Map<unknown, unknown>['entries']>(Map.prototype, 'entries');
+const MAP_NEXT = intrinsic<ReturnType<typeof MAP_ENTRIES>['next']>(
+  Object.getPrototypeOf(new Map<unknown, unknown>().entries()),
+  'next',
+);
+const SET_VALUES = intrinsic<Set<unknown>['values']>(Set.prototype, 'values');
+const SET_NEXT = intrinsic<ReturnType<typeof SET_VALUES>['next']>(
+  Object.getPrototypeOf(new Set<unknown>().values()),
+  'next',
+);
+const MAP_SIZE = intrinsic<(this: unknown) => unknown>(Map.prototype, 'size', 'get');
+const SET_SIZE = intrinsic<(this: unknown) => unknown>(Set.prototype, 'size', 'get');
 
 /** A finite data-freshness failure; it never certifies a role, runtime or source origin. */
 export class NodeManifestIdentityError extends AuditError {
@@ -99,7 +111,6 @@ export function roots(values: readonly unknown[]): readonly unknown[] {
   return Object.freeze(result);
 }
 function collectionSize(value: unknown, getter: typeof MAP_SIZE): number {
-  if (getter === undefined) return refuse('missing collection intrinsic');
   let size: unknown;
   try {
     size = getter.call(value);
@@ -120,7 +131,7 @@ function mapSnapshot(value: IdentityObject, budget: Budget): Collection {
   spend(budget, size * 2);
   const entries: (readonly [unknown, unknown])[] = [];
   const iterator = MAP_ENTRIES.call(value);
-  for (let item = MAP_NEXT.call(iterator); !item.done; item = MAP_NEXT.call(iterator))
+  for (let item = MAP_NEXT.call(iterator); item.done !== true; item = MAP_NEXT.call(iterator))
     entries.push(Object.freeze([item.value[0], item.value[1]]));
   if (entries.length !== size) return refuse('changed collection size');
   return Object.freeze({ kind: 'map', entries: Object.freeze(entries) });
@@ -130,7 +141,7 @@ function setSnapshot(value: IdentityObject, budget: Budget): Collection {
   spend(budget, size);
   const entries: unknown[] = [];
   const iterator = SET_VALUES.call(value);
-  for (let item = SET_NEXT.call(iterator); !item.done; item = SET_NEXT.call(iterator))
+  for (let item = SET_NEXT.call(iterator); item.done !== true; item = SET_NEXT.call(iterator))
     entries.push(item.value);
   if (entries.length !== size) return refuse('changed collection size');
   return Object.freeze({ kind: 'set', entries: Object.freeze(entries) });
@@ -206,10 +217,14 @@ function assertMap(
   const iterator = MAP_ENTRIES.call(object);
   for (const entry of collection.entries) {
     const item = MAP_NEXT.call(iterator);
-    if (item.done || !Object.is(item.value[0], entry[0]) || !Object.is(item.value[1], entry[1]))
+    if (
+      item.done === true ||
+      !Object.is(item.value[0], entry[0]) ||
+      !Object.is(item.value[1], entry[1])
+    )
       return refuse('changed map entries or order');
   }
-  if (!MAP_NEXT.call(iterator).done) return refuse('changed map entries');
+  if (MAP_NEXT.call(iterator).done !== true) return refuse('changed map entries');
 }
 function assertSet(
   object: IdentityObject,
@@ -220,9 +235,10 @@ function assertSet(
   const iterator = SET_VALUES.call(object);
   for (const entry of collection.entries) {
     const item = SET_NEXT.call(iterator);
-    if (item.done || !Object.is(item.value, entry)) return refuse('changed set entries or order');
+    if (item.done === true || !Object.is(item.value, entry))
+      return refuse('changed set entries or order');
   }
-  if (!SET_NEXT.call(iterator).done) return refuse('changed set entries');
+  if (SET_NEXT.call(iterator).done !== true) return refuse('changed set entries');
 }
 export function assertCollection(recorded: RecordSnapshot): void {
   const collection = recorded.collection;

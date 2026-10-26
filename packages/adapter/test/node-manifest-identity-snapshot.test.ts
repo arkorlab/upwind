@@ -273,12 +273,12 @@ describe('private original data identity snapshots', () => {
     expect(() => {
       assertNodeManifestIdentity(deep, [source]);
     }).toThrow('property or identity');
-    expect(() => Reflect.apply(assertNodeManifestIdentity, undefined, [own, [source]])).toThrow(
-      'uncertified snapshot',
-    );
-    expect(() =>
-      Reflect.apply(assertNodeManifestOwnIdentity, undefined, [deep, [control]]),
-    ).toThrow('uncertified own snapshot');
+    expect(() => {
+      Reflect.apply(assertNodeManifestIdentity, undefined, [own, [source]]);
+    }).toThrow('uncertified snapshot');
+    expect(() => {
+      Reflect.apply(assertNodeManifestOwnIdentity, undefined, [deep, [control]]);
+    }).toThrow('uncertified own snapshot');
 
     control.source = { ...source };
 
