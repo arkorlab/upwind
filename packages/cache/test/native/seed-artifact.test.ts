@@ -89,7 +89,8 @@ describe('native seed artifact reads', () => {
       );
 
       await rm(filename);
-      execFileSync('/usr/bin/mkfifo', [filename]);
+      // eslint-disable-next-line sonarjs/no-os-command-from-path -- mkfifo creates only this test's private FIFO.
+      execFileSync('mkfifo', [filename]);
 
       await expect(readSeedArtifact(location, { sha256, byteLength: 0 }, maximum)).rejects.toThrow(
         /regular/u,

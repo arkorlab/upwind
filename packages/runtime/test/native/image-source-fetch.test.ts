@@ -128,7 +128,7 @@ describe('native image source destinations', () => {
     expect(failed).toHaveBeenCalledExactlyOnceWith(missing, []);
   });
 
-  it('does not reuse an opted-in local socket for a protected request', async () => {
+  it('rejects local IP literals unless explicitly opted in', async () => {
     const answer = vi.fn<RequestListener>((_request, response) => {
       response.end('local image');
     });
