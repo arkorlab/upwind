@@ -1,4 +1,5 @@
-import { listsTag } from '../strategies/entity-tags.ts';
+import { listsTag } from '@stayingupwind/core/request';
+
 import { logError } from './logger.ts';
 
 /**

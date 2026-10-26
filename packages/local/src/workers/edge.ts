@@ -223,10 +223,14 @@ function servedFrom(
  * not be reached at all (`GATE_UNREACHABLE_HEADER`) — so the edge answers as it would deployed. It
  * is cancelled with what the edge asked, as the request it addresses is (`addressed`).
  */
-function gateFrom(origin: URL, service: FunctionService): FunctionService {
+function gateFrom(
+  origin: URL,
+  service: FunctionService,
+  originalCf: IncomingRequestCfProperties | undefined,
+): FunctionService {
   return {
     async fetch(asked) {
-      const sent = addressed(origin, asked, undefined);
+      const sent = addressed(origin, asked, originalCf);
       const headers = new Headers(sent.headers);
       headers.set(NODE_URL_HEADER, sent.url);
       const answer = await service.fetch(new Request(sent, { headers, signal: sent.signal }));
@@ -261,10 +265,9 @@ function watched(kv: KVNamespace, trace: string): KVNamespace {
 }
 
 /**
- * `env`, each Function in it reached as `servedFrom` reaches it, each gate as `gateFrom` reaches
- * it, and the runtime cache's records read as `watched` reads them, whether KV or the authority
- * answers with them. Both pass through the same decoder before the check is told the generation
- * was read.
+ * `env`, each Function in it reached as `servedFrom` reaches it, and the runtime cache's records
+ * read as `watched` reads them, whether KV or the authority answers with them. Both pass through
+ * the same decoder before the check is told the generation was read.
  */
 function servedEnv(
   env: StandaloneEnv,
@@ -290,7 +293,7 @@ function servedEnv(
     if (name.startsWith(FUNCTION_BINDING_PREFIX)) {
       Reflect.set(local, name, servedFrom(origin, service, trace, originalCf));
     } else if (name.startsWith(GATE_BINDING_PREFIX)) {
-      Reflect.set(local, name, gateFrom(origin, service));
+      Reflect.set(local, name, gateFrom(origin, service, originalCf));
     }
   }
   return local;

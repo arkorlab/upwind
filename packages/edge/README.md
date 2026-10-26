@@ -13,6 +13,14 @@ Function's to answer whole. Around that, the edge serves:
 A pointer names what a site serves: a manifest, a delivery policy, the Functions behind them, and
 whether the edge serves from its shells at all.
 
+A request begins its cache scope check when it reads a generation or dispatches to the deployment's
+Function, as a whole request or a shell's continuation. Neither waits for the check. Documents keep
+their generation-read timing, so a cold build shell can be read beside its record while the scope
+authority is still answering. A document with no generation starts its check when it dispatches
+its continuation, after its shell read has begun. Pages Router data handed to the Function checks
+too; shipped-file and image responses do not.
+The existing scope hold and background refresh cadence are unchanged.
+
 A host hands the edge what is its own. `EdgeHost` carries the names the edge keeps things under,
 the domains it serves, the credentials it keeps for itself, how a Function that is gone is told
 apart, and an observer that is told what each answer cost. `EdgeRuntime` is how the edge reaches

@@ -13,11 +13,9 @@ import {
   filterShellResponseHeaders,
   routeDebugValue,
   SHARED_CACHE_CONTROL_HEADERS,
-} from '@stayingupwind/core/request';
-import {
-  mergeScopedMiddlewareHeaders,
   removeSharedCacheOverrides,
-} from '@stayingupwind/edge/handlers/responses';
+} from '@stayingupwind/core/request';
+import { mergeScopedMiddlewareHeaders } from '@stayingupwind/edge/handlers/responses';
 import { runtimeCacheOf } from '@stayingupwind/host/delivery';
 
 import {

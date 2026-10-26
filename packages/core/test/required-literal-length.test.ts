@@ -17,8 +17,10 @@ describe('a match length proved by a mandatory literal', () => {
     expect(requiredLiteralLength(source)).toBeUndefined();
   });
 
-  it('does not mistake the tail of a legacy octal escape for mandatory text', () => {
-    expect(requiredLiteralLength(String.raw`^\012ab$`)).toBeUndefined();
+  it('consumes a complete legacy octal token before proving its printable suffix', () => {
+    expect(requiredLiteralLength(String.raw`^\012ab$`)).toBe(2);
+    expect(requiredLiteralLength(String.raw`^\057ab$`)).toBe(3);
+    expect(requiredLiteralLength(String.raw`^\012a$`)).toBeUndefined();
   });
 
   it('does not include a quantified final literal in its candidate', () => {
@@ -45,6 +47,8 @@ describe('a match length proved by a mandatory literal', () => {
     [String.raw`^/catalog\.json$`, ['', '/', '/catalog.json', '/CATALOG.JSON']],
     ['^/catalog?$', ['', '/', '/catalo', '/catalog']],
     ['^/café/catalog$', ['', '/', '/café/catalog', '/CAFÉ/CATALOG']],
+    [String.raw`^\012ab$`, ['', 'ab', '\nab', '\nAB', '12ab']],
+    [String.raw`^\057ab$`, ['', '/ab', '/AB', '57ab']],
   ] as const)('keeps every real match at least as long as its proof: %s', (source, values) => {
     const minimum = requiredLiteralLength(source);
 

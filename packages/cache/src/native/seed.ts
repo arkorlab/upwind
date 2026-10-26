@@ -1,17 +1,16 @@
-import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-
 import { KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
 import type { SeedScopeInput } from '@stayingupwind/host/cache';
 
+import { DEFAULT_CACHE_VARS } from '../env.ts';
 import type { MutationPipeline } from '../scope/mutation-pipeline.ts';
 import { applySeedScope, needsSeedVerification, planSeedEntries } from '../scope/seed.ts';
 import { isRefusal, refuse } from '../scope/state.ts';
 import type { CacheFiles } from './files.ts';
 import type { NativeCacheWorkerOptions } from './protocol.ts';
+import { readSeedArtifact, validateSeedArtifact } from './seed-artifact.ts';
 
 const SEED_BATCH_SIZE = 200;
+const MAXIMUM_ARTIFACT_BYTES = DEFAULT_CACHE_VARS.MAX_ARTIFACT_BYTES;
 
 async function copyBuildArtifacts(
   options: NativeCacheWorkerOptions,
@@ -22,16 +21,9 @@ async function copyBuildArtifacts(
   for (const entry of seed.entries) {
     for (const output of entry.generation.outputs) {
       for (const artifact of output.artifacts) {
+        validateSeedArtifact(artifact, MAXIMUM_ARTIFACT_BYTES);
         if (await files.blobs.exists(artifact.storageRef)) continue;
-        // The build's own SHA-256 names this file, never a public URL or request path.
-        // eslint-disable-next-line security/detect-non-literal-fs-filename
-        const bytes = await readFile(path.join(seed.blobsDirectory, artifact.sha256));
-        if (
-          bytes.byteLength !== artifact.byteLength ||
-          createHash('sha256').update(bytes).digest('hex') !== artifact.sha256
-        ) {
-          throw new Error('native cache build artifact does not match its digest');
-        }
+        const bytes = await readSeedArtifact(seed.blobsDirectory, artifact, MAXIMUM_ARTIFACT_BYTES);
         await files.blobs.write(artifact.storageRef, bytes, artifact.contentType);
       }
     }

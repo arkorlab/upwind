@@ -1,3 +1,4 @@
+import { pageHeaders } from '@stayingupwind/core/bundle';
 import {
   deriveEntry,
   staticPageDataHeadersAllowSharing,
@@ -17,6 +18,9 @@ import {
   EDGE_DEBUG_HEADER,
   manifestIdPrefix,
   type RequestClass,
+  varyOn,
+  removeSharedCacheOverrides,
+  REVALIDATE_CACHE_CONTROL,
 } from '@stayingupwind/core/request';
 import { releaseStream, withDeadline } from '@stayingupwind/core/util';
 import {
@@ -35,16 +39,14 @@ import type { EdgeContext } from '../strategies/context.ts';
 import { loadShell, storageReadsOf } from '../strategies/shell-loader.ts';
 import { layStoredConfiguredOver, withJudgedRules } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { ACCEPT_ENCODING_HEADER, IDENTITY_ENCODING, varyOn } from './document-headers.ts';
+import { ACCEPT_ENCODING_HEADER, IDENTITY_ENCODING } from './document-headers.ts';
 import { serveAfterMiddleware } from './hosted-gate.ts';
 import { offTheEdge } from './hosted-route.ts';
 import { observeMetric } from './observer.ts';
 import { handlePassthrough, PATTERN_BUDGET } from './passthrough.ts';
-import { removeSharedCacheOverrides } from './responses.ts';
 import { chosenRendering, closedStream } from './segment.ts';
 import { capturePairedPageData, refreshMissingPairedPage } from './static-page-capture.ts';
 import { servePairedPageData } from './static-page-data.ts';
-import { pageHeaders } from './static-page-record.ts';
 import { requestAllowsSharing, serveCurrentPage, type StaticPageInput } from './static-page.ts';
 
 const FALLBACK_PRIVACY = 3;
@@ -260,10 +262,7 @@ async function loadingPage(
   for (const name of [CONTENT_ENCODING, 'content-range', 'accept-ranges', 'etag'])
     headers.delete(name);
   removeSharedCacheOverrides(headers);
-  headers.set(
-    'cache-control',
-    `public, max-age=0, must-revalidate${noTransform ? ', no-transform' : ''}`,
-  );
+  headers.set('cache-control', `${REVALIDATE_CACHE_CONTROL}${noTransform ? ', no-transform' : ''}`);
   headers.set('content-type', lazy.entry.shell.artifact.contentType);
   headers.set('content-length', String(length));
   varyOn(headers, ACCEPT_ENCODING_HEADER);

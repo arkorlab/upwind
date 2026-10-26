@@ -363,6 +363,11 @@ function outputsOf(
  * revision of the tag view its reads were judged against, and what that view held of each tag.
  */
 interface Made {
+  /**
+   * When the render was made: what the generation's freshness is measured from, as Next.js
+   * measures an entry's from the moment its render is set (`lastModified`).
+   */
+  readonly at: number;
   readonly uploads: Uploads;
   readonly tags: readonly GenerationTag[];
   readonly observedTagRevision: number;
@@ -375,14 +380,16 @@ function commitRequest(
   render: StaticRender,
   made: Made,
 ): CommitRequest {
-  const now = nowMs();
   return {
     fencingToken: lease.fencingToken,
     observedTagRevision: made.observedTagRevision,
     heldTagRevisions: made.heldTagRevisions,
     generation: {
-      cacheTimestamp: now,
-      producedAt: now,
+      // Not the moment the commit is asked for: the uploads ahead of it take round trips, and a
+      // generation stamped once they had landed stayed fresh for as long past its lifetime — and
+      // short of its `expire` for a visitor answered from the render meanwhile.
+      cacheTimestamp: made.at,
+      producedAt: nowMs(),
       policy: policyFromCacheControl(render.cacheControl),
       status: render.status,
       headers: generationHeadersFor(input.target.descriptor.kind, render),
@@ -422,6 +429,8 @@ async function publish(
 ): Promise<PublishOutcome> {
   const { runtime, target } = input;
   const { render, observedTagRevision, held, began } = rendered;
+  // Called as the render is made, ahead of everything its publish waits for.
+  const at = nowMs();
   let published: DecodedGenerationPack | undefined;
   try {
     // Ahead of the uploads: a render the contract will not take is one whose outputs are not
@@ -433,7 +442,13 @@ async function publish(
     const heldTagRevisions = held.of(values, observedTagRevision);
     const committed = await runtime.host.commit(
       lease.attemptId,
-      commitRequest(input, lease, render, { uploads, tags, observedTagRevision, heldTagRevisions }),
+      commitRequest(input, lease, render, {
+        at,
+        uploads,
+        tags,
+        observedTagRevision,
+        heldTagRevisions,
+      }),
     );
     if (committed.kind === 'published') {
       published = await publishedRecordOf(committed.record, lease.entryId, committed.generationId);

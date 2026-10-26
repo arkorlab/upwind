@@ -30,7 +30,11 @@ const config: KnipConfig = {
     'packages/host': {},
     'packages/deploy': {},
     // `cloudflare:workers` and `cloudflare:test` are the Workers runtime's own, not npm packages.
-    'packages/cache': { ignoreDependencies: ['cloudflare'] },
+    'packages/cache': {
+      // The native file-safety regression creates a FIFO with the host's own utility.
+      ignoreBinaries: ['mkfifo'],
+      ignoreDependencies: ['cloudflare'],
+    },
     'packages/edge': { ignoreDependencies: ['cloudflare', 'arkor'] },
     // A local stack's Workers are bundled by path (`bundleWorker`), so nothing imports them; `cloudflare:*`
     // is the Workers runtime's own.
@@ -75,10 +79,13 @@ const config: KnipConfig = {
         'src/install-npm.ts',
         'src/serve-cloudflare.ts',
       ],
+      // Local release-verification fixtures use the host's GnuPG installation.
+      ignoreBinaries: ['gpg', 'gpgconf'],
     },
     // The lifetime control is run directly by CI, beside the Next.js matrix runner.
     'tools/next-matrix': { entry: ['src/node-handler-lifetime.ts'] },
-    'tools/vocabulary': {},
+    // The file-safety regression creates a FIFO with the host's own utility.
+    'tools/vocabulary': { ignoreBinaries: ['mkfifo'] },
   },
   // Applications the matrix builds with a Next.js of their own, not code of this repository's — and
   // the site, which is an application too: its own project, its own lockfile, and its own install of

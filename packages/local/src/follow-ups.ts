@@ -1,5 +1,5 @@
 import type { StaticFileEntry } from '@stayingupwind/core/manifest';
-import { listsTag } from '@stayingupwind/edge/internal/strategies/entity-tags.ts';
+import { listsTag } from '@stayingupwind/core/request';
 
 import { type CheckedStack, HTTP_OK } from './answers.ts';
 import { askedAgain, opaqueTag, said, type Subject, subjectOf } from './asked-again.ts';

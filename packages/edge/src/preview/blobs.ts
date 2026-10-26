@@ -1,5 +1,6 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import { MAX_MANIFEST_BYTES } from '@stayingupwind/core/manifest';
+import { type ByteRange } from '@stayingupwind/core/request';
 import { readBoundedBody, releaseStream, withDeadline } from '@stayingupwind/core/util';
 
 import type { BlobWorker } from '../edge-runtime.ts';
@@ -58,12 +59,8 @@ export interface FileReadProgress {
   readonly ownsDeadline?: true | undefined;
 }
 
-/** One range of a file's bytes, as offsets into it. */
-export interface BlobRange {
-  readonly start: number;
-  /** Inclusive. */
-  readonly end: number;
-}
+/** One range of a file's bytes, as offsets into it (`ByteRange`). */
+export type BlobRange = ByteRange;
 
 /**
  * What asking the blob Worker for a file came to: its bytes; an answer without them, after which

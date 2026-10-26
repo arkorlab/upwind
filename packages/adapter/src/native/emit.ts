@@ -33,7 +33,14 @@ import { carriesMaps } from '../source-maps.ts';
 import { collectStaticFiles } from '../static-files.ts';
 import { staticPagesRuntimeFields } from '../static-pages.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from '../throwing-globals.ts';
-import { copyNativeFiles, nativeTraceFiles } from './files.ts';
+import { EDGE_ANSWER_SOURCE, EDGE_ANSWER_WRAPPER } from './edge-answer.ts';
+import {
+  NATIVE_EDGE_WEB_GLOBALS,
+  NATIVE_EDGE_WEB_OBJECT,
+  nativeEdgeWebPlugin,
+} from './edge-web.ts';
+import { imageEncoderFiles } from './encoder-files.ts';
+import { copyNativeFiles, nativeAssetSources, nativeTraceFiles } from './files.ts';
 import { nativeEdgeGraphPlugin } from './graph.ts';
 
 const MIDDLEWARE_ID = '/_middleware';
@@ -90,9 +97,11 @@ async function nativeSources(ctx: BuildContext): Promise<string[]> {
     ...ctx.outputs.pagesApi,
     ...(ctx.outputs.middleware === undefined ? [] : [ctx.outputs.middleware]),
   ];
-  const sources = new Set(
-    outputs.flatMap((output) => [output.filePath, ...Object.values(output.assets)]),
-  );
+  const sources = new Set<string>();
+  for (const output of outputs) {
+    sources.add(output.filePath);
+    for (const source of nativeAssetSources(output.assets, ctx.distDir)) sources.add(source);
+  }
   const serverFiles = await filesUnder(path.join(ctx.distDir, 'server'));
   const manifests = await rootManifests(ctx.distDir);
   for (const file of serverFiles) sources.add(file);
@@ -146,6 +155,7 @@ function edgeModuleSource(entries: readonly EdgeEntry[], pathOf: (file: string) 
   return [
     "const fs = require('node:fs');",
     "const path = require('node:path');",
+    EDGE_ANSWER_SOURCE,
     ...(inline.length === 0
       ? []
       : [
@@ -176,7 +186,7 @@ function edgeModuleSource(entries: readonly EdgeEntry[], pathOf: (file: string) 
         '    if (config !== undefined) config.trustHostHeader = true;',
         `    const entry = globalThis._ENTRIES?.[${jsLiteral(entry.entryKey)}];`,
         '    if (entry === undefined) throw new Error("upwind: Edge entry registered no handler");',
-        `    return { handler: entry[${jsLiteral(entry.handlerExport)}] };`,
+        `    return { handler: ${EDGE_ANSWER_WRAPPER}(entry[${jsLiteral(entry.handlerExport)}]) };`,
         '  },',
       ].join('\n');
     }),
@@ -195,6 +205,11 @@ function nativeModules(runtimeRoot: string, cacheHost: string): Plugin {
   };
   const replacements = new Map([
     [path.join(runtimeRoot, 'environment.ts'), path.join(runtimeRoot, 'native/environment.ts')],
+    [path.join(runtimeRoot, 'image-encoder.ts'), path.join(runtimeRoot, 'native/image-encoder.ts')],
+    [
+      path.join(runtimeRoot, 'image-source-fetch.ts'),
+      path.join(runtimeRoot, 'native/image-source-fetch.ts'),
+    ],
     [path.join(runtimeRoot, 'node-bridge.ts'), path.join(runtimeRoot, 'native/entry.ts')],
     [path.join(runtimeRoot, 'rewrite-fetch.ts'), path.join(runtimeRoot, 'native/rewrite-fetch.ts')],
     [path.join(runtimeRoot, 'static-file.ts'), path.join(runtimeRoot, 'native/static-file.ts')],
@@ -273,6 +288,7 @@ async function emitNativeEdge(
     external: [/^node:/u],
     plugins: [
       globalObjectPlugin(),
+      nativeEdgeWebPlugin(),
       nativeEdgeGraphPlugin(),
       {
         name: 'upwind-native-edge',
@@ -287,9 +303,10 @@ async function emitNativeEdge(
     ],
     transform: {
       target: 'es2023',
-      inject: GLOBAL_OBJECT,
+      inject: { ...GLOBAL_OBJECT, ...NATIVE_EDGE_WEB_OBJECT },
       define: {
         ...THROWING_GLOBALS,
+        ...NATIVE_EDGE_WEB_GLOBALS,
         'process.env.NODE_ENV': '"production"',
         'process.env.NEXT_RUNTIME': '"edge"',
         self: 'globalThis',
@@ -435,6 +452,7 @@ export async function emitNativeDeployment(
   const id = deploymentId();
   const generatedAt = new Date().toISOString();
   const bypassToken = bypassTokenOf(ctx.outputs);
+  const images = await imagesConfig(ctx);
   const base = {
     v: ONE_PASS_BUNDLE_VERSION as number,
     routerReferences: 'one-pass' as const,
@@ -443,7 +461,7 @@ export async function emitNativeDeployment(
     buildId: ctx.buildId,
     nextVersion: ctx.nextVersion,
     generatedAt,
-    config: bundleConfig(ctx.config, await imagesConfig(ctx)),
+    config: bundleConfig(ctx.config, images),
     routing: bundleRouting(ctx.routing, middleware),
     ...(bypassToken !== undefined && { bypassToken }),
     entrypoints,
@@ -457,7 +475,13 @@ export async function emitNativeDeployment(
     JSON.stringify({ ...runtime, prerenders: packPrerenders(prerenders) }),
   );
   const layout = await copyNativeFiles({
-    files: exported ? [] : await nativeSources(ctx),
+    files: exported
+      ? []
+      : [
+          ...(await nativeSources(ctx)),
+          // The encoder `/_next/image` resizes with, where the build has an optimizer to answer it.
+          ...(images === undefined ? [] : await imageEncoderFiles(ctx.projectDir)),
+        ],
     directories: [ctx.repoRoot, ctx.projectDir, ctx.distDir],
     outDir,
   });

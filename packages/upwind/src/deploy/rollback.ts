@@ -1,8 +1,7 @@
-import { type DeploymentBundle, deploymentBundleSchema } from '@stayingupwind/core/bundle';
+import type { DeploymentBundle } from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
 import { DeployRefusalError, stageDeployment } from '@stayingupwind/deploy/deploy';
 import { recoveryScriptCspSource } from '@stayingupwind/host/splice';
-import { bundleObjectKey } from '@stayingupwind/host/storage';
 
 import { type AccountView, bucketRefusal, readAccount, resolveAccount } from './account.ts';
 import { activate, liveVersionOf } from './activate.ts';
@@ -29,6 +28,7 @@ import {
 import { appRuntimeOf, type ProjectNames, projectNames } from './names.ts';
 import { publishPointer } from './pointer.ts';
 import { withProjectLock } from './project-lock.ts';
+import { bundleIn, type KeptBundle, refuseUnboundGates } from './rollback-bundles.ts';
 import { shippedWorkers } from './shipped.ts';
 import type { ProjectStores } from './stores.ts';
 import { blobsMissing, type RemoteTarget, storedTarget } from './target.ts';
@@ -247,46 +247,6 @@ function liveDeploymentOf(history: EdgeHistory): string | undefined {
   return history.deployments.find((record) => record.versionId === liveVersion)?.deploymentId;
 }
 
-/** A deployment's bundle as the bucket keeps it, and the bytes it was kept as. */
-interface KeptBundle {
-  readonly bundle: DeploymentBundle;
-  readonly json: string;
-}
-
-/**
- * A deployment's bundle as the bucket keeps it; nothing where it keeps none. One this version
- * cannot read — not JSON, or no bundle by the schema — is refused (`bundle_invalid`): like any
- * refusal of publishing a deployment again, the deployment's own.
- */
-async function bundleIn(
-  target: RemoteTarget,
-  project: string,
-  deploymentId: string,
-): Promise<KeptBundle | undefined> {
-  const bytes = await target.bucket.get(bundleObjectKey(project, deploymentId));
-  if (bytes === undefined) {
-    return undefined;
-  }
-  const json = new TextDecoder().decode(bytes);
-  let value: unknown;
-  try {
-    value = JSON.parse(json);
-  } catch (error) {
-    throw new DeployRefusalError('its kept bundle is not JSON', {
-      code: 'bundle_invalid',
-      cause: error,
-    });
-  }
-  const parsed = deploymentBundleSchema.safeParse(value);
-  if (!parsed.success) {
-    throw new DeployRefusalError('its kept bundle is not a deployment bundle this version reads', {
-      code: 'bundle_invalid',
-      cause: parsed.error,
-    });
-  }
-  return { bundle: parsed.data, json };
-}
-
 /**
  * The live deployment's bundle, whose files a deployment gone back to serves beside its own
  * (`previous`); nothing, with a warning, where they cannot be carried over — no bundle of it kept,
@@ -391,6 +351,7 @@ async function restage(input: Restaging): Promise<Served | undefined> {
   if (kept === undefined) {
     return undefined;
   }
+  refuseUnboundGates(kept.bundle);
   const app = appRuntimeOf(names.project, kept.bundle);
   const staged = await stageDeployment(target, {
     bundle: kept.bundle,

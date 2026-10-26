@@ -12,6 +12,10 @@ import {
   NEXT_ROUTER_STATE_TREE_HEADER,
   NO_STORE_CACHE_CONTROL,
   RSC_HEADER,
+  varyOn,
+  keptByNobody,
+  removeSharedCacheOverrides,
+  GATED_CACHE_CONTROL,
 } from '@stayingupwind/core/request';
 import type { ShellDeliveryStrategy } from '@stayingupwind/host/delivery';
 import { brotliWire, gzipWire } from '@stayingupwind/host/splice';
@@ -21,12 +25,10 @@ import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { loadShell, storageReadsOf } from '../strategies/shell-loader.ts';
 import { layStoredConfiguredOver, setConfigured } from './configured-headers.ts';
-import { ACCEPT_ENCODING_HEADER, IDENTITY_ENCODING, varyOn } from './document-headers.ts';
+import { ACCEPT_ENCODING_HEADER, IDENTITY_ENCODING } from './document-headers.ts';
 import { observeMetric } from './observer.ts';
 import {
-  keptByNobody,
   mergeScopedMiddlewareHeaders,
-  removeSharedCacheOverrides,
   safeDiagnosticField,
   serviceUnavailableResponse,
 } from './responses.ts';
@@ -141,7 +143,6 @@ interface Rendering {
 }
 
 /** A response this visitor's alone: never held in a cache another visitor reads. */
-const GATED_CACHE_CONTROL = 'private, max-age=0, must-revalidate';
 
 /**
  * What the client accepts, as the client said it — Cloudflare's front line rewrites

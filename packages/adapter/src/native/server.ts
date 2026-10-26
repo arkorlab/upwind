@@ -21,6 +21,7 @@ import {
 } from '../../../deploy/src/cache-seed.ts';
 import { drainNativeWork } from './drain.ts';
 import { nativeOrigin, nativeRequest, writeNativeResponse } from './http.ts';
+import { listeningOn } from './listening.ts';
 
 const SHUTDOWN_MS = 30_000;
 const DEFAULT_PORT = 3000;
@@ -191,11 +192,16 @@ async function main(): Promise<void> {
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
+  let listening: string | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(port, hostname, () => {
         server.off('error', reject);
+        // Before any request is taken: the first render may already read the port.
+        const address = server.address();
+        if (address !== null && typeof address !== 'string')
+          listening = listeningOn(address, process.env);
         resolve();
       });
     });
@@ -206,12 +212,7 @@ async function main(): Promise<void> {
     await cache.close();
     throw error;
   }
-  const address = server.address();
-  if (address !== null && typeof address !== 'string') {
-    const host = address.address.includes(':') ? `[${address.address}]` : address.address;
-
-    console.log(`upwind: native server listening on http://${host}:${String(address.port)}`);
-  }
+  if (listening !== undefined) console.log(`upwind: native server listening on ${listening}`);
 }
 
 try {

@@ -1,5 +1,7 @@
+import { sha256Hex } from '@stayingupwind/core/artifact';
 import {
   allowedImageDestination,
+  BYPASS_IMAGE_TYPES,
   detectImageType,
   IMAGE_SIGNATURE_BYTES,
   type ImageRequestParams,
@@ -18,10 +20,15 @@ import {
   releaseStream,
 } from '@stayingupwind/core/util';
 
+import { encodeImage, type EncodedImage, holdsImage } from './image-encoder.ts';
+import { ImageDestinationError } from './image-source-error.ts';
+import { fetchImageSource } from './image-source-fetch.ts';
+
 /**
  * `/_next/image` reaching the Function itself.
  *
- * The edge optimizes images; the Function has no encoder. But the edge proxies everything while it
+ * The edge optimizes images; the Function has no encoder (`image-encoder.ts`, which a target with
+ * no edge in front of it fills in). But the edge proxies everything while it
  * has no manifest to serve from — before a first deployment activates, while a manifest cannot
  * be read — and a page must not lose its images for that. So a request that gets this far —
  * asked for directly, or rewritten here by a rule of `next.config` — is answered with the source
@@ -33,6 +40,7 @@ import {
  * refused, nor without the sandbox it puts an SVG in, nor past the size it would have stood for.
  */
 
+const HTTP_NOT_MODIFIED = 304;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
@@ -145,27 +153,34 @@ function redirectRefused(
 }
 
 async function fetchHop(
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch | undefined,
   url: URL,
   deadline: number,
+  dangerouslyAllowLocalIP: boolean,
 ): Promise<RemoteSource> {
   const remaining = Math.max(1, deadline - Date.now());
   try {
-    const response = await fetchImpl(url.href, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(remaining),
-    });
+    const signal = AbortSignal.timeout(remaining);
+    const response = await (fetchImpl === undefined
+      ? fetchImageSource(url, signal, dangerouslyAllowLocalIP)
+      : fetchImpl(url.href, { redirect: 'manual', signal }));
     return { kind: 'ok', response };
   } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      return {
+        kind: 'refused',
+        response: refusal(
+          HTTP_GATEWAY_TIMEOUT,
+          '"url" parameter is valid but upstream response timed out',
+        ),
+      };
+    }
     return {
       kind: 'refused',
-      response:
-        error instanceof Error && error.name === 'TimeoutError'
-          ? refusal(
-              HTTP_GATEWAY_TIMEOUT,
-              '"url" parameter is valid but upstream response timed out',
-            )
-          : refusal(HTTP_INTERNAL_ERROR, UPSTREAM_INVALID),
+      response: refusal(
+        error instanceof ImageDestinationError ? HTTP_BAD_REQUEST : HTTP_INTERNAL_ERROR,
+        UPSTREAM_INVALID,
+      ),
     };
   }
 }
@@ -186,7 +201,7 @@ export interface RemoteSourceInput {
  * it ask itself.
  */
 export async function fetchRemoteSource(input: RemoteSourceInput): Promise<RemoteSource> {
-  const { images, ownHosts, fetchImpl = fetch } = input;
+  const { images, ownHosts, fetchImpl } = input;
   const deadline = Date.now() + SOURCE_BUDGET_MS;
   let url = new URL(input.href);
   // The patterns name the hosts an application meant to allow, not where they point. Checked on
@@ -195,7 +210,7 @@ export async function fetchRemoteSource(input: RemoteSourceInput): Promise<Remot
     return { kind: 'refused', response: refusal(HTTP_BAD_REQUEST, UPSTREAM_INVALID) };
   }
   for (let hops = images.maximumRedirects; ; hops -= 1) {
-    const hop = await fetchHop(fetchImpl, url, deadline);
+    const hop = await fetchHop(fetchImpl, url, deadline, images.dangerouslyAllowLocalIP);
     if (hop.kind === 'refused') {
       return hop;
     }
@@ -231,8 +246,11 @@ interface SourceResponseInput {
   readonly images: ImagesConfig;
   /** The source is a path of the application, refused in the words the optimizer has for one. */
   readonly internal: boolean;
-  /** The client's method: a `HEAD` is answered without the body. */
-  readonly method: string;
+  /**
+   * The client's request: a `HEAD` is answered without the body, and one that holds the image
+   * already, where the target answers a validator itself (`holdsImage`), with a 304.
+   */
+  readonly request: Request;
 }
 
 /** The source's bytes, whole, or the refusal they amount to. */
@@ -300,18 +318,51 @@ export async function sourceResponse(input: SourceResponseInput): Promise<Respon
   if (contentType === SVG && !images.dangerouslyAllowSVG) {
     return refusal(HTTP_BAD_REQUEST, '"url" parameter is valid but image type is not allowed');
   }
-  const granted = upstreamMaxAge(source.headers.get('cache-control'));
+  // A type the optimizer passes on as it is is not asked of an encoder; on Workers there is none
+  // to ask, and nothing is waited on (`encodeImage`).
+  const encoding = BYPASS_IMAGE_TYPES.has(contentType)
+    ? undefined
+    : encodeImage({ bytes, upstreamType: contentType, params });
+  const encoded = encoding === undefined ? undefined : await encoding;
+  // A transformation is tagged by its own bytes, as the edge tags one; a source keeps its own tag.
+  const made =
+    encoded?.kind === 'encoded'
+      ? { ...encoded, etag: `"${await sha256Hex(encoded.bytes)}"` }
+      : undefined;
+  return answered(input, { bytes, contentType }, made ?? encoded);
+}
+
+/** A transformation the encoder made, with its entity tag. */
+type Made = Extract<EncodedImage, { kind: 'encoded' }> & { readonly etag: string };
+
+/** The image as it goes out: the encoder's, where it made one, else the source under its own type. */
+function answered(
+  input: SourceResponseInput,
+  source: { readonly bytes: Uint8Array; readonly contentType: string },
+  encoded: Made | EncodedImage | undefined,
+): Response {
+  const { params, images, request } = input;
+  const failed = encoded?.kind === 'failed';
+  const made = encoded !== undefined && 'etag' in encoded ? encoded : undefined;
+  const bytes = made?.bytes ?? source.bytes;
+  const granted = upstreamMaxAge(input.source.headers.get('cache-control'));
   const headers = imageResponseHeaders({
     href: params.href,
-    contentType,
-    isStatic: params.isStatic,
-    maxAge: Math.max(images.minimumCacheTTL, granted),
-    etag: source.headers.get('etag') ?? undefined,
+    contentType: made?.contentType ?? source.contentType,
+    // A source standing in for a transformation that failed is kept for the shortest lifetime the
+    // configuration allows, however build-hashed: a request after it may be given the one it
+    // stood in for (as Next.js falls back, and the edge marks `serviceFailed`).
+    isStatic: params.isStatic && !failed,
+    maxAge: failed ? images.minimumCacheTTL : Math.max(images.minimumCacheTTL, granted),
+    etag: made?.etag ?? input.source.headers.get('etag') ?? undefined,
     config: images,
     cache: 'MISS',
   });
+  if (holdsImage(request, headers.get('etag') ?? undefined)) {
+    return new Response(null, { status: HTTP_NOT_MODIFIED, headers });
+  }
   headers.set('content-length', String(bytes.byteLength));
   // Read into a buffer of its own, which is what the runtime's `Response` asks a body to be over.
   const body = bytes as Uint8Array<ArrayBuffer>;
-  return new Response(input.method === 'HEAD' ? null : body, { headers });
+  return new Response(request.method === 'HEAD' ? null : body, { headers });
 }

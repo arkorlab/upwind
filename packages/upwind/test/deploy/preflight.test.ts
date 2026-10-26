@@ -89,11 +89,8 @@ describe('checking a build before a deploy', () => {
     );
     const plan = await preflight({ projectDir: dir, settings: SETTINGS, secrets: NO_SECRETS });
 
-    expect(plan.problems).toStrictEqual([
-      expect.stringContaining(
-        'the build declares route gates, which `upwind deploy` does not bind yet',
-      ),
-    ]);
+    expect(plan.problems).toStrictEqual([expect.stringContaining('route gates')]);
+    expect(plan.problems[0]).toContain('`upwind deploy` does not bind yet');
   });
 
   it('refuses a Function built without the runtime cache', async () => {

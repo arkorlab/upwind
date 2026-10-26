@@ -25,8 +25,10 @@ The two on this machine need no credential and no project. For `cloudflare`, the
 `upwind deploy` makes — the runtime cache's host in every Function, the prefetch segments left to the
 prefetch Worker — and the edge transforms images, as one bound to Cloudflare Images does. For `node`, the
 build is `upwind build --target=node`'s. The deploy hook starts the server as a process of its own,
-which outlives the hook and logs to `.adapter-runtime.log` (the logs hook prints it), and the cleanup
-hook stops it. Each application is served on a port of its own, so the suite may run several at once
+which outlives the hook and logs to `.adapter-runtime.log`. The cleanup hook stops it and then prints
+the end of that log. The suite passes the cleanup hook's output into its own, which a run prints only
+for a failing suite, so a test that saw a 500 shows the server's stack too. The logs hook is called
+before the tests, so it cannot. Each application is served on a port of its own, so the suite may run several at once
 (`-c 2`).
 
 The lifecycle is the
@@ -98,6 +100,19 @@ run with Corepack's last known good pnpm, and pnpm 11 and 12 refuse such a proje
 version Next.js pins every other fixture to, from the Next.js checkout, as the workflow does:
 `corepack install -g "$(node -p "require('./package.json').packageManager")"`.
 
+### The runtime cache on a host
+
+A host's builds are the adapter alone unless `ADAPTER_TEST_CACHE=hosted` (the workflow's `cache`
+input) asks for the runtime cache a host serves behind an edge of its own: then
+`packages/cache/src/function/hosted.ts` goes into every Function the build writes. Where the host
+binds the application a cache, its Functions read and write it, and learn where its scope stands
+from the host's edge alone (`SCOPE_REVISION_HEADER`). They keep none of their own, as a standalone
+cache's do (`function/host.ts`, the `cloudflare` target's): one that asked the authority itself
+would learn of an invalidation whatever the edge in front of it said, and a suite would then pass
+whether that edge had told it or not. Where the host binds none, the host module finds nothing to
+reach, and every read is a miss, as without it. Unset, empty or `none` is the adapter alone; another
+value, or `hosted` for a target on this machine, fails before anything is built.
+
 ### Choosing the installer
 
 `ADAPTER_TEST_INSTALL_MANAGER=npm` selects npm for the isolated application's **install step**.
@@ -149,7 +164,8 @@ rest declare `skipDeployment` upstream and pass in a couple of seconds. A shard 
 about three minutes of its own setup, and must stay under the 6 hours a job may execute; the last shard
 waits for the other `n - 1` of those, and must start within the 24 hours a job may sit in the queue before
 it is cancelled. Measured: a full pass in six shards took 11h41m, about two hours a shard, the last one
-starting nine and three-quarter hours in — which is why a host's default is `6`, with room on both sides.
+starting nine and three-quarter hours in — which is why a host of fewer than six projects is cut into `6`,
+with room on both sides.
 
 A settle is paid by every deploying suite: at its one-minute ceiling, about six hundred minutes across the
 run, a hundred or so a shard — about four hours a shard at most, at six, still inside both limits. A host
@@ -157,16 +173,23 @@ that gives each deployment a URL of its own costs none of it (below).
 
 Given a project per shard, none of that applies: the jobs all start at once, the queue limit never comes
 near, and the run is one shard long. That is the section below, and it is the answer for a run much longer
-than the measured one rather than a different number of shards.
+than the measured one rather than a different number of shards — and, with six projects or more, the
+default.
 
 Without a host at all, `pnpm check:deploy-tests` runs the three hooks against a fake one: a fake
 application, a fake API, and the real scripts. It is what CI runs, and what keeps the shell contract
 (standard output, which variables a fixture's scripts can see, which file the build id comes from) and
 the order of the calls from breaking quietly between runs against a real host.
 
+`pnpm check:deploy-tests --group <host|environment|lifecycle-workspace|install-manager>` runs one
+independent group. CI runs these groups on separate runners, each with its own applications, fake
+hosts, deployment claims and harness process. Without `--group`, every scenario runs in its original
+order. Poll intervals, settle checks and timeouts are the same for grouped and complete runs.
+
 `pnpm check:deploy-tests-local [--target cloudflare|node]` runs the same hooks for real on this machine's
 targets, with no harness: `fixtures/next-minimal` copied, installed and built by the deploy hook, asked
-over HTTP, its markers read back through the logs hook, and its server gone after the cleanup hook. CI
+over HTTP, its markers read back through the logs hook, and its server gone after the cleanup hook,
+which prints what the server said. CI
 runs it for both targets on every pull request.
 
 **On a host, serially, `-c 1`.** One project takes one fixture at a time, because a deployment replaces
@@ -180,7 +203,10 @@ by whitespace, and the count is how many shards the workflow runs at once — a 
 own position, so nothing is pooled and no two shards share a project. Fewer ids than shards is a slower
 run rather than a broken one: the extra shards queue behind the ids that exist. Six projects turn a
 day-long serial run into an afternoon, and they are made on the dashboard, since the public API deploys
-into a project and does not create one.
+into a project and does not create one. Unless `shards` says otherwise, a run of `all` on a host is cut
+into a shard a project — the ids in order, up to the first that repeats, at most 32 (`HOST_SHARDS`) — and
+every shard runs at once; under six projects it is six shards, one after another. A slice taken again
+with `only` names the run's `shards` as well, since the split follows the list.
 
 **A project's run still under way is waited for.** A host deploys one run of a project at a time and
 refuses the next finalize while one is going (`run_in_progress`). That run is the previous fixture's —
@@ -239,7 +265,9 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   data cache, no `use cache`, no page kept between requests and no regeneration seen. Every suite that
   asserts on caching or revalidation fails for that alone. A host that plugs its cache in
   (`createAdapter({ cacheHostModule })`) tests what it deploys by naming that adapter in
-  `NEXT_ADAPTER_PATH`, which the deploy hook then uses instead of its own.
+  `NEXT_ADAPTER_PATH`, which the deploy hook then uses instead of its own. A host that serves the
+  runtime cache behind its own edge can instead have this adapter carry its Function host
+  ([`ADAPTER_TEST_CACHE=hosted`](#the-runtime-cache-on-a-host)).
 - **A `next.config.ts` that Node.js loads itself is built the way Next.js's own CI builds it.** The
   suites under `next-config-ts-native-ts` and `-mts` await at the top level of their configs on
   purpose, and Next.js's CI builds them alone with Node.js's loader turned on

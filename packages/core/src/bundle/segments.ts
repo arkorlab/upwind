@@ -1,6 +1,8 @@
 import { namesPagesDataPrefix } from '../manifest/pages-data-prefix.ts';
 import { mayHoldForDocument } from '../request/conditions.ts';
 import { pagesDataPathnameUnder } from './pages-data.ts';
+import { BuildPatternBudget } from './pattern-budget.ts';
+import type { BuildPatternMatcher } from './pattern-matcher.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
 import {
   beforeFilesPhases,
@@ -40,21 +42,14 @@ const HTTP_OK = 200;
  * no conditional rule for the edge to apply, so the parts of a page one covers stay with the Function
  * (`prefetchSegments`).
  */
-function routerRulePatterns(bundle: DeploymentBundle): RegExp[] {
+function routerRulePatterns(bundle: DeploymentBundle): string[] {
   if (reproducesDynamicRouting(bundle)) {
     return [];
   }
   return [
     ...headerPhases(bundle).filter((rule) => rule.headers !== undefined),
     ...beforeFilesPhases(bundle),
-  ].flatMap((rule) => {
-    return mayHoldForDocument(rule)
-      ? []
-      : // Compiled by Next.js for its own router, which runs them without the unicode flag and
-        // without regard to case, as `mayRoutePath` does: a rule for `/Account` covers `/account`.
-        // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-        [new RegExp(rule.sourceRegex, 'i')];
-  });
+  ].flatMap((rule) => (mayHoldForDocument(rule) ? [] : [rule.sourceRegex]));
 }
 
 /**
@@ -66,12 +61,15 @@ function routerRulePatterns(bundle: DeploymentBundle): RegExp[] {
 function partsServed(
   bundle: DeploymentBundle,
   options: ServableOptions,
+  patterns: BuildPatternMatcher,
 ): (document: Prerender) => boolean {
-  const served = new Set(edgeServablePrerenders(bundle, options).map((prerender) => prerender.id));
+  const served = new Set(
+    edgeServablePrerenders(bundle, options, patterns).map((prerender) => prerender.id),
+  );
   const routerRules = routerRulePatterns(bundle);
   return (document) => {
     const asked = requestedPathname(bundle, document.pathname);
-    return served.has(document.id) && routerRules.every((rule) => !rule.test(asked));
+    return served.has(document.id) && routerRules.every((rule) => !patterns.test(rule, 'i', asked));
   };
 }
 
@@ -107,9 +105,10 @@ export interface PrefetchSegment {
 export function prefetchSegments(
   bundle: DeploymentBundle,
   options: ServableOptions = {},
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
 ): PrefetchSegment[] {
   const documents = primaryPrerenders(bundle.prerenders);
-  const servesParts = partsServed(bundle, options);
+  const servesParts = partsServed(bundle, options, patterns);
   return bundle.prerenders.flatMap((prerender) => {
     const { segmentPath } = prerender;
     const document = documents.get(prerender.id);
@@ -149,8 +148,9 @@ export interface RoutePayload {
 export function routePayloads(
   bundle: DeploymentBundle,
   options: ServableOptions = {},
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
 ): RoutePayload[] {
-  const servesParts = partsServed(bundle, options);
+  const servesParts = partsServed(bundle, options, patterns);
   const byPathname = new Map(bundle.prerenders.map((prerender) => [prerender.pathname, prerender]));
   const { suffix } = bundle.routing.rsc;
   const { basePath } = bundle.config;
@@ -207,6 +207,7 @@ export interface RoutePagesData {
 export function routePagesData(
   bundle: DeploymentBundle,
   options: ServableOptions = {},
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
 ): RoutePagesData[] {
   const { basePath } = bundle.config;
   if (
@@ -216,7 +217,7 @@ export function routePagesData(
   ) {
     return [];
   }
-  const servesParts = partsServed(bundle, options);
+  const servesParts = partsServed(bundle, options, patterns);
   const pages = new Set(
     bundle.entrypoints.filter((entry) => entry.kind === 'pages').map((entry) => entry.pathname),
   );

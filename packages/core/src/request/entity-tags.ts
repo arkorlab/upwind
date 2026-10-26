@@ -1,8 +1,8 @@
 /**
  * The entity-tag lists of a request's preconditions — `If-None-Match`, `If-Match` — read as RFC 9110
- * writes them (§8.8.3, §13.1.1, §13.1.2): of the edge's own answers (`asset-upstream.ts`,
- * `static-file-conditions.ts`), and of the blob Worker's (`../blob/worker.ts`). A leaf of no import,
- * so that what imports it carries nothing else.
+ * writes them (§8.8.3, §13.1.1, §13.1.2): of the answers a host gives as an origin or a cache
+ * (`preconditions.ts`), the edge's and the blob Worker's among them. A leaf of no import, so that
+ * what imports it carries nothing else.
  */
 
 /** The opaque tag without a `W/` prefix: `If-None-Match` uses weak comparison (RFC 9110 §13.1.2). */

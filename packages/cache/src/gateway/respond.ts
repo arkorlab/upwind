@@ -49,9 +49,26 @@ export function answer(c: Context, result: unknown): Response {
   return isRefusal(result) ? fail(c, result.code, result.message) : ok(c, result);
 }
 
-/** Compact, non-sensitive rendering of a schema's issues for 400 responses. */
+const MAX_DESCRIBED_ISSUES = 32;
+const MAX_DIAGNOSTIC_LENGTH = 8192;
+
+/** Bounded rendering, including paths and messages, before building a 400 response. */
 export function describeIssues(error: ParseFailure): string {
-  return error.issues
-    .map((issue) => `${issue.path.map(String).join('.') || '(root)'}: ${issue.message}`)
-    .join('; ');
+  let description = '';
+  const append = (part: string): void => {
+    description += part.slice(0, MAX_DIAGNOSTIC_LENGTH - description.length);
+  };
+  for (const [index, issue] of error.issues.entries()) {
+    if (index >= MAX_DESCRIBED_ISSUES || description.length >= MAX_DIAGNOSTIC_LENGTH) break;
+    if (index > 0) append('; ');
+    if (issue.path.length === 0) append('(root)');
+    for (const [partIndex, part] of issue.path.entries()) {
+      if (description.length >= MAX_DIAGNOSTIC_LENGTH) break;
+      if (partIndex > 0) append('.');
+      append(String(part));
+    }
+    append(': ');
+    append(issue.message);
+  }
+  return description;
 }

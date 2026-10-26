@@ -41,7 +41,7 @@ describe('the target a build is deployed to on a stack', () => {
   it('sends a write’s metadata in a header any pathname fits in', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'upwind-local-'));
     mkdirSync(path.join(dir, 'blobs'));
-    const target = agentTarget(state.url ?? new URL('http://invalid'), dir);
+    const target = agentTarget(state.url ?? new URL('http://invalid'), dir, 'stack-secret');
     const metadata = { sourcePath: '/日本/ページ' };
 
     await target.bucket.put('artifacts/shell', 'bytes', {
@@ -55,6 +55,9 @@ describe('the target a build is deployed to on a stack', () => {
 
     expect(sent.every((header) => /^\p{ASCII}+$/u.test(header))).toBe(true);
     expect(decoded).toStrictEqual([metadata, metadata]);
+    expect(received.every((write) => write.headers.authorization === 'Bearer stack-secret')).toBe(
+      true,
+    );
     await expect(target.blobs.read('0'.repeat(64))).resolves.toBeUndefined();
   });
 });
