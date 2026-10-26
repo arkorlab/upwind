@@ -5,29 +5,25 @@ import { AuditError } from './dependencies.ts';
 const MAX_ROOTS = 32;
 const MAX_ENTRIES = 1_000_000;
 /** Capture standard intrinsics without binding them to a particular collection. */
-function intrinsic<T extends () => unknown>(
-  object: unknown,
-  key: string,
-  field: 'value' | 'get' = 'value',
-): T {
+function intrinsic(object: unknown, key: string, field: 'value' | 'get' = 'value'): unknown {
   const ownDescriptor = Object.getOwnPropertyDescriptor(object, key);
   const value: unknown =
     ownDescriptor === undefined ? undefined : Reflect.get(ownDescriptor, field);
   if (typeof value !== 'function') throw new TypeError('Missing collection intrinsic');
-  return value as T;
+  return value;
 }
-const MAP_ENTRIES = intrinsic<Map<unknown, unknown>['entries']>(Map.prototype, 'entries');
-const MAP_NEXT = intrinsic<ReturnType<typeof MAP_ENTRIES>['next']>(
+const MAP_ENTRIES = intrinsic(Map.prototype, 'entries') as Map<unknown, unknown>['entries'];
+const MAP_NEXT = intrinsic(
   Object.getPrototypeOf(new Map<unknown, unknown>().entries()),
   'next',
-);
-const SET_VALUES = intrinsic<Set<unknown>['values']>(Set.prototype, 'values');
-const SET_NEXT = intrinsic<ReturnType<typeof SET_VALUES>['next']>(
+) as ReturnType<typeof MAP_ENTRIES>['next'];
+const SET_VALUES = intrinsic(Set.prototype, 'values') as Set<unknown>['values'];
+const SET_NEXT = intrinsic(
   Object.getPrototypeOf(new Set<unknown>().values()),
   'next',
-);
-const MAP_SIZE = intrinsic<(this: unknown) => unknown>(Map.prototype, 'size', 'get');
-const SET_SIZE = intrinsic<(this: unknown) => unknown>(Set.prototype, 'size', 'get');
+) as ReturnType<typeof SET_VALUES>['next'];
+const MAP_SIZE = intrinsic(Map.prototype, 'size', 'get') as (this: unknown) => unknown;
+const SET_SIZE = intrinsic(Set.prototype, 'size', 'get') as (this: unknown) => unknown;
 
 /** A finite data-freshness failure; it never certifies a role, runtime or source origin. */
 export class NodeManifestIdentityError extends AuditError {

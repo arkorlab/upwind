@@ -111,12 +111,12 @@ function matches(tags: Tags, target: NativePrebuildTarget): boolean {
   if (tags.runtime !== undefined && tags.runtime !== 'node') return false;
   if (Boolean(tags.abi) && tags.abi !== target.abi && tags.napi !== true) return false;
   if (Boolean(tags.uv) && tags.uv !== target.uv) return false;
-  if (tags.armv) return false;
-  return !tags.libc || tags.libc === 'glibc';
+  if (tags.armv !== undefined && tags.armv !== '') return false;
+  return tags.libc === undefined || tags.libc === '' || tags.libc === 'glibc';
 }
 function compare(left: Tags, right: Tags): number {
   if (left.runtime !== right.runtime) return left.runtime === 'node' ? -1 : 1;
-  if (left.abi !== right.abi) return left.abi ? -1 : 1;
+  if (left.abi !== right.abi) return left.abi !== undefined && left.abi !== '' ? -1 : 1;
   return right.specificity - left.specificity;
 }
 

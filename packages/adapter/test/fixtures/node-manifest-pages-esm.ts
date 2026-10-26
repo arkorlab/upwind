@@ -94,20 +94,21 @@ export async function pagesEsmFixture(
     .replaceAll('RouteKind.PAGES', 'kindNs.RouteKind.PAGES')
     .replaceAll('hoist(', '(0,helperNs.hoist)(')
     .replaceAll('getHandler(', '(0,handlerNs.getHandler)(');
-  if (options.grouped) body = body.replaceAll(`;\n${kind} `, ',');
+  if (options.grouped === true) body = body.replaceAll(`;\n${kind} `, ',');
+  const eager = options.eager === true;
   const values = [
     ['default', 'defaultValue'] as const,
     ...EXPORTS.map((name) => [name, name] as const),
   ];
   const table = values
     .map(([name, value]) => {
-      const selector = options.eager ? `0,${value}` : `()=>${value}`;
+      const selector = eager ? `0,${value}` : `()=>${value}`;
       return `${jsLiteral(name)},${selector}`;
     })
     .join(',');
   const header = `${kind} ${prefix.join(',')};`;
   const registration = `context.s([${table}]);`;
-  const code = `module.exports=[1,context=>{"use strict";${options.eager ? '' : registration}${header}${body}\n${options.eager ? registration : ''}}];`;
+  const code = `module.exports=[1,context=>{"use strict";${eager ? '' : registration}${header}${body}\n${eager ? registration : ''}}];`;
   return {
     projection: projectNodeManifestTurbopackFactory(source(code), 1),
     imports,
