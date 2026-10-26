@@ -106,7 +106,7 @@ describe('private coalesced namespace alias in the fixed Pages ESM template', ()
   it('refuses changing the derived alias after certification', async () => {
     const input = await inspected();
     const alias = variable(input.program, 'userland');
-    alias['init'] = { ...(alias['init'] as Node), name: 'otherNamespace' };
+    Reflect.set(alias, 'init', { ...(alias['init'] as Node), name: 'otherNamespace' });
 
     expect(() => {
       assertNodeManifestPagesEsmPorts(input);
@@ -115,7 +115,8 @@ describe('private coalesced namespace alias in the fixed Pages ESM template', ()
 
   it('refuses a name-only namespace claim without the original private profile', async () => {
     const input = await inspected();
-    const original = { ...input.original, coalesced: undefined };
+    const original = { ...input.original };
+    delete original.coalesced;
 
     expect(() => {
       assertNodeManifestPagesEsmPorts({ ...input, original });

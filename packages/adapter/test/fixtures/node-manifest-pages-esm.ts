@@ -46,7 +46,11 @@ export async function pagesEsmFixture(
     readonly namespaceMethod?: 'i' | 'r';
     readonly eager?: boolean;
   } = {},
-): Promise<NodeManifestTurbopackTemplateInput> {
+): Promise<
+  Omit<NodeManifestTurbopackTemplateInput, 'imports'> & {
+    readonly imports: readonly NodeManifestTemplateImport[];
+  }
+> {
   const anchor = await realpath(
     fileURLToPath(import.meta.resolve('next/dist/build/templates/pages.js')),
   );
