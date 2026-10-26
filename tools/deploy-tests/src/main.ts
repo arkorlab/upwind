@@ -4,7 +4,7 @@ import { createClient } from './client.ts';
 import { readConfig, readProjectConfig } from './config.ts';
 import { deployFixture, preflight } from './deploy.ts';
 import { hookDeadline, hookOver, hookSignal } from './hook.ts';
-import { serveLocally, stopLocally } from './local-server.ts';
+import { servedLog, serveLocally, stopLocally } from './local-server.ts';
 import { isLocal, targetOf } from './target.ts';
 
 /**
@@ -71,6 +71,39 @@ function commandOf(value: string | undefined): Command {
   return value as Command;
 }
 
+/** A command for a server of this machine's: no host to ask, no project to claim, no credential to read. */
+async function local(
+  command: Exclude<Command, 'bundle'>,
+  appDir: string,
+  target: 'cloudflare' | 'node',
+): Promise<void> {
+  switch (command) {
+    case 'preflight': {
+      say(`nothing to check before a run on ${target}: no host is asked`);
+      return;
+    }
+    case 'release': {
+      if (await stopLocally(appDir)) {
+        // What the server said as the suite ran. The suite's harness passes the cleanup hook's
+        // output on into the suite's own, which a run prints for a failing suite alone: where a
+        // test that saw a 500 finds the stack behind it. The logs hook is asked before the tests.
+        say(`=== the server ===\n${servedLog(appDir)}`);
+      }
+      return;
+    }
+    case 'deploy': {
+      const url = await serveLocally({
+        appDir,
+        target,
+        log: say,
+        deadline: hookDeadline(process.env),
+      });
+      // The one thing on standard output: the harness reads it as the deployment's URL.
+      process.stdout.write(`${url}\n`);
+    }
+  }
+}
+
 async function main(argv: readonly string[]): Promise<void> {
   const [first, directory] = argv;
   const command = commandOf(first);
@@ -85,28 +118,8 @@ async function main(argv: readonly string[]): Promise<void> {
     return;
   }
   if (isLocal(target)) {
-    // Served on this machine: no host to ask, no project to claim, no credential to read.
-    switch (command) {
-      case 'preflight': {
-        say(`nothing to check before a run on ${target}: no host is asked`);
-        return;
-      }
-      case 'release': {
-        await stopLocally(appDir);
-        return;
-      }
-      case 'deploy': {
-        const url = await serveLocally({
-          appDir,
-          target,
-          log: say,
-          deadline: hookDeadline(process.env),
-        });
-        // The one thing on standard output: the harness reads it as the deployment's URL.
-        process.stdout.write(`${url}\n`);
-        return;
-      }
-    }
+    await local(command, appDir, target);
+    return;
   }
   if (command === 'release') {
     // No token asked for: giving the project back is a file on this machine, and a cleanup hook that

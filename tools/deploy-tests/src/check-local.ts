@@ -6,6 +6,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 
+import { CLOUDFLARE_SERVING, NODE_LISTENING } from './local-protocol.ts';
 import { type Target, TARGET_ENV } from './target.ts';
 
 /**
@@ -43,6 +44,8 @@ const POLL_MS = 500;
 /** How long one request asking whether the server still answers may take. */
 const ASK_MS = 2000;
 const OK = 200;
+/** What the cleanup hook heads the server's own account with. */
+const SERVER_SAID = '=== the server ===';
 
 function say(text: string): void {
   console.log(`check-local: ${text}`);
@@ -53,8 +56,14 @@ function isSource(source: string): boolean {
   return !['.arkor', '.next', '.upwind', 'node_modules'].includes(path.basename(source));
 }
 
-/** A hook, run in the application as the suite's harness runs it; what it printed on standard output. */
-async function hook(name: string, appDir: string, target: Target): Promise<string> {
+/** What a hook printed: standard output for the harness, standard error for the suite's log. */
+interface Printed {
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/** A hook, run in the application as the suite's harness runs it; what it printed. */
+async function hook(name: string, appDir: string, target: Target): Promise<Printed> {
   // The script itself, by its own path, as the suite's harness starts it: it is executable and
   // carries a shebang.
   const child = spawn(path.join(SCRIPTS, name), [], {
@@ -67,11 +76,17 @@ async function hook(name: string, appDir: string, target: Target): Promise<strin
       ADAPTER_TEST_HARNESS_PID: String(process.pid),
       NEXT_TELEMETRY_DISABLED: '1',
     },
-    stdio: ['ignore', 'pipe', 'inherit'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
+  let stderr = '';
   child.stdout.on('data', (chunk: Buffer) => {
     stdout += chunk.toString('utf8');
+  });
+  // Passed on as it comes, as the harness passes it into the suite's log, and kept to be read.
+  child.stderr.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString('utf8');
+    process.stderr.write(chunk);
   });
   const timer = setTimeout(() => {
     child.kill('SIGKILL');
@@ -87,7 +102,7 @@ async function hook(name: string, appDir: string, target: Target): Promise<strin
   } finally {
     clearTimeout(timer);
   }
-  return stdout;
+  return { stdout, stderr };
 }
 
 /** Whether the site still answers anything at all. */
@@ -106,7 +121,7 @@ async function checkTarget(target: Target, root: string): Promise<void> {
   cpSync(FIXTURE, appDir, { recursive: true, filter: (source) => isSource(source) });
   say(`${target}: deploying a copy of next-minimal`);
   try {
-    const printed = await hook('e2e-deploy.sh', appDir, target);
+    const printed = (await hook('e2e-deploy.sh', appDir, target)).stdout;
     const lines = printed.split('\n').filter((line) => line !== '');
     assert.equal(lines.length, 1, `the deploy hook printed more than a URL:\n${printed}`);
     const url = new URL(lines[0] ?? '');
@@ -121,7 +136,7 @@ async function checkTarget(target: Target, root: string): Promise<void> {
     assert.equal(api.status, OK, `${API} was answered ${String(api.status)}`);
     assert.deepEqual(await api.json(), API_ANSWER, `${API} did not answer as the fixture does`);
 
-    const logs = await hook('e2e-logs.sh', appDir, target);
+    const logs = (await hook('e2e-logs.sh', appDir, target)).stdout;
     assert.match(logs, /^BUILD_ID: \S+$/mu, 'the logs name no build id');
     assert.match(logs, /^DEPLOYMENT_ID: dpl_\w+$/mu, 'the logs name no deployment');
     assert.match(
@@ -130,7 +145,15 @@ async function checkTarget(target: Target, root: string): Promise<void> {
       'the logs say nothing of assets',
     );
 
-    await hook('e2e-cleanup.sh', appDir, target);
+    const cleanup = await hook('e2e-cleanup.sh', appDir, target);
+    // What the server said goes into a failing suite's output by way of the cleanup hook: at the least
+    // the line it said it serves with, so the suite's requests came after it.
+    assert.ok(cleanup.stderr.includes(SERVER_SAID), 'the cleanup hook did not pass the server on');
+    const served = cleanup.stderr.slice(cleanup.stderr.indexOf(SERVER_SAID));
+    assert.ok(
+      served.includes(target === 'cloudflare' ? CLOUDFLARE_SERVING : NODE_LISTENING),
+      'the cleanup hook passed on nothing the server said',
+    );
     const end = Date.now() + GONE_MS;
     while ((await answers(url.href)) && Date.now() < end) {
       await sleep(POLL_MS);
