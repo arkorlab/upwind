@@ -91,4 +91,18 @@ describe('build matching against pinned Next middleware grammar', () => {
       BuildPatternBudgetExceededError,
     );
   });
+
+  it.each(['?', '*', '+', '{0,1}', '{1}', '{2}'])(
+    'does not transform a quantified locale group (%s)',
+    (quantifier) => {
+      const emitted = getMiddlewareMatchers('/:path*', CONFIGS[2] ?? {})[0]?.regexp ?? '';
+      const locale = String.raw`(?:\/((?!_next\/)[^/.]{1,}))`;
+      const source = emitted.split(locale).join(locale + quantifier);
+      const path = `/_next/${'a'.repeat(80)}`;
+
+      expect(() => new BuildPatternBudget().test(source, 'i', path)).toThrow(
+        BuildPatternBudgetExceededError,
+      );
+    },
+  );
 });

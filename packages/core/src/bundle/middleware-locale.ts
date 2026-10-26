@@ -1,4 +1,4 @@
-import { literalAt } from '../request/pattern-syntax.ts';
+import { literalAt, quantifierAt } from '../request/pattern-syntax.ts';
 
 /** The exact optional data prefix and locale guard emitted by Next.js 16.4.2 and 16.4.3. */
 const DATA = String.raw`(?:\/(_next\/data\/[^/]{1,}))?`;
@@ -40,7 +40,12 @@ export function localeMiddlewareSource(
   const { source } = pattern;
   const dataAt = source.indexOf(DATA);
   const localeAt = dataAt + DATA.length;
-  if (!source.startsWith('^') || dataAt < 1 || !source.startsWith(LOCALE, localeAt)) {
+  if (
+    !source.startsWith('^') ||
+    dataAt < 1 ||
+    !source.startsWith(LOCALE, localeAt) ||
+    quantifierAt(source, localeAt + LOCALE.length) !== undefined
+  ) {
     return UNSUPPORTED;
   }
   const base = source.slice(1, dataAt);
