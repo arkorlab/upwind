@@ -28,14 +28,19 @@ export function nodeManifestHandlerLiteralValues(input: {
   const actual: { readonly key: string; readonly value: string }[] = [];
   for (const slot of input.profile.literalSlots) {
     if (
-      !['compiler-relative-next-source-directory-with-trailing-slash'].includes(slot.origin.kind) ||
+      ![
+        'compiler-relative-next-source-directory',
+        'compiler-relative-next-source-directory-with-trailing-slash',
+      ].includes(slot.origin.kind) ||
       input.profile.sources.every((pin) => pin.relative !== slot.origin.relative)
     )
       return;
     const source = nodeManifestHandlerOrigin(input.nextRoot, slot.origin.relative);
     const relative = beneath(basis.compilerRoot, path.dirname(source))?.split(path.sep).join('/');
     if (relative === undefined || relative.length === 0) return;
-    actual.push({ key: slot.key, value: `/ROOT/${relative}/` });
+    const suffix =
+      slot.origin.kind === 'compiler-relative-next-source-directory-with-trailing-slash' ? '/' : '';
+    actual.push({ key: slot.key, value: `/ROOT/${relative}${suffix}` });
   }
   return { expected: input.profile.literalSlots, actual };
 }

@@ -23,7 +23,9 @@ export interface NodeManifestHandlerProfile {
   readonly sources: readonly NodeManifestHandlerSourcePin[];
   readonly literalSlots: readonly (NodeManifestHandlerLiteralSlot & {
     readonly origin: {
-      readonly kind: 'compiler-relative-next-source-directory-with-trailing-slash';
+      readonly kind:
+        | 'compiler-relative-next-source-directory'
+        | 'compiler-relative-next-source-directory-with-trailing-slash';
       readonly relative: string;
     };
   })[];
