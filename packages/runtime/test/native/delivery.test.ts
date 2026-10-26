@@ -1,8 +1,10 @@
 import type { DeploymentBundle, Prerender } from '@stayingupwind/core/bundle';
-import type { GenerationPackHeader } from '@stayingupwind/core/cache';
+import type { GenerationPackHeader, RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { CurrentGeneration } from '../../src/cache/current.ts';
+import { type CurrentGeneration, currentGeneration } from '../../src/cache/current.ts';
+import type { CacheRuntime } from '../../src/cache/runtime.ts';
+import type { FirstPublish } from '../../src/delivery.ts';
 import * as shared from '../../src/delivery.ts';
 import * as native from '../../src/native/delivery.ts';
 import type { RoutedInput } from '../../src/serve.ts';
@@ -16,6 +18,12 @@ import { getStore, type Store } from '../../src/store.ts';
 vi.mock(import('../../src/store.ts'), async (importOriginal) => {
   const original = await importOriginal();
   return { ...original, getStore: vi.fn() };
+});
+
+// The record a first member's data waits for is the test's to give (`offeredOncePublished`).
+vi.mock(import('../../src/cache/current.ts'), async (importOriginal) => {
+  const original = await importOriginal();
+  return { ...original, currentGeneration: vi.fn() };
 });
 
 const PAGE_SHA = 'a'.repeat(64);
@@ -192,14 +200,17 @@ function routed(path: string, init: RequestInit = {}, middlewareRan = false): Ro
   return {
     request: new Request(`${ORIGIN}${path}`, init),
     cache: { scopeId: SCOPE },
+    waitUntil: () => {
+      // Nothing is left behind the answers here.
+    },
     ...(middlewareRan && { middlewareRan: true }),
   } as unknown as RoutedInput;
 }
 
 /** What the runtime answers, before either rule: one visitor's. */
-function visitorAnswer(contentType: string, extra: Record<string, string> = {}): Response {
+function visitorAnswer(contentType: string): Response {
   return new Response('body', {
-    headers: { 'content-type': contentType, 'cache-control': VISITOR, ...extra },
+    headers: { 'content-type': contentType, 'cache-control': VISITOR },
   });
 }
 
@@ -336,5 +347,332 @@ describe('answers by the edge’s rules on the native target', () => {
     expect(cookie.headers.get('cache-control')).toBe(VISITOR);
     // Routing's own word stands, as it would over the visitor's answer.
     expect(privacy.headers.get('cache-control')).toBe('private, max-age=60');
+  });
+});
+
+/** A `fallback: true` route, its loading shell the build's, its members its first requests' own. */
+const FALLBACK_ROUTE = '/fallback-true/[slug]';
+const MEMBER = '/fallback-true/second';
+const MEMBER_DATA = `/_next/data/build${MEMBER}.json`;
+const DATA_BYTES = new TextEncoder().encode('{"pageProps":{}}');
+const SHELL: Prerender = {
+  id: FALLBACK_ROUTE,
+  pathname: FALLBACK_ROUTE,
+  route: FALLBACK_ROUTE,
+  parentOutputId: 'fallback',
+  groupId: 4,
+  routeType: 'fallback',
+  response: 'initial',
+  compute: 'static',
+  initialRevalidate: 1,
+  allowQuery: ['nxtPslug'],
+  body: { sha256: PAGE_SHA, byteLength: PAGE_BYTES.byteLength, contentType: 'text/html' },
+};
+
+function fallbackBundle(): DeploymentBundle {
+  const made = bundle();
+  return {
+    ...made,
+    routing: {
+      ...made.routing,
+      beforeMiddleware: [],
+      dynamicRoutes: [
+        { sourceRegex: '^/fallback-true/([^/]+?)(?:/)?$', destination: FALLBACK_ROUTE },
+      ],
+    },
+    entrypoints: [{ id: 'fallback', kind: 'pages', pathname: FALLBACK_ROUTE }],
+    prerenders: [SHELL],
+  };
+}
+
+/** The first generation a request made of the member: its page and its paired data. */
+function memberCurrent(): CurrentGeneration {
+  const made = header('pages', {
+    entryId: 'member-entry',
+    source: 'runtime',
+    route: FALLBACK_ROUTE,
+    pathname: MEMBER,
+    staticPagePrivacy: 3,
+    policy: {
+      revalidateAfter: { kind: 'finite', seconds: 60 },
+      expireAfter: { kind: 'unbounded' },
+      clientStale: { kind: 'unknown' },
+      source: 'runtime-output',
+    },
+    artifacts: [
+      {
+        artifactId: 'html',
+        sha256: PAGE_SHA,
+        byteLength: PAGE_BYTES.byteLength,
+        contentType: 'text/html',
+        encoding: 'identity',
+        role: 'html',
+        representationKey: 'html',
+      },
+      {
+        artifactId: 'data',
+        sha256: 'c'.repeat(64),
+        byteLength: DATA_BYTES.byteLength,
+        contentType: 'application/json',
+        encoding: 'identity',
+        role: 'pages-data',
+        representationKey: 'pages-data',
+        storageRef: 'data',
+      },
+    ],
+  });
+  return {
+    entryId: made.entryId,
+    validity: 'fresh',
+    pack: { header: made, html: PAGE_BYTES, postponed: undefined },
+  };
+}
+
+/** The member's data, as the runtime answers it before either rule: one visitor's. */
+function dataAnswer(): Response {
+  return visitorAnswer('application/json');
+}
+
+/** The loading fallback the build wrote for the route, which says nothing of its lifetime. */
+function loadingAnswer(): Response {
+  return new Response('loading', { headers: { 'content-type': 'text/html; charset=utf-8' } });
+}
+
+/** The route's loading fallback the build wrote, through both steps. */
+function deliveredFor(input: RoutedInput): Response {
+  return native.delivered(
+    input.request,
+    native.offeredFromFallback(input, getStore(), SHELL, loadingAnswer()),
+  );
+}
+
+/** The runtime's answer of `representation` from `made`, through both steps, `routing` between. */
+function answeredAs(
+  input: RoutedInput,
+  made: CurrentGeneration,
+  representation: 'html' | 'pages-data',
+  routing: Record<string, string> = {},
+): Response {
+  const offered = native.offeredFromGeneration(
+    input,
+    made,
+    representation,
+    representation === 'html' ? visitorAnswer('text/html; charset=utf-8') : dataAnswer(),
+  );
+  const laid = new Response(offered.body, offered);
+  for (const [name, value] of Object.entries(routing)) laid.headers.set(name, value);
+  return native.delivered(input.request, laid);
+}
+
+describe('a member of a fallback: true route, and what a rewrite or routing left on an answer', () => {
+  beforeEach(() => {
+    vi.mocked(getStore).mockReturnValue({ manifest: fallbackBundle() } as unknown as Store);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shares a member its first request rendered, its page and its data, each by its own name', () => {
+    const page = answeredAs(routed(MEMBER), memberCurrent(), 'html');
+    const data = answeredAs(routed(MEMBER_DATA), memberCurrent(), 'pages-data');
+
+    expect(page.headers.get('cache-control')).toBe(REVALIDATE);
+    expect(data.headers.get('cache-control')).toBe(REVALIDATE);
+  });
+
+  it('keeps a member’s data the visitor’s where routing laid a cookie or a private policy on it', () => {
+    const cookie = answeredAs(routed(MEMBER_DATA), memberCurrent(), 'pages-data', {
+      'set-cookie': 'a=1',
+    });
+    const privacy = answeredAs(routed(MEMBER_DATA), memberCurrent(), 'pages-data', {
+      'cache-control': 'private, max-age=60',
+    });
+
+    expect(cookie.headers.get('cache-control')).toBe(VISITOR);
+    expect(privacy.headers.get('cache-control')).toBe('private, max-age=60');
+  });
+
+  it('keeps a member the visitor’s where a rewrite led to it from another name', () => {
+    const page = answeredAs(routed('/alias'), memberCurrent(), 'html');
+    const data = answeredAs(routed('/_next/data/build/alias.json'), memberCurrent(), 'pages-data');
+
+    expect(page.headers.get('cache-control')).toBe(VISITOR);
+    expect(data.headers.get('cache-control')).toBe(VISITOR);
+  });
+
+  it('shares the loading fallback asked for by a member’s own name, and by no other', () => {
+    expect(deliveredFor(routed(MEMBER)).headers.get('cache-control')).toBe(REVALIDATE);
+    expect(deliveredFor(routed('/alias')).headers.get('cache-control')).toBe(VISITOR);
+    expect(deliveredFor(routed(MEMBER, {}, true)).headers.get('cache-control')).toBe(VISITOR);
+    expect(
+      deliveredFor(routed(MEMBER, { headers: { cookie: 'a=1' } })).headers.get('cache-control'),
+    ).toBe(VISITOR);
+  });
+});
+
+/** The member's first data the visitor is answered with, through both steps. */
+async function heldFor(
+  target: Delivery,
+  input: RoutedInput,
+  first: FirstPublish,
+): Promise<Response> {
+  const held = await target.offeredOncePublished(input, first, 'pages-data', dataAnswer());
+  return target.delivered(input.request, held);
+}
+
+/** Whether `promise` is still pending once everything queued ahead of the check has run. */
+async function pending(promise: Promise<unknown>): Promise<boolean> {
+  const marker = Symbol('pending');
+  return (await Promise.race([promise, Promise.resolve(marker)])) === marker;
+}
+
+describe('a member’s first data, held for its first generation', () => {
+  const descriptor: RouteEntryDescriptor = {
+    kind: 'pages',
+    route: FALLBACK_ROUTE,
+    pathname: MEMBER,
+  };
+  const generation = { kind: 'generation', current: memberCurrent() } as const;
+  const none = { kind: 'none', entryId: 'member-entry' } as const;
+
+  /** What the runtime knows of the first generation, its answer from the record the rules'. */
+  function firstPublish(input: RoutedInput, given: Partial<FirstPublish>): FirstPublish {
+    return {
+      runtime: {} as CacheRuntime,
+      descriptor,
+      published: undefined,
+      elsewhere: false,
+      fromRecord: vi.fn((made: CurrentGeneration) =>
+        Promise.resolve(native.offeredFromGeneration(input, made, 'pages-data', dataAnswer())),
+      ),
+      ...given,
+    };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(getStore).mockReturnValue({ manifest: fallbackBundle() } as unknown as Store);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it('answers from the generation once this isolate’s publish of it settles', async () => {
+    const input = routed(MEMBER_DATA);
+    const publish = Promise.withResolvers<unknown>();
+    vi.mocked(currentGeneration).mockResolvedValue(generation);
+
+    const answer = heldFor(native, input, firstPublish(input, { published: publish.promise }));
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await expect(pending(answer)).resolves.toBe(true);
+    expect(currentGeneration).not.toHaveBeenCalled();
+
+    publish.resolve({ kind: 'published', generationId: 'generation' });
+
+    await expect(answer).resolves.toSatisfy(
+      (response: Response) => response.headers.get('cache-control') === REVALIDATE,
+    );
+  });
+
+  it('reads the record again while it is absent, where another render is making it', async () => {
+    const input = routed(MEMBER_DATA);
+    vi.mocked(currentGeneration)
+      .mockResolvedValueOnce(none)
+      .mockResolvedValueOnce(none)
+      .mockResolvedValueOnce(generation);
+
+    const answer = heldFor(native, input, firstPublish(input, { elsewhere: true }));
+    await vi.advanceTimersByTimeAsync(250 + 500);
+
+    expect((await answer).headers.get('cache-control')).toBe(REVALIDATE);
+    expect(currentGeneration).toHaveBeenCalledTimes(3);
+  });
+
+  it('leaves the visitor the answer made for them once they go', async () => {
+    const controller = new AbortController();
+    const input = routed(MEMBER_DATA, { signal: controller.signal });
+    vi.mocked(currentGeneration).mockResolvedValue(none);
+    const first = firstPublish(input, { elsewhere: true });
+
+    const answer = heldFor(native, input, first);
+    await vi.advanceTimersByTimeAsync(100);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect((await answer).headers.get('cache-control')).toBe(VISITOR);
+    expect(currentGeneration).toHaveBeenCalledTimes(1);
+    expect(first.fromRecord).not.toHaveBeenCalled();
+  });
+
+  it('reads an absent record six times at the most, as the edge reads it', async () => {
+    const input = routed(MEMBER_DATA);
+    vi.mocked(currentGeneration).mockResolvedValue(none);
+
+    const answer = heldFor(native, input, firstPublish(input, { elsewhere: true }));
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect((await answer).headers.get('cache-control')).toBe(VISITOR);
+    expect(currentGeneration).toHaveBeenCalledTimes(6);
+  });
+
+  it('waits ten seconds at the most for a publish that does not settle', async () => {
+    const input = routed(MEMBER_DATA);
+
+    const answer = heldFor(
+      native,
+      input,
+      firstPublish(input, { published: Promise.withResolvers<unknown>().promise }),
+    );
+    await vi.advanceTimersByTimeAsync(9999);
+
+    await expect(pending(answer)).resolves.toBe(true);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect((await answer).headers.get('cache-control')).toBe(VISITOR);
+    expect(currentGeneration).not.toHaveBeenCalled();
+  });
+
+  it('reads once after a publish that came to nothing, and not at all where nobody makes one', async () => {
+    const input = routed(MEMBER_DATA);
+    vi.mocked(currentGeneration).mockResolvedValue(none);
+
+    const refused = await heldFor(
+      native,
+      input,
+      firstPublish(input, { published: Promise.resolve({ kind: 'refused', reason: 'lease' }) }),
+    );
+
+    expect(refused.headers.get('cache-control')).toBe(VISITOR);
+    expect(currentGeneration).toHaveBeenCalledTimes(1);
+
+    vi.mocked(currentGeneration).mockClear();
+    const unmade = await heldFor(native, input, firstPublish(input, {}));
+
+    expect(unmade.headers.get('cache-control')).toBe(VISITOR);
+    expect(currentGeneration).not.toHaveBeenCalled();
+  });
+
+  it('holds nothing for data a rewrite led to from another name, or on Workers', async () => {
+    const rewritten = routed('/_next/data/build/alias.json');
+    const input = routed(MEMBER_DATA);
+    vi.mocked(currentGeneration).mockResolvedValue(generation);
+    const made = dataAnswer();
+
+    const alias = await heldFor(native, rewritten, firstPublish(rewritten, { elsewhere: true }));
+    const workers = await shared.offeredOncePublished(
+      input,
+      firstPublish(input, { published: Promise.resolve({ kind: 'published' }) }),
+      'pages-data',
+      made,
+    );
+
+    expect(alias.headers.get('cache-control')).toBe(VISITOR);
+    expect(workers).toBe(made);
+    expect(currentGeneration).not.toHaveBeenCalled();
   });
 });

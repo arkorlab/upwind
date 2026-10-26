@@ -36,6 +36,12 @@ export interface FirstPublish {
   readonly descriptor: RouteEntryDescriptor;
   /** Its publish, where this isolate makes it: settled once committed, or not to be. Never rejects. */
   readonly published: Promise<unknown> | undefined;
+  /**
+   * Whether a render whose publish this isolate does not hold has the entry's lease (`busy`): a
+   * generation may come of it all the same. Where neither this nor `published` says so, nobody is
+   * making one — the regeneration was refused, failed or skipped — and there is none to wait for.
+   */
+  readonly elsewhere: boolean;
   /** The answer a generation gives, as from any record read (`answerFromGeneration`). */
   readonly fromRecord: (current: CurrentGeneration) => Promise<Response | undefined>;
 }

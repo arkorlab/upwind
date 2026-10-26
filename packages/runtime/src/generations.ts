@@ -471,10 +471,12 @@ async function answerFirstRender(
     return answerFromLater(job, { kind: outcome.kind, generation: later }, source, want);
   }
   const answered = await answerFromJob(job, outcome, want);
+  const published = publishOf(outcome);
   const first = {
     runtime: job.runtime,
     descriptor: job.target.descriptor,
-    published: publishOf(outcome),
+    published,
+    elsewhere: outcome.kind === 'busy' && published === undefined,
     fromRecord: (current: CurrentGeneration) => answerFromGeneration(job, current, source, want),
   };
   return answered && offeredOncePublished(job.input, first, source.representation, answered);

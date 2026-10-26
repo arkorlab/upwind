@@ -8,6 +8,7 @@ import {
   noTransform,
   pageDataArtifact,
   pageHeaders,
+  pagesDataPathnameUnder,
   type Prerender,
   staticFallbackPageFor,
   staticFallbackPagesOf,
@@ -169,6 +170,31 @@ function offer(answer: Response, made: Offer, cacheControl: string | null): Resp
   return offered;
 }
 
+/** The request's pathname, and as `decodeURI` reads it, which leaves an escaped `/` escaped. */
+function askedPathnames(request: Request): readonly string[] {
+  const asked = new URL(request.url).pathname;
+  try {
+    const decoded = decodeURI(asked);
+    return decoded === asked ? [asked] : [asked, decoded];
+  } catch {
+    return [asked];
+  }
+}
+
+/**
+ * Whether the client asked for the page, its data or the route body by its own name. The edge shares
+ * only what the request's own pathname finds (`findStaticPage`, `pagesDataRequest` and
+ * `findRouteBody`, by way of `classifyRequest`); a request a rewrite led to it from another name —
+ * whose rules, and their conditions, routing judged against names the decision below never sees —
+ * goes to the Function there, and is the visitor's here.
+ */
+function askedByName(request: Request, store: Store, pathname: string, data: boolean): boolean {
+  const named = data
+    ? pagesDataPathnameUnder(store.manifest.buildId, store.manifest.config.basePath, pathname)
+    : pathname;
+  return askedPathnames(request).includes(named);
+}
+
 /**
  * The entry the build lets a page be shared as: a member of a `fallback: true` route, the build's or
  * one its first request rendered (`staticFallbackPageFor`, as the edge's classification finds
@@ -204,8 +230,14 @@ function pageOffered(
 ): Response {
   const { pack, validity, entryId } = current;
   const scopeId = input.cache?.scopeId;
-  const entry = pageEntryOf(getStore(), pack.header, entryId);
-  if (scopeId === undefined || entry === undefined || input.middlewareRan === true) {
+  const store = getStore();
+  const entry = pageEntryOf(store, pack.header, entryId);
+  if (
+    scopeId === undefined ||
+    entry === undefined ||
+    input.middlewareRan === true ||
+    !askedByName(input.request, store, entry.pathname, data)
+  ) {
     return answer;
   }
   // A build's own page is shared while fresh; an ISR page, or a member, stale as well, unless the
@@ -240,8 +272,11 @@ function pageOffered(
 
 function bodyOffered(input: RoutedInput, current: CurrentGeneration, answer: Response): Response {
   const { pack, entryId } = current;
-  const admitted = admittedOf(getStore()).bodies.get(pack.header.pathname);
-  if (admitted === undefined) return answer;
+  const store = getStore();
+  const admitted = admittedOf(store).bodies.get(pack.header.pathname);
+  if (admitted === undefined || !askedByName(input.request, store, admitted.pathname, false)) {
+    return answer;
+  }
   const headers = bodyHeaders(pack, { ...admitted, entryId });
   if (headers === undefined) return answer;
   return offer(
@@ -269,30 +304,117 @@ export function offeredFromGeneration(
   return answer;
 }
 
-/** How long the first data of a member waits for its generation (the edge's own read window). */
+/**
+ * How long the first data of a member waits for its generation, from the answer made: the edge's
+ * own window (`FOREGROUND_RECORD_READ_MS`, `static-page-capture.ts`), which it opens once the
+ * Function's answer is in.
+ */
 const FIRST_RECORD_MS = 10_000;
-/** How often the cache is asked for it meanwhile. */
-const FIRST_RECORD_POLL_MS = 100;
+/** How many times the record is read meanwhile, at the most (`MAX_FIRST_MEMBER_READS`). */
+const FIRST_RECORD_READS = 6;
+/** The pause before the second read, doubled before each after it (`FIRST_MEMBER_RETRY_MS`). */
+const FIRST_RECORD_RETRY_MS = 250;
 
-/** The entry's generation once there is one, before the deadline or the visitor's going. */
+/** `operation`'s value, held so that a value of `undefined` is told from none. */
+async function valued<T>(operation: Promise<T>): Promise<{ readonly value: T }> {
+  return { value: await operation };
+}
+
+/** `operation`'s value, or `undefined` once the window closes or the visitor goes first. */
+async function within<T>(
+  operation: Promise<T>,
+  until: number,
+  signal: AbortSignal,
+): Promise<{ readonly value: T } | undefined> {
+  const remaining = until - performance.now();
+  if (remaining <= 0 || signal.aborted) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      valued(operation),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => {
+          resolve(undefined);
+        }, remaining);
+        onAbort = () => {
+          resolve(undefined);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+/** Whether a pause of `milliseconds` ran its course, the window open and the visitor still there. */
+async function pausedFor(
+  milliseconds: number,
+  until: number,
+  signal: AbortSignal,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const paused = await within(
+      new Promise<true>((resolve) => {
+        timer = setTimeout(() => {
+          resolve(true);
+        }, milliseconds);
+      }),
+      until,
+      signal,
+    );
+    return paused !== undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Whether a publish settled as a generation (`PublishOutcome`): one refused or failed may not be. */
+function publishedOne(settled: unknown): boolean {
+  return (
+    typeof settled === 'object' &&
+    settled !== null &&
+    (settled as { readonly kind?: unknown }).kind === 'published'
+  );
+}
+
+/**
+ * The entry's generation once there is one, within the window and while the visitor stays.
+ *
+ * The publish this isolate makes is waited for first, as the edge waits for the Function's answer,
+ * which waits for it (`holdFirstPublish`) — bounded here, where the edge's wait is the Function's
+ * own: a cache that stalls keeps no visitor from the answer made for them. A publish that settled
+ * any other way than as a generation leaves one read: the commit may have landed all the same, or
+ * another attempt's in its place, and the record says which. Otherwise the record is read as the
+ * edge reads it for a first member (`confirmedPairedPage`): again while it is absent, after a pause
+ * doubled each time, a few times at the most.
+ */
 async function firstRecord(
   input: RoutedInput,
   first: FirstPublish,
-  until: number,
 ): Promise<CurrentGeneration | undefined> {
-  await first.published;
-  for (;;) {
-    const lookup = await currentGeneration(
-      first.runtime,
-      first.descriptor,
-      nowMs(),
-      input.waitUntil,
+  const until = performance.now() + FIRST_RECORD_MS;
+  const { signal } = input.request;
+  let reads = FIRST_RECORD_READS;
+  if (first.published !== undefined) {
+    const settled = await within(first.published, until, signal);
+    if (settled === undefined) return undefined;
+    if (!publishedOne(settled.value)) reads = 1;
+  }
+  let delay = FIRST_RECORD_RETRY_MS;
+  for (let read = 1; ; read += 1) {
+    const lookup = await within(
+      currentGeneration(first.runtime, first.descriptor, nowMs(), input.waitUntil),
+      until,
+      signal,
     );
-    if (lookup.kind === 'generation') return lookup.current;
-    if (performance.now() >= until || input.request.signal.aborted) return undefined;
-    await new Promise((resolve) => {
-      setTimeout(resolve, FIRST_RECORD_POLL_MS);
-    });
+    if (lookup === undefined) return undefined;
+    if (lookup.value.kind === 'generation') return lookup.value.current;
+    if (read >= reads || !(await pausedFor(delay, until, signal))) return undefined;
+    delay *= 2;
   }
 }
 
@@ -301,7 +423,7 @@ async function firstRecord(
  * then reads the record for a while, and shares the props from the generation once it is committed
  * and agrees (`capturePairedPageData`, `dataPage`); otherwise the visitor keeps the answer made for
  * them. So does this: once the generation is there, its answer — offered by the rules above — goes
- * in place of the render's.
+ * in place of the render's. Where nobody is making one, there is nothing to wait for.
  */
 export async function offeredOncePublished(
   input: RoutedInput,
@@ -309,16 +431,19 @@ export async function offeredOncePublished(
   representation: Representation,
   answer: Response,
 ): Promise<Response> {
+  const store = getStore();
   if (
     representation !== PAGES_DATA ||
     input.request.method !== 'GET' ||
     answer.status !== HTTP_OK ||
     input.middlewareRan === true ||
-    pageEntryOf(getStore(), first.descriptor, '') === undefined
+    (first.published === undefined && !first.elsewhere) ||
+    !askedByName(input.request, store, first.descriptor.pathname, true) ||
+    pageEntryOf(store, first.descriptor, '') === undefined
   ) {
     return answer;
   }
-  const current = await firstRecord(input, first, performance.now() + FIRST_RECORD_MS);
+  const current = await firstRecord(input, first);
   const recorded = current === undefined ? undefined : await first.fromRecord(current);
   if (recorded?.headers.has(OFFER) !== true) {
     await recorded?.body?.cancel();
@@ -326,6 +451,18 @@ export async function offeredOncePublished(
   }
   await answer.body?.cancel();
   return recorded;
+}
+
+/**
+ * The build's loading fallback as the visitor's own: under `private, no-store` where it says nothing
+ * of its own, as the edge's passthrough leaves such an answer of the Function's
+ * (`unsharedUnlessPublic`) — the build writes none on it.
+ */
+function visitorsOwn(answer: Response): Response {
+  if (answer.headers.has(CACHE_CONTROL)) return answer;
+  const own = new Response(answer.body, answer);
+  own.headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
+  return own;
 }
 
 export function offeredFromFallback(
@@ -338,9 +475,13 @@ export function offeredFromFallback(
     input.request.method !== 'GET' ||
     answer.status !== HTTP_OK ||
     input.middlewareRan === true ||
-    !admittedOf(store).fallbacks.has(shell)
+    !admittedOf(store).fallbacks.has(shell) ||
+    // Asked for by a member's own name, as the edge finds a fallback page (`findPagesFallback`).
+    askedPathnames(input.request).every(
+      (asked) => staticFallbackPageFor(store.manifest, shell.route, asked)?.kind !== 'fallback',
+    )
   ) {
-    return answer;
+    return visitorsOwn(answer);
   }
   return offer(
     answer,
@@ -399,7 +540,13 @@ function shared(headers: Headers, made: Offer, configured: ConfiguredHeaders): b
   if (made.kind === FALLBACK) {
     if (!htmlType(contentType) || !staticPageHeadersAllowSharing(headers)) return false;
     for (const name of SHELL_ENTITY_HEADERS) headers.delete(name);
-  } else if (made.kind === PAGE && !htmlType(contentType)) {
+  } else if (
+    // The whole answer as routing left it, as the edge judges its own once the rules are on it:
+    // anything routing laid on — a `Set-Cookie`, a private policy — keeps it the visitor's (Codex).
+    !(made.kind === PAGE_DATA ? staticPageDataHeadersAllowSharing : staticPageHeadersAllowSharing)(
+      headers,
+    )
+  ) {
     return false;
   }
   const untransformed =
