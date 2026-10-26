@@ -1,8 +1,20 @@
+const HIGH_SURROGATE_START = 0xd8_00;
+const HIGH_SURROGATE_END = 0xdb_ff;
+const LOW_SURROGATE_START = 0xdc_00;
+const LOW_SURROGATE_END = 0xdf_ff;
+
 /** A Unicode regexp cannot end or begin an atom in the middle of a surrogate pair. */
 function boundary(value: string, index: number): boolean {
+  // eslint-disable-next-line unicorn/prefer-code-point -- code units reveal a split surrogate pair.
   const before = value.charCodeAt(index - 1);
+  // eslint-disable-next-line unicorn/prefer-code-point -- code units reveal a split surrogate pair.
   const after = value.charCodeAt(index);
-  return !(before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff);
+  return !(
+    before >= HIGH_SURROGATE_START &&
+    before <= HIGH_SURROGATE_END &&
+    after >= LOW_SURROGATE_START &&
+    after <= LOW_SURROGATE_END
+  );
 }
 
 interface Literal {
@@ -48,7 +60,7 @@ export function templateMatcher(
       if (!wildcard) runs.push('');
       wildcard = true;
     } else {
-      runs[runs.length - 1] += part;
+      runs[runs.length - 1] = (runs.at(-1) ?? '') + part;
       if (part !== '') wildcard = false;
     }
   }
@@ -58,7 +70,7 @@ export function templateMatcher(
   const middle = runs
     .slice(1, -1)
     .filter((part) => part !== '')
-    .map(literal);
+    .map((part) => literal(part));
   return (input) => {
     const end = input.length - suffix.length;
     if (

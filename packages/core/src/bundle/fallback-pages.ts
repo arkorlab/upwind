@@ -152,20 +152,22 @@ function owns(admission: Admission, route: string, pathname: string, built: bool
     return false;
   const early = compiledRules(admission.reserved, 'i');
   if (
-    early.some(
-      (rule) =>
+    early.some((rule) => {
+      return (
         admission.patterns?.test(rule.rule.sourceRegex, rule.flags, pathname) ??
-        testWithin(patternOf(rule), pathname),
-    )
+        testWithin(patternOf(rule), pathname)
+      );
+    })
   )
     return false;
   if (admission.exact.has(pathname)) return false;
   if (!built && admission.outputs.has(pathname)) return false;
-  const first = compiledRules(admission.pages).find(
-    (rule) =>
+  const first = compiledRules(admission.pages).find((rule) => {
+    return (
       admission.patterns?.test(rule.rule.sourceRegex, rule.flags, pathname) ??
-      testWithin(patternOf(rule), pathname),
-  );
+      testWithin(patternOf(rule), pathname)
+    );
+  });
   return (
     first?.rule.template === route &&
     first.rule.route.has === undefined &&

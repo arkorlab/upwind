@@ -300,9 +300,9 @@ function mayBeRoute(
 /** Resolve construction eligibility and the last winner for each pathname before tag allocation. */
 export function routePrerendersOf(
   prerenders: readonly Prerender[],
-  context: Pick<ManifestContext, 'bundle' | 'resumable' | 'patterns'>,
+  inputContext: Pick<ManifestContext, 'bundle' | 'resumable' | 'patterns'>,
 ): Prerender[] {
-  context = { ...context, patterns: context.patterns ?? new BuildPatternBudget() };
+  const context = { ...inputContext, patterns: inputContext.patterns ?? new BuildPatternBudget() };
   const named = new Map<string, Prerender>();
   for (const prerender of prerenders) {
     if (mayBeRoute(prerender, context)) {
@@ -314,9 +314,9 @@ export function routePrerendersOf(
 
 export function routeEntryOf(
   prerender: Prerender,
-  context: ManifestContext,
+  inputContext: ManifestContext,
 ): RouteEntry | undefined {
-  context = { ...context, patterns: context.patterns ?? new BuildPatternBudget() };
+  const context = { ...inputContext, patterns: inputContext.patterns ?? new BuildPatternBudget() };
   if (!mayBeRoute(prerender, context)) {
     return undefined;
   }
@@ -337,11 +337,7 @@ export function routeEntryOf(
   // The spelling a request asks for the page by, behind the slash where the application keeps its
   // pages there; a class shell under its template. The matchers are asked about that request.
   const pathname = routePathnameOf(bundle, prerender);
-  const named = middlewareCovers(
-    context.matchers,
-    pathname,
-    context.patterns ?? new BuildPatternBudget(),
-  )
+  const named = middlewareCovers(context.matchers, pathname, context.patterns)
     ? []
     : (context.preloads[prerender.body.sha256] ?? []);
   // And what the route's own policies forbid or quieten goes out with it: a hint replayed as a

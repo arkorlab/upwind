@@ -84,10 +84,11 @@ export class TemplateLiteralSchema<Out extends string = string> extends Schema<
   undefined,
   undefined
 > {
+  private readonly matchesValue: (input: string) => boolean;
+
   /** The parts as they were given, for a reader that rebuilds the schema elsewhere. */
   readonly parts: readonly TemplatePart[];
   readonly pattern: RegExp;
-  private readonly matchesValue: (input: string) => boolean;
 
   constructor(parts: readonly TemplatePart[]) {
     super();

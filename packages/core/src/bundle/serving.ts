@@ -11,10 +11,11 @@ import { memberRoutesOf } from './member-routes.ts';
 import { pageRoutes } from './page-routes.ts';
 import { BuildPatternBudget, type BuildPatternMatcher } from './pattern-budget.ts';
 import { queryDependent } from './query.ts';
-import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
+import type { DeploymentBundle, Entrypoint, Prerender, Route } from './schema.ts';
+import { edgeServedRewrites } from './served-rewrites.ts';
 import { terminalShellsOf } from './shared-shell.ts';
 import { isTemplate, keepsTrailingSlash, requestedPathname, routerSpellings } from './spelling.ts';
-import { assetPrefixRewrite, travelsWithFunction } from './static-files.ts';
+import { assetPrefixRewrite } from './static-files.ts';
 
 /**
  * What of a deployment's build the edge serves, and under which headers: the prerenders with a
@@ -33,12 +34,6 @@ export type ServingBundle = Omit<
 >;
 
 const HTTP_OK = 200;
-/**
- * A path with nothing in it for a router to interpret: no parameter, no group, no wildcard. Only
- * such a source and destination say, at build time, exactly which request a rule answers and with
- * what — which is what `edgeServedRewrites` needs before it may answer one itself.
- */
-const LITERAL_PATHNAME = /^\/[^\s:(*?#[]*$/u;
 /** The entrypoint kinds whose code renders a document, rather than answering with a response. */
 const DOCUMENT_KINDS: ReadonlySet<string> = new Set(['app-page', 'pages']);
 
@@ -621,115 +616,6 @@ function conditionsOf(route: Route): Pick<DynamicRoute, 'has' | 'missing'> {
 }
 
 /** A rewrite of `next.config` the edge answers itself, and the file of the build it answers with. */
-export interface ServedRewrite {
-  /** The rule this came from, so the routing it is taken out of can leave it out. */
-  readonly rule: Route;
-  /** What the visitor asks for. */
-  readonly pathname: string;
-  readonly file: StaticFile;
-}
-
-/** A rule that can change where this pathname goes, for at least one request. */
-function mayRoutePath(rule: Route, pathname: string, patterns: BuildPatternMatcher): boolean {
-  if (rule.destination === undefined && rule.status === undefined) {
-    return false;
-  }
-  // Conditions cannot be settled at build time: an alias must be right for every request. Match
-  // the compiled pattern, including parameterized sources and Next.js's case-insensitive default.
-  return patterns.test(rule.sourceRegex, 'i', pathname);
-}
-
-/** The literal file a rule can name, before routing precedence is considered. */
-function rewriteCandidate(
-  rule: Route,
-  files: ReadonlyMap<string, StaticFile>,
-  basePath: string,
-): ServedRewrite | undefined {
-  const { source, destination } = rule;
-  if (
-    source === undefined ||
-    destination === undefined ||
-    rule.status !== undefined ||
-    isConditional(rule) ||
-    !LITERAL_PATHNAME.test(source) ||
-    !LITERAL_PATHNAME.test(destination)
-  ) {
-    return undefined;
-  }
-  const file = files.get(destination);
-  return file === undefined || travelsWithFunction(file, basePath)
-    ? undefined
-    : { rule, pathname: source, file };
-}
-
-/**
- * The rewrites the edge serves from its own storage rather than handing to the Function.
- *
- * A rewrite to a file too large to travel with the Function had nowhere to be answered: the Function
- * is where routing happens, and the file it resolves to is not in the manifest compiled into it,
- * so the request came back a miss while the edge held the bytes all along. Resolved here, once,
- * against the build — never at request time — and the edge serves the source pathname as the
- * static file it names.
- *
- * Only a rule that says at build time exactly what it answers qualifies: a literal source and
- * destination, no condition, no status, and no earlier rule that may claim its source. A
- * `beforeFiles` rewrite overrides an existing pathname, but must leave its destination alone for
- * the rest of that phase; an `afterFiles` rewrite is reached only when no file or exact route
- * claims its source. Conditions and rewrite chains stay with the router that can resolve them.
- */
-export function edgeServedRewrites(
-  bundle: ServingBundle,
-  patterns: BuildPatternMatcher = new BuildPatternBudget(),
-): ServedRewrite[] {
-  if (!reproducesDynamicRouting(bundle)) {
-    return [];
-  }
-  const { basePath } = bundle.config;
-  const files = new Map(bundle.staticFiles.map((file) => [file.pathname, file]));
-  // A page or a file is found under every spelling the router finds it by (`routerSpellings`):
-  // `/about/` is the page `/about`, and `/manual/` the file `/manual`, ahead of `afterFiles`.
-  const named = [...bundle.entrypoints, ...bundle.prerenders].map((output) => output.pathname);
-  const claimed = new Set(
-    [...files.keys(), ...named].flatMap((pathname) => routerSpellings(bundle, pathname)),
-  );
-  const served: ServedRewrite[] = [];
-  // Every earlier rule counts, including one serving a small file, a conditional rule and a
-  // redirect before middleware. Failing to promote one does not mean routing skipped it.
-  const earlier = [...bundle.routing.beforeMiddleware];
-  const phases = [
-    { rules: bundle.routing.beforeFiles, beforeFiles: true },
-    { rules: bundle.routing.afterFiles, beforeFiles: false },
-  ];
-  for (const phase of phases) {
-    for (const [index, rule] of phase.rules.entries()) {
-      const candidate = rewriteCandidate(rule, files, basePath);
-      const prior =
-        candidate !== undefined &&
-        earlier.some((route) => mayRoutePath(route, candidate.pathname, patterns));
-      earlier.push(rule);
-      if (
-        candidate === undefined ||
-        prior ||
-        (!phase.beforeFiles && claimed.has(candidate.pathname))
-      ) {
-        continue;
-      }
-      // Unlike afterFiles, beforeFiles keeps rewriting before checking the filesystem. A later
-      // rule can replace this destination, even though the build already contains a file there.
-      if (
-        phase.beforeFiles &&
-        phase.rules
-          .slice(index + 1)
-          .some((route) => mayRoutePath(route, candidate.file.pathname, patterns))
-      ) {
-        continue;
-      }
-      served.push(candidate);
-    }
-  }
-  return served;
-}
-
 /**
  * What the edge needs to pick a dynamic route's class the way Next.js picks the route; for a
  * bundle whose routes are split across app Functions, which Function each route it picks is in;
@@ -760,9 +646,12 @@ export function dynamicRouting(
   const membersOf = memberRoutesOf(bundle, {
     edgeRuntime: edgeRuntimeRoutes(bundle),
     isDocument: documentPrerenders(bundle.prerenders, bundle.entrypoints),
-    servable: (prerender) =>
-      !claimedBeforeFiles(bundle, prerender, patterns) &&
-      headersReproducible(bundle, prerender, patterns),
+    servable: (prerender) => {
+      return (
+        !claimedBeforeFiles(bundle, prerender, patterns) &&
+        headersReproducible(bundle, prerender, patterns)
+      );
+    },
   });
   // One for each page and one for each page's data, however the build collapsed them.
   const pages = pageRoutes(routing.dynamicRoutes, bundle.config.basePath);
@@ -888,3 +777,5 @@ export function shellHeaders(
 ): Record<string, string> {
   return filterShellResponseHeaders(prerenderResponseHeaders(bundle, prerender, patterns));
 }
+
+export { edgeServedRewrites, type ServedRewrite } from './served-rewrites.ts';

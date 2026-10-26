@@ -27,25 +27,32 @@ function assemble(bundle: DeploymentBundle) {
   });
 }
 
+function expensiveBundle(kind: 'middleware' | 'policy'): DeploymentBundle {
+  const pathname = `/${'a'.repeat(200)}b`;
+  const bundle = fixtureBundle();
+  bundle.entrypoints = [{ id: pathname, pathname, kind: 'app-page' }];
+  bundle.prerenders = [
+    { ...rootPrerender(), id: pathname, pathname, route: pathname, parentOutputId: pathname },
+  ];
+  const rule = { sourceRegex: '^/a*a*a*a*!$' };
+  if (kind === 'middleware') bundle.middleware = { matchers: [rule] };
+  else
+    bundle.routing.beforeMiddleware = [
+      {
+        ...rule,
+        has: [{ type: 'header', key: 'x-policy' }],
+        headers: { 'content-security-policy': "script-src 'none'" },
+      },
+    ];
+
+  return bundle;
+}
+
 describe('manifest assembly pattern refusals', () => {
   it.each(['middleware', 'policy'] as const)('refuses an expensive %s expression', async (kind) => {
-    const pathname = `/${'a'.repeat(200)}b`;
-    const bundle = fixtureBundle();
-    bundle.entrypoints = [{ id: pathname, pathname, kind: 'app-page' }];
-    bundle.prerenders = [
-      { ...rootPrerender(), id: pathname, pathname, route: pathname, parentOutputId: pathname },
-    ];
-    const rule = { sourceRegex: '^/a*a*a*a*!$' };
-    if (kind === 'middleware') bundle.middleware = { matchers: [rule] };
-    else
-      bundle.routing.beforeMiddleware = [
-        {
-          ...rule,
-          has: [{ type: 'header', key: 'x-policy' }],
-          headers: { 'content-security-policy': "script-src 'none'" },
-        },
-      ];
-    await expect(assemble(bundle)).resolves.toEqual({
+    const bundle = expensiveBundle(kind);
+
+    await expect(assemble(bundle)).resolves.toStrictEqual({
       kind: 'refused',
       reason: 'the build exceeds the routing pattern execution budget',
     });
@@ -56,11 +63,14 @@ describe('manifest assembly pattern refusals', () => {
     const exec = vi.spyOn(BuildPatternBudget.prototype, 'exec');
     try {
       expect((await assemble(fixtureBundle())).kind).toBe('assembled');
+
       const contexts = [...test.mock.contexts, ...exec.mock.contexts];
+
       expect(contexts.length).toBeGreaterThan(1);
       expect(new Set(contexts).size).toBe(1);
     } finally {
       test.mockRestore();
+
       exec.mockRestore();
     }
   });

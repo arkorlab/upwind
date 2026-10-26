@@ -6,6 +6,7 @@ describe('bounded template matching', () => {
   it('retains the generated pattern as metadata, without executing it', () => {
     const schema = templateLiteral([string(), 'a', string(), 'a', string(), '!']);
     const execute = vi.spyOn(schema.pattern, 'test');
+
     expect(schema.safeParse(`${'a'.repeat(1024)}?`).success).toBe(false);
     expect(schema.safeParse('aa!').success).toBe(true);
     expect(execute).not.toHaveBeenCalled();
@@ -18,9 +19,9 @@ describe('bounded template matching', () => {
       templateLiteral(['segment:', string()]),
       templateLiteral([string(), 'a', string(), 'ab']),
       templateLiteral([string(), '', string(), '!']),
-      templateLiteral(['\ud83d', string(), '\ude00']),
-      templateLiteral([string(), '\ude00', string()]),
-      templateLiteral(['\ud83d', '\ude00', string()]),
+      templateLiteral(['\u{D83D}', string(), '\u{DE00}']),
+      templateLiteral([string(), '\u{DE00}', string()]),
+      templateLiteral(['\u{D83D}', '\u{DE00}', string()]),
     ];
     const inputs = [
       '',
@@ -31,16 +32,16 @@ describe('bounded template matching', () => {
       'abab',
       '!',
       '😀',
-      '\ud83d',
-      '\ude00',
-      '😀\ude00',
+      '\u{D83D}',
+      '\u{DE00}',
+      '😀\u{DE00}',
     ];
     for (const schema of schemas) {
       for (const input of inputs) expect(schema.matches(input)).toBe(schema.pattern.test(input));
     }
   });
 
-  it.each(['\n', '\r', '\r\n', '\u2028', '\u2029'])(
+  it.each(['\n', '\r', '\r\n', '\u{2028}', '\u{2029}'])(
     'requires the fixed suffix at the actual end before %j',
     (line) => {
       expect(templateLiteral([string(), '!']).matches(`!${line}`)).toBe(false);

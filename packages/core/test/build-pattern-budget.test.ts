@@ -18,12 +18,14 @@ const PATHNAME = `/${'a'.repeat(200)}b`;
 describe('explicit build pattern allowances', () => {
   it('retains flags, captures, and the missing-literal shortcut', () => {
     const patterns = new BuildPatternBudget();
-    expect(patterns.exec('^/(?<slug>[^/]+)$', 'i', '/Foo')?.groups).toEqual({ slug: 'Foo' });
+
+    expect(patterns.exec('^/(?<slug>[^/]+)$', 'i', '/Foo')?.groups?.['slug']).toBe('Foo');
     expect(patterns.test('^/literal/a*a*a*a*!$', 'i', PATHNAME)).toBe(false);
   });
 
   it('charges successive affordable matches to the operation, independently of other operations', () => {
     const patterns = new BuildPatternBudget(48);
+
     expect(patterns.test('^a$', '', 'a')).toBe(true);
     expect(() => {
       for (let count = 0; count < 48; count += 1) patterns.test('^a$', '', 'a');
@@ -35,17 +37,24 @@ describe('explicit build pattern allowances', () => {
     const bundle = fixtureBundle();
     const page = { ...staticPrerender(), pathname: PATHNAME };
     bundle.routing.beforeMiddleware = [{ sourceRegex: SOURCE, headers: { 'x-example': 'value' } }];
+
     expect(() => prerenderResponseHeaders(bundle, page)).toThrow(BuildPatternBudgetExceededError);
+
     bundle.routing.beforeMiddleware = [{ sourceRegex: SOURCE, destination: '/elsewhere' }];
-    bundle.staticFiles = bundle.staticFiles.map((file) => ({
-      ...file,
-      blob: { ...file.blob, byteLength: 100_000_000 },
-    }));
+    bundle.staticFiles = bundle.staticFiles.map((file) => {
+      return {
+        ...file,
+        blob: { ...file.blob, byteLength: 100_000_000 },
+      };
+    });
     bundle.routing.beforeFiles = [
       { source: PATHNAME, sourceRegex: '^/literal$', destination: '/hello.txt' },
     ];
+
     expect(() => edgeServedRewrites(bundle)).toThrow(BuildPatternBudgetExceededError);
+
     bundle.entrypoints = [{ id: 'page', pathname: PATHNAME, kind: 'app-page' }];
+
     expect(() => filesystemPagesOf(bundle, [{ sourceRegex: SOURCE }])).toThrow(
       BuildPatternBudgetExceededError,
     );
@@ -56,11 +65,14 @@ describe('explicit build pattern allowances', () => {
   it('keeps runtime privacy defaults and explicit build contexts separate', () => {
     const bundle = fallbackBundle();
     const patterns = new BuildPatternBudget(1);
+
     expect(() => staticPagesMembersOf(bundle, patterns)).toThrow(BuildPatternBudgetExceededError);
     expect(() => staticPagesMembersOf(bundle, patterns)).toThrow(BuildPatternBudgetExceededError);
     expect(staticPagesMembersOf(bundle).size).toBe(1);
+
     const privacy = fixtureBundle();
     privacy.staticPagesPrivacy = 1;
+
     expect(() => staticPagesPrivacyOf(privacy, new BuildPatternBudget(1))).toThrow(
       BuildPatternBudgetExceededError,
     );

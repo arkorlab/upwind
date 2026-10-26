@@ -13,6 +13,7 @@ describe('unsupported legacy octal routing tokens', () => {
     'does not infer mandatory trailing digits from %s',
     (escape) => {
       const source = `^${escape}a*a*a*a*!$`;
+
       expect(patternCost(source, '', true)).toBeUndefined();
       expect(literalGate(source, '', true)).toBeUndefined();
     },
@@ -20,11 +21,12 @@ describe('unsupported legacy octal routing tokens', () => {
 
   it('refuses both guarded APIs before native execution', () => {
     budgetPatterns();
-    // eslint-disable-next-line require-unicode-regexp -- the legacy grammar under test.
-    const pattern = /^\057a*a*a*a*!$/;
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp -- adversarial legacy grammar, refused before execution.
+    const pattern = new RegExp(['^', String.raw`\057`, 'a*'.repeat(4), '!$'].join(''));
     const test = vi.spyOn(pattern, 'test');
     const exec = vi.spyOn(pattern, 'exec');
     const value = `/${'a'.repeat(200)}b`;
+
     expect(() => testWithin(pattern, value)).toThrow(PatternBudgetExceededError);
     expect(() => execWithin(pattern, value)).toThrow(PatternBudgetExceededError);
     expect(test).not.toHaveBeenCalled();
