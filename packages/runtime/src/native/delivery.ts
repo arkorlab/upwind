@@ -8,6 +8,7 @@ import {
   noTransform,
   pageDataArtifact,
   pageHeaders,
+  pageOfDataPathname,
   pagesDataPathnameUnder,
   type Prerender,
   staticFallbackPageFor,
@@ -22,10 +23,13 @@ import {
 import {
   type ConfiguredHeaders,
   headerRulesFor,
+  pathIsReserved,
+  type ReservedRoute,
   type RouteBodyEntry,
   type StaticPageEntry,
 } from '@stayingupwind/core/manifest';
 import {
+  dataRequestHeaders,
   hasRouteBodyControlHeader,
   NO_STORE_CACHE_CONTROL,
   PLATFORM_HEADER_PREFIX,
@@ -114,9 +118,33 @@ interface Admitted {
   readonly fallbacks: ReadonlySet<Prerender>;
   readonly bodies: ReadonlyMap<string, Omit<RouteBodyEntry, 'entryId'>>;
   readonly rules: Parameters<typeof headerRulesFor>[0];
+  /** The routes that take a request elsewhere ahead of the filesystem (`reservedOf`). */
+  readonly reserved: readonly ReservedRoute[];
 }
 
 const admissions = new WeakMap<Store['manifest'], Admitted>();
+
+/**
+ * The routes Next.js runs ahead of the filesystem that take a request elsewhere: redirects and
+ * rewrites ahead of the middleware, and rewrites ahead of the filesystem — what the edge reserves a
+ * page's own path from (`reservedRoutes`, `serving.ts`), each with its conditions. A rewrite after
+ * the filesystem never reaches a page the build wrote; one ahead of it may lead the request through
+ * other names before it lands back, and routing lays on the rules of each, judged against names
+ * the decision below never sees.
+ */
+function reservedOf(bundle: Store['manifest']): ReservedRoute[] {
+  const { beforeMiddleware, beforeFiles } = bundle.routing;
+  return [...beforeMiddleware, ...beforeFiles]
+    .filter((route) => route.status !== undefined || route.destination !== undefined)
+    .map((route) => {
+      return {
+        sourceRegex: route.sourceRegex,
+        ...(route.has !== undefined && { has: route.has }),
+        ...(route.missing !== undefined && { missing: route.missing }),
+        beforeFiles: true as const,
+      };
+    });
+}
 
 /**
  * The outputs the build lets be shared, as a deployment's manifest names them (`staticPagesOf`,
@@ -148,6 +176,7 @@ function admittedOf(store: Store): Admitted {
     fallbacks: new Set(staticFallbackPagesOf(bundle)),
     bodies,
     rules: { headerRules: headerRulesOf(bundle), routerReferences: bundle.routerReferences },
+    reserved: reservedOf(bundle),
   };
   admissions.set(bundle, admitted);
   return admitted;
@@ -510,6 +539,26 @@ function requestShares(request: Request, body: boolean): boolean {
   );
 }
 
+/**
+ * Whether a route of `reservedOf` takes the request, its conditions judged against it: the request's
+ * own name, and for a page's data the data's (as the router reads a data request, `x-nextjs-data`
+ * set) and the page's too (`reservedRequest`, `pages-fallback.ts`). The edge leaves such a request to
+ * the Function, whose answer is the visitor's: so is this one (Codex).
+ */
+function reservedFor(store: Store, request: Request, data: boolean): boolean {
+  const { reserved } = admittedOf(store);
+  if (reserved.length === 0) return false;
+  const url = new URL(request.url);
+  if (!data) return pathIsReserved(reserved, url, request.headers, true);
+  if (pathIsReserved(reserved, url, dataRequestHeaders(request.headers), true)) return true;
+  const { buildId, config } = store.manifest;
+  const page = pageOfDataPathname(buildId, config.basePath, url.pathname);
+  if (page === undefined) return true;
+  const pageUrl = new URL(url.href);
+  pageUrl.pathname = page;
+  return pathIsReserved(reserved, pageUrl, request.headers, true);
+}
+
 /** The rules of `next.config` hold for everyone, and none keeps the answer from being shared. */
 function configuredShares(configured: ConfiguredHeaders, made: Offer): boolean {
   if (configured.conditioned) return false;
@@ -567,9 +616,15 @@ export function delivered(request: Request, answer: Response): Response {
   headers.delete(OFFER);
   headers.delete(OFFERED_CACHE_CONTROL);
   const made = offerOf(value);
-  if (made !== undefined && out.status === HTTP_OK && requestShares(request, made.kind === BODY)) {
+  const store = getStore();
+  if (
+    made !== undefined &&
+    out.status === HTTP_OK &&
+    requestShares(request, made.kind === BODY) &&
+    !reservedFor(store, request, made.kind === PAGE_DATA)
+  ) {
     const configured = headerRulesFor(
-      admittedOf(getStore()).rules,
+      admittedOf(store).rules,
       new URL(request.url),
       request.headers,
     );

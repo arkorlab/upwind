@@ -310,6 +310,47 @@ describe('answers by the edge’s rules on the native target', () => {
     );
   });
 
+  it('keeps a page the visitor’s where a route ahead of the filesystem takes its request', () => {
+    // A rewrite through another name and back, for a request that carries `x-hop`; a rule of that
+    // other name, for the same request, lays a header no rule of the page's own name lays.
+    const made = bundle();
+    vi.mocked(getStore).mockReturnValue({
+      manifest: {
+        ...made,
+        routing: {
+          ...made.routing,
+          beforeMiddleware: [
+            ...made.routing.beforeMiddleware,
+            {
+              sourceRegex: '^/intermediate$',
+              headers: { 'access-control-allow-origin': '*' },
+              has: [{ type: 'header', key: 'x-hop' }],
+            },
+          ],
+          beforeFiles: [
+            {
+              sourceRegex: '^/something$',
+              destination: '/intermediate',
+              has: [{ type: 'header', key: 'x-hop' }],
+            },
+            { sourceRegex: '^/intermediate$', destination: '/something' },
+          ],
+        },
+      },
+    } as unknown as Store);
+
+    const hopped = answered(
+      native,
+      routed('/something', { headers: { 'x-hop': '1' } }),
+      current('pages'),
+      { 'access-control-allow-origin': '*' },
+    );
+    const direct = answered(native, routed('/something'), current('pages'));
+
+    expect(hopped.headers.get('cache-control')).toBe(VISITOR);
+    expect(direct.headers.get('cache-control')).toBe(REVALIDATE);
+  });
+
   it('keeps a page whose record the build did not admit the visitor’s', () => {
     const made = current('pages', { staticPagePrivacy: undefined });
 
