@@ -36,6 +36,11 @@ const POLL_MS = 250;
 const ASK_MS = 5000;
 /** How much of what a server said goes with a failure to start it. */
 const TAIL_BYTES = 4000;
+/**
+ * How much of it the cleanup hook passes on: the end of a whole suite's serving, where a failure the
+ * suite saw as a status alone left its stack.
+ */
+const SERVED_TAIL_BYTES = 32_000;
 
 const REPO = path.join(import.meta.dirname, '..', '..', '..');
 const UPWIND_CLI = path.join(REPO, 'packages', 'upwind', 'src', 'cli.ts');
@@ -97,9 +102,9 @@ function printedIn(file: string): string {
   }
 }
 
-function tailOf(file: string): string {
+function tailOf(file: string, bytes = TAIL_BYTES): string {
   const all = printedIn(file);
-  return all.length > TAIL_BYTES ? `…${all.slice(-TAIL_BYTES)}` : all;
+  return all.length > bytes ? `…${all.slice(-bytes)}` : all;
 }
 
 function signalGroup(pid: number, signal: NodeJS.Signals): void {
@@ -205,17 +210,20 @@ export async function serveLocally(input: LocalServeInput): Promise<string> {
   }
 }
 
-/** Stop the server serving the fixture here, if there is one: asked first, then made to. */
-export async function stopLocally(appDir: string): Promise<void> {
+/**
+ * Stop the server serving the fixture here, if there is one: asked first, then made to. Whether there
+ * was one to stop.
+ */
+export async function stopLocally(appDir: string): Promise<boolean> {
   const file = path.join(appDir, PID_FILE);
   if (!existsSync(file)) {
-    return;
+    return false;
   }
   const pid = Number(readFileSync(file, 'utf8'));
   rmSync(file, { force: true });
   rmSync(path.join(appDir, ENV_FILE), { force: true });
   if (!Number.isSafeInteger(pid) || pid <= 0) {
-    return;
+    return false;
   }
   signalGroup(pid, 'SIGTERM');
   const end = Date.now() + STOP_MS;
@@ -224,4 +232,10 @@ export async function stopLocally(appDir: string): Promise<void> {
   }
   // Whatever of the group is left — workerd under a stack that did not let it go — is ended now.
   signalGroup(pid, 'SIGKILL');
+  return true;
+}
+
+/** The end of what the server serving the fixture here said, to its last line: its stopping too. */
+export function servedLog(appDir: string): string {
+  return tailOf(path.join(appDir, RUNTIME_LOG), SERVED_TAIL_BYTES);
 }
