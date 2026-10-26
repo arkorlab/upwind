@@ -1,5 +1,6 @@
 import { once } from 'node:events';
 import { createServer, type RequestListener } from 'node:http';
+import { Readable } from 'node:stream';
 import {
   brotliCompressSync,
   deflateRawSync,
@@ -13,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ImageDestinationError } from '../../src/image-source-error.ts';
 import {
   createImageSourceTransport,
+  DeflateDecoder,
   guardedImageLookup,
   type ImageSourceTransport,
 } from '../../src/native/image-source-fetch.ts';
@@ -223,5 +225,33 @@ describe('native image source destinations', () => {
     controller.abort(reason);
 
     await expect(pending).rejects.toBe(reason);
+  });
+
+  it('bounds deflate output while its consumer is paused and resumes on demand', async () => {
+    const decoder = new DeflateDecoder();
+    const paused = Promise.withResolvers<undefined>();
+    // eslint-disable-next-line @typescript-eslint/unbound-method, vitest/unbound-method -- invoked with its explicit receiver below.
+    const pause = Readable.prototype.pause;
+    const spy = vi.spyOn(Readable.prototype, 'pause').mockImplementation(function pauseDecoder(
+      this: Readable,
+    ) {
+      if (this !== decoder) paused.resolve(undefined);
+      return pause.call(this);
+    });
+    const bytes = new Uint8Array(256 * 1024);
+    try {
+      decoder.end(deflateSync(bytes));
+      await paused.promise;
+
+      expect(decoder.readableLength).toBeLessThanOrEqual(decoder.readableHighWaterMark);
+
+      const chunks: Buffer[] = [];
+      for await (const chunk of decoder) chunks.push(chunk as Buffer);
+
+      expect(Buffer.concat(chunks)).toHaveLength(bytes.byteLength);
+    } finally {
+      spy.mockRestore();
+      decoder.destroy();
+    }
   });
 });

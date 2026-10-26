@@ -66,7 +66,7 @@ export function guardedImageLookup(resolve: ResolveAddresses = lookup): LookupFu
 }
 
 /** HTTP permits raw deflate as well as a zlib-wrapped stream, as native fetch accepts both. */
-class DeflateDecoder extends Transform {
+export class DeflateDecoder extends Transform {
   #decoder: ReturnType<typeof createInflate> | undefined;
 
   override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
@@ -84,13 +84,18 @@ class DeflateDecoder extends Transform {
             finishFlush: constants.Z_SYNC_FLUSH,
           });
       this.#decoder.on('data', (bytes: Buffer) => {
-        this.push(bytes);
+        if (!this.push(bytes)) this.#decoder?.pause();
       });
       this.#decoder.on('error', (error: Error) => {
         this.destroy(error);
       });
     }
     this.#decoder.write(chunk, callback);
+  }
+
+  override _read(size: number): void {
+    super._read(size);
+    this.#decoder?.resume();
   }
 
   override _final(callback: TransformCallback): void {
@@ -206,9 +211,16 @@ export function createImageSourceTransport(
               );
             }
             const status = response.statusCode ?? HTTP_BAD_GATEWAY;
-            const body = BODYLESS_STATUSES.has(status)
-              ? null
-              : Readable.toWeb(decodedBody(response));
+            const decoded = BODYLESS_STATUSES.has(status) ? null : decodedBody(response);
+            const body =
+              decoded === null
+                ? null
+                : Readable.toWeb(decoded, {
+                    strategy: {
+                      highWaterMark: decoded.readableHighWaterMark,
+                      size: (chunk: Uint8Array) => chunk.byteLength,
+                    },
+                  });
             if (body === null) response.resume();
             resolve(
               new Response(body as ReadableStream<Uint8Array> | null, {
