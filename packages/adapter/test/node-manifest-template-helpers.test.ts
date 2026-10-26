@@ -36,6 +36,7 @@ async function fixture(
   role: 'RouteKind' | 'hoist' = 'RouteKind',
   targetExtra = '',
   selector?: string,
+  brackets = false,
 ) {
   const original = await projectedTemplateFixture('pages');
   const relative = role === 'RouteKind' ? '/server/route-kind.js' : '/build/templates/helpers.js';
@@ -45,7 +46,10 @@ async function fixture(
   const namespace = role === 'RouteKind' ? '_routekind' : '_helpers';
   const imported = `runtimeContext.x(${jsLiteral(known.specifier)},()=>require(${jsLiteral(known.specifier)}))`;
   let code = original.projection.original.code.replace(imported, () => 'runtimeContext.i(2)');
-  code = code.replaceAll(`${namespace}.${role}`, () => `${namespace}.${selector ?? compact}`);
+  code = code.replaceAll(`${namespace}.${role}`, () => {
+    const key = selector ?? compact;
+    return brackets ? `${namespace}[${jsLiteral(key)}]` : `${namespace}.${key}`;
+  });
   assert(code !== original.projection.original.code);
   const helper = `2,(ctx)=>{"use strict";${await helperSource(role)};ctx.s([${jsLiteral(compact)},()=>${role}]);${targetExtra}}`;
   code = `${code.slice(0, -2)},${helper}];`;
@@ -119,6 +123,31 @@ describe('opaque selected Pages helper imports', () => {
       expect(own.descriptor.sha256).toBe(own.physical.source.sha256);
     },
   );
+
+  it.each(['RouteKind', 'hoist'] as const)(
+    'authenticates a bracket compact %s selector through its original selected export',
+    async (role) => {
+      const own = await fixture(role, '', undefined, true);
+
+      await expect(assertNodeManifestTurbopackTemplateConsumer(own.input)).resolves.toMatchObject({
+        kind: 'pages',
+      });
+      expect(own.descriptor.sha256).toBe(own.physical.source.sha256);
+    },
+  );
+
+  it('refuses an unproved bracket helper selector and a copied helper identity', async () => {
+    const wrong = await fixture('hoist', '', 'other', true);
+    const copied = await fixture('hoist', '', undefined, true);
+    copied.descriptor.helper = { ...copied.descriptor.helper };
+
+    await expect(assertNodeManifestTurbopackTemplateConsumer(wrong.input)).rejects.toThrow(
+      'unrecognized external import',
+    );
+    await expect(assertNodeManifestTurbopackTemplateConsumer(copied.input)).rejects.toThrow(
+      'changed template helper import',
+    );
+  });
 
   it('preserves the unchanged direct pinned Next import path', async () => {
     const input = await projectedTemplateFixture('pages');

@@ -234,7 +234,7 @@ describe('projected fixed Next Pages and AppRoute template bodies', () => {
               own,
               own.projection.original.code.replace(
                 '_modulecompiled.PagesRouteModule',
-                "_modulecompiled['PagesRouteModule']",
+                '_modulecompiled[globalThis.constructorName]',
               ),
             )
           : own;

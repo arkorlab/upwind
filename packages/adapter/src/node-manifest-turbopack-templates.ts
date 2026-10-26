@@ -41,6 +41,10 @@ import {
   nodeManifestTemplateHelperToken,
 } from './node-manifest-template-helper-tokens.ts';
 import type { NodeManifestTemplateHelperOwner } from './node-manifest-template-helpers.ts';
+import {
+  nodeManifestTemplateConstructors,
+  nodeManifestTemplateMemberName,
+} from './node-manifest-template-members.ts';
 import type { NodeManifestTemplateProof } from './node-manifest-templates.ts';
 import type { NodeManifestTurbopackConsumerInput } from './node-manifest-turbopack-consumers.ts';
 import {
@@ -179,18 +183,13 @@ function constructorFields(
   value: Node,
   input: NodeManifestTurbopackTemplateInput,
 ): ReadonlyMap<string, Node> {
-  const constructors = visitTree(value).filter((visit) => {
-    const callee = visit.node['callee'];
-    return (
-      visit.node.type === 'NewExpression' &&
-      isNode(callee) &&
-      callee.type === 'MemberExpression' &&
-      propertyName(callee) === PROFILES[input.route.kind].constructorName
-    );
-  });
+  const constructors = nodeManifestTemplateConstructors(
+    value,
+    PROFILES[input.route.kind].constructorName,
+  );
   const constructor = constructors[0];
   if (constructor === undefined || constructors.length !== 1) return refuse('constructor');
-  return fieldsOf(listOf(constructor.node, 'arguments')[0]);
+  return fieldsOf(listOf(constructor, 'arguments')[0]);
 }
 function origin(value: unknown, visits: ReadonlyMap<Node, Visit>): Node | undefined {
   if (!identifier(value)) return undefined;
@@ -453,6 +452,7 @@ function view(
       ? nodeManifestTemplateDeclarationView({ original: context.program, body })
       : body,
     importToken: (node) => importToken(node, context),
+    memberName: nodeManifestTemplateMemberName,
   });
   return { alpha, exports };
 }

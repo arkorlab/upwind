@@ -7,6 +7,8 @@ export interface NodeManifestAlphaInput {
   readonly body: readonly unknown[];
   /** Only a static import expression may be substituted; no runtime code is emitted. */
   readonly importToken?: (node: Node) => string | undefined;
+  /** An explicitly scoped template selector DATA view; original receiver shapes remain intact. */
+  readonly memberName?: (node: Node) => string | undefined;
 }
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -94,7 +96,7 @@ export class NodeManifestAlpha {
     };
   }
 
-  private recordShape(value: Record<string, unknown>): unknown {
+  private recordShape(value: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     const owner = isNode(value) ? value : undefined;
     for (const [field, child] of Object.entries(value)) {
@@ -113,6 +115,13 @@ export class NodeManifestAlpha {
       const imported = this.input.importToken?.(value);
       if (imported !== undefined) return { type: 'StaticTemplateImport', value: imported };
       if (identifier(value)) return this.identifierShape(value, parent, key);
+      const member = this.input.memberName?.(value);
+      if (member !== undefined && value.type === 'MemberExpression')
+        return {
+          ...this.recordShape(value),
+          computed: false,
+          property: { type: 'Identifier', name: member },
+        };
     }
     return this.recordShape(value);
   }

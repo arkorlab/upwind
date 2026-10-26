@@ -9,7 +9,6 @@ import { nativeBindings } from './native-ast.ts';
 import {
   declaration,
   identifier,
-  propertyName,
   reference,
   stringOf,
   type Visit,
@@ -20,6 +19,7 @@ import {
   type NodeManifestTemplateHelperMember,
   type NodeManifestTemplateHelperOwner,
 } from './node-manifest-template-helpers.ts';
+import { nodeManifestTemplateMemberKey } from './node-manifest-template-members.ts';
 import type { NodeManifestTemplateImport } from './node-manifest-templates.ts';
 import type { NodeManifestTurbopackTemplateImport } from './node-manifest-turbopack-template-import.ts';
 import type { NodeManifestTurbopackProjection } from './node-manifest-turbopack.ts';
@@ -136,7 +136,7 @@ function semantic(
 function member(node: Node, input: TokenInput): NodeManifestTemplateHelperMember | undefined {
   if (node.type !== 'MemberExpression' || node['optional'] === true || !identifier(node['object']))
     return undefined;
-  const key = propertyName(node);
+  const key = nodeManifestTemplateMemberKey(node);
   const known = namespace(node['object'], input);
   if (
     key === undefined ||
