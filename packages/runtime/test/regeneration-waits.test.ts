@@ -25,8 +25,9 @@ import { requestKeeping } from './request-context.ts';
  * memory: the render made for them and nothing after it. The uploads and the commit go on behind
  * the answer; the tag delta is pulled beside the lease; a stale generation is regenerated once its
  * answer has gone out in full, and its visitors are answered from that regeneration's render as
- * soon as it is made. The generation a render publishes is stamped with the moment it was made, not
- * the moment its commit is asked for.
+ * soon as it is made — so is a visitor whose record comes too late, rather than with the build's
+ * page. The generation a render publishes is stamped with the moment it was made, not the moment
+ * its commit is asked for.
  */
 
 function nodeBridge(): { invokeNodeHandler: Mock } {
@@ -874,6 +875,47 @@ describe('what a visitor waits for while an entry is regenerated', () => {
 
     expect(answered).toBe('{"feed":"kept"}');
     expect(second.response?.headers.has(CACHE_OUTCOME_HEADER)).toBe(false);
+  });
+
+  /**
+   * The regeneration let go of the record it replaces as its render was made, and the request after
+   * it reads the host for one. Answered with the build's page where that read was late, a visitor
+   * was sent a page older than the one the request before them was.
+   */
+  it('answers a visitor whose record comes too late from the render regenerating the entry', async () => {
+    const authority = fakeAuthority(SCOPE);
+    await keptFeed(authority);
+    const recordsHeld = Promise.withResolvers<true>();
+    let records = 0;
+    const commit = commitsHeldBack(async (request) => {
+      if (new URL(request.url).pathname.endsWith('/record')) {
+        records += 1;
+        // The first read finds the generation; the one after the render is held past its deadline.
+        if (records > 1) {
+          await recordsHeld.promise;
+        }
+      }
+      return authority.fetchImpl(request);
+    });
+    const runtime = runtimeFor(commit.fetchImpl);
+    vi.mocked(invokeNodeHandler).mockResolvedValue(
+      Response.json({ feed: 'regenerated' }, { headers: { 'cache-control': ISR } }),
+    );
+    const store = storeOf(FEED.route, 'app-route');
+    const now = T0 + 61 * SECOND;
+
+    const first = await serve(runtime, store, FEED_SOURCE, now);
+    await first.response?.text();
+    await commit.arrived;
+    const second = await serve(runtime, store, FEED_SOURCE, now);
+    const answered = await second.response?.text();
+    recordsHeld.resolve(true);
+    commit.release();
+    await settle([...first.pending, ...second.pending]);
+
+    expect(records).toBe(2);
+    expect(answered).toBe('{"feed":"regenerated"}');
+    expect(second.response?.headers.get(CACHE_OUTCOME_HEADER)).toBe('publishing');
   });
 
   /**
