@@ -333,6 +333,18 @@ async function matchingRelativeAlias(
   }
 }
 
+async function relativeFileAlias(
+  logical: string,
+  resolved: string,
+  context: PackageAliasContext,
+  exact = true,
+): Promise<boolean> {
+  const suffixes = exact ? COMMONJS_SUFFIXES : COMMONJS_SUFFIXES.slice(1);
+  for (const suffix of suffixes)
+    if (await matchingRelativeAlias(`${logical}${suffix}`, resolved, context)) return true;
+  return false;
+}
+
 /** Preserve logical relative links even when NFT recorded only canonical files. */
 async function relativeAliases(
   file: string,
@@ -344,14 +356,18 @@ async function relativeAliases(
   const resolved = resolveRelative(file, specifier);
   if (resolved === undefined) return;
   context.layout.nameOf(logical);
-  const roots: string[] = specifier === '.' ? [] : [logical];
+  const directoryOnly = specifier.endsWith('/') || ['.', '..'].includes(path.basename(specifier));
+  // Node checks exact/extension files before consulting a same-name directory's package.json.
+  if (!directoryOnly && (await relativeFileAlias(logical, resolved, context))) return;
   const main = await relativeMain(logical, context);
-  if (main !== undefined) roots.push(main, path.join(main, 'index'));
-  roots.push(path.join(logical, 'index'));
   await relativeDirectoryAlias(logical, context);
-  for (const root of roots)
-    for (const suffix of COMMONJS_SUFFIXES)
-      if (await matchingRelativeAlias(`${root}${suffix}`, resolved, context)) return;
+  if (
+    main !== undefined &&
+    ((await relativeFileAlias(main, resolved, context)) ||
+      (await relativeFileAlias(path.join(main, 'index'), resolved, context, false)))
+  )
+    return;
+  if (await relativeFileAlias(path.join(logical, 'index'), resolved, context, false)) return;
   throw new AuditError('A relative Node module lookup has no proved physical alias');
 }
 
