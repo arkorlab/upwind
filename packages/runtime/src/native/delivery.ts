@@ -9,8 +9,8 @@ import {
   pageDataArtifact,
   pageHeaders,
   type Prerender,
+  staticFallbackPageFor,
   staticFallbackPagesOf,
-  staticPagesMembersOf,
   staticPagesPrivacyOf,
 } from '@stayingupwind/core/bundle';
 import {
@@ -33,7 +33,9 @@ import {
   REVALIDATE_CACHE_CONTROL,
 } from '@stayingupwind/core/request';
 
-import type { CurrentGeneration } from '../cache/current.ts';
+import { nowMs } from '../cache/clock.ts';
+import { type CurrentGeneration, currentGeneration } from '../cache/current.ts';
+import type { FirstPublish } from '../delivery.ts';
 import type { Representation } from '../representations.ts';
 import type { RoutedInput } from '../serve.ts';
 import { getStore, type Store } from '../store.ts';
@@ -74,6 +76,8 @@ import { getStore, type Store } from '../store.ts';
 const OFFER = `${PLATFORM_HEADER_PREFIX}offer`;
 /** The `Cache-Control` the offer left on the answer, for routing's own to be told from it. */
 const OFFERED_CACHE_CONTROL = `${PLATFORM_HEADER_PREFIX}offer-cache-control`;
+/** A page's data, as a request wants it (`PAGES_DATA`, read here without the module it is in). */
+const PAGES_DATA = 'pages-data' satisfies Representation;
 const CACHE_CONTROL = 'cache-control';
 const CONTENT_TYPE = 'content-type';
 const SET_COOKIE = 'set-cookie';
@@ -133,16 +137,6 @@ function admittedOf(store: Store): Admitted {
         ...(privacy === 2 && { staticPagePrivacy: privacy }),
       });
     }
-    for (const [page, member] of staticPagesMembersOf(bundle)) {
-      pages.set(page.pathname, {
-        pathname: page.pathname,
-        route: page.route,
-        entryId: '',
-        staticPagePrivacy: FALLBACK_PRIVACY,
-        parameters: { ...member.params },
-        dataPathname: member.dataPathname,
-      });
-    }
   }
   const bodies = new Map<string, Omit<RouteBodyEntry, 'entryId'>>();
   for (const body of edgeServableRouteBodies(bundle)) {
@@ -175,6 +169,33 @@ function offer(answer: Response, made: Offer, cacheControl: string | null): Resp
   return offered;
 }
 
+/**
+ * The entry the build lets a page be shared as: a member of a `fallback: true` route, the build's or
+ * one its first request rendered (`staticFallbackPageFor`, as the edge's classification finds
+ * either), or a page the build admitted on its own (`staticPagesPrivacyOf`).
+ */
+function pageEntryOf(
+  store: Store,
+  { route, pathname }: { readonly route: string; readonly pathname: string },
+  entryId: string,
+): StaticPageEntry | undefined {
+  const member = store.manifest.config.trailingSlash
+    ? undefined
+    : staticFallbackPageFor(store.manifest, route, pathname);
+  if (member !== undefined) {
+    return {
+      staticPagePrivacy: FALLBACK_PRIVACY,
+      route,
+      pathname,
+      entryId,
+      parameters: { ...member.params },
+      dataPathname: member.dataPathname,
+    };
+  }
+  const page = admittedOf(store).pages.get(pathname);
+  return page?.route === route ? { ...page, entryId } : undefined;
+}
+
 function pageOffered(
   input: RoutedInput,
   current: CurrentGeneration,
@@ -183,11 +204,10 @@ function pageOffered(
 ): Response {
   const { pack, validity, entryId } = current;
   const scopeId = input.cache?.scopeId;
-  const admitted = admittedOf(getStore()).pages.get(pack.header.pathname);
-  if (scopeId === undefined || admitted === undefined || input.middlewareRan === true) {
+  const entry = pageEntryOf(getStore(), pack.header, entryId);
+  if (scopeId === undefined || entry === undefined || input.middlewareRan === true) {
     return answer;
   }
-  const entry: StaticPageEntry = { ...admitted, entryId };
   // A build's own page is shared while fresh; an ISR page, or a member, stale as well, unless the
   // cache carries an invalidation of it (`pageDecisionAgrees`, and the edge's invalidated path).
   const isr = entry.staticPagePrivacy !== undefined;
@@ -240,13 +260,40 @@ export function offeredFromGeneration(
   // A `HEAD` is the Function's on the edge: the build proves a `GET` representation.
   if (input.request.method !== 'GET' || answer.status !== HTTP_OK) return answer;
   const { kind } = current.pack.header;
-  if (kind === 'pages' && (representation === 'html' || representation === 'pages-data')) {
-    return pageOffered(input, current, representation === 'pages-data', answer);
+  if (kind === 'pages' && (representation === 'html' || representation === PAGES_DATA)) {
+    return pageOffered(input, current, representation === PAGES_DATA, answer);
   }
   if (kind === 'app-route' && representation === BODY) {
     return bodyOffered(input, current, answer);
   }
   return answer;
+}
+
+/**
+ * The data of a member a request is the first to render: the edge has the member rendered and
+ * shares its props once their generation is committed and agrees (`capturePairedPageData`,
+ * `dataPage`), so the answer here waits for the same commit before it is offered.
+ */
+export async function offeredOncePublished(
+  input: RoutedInput,
+  first: FirstPublish,
+  representation: Representation,
+  answer: Response,
+): Promise<Response> {
+  if (
+    representation !== PAGES_DATA ||
+    input.request.method !== 'GET' ||
+    answer.status !== HTTP_OK ||
+    input.middlewareRan === true ||
+    pageEntryOf(getStore(), first.descriptor, '') === undefined
+  ) {
+    return answer;
+  }
+  await first.published;
+  // Whatever the publish came to, what is shared is what the cache now holds of the entry, judged
+  // as any generation is: a refused or failed publish leaves none, and the answer the visitor's.
+  const lookup = await currentGeneration(first.runtime, first.descriptor, nowMs(), input.waitUntil);
+  return lookup.kind === 'generation' ? pageOffered(input, lookup.current, true, answer) : answer;
 }
 
 export function offeredFromFallback(

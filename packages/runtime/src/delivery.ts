@@ -1,6 +1,8 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
+import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
 
 import type { CurrentGeneration } from './cache/current.ts';
+import type { CacheRuntime } from './cache/runtime.ts';
 import type { Representation } from './representations.ts';
 import type { RoutedInput } from './serve.ts';
 import type { Store } from './store.ts';
@@ -25,6 +27,24 @@ export function offeredFromGeneration(
   _representation: Representation,
   answer: Response,
 ): Response {
+  return answer;
+}
+
+/** A render the runtime is publishing as an entry's first generation, and how it reached it. */
+export interface FirstPublish {
+  readonly runtime: CacheRuntime;
+  readonly descriptor: RouteEntryDescriptor;
+  /** Its publish: settled once the generation is committed, or is not to be. Never rejects. */
+  readonly published: Promise<unknown>;
+}
+
+/** The answer the runtime makes from a render it is publishing as the entry's first generation. */
+export function offeredOncePublished(
+  _input: RoutedInput,
+  _first: FirstPublish,
+  _representation: Representation,
+  answer: Response,
+): Response | Promise<Response> {
   return answer;
 }
 

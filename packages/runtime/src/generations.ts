@@ -39,7 +39,7 @@ import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { servable } from './cache/servable.ts';
-import { offeredFromGeneration } from './delivery.ts';
+import { offeredFromGeneration, offeredOncePublished } from './delivery.ts';
 import { foundDynamic, rememberingDynamic } from './dynamic-misses.ts';
 import { nodeHandlerOf } from './entries.ts';
 import type { GenerationSource } from './generation-source.ts';
@@ -551,9 +551,22 @@ async function answerMiss(
     const outcome = await runJob(job, 'miss', null);
     holdFirstPublish(outcome);
     const later = laterOf(outcome);
-    return later === undefined
-      ? answerFromJob(job, outcome, want)
-      : answerFromLater(job, { kind: outcome.kind, generation: later }, source, want);
+    if (later !== undefined) {
+      return answerFromLater(job, { kind: outcome.kind, generation: later }, source, want);
+    }
+    const answered = await answerFromJob(job, outcome, want);
+    // What a host with no edge in front of it shares of the first generation, once it is one: the
+    // render this request made, or the one this isolate was already publishing of the entry.
+    const published =
+      outcome.kind === 'accepted' || outcome.kind === 'busy' ? outcome.published : undefined;
+    return answered === undefined || published === undefined
+      ? answered
+      : offeredOncePublished(
+          job.input,
+          { runtime: job.runtime, descriptor: job.target.descriptor, published },
+          source.representation,
+          answered,
+        );
   }
   if (onMiss === 'behind' && once) {
     scheduleJob(job, 'miss', null);
