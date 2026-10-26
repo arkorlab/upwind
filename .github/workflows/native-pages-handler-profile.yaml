@@ -9,6 +9,7 @@ on:
       - 'tools/native-pages-handler-profile/**'
       - 'packages/adapter/src/node-pages-handler-profile.ts'
       - 'packages/adapter/test/node-pages-handler-profile.test.ts'
+      - 'packages/adapter/test/node-pages-handler-inputs.test.ts'
 
 permissions:
   contents: read
@@ -21,6 +22,18 @@ jobs:
   produce:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - server-minification: default
+            option: ''
+            output: independent-pages-handler-profile
+            artifact: UNQUALIFIED-public-pages-handler
+          - server-minification: off
+            option: '--server-minification=off'
+            output: independent-pages-handler-profile-server-minification-off
+            artifact: UNQUALIFIED-public-pages-handler-server-minification-off
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -32,11 +45,11 @@ jobs:
         with:
           node-version: 24.22.1
       - name: Independently compile fixed public inputs twice without network
-        run: node tools/native-pages-handler-profile-ci.mts
+        run: node tools/native-pages-handler-profile-ci.mts ${{ matrix.option }}
       - name: Retain unqualified public source corpus for separate review
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: UNQUALIFIED-public-pages-handler
-          path: ${{ runner.temp }}/independent-pages-handler-profile/UNQUALIFIED.json
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/${{ matrix.output }}/UNQUALIFIED.json
           if-no-files-found: error
           retention-days: 1

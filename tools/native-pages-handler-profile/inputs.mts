@@ -14,3 +14,5 @@ export const FIXTURE_FILES = {
   'pnpm-lock.yaml': '404a690b1c38fb8342c10604979b3e9c9eb48db09359c5a3647ed514630411b6',
   'pnpm-workspace.yaml': '88e934fe6ccbe96f25789faf958f3478625f934dd651b8968f3c33a4e1c88d31',
 } as const;
+export const SERVER_MINIFICATION_OFF_CONFIG =
+  'd3c5b5fab607b9300eb21e847197612fd64b5137490e328f26c33ea44267fcb0';

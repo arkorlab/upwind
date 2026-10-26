@@ -13,10 +13,13 @@ import {
   PACKAGE_MANAGER,
   SWC_INTEGRITY,
 } from './native-pages-handler-profile/inputs.mts';
+import {
+  pagesHandlerProfileInputs,
+  type PagesHandlerProfileInputs,
+} from './native-pages-handler-profile/options.mts';
 import { command } from './native-pages-handler-profile/process.mts';
 
-const FIXTURE = fileURLToPath(new URL('native-pages-handler-profile/fixture/', import.meta.url));
-const OUTPUT_NAME = 'independent-pages-handler-profile';
+const INPUTS = fileURLToPath(new URL('native-pages-handler-profile/', import.meta.url));
 const NEXT_HANDLER = 'node_modules/next/dist/server/route-modules/pages/pages-handler.js';
 const FILE_MODE = 0o700;
 const NODE_VERSION = '24.22.1';
@@ -37,12 +40,12 @@ function hostEnvironment(home: string): NodeJS.ProcessEnv {
   };
 }
 
-async function inputIdentity(): Promise<string> {
+async function inputIdentity(profile: PagesHandlerProfileInputs): Promise<string> {
   const inventory: string[] = [];
-  for (const [name, digest] of Object.entries(FIXTURE_FILES)) {
-    const bytes = await readFile(path.join(FIXTURE, name));
-    assert.equal(sha256(bytes), digest, 'Fixed public compiler fixture changed');
-    inventory.push(`${name}:${digest}`);
+  for (const file of profile.files) {
+    const bytes = await readFile(path.join(INPUTS, file.source));
+    assert.equal(sha256(bytes), file.sha256, 'Fixed public compiler fixture changed');
+    inventory.push(`${file.target}:${file.sha256}`);
   }
   return sha256(inventory.join('\n'));
 }
@@ -50,6 +53,7 @@ async function inputIdentity(): Promise<string> {
 async function prepare(
   root: string,
   cohort: string,
+  profile: PagesHandlerProfileInputs,
 ): Promise<{ project: string; environment: NodeJS.ProcessEnv }> {
   const directory = path.join(root, cohort);
   const home = path.join(directory, 'home');
@@ -58,10 +62,10 @@ async function prepare(
   await writeFile(path.join(home, GLOBAL_CONFIG), '');
   await writeFile(path.join(home, USER_CONFIG), '');
   await mkdir(project, { mode: FILE_MODE });
-  for (const name of Object.keys(FIXTURE_FILES)) {
-    const target = path.join(project, name);
+  for (const file of profile.files) {
+    const target = path.join(project, file.target);
     await mkdir(path.dirname(target), { recursive: true });
-    await cp(path.join(FIXTURE, name), target, { errorOnExist: true, force: false });
+    await cp(path.join(INPUTS, file.source), target, { errorOnExist: true, force: false });
   }
   const environment = hostEnvironment(home);
   await command(
@@ -143,8 +147,9 @@ async function compile(
   root: string,
   cohort: string,
   cleanup: string[],
+  profile: PagesHandlerProfileInputs,
 ): Promise<readonly unknown[]> {
-  const { environment, project } = await prepare(root, cohort);
+  const { environment, project } = await prepare(root, cohort, profile);
   const name = `pages-handler-profile-${path.basename(root)}-${cohort}`;
   cleanup.push(name);
   await command('docker', compileArguments(project, name), root, environment);
@@ -158,13 +163,13 @@ async function compile(
   return publicPagesCorpus(project);
 }
 
-async function produce(temporary: string): Promise<void> {
+async function produce(temporary: string, profile: PagesHandlerProfileInputs): Promise<void> {
   assert.equal(process.versions.node, NODE_VERSION, 'Pinned producer Node required');
   assert.ok(
     process.platform === 'linux' && process.arch === 'x64',
     'Pinned Linux compiler platform required',
   );
-  const fixture = await inputIdentity();
+  const fixture = await inputIdentity(profile);
   const root = await mkdtemp(path.join(temporary, 'pages-handler-public-'));
   const environment = hostEnvironment(root);
   const cleanup: string[] = [];
@@ -187,14 +192,14 @@ async function produce(temporary: string): Promise<void> {
       IMAGE_ID,
       'Pinned image identity changed',
     );
-    const first = await compile(root, 'first', cleanup);
-    const second = await compile(root, 'second', cleanup);
+    const first = await compile(root, 'first', cleanup, profile);
+    const second = await compile(root, 'second', cleanup, profile);
     assert.equal(
       JSON.stringify(first),
       JSON.stringify(second),
       'Two clean public compilations differ; no normalization is permitted',
     );
-    const output = path.join(temporary, OUTPUT_NAME);
+    const output = path.join(temporary, profile.outputName);
     await mkdir(output);
     await writeFile(
       path.join(output, 'UNQUALIFIED.json'),
@@ -233,9 +238,10 @@ async function produce(temporary: string): Promise<void> {
   }
 }
 
+const profile = pagesHandlerProfileInputs(process.argv.slice(2));
 const temporary = process.env['RUNNER_TEMP'];
 assert.ok(
   typeof temporary === 'string' && path.isAbsolute(temporary),
   'A runner temporary directory is required',
 );
-await produce(temporary);
+await produce(temporary, profile);
