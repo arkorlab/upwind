@@ -13,6 +13,7 @@ import {
   workerNodeMayExecute,
   workerSelectionWasMutated,
 } from './native-worker-branches.ts';
+import { exportedWorkerCapability } from './native-worker-handoff.ts';
 
 type WorkerOrigin = 'constructor' | 'prototype' | 'namespace' | 'module' | 'promise' | 'ambiguous';
 const IMPORTS = new WeakMap<readonly Node[], ReadonlyMap<Node, WorkerOrigin>>();
@@ -365,78 +366,6 @@ function handledWorkerConstructor(
   );
 }
 
-function exportedPattern(pattern: Node, context: WorkerContext): boolean {
-  let value = pattern;
-  while (value.type === 'AssignmentPattern' || value.type === 'RestElement')
-    value = value.type === 'AssignmentPattern' ? value.left : value.argument;
-  if (value.type === 'Identifier') return handedOffCapability(value, context);
-  if (value.type === 'ArrayPattern')
-    return value.elements.some((element) => element !== null && exportedPattern(element, context));
-  if (value.type === 'ObjectPattern')
-    return value.properties.some((property) =>
-      exportedPattern(property.type === 'Property' ? property.value : property.argument, context),
-    );
-  return false;
-}
-
-function objectInitializer(value: Node, context: WorkerContext): Node | undefined {
-  if (value.type !== 'Identifier') return undefined;
-  const declaration = context.bindings.lookup(value, value.name);
-  if (
-    declaration?.type !== 'VariableDeclarator' ||
-    declaration.init === null ||
-    declaration.id.type !== 'Identifier'
-  )
-    return undefined;
-  return declaration.init;
-}
-
-function handoffValues(node: Node, context: WorkerContext): readonly Node[] {
-  if (node.type === 'ObjectExpression')
-    return node.properties.map((property) =>
-      property.type === 'Property' ? property.value : property.argument,
-    );
-  const initializer = objectInitializer(node, context);
-  return initializer === undefined ? [] : [initializer];
-}
-
-function handedOffCapability(value: Node, context: WorkerContext): boolean {
-  const seen = new Set<Node>();
-  const pending: Node[] = [value];
-  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
-    if (seen.has(node)) continue;
-    seen.add(node);
-    if (workerOrigin(node, context) !== undefined) return true;
-    const values = handoffValues(node, context);
-    pending.push(...values);
-  }
-  return false;
-}
-
-function exportedCapability(node: Node, context: WorkerContext): boolean {
-  if (node.type === 'ExportAllDeclaration') return WORKER_MODULES.has(stringOf(node.source) ?? '');
-  if (node.type === 'ExportDefaultDeclaration')
-    return handedOffCapability(node.declaration, context);
-  if (node.type === 'AssignmentExpression' || node.type === 'AssignmentPattern')
-    return handedOffCapability(node.right, context);
-  if (node.type !== 'ExportNamedDeclaration') return false;
-  if (node.source !== null) {
-    if (!WORKER_MODULES.has(stringOf(node.source) ?? '')) return false;
-    return node.specifiers.some((specifier) => {
-      const name =
-        specifier.local.type === 'Identifier' ? specifier.local.name : stringOf(specifier.local);
-      return name === 'Worker' || name === 'default';
-    });
-  }
-  const declared = node.declaration;
-  if (
-    declared?.type === 'VariableDeclaration' &&
-    declared.declarations.some((item) => exportedPattern(item.id, context))
-  )
-    return true;
-  return node.specifiers.some((specifier) => handedOffCapability(specifier.local, context));
-}
-
 /** Inspect only the tree-shaken chunk; exports receive no eager source marker. */
 export function hasRetainedWorkerCapability(
   tree: readonly Node[],
@@ -466,7 +395,14 @@ export function retainedWorkerCapabilityNodes(
       handledWorkerConstructor(node, context, tree, options.guards)
     )
       return false;
-    if (returnedCapability(node, context) !== undefined || exportedCapability(node, context))
+    if (
+      returnedCapability(node, context) !== undefined ||
+      exportedWorkerCapability(
+        node,
+        { bindings, origin: (value) => workerOrigin(value, context) },
+        WORKER_MODULES,
+      )
+    )
       return true;
     return (
       (node.type === 'CallExpression' || node.type === 'NewExpression') &&
