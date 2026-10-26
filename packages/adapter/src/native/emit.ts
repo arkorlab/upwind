@@ -197,6 +197,10 @@ function nativeModules(runtimeRoot: string, cacheHost: string): Plugin {
     [path.join(runtimeRoot, 'environment.ts'), path.join(runtimeRoot, 'native/environment.ts')],
     [path.join(runtimeRoot, 'node-bridge.ts'), path.join(runtimeRoot, 'native/entry.ts')],
     [path.join(runtimeRoot, 'rewrite-fetch.ts'), path.join(runtimeRoot, 'native/rewrite-fetch.ts')],
+    [
+      path.join(runtimeRoot, 'image-source-fetch.ts'),
+      path.join(runtimeRoot, 'native/image-source-fetch.ts'),
+    ],
     [path.join(runtimeRoot, 'static-file.ts'), path.join(runtimeRoot, 'native/static-file.ts')],
   ]);
   return {
