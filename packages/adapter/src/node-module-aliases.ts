@@ -5,7 +5,11 @@ import path from 'node:path';
 import { beneath } from './build-paths.ts';
 import { AuditError } from './dependencies.ts';
 import { NodeAliasCompatibility } from './node-alias-compatibility.ts';
-import { nodePackageCandidate, nodePackageHasExports } from './node-package-lookup.ts';
+import {
+  nodePackageCandidate,
+  nodePackageHasExports,
+  nodePackageImportsDirectory,
+} from './node-package-lookup.ts';
 import { nodePackageScope } from './node-package-scope.ts';
 import {
   nodePackageMain,
@@ -95,8 +99,9 @@ interface PackageAliasContext {
   readonly sources: NodeModuleAliasSources;
   readonly links: Map<string, string>;
   readonly kind: NodeSourceSpecifier['kind'];
+  readonly lookup?: 'imports-target';
 }
-type ModuleAliasContext = Omit<PackageAliasContext, 'kind'>;
+type ModuleAliasContext = Omit<PackageAliasContext, 'kind' | 'lookup'>;
 
 function ownsDirectory(sources: NodeModuleAliasSources, target: string): boolean {
   for (const file of sources.originals.keys()) if (beneath(target, file) !== undefined) return true;
@@ -164,7 +169,17 @@ async function bareFileAlias(
   }
   return false;
 }
-
+async function mappedPackageAlias(
+  file: string,
+  specifier: string,
+  pkg: string,
+  context: PackageAliasContext,
+): Promise<boolean> {
+  const alias = await nodePackageImportsDirectory(file, pkg);
+  if (alias === undefined || !(await recordPackageAlias(alias, context))) return false;
+  await packageSubpathAliases(await realpath(alias), specifier, pkg, context);
+  return true;
+}
 async function packageAliases(
   file: string,
   specifier: string,
@@ -214,7 +229,11 @@ async function packageSubpathAliases(
     specifier,
     packageName: pkg,
     metadata: context.sources.files.get(context.layout.nameOf(file)),
-    relativeAlias: (target) => relativeAliases(file, target, context),
+    relativeAlias: (target) => {
+      return specifier === pkg || context.lookup === undefined
+        ? relativeAliases(file, target, context)
+        : relativePackageImport(file, target, context);
+    },
     exactAlias: (target) => relativePackageImport(file, target, context),
   });
 }
@@ -300,7 +319,9 @@ async function packageImports(
     (pkg === scope.metadata['name'] && scope.metadata['exports'] !== undefined)
   )
     throw new AuditError('Node package import has an unproved external target');
-  if (!(await packageAliases(scope.file, target, context)))
+  if (
+    !(await mappedPackageAlias(scope.file, target, pkg, { ...context, lookup: 'imports-target' }))
+  )
     throw new AuditError('Node package import external alias has no closed physical target');
 }
 

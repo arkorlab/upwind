@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import { AuditError } from './dependencies.ts';
-import { nodePackageMain, nodePackageSubpaths } from './node-package-subpaths.ts';
+import { nodePackageMain, nodePackageName, nodePackageSubpaths } from './node-package-subpaths.ts';
 import type { NodeSourceSpecifier } from './node-source-specifiers.ts';
 
 const PACKAGE_MANIFEST = 'package.json';
@@ -42,6 +42,25 @@ export async function nodePackageDirectory(alias: string): Promise<boolean> {
   } catch (error) {
     if (!missingPath(error)) throw error;
     return false;
+  }
+}
+
+/** External imports targets use packageResolve directory ancestry, independent of conditions. */
+export async function nodePackageImportsDirectory(
+  importer: string,
+  packageName: string,
+): Promise<string | undefined> {
+  if (
+    !path.isAbsolute(importer) ||
+    nodePackageName(packageName) !== packageName ||
+    !/^(?:@[\w.-]+\/)?[\w.-]+$/u.test(packageName) ||
+    packageName.split('/').some((part) => ['.', '..', 'node_modules'].includes(part))
+  )
+    throw new AuditError('Node package import has an unproved external target');
+  for (let directory = path.dirname(importer); ; directory = path.dirname(directory)) {
+    const alias = path.join(directory, 'node_modules', packageName);
+    if (await nodePackageDirectory(alias)) return alias;
+    if (path.dirname(directory) === directory) return undefined;
   }
 }
 
