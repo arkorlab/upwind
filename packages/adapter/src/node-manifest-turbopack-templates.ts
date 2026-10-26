@@ -480,7 +480,7 @@ export async function assertNodeManifestTurbopackTemplateConsumer(
     const esm = expectedScalars(await nodeManifestPagesEsmTemplate(primary.root), actual);
     assertNodeManifestPagesEsmPorts({
       program: actual.program,
-      projection: input.projection,
+      original: input,
       slots: actual.slots,
       ...options,
     });

@@ -5,6 +5,7 @@ import { jsLiteral } from './codegen.ts';
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node } from './lexical-scope.ts';
 import { nativeBindings } from './native-ast.ts';
+import { nodeManifestCoalescedPagesInspection } from './node-manifest-coalesced-pages.ts';
 import {
   declaration,
   identifier,
@@ -13,6 +14,7 @@ import {
   stringOf,
   visitTree,
 } from './node-manifest-consumer-ast.ts';
+import type { NodeManifestTurbopackTemplateInput } from './node-manifest-turbopack-templates.ts';
 import type { NodeManifestTurbopackProjection } from './node-manifest-turbopack.ts';
 
 const PREFIX = '__upwind_pages_esm_';
@@ -222,10 +224,65 @@ export function nodeManifestPagesEsmExpectedCode(code: string): string {
 
 interface NamespaceInput {
   readonly program: Node;
-  readonly projection: NodeManifestTurbopackProjection;
+  readonly original: NodeManifestTurbopackTemplateInput;
   readonly slots: ReadonlyMap<Node, string>;
   /** Only the enclosing checked private coalesced profile can supply this existing slot. */
   readonly namespace?: string;
+}
+function certifiedNamespace(input: NamespaceInput): string | undefined {
+  if (input.namespace === undefined) return undefined;
+  const coalesced = input.original.coalesced;
+  if (coalesced === undefined || input.original.route.kind !== 'pages')
+    refuse('uncertified coalesced namespace');
+  const view = nodeManifestCoalescedPagesInspection(
+    coalesced.profile,
+    coalesced.owner,
+    input.original.projection,
+    { ...input.original.route, kind: 'pages' },
+  );
+  if (
+    view.namespace !== input.namespace ||
+    JSON.stringify(parsed(view.projection.source.code)) !== JSON.stringify(input.program)
+  )
+    refuse('changed coalesced namespace view');
+  return view.namespace;
+}
+function assertNamespaceRead(visits: ReturnType<typeof visitTree>, init: Node, name: string): void {
+  for (const use of visits)
+    if (
+      identifier(use.node) &&
+      reference(use) &&
+      use.node.name === name &&
+      (use.node !== init || declaration(name, use.scopes) !== undefined)
+    )
+      refuse('coalesced namespace read or escape');
+}
+function assertCoalescedAlias(variable: Node, input: NamespaceInput, namespace: string): void {
+  const local = variable['id'];
+  const init = variable['init'];
+  const visits = visitTree(input.program);
+  const parents = new Map(visits.map((visit) => [visit.node, visit]));
+  const visit = parents.get(variable);
+  const parent = visit?.parent;
+  const at = isNode(init) ? parents.get(init) : undefined;
+  if (
+    at === undefined ||
+    variable.type !== 'VariableDeclarator' ||
+    !identifier(local) ||
+    !identifier(init) ||
+    init.name !== namespace ||
+    parent?.type !== 'VariableDeclaration' ||
+    declaration(namespace, at.scopes) !== undefined ||
+    declaration(local.name, at.scopes)?.node !== variable ||
+    parents.get(parent)?.parent !== input.program ||
+    !nativeBindings(input.program as unknown as AstNode).unmodified(
+      variable as unknown as AstNode,
+      local.name,
+      true,
+    )
+  )
+    refuse('coalesced namespace alias');
+  assertNamespaceRead(visits, init, namespace);
 }
 function genuineStrictDirective(node: Node): boolean {
   const body = node.type === 'Program' ? node : node['body'];
@@ -295,7 +352,7 @@ function assertNamespacePort(variable: Node, input: NamespaceInput): void {
   )
     refuse('namespace binding');
   const specifier = stringOf(listOf(call, 'arguments')[0]);
-  const ports = input.projection.imports.filter((entry) => entry.specifier === specifier);
+  const ports = input.original.projection.imports.filter((entry) => entry.specifier === specifier);
   if (
     specifier === undefined ||
     ports.length === 0 ||
@@ -306,12 +363,14 @@ function assertNamespacePort(variable: Node, input: NamespaceInput): void {
 const NAMESPACES = ['VAR_USERLAND', 'VAR_MODULE_APP', 'VAR_MODULE_DOCUMENT'];
 /** VAR namespaces require original reviewed esmImport ports, never raw require equivalence. */
 export function assertNodeManifestPagesEsmPorts(input: NamespaceInput): void {
-  assertOriginalStrictness(input.projection);
+  assertOriginalStrictness(input.original.projection);
+  const namespace = certifiedNamespace(input);
   const roles = new Set<string>();
-  if (input.namespace !== undefined) roles.add('VAR_USERLAND');
   for (const [variable, role] of input.slots) {
     if (roles.has(role)) refuse('duplicate namespace');
-    assertNamespacePort(variable, input);
+    if (role === 'VAR_USERLAND' && namespace !== undefined)
+      assertCoalescedAlias(variable, input, namespace);
+    else assertNamespacePort(variable, input);
     roles.add(role);
   }
   if (roles.size !== NAMESPACES.length || NAMESPACES.some((role) => !roles.has(role)))
