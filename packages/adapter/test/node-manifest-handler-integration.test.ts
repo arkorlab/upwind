@@ -65,8 +65,19 @@ describe('private Pages handler source integration', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  it('keeps the static catalog empty and does not read missing root metadata for an unrelated native graph', async () => {
-    expect(NODE_MANIFEST_HANDLER_PROFILES).toStrictEqual([]);
+  it('freezes the qualified static catalog and does not read missing root metadata for an unrelated native graph', async () => {
+    expect(NODE_MANIFEST_HANDLER_PROFILES.map((profile) => profile.name)).toStrictEqual([
+      'next-16.4.3-public-pages-handler',
+    ]);
+    expect(
+      NODE_MANIFEST_HANDLER_PROFILES.every((profile) => {
+        return (
+          Object.isFrozen(profile) &&
+          Object.isFrozen(profile.reference.rows) &&
+          Object.isFrozen(profile.literalSlots)
+        );
+      }),
+    ).toBe(true);
     expect(Object.isFrozen(NODE_MANIFEST_HANDLER_PROFILES)).toBe(true);
     await expect(
       prepareNodeManifestHandlerCompilerRoot(

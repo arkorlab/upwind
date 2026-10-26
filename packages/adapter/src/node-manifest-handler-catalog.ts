@@ -2,6 +2,7 @@ import type {
   NodeManifestHandlerLiteralSlot,
   NodeManifestHandlerReferenceGraphData,
 } from './node-manifest-handler-graph.ts';
+import { NEXT_16_4_3_HANDLER_REFERENCE } from './node-manifest-handler-reference.ts';
 
 export const NODE_MANIFEST_HANDLER_MODULE = 'dist/server/route-modules/pages/pages-handler.js';
 export const NODE_MANIFEST_HANDLER_SHA256 =
@@ -36,4 +37,6 @@ function immutable<T>(value: T): T {
   return value;
 }
 /** Static, deeply frozen qualification boundary. Comparison DATA cannot populate this registry. */
-export const NODE_MANIFEST_HANDLER_PROFILES: readonly NodeManifestHandlerProfile[] = immutable([]);
+export const NODE_MANIFEST_HANDLER_PROFILES: readonly NodeManifestHandlerProfile[] = immutable([
+  NEXT_16_4_3_HANDLER_REFERENCE,
+]);

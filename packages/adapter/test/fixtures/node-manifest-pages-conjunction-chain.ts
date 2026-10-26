@@ -1,8 +1,10 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 import { appEntrySource } from '../../src/app-entry.ts';
 import { jsLiteral } from '../../src/codegen.ts';
+import { NODE_MANIFEST_HANDLER_PROFILES } from '../../src/node-manifest-handler-catalog.ts';
 import { createNodeManifestBoundBatch } from '../../src/node-manifest-bound-batch.ts';
 import { certifyNodeManifestRuntimeCallers } from '../../src/node-manifest-runtime-callers.ts';
 import type { NodeManifestTurbopackConsumerInput } from '../../src/node-manifest-turbopack-consumers.ts';
@@ -13,9 +15,22 @@ import { manifestTemplateSource as source } from './node-manifest-turbopack-temp
 const CLASS_ID = 77;
 const SECOND_PAGE = '/other/[slug]';
 
+/** Provenance-only primary source bytes; never add these files to the executable fixture graph. */
+async function handlerSourcePins(root: string): Promise<void> {
+  const installed = path.dirname(fileURLToPath(import.meta.resolve('next/package.json')));
+  for (const profile of NODE_MANIFEST_HANDLER_PROFILES)
+    for (const pin of profile.sources) {
+      const destination = path.join(root, pin.relative);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, await readFile(path.join(installed, pin.relative)));
+    }
+}
+
+
 /** Authored inert source only: Next modules and generated route entries are never evaluated. */
 async function createFixture(directory: string) {
   const own = await boundBatchFixture(directory);
+  await handlerSourcePins(own.root);
   const first = await addBoundBatchTemplate(own, 'pages');
   const producer = path.join(own.root, 'dist/server/route-modules/pages/module.compiled.js');
   const wrapperTable = path.join(own.input.distDir, 'server/chunks/pages-wrapper.js');
