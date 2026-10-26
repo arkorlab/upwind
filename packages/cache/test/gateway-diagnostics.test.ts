@@ -1,8 +1,8 @@
+import * as z from '@stayingupwind/core/schema';
+import { type BoundedParse, type ParseFailure, safeParseBounded } from '@stayingupwind/host/util';
 import { describe, expect, it } from 'vitest';
 
-import { describeIssues } from '../../cache/src/gateway/respond.ts';
-import * as z from '../../core/src/schema/index.ts';
-import { type BoundedParse, type ParseFailure, safeParseBounded } from '../src/util/parse.ts';
+import { describeIssues } from '../src/gateway/respond.ts';
 
 function diagnosticOf<T>(parsed: BoundedParse<T>): ParseFailure {
   if (parsed.success || parsed.error === undefined) throw new Error('missing diagnostic');
