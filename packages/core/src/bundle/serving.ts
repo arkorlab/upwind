@@ -583,7 +583,7 @@ export function cacheablePrerenders(
  * middleware on the request as the client sent it, and one that runs on a match on the request as
  * it is finally matched, so the edge hands a Function only the first as judged (`aheadOfMiddleware`).
  */
-export function headerRulesOf(bundle: DeploymentBundle): HeaderRule[] {
+export function headerRulesOf(bundle: ServingBundle): HeaderRule[] {
   const reproduced = reproducesDynamicRouting(bundle);
   return phasedHeaderRoutes(bundle).flatMap(({ route, phase }) => {
     return route.headers === undefined || (!reproduced && route.priority !== true)

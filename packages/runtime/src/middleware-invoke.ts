@@ -44,6 +44,11 @@ export interface MiddlewareTrace {
   rewrite: URL | undefined;
   /** The status the middleware gave its rewrite, where it gave one other than 200. */
   status: number | undefined;
+  /**
+   * What the middleware set on its answer, where it let the request on: routing merges it with the
+   * rules' headers, and a host answering a file by the edge's rules reads it apart.
+   */
+  responseHeaders: Headers | undefined;
 }
 
 /**
@@ -127,6 +132,7 @@ export function middlewareInvoker(
       trace.response = response;
     }
     trace.requestHeaders = result.requestHeaders;
+    trace.responseHeaders = result.responseHeaders;
     trace.rewrite = result.rewrite;
     if (result.rewrite !== undefined && response.status !== HTTP_OK) {
       trace.status = response.status;

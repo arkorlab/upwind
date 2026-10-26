@@ -53,6 +53,7 @@ export function untraced(): MiddlewareTrace {
     requestHeaders: undefined,
     rewrite: undefined,
     status: undefined,
+    responseHeaders: undefined,
   };
 }
 
