@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -11,6 +11,17 @@ import { nativeLoaderBinary, nativeLoaderSelectorKeys } from '../src/native-load
 // https://github.com/prebuild/node-gyp-build/blob/v4.8.4/node-gyp-build.js
 const REVIEWED_NODE_GYP =
   "var fs = require('fs')\nvar path = require('path')\nvar os = require('os')\n\n// Workaround to fix webpack's build warnings: 'the request of a dependency is an expression'\nvar runtimeRequire = typeof __webpack_require__ === 'function' ? __non_webpack_require__ : require // eslint-disable-line\n\nvar vars = (process.config && process.config.variables) || {}\nvar prebuildsOnly = !!process.env.PREBUILDS_ONLY\nvar abi = process.versions.modules // TODO: support old node where this is undef\nvar runtime = isElectron() ? 'electron' : (isNwjs() ? 'node-webkit' : 'node')\n\nvar arch = process.env.npm_config_arch || os.arch()\nvar platform = process.env.npm_config_platform || os.platform()\nvar libc = process.env.LIBC || (isAlpine(platform) ? 'musl' : 'glibc')\nvar armv = process.env.ARM_VERSION || (arch === 'arm64' ? '8' : vars.arm_version) || ''\nvar uv = (process.versions.uv || '').split('.')[0]\n\nmodule.exports = load\n\nfunction load (dir) {\n  return runtimeRequire(load.resolve(dir))\n}\n\nload.resolve = load.path = function (dir) {\n  dir = path.resolve(dir || '.')\n\n  try {\n    var name = runtimeRequire(path.join(dir, 'package.json')).name.toUpperCase().replace(/-/g, '_')\n    if (process.env[name + '_PREBUILD']) dir = process.env[name + '_PREBUILD']\n  } catch (err) {}\n\n  if (!prebuildsOnly) {\n    var release = getFirst(path.join(dir, 'build/Release'), matchBuild)\n    if (release) return release\n\n    var debug = getFirst(path.join(dir, 'build/Debug'), matchBuild)\n    if (debug) return debug\n  }\n\n  var prebuild = resolve(dir)\n  if (prebuild) return prebuild\n\n  var nearby = resolve(path.dirname(process.execPath))\n  if (nearby) return nearby\n\n  var target = [\n    'platform=' + platform,\n    'arch=' + arch,\n    'runtime=' + runtime,\n    'abi=' + abi,\n    'uv=' + uv,\n    armv ? 'armv=' + armv : '',\n    'libc=' + libc,\n    'node=' + process.versions.node,\n    process.versions.electron ? 'electron=' + process.versions.electron : '',\n    typeof __webpack_require__ === 'function' ? 'webpack=true' : '' // eslint-disable-line\n  ].filter(Boolean).join(' ')\n\n  throw new Error('No native build was found for ' + target + '\\n    loaded from: ' + dir + '\\n')\n\n  function resolve (dir) {\n    // Find matching \"prebuilds/<platform>-<arch>\" directory\n    var tuples = readdirSync(path.join(dir, 'prebuilds')).map(parseTuple)\n    var tuple = tuples.filter(matchTuple(platform, arch)).sort(compareTuples)[0]\n    if (!tuple) return\n\n    // Find most specific flavor first\n    var prebuilds = path.join(dir, 'prebuilds', tuple.name)\n    var parsed = readdirSync(prebuilds).map(parseTags)\n    var candidates = parsed.filter(matchTags(runtime, abi))\n    var winner = candidates.sort(compareTags(runtime))[0]\n    if (winner) return path.join(prebuilds, winner.file)\n  }\n}\n\nfunction readdirSync (dir) {\n  try {\n    return fs.readdirSync(dir)\n  } catch (err) {\n    return []\n  }\n}\n\nfunction getFirst (dir, filter) {\n  var files = readdirSync(dir).filter(filter)\n  return files[0] && path.join(dir, files[0])\n}\n\nfunction matchBuild (name) {\n  return /\\.node$/.test(name)\n}\n\nfunction parseTuple (name) {\n  // Example: darwin-x64+arm64\n  var arr = name.split('-')\n  if (arr.length !== 2) return\n\n  var platform = arr[0]\n  var architectures = arr[1].split('+')\n\n  if (!platform) return\n  if (!architectures.length) return\n  if (!architectures.every(Boolean)) return\n\n  return { name, platform, architectures }\n}\n\nfunction matchTuple (platform, arch) {\n  return function (tuple) {\n    if (tuple == null) return false\n    if (tuple.platform !== platform) return false\n    return tuple.architectures.includes(arch)\n  }\n}\n\nfunction compareTuples (a, b) {\n  // Prefer single-arch prebuilds over multi-arch\n  return a.architectures.length - b.architectures.length\n}\n\nfunction parseTags (file) {\n  var arr = file.split('.')\n  var extension = arr.pop()\n  var tags = { file: file, specificity: 0 }\n\n  if (extension !== 'node') return\n\n  for (var i = 0; i < arr.length; i++) {\n    var tag = arr[i]\n\n    if (tag === 'node' || tag === 'electron' || tag === 'node-webkit') {\n      tags.runtime = tag\n    } else if (tag === 'napi') {\n      tags.napi = true\n    } else if (tag.slice(0, 3) === 'abi') {\n      tags.abi = tag.slice(3)\n    } else if (tag.slice(0, 2) === 'uv') {\n      tags.uv = tag.slice(2)\n    } else if (tag.slice(0, 4) === 'armv') {\n      tags.armv = tag.slice(4)\n    } else if (tag === 'glibc' || tag === 'musl') {\n      tags.libc = tag\n    } else {\n      continue\n    }\n\n    tags.specificity++\n  }\n\n  return tags\n}\n\nfunction matchTags (runtime, abi) {\n  return function (tags) {\n    if (tags == null) return false\n    if (tags.runtime && tags.runtime !== runtime && !runtimeAgnostic(tags)) return false\n    if (tags.abi && tags.abi !== abi && !tags.napi) return false\n    if (tags.uv && tags.uv !== uv) return false\n    if (tags.armv && tags.armv !== armv) return false\n    if (tags.libc && tags.libc !== libc) return false\n\n    return true\n  }\n}\n\nfunction runtimeAgnostic (tags) {\n  return tags.runtime === 'node' && tags.napi\n}\n\nfunction compareTags (runtime) {\n  // Precedence: non-agnostic runtime, abi over napi, then by specificity.\n  return function (a, b) {\n    if (a.runtime !== b.runtime) {\n      return a.runtime === runtime ? -1 : 1\n    } else if (a.abi !== b.abi) {\n      return a.abi ? -1 : 1\n    } else if (a.specificity !== b.specificity) {\n      return a.specificity > b.specificity ? -1 : 1\n    } else {\n      return 0\n    }\n  }\n}\n\nfunction isNwjs () {\n  return !!(process.versions && process.versions.nw)\n}\n\nfunction isElectron () {\n  if (process.versions && process.versions.electron) return true\n  if (process.env.ELECTRON_RUN_AS_NODE) return true\n  return typeof window !== 'undefined' && window.process && window.process.type === 'renderer'\n}\n\nfunction isAlpine (platform) {\n  return platform === 'linux' && fs.existsSync('/etc/alpine-release')\n}\n\n// Exposed for unit tests\n// TODO: move to lib\nload.parseTags = parseTags\nload.matchTags = matchTags\nload.compareTags = compareTags\nload.parseTuple = parseTuple\nload.matchTuple = matchTuple\nload.compareTuples = compareTuples\n";
+
+function defaultPrebuildHost(): void {
+  vi.stubGlobal('process', {
+    ...process,
+    platform: 'linux',
+    arch: 'x64',
+    versions: { node: '24.22.1', modules: '137', uv: '1.0.0' },
+    config: { variables: {} },
+    report: { getReport: () => ({ header: { glibcVersionRuntime: '2.41' } }) },
+  });
+}
 
 describe('proved native loader selection', () => {
   let directory: string;
@@ -43,6 +54,7 @@ describe('proved native loader selection', () => {
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     await rm(directory, { recursive: true, force: true });
   });
 
@@ -118,4 +130,123 @@ describe('proved native loader selection', () => {
 
     await expect(selected([release])).rejects.toThrow('environment overrides');
   });
+
+  async function prebuild(file: string, folder = 'linux-x64'): Promise<string> {
+    const binary = path.join(directory, 'prebuilds', folder, file);
+    await mkdir(path.dirname(binary), { recursive: true });
+    await writeFile(binary, new Uint8Array([3]));
+    return binary;
+  }
+
+  it('selects an owned package-local prebuild without evaluating the loader or binary', async () => {
+    defaultPrebuildHost();
+    const binary = await prebuild('node.napi.glibc.node');
+
+    await expect(selected([binary])).resolves.toMatchObject({ binary });
+  });
+
+  it.each([
+    'PREBUILDS_ONLY',
+    'npm_config_arch',
+    'npm_config_platform',
+    'LIBC',
+    'ARM_VERSION',
+    'ELECTRON_RUN_AS_NODE',
+    'NATIVE_PACKAGE_PREBUILD',
+  ])('refuses configured prebuild selector %s rather than certifying its default', async (key) => {
+    defaultPrebuildHost();
+    const binary = await prebuild('node.napi.node');
+    vi.stubEnv(key, 'custom');
+
+    await expect(selected([binary])).rejects.toThrow('environment overrides');
+  });
+
+  it('keeps Release before even an ambiguous prebuild directory', async () => {
+    await writeFile(release, new Uint8Array([1]));
+    const first = await prebuild('first.node.napi.node');
+    const second = await prebuild('second.node.napi.node');
+
+    await expect(selected([release, first, second])).resolves.toMatchObject({ binary: release });
+  });
+
+  it('does not skip an unowned winning prebuild for a lower-priority owned binary', async () => {
+    defaultPrebuildHost();
+    await prebuild('node.abi137.node');
+    const fallback = await prebuild('node.napi.node');
+
+    await expect(selected([fallback])).rejects.toThrow('first existing binary');
+  });
+
+  it('refuses an unproved selected prebuild symlink even when its target is owned', async () => {
+    defaultPrebuildHost();
+    const binary = path.join(directory, 'canonical.node');
+    const alias = path.join(directory, 'prebuilds/linux-x64/node.napi.node');
+    await writeFile(binary, new Uint8Array([3]));
+    await mkdir(path.dirname(alias), { recursive: true });
+    await symlink(binary, alias);
+
+    await expect(selected([binary])).rejects.toThrow('unproved internal alias');
+  });
+
+  it('does not fall back to another matching tuple after the selected tuple has no binary', async () => {
+    defaultPrebuildHost();
+    await mkdir(path.join(directory, 'prebuilds/linux-x64'), { recursive: true });
+    const other = await prebuild('node.napi.node', 'linux-x64+arm64');
+
+    await expect(selected([other])).rejects.toThrow('single proved target');
+  });
+
+  it('refuses a non-directory selected tuple instead of hiding a filesystem error', async () => {
+    defaultPrebuildHost();
+    await mkdir(path.join(directory, 'prebuilds'), { recursive: true });
+    await writeFile(path.join(directory, 'prebuilds/linux-x64'), 'not a directory');
+
+    await expect(selected([])).rejects.toThrow('ENOTDIR');
+  });
+
+  it.each(['platform', 'arch', 'electron', 'nw', 'libc', 'arm', 'window', 'webpack'])(
+    'refuses the unsupported prebuild host selector %s',
+    async (selector) => {
+      defaultPrebuildHost();
+      switch (selector) {
+        case 'platform': {
+          vi.stubGlobal('process', { ...process, platform: 'darwin' });
+          break;
+        }
+        case 'arch': {
+          vi.stubGlobal('process', { ...process, arch: 'arm64' });
+          break;
+        }
+        case 'electron':
+        case 'nw': {
+          vi.stubGlobal('process', {
+            ...process,
+            versions: { ...process.versions, [selector]: '1.0.0' },
+          });
+          break;
+        }
+        case 'libc': {
+          vi.stubGlobal('process', {
+            ...process,
+            report: { getReport: () => ({ header: {} }) },
+          });
+          break;
+        }
+        case 'arm': {
+          vi.stubGlobal('process', { ...process, config: { variables: { arm_version: 7 } } });
+          break;
+        }
+        case 'window': {
+          vi.stubGlobal('window', { process: { type: 'renderer' } });
+          break;
+        }
+        default: {
+          vi.stubGlobal('__webpack_require__', vi.fn());
+        }
+      }
+      const binary = await prebuild('node.napi.node');
+
+      await expect(selected([binary])).rejects.toThrow('default Node Linux x64 glibc host');
+    },
+  );
 });

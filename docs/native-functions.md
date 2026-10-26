@@ -18,6 +18,13 @@ backend. A guarded direct native load does not prove such a fallback and is refu
 Node worker with owned native child dependencies is also refused: main-graph binary proof does not
 prove the complete child's load closure in this backend's first version. Absolute build-machine
 imports, loader environment overrides and ambiguous binary directories are not portable proof.
+Reviewed `node-gyp-build` also supports package-local standard prebuilds on the default
+Node/Linux x64/glibc host. Tuple and binary selection must have an unambiguous winner under
+the reviewed loader's precedence. Discovery next to the Node executable is unsupported.
+Prebuild lookup paths containing symlinks are currently refused.
+Configured selector overrides remain refused. Applications that change native-loader selector
+environment variables before loading an addon are unsupported; startup checks do not prove
+that application code leaves those variables unchanged.
 
 Routes sharing one built module remain together. Pages Router pages and API routes remain together
 because `res.revalidate()` can render another page. Shared middleware, error pages and instrumentation

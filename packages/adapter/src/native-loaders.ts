@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { AuditError } from './dependencies.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
+import { nodeGypPrebuild } from './native-prebuilds.ts';
 
 const FIXTURE_BINDINGS = 'fd4a2e414af0b19ae18ef43baed3eaa37a918db5';
 const NODE_GYP_INDEX = '07eb14ffd8045c07d69a8acc15bb97b6ea3d1217';
@@ -156,7 +157,11 @@ async function localNodeGypBinary(
     const name = names[0];
     if (name !== undefined) return firstExisting([path.join(root, folder, name)], owned);
   }
-  return undefined;
+  const prebuild = await nodeGypPrebuild(root);
+  if (prebuild === undefined) return undefined;
+  if ((await realpath(prebuild)) !== prebuild)
+    throw new AuditError('Native prebuild lookup requires an unproved internal alias');
+  return firstExisting([prebuild], owned);
 }
 
 export async function nativeLoaderBinary(input: {
