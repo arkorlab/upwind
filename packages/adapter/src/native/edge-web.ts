@@ -22,6 +22,13 @@ import type { Plugin } from 'rolldown';
  */
 const EDGE_WEB_BINDING = '__upwindEdgeWeb';
 
+/**
+ * The object's name in the Edge bundle, for its entry module to read off it whether a body is one
+ * Node.js's Fetch decoded (`decodedBody`), and whether Fetch decodes a coding at all
+ * (`fetchDecodes`, `edge-answer.ts`).
+ */
+export const NATIVE_EDGE_WEB_BINDING = EDGE_WEB_BINDING;
+
 const EDGE_WEB_MODULE = '\0upwind:native-edge-web';
 
 /** For `transform.define`: the Edge Runtime's `Request` and `fetch`, as properties of the object. */
@@ -59,6 +66,7 @@ const FETCH_MEMBERS = [
 ];
 
 const EDGE_WEB_SOURCE = [
+  'import * as zlib from "node:zlib";',
   // As the Edge Runtime's primitives do: the option only where a body is given and nothing was said
   // of it. Node.js knows no other value, so nothing it took before is taken otherwise. What else the
   // dictionary says is read as Fetch reads it, by property, so none of it is lost to a copy (Codex):
@@ -91,15 +99,54 @@ const EDGE_WEB_SOURCE = [
   'const requestFor = keptFor((current) => new Proxy(current, {',
   '  construct: (target, args, newTarget) => Reflect.construct(target, withOption(args), newTarget),',
   '}));',
+  // Whether Node.js's Fetch decodes a body under this `content-encoding`: every coding it names one
+  // Fetch decodes — gzip, deflate, br, and zstd where Node.js has it — or the body is handed over as
+  // it came (Codex). Measured on Node.js 24: a list with any other token in it is not decoded at all,
+  // `identity` and an empty token included (`gzip, identity`, `gzip,`), so none is left out of the
+  // judgement (Sentry); the case of a token and the space around it are not judged.
+  'const DECODED_CODINGS = new Set(["gzip", "x-gzip", "deflate", "br", ...(typeof zlib.createZstdDecompress === "function" ? ["zstd"] : [])]);',
+  'const fetchDecodes = (header) =>',
+  '  header != null && header.split(",").every((coding) => DECODED_CODINGS.has(coding.trim().toLowerCase()));',
+  // The bodies Node.js's Fetch handed over decoded, under the `content-encoding` they arrived with:
+  // an answer made of one says a coding its bytes no longer have (`edge-answer.ts`). Kept by the
+  // stream, which an answer made again of the body — `new Response(answer.body, answer)` — carries
+  // on as it is; a clone tees the body into two new streams, so a decoded answer's clone notes both,
+  // and its own clones in turn (greptile).
+  'const decodedBodies = new WeakSet();',
+  'const notedOnClone = (response) => {',
+  '  const clone = response.clone;',
+  '  Object.defineProperty(response, "clone", {',
+  '    configurable: true,',
+  '    writable: true,',
+  '    value: function () {',
+  '      const copy = clone.call(this);',
+  '      if (this.body !== null) decodedBodies.add(this.body);',
+  '      if (copy.body !== null) decodedBodies.add(copy.body);',
+  '      notedOnClone(copy);',
+  '      return copy;',
+  '    },',
+  '  });',
+  '};',
+  'const noteDecoded = (response) => {',
+  '  if (!(response instanceof Response) || response.body === null || !fetchDecodes(response.headers.get("content-encoding"))) return response;',
+  '  decodedBodies.add(response.body);',
+  '  notedOnClone(response);',
+  '  return response;',
+  '};',
   'const fetchFor = keptFor((current) => new Proxy(current, {',
   // Called as the bare name is, `fetch(…)` reads as a method of this object: not its `this`.
-  '  apply: (target, self, args) => Reflect.apply(target, self === upwindEdgeWeb ? undefined : self, withOption(args)),',
+  '  apply: (target, self, args) => {',
+  '    const answered = Reflect.apply(target, self === upwindEdgeWeb ? undefined : self, withOption(args));',
+  '    return answered instanceof Promise ? answered.then(noteDecoded) : answered;',
+  '  },',
   '}));',
   'export const upwindEdgeWeb = {',
   '  get Request() { return requestFor(globalThis.Request); },',
   '  set Request(value) { globalThis.Request = value; },',
   '  get fetch() { return fetchFor(globalThis.fetch); },',
   '  set fetch(value) { globalThis.fetch = value; },',
+  '  decodedBody: (body) => body != null && decodedBodies.has(body),',
+  '  fetchDecodes,',
   '};',
   '',
 ].join('\n');

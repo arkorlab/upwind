@@ -1,10 +1,15 @@
+import { once } from 'node:events';
+import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
+import type { AddressInfo } from 'node:net';
 import { runInThisContext } from 'node:vm';
+import { gzipSync } from 'node:zlib';
 
 import { type Plugin, rolldown } from 'rolldown';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  NATIVE_EDGE_WEB_BINDING,
   NATIVE_EDGE_WEB_GLOBALS,
   NATIVE_EDGE_WEB_OBJECT,
   nativeEdgeWebPlugin,
@@ -187,6 +192,67 @@ describe('the native Edge bundle', () => {
 
     expect(fetch).toBe(replacementFetch);
     expect(Request).toBe(replacementRequest);
+  });
+
+  it('notes a body Fetch decoded, carried on into a clone and an answer made again of it, and no other', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-encoding': 'gzip' });
+      response.end(gzipSync(BODY));
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    try {
+      const { port } = server.address() as AddressInfo;
+      const check = (await edgeModule(SNIPPET, true, [
+        snippetPlugin(
+          [
+            'module.exports = async (url) => {',
+            '  const fetched = await fetch(url);',
+            '  const copy = fetched.clone();',
+            '  const again = new Response(fetched.body, fetched);',
+            '  const made = new Response("made", { headers: { "content-encoding": "gzip" } });',
+            `  const noted = [${NATIVE_EDGE_WEB_BINDING}.decodedBody(again.body), ${NATIVE_EDGE_WEB_BINDING}.decodedBody(copy.body), ${NATIVE_EDGE_WEB_BINDING}.decodedBody(made.body)];`,
+            // A clone's two streams are let go together: the source is cancelled once both are.
+            '  await Promise.all([again.body.cancel(), copy.body.cancel(), made.body.cancel()]);',
+            '  return noted;',
+            '};',
+          ].join('\n'),
+        ),
+      ])) as (url: string) => Promise<boolean[]>;
+
+      await expect(check(`http://127.0.0.1:${String(port)}/`)).resolves.toStrictEqual([
+        true,
+        true,
+        false,
+      ]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('says which codings Fetch decodes: all of a list, or none of it', async () => {
+    const decodes = (await edgeModule(SNIPPET, true, [
+      snippetPlugin(
+        `module.exports = (header) => ${NATIVE_EDGE_WEB_BINDING}.fetchDecodes(header);`,
+      ),
+    ])) as (header: string | null) => boolean;
+
+    expect(
+      [
+        'gzip',
+        'X-Gzip',
+        ' deflate ',
+        'br',
+        'gzip, br',
+        'compress',
+        'gzip, compress',
+        'identity',
+        'gzip, identity',
+        'gzip,',
+        '',
+      ].map((header) => decodes(header)),
+    ).toStrictEqual([true, true, true, true, true, false, false, false, false, false, false]);
+    expect(decodes(null)).toBe(false);
   });
 
   it('builds a module that assigns either global, as a polyfill may', async () => {
