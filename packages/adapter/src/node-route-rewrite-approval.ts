@@ -61,6 +61,34 @@ function contextSnapshot(context: Context): string {
     context.entries?.map((entry) => [entry.id, entry.filePath]),
   ]);
 }
+interface Fingerprint {
+  readonly graphSha256: string;
+  readonly context: string;
+}
+function fingerprint(input: {
+  readonly graph: ManifestModuleGraph;
+  readonly context: Context;
+}): Fingerprint {
+  return { graphSha256: graphDigest(input.graph), context: contextSnapshot(input.context) };
+}
+interface Invocation extends Fingerprint {
+  readonly graph: ManifestModuleGraph;
+  readonly originalContext: Context;
+}
+function invocation(input: {
+  readonly graph: ManifestModuleGraph;
+  readonly context: Context;
+}): Invocation {
+  const { graph, context } = input;
+  return { ...fingerprint({ graph, context }), graph, originalContext: context };
+}
+function assertInvocation(fresh: Invocation): void {
+  if (
+    fresh.graphSha256 !== graphDigest(fresh.graph) ||
+    fresh.context !== contextSnapshot(fresh.originalContext)
+  )
+    refuse();
+}
 
 interface Completion {
   readonly graph: ManifestModuleGraph;
@@ -71,12 +99,13 @@ interface Completion {
 function mint(
   input: Completion,
   dependencies: readonly NodeRouteRewriteApprovalBinding[],
+  fresh: Fingerprint = fingerprint(input),
 ): NodeRouteRewriteApproval {
   const proof = Object.freeze<NodeRouteRewriteApproval>({ [APPROVAL]: true });
   APPROVALS.set(proof, {
     graph: input.graph,
-    graphSha256: graphDigest(input.graph),
-    context: contextSnapshot(input.context),
+    graphSha256: fresh.graphSha256,
+    context: fresh.context,
     normalization: input.normalization,
     normalizationSnapshot: JSON.stringify(input.normalization),
     routes: Object.freeze(input.routes.map((route) => Object.freeze({ ...route }))),
@@ -95,12 +124,16 @@ interface CheckInput {
   readonly context: Context;
   readonly normalization: NodeManifestNormalization | undefined;
 }
-function current(proof: NodeRouteRewriteApproval, input: CheckInput): StoredApproval {
+function current(
+  proof: NodeRouteRewriteApproval,
+  input: CheckInput,
+  fresh: Fingerprint,
+): StoredApproval {
   const stored = APPROVALS.get(proof);
   if (
     stored?.graph !== input.graph ||
-    stored.graphSha256 !== graphDigest(input.graph) ||
-    stored.context !== contextSnapshot(input.context) ||
+    stored.graphSha256 !== fresh.graphSha256 ||
+    stored.context !== fresh.context ||
     stored.normalization !== input.normalization ||
     stored.normalizationSnapshot !== JSON.stringify(input.normalization)
   )
@@ -112,6 +145,7 @@ function checkedDependencies(
   proof: NodeRouteRewriteApproval,
   input: CheckInput,
   checked: Set<NodeRouteRewriteApproval>,
+  fresh: Fingerprint,
 ): void {
   const active = new Set<NodeRouteRewriteApproval>();
   const pending = [{ approval: proof, normalization: input.normalization, exit: false }];
@@ -122,7 +156,11 @@ function checkedDependencies(
       continue;
     }
     // Even a visited token must retain this exact associated normalization object.
-    const original = current(frame.approval, { ...input, normalization: frame.normalization });
+    const original = current(
+      frame.approval,
+      { ...input, normalization: frame.normalization },
+      fresh,
+    );
     if (checked.has(frame.approval)) continue;
     if (active.has(frame.approval) || active.size + checked.size >= MAX_APPROVALS) refuse();
     active.add(frame.approval);
@@ -131,21 +169,41 @@ function checkedDependencies(
   }
 }
 
+function checkedSources(
+  input: CheckInput & {
+    readonly approvals?: readonly NodeRouteRewriteApproval[] | undefined;
+  },
+  fresh: Fingerprint,
+): readonly ManifestRouteSource[] {
+  const routes: ManifestRouteSource[] = [];
+  if (input.approvals === undefined) return Object.freeze(routes);
+  const checked = new Set<NodeRouteRewriteApproval>();
+  for (const proof of input.approvals) {
+    const stored = current(proof, input, fresh);
+    checkedDependencies(proof, input, checked, fresh);
+    routes.push(...stored.routes);
+  }
+  return Object.freeze(routes);
+}
+
 /** A copied token, retargeted graph or changed source/edge inventory is never an approval. */
 export function checkedNodeRouteRewriteSources(
   input: CheckInput & {
     readonly approvals?: readonly NodeRouteRewriteApproval[] | undefined;
   },
 ): readonly ManifestRouteSource[] {
-  const routes: ManifestRouteSource[] = [];
-  if (input.approvals === undefined) return Object.freeze(routes);
-  const checked = new Set<NodeRouteRewriteApproval>();
-  for (const proof of input.approvals) {
-    const stored = current(proof, input);
-    checkedDependencies(proof, input, checked);
-    routes.push(...stored.routes);
-  }
-  return Object.freeze(routes);
+  const approvals = input.approvals;
+  if (approvals === undefined || approvals.length === 0) return Object.freeze([]);
+  const check = {
+    graph: input.graph,
+    context: input.context,
+    normalization: input.normalization,
+    approvals,
+  };
+  const fresh = invocation(check);
+  const routes = checkedSources(check, fresh);
+  assertInvocation(fresh);
+  return routes;
 }
 
 function sameScope(left: NodeManifestNormalization, right: NodeManifestNormalization): boolean {
@@ -194,16 +252,24 @@ export function combineNodeRouteRewriteApprovals(input: {
   );
   const first = bindings[0];
   if (first === undefined) return { approvals: Object.freeze([]), normalization: undefined };
+  const graph = input.graph;
+  const context = input.context;
+  const fresh = invocation({ graph, context });
   const allRoutes = bindings.flatMap((binding) => {
-    return checkedNodeRouteRewriteSources({
-      graph: input.graph,
-      context: input.context,
-      approvals: [binding.approval],
-      normalization: binding.normalization,
-    });
+    return checkedSources(
+      {
+        graph,
+        context,
+        approvals: [binding.approval],
+        normalization: binding.normalization,
+      },
+      fresh,
+    );
   });
-  if (bindings.length === 1)
+  if (bindings.length === 1) {
+    assertInvocation(fresh);
     return { approvals: Object.freeze([first.approval]), normalization: first.normalization };
+  }
   const metadata = new Map<string, { readonly file: string; readonly sha256: string }>();
   const routes = new Map<string, ManifestRouteSource>();
   for (const binding of bindings) {
@@ -229,8 +295,10 @@ export function combineNodeRouteRewriteApprovals(input: {
     }),
   });
   const approval = mint(
-    { graph: input.graph, context: input.context, normalization, routes: [...routes.values()] },
+    { graph, context, normalization, routes: [...routes.values()] },
     bindings,
+    fresh,
   );
+  assertInvocation(fresh);
   return { approvals: Object.freeze([approval]), normalization };
 }

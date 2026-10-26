@@ -277,6 +277,84 @@ describe('completed evaluator route approval normalization', () => {
       'stale completed route graph',
     );
   });
+
+  it('rechecks graph bytes and context between independent successful calls', () => {
+    const own = fixture();
+    const first = own.binding();
+    const second = own.binding();
+    const combined = own.combine([first, second]);
+
+    expect(own.checked(combined)).toStrictEqual([]);
+
+    own.graph.rendered.set('source', 'const authored=2;');
+
+    expect(() => own.checked(combined)).toThrow('stale completed route graph');
+    expect(() => own.combine([first, second])).toThrow('stale completed route graph');
+
+    own.graph.rendered.set('source', 'const authored=1;');
+
+    expect(own.checked(combined)).toStrictEqual([]);
+
+    own.context.distDir = '/authored/changed';
+
+    expect(() => own.checked(combined)).toThrow('stale completed route graph');
+    expect(() => own.combine([first, second])).toThrow('stale completed route graph');
+
+    own.context.distDir = '/authored/.next';
+
+    expect(own.checked(combined)).toStrictEqual([]);
+    expect(own.checked(own.combine([first, second]))).toStrictEqual([]);
+  });
+
+  it.each([
+    ['check', 'graph'],
+    ['check', 'context'],
+    ['combine', 'graph'],
+    ['combine', 'context'],
+  ] as const)('rejects a same-call normalization hook changing %s %s data', (operation, field) => {
+    const own = fixture();
+    const normalized = own.normalization();
+    let mutate = false;
+    Object.defineProperty(normalized, 'toJSON', {
+      value() {
+        if (mutate) {
+          if (field === 'graph') own.graph.rendered.set('source', 'const authored=2;');
+          else own.context.distDir = '/authored/changed';
+        }
+        return { ...normalized };
+      },
+    });
+    const first = own.binding();
+    const second = own.binding(normalized);
+    const combined = own.combine([first, second]);
+
+    expect(own.checked(combined)).toStrictEqual([]);
+
+    mutate = true;
+
+    expect(() =>
+      operation === 'check' ? own.checked(combined) : own.combine([first, second]),
+    ).toThrow('stale completed route graph');
+  });
+
+  it('ignores unrelated opaque graph and context fields while retaining the original check scope', () => {
+    const own = fixture();
+    const extra = {
+      bytes: new Uint8Array([1, 2]),
+      callback() {
+        throw new Error('Unrelated callback must not execute');
+      },
+    };
+    Object.assign(own.context, extra);
+    Object.assign(own.graph, extra);
+    const first = own.binding();
+    const second = own.binding();
+    const combined = own.combine([first, second]);
+
+    expect(own.checked(combined)).toStrictEqual([]);
+    expect(own.context).toMatchObject(extra);
+    expect(own.graph).toMatchObject(extra);
+  });
 });
 
 describe('multiple evaluator source aggregation', () => {
