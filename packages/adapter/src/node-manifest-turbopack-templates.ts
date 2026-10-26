@@ -19,6 +19,7 @@ import {
   type Visit,
 } from './node-manifest-consumer-ast.ts';
 import { reviewedRouteConstructorSource } from './node-manifest-framework.ts';
+import { nodeManifestConstructorString as stringScalar } from './node-manifest-pages-constructor-scalar.ts';
 import {
   nodeManifestPagesPage,
   type NodeManifestPagesDefinition,
@@ -380,8 +381,7 @@ function constructorScalar(value: Node, actual: Context): Node | undefined {
   if (value.type !== 'Property') return undefined;
   const name = propertyName(value);
   const selected = name === undefined ? undefined : actual.fields.get(name);
-  if (['distDir', 'relativeProjectDir'].includes(name ?? '') && stringOf(selected) !== undefined)
-    return { ...value, value: selected };
+  if (stringScalar(actual.input.route.kind, name, selected)) return { ...value, value: selected };
   if (
     name !== 'nextConfigOutput' ||
     selected === undefined ||
