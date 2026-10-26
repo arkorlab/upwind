@@ -84,8 +84,8 @@ describe('workflow security', () => {
     git(work, 'push', 'origin', 'main');
     return { work, trusted: git(work, 'rev-parse', 'HEAD') };
   }
-  function tag(work: string, name: string, signer: string): void {
-    git(work, '-c', 'gpg.format=openpgp', 'tag', '-s', '-u', signer, '-m', 'test release', name);
+  function tag(work: string, name: string, signer: string, message = 'test release'): void {
+    git(work, '-c', 'gpg.format=openpgp', 'tag', '-s', '-u', signer, '-m', message, name);
     git(work, 'push', 'origin', `refs/tags/${name}`);
   }
   function verify(work: string, name: string) {
@@ -103,10 +103,10 @@ describe('workflow security', () => {
     return { ...result, output };
   }
 
-  describe('release verification binds policy, signature, ancestry, and checkout', () => {
+  describe('release verification binds policy, signature, tag name, ancestry, and checkout', () => {
     it('selects the signed commit even when a different branch has the tag name', () => {
       const { work, trusted } = fixture();
-      tag(work, 'v1.0.0', keyNames[0] ?? '');
+      tag(work, 'v1.0.0', keyNames[0] ?? '', 'test release\n\ntag fake-message-name');
       git(work, 'checkout', '-b', 'v1.0.0');
       writeFileSync(path.join(work, '.github/release-signers.asc'), 'attacker policy');
       git(work, 'add', '.');
@@ -129,6 +129,19 @@ describe('workflow security', () => {
 
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain('release tag signature is not trusted');
+      expect(existsSync(result.output)).toBe(false);
+    });
+
+    it('refuses a trusted signed tag object reused under a different release name', () => {
+      const { work } = fixture();
+      tag(work, 'v1.0.4', keyNames[0] ?? '', 'test release\n\ntag v2.0.0');
+      git(work, 'update-ref', 'refs/tags/v2.0.0', git(work, 'rev-parse', 'refs/tags/v1.0.4'));
+      git(work, 'push', 'origin', 'refs/tags/v2.0.0');
+
+      const result = verify(work, 'v2.0.0');
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('signed tag name does not match requested release tag');
       expect(existsSync(result.output)).toBe(false);
     });
 

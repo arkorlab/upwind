@@ -25,6 +25,17 @@ if ! git -c gpg.program=gpg -c gpg.format=openpgp verify-tag --raw "$tag_object"
   echo '::error::release tag signature is not trusted' >&2
   exit 1
 fi
+# A signed tag object can be reused under another ref; bind the requested name to its signed header.
+# Read the entire object so pipefail cannot turn an early reader exit into a SIGPIPE failure.
+signed_tag="$(git cat-file tag "$tag_object" | awk '
+  /^$/ { in_message = 1 }
+  !in_message && /^tag / { tags += 1; name = substr($0, 5) }
+  END { if (tags == 1) print name }
+')"
+if [ "$signed_tag" != "$TAG" ]; then
+  echo '::error::signed tag name does not match requested release tag' >&2
+  exit 1
+fi
 if ! git merge-base --is-ancestor "$commit" "$policy_commit"; then
   echo '::error::release tag is outside the trusted branch history' >&2
   exit 1
