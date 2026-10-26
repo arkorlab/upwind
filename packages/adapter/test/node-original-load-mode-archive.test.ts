@@ -74,7 +74,10 @@ async function fixture(
     blobStore: new BlobStore(path.join(root, 'blobs')),
   };
   async function copied() {
-    const physical = await nodePhysicalFiles(input, [], nodeOriginalModeMetadata(scope));
+    const physical = await nodePhysicalFiles(input, [], [], async (sourcePaths) => {
+      await usePhysicalOriginalNodeModes(scope, sourcePaths);
+      return nodeOriginalModeMetadata(scope);
+    });
     const proof = { files: nodeOriginalModeProofFiles(scope, [source]), native: [] };
     assertNodeProofFiles(proof, physical, new Map());
     return { physical, proof, files: new Map(physical.files.map((entry) => [entry.name, entry])) };
@@ -149,18 +152,13 @@ describe('original CommonJS mode source facts; no application executes', () => {
       });
       expect(nodeOriginalModeMetadata(own.scope)).toStrictEqual([]);
 
-      const preliminary = await nodePhysicalFiles(own.input, [], []);
+      const copied = await own.copied();
 
-      expect([...preliminary.sourcePaths.values()]).toContain(own.source.file);
-
-      const proof = await useOriginalCommonJsMode(own.scope, 'page', own.source);
-
-      expect(proof).toBeDefined();
+      expect([...copied.physical.sourcePaths.values()]).toContain(own.source.file);
       expect(nodeOriginalModeMetadata(own.scope)).toStrictEqual([
         { file: own.pkg, sha256: originalNodeModeHash(await readFile(own.pkg)) },
       ]);
 
-      const copied = await own.copied();
       await assertFinalOriginalNodeModes(own.scope, {
         files: copied.files,
         sourcePaths: copied.physical.sourcePaths,
@@ -194,9 +192,10 @@ describe('original CommonJS mode source facts; no application executes', () => {
         { rootDir: own.project, projectDir: own.project, distDir: dist },
         graph,
       );
-      const preliminary = await nodePhysicalFiles(input, []);
-      await usePhysicalOriginalNodeModes(scope, preliminary.sourcePaths);
-      const physical = await nodePhysicalFiles(input, [], nodeOriginalModeMetadata(scope));
+      const physical = await nodePhysicalFiles(input, [], [], async (sourcePaths) => {
+        await usePhysicalOriginalNodeModes(scope, sourcePaths);
+        return nodeOriginalModeMetadata(scope);
+      });
       const proof = { files: nodeOriginalModeProofFiles(scope, [source]), native: [] };
       assertNodeProofFiles(proof, physical, new Map());
       await assertFinalOriginalNodeModes(scope, {
@@ -264,12 +263,13 @@ describe('original CommonJS mode source facts; no application executes', () => {
       kind: 'commonjs-candidate',
     });
 
-    const preliminary = await nodePhysicalFiles(own.input, [], []);
+    const final = await nodePhysicalFiles(own.input, [], [], async (sourcePaths) => {
+      await usePhysicalOriginalNodeModes(scope, sourcePaths);
+      return nodeOriginalModeMetadata(scope);
+    });
 
-    expect([...preliminary.sourcePaths.values()]).not.toContain(hook.file);
+    expect([...final.sourcePaths.values()]).not.toContain(hook.file);
 
-    await usePhysicalOriginalNodeModes(scope, preliminary.sourcePaths);
-    const final = await nodePhysicalFiles(own.input, [], nodeOriginalModeMetadata(scope));
     const proof = { files: nodeOriginalModeProofFiles(scope, [own.source, hook]), native: [] };
     assertNodeProofFiles(proof, final, new Map([[hook.file, hook.sha256]]));
 

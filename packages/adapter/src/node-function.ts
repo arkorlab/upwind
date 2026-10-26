@@ -380,21 +380,19 @@ export async function buildNodeFunction(
   assertNativeSelection(selected, native);
   assertNodeTarget(input, native);
   const abi = assertNativeAbi();
-  const preliminary = await nodePhysicalFiles(
+  const physical = await nodePhysicalFiles(
     input,
-    originalProof.native,
+    native,
     originalProof.normalization?.metadataFiles,
+    async (sourcePaths) => {
+      await usePhysicalOriginalNodeModes(originalProof.originalModes, sourcePaths);
+      return nodeOriginalModeMetadata(originalProof.originalModes);
+    },
   );
-  await usePhysicalOriginalNodeModes(originalProof.originalModes, preliminary.sourcePaths);
   const proof = {
     ...originalProof,
     files: nodeOriginalModeProofFiles(originalProof.originalModes, originalProof.files),
   };
-  const physical = await nodePhysicalFiles(
-    input,
-    native,
-    nodeOriginalModeMetadata(proof.originalModes, proof.normalization?.metadataFiles),
-  );
   const files = new NodeArtifactFiles(input, physical, native, proof.nextRewrites);
   const work = path.join(input.outDir, 'work', `node-${input.name ?? input.kind}`);
   await mkdir(work, { recursive: true });

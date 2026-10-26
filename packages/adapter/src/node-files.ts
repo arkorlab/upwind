@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -28,6 +29,13 @@ export interface NodePhysicalFiles {
 }
 
 type PhysicalLayout = NodePhysicalLayout;
+interface ModeMetadataFile {
+  readonly file: string;
+  readonly sha256: string;
+}
+type ModeMetadataSelector = (
+  sourcePaths: ReadonlyMap<string, string>,
+) => Promise<readonly ModeMetadataFile[]>;
 interface PhysicalSources {
   readonly files: Map<string, Uint8Array>;
   readonly executable: Set<string>;
@@ -163,11 +171,85 @@ function emittedLinks(
   return emitted;
 }
 
+function physicalSourcePaths(sources: PhysicalSources): ReadonlyMap<string, string> {
+  return new Map([...sources.originals].map(([file, name]) => [name, file]));
+}
+function metadataDigests(pins: readonly ModeMetadataFile[]): ReadonlyMap<string, string> {
+  const selected = new Map<string, string>();
+  for (const pin of pins) {
+    const file = pin.file;
+    const sha256 = pin.sha256;
+    const previous = selected.get(file);
+    if (previous !== undefined && previous !== sha256)
+      throw new AuditError('Node physical mode metadata has conflicting source digests');
+    selected.set(file, sha256);
+  }
+  return selected;
+}
+function modeMetadataPins(
+  pins: readonly ModeMetadataFile[],
+  prior: readonly ModeMetadataFile[],
+): ReadonlyMap<string, string> {
+  const expected = metadataDigests(prior);
+  const selected = metadataDigests(pins);
+  for (const [file, sha256] of selected) {
+    const previous = expected.get(file);
+    if (previous !== undefined && previous !== sha256)
+      throw new AuditError('Node physical mode metadata has conflicting source digests');
+  }
+  return selected;
+}
+async function addModeMetadata(
+  sources: PhysicalSources,
+  layout: PhysicalLayout,
+  pins: readonly ModeMetadataFile[],
+  prior: readonly ModeMetadataFile[],
+): Promise<boolean> {
+  let added = false;
+  for (const [file, sha256] of modeMetadataPins(pins, prior)) {
+    if (path.basename(file) !== PACKAGE_MANIFEST || (await realpath(file)) !== file)
+      throw new AuditError('Node physical mode metadata requires a canonical package.json');
+    const name = layout.nameOf(file);
+    const previous = sources.files.get(name);
+    const bytes = previous ?? (await boundedFile(file));
+    const info = await stat(file);
+    if (!info.isFile() || info.size > MAX_FILE_BYTES || bytes.byteLength !== info.size)
+      throw new AuditError('Node physical mode metadata changed after its source snapshot');
+    if (createHash('sha256').update(bytes).digest('hex') !== sha256)
+      throw new AuditError('Node physical mode metadata conflicts with copied bytes');
+    sources.files.set(name, bytes);
+    sources.originals.set(file, name);
+    // eslint-disable-next-line no-bitwise -- Preserve the explicitly copied metadata's POSIX mode.
+    if ((info.mode & EXECUTABLE_BITS) === 0) {
+      sources.executable.delete(name);
+    } else {
+      sources.executable.add(name);
+    }
+    added ||= previous === undefined;
+  }
+  return added;
+}
+async function collectAliases(
+  input: BuildFunctionInput,
+  native: readonly NativeLoad[],
+  sources: PhysicalSources,
+  context: { readonly layout: PhysicalLayout; readonly links: Map<string, string> },
+): Promise<void> {
+  const { layout, links } = context;
+  await nodeModuleAliases(sources, layout, links, async () => {
+    await traceAliases(input, layout, links);
+    await nodeNativeAliases(native, sources, layout, links);
+  });
+  // Keep the native guard's final check after every optional layout transaction.
+  await nodeNativeAliases(native, sources, layout, links);
+}
+
 /** Physical traces plus explicit internal aliases; no user module is evaluated or rebundled. */
 export async function nodePhysicalFiles(
   input: BuildFunctionInput,
   native: readonly NativeLoad[],
   metadataFiles: readonly { readonly file: string; readonly sha256: string }[] = [],
+  selectModeMetadata?: ModeMetadataSelector,
 ): Promise<NodePhysicalFiles> {
   const layout = await nodePhysicalLayout(input);
   for (const load of native)
@@ -181,12 +263,15 @@ export async function nodePhysicalFiles(
   for (const metadata of metadataFiles) owned.add(metadata.file);
   const sources = await physicalSources(owned, layout);
   const links = new Map<string, string>();
-  await nodeModuleAliases(sources, layout, links, async () => {
-    await traceAliases(input, layout, links);
-    await nodeNativeAliases(native, sources, layout, links);
-  });
-  // Keep the native guard's final check after every optional layout transaction.
-  await nodeNativeAliases(native, sources, layout, links);
+  await collectAliases(input, native, sources, { layout, links });
+  if (selectModeMetadata !== undefined) {
+    // The callback sees an isolated coordinate map, never the owned bytes or collections.
+    const selected = await selectModeMetadata(physicalSourcePaths(sources));
+    if (await addModeMetadata(sources, layout, selected, metadataFiles)) {
+      links.clear();
+      await collectAliases(input, native, sources, { layout, links });
+    } else await nodeNativeAliases(native, sources, layout, links);
+  }
   return {
     files: [...sources.files].map(([name, bytes]) => {
       return {
@@ -196,7 +281,7 @@ export async function nodePhysicalFiles(
       };
     }),
     links: emittedLinks(links, sources.files),
-    sourcePaths: new Map([...sources.originals].map(([file, name]) => [name, file])),
+    sourcePaths: physicalSourcePaths(sources),
     cwd: layout.cwd,
     instrumentation,
     nameOf: layout.nameOf,
