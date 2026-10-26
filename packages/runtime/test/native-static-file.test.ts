@@ -7,7 +7,7 @@ import path from 'node:path';
 import type { StaticFile } from '@stayingupwind/core/bundle';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { staticFileResponse } from '../src/native/static-file.ts';
+import { keptAfterRouting, staticFileResponse } from '../src/native/static-file.ts';
 import type { RoutedInput } from '../src/serve.ts';
 import type { Store } from '../src/store.ts';
 
@@ -266,6 +266,57 @@ describe('native static file delivery', () => {
       expect(response?.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
 
       await response?.body?.cancel();
+    });
+
+    it('judges no validator or range under the status a rewrite named, sending the file whole', async () => {
+      const response = await staticFileResponse(
+        { ...asked({ 'if-none-match': TAG, range: 'bytes=1-2' }), rewriteStatus: 404 },
+        store,
+        file(4),
+        200,
+      );
+
+      expect(response?.status).toBe(404);
+      expect(response?.headers.get('accept-ranges')).toBe('none');
+      await expect(response?.text()).resolves.toBe(BODY);
+    });
+
+    it('names no length under a bodyless status a rewrite named', async () => {
+      const response = await staticFileResponse(
+        { ...asked({}), rewriteStatus: 205 },
+        store,
+        file(4),
+        200,
+      );
+
+      expect(response?.status).toBe(205);
+      expect(response?.body).toBeNull();
+      expect(response?.headers.has('content-length')).toBe(false);
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it('keeps a refusal by nobody once routing has laid a lifetime on it', async () => {
+      const refusal = requireResource(
+        await staticFileResponse(asked({ 'if-match': '"other"' }), store, file(4), 200),
+      );
+      // As routing's headers come to it: a rule's own lifetime over the file's.
+      const routed = new Response(null, { status: refusal.status, headers: refusal.headers });
+      routed.headers.set('cache-control', 'public, max-age=60');
+
+      const kept = keptAfterRouting(routed);
+
+      expect(kept.status).toBe(412);
+      expect(kept.headers.get('cache-control')).toBe('private, no-store');
+      expect(kept.headers.has('x-arkor-file-refusal')).toBe(false);
+    });
+
+    it('leaves an answer it did not refuse as routing left it', async () => {
+      const response = requireResource(await staticFileResponse(asked({}), store, file(4), 200));
+      response.headers.set('cache-control', 'public, max-age=60');
+
+      expect(keptAfterRouting(response).headers.get('cache-control')).toBe('public, max-age=60');
+
+      await response.body?.cancel();
     });
 
     it('sends an error document whole under its status, judging no validator or range', async () => {

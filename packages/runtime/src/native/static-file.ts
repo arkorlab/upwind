@@ -10,6 +10,7 @@ import {
   GATED_CACHE_CONTROL,
   IMMUTABLE_CACHE_CONTROL,
   keptByNobody,
+  PLATFORM_HEADER_PREFIX,
   preconditionFails,
   requestedRange,
   REVALIDATE_CACHE_CONTROL,
@@ -46,6 +47,11 @@ const STREAM_BUFFER_KIB = 64;
 const KIB = 1024;
 const STREAM_BUFFER_BYTES = STREAM_BUFFER_KIB * KIB;
 const CONTENT_LENGTH = 'content-length';
+/**
+ * Marks a refusal of this module's — a 412 or a 416 — for `keptAfterRouting`, which makes it kept by
+ * nobody again once routing's headers are on it. A platform header: never sent (`http.ts`).
+ */
+const REFUSAL_HEADER = `${PLATFORM_HEADER_PREFIX}file-refusal`;
 const CONTENT_RANGE = 'content-range';
 
 function requireMatchingFile(info: Stats, file: StaticFile): void {
@@ -129,13 +135,20 @@ function fromManifest(input: RoutedInput, file: StaticFile, status: number): Res
   if (answersAsItself(status) && preconditionFails(request, tag, noDate)) {
     headers.delete(CONTENT_LENGTH);
     keptByNobody(headers);
+    headers.set(REFUSAL_HEADER, '1');
     return new Response(null, { status: HTTP_PRECONDITION_FAILED, headers });
   }
   if (answersAsItself(status) && clientHolds(request, tag, noDate)) {
     headers.delete(CONTENT_LENGTH);
     return new Response(null, { status: HTTP_NOT_MODIFIED, headers });
   }
-  if (request.method === 'HEAD' || BODYLESS.has(status)) {
+  if (BODYLESS.has(status)) {
+    // A status that carries no body, as a rewrite may name one, says no length of one either: the
+    // edge drops it too (`underRewriteStatus`), and a client would wait for the bytes it names.
+    headers.delete(CONTENT_LENGTH);
+    return new Response(null, { status, headers });
+  }
+  if (request.method === 'HEAD') {
     return new Response(null, { status, headers });
   }
   return undefined;
@@ -151,6 +164,7 @@ function rangeNotSatisfiable(input: RoutedInput, file: StaticFile, status: numbe
   headers.delete(CONTENT_LENGTH);
   headers.set(CONTENT_RANGE, `bytes */${String(file.blob.byteLength)}`);
   keptByNobody(headers);
+  headers.set(REFUSAL_HEADER, '1');
   return new Response(null, { status: HTTP_RANGE_NOT_SATISFIABLE, headers });
 }
 
@@ -180,6 +194,18 @@ function bodyResponse(
 }
 
 /**
+ * The status the file is answered under: the one a rewrite named, where it names one for an answer
+ * of the file's own, as the edge judges it (`underRewriteStatus`) — a 404 a middleware rewrote to
+ * the file is not answered with a 304 or a range of it — and `withRewriteStatus` then leaves the
+ * answer as it is.
+ */
+function underRewriteStatus(input: RoutedInput, fileStatus: number): number {
+  return fileStatus === HTTP_OK && input.rewriteStatus !== undefined
+    ? input.rewriteStatus
+    : fileStatus;
+}
+
+/**
  * Called only after the shared router and middleware selected this build-owned StaticFile.
  * A request pathname never becomes a filesystem path. The body stays on disk until consumed,
  * and cancelling its Web stream destroys the Node stream and closes the file descriptor; a range
@@ -189,10 +215,11 @@ export async function staticFileResponse(
   input: RoutedInput,
   _store: Store,
   file: StaticFile,
-  status: number,
+  fileStatus: number,
 ): Promise<Response | undefined> {
   if (!DIGEST.test(file.blob.sha256)) throw new Error('upwind: invalid native bundle blob digest');
   input.request.signal.throwIfAborted();
+  const status = underRewriteStatus(input, fileStatus);
   const root =
     typeof __ARKOR_BUNDLE_ROOT__ === 'undefined' ? import.meta.dirname : __ARKOR_BUNDLE_ROOT__;
   const location = path.join(root, 'blobs', file.blob.sha256);
@@ -239,4 +266,19 @@ export async function staticFileResponse(
     await handle.close();
     throw error;
   }
+}
+
+/**
+ * The routed answer once routing's headers and a rewrite's status are on it: a refusal of this
+ * module's kept by nobody again, as the edge judges its refusals after the application's headers are
+ * on them. A header rule or a middleware's own lifetime laid on a 412 or a 416 would otherwise have a
+ * cache keep the refusal of one request for every request for the file.
+ */
+export function keptAfterRouting(response: Response): Response {
+  if (!response.headers.has(REFUSAL_HEADER)) {
+    return response;
+  }
+  response.headers.delete(REFUSAL_HEADER);
+  keptByNobody(response.headers);
+  return response;
 }

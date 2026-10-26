@@ -80,6 +80,12 @@ export interface RoutedInput extends HandleInput {
    * answers by the edge's rules (the native target) needs to know it as the edge does.
    */
   readonly middlewareRan?: true | undefined;
+  /**
+   * The status a rewrite named, which the answer is given after it is made (`withRewriteStatus`).
+   * The edge judges a file's validators and ranges under it (`underRewriteStatus`), and so does a
+   * host that answers by the edge's rules.
+   */
+  readonly rewriteStatus?: number | undefined;
 }
 
 export { initUrlOf, resumeUrl, stripPlatformHeaders } from './incoming.ts';

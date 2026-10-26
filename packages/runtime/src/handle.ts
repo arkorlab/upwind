@@ -20,6 +20,7 @@ import {
   documentFromBuild,
   notFound,
   postponedOf,
+  keptAfterRouting,
   staticFileResponse,
 } from './documents.ts';
 import { deferredEntryFor, entryFor, hasEntry } from './entries.ts';
@@ -413,12 +414,13 @@ async function answerResolved(
     const image = await serveImageSource(forwarded, store, images, routed);
     return misdirectedTo(image) === undefined ? withRoutingHeaders(image, routed.headers) : image;
   }
-  return withRewriteStatus(
-    store,
-    resolved.route,
-    withRoutingHeaders(await serveResolved(forwarded, store, resolved, url), routed.headers),
-    routed.status,
+  const asked =
+    routed.status === undefined ? forwarded : { ...forwarded, rewriteStatus: routed.status };
+  const answer = withRoutingHeaders(
+    await serveResolved(asked, store, resolved, url),
+    routed.headers,
   );
+  return keptAfterRouting(withRewriteStatus(store, resolved.route, answer, routed.status));
 }
 
 /**
