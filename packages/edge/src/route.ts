@@ -460,10 +460,10 @@ function lookAtScopeOf(input: ManifestRoutingInput): void {
   const { request, state } = input;
   const scopeId = state.manifest?.cache?.scopeId;
   if (
-    (request.method !== 'GET' && request.method !== 'HEAD') ||
     state.validated ||
     state.function !== undefined ||
-    scopeId === undefined
+    scopeId === undefined ||
+    (request.method !== 'GET' && request.method !== 'HEAD')
   ) {
     return;
   }

@@ -115,7 +115,12 @@ async function fixture({
       {
         manifestLookup: Promise.resolve({ kind: 'found', value: manifest }),
         policyLookup:
-          policyReady === undefined ? Promise.resolve(lookup) : policyReady.then(() => lookup),
+          policyReady === undefined
+            ? Promise.resolve(lookup)
+            : (async () => {
+                await policyReady;
+                return lookup;
+              })(),
       },
     );
   };
@@ -169,24 +174,27 @@ describe('what looks at scope signals as it is routed', () => {
     }
   });
 
-  it('keeps a generation scope refresh behind the public document response', async () => {
-    const subject = await fixture();
-    try {
-      const response = await subject.serve();
+  it.each([true, false])(
+    'keeps scope refresh behind a document, generations=%s',
+    async (generations) => {
+      const subject = await fixture();
+      try {
+        const response = await subject.serve({ generations });
 
-      await expect(response.text()).resolves.toBe(
-        subject.document.shellText + subject.document.suffixText,
-      );
+        await expect(response.text()).resolves.toBe(
+          subject.document.shellText + subject.document.suffixText,
+        );
 
-      await subject.entered.promise;
+        await subject.entered.promise;
 
-      expect(subject.opened).toHaveBeenCalledWith(subject.signalCache);
-      expect(subject.scopeSignals).toHaveBeenCalledTimes(1);
-    } finally {
-      subject.release.resolve(undefined);
-      await waitOnExecutionContext(subject.ctx);
-    }
-  });
+        expect(subject.opened).toHaveBeenCalledWith(subject.signalCache);
+        expect(subject.scopeSignals).toHaveBeenCalledTimes(1);
+      } finally {
+        subject.release.resolve(undefined);
+        await waitOnExecutionContext(subject.ctx);
+      }
+    },
+  );
 
   it('looks once for a document whose record is read as well', async () => {
     const subject = await fixture();

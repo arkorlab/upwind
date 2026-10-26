@@ -127,8 +127,8 @@ const lookedAt = new WeakMap<ExecutionContext, string>();
 /**
  * Begin a look at where `scopeId` stands behind the request (`lookAtScope`), once for the request
  * however many of its routes and reads ask (`lookedAt`): as it reads a generation, and as it is
- * handed to the Function (`passthroughFor`). Nothing where the host keeps no signals, nor
- * before the deployment has Workers to tell.
+ * handed to the Function whole or as a continuation (`passthroughFor`, `resumeContinuation`).
+ * Nothing where the host keeps no signals, nor before the deployment has Workers to tell.
  */
 export function lookAtScopeBehind(
   edge: Pick<EdgeContext, 'app' | 'ctx' | 'host' | 'runtime'>,
