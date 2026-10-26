@@ -23,7 +23,7 @@ export function pagesHandlerProfileInputs(args: readonly string[]): PagesHandler
   const files = Object.entries(FIXTURE_FILES).map(([target, digest]) => {
     const replacement = off && target === 'next.config.mjs';
     return Object.freeze({
-      source: replacement ? 'server-minification-off.next.config.mjs' : `fixture/${target}`,
+      source: replacement ? 'fixture/server-minification-off.next.config.mjs' : `fixture/${target}`,
       target,
       sha256: replacement ? SERVER_MINIFICATION_OFF_CONFIG : digest,
     });

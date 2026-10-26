@@ -61,7 +61,7 @@ describe('fixed public Pages producer input selection without running the produc
     expect(off.files).toHaveLength(original.files.length);
     expect(withoutConfig(off)).toStrictEqual(withoutConfig(original));
     expect(off.files.find((file) => file.target === 'next.config.mjs')).toStrictEqual({
-      source: 'server-minification-off.next.config.mjs',
+      source: 'fixture/server-minification-off.next.config.mjs',
       target: 'next.config.mjs',
       sha256: SERVER_MINIFICATION_OFF_CONFIG,
     });
@@ -81,7 +81,9 @@ describe('fixed public Pages producer input selection without running the produc
 
   it('uses an authored pinned config that adds only experimental.serverMinification=false', async () => {
     const normal = await readFile(new URL('fixture/next.config.mjs', INPUTS), 'utf8');
-    const off = await readFile(new URL('server-minification-off.next.config.mjs', INPUTS), 'utf8');
+    const file = new URL('fixture/server-minification-off.next.config.mjs', INPUTS);
+    const off = await readFile(file, 'utf8');
+    const adapter = await readFile(new URL('adapter.mjs', file));
     const parsed = parseAst(off);
     const exported = parsed.body.find((node) => node.type === 'ExportDefaultDeclaration');
     const properties =
@@ -108,6 +110,7 @@ describe('fixed public Pages producer input selection without running the produc
     expect(off.replace('  experimental: { serverMinification: false },\n', '')).toBe(normal);
     expect(digest(normal)).toBe(FIXTURE_FILES['next.config.mjs']);
     expect(digest(off)).toBe(SERVER_MINIFICATION_OFF_CONFIG);
+    expect(digest(adapter)).toBe(FIXTURE_FILES['adapter.mjs']);
   });
 
   it.each([
