@@ -219,7 +219,6 @@ async function serveImageSource(
     return fallback.response;
   }
   const { params } = fallback;
-  const { method } = request;
   if (fallback.kind === 'remote') {
     const remote = await fetchRemoteSource({
       href: params.href,
@@ -228,7 +227,7 @@ async function serveImageSource(
     });
     return remote.kind === 'refused'
       ? remote.response
-      : sourceResponse({ source: remote.response, params, images, internal: false, method });
+      : sourceResponse({ source: remote.response, params, images, internal: false, request });
   }
   const source = sourceRequest(request, params.href);
   // Routed already, by the Function that handed the image here: answered from there.
@@ -241,7 +240,7 @@ async function serveImageSource(
   if (misdirectedTo(answered) !== undefined) {
     return answered;
   }
-  return sourceResponse({ source: answered, params, images, internal: true, method });
+  return sourceResponse({ source: answered, params, images, internal: true, request });
 }
 
 /**
