@@ -11,6 +11,7 @@ import {
   commitNodeManifestBoundStage,
   createNodeManifestBoundBatch,
 } from './node-manifest-bound-batch.ts';
+import type { NodeManifestCompilerRootBinding } from './node-manifest-compiler-root.ts';
 import {
   assertNodeManifestConsumer,
   type NodeManifestConsumerImport,
@@ -26,6 +27,7 @@ import {
   ROUTE_EXPORTS,
   type ManifestProtectedKind,
 } from './node-manifest-framework.ts';
+import { commitNodeManifestHandlerMetadata } from './node-manifest-handler-metadata.ts';
 import { type NodeManifestNormalization } from './node-manifest-normalization.ts';
 import type { SealedRoute } from './node-manifest-routes.ts';
 import { certifyNodeManifestRuntimeCallers } from './node-manifest-runtime-callers.ts';
@@ -90,6 +92,7 @@ export interface ManifestGraphInput {
   readonly runtimeManifest?: string | undefined;
   readonly instrumentation?: string | undefined;
   readonly analysisEntry?: string | undefined;
+  readonly compilerRootBinding?: NodeManifestCompilerRootBinding | undefined;
 }
 interface ProtectedModule {
   readonly id: string;
@@ -162,6 +165,7 @@ class ConsumerGraph {
   private readonly sdkScope: NodeManifestSdkTerminalScope;
   private readonly sdkTerminals = new Map<string, NodeManifestSdkTerminalProof>();
   private runtimeRoot: string | undefined;
+  readonly helperMetadata = new Map<string, ManifestGraphFile>();
 
   constructor(
     input: ManifestGraphInput,
@@ -292,6 +296,7 @@ class ConsumerGraph {
       boundBatch: this.boundBatch,
       runtimeProfiles: this.runtimeProfiles(),
       sdkTerminalScope: this.sdkScope,
+      compilerRootBinding: this.input.compilerRootBinding,
       producer: { id: child.id, file: producer.file, sha256: producer.sha256, kind: producerKind },
     });
     // The source helper's boot terminals are not proof terminals: every actual physical
@@ -302,14 +307,14 @@ class ConsumerGraph {
     }
     if (proof.boundStage === undefined) refuse('missing bound proof stage');
     commitNodeManifestBoundStage(this.boundBatch, proof.boundStage);
-    await commitNodeManifestPagesConjunctionStage(
-      proof,
-      proof.terminals.map((terminal) => {
-        const certificate = this.sdkTerminals.get(terminal.id);
-        return certificate ?? refuse('missing actual SDK terminal certificate');
-      }),
-    );
+    const terminalCertificates = proof.terminals.map((terminal) => {
+      const certificate = this.sdkTerminals.get(terminal.id);
+      return certificate ?? refuse('missing actual SDK terminal certificate');
+    });
+    await commitNodeManifestPagesConjunctionStage(proof, terminalCertificates);
+    const helperMetadata = await commitNodeManifestHandlerMetadata(proof, terminalCertificates);
     for (const source of proof.files) this.files.set(source.file, source);
+    for (const source of helperMetadata) this.helperMetadata.set(source.file, source);
     for (const runtime of proof.compilerSources) this.compilerSources.set(runtime.file, runtime);
     this.runtimeRoot = rootDir;
     this.turbopackProducers.add(child.id);
@@ -461,12 +466,15 @@ export async function proveManifestConsumerGraph(
           runtimeRootDir,
         });
   const finalNormalization =
-    sealed.files.length === 0
+    sealed.files.length === 0 && consumers.helperMetadata.size === 0
       ? sealedNormalization
-      : Object.freeze({ ...sealedNormalization, metadataFiles: sealed.files });
+      : Object.freeze({
+          ...sealedNormalization,
+          metadataFiles: Object.freeze([...sealed.files, ...consumers.helperMetadata.values()]),
+        });
   return {
     files: consumers.sources(),
-    metadataFiles: sealed.files,
+    metadataFiles: finalNormalization.metadataFiles ?? [],
     normalization: finalNormalization,
     pages: consumers.certifiedPages(),
     approvedCompilerSources: consumers.approvedCompilerSources(),

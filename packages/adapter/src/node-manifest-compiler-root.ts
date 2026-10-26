@@ -23,6 +23,11 @@ export interface NodeManifestCompilerRootInput {
 export interface NodeManifestCompilerRootProof {
   readonly [ROOT]: true;
 }
+/** Exact opaque token plus its original input object; equal JSON is not a binding. */
+export interface NodeManifestCompilerRootBinding {
+  readonly proof: NodeManifestCompilerRootProof;
+  readonly input: NodeManifestCompilerRootInput;
+}
 export interface NodeManifestCompilerRootData {
   readonly kind: 'persisted build compiler root';
   readonly basis: 'turbopack.root' | 'outputFileTracingRoot' | 'appDir';

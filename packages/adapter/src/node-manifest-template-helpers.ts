@@ -1,4 +1,8 @@
 import { AuditError } from './dependencies.ts';
+import {
+  nodeManifestHandlerMember,
+  type NodeManifestHandlerContext,
+} from './node-manifest-handler-context.ts';
 import { certifyNodeManifestHoist, nodeManifestHoistMember } from './node-manifest-hoist.ts';
 import {
   certifyNodeManifestRouteKind,
@@ -17,8 +21,11 @@ export interface NodeManifestTemplateHelperImport {
   readonly kind: 'selected Pages helper import';
 }
 export interface NodeManifestTemplateHelperMember {
-  readonly module: 'dist/server/route-kind.js' | 'dist/build/templates/helpers.js';
-  readonly name: 'RouteKind' | 'hoist';
+  readonly module:
+    | 'dist/server/route-kind.js'
+    | 'dist/build/templates/helpers.js'
+    | 'dist/server/route-modules/pages/pages-handler.js';
+  readonly name: 'RouteKind' | 'hoist' | 'getHandler';
 }
 interface HelperInput {
   readonly owner: NodeManifestTemplateHelperOwner;
@@ -26,6 +33,7 @@ interface HelperInput {
   readonly target: NodeManifestTurbopackGraphFactory;
   readonly physical: NodeManifestTurbopackGraphFile;
   readonly specifier: string;
+  readonly handlerContext?: NodeManifestHandlerContext | undefined;
 }
 interface StoredImport {
   readonly input: HelperInput;
@@ -39,6 +47,7 @@ interface StoredImport {
   readonly physical: NodeManifestTurbopackGraphFile;
   readonly physicalSource: NodeManifestTurbopackGraphFile['source'];
   readonly fingerprint: string;
+  readonly handlerContext: NodeManifestHandlerContext | undefined;
 }
 const IMPORTS = new WeakMap<NodeManifestTemplateHelperImport, StoredImport>();
 
@@ -88,6 +97,7 @@ export function certifyNodeManifestTemplateHelperImport(
     physical: input.physical,
     physicalSource: input.physical.source,
     fingerprint: identity(input),
+    handlerContext: input.handlerContext,
   });
   return proof;
 }
@@ -105,6 +115,7 @@ function current(
     stored.input.consumer !== stored.consumer ||
     stored.input.target !== stored.target ||
     stored.input.physical !== stored.physical ||
+    stored.input.handlerContext !== stored.handlerContext ||
     stored.consumer.projection !== stored.consumerProjection ||
     stored.consumer.projection.original !== stored.consumerOriginal ||
     stored.target.projection !== stored.targetProjection ||
@@ -146,6 +157,7 @@ export function nodeManifestTemplateHelperMember(
     readonly specifier: string;
     readonly file: string;
     readonly sha256: string;
+    readonly nextRoot?: string | undefined;
   },
 ): NodeManifestTemplateHelperMember | undefined {
   const stored = current(proof, input.owner, input.projection);
@@ -167,5 +179,15 @@ export function nodeManifestTemplateHelperMember(
     )
       throw error;
   }
-  return undefined;
+  return stored.handlerContext === undefined
+    ? undefined
+    : nodeManifestHandlerMember(stored.handlerContext, {
+        owner: stored.owner,
+        consumer: stored.consumer,
+        target: stored.target,
+        physical: stored.physical,
+        specifier: input.specifier,
+        exportName: input.exportName,
+        nextRoot: input.nextRoot,
+      });
 }

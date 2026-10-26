@@ -3,6 +3,7 @@ import type {
   NodeManifestBoundBatch,
   NodeManifestBoundStage,
 } from './node-manifest-bound-batch.ts';
+import type { NodeManifestCompilerRootBinding } from './node-manifest-compiler-root.ts';
 import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
 import type { NodeManifestPagesConjunctionStage } from './node-manifest-pages-conjunction-walk.ts';
 import { nodeManifestRegistrationProofFiles } from './node-manifest-registration-views.ts';
@@ -50,6 +51,7 @@ export interface NodeManifestTurbopackConsumerInput {
   readonly boundBatch?: NodeManifestBoundBatch | undefined;
   /** Private, filesystem-sealed outer SDK graph; never an inner caller assertion. */
   readonly sdkTerminalScope?: NodeManifestSdkTerminalScope | undefined;
+  readonly compilerRootBinding?: NodeManifestCompilerRootBinding | undefined;
   readonly producer: {
     readonly id: string;
     readonly file: string;
@@ -66,6 +68,8 @@ export interface NodeManifestTurbopackConsumerProof {
   readonly terminals: readonly (NodeManifestTurbopackSealedEntry & { readonly id: string })[];
   readonly files: readonly { readonly file: string; readonly sha256: string }[];
   readonly compilerSources: readonly { readonly file: string; readonly sha256: string }[];
+  /** Inert persisted compiler-root JSON only, copied after outer SDK/bound closure. */
+  readonly helperMetadataFiles?: readonly { readonly file: string; readonly sha256: string }[];
   /** Provisional only: the outer graph must commit its SDK terminal walk and close the batch. */
   readonly boundStage?: NodeManifestBoundStage | undefined;
   /** Pending all-member Pages transport; outer SDK and committed bound stage are still required. */

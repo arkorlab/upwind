@@ -14,6 +14,12 @@ import {
 } from './node-manifest-bound-batch.ts';
 import { assertCoalescedPagesConsumer } from './node-manifest-coalesced-consumer.ts';
 import {
+  nodeManifestUnwrappedConsumerFactory,
+  nodeManifestStrictConsumerFactory,
+  assertAdditionalNodeManifestConsumerRoles,
+  captureNodeManifestConsumerTerminals,
+} from './node-manifest-consumer-factories.ts';
+import {
   registerNodeManifestConsumerFactory,
   assertNodeManifestPhysicalCallers,
   restrictNodeManifestProtectedIncoming,
@@ -21,12 +27,18 @@ import {
 } from './node-manifest-consumer-incoming.ts';
 import type { NodeManifestConsumerImport } from './node-manifest-consumers.ts';
 import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
+import {
+  qualifyNodeManifestHandlerContext,
+  assertCurrentNodeManifestHandlerContext,
+  type NodeManifestHandlerContext,
+  type NodeManifestHandlerOwnerBinding,
+} from './node-manifest-handler-context.ts';
+import { stageNodeManifestHandlerMetadata } from './node-manifest-handler-metadata.ts';
 import { NodeManifestPagesConjunctionWalk } from './node-manifest-pages-conjunction-walk.ts';
 import { nodeManifestPagesContextLeaf } from './node-manifest-pages-context-consumer.ts';
 import {
   assertNodeManifestPassSingle,
   nodeManifestPassForwarded,
-  nodeManifestPassTouchesProtected,
   withNodeManifestRegistrationPass,
   withNodeManifestRegistrationPassAsync,
   type NodeManifestRegistrationPass,
@@ -60,7 +72,6 @@ import {
   type NodeManifestTurbopackSealedEntry,
 } from './node-manifest-turbopack-graph.ts';
 import { assertNodeManifestTurbopackTemplateConsumer } from './node-manifest-turbopack-templates.ts';
-import { projectNodeManifestTurbopackFactory } from './node-manifest-turbopack.ts';
 
 export type {
   NodeManifestTurbopackConsumerInput,
@@ -74,12 +85,18 @@ function refuse(reason: string): never {
   );
 }
 
-const CONSUMER_OWNERS = new WeakSet<Readonly<{ identity: symbol }>>();
+const CONSUMER_OWNERS = new WeakMap<
+  Readonly<{ identity: symbol }>,
+  NodeManifestHandlerOwnerBinding
+>();
 /** An assertion only: the sole mint site is the private consumer constructor below. */
 export function assertNodeManifestTurbopackConsumerOwner(
   owner: Readonly<{ identity: symbol }>,
+  binding?: NodeManifestHandlerOwnerBinding,
 ): void {
-  if (!CONSUMER_OWNERS.has(owner)) refuse('uncertified private consumer owner');
+  const known = CONSUMER_OWNERS.get(owner);
+  if (known === undefined) refuse('uncertified private consumer owner');
+  if (binding !== undefined && known !== binding) refuse('foreign private handler owner binding');
 }
 
 class TurbopackConsumers {
@@ -112,11 +129,12 @@ class TurbopackConsumers {
   private readonly certifiedFactories = new Map<string, NodeManifestAppPageFactoryProof>();
   private callerProof: NodeManifestRuntimeCallerProof | undefined;
   private pass: NodeManifestRegistrationPass | undefined;
+  private handlerContext: NodeManifestHandlerContext | undefined;
+  private readonly handlerBinding: NodeManifestHandlerOwnerBinding;
   private reachabilityFallback: NodeManifestIncomingFallback;
 
   constructor(input: NodeManifestTurbopackConsumerInput) {
     this.input = input;
-    CONSUMER_OWNERS.add(this.conjunctionOwner);
     const expectedKind = nodeManifestTurbopackProducerKind(this.input);
     for (const entry of input.entries) {
       const kind = entry.kind ?? 'app-page';
@@ -136,6 +154,16 @@ class TurbopackConsumers {
     for (const graph of this.allGraphs)
       for (const factory of graph.factories)
         registerNodeManifestConsumerFactory(factory, this.factories, this.incoming);
+    this.handlerBinding = Object.freeze({
+      owner: this.helperOwner,
+      input: this.input,
+      graphs: this.allGraphs,
+      registrations: this.registrations,
+      factories: this.factories,
+      strictFactories: this.strictFactories,
+      cohort: this.runtimeCohort,
+    });
+    CONSUMER_OWNERS.set(this.conjunctionOwner, this.handlerBinding);
     this.pagesConjunction = new NodeManifestPagesConjunctionWalk({
       consumerOwner: this.conjunctionOwner,
       input,
@@ -195,34 +223,7 @@ class TurbopackConsumers {
   }
 
   private unwrapped(id: string): string {
-    const seen = new Set<string>();
-    let current = id;
-    assertNodeManifestPassSingle(this.currentPass(), current);
-    while (this.factories.has(current)) {
-      if (seen.has(current)) refuse('cyclic namespace forwarding');
-      seen.add(current);
-      const factory = this.factories.get(current);
-      if (factory === undefined) return refuse('missing factory');
-      const next = nodeManifestPassForwarded(this.currentPass(), factory.id);
-      if (next === undefined) return current;
-      current = next;
-      assertNodeManifestPassSingle(this.currentPass(), current);
-    }
-    return current;
-  }
-
-  private assertAdditionalCallerRoles(): void {
-    if (this.callerProof === undefined) return;
-    const protectedBoots = new Set(this.graphs.map((graph) => graph.physicalId));
-    for (const caller of this.callerProof.callers) {
-      if (protectedBoots.has(caller.id)) continue;
-      if (
-        caller.invoked.some((id) =>
-          nodeManifestPassTouchesProtected(this.currentPass(), id, this.complete),
-        )
-      )
-        refuse('additional runtime caller consumes protected route authority');
-    }
+    return nodeManifestUnwrappedConsumerFactory(id, this.currentPass(), this.factories);
   }
 
   private descriptor(edge: {
@@ -280,7 +281,11 @@ class TurbopackConsumers {
         this.pagesConjunction.imported(factory, edge, this.currentPass()) ?? this.importTarget(id),
       helper:
         nodeManifestTurbopackProducerKind(this.input) === 'pages'
-          ? { owner: this.helperOwner, factories: this.factories }
+          ? {
+              owner: this.helperOwner,
+              factories: this.factories,
+              handlerContext: this.handlerContext,
+            }
           : undefined,
     };
   }
@@ -348,31 +353,7 @@ class TurbopackConsumers {
   private strictFactory(
     factory: NodeManifestTurbopackGraphFactory,
   ): NodeManifestTurbopackGraphFactory {
-    assertNodeManifestPassSingle(this.currentPass(), factory.id);
-    const previous = this.strictFactories.get(factory.id);
-    if (previous !== undefined) return previous;
-    const id = factory.projection.moduleId;
-    const projection = projectNodeManifestTurbopackFactory(factory.projection.original, id);
-    if (
-      JSON.stringify(projection.imports) !== JSON.stringify(factory.projection.imports) ||
-      JSON.stringify(projection.boundRuntimeInputs) !==
-        JSON.stringify(factory.projection.boundRuntimeInputs)
-    )
-      refuse('protected factory dependency projection disagreement');
-    const strict = { ...factory, projection };
-    this.strictFactories.set(factory.id, strict);
-    return strict;
-  }
-
-  private captureTerminals(id: string, role: Role): boolean {
-    let found = false;
-    for (const graph of this.graphs) {
-      if (graph.exportedId !== id) continue;
-      if (role !== 'route-exports') refuse('producer namespace reaches SDK route terminal');
-      this.terminals.set(graph.physicalId, { ...graph.entry, id: graph.physicalId });
-      found = true;
-    }
-    return found;
+    return nodeManifestStrictConsumerFactory(factory, this.currentPass(), this.strictFactories);
   }
 
   private async visitParent(
@@ -409,7 +390,12 @@ class TurbopackConsumers {
     }
     if (this.visiting.has(id)) refuse('cyclic protected factory chain');
     this.visiting.add(id);
-    const terminal = this.captureTerminals(id, role);
+    const terminal = captureNodeManifestConsumerTerminals({
+      graphs: this.graphs,
+      terminals: this.terminals,
+      id,
+      role,
+    });
     const parents = this.incoming.get(id) ?? new Set<string>();
     if (!terminal && parents.size === 0) refuse('unclosed protected factory chain');
     for (const parent of parents) {
@@ -467,6 +453,12 @@ class TurbopackConsumers {
   }
 
   private async proveWithinPass(): Promise<NodeManifestTurbopackConsumerProof> {
+    const handlerInput = {
+      owned: this.handlerBinding,
+      consumerOwner: this.conjunctionOwner,
+      pass: this.currentPass(),
+    };
+    this.handlerContext = await qualifyNodeManifestHandlerContext(handlerInput);
     const producer = this.input.sources.find((source) => source.id === this.input.producer.id);
     if (
       producer?.file !== this.input.producer.file ||
@@ -477,8 +469,14 @@ class TurbopackConsumers {
       this.input.producer.id,
       this.input.producer.kind === APP_PAGE_CLASS ? 'class' : 'factory',
     );
-    this.assertAdditionalCallerRoles();
+    assertAdditionalNodeManifestConsumerRoles({
+      pass: this.currentPass(),
+      graphs: this.graphs,
+      proof: this.callerProof,
+      complete: this.complete,
+    });
     assertStandaloneNodeBoundConsumers(this.input, this.factories.values(), this.runtimeConsumers);
+    const handlerFiles = await assertCurrentNodeManifestHandlerContext(this.handlerContext);
     if (this.terminals.size === 0) refuse('missing protected SDK route terminal');
     const boundStage =
       this.input.boundBatch === undefined
@@ -490,11 +488,16 @@ class TurbopackConsumers {
             factories: [...this.factories.values()],
             certified: [...this.boundConsumers.values()],
           });
-    return this.pagesConjunction.stage({
-      terminals: [...this.terminals.values()],
-      ...this.proofFiles,
-      ...(boundStage !== undefined && { boundStage }),
-      requiresSdkNormalization: true,
+    return stageNodeManifestHandlerMetadata({
+      ...handlerInput,
+      context: this.handlerContext,
+      proof: this.pagesConjunction.stage({
+        terminals: [...this.terminals.values()],
+        ...this.proofFiles,
+        helperMetadataFiles: handlerFiles,
+        ...(boundStage !== undefined && { boundStage }),
+        requiresSdkNormalization: true,
+      }),
     });
   }
   async prove(): Promise<NodeManifestTurbopackConsumerProof> {

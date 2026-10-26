@@ -48,6 +48,10 @@ const MODULES = {
     module: 'dist/build/templates/helpers.js',
     sha256: 'b9dd74a9ba684af8c21a7204d79c63f08683e22cf5e49d4e133ab5e2d9149b03',
   },
+  getHandler: {
+    module: 'dist/server/route-modules/pages/pages-handler.js',
+    sha256: 'b20671fb66060f58b98fe7677adf844d10697a97b463eb2390eb00831500bda1',
+  },
 } as const;
 
 function required(node: Node, input: TokenInput): string | undefined {
@@ -102,7 +106,7 @@ function physicalMember(
   key: string,
   input: TokenInput,
 ): NodeManifestTemplateHelperMember | undefined {
-  if (key !== 'RouteKind' && key !== 'hoist') return undefined;
+  if (key !== 'RouteKind' && key !== 'hoist' && key !== 'getHandler') return undefined;
   const profile = MODULES[key];
   const relative = beneath(input.nextRoot, entry.file)?.split(path.sep).join('/');
   return relative === profile.module && (input.expected || entry.sha256 === profile.sha256)
@@ -125,6 +129,7 @@ function semantic(
     specifier: entry.specifier,
     file: entry.file,
     sha256: entry.sha256,
+    nextRoot: input.nextRoot,
   });
 }
 

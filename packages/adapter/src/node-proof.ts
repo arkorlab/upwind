@@ -22,6 +22,10 @@ import type { NodeArchiveFile } from './node-archive.ts';
 import { nodeCachePolicyPatch } from './node-cache-policy.ts';
 import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
 import type { ManifestGraphEdge, NodeManifestNormalization } from './node-manifest-graph.ts';
+import {
+  prepareNodeManifestHandlerCompilerRoot,
+  assertCurrentUsedNodeManifestHandlerCompilerRoot,
+} from './node-manifest-handler-root.ts';
 import { proveNodeManifests, type NodeManifestProof } from './node-manifest-proof.ts';
 import {
   certifyNodeNextRewrites,
@@ -368,6 +372,13 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) throw new AuditError('Original Node graph produced no proof chunk');
   await assertRetainedSourceBytes(chunk, graph);
+  const compilerRootBinding = await prepareNodeManifestHandlerCompilerRoot(
+    Object.freeze({ projectDir: input.projectDir, distDir: input.patch.distDir }),
+    Object.keys(chunk.modules).flatMap((id) => {
+      const source = graph.sources.get(id);
+      return source === undefined ? [] : [source];
+    }),
+  );
   const manifestGraph = {
     sources: graph.sources,
     importers: graph.importers,
@@ -391,6 +402,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
       runtimeManifest: input.runtimeManifest,
       instrumentation: input.patch.instrumentation,
       analysisEntry: entryFile,
+      compilerRootBinding,
     },
     manifestGraph,
   );
@@ -430,6 +442,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     ...rewriteMetadata,
   ]);
   const normalization = nodeNextRewriteNormalization(nextRewrites, manifests.normalization);
+  await assertCurrentUsedNodeManifestHandlerCompilerRoot(compilerRootBinding, files);
   return {
     native: retained,
     files,

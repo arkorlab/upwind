@@ -2,6 +2,7 @@ import { isBuiltin } from 'node:module';
 
 import { AuditError } from './dependencies.ts';
 import type { NodeManifestCoalescedImport } from './node-manifest-coalesced-pages.ts';
+import type { NodeManifestHandlerContext } from './node-manifest-handler-context.ts';
 import type { NodeManifestPagesConjunctionImport } from './node-manifest-pages-conjunction-walk.ts';
 import {
   certifyNodeManifestTemplateHelperImport,
@@ -24,6 +25,7 @@ interface ImportInput {
     | {
         readonly owner: NodeManifestTemplateHelperOwner;
         readonly factories: ReadonlyMap<string, NodeManifestTurbopackGraphFactory>;
+        readonly handlerContext?: NodeManifestHandlerContext | undefined;
       }
     | undefined;
 }
@@ -47,6 +49,7 @@ function helperImport(
         target: selected,
         physical: source,
         specifier: edge.specifier,
+        handlerContext: input.helper.handlerContext,
       });
 }
 function resolvedImport(

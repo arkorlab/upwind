@@ -64,6 +64,9 @@ function digest(code: string | Uint8Array): string {
 }
 function pointers(input: ManifestGraphInput, graph: ManifestModuleGraph): readonly unknown[] {
   return [
+    input.compilerRootBinding,
+    input.compilerRootBinding?.proof,
+    input.compilerRootBinding?.input,
     input.entries,
     graph.sources,
     graph.imports,
@@ -72,6 +75,32 @@ function pointers(input: ManifestGraphInput, graph: ManifestModuleGraph): readon
     graph.retained,
     graph.rendered,
   ];
+}
+/** Pending identity only. This neither creates nor completes an SDK terminal certificate. */
+export function assertNodeManifestPendingSdkContext(
+  scope: NodeManifestSdkTerminalScope,
+  input: NodeManifestTurbopackConsumerInput,
+): void {
+  const state = current(scope);
+  if (
+    input.sdkTerminalScope !== scope ||
+    state.input.compilerRootBinding !== input.compilerRootBinding ||
+    state.rootDir !== input.rootDir ||
+    state.distDir !== input.distDir ||
+    state.graph.sources.size !== input.sources.length ||
+    new Set(input.sources.map((source) => source.id)).size !== input.sources.length
+  )
+    refuse('foreign pending SDK context');
+  for (const source of input.sources) {
+    const original = state.graph.sources.get(source.id);
+    if (
+      original?.file !== source.file ||
+      original.sha256 !== source.source.sha256 ||
+      digest(source.source.code) !== original.sha256 ||
+      state.graph.imports?.get(source.id) !== source.imports
+    )
+      refuse('pending SDK original source binding');
+  }
 }
 function fingerprint(input: ManifestGraphInput, graph: ManifestModuleGraph): string {
   return digest(
