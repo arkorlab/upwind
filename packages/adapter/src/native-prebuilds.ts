@@ -116,7 +116,7 @@ function matches(tags: Tags, target: NativePrebuildTarget): boolean {
 }
 function compare(left: Tags, right: Tags): number {
   if (left.runtime !== right.runtime) return left.runtime === 'node' ? -1 : 1;
-  if (left.abi !== right.abi) return left.abi !== undefined && left.abi !== '' ? -1 : 1;
+  if (left.abi !== right.abi) return left.abi === undefined || left.abi === '' ? 1 : -1;
   return right.specificity - left.specificity;
 }
 
