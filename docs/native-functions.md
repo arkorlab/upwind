@@ -53,8 +53,10 @@ of the official native fixture remains incomplete: its default Turbopack build c
 at the original-factory strictness check, before the emitted Function is invoked. Next.js tracks
 [minification losing strict mode](https://github.com/vercel/next.js/issues/100617) upstream.
 CI retains that failure and runs a separate diagnostic with server minification disabled;
-that diagnostic does not establish default-build or hosted compatibility. The adapter leaves
-the project's minification setting unchanged. These restrictions apply to native Node artifacts;
+that diagnostic currently stops at an unproved JavaScript compiler in a bundled Next.js dependency,
+also before invocation. Disabling minification is not a verified workaround and does not establish
+default-build or hosted compatibility. The adapter leaves the project's minification setting
+unchanged. These restrictions apply to native Node artifacts;
 ordinary Worker output keeps its existing version support.
 
 Hook TypeScript is analyzed after compiler lowering and can be bundled as JavaScript. A dependency
