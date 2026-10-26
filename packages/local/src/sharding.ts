@@ -6,6 +6,7 @@ export interface CheckShard {
   readonly total: number;
 }
 
+/** Whether the bounds name a complete one-based share using positive safe integers. */
 function validCheckShard(shard: CheckShard): boolean {
   return (
     Number.isSafeInteger(shard.index) &&

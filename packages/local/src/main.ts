@@ -196,6 +196,7 @@ type Asked =
     })
   | { readonly refused: string };
 
+/** Validate the deployment options and check partition before starting a stack. */
 function askedOf(
   values: ReturnType<typeof commandLine>['values'],
   command: string | undefined,
@@ -212,6 +213,7 @@ function askedOf(
   return 'refused' in named ? named : { ...served, gates: named.gates, shard: partition.shard };
 }
 
+/** Run a local serve or check command and report its exit status. */
 async function main(): Promise<number> {
   let parsed: ReturnType<typeof commandLine>;
   try {
