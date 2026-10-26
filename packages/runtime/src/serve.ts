@@ -78,6 +78,9 @@ export interface RoutedInput extends HandleInput {
    * Whether a middleware ran for the request. The edge answers a build-owned file or record no
    * longer as everyone's when one did — it may have read the request's cookies — and a host that
    * answers by the edge's rules (the native target) needs to know it as the edge does.
+   *
+   * This and the fields below are what this request's own routing came to, set by it: a request
+   * routed within another — an image's source (`serveImageSource`) — starts without the outer one's.
    */
   readonly middlewareRan?: true | undefined;
   /**
