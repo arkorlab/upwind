@@ -11,6 +11,11 @@ interface Forwarded {
   readonly imported: NodeManifestTurbopackImport;
   readonly interop: boolean;
 }
+export interface NodeManifestRegistrationForwarderData {
+  readonly exporter: 'commonjs' | 'n' | 'v';
+  readonly imported: NodeManifestTurbopackImport;
+  readonly interop: boolean;
+}
 interface Parameters {
   readonly context: string;
   readonly module: string | undefined;
@@ -136,7 +141,7 @@ function commonjs(
 function namespace(
   body: readonly unknown[],
   params: Parameters,
-): { readonly target: Forwarded; readonly method: string } | undefined {
+): { readonly target: Forwarded; readonly method: 'n' | 'v' } | undefined {
   const declaration = body[0];
   const call = statementExpression(body[1]);
   if (
@@ -160,7 +165,8 @@ function namespace(
     params.names.includes(value.name)
   )
     return undefined;
-  const method = ['n', 'v'].find((candidate) => member(call['callee'], params.context, candidate));
+  const methods = ['n', 'v'] as const;
+  const method = methods.find((candidate) => member(call['callee'], params.context, candidate));
   const target = imported(variable['init'], params.context, false);
   return method === undefined || target === undefined ? undefined : { target, method };
 }
@@ -195,11 +201,11 @@ function isolated(factory: Node, projection: NodeManifestTurbopackProjection): b
   );
 }
 
-/** A finite raw-body classification, not arbitrary alpha or directive-stripping equivalence. */
-export function nodeManifestRegistrationForwarder(
+/** Source classification DATA only; this grants no producer, constructor or caller authority. */
+export function nodeManifestRegistrationForwarderData(
   factory: Node,
   projection: NodeManifestTurbopackProjection,
-): string | undefined {
+): NodeManifestRegistrationForwarderData | undefined {
   const params = parameters(factory);
   if (params === undefined || !isolated(factory, projection)) return undefined;
   const body = factoryBody(factory);
@@ -217,5 +223,23 @@ export function nodeManifestRegistrationForwarder(
     actual.targetId !== target.imported.targetId
   )
     return undefined;
-  return JSON.stringify([direct === undefined ? forwarded?.method : 'commonjs', target]);
+  const exporter = direct === undefined ? forwarded?.method : 'commonjs';
+  return exporter === undefined
+    ? undefined
+    : Object.freeze<NodeManifestRegistrationForwarderData>({
+        exporter,
+        imported: Object.freeze({ ...target.imported }),
+        interop: target.interop,
+      });
+}
+
+/** A finite raw-body classification, not arbitrary alpha or directive-stripping equivalence. */
+export function nodeManifestRegistrationForwarder(
+  factory: Node,
+  projection: NodeManifestTurbopackProjection,
+): string | undefined {
+  const data = nodeManifestRegistrationForwarderData(factory, projection);
+  return data === undefined
+    ? undefined
+    : JSON.stringify([data.exporter, { imported: data.imported, interop: data.interop }]);
 }

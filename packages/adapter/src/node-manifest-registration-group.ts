@@ -13,6 +13,7 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
+import { nodeManifestPagesForwarderSource } from './node-manifest-pages-forwarder-source.ts';
 import { nodeManifestRegistrationForwarder } from './node-manifest-registration-forwarders.ts';
 import {
   nodeManifestRuntimeCohortSources,
@@ -223,6 +224,7 @@ function dependency(
     readonly sources: ReadonlyMap<string, NodeManifestTurbopackGraphFile>;
     readonly registry: ReadonlyMap<string | number, readonly string[]>;
   },
+  forwarder: { readonly original: Node; readonly projection: NodeManifestTurbopackProjection },
 ): string | undefined {
   if (imported.targetId !== undefined) {
     const targets = context.registry.get(imported.targetId);
@@ -236,8 +238,13 @@ function dependency(
   if (isBuiltin(edge.target))
     return JSON.stringify([imported.kind, imported.specifier, 'builtin', edge.target]);
   const target = context.sources.get(edge.target);
-  // This initial ordinary-only certificate never groups privileged Next runtime imports.
-  if (target === undefined || target.file.replaceAll('\\', '/').includes('/next/dist/'))
+  if (target === undefined) return undefined;
+  // Only the exact Pages external-forwarder DATA profile may cross this boundary. A
+  // grouped protected use still requires its separate, presently unsupported role proof.
+  if (
+    target.file.replaceAll('\\', '/').includes('/next/dist/') &&
+    nodeManifestPagesForwarderSource(forwarder.original, forwarder.projection, target) === undefined
+  )
     return undefined;
   return JSON.stringify([
     imported.kind,
@@ -322,7 +329,10 @@ function inspectOccurrence(
   const dependencies: string[] = [];
   for (const projection of projections) {
     for (const imported of projection.imports) {
-      const signature = dependency(imported, physical, context);
+      const signature = dependency(imported, physical, context, {
+        original: original.factory,
+        projection,
+      });
       if (signature === undefined) return undefined;
       dependencies.push(signature);
     }
