@@ -33,6 +33,11 @@ import { carriesMaps } from '../source-maps.ts';
 import { collectStaticFiles } from '../static-files.ts';
 import { staticPagesRuntimeFields } from '../static-pages.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from '../throwing-globals.ts';
+import {
+  NATIVE_EDGE_WEB_GLOBALS,
+  NATIVE_EDGE_WEB_OBJECT,
+  nativeEdgeWebPlugin,
+} from './edge-web.ts';
 import { copyNativeFiles, nativeTraceFiles } from './files.ts';
 import { nativeEdgeGraphPlugin } from './graph.ts';
 
@@ -273,6 +278,7 @@ async function emitNativeEdge(
     external: [/^node:/u],
     plugins: [
       globalObjectPlugin(),
+      nativeEdgeWebPlugin(),
       nativeEdgeGraphPlugin(),
       {
         name: 'upwind-native-edge',
@@ -287,9 +293,10 @@ async function emitNativeEdge(
     ],
     transform: {
       target: 'es2023',
-      inject: GLOBAL_OBJECT,
+      inject: { ...GLOBAL_OBJECT, ...NATIVE_EDGE_WEB_OBJECT },
       define: {
         ...THROWING_GLOBALS,
+        ...NATIVE_EDGE_WEB_GLOBALS,
         'process.env.NODE_ENV': '"production"',
         'process.env.NEXT_RUNTIME': '"edge"',
         self: 'globalThis',
