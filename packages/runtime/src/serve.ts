@@ -84,6 +84,18 @@ export interface RoutedInput extends HandleInput {
    */
   readonly middlewareRan?: true | undefined;
   /**
+   * What the middleware set on its answer, where it ran and let the request on: what the edge reads
+   * apart from the rules' to answer a file as it does (`middlewareCacheControl`, `entityTagOf`) —
+   * its own `ETag` and `Cache-Control` — where routing's merge of the two no longer tells them apart.
+   */
+  readonly middlewareHeaders?: Headers | undefined;
+  /**
+   * The request's headers as routing judged them, before a middleware changed them: what the edge
+   * judges `next.config`'s header rules by (`headerRulesFor`), and what routing laid the rules'
+   * headers by.
+   */
+  readonly askedHeaders?: Headers | undefined;
+  /**
    * The status a rewrite named, which the answer is given after it is made (`withRewriteStatus`).
    * The edge judges a file's validators and ranges under it (`underRewriteStatus`), and so does a
    * host that answers by the edge's rules.

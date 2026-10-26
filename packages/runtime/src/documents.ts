@@ -28,7 +28,7 @@ import {
 import { staticFileResponse } from './static-file.ts';
 import { entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
 
-export { keptAfterRouting, staticFileResponse } from './static-file.ts';
+export { afterRouting, staticFileResponse } from './static-file.ts';
 
 /**
  * What the build made of a route, answered from the bundle: a document from its shell and the

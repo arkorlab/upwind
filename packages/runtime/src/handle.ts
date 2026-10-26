@@ -20,7 +20,7 @@ import {
   documentFromBuild,
   notFound,
   postponedOf,
-  keptAfterRouting,
+  afterRouting,
   staticFileResponse,
 } from './documents.ts';
 import { deferredEntryFor, entryFor, hasEntry } from './entries.ts';
@@ -211,6 +211,8 @@ function sourceInput(input: RoutedInput, source: Request): RoutedInput {
     request: source,
     initURL: source.url,
     middlewareRan: undefined,
+    middlewareHeaders: undefined,
+    askedHeaders: undefined,
     rewriteStatus: undefined,
   };
 }
@@ -356,9 +358,11 @@ async function routeAndServe(
       // request's own, which the request hands over as it is copied.
       ...(bodies.handler !== request.body && { body: bodies.handler, duplex: 'half' }),
     }),
-    // What this routing came to, set whatever the input said: a request routed within another — an
-    // image's source — is not the outer one's, and its middleware may not have run for it.
+    // What this routing came to, each set whatever the input said: a request routed within another
+    // — an image's source — is not the outer one's, and its middleware may not have run for it.
     middlewareRan: trace.invoked ? true : undefined,
+    middlewareHeaders: trace.invoked ? trace.responseHeaders : undefined,
+    askedHeaders: requestHeaders,
   };
   if (routed.externalRewrite !== undefined) {
     return withRoutingHeaders(
@@ -441,7 +445,7 @@ async function answerResolved(
     await serveResolved(asked, store, resolved, url),
     routed.headers,
   );
-  return keptAfterRouting(withRewriteStatus(store, resolved.route, answer, routed.status));
+  return afterRouting(asked, withRewriteStatus(store, resolved.route, answer, routed.status));
 }
 
 /**

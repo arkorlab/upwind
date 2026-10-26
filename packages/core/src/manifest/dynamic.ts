@@ -485,7 +485,7 @@ function applyHeaderSet(
 }
 
 function configuredHeaders(
-  manifest: ProjectManifest,
+  manifest: Pick<ProjectManifest, 'headerRules' | 'routerReferences'>,
   url: URL,
   headers: Headers,
   forDocument: boolean,
@@ -524,7 +524,7 @@ function configuredHeaders(
  * Nothing for a manifest that carries no rule.
  */
 export function headerRulesFor(
-  manifest: ProjectManifest,
+  manifest: Pick<ProjectManifest, 'headerRules' | 'routerReferences'>,
   url: URL,
   headers: Headers,
 ): ConfiguredHeaders {

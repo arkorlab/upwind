@@ -51,9 +51,9 @@ async function fromHost(
 
 /**
  * The routed answer, as the host leaves it once routing's headers and a rewrite's status are on it:
- * as it is, here. A host that answers files by the edge's rules has more to say of a refusal it made
- * (`native/static-file.ts`).
+ * as it is, here. A host that answers files by the edge's rules has more to say of a file answer
+ * after routing (`native/static-file.ts`).
  */
-export function keptAfterRouting(response: Response): Response {
+export function afterRouting(_input: RoutedInput, response: Response): Response {
   return response;
 }

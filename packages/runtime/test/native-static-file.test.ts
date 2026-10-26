@@ -4,10 +4,10 @@ import { type FileHandle, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/pr
 import os from 'node:os';
 import path from 'node:path';
 
-import type { StaticFile } from '@stayingupwind/core/bundle';
+import type { Route, StaticFile } from '@stayingupwind/core/bundle';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { keptAfterRouting, staticFileResponse } from '../src/native/static-file.ts';
+import { afterRouting, staticFileResponse } from '../src/native/static-file.ts';
 import type { RoutedInput } from '../src/serve.ts';
 import type { Store } from '../src/store.ts';
 
@@ -42,11 +42,35 @@ function requireResource<T>(value: T | undefined): T {
 }
 
 const digest = 'a'.repeat(64);
-const store = {
-  tryReadBlob: () => {
-    throw new Error('native static files must stream from disk');
-  },
-} as unknown as Store;
+
+/** A build whose `next.config` header rules are `rules`, ahead of the middleware. */
+function storeWith(rules: readonly Route[] = []): Store {
+  return {
+    manifest: { config: {}, routing: { beforeMiddleware: rules, afterFiles: [], onMatch: [] } },
+    tryReadBlob: () => {
+      throw new Error('native static files must stream from disk');
+    },
+  } as unknown as Store;
+}
+
+const store = storeWith();
+const FILE_PATTERN = String.raw`^/static\.js$`;
+
+/**
+ * The answer as routing lays what it collected on it (`withRoutingHeaders`): a cookie one more, any
+ * other header over the answer's own.
+ */
+function routed(answer: Response, laid: readonly (readonly [string, string])[]): Response {
+  const headers = new Headers(answer.headers);
+  for (const [name, value] of laid) {
+    if (name === 'set-cookie') {
+      headers.append(name, value);
+    } else {
+      headers.set(name, value);
+    }
+  }
+  return new Response(answer.body, { status: answer.status, headers });
+}
 
 function input(method: string, signal?: AbortSignal): RoutedInput {
   return {
@@ -296,27 +320,184 @@ describe('native static file delivery', () => {
     });
 
     it('keeps a refusal by nobody once routing has laid a lifetime on it', async () => {
-      const refusal = requireResource(
-        await staticFileResponse(asked({ 'if-match': '"other"' }), store, file(4), 200),
-      );
-      // As routing's headers come to it: a rule's own lifetime over the file's.
-      const routed = new Response(null, { status: refusal.status, headers: refusal.headers });
-      routed.headers.set('cache-control', 'public, max-age=60');
+      const ask = asked({ 'if-match': '"other"' });
+      const refusal = requireResource(await staticFileResponse(ask, store, file(4), 200));
 
-      const kept = keptAfterRouting(routed);
+      // A rule's own lifetime over the file's.
+      const kept = afterRouting(ask, routed(refusal, [['cache-control', 'public, max-age=60']]));
 
       expect(kept.status).toBe(412);
       expect(kept.headers.get('cache-control')).toBe('private, no-store');
-      expect(kept.headers.has('x-arkor-file-refusal')).toBe(false);
     });
 
-    it('leaves an answer it did not refuse as routing left it', async () => {
-      const response = requireResource(await staticFileResponse(asked({}), store, file(4), 200));
-      response.headers.set('cache-control', 'public, max-age=60');
+    it('leaves an answer that is not its own as routing left it', () => {
+      const other = new Response('page', { headers: { 'cache-control': 'public, max-age=60' } });
 
-      expect(keptAfterRouting(response).headers.get('cache-control')).toBe('public, max-age=60');
+      expect(afterRouting(asked({}), other)).toBe(other);
+      expect(other.headers.get('cache-control')).toBe('public, max-age=60');
+    });
 
-      await response.body?.cancel();
+    it('says the bytes on the wire as the answer has them, whatever a rule laid on them', async () => {
+      const ask = asked({});
+      const answer = requireResource(await staticFileResponse(ask, store, file(4), 200));
+
+      const laid = afterRouting(
+        ask,
+        routed(answer, [
+          ['etag', '"rule"'],
+          ['content-length', '9'],
+          ['accept-ranges', 'none'],
+          ['content-range', 'bytes 0-1/9'],
+        ]),
+      );
+
+      expect(laid.headers.get('etag')).toBe(TAG);
+      expect(laid.headers.get('content-length')).toBe('4');
+      expect(laid.headers.get('accept-ranges')).toBe('bytes');
+      expect(laid.headers.has('content-range')).toBe(false);
+      await expect(laid.text()).resolves.toBe(BODY);
+    });
+
+    it('judges a validator by the tag the middleware set in place of the file’s', async () => {
+      const ask: RoutedInput = {
+        ...asked({ 'if-none-match': '"mw"' }, true),
+        middlewareHeaders: new Headers({ etag: '"mw"' }),
+      };
+
+      const response = await staticFileResponse(ask, store, file(4), 200);
+
+      expect(response?.status).toBe(304);
+      expect(response?.headers.get('etag')).toBe('"mw"');
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it('judges a date by the Last-Modified a rule set, the build keeping none of the file’s', async () => {
+      const dated = storeWith([
+        {
+          sourceRegex: FILE_PATTERN,
+          headers: { 'Last-Modified': 'Mon, 26 Oct 2026 00:00:00 GMT' },
+        },
+      ]);
+
+      const unchanged = await staticFileResponse(
+        asked({ 'if-modified-since': 'Mon, 26 Oct 2026 00:00:00 GMT' }),
+        dated,
+        file(4),
+        200,
+      );
+      const changed = await staticFileResponse(
+        asked({ 'if-unmodified-since': 'Sun, 25 Oct 2026 00:00:00 GMT' }),
+        dated,
+        file(4),
+        200,
+      );
+
+      expect(unchanged?.status).toBe(304);
+      expect(changed?.status).toBe(412);
+    });
+
+    it('sends the type a rule gives the file, and neither type nor coding of the middleware’s', async () => {
+      const typed = storeWith([
+        { sourceRegex: FILE_PATTERN, headers: { 'content-type': 'text/plain' } },
+      ]);
+      const ask: RoutedInput = {
+        ...asked({}, true),
+        middlewareHeaders: new Headers({ 'content-type': 'image/png', 'content-encoding': 'gzip' }),
+      };
+      const answer = requireResource(await staticFileResponse(ask, typed, file(4), 200));
+
+      const laid = afterRouting(
+        ask,
+        routed(answer, [
+          ['content-type', 'image/png'],
+          ['content-encoding', 'gzip'],
+        ]),
+      );
+
+      expect(laid.headers.get('content-type')).toBe('text/plain');
+      expect(laid.headers.has('content-encoding')).toBe(false);
+
+      await laid.body?.cancel();
+    });
+
+    it('keeps what the middleware wrote of holding the file, where nothing makes it one visitor’s', async () => {
+      const ask: RoutedInput = {
+        ...asked({}, true),
+        middlewareHeaders: new Headers({ 'cache-control': 'public, max-age=5' }),
+      };
+      const answer = requireResource(await staticFileResponse(ask, store, file(4), 200));
+
+      // A rule laid over it after the middleware: the edge's last word is the middleware's still.
+      const laid = afterRouting(ask, routed(answer, [['cache-control', 'public, max-age=60']]));
+
+      expect(laid.headers.get('cache-control')).toBe('public, max-age=5');
+
+      await laid.body?.cancel();
+    });
+
+    it('holds the file for the visitor alone where a cookie sits beside the middleware’s word', async () => {
+      const ask: RoutedInput = {
+        ...asked({}, true),
+        middlewareHeaders: new Headers({
+          'cache-control': 'public, max-age=5',
+          'set-cookie': 'a=1',
+        }),
+      };
+      const answer = requireResource(await staticFileResponse(ask, store, file(4), 200));
+
+      const laid = afterRouting(
+        ask,
+        routed(answer, [
+          ['cache-control', 'public, max-age=5'],
+          ['set-cookie', 'a=1'],
+          ['cdn-cache-control', 'max-age=99'],
+        ]),
+      );
+
+      expect(laid.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
+      expect(laid.headers.has('cdn-cache-control')).toBe(false);
+      expect(laid.headers.get('set-cookie')).toBe('a=1');
+
+      await laid.body?.cancel();
+    });
+
+    it('holds the file for the visitor alone where a rule the request selected applied', async () => {
+      const conditioned = storeWith([
+        {
+          sourceRegex: FILE_PATTERN,
+          has: [{ type: 'header', key: 'x-variant' }],
+          headers: { 'cdn-cache-control': 'max-age=99', 'x-variant-seen': '1' },
+        },
+      ]);
+      const ask = asked({ 'x-variant': 'b' });
+      const answer = requireResource(await staticFileResponse(ask, conditioned, file(4), 200));
+
+      const laid = afterRouting(
+        ask,
+        routed(answer, [
+          ['cdn-cache-control', 'max-age=99'],
+          ['x-variant-seen', '1'],
+        ]),
+      );
+
+      expect(laid.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
+      expect(laid.headers.has('cdn-cache-control')).toBe(false);
+      expect(laid.headers.get('x-variant-seen')).toBe('1');
+
+      await laid.body?.cancel();
+    });
+
+    it('varies on what a router sent, past a Vary routing laid of its own', async () => {
+      const ask = asked({ rsc: '1' });
+      const answer = requireResource(await staticFileResponse(ask, store, file(4), 200));
+
+      const laid = afterRouting(ask, routed(answer, [['vary', 'accept']]));
+
+      expect(laid.headers.get('vary')).toBe(
+        'accept, rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch',
+      );
+
+      await laid.body?.cancel();
     });
 
     it('sends an error document whole under its status, judging no validator or range', async () => {

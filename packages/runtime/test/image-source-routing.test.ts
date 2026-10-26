@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppModule, WebHandler } from '../src/app-module.ts';
 import { handleRequest } from '../src/handle.ts';
+import type { RoutedInput } from '../src/serve.ts';
 import { staticFileResponse } from '../src/static-file.ts';
 import { getStore, type Store } from '../src/store.ts';
 
@@ -38,7 +39,7 @@ vi.mock(import('../src/static-file.ts'), () => {
     staticFileResponse: vi.fn(() =>
       Promise.resolve(new Response(PNG, { headers: { 'content-type': 'image/png' } })),
     ),
-    keptAfterRouting: (response: Response) => response,
+    afterRouting: (_input: RoutedInput, response: Response) => response,
   };
 });
 
@@ -146,6 +147,7 @@ describe('an image’s source, asked for by the image’s own request', () => {
       return {
         url: input.request.url,
         middlewareRan: input.middlewareRan,
+        middlewareHeaders: input.middlewareHeaders,
         rewriteStatus: input.rewriteStatus,
       };
     });
@@ -154,6 +156,7 @@ describe('an image’s source, asked for by the image’s own request', () => {
       {
         url: `https://app.test${SOURCE}`,
         middlewareRan: undefined,
+        middlewareHeaders: undefined,
         rewriteStatus: undefined,
       },
     ]);
