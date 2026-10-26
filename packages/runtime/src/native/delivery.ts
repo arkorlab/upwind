@@ -8,6 +8,8 @@ import {
   noTransform,
   pageDataArtifact,
   pageHeaders,
+  pageOfDataPathname,
+  pagesDataPathnameUnder,
   type Prerender,
   staticFallbackPageFor,
   staticFallbackPagesOf,
@@ -21,10 +23,13 @@ import {
 import {
   type ConfiguredHeaders,
   headerRulesFor,
+  pathIsReserved,
+  type ReservedRoute,
   type RouteBodyEntry,
   type StaticPageEntry,
 } from '@stayingupwind/core/manifest';
 import {
+  dataRequestHeaders,
   hasRouteBodyControlHeader,
   NO_STORE_CACHE_CONTROL,
   NULL_BODY_STATUSES,
@@ -37,12 +42,12 @@ import {
 } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
-import { nowMs } from '../cache/clock.ts';
-import { type CurrentGeneration, currentGeneration } from '../cache/current.ts';
+import type { CurrentGeneration } from '../cache/current.ts';
 import type { FirstPublish } from '../delivery.ts';
 import type { Representation } from '../representations.ts';
 import type { RoutedInput } from '../serve.ts';
 import { getStore, type Store } from '../store.ts';
+import { FIRST_RECORD_MS, firstRecord, letGo, within } from './first-record.ts';
 
 /**
  * The edge's rules for what goes out as everyone's, for a host with no edge in front of it: the
@@ -128,12 +133,36 @@ interface Admitted {
   readonly fallbacks: ReadonlySet<Prerender>;
   readonly bodies: ReadonlyMap<string, Omit<RouteBodyEntry, 'entryId'>>;
   readonly rules: Parameters<typeof headerRulesFor>[0];
+  /** The routes that take a request elsewhere ahead of the filesystem (`reservedOf`). */
+  readonly reserved: readonly ReservedRoute[];
 }
 
 const admissions = new WeakMap<Store['manifest'], Admitted>();
 
 /** Each client's request as the middleware that ran for it handed it on (`handedOn`). */
 const handedRequests = new WeakMap<Request, Headers>();
+
+/**
+ * The routes Next.js runs ahead of the filesystem that take a request elsewhere: redirects and
+ * rewrites ahead of the middleware, and rewrites ahead of the filesystem — what the edge reserves a
+ * page's own path from (`reservedRoutes`, `serving.ts`), each with its conditions. A rewrite after
+ * the filesystem never reaches a page the build wrote; one ahead of it may lead the request through
+ * other names before it lands back, and routing lays on the rules of each, judged against names
+ * the decision below never sees.
+ */
+function reservedOf(bundle: Store['manifest']): ReservedRoute[] {
+  const { beforeMiddleware, beforeFiles } = bundle.routing;
+  return [...beforeMiddleware, ...beforeFiles]
+    .filter((route) => route.status !== undefined || route.destination !== undefined)
+    .map((route) => {
+      return {
+        sourceRegex: route.sourceRegex,
+        ...(route.has !== undefined && { has: route.has }),
+        ...(route.missing !== undefined && { missing: route.missing }),
+        beforeFiles: true as const,
+      };
+    });
+}
 
 /**
  * The outputs the build lets be shared, as a deployment's manifest names them (`staticPagesOf`,
@@ -165,6 +194,7 @@ function admittedOf(store: Store): Admitted {
     fallbacks: new Set(staticFallbackPagesOf(bundle)),
     bodies,
     rules: { headerRules: headerRulesOf(bundle), routerReferences: bundle.routerReferences },
+    reserved: reservedOf(bundle),
   };
   admissions.set(bundle, admitted);
   return admitted;
@@ -185,6 +215,31 @@ function offer(answer: Response, made: Offer, cacheControl: string | null): Resp
   );
   offered.headers.set(OFFERED_CACHE_CONTROL, cacheControl ?? '');
   return offered;
+}
+
+/** The request's pathname, and as `decodeURI` reads it, which leaves an escaped `/` escaped. */
+function askedPathnames(request: Request): readonly string[] {
+  const asked = new URL(request.url).pathname;
+  try {
+    const decoded = decodeURI(asked);
+    return decoded === asked ? [asked] : [asked, decoded];
+  } catch {
+    return [asked];
+  }
+}
+
+/**
+ * Whether the client asked for the page, its data or the route body by its own name. The edge shares
+ * only what the request's own pathname finds (`findStaticPage`, `pagesDataRequest` and
+ * `findRouteBody`, by way of `classifyRequest`); a request a rewrite led to it from another name —
+ * whose rules, and their conditions, routing judged against names the decision below never sees —
+ * goes to the Function there, and is the visitor's here.
+ */
+function askedByName(request: Request, store: Store, pathname: string, data: boolean): boolean {
+  const named = data
+    ? pagesDataPathnameUnder(store.manifest.buildId, store.manifest.config.basePath, pathname)
+    : pathname;
+  return askedPathnames(request).includes(named);
 }
 
 /**
@@ -222,8 +277,14 @@ function pageOffered(
 ): Response {
   const { pack, validity, entryId } = current;
   const scopeId = input.cache?.scopeId;
-  const entry = pageEntryOf(getStore(), pack.header, entryId);
-  if (scopeId === undefined || entry === undefined || input.middlewareRan === true) {
+  const store = getStore();
+  const entry = pageEntryOf(store, pack.header, entryId);
+  if (
+    scopeId === undefined ||
+    entry === undefined ||
+    input.middlewareRan === true ||
+    !askedByName(input.request, store, entry.pathname, data)
+  ) {
     return answer;
   }
   // A build's own page is shared while fresh; an ISR page, or a member, stale as well, unless the
@@ -258,8 +319,11 @@ function pageOffered(
 
 function bodyOffered(input: RoutedInput, current: CurrentGeneration, answer: Response): Response {
   const { pack, entryId } = current;
-  const admitted = admittedOf(getStore()).bodies.get(pack.header.pathname);
-  if (admitted === undefined) return answer;
+  const store = getStore();
+  const admitted = admittedOf(store).bodies.get(pack.header.pathname);
+  if (admitted === undefined || !askedByName(input.request, store, admitted.pathname, false)) {
+    return answer;
+  }
   const headers = bodyHeaders(pack, { ...admitted, entryId });
   if (headers === undefined) return answer;
   return offer(
@@ -287,39 +351,12 @@ export function offeredFromGeneration(
   return answer;
 }
 
-/** How long the first data of a member waits for its generation (the edge's own read window). */
-const FIRST_RECORD_MS = 10_000;
-/** How often the cache is asked for it meanwhile. */
-const FIRST_RECORD_POLL_MS = 100;
-
-/** The entry's generation once there is one, before the deadline or the visitor's going. */
-async function firstRecord(
-  input: RoutedInput,
-  first: FirstPublish,
-  until: number,
-): Promise<CurrentGeneration | undefined> {
-  await first.published;
-  for (;;) {
-    const lookup = await currentGeneration(
-      first.runtime,
-      first.descriptor,
-      nowMs(),
-      input.waitUntil,
-    );
-    if (lookup.kind === 'generation') return lookup.current;
-    if (performance.now() >= until || input.request.signal.aborted) return undefined;
-    await new Promise((resolve) => {
-      setTimeout(resolve, FIRST_RECORD_POLL_MS);
-    });
-  }
-}
-
 /**
  * The data of a member whose first generation is in the making. The edge has the member rendered,
  * then reads the record for a while, and shares the props from the generation once it is committed
  * and agrees (`capturePairedPageData`, `dataPage`); otherwise the visitor keeps the answer made for
  * them. So does this: once the generation is there, its answer — offered by the rules above — goes
- * in place of the render's.
+ * in place of the render's. Where nobody is making one, there is nothing to wait for.
  */
 export async function offeredOncePublished(
   input: RoutedInput,
@@ -327,23 +364,47 @@ export async function offeredOncePublished(
   representation: Representation,
   answer: Response,
 ): Promise<Response> {
+  const store = getStore();
   if (
     representation !== PAGES_DATA ||
     input.request.method !== 'GET' ||
     answer.status !== HTTP_OK ||
     input.middlewareRan === true ||
-    pageEntryOf(getStore(), first.descriptor, '') === undefined
+    (first.published === undefined && !first.elsewhere) ||
+    !askedByName(input.request, store, first.descriptor.pathname, true) ||
+    pageEntryOf(store, first.descriptor, '') === undefined
   ) {
     return answer;
   }
-  const current = await firstRecord(input, first, performance.now() + FIRST_RECORD_MS);
-  const recorded = current === undefined ? undefined : await first.fromRecord(current);
-  if (recorded?.headers.has(OFFER) !== true) {
-    await recorded?.body?.cancel();
+  const until = performance.now() + FIRST_RECORD_MS;
+  const current = await firstRecord(input, first, until);
+  if (current === undefined) return answer;
+  // The generation's answer reads its output from the cache: within the same window, and only
+  // while the visitor waits, with the answer made for them ready all the while (greptile).
+  const reading = first.fromRecord(current);
+  const recorded = await within(reading, until, input.request.signal);
+  if (recorded === undefined) {
+    input.waitUntil(letGo(reading));
+    return answer;
+  }
+  if (recorded.value?.headers.has(OFFER) !== true) {
+    await recorded.value?.body?.cancel();
     return answer;
   }
   await answer.body?.cancel();
-  return recorded;
+  return recorded.value;
+}
+
+/**
+ * The build's loading fallback as the visitor's own: under `private, no-store` where it says nothing
+ * of its own, as the edge's passthrough leaves such an answer of the Function's
+ * (`unsharedUnlessPublic`) — the build writes none on it.
+ */
+function visitorsOwn(answer: Response): Response {
+  if (answer.headers.has(CACHE_CONTROL)) return answer;
+  const own = new Response(answer.body, answer);
+  own.headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
+  return own;
 }
 
 export function offeredFromFallback(
@@ -356,9 +417,13 @@ export function offeredFromFallback(
     input.request.method !== 'GET' ||
     answer.status !== HTTP_OK ||
     input.middlewareRan === true ||
-    !admittedOf(store).fallbacks.has(shell)
+    !admittedOf(store).fallbacks.has(shell) ||
+    // Asked for by a member's own name, as the edge finds a fallback page (`findPagesFallback`).
+    askedPathnames(input.request).every(
+      (asked) => staticFallbackPageFor(store.manifest, shell.route, asked)?.kind !== 'fallback',
+    )
   ) {
-    return answer;
+    return visitorsOwn(answer);
   }
   return offer(
     answer,
@@ -385,6 +450,26 @@ function requestShares(request: Request, body: boolean): boolean {
     CONDITIONAL_HEADERS.every((name) => !headers.has(name)) &&
     !(body && hasRouteBodyControlHeader(headers))
   );
+}
+
+/**
+ * Whether a route of `reservedOf` takes the request, its conditions judged against it: the request's
+ * own name, and for a page's data the data's (as the router reads a data request, `x-nextjs-data`
+ * set) and the page's too (`reservedRequest`, `pages-fallback.ts`). The edge leaves such a request to
+ * the Function, whose answer is the visitor's: so is this one (Codex).
+ */
+function reservedFor(store: Store, request: Request, data: boolean): boolean {
+  const { reserved } = admittedOf(store);
+  if (reserved.length === 0) return false;
+  const url = new URL(request.url);
+  if (!data) return pathIsReserved(reserved, url, request.headers, true);
+  if (pathIsReserved(reserved, url, dataRequestHeaders(request.headers), true)) return true;
+  const { buildId, config } = store.manifest;
+  const page = pageOfDataPathname(buildId, config.basePath, url.pathname);
+  if (page === undefined) return true;
+  const pageUrl = new URL(url.href);
+  pageUrl.pathname = page;
+  return pathIsReserved(reserved, pageUrl, request.headers, true);
 }
 
 /** The rules of `next.config` hold for everyone, and none keeps the answer from being shared. */
@@ -417,7 +502,13 @@ function shared(headers: Headers, made: Offer, configured: ConfiguredHeaders): b
   if (made.kind === FALLBACK) {
     if (!htmlType(contentType) || !staticPageHeadersAllowSharing(headers)) return false;
     for (const name of SHELL_ENTITY_HEADERS) headers.delete(name);
-  } else if (made.kind === PAGE && !htmlType(contentType)) {
+  } else if (
+    // The whole answer as routing left it, as the edge judges its own once the rules are on it:
+    // anything routing laid on — a `Set-Cookie`, a private policy — keeps it the visitor's (Codex).
+    !(made.kind === PAGE_DATA ? staticPageDataHeadersAllowSharing : staticPageHeadersAllowSharing)(
+      headers,
+    )
+  ) {
     return false;
   }
   const untransformed =
@@ -501,9 +592,15 @@ export function delivered(request: Request, answer: Response): Response {
   headers.delete(OFFER);
   headers.delete(OFFERED_CACHE_CONTROL);
   const made = offerOf(value);
-  if (made !== undefined && out.status === HTTP_OK && requestShares(request, made.kind === BODY)) {
+  const store = getStore();
+  if (
+    made !== undefined &&
+    out.status === HTTP_OK &&
+    requestShares(request, made.kind === BODY) &&
+    !reservedFor(store, request, made.kind === PAGE_DATA)
+  ) {
     const configured = headerRulesFor(
-      admittedOf(getStore()).rules,
+      admittedOf(store).rules,
       new URL(request.url),
       request.headers,
     );

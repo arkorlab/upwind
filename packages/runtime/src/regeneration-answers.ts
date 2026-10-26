@@ -1,4 +1,10 @@
-import { answerFromRender, renderForVisitor, type Want, withOutcome } from './answers.ts';
+import {
+  answerFromPublishing,
+  answerFromRender,
+  renderForVisitor,
+  type Want,
+  withOutcome,
+} from './answers.ts';
 import { requestContext } from './cache/context.ts';
 import type { CurrentGeneration } from './cache/current.ts';
 import type { RegenerationOutcome } from './cache/regenerate.ts';
@@ -57,20 +63,11 @@ export async function answerFromJob(
   }
   // The render this isolate is publishing of the entry, or has just published: the page the requests
   // after its publish are answered with, already made.
-  if (
-    (outcome.kind === 'busy' || outcome.kind === 'superseded') &&
-    outcome.publishing !== undefined &&
-    servable(outcome.publishing.status, outcome.publishing.headers)
-  ) {
-    const answered = await answerFromRender(
-      job.input,
-      job.target.handler,
-      outcome.publishing,
-      want,
-    );
-    if (answered !== undefined) {
-      return withOutcome(answered, 'publishing');
-    }
+  const publishing =
+    outcome.kind === 'busy' || outcome.kind === 'superseded' ? outcome.publishing : undefined;
+  const ours = await answerFromPublishing(job.input, job.target.handler, publishing, want);
+  if (ours !== undefined) {
+    return ours;
   }
   // A later generation the host holds, whose record its answer carried and this isolate now holds
   // (`RegenerationOutcome.current`): the usual path answers with it, as with any record read.

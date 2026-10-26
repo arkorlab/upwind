@@ -7,10 +7,9 @@
  * registries, the tables below being that library's — plus `localhost`, which is loopback by
  * definition (RFC 6761), and the deprecated IPv4-compatible `::/96` prefix (RFC 4291).
  *
- * Only a literal address is judged; a hostname is not resolved. Next.js looks its sources up
- * before fetching them, and a Function cannot — nor needs to: the platform refuses a request to a
- * bare address, and has no route into private space. What this keeps is the optimizer's own
- * refusal, in its own words, for what it would have refused.
+ * This classifier judges addresses without resolving hostnames. The portable destination check
+ * uses it for URL literals, and the native image transport also uses it for its socket's DNS
+ * answers. Workers leave network transport to the platform.
  */
 
 const DOTTED_QUAD = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u;

@@ -44,6 +44,52 @@ describe('readMiddlewareResponse', () => {
     expect(result.kind).toBe('external-rewrite');
   });
 
+  /**
+   * Next.js's `NextURL` spells every loopback host `localhost` (`server/web/next-url.ts`), so a
+   * middleware on a site reached at `127.0.0.1` that rewrites to `new URL('/b', request.url)` names
+   * `http://localhost:<port>/b`: the same server, which Next.js's own router compares in that spelling
+   * too. Read as another origin, it was proxied back to the same server by name.
+   */
+  it.each([
+    ['http://127.0.0.1:3000/a', 'http://localhost:3000/b?x=1', 'http://127.0.0.1:3000/b?x=1'],
+    ['http://[::1]:3000/a', 'http://localhost:3000/b', 'http://[::1]:3000/b'],
+    ['http://localhost:3000/a', 'http://127.0.0.2:3000/b', 'http://localhost:3000/b'],
+    [
+      'http://127.0.0.1:3000/a',
+      'http://localhost:3000//elsewhere/b',
+      'http://127.0.0.1:3000//elsewhere/b',
+    ],
+  ])(
+    'follows a rewrite from %s to the same loopback server as %s, on its own origin',
+    (from, to, at) => {
+      const result = readMiddlewareResponse(
+        new Response(null, { headers: { 'x-middleware-rewrite': to } }),
+        new URL(from),
+        new Headers(),
+      );
+
+      expect(result.kind).toBe('continue');
+      expect(result.kind === 'continue' && result.url.href).toBe(at);
+      expect(result.kind === 'continue' && result.rewritten).toBe(true);
+    },
+  );
+
+  it.each([
+    ['another port', 'http://127.0.0.1:3000/a', 'http://localhost:3001/b'],
+    ['another scheme', 'http://127.0.0.1:3000/a', 'https://localhost:3000/b'],
+    ['a name that is not loopback', 'http://127.0.0.1:3000/a', 'http://localhost.example:3000/b'],
+    ['a request that is not on loopback', 'https://app.example.app/a', 'https://localhost/b'],
+  ])('still reports a rewrite to %s as another origin', (_, from, to) => {
+    const result = readMiddlewareResponse(
+      new Response(null, { headers: { 'x-middleware-rewrite': to } }),
+      new URL(from),
+      new Headers(),
+    );
+
+    expect(result.kind).toBe('external-rewrite');
+    expect(result.kind === 'external-rewrite' && result.url.href).toBe(new URL(to).href);
+  });
+
   it('hands back a redirect and a whole response as the middleware answered', () => {
     const redirect = read({ location: '/ja' }, 307);
     const responded = read({ 'content-type': 'text/plain' });

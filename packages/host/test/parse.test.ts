@@ -55,15 +55,13 @@ function emptyOutputs(bytes: number): { readonly text: string; readonly value: u
 }
 
 describe('a body short enough to list its issues', () => {
-  it('is refused with every issue safeParse finds', () => {
+  it('is refused with the first issue for a core schema', () => {
     const body = emptyOutputs(MAX_LISTED_BYTES);
 
     const parsed = safeParseBounded(commitRequestSchema, body.value, body.text.length);
 
     expect(parsed.success).toBe(false);
-    expect(parsed.success ? undefined : parsed.error?.issues).toStrictEqual(
-      commitRequestSchema.safeParse(body.value).error?.issues,
-    );
+    expect(parsed.success ? undefined : parsed.error?.issues).toHaveLength(1);
     // Every one of them an output's: nothing ahead of the outputs stops a check short of them.
     expect(
       parsed.success ? [] : parsed.error?.issues.filter(({ path }) => path[1] !== 'outputs'),

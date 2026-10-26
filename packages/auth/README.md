@@ -34,8 +34,12 @@ untouched, plugins keep their types, and `auth.api` is inferred from what _you_ 
 
 ## The provider upwind plays
 
-With no OAuth credentials and no `AUTH_SECRET` anywhere, `signIn.social({ provider: 'github' })`
+On a loopback-bound `upwind dev` server with no OAuth credentials and no `AUTH_SECRET` anywhere, `signIn.social({ provider: 'github' })`
 does not reach GitHub. It reaches a page upwind serves:
+
+`upwind dev` binds to `127.0.0.1` by default. An explicit non-loopback or wildcard `--hostname`
+disables this identity issuer, including for local visitors; configure a real provider and signing
+key for remote development. A server started outside `upwind dev` does not enable the issuer.
 
 > **upwind is standing in for GitHub**
 > This is not GitHub. Nothing here reaches it, and no account of yours is involved.

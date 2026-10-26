@@ -16,7 +16,7 @@ const DATE = '2026-10-18T00:00:00.000Z';
 const RULE = { sourceRegex: '^/([^/]+)$' };
 const MEMBER = { route: '/[id]', kind: 'app-page' as const };
 const CONDITION = { type: 'host' as const };
-/** A member-heavy manifest whose stored bytes fit, while its parsed objects exceed the budget. */
+/** A member-heavy manifest whose table remains small when its routes share conditions. */
 const MANY_RULES = 1000;
 const MANY_CONDITIONS = 600;
 
@@ -143,30 +143,34 @@ describe('the memory held by a manifest’s member routes', () => {
     ).toBe(80 * example.objects);
   });
 
-  it('keeps the existing budget effective for a schema-valid member-heavy manifest', () => {
+  it.each([
+    { shared: true, conditions: MANY_CONDITIONS },
+    { shared: false, conditions: 420 },
+  ])('charges the physical parsed graph, shared table: $shared', ({ shared, conditions }) => {
     const manifest = manifestOf(
       Array.from({ length: MANY_RULES }, () => {
         return {
           ...RULE,
           members: {
             ...MEMBER,
-            bypassFor: Array.from({ length: MANY_CONDITIONS }, () => CONDITION),
+            bypassFor: Array.from({ length: conditions }, () => CONDITION),
           },
         };
       }),
     );
-    const serialized = serializeManifest(manifest);
+    const serialized = shared ? serializeManifest(manifest) : JSON.stringify(manifest);
     const parsed = parseProjectManifest(serialized);
     const bytes = encodeUtf8(serialized).byteLength;
     const ordinary = manifestOf([{ ...RULE, members: { ...MEMBER, bypassFor: [CONDITION] } }]);
     const ordinaryBytes = encodeUtf8(serializeManifest(ordinary)).byteLength;
 
     expect(bytes).toBeLessThan(MAX_MANIFEST_BYTES);
-    expect(parsed.dynamicRoutes?.[0]?.members?.bypassFor).toHaveLength(MANY_CONDITIONS);
-    expect(parsed.dynamicRoutes?.[0]?.members?.bypassFor).not.toBe(
-      parsed.dynamicRoutes?.[1]?.members?.bypassFor,
-    );
-    expect(manifestCharge(parsed, bytes)).toBeGreaterThan(EDGE_ISOLATE_BUDGET_BYTES);
+    expect(parsed.dynamicRoutes?.[0]?.members?.bypassFor).toHaveLength(conditions);
+    expect(
+      parsed.dynamicRoutes?.[0]?.members?.bypassFor ===
+        parsed.dynamicRoutes?.[1]?.members?.bypassFor,
+    ).toBe(shared);
+    expect(manifestCharge(parsed, bytes) > EDGE_ISOLATE_BUDGET_BYTES).toBe(!shared);
     expect(manifestCharge(ordinary, ordinaryBytes)).toBeLessThan(EDGE_ISOLATE_BUDGET_BYTES);
   });
 });

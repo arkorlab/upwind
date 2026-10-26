@@ -39,34 +39,22 @@ function refuseConflicts(target: string, conflicts: readonly string[]): never {
   throw new Error(`${target} already has something in it (${shown}${rest})`);
 }
 
-/** How a single quote is written inside single quotes: close, escape one, open again. */
+/** The POSIX word formatter keeps paths beginning with a dash out of option parsing. */
 const ESCAPED_QUOTE = String.raw`'\''`;
-/** What needs no quoting anywhere, plus the separator each shell writes a path with. */
-const PLAIN = process.platform === 'win32' ? /^[\w+,.:=@\\-]+$/u : /^[\w+,./:=@-]+$/u;
+const PLAIN = /^[\w+,./:=@-]+$/u;
 
-/**
- * A path the shell this was run from reads as one word, and as a path.
- *
- * Two things can go wrong with a next step somebody pastes. A path with a space in it is two
- * arguments — and `cmd.exe` does not read the single quotes a POSIX shell does, so the quoting has
- * to be the one the platform uses. And a relative path that begins with `-` is read as options by
- * every shell there is, which `./` settles.
- *
- * Two things are left, and both are `cmd.exe`'s alone. It expands `%NAME%` inside double quotes and
- * has no escape for it at the prompt, so a directory with a percent sign in its name prints a line
- * that reads as something else there. And a target on another drive needs `cd /d` there, which is
- * not a `cd` PowerShell accepts. Both read correctly in PowerShell, which is where a Windows
- * developer is more likely to be standing, and the alternative would be a line that is wrong in the
- * other shell instead.
- */
-function shellWord(value: string): string {
-  const safe = value.startsWith('-') ? `./${value}` : value;
-  if (PLAIN.test(safe)) {
-    return safe;
+/** Windows next steps explicitly target PowerShell, including its smart single-quote delimiters. */
+export function directoryCommand(
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === 'win32') {
+    const literal = value.replaceAll(/['\u{2018}-\u{201B}]/gu, (quote) => quote + quote);
+    return `Set-Location -LiteralPath '${literal}'`;
   }
-  return process.platform === 'win32'
-    ? `"${safe}"`
-    : `'${safe.replaceAll("'", () => ESCAPED_QUOTE)}'`;
+  const safe = value.startsWith('-') ? `./${value}` : value;
+  const word = PLAIN.test(safe) ? safe : `'${safe.replaceAll("'", () => ESCAPED_QUOTE)}'`;
+  return `cd ${word}`;
 }
 
 function printNextSteps(options: {
@@ -84,7 +72,8 @@ function printNextSteps(options: {
   );
   console.log('');
   if (where !== '') {
-    console.log(`  cd ${shellWord(where)}`);
+    if (process.platform === 'win32') console.log('  # PowerShell');
+    console.log(`  ${directoryCommand(where)}`);
   }
   if (!options.installed) {
     // Nothing was installed, so `dev` would be a command that is not there yet.
