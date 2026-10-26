@@ -67,6 +67,8 @@ const SWEEP_INTERVAL_MS = HOUR_MS;
 /** How long a write may have been left unfinished, by a server that stopped, before it is let go. */
 const PARTIAL_GRACE_MS = HOUR_MS;
 const HTTP_NOT_MODIFIED = 304;
+/** What is said where the directory could not be looked over. */
+const LOOK_FAILED = 'image cache could not be looked over';
 /** What the edge's escaping leaves as it is in a part of a key (`imagePathPart`). */
 const UNESCAPED_PART = /^[\w.~-]*$/u;
 
@@ -249,6 +251,14 @@ class DiskImages {
   #turn: Promise<void> = Promise.resolve();
   /** The images a read let go while a look over the directory was under way: not to be counted again. */
   #letGoDuringLook: Set<string> | undefined;
+  /** Whether the index has been read off the directory: until then, a use is kept aside. */
+  #indexReady = false;
+  /**
+   * The images used before the index was read off the directory, by when: the first look orders
+   * each by the later of its use and its write (Codex, greptile). A server started again would
+   * otherwise let go first an image read since, ahead of one nobody has asked for.
+   */
+  readonly #usedBeforeIndex = new Map<string, number>();
 
   constructor(directory: string, maxBytes: number | undefined) {
     this.#directory = directory;
@@ -325,7 +335,7 @@ class DiskImages {
       // In its turn, as every look is: one that outlasts the hour is waited on by the next. It says
       // what it cannot do itself, and fails at nothing.
       void this.#sweep().catch((error: unknown) => {
-        warn('image cache could not be looked over', { detail: detailOf(error) });
+        warn(LOOK_FAILED, { detail: detailOf(error) });
       });
     }, SWEEP_INTERVAL_MS);
     // Nothing of the server waits on it.
@@ -352,14 +362,18 @@ class DiskImages {
           const kept = await this.#lookedAt(name, now);
           if (kept !== undefined) found.push(kept);
         }
-        found.sort((left, right) => left.written - right.written);
+        const usedAt = ({ name, written }: Found): number =>
+          Math.max(written, this.#usedBeforeIndex.get(name) ?? 0);
+        found.sort((left, right) => usedAt(left) - usedAt(right));
         for (const { name, size } of found) {
           // What a read let go after the look found it is gone, whatever the look read of it.
           if (!this.#entries.has(name) && !letGo.has(name)) this.#count(name, size);
         }
+        this.#indexReady = true;
+        this.#usedBeforeIndex.clear();
         await this.#evict();
       } catch (error) {
-        warn('image cache could not be looked over', { detail: detailOf(error) });
+        warn(LOOK_FAILED, { detail: detailOf(error) });
       } finally {
         this.#letGoDuringLook = undefined;
       }
@@ -411,6 +425,10 @@ class DiskImages {
 
   /** Used just now: the last to be let go. */
   #touch(name: string): void {
+    if (!this.#indexReady) {
+      this.#usedBeforeIndex.delete(name);
+      this.#usedBeforeIndex.set(name, Date.now());
+    }
     const size = this.#entries.get(name);
     if (size === undefined) return;
     this.#entries.delete(name);
@@ -434,8 +452,17 @@ class DiskImages {
     await rm(path.join(this.#directory, name), { force: true });
   }
 
+  /** The index begun, where nothing has begun it: by the first image asked for, in the background. */
+  #startIndexing(): void {
+    if (this.#indexed !== undefined) return;
+    void this.#index().catch((error: unknown) => {
+      warn(LOOK_FAILED, { detail: detailOf(error) });
+    });
+  }
+
   /** The image kept under `key`, where one is and its lifetime has not run out. */
   async read(key: string): Promise<KeptImage | undefined> {
+    this.#startIndexing();
     const name = fileNameOf(key);
     let bytes: Uint8Array;
     try {

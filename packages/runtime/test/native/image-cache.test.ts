@@ -349,6 +349,29 @@ describe('images the native target keeps', () => {
     await expect(hitOf(third)).resolves.toBeDefined();
   });
 
+  it('counts an image read after a restart, before anything is written, as used (Codex, greptile)', async () => {
+    const image = { ...IMAGE, bytes: new Uint8Array(700) };
+    const older = inputOf({ params: { ...PARAMS, href: '/older.png' } });
+    const newer = inputOf({ params: { ...PARAMS, href: '/newer.png' } });
+    const latest = inputOf({ params: { ...PARAMS, href: '/latest.png' } });
+    configureImageCache({ directory, maxBytes: 2400 });
+    await kept(older, image);
+    await sleep(20);
+    await kept(newer, image);
+
+    // A server started again on the same directory: the older image is read before anything is
+    // written, then a third is kept, which leaves room for two.
+    configureImageCache({ directory, maxBytes: 2400 });
+
+    await expect(hitOf(older)).resolves.toBeDefined();
+
+    await kept(latest, image);
+
+    await expect(hitOf(older)).resolves.toBeDefined();
+    await expect(hitOf(latest)).resolves.toBeDefined();
+    await expect(hitOf(newer)).resolves.toBeUndefined();
+  });
+
   it('reads a damaged entry as none', async () => {
     await writeFile(fileOf(inputOf()), new Uint8Array([0, 0, 0, 9, 1, 2]));
 
