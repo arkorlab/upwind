@@ -31,6 +31,12 @@ name: Deploy tests
 # adds about a hundred minutes a shard — still well inside both limits at six. A run much longer than the
 # measured one wants as many projects as it has shards, or the slices taken one dispatch at a time with
 # `only`.
+#
+# **So a host is cut into a shard a project.** Unless `shards` says otherwise, a run of the whole
+# manifest takes as many pieces as the list names different projects before one repeats, up to
+# `HOST_SHARDS`, and every piece runs at once. Under six projects it stays the six measured above, one
+# after another: the split measured inside both limits, where two or three pieces at once would each run
+# for most of a job's six hours, or past them.
 
 on:
   # Every night, both targets on the runner over the whole manifest (`plan`).
@@ -58,11 +64,11 @@ on:
           test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
         type: string
       shards:
-        description: 'How many pieces to cut `all` into, 1 to 64: 6 on a host, 64 on the runner when empty'
+        description: 'How many pieces to cut `all` into, 1 to 64 — when empty, a piece a project on a host (at most 32; 6 under six projects) and 64 on the runner'
         default: ''
         type: string
       only:
-        description: 'Run just this shard of that many — for taking a slice again on its own'
+        description: 'Run just this shard of that many — for taking a slice again on its own; on a host, with the `shards` the run had'
         default: ''
         type: string
       concurrency:
@@ -87,6 +93,9 @@ env:
   # as the plan cuts. Both targets in 64 pieces each is 128 jobs, inside the 256 a matrix holds, and
   # each piece about seventeen suites — a job a few minutes long beside its own setup.
   RUNNER_SHARDS: '64'
+  # The most pieces a host's run of the whole manifest is cut into when a dispatch names none: one a
+  # project, every one at once (`plan`). At thirty-two, some twenty of the suites that deploy a piece.
+  HOST_SHARDS: '32'
 
 # Never two runs on a host at once: they would be deploying into the same projects. The runner's
 # targets share nothing, so each of their runs is a group of its own — one group for them all would
@@ -167,9 +176,25 @@ jobs:
           # A named selection is one job: `-g` would cut *those* paths into pieces, and nine of ten
           # shards of three paths are empty jobs that install Next.js to run nothing.
           # Unsaid, as many as the target allows: a host's projects bound it, nothing bounds the runner.
+          # On a host that is a shard a project, up to `HOST_SHARDS`: the ids in order, read as the check
+          # below reads them, up to the first that repeats, since the shards that run at once each take
+          # their own. Under six, the six the header measured, one after another.
           if [ -z "$SHARDS" ]; then
             if [ "$targets" = 'host' ]; then
-              SHARDS=6
+              projects="$(
+                ids="$(printf '%s' "${PROJECT_IDS:-$PROJECT_ID}" | tr -d '\r')"
+                set -f
+                # shellcheck disable=SC2086 -- splitting the list is the parse, and globbing is off above
+                set -- $ids
+                printf '%s\n' "$@" | awk '!seen[$0]++ { n++; next } { exit } END { print n + 0 }'
+              )"
+              if [ "$projects" -lt 6 ]; then
+                SHARDS=6
+              elif [ "$projects" -gt "$HOST_SHARDS" ]; then
+                SHARDS="$HOST_SHARDS"
+              else
+                SHARDS="$projects"
+              fi
             else
               SHARDS="$RUNNER_SHARDS"
             fi

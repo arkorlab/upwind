@@ -46,6 +46,11 @@ pnpm local:check --dir <app> [options]
 - `check` asks the stack once for every prerendered route, every file of the build and every app
   Function, and exits non-zero where an answer is not what a deployment would give.
 
+For independent runners, use `check --shard 1/4` through `check --shard 4/4`. Shards assign whole
+routes, files and Functions in sorted order; each item's browser, router and encoding checks stay
+together. Every shard keeps the full deployment and repeats its manifest integrity checks. Run all
+shards and require every one to succeed. Without `--shard`, the check asks everything as before.
+
 | Option                                                     | What it does                                                                                        |
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `--env-file <file>`                                        | Gives the Functions the variables a `.env` file holds; a later file's value of a name wins          |
@@ -55,10 +60,14 @@ pnpm local:check --dir <app> [options]
 | `--csp-nonce enforce\|report-only`, `--csp-strict-dynamic` | Has the edge mint a nonce for each document, with `'strict-dynamic'` beside it where asked          |
 | `--prover-agent <agent>`                                   | The user agent a check asks as                                                                      |
 | `--hostname <host>`                                        | The hostname a check names the site by; the stack is still reached at its own socket                |
+| `--shard <index>/<total>`                                  | A check's share, with positive safe integers and `1 <= index <= total`; check only                  |
 
 Each of `--env-file`, `--kv`, `--r2` and `--d1` may be given more than once.
 
 ## From code
+
+Pass `checkStack(stack, { shard: { index: 1, total: 4 } })` for the same partition from code. Omit
+`shard` for a complete check. `CheckShard` describes the one-based index and total.
 
 | Export                           | What it is                                                                                                               |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |

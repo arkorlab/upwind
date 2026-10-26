@@ -31,6 +31,7 @@ import {
   withoutPolicies,
 } from './csp-nonce.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
+import { gateBodyDecodedByFetch } from './gate-body-encoding.ts';
 import { decompressLive } from './live-compression.ts';
 import { headerRulesAsRouted } from './middleware.ts';
 import { forwardedResponse, serviceUnavailableResponse } from './responses.ts';
@@ -143,13 +144,8 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Conditions and ranges that could keep a nonce document from being answered whole. */
-const VALIDATOR_HEADERS: readonly string[] = [
-  'if-none-match',
-  'if-modified-since',
-  'range',
-  'if-range',
-];
+/** Conditional validators that could keep a nonce document from being answered whole. */
+const VALIDATOR_HEADERS: readonly string[] = ['if-none-match', 'if-modified-since'];
 /** The validators, length and digests of the gate's saved bytes, which a minted nonce changes. */
 const REPRESENTATION_HEADERS: readonly string[] = [
   'etag',
@@ -195,10 +191,16 @@ function gateRequest(input: GateInput, gate: RouteGate, signal: AbortSignal): Re
   if (deployment !== undefined) {
     asked.headers.set(GATE_DEPLOYMENT_HEADER, deployment);
   }
-  // A document is any request but a payload's, `RSC: 1` alone, as the edge reads one elsewhere.
-  if (input.cspNonce !== undefined && asked.headers.get(RSC_HEADER) !== '1') {
-    for (const name of VALIDATOR_HEADERS) {
-      asked.headers.delete(name);
+  if (input.cspNonce !== undefined) {
+    // Even a payload request can receive terminal HTML that needs nonce rewriting.
+    asked.headers.set('accept-encoding', 'identity');
+    asked.headers.delete('range');
+    asked.headers.delete('if-range');
+    // A document is any request but a payload's, `RSC: 1` alone, as read elsewhere.
+    if (asked.headers.get(RSC_HEADER) !== '1') {
+      for (const name of VALIDATOR_HEADERS) {
+        asked.headers.delete(name);
+      }
     }
   }
   return asked;
@@ -348,7 +350,7 @@ function gateAnswer(input: GateInput, gate: RouteGate, answer: Response): Respon
     headers.delete(CONTENT_ENCODING);
     return response;
   }
-  const decoded = decodedNonceDocument(response);
+  const decoded = decodedNonceDocument(response, input.host.gates);
   if (decoded === undefined) {
     releaseStream(response.body, 'gate');
     return serviceUnavailableResponse(GATE_UNAVAILABLE);
@@ -443,7 +445,10 @@ export function routeThroughGate(
 }
 
 /** Content codings describe the input bytes and are removed once the gate's HTML is decoded. */
-function decodedNonceDocument(response: Response): Response | undefined {
+function decodedNonceDocument(
+  response: Response,
+  gates: EdgeGates | undefined,
+): Response | undefined {
   const encoding = response.headers.get(CONTENT_ENCODING);
   if (encoding === null || encoding.trim() === '' || response.body === null) return response;
   const parts = encoding.split(',');
@@ -455,7 +460,8 @@ function decodedNonceDocument(response: Response): Response | undefined {
   }
   // Fetch response bodies carry bytes; the Workers declaration leaves their element type open.
   let body = response.body as ReadableStream<Uint8Array>;
-  for (const coding of codings.toReversed()) {
+  const remaining = gateBodyDecodedByFetch(gates, encoding) ? [] : codings.toReversed();
+  for (const coding of remaining) {
     if (coding !== 'identity') body = decompressLive(body, coding);
   }
   const headers = new Headers(response.headers);

@@ -5,13 +5,19 @@ import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
-import type { EdgeGates } from '../src/edge-host.ts';
+import type { EdgeGates, EdgeHost } from '../src/edge-host.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { EdgeMetric } from '../src/observability/metrics.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
-import { navigation, pprDocument, seedSite, type SiteOptions } from './helpers/site.ts';
+import {
+  htmlResponse,
+  navigation,
+  pprDocument,
+  seedSite,
+  type SiteOptions,
+} from './helpers/site.ts';
 
 /** Configured gate headers cross the ordinary response boundary and each terminal answer counts. */
 
@@ -39,6 +45,8 @@ async function routed(
     readonly observer?: (point: EdgeMetric) => void;
     readonly now?: () => number;
     readonly sharedDomain?: string;
+    readonly host?: EdgeHost;
+    readonly dispatchApp?: (request: Request) => Promise<Response>;
   } = {},
 ): Promise<{
   readonly response: Response;
@@ -56,7 +64,7 @@ async function routed(
   const points: EdgeMetric[] = [];
   const functionAsked: string[] = [];
   const base = standaloneHost(env);
-  const host = {
+  const host = settings.host ?? {
     ...base,
     sharedDomain: settings.sharedDomain ?? base.sharedDomain,
     gates,
@@ -73,7 +81,9 @@ async function routed(
     ...(settings.now !== undefined && { now: settings.now }),
     dispatchApp: (_: string, dispatched: Request): Promise<Response> => {
       functionAsked.push(new URL(dispatched.url).pathname);
-      return Promise.resolve(new Response('from the Function'));
+      return (
+        settings.dispatchApp?.(dispatched) ?? Promise.resolve(new Response('from the Function'))
+      );
     },
   });
   const ctx = createExecutionContext();
@@ -94,9 +104,33 @@ async function routed(
   return { response, points, functionAsked, projectId: pointer.projectId, manifestId };
 }
 
+/** A host observer keeps its state on the original receiver, including prototype methods. */
+class MetricSink {
+  readonly points: EdgeMetric[] = [];
+  servedBytes = 0;
+  transformed = 0;
+
+  imageTransformed(): void {
+    this.transformed += 1;
+  }
+
+  metric(point: EdgeMetric): void {
+    this.points.push(point);
+  }
+
+  recordServed(bytes: number): void {
+    this.servedBytes += bytes;
+  }
+}
+
 /** The bound gate answers as a fresh call of `answer` does, keeping its stream request-local. */
 function answering(answer: () => Response): EdgeGates {
   return { answer: () => Promise.resolve(answer()) };
+}
+
+/** The valid continuation matching the stored PPR shell. */
+function resumed(): Promise<Response> {
+  return Promise.resolve(htmlResponse(pprDocument().suffix));
 }
 
 /** Every request of the post matches one rule, independent of any gate-specific control header. */
@@ -262,7 +296,96 @@ describe('terminal gate request metrics', () => {
 
     expect(functionAsked).toStrictEqual(['/posts/abc']);
     expect(points).toHaveLength(1);
+    expect(points[0]).toMatchObject({ subrequests: 2 });
     expect(points[0]?.outcomeKind).not.toMatch(/^gate/u);
+  });
+
+  it('counts the gate once after deferred policy resolves a stored document', async () => {
+    const baseline = await routed(navigation('/posts/abc'), undefined, undefined, {
+      site: {
+        gates: undefined,
+        gatedPathnames: undefined,
+        dynamicRoutes: [{ sourceRegex: POST_PATTERN, route: POST }],
+      },
+      dispatchApp: resumed,
+    });
+    const passed = await routed(
+      navigation('/posts/abc'),
+      answering(() => new Response(null, { headers: { [GATE_ANSWER_HEADER]: GATE_PASS } })),
+      undefined,
+      { dispatchApp: resumed },
+    );
+
+    expect(baseline.functionAsked).toStrictEqual(['/posts/abc']);
+    expect(passed.functionAsked).toStrictEqual(['/posts/abc']);
+    expect(baseline.points).toHaveLength(1);
+    expect(passed.points).toHaveLength(1);
+    expect(passed.points[0]).toMatchObject({
+      kind: 'document',
+      outcomeKind: 'ok',
+      subrequests: (baseline.points[0]?.subrequests ?? 0) + 1,
+    });
+    expect(passed.response.headers.get(EDGE_DEBUG_HEADER)).toMatch(/^shell;/u);
+  });
+
+  it('keeps the original observer receiver when a passed request reports its point', async () => {
+    const sink = new MetricSink();
+    const host: EdgeHost = {
+      ...standaloneHost(env),
+      observer: sink,
+      gates: answering(() => new Response(null, { headers: { [GATE_ANSWER_HEADER]: GATE_PASS } })),
+    };
+    const { response } = await routed(
+      navigation('/posts/abc', { headers: { rsc: '1' } }),
+      undefined,
+      undefined,
+      { host },
+    );
+
+    expect(response.status).toBe(STATUS.ok);
+    expect(sink.points).toHaveLength(1);
+    expect(sink.points[0]?.outcomeKind).not.toMatch(/^gate/u);
+    expect(host.observer).toBe(sink);
+  });
+
+  it('keeps concurrent gated and ungated points isolated on the same host', async () => {
+    const sink = new MetricSink();
+    const host: EdgeHost = {
+      ...standaloneHost(env),
+      observer: sink,
+      gates: answering(() => new Response(null, { headers: { [GATE_ANSWER_HEADER]: GATE_PASS } })),
+    };
+    const entered = Promise.withResolvers<undefined>();
+    const released = Promise.withResolvers<Response>();
+    const gated = routed(
+      navigation('/posts/abc', { headers: { rsc: '1' } }),
+      undefined,
+      undefined,
+      {
+        host,
+        dispatchApp: () => {
+          entered.resolve(undefined);
+          return released.promise;
+        },
+      },
+    );
+    try {
+      await entered.promise;
+      await routed(navigation('/ordinary', { headers: { rsc: '1' } }), undefined, undefined, {
+        host,
+      });
+    } finally {
+      released.resolve(new Response('from the Function'));
+    }
+    await gated;
+
+    expect(
+      sink.points.map(({ pathname, subrequests }) => ({ pathname, subrequests })),
+    ).toStrictEqual([
+      { pathname: '/ordinary', subrequests: 1 },
+      { pathname: '/posts/abc', subrequests: 2 },
+    ]);
+    expect(host.observer).toBe(sink);
   });
 
   it('records a pattern-budget rejection without dispatching any gate', async () => {
