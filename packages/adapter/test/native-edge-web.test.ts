@@ -88,6 +88,25 @@ describe('the native Edge bundle', () => {
     await expect(request.text()).resolves.toBe(BODY);
   });
 
+  it('keeps what a dictionary says on its prototype or out of its keys', async () => {
+    const NextRequest = await nextRequest(true);
+    const inherited = Object.assign(Object.create({ method: 'POST' }) as RequestInit, {
+      body: streamOfBody(),
+    });
+    const hidden = Object.defineProperty({ body: streamOfBody() }, 'method', {
+      value: 'PUT',
+      enumerable: false,
+    }) as RequestInit;
+
+    const fromPrototype = new NextRequest(ORIGIN, inherited);
+    const fromHidden = new NextRequest(ORIGIN, hidden);
+
+    expect(fromPrototype.method).toBe('POST');
+    await expect(fromPrototype.text()).resolves.toBe(BODY);
+    expect(fromHidden.method).toBe('PUT');
+    await expect(fromHidden.text()).resolves.toBe(BODY);
+  });
+
   it("leaves Node.js's own Request to the rest of the process", async () => {
     const before = Request;
     await nextRequest(true);

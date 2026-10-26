@@ -35,11 +35,45 @@ export const NATIVE_EDGE_WEB_OBJECT: Readonly<Record<string, [string, string]>> 
   [EDGE_WEB_BINDING]: [EDGE_WEB_MODULE, 'upwindEdgeWeb'],
 };
 
+/**
+ * The members of the Fetch standard's `RequestInit` Node.js reads, with its own `dispatcher` and
+ * Next.js's `next`.
+ */
+const FETCH_MEMBERS = [
+  'method',
+  'headers',
+  'body',
+  'referrer',
+  'referrerPolicy',
+  'mode',
+  'credentials',
+  'cache',
+  'redirect',
+  'integrity',
+  'keepalive',
+  'signal',
+  'window',
+  'priority',
+  'dispatcher',
+  'next',
+];
+
 const EDGE_WEB_SOURCE = [
   // As the Edge Runtime's primitives do: the option only where a body is given and nothing was said
-  // of it. Node.js knows no other value, so nothing it took before is taken otherwise.
-  'const halfDuplex = (init) =>',
-  '  init != null && init.body != null && init.duplex === undefined ? { ...init, duplex: "half" } : init;',
+  // of it. Node.js knows no other value, so nothing it took before is taken otherwise. What else the
+  // dictionary says is read as Fetch reads it, by property, so none of it is lost to a copy (Codex):
+  // what a loop over its keys finds, its prototype's included, and each member Fetch reads, which a
+  // class's getter or a non-enumerable property may hold. A plain object, with the option its own: a
+  // patched fetch that copies the dictionary again (Next.js's) keeps it.
+  `const FETCH_MEMBERS = ${JSON.stringify(FETCH_MEMBERS)};`,
+  'const halfDuplex = (init) => {',
+  '  if (init == null || init.body == null || init.duplex !== undefined) return init;',
+  '  const given = {};',
+  '  for (const key in init) given[key] = init[key];',
+  '  for (const key of FETCH_MEMBERS) if (!(key in given) && init[key] !== undefined) given[key] = init[key];',
+  '  given.duplex = "half";',
+  '  return given;',
+  '};',
   'const withOption = (args) => (args.length < 2 ? args : [args[0], halfDuplex(args[1]), ...args.slice(2)]);',
   // A wrapper for each global the name has stood for, the last one kept: the same function for as
   // long as the global stays, as the bare name would be.
