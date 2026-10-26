@@ -3,6 +3,7 @@ import type { FunctionEnv } from '@stayingupwind/core/paas';
 import { nativeFetch } from './cache/native.ts';
 import { fetchedResponse } from './node-fetch-response.ts';
 import { removeNodeControlHeaders } from './node-http.ts';
+import { nodeOidcCapability } from './node-oidc.ts';
 
 /** No platform credential is carried into the application process. */
 export interface NodeRuntimeConfiguration {
@@ -15,6 +16,7 @@ export interface NodeRuntimeConfiguration {
     readonly cacheRead?: string;
     readonly prefetch?: string;
     readonly monitor?: string;
+    readonly oidc?: string;
     readonly services: Readonly<Record<string, string>>;
   };
 }
@@ -65,7 +67,7 @@ function validateCapabilities(caps: unknown): void {
   if (!record(caps) || !record(caps['services'])) {
     throw new Error('invalid Node runtime capabilities');
   }
-  for (const key of ['cacheWrite', 'cacheRead', 'prefetch', 'monitor']) {
+  for (const key of ['cacheWrite', 'cacheRead', 'prefetch', 'monitor', 'oidc']) {
     if (caps[key] !== undefined && !capability(caps[key])) {
       throw new Error(INVALID_CAPABILITY);
     }
@@ -166,6 +168,8 @@ export function createNodeFunctionEnv(config: NodeRuntimeConfiguration): Functio
     env['ARKOR_MONITOR'] = nodeCapabilityFetcher(caps.monitor);
     env['ARKOR_MONITOR_TOKEN'] = DELEGATED;
   }
+  if (caps.oidc !== undefined)
+    env['ARKOR_OIDC'] = nodeOidcCapability(nodeCapabilityFetcher(caps.oidc));
   for (const [name, url] of Object.entries(caps.services))
     env[name] = nodeCapabilityFetcher(url, true);
   env['ARKOR_RESOURCES'] = JSON.stringify(

@@ -31,6 +31,52 @@ const config = {
 };
 
 describe('node delegated bindings', () => {
+  it('publishes the optional OIDC RPC facade over only its sealed native-fetch capability', async () => {
+    transport.fetch.mockClear();
+    transport.fetch.mockResolvedValueOnce(
+      Response.json({ ok: true, token: 'inert-oidc-token', expiresAt: 1_800_000_000_123 }),
+    );
+    const oidc = config.capabilities.services.SEARCH;
+    const env = createNodeFunctionEnv(
+      parseNodeRuntimeConfiguration(
+        JSON.stringify({ ...config, capabilities: { services: {}, oidc } }),
+      ),
+    );
+    const binding = env['ARKOR_OIDC'] as {
+      token(options?: { audience?: string }): Promise<unknown>;
+    };
+
+    await expect(binding.token({ audience: 'wanted' })).resolves.toStrictEqual({
+      ok: true,
+      token: 'inert-oidc-token',
+      expiresAt: 1_800_000_000_123,
+    });
+
+    const [input] = transport.fetch.mock.calls[0]!;
+    const request = input as Request;
+
+    expect(request.url).toBe(`${oidc}/v1/token`);
+    await expect(request.json()).resolves.toStrictEqual({ audience: 'wanted' });
+    expect(transport.fetch).toHaveBeenCalledTimes(1);
+    expect(env['ARKOR_RESOURCES']).toBe('[]');
+
+    transport.fetch.mockClear();
+  });
+
+  it('keeps old bootstrap configurations valid and refuses an unsealed OIDC origin', () => {
+    const env = createNodeFunctionEnv(parseNodeRuntimeConfiguration(JSON.stringify(config)));
+
+    expect(env['ARKOR_OIDC']).toBeUndefined();
+    expect(() => {
+      return parseNodeRuntimeConfiguration(
+        JSON.stringify({
+          ...config,
+          capabilities: { services: {}, oidc: 'https://unsealed.example' },
+        }),
+      );
+    }).toThrow('invalid Node runtime capability');
+  });
+
   it('omits the private bootstrap payload from an application environment snapshot', () => {
     vi.stubEnv('ARKOR_NODE_RUNTIME', JSON.stringify(config));
     try {
