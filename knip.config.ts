@@ -83,7 +83,12 @@ const config: KnipConfig = {
   // Applications the matrix builds with a Next.js of their own, not code of this repository's — and
   // the site, which is an application too: its own project, its own lockfile, and its own install of
   // the published packages, none of which this workspace's dependency graph knows anything about.
-  ignore: ['fixtures/**', 'web-site/**'],
+  ignore: [
+    'fixtures/**',
+    'web-site/**',
+    // Pinned public compiler inputs are copied into an isolated CI project with its own install.
+    'tools/native-pages-handler-profile/fixture/**',
+  ],
 };
 
 export default config;
