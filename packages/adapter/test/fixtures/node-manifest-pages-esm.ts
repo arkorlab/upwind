@@ -91,7 +91,10 @@ export async function pagesEsmFixture(
     .replaceAll('hoist(', '(0,helperNs.hoist)(')
     .replaceAll('getHandler(', '(0,handlerNs.getHandler)(');
   if (options.grouped) body = body.replaceAll(`;\n${kind} `, ',');
-  const values = [['default', 'defaultValue'], ...EXPORTS.map((name) => [name, name])];
+  const values = [
+    ['default', 'defaultValue'] as const,
+    ...EXPORTS.map((name) => [name, name] as const),
+  ];
   const table = values
     .map(([name, value]) => {
       const selector = options.eager ? `0,${value}` : `()=>${value}`;
