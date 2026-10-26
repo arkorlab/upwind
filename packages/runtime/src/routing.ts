@@ -24,6 +24,7 @@ import { edgeJudgesHeaderRules, stripPlatformHeaders } from './incoming.ts';
 import { escapedNameOf, namesWithSpellings, prerenderedName } from './name-spellings.ts';
 import type { Resolved } from './outputs.ts';
 import { misdirectedTo } from './placement.ts';
+import { withHeadersChanged } from './reframe.ts';
 import {
   AFTER_FILES,
   BEFORE_FILES,
@@ -239,15 +240,12 @@ export function withRoutingHeaders(response: Response, added: Headers | undefine
   if (added === undefined) {
     return response;
   }
-  const headers = new Headers(response.headers);
-  for (const [name, value] of added) {
-    if (name === 'set-cookie') {
-      headers.append(name, value);
-    } else {
-      headers.set(name, value);
+  return withHeadersChanged(response, (headers) => {
+    for (const [name, value] of added) {
+      // A cookie is one more; any other header is routing's over the handler's.
+      headers[name === 'set-cookie' ? 'append' : 'set'](name, value);
     }
-  }
-  return new Response(response.body, { status: response.status, headers });
+  });
 }
 
 /**
@@ -261,9 +259,9 @@ export function withHeaderRulesLeft(request: Request, response: Response): Respo
   if (!edgeJudgesHeaderRules(request.headers) || misdirectedTo(response) !== undefined) {
     return response;
   }
-  const headers = new Headers(response.headers);
-  headers.set(HEADER_RULES_LEFT_HEADER, '1');
-  return new Response(response.body, { status: response.status, headers });
+  return withHeadersChanged(response, (headers) => {
+    headers.set(HEADER_RULES_LEFT_HEADER, '1');
+  });
 }
 
 /**

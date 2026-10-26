@@ -18,6 +18,7 @@ import type { Entry, EntryTables } from './entries.ts';
 import { NEVER_STORED, render404 } from './error-pages.ts';
 import { stripPlatformHeaders } from './incoming.ts';
 import { type FailureAnswer, invokeNodeHandler, type Run } from './node-bridge.ts';
+import { withHeadersChanged } from './reframe.ts';
 import { fetchRewrite } from './rewrite-fetch.ts';
 import type { Store } from './store.ts';
 
@@ -359,19 +360,15 @@ export function withInvalidatedTags(response: Response, invalidated: Invalidated
   if (response.status === 0 || (!said && tags.size === 0)) {
     return response;
   }
-  const headers = new Headers(response.headers);
-  headers.delete(INVALIDATED_TAGS_HEADER);
-  headers.delete(INVALIDATED_REVISION_HEADER);
-  if (tags.size > 0) {
-    headers.set(INVALIDATED_TAGS_HEADER, invalidatedTagsValue(tags));
-    if (revision !== undefined) {
-      headers.set(INVALIDATED_REVISION_HEADER, String(revision));
+  return withHeadersChanged(response, (headers) => {
+    headers.delete(INVALIDATED_TAGS_HEADER);
+    headers.delete(INVALIDATED_REVISION_HEADER);
+    if (tags.size > 0) {
+      headers.set(INVALIDATED_TAGS_HEADER, invalidatedTagsValue(tags));
+      if (revision !== undefined) {
+        headers.set(INVALIDATED_REVISION_HEADER, String(revision));
+      }
     }
-  }
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
   });
 }
 

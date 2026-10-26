@@ -13,6 +13,7 @@ import {
 import { foundDynamic } from './dynamic-misses.ts';
 import type { GenerationSource } from './generation-source.ts';
 import { invokeNodeHandler } from './node-bridge.ts';
+import { withHeadersChanged } from './reframe.ts';
 import {
   answerHeaders,
   PAGES_DATA,
@@ -84,9 +85,9 @@ export function answerWith(input: RoutedInput, handler: NodeHandler, answer: Ans
 
 /** `response`, saying what came of the regeneration behind it (`CACHE_OUTCOME_HEADER`). */
 export function withOutcome(response: Response, outcome: string): Response {
-  const headers = new Headers(response.headers);
-  headers.set(CACHE_OUTCOME_HEADER, outcome);
-  return new Response(response.body, { status: response.status, headers });
+  return withHeadersChanged(response, (headers) => {
+    headers.set(CACHE_OUTCOME_HEADER, outcome);
+  });
 }
 
 /** The output of a render a want names, as the render captured it. */
