@@ -1,6 +1,7 @@
 import type { Node } from '@oxc-project/types';
 
 import { nativeSourceAnalysis } from './native-source-parser.ts';
+import { nodeSourceEnvironment } from './node-source-environment.ts';
 
 function staticString(node: Node | undefined): string | undefined {
   if (node?.type === 'Literal' && typeof node.value === 'string') return node.value;
@@ -44,20 +45,26 @@ function literalTruthiness(node: Node): boolean | undefined {
     : undefined;
 }
 
-function conditionalBranch(node: Node): Node[] | undefined {
+type EnvironmentTruth = ReturnType<typeof nodeSourceEnvironment>;
+
+function truthiness(node: Node, environment: EnvironmentTruth): boolean | undefined {
+  return literalTruthiness(node) ?? environment(node);
+}
+
+function conditionalBranch(node: Node, environment: EnvironmentTruth): Node[] | undefined {
   if (node.type !== 'IfStatement' && node.type !== 'ConditionalExpression') return undefined;
-  // Only primitive literals have a known truth value and no condition side effects here.
-  const truth = literalTruthiness(node.test);
+  // Only primitive literals and the two pure, fixed Node environment reads can omit a branch.
+  const truth = truthiness(node.test, environment);
   if (truth === undefined) return undefined;
   const selected = truth ? node.consequent : node.alternate;
   return selected === null ? [] : [selected];
 }
 
-function children(node: Node): Node[] {
-  const selected = conditionalBranch(node);
+function children(node: Node, environment: EnvironmentTruth): Node[] {
+  const selected = conditionalBranch(node, environment);
   if (selected !== undefined) return selected;
   if (node.type === 'LogicalExpression') {
-    const truth = literalTruthiness(node.left);
+    const truth = truthiness(node.left, environment);
     if ((truth === false && node.operator === '&&') || (truth === true && node.operator === '||'))
       return [node.left];
   }
@@ -75,11 +82,12 @@ export function originalNodeSpecifiers(file: string, bytes: Uint8Array | undefin
   try {
     const found: string[] = [];
     const analysis = nativeSourceAnalysis(new TextDecoder().decode(bytes), file);
+    const environment = nodeSourceEnvironment(analysis.program);
     const pending: Node[] = [analysis.program];
     for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
       const specifier = specifierIn(node);
       if (specifier !== undefined) found.push(specifier);
-      for (const child of children(node).toReversed()) pending.push(child);
+      for (const child of children(node, environment).toReversed()) pending.push(child);
     }
     return found;
   } catch {

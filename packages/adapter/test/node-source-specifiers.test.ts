@@ -78,6 +78,114 @@ describe('original Node physical dependency discovery', () => {
     expect(specifiers(code)).toStrictEqual(['./condition.cjs', './one.node', './two.node']);
   });
 
+  it.each(['js', 'cjs', 'mjs', 'ts', 'cts', 'mts'])(
+    'omits a development-only package under the fixed production %s environment',
+    (extension) => {
+      const code = [
+        `if(process.env.NODE_ENV !== 'production') require('dev-only');`,
+        `if(process.env.NEXT_RUNTIME === 'edge') require('edge-only');`,
+        `if(process.env.NODE_ENV === 'production') require('./production.node');`,
+        `if(process.env.NEXT_RUNTIME === 'nodejs') require('node-runtime');`,
+      ].join('\n');
+
+      expect(specifiers(code, extension)).toStrictEqual(['./production.node', 'node-runtime']);
+    },
+  );
+
+  it.each([
+    `process.env['NODE_ENV'] !== 'production'`,
+    `'production' !== process['env'].NODE_ENV`,
+    `process['env']['NEXT_RUNTIME'] !== 'nodejs'`,
+    `!(process.env.NODE_ENV === 'production')`,
+    `!process.env.NEXT_RUNTIME`,
+  ])('uses only finite pure fixed-environment comparisons for %s', (condition) => {
+    const code = `if(${condition})require('dev-only');else require('./live.node');`;
+
+    expect(specifiers(code)).toStrictEqual(['./live.node']);
+  });
+
+  it('uses fixed environment conditions in ternaries and short-circuit discovery without changing input bytes', () => {
+    const bytes = new TextEncoder().encode(
+      [
+        `process.env.NODE_ENV !== 'production' ? require('dev-only') : require('./live.node');`,
+        `process.env.NEXT_RUNTIME === 'edge' && require('edge-only');`,
+        `process.env.NODE_ENV === 'production' || require('development-only');`,
+      ].join('\n'),
+    );
+    const before = new Uint8Array(bytes);
+
+    expect(originalNodeSpecifiers('/project/entry.cjs', bytes)).toStrictEqual(['./live.node']);
+    expect(bytes).toStrictEqual(before);
+  });
+
+  it.each([
+    `process.env.CUSTOM_MODE === 'production'`,
+    `(sideEffect(), process.env.NODE_ENV !== 'production')`,
+    `(require('./condition.cjs'), process.env.NEXT_RUNTIME === 'edge')`,
+    `process.env.NODE_ENV.startsWith('dev')`,
+    `process?.env.NODE_ENV !== 'production'`,
+    `process.env[mode()] !== 'production'`,
+  ])(
+    'visits unknown, optional or effectful environment conditions conservatively: %s',
+    (condition) => {
+      const code = `if(${condition})require('./one.node');else require('./two.node');`;
+      const expected = condition.includes('condition.cjs')
+        ? ['./condition.cjs', './one.node', './two.node']
+        : ['./one.node', './two.node'];
+
+      expect(specifiers(code)).toStrictEqual(expected);
+    },
+  );
+
+  it.each([
+    `const env=process.env;env.NODE_ENV='development';`,
+    `const p=process;p.env.NODE_ENV='development';`,
+    `const {env}=process;env.NODE_ENV='development';`,
+    `handoff(process.env);`,
+    `handoff(process);`,
+    `process.env.NODE_ENV='development';`,
+    `function later(){process.env.NEXT_RUNTIME='edge';}`,
+    `for(process.env.NODE_ENV of ['development']){}`,
+    `({mode:process.env.NODE_ENV}=settings);`,
+    `Object.defineProperty(process.env,'NODE_ENV',{value:'development'});`,
+    `const p=globalThis.process;p.env.NODE_ENV='development';`,
+    `const p=require('node:process');p.env.NODE_ENV='development';`,
+  ])(
+    'keeps both branches after an observable process/env alias, handoff or write: %s',
+    (prefix) => {
+      const code = `${prefix}if(process.env.NODE_ENV!=='production')require('./one.node');else require('./two.node');`;
+      const expected = prefix.includes('node:process')
+        ? ['node:process', './one.node', './two.node']
+        : ['./one.node', './two.node'];
+
+      expect(specifiers(code)).toStrictEqual(expected);
+    },
+  );
+
+  it.each([
+    `function run(process){if(process.env.NODE_ENV!=='production')require('./one.node');else require('./two.node');}`,
+    `const process=settings;if(process.env.NEXT_RUNTIME==='edge')require('./one.node');else require('./two.node');`,
+    `{let process=settings;if(process.env.NODE_ENV!=='production')require('./one.node');else require('./two.node');}`,
+  ])('retains conditions on a genuinely shadowed process binding', (code) => {
+    expect(specifiers(code)).toStrictEqual(['./one.node', './two.node']);
+  });
+
+  it('keeps a shadowed process independent of a genuine fixed global condition', () => {
+    const code = [
+      `function local(process){if(process.env.NODE_ENV!=='production')require('local-one');else require('local-two');}`,
+      `if(process.env.NODE_ENV!=='production')require('dev-only');else require('./production.node');`,
+      `if(process.env.CUSTOM_MODE)require('custom-one');else require('custom-two');`,
+    ].join('\n');
+
+    expect(specifiers(code)).toStrictEqual([
+      'local-one',
+      'local-two',
+      './production.node',
+      'custom-one',
+      'custom-two',
+    ]);
+  });
+
   it('does not infer a runtime file from explicit type-only imports or rewrite raw source', () => {
     const raw = new TextEncoder().encode(
       'import type {Value} from "only-types";export const x:number=1;',
