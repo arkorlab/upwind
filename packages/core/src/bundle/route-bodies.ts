@@ -1,10 +1,11 @@
 import { generationResponseHeaders } from '../cache/response-headers.ts';
 import { ROUTE_BODY_BUILD_HEADERS } from '../request/constants.ts';
-import type { DeploymentBundle, Prerender } from './schema.ts';
+import type { Prerender } from './schema.ts';
 import {
   prerenderResponseHeaders,
   reproducesDynamicRouting,
   routeHandlerPrerenders,
+  type ServingBundle,
 } from './serving.ts';
 
 const HTTP_OK = 200;
@@ -36,7 +37,7 @@ function initialHeaders(prerender: Prerender): [string, string][] {
 }
 
 /** The build's privacy vetoes are judged before a stored-response filter can remove them. */
-function publicBody(bundle: DeploymentBundle, prerender: Prerender): boolean {
+function publicBody(bundle: ServingBundle, prerender: Prerender): boolean {
   if (prerender.body === undefined || !nonHtml(prerender.body.contentType)) {
     return false;
   }
@@ -56,7 +57,7 @@ function publicBody(bundle: DeploymentBundle, prerender: Prerender): boolean {
  * Only a bundle built with the privacy-preserving runtime opts in. Older bundles remain private
  * Function responses, even when a newer host assembles their manifest again.
  */
-export function edgeServableRouteBodies(bundle: DeploymentBundle): Prerender[] {
+export function edgeServableRouteBodies(bundle: ServingBundle): Prerender[] {
   if (bundle.routeBodyPrivacy !== 2 || !reproducesDynamicRouting(bundle)) {
     return [];
   }

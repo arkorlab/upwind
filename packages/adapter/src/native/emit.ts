@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ONE_PASS_BUNDLE_VERSION, packPrerenders } from '@stayingupwind/core/bundle';
+import { STATIC_PAGES_FALLBACK_PRIVACY } from '@stayingupwind/core/cache';
 import { type Plugin, type ResolveIdResult, rolldown } from 'rolldown';
 
 import { BlobStore } from '../blobs.ts';
@@ -31,7 +32,6 @@ import { collectPageBodies } from '../page-body-layout.ts';
 import { readProjectConfig } from '../project-config.ts';
 import { carriesMaps } from '../source-maps.ts';
 import { collectStaticFiles } from '../static-files.ts';
-import { staticPagesRuntimeFields } from '../static-pages.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from '../throwing-globals.ts';
 import {
   NATIVE_EDGE_WEB_GLOBALS,
@@ -199,6 +199,7 @@ function nativeModules(runtimeRoot: string, cacheHost: string): Plugin {
     'arkor:wasm': { id: '\0native-wasm', external: false },
   };
   const replacements = new Map([
+    [path.join(runtimeRoot, 'delivery.ts'), path.join(runtimeRoot, 'native/delivery.ts')],
     [path.join(runtimeRoot, 'environment.ts'), path.join(runtimeRoot, 'native/environment.ts')],
     [path.join(runtimeRoot, 'node-bridge.ts'), path.join(runtimeRoot, 'native/entry.ts')],
     [path.join(runtimeRoot, 'rewrite-fetch.ts'), path.join(runtimeRoot, 'native/rewrite-fetch.ts')],
@@ -458,7 +459,14 @@ export async function emitNativeDeployment(
     staticFiles,
     ...(middleware !== undefined && { middleware: { matchers: middlewareMatchers(middleware) } }),
   };
-  const runtime = { ...base, ...staticPagesRuntimeFields(base) };
+  // The server is its own host: what a publication tells the edge of the build, its bundle says to
+  // the runtime, which answers by the edge's rules (`native/delivery.ts`) and seeds its own cache
+  // with the privacy those rules read (`seedEntriesOf`).
+  const runtime = {
+    ...base,
+    routeBodyPrivacy: 2 as const,
+    staticPagesPrivacy: STATIC_PAGES_FALLBACK_PRIVACY,
+  };
   await writeFile(
     path.join(outDir, 'runtime.json'),
     JSON.stringify({ ...runtime, prerenders: packPrerenders(prerenders) }),

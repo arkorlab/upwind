@@ -441,7 +441,7 @@ export function edgeServablePrerenders(
  * read): the deployment's Function serves them whole, from the cache's generation of each. One on
  * the edge runtime has no generation — the Function runs it for every request.
  */
-export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
+export function routeHandlerPrerenders(bundle: ServingBundle): Prerender[] {
   const edgeRuntime = edgeRuntimeRoutes(bundle);
   const handlers = handlerRoutes(bundle);
   return bundle.prerenders.filter((prerender) => {
@@ -515,7 +515,7 @@ function resumesFromItself(prerender: Prerender): boolean {
 }
 
 /** The routes whose entrypoint answers with a response rather than rendering a document. */
-function handlerRoutes(bundle: DeploymentBundle): ReadonlySet<string> {
+function handlerRoutes(bundle: ServingBundle): ReadonlySet<string> {
   const handlers = new Set<string>();
   for (const entry of bundle.entrypoints) {
     if (DOCUMENT_KINDS.has(entry.kind)) {
@@ -556,7 +556,7 @@ export function cacheablePrerenders(bundle: DeploymentBundle): Prerender[] {
  * middleware on the request as the client sent it, and one that runs on a match on the request as
  * it is finally matched, so the edge hands a Function only the first as judged (`aheadOfMiddleware`).
  */
-export function headerRulesOf(bundle: DeploymentBundle): HeaderRule[] {
+export function headerRulesOf(bundle: ServingBundle): HeaderRule[] {
   const reproduced = reproducesDynamicRouting(bundle);
   return phasedHeaderRoutes(bundle).flatMap(({ route, phase }) => {
     return route.headers === undefined || (!reproduced && route.priority !== true)

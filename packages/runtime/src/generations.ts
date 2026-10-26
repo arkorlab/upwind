@@ -39,6 +39,7 @@ import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { servable } from './cache/servable.ts';
+import { offeredFromGeneration } from './delivery.ts';
 import { foundDynamic, rememberingDynamic } from './dynamic-misses.ts';
 import { nodeHandlerOf } from './entries.ts';
 import type { GenerationSource } from './generation-source.ts';
@@ -641,11 +642,12 @@ export async function serveFromGeneration(
  */
 async function answerFromGeneration(
   job: Job,
-  { pack, validity }: CurrentGeneration,
+  current: CurrentGeneration,
   source: GenerationSource,
   want: Want,
 ): Promise<Response | undefined> {
   const { input, runtime, store } = job;
+  const { pack, validity } = current;
   const { handler } = job.target;
   // What the record says is what the visitor would be told, and a record that cannot be answered
   // as written is not: the visitor gets a render of their own, as they would from a publish of it.
@@ -663,7 +665,7 @@ async function answerFromGeneration(
   if (body === undefined) {
     return pack.header.source === 'runtime' ? renderRequest(job, source.url) : undefined;
   }
-  return answerWith(input, handler, {
+  const answer = answerWith(input, handler, {
     ...want,
     body,
     // The bytes name themselves: a regeneration that produced the same body leaves what a client
@@ -678,6 +680,8 @@ async function answerFromGeneration(
     headers: pack.header.headers,
     cache: validity === 'stale' ? 'STALE' : 'HIT',
   });
+  // What a host with no edge in front of it shares of this generation, as the edge would.
+  return offeredFromGeneration(input, current, source.representation, answer);
 }
 
 /**
