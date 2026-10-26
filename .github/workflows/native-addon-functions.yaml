@@ -47,6 +47,7 @@ jobs:
           git -C "$fixture_source" checkout --detach FETCH_HEAD
           test "$(git -C "$fixture_source" rev-parse HEAD)" = 29bbeab09981148ade186e8599ecdede15abc281
       - name: Build and invoke the official native fixture and fallback path
+        id: official_native
         run: node tools/native-addon-next-ci.mts "$RUNNER_TEMP/upwind-official-native-next/test/e2e/prerender-native-module"
       - name: Retain bounded public fixture JavaScript after failure
         if: failure()
@@ -54,5 +55,23 @@ jobs:
         with:
           name: native-next-compiled-js-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/upwind-native-next-diagnostics
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Diagnose the failed fixture with server minification disabled
+        id: official_native_diagnostic
+        if: failure() && !cancelled() && steps.official_native.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture_source="$RUNNER_TEMP/upwind-official-native-next/test/e2e/prerender-native-module"
+          diagnostic_root="$RUNNER_TEMP/upwind-native-next-server-minification-off"
+          mkdir "$diagnostic_root"
+          RUNNER_TEMP="$diagnostic_root" node tools/native-addon-next-ci.mts "$fixture_source" --server-minification=off
+      - name: Retain separate JavaScript after the diagnostic fails
+        if: failure() && steps.official_native_diagnostic.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-next-server-minification-off-js-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/upwind-native-next-server-minification-off/upwind-native-next-diagnostics
           if-no-files-found: warn
           retention-days: 1

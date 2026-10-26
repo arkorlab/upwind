@@ -2,6 +2,7 @@
  * CI only: build the fixed official native-addon fixture with the actual adapter, then run its
  * emitted Node Function on loopback. No Cloudflare service, credentials, browser or next start.
  * Usage: node tools/native-addon-next-ci.mts <pinned-next-checkout>/test/e2e/prerender-native-module
+ * Optional diagnostic: append --server-minification=off. This is a separate build condition.
  * The Linux runner must provide an empty, writable /bundle, Node24.22.1, pnpm12.15.0 and a C++
  * toolchain/Python for node-gyp. Run after the SDK's normal build. This is not a hosted measurement.
  */
@@ -42,6 +43,7 @@ const HTTP_OK = 200;
 const BUNDLE_ROOT = '/bundle';
 const OWNER_MARKER = '.upwind-native-next-ci-owner';
 const TOKEN = randomBytes(TOKEN_BYTES).toString('base64url');
+type ServerMinification = 'default' | 'off';
 const PINNED_FILES: Readonly<Record<string, string>> = {
   '.npmrc': '951a2b6e795f12e7e5e47a7ce71ab649cbb6e614',
   'bindings/index.js': 'fd4a2e414af0b19ae18ef43baed3eaa37a918db5',
@@ -65,6 +67,27 @@ function record(value: unknown): Record<string, unknown> {
     'Expected a JSON object',
   );
   return value as Record<string, unknown>;
+}
+
+function argumentsOf(values: readonly string[]): {
+  readonly source: string;
+  readonly serverMinification: ServerMinification;
+} {
+  assert.ok(
+    [1, 2].includes(values.length),
+    'Pass one fixture path and an optional diagnostic flag',
+  );
+  const source = values[0];
+  const option = values[1];
+  assert.ok(
+    source !== undefined && source !== '' && !source.startsWith('-'),
+    'Pass the fixed official fixture path first',
+  );
+  assert.ok(
+    option === undefined || option === '--server-minification=off',
+    'The only diagnostic flag is --server-minification=off',
+  );
+  return { source, serverMinification: option === undefined ? 'default' : 'off' };
 }
 
 function compareNames(left: string, right: string): number {
@@ -122,7 +145,12 @@ function environment(userConfig: string, globalConfig: string): NodeJS.ProcessEn
 
 const processes = new NativeNextProcesses();
 
-async function prepare(source: string, directory: string, env: NodeJS.ProcessEnv): Promise<void> {
+async function prepare(
+  source: string,
+  directory: string,
+  env: NodeJS.ProcessEnv,
+  serverMinification: ServerMinification,
+): Promise<void> {
   await copyFixture(source, directory);
   const packageFile = path.join(directory, 'package.json');
   const originalJson: unknown = JSON.parse(await readFile(packageFile, 'utf8'));
@@ -162,9 +190,10 @@ async function prepare(source: string, directory: string, env: NodeJS.ProcessEnv
   );
   const adapter = path.join(ROOT, 'packages/adapter/dist/index.js');
   assert.ok((await lstat(adapter)).isFile(), 'Build the SDK before this CI helper');
+  const diagnostic = serverMinification === 'off' ? ',experimental:{serverMinification:false}' : '';
   await writeFile(
     path.join(directory, 'next.config.mjs'),
-    `export default {adapterPath:${JSON.stringify(adapter)}};\n`,
+    `export default {adapterPath:${JSON.stringify(adapter)}${diagnostic}};\n`,
     { flag: 'wx' },
   );
   assert.equal(
@@ -375,12 +404,14 @@ async function main(): Promise<void> {
     process.env['NODE_OPTIONS'] === undefined,
     'Unset inherited Node loaders/options for this control',
   );
-  const source = process.argv[2];
+  const { source, serverMinification } = argumentsOf(process.argv.slice(2));
+  const conditions = {
+    bundler: 'turbopack',
+    serverMinification,
+    diagnosticOnly: serverMinification === 'off',
+  };
   const runnerTemp = process.env['RUNNER_TEMP'];
-  assert.ok(
-    source !== undefined && runnerTemp !== undefined,
-    'Pass the fixed fixture path and RUNNER_TEMP',
-  );
+  assert.ok(runnerTemp !== undefined, 'Pass RUNNER_TEMP for the isolated control');
   assert.ok(
     (await lstat(BUNDLE_ROOT)).isDirectory() && (await readdir(BUNDLE_ROOT)).length === 0,
     'CI must provide an empty writable /bundle',
@@ -400,8 +431,16 @@ async function main(): Promise<void> {
     await writeFile(globalConfig, 'registry=https://registry.npmjs.org\n');
     await mkdir(fixture);
     const env = environment(config, globalConfig);
-    await prepare(await realpath(source), fixture, env);
+    await prepare(await realpath(source), fixture, env, serverMinification);
     validated = true;
+    console.log(
+      JSON.stringify({
+        kind: 'native-next-build-conditions',
+        nextVersion: NEXT_VERSION,
+        nextCommit: NEXT_COMMIT,
+        ...conditions,
+      }),
+    );
     await processes.command(['exec', 'next', 'build'], fixture, {
       env: { ...env, NODE_ENV: 'production' },
     });
@@ -417,6 +456,7 @@ async function main(): Promise<void> {
   console.log(
     JSON.stringify({
       complete: true,
+      ...conditions,
       nextVersion: NEXT_VERSION,
       nextCommit: NEXT_COMMIT,
       nativeFunctions: 1,
