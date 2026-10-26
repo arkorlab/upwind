@@ -111,6 +111,7 @@ function environment(userConfig: string, globalConfig: string): NodeJS.ProcessEn
     PATH: process.env['PATH'],
     HOME: process.env['HOME'],
     TMPDIR: process.env['TMPDIR'],
+    NODE_ENV: 'development',
     CI: 'true',
     NEXT_TELEMETRY_DISABLED: '1',
     npm_config_userconfig: userConfig,
@@ -401,7 +402,9 @@ async function main(): Promise<void> {
     const env = environment(config, globalConfig);
     await prepare(await realpath(source), fixture, env);
     validated = true;
-    await processes.command(['exec', 'next', 'build'], fixture, { env });
+    await processes.command(['exec', 'next', 'build'], fixture, {
+      env: { ...env, NODE_ENV: 'production' },
+    });
     const identity = await materializeNativeArtifact(fixture, BUNDLE_ROOT, NODE_VERSION);
     await smoke(identity, env);
     assert.ok(!processes.interrupted, 'The CI control was interrupted');

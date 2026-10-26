@@ -28,6 +28,7 @@ function hostEnvironment(home: string): NodeJS.ProcessEnv {
   return {
     CI: '1',
     HOME: home,
+    NODE_ENV: 'development',
     NEXT_TELEMETRY_DISABLED: '1',
     PATH: process.env['PATH'],
     npm_config_globalconfig: path.join(home, GLOBAL_CONFIG),
@@ -120,6 +121,8 @@ function compileArguments(project: string, name: string): string[] {
     '/work',
     '--env',
     'CI=1',
+    '--env',
+    'NODE_ENV=production',
     '--env',
     'HOME=/tmp',
     '--env',
