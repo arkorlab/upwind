@@ -1,6 +1,7 @@
 import { generationResponseHeaders } from '../cache/response-headers.ts';
 import { ROUTE_BODY_BUILD_HEADERS } from '../request/constants.ts';
-import { BuildPatternBudget, type BuildPatternMatcher } from './pattern-budget.ts';
+import { BuildPatternBudget } from './pattern-budget.ts';
+import type { BuildPatternMatcher } from './pattern-matcher.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
 import {
   prerenderResponseHeaders,

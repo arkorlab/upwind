@@ -395,9 +395,10 @@ export function routeSegmentsOf(
   bundle: DeploymentBundle,
   encodings: ReadonlyMap<string, readonly EncodedShellRef[]>,
   servable: ServableOptions,
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
 ): ReadonlyMap<string, Record<string, RouteSegment>> {
   const routes = new Map<string, Record<string, RouteSegment>>();
-  const found = prefetchSegments(bundle, servable);
+  const found = prefetchSegments(bundle, servable, patterns);
   for (const segment of found) {
     const { body } = segment.prerender;
     if (body === undefined) {

@@ -363,9 +363,9 @@ async function assembleWithin(
     policyRules: rules.filter(maySetPreloadPolicy),
     recoverySource: input.recoverySource,
     resumable,
-    segments: routeSegmentsOf(bundle, input.encodings, servable),
-    payloads: routeArtifactsOf(routePayloads(bundle, servable), input.encodings),
-    pagesData: routeArtifactsOf(routePagesData(bundle, servable), input.encodings),
+    segments: routeSegmentsOf(bundle, input.encodings, servable, patterns),
+    payloads: routeArtifactsOf(routePayloads(bundle, servable, patterns), input.encodings),
+    pagesData: routeArtifactsOf(routePagesData(bundle, servable, patterns), input.encodings),
   };
   const routes = prerenders.flatMap((prerender) => {
     const entry = routeEntryOf(prerender, context);

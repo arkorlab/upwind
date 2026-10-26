@@ -1,12 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import {
+  completePrerenders,
+  edgeServedRewrites,
+  prerenderResponseHeaders,
+} from '../src/bundle/build-serving.ts';
 import { staticPagesMembersOf } from '../src/bundle/fallback-pages.ts';
 import { filesystemPagesOf } from '../src/bundle/filesystem-pages.ts';
 import {
   BuildPatternBudget,
   BuildPatternBudgetExceededError,
 } from '../src/bundle/pattern-budget.ts';
-import { edgeServedRewrites, prerenderResponseHeaders } from '../src/bundle/serving.ts';
 import { staticPagesPrivacyOf } from '../src/bundle/static-pages.ts';
 import { testWithin } from '../src/request/pattern-budget.ts';
 import { fallbackBundle } from './fallback-pages-fixtures.ts';
@@ -31,6 +35,33 @@ describe('explicit build pattern allowances', () => {
       for (let count = 0; count < 48; count += 1) patterns.test('^a$', '', 'a');
     }).toThrow(BuildPatternBudgetExceededError);
     expect(new BuildPatternBudget(48).test('^a$', '', 'a')).toBe(true);
+  });
+
+  it('memoizes bounded boolean results without reusing them for captures or skipping lookup charges', () => {
+    const patterns = new BuildPatternBudget(15_000);
+    const source = '^a+a+!$';
+    const value = 'a'.repeat(100);
+
+    expect(patterns.test(source, '', value)).toBe(false);
+
+    for (let repeat = 0; repeat < 10; repeat += 1)
+      expect(patterns.test(source, '', value)).toBe(false);
+
+    expect(() => patterns.exec(source, '', value)).toThrow(BuildPatternBudgetExceededError);
+    expect(() => {
+      for (let repeat = 0; repeat < 100; repeat += 1) patterns.test(source, '', value);
+    }).toThrow(BuildPatternBudgetExceededError);
+  });
+
+  it('returns fresh mutable capture arrays from each execution', () => {
+    const patterns = new BuildPatternBudget();
+    const source = '^/(.+)$';
+    const first = patterns.exec(source, '', '/one') ?? [];
+    first[1] = 'changed';
+    const second = patterns.exec(source, '', '/one');
+
+    expect(second).not.toBe(first);
+    expect(second?.[1]).toBe('one');
   });
 
   it('refuses header folding, rewrite analysis, and filesystem classification without enabling request budgets', () => {
@@ -60,6 +91,24 @@ describe('explicit build pattern allowances', () => {
     );
     // An unbounded but cheap non-match still runs in the application's own default mode.
     expect(testWithin(/(a)\1/u, 'aa')).toBe(true);
+  });
+
+  it('passes the supplied matcher through generation rewrite analysis', () => {
+    const bundle = fixtureBundle();
+    bundle.staticFiles = bundle.staticFiles.map((file) => {
+      return {
+        ...file,
+        blob: { ...file.blob, byteLength: 100_000_000 },
+      };
+    });
+    bundle.routing.beforeMiddleware = [{ sourceRegex: '^/earlier$', destination: '/elsewhere' }];
+    bundle.routing.beforeFiles = [
+      { source: '/alias', sourceRegex: '^/alias$', destination: '/hello.txt' },
+    ];
+    const patterns = { test: vi.fn(() => false), exec: vi.fn(() => null) };
+    completePrerenders(bundle, patterns);
+
+    expect(patterns.test).toHaveBeenCalledWith('^/earlier$', 'i', '/alias');
   });
 
   it('keeps runtime privacy defaults and explicit build contexts separate', () => {

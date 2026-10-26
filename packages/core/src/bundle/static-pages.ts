@@ -1,6 +1,6 @@
 import { STATIC_PAGES_FALLBACK_PRIVACY } from '../cache/static-page-version.ts';
 import { staticPageHeadersAllowSharing } from '../cache/static-pages.ts';
-import { type BuildPatternMatcher, nativeBuildPatterns } from './pattern-budget.ts';
+import { type BuildPatternMatcher, nativeBuildPatterns } from './pattern-matcher.ts';
 import type { Prerender } from './schema.ts';
 import {
   completePrerenders,

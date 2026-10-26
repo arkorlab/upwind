@@ -1,4 +1,4 @@
-import { BuildPatternBudget, type BuildPatternMatcher } from './pattern-budget.ts';
+import { type BuildPatternMatcher, nativeBuildPatterns } from './pattern-matcher.ts';
 import type { Route, StaticFile } from './schema.ts';
 import { reproducesDynamicRouting, type ServingBundle } from './serving.ts';
 import { routerSpellings } from './spelling.ts';
@@ -72,7 +72,7 @@ function rewriteCandidate(
  */
 export function edgeServedRewrites(
   bundle: ServingBundle,
-  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): ServedRewrite[] {
   if (!reproducesDynamicRouting(bundle)) {
     return [];

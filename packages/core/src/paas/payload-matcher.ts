@@ -185,3 +185,6 @@ export function matcherHolds(pattern: RegExp, path: string): boolean {
     return someHeadHolds(head, split);
   }
 }
+
+/** Internal pure decomposition shared with explicitly budgeted build analysis. */
+export { headOf as payloadHeadOf, headsOf as payloadHeadsOf };

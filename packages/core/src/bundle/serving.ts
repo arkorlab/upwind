@@ -9,7 +9,7 @@ import { type DynamicRouting, withFunctions } from './functions.ts';
 import { withGates } from './gates.ts';
 import { memberRoutesOf } from './member-routes.ts';
 import { pageRoutes } from './page-routes.ts';
-import { BuildPatternBudget, type BuildPatternMatcher } from './pattern-budget.ts';
+import { type BuildPatternMatcher, nativeBuildPatterns } from './pattern-matcher.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route } from './schema.ts';
 import { edgeServedRewrites } from './served-rewrites.ts';
@@ -241,10 +241,13 @@ function pagesRoutes(bundle: ServingBundle): ReadonlySet<string> {
  * member it never saw is a loading page, not the page, which Next.js renders only at build — the
  * Function renders the member instead, and a runtime cache holds no generation of the class.
  */
-function generationIn(bundle: ServingBundle): (prerender: Prerender) => boolean {
+function generationIn(
+  bundle: ServingBundle,
+  patterns: BuildPatternMatcher,
+): (prerender: Prerender) => boolean {
   const edgeRuntime = edgeRuntimeRoutes(bundle);
   const pages = pagesRoutes(bundle);
-  const rewritten = new Set(edgeServedRewrites(bundle).map((served) => served.pathname));
+  const rewritten = new Set(edgeServedRewrites(bundle, patterns).map((served) => served.pathname));
   const isDocument = documentPrerenders(bundle.prerenders, bundle.entrypoints);
   return (prerender) => {
     return (
@@ -291,7 +294,7 @@ function servableIn(
   bundle: ServingBundle,
   patterns: BuildPatternMatcher,
 ): (prerender: Prerender) => boolean {
-  const generation = generationIn(bundle);
+  const generation = generationIn(bundle, patterns);
   const templates = reachableTemplates(bundle);
   const localePicked = localePickedPerRequest(bundle);
   return (prerender) => {
@@ -323,7 +326,7 @@ function resumableBy(
  */
 export function resumablePrerenders(
   bundle: DeploymentBundle,
-  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): Prerender[] {
   return resumableBy(bundle, servableIn(bundle, patterns));
 }
@@ -435,7 +438,7 @@ function completeBy(
 
 export function completePrerenders(
   bundle: ServingBundle,
-  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): Prerender[] {
   return completeBy(bundle, servableIn(bundle, patterns), patterns);
 }
@@ -449,7 +452,7 @@ export interface ServableOptions {
 export function edgeServablePrerenders(
   bundle: DeploymentBundle,
   options: ServableOptions = {},
-  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): Prerender[] {
   const resumable = resumablePrerenders(bundle, patterns);
   return options.complete === true
@@ -556,9 +559,9 @@ function isHandlerOutput(prerender: Prerender, handlers: ReadonlySet<string>): b
 
 export function cacheablePrerenders(
   bundle: DeploymentBundle,
-  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): Prerender[] {
-  const generation = generationIn(bundle);
+  const generation = generationIn(bundle, patterns);
   return [
     ...resumableBy(bundle, generation).filter(
       (prerender) => prerender.allowQuery === undefined || prerender.allowQuery.length === 0,
@@ -628,7 +631,7 @@ function conditionsOf(route: Route): Pick<DynamicRoute, 'has' | 'missing'> {
 export function dynamicRouting(
   bundle: DeploymentBundle,
   routeKeys: ReadonlySet<string>,
-  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): DynamicRouting & {
   readonly trailingSlash?: boolean;
   readonly staticFileTrailingSlash?: boolean;
@@ -764,7 +767,7 @@ function phasedHeaderRoutes(
 export function prerenderResponseHeaders(
   bundle: ServingBundle,
   prerender: Prerender,
-  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): Map<string, string> {
   return applicableHeaders(bundle, prerender, 'leave', patterns);
 }
@@ -773,7 +776,7 @@ export function prerenderResponseHeaders(
 export function shellHeaders(
   bundle: DeploymentBundle,
   prerender: Prerender,
-  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+  patterns: BuildPatternMatcher = nativeBuildPatterns,
 ): Record<string, string> {
   return filterShellResponseHeaders(prerenderResponseHeaders(bundle, prerender, patterns));
 }

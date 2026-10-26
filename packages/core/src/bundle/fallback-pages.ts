@@ -6,7 +6,7 @@ import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
 import { testWithin } from '../request/pattern-budget.ts';
 import { pageRoutes, type PageRoute } from './page-routes.ts';
 import { pagesDataPathnameUnder } from './pages-data.ts';
-import { type BuildPatternMatcher, nativeBuildPatterns } from './pattern-budget.ts';
+import { type BuildPatternMatcher, nativeBuildPatterns } from './pattern-matcher.ts';
 import type { Entrypoint, Prerender, Route } from './schema.ts';
 import {
   beforeFilesPhases,

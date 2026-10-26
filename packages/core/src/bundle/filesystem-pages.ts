@@ -1,9 +1,6 @@
 import type { DynamicRoute } from '../manifest/schema.ts';
-import {
-  BuildPatternBudget,
-  BuildPatternBudgetExceededError,
-  type BuildPatternMatcher,
-} from './pattern-budget.ts';
+import { BuildPatternBudget, BuildPatternBudgetExceededError } from './pattern-budget.ts';
+import type { BuildPatternMatcher } from './pattern-matcher.ts';
 import type { DeploymentBundle } from './schema.ts';
 import { isTemplate, routerSpellings } from './spelling.ts';
 

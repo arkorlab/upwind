@@ -98,22 +98,14 @@ export {
   standsForClass,
 } from './spelling.ts';
 export {
-  cacheablePrerenders,
-  completePrerenders,
   documentPrerenders,
-  dynamicRouting,
-  edgeServablePrerenders,
-  edgeServedRewrites,
   foldedHeaderRulesOf,
   headerRulesOf,
-  prerenderResponseHeaders,
   primaryPrerenders,
-  resumablePrerenders,
   routeHandlerPrerenders,
   type ServableOptions,
   type ServedRewrite,
   type ServingBundle,
-  shellHeaders,
 } from './serving.ts';
 export { spelledPrefixOf } from './spelled-prefix.ts';
 export {
@@ -166,5 +158,16 @@ export {
   BuildPatternBudget,
   BuildPatternBudgetExceededError,
   BUILD_PATTERN_BUDGET,
-  type BuildPatternMatcher,
 } from './pattern-budget.ts';
+
+export type { BuildPatternMatcher } from './pattern-matcher.ts';
+export {
+  cacheablePrerenders,
+  completePrerenders,
+  dynamicRouting,
+  edgeServablePrerenders,
+  edgeServedRewrites,
+  prerenderResponseHeaders,
+  resumablePrerenders,
+  shellHeaders,
+} from './build-serving.ts';
