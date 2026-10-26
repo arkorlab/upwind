@@ -124,6 +124,18 @@ describe('a middleware rewrite on a loopback address', () => {
     );
   });
 
+  it('says a path that reads as another host whole, and keeps it on the same server', async () => {
+    const proxied = vi.fn(() => Promise.reject(new Error('proxied')));
+    vi.stubGlobal('fetch', proxied);
+
+    const response = await handle(rewritingTo(`http://localhost:3000//elsewhere${ROUTE_HANDLER}`));
+
+    expect(proxied).not.toHaveBeenCalled();
+    expect(response.headers.get('x-middleware-rewrite')).toBe(
+      `http://127.0.0.1:3000//elsewhere${ROUTE_HANDLER}`,
+    );
+  });
+
   it('still proxies a rewrite to another port of the same address', async () => {
     const proxied = vi.fn(() => Promise.resolve(new Response('from elsewhere')));
     vi.stubGlobal('fetch', proxied);

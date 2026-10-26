@@ -79,7 +79,8 @@ function middlewareUrl(url: URL, store: Store): URL {
  * Next.js's router keeps it (`onLoopbackOrigin`): `@next/routing` compares the `localhost` a
  * middleware's `NextURL` spells with the `127.0.0.1` a request came in on, and proxied the rewrite
  * back to the same server by name. Said to the client as that router says it, relative to the
- * request. Nothing is asked of a rewrite on the request's own origin.
+ * request — but for a path that begins `//`, which a reader would take for another host's
+ * (greptile): that one is said whole. Nothing is asked of a rewrite on the request's own origin.
  */
 function keptOnLoopback(result: MiddlewareResult, url: URL): void {
   const { rewrite } = result;
@@ -91,7 +92,8 @@ function keptOnLoopback(result: MiddlewareResult, url: URL): void {
     return;
   }
   result.rewrite = own;
-  result.responseHeaders?.set(REWRITE_HEADER, `${own.pathname}${own.search}${own.hash}`);
+  const relative = `${own.pathname}${own.search}${own.hash}`;
+  result.responseHeaders?.set(REWRITE_HEADER, relative.startsWith('//') ? own.href : relative);
 }
 
 /**
