@@ -113,6 +113,41 @@ describe('independent Pages handler profile data boundary', () => {
     expect(createHash('sha256').update(bytes).digest('hex')).toBe(FIXTURE_FILES['pnpm-lock.yaml']);
   });
 
+  it('pins the separate dependency-bundled public input without granting helper identity', async () => {
+    const bytes = await readFile(
+      new URL(
+        '../../../tools/native-pages-handler-profile/fixture/next.config.mjs',
+        import.meta.url,
+      ),
+    );
+    const exported = parseAst(bytes.toString('utf8')).body.find(
+      (statement) => statement.type === 'ExportDefaultDeclaration',
+    );
+    const properties =
+      exported?.type === 'ExportDefaultDeclaration' &&
+      exported.declaration.type === 'ObjectExpression'
+        ? exported.declaration.properties
+        : [];
+    const bundling = properties.find((property) => {
+      return (
+        property.type === 'Property' &&
+        property.key.type === 'Identifier' &&
+        property.key.name === 'bundlePagesRouterDependencies'
+      );
+    });
+
+    expect(bundling).toMatchObject({
+      type: 'Property',
+      computed: false,
+      kind: 'init',
+      method: false,
+      shorthand: false,
+      value: { type: 'Literal', value: true },
+    });
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(FIXTURE_FILES['next.config.mjs']);
+    expect(matchReviewedPagesHandler(fixture())).toBeUndefined();
+  });
+
   it('parses immutable unqualified data without granting authority from matching self-hashes', () => {
     const input = fixture();
     const parsed = parsePagesHandlerProfile(input);
