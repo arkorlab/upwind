@@ -1,5 +1,6 @@
 import type { Node } from '@oxc-project/types';
 
+import { nativeBindings, type NativeBindings } from './native-ast.ts';
 import { nativeSourceAnalysis } from './native-source-parser.ts';
 import { nodeSourceEnvironment } from './node-source-environment.ts';
 
@@ -10,11 +11,12 @@ function staticString(node: Node | undefined): string | undefined {
   return undefined;
 }
 
-function specifierIn(node: Node): string | undefined {
+function specifierIn(node: Node, bindings: NativeBindings): string | undefined {
   if (
     node.type === 'CallExpression' &&
     node.callee.type === 'Identifier' &&
-    node.callee.name === 'require'
+    node.callee.name === 'require' &&
+    bindings.lookup(node.callee, 'require') === undefined
   )
     return staticString(node.arguments[0]);
   if (
@@ -82,10 +84,11 @@ export function originalNodeSpecifiers(file: string, bytes: Uint8Array | undefin
   try {
     const found: string[] = [];
     const analysis = nativeSourceAnalysis(new TextDecoder().decode(bytes), file);
+    const bindings = nativeBindings(analysis.program);
     const environment = nodeSourceEnvironment(analysis.program);
     const pending: Node[] = [analysis.program];
     for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
-      const specifier = specifierIn(node);
+      const specifier = specifierIn(node, bindings);
       if (specifier !== undefined) found.push(specifier);
       for (const child of children(node, environment).toReversed()) pending.push(child);
     }

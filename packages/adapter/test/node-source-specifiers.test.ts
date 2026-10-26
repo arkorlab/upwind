@@ -7,6 +7,41 @@ function specifiers(code: string, extension = 'cjs'): string[] {
 }
 
 describe('original Node physical dependency discovery', () => {
+  it.each([
+    'exports.label=require=>require("/label");',
+    'function label(require){return require("/label");}',
+    'function require(value){return value;}exports.label=require("/label");',
+    'const label=function require(){return require("/label");};',
+    '{const require=value=>value;exports.label=require("/label");}',
+    'try{label();}catch(require){require("/label");}',
+    'function label(){require("/label");var require=value=>value;}',
+    'function label(){require("/label");if(false){var require=value=>value;}}',
+  ])('does not treat a lexical require binding as the CJS loader: %s', (code) => {
+    expect(specifiers(code)).toStrictEqual([]);
+  });
+
+  it('preserves genuine CJS loader calls outside independent local/block/catch shadows', () => {
+    const code = [
+      'require("./first.node");',
+      'function local(require){return require("/label");}',
+      '{let require=value=>value;require("/label");}',
+      'try{local();}catch(require){require("/label");}',
+      'function later(){return require("./nested.node");}',
+      'require("package-alias");',
+    ].join('\n');
+
+    expect(specifiers(code)).toStrictEqual(['./first.node', './nested.node', 'package-alias']);
+  });
+
+  it.each(['js', 'ts', 'mts'])(
+    'keeps actual import edges while excluding an imported require function in %s',
+    (extension) => {
+      const code = 'import require from "./local-loader.mjs";export const label=require("/label");';
+
+      expect(specifiers(code, extension)).toStrictEqual(['./local-loader.mjs']);
+    },
+  );
+
   it.each(['ts', 'cts', 'mts'])(
     'discovers relative addon and package alias specifiers in raw %s',
     (extension) => {
