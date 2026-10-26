@@ -13,6 +13,7 @@ import {
 import { checkStack } from './check.ts';
 import { environmentOf } from './environment.ts';
 import type { LocalGate } from './gates.ts';
+import { parseCheckShard } from './sharding.ts';
 import {
   type CspNonceSetting,
   deliveryPolicyRefusal,
@@ -25,7 +26,7 @@ import {
  *
  *   node src/main.ts serve --dir <app> [--port <port>] [<environment>]
  *       serve it until interrupted
- *   node src/main.ts check --dir <app> [<environment>]
+ *   node src/main.ts check --dir <app> [--shard <index>/<total>] [<environment>]
  *       ask it once for every prerendered route, every file of the build and every app Function
  *
  * `<environment>` is any of `--env-file <file>`, which gives the application's Functions the
@@ -49,7 +50,7 @@ import {
 /** The highest port a socket listens on. */
 const MAX_PORT = 65_535;
 const USAGE =
-  'usage: main.ts serve|check --dir <app> [--port <port>] [--env-file <file>]… [--kv|--r2|--d1 <name>]… [--images] [--delivery-policy <id|file>] [--csp-nonce enforce|report-only [--csp-strict-dynamic]] [--prover-agent <agent>] [--hostname <host>] [--gate <name>=<url>]…';
+  'usage: main.ts serve|check --dir <app> [--port <port>] [--env-file <file>]… [--kv|--r2|--d1 <name>]… [--images] [--delivery-policy <id|file>] [--csp-nonce enforce|report-only [--csp-strict-dynamic]] [--prover-agent <agent>] [--hostname <host>] [--gate <name>=<url>]… [--shard <index>/<total> (check only)]';
 
 function log(message: string): void {
   process.stderr.write(`${message}\n`);
@@ -90,6 +91,7 @@ function commandLine() {
       'delivery-policy': { type: 'string' },
       // The hostname a check names the site by, where a host's validation asks under its own.
       hostname: { type: 'string' },
+      shard: { type: 'string' },
       'csp-nonce': { type: 'string' },
       'csp-strict-dynamic': { type: 'boolean' },
       // Where each gate the build declares answers, as `<name>=<url>`.
@@ -201,6 +203,11 @@ async function main(): Promise<number> {
   const [command] = positionals;
   const port = values.port === undefined ? undefined : portOf(values.port);
   const hostname = values.hostname === undefined ? undefined : hostOf(values.hostname);
+  const shard = values.shard === undefined ? undefined : parseCheckShard(values.shard);
+  if (shard === null || (values.shard !== undefined && command !== 'check')) {
+    log(`--shard needs index/total with 1 <= index <= total, and is only for check\n${USAGE}`);
+    return 2;
+  }
   const served = askedOf(values);
   if ('refused' in served) {
     log(`${served.refused}\n${USAGE}`);
@@ -245,6 +252,7 @@ async function main(): Promise<number> {
     const { checked, failures, skipped } = await checkStack(stack, {
       proverAgent: values['prover-agent'],
       hostname,
+      shard,
     });
     for (const { path: asked, reason } of skipped) {
       log(`${asked}: not judged, ${reason}`);
