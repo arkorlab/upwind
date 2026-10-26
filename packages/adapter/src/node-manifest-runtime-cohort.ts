@@ -7,6 +7,7 @@ import { parseAst } from 'rolldown/parseAst';
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf } from './lexical-scope.ts';
 import { identifier } from './node-manifest-consumer-ast.ts';
+import { createNodeManifestRegistrationScope } from './node-manifest-registration-registry.ts';
 import {
   nodeManifestRuntimeCallerSources,
   type NodeManifestRuntimeCallers,
@@ -313,16 +314,23 @@ export function prepareNodeManifestRuntimeGraphs(input: {
       requiredBoots: input.entries.map((entry) => entry.file),
     });
   }
+  const registrationScope =
+    cohort === undefined ? undefined : createNodeManifestRegistrationScope(cohort, input.sources);
   const graphs = input.entries.map((entry) =>
-    nodeManifestTurbopackEntryGraph({ ...input, entry, runtimeCohort: cohort }),
+    nodeManifestTurbopackEntryGraph({ ...input, entry, runtimeCohort: cohort, registrationScope }),
   );
   const protectedFiles = new Set(graphs.map((graph) => graph.entry.file));
   const other =
     cohort?.boots
       .filter((boot) => !protectedFiles.has(boot.file))
-      .map((boot) =>
-        nodeManifestTurbopackBootGraph({ ...input, file: boot.file, runtimeCohort: cohort }),
-      ) ?? [];
+      .map((boot) => {
+        return nodeManifestTurbopackBootGraph({
+          ...input,
+          file: boot.file,
+          runtimeCohort: cohort,
+          registrationScope,
+        });
+      }) ?? [];
   if (cohort === undefined) {
     for (const graph of graphs)
       assertNodeManifestTurbopackRuntime({

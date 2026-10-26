@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { AuditError } from './dependencies.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
+import { nodeManifestInitialGraphRegistration } from './node-manifest-registration-views.ts';
 import {
   inspectNodeManifestTurbopackEntry,
   type NodeManifestTurbopackBootGraph,
@@ -213,13 +214,9 @@ function callerProof(input: {
       refuse('unclosed boot chunk');
     chunks.add(target.id);
   }
-  const modules = new Map(graph.factories.map((factory) => [factory.projection.moduleId, factory]));
   const invoked = new Set<string>();
   for (const id of [...boot.evaluations, boot.exportedId]) {
-    const factory = modules.get(id);
-    if (factory === undefined || !chunks.has(factory.physicalId))
-      refuse('unregistered boot evaluation');
-    invoked.add(factory.id);
+    invoked.add(nodeManifestInitialGraphRegistration(graph, sources, id, chunks));
   }
   return Object.freeze({
     id: caller.id,

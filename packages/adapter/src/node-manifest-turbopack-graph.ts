@@ -9,18 +9,20 @@ import { isNode, listOf, type Node } from './lexical-scope.ts';
 import { identifier, propertyName, stringOf } from './node-manifest-consumer-ast.ts';
 import type { NodeManifestPagesDefinition } from './node-manifest-pages-definitions.ts';
 import {
+  nodeManifestRegistrationIndex,
+  nodeManifestRegistrationView,
+  nodeManifestInitialRegistration,
+  type NodeManifestRegistrationScope,
+  type NodeManifestRegistrationIndex,
+} from './node-manifest-registration-registry.ts';
+import {
   nodeManifestRuntimeCohortLookup,
   nodeManifestRuntimeCohortSources,
   type NodeManifestRuntimeCohort,
 } from './node-manifest-runtime-cohort.ts';
 import { nodeManifestRuntimeTables } from './node-manifest-runtime-tables.ts';
-import { assertTurbopackAsyncGraph } from './node-manifest-turbopack-async-graph.ts';
-import { assertTurbopackCacheOwners } from './node-manifest-turbopack-cache.ts';
 import {
-  nodeManifestTurbopackFactories,
-  projectNodeManifestTurbopackFactory,
   turbopackModuleId,
-  turbopackModuleSpecifier,
   type NodeManifestTurbopackModuleId,
   type NodeManifestTurbopackProjection,
   type NodeManifestTurbopackSource,
@@ -65,6 +67,7 @@ export interface NodeManifestTurbopackBootGraph {
   /** Full lookup inventory for physical caller checks, including uninstalled table targets. */
   readonly lookupTables?: readonly string[];
   /** Topology alone is never a manifest exemption or an SDK normalization terminal. */
+  readonly registrationIndex?: NodeManifestRegistrationIndex | undefined;
   readonly requiresReviewedRuntime: true;
 }
 export interface NodeManifestTurbopackEntryGraph extends NodeManifestTurbopackBootGraph {
@@ -256,12 +259,6 @@ function resolved(source: NodeManifestTurbopackGraphFile, specifier: string): st
   return only ?? refuse('missing actual import target');
 }
 
-/** Metadata-only identity; it is never registered as a bundler or physical source module. */
-function factoryId(physical: string, id: NodeManifestTurbopackModuleId, runtime?: string): string {
-  const owner = runtime === undefined ? physical : JSON.stringify([runtime, physical]);
-  return `${owner}#${turbopackModuleSpecifier(id)}`;
-}
-
 function runtimeTables(
   runtime: NodeManifestTurbopackGraphFile,
   sources: ReadonlyMap<string, NodeManifestTurbopackGraphFile>,
@@ -286,88 +283,12 @@ function runtimeTables(
   return [...tables.values()];
 }
 
-const MAX_DIAGNOSTIC_REASONS = 12;
-const MAX_DIAGNOSTIC_MESSAGE_LENGTH = 320;
-const PROTOCOL_SUFFIX = '; refusing native publication';
-const PROTOCOL_PREFIXES = [
-  'Unproved Next.js Turbopack manifest ',
-  'Unproved Next.js Turbopack cache initializer ',
-];
-
-/** Only our bounded structural protocol errors are safe to combine; never parser error text. */
-class FactoryDiagnostics {
-  private readonly reasons = new Map<string, number>();
-  private failures = 0;
-  private omitted = 0;
-
-  capture(error: unknown): void {
-    if (
-      !(error instanceof AuditError) ||
-      error.message.length > MAX_DIAGNOSTIC_MESSAGE_LENGTH ||
-      PROTOCOL_PREFIXES.every((prefix) => !error.message.startsWith(prefix)) ||
-      !error.message.endsWith(PROTOCOL_SUFFIX)
-    )
-      throw error;
-    this.failures += 1;
-    const count = this.reasons.get(error.message);
-    if (count !== undefined) this.reasons.set(error.message, count + 1);
-    else if (this.reasons.size < MAX_DIAGNOSTIC_REASONS) this.reasons.set(error.message, 1);
-    else this.omitted += 1;
-  }
-
-  assertNone(): void {
-    if (this.failures === 0) return;
-    const reasons = [...this.reasons].map(([reason, count]) => `${count}x ${reason}`).join(' | ');
-    throw new AuditError(
-      `Unproved Next.js Turbopack manifest diagnostics (${this.failures} failures; ${this.reasons.size} reasons shown; ${this.omitted} omitted failures): ${reasons}`,
-    );
-  }
-}
-
-interface FactoryRecord {
-  readonly physical: NodeManifestTurbopackGraphFile;
-  readonly projection: NodeManifestTurbopackProjection;
-}
-
-function factoryRecords(
-  tables: readonly NodeManifestTurbopackGraphFile[],
-): ReadonlyMap<NodeManifestTurbopackModuleId, FactoryRecord> {
-  const records: [NodeManifestTurbopackModuleId, FactoryRecord][] = [];
-  const diagnostics = new FactoryDiagnostics();
-  for (const table of tables) {
-    let factories: ReturnType<typeof nodeManifestTurbopackFactories>;
-    try {
-      factories = nodeManifestTurbopackFactories(table.source);
-    } catch (error) {
-      diagnostics.capture(error);
-      continue;
-    }
-    for (const factory of factories) {
-      for (const id of factory.ids) {
-        try {
-          const projection = projectNodeManifestTurbopackFactory(table.source, id, 'dependencies');
-          records.push([id, { physical: table, projection }]);
-        } catch (error) {
-          diagnostics.capture(error);
-        }
-      }
-    }
-  }
-  // No successful subset may reach duplicate/owner checks or become a usable graph.
-  diagnostics.assertNone();
-  const result = new Map<NodeManifestTurbopackModuleId, FactoryRecord>();
-  for (const [id, record] of records) {
-    if (result.has(id)) refuse('duplicate module id across loaded chunks');
-    result.set(id, record);
-  }
-  return result;
-}
-
 export function nodeManifestTurbopackBootGraph(input: {
   readonly distDir: string;
   readonly sources: readonly NodeManifestTurbopackGraphFile[];
   readonly file: string;
   readonly runtimeCohort?: NodeManifestRuntimeCohort | undefined;
+  readonly registrationScope?: NodeManifestRegistrationScope | undefined;
 }): NodeManifestTurbopackBootGraph {
   const sources = byId(input.sources);
   const entry = input.sources.find((source) => source.file === input.file);
@@ -405,56 +326,26 @@ export function nodeManifestTurbopackBootGraph(input: {
     runtimeIds,
     cohort: input.runtimeCohort,
   });
-  const factories = factoryRecords(tables);
-  assertTurbopackCacheOwners([...factories.values()], new Set(factories.keys()));
-  assertTurbopackAsyncGraph({ distDir: input.distDir, tables, factories });
-  const logicalIds = new Map<string, NodeManifestTurbopackModuleId>();
-  const targetOf = (id: NodeManifestTurbopackModuleId): string => {
-    const target = factories.get(id);
-    if (target === undefined) return refuse('unregistered module dependency');
-    const logical = factoryId(
-      target.physical.id,
-      id,
-      input.runtimeCohort === undefined ? undefined : runtime.id,
-    );
-    if (sources.has(logical)) refuse('factory metadata identity collision');
-    const previous = logicalIds.get(logical);
-    if (previous !== undefined && previous !== id) refuse('factory logical identity collision');
-    logicalIds.set(logical, id);
-    return logical;
-  };
-  const modules = [...factories].map(([id, factory]) => {
-    return {
-      id: targetOf(id),
-      runtimeId,
-      physicalId: factory.physical.id,
-      projection: factory.projection,
-      imports: factory.projection.imports.map((edge) => {
-        if (edge.targetId !== undefined)
-          return { specifier: edge.specifier, target: targetOf(edge.targetId) };
-        return {
-          specifier: edge.specifier,
-          target: isBuiltin(edge.specifier)
-            ? edge.specifier
-            : resolved(factory.physical, edge.specifier),
-        };
-      }),
-    };
+  const registrationIndex = nodeManifestRegistrationIndex({
+    distDir: input.distDir,
+    runtime,
+    sources: input.sources,
+    tables,
+    cohort: input.runtimeCohort,
+    scope: input.registrationScope,
   });
+  const view = nodeManifestRegistrationView(registrationIndex, input.sources);
   const initialTables = new Set(initialChunks);
-  const initialTargetOf = (id: NodeManifestTurbopackModuleId): string => {
-    const factory = factories.get(id);
-    if (factory === undefined || !initialTables.has(factory.physical.id))
-      refuse('entry module is not initially registered');
-    return targetOf(id);
-  };
+  const initialTargetOf = (id: NodeManifestTurbopackModuleId): string =>
+    nodeManifestInitialRegistration(registrationIndex, input.sources, id, initialTables);
   return {
     physicalId: entry.id,
     runtimeId,
     exportedId: initialTargetOf(boot.exportedId),
     evaluations: boot.evaluations.map((id) => initialTargetOf(id)),
     initialChunks,
-    factories: modules,
+    factories: view.rows,
+    registrationIndex,
     runtime,
     lookupTables: Object.freeze(lookup.map((table) => table.id)),
     requiresReviewedRuntime: true,
@@ -466,6 +357,7 @@ export function nodeManifestTurbopackEntryGraph(input: {
   readonly sources: readonly NodeManifestTurbopackGraphFile[];
   readonly entry: NodeManifestTurbopackSealedEntry;
   readonly runtimeCohort?: NodeManifestRuntimeCohort | undefined;
+  readonly registrationScope?: NodeManifestRegistrationScope | undefined;
 }): NodeManifestTurbopackEntryGraph {
   return {
     ...nodeManifestTurbopackBootGraph({ ...input, file: input.entry.file }),

@@ -265,17 +265,17 @@ describe('owned runtime caller inventory', () => {
     ['extra executable statement', 'R.m(3);', 'R.m(3);unknown();', 'entry runtime receiver'],
   ])('refuses an owned shared boot with %s', async (_name, before, after, reason) => {
     const own = await fixture(directory);
-    const graph = nodeManifestTurbopackEntryGraph({
-      distDir: own.distDir,
-      sources: own.sources,
-      entry: { file: own.entry, page: '/post', pathname: '/post', kind: 'pages' },
-    });
     const sources = own.sources.map((file) => {
       return file.file === own.shared
         ? { ...file, source: source(file.source.code.replaceAll(before, () => after)) }
         : file;
     });
     const inventory = await certifyNodeManifestRuntimeCallers({ ...own.input, sources });
+    const graph = nodeManifestTurbopackEntryGraph({
+      distDir: own.distDir,
+      sources,
+      entry: { file: own.entry, page: '/post', pathname: '/post', kind: 'pages' },
+    });
 
     expect(() => {
       return proveNodeManifestRuntimeCallers({

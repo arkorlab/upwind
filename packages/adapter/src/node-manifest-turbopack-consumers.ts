@@ -20,6 +20,14 @@ import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
 import { nodeManifestPagesContextLeaf } from './node-manifest-pages-context-consumer.ts';
 import { inspectNodeManifestReachability } from './node-manifest-reachability.ts';
 import {
+  assertNodeManifestSingleRegistration,
+  createNodeManifestRegistrationViews,
+  nodeManifestConsumerBoots,
+  nodeManifestRegistrationProofFiles,
+  nodeManifestRegistrationTouchesProtected,
+  type NodeManifestRegistrationViews,
+} from './node-manifest-registration-views.ts';
+import {
   proveNodeManifestRuntimeCallers,
   type NodeManifestRuntimeCallers,
   type NodeManifestRuntimeCallerProof,
@@ -83,22 +91,12 @@ function refuse(reason: string): never {
   );
 }
 
-function physicalBoots(
-  graphs: readonly NodeManifestTurbopackEntryGraph[],
-  proof: NodeManifestRuntimeCallerProof | undefined,
-): ReadonlySet<string> {
-  const boots = new Set(graphs.map((graph) => graph.physicalId));
-  if (proof !== undefined) {
-    for (const caller of proof.callers) boots.add(caller.id);
-  }
-  return boots;
-}
-
 class TurbopackConsumers {
   private readonly input: NodeManifestTurbopackConsumerInput;
   private readonly graphs: readonly NodeManifestTurbopackEntryGraph[];
   private readonly allGraphs: readonly NodeManifestTurbopackBootGraph[];
   private readonly runtimeCohort: NodeManifestRuntimeCohort | undefined;
+  private readonly registrations: NodeManifestRegistrationViews;
   private readonly factories = new Map<string, NodeManifestTurbopackGraphFactory>();
   private readonly incoming = new Map<string, Set<string>>();
   private readonly terminals = new Map<
@@ -133,6 +131,7 @@ class TurbopackConsumers {
     this.graphs = prepared.graphs;
     this.allGraphs = prepared.allGraphs;
     this.runtimeCohort = prepared.cohort;
+    this.registrations = createNodeManifestRegistrationViews(this.allGraphs, input.sources);
     for (const graph of this.allGraphs)
       for (const factory of graph.factories) this.register(factory);
     for (const graph of this.graphs) {
@@ -165,6 +164,7 @@ class TurbopackConsumers {
       callers: this.callerProof?.callers ?? [],
       physicalIds: new Set(this.input.sources.map((source) => source.id)),
       runtimeIds: new Set(this.allGraphs.map((graph) => graph.runtimeId)),
+      registrations: this.registrations,
     });
     this.reachabilityFallback = fallback;
     if (reached === undefined) return;
@@ -219,6 +219,7 @@ class TurbopackConsumers {
   private unwrapped(id: string): string {
     const seen = new Set<string>();
     let current = id;
+    assertNodeManifestSingleRegistration(this.registrations, current);
     while (this.factories.has(current)) {
       if (seen.has(current)) refuse('cyclic namespace forwarding');
       seen.add(current);
@@ -227,6 +228,7 @@ class TurbopackConsumers {
       const next = forwarded(factory);
       if (next === undefined) return current;
       current = next;
+      assertNodeManifestSingleRegistration(this.registrations, current);
     }
     return current;
   }
@@ -234,7 +236,7 @@ class TurbopackConsumers {
   private assertPhysicalCallers(): void {
     const tables = nodeManifestRuntimeLookupTables(this.allGraphs);
     const runtimes = new Set(this.allGraphs.map((graph) => graph.runtimeId));
-    const boots = physicalBoots(this.graphs, this.callerProof);
+    const boots = nodeManifestConsumerBoots(this.graphs, this.callerProof);
     for (const source of this.input.sources) {
       for (const edge of source.imports) {
         if (tables.has(edge.target) && !runtimes.has(source.id))
@@ -256,7 +258,9 @@ class TurbopackConsumers {
     for (const caller of this.callerProof.callers) {
       if (protectedBoots.has(caller.id)) continue;
       if (
-        caller.invoked.some((id) => this.complete.has(id) || this.complete.has(this.unwrapped(id)))
+        caller.invoked.some((id) =>
+          nodeManifestRegistrationTouchesProtected(this.registrations, id, this.complete),
+        )
       )
         refuse('additional runtime caller consumes protected route authority');
     }
@@ -309,6 +313,7 @@ class TurbopackConsumers {
   private importInput(
     factory: NodeManifestTurbopackGraphFactory,
   ): Parameters<typeof nodeManifestTemplateImports>[0] {
+    assertNodeManifestSingleRegistration(this.registrations, factory.id);
     return {
       factory,
       sources: this.input.sources,
@@ -380,6 +385,7 @@ class TurbopackConsumers {
   private strictFactory(
     factory: NodeManifestTurbopackGraphFactory,
   ): NodeManifestTurbopackGraphFactory {
+    assertNodeManifestSingleRegistration(this.registrations, factory.id);
     const previous = this.strictFactories.get(factory.id);
     if (previous !== undefined) return previous;
     const id = factory.projection.moduleId;
@@ -411,6 +417,7 @@ class TurbopackConsumers {
     id: string,
     role: Role,
   ): Promise<void> {
+    assertNodeManifestSingleRegistration(this.registrations, factory.id);
     if (
       role === 'factory' &&
       !this.routes.has(factory.id) &&
@@ -429,6 +436,7 @@ class TurbopackConsumers {
   }
 
   private async visit(id: string, role: Role): Promise<void> {
+    assertNodeManifestSingleRegistration(this.registrations, id);
     const complete = this.complete.get(id);
     if (complete !== undefined) {
       if (complete !== role) refuse('conflicting protected export role');
@@ -453,26 +461,6 @@ class TurbopackConsumers {
     }
     this.visiting.delete(id);
     this.complete.set(id, role);
-  }
-
-  private proofFiles(): NodeManifestTurbopackConsumerProof['files'] {
-    const files = new Map<string, { readonly file: string; readonly sha256: string }>();
-    for (const graph of this.allGraphs) {
-      const ids = new Set([
-        graph.physicalId,
-        graph.runtimeId,
-        ...graph.factories.map((factory) => factory.physicalId),
-      ]);
-      for (const source of this.input.sources) {
-        if (ids.has(source.id))
-          files.set(source.file, { file: source.file, sha256: source.source.sha256 });
-      }
-    }
-    if (this.callerProof !== undefined) {
-      for (const caller of this.callerProof.callers)
-        files.set(caller.file, { file: caller.file, sha256: caller.sha256 });
-    }
-    return [...files.values()];
   }
 
   async prove(): Promise<NodeManifestTurbopackConsumerProof> {
@@ -501,7 +489,11 @@ class TurbopackConsumers {
           });
     return {
       terminals: [...this.terminals.values()],
-      files: this.proofFiles(),
+      files: nodeManifestRegistrationProofFiles(
+        this.allGraphs,
+        this.input.sources,
+        this.callerProof,
+      ),
       compilerSources: [
         ...new Map(
           this.allGraphs.map((graph) => {

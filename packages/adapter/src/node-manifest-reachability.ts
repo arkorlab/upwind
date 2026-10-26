@@ -2,6 +2,11 @@ import { isBuiltin } from 'node:module';
 
 import { compareCodeUnits } from '@stayingupwind/core/util';
 
+import {
+  assertNodeManifestRegistrationRows,
+  nodeManifestRegistrationMembers,
+  type NodeManifestRegistrationViews,
+} from './node-manifest-registration-views.ts';
 import type { NodeManifestRuntimeCallerProof } from './node-manifest-runtime-callers.ts';
 import type {
   NodeManifestTurbopackEntryGraph,
@@ -14,6 +19,7 @@ interface ReachabilityInput {
   readonly callers: NodeManifestRuntimeCallerProof['callers'];
   readonly physicalIds: ReadonlySet<string>;
   readonly runtimeIds: ReadonlySet<string>;
+  readonly registrations?: NodeManifestRegistrationViews | undefined;
 }
 
 type ReachabilityFallback =
@@ -66,12 +72,50 @@ function dependencyTargets(
     return allFactories('reachable-bound-runtime');
   const targets: string[] = [];
   for (const edge of factory.imports) {
-    if (known.has(edge.target)) targets.push(edge.target);
+    const members = registrationMembers(edge.target, known, input);
+    if (members !== undefined) targets.push(...members);
     else if (input.runtimeIds.has(edge.target)) return allFactories('open-runtime-import');
     else if (!input.physicalIds.has(edge.target) && !isBuiltin(edge.target))
       return allFactories('unresolved-import');
   }
   return closedFactories(targets);
+}
+
+function registrationMembers(
+  id: string,
+  known: ReadonlyMap<string, NodeManifestTurbopackGraphFactory>,
+  input: ReachabilityInput,
+): readonly string[] | undefined {
+  if (input.registrations !== undefined)
+    return nodeManifestRegistrationMembers(input.registrations, id);
+  return known.has(id) ? [id] : undefined;
+}
+
+interface WalkState {
+  readonly input: ReachabilityInput;
+  readonly factories: ReadonlyMap<string, NodeManifestTurbopackGraphFactory>;
+  readonly owners: ReadonlyMap<string, string[]>;
+  readonly reached: Set<string>;
+  readonly pending: string[];
+}
+
+function followRegistration(
+  id: string,
+  state: WalkState,
+): NodeManifestReachabilityResult | undefined {
+  const { input, factories, reached, pending, owners } = state;
+  const members = registrationMembers(id, factories, input);
+  if (members === undefined) return allFactories('unregistered-seed');
+  for (const member of members) {
+    if (reached.has(member)) continue;
+    const factory = factories.get(member);
+    if (factory === undefined) return allFactories('unregistered-seed');
+    const targets = dependencyTargets(factory, factories, input);
+    if (targets.reached === undefined) return targets;
+    reached.add(member);
+    pending.push(...(owners.get(ownerOf(factory)) ?? []), ...targets.reached);
+  }
+  return undefined;
 }
 
 /** A fallback keeps every incoming edge; its finite label carries no source identity. */
@@ -80,6 +124,8 @@ export function inspectNodeManifestReachability(
 ): NodeManifestReachabilityResult {
   const factories = new Map(input.factories.map((factory) => [factory.id, factory]));
   if (factories.size !== input.factories.length) return allFactories('duplicate-factory');
+  if (input.registrations !== undefined)
+    assertNodeManifestRegistrationRows(input.registrations, input.factories);
   const pending = [
     ...input.graphs.flatMap((graph) => [graph.exportedId, ...graph.evaluations]),
     ...input.callers.flatMap((caller) => caller.invoked),
@@ -87,16 +133,9 @@ export function inspectNodeManifestReachability(
   if (pending.length === 0) return allFactories('no-seeds');
   const owners = factoryOwners(input.factories);
   const reached = new Set<string>();
-  while (pending.length > 0) {
-    const id = pending.pop();
-    if (id === undefined || reached.has(id)) continue;
-    const factory = factories.get(id);
-    if (factory === undefined) return allFactories('unregistered-seed');
-    const targets = dependencyTargets(factory, factories, input);
-    if (targets.reached === undefined) return targets;
-    reached.add(id);
-    // One callback may register several IDs: executing one retains the whole original body.
-    pending.push(...(owners.get(ownerOf(factory)) ?? []), ...targets.reached);
+  for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
+    const fallback = followRegistration(id, { input, factories, owners, reached, pending });
+    if (fallback !== undefined) return fallback;
   }
   return closedFactories([...reached].toSorted(compareCodeUnits));
 }

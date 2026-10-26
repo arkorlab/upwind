@@ -277,6 +277,80 @@ describe('closed static manifest reachability', () => {
 });
 
 describe('protected Pages consumer reachability', () => {
+  it('keeps ordinary duplicate registrations in additional owned boots without granting a protected role or losing files', async () => {
+    const input = await pagesFixture();
+    const tables = [0, 1].map((index) => {
+      const file = `${DIST}/server/chunks/ordinary-${index}.js`;
+      return {
+        id: file,
+        file,
+        source: source('module.exports=[77,ctx=>{"use strict";ctx.v(42);}];'),
+        imports: [],
+      };
+    });
+    const boots = tables.map((table, index) => {
+      const file = `${DIST}/server/pages/ordinary-${index}.js`;
+      return {
+        id: file,
+        file,
+        source: source(
+          `var R=require("../chunks/[turbopack]_runtime.js")(${jsLiteral(path.posix.relative(DIST, file))});R.c(${jsLiteral(path.posix.relative(DIST, table.file))});module.exports=R.m(77).exports;`,
+        ),
+        imports: [{ specifier: '../chunks/[turbopack]_runtime.js', target: RUNTIME }],
+      };
+    });
+    const sources = [
+      ...input.sources.map((item) => {
+        return item.id === RUNTIME
+          ? {
+              ...item,
+              imports: [
+                ...item.imports,
+                ...tables.map((table) => ({ specifier: table.file, target: table.id })),
+              ],
+            }
+          : item;
+      }),
+      ...tables,
+      ...boots,
+    ];
+    const runtimeProfiles = [
+      { file: ENTRY, kind: 'pages' as const, pathname: '/blog/[slug]', assetPrefix: '/' },
+      ...boots.map((boot, index) => {
+        return {
+          file: boot.file,
+          kind: 'pages' as const,
+          pathname: `/ordinary-${index}`,
+          assetPrefix: '/',
+        };
+      }),
+    ];
+    const entries: { id: string; canonicalFilePath: string }[] = [];
+    for (const { pathname, file } of runtimeProfiles)
+      entries.push({ id: pathname, canonicalFilePath: file });
+    const runtimeCallers = await certifyNodeManifestRuntimeCallers({
+      rootDir: '/project',
+      distDir: DIST,
+      entries,
+      routes: runtimeProfiles,
+      entryTraces: [],
+      sources,
+      retained: new Set(sources.map((item) => item.id)),
+    });
+    const proof = await proveNodeManifestTurbopackConsumers({
+      ...input,
+      sources,
+      runtimeProfiles,
+      runtimeCallers,
+    });
+
+    expect(proof.terminals.map((terminal) => terminal.id)).toStrictEqual([ENTRY]);
+    expect(proof.files.map((file) => file.file)).toStrictEqual(
+      expect.arrayContaining([...tables, ...boots].map((item) => item.file)),
+    );
+    expect(proof.requiresSdkNormalization).toBe(true);
+  });
+
   it('excludes an unused constructor consumer while still retaining the complete physical table proof', async () => {
     const proof = await proveNodeManifestTurbopackConsumers(await pagesFixture());
 

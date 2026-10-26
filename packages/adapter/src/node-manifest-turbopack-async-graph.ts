@@ -15,7 +15,7 @@ interface AsyncFactory {
 interface AsyncGraphInput {
   readonly distDir: string;
   readonly tables: readonly NodeManifestTurbopackGraphFile[];
-  readonly factories: ReadonlyMap<NodeManifestTurbopackModuleId, AsyncFactory>;
+  readonly factories: ReadonlyMap<NodeManifestTurbopackModuleId, readonly AsyncFactory[]>;
 }
 
 function refuse(reason: string): never {
@@ -37,7 +37,12 @@ function importRetained(factory: AsyncFactory, targetId: NodeManifestTurbopackMo
 function assertCalls(factory: AsyncFactory, factories: AsyncGraphInput['factories']): void {
   for (const loaderId of factory.projection.asyncLoads) {
     const loader = factories.get(loaderId);
-    if (loader?.projection.asyncLoader === undefined) refuse('unregistered or uncertified loader');
+    if (
+      loader === undefined ||
+      loader.length === 0 ||
+      loader.some((member) => member.projection.asyncLoader === undefined)
+    )
+      refuse('unregistered or uncertified loader');
     importRetained(factory, loaderId);
   }
 }
@@ -64,9 +69,11 @@ function assertLoader(
 export function assertTurbopackAsyncGraph(input: AsyncGraphInput): void {
   const tables = new Map(input.tables.map((table) => [table.file, table]));
   if (tables.size !== input.tables.length) refuse('ambiguous runtime table');
-  for (const [id, factory] of input.factories) {
-    if (factory.projection.moduleId !== id) refuse('selected module identity');
-    assertCalls(factory, input.factories);
-    assertLoader(factory, input, tables);
+  for (const [id, members] of input.factories) {
+    for (const factory of members) {
+      if (factory.projection.moduleId !== id) refuse('selected module identity');
+      assertCalls(factory, input.factories);
+      assertLoader(factory, input, tables);
+    }
   }
 }
