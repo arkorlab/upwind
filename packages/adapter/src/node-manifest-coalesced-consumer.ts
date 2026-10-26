@@ -31,7 +31,7 @@ export async function assertCoalescedPagesConsumer(input: {
   const profile = certifyNodeManifestCoalescedPages({ ...input, graph, route });
   await assertNodeManifestTurbopackTemplateConsumer({
     projection: input.factory.projection,
-    imports: input.imports.filter((entry) => 'file' in entry),
+    imports: input.imports.filter((entry) => !('builtin' in entry)),
     helperOwner: input.helperOwner,
     route,
     coalesced: { profile, owner: input.owner },

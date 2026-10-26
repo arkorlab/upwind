@@ -29,6 +29,7 @@ interface BatchState {
   readonly obligations: Set<string>;
   readonly approved: Set<string>;
   readonly pending: Set<NodeManifestBoundStage>;
+  readonly committed: Set<NodeManifestBoundStage>;
 }
 interface StageState {
   readonly batch: NodeManifestBoundBatch;
@@ -166,6 +167,7 @@ export function createNodeManifestBoundBatch(): NodeManifestBoundBatch {
     obligations: new Set(),
     approved: new Set(),
     pending: new Set(),
+    committed: new Set(),
   });
   return batch;
 }
@@ -217,6 +219,17 @@ export function commitNodeManifestBoundStage(
   if (proof?.batch !== batch || !state.pending.has(stage)) refuse('uncertified or reused stage');
   for (const key of proof.discharges) state.approved.add(key);
   state.pending.delete(stage);
+  state.committed.add(stage);
+}
+
+/** Read-only intrinsic check: only the existing commit path can add this exact stage. */
+export function assertNodeManifestBoundStageCommitted(
+  batch: NodeManifestBoundBatch,
+  stage: NodeManifestBoundStage,
+): void {
+  const state = active(batch);
+  if (STAGES.get(stage)?.batch !== batch || !state.committed.has(stage))
+    refuse('uncommitted or foreign SDK stage');
 }
 
 /** No source/compiler approvals may leave the outer graph before this final conjunction. */

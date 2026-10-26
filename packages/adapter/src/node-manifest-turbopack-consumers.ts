@@ -13,10 +13,16 @@ import {
   type NodeManifestBoundConsumerProof,
 } from './node-manifest-bound-batch.ts';
 import { assertCoalescedPagesConsumer } from './node-manifest-coalesced-consumer.ts';
+import {
+  registerNodeManifestConsumerFactory,
+  assertNodeManifestPhysicalCallers,
+  restrictNodeManifestProtectedIncoming,
+  type NodeManifestIncomingFallback,
+} from './node-manifest-consumer-incoming.ts';
 import type { NodeManifestConsumerImport } from './node-manifest-consumers.ts';
 import { APP_PAGE_CLASS, APP_PAGE_FACTORY } from './node-manifest-framework.ts';
+import { NodeManifestPagesConjunctionWalk } from './node-manifest-pages-conjunction-walk.ts';
 import { nodeManifestPagesContextLeaf } from './node-manifest-pages-context-consumer.ts';
-import { inspectNodeManifestReachability } from './node-manifest-reachability.ts';
 import {
   assertNodeManifestPassSingle,
   nodeManifestPassForwarded,
@@ -27,7 +33,6 @@ import {
 } from './node-manifest-registration-pass.ts';
 import {
   createNodeManifestRegistrationViews,
-  nodeManifestConsumerBoots,
   type NodeManifestRegistrationViews,
 } from './node-manifest-registration-views.ts';
 import {
@@ -38,7 +43,6 @@ import {
   prepareNodeManifestRuntimeGraphs,
   type NodeManifestRuntimeCohort,
 } from './node-manifest-runtime-cohort.ts';
-import { nodeManifestRuntimeLookupTables } from './node-manifest-runtime-tables.ts';
 import {
   nodeManifestCoalescedImports,
   nodeManifestTemplateImports,
@@ -55,7 +59,6 @@ import {
   type NodeManifestTurbopackGraphFactory,
   type NodeManifestTurbopackSealedEntry,
 } from './node-manifest-turbopack-graph.ts';
-import { knownRuntimeCaller } from './node-manifest-turbopack-parents.ts';
 import { assertNodeManifestTurbopackTemplateConsumer } from './node-manifest-turbopack-templates.ts';
 import { projectNodeManifestTurbopackFactory } from './node-manifest-turbopack.ts';
 
@@ -69,6 +72,14 @@ function refuse(reason: string): never {
   throw new AuditError(
     `Unproved Next.js Turbopack manifest chain ${reason}; refusing native publication`,
   );
+}
+
+const CONSUMER_OWNERS = new WeakSet<Readonly<{ identity: symbol }>>();
+/** An assertion only: the sole mint site is the private consumer constructor below. */
+export function assertNodeManifestTurbopackConsumerOwner(
+  owner: Readonly<{ identity: symbol }>,
+): void {
+  if (!CONSUMER_OWNERS.has(owner)) refuse('uncertified private consumer owner');
 }
 
 class TurbopackConsumers {
@@ -93,14 +104,19 @@ class TurbopackConsumers {
   private readonly runtimeConsumers = new Set<string>();
   private readonly boundConsumers = new Map<string, NodeManifestBoundConsumerProof>();
   private readonly strictFactories = new Map<string, NodeManifestTurbopackGraphFactory>();
+  private readonly conjunctionOwner = Object.freeze({
+    identity: Symbol('private protected manifest consumer'),
+  });
+  private readonly pagesConjunction: NodeManifestPagesConjunctionWalk;
   private readonly helperOwner = Object.freeze({ identity: Symbol('Pages template helper owner') });
   private readonly certifiedFactories = new Map<string, NodeManifestAppPageFactoryProof>();
   private callerProof: NodeManifestRuntimeCallerProof | undefined;
   private pass: NodeManifestRegistrationPass | undefined;
-  private reachabilityFallback: ReturnType<typeof inspectNodeManifestReachability>['fallback'];
+  private reachabilityFallback: NodeManifestIncomingFallback;
 
   constructor(input: NodeManifestTurbopackConsumerInput) {
     this.input = input;
+    CONSUMER_OWNERS.add(this.conjunctionOwner);
     const expectedKind = nodeManifestTurbopackProducerKind(this.input);
     for (const entry of input.entries) {
       const kind = entry.kind ?? 'app-page';
@@ -118,7 +134,16 @@ class TurbopackConsumers {
     this.runtimeCohort = prepared.cohort;
     this.registrations = createNodeManifestRegistrationViews(this.allGraphs, input.sources);
     for (const graph of this.allGraphs)
-      for (const factory of graph.factories) this.register(factory);
+      for (const factory of graph.factories)
+        registerNodeManifestConsumerFactory(factory, this.factories, this.incoming);
+    this.pagesConjunction = new NodeManifestPagesConjunctionWalk({
+      consumerOwner: this.conjunctionOwner,
+      input,
+      owner: this.helperOwner,
+      graphs: this.allGraphs,
+      registrations: this.registrations,
+      factories: this.factories,
+    });
     this.proofFiles = withNodeManifestRegistrationPass(this.registrations, (pass) => {
       this.pass = pass;
       try {
@@ -152,46 +177,21 @@ class TurbopackConsumers {
             sources: this.input.sources,
             distDir: this.input.distDir,
           });
-    this.assertPhysicalCallers();
-    this.restrictProtectedIncoming();
-  }
-
-  private restrictProtectedIncoming(): void {
-    const { reached, fallback } = inspectNodeManifestReachability({
-      factories: [...this.factories.values()],
+    const topology = {
+      input: this.input,
       graphs: this.graphs,
-      callers: this.callerProof?.callers ?? [],
-      physicalIds: new Set(this.input.sources.map((source) => source.id)),
-      runtimeIds: new Set(this.allGraphs.map((graph) => graph.runtimeId)),
+      allGraphs: this.allGraphs,
+      callerProof: this.callerProof,
+      cohort: this.runtimeCohort,
+    };
+    assertNodeManifestPhysicalCallers(topology);
+    this.reachabilityFallback = restrictNodeManifestProtectedIncoming({
+      ...topology,
+      factories: this.factories,
+      incoming: this.incoming,
       registrations: this.registrations,
       pass: this.currentPass(),
     });
-    this.reachabilityFallback = fallback;
-    if (reached === undefined) return;
-    const reachable = new Set(reached);
-    for (const [target, parents] of this.incoming) {
-      const included = new Set<string>();
-      for (const parent of parents) {
-        if (reachable.has(parent)) included.add(parent);
-      }
-      this.incoming.set(target, included);
-    }
-  }
-
-  private register(factory: NodeManifestTurbopackGraphFactory): void {
-    const previous = this.factories.get(factory.id);
-    if (
-      previous !== undefined &&
-      (previous.projection.source.sha256 !== factory.projection.source.sha256 ||
-        JSON.stringify(previous.imports) !== JSON.stringify(factory.imports))
-    )
-      refuse('ambiguous factory dependency graph');
-    this.factories.set(factory.id, factory);
-    for (const edge of factory.imports) {
-      const parents = this.incoming.get(edge.target) ?? new Set<string>();
-      parents.add(factory.id);
-      this.incoming.set(edge.target, parents);
-    }
   }
 
   private unwrapped(id: string): string {
@@ -209,25 +209,6 @@ class TurbopackConsumers {
       assertNodeManifestPassSingle(this.currentPass(), current);
     }
     return current;
-  }
-
-  private assertPhysicalCallers(): void {
-    const tables = nodeManifestRuntimeLookupTables(this.allGraphs);
-    const runtimes = new Set(this.allGraphs.map((graph) => graph.runtimeId));
-    const boots = nodeManifestConsumerBoots(this.graphs, this.callerProof);
-    for (const source of this.input.sources) {
-      for (const edge of source.imports) {
-        if (tables.has(edge.target) && !runtimes.has(source.id))
-          refuse('unknown physical factory-table caller');
-        if (
-          runtimes.has(edge.target) &&
-          !knownRuntimeCaller(source.id, edge, { boots, cohort: this.runtimeCohort })
-        )
-          refuse('unknown runtime API caller');
-        if (edge.target === this.input.producer.id && !tables.has(source.id))
-          refuse('uncertified physical producer caller');
-      }
-    }
   }
 
   private assertAdditionalCallerRoles(): void {
@@ -295,7 +276,8 @@ class TurbopackConsumers {
     return {
       factory,
       sources: this.input.sources,
-      target: (id) => this.importTarget(id),
+      target: (id, edge) =>
+        this.pagesConjunction.imported(factory, edge, this.currentPass()) ?? this.importTarget(id),
       helper:
         nodeManifestTurbopackProducerKind(this.input) === 'pages'
           ? { owner: this.helperOwner, factories: this.factories }
@@ -351,7 +333,10 @@ class TurbopackConsumers {
         ...factory,
         imports: factory.imports.filter((edge) => !isBuiltin(edge.target)),
       }),
-    );
+    ).map((entry) => {
+      if ('conjunction' in entry) return refuse('Pages group used as AppPage factory');
+      return entry;
+    });
     const proof = await certifyNodeManifestAppPageFactory({
       file: physical.file,
       projection: factory.projection,
@@ -399,6 +384,7 @@ class TurbopackConsumers {
     if (
       role === 'factory' &&
       !this.routes.has(factory.id) &&
+      !this.pagesConjunction.has(id) &&
       nodeManifestPagesContextLeaf(factory, id, this.unwrapped(id), this.input)
     )
       return;
@@ -435,11 +421,45 @@ class TurbopackConsumers {
         nodeManifestTurbopackProducerKind(this.input) === 'pages' &&
         route?.kind === 'pages' &&
         incoming.projection.cacheInitializers.length === 1;
+      if (await this.visitPagesGroup(incoming, id, role)) continue;
       const factory = coalesced ? incoming : this.strictFactory(incoming);
       await this.visitParent(factory, id, role);
     }
     this.visiting.delete(id);
     this.complete.set(id, role);
+  }
+
+  private async visitPagesGroup(
+    factory: NodeManifestTurbopackGraphFactory,
+    id: string,
+    role: Role,
+  ): Promise<boolean> {
+    const group = this.pagesConjunction.parent(factory, id, role, this.currentPass());
+    if (group === undefined) return false;
+    const done = this.complete.get(group.registrationId);
+    if (done !== undefined) {
+      if (done !== role) refuse('conflicting protected group role');
+      return true;
+    }
+    if (this.visiting.has(group.registrationId)) refuse('cyclic protected group chain');
+    this.visiting.add(group.registrationId);
+    const parents = this.pagesConjunction.incoming(group, this.incoming);
+    for (const parent of parents) {
+      const incoming = this.factories.get(parent);
+      if (incoming === undefined) refuse('unknown protected group consumer');
+      const route = this.routes.get(parent);
+      const coalesced =
+        route?.kind === 'pages' && incoming.projection.cacheInitializers.length === 1;
+      await this.visitParent(
+        coalesced ? incoming : this.strictFactory(incoming),
+        group.registrationId,
+        role,
+      );
+    }
+    this.pagesConjunction.complete(group, parents);
+    this.visiting.delete(group.registrationId);
+    for (const member of [group.registrationId, ...group.members]) this.complete.set(member, role);
+    return true;
   }
 
   private currentPass(): NodeManifestRegistrationPass {
@@ -470,12 +490,12 @@ class TurbopackConsumers {
             factories: [...this.factories.values()],
             certified: [...this.boundConsumers.values()],
           });
-    return {
+    return this.pagesConjunction.stage({
       terminals: [...this.terminals.values()],
       ...this.proofFiles,
       ...(boundStage !== undefined && { boundStage }),
       requiresSdkNormalization: true,
-    };
+    });
   }
   async prove(): Promise<NodeManifestTurbopackConsumerProof> {
     return await withNodeManifestRegistrationPassAsync(this.registrations, async (pass) => {

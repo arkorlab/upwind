@@ -2,8 +2,6 @@ import { createHash } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { appEntrySource } from './app-entry.ts';
-import { jsLiteral } from './codegen.ts';
 import { AuditError } from './dependencies.ts';
 import type { EntryModule } from './function.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
@@ -28,18 +26,22 @@ import {
   ROUTE_EXPORTS,
   type ManifestProtectedKind,
 } from './node-manifest-framework.ts';
-import {
-  nodeManifestNormalization,
-  type NodeManifestNormalization,
-} from './node-manifest-normalization.ts';
-import { sealedRoutes, type SealedRoute } from './node-manifest-routes.ts';
+import { type NodeManifestNormalization } from './node-manifest-normalization.ts';
+import type { SealedRoute } from './node-manifest-routes.ts';
 import { certifyNodeManifestRuntimeCallers } from './node-manifest-runtime-callers.ts';
 import type { NodeManifestRuntimeProfile } from './node-manifest-runtime-cohort.ts';
+import {
+  prepareNodeManifestSdkTerminalScope,
+  certifyNodeManifestSdkTerminal,
+  type NodeManifestSdkTerminalProof,
+  type NodeManifestSdkTerminalScope,
+} from './node-manifest-sdk-terminal.ts';
 import {
   completedNodeRouteRewriteApproval,
   type NodeRouteRewriteApproval,
 } from './node-route-rewrite-approval.ts';
 export type { NodeManifestNormalization } from './node-manifest-normalization.ts';
+import { commitNodeManifestPagesConjunctionStage } from './node-manifest-pages-conjunction-walk.ts';
 import {
   assertNodeManifestTemplateConsumer,
   type NodeManifestTemplateImport,
@@ -126,19 +128,6 @@ async function checkedCode(source: ManifestGraphFile): Promise<string> {
     refuse('consumer source changed');
   return bytes.toString('utf8');
 }
-function generatedEntry(input: ManifestGraphInput): string {
-  if (input.entries === undefined) return refuse('missing generated entry inputs');
-  return [
-    appEntrySource(input.entries, {
-      external: true,
-      runtimeDistDir: input.distDir,
-      nodeRequestMeta: true,
-    }),
-    ...(input.instrumentation === undefined
-      ? []
-      : [`module.exports.instrumentation=()=>require(${jsLiteral(input.instrumentation)});`]),
-  ].join('\n');
-}
 function incoming(graph: ManifestModuleGraph, id: string): readonly string[] {
   const importers = graph.importers.get(id);
   if (importers === undefined) return refuse('missing resolved consumer graph');
@@ -170,6 +159,8 @@ class ConsumerGraph {
   private readonly routeSources = new Map<string, ManifestRouteSource>();
   private readonly turbopackProducers = new Set<string>();
   private readonly boundBatch = createNodeManifestBoundBatch();
+  private readonly sdkScope: NodeManifestSdkTerminalScope;
+  private readonly sdkTerminals = new Map<string, NodeManifestSdkTerminalProof>();
   private runtimeRoot: string | undefined;
 
   constructor(
@@ -179,6 +170,7 @@ class ConsumerGraph {
     sealed: {
       readonly routes: ReadonlyMap<string, SealedRoute>;
       readonly normalization: NodeManifestNormalization;
+      readonly sdkScope: NodeManifestSdkTerminalScope;
     },
   ) {
     this.input = input;
@@ -186,19 +178,7 @@ class ConsumerGraph {
     this.root = root;
     this.routes = sealed.routes;
     this.normalization = sealed.normalization;
-  }
-
-  private terminal(parent: string, child: ProtectedModule, code: string): boolean {
-    if (parent !== this.input.analysisEntry) return false;
-    if (
-      child.kind !== ROUTE_EXPORTS ||
-      this.graph.roots?.has(parent) !== true ||
-      code !== generatedEntry(this.input)
-    )
-      return refuse('unproved SDK entry terminal');
-    const route = this.routes.get(sourceOf(this.graph, child.id).file);
-    if (route === undefined) refuse('unsealed SDK route terminal');
-    return true;
+    this.sdkScope = sealed.sdkScope;
   }
 
   private async parent(
@@ -207,8 +187,12 @@ class ConsumerGraph {
   ): Promise<ProtectedModule | undefined> {
     edgesTo(this.graph, parent, child.id);
     const source = sourceOf(this.graph, parent);
+    const terminal = await certifyNodeManifestSdkTerminal(this.sdkScope, parent, child);
+    if (terminal !== undefined) {
+      this.sdkTerminals.set(child.id, terminal);
+      return undefined;
+    }
     const code = await checkedCode(source);
-    if (this.terminal(parent, child, code)) return undefined;
     const relative = path.relative(this.root, source.file).split(path.sep).join('/');
     const kind = frameworkParent(relative, child.relative);
     if (kind !== undefined) {
@@ -307,6 +291,7 @@ class ConsumerGraph {
       runtimeCallers,
       boundBatch: this.boundBatch,
       runtimeProfiles: this.runtimeProfiles(),
+      sdkTerminalScope: this.sdkScope,
       producer: { id: child.id, file: producer.file, sha256: producer.sha256, kind: producerKind },
     });
     // The source helper's boot terminals are not proof terminals: every actual physical
@@ -317,6 +302,13 @@ class ConsumerGraph {
     }
     if (proof.boundStage === undefined) refuse('missing bound proof stage');
     commitNodeManifestBoundStage(this.boundBatch, proof.boundStage);
+    await commitNodeManifestPagesConjunctionStage(
+      proof,
+      proof.terminals.map((terminal) => {
+        const certificate = this.sdkTerminals.get(terminal.id);
+        return certificate ?? refuse('missing actual SDK terminal certificate');
+      }),
+    );
     for (const source of proof.files) this.files.set(source.file, source);
     for (const runtime of proof.compilerSources) this.compilerSources.set(runtime.file, runtime);
     this.runtimeRoot = rootDir;
@@ -446,10 +438,17 @@ export async function proveManifestConsumerGraph(
   readonly routeRewriteApproval: NodeRouteRewriteApproval;
   readonly metadataFiles: readonly ManifestGraphFile[];
 }> {
-  const normalization = await nodeManifestNormalization(input);
-  const sealed = await sealedRoutes(input, normalization);
+  const {
+    scope: sdkScope,
+    normalization,
+    sealed,
+  } = await prepareNodeManifestSdkTerminalScope(input, graph);
   const routes = sealed.routes;
-  const consumers = new ConsumerGraph(input, graph, evaluator.root, { routes, normalization });
+  const consumers = new ConsumerGraph(input, graph, evaluator.root, {
+    routes,
+    normalization,
+    sdkScope,
+  });
   await consumers.visit({ id: evaluator.id, relative: EVALUATOR, kind: 'evaluator' });
   consumers.assertBoundProofs();
   const runtimeRootDir = consumers.runtimeRootDir();

@@ -2,20 +2,24 @@ import { isBuiltin } from 'node:module';
 
 import { AuditError } from './dependencies.ts';
 import type { NodeManifestCoalescedImport } from './node-manifest-coalesced-pages.ts';
+import type { NodeManifestPagesConjunctionImport } from './node-manifest-pages-conjunction-walk.ts';
 import {
   certifyNodeManifestTemplateHelperImport,
   type NodeManifestTemplateHelperOwner,
 } from './node-manifest-template-helpers.ts';
-import type { NodeManifestTemplateImport } from './node-manifest-templates.ts';
 import type {
   NodeManifestTurbopackGraphFactory,
   NodeManifestTurbopackGraphFile,
 } from './node-manifest-turbopack-graph.ts';
+import type { NodeManifestTurbopackTemplateImport } from './node-manifest-turbopack-template-import.ts';
 
 interface ImportInput {
   readonly factory: NodeManifestTurbopackGraphFactory;
   readonly sources: readonly NodeManifestTurbopackGraphFile[];
-  readonly target: (id: string) => string;
+  readonly target: (
+    id: string,
+    edge: { readonly specifier: string; readonly target: string },
+  ) => string | NodeManifestPagesConjunctionImport;
   readonly helper?:
     | {
         readonly owner: NodeManifestTemplateHelperOwner;
@@ -45,19 +49,23 @@ function helperImport(
         specifier: edge.specifier,
       });
 }
+function resolvedImport(
+  input: ImportInput,
+  edge: { readonly specifier: string; readonly target: string },
+): NodeManifestCoalescedImport {
+  const target = input.target(edge.target, edge);
+  if (typeof target !== 'string') return target;
+  if (isBuiltin(target)) return { specifier: edge.specifier, builtin: target };
+  const source = input.sources.find((candidate) => candidate.id === target);
+  if (source === undefined) return refuse('unproved route template import identity');
+  const imported = { specifier: edge.specifier, file: source.file, sha256: source.source.sha256 };
+  const helper = helperImport(input, edge, source);
+  return helper === undefined ? imported : { ...imported, helper };
+}
 function resolved(input: ImportInput): readonly NodeManifestCoalescedImport[] {
   const imports = new Map<string, NodeManifestCoalescedImport>();
   for (const edge of input.factory.imports) {
-    const target = input.target(edge.target);
-    const source = input.sources.find((candidate) => candidate.id === target);
-    let imported: NodeManifestCoalescedImport;
-    if (isBuiltin(target)) imported = { specifier: edge.specifier, builtin: target };
-    else {
-      if (source === undefined) return refuse('unproved route template import identity');
-      imported = { specifier: edge.specifier, file: source.file, sha256: source.source.sha256 };
-      const helper = helperImport(input, edge, source);
-      if (helper !== undefined) imported = { ...imported, helper };
-    }
+    const imported = resolvedImport(input, edge);
     const previous = imports.get(edge.specifier);
     if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(imported))
       refuse('ambiguous route template import');
@@ -68,7 +76,7 @@ function resolved(input: ImportInput): readonly NodeManifestCoalescedImport[] {
 
 export function nodeManifestTemplateImports(
   input: ImportInput,
-): readonly NodeManifestTemplateImport[] {
+): readonly NodeManifestTurbopackTemplateImport[] {
   return resolved(input).map((entry) => {
     if ('builtin' in entry) return refuse('unproved route template import identity');
     return entry;

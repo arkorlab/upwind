@@ -8,6 +8,7 @@ import { parseAst } from 'rolldown/parseAst';
 import { jsLiteral } from '../../src/codegen.ts';
 import { isNode, listOf, type Node } from '../../src/lexical-scope.ts';
 import { stringOf, visitTree } from '../../src/node-manifest-consumer-ast.ts';
+import type { NodeManifestTemplateImport } from '../../src/node-manifest-templates.ts';
 import { swcTemplateExports } from '../../src/node-manifest-template-exports.ts';
 import {
   type NodeManifestTurbopackTemplateInput,
@@ -27,10 +28,10 @@ function program(code: string): Node {
   if (!isNode(value)) throw new Error('Expected an inert primary-source program');
   return value;
 }
-export function reprojectTemplateFixture(
-  input: NodeManifestTurbopackTemplateInput,
+export function reprojectTemplateFixture<I extends NodeManifestTurbopackTemplateInput['imports']>(
+  input: NodeManifestTurbopackTemplateInput & { readonly imports: I },
   code: string,
-): NodeManifestTurbopackTemplateInput {
+): NodeManifestTurbopackTemplateInput & { readonly imports: I } {
   return { ...input, projection: projectNodeManifestTurbopackFactory(manifestTemplateSource(code), 1) };
 }
 interface Edit {
@@ -128,7 +129,7 @@ function editedStatements(
   }
   return statements;
 }
-export async function projectedTemplateFixture(kind: NodeManifestTurbopackTemplateInput['route']['kind']): Promise<NodeManifestTurbopackTemplateInput> {
+export async function projectedTemplateFixture(kind: NodeManifestTurbopackTemplateInput['route']['kind']): Promise<NodeManifestTurbopackTemplateInput & { readonly imports: readonly NodeManifestTemplateImport[] }> {
   const file = await realpath(
     fileURLToPath(import.meta.resolve(`next/dist/build/templates/${kind}.js`)),
   );
@@ -150,11 +151,11 @@ export async function projectedTemplateFixture(kind: NodeManifestTurbopackTempla
   const original = manifestTemplateSource(`module.exports=[1,(runtimeContext)=>{${statements.join('\n')}}];`);
   return { projection: projectNodeManifestTurbopackFactory(original, 1), imports: imported, route };
 }
-export function changeOriginalTemplateFixture(
-  input: NodeManifestTurbopackTemplateInput,
+export function changeOriginalTemplateFixture<I extends NodeManifestTurbopackTemplateInput['imports']>(
+  input: NodeManifestTurbopackTemplateInput & { readonly imports: I },
   before: string,
   after: string,
-): NodeManifestTurbopackTemplateInput {
+): NodeManifestTurbopackTemplateInput & { readonly imports: I } {
   const code = input.projection.original.code.replace(before, () => after);
   if (code === input.projection.original.code) throw new Error('Expected primary-source mutation');
   return reprojectTemplateFixture(input, code);

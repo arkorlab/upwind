@@ -21,10 +21,7 @@ import {
   visitTree,
   type Visit,
 } from './node-manifest-consumer-ast.ts';
-import {
-  manifestConstructorImport,
-  reviewedRouteConstructorSource,
-} from './node-manifest-framework.ts';
+import { reviewedRouteConstructorSource } from './node-manifest-framework.ts';
 import {
   nodeManifestPagesPage,
   type NodeManifestPagesDefinition,
@@ -39,11 +36,13 @@ import {
   nodeManifestTemplateHelperToken,
 } from './node-manifest-template-helper-tokens.ts';
 import type { NodeManifestTemplateHelperOwner } from './node-manifest-template-helpers.ts';
-import type {
-  NodeManifestTemplateImport,
-  NodeManifestTemplateProof,
-} from './node-manifest-templates.ts';
+import type { NodeManifestTemplateProof } from './node-manifest-templates.ts';
 import type { NodeManifestTurbopackConsumerInput } from './node-manifest-turbopack-consumers.ts';
+import {
+  nodeManifestTurbopackConstructorIdentity,
+  nodeManifestPagesConjunctionToken,
+  type NodeManifestTurbopackTemplateImport,
+} from './node-manifest-turbopack-template-import.ts';
 import { assertStrictFactory, withoutStrict } from './node-manifest-turbopack-template-strict.ts';
 import {
   projectNodeManifestTurbopackFactory,
@@ -87,7 +86,7 @@ const PROTECTED_IMPORTS: ReadonlyMap<string, string> = new Map([
 ]);
 export interface NodeManifestTurbopackTemplateInput {
   readonly projection: NodeManifestTurbopackProjection;
-  readonly imports: readonly NodeManifestTemplateImport[];
+  readonly imports: readonly NodeManifestTurbopackTemplateImport[];
   readonly helperOwner?: NodeManifestTemplateHelperOwner | undefined;
   readonly route: {
     readonly kind: keyof typeof PROFILES;
@@ -152,7 +151,7 @@ function checkedProjection(input: NodeManifestTurbopackTemplateInput): {
 async function templateOf(input: NodeManifestTurbopackTemplateInput): Promise<Template> {
   const profile = PROFILES[input.route.kind];
   const imports = input.imports
-    .map((entry) => manifestConstructorImport(entry.file, entry.sha256))
+    .map((entry) => nodeManifestTurbopackConstructorIdentity(entry, input))
     .filter((entry) => entry?.module === profile.module);
   const imported = imports[0];
   if (imported === undefined || imports.length !== 1) refuse('constructor import identity');
@@ -325,6 +324,8 @@ function importToken(node: Node, context: Context): string | undefined {
   const imports = context.input.imports.filter((entry) => entry.specifier === specifier);
   const imported = imports[0];
   if (imported === undefined || imports.length !== 1) return refuse('unresolved import');
+  if ('conjunction' in imported)
+    return nodeManifestPagesConjunctionToken(imported, context.input, context.template.root);
   if (
     !currentTemplateHelperImport(imported, {
       owner: context.input.helperOwner,

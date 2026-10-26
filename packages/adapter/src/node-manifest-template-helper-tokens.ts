@@ -21,12 +21,13 @@ import {
   type NodeManifestTemplateHelperOwner,
 } from './node-manifest-template-helpers.ts';
 import type { NodeManifestTemplateImport } from './node-manifest-templates.ts';
+import type { NodeManifestTurbopackTemplateImport } from './node-manifest-turbopack-template-import.ts';
 import type { NodeManifestTurbopackProjection } from './node-manifest-turbopack.ts';
 
 interface TokenInput {
   readonly program: Node;
   readonly visits: ReadonlyMap<Node, Visit>;
-  readonly imports: readonly NodeManifestTemplateImport[];
+  readonly imports: readonly NodeManifestTurbopackTemplateImport[];
   readonly templateFile: string;
   readonly nextRoot: string;
   readonly expected: boolean;
@@ -72,7 +73,8 @@ function imported(call: Node, input: TokenInput): NodeManifestTemplateImport | u
   if (input.expected)
     return { specifier, file: createRequire(input.templateFile).resolve(specifier), sha256: '' };
   const entries = input.imports.filter((entry) => entry.specifier === specifier);
-  return entries.length === 1 ? entries[0] : undefined;
+  const entry = entries[0];
+  return entry !== undefined && entries.length === 1 && 'file' in entry ? entry : undefined;
 }
 
 function namespace(value: Node, input: TokenInput): Namespace | undefined {

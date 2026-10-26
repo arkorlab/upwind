@@ -8,7 +8,14 @@ import {
   manifestConstructorImport,
   reviewedFrameworkSource,
 } from './node-manifest-framework.ts';
-import type { NodeManifestTemplateHelperImport } from './node-manifest-template-helpers.ts';
+import {
+  nodeManifestPagesConjunctionIdentity,
+  type NodeManifestPagesConjunctionImport,
+} from './node-manifest-pages-conjunction-walk.ts';
+import type {
+  NodeManifestTemplateHelperOwner,
+  NodeManifestTemplateHelperImport,
+} from './node-manifest-template-helpers.ts';
 import { assertTurbopackCacheOwners } from './node-manifest-turbopack-cache.ts';
 import type { NodeManifestTurbopackConsumerInput } from './node-manifest-turbopack-consumers.ts';
 import type {
@@ -25,6 +32,7 @@ export interface NodeManifestCoalescedPagesProfile {
   readonly [PROFILE]: boolean;
 }
 export type NodeManifestCoalescedImport =
+  | NodeManifestPagesConjunctionImport
   | {
       readonly specifier: string;
       readonly file: string;
@@ -36,6 +44,7 @@ interface NodeManifestCoalescedPagesInput {
   readonly owner: NodeManifestTurbopackConsumerInput;
   readonly graph: NodeManifestTurbopackBootGraph;
   readonly factory: NodeManifestTurbopackGraphFactory;
+  readonly helperOwner?: NodeManifestTemplateHelperOwner | undefined;
   readonly imports: readonly NodeManifestCoalescedImport[];
   readonly route: { readonly kind: 'pages'; readonly page: string; readonly pathname: string };
 }
@@ -89,6 +98,13 @@ function graphIdentity(input: NodeManifestCoalescedPagesInput): string {
 function privilegedImports(input: NodeManifestCoalescedPagesInput): ReadonlySet<string> {
   const identities = input.imports.flatMap((entry) => {
     if ('builtin' in entry) return [];
+    if ('conjunction' in entry) {
+      const identity = nodeManifestPagesConjunctionIdentity(entry, {
+        owner: input.helperOwner,
+        projection: input.factory.projection,
+      });
+      return [{ ...identity, kind: 'pages' as const }];
+    }
     const identity = manifestConstructorImport(entry.file, entry.sha256);
     return identity?.kind === 'pages' ? [identity] : [];
   });
@@ -97,6 +113,14 @@ function privilegedImports(input: NodeManifestCoalescedPagesInput): ReadonlySet<
   const result = new Set<string>();
   for (const imported of input.imports) {
     if ('builtin' in imported) continue;
+    if ('conjunction' in imported) {
+      nodeManifestPagesConjunctionIdentity(imported, {
+        owner: input.helperOwner,
+        projection: input.factory.projection,
+      });
+      result.add(imported.specifier);
+      continue;
+    }
     // Refusal only: another installed/copy root must not conceal a known privileged producer.
     const normalized = imported.file.replaceAll('\\', '/');
     const start = normalized.lastIndexOf('/dist/');

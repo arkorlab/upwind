@@ -18,7 +18,9 @@ async function runtimeConstructor(
   own: NodeManifestTurbopackTemplateInput,
   runtime: string,
 ): Promise<NodeManifestTurbopackTemplateInput> {
-  const original = own.imports.find((entry) => entry.file.endsWith('/module.compiled.js'));
+  const original = own.imports.find(
+    (entry) => 'file' in entry && entry.file.endsWith('/module.compiled.js'),
+  );
   if (original === undefined) throw new Error('Expected published constructor dependency');
   const file = await realpath(
     fileURLToPath(import.meta.resolve(`next/dist/compiled/next-server/${runtime}`)),
