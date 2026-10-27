@@ -32,6 +32,11 @@ import {
 } from './node-manifest-handler-root.ts';
 import { proveNodeManifests, type NodeManifestProof } from './node-manifest-proof.ts';
 import {
+  qualifyNodeNextCacheWrites,
+  nodeNextCacheWriteMetadata,
+  type NodeNextCacheWriteProof,
+} from './node-next-cache-write-proof.ts';
+import {
   qualifyNodeNextRequireHook,
   nodeNextRequireHookInspection,
   nodeNextRequireHookMetadata,
@@ -47,6 +52,7 @@ import {
 } from './node-next-rewrite-proof.ts';
 import { originalHostLoadersPlugin } from './node-original-host-loaders.ts';
 import { prepareOriginalNodeModes, type OriginalNodeModeScope } from './node-original-load-mode.ts';
+import { retainedFileIdentity } from './node-proof-diagnostics.ts';
 import {
   qualifyNodeWsLoaders,
   nodeWsLoaderMetadata,
@@ -61,7 +67,6 @@ import { turbopackRuntimePatch } from './patches/turbopack-runtime.ts';
 const BYTES_PER_MEBIBYTE = 1_048_576;
 const MAX_SOURCE_MEBIBYTES = 128;
 const MAX_SOURCE_BYTES = MAX_SOURCE_MEBIBYTES * BYTES_PER_MEBIBYTE;
-const MAX_DIAGNOSTIC_FILE_CHARACTERS = 240;
 const ROLLDOWN_RUNTIME_MODULE = '\0rolldown/runtime.js';
 // These expose the original Node graph. No Worker-specific code or dependency is substituted.
 const GRAPH_LINKS = [turbopackRuntimePatch, instrumentationPatch, nodeCachePolicyPatch];
@@ -235,16 +240,6 @@ function originalNodeGraphPlugin(input: NodeProofInput, graph: OriginalNodeGraph
   };
 }
 
-function retainedFileIdentity(projectDir: string, file: string): string {
-  if (!path.isAbsolute(file)) return JSON.stringify('[non-physical module]');
-  const relative = path.relative(projectDir, file).split(path.sep).join('/');
-  const bounded =
-    relative.length > MAX_DIAGNOSTIC_FILE_CHARACTERS
-      ? `${relative.slice(0, MAX_DIAGNOSTIC_FILE_CHARACTERS)}…`
-      : relative;
-  return JSON.stringify(bounded);
-}
-
 async function assertRetainedSourceBytes(
   chunk: OutputChunk,
   graph: OriginalNodeGraph,
@@ -269,6 +264,7 @@ function assertRetainedClosures(
     readonly jwt: NodeJwtCompilerProof | undefined;
     readonly ws: NodeWsLoaderProof | undefined;
     readonly nextRequireHook: NodeNextRequireHookProof | undefined;
+    readonly nextCacheWrite: NodeNextCacheWriteProof | undefined;
   },
 ): void {
   const modules = Object.entries(chunk.modules);
@@ -281,6 +277,7 @@ function assertRetainedClosures(
     const refusal = dynamicNodeClosureRefusal(file, inspection, closure.jwt, {
       ws: closure.ws,
       nextRequireHook: closure.nextRequireHook,
+      nextCacheWrite: closure.nextCacheWrite,
     });
     if (refusal !== undefined) {
       const identity = retainedFileIdentity(projectDir, file);
@@ -475,11 +472,14 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   const jwtCompiler = await qualifyNodeJwtCompiler(initializationInput);
   const wsLoaders = await qualifyNodeWsLoaders(initializationInput);
   const nextRequireHook = await qualifyNodeNextRequireHook(initializationInput);
+  const nextCacheWrite = await qualifyNodeNextCacheWrites(initializationInput);
   const jwtMetadata =
     jwtCompiler === undefined ? [] : (await nodeJwtCompilerMetadata(jwtCompiler)).files;
   const wsMetadata = wsLoaders === undefined ? [] : (await nodeWsLoaderMetadata(wsLoaders)).files;
   const hookMetadata =
     nextRequireHook === undefined ? [] : (await nodeNextRequireHookMetadata(nextRequireHook)).files;
+  const cacheWriteMetadata =
+    nextCacheWrite === undefined ? [] : await nodeNextCacheWriteMetadata(nextCacheWrite);
   const retainedHost = hostLoaders
     .retained(chunk)
     .find((site) => !compilerModules.has(site.importer));
@@ -494,6 +494,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     jwt: jwtCompiler,
     ws: wsLoaders,
     nextRequireHook,
+    nextCacheWrite,
   });
   const retained = await native.retained(chunk);
   if (retained.length === 0)
@@ -511,6 +512,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     ...jwtMetadata,
     ...wsMetadata,
     ...hookMetadata,
+    ...cacheWriteMetadata,
   ]);
   const normalization = nodeNextRewriteNormalization(nextRewrites, manifests.normalization);
   await assertCurrentUsedNodeManifestHandlerCompilerRoot(compilerRootBinding, files);

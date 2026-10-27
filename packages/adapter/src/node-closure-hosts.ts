@@ -1,15 +1,25 @@
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
+import type { NodeClosureOrigin } from './node-closure-assigned-origins.ts';
 import { nodeClosureReference } from './node-compiler-metadata.ts';
 
 const COMMON_JS_HOST = 'cjs-module';
 type HostObject = 'global' | typeof COMMON_JS_HOST;
 export type AssignedNodeHosts = ReadonlyMap<Node, 'global'>;
 const NO_ASSIGNED_HOSTS: AssignedNodeHosts = new Map();
+const NO_METADATA_ROOTS: ReadonlySet<Node> = new Set();
 interface HostVisit {
   readonly node: Node;
   readonly scopes: readonly Scope[];
   readonly parent: Node | undefined;
   readonly key: string | undefined;
+}
+type AssignedHostRejectionReason = 'optional' | 'computed' | 'loader' | 'write' | 'global-escape';
+export interface AssignedNodeHostsAnalysis {
+  readonly assigned: AssignedNodeHosts;
+  readonly rejection:
+    | { readonly visit: HostVisit; readonly reason: AssignedHostRejectionReason }
+    | undefined;
+  readonly diagnostic: string;
 }
 
 function namedHost(name: unknown): HostObject | undefined {
@@ -80,6 +90,21 @@ export function hostObjectOf(
     return hostMember(current, owner);
   }
   return undefined;
+}
+
+/** The existing CommonJS/global member mapping, shared with the closure traversal. */
+export function nodeHostMemberOrigin(
+  value: Node,
+  scopes: readonly Scope[],
+  member: string | undefined,
+  assigned?: AssignedNodeHosts,
+): NodeClosureOrigin | undefined {
+  const owner = hostObjectOf(value['object'], scopes, new Set(), assigned);
+  if (owner === 'global' && member === 'process') return { builtin: 'process' };
+  if (owner !== 'cjs-module') return undefined;
+  if (member === 'constructor') return { builtin: 'module', member: 'Module' };
+  if (member === 'require' || member === 'load') return { builtin: 'module', member: 'load' };
+  return member === undefined ? { builtin: 'module', member: '*' } : undefined;
 }
 
 export function nodeHostBinding(
@@ -262,7 +287,10 @@ function assignmentTarget(
 }
 
 /** Per-parse provenance, never a source rewrite or a grant of a global operation. */
-export function assignedNodeHosts(visits: readonly HostVisit[]): AssignedNodeHosts {
+export function analyzeAssignedNodeHosts(
+  visits: readonly HostVisit[],
+  metadataRoots: ReadonlySet<Node> = NO_METADATA_ROOTS,
+): AssignedNodeHostsAnalysis {
   const parents = new Map(visits.map((visit) => [visit.node, visit]));
   const assigned = new Map<Node, 'global'>();
   for (const visit of visits) {
@@ -275,16 +303,51 @@ export function assignedNodeHosts(visits: readonly HostVisit[]): AssignedNodeHos
         writeTarget(value, parents) &&
         ((value.name === target.left.name &&
           nodeHostBinding(value.name, other.scopes)?.scope === target.scope) ||
-          (value.name === 'globalThis' && nodeHostBinding(value.name, other.scopes) === undefined))
+          (value.name === 'globalThis' &&
+            nodeHostBinding(value.name, other.scopes) === undefined &&
+            !metadataRoots.has(value)))
       );
     });
     if (writes.length !== 1 || writes[0]?.node !== target.left) continue;
     assigned.set(target.declaration, 'global');
     assigned.set(visit.node, 'global');
   }
-  return visits.some((visit) => assignedHostEscape(visit, assigned, parents))
-    ? NO_ASSIGNED_HOSTS
-    : assigned;
+  for (const visit of visits) {
+    const reason = assignedHostRejection(visit, assigned, parents);
+    if (reason !== undefined)
+      return {
+        assigned: NO_ASSIGNED_HOSTS,
+        rejection: { visit, reason },
+        diagnostic: rejectedHostDiagnostic(visit.node, reason),
+      };
+  }
+  return {
+    assigned,
+    rejection: undefined,
+    diagnostic:
+      assigned.size === 0
+        ? 'no eligible single globalThis assignment'
+        : 'outside accepted globalThis assignment provenance',
+  };
+}
+
+/** Compatibility API: diagnosis does not change the all-or-nothing provenance map. */
+export function assignedNodeHosts(visits: readonly HostVisit[]): AssignedNodeHosts {
+  return analyzeAssignedNodeHosts(visits).assigned;
+}
+
+function rejectedHostDiagnostic(node: Node, reason: AssignedHostRejectionReason): string {
+  const type = ['AssignmentExpression', 'Identifier', 'MemberExpression'].includes(node.type)
+    ? node.type
+    : 'node';
+  const range =
+    Number.isSafeInteger(node.start) &&
+    node.start >= 0 &&
+    Number.isSafeInteger(node.end) &&
+    node.end >= node.start
+      ? ` at ${node.start}:${node.end}`
+      : '';
+  return `assigned global ${reason} (${type}${range})`;
 }
 
 function permittedAssignedValue(visit: HostVisit, assigned: AssignedNodeHosts): boolean {
@@ -303,40 +366,42 @@ function permittedAssignedValue(visit: HostVisit, assigned: AssignedNodeHosts): 
   );
 }
 
-function unsafeAssignedMember(
+function unsafeAssignedMemberReason(
   node: Node,
   scopes: readonly Scope[],
   assigned: AssignedNodeHosts,
   parents: ReadonlyMap<Node, HostVisit>,
-): boolean {
-  return (
-    node.type === 'MemberExpression' &&
-    hostObjectOf(node['object'], scopes, new Set(), assigned) === 'global' &&
-    hostObjectOf(node['object'], scopes) !== 'global' &&
-    (node['optional'] === true ||
-      hostPropertyName(node) === undefined ||
-      hostPropertyName(node) === 'require' ||
-      writeTarget(node, parents))
-  );
+): AssignedHostRejectionReason | undefined {
+  if (
+    node.type !== 'MemberExpression' ||
+    hostObjectOf(node['object'], scopes, new Set(), assigned) !== 'global' ||
+    hostObjectOf(node['object'], scopes) === 'global'
+  )
+    return undefined;
+  if (node['optional'] === true) return 'optional';
+  if (hostPropertyName(node) === undefined) return 'computed';
+  if (hostPropertyName(node) === 'require') return 'loader';
+  return writeTarget(node, parents) ? 'write' : undefined;
 }
 
 /** Assignment-derived hosts may be inspected, but cannot escape or introduce an opaque loader. */
-function assignedHostEscape(
+function assignedHostRejection(
   visit: HostVisit,
   assigned: AssignedNodeHosts,
   parents: ReadonlyMap<Node, HostVisit>,
-): boolean {
+): AssignedHostRejectionReason | undefined {
   const { node, scopes } = visit;
-  if (assigned.size === 0) return false;
-  if (unsafeAssignedMember(node, scopes, assigned, parents)) return true;
+  if (assigned.size === 0) return undefined;
+  const member = unsafeAssignedMemberReason(node, scopes, assigned, parents);
+  if (member !== undefined) return member;
   if (
     !nodeClosureReference(visit) ||
     !['AssignmentExpression', 'Identifier', 'MemberExpression'].includes(node.type) ||
     hostObjectOf(node, scopes, new Set(), assigned) !== 'global' ||
     hostObjectOf(node, scopes) === 'global'
   )
-    return false;
-  return !permittedAssignedValue(visit, assigned);
+    return undefined;
+  return permittedAssignedValue(visit, assigned) ? undefined : 'global-escape';
 }
 
 export function isCommonJsHost(value: unknown, scopes: readonly Scope[]): boolean {

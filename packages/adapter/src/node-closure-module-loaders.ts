@@ -1,3 +1,4 @@
+import type { NodeNextCacheWriteProof } from './node-next-cache-write-proof.ts';
 import type { NodeNextRequireHookProof } from './node-next-require-hook-proof.ts';
 import type { NodeWsLoaderProof } from './node-ws-loader-proof.ts';
 
@@ -30,4 +31,5 @@ export const NODE_MODULE_LOADERS = new Set([
 export interface NodeClosureLoaders {
   readonly ws?: NodeWsLoaderProof | undefined;
   readonly nextRequireHook?: NodeNextRequireHookProof | undefined;
+  readonly nextCacheWrite?: NodeNextCacheWriteProof | undefined;
 }

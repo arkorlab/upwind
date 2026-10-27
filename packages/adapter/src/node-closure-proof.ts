@@ -11,10 +11,11 @@ import {
 } from './node-closure-assigned-origins.ts';
 import { globalPatternRefusal } from './node-closure-globals.ts';
 import {
-  assignedNodeHosts,
+  analyzeAssignedNodeHosts,
   hostObjectOf,
   nodeHostBinding as bindingOf,
   nodeHostIdentifier as isIdentifier,
+  nodeHostMemberOrigin,
   type AssignedNodeHosts,
 } from './node-closure-hosts.ts';
 import {
@@ -27,13 +28,17 @@ import {
 } from './node-compiler-metadata.ts';
 import { nodeJwtCompilerSite, type NodeJwtCompilerProof } from './node-jwt-compiler-proof.ts';
 import { isGlobalCompiler } from './node-jwt-compiler-sites.ts';
+import { nodeNextCacheWriteSites } from './node-next-cache-write-proof.ts';
 import { nodeNextRequireHookSites } from './node-next-require-hook-proof.ts';
 import type { NodeNextRequireHookSites } from './node-next-require-hook-sites.ts';
 import { nodeWsLoaderSites } from './node-ws-loader-proof.ts';
 
 export { originalNodeHostLoaderRefusal } from './node-original-host-proof.ts';
 
-type Origins = ReadonlyMap<Node, Origin> & { readonly assigned?: AssignedNodeHosts };
+type Origins = ReadonlyMap<Node, Origin> & {
+  readonly assigned?: AssignedNodeHosts;
+  readonly assignedDiagnostic?: string;
+};
 interface Visit {
   readonly node: Node;
   readonly parent: Node | undefined;
@@ -168,26 +173,12 @@ function memberOrigin(
   imports: Origins,
   seen: Set<Node>,
 ): Origin | undefined {
-  const host = hostMemberOrigin(value, scopes, imports.assigned);
+  const host = nodeHostMemberOrigin(value, scopes, memberOf(value), imports.assigned);
   if (host !== undefined) return host;
   const owner = originOf(value['object'], scopes, imports, seen);
   if (owner === undefined || owner.member !== undefined) return owner;
   const member = memberOf(value);
   return member === 'default' ? owner : { builtin: owner.builtin, member: member ?? '*' };
-}
-
-function hostMemberOrigin(
-  value: Node,
-  scopes: readonly Scope[],
-  assigned?: AssignedNodeHosts,
-): Origin | undefined {
-  const owner = hostObjectOf(value['object'], scopes, new Set(), assigned);
-  const member = memberOf(value);
-  if (owner === 'global' && member === 'process') return { builtin: 'process' };
-  if (owner !== 'cjs-module') return undefined;
-  if (member === 'constructor') return { builtin: 'module', member: 'Module' };
-  if (member === 'require' || member === 'load') return { builtin: 'module', member: 'load' };
-  return member === undefined ? { builtin: 'module', member: '*' } : undefined;
 }
 
 function requiredOrigin(value: Node, scopes: readonly Scope[]): Origin | undefined {
@@ -475,7 +466,8 @@ function loaderRefusal(
     isGlobalCompiler(node, scopes, imports.assigned)
   )
     return 'an unproved JavaScript code compiler';
-  if (isNamespaceRebinding(visit, imports)) return 'an unproved rebound Node loader namespace';
+  if (isNamespaceRebinding(visit, imports))
+    return `an unproved rebound Node loader namespace (${imports.assignedDiagnostic ?? 'assignment provenance unavailable'})`;
   if (
     (node.type === 'MemberExpression' &&
       !hook.operations.has(node) &&
@@ -518,7 +510,12 @@ export function dynamicNodeClosureRefusal(
   const imports = importedOrigins(program);
   const factories = factoriesOf(program);
   const { visits: all, contexts } = visits(program, imports, factories);
-  const origins = Object.assign(imports, { assigned: assignedNodeHosts(all) });
+  const metadataRoots = nodeNextCacheWriteSites(loaders?.nextCacheWrite, file, code, program);
+  const assigned = analyzeAssignedNodeHosts(all, metadataRoots);
+  const origins = Object.assign(imports, {
+    assigned: assigned.assigned,
+    assignedDiagnostic: assigned.diagnostic,
+  });
   const serverChunk = /[/\\]server[/\\]chunks[/\\]/u.test(file);
   if (serverChunk && [...factories.values()].includes(null))
     return 'an unproved Turbopack factory context';
