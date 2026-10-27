@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   type FunctionModule,
-  type FunctionSpec,
+  type WorkerFunctionSpec,
   type ManifestHead,
   manifestHead,
   type SourceMapRef,
@@ -298,7 +298,7 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
 }
 
 export interface BuiltFunction {
-  readonly spec: FunctionSpec;
+  readonly spec: WorkerFunctionSpec;
   readonly dependencies: FunctionDependencies;
   /** The maps of this Function's own modules; empty unless the host asked for them. */
   readonly sourceMaps: SourceMapRef[];

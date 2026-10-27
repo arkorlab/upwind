@@ -1,4 +1,4 @@
-import type { FunctionSpec, SourceMapRef, WorkflowSpec } from '@stayingupwind/core/bundle';
+import type { WorkerFunctionSpec, SourceMapRef, WorkflowSpec } from '@stayingupwind/core/bundle';
 import type { AdapterOutput } from 'next';
 
 import { type FunctionsContext, patchFor, runtimeManifestJson } from './app-functions.ts';
@@ -62,7 +62,7 @@ export async function workflowBuildOf(
 export interface WorkflowParts {
   /** Where the workflow Function takes the SDK's queue, and which SDK it was built with. */
   readonly bundle: { readonly workflow?: WorkflowSpec };
-  readonly functions: { readonly workflow?: FunctionSpec };
+  readonly functions: { readonly workflow?: WorkerFunctionSpec };
   readonly dependencies: { readonly workflow?: FunctionDependencies };
   readonly sourceMaps: readonly SourceMapRef[];
 }

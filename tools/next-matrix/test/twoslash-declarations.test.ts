@@ -3,12 +3,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type { FunctionSpec } from '@stayingupwind/core/bundle';
+import type { WorkerFunctionSpec } from '@stayingupwind/core/bundle';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { checkedDeclarationSources } from '../src/twoslash-declarations.ts';
 
-function module(name: string, source: string): FunctionSpec['modules'][number] {
+function module(name: string, source: string): WorkerFunctionSpec['modules'][number] {
   return {
     name,
     type: 'data',

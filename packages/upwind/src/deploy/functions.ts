@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { appFunctions, type DeploymentBundle, type FunctionSpec } from '@stayingupwind/core/bundle';
+import {
+  appFunctions,
+  type DeploymentBundle,
+  type WorkerFunctionSpec as FunctionSpec,
+} from '@stayingupwind/core/bundle';
 import {
   formatResourcesManifest,
   RESOURCES_MANIFEST_BINDING,
@@ -16,6 +20,7 @@ import { type ModulePart, type WorkerBinding, workerForm } from './cloudflare/fo
 import { type AccountScope, putScript } from './cloudflare/workers.ts';
 import type { StorageKind } from './config.ts';
 import { functionScripts, type ProjectNames } from './names.ts';
+import { workerCliFunction } from './preflight.ts';
 import type { MadeStorage, ProjectStores } from './stores.ts';
 import { ensureWorker, holdReach, UNREACHED } from './uploads.ts';
 
@@ -137,7 +142,9 @@ export function bindingsOf(input: FunctionsInput): WorkerBinding[] {
 
 /** Every Function of the build, by its name, beside its spec. */
 function specsOf(bundle: DeploymentBundle): ReadonlyMap<string, FunctionSpec> {
-  const specs = new Map<string, FunctionSpec>(appFunctions(bundle));
+  const specs = new Map<string, FunctionSpec>(
+    appFunctions(bundle).map(([name, spec]) => [name, workerCliFunction(spec)]),
+  );
   if (bundle.functions.middleware !== undefined) {
     specs.set('middleware', bundle.functions.middleware);
   }

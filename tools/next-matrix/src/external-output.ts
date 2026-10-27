@@ -1,6 +1,7 @@
 import type { DeploymentBundle } from '@stayingupwind/core/bundle';
 
 import { functionWorker } from './function-worker.ts';
+import { workerApp } from './worker-function.ts';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const HTTP_OK = 200;
@@ -14,7 +15,7 @@ export async function externalOutputHolds(
   if (bundle.prerenders.some((entry) => entry.pathname === '/')) {
     return ['the external-output page was prerendered instead of remaining dynamic'];
   }
-  const spec = bundle.functions.app;
+  const spec = workerApp(bundle);
   if (spec.modules.every(({ name }) => !name.endsWith('_client-reference-manifest.json'))) {
     return ['the external-output Function carries no client-reference manifest'];
   }

@@ -7,6 +7,8 @@ import type { DeploymentBundle, FunctionSpec } from '@stayingupwind/core/bundle'
 import { MIDDLEWARE_DONE_HEADER, MIDDLEWARE_ONLY_HEADER } from '@stayingupwind/core/paas';
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
 
+import { workerApp, workerSpec } from './worker-function.ts';
+
 const TOTAL_MS = 120_000;
 const REQUEST_MS = 10_000;
 const CLEANUP_MS = 5000;
@@ -75,7 +77,8 @@ async function bounded<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> 
 }
 
 /** Verify uploaded bytes before constructing the same module graph in workerd. */
-async function modulesOf(spec: FunctionSpec, out: string) {
+async function modulesOf(inputSpec: FunctionSpec, out: string) {
+  const spec = workerSpec(inputSpec);
   const modules = await Promise.all(
     spec.modules.map(async (module) => {
       const bytes = await readFile(path.join(out, 'blobs', module.blob.sha256));
@@ -228,7 +231,12 @@ async function assertCase(client: FixtureClient, proof: CaseProof, own: boolean)
 }
 
 /** Exercise actual compiler output, not a direct call to a generated hook or its sources. */
-async function exercise(input: ExerciseInput, spec: FunctionSpec, proof: CaseProof): Promise<void> {
+async function exercise(
+  input: ExerciseInput,
+  candidate: FunctionSpec,
+  proof: CaseProof,
+): Promise<void> {
+  const spec = workerSpec(candidate);
   const runtime = new Miniflare(
     convertV4MiniflareOptions({
       name: 'instrumentation-fixture',
@@ -283,10 +291,10 @@ async function exerciseAll(input: ExerciseInput, cases: CaseProof[]): Promise<vo
   const lanes = input.edgeHosts
     ? ([
         ['middleware', input.bundle.functions.middleware],
-        ['app', input.bundle.functions.app],
-        ['app-edge', input.bundle.functions.app],
+        ['app', workerApp(input.bundle)],
+        ['app-edge', workerApp(input.bundle)],
       ] as const)
-    : ([['app-edge', input.bundle.functions.app]] as const);
+    : ([['app-edge', workerApp(input.bundle)]] as const);
   const selectedCases = input.edgeHosts
     ? [
         'normal',

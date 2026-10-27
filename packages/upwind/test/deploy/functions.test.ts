@@ -18,7 +18,7 @@ import { createCloudflareClient } from '../../src/deploy/cloudflare/client.ts';
 import type { AccountScope } from '../../src/deploy/cloudflare/workers.ts';
 import { type FunctionsInput, uploadFunctions } from '../../src/deploy/functions.ts';
 import { functionScripts, projectNames } from '../../src/deploy/names.ts';
-import { BUNDLE_PATH } from '../../src/deploy/preflight.ts';
+import { BUNDLE_PATH, workerCliFunction } from '../../src/deploy/preflight.ts';
 import { bundleOf, deployableFunction, functionOf, moduleOf, projectDir } from './bundle.ts';
 import { type FakeCloudflare, type FakeVersion, fakeCloudflare } from './fake-cloudflare.ts';
 
@@ -107,7 +107,7 @@ function digestsOf(bundle: DeploymentBundle): string[] {
   ];
   const digests = new Set<string>();
   for (const spec of specs) {
-    for (const module of spec.modules) {
+    for (const module of workerCliFunction(spec).modules) {
       digests.add(module.blob.sha256);
     }
   }
@@ -281,7 +281,7 @@ describe("a deployment's Functions", () => {
   it('are not uploaded, nor made, where a module is not the blob its bundle names', async () => {
     const fake = fakeCloudflare();
     const { input } = build();
-    const [chunk] = input.bundle.functions.app.modules;
+    const [chunk] = workerCliFunction(input.bundle.functions.app).modules;
     writeFileSync(
       path.join(input.bundleDir, 'blobs', chunk?.blob.sha256 ?? ''),
       'module.exports = 2;',

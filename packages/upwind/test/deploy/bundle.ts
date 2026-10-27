@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type { DeploymentBundle, FunctionSpec } from '@stayingupwind/core/bundle';
+import type { DeploymentBundle, WorkerFunctionSpec } from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
 
 /**
@@ -12,7 +12,7 @@ import { createId } from '@stayingupwind/core/util';
  * bundle's own schema.
  */
 
-type FunctionModule = FunctionSpec['modules'][number];
+type FunctionModule = WorkerFunctionSpec['modules'][number];
 
 /** What the runtime cache's Function host carries, which a Function built for a deploy has. */
 export const CACHE_HOST_SOURCE = "const naming = { copyCache: 'upwind-cache-host-artifacts-v1' };";
@@ -40,7 +40,7 @@ export function moduleOf(
   };
 }
 
-export function functionOf(modules: FunctionModule[]): FunctionSpec {
+export function functionOf(modules: FunctionModule[]): WorkerFunctionSpec {
   return {
     mainModule: 'index.mjs',
     modules,
@@ -50,7 +50,7 @@ export function functionOf(modules: FunctionModule[]): FunctionSpec {
 }
 
 /** A Function built for a deploy: a main module that carries the cache host. */
-export function deployableFunction(dir: string): FunctionSpec {
+export function deployableFunction(dir: string): WorkerFunctionSpec {
   return functionOf([
     moduleOf(dir, 'index.mjs', 'esm', `${CACHE_HOST_SOURCE}\nexport default {};`),
   ]);
@@ -58,7 +58,7 @@ export function deployableFunction(dir: string): FunctionSpec {
 
 /** A build of one page, as its bundle reads, with whatever the test changes. */
 export function bundleOf(
-  app: FunctionSpec,
+  app: WorkerFunctionSpec,
   extra: Partial<DeploymentBundle> = {},
 ): DeploymentBundle {
   return {

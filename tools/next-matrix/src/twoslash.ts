@@ -14,6 +14,7 @@ import {
   linkedImportProbeSource,
 } from './twoslash-probes.ts';
 import type { AnnotationProof, LinkedModuleEvidence, Mode, Proof } from './twoslash-proof.ts';
+import { workerApp, workerSpec } from './worker-function.ts';
 
 const MODES: readonly Mode[] = ['default', 'esnext'];
 const REQUEST_MS = 30_000;
@@ -89,7 +90,8 @@ async function bounded<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> 
 }
 
 /** The exact bytes and module names the adapter wrote, without rebundling its output. */
-async function modulesOf(spec: FunctionSpec, out: string, proof: Proof) {
+async function modulesOf(candidate: FunctionSpec, out: string, proof: Proof) {
+  const spec = workerSpec(candidate);
   const modules = await Promise.all(
     spec.modules.map(async (module) => {
       const bytes = await readFile(path.join(out, 'blobs', module.blob.sha256));
@@ -158,8 +160,8 @@ function runtimeOf(
       name: 'twoslash-fixture',
       modulesRoot: '/bundle',
       modules: [...probe, ...modules],
-      compatibilityDate: bundle.functions.app.compatibilityDate,
-      compatibilityFlags: bundle.functions.app.compatibilityFlags,
+      compatibilityDate: workerApp(bundle).compatibilityDate,
+      compatibilityFlags: workerApp(bundle).compatibilityFlags,
       bindings: { NODE_ENV: 'production', NEXT_DEPLOYMENT_ID: bundle.deploymentId },
       cf: false,
       telemetry: { enabled: false },
@@ -313,7 +315,7 @@ async function probeLinkedImport(
   proof: Proof,
   signal: AbortSignal,
 ): Promise<void> {
-  const linked = bundle.functions.app.modules.filter((module) => TWOSLASH_MODULE.test(module.name));
+  const linked = workerApp(bundle).modules.filter((module) => TWOSLASH_MODULE.test(module.name));
   assert.equal(linked.length, 1, 'one emitted linked Twoslash entry must own the fixture');
   const module = linked[0];
   assert.ok(module !== undefined);
@@ -384,7 +386,7 @@ export async function twoslashHolds(
     nextVersion: bundle.nextVersion,
     packageVersions: await packageVersions(path.dirname(out)),
     sourceSha256: {},
-    declarationNamedModules: bundle.functions.app.modules.filter((module) =>
+    declarationNamedModules: workerApp(bundle).modules.filter((module) =>
       DECLARATION_MODULE.test(module.name),
     ).length,
     tracedDeclarations: null,
@@ -407,21 +409,21 @@ export async function twoslashHolds(
     assert.equal(proof.packageVersions['twoslash'], '0.3.4');
     assert.equal(proof.packageVersions['typescript'], '5.9.2');
     assert.equal(
-      bundle.functions.app.mainModule,
+      workerApp(bundle).mainModule,
       'index.mjs',
       'the probe must name the emitted runtime',
     );
     assert.ok(
-      bundle.functions.app.modules.some((module) => module.name === 'app.cjs'),
+      workerApp(bundle).modules.some((module) => module.name === 'app.cjs'),
       'the probe must name the emitted application',
     );
     proof.declarationSources = await checkedDeclarationSources(
       path.dirname(out),
-      bundle.functions.app,
+      workerApp(bundle),
     );
     proof.tracedDeclarations = proof.declarationSources.length;
     proof.functionSize = recordedSize(dependencies);
-    const modules = await modulesOf(bundle.functions.app, out, proof);
+    const modules = await modulesOf(workerApp(bundle), out, proof);
     assert.equal(
       proof.moduleBytes,
       proof.functionSize.bytes,

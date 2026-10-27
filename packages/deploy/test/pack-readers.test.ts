@@ -1,4 +1,7 @@
-import type { DeploymentBundle, FunctionSpec } from '@stayingupwind/core/bundle';
+import type {
+  DeploymentBundle,
+  WorkerFunctionSpec as FunctionSpec,
+} from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
 import type { ApprovedPackReaderRollout } from '@stayingupwind/host/cache';
 import { describe, expect, it } from 'vitest';
@@ -20,7 +23,9 @@ function spec(digit: string): FunctionSpec {
   };
 }
 
-function bundle(): DeploymentBundle {
+function bundle(): DeploymentBundle & {
+  functions: DeploymentBundle['functions'] & { app: FunctionSpec };
+} {
   return {
     v: 1,
     deploymentId: createId('dpl'),
@@ -91,6 +96,40 @@ function approval(): ApprovedPackReaderRollout {
 }
 
 describe('a trusted pack-reader rollout applied to an immutable bundle', () => {
+  it('keeps native artifact readers on the existing cache contract until separately approved', () => {
+    const value = bundle();
+
+    expect(
+      scopePackReadersOf(
+        {
+          ...value,
+          v: 12,
+          routerReferences: 'one-pass',
+          functions: {
+            ...value.functions,
+            app: {
+              runtime: 'node-container',
+              entrypoint: 'upwind/server.mjs',
+              artifact: {
+                sha256: 'a'.repeat(64),
+                byteLength: 1024,
+                contentType: 'application/gzip',
+              },
+              abi: {
+                nodeVersion: '24.22.1',
+                nodeAbi: '137',
+                platform: 'linux',
+                arch: 'x64',
+                libc: 'glibc',
+              },
+            },
+          },
+        },
+        approval(),
+      ),
+    ).toBeUndefined();
+  });
+
   it('requires approval of every actual main module and records the complete inventory', () => {
     const value = bundle();
     const proof = scopePackReadersOf(value, approval());

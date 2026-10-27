@@ -3,12 +3,12 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type { FunctionSpec } from '@stayingupwind/core/bundle';
+import type { WorkerFunctionSpec } from '@stayingupwind/core/bundle';
 import { describe, expect, it } from 'vitest';
 
 import { deploymentFunctions, type DeploymentFunctions } from '../src/functions.ts';
 
-type FunctionModule = FunctionSpec['modules'][number];
+type FunctionModule = WorkerFunctionSpec['modules'][number];
 
 const DEPLOYMENT_ID = 'dpl_4Fixture2Minima1AppXy';
 const BINDINGS = {
@@ -52,7 +52,7 @@ function module(
   };
 }
 
-function spec(modules: FunctionModule[]): FunctionSpec {
+function spec(modules: FunctionModule[]): WorkerFunctionSpec {
   return {
     mainModule: 'index.mjs',
     modules,

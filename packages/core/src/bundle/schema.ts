@@ -1,9 +1,10 @@
-import { sha256HexSchema } from '../artifact/artifact.ts';
 import { STATIC_PAGES_FALLBACK_PRIVACY } from '../cache/static-page-version.ts';
 import { cronsSchema } from '../cron/schema.ts';
 import { checkedImagesConfigSchema } from '../images/build.ts';
 import { runnableSourceRegexSchema, unsafeRoutePatternReason } from '../request/pattern-safety.ts';
 import * as z from '../schema/index.ts';
+import { forEachBlob } from './blob-references.ts';
+import { blobRefSchema } from './blob.ts';
 import {
   routeGatesSchema,
   routeHasSchema,
@@ -22,9 +23,32 @@ import {
   DURABLE_OBJECT_BUNDLE_VERSION,
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
 } from './durable-objects.ts';
+import {
+  functionSchema,
+  isNodeContainerFunction,
+  workerFunctionSchema,
+} from './function-contract.ts';
 import { judgedApart } from './gate-conditions.ts';
 import { gatedEitherWay, isOptimizerPath, rewritesOnto } from './gate-routes.ts';
 import { workerClassIssues } from './worker-classes.ts';
+
+export { type BlobRef, blobRefSchema } from './blob.ts';
+export { bundleBlobs } from './blob-references.ts';
+export {
+  type FunctionModule,
+  type FunctionModuleType,
+  functionModuleSchema,
+  functionModuleTypeSchema,
+  type FunctionSpec,
+  functionSchema,
+  type WorkerFunctionSpec,
+  workerFunctionSchema,
+  type NodeContainerFunctionSpec,
+  nodeContainerFunctionSchema,
+  nodeContainerAbiSchema,
+  nodeArtifactPathSchema,
+  isNodeContainerFunction,
+} from './function-contract.ts';
 
 export {
   type RouteHas,
@@ -69,11 +93,16 @@ export const SPLIT_BUNDLE_VERSION = 2;
 export const ONE_PASS_BUNDLE_VERSION = 3;
 export const ONE_PASS_SPLIT_BUNDLE_VERSION = 4;
 
+/** Native Node.js renderers use immutable physical artifacts, rather than Worker modules. */
+export const NATIVE_FUNCTION_BUNDLE_VERSION = 11;
+export const NATIVE_FUNCTION_SPLIT_BUNDLE_VERSION = 12;
+
 /** The versions of a bundle whose routes the build split across app Functions. */
 const SPLIT_VERSIONS: ReadonlySet<number> = new Set([
   CLOUDFLARE_WORKFLOW_SPLIT_BUNDLE_VERSION,
   CONTAINER_SPLIT_BUNDLE_VERSION,
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
+  NATIVE_FUNCTION_SPLIT_BUNDLE_VERSION,
   ONE_PASS_SPLIT_BUNDLE_VERSION,
   SPLIT_BUNDLE_VERSION,
 ]);
@@ -85,6 +114,8 @@ const ONE_PASS_VERSIONS: ReadonlySet<number> = new Set([
   CONTAINER_SPLIT_BUNDLE_VERSION,
   DURABLE_OBJECT_BUNDLE_VERSION,
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
+  NATIVE_FUNCTION_BUNDLE_VERSION,
+  NATIVE_FUNCTION_SPLIT_BUNDLE_VERSION,
   ONE_PASS_BUNDLE_VERSION,
   ONE_PASS_SPLIT_BUNDLE_VERSION,
 ]);
@@ -95,30 +126,6 @@ const ONE_PASS_VERSIONS: ReadonlySet<number> = new Set([
  * adapter's planner makes, and is here so that no bundle can ask for thousands.
  */
 export const MAX_APP_FUNCTIONS = 32;
-
-/**
- * What a blob is served as.
- *
- * The adapter writes a media type, but the bundle is uploaded as JSON by whoever owns the project,
- * and this string is put in a `content-type` header — by the edge on the hot path, by the shell
- * a reader that frames a build's shells, by the Cache API write behind a static file. A value a header cannot hold makes the
- * response fail to build where it is served rather than where it was accepted, so the upload is
- * where it is refused: printable ASCII (no newline can split a response, no control character can
- * confuse a parser) with the slash a media type has.
- */
-const contentTypeSchema = z
-  .string()
-  .min(1)
-  .regex(/^[\u{20}-\u{7E}]+$/u, 'expected printable ASCII')
-  .refine((value) => value.includes('/'), 'expected a media type');
-
-/** A file in the bundle, named by content. */
-export const blobRefSchema = z.object({
-  sha256: sha256HexSchema,
-  byteLength: z.number().int().nonnegative(),
-  contentType: contentTypeSchema,
-});
-export type BlobRef = z.infer<typeof blobRefSchema>;
 
 /**
  * A route's condition (`routeHasSchema`, in `carried.ts`), with its pattern held to what the edge
@@ -351,26 +358,6 @@ export const sourceMapSchema = z.object({
 });
 export type SourceMapRef = z.infer<typeof sourceMapSchema>;
 
-export const functionModuleTypeSchema = z.enum(['esm', 'commonjs', 'text', 'json', 'wasm', 'data']);
-export type FunctionModuleType = z.infer<typeof functionModuleTypeSchema>;
-
-export const functionModuleSchema = z.object({
-  /** Module path inside the Function (`index.mjs`, `.next/server/app-paths-manifest.json`). */
-  name: z.string().min(1),
-  type: functionModuleTypeSchema,
-  blob: blobRefSchema,
-});
-export type FunctionModule = z.infer<typeof functionModuleSchema>;
-
-/** A Function as it will be uploaded: its modules, entry, and the runtime it was built for. */
-export const functionSchema = z.object({
-  mainModule: z.string().min(1),
-  modules: z.array(functionModuleSchema),
-  compatibilityDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
-  compatibilityFlags: z.array(z.string()),
-});
-export type FunctionSpec = z.infer<typeof functionSchema>;
-
 /**
  * What a host needs to know of the Workflow SDK a deployment runs: where the workflow Function
  * takes a queue's messages (`route`, the SDK's flow route under the project's `basePath`), and the
@@ -445,7 +432,7 @@ export const bundleConfigSchema = z.looseObject({
 });
 export type BundleConfig = z.infer<typeof bundleConfigSchema>;
 
-const durableObjectFunctionsSchema = z.record(z.string(), functionSchema);
+const durableObjectFunctionsSchema = z.record(z.string(), workerFunctionSchema);
 
 const bundleSchema = z.object({
   v: z.literal([
@@ -459,6 +446,8 @@ const bundleSchema = z.object({
     CLOUDFLARE_WORKFLOW_SPLIT_BUNDLE_VERSION,
     CONTAINER_BUNDLE_VERSION,
     CONTAINER_SPLIT_BUNDLE_VERSION,
+    NATIVE_FUNCTION_BUNDLE_VERSION,
+    NATIVE_FUNCTION_SPLIT_BUNDLE_VERSION,
   ]),
   deploymentId: deploymentIdSchema,
   nextVersion: z.string().min(1),
@@ -473,7 +462,7 @@ const bundleSchema = z.object({
   /**
    * How this deployment's Functions fill a header's `$` references (`routerReferencesSchema`), so
    * that what the edge answers for them carries the values the Function would have given it. Said
-   * by a bundle of version 3 through 10, and by no other: absent from a
+   * by a bundle of version 3 through 12, and by no other: absent from a
    * bundle an earlier adapter wrote, whose Functions route with the router before.
    */
   routerReferences: routerReferencesSchema.optional(),
@@ -536,7 +525,7 @@ const bundleSchema = z.object({
   functions: z.object({
     /** The application's code: every route's, or — when `split` is there — the first group's. */
     app: functionSchema,
-    middleware: functionSchema.optional(),
+    middleware: workerFunctionSchema.optional(),
     /**
      * The app Functions after the first, by name, when the build split the routes across them
      * (`SPLIT_BUNDLE_VERSION`). Each carries its own routes' code and prerendered bodies, and every
@@ -544,7 +533,7 @@ const bundleSchema = z.object({
      */
     split: z.record(splitFunctionNameSchema, functionSchema).optional(),
     /** Present exactly when `workflow` is: the Function that runs the project's workflows. */
-    workflow: functionSchema.optional(),
+    workflow: workerFunctionSchema.optional(),
     durableObjects: durableObjectFunctionsSchema.optional(),
     cloudflareWorkflows: durableObjectFunctionsSchema.optional(),
   }),
@@ -622,7 +611,9 @@ function splitIssues(bundle: DeploymentBundle): string[] {
     issues.push('functions.split names no Function; a bundle that was not split leaves it out');
   }
   if (SPLIT_VERSIONS.has(bundle.v) !== names.length > 0) {
-    issues.push(`a split bundle must use version 2, 4, 6, 8 or 10, and only such a bundle does`);
+    issues.push(
+      `a split bundle must use version 2, 4, 6, 8, 10 or 12, and only such a bundle does`,
+    );
   }
   if (names.length + 1 > MAX_APP_FUNCTIONS) {
     issues.push(
@@ -757,7 +748,7 @@ export const deploymentBundleSchema = bundleSchema
     if (ONE_PASS_VERSIONS.has(bundle.v) !== (bundle.routerReferences !== undefined)) {
       ctx.addIssue({
         code: 'custom',
-        message: `a bundle says how its Functions fill a header's references at version 3 through 10, and only such a bundle does`,
+        message: `a bundle says how its Functions fill a header's references at version 3 through 12, and only such a bundle does`,
       });
     }
   })
@@ -773,47 +764,30 @@ export const deploymentBundleSchema = bundleSchema
   })
   .superRefine((bundle, ctx) => {
     for (const message of workerClassIssues(bundle)) ctx.addIssue({ code: 'custom', message });
+  })
+  .superRefine((bundle, ctx) => {
+    const native = [bundle.functions.app, ...Object.values(bundle.functions.split ?? {})].some(
+      (spec) => isNodeContainerFunction(spec),
+    );
+    const version =
+      bundle.v === NATIVE_FUNCTION_BUNDLE_VERSION ||
+      bundle.v === NATIVE_FUNCTION_SPLIT_BUNDLE_VERSION;
+    if (native !== version)
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'native Functions require bundle version 11 or 12, and only such a bundle uses those versions',
+      });
+    if (
+      native &&
+      (bundle.durableObjects !== undefined ||
+        bundle.cloudflareWorkflows !== undefined ||
+        bundle.workflow !== undefined)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'native Functions currently support shared cache, HTTP services and plain environment values only',
+      });
+    }
   });
-
-/** The complete reference walk shared by validation and collection. */
-function forEachBlob(bundle: DeploymentBundle, visit: (ref: BlobRef) => void): void {
-  const add = (ref: BlobRef | undefined): void => {
-    if (ref !== undefined) visit(ref);
-  };
-  for (const prerender of bundle.prerenders) {
-    add(prerender.body);
-    add(prerender.postponed);
-  }
-  for (const file of bundle.staticFiles) {
-    add(file.blob);
-  }
-  if (bundle.sourceMaps !== undefined) {
-    for (const map of bundle.sourceMaps) {
-      add(map.blob);
-      add(map.sources);
-    }
-  }
-  const functions = [
-    bundle.functions.app,
-    bundle.functions.middleware,
-    ...Object.values(bundle.functions.split ?? {}),
-    bundle.functions.workflow,
-    ...Object.values(bundle.functions.durableObjects ?? {}),
-    ...Object.values(bundle.functions.cloudflareWorkflows ?? {}),
-  ];
-  for (const spec of functions) {
-    if (spec === undefined) {
-      continue;
-    }
-    for (const module of spec.modules) {
-      add(module.blob);
-    }
-  }
-}
-
-/** Every blob a validated bundle references, deduplicated by content. */
-export function bundleBlobs(bundle: DeploymentBundle): Map<string, BlobRef> {
-  const blobs = new Map<string, BlobRef>();
-  forEachBlob(bundle, (ref) => blobs.set(ref.sha256, ref));
-  return blobs;
-}

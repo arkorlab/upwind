@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type { FunctionSpec } from '@stayingupwind/core/bundle';
+import type { WorkerFunctionSpec } from '@stayingupwind/core/bundle';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { deploymentFunctions } from '../src/functions.ts';
@@ -15,7 +15,7 @@ const definition = { name: 'JOBS', module: 'jobs.ts', className: 'Jobs' };
 
 function fixture(source = 'export class UpwindCloudflareWorkflow {}'): {
   dir: string;
-  spec: FunctionSpec;
+  spec: WorkerFunctionSpec;
   sha256: string;
 } {
   const dir = mkdtempSync(path.join(tmpdir(), 'upwind-preview-workflow-'));
