@@ -117,6 +117,7 @@ jobs:
       nextjs: ${{ steps.plan.outputs.nextjs }}
       tests: ${{ steps.plan.outputs.tests }}
       cache: ${{ steps.plan.outputs.cache }}
+      started-at: ${{ steps.plan.outputs.started-at }}
     steps:
       - name: Work out the shards
         id: plan
@@ -306,6 +307,7 @@ jobs:
             echo "nextjs=$nextjs"
             echo "tests=$selection"
             echo "cache=$cache"
+            echo "started-at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           } >>"$GITHUB_OUTPUT"
           # One shard asked for by name is one job: nothing of the rest of the split runs, so nothing
           # about how many could have run at once is true of it.
@@ -354,14 +356,6 @@ jobs:
           ref: ${{ needs.plan.outputs.nextjs }}
           path: nextjs
           fetch-depth: 25
-      # Scratch only: the header checks out, so the checks after them run on this target.
-      - name: Take out the x-vercel-cache assertions
-        working-directory: nextjs
-        run: |
-          files='test/e2e/app-dir/cache-components-prerender-matrix/cache-components-prerender-matrix.test.ts test/e2e/app-dir/partial-fallback-shell-upgrade/partial-fallback-shell-upgrade.test.ts'
-          perl -0pi -e "s/expect\(([\w.]+)\.headers\.get\('x-vercel-cache'\)\)\.toBe\(/void (/g" $files
-          grep -n "x-vercel-cache" $files || true
-          git diff --stat
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -435,8 +429,51 @@ jobs:
         # slow slice of suites, not for a build that stalled.
         timeout-minutes: 30
         run: pnpm install && pnpm build && pnpm install
-      # Downloads and apt: a stall is tried again rather than holding the shard until the job's limit,
-      # as two shards were held on 2026-10-26, five and a half hours each before they were cancelled.
+      # The suites this shard is to run, listed as the run below selects them, before Chromium and the
+      # adapter are built: a shard that fails after this leaves its suites named, and missing from its
+      # results, rather than unknown (`keep-results.ts`, `judge-results.ts`).
+      - name: List what this shard runs
+        id: inventory
+        working-directory: nextjs
+        env:
+          NEXT_TEST_MODE: deploy
+          NEXT_ENABLE_ADAPTER: 1
+          NEXT_EXTERNAL_TESTS_FILTERS: test/deploy-tests-manifest.json
+          IS_TURBOPACK_TEST: 1
+          NEXT_TEST_JOB: 1
+          NEXT_TEST_SKIP_RESULT_CACHE: 1
+          TESTS: ${{ needs.plan.outputs.tests }}
+          SHARD: ${{ matrix.shard }}
+          TOTAL: ${{ needs.plan.outputs.total }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/deploy-results"
+          group=''
+          if [ "$TOTAL" -gt 1 ]; then
+            group="-g $SHARD/$TOTAL"
+          fi
+          paths=''
+          if [ "$(printf '%s' "$TESTS" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')" != 'all' ]; then
+            paths="$TESTS"
+          fi
+          listing="$RUNNER_TEMP/deploy-results/expected-tests.txt"
+          # shellcheck disable=SC2086 -- both are several words, or none, on purpose
+          node run-tests.js --type e2e $group $paths --print-tests >"$listing"
+          count="$(grep -Ec '^[[:space:]]*test/[^[:space:]]+\.test\.[jt]sx?[[:space:]]*$' "$listing" || true)"
+          # A selection named by path that the manifest leaves nothing of would run nothing and pass,
+          # and its results would say so: refused here instead. `all` is the manifest's own.
+          if [ "$count" -eq 0 ] && [ -n "$paths" ]; then
+            echo 'the deploy manifest leaves none of the suites named: the run would run none' >&2
+            exit 1
+          fi
+          echo "shard $SHARD: $count suite(s) listed" >>"$GITHUB_STEP_SUMMARY"
+      # The headless shell alone and no apt, as Next.js's own CI installs Chromium
+      # (`.github/workflows/build_reusable.yml`, `--with-deps` for the other browsers only): the runner
+      # has the libraries it needs. Both stalls were in apt. On 2026-10-26 `apt-get update` held two
+      # shards five and a half hours, until they were cancelled. On 2026-10-27 a slow mirror ran an
+      # attempt past its six minutes, and its `apt-get`, which runs as root and so outlives the cut, held
+      # dpkg's lock against the two attempts after it. A download that stalls is tried again rather than
+      # holding the shard until the job's limit.
       - name: Install Chromium
         working-directory: nextjs
         timeout-minutes: 20
@@ -464,9 +501,40 @@ jobs:
       # deploy the same fixture again and say nothing about why the first one failed. A suite that fails does not stop the rest — the runner carries on
       # and reports every one at the end, which is what makes a long run an inventory. Its own job
       # summary lists the failures, so a shard's findings are readable without opening the log.
-      # Scratch only: the npm the hook's npm installer requires (`tools/deploy-tests/README.md`).
-      - name: Install npm 11.19.1
-        run: npm install -g npm@11.19.1 && npm --version
+      # Scratch only: vary-params-base-dynamic's fix for upstream, under `next start` as Next.js's CI runs
+      # it. Two copies get a 400 ms pause before their `act`, as a slow runner gives: the original, and
+      # the fixed. Then the suite itself is patched, for the run below on this target.
+      - name: vary-params-base-dynamic under next start
+        working-directory: nextjs
+        env:
+          NEXT_TEST_MODE: start
+          NEXT_TELEMETRY_DISABLED: 1
+          IS_TURBOPACK_TEST: 1
+          NEXT_TEST_JOB: 1
+          NEXT_TEST_SKIP_RESULT_CACHE: 1
+        run: |
+          set -u
+          base=test/e2e/app-dir/segment-cache/vary-params-base-dynamic
+          pause='    await new Promise((resolve) => setTimeout(resolve, 400))'
+          cp -r "$base" "$base-original-paused"
+          perl -0pi -e "s/\n    await act\(async \(\) => \{/\n$pause\n    await act(async () => {/" "$base-original-paused/vary-params-base-dynamic.test.ts"
+          git apply ../adapter/scratch/vpbd.patch
+          cp -r "$base" "$base-fixed-paused"
+          perl -0pi -e "s/\n    await act\(async \(\) => \{/\n$pause\n    await act(async () => {/" "$base-fixed-paused/vary-params-base-dynamic.test.ts"
+          grep -c "setTimeout(resolve, 400)" "$base-original-paused/vary-params-base-dynamic.test.ts" "$base-fixed-paused/vary-params-base-dynamic.test.ts"
+          git status --short
+          for variant in original-paused fixed-paused fixed; do
+            dir="$base-$variant"
+            [ "$variant" = fixed ] && dir="$base"
+            for attempt in 1 2; do
+              if node run-tests.js --type e2e -c 1 --retries 0 "$dir/vary-params-base-dynamic.test.ts" > "$RUNNER_TEMP/vpbd-$variant-$attempt.log" 2>&1; then
+                echo "VPBD $variant attempt $attempt: passed"
+              else
+                echo "VPBD $variant attempt $attempt: failed"
+                grep -E "✕|Timed out waiting|Tests:" "$RUNNER_TEMP/vpbd-$variant-$attempt.log" | head -20
+              fi
+            done
+          done
       - name: Run the suite
         working-directory: nextjs
         env:
@@ -486,6 +554,8 @@ jobs:
           NEXT_TELEMETRY_DISABLED: 1
           IS_TURBOPACK_TEST: 1
           NEXT_TEST_JOB: 1
+          # As the listing above has it, so that the two select the same suites.
+          NEXT_TEST_SKIP_RESULT_CACHE: 1
           ADAPTER_DIR: ${{ github.workspace }}/adapter
           NEXT_TEST_DEPLOY_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-deploy.sh
           NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-logs.sh
@@ -525,4 +595,91 @@ jobs:
             paths="$TESTS"
           fi
           # shellcheck disable=SC2086 -- both are several words, or none, on purpose
-          node run-tests.js --type e2e -c "$CONCURRENCY" --retries 0 $group $paths
+          if node run-tests.js --type e2e -c "$CONCURRENCY" --retries 0 $group $paths; then
+            result=0
+          else
+            result=$?
+          fi
+          # What the runner said of the shard, kept with its results where they are kept (below).
+          if [ -d "$RUNNER_TEMP/deploy-results" ]; then
+            printf '%s\n' "$result" >"$RUNNER_TEMP/deploy-results/runner-exit-code.txt"
+          fi
+          # On this machine's targets the verdict below fails the shard instead: a failure
+          # `REVIEWED.md` reads as saying nothing against this adapter is not one.
+          if [ "$ADAPTER_TEST_TARGET" != 'host' ]; then
+            exit 0
+          fi
+          exit "$result"
+      # The shard's results, kept in the form `keep-results.ts` writes: the run's identity, the suites
+      # listed, the runner's exit code, and each case's names and status — never a message, an
+      # application's URL or a project. Public, as this repository's artifacts are, for a month: a
+      # host's for a compatibility record, this machine's targets' for the report below.
+      - name: Keep this shard's results
+        if: always() && steps.inventory.outcome == 'success'
+        env:
+          TARGET: ${{ matrix.target }}
+          CACHE: ${{ needs.plan.outputs.cache }}
+          ADAPTER_COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          STARTED_AT: ${{ needs.plan.outputs.started-at }}
+          TESTS: ${{ needs.plan.outputs.tests }}
+          SHARD: ${{ matrix.shard }}
+          TOTAL: ${{ needs.plan.outputs.total }}
+        run: |
+          set -euo pipefail
+          NEXT_COMMIT="$(git -C nextjs rev-parse HEAD)" FINISHED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            node adapter/tools/deploy-tests/src/keep-results.ts --next-dir nextjs \
+            --output "$RUNNER_TEMP/deploy-results"
+      # On this machine's targets, the shard's results judged against the cases `REVIEWED.md` reads
+      # (`judge-results.ts`): what failed and is read there does not fail the shard, and anything else
+      # that failed does, as does a suite that left no result. The verdict goes into the results kept.
+      - name: Judge this shard's results
+        if: always() && matrix.target != 'host' && steps.inventory.outcome == 'success'
+        env:
+          TARGET: ${{ matrix.target }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          NEXT_COMMIT="$(git -C nextjs rev-parse HEAD)" \
+            node adapter/tools/deploy-tests/src/judge-results.ts --next-dir nextjs \
+            --results "$RUNNER_TEMP/deploy-results"
+      # Named by the shard alone on a host, as a record reads them, and by the target as well on this
+      # machine, whose two targets share a night's run.
+      - name: Save this shard's results
+        if: always() && steps.inventory.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.target == 'host' && format('deploy-results-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.shard) || format('deploy-results-{0}-{1}-{2}-{3}', github.run_id, github.run_attempt, matrix.target, matrix.shard) }}
+          path: ${{ runner.temp }}/deploy-results
+          if-no-files-found: error
+          retention-days: 30
+
+  # What a run on this machine's targets came to on each of them: every shard's verdict summed into
+  # this job's summary (`report-results.ts`), with the shards that left none named. A host's run is
+  # read from its results instead, by whoever keeps its record.
+  report:
+    needs: [plan, deploy-tests]
+    if: always() && needs.plan.result == 'success' && !contains(needs.plan.outputs.matrix, '"target":"host"')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tools/deploy-tests/src
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # A shard that stopped before its results were kept left no artifact, and the report names it:
+      # none at all is a report of every shard missing, not a reason to stop before it.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: deploy-results-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/deploy-results
+      - name: Sum the shards' verdicts
+        env:
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: node tools/deploy-tests/src/report-results.ts --dir "$RUNNER_TEMP/deploy-results"

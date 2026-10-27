@@ -49,13 +49,6 @@ case "$install_manager" in
     exit 1
     ;;
 esac
-# Scratch only: the install this suite's deploy-mode rewrite assumes.
-case "${JEST_SUITE_NAME:-}" in
-  *test/e2e/app-dir/next-dist-client-esm-import/*)
-    install_manager=npm
-    echo 'scratch: npm install for this suite' >&2
-    ;;
-esac
 
 # The suite's own variables (`createNext({ env })`): what the harness handed this hook beyond its own
 # environment, read before anything below sets a variable of its own (`src/suite-env.ts`). The harness
@@ -115,11 +108,13 @@ export NEXT_PRIVATE_TEST_MODE=e2e
 # `.arkor/node/` instead of Workers. A host builds with the adapter alone, unless the run asks for the
 # runtime cache a host serves behind its own edge (`ADAPTER_TEST_CACHE=hosted`): then its host goes
 # into every Function without the beacon a standalone cache's Functions keep, so that where the scope
-# stands is what the host's edge says, as it is for a deployment the host builds itself.
+# stands is what the host's edge says, and the prefetch segments stay out of them for that edge to
+# answer — as they are for a deployment the host builds itself.
 case "$target" in
   host)
     if [ "$cache" = hosted ]; then
       export UPWIND_CACHE_HOST_MODULE="${adapter_dir}/packages/cache/src/function/hosted.ts"
+      export UPWIND_UNSHIPPED_OUTPUTS=prefetch-segments
       if [ ! -f "$UPWIND_CACHE_HOST_MODULE" ]; then
         echo "no runtime cache host at ${UPWIND_CACHE_HOST_MODULE}" >&2
         exit 1
@@ -203,10 +198,17 @@ case "${JEST_SUITE_NAME:-}" in
     export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--experimental-transform-types"
     echo 'a suite of a next.config Node.js loads itself: built with that loader, as Next.js builds it' >&2
     ;;
+  # This fixture configures a cache handler of its own unless `VERCEL` is set at build
+  # (`next.config.js`), and that handler keeps nothing: `get` answers `null`, and `set` stores no
+  # value. The case it runs when deployed expects its values to stay cached, as they do on Vercel,
+  # where no handler is configured and the deployment's own cache keeps them. Built with `VERCEL=1`,
+  # the application leaves its cache to the deployment here as well, which is what the case tests.
+  # Next.js 16.4.3 reads `VERCEL` elsewhere only to choose Open Graph's fallback `metadataBase`
+  # (`resolve-opengraph.js`) and to upload traces (`trace-uploader.js`); this fixture uses neither. The
+  # build alone is given it: the deployment's environment is the fixture's and the suite's.
   *test/e2e/app-dir/non-ascii-cache-item-name/*)
-    # Scratch only: the fixture keeps its own cache handler unless VERCEL is set.
     export VERCEL=1
-    echo 'scratch: VERCEL=1 for this build' >&2
+    echo 'a fixture that leaves its cache to the deployment only on Vercel: built with VERCEL=1' >&2
     ;;
 esac
 

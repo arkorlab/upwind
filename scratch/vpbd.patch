@@ -1,0 +1,72 @@
+From bbfff093ab4238b6e010e92a9a9cc94d5ecfa4d8 Mon Sep 17 00:00:00 2001
+From: k-taro56 <121674121+k-taro56@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 17:27:12 +0900
+Subject: [PATCH] test: start vary-params-base-dynamic's accordion prefetches
+ from a page without visible links
+
+`collectSegmentPrefetchResponses` reveals an accordion link inside `act`, which
+times out when no request starts. Since the visible navigation links were added
+to the home page, they prefetch the same routes as soon as it loads, outside
+`act`. When those prefetches finish before `act` begins, the revealed link finds
+the routes cached and starts no request, and the case fails with "Timed out
+waiting for a request to be initiated".
+
+Start the helper from a page whose only links are the accordions, as the suite
+did before the navigation links were added.
+---
+ .../app/link-accordions/page.tsx              | 21 +++++++++++++++++++
+ .../vary-params-base-dynamic.test.ts          |  8 ++++++-
+ 2 files changed, 28 insertions(+), 1 deletion(-)
+ create mode 100644 test/e2e/app-dir/segment-cache/vary-params-base-dynamic/app/link-accordions/page.tsx
+
+diff --git a/test/e2e/app-dir/segment-cache/vary-params-base-dynamic/app/link-accordions/page.tsx b/test/e2e/app-dir/segment-cache/vary-params-base-dynamic/app/link-accordions/page.tsx
+new file mode 100644
+index 0000000..d527c7d
+--- /dev/null
++++ b/test/e2e/app-dir/segment-cache/vary-params-base-dynamic/app/link-accordions/page.tsx
+@@ -0,0 +1,21 @@
++import { LinkAccordion } from '../../components/link-accordion'
++
++// Each link stays hidden until its accordion is opened, so these routes are
++// prefetched only inside the `act` scope that opens it. The home page's links
++// are visible as soon as it loads and prefetch the same routes outside `act`.
++export default function LinkAccordionsPage() {
++  return (
++    <ul>
++      <li>
++        <LinkAccordion href="/acme/dashboard">
++          Team project: acme/dashboard
++        </LinkAccordion>
++      </li>
++      <li>
++        <LinkAccordion href="/globex/portal">
++          Team project: globex/portal
++        </LinkAccordion>
++      </li>
++    </ul>
++  )
++}
+diff --git a/test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts b/test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
+index f32b223..33e5678 100644
+--- a/test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
++++ b/test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts
+@@ -82,9 +82,15 @@ describe('segment cache - vary params base dynamic', () => {
+       }))
+   }
+ 
++  // Revealing an accordion's link must start the route's prefetches inside
++  // `act`, which times out when none starts. Starting from the home page, the
++  // visible links there prefetch the same routes as soon as it loads; when
++  // those prefetches finish before `act` begins, the revealed link finds the
++  // routes already cached and starts nothing. So start from a page whose only
++  // links are the accordions'.
+   const collectSegmentPrefetchResponses = async (
+     href: string,
+-    startPath: string = '/'
++    startPath: string = '/link-accordions'
+   ) => {
+     let act: ReturnType<typeof createRouterAct>
+     const segmentPrefetchResponses: Array<Promise<SegmentPrefetchResponse>> = []
+-- 
+2.43.0
+
