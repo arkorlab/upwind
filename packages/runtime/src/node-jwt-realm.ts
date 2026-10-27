@@ -424,6 +424,7 @@ export function captureNodeJwtRealm(
   const environment = data(processObject, 'env');
   if (!object(environment)) fail('missing Node environment');
   const capture = new BuiltinCapture();
+  for (const key of ['NODE_ENV', 'NEXT_RUNTIME', 'TURBOPACK']) capture.optional(environment, key);
   const roots = capture.roots;
   let globalBuffer: ObjectValue | undefined;
   let index = 0;

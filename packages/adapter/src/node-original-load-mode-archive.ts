@@ -17,6 +17,7 @@ import type { NodeFunctionProof } from './node-proof.ts';
 import { assertRawNodeSource } from './node-source-runtime.ts';
 
 type OriginalNodeSource = OriginalNodeModeSource;
+const MAX_DIAGNOSTIC_NAME_CHARACTERS = 240;
 interface CopiedNodeSources {
   readonly files: ReadonlyMap<string, Uint8Array>;
   readonly nameOf: (file: string) => string;
@@ -41,7 +42,11 @@ function assertCopiedSource(
   const bytes = copied.files.get(name);
   if (bytes === undefined || digest(bytes) !== original.sha256)
     throw new AuditError(
-      'Original Node graph source is absent or changed in its physical artifact',
+      `Original Node graph source is absent or changed in its physical artifact: ${JSON.stringify(
+        name.length > MAX_DIAGNOSTIC_NAME_CHARACTERS
+          ? `${name.slice(0, MAX_DIAGNOSTIC_NAME_CHARACTERS)}…`
+          : name,
+      )}`,
     );
   assertRawNodeSource(name, bytes);
 }

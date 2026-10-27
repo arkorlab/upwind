@@ -52,7 +52,7 @@ function physicalCode(physical: NodePhysicalFiles, name: string): string {
   return new TextDecoder().decode(file.bytes);
 }
 
-describe('physical alias inventory uses only a private cache policy preview', () => {
+describe('physical alias inventory uses only a private Next policy preview', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     for (const directory of directories.splice(0))
@@ -61,7 +61,7 @@ describe('physical alias inventory uses only a private cache policy preview', ()
 
   it('keeps raw owned bytes and source coordinates when no certificate is supplied', async () => {
     const own = await fixture();
-    const preview = vi.spyOn(NextRewrites, 'previewCertifiedNodeCachePolicy');
+    const preview = vi.spyOn(NextRewrites, 'previewCertifiedNodeNextPolicy');
     const physical = await nodePhysicalFiles(own.input, []);
     const name = physical.nameOf(own.entry);
 
@@ -129,7 +129,7 @@ describe('physical alias inventory uses only a private cache policy preview', ()
     await writeFile(metadata, contents);
     const sha256 = createHash('sha256').update(contents).digest('hex');
     const aliases = vi.spyOn(NodeAliases, 'nodeModuleAliases');
-    const preview = vi.spyOn(NextRewrites, 'previewCertifiedNodeCachePolicy');
+    const preview = vi.spyOn(NextRewrites, 'previewCertifiedNodeNextPolicy');
     const physical = await nodePhysicalFiles(own.input, [], [], {
       selectModeMetadata: async () => {
         await writeFile(own.entry, 'require("unowned-after-copy");');

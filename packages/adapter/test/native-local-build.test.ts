@@ -86,6 +86,15 @@ describe('local native candidate paths from authored inert filesystem data', () 
     ).rejects.toThrow('lookup requires an unproved internal alias');
   });
 
+  it('refuses a dangling Release symlink instead of selecting an owned Debug fallback', async () => {
+    await symlink('missing.node', release);
+    await writeFile(debug, new Uint8Array([2]));
+
+    await expect(firstExistingNativeBinary([release, debug], new Set([debug]))).rejects.toThrow(
+      'lookup requires an unproved internal alias',
+    );
+  });
+
   it.each(['build', 'build/Release', 'build/Debug'])(
     'refuses a selected binary beneath the symlinked %s lookup directory',
     async (folder) => {
@@ -98,7 +107,8 @@ describe('local native candidate paths from authored inert filesystem data', () 
   );
 
   it('keeps nonmissing resolution errors instead of selecting a fallback', async () => {
-    await symlink('addon.node', release);
+    await rm(path.dirname(release), { recursive: true });
+    await symlink('Release', path.dirname(release));
     await writeFile(debug, new Uint8Array([2]));
 
     await expect(

@@ -43,6 +43,10 @@ jobs:
         run: pnpm exec vitest run --project adapter packages/adapter/test/node-ws-guard-integration.test.ts
         env:
           UPWIND_NATIVE_FUNCTION_INTEGRATION: '1'
+      - name: Verify the fixed Turbopack selector specialization
+        run: pnpm exec vitest run --project adapter packages/adapter/test/node-turbopack-selector-integration.test.ts
+        env:
+          UPWIND_NATIVE_FUNCTION_INTEGRATION: '1'
       - name: Check out the unchanged Next.js 16.4.3 native fixture
         shell: bash
         run: |

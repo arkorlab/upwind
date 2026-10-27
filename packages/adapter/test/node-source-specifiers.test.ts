@@ -346,6 +346,100 @@ describe('original Node physical dependency discovery', () => {
     expect(raw).toStrictEqual(before);
   });
 
+  it.each(['js', 'cjs', 'mjs', 'ts', 'cts', 'mts'])(
+    'uses the fixed native Turbopack selector without modifying raw %s bytes',
+    (extension) => {
+      const raw = new TextEncoder().encode(
+        `if(process.env.TURBOPACK==='1')require('turbopack');else require('webpack');`,
+      );
+      const before = new Uint8Array(raw);
+
+      expect(originalNodeSpecifierInventory(`/project/entry.${extension}`, raw)).toStrictEqual({
+        required: [{ specifier: 'turbopack', kind: 'require' }],
+        alternatives: [{ specifier: 'webpack', kind: 'require' }],
+      });
+      expect(raw).toStrictEqual(before);
+    },
+  );
+
+  it.each([
+    ['truthy string', 'process.env.TURBOPACK', 'selected'],
+    ['dot comparison', "process.env.TURBOPACK==='1'", 'selected'],
+    ['fixed computed key', "process['env']['TURBOPACK']==='1'", 'selected'],
+    ['reverse comparison', "'1'===process.env.TURBOPACK", 'selected'],
+    ['string truthiness', '!!process.env.TURBOPACK', 'selected'],
+    ['numeric comparison', 'process.env.TURBOPACK===1', 'other'],
+    ['different string', "process.env.TURBOPACK==='0'", 'other'],
+    ['negation', '!process.env.TURBOPACK', 'other'],
+  ])('keeps the exact selector semantics for %s', (_name, condition, selected) => {
+    const source = `if(${condition})require('selected');else require('other');`;
+
+    expect(specifiers(source)).toStrictEqual([selected]);
+  });
+
+  it.each([
+    'TURBOPACK',
+    'process.env.OTHER_BUNDLER',
+    'process.env[selector]',
+    'process?.env.TURBOPACK',
+    'process.env?.TURBOPACK',
+    '(effect(),process.env.TURBOPACK)',
+  ])('does not infer any additional native selector authority from %s', (condition) => {
+    const source = `if(${condition})require('one');else require('two');`;
+
+    expect(specifiers(source)).toStrictEqual(['one', 'two']);
+  });
+
+  it.each([
+    `process.env.TURBOPACK='0';`,
+    'delete process.env.TURBOPACK;',
+    'process.env.TURBOPACK++;',
+    `process.env.TURBOPACK+='0';`,
+    `for(process.env.TURBOPACK of ['0']){}`,
+    '({selector:process.env.TURBOPACK}=settings);',
+    `const env=process.env;env.TURBOPACK='0';`,
+    `const p=process;p.env.TURBOPACK='0';`,
+    'handoff(process.env);',
+    `globalThis.process.env.TURBOPACK='0';`,
+    `const p=require('node:process');p.env.TURBOPACK='0';`,
+    `Object.defineProperty(process.env,'TURBOPACK',{get(){return '0'}});`,
+  ])('keeps the selector unproved after the existing mutation/alias rule: %s', (prefix) => {
+    const source = `${prefix}if(process.env.TURBOPACK==='1')require('one');else require('two');`;
+    const expected = prefix.includes('node:process')
+      ? ['node:process', 'one', 'two']
+      : ['one', 'two'];
+
+    expect(specifiers(source)).toStrictEqual(expected);
+  });
+
+  it.each([
+    `function run(process){if(process.env.TURBOPACK==='1')require('one');else require('two');}`,
+    `const process=settings;if(process.env.TURBOPACK==='1')require('one');else require('two');`,
+    `{let process=settings;if(process.env.TURBOPACK==='1')require('one');else require('two');}`,
+  ])('keeps the third field unknown under a lexical process shadow: %s', (source) => {
+    expect(specifiers(source)).toStrictEqual(['one', 'two']);
+  });
+
+  it('does not preserve other fixed facts after a source-level selector write', () => {
+    const source =
+      "delete process.env.TURBOPACK;if(process.env.NODE_ENV==='production')require('one');else require('two');";
+
+    expect(specifiers(source)).toStrictEqual(['one', 'two']);
+  });
+
+  it('keeps a branch that temporarily changes the selector and restores its startup value', () => {
+    const raw = new TextEncoder().encode(
+      "process.env.TURBOPACK='0';if(process.env.TURBOPACK!=='1')require('unproved-branch');process.env.TURBOPACK='1';",
+    );
+    const before = new Uint8Array(raw);
+
+    expect(originalNodeSpecifierInventory('/project/entry.cjs', raw)).toStrictEqual({
+      required: [{ specifier: 'unproved-branch', kind: 'require' }],
+      alternatives: [],
+    });
+    expect(raw).toStrictEqual(before);
+  });
+
   it.each(['json', 'txt', 'tsx', 'jsx'])(
     'preserves the existing data and unshipped raw %s boundary',
     (extension) => {

@@ -49,9 +49,13 @@ describe('source-bound Node cache and instrumentation policy', () => {
       ).toString('utf8'),
     ).toBe(own.runtimeCode);
     expect(own.manifests.approvedCompilerSources).toStrictEqual([]);
-    expect(nodeNextRewriteMetadata(own.proof).map((source) => source.file)).toStrictEqual([
-      own.config,
-    ]);
+    expect(
+      nodeNextRewriteMetadata(own.proof)
+        .map((source) => source.file)
+        .toSorted((left, right) => left.localeCompare(right)),
+    ).toStrictEqual(
+      [own.config, own.runtime, own.loader].toSorted((left, right) => left.localeCompare(right)),
+    );
   });
 
   it.each(['class', 'normalization'] as const)(
@@ -210,6 +214,13 @@ describe('source-bound Node cache and instrumentation policy', () => {
         '/bundle/upwind/instrumentation.cjs',
       );
       expect(own.loaderCode).not.toContain('/bundle/upwind/instrumentation.cjs');
+      expect(
+        nodeNextRewriteMetadata(own.proof)
+          .map((source) => source.file)
+          .toSorted((left, right) => left.localeCompare(right)),
+      ).toStrictEqual(
+        [own.config, own.runtime, own.loader].toSorted((left, right) => left.localeCompare(right)),
+      );
     },
   );
 

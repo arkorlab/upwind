@@ -57,6 +57,11 @@ CommonJS Pages factory can retain its original sloppy arrow function when its ph
 mode and closed userland partition are proved alongside the protected template. This inspection
 does not insert a strict directive or change the shipped JavaScript. The adapter leaves the
 project's minification setting unchanged.
+The native bootstrap selects production Node.js and Turbopack before application loading.
+Four source-pinned Next.js runtime selectors use the same certified Turbopack policy in
+dependency analysis and the physical archive; application code receives no global Turbopack define.
+Its guard checks the initial `NODE_ENV`, `NEXT_RUNTIME` and `TURBOPACK` properties at loader
+boundaries; changing them is unsupported. Other application environment variables remain mutable.
 
 Native Functions initially do not support application-supplied `cacheHandler`/`cacheHandlers` or
 `experimental.optimizeCss`. Recorded builds that enable these options are refused before

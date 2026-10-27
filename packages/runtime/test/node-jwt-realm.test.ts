@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertNodeJwtRealm,
+  assertNodeJwtRealmStructure,
   captureNodeJwtRealm,
   type NodeJwtRealm,
   type NodeJwtBuiltinBasis,
@@ -19,6 +20,14 @@ const PREDICATES = [
   'isSet',
   'isTypedArray',
 ] as const;
+const CONFIGURED_ENVIRONMENT = { NODE_ENV: 'production', NEXT_RUNTIME: 'nodejs', TURBOPACK: '1' };
+const ENVIRONMENT_CHECKS = [
+  ['full', assertNodeJwtRealm],
+  ['cached', assertNodeJwtRealmStructure],
+] as const;
+const ENVIRONMENT_CASES = ENVIRONMENT_CHECKS.flatMap(([mode, check]) =>
+  (['NODE_ENV', 'NEXT_RUNTIME', 'TURBOPACK'] as const).map((key) => ({ mode, check, key })),
+);
 function isObject(value: unknown): value is Record<PropertyKey, unknown> {
   return (typeof value === 'object' && value !== null) || typeof value === 'function';
 }
@@ -31,11 +40,14 @@ function callback(): number {
 }
 
 /** Authored objects only: no actual Node realm, builtin module, loader or application executes. */
-function fixture({ builtins = true, accessors = false } = {}) {
+function fixture(
+  { builtins = true, accessors = false } = {},
+  initialEnvironment: Readonly<Record<string, string>> = {},
+) {
   const globals: Record<PropertyKey, unknown> = {};
   const globalPrototype: Record<PropertyKey, unknown> = {};
   Object.setPrototypeOf(globals, globalPrototype);
-  const environment: Record<PropertyKey, unknown> = {};
+  const environment: Record<PropertyKey, unknown> = { ...initialEnvironment };
   const versions = { node: '24.22.1' };
   const process = {
     env: environment,
@@ -184,6 +196,94 @@ describe('private Node JWT initialization preconditions', () => {
 
     expect(checking(own.realm)).not.toThrow();
   });
+
+  it.each(ENVIRONMENT_CHECKS)(
+    'keeps initial flag values or absence and unrelated environment updates under %s checks',
+    (_mode, check) => {
+      const empty = fixture();
+      const native = fixture({}, CONFIGURED_ENVIRONMENT);
+      const other = fixture({}, { NODE_ENV: 'test', NEXT_RUNTIME: 'other', TURBOPACK: '0' });
+      for (const own of [empty, native, other]) {
+        own.environment['USER_SETTING'] = 'changed';
+        own.environment['SERVICE_TOKEN'] = 'rotated authored value';
+      }
+
+      expect(() => {
+        check(empty.realm);
+        check(native.realm);
+        check(other.realm);
+      }).not.toThrow();
+      expect(Object.isFrozen(native.environment)).toBe(false);
+    },
+  );
+
+  it.each(ENVIRONMENT_CASES)(
+    'refuses a changed $key value under $mode checks',
+    ({ check, key }) => {
+      const own = fixture({}, CONFIGURED_ENVIRONMENT);
+      own.environment[key] = 'changed';
+
+      expect(() => {
+        check(own.realm);
+      }).toThrow('descriptor changed');
+    },
+  );
+
+  it.each(ENVIRONMENT_CASES)('refuses a deleted $key under $mode checks', ({ check, key }) => {
+    const own = fixture({}, CONFIGURED_ENVIRONMENT);
+    Reflect.deleteProperty(own.environment, key);
+
+    expect(() => {
+      check(own.realm);
+    }).toThrow('descriptor changed');
+  });
+
+  it.each(ENVIRONMENT_CASES)('refuses a redefined $key under $mode checks', ({ check, key }) => {
+    const own = fixture({}, CONFIGURED_ENVIRONMENT);
+    Object.defineProperty(own.environment, key, {
+      value: CONFIGURED_ENVIRONMENT[key],
+      configurable: true,
+      enumerable: true,
+      writable: false,
+    });
+
+    expect(() => {
+      check(own.realm);
+    }).toThrow('descriptor changed');
+  });
+
+  it.each(ENVIRONMENT_CASES)(
+    'refuses a new initially absent $key under $mode checks',
+    ({ check, key }) => {
+      const own = fixture();
+      own.environment[key] = CONFIGURED_ENVIRONMENT[key];
+
+      expect(() => {
+        check(own.realm);
+      }).toThrow('descriptor changed');
+    },
+  );
+
+  it.each(ENVIRONMENT_CASES)(
+    'never invokes a substituted $key getter under $mode checks',
+    ({ check, key }) => {
+      const own = fixture({}, CONFIGURED_ENVIRONMENT);
+      let calls = 0;
+      Object.defineProperty(own.environment, key, {
+        configurable: true,
+        get() {
+          calls += 1;
+          return CONFIGURED_ENVIRONMENT[key];
+        },
+      });
+
+      expect(() => {
+        check(own.realm);
+      }).toThrow('descriptor changed');
+      expect(capturing(own)).toThrow('accessor');
+      expect(calls).toBe(0);
+    },
+  );
 
   it('allows unrelated application globals without freezing its objects', () => {
     const own = fixture();

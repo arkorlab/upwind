@@ -18,7 +18,6 @@ import {
 import { dynamicLoadsOf } from './dynamic-loads.ts';
 import type { BuildFunctionInput } from './function.ts';
 import { nativeLoadsPlugin, type NativeLoad } from './native-loads.ts';
-import { nodeCachePolicyPatch } from './node-cache-policy.ts';
 import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
 import {
   qualifyNodeJwtCompiler,
@@ -50,6 +49,7 @@ import {
   nodeNextRewriteNormalization,
   type NodeNextRewriteProof,
 } from './node-next-rewrite-proof.ts';
+import { linkedOriginalNodeSource } from './node-original-graph-source.ts';
 import { originalHostLoadersPlugin } from './node-original-host-loaders.ts';
 import { prepareOriginalNodeModes, type OriginalNodeModeScope } from './node-original-load-mode.ts';
 import { retainedFileIdentity } from './node-proof-diagnostics.ts';
@@ -60,16 +60,12 @@ import {
 } from './node-ws-loader-proof.ts';
 
 export { assertNodeProofFiles } from './node-original-load-mode-archive.ts';
-import { instrumentationPatch } from './patches/instrumentation.ts';
 import type { AppliedPatch } from './patches/rolldown.ts';
-import { turbopackRuntimePatch } from './patches/turbopack-runtime.ts';
 
 const BYTES_PER_MEBIBYTE = 1_048_576;
 const MAX_SOURCE_MEBIBYTES = 128;
 const MAX_SOURCE_BYTES = MAX_SOURCE_MEBIBYTES * BYTES_PER_MEBIBYTE;
 const ROLLDOWN_RUNTIME_MODULE = '\0rolldown/runtime.js';
-// These expose the original Node graph. No Worker-specific code or dependency is substituted.
-const GRAPH_LINKS = [turbopackRuntimePatch, instrumentationPatch, nodeCachePolicyPatch];
 
 type NodeProofInput = Partial<
   Pick<BuildFunctionInput, 'manifests' | 'runtimeManifest' | 'repoRoot' | 'clientAssetPrefix'>
@@ -147,26 +143,6 @@ async function proofEntry(input: NodeProofInput): Promise<string> {
   return realpath(entry);
 }
 
-function linkedSource(
-  code: string,
-  id: string,
-  input: NodeProofInput,
-  graph: OriginalNodeGraph,
-): string {
-  let contents = code;
-  for (const patch of GRAPH_LINKS) {
-    if (!patch.target.test(id) || (patch.marker !== undefined && !patch.marker(contents))) continue;
-    // Raw Node loads each original chunk with its own CommonJS coordinates. Worker-only
-    // copy substitution must not change the physical sources this analysis inspects.
-    const context =
-      patch === turbopackRuntimePatch ? { ...input.patch, copies: undefined } : input.patch;
-    const result = patch.apply(contents, id, context);
-    graph.patches.push({ patch: patch.name, file: id, result });
-    contents = result.contents;
-  }
-  return contents;
-}
-
 async function originalNodeModule(
   id: string,
   input: NodeProofInput,
@@ -176,7 +152,7 @@ async function originalNodeModule(
   const file = await realpath(id);
   const bytes = await nodeProofSource(file);
   graph.sources.set(id, { file, sha256: digest(bytes) });
-  return { code: linkedSource(bytes.toString('utf8'), id, input, graph) };
+  return { code: linkedOriginalNodeSource(bytes.toString('utf8'), id, input.patch, graph) };
 }
 
 function resolvedEdges(

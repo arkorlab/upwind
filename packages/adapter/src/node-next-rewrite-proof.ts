@@ -21,6 +21,11 @@ import {
   checkedNodeRouteRewriteSources,
   type NodeRouteRewriteApproval,
 } from './node-route-rewrite-approval.ts';
+import {
+  nativeTurbopackSelectorPatch,
+  nativeTurbopackSelectorTargets,
+  nodeNextPolicySourcePins,
+} from './node-turbopack-selector.ts';
 import { fetchCacheWaitUntilPatch } from './patches/fetch-cache-wait-until.ts';
 import { instrumentationPatch } from './patches/instrumentation.ts';
 import { resourceCacheBridgePatch } from './patches/resource-cache-bridge.ts';
@@ -59,7 +64,8 @@ interface StoredProof {
 }
 const PROOFS = new WeakMap<NodeNextRewriteProof, StoredProof>();
 const SHARED_PATCHES = [fetchCacheWaitUntilPatch, resourceCacheBridgePatch];
-const POLICY_PATCHES = [nodeCachePolicyPatch, instrumentationPatch];
+const NATIVE_POLICIES = [nodeCachePolicyPatch, nativeTurbopackSelectorPatch];
+const POLICY_PATCHES = [...NATIVE_POLICIES, instrumentationPatch];
 
 function refuse(reason: string): never {
   throw new AuditError(`Unproved Node Next.js rewrite ${reason}; refusing native publication`);
@@ -156,6 +162,29 @@ function hookClosure(graph: ManifestModuleGraph, hook: Source): ReadonlyMap<stri
   return sources;
 }
 
+function recognizedRewrite(
+  applied: AppliedPatch,
+  original: Source,
+  graph: ManifestModuleGraph,
+  routes: ReadonlyMap<string, ManifestRouteSource>,
+): boolean {
+  if (NATIVE_POLICIES.some((policy) => policy.name === applied.patch)) {
+    const role = applied.patch === nodeCachePolicyPatch.name ? 'cache' : 'selector';
+    if (routes.get(original.file)?.sha256 !== original.sha256)
+      refuse(`${role} policy caller proof`);
+    if (applied.result.edits === 0) refuse('native policy has no checked edits');
+    if (
+      applied.patch === nativeTurbopackSelectorPatch.name &&
+      !nativeTurbopackSelectorTargets(applied, graph, routes)
+    )
+      refuse('selector target closure');
+    return true;
+  }
+  if (applied.patch !== instrumentationPatch.name) return false;
+  instrumentationCallerRoot(applied.file, graph, routes);
+  return true;
+}
+
 function rewriteRecords(
   graph: ManifestModuleGraph,
   patches: readonly AppliedPatch[],
@@ -167,12 +196,7 @@ function rewriteRecords(
     if (!graph.retained.has(applied.file)) continue;
     const original = graph.sources.get(applied.file);
     if (original === undefined) refuse('missing original source');
-    if (applied.patch === nodeCachePolicyPatch.name) {
-      if (routes.get(original.file)?.sha256 !== original.sha256)
-        refuse('cache policy caller proof');
-    } else if (applied.patch === instrumentationPatch.name) {
-      instrumentationCallerRoot(applied.file, graph, routes);
-    } else continue;
+    if (!recognizedRewrite(applied, original, graph, routes)) continue;
     if (normalization === undefined) refuse('missing Node entry normalization');
     records.set(
       original.file,
@@ -240,7 +264,8 @@ export async function certifyNodeNextRewrites(
 }
 
 export function nodeNextRewriteMetadata(proof: NodeNextRewriteProof): readonly Source[] {
-  return stored(proof).metadata;
+  const state = stored(proof);
+  return nodeNextPolicySourcePins([state.metadata, state.records.values()]);
 }
 
 export function nodeNextRewriteNormalization(
@@ -252,7 +277,7 @@ export function nodeNextRewriteNormalization(
     ...normalization,
     metadataFiles: Object.freeze([
       ...(normalization.metadataFiles ?? []),
-      ...stored(proof).metadata,
+      ...nodeNextRewriteMetadata(proof),
     ]),
   });
 }
@@ -271,6 +296,31 @@ function patchFor(file: string) {
   return POLICY_PATCHES.find((patch) => patch.target.test(file));
 }
 
+/** Preview only completed native policies; do not expose instrumentation or mutate the ledger. */
+export function previewCertifiedNodeNextPolicy(
+  proof: NodeNextRewriteProof | undefined,
+  input: NodeNextRewriteInput,
+  original: { readonly file: string; readonly code: string },
+): string | undefined {
+  if (proof === undefined) return undefined;
+  const state = stored(proof);
+  assertContext(input, state);
+  const { file, code } = original;
+  const record = state.records.get(file);
+  const patch = NATIVE_POLICIES.find((policy) => policy.name === record?.patch);
+  if (record === undefined || patch === undefined) return undefined;
+  if (!patch.target.test(file) || record.sha256 !== digest(code))
+    refuse('inspection source lacks a matching native policy certificate');
+  const result = patch.apply(code, file, input.patch);
+  if (
+    result.edits === 0 ||
+    (patch === nodeCachePolicyPatch && result.edits !== nodeCachePolicyExpectedEdits(code)) ||
+    digest(result.contents) !== record.analysisSha256
+  )
+    refuse('inspection analysis mapping changed');
+  return result.contents;
+}
+
 /** A private certificate-backed inspection preview; no physical archive bookkeeping is changed. */
 export function previewCertifiedNodeCachePolicy(
   proof: NodeNextRewriteProof | undefined,
@@ -285,20 +335,12 @@ export function previewCertifiedNodeCachePolicy(
   if (proof === undefined) return undefined;
   const state = stored(proof);
   assertContext(input, state);
-  const { file, code } = original;
-  const record = state.records.get(file);
-  if (record?.patch !== nodeCachePolicyPatch.name) return undefined;
-  if (!nodeCachePolicyPatch.target.test(file) || record.sha256 !== digest(code))
-    refuse('inspection source lacks a matching cache policy certificate');
-  const result = nodeCachePolicyPatch.apply(code, file, input.patch);
-  if (
-    result.edits !== nodeCachePolicyExpectedEdits(code) ||
-    digest(result.contents) !== record.analysisSha256
-  )
-    refuse('inspection analysis mapping changed');
+  if (state.records.get(original.file)?.patch !== nodeCachePolicyPatch.name) return undefined;
+  const analysis = previewCertifiedNodeNextPolicy(proof, input, original);
+  if (analysis === undefined) refuse('inspection analysis mapping changed');
   return Object.freeze({
-    analysis: result.contents,
-    removed: nodeCachePolicyRemovedRanges(code),
+    analysis,
+    removed: nodeCachePolicyRemovedRanges(original.code),
   });
 }
 
@@ -314,6 +356,7 @@ export function rewriteCertifiedNodeNextFile(
   const state = stored(proof);
   assertContext(input, state);
   const record = state.records.get(file);
+  if (patch === nativeTurbopackSelectorPatch && record === undefined) return undefined;
   if (record?.patch !== patch.name || record.sha256 !== digest(code))
     refuse('physical source lacks a matching certificate');
   const analysis = patch.apply(code, file, input.patch).contents;

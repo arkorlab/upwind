@@ -23,7 +23,11 @@ import {
 } from './node-jwt-compiler-archive.ts';
 import { nodeJwtCompilerMetadata } from './node-jwt-compiler-proof.ts';
 import { nodeNextRequireHookMetadata } from './node-next-require-hook-proof.ts';
-import { nodeProjectInstrumentationSource } from './node-next-rewrite-proof.ts';
+import {
+  nodeProjectInstrumentationSource,
+  previewCertifiedNodeNextPolicy,
+  type NodeNextRewriteProof,
+} from './node-next-rewrite-proof.ts';
 import {
   assertFinalOriginalNodeModes,
   nodeOriginalModeMetadata,
@@ -179,6 +183,7 @@ async function bundleNodeInstrumentation(
     outFile: string;
     nameOf: (file: string) => string;
     instrumentation: string | undefined;
+    nextRewrites: NodeNextRewriteProof | undefined;
   },
 ): Promise<ReadonlyMap<string, string>> {
   if (input.patch.instrumentation === undefined) return new Map();
@@ -215,7 +220,12 @@ async function bundleNodeInstrumentation(
             const file = await realpath(id);
             const bytes = await nodeProofSource(file);
             originals.set(file, await sha256Hex(bytes));
-            return { code: bytes.toString('utf8') };
+            const code = bytes.toString('utf8');
+            return {
+              code:
+                previewCertifiedNodeNextPolicy(settings.nextRewrites, input, { file, code }) ??
+                code,
+            };
           },
         },
       },
@@ -297,6 +307,7 @@ function assertNodeTarget(input: BuildFunctionInput, native: readonly NativeLoad
 async function addNodeInstrumentation(
   files: NodeArtifactFiles,
   work: string,
+  nextRewrites: NodeNextRewriteProof | undefined,
 ): Promise<ReadonlyMap<string, string>> {
   if (files.input.patch.instrumentation === undefined) return new Map();
   const hook = path.join(work, 'instrumentation.cjs');
@@ -304,6 +315,7 @@ async function addNodeInstrumentation(
     outFile: hook,
     nameOf: files.physical.nameOf,
     instrumentation: files.physical.instrumentation,
+    nextRewrites,
   });
   const bytes = new Uint8Array(await readFile(hook));
   files.sealInstrumentation(originals, bytes);
@@ -378,7 +390,7 @@ async function serverSource(
   return [
     "import {env as runtimeEnv} from 'node:process';",
     `import {startNodeContainer,installNodeJwtGuards} from ${containerModule};`,
-    "runtimeEnv.NODE_ENV='production';runtimeEnv.NEXT_RUNTIME='nodejs';",
+    "runtimeEnv.NODE_ENV='production';runtimeEnv.NEXT_RUNTIME='nodejs';runtimeEnv.TURBOPACK='1';",
     `if(${JSON.stringify(selectors)}.some(key=>Boolean(runtimeEnv[key])))throw new Error('Native loader environment overrides are unsupported');`,
     `installNodeJwtGuards(import.meta.url,${jsLiteral(records)}${hookArgument});`,
     `process.chdir(${cwd});`,
@@ -453,7 +465,7 @@ export async function buildNodeFunction(
   const files = new NodeArtifactFiles(input, physical, native, proof.nextRewrites);
   const work = path.join(input.outDir, 'work', `node-${input.name ?? input.kind}`);
   await mkdir(work, { recursive: true });
-  const instrumentation = await addNodeInstrumentation(files, work);
+  const instrumentation = await addNodeInstrumentation(files, work, proof.nextRewrites);
   assertNodeProofFiles(proof, physical, instrumentation);
   files.rewriteNextFiles();
   await files.addNativeMetadata();

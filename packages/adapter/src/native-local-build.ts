@@ -1,4 +1,4 @@
-import { realpath, stat } from 'node:fs/promises';
+import { lstat, realpath, stat } from 'node:fs/promises';
 
 import { AuditError } from './dependencies.ts';
 
@@ -11,6 +11,8 @@ export async function firstExistingNativeBinary(
 ): Promise<string | undefined> {
   for (const candidate of candidates) {
     try {
+      if ((await lstat(candidate)).isSymbolicLink())
+        throw new AuditError('Native loader lookup requires an unproved internal alias');
       const actual = await realpath(candidate);
       if (actual !== candidate)
         throw new AuditError('Native loader lookup requires an unproved internal alias');

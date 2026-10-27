@@ -11,7 +11,7 @@ import {
   OUTSIDE_CLOSED_TRACE,
 } from './node-alias-diagnostics.ts';
 import {
-  previewCertifiedNodeCachePolicy,
+  previewCertifiedNodeNextPolicy,
   type NodeNextRewriteInput,
   type NodeNextRewriteProof,
 } from './node-next-rewrite-proof.ts';
@@ -497,11 +497,11 @@ function aliasInventory(
   policy: NodeAliasCachePolicy | undefined,
 ): NodeSpecifierInventory {
   if (policy?.proof === undefined) return originalNodeSpecifierInventory(file, bytes);
-  const preview = previewCertifiedNodeCachePolicy(policy.proof, policy.input, {
+  const preview = previewCertifiedNodeNextPolicy(policy.proof, policy.input, {
     file,
     code: new TextDecoder().decode(bytes),
   });
-  const analysis = preview === undefined ? bytes : new TextEncoder().encode(preview.analysis);
+  const analysis = preview === undefined ? bytes : new TextEncoder().encode(preview);
   return originalNodeSpecifierInventory(file, analysis);
 }
 

@@ -101,7 +101,8 @@ function environmentValue(node: Node, bindings: NativeBindings): string | undefi
     return undefined;
   const key = memberKey(node);
   if (key === 'NODE_ENV') return 'production';
-  return key === 'NEXT_RUNTIME' ? 'nodejs' : undefined;
+  if (key === 'NEXT_RUNTIME') return 'nodejs';
+  return key === 'TURBOPACK' ? '1' : undefined;
 }
 
 function knownValue(node: Node, bindings: NativeBindings, depth = 0): KnownValue | undefined {
@@ -126,7 +127,7 @@ function knownValue(node: Node, bindings: NativeBindings, depth = 0): KnownValue
   return { environment: true, value: node.operator === '===' ? equal : !equal };
 }
 
-/** Same two fixed Node proof defines, applied only to pure, source-stable condition inspection. */
+/** Fixed native startup values for layout hints only; never proof of runtime branch exclusion. */
 export function nodeSourceEnvironment(program: Node): (node: Node) => boolean | undefined {
   const bindings = nativeBindings(program);
   const stable = isStableEnvironment(walk(program), bindings);
