@@ -8,6 +8,8 @@ import { isNode, listOf, type Node } from './lexical-scope.ts';
 import { NodeManifestAlpha } from './node-manifest-alpha.ts';
 import {
   nodeManifestCoalescedPagesInspection,
+  assertNodeManifestCoalescedTemplateOrigin,
+  assertNodeManifestCoalescedTemplateComplete,
   type NodeManifestCoalescedPagesProfile,
 } from './node-manifest-coalesced-pages.ts';
 import {
@@ -42,10 +44,7 @@ import {
   nodeManifestTemplateHelperToken,
 } from './node-manifest-template-helper-tokens.ts';
 import type { NodeManifestTemplateHelperOwner } from './node-manifest-template-helpers.ts';
-import {
-  nodeManifestTemplateConstructors,
-  nodeManifestTemplateMemberName,
-} from './node-manifest-template-members.ts';
+import * as templateMembers from './node-manifest-template-members.ts';
 import type { NodeManifestTemplateProof } from './node-manifest-templates.ts';
 import type { NodeManifestTurbopackConsumerInput } from './node-manifest-turbopack-consumers.ts';
 import {
@@ -53,7 +52,7 @@ import {
   nodeManifestPagesConjunctionToken,
   type NodeManifestTurbopackTemplateImport,
 } from './node-manifest-turbopack-template-import.ts';
-import { assertStrictFactory, withoutStrict } from './node-manifest-turbopack-template-strict.ts';
+import { withoutStrict } from './node-manifest-turbopack-template-strict.ts';
 import {
   projectNodeManifestTurbopackFactory,
   type NodeManifestTurbopackProjection,
@@ -104,7 +103,6 @@ export interface NodeManifestTurbopackTemplateInput {
     readonly pathname: string;
     readonly definition?: NodeManifestPagesDefinition | undefined;
   };
-  /** Private, original-source-bound inspection only; never a physical source identity. */
   readonly coalesced?: {
     readonly profile: NodeManifestCoalescedPagesProfile;
     readonly owner: NodeManifestTurbopackConsumerInput;
@@ -184,7 +182,7 @@ function constructorFields(
   value: Node,
   input: NodeManifestTurbopackTemplateInput,
 ): ReadonlyMap<string, Node> {
-  const constructors = nodeManifestTemplateConstructors(
+  const constructors = templateMembers.nodeManifestTemplateConstructors(
     value,
     PROFILES[input.route.kind].constructorName,
   );
@@ -452,15 +450,14 @@ function view(
       ? nodeManifestTemplateDeclarationView({ original: context.program, body })
       : body,
     importToken: (node) => importToken(node, context),
-    memberName: nodeManifestTemplateMemberName,
+    memberName: templateMembers.nodeManifestTemplateMemberName,
   });
   return { alpha, exports };
 }
-/** Inspection only: alpha/scaffold views never replace original runtime or application bytes. */
 export async function assertNodeManifestTurbopackTemplateConsumer(
   input: NodeManifestTurbopackTemplateInput,
 ): Promise<NodeManifestTemplateProof> {
-  assertStrictFactory(input.projection);
+  await assertNodeManifestCoalescedTemplateOrigin(input);
   const checked = checkedProjection(input);
   const projection = checked.projection;
   const primary = await templateOf(input);
@@ -490,6 +487,7 @@ export async function assertNodeManifestTurbopackTemplateConsumer(
       refuse('changed ESM handler or constructor body');
     exports = nodeManifestTemplateExportNames(left, right, input.route.kind);
   } else refuse('changed handler or constructor body');
+  await assertNodeManifestCoalescedTemplateComplete(input);
   return {
     kind: input.route.kind,
     page: templatePage(actual),

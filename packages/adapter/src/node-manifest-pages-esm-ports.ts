@@ -5,7 +5,10 @@ import { jsLiteral } from './codegen.ts';
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node } from './lexical-scope.ts';
 import { nativeBindings } from './native-ast.ts';
-import { nodeManifestCoalescedPagesInspection } from './node-manifest-coalesced-pages.ts';
+import {
+  nodeManifestCoalescedPagesInspection,
+  nodeManifestCoalescedCjsPorts,
+} from './node-manifest-coalesced-pages.ts';
 import {
   declaration,
   identifier,
@@ -363,7 +366,8 @@ function assertNamespacePort(variable: Node, input: NamespaceInput): void {
 const NAMESPACES = ['VAR_USERLAND', 'VAR_MODULE_APP', 'VAR_MODULE_DOCUMENT'];
 /** VAR namespaces require original reviewed esmImport ports, never raw require equivalence. */
 export function assertNodeManifestPagesEsmPorts(input: NamespaceInput): void {
-  assertOriginalStrictness(input.original.projection);
+  if (!nodeManifestCoalescedCjsPorts(input.original))
+    assertOriginalStrictness(input.original.projection);
   const namespace = certifiedNamespace(input);
   const roles = new Set<string>();
   for (const [variable, role] of input.slots) {

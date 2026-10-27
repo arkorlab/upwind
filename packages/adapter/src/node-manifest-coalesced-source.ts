@@ -2,6 +2,11 @@ import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
+import {
+  assertNodeManifestCoalescedCjsFactory,
+  certifyNodeManifestCoalescedCjsPartition,
+  type NodeManifestCoalescedCjsBasis,
+} from './node-manifest-coalesced-cjs.ts';
 import { assertCoalescedPagesClosure } from './node-manifest-coalesced-closure.ts';
 import {
   declaration,
@@ -57,7 +62,23 @@ function strict(statement: unknown): boolean {
     (value['raw'] === '"use strict"' || value['raw'] === "'use strict'")
   );
 }
-function originalContext(projection: NodeManifestTurbopackProjection): OriginalContext {
+function originalStrict(factory: Node, parents: ReadonlyMap<Node, Visit>): boolean {
+  let ancestor: Node | undefined = factory;
+  while (ancestor !== undefined) {
+    const block = ancestor['body'];
+    if (
+      (ancestor.type === 'Program' && strict(listOf(ancestor, 'body')[0])) ||
+      (isNode(block) && block.type === 'BlockStatement' && strict(listOf(block, 'body')[0]))
+    )
+      return true;
+    ancestor = parents.get(ancestor)?.parent;
+  }
+  return false;
+}
+function originalContext(
+  projection: NodeManifestTurbopackProjection,
+  basis?: NodeManifestCoalescedCjsBasis,
+): OriginalContext {
   const program: unknown = parseAst(projection.original.code);
   if (!isNode(program)) return refuse('original parser');
   const all = visitTree(program);
@@ -71,18 +92,9 @@ function originalContext(projection: NodeManifestTurbopackProjection): OriginalC
   const scope = found?.scopes.at(-1);
   if (factory === undefined || scope === undefined || !isNode(body) || !identifier(param))
     return refuse('factory identity');
-  let ancestor: Node | undefined = factory;
-  let isStrict = false;
-  while (ancestor !== undefined) {
-    const block = ancestor['body'];
-    if (
-      (ancestor.type === 'Program' && strict(listOf(ancestor, 'body')[0])) ||
-      (isNode(block) && block.type === 'BlockStatement' && strict(listOf(block, 'body')[0]))
-    )
-      isStrict = true;
-    ancestor = parents.get(ancestor)?.parent;
-  }
-  if (!isStrict) return refuse('original factory strictness');
+  if (basis === undefined && !originalStrict(factory, parents))
+    return refuse('original factory strictness');
+  if (basis !== undefined) assertNodeManifestCoalescedCjsFactory(basis, projection);
   if (all.some(({ node }) => identifier(node) && node.name.startsWith(COALESCED_NAMESPACE)))
     return refuse('reserved namespace identity');
   return {
@@ -433,22 +445,24 @@ function declarationGroup(statement: Node, input: Partition): Edit | undefined {
 export function coalescedPagesSource(
   projection: NodeManifestTurbopackProjection,
   privileged: ReadonlySet<string>,
+  basis?: NodeManifestCoalescedCjsBasis,
 ): string {
-  const original = originalContext(projection);
+  const original = originalContext(projection, basis);
   const cache = protocol(original, projection);
   const imports = originalImports(original, privileged);
   adjacent(original, cache.statement, cache.group, imports);
   const forbidden = forbiddenBindings(original, cache.variable, projection.moduleId);
-  const owned = new Set(
-    assertCoalescedPagesClosure({
-      original: original.program,
-      factory: original.factory,
-      table: cache.table,
-      tableValues: cache.values,
-      imports,
-      forbidden,
-    }),
-  );
+  const closure = {
+    original: original.program,
+    factory: original.factory,
+    table: cache.table,
+    tableValues: cache.values,
+    imports,
+    forbidden,
+  };
+  const owned = new Set(assertCoalescedPagesClosure(closure));
+  if (basis !== undefined)
+    certifyNodeManifestCoalescedCjsPartition(basis, projection, closure, [...owned]);
   const edits: Edit[] = [{ start: cache.statement.start, end: cache.statement.end, code: '' }];
   const imported = new Set(
     imports.flatMap((entry) => (entry.declaration === undefined ? [] : [entry.declaration])),

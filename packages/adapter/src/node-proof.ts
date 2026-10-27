@@ -410,6 +410,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
       instrumentation: input.patch.instrumentation,
       analysisEntry: entryFile,
       compilerRootBinding,
+      originalModes,
     },
     manifestGraph,
   );

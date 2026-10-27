@@ -77,6 +77,15 @@ function beneath(root: string, file: string): string | undefined {
 function stored(scope: OriginalNodeModeScope): Stored {
   return SCOPES.get(scope) ?? fail('copied or missing scope');
 }
+/** The physical goal belongs to this exact original graph, never a structural graph copy. */
+export function assertOriginalNodeModesGraph(
+  scope: OriginalNodeModeScope,
+  graph: OriginalNodeModeGraph,
+): void {
+  const own = stored(scope);
+  if (own.graph !== graph || graph.sources !== own.sources || graph.retained !== own.retained)
+    fail('foreign or changed original source graph');
+}
 class GoalUnavailableError extends Error {
   override name = 'GoalUnavailableError';
 }

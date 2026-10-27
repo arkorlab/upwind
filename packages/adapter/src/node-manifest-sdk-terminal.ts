@@ -26,6 +26,13 @@ import type {
   NodeManifestTurbopackConsumerInput,
   NodeManifestTurbopackConsumerProof,
 } from './node-manifest-turbopack-consumer-input.ts';
+import type { NodeManifestTurbopackGraphFile } from './node-manifest-turbopack-graph.ts';
+import {
+  assertOriginalCommonJsMode,
+  assertOriginalNodeModesGraph,
+  useOriginalCommonJsMode,
+  type OriginalCommonJsMode,
+} from './node-original-load-mode.ts';
 
 const MAX_SOURCE_BYTES = 134_217_728;
 const SCOPE: unique symbol = Symbol('sealed SDK route terminal scope');
@@ -81,6 +88,7 @@ function pointers(input: ManifestGraphInput, graph: ManifestModuleGraph): readon
     input.compilerRootBinding,
     input.compilerRootBinding?.proof,
     input.compilerRootBinding?.input,
+    input.originalModes,
     input.entries,
     graph.sources,
     graph.imports,
@@ -125,6 +133,7 @@ function pendingBindings(state: Scope, input: NodeManifestTurbopackConsumerInput
     input.sdkTerminalScope === undefined ||
     SCOPES.get(input.sdkTerminalScope) !== state ||
     state.input.compilerRootBinding !== input.compilerRootBinding ||
+    state.input.originalModes !== input.originalModes ||
     state.rootDir !== input.rootDir ||
     state.distDir !== input.distDir ||
     state.graph.sources.size !== input.sources.length ||
@@ -157,6 +166,56 @@ function current(scope: NodeManifestSdkTerminalScope): Scope {
   if (state.pointers.some((value, index) => pointers(state.input, state.graph)[index] !== value))
     return refuse(STALE_SCOPE);
   return state;
+}
+
+function originalCommonJsBinding(
+  input: NodeManifestTurbopackConsumerInput,
+  physical: NodeManifestTurbopackGraphFile,
+) {
+  const scope = input.sdkTerminalScope;
+  if (scope === undefined) {
+    if (input.originalModes !== undefined) refuse('missing SDK original mode context');
+    return;
+  }
+  assertNodeManifestPendingSdkContext(scope, input);
+  if (input.sources.filter((source) => source === physical).length !== 1)
+    return refuse(PENDING_SOURCE);
+  const state = current(scope);
+  const source = state.graph.sources.get(physical.id);
+  if (source === undefined || digest(physical.source.code) !== physical.source.sha256)
+    return refuse(PENDING_SOURCE);
+  const modes = input.originalModes;
+  if (modes === undefined) return;
+  assertOriginalNodeModesGraph(modes, state.graph);
+  return { modes, source };
+}
+
+/** Physical CommonJS mode only, bound to the actual outer SDK graph and original source row. */
+export async function useNodeManifestOriginalCommonJs(
+  input: NodeManifestTurbopackConsumerInput,
+  physical: NodeManifestTurbopackGraphFile,
+): Promise<OriginalCommonJsMode | undefined> {
+  const before = originalCommonJsBinding(input, physical);
+  if (before === undefined) return undefined;
+  const proof = await useOriginalCommonJsMode(before.modes, physical.id, before.source);
+  const after = originalCommonJsBinding(input, physical);
+  if (after?.modes !== before.modes || after.source !== before.source)
+    return refuse('changed SDK original mode context');
+  return proof;
+}
+
+/** Recheck the same original mode after every asynchronous consumer proof operation. */
+export async function assertNodeManifestOriginalCommonJs(
+  proof: OriginalCommonJsMode,
+  input: NodeManifestTurbopackConsumerInput,
+  physical: NodeManifestTurbopackGraphFile,
+): Promise<void> {
+  const before = originalCommonJsBinding(input, physical);
+  if (before === undefined) return refuse('missing SDK original mode context');
+  await assertOriginalCommonJsMode(proof, before.modes, physical.id, before.source);
+  const after = originalCommonJsBinding(input, physical);
+  if (after?.modes !== before.modes || after.source !== before.source)
+    refuse('changed SDK original mode context');
 }
 async function checkedCode(source: ManifestGraphFile): Promise<string> {
   const { file, sha256 } = source;

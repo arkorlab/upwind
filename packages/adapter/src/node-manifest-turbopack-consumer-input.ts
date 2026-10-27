@@ -18,6 +18,7 @@ import type {
   NodeManifestTurbopackGraphFile,
   NodeManifestTurbopackSealedEntry,
 } from './node-manifest-turbopack-graph.ts';
+import type { OriginalNodeModeScope } from './node-original-load-mode.ts';
 
 export function nodeManifestTurbopackProofFiles(
   graphs: readonly NodeManifestTurbopackBootGraph[],
@@ -52,6 +53,8 @@ export interface NodeManifestTurbopackConsumerInput {
   /** Private, filesystem-sealed outer SDK graph; never an inner caller assertion. */
   readonly sdkTerminalScope?: NodeManifestSdkTerminalScope | undefined;
   readonly compilerRootBinding?: NodeManifestCompilerRootBinding | undefined;
+  /** Exact outer physical source mode scope; never a route/template approval. */
+  readonly originalModes?: OriginalNodeModeScope | undefined;
   readonly producer: {
     readonly id: string;
     readonly file: string;

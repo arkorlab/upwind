@@ -2,6 +2,13 @@ import { createHash } from 'node:crypto';
 
 import { AuditError } from './dependencies.ts';
 import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
+import {
+  certifyNodeManifestCoalescedCjs,
+  assertCurrentNodeManifestCoalescedCjs,
+  assertNodeManifestCoalescedCjsPartitioned,
+  type NodeManifestCoalescedCjsBasis,
+  type NodeManifestCoalescedCjsContext,
+} from './node-manifest-coalesced-cjs.ts';
 import { COALESCED_NAMESPACE, coalescedPagesSource } from './node-manifest-coalesced-source.ts';
 import {
   EVALUATOR,
@@ -22,6 +29,8 @@ import type {
   NodeManifestTurbopackBootGraph,
   NodeManifestTurbopackGraphFactory,
 } from './node-manifest-turbopack-graph.ts';
+import { assertStrictFactory } from './node-manifest-turbopack-template-strict.ts';
+import type { NodeManifestTurbopackTemplateInput } from './node-manifest-turbopack-templates.ts';
 import {
   projectNodeManifestTurbopackFactory,
   type NodeManifestTurbopackProjection,
@@ -50,6 +59,7 @@ interface NodeManifestCoalescedPagesInput {
 }
 interface StoredProfile {
   readonly input: NodeManifestCoalescedPagesInput;
+  readonly cjs?: NodeManifestCoalescedCjsBasis;
   readonly owner: NodeManifestTurbopackConsumerInput;
   readonly graphObject: NodeManifestTurbopackBootGraph;
   readonly factoryObject: NodeManifestTurbopackGraphFactory;
@@ -172,9 +182,9 @@ function originalProjection(
   if (failure !== undefined) return refuse(`original inspection has ${failure}`);
   return original;
 }
-function derive(input: NodeManifestCoalescedPagesInput) {
+function derive(input: NodeManifestCoalescedPagesInput, cjs?: NodeManifestCoalescedCjsBasis) {
   const original = originalProjection(input);
-  const code = coalescedPagesSource(original, privilegedImports(input));
+  const code = coalescedPagesSource(original, privilegedImports(input), cjs);
   // This source is explicitly an inert derived registration, never a physical file or its SHA.
   const source = { code, sha256: createHash('sha256').update(code).digest('hex') };
   const projection = projectNodeManifestTurbopackFactory(source, original.moduleId);
@@ -200,12 +210,12 @@ export function certifyNodeManifestCoalescedPages(
   return profile;
 }
 
-export function nodeManifestCoalescedPagesInspection(
+function currentProfile(
   profile: NodeManifestCoalescedPagesProfile,
   owner: NodeManifestTurbopackConsumerInput,
   raw: NodeManifestTurbopackProjection,
   route: NodeManifestCoalescedPagesInput['route'],
-): ReturnType<typeof derive> {
+): StoredProfile {
   const stored = PROFILES.get(profile);
   if (
     stored?.owner !== owner ||
@@ -220,5 +230,59 @@ export function nodeManifestCoalescedPagesInspection(
     stored.route !== JSON.stringify(stored.input.route)
   )
     return refuse('copied, stale or cross-batch identity');
-  return derive(stored.input);
+  return stored;
+}
+export function nodeManifestCoalescedPagesInspection(
+  profile: NodeManifestCoalescedPagesProfile,
+  owner: NodeManifestTurbopackConsumerInput,
+  raw: NodeManifestTurbopackProjection,
+  route: NodeManifestCoalescedPagesInput['route'],
+): ReturnType<typeof derive> {
+  const stored = currentProfile(profile, owner, raw, route);
+  return derive(stored.input, stored.cjs);
+}
+export async function certifyNodeManifestCoalescedCjsPages(
+  input: NodeManifestCoalescedPagesInput,
+  context: NodeManifestCoalescedCjsContext,
+): Promise<NodeManifestCoalescedPagesProfile | undefined> {
+  originalProjection(input);
+  const cjs = await certifyNodeManifestCoalescedCjs({
+    owner: input.owner,
+    graph: input.graph,
+    factory: input.factory,
+    helperOwner: input.helperOwner,
+    context,
+  });
+  if (cjs === undefined) return undefined;
+  const profile = certifyNodeManifestCoalescedPages(input);
+  const stored = PROFILES.get(profile);
+  if (stored === undefined) return refuse('missing original profile');
+  PROFILES.set(profile, { ...stored, cjs });
+  return profile;
+}
+type OriginInput = Pick<NodeManifestTurbopackTemplateInput, 'projection' | 'coalesced' | 'route'>;
+function cjsBasis(input: OriginInput): NodeManifestCoalescedCjsBasis | undefined {
+  if (input.coalesced === undefined) return undefined;
+  if (input.route.kind !== 'pages') return refuse('CJS route kind');
+  return currentProfile(input.coalesced.profile, input.coalesced.owner, input.projection, {
+    ...input.route,
+    kind: 'pages',
+  }).cjs;
+}
+export async function assertNodeManifestCoalescedTemplateOrigin(input: OriginInput): Promise<void> {
+  const basis = cjsBasis(input);
+  if (basis === undefined) assertStrictFactory(input.projection);
+  else await assertCurrentNodeManifestCoalescedCjs(basis);
+}
+export function nodeManifestCoalescedCjsPorts(input: OriginInput): boolean {
+  const basis = cjsBasis(input);
+  if (basis === undefined) return false;
+  assertNodeManifestCoalescedCjsPartitioned(basis, input.projection);
+  return true;
+}
+export async function assertNodeManifestCoalescedTemplateComplete(
+  input: OriginInput,
+): Promise<void> {
+  await assertNodeManifestCoalescedTemplateOrigin(input);
+  nodeManifestCoalescedCjsPorts(input);
 }

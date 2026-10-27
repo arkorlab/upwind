@@ -50,6 +50,7 @@ import {
 } from './node-manifest-templates.ts';
 import { proveNodeManifestTurbopackConsumers } from './node-manifest-turbopack-consumers.ts';
 import { type NodeManifestTurbopackGraphFile } from './node-manifest-turbopack-graph.ts';
+import type { OriginalNodeModeScope } from './node-original-load-mode.ts';
 
 const MAX_SOURCE_MEBIBYTES = 128;
 const BYTES_PER_MEBIBYTE = 1_048_576;
@@ -93,6 +94,7 @@ export interface ManifestGraphInput {
   readonly instrumentation?: string | undefined;
   readonly analysisEntry?: string | undefined;
   readonly compilerRootBinding?: NodeManifestCompilerRootBinding | undefined;
+  readonly originalModes?: OriginalNodeModeScope | undefined;
 }
 interface ProtectedModule {
   readonly id: string;
@@ -297,6 +299,7 @@ class ConsumerGraph {
       runtimeProfiles: this.runtimeProfiles(),
       sdkTerminalScope: this.sdkScope,
       compilerRootBinding: this.input.compilerRootBinding,
+      originalModes: this.input.originalModes,
       producer: { id: child.id, file: producer.file, sha256: producer.sha256, kind: producerKind },
     });
     // The source helper's boot terminals are not proof terminals: every actual physical
