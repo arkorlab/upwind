@@ -80,7 +80,8 @@ value. A fixture is minutes of building before the first call to the API, so a t
 is worth learning about first.
 
 Then, from a checkout of Next.js that has been built (`pnpm install && pnpm build && pnpm install`, and
-`pnpm playwright install --with-deps chromium`):
+`pnpm playwright install --only-shell chromium`, with `--with-deps` on a machine that lacks Chromium's
+libraries):
 
 ```console
 $ NEXT_TEST_MODE=deploy \
@@ -112,6 +113,40 @@ would learn of an invalidation whatever the edge in front of it said, and a suit
 whether that edge had told it or not. Where the host binds none, the host module finds nothing to
 reach, and every read is a miss, as without it. Unset, empty or `none` is the adapter alone; another
 value, or `hosted` for a target on this machine, fails before anything is built.
+
+The build is then the one a host makes of its own deployments in what it leaves out of the Functions
+as well: the prefetch segments (`UPWIND_UNSHIPPED_OUTPUTS=prefetch-segments`), for the host's edge to
+answer from the bundle, and — the adapter's default beside a named cache host — the large bodies of
+completed pages where a Function would be over its size limit with them, for the host's reader.
+
+### What a host's run keeps
+
+Each shard of a run on a host keeps a public artifact, `deploy-results-<run>-<attempt>-<shard>`, for
+a compatibility record to be made from: `metadata.json` (the run and its attempt, when it was planned
+and when the shard ended, the selection and its pieces, the target, the cache, and the commits of
+Next.js and of this adapter), `expected-tests.txt` (the suites the shard was to run, listed before it
+ran them, so that one it never reached is known to be missing), `runner-exit-code.txt` (where the
+runner ran: a shard whose setup failed before it has none, rather than a code nothing returned), and
+`results/<suite>.json` for each suite that left a result (`src/keep-results.ts`). A result keeps each
+case's names and status and nothing it said — no message, no application URL, no project — except
+that a case failed only by Jest's `test.failing` refusal, its body having completed, says so
+(`failure: "failing-test-passed"`): a case upstream expects to fail on its own provider reads by
+that.
+
+### How a run on this machine is judged
+
+A run on this machine's targets keeps its results in the same form, as
+`deploy-results-<run>-<attempt>-<target>-<shard>`, and judges them where it ran
+(`src/judge-results.ts`). Every failure is read against [`REVIEWED.md`](REVIEWED.md): for each
+release of Next.js, the cases whose failure says nothing against this adapter, with the reason, the
+evidence and upstream's word where it has one, and the failure each was read from. A case read there
+does not fail its shard. Any other failure does, as does a suite that left no result. The verdict,
+names and counts and never a message, goes into the results kept (`verdict.json`) and into the job's
+summary, and a last job sums every shard's for each target (`src/report-results.ts`).
+
+A failure that is not this adapter's is recorded in `REVIEWED.md` and in `src/reviewed.ts`
+together, and a test holds the two to each other. A run of another release of Next.js reads nothing
+there until its failures have been read again.
 
 ### Choosing the installer
 
@@ -274,6 +309,11 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   (`__NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true`, `NODE_OPTIONS=--experimental-transform-types`). The
   deploy hook does the same for those suites, by the test file `run-tests.js` names in
   `JEST_SUITE_NAME`, and for no other; run outside `run-tests.js`, they fail as they would anywhere.
+- **`non-ascii-cache-item-name` is built with `VERCEL=1`.** Its fixture leaves its cache to the
+  deployment only where `VERCEL` is set at build, and otherwise configures a handler that keeps
+  nothing, while the case it runs when deployed expects its values to stay cached. The deploy hook sets
+  it for that suite's build alone, by `JEST_SUITE_NAME`, so that the case tests the deployment's cache,
+  as it does on Vercel. The deployment itself is not given it.
 - **No runtime logs.** The API serves a built deployment's build log, and an uploaded deployment has
   none, so what the logs hook shows is the build and the deployment. A suite that asserts on server
   output may fail for want of it.

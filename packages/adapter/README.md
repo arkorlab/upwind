@@ -433,6 +433,15 @@ eligible body waits for the reader and fails if the bytes are unavailable or hav
 length; it does not render a replacement. HEAD and bodyless statuses read no body. This reduces
 Function size, while the latency and memory cost of that fallback depend on the host.
 
+A build that `upwind build` or `upwind deploy` runs names upwind's own cache host, whose module
+exports that reader, and so the default export applies `when: 'over-limit'` with the range above to
+it unless told otherwise: a build within the limit is the build it was, and one that could not be
+uploaded with its large page bodies is uploaded without them. `UPWIND_UNSHIPPED_PRERENDER_BODIES`
+says otherwise: `large` leaves the range out of every build, `none` ships every body, and `auto` is
+the default spelled out. A cache host named through `UPWIND_CACHE_HOST_MODULE` that exports no
+reader is built with `none`. A project that names the adapter in its `next.config` configures it
+there, and none of this applies to it.
+
 The middleware Function answers one request, which runs the middleware and hands back its response,
 and carries what that path reads: its runtime manifest keeps the configuration and the `next.config`
 rules without the entrypoints, prerenders, files and dynamic routes, it has no build manifest, and

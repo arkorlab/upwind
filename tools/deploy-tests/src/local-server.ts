@@ -187,6 +187,24 @@ export async function accepting(url: string, end: number): Promise<void> {
   throw new Error(`${url} did not take a connection in time`);
 }
 
+/**
+ * The URL the suite is given for a server that says it serves on a loopback address: the same port
+ * under `localhost`. Next.js names every loopback address `localhost` in the URLs it builds
+ * (`NextURL`), so an application that redirects to `new URL(path, request.url)` sends the browser to
+ * `localhost` whatever address it was reached on. A browser keeps a cookie for the host it was set on,
+ * and one set on `127.0.0.1` is not sent to `localhost`: a draft-mode cookie, set before such a
+ * redirect, was lost on the node target (`adapter-rsc-query-leak`). The local stack serves under
+ * `localhost` for the same reason (`stack.ts`). The server still listens on the address it bound; a
+ * client that resolves `localhost` to `::1` first falls back to it, as browsers and Node.js do.
+ */
+function handedOut(bound: string): string {
+  const url = new URL(bound);
+  if (url.hostname === '127.0.0.1' || url.hostname === '[::1]') {
+    url.hostname = 'localhost';
+  }
+  return url.origin;
+}
+
 /** Serve the fixture here; its URL, once it answers. */
 export async function serveLocally(input: LocalServeInput): Promise<string> {
   const { appDir, target } = input;
@@ -226,8 +244,9 @@ export async function serveLocally(input: LocalServeInput): Promise<string> {
   );
   const end = withinHook(Date.now() + START_MS, input.deadline);
   try {
-    const url = new URL(await servedAt(child, logFile, ready, end)).origin;
-    await accepting(url, end);
+    const bound = new URL(await servedAt(child, logFile, ready, end)).origin;
+    await accepting(bound, end);
+    const url = handedOut(bound);
     input.log(`served at ${url}`);
     return url;
   } catch (error) {
