@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -224,7 +225,47 @@ export function encodeImageWith(
   })();
 }
 
-export const encodeImage: ImageEncoder = (input) => encodeImageWith(sharpOf(), input);
+/** Whether there is an encoder to make an image with, as `encodeImage` would find it. */
+export function encoderAvailable(): boolean {
+  return sharpOf() !== null;
+}
+
+/** The encodings under way, by what they are made of and for: one each, whoever asked for it. */
+const encoding = new Map<string, Promise<EncodedImage>>();
+
+/** What an encoding is made of and for: the source by its bytes, and what was asked of it. */
+function encodingKeyOf({ bytes, upstreamType, params }: EncodeImageInput): string {
+  const source = createHash('sha256').update(bytes).digest('hex');
+  return `${source}/${upstreamType}/${String(params.width)}/${String(params.quality)}/${params.mimeType}`;
+}
+
+/**
+ * The encoding `encode` starts, unless one of the same source for the same request is under way
+ * already, whose result it shares: two requests for an image at once encode it once. The result's
+ * bytes are each answer's to read, as a `Response` reads a body it is given into one of its own.
+ */
+export function encodingOnce(
+  input: EncodeImageInput,
+  encode: () => Promise<EncodedImage> | undefined,
+): Promise<EncodedImage> | undefined {
+  const key = encodingKeyOf(input);
+  const running = encoding.get(key);
+  if (running !== undefined) return running;
+  const started = encode();
+  if (started === undefined) return undefined;
+  const shared = (async (): Promise<EncodedImage> => {
+    try {
+      return await started;
+    } finally {
+      encoding.delete(key);
+    }
+  })();
+  encoding.set(key, shared);
+  return shared;
+}
+
+export const encodeImage: ImageEncoder = (input) =>
+  encodingOnce(input, () => encodeImageWith(sharpOf(), input));
 
 /**
  * Whether the client already holds the image the answer carries — its `If-None-Match` naming the

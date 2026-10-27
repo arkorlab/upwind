@@ -10,7 +10,7 @@ import {
   unpackPrerenders,
 } from '@stayingupwind/core/bundle';
 import { TaskGroup } from '@stayingupwind/runtime/native';
-import entry, { closeNodeBridge } from 'arkor:native-function';
+import entry, { closeNodeBridge, configureImageCache } from 'arkor:native-function';
 
 // Private host sources are embedded into the published executable, never imported by its user.
 import { createNativeCache } from '../../../cache/src/native/index.ts';
@@ -39,6 +39,7 @@ interface NativeManifest {
   readonly buildId: string;
   readonly nextVersion: string;
   readonly generatedAt: string;
+  readonly imageCacheBytes?: number;
 }
 
 function manifestOf(value: unknown): NativeManifest {
@@ -59,6 +60,14 @@ function manifestOf(value: unknown): NativeManifest {
   }
   if (!/^[\w~-]+$/u.test(String(fields['deploymentId'])))
     throw new Error('invalid native deployment identity');
+  const imageCacheBytes = fields['imageCacheBytes'];
+  if (
+    imageCacheBytes !== undefined &&
+    (typeof imageCacheBytes !== 'number' ||
+      !Number.isSafeInteger(imageCacheBytes) ||
+      imageCacheBytes < 0)
+  )
+    throw new Error('invalid native manifest imageCacheBytes');
   for (const field of ['projectDir', 'distDir']) {
     const relative = String(fields[field]);
     const absolute = path.resolve(ROOT, relative);
@@ -99,6 +108,13 @@ async function main(): Promise<void> {
     ? path.resolve(ROOT, '../.upwind/node-cache')
     : defaultCache;
   const cacheRoot = path.resolve(process.env['UPWIND_NODE_CACHE_DIR'] ?? outsideArtifact);
+  // The images it makes, beside the deployments' caches: one directory every deployment the root
+  // serves shares, as an image of a URL of the internet is the same for each, and an image of a path
+  // of the application is kept under the deployment that answered it (`image-cache.ts`).
+  configureImageCache({
+    directory: path.join(cacheRoot, 'images'),
+    maxBytes: manifest.imageCacheBytes,
+  });
   const originValue = process.env['UPWIND_NODE_ORIGIN'];
   const origin = originValue === undefined ? undefined : nativeOrigin(originValue);
   const hostname = process.env['UPWIND_NODE_HOSTNAME'] ?? '0.0.0.0';

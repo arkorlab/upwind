@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,6 +32,7 @@ import { readProjectConfig } from '../project-config.ts';
 import { carriesMaps } from '../source-maps.ts';
 import { collectStaticFiles } from '../static-files.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from '../throwing-globals.ts';
+import { adapterRoot } from './adapter-root.ts';
 import { EDGE_ANSWER_SOURCE, EDGE_ANSWER_WRAPPER } from './edge-answer.ts';
 import {
   NATIVE_EDGE_WEB_GLOBALS,
@@ -41,6 +42,7 @@ import {
 import { imageEncoderFiles } from './encoder-files.ts';
 import { copyNativeFiles, nativeAssetSources, nativeTraceFiles } from './files.ts';
 import { nativeEdgeGraphPlugin } from './graph.ts';
+import { type ImageCacheField, imageCacheField } from './image-cache-field.ts';
 import { NATIVE_RUNTIME_FIELDS } from './runtime-fields.ts';
 
 const MIDDLEWARE_ID = '/_middleware';
@@ -48,7 +50,7 @@ const SERVER_FILE = 'server.mjs';
 const CACHE_WORKER_FILE = 'cache-worker.mjs';
 
 /** A separate format prevents an older Workers uploader from mistaking this for its bundle. */
-export interface NativeDeploymentManifest {
+export interface NativeDeploymentManifest extends ImageCacheField {
   readonly format: 'upwind-node';
   readonly v: 1;
   readonly deploymentId: string;
@@ -206,6 +208,7 @@ function nativeModules(runtimeRoot: string, cacheHost: string): Plugin {
   const replacements = new Map([
     [path.join(runtimeRoot, 'delivery.ts'), path.join(runtimeRoot, 'native/delivery.ts')],
     [path.join(runtimeRoot, 'environment.ts'), path.join(runtimeRoot, 'native/environment.ts')],
+    [path.join(runtimeRoot, 'image-cache.ts'), path.join(runtimeRoot, 'native/image-cache.ts')],
     [path.join(runtimeRoot, 'image-encoder.ts'), path.join(runtimeRoot, 'native/image-encoder.ts')],
     [
       path.join(runtimeRoot, 'image-source-fetch.ts'),
@@ -329,21 +332,6 @@ async function emitNativeEdge(
     comments: { legal: false },
   });
   await rm(entry);
-}
-
-async function adapterRoot(): Promise<string> {
-  let directory = import.meta.dirname;
-  for (;;) {
-    const manifest = path.join(directory, 'package.json');
-    if (await exists(manifest)) {
-      const value = JSON.parse(await readFile(manifest, 'utf8')) as { readonly name?: string };
-      if (value.name === '@stayingupwind/adapter') return directory;
-    }
-    const parent = path.dirname(directory);
-    if (parent === directory)
-      throw new Error('@stayingupwind/adapter: cannot find the native server templates');
-    directory = parent;
-  }
 }
 
 /** Public installs carry compiled templates; a source checkout compiles these same entries. */
@@ -495,6 +483,7 @@ export async function emitNativeDeployment(
     generatedAt,
     projectDir: layout.pathOf(ctx.projectDir),
     distDir: layout.pathOf(ctx.distDir),
+    ...imageCacheField(ctx, images),
   };
   // A static export still needs a real cwd, even though none of its route modules are loaded.
   await mkdir(path.join(outDir, manifest.projectDir), { recursive: true });
