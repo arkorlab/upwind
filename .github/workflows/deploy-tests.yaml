@@ -526,12 +526,13 @@ jobs:
           for variant in original-paused fixed-paused fixed; do
             dir="$base-$variant"
             [ "$variant" = fixed ] && dir="$base"
-            for attempt in 1 2; do
+            for attempt in 1; do
               if node run-tests.js --type e2e -c 1 --retries 0 "$dir/vary-params-base-dynamic.test.ts" > "$RUNNER_TEMP/vpbd-$variant-$attempt.log" 2>&1; then
                 echo "VPBD $variant attempt $attempt: passed"
               else
                 echo "VPBD $variant attempt $attempt: failed"
                 grep -E "✕|Timed out waiting|Tests:" "$RUNNER_TEMP/vpbd-$variant-$attempt.log" | head -20
+                tail -60 "$RUNNER_TEMP/vpbd-$variant-$attempt.log"
               fi
             done
           done
