@@ -113,6 +113,25 @@ whether that edge had told it or not. Where the host binds none, the host module
 reach, and every read is a miss, as without it. Unset, empty or `none` is the adapter alone; another
 value, or `hosted` for a target on this machine, fails before anything is built.
 
+The build is then the one a host makes of its own deployments in what it leaves out of the Functions
+as well: the prefetch segments (`UPWIND_UNSHIPPED_OUTPUTS=prefetch-segments`), for the host's edge to
+answer from the bundle, and — the adapter's default beside a named cache host — the large bodies of
+completed pages where a Function would be over its size limit with them, for the host's reader.
+
+### What a host's run keeps
+
+Each shard of a run on a host keeps a public artifact, `deploy-results-<run>-<attempt>-<shard>`, for
+a compatibility record to be made from: `metadata.json` (the run and its attempt, when it was planned
+and when the shard ended, the selection and its pieces, the target, the cache, and the commits of
+Next.js and of this adapter), `expected-tests.txt` (the suites the shard was to run, listed before it
+ran them, so that one it never reached is known to be missing), `runner-exit-code.txt` (where the
+runner ran: a shard whose setup failed before it has none, rather than a code nothing returned), and
+`results/<suite>.json` for each suite that left a result (`src/keep-results.ts`). A result keeps each
+case's names and status and nothing it said — no message, no application URL, no project — except
+that a case failed only by Jest's `test.failing` refusal, its body having completed, says so
+(`failure: "failing-test-passed"`): a case upstream expects to fail on its own provider reads by
+that. The runner's targets keep none.
+
 ### Choosing the installer
 
 `ADAPTER_TEST_INSTALL_MANAGER=npm` selects npm for the isolated application's **install step**.

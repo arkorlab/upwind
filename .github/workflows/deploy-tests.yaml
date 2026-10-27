@@ -117,6 +117,7 @@ jobs:
       nextjs: ${{ steps.plan.outputs.nextjs }}
       tests: ${{ steps.plan.outputs.tests }}
       cache: ${{ steps.plan.outputs.cache }}
+      started-at: ${{ steps.plan.outputs.started-at }}
     steps:
       - name: Work out the shards
         id: plan
@@ -306,6 +307,7 @@ jobs:
             echo "nextjs=$nextjs"
             echo "tests=$selection"
             echo "cache=$cache"
+            echo "started-at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           } >>"$GITHUB_OUTPUT"
           # One shard asked for by name is one job: nothing of the rest of the split runs, so nothing
           # about how many could have run at once is true of it.
@@ -427,6 +429,46 @@ jobs:
         # slow slice of suites, not for a build that stalled.
         timeout-minutes: 30
         run: pnpm install && pnpm build && pnpm install
+      # The suites this shard is to run, listed as the run below selects them, before Chromium and the
+      # adapter are built: a shard that fails after this leaves its suites named, and missing from its
+      # results, rather than unknown (`keep-results.ts`). On a host only, the target its results are
+      # kept for.
+      - name: List what this shard runs
+        id: inventory
+        if: matrix.target == 'host'
+        working-directory: nextjs
+        env:
+          NEXT_TEST_MODE: deploy
+          NEXT_ENABLE_ADAPTER: 1
+          NEXT_EXTERNAL_TESTS_FILTERS: test/deploy-tests-manifest.json
+          IS_TURBOPACK_TEST: 1
+          NEXT_TEST_JOB: 1
+          NEXT_TEST_SKIP_RESULT_CACHE: 1
+          TESTS: ${{ needs.plan.outputs.tests }}
+          SHARD: ${{ matrix.shard }}
+          TOTAL: ${{ needs.plan.outputs.total }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/deploy-results"
+          group=''
+          if [ "$TOTAL" -gt 1 ]; then
+            group="-g $SHARD/$TOTAL"
+          fi
+          paths=''
+          if [ "$(printf '%s' "$TESTS" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')" != 'all' ]; then
+            paths="$TESTS"
+          fi
+          listing="$RUNNER_TEMP/deploy-results/expected-tests.txt"
+          # shellcheck disable=SC2086 -- both are several words, or none, on purpose
+          node run-tests.js --type e2e $group $paths --print-tests >"$listing"
+          count="$(grep -Ec '^[[:space:]]*test/[^[:space:]]+\.test\.[jt]sx?[[:space:]]*$' "$listing" || true)"
+          # A selection named by path that the manifest leaves nothing of would run nothing and pass,
+          # and its results would say so: refused here instead. `all` is the manifest's own.
+          if [ "$count" -eq 0 ] && [ -n "$paths" ]; then
+            echo 'the deploy manifest leaves none of the suites named: the run would run none' >&2
+            exit 1
+          fi
+          echo "shard $SHARD: $count suite(s) listed" >>"$GITHUB_STEP_SUMMARY"
       # Downloads and apt: a stall is tried again rather than holding the shard until the job's limit,
       # as two shards were held on 2026-10-26, five and a half hours each before they were cancelled.
       - name: Install Chromium
@@ -475,6 +517,8 @@ jobs:
           NEXT_TELEMETRY_DISABLED: 1
           IS_TURBOPACK_TEST: 1
           NEXT_TEST_JOB: 1
+          # As the listing above has it, so that the two select the same suites.
+          NEXT_TEST_SKIP_RESULT_CACHE: 1
           ADAPTER_DIR: ${{ github.workspace }}/adapter
           NEXT_TEST_DEPLOY_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-deploy.sh
           NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-logs.sh
@@ -514,4 +558,42 @@ jobs:
             paths="$TESTS"
           fi
           # shellcheck disable=SC2086 -- both are several words, or none, on purpose
-          node run-tests.js --type e2e -c "$CONCURRENCY" --retries 0 $group $paths
+          if node run-tests.js --type e2e -c "$CONCURRENCY" --retries 0 $group $paths; then
+            result=0
+          else
+            result=$?
+          fi
+          # What the runner said of the shard, kept with its results where they are kept (below).
+          if [ -d "$RUNNER_TEMP/deploy-results" ]; then
+            printf '%s\n' "$result" >"$RUNNER_TEMP/deploy-results/runner-exit-code.txt"
+          fi
+          exit "$result"
+      # A host's results, kept for a compatibility record in the form `keep-results.ts` writes: the
+      # run's identity, the suites listed, the runner's exit code, and each case's names and status —
+      # never a message, an application's URL or a project. Public, as this repository's artifacts
+      # are, for a month.
+      - name: Keep this shard's results
+        if: always() && matrix.target == 'host' && steps.inventory.outcome == 'success'
+        env:
+          TARGET: ${{ matrix.target }}
+          CACHE: ${{ needs.plan.outputs.cache }}
+          ADAPTER_COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          STARTED_AT: ${{ needs.plan.outputs.started-at }}
+          TESTS: ${{ needs.plan.outputs.tests }}
+          SHARD: ${{ matrix.shard }}
+          TOTAL: ${{ needs.plan.outputs.total }}
+        run: |
+          set -euo pipefail
+          NEXT_COMMIT="$(git -C nextjs rev-parse HEAD)" FINISHED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            node adapter/tools/deploy-tests/src/keep-results.ts --next-dir nextjs \
+            --output "$RUNNER_TEMP/deploy-results"
+      - name: Save this shard's results
+        if: always() && matrix.target == 'host' && steps.inventory.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deploy-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/deploy-results
+          if-no-files-found: error
+          retention-days: 30
