@@ -4,6 +4,7 @@ import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { MIDDLEWARE_DONE_HEADER } from '@stayingupwind/core/paas';
 import { describe, expect, it, vi } from 'vitest';
 
+import { fetchRewrite } from '../src/node-rewrite-fetch.ts';
 import { externalRewrite } from '../src/serve.ts';
 
 // This suite uses native Node HTTP/fetch. No Next render or Worker-only bridge is invoked.
@@ -139,4 +140,102 @@ describe('external rewrites over real Node HTTP', () => {
       }
     },
   );
+
+  it('requests an identity byte range and preserves its offsets and bytes', async () => {
+    let encoding: string | undefined;
+    const server = createServer((request, response) => {
+      encoding = request.headers['accept-encoding'];
+      response.writeHead(206, { 'content-range': 'bytes 2-4/9', 'content-length': '3' });
+      response.end('234');
+    });
+    const port = await listen(server);
+    const request = new Request('https://incoming.example/range', {
+      headers: { range: 'bytes=2-4', 'accept-encoding': 'gzip, br' },
+    });
+    try {
+      const response = await externalRewrite(request, new URL(`http://127.0.0.1:${port}/range`));
+
+      const codings = new Set(encoding?.split(',').map((value) => value.trim()));
+
+      expect(codings).toStrictEqual(new Set(['identity']));
+      expect(request.headers.get('accept-encoding')).toBe('gzip, br');
+      expect({
+        status: response.status,
+        range: response.headers.get('content-range'),
+      }).toStrictEqual({
+        status: 206,
+        range: 'bytes 2-4/9',
+      });
+      await expect(response.text()).resolves.toBe('234');
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('refuses an origin that compresses a partial response despite the identity request', async () => {
+    const encoded = gzipSync('decoded partial response');
+    let encoding: string | undefined;
+    const server = createServer((request, response) => {
+      encoding = request.headers['accept-encoding'];
+      response.writeHead(206, {
+        'content-encoding': 'gzip',
+        'content-length': String(encoded.byteLength),
+        'content-range': `bytes 0-${encoded.byteLength - 1}/${encoded.byteLength}`,
+      });
+      response.end(encoded);
+    });
+    const port = await listen(server);
+    try {
+      const response = await externalRewrite(
+        new Request('https://incoming.example/range', { headers: { range: 'bytes=0-20' } }),
+        new URL(`http://127.0.0.1:${port}/range`),
+      );
+
+      const codings = new Set(encoding?.split(',').map((value) => value.trim()));
+
+      expect(codings).toStrictEqual(new Set(['identity']));
+      expect(response.status).toBe(502);
+      expect(response.headers.has('content-range')).toBe(false);
+      await expect(response.text()).resolves.toBe('rewrite target unavailable');
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('preserves native fetch redirect metadata through normalization and clones', async () => {
+    const encoded = gzipSync('redirected decoded response');
+    const server = createServer((request, response) => {
+      if (request.url === '/redirect') {
+        response.writeHead(302, { location: '/final' });
+        response.end();
+        return;
+      }
+      response.writeHead(200, {
+        'content-encoding': 'gzip',
+        'content-length': String(encoded.byteLength),
+      });
+      response.end(encoded);
+    });
+    const port = await listen(server);
+    try {
+      const response = await fetchRewrite(new URL(`http://127.0.0.1:${port}/redirect`), {
+        redirect: 'follow',
+      });
+      const clone = response.clone();
+      for (const value of [response, clone]) {
+        expect({ url: value.url, redirected: value.redirected, type: value.type }).toStrictEqual({
+          url: `http://127.0.0.1:${port}/final`,
+          redirected: true,
+          type: 'basic',
+        });
+      }
+
+      await expect(Promise.all([response.text(), clone.text()])).resolves.toStrictEqual([
+        'redirected decoded response',
+        'redirected decoded response',
+      ]);
+    } finally {
+      await close(server);
+    }
+  });
 });

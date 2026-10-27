@@ -166,7 +166,9 @@ export async function startNodeContainer(
         ? control(request, response, lifetime)
         : application(entry, request, response, lifetime);
     // eslint-disable-next-line unicorn/prefer-await -- node:http owns the response stream's lifetime.
-    work.catch(() => {
+    work.catch((error: unknown) => {
+      // eslint-disable-next-line no-console -- Keep the original cause in server logs, never in the generic HTTP answer.
+      console.error('next-runtime: Function failed', error);
       if (response.headersSent) response.destroy();
       else response.writeHead(HTTP_INTERNAL_ERROR).end('Internal Server Error');
     });

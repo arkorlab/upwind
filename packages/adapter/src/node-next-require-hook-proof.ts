@@ -24,6 +24,7 @@ import {
   captureNodeManifestIdentity,
   type NodeManifestIdentitySnapshot,
 } from './node-manifest-identity-snapshot.ts';
+import { nodeNextHookAliasRoleData } from './node-next-hook-alias-role.ts';
 import {
   nodeNextStaticRequireHookSites,
   type NodeNextRequireHookSites,
@@ -248,8 +249,10 @@ async function aliasInventory(state: State): Promise<void> {
   state.aliasMetadata = initial.metadata;
   if (initial.metadata !== undefined) await source(state, initial.metadata);
   for (const alias of initial.aliases) {
-    const own = owned(state, alias.target);
-    await source(state, own.file, own.sha256);
+    const data = nodeNextHookAliasRoleData(state.input.graph, alias);
+    if (data === undefined) refuse('incomplete alias execution inventory');
+    const own = data.requiresOwned ? owned(state, alias.target) : undefined;
+    await source(state, alias.target, own?.sha256 ?? data.sha256);
     state.aliases.push(Object.freeze(alias));
   }
   const imports = state.input.graph.imports;

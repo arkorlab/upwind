@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { startNodeContainer, type NodeContainerServer } from '../src/node-container.ts';
 
@@ -29,8 +29,90 @@ describe('node container HTTP service', () => {
     vi.stubEnv('ARKOR_NODE_RUNTIME', CONFIGURATION);
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   afterAll(() => {
     vi.unstubAllEnvs();
+  });
+
+  it('logs the original Function failure while returning only a generic client response', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {
+      // Capture the private cause without writing expected failures to the test process.
+    });
+    const failure = new Error('private synthetic Function cause');
+    const server = await startNodeContainer({
+      port: 0,
+      entry: { fetch: () => Promise.reject(failure) },
+    });
+    try {
+      const response = await internal(server, '/failure', {
+        headers: { 'x-upwind-request-url': 'https://example.test/failure' },
+      });
+      const body = await response.text();
+
+      expect({ status: response.status, body }).toStrictEqual({
+        status: 500,
+        body: 'Internal Server Error',
+      });
+      expect(JSON.stringify([...response.headers])).not.toContain(failure.message);
+      expect(logged).toHaveBeenCalledWith('next-runtime: Function failed', failure);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('logs a response forwarding failure without replacing the committed response', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {
+      // Capture the private stream cause without writing the expected failure.
+    });
+    const failure = new Error('private synthetic response stream cause');
+    const release = Promise.withResolvers<undefined>();
+    let started = false;
+    const server = await startNodeContainer({
+      port: 0,
+      entry: {
+        fetch: () => {
+          return Promise.resolve(
+            new Response(
+              new ReadableStream<Uint8Array>({
+                pull: async (controller) => {
+                  if (!started) {
+                    started = true;
+                    controller.enqueue(new TextEncoder().encode('first'));
+                    return;
+                  }
+                  await release.promise;
+                  throw failure;
+                },
+              }),
+            ),
+          );
+        },
+      },
+    });
+    try {
+      const response = await internal(server, '/stream', {
+        headers: { 'x-upwind-request-url': 'https://example.test/stream' },
+      });
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+      release.resolve(undefined);
+
+      expect(response.status).toBe(200);
+      expect(new TextDecoder().decode(first.value)).toBe('first');
+      await expect(reader.read()).rejects.toThrow(TypeError);
+
+      await vi.waitFor(() => {
+        expect(logged).toHaveBeenCalledWith('next-runtime: Function failed', failure);
+      });
+
+      expect(JSON.stringify([...response.headers])).not.toContain(failure.message);
+    } finally {
+      release.resolve(undefined);
+      await server.close();
+    }
   });
 
   it('consumes bootstrap configuration before evaluating the lazy application entry', async () => {

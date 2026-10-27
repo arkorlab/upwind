@@ -1,3 +1,5 @@
+import { isProxy } from 'node:util/types';
+
 import type { FunctionEnv } from '@stayingupwind/core/paas';
 
 import { nativeFetch } from './cache/native.ts';
@@ -30,6 +32,8 @@ const NAME = /^[A-Za-z_]\w{0,127}$/u;
 const INVALID_CONFIGURATION = 'invalid Node runtime configuration';
 const INVALID_CAPABILITY = 'invalid Node runtime capability';
 const BOOTSTRAP_ENV = 'ARKOR_NODE_RUNTIME';
+const BINDINGS_KEY = Symbol.for('upwind.node-runtime-bindings.v1');
+const SHARED_BINDING_FIELDS = 3;
 const RESERVED_SERVICE_NAMES: ReadonlySet<string> = new Set([
   '__proto__',
   'constructor',
@@ -112,11 +116,15 @@ export function parseNodeRuntimeConfiguration(raw: string | undefined): NodeRunt
   }
   if (!record(value) || !identity(value)) throw new Error(INVALID_CONFIGURATION);
   validateCapabilities(value['capabilities']);
-  return value as unknown as NodeRuntimeConfiguration;
+  const configuration = value as unknown as NodeRuntimeConfiguration;
+  Object.freeze(configuration.capabilities.services);
+  Object.freeze(configuration.capabilities);
+  return Object.freeze(configuration);
 }
 
 /** A Fetcher facade uses captured native fetch, never Next's patched fetch/data cache. */
 async function fetchCapability(request: Request): Promise<Response> {
+  if (request.headers.has('range')) request.headers.set('accept-encoding', 'identity');
   return fetchedResponse(await nativeFetch(request, { redirect: 'manual' }), request.method);
 }
 
@@ -126,7 +134,7 @@ export function nodeCapabilityFetcher(
 ): { readonly fetch: typeof fetch } {
   if (!capability(origin)) throw new Error(INVALID_CAPABILITY);
   return Object.freeze({
-    fetch: (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    fetch: async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const request = new Request(input, init);
       const source = new URL(request.url);
       const target = new URL(origin);
@@ -178,19 +186,89 @@ export function createNodeFunctionEnv(config: NodeRuntimeConfiguration): Functio
   return Object.freeze(env);
 }
 
-const cached: {
-  configuration: NodeRuntimeConfiguration | undefined;
-  environment: FunctionEnv | undefined;
-} = { configuration: undefined, environment: undefined };
+interface SharedBindings {
+  readonly version: 1;
+  readonly configuration: NodeRuntimeConfiguration;
+  readonly environment: () => FunctionEnv;
+}
 
-export function nodeRuntimeConfiguration(): NodeRuntimeConfiguration {
+const cachedBindings: { value: SharedBindings | undefined } = { value: undefined };
+
+function frozenRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    !isProxy(value) &&
+    record(value) &&
+    Object.isFrozen(value) &&
+    Object.values(Object.getOwnPropertyDescriptors(value)).every((descriptor) =>
+      Object.hasOwn(descriptor, 'value'),
+    )
+  );
+}
+
+function isSharedBindings(value: unknown): value is SharedBindings {
+  if (
+    !frozenRecord(value) ||
+    Reflect.ownKeys(value).length !== SHARED_BINDING_FIELDS ||
+    value['version'] !== 1 ||
+    !frozenRecord(value['configuration']) ||
+    !identity(value['configuration']) ||
+    !frozenRecord(value['configuration']['capabilities']) ||
+    !frozenRecord(value['configuration']['capabilities']['services']) ||
+    typeof value['environment'] !== 'function' ||
+    isProxy(value['environment']) ||
+    !Object.isFrozen(value['environment'])
+  )
+    return false;
+  try {
+    validateCapabilities(value['configuration']['capabilities']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sharedBindings(): SharedBindings {
   const raw = process.env[BOOTSTRAP_ENV];
   Reflect.deleteProperty(process.env, BOOTSTRAP_ENV);
-  cached.configuration ??= parseNodeRuntimeConfiguration(raw);
-  return cached.configuration;
+  if (cachedBindings.value !== undefined) return cachedBindings.value;
+  const existing = Object.getOwnPropertyDescriptor(globalThis, BINDINGS_KEY);
+  if (existing !== undefined) {
+    const value: unknown = existing.value;
+    if (
+      existing.configurable !== false ||
+      existing.enumerable !== false ||
+      existing.writable !== false ||
+      !isSharedBindings(value)
+    )
+      throw new Error('Conflicting Node runtime bindings registry');
+    cachedBindings.value = value;
+    return value;
+  }
+  const configuration = parseNodeRuntimeConfiguration(raw);
+  const cached: { environment: FunctionEnv | undefined } = { environment: undefined };
+  const made: SharedBindings = Object.freeze({
+    version: 1,
+    configuration,
+    environment: Object.freeze(() => {
+      cached.environment ??= createNodeFunctionEnv(configuration);
+      return cached.environment;
+    }),
+  });
+  Object.defineProperty(globalThis, BINDINGS_KEY, {
+    value: made,
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  cachedBindings.value = made;
+  return made;
+}
+
+// server.mjs consumes the bootstrap before function.mjs evaluates its own copy of this module.
+export function nodeRuntimeConfiguration(): NodeRuntimeConfiguration {
+  return sharedBindings().configuration;
 }
 
 export function nodeFunctionEnv(): FunctionEnv {
-  cached.environment ??= createNodeFunctionEnv(nodeRuntimeConfiguration());
-  return cached.environment;
+  return sharedBindings().environment();
 }

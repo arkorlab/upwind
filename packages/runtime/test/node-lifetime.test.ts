@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { NodeLifetime } from '../src/node-lifetime.ts';
 
@@ -51,6 +51,86 @@ describe('node container lifetime', () => {
     task.resolve(undefined);
 
     await expect(lifetime.drain(1000)).resolves.toBe(true);
+  });
+
+  it('rechecks idle after a later settlement reaction retains another task', async () => {
+    const lifetime = new NodeLifetime();
+    const first = Promise.withResolvers<undefined>();
+    const second = Promise.withResolvers<undefined>();
+    lifetime.waitUntil(first.promise);
+    async function registerLater(): Promise<void> {
+      await first.promise;
+      lifetime.waitUntil(second.promise);
+    }
+    const later = registerLater();
+    const observed = vi.fn<(drained: boolean) => void>();
+    const drained = lifetime.drain(1000);
+    async function observe(): Promise<void> {
+      observed(await drained);
+    }
+    const observation = observe();
+    try {
+      first.resolve(undefined);
+      await later;
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+
+      expect(observed).not.toHaveBeenCalled();
+      expect(lifetime.snapshot().backgroundTasks).toBe(1);
+
+      second.resolve(undefined);
+
+      await expect(drained).resolves.toBe(true);
+
+      await observation;
+    } finally {
+      second.resolve(undefined);
+      await observation;
+    }
+  });
+
+  it('keeps the original drain deadline when a late settlement reaction adds work', async () => {
+    vi.useFakeTimers();
+    const lifetime = new NodeLifetime();
+    const first = Promise.withResolvers<undefined>();
+    const second = Promise.withResolvers<undefined>();
+    lifetime.waitUntil(first.promise);
+    async function registerLater(): Promise<void> {
+      await first.promise;
+      lifetime.waitUntil(second.promise);
+    }
+    const later = registerLater();
+    const drained = lifetime.drain(50);
+    const observed = vi.fn<(value: boolean) => void>();
+    async function observe(): Promise<void> {
+      observed(await drained);
+    }
+    const observation = observe();
+    try {
+      await vi.advanceTimersByTimeAsync(40);
+      first.resolve(undefined);
+      await later;
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(observed).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(drained).resolves.toBe(false);
+      expect(lifetime.snapshot().backgroundTasks).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      second.resolve(undefined);
+      await observation;
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports an already idle zero-budget drain without leaving a timer', async () => {
+    const lifetime = new NodeLifetime();
+
+    await expect(lifetime.drain(0)).resolves.toBe(true);
   });
 
   it('accounts for rejected background tasks without an unhandled rejection or double request end', async () => {
