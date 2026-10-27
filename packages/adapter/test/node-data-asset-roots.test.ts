@@ -12,11 +12,12 @@ import { WasmCollector } from '../src/wasm.ts';
 
 vi.mock(import('node:fs/promises'), async (importOriginal) => {
   const actual = await importOriginal();
-  return {
+  const mocked = {
     ...actual,
     readFile: vi.fn<() => Promise<never>>().mockRejectedValue(new Error('unowned file read')),
-    stat: vi.fn(actual.stat),
   };
+  vi.spyOn(mocked, 'stat');
+  return mocked;
 });
 
 const ENTRY = 'exports.value=42;';
