@@ -19,7 +19,7 @@ export function nodeAliasLookupError(
   error: unknown,
   root: string,
   importer: string,
-  load: NodeSourceSpecifier,
+  load: NodeSourceSpecifier & { readonly requiredInput?: boolean | undefined },
 ): unknown {
   if (!(error instanceof AuditError)) return error;
   const specifier =
@@ -28,8 +28,10 @@ export function nodeAliasLookupError(
       : load.specifier;
   const target = TARGETS.get(error);
   const resolved = target === undefined ? '' : `, target=${retainedFileIdentity(root, target)}`;
+  const role =
+    load.requiredInput === undefined ? '' : `, requiredInput=${String(load.requiredInput)}`;
   return new AuditError(
-    `${error.message} (importer=${retainedFileIdentity(root, importer)}, specifier=${JSON.stringify(specifier)}, kind=${JSON.stringify(load.kind)}${resolved})`,
+    `${error.message} (importer=${retainedFileIdentity(root, importer)}, specifier=${JSON.stringify(specifier)}, kind=${JSON.stringify(load.kind)}${resolved}${role})`,
     { cause: error },
   );
 }

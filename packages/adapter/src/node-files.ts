@@ -49,6 +49,7 @@ interface PhysicalSources {
   readonly files: Map<string, Uint8Array>;
   readonly executable: Set<string>;
   readonly originals: Map<string, string>;
+  readonly required: Set<string>;
 }
 interface TraceDirectory {
   readonly file: string;
@@ -168,8 +169,9 @@ async function physicalSources(
     files: new Map(),
     executable: new Set(),
     originals: new Map(),
+    required: new Set(),
   };
-  const hard = new Set<string>();
+  const hard = sources.required;
   for (const file of files) {
     const canonical = await realpath(file);
     hard.add(canonical);

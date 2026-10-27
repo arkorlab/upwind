@@ -108,6 +108,24 @@ describe('required Node alias diagnostics from authored data and FS only', () =>
     expect(wrapped.cause).toBe(copied);
   });
 
+  it.each([false, true])(
+    'reports required-input provenance without changing refusal: %s',
+    (requiredInput) => {
+      const error = nodeAliasOutsideTrace(`${ROOT}/store/unclosed.cjs`);
+      const wrapped = diagnostic(
+        nodeAliasLookupError(error, ROOT, `${ROOT}/entry.cjs`, {
+          kind: 'require',
+          specifier: 'dep',
+          requiredInput,
+        }),
+      );
+
+      expect(wrapped.message).toContain(`requiredInput=${String(requiredInput)}`);
+      expect(wrapped.cause).toBe(error);
+      expect(error.message).toBe(OUTSIDE_CLOSED_TRACE);
+    },
+  );
+
   it('bounds and JSON-quotes relative identities and source specifiers', () => {
     const name = `src/"line\n${'x'.repeat(300)}`;
     const specifier = `dep/"line\n${'y'.repeat(300)}`;

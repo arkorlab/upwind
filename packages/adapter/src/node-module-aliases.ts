@@ -38,6 +38,8 @@ const COMMONJS_SUFFIXES = ['', '.js', '.json', '.node'] as const;
 interface NodeModuleAliasSources {
   readonly files: ReadonlyMap<string, Uint8Array>;
   readonly originals: ReadonlyMap<string, string>;
+  /** Diagnostic provenance only; never changes alias admission or lookup order. */
+  readonly required?: ReadonlySet<string>;
 }
 interface NodeAliasCachePolicy {
   readonly proof: NodeNextRewriteProof | undefined;
@@ -526,7 +528,10 @@ export async function nodeModuleAliases(
       try {
         await moduleAlias(file, load, context);
       } catch (error) {
-        throw nodeAliasLookupError(error, layout.root, file, load);
+        throw nodeAliasLookupError(error, layout.root, file, {
+          ...load,
+          requiredInput: sources.required?.has(file),
+        });
       }
     }
   }
