@@ -153,13 +153,18 @@ function outcomeOf(
     : { kind: 'failed', why: `Jest gave it the status ${status}` };
 }
 
-/** Why a suite failed as a whole, where it did. */
+/**
+ * Why a suite failed as a whole, where it did, whatever its cases did. An error of the file's own —
+ * an `afterAll` hook's, or the test environment's — is one Jest counts as the file's runtime error
+ * (`numRuntimeErrorTestSuites`) and attaches to no case: it does so beside a failed case as well
+ * (measured with Jest 29.7, which Next.js runs), so a reviewed case's failure never accounts for it.
+ */
 function suiteFailure(suite: JestSuite): string | undefined {
   if (suite.interrupted) {
     return 'Jest said the run was interrupted';
   }
   if (suite.runtimeError) {
-    return 'the file could not run';
+    return 'Jest reported an error of the file outside its cases (a hook, or the file itself)';
   }
   return suite.status === 'failed' && suite.cases.every((entry) => entry.status !== 'failed')
     ? 'the suite failed outside its cases'

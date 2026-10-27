@@ -170,7 +170,7 @@ describe('a shard judged against the reviewed cases', () => {
       'Jest said the run was interrupted',
     );
     expect(judged(passing, ON_NODE, { runtimeError: true }).unexplained[0]?.why).toBe(
-      'the file could not run',
+      'Jest reported an error of the file outside its cases (a hook, or the file itself)',
     );
   });
 
@@ -178,6 +178,20 @@ describe('a shard judged against the reviewed cases', () => {
     const verdict = judged([jestCase('feed native', 'passed')], ON_CLOUDFLARE);
 
     expect(verdict.passedAnyway).toStrictEqual([]);
+  });
+
+  it('fails a suite whose reviewed failure comes with an error of the file’s own', () => {
+    const header = jestCase('feed header', 'failed', ['Received: null']);
+    const verdict = judged([header], ON_NODE, { runtimeError: true });
+
+    expect(verdict.cases.reviewed.vercel).toBe(1);
+    expect(verdict.unexplained).toStrictEqual([
+      {
+        suite: SUITE,
+        why: 'Jest reported an error of the file outside its cases (a hook, or the file itself)',
+      },
+    ]);
+    expect(fails(verdict)).toBe(true);
   });
 
   it('lists a case reviewed as failing that passed', () => {
@@ -432,9 +446,9 @@ const GATED_CASE = {
 };
 
 /** The gated suite's result as the run writes it (`<suite>.results.json`). */
-function gatedResult(cases: unknown[]) {
+function gatedResult(cases: unknown[], runtimeErrors = 0) {
   return {
-    numRuntimeErrorTestSuites: 0,
+    numRuntimeErrorTestSuites: runtimeErrors,
     wasInterrupted: false,
     testResults: [
       { name: `/home/runner/work/nextjs/${GATED}`, status: 'failed', assertionResults: cases },
@@ -493,6 +507,16 @@ describe('a shard judged by the workflow', () => {
     });
     expect(JSON.stringify(verdict)).not.toContain('Failing test passed');
     expect(readFileSync(summary, 'utf8')).toContain('### `node`, Next.js 16.4.3 (29bbeab09981)');
+  });
+
+  it('fails a shard whose read failure comes with an error of the file’s own', () => {
+    // As Jest 29.7 writes an `afterAll` hook's error beside a failed case: the file's runtime error.
+    const { run, summary } = shard({ [GATED]: gatedResult([GATED_CASE], 1) });
+
+    expect(run.status).toBe(1);
+    expect(readFileSync(summary, 'utf8')).toContain(
+      `- \`${GATED}\`: Jest reported an error of the file outside its cases`,
+    );
   });
 
   it('fails a shard with a failure nobody reviewed, or a suite that left no result', () => {
