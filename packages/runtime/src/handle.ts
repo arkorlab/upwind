@@ -441,8 +441,12 @@ async function answerResolved(
   const { resolved } = routed;
   const { images } = store.manifest.config;
   if (images !== undefined && routed.image) {
-    const image = decidedApart(await serveImageSource(forwarded, store, images, routed));
-    return misdirectedTo(image) === undefined ? withRoutingHeaders(image, routed.headers) : image;
+    const image = await serveImageSource(forwarded, store, images, routed);
+    // Handed on as it came where its source is another Function's: the hand-off knows the answer
+    // itself (`misdirectedTo`), which one made again for the mark would not be (coderabbit).
+    return misdirectedTo(image) === undefined
+      ? withRoutingHeaders(decidedApart(image), routed.headers)
+      : image;
   }
   // The status this routing named, and the headers it collected: never an outer request's.
   const asked: RoutedInput = {

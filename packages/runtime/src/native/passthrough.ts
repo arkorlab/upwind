@@ -24,6 +24,14 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 /** An answer of a kind decided by a rule of its own (`decidedApart`): a shipped file, an image. */
 const APART = `${PLATFORM_HEADER_PREFIX}apart`;
+/**
+ * The mark's value: this process's own, which nothing outside the runtime knows. An application's
+ * answer, a response it passes on from elsewhere, or a header rule could carry a header of the
+ * mark's name, and one that passed for the mark would take the answer out of the rule passed-on
+ * answers go by — a cookie-bearing visitor's answer kept as everyone's (coderabbit). Only the
+ * runtime's own value marks; any other is a platform header the client never sees.
+ */
+const APART_VALUE = crypto.randomUUID();
 const CACHE_CONTROL = 'cache-control';
 
 /** Each client's request as the middleware that ran for it handed it on (`handedOn`). */
@@ -42,7 +50,7 @@ function reframed(answer: Response, headers: Headers): Response {
 
 export function decidedApart(answer: Response): Response {
   const headers = new Headers(answer.headers);
-  headers.set(APART, '1');
+  headers.set(APART, APART_VALUE);
   return reframed(answer, headers);
 }
 
@@ -54,7 +62,9 @@ export function decidedApart(answer: Response): Response {
  * an answer made for it (`decidedApart`), and routing makes or changes the answer it hands on.
  */
 export function leftApart(answer: Response): Response | undefined {
-  if (!answer.headers.has(APART)) return undefined;
+  // Another value is no mark: left where it is — the headers of an answer passed on as it came may
+  // not be changed — and taken off with every platform header at the server's door (`http.ts`).
+  if (answer.headers.get(APART) !== APART_VALUE) return undefined;
   answer.headers.delete(APART);
   return answer;
 }

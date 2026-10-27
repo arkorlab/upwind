@@ -130,6 +130,15 @@ describe('an answer the edge would pass on, on the native target', () => {
     expect(response.headers.has('x-arkor-apart')).toBe(false);
   });
 
+  it('takes no header of the mark’s name the application set for the mark (coderabbit)', () => {
+    // An application's answer, or one it passes on from elsewhere, naming the mark itself.
+    const forged = answer({ 'cache-control': PUBLIC, 'x-arkor-apart': '1' });
+
+    const response = native.delivered(asked('/feed', { cookie: 'session=1' }), forged);
+
+    expect(response.headers.get('cache-control')).toBe('private, max-age=60');
+  });
+
   it('marks nothing and keeps nothing on Workers', () => {
     const file = answer({ 'cache-control': 'public, max-age=31536000, immutable' });
     const request = asked('/logo.png');
