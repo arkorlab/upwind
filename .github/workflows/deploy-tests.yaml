@@ -443,7 +443,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             # Killed where it does not stop when asked, so that one stuck attempt leaves the others.
-            if timeout --kill-after=15s 6m pnpm playwright install --with-deps chromium; then exit 0; fi
+            if timeout --kill-after=15s 6m pnpm playwright install --only-shell chromium; then exit 0; fi
             echo "::warning::Chromium's install did not finish (attempt ${attempt} of 3)"
           done
           exit 1
