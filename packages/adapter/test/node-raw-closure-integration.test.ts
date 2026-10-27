@@ -108,4 +108,44 @@ describe.skipIf(!ENABLED)('complete original Node export closure (dedicated CI)'
       'raw source export was eliminated',
     );
   });
+
+  it.each([
+    [
+      'call annotation',
+      'function load(){return import(process.env.PLUGIN)};/*@__PURE__*/load();export const used=42;',
+    ],
+    [
+      'hash call annotation',
+      'function load(){return import(process.env.PLUGIN)};/*#__PURE__*/load();export const used=42;',
+    ],
+    [
+      'function annotation',
+      '/*#__NO_SIDE_EFFECTS__*/function load(){return import(process.env.PLUGIN)};load();export const used=42;',
+    ],
+  ])('refuses an executed loader hidden behind a purity hint: %s', async (_label, code) => {
+    const dependency = path.join(distDir, 'server/dependency.mjs');
+    await writeFile(dependency, code);
+    await writeEntry('./dependency.mjs');
+
+    await expect(proveNodeFunction(input([dependency]))).rejects.toThrow(
+      'load the bundler could not follow',
+    );
+  });
+
+  it('refuses an executed loader hidden behind package sideEffects metadata', async () => {
+    const root = path.join(directory, 'node_modules/declared-pure');
+    const dependency = path.join(root, 'index.mjs');
+    const metadata = path.join(root, 'package.json');
+    await mkdir(root, { recursive: true });
+    await writeFile(
+      metadata,
+      '{"name":"declared-pure","type":"module","sideEffects":false,"exports":"./index.mjs"}',
+    );
+    await writeFile(dependency, 'import(process.env.PLUGIN);export const unused=42;');
+    await writeFile(entry, "require('declared-pure');exports.native=()=>require('./addon.node');");
+
+    await expect(proveNodeFunction(input([dependency, metadata]))).rejects.toThrow(
+      'load the bundler could not follow',
+    );
+  });
 });

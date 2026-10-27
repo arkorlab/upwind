@@ -175,12 +175,15 @@ async function originalNodeModule(
   id: string,
   input: NodeProofInput,
   graph: OriginalNodeGraph,
-): Promise<{ code: string } | null> {
+): Promise<{ code: string; moduleSideEffects: true } | null> {
   if (!path.isAbsolute(id)) return null;
   const file = await realpath(id);
   const bytes = await nodeProofSource(file);
   graph.sources.set(id, { file, sha256: digest(bytes) });
-  return { code: linkedOriginalNodeSource(bytes.toString('utf8'), id, input.patch, graph) };
+  return {
+    code: linkedOriginalNodeSource(bytes.toString('utf8'), id, input.patch, graph),
+    moduleSideEffects: true,
+  };
 }
 
 function resolvedEdges(
@@ -343,7 +346,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     cwd: input.projectDir,
     input: entryFile,
     platform: 'node',
-    treeshake: { commonjs: false },
+    treeshake: { annotations: false, commonjs: false },
     resolve: { conditionNames: ['node', 'default'] },
     plugins: [originalNodeGraphPlugin(input, graph), hostLoaders.plugin, native.plugin],
     external(specifier) {
@@ -362,7 +365,11 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   const { output } = await bundle.generate({
     format: 'cjs',
     codeSplitting: false,
-    minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
+    minify: {
+      compress: { treeshake: { annotations: false } },
+      mangle: false,
+      codegen: { removeWhitespace: true },
+    },
     comments: { legal: false },
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');

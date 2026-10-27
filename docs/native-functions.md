@@ -63,6 +63,8 @@ dependency analysis and the physical archive; application code receives no globa
 Original-module analysis preserves CommonJS exports so their dependency closure is checked before
 publication. An ES module whose public exports were removed from the audited graph is refused.
 This also applies when a namespace conversion does not attest the complete exported-name list.
+The analysis ignores purity annotations and package `sideEffects` hints because the shipped files
+retain their original executable statements.
 Raw archive sources come from route and project-hook reachability; host-hook-only
 sources remain bundled, while sources shared with a route keep their raw physical copy.
 Trace membership alone does not make an asset an execution dependency. Required Node imports
