@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,6 +32,7 @@ import { readProjectConfig } from '../project-config.ts';
 import { carriesMaps } from '../source-maps.ts';
 import { collectStaticFiles } from '../static-files.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from '../throwing-globals.ts';
+import { adapterRoot } from './adapter-root.ts';
 import { EDGE_ANSWER_SOURCE, EDGE_ANSWER_WRAPPER } from './edge-answer.ts';
 import {
   NATIVE_EDGE_WEB_GLOBALS,
@@ -331,21 +332,6 @@ async function emitNativeEdge(
     comments: { legal: false },
   });
   await rm(entry);
-}
-
-async function adapterRoot(): Promise<string> {
-  let directory = import.meta.dirname;
-  for (;;) {
-    const manifest = path.join(directory, 'package.json');
-    if (await exists(manifest)) {
-      const value = JSON.parse(await readFile(manifest, 'utf8')) as { readonly name?: string };
-      if (value.name === '@stayingupwind/adapter') return directory;
-    }
-    const parent = path.dirname(directory);
-    if (parent === directory)
-      throw new Error('@stayingupwind/adapter: cannot find the native server templates');
-    directory = parent;
-  }
 }
 
 /** Public installs carry compiled templates; a source checkout compiles these same entries. */
