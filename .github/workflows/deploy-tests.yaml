@@ -431,11 +431,9 @@ jobs:
         run: pnpm install && pnpm build && pnpm install
       # The suites this shard is to run, listed as the run below selects them, before Chromium and the
       # adapter are built: a shard that fails after this leaves its suites named, and missing from its
-      # results, rather than unknown (`keep-results.ts`). On a host only, the target its results are
-      # kept for.
+      # results, rather than unknown (`keep-results.ts`, `judge-results.ts`).
       - name: List what this shard runs
         id: inventory
-        if: matrix.target == 'host'
         working-directory: nextjs
         env:
           NEXT_TEST_MODE: deploy
@@ -572,13 +570,18 @@ jobs:
           if [ -d "$RUNNER_TEMP/deploy-results" ]; then
             printf '%s\n' "$result" >"$RUNNER_TEMP/deploy-results/runner-exit-code.txt"
           fi
+          # On this machine's targets the verdict below fails the shard instead: a failure
+          # `REVIEWED.md` reads as saying nothing against this adapter is not one.
+          if [ "$ADAPTER_TEST_TARGET" != 'host' ]; then
+            exit 0
+          fi
           exit "$result"
-      # A host's results, kept for a compatibility record in the form `keep-results.ts` writes: the
-      # run's identity, the suites listed, the runner's exit code, and each case's names and status —
-      # never a message, an application's URL or a project. Public, as this repository's artifacts
-      # are, for a month.
+      # The shard's results, kept in the form `keep-results.ts` writes: the run's identity, the suites
+      # listed, the runner's exit code, and each case's names and status — never a message, an
+      # application's URL or a project. Public, as this repository's artifacts are, for a month: a
+      # host's for a compatibility record, this machine's targets' for the report below.
       - name: Keep this shard's results
-        if: always() && matrix.target == 'host' && steps.inventory.outcome == 'success'
+        if: always() && steps.inventory.outcome == 'success'
         env:
           TARGET: ${{ matrix.target }}
           CACHE: ${{ needs.plan.outputs.cache }}
@@ -594,11 +597,55 @@ jobs:
           NEXT_COMMIT="$(git -C nextjs rev-parse HEAD)" FINISHED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
             node adapter/tools/deploy-tests/src/keep-results.ts --next-dir nextjs \
             --output "$RUNNER_TEMP/deploy-results"
+      # On this machine's targets, the shard's results judged against the cases `REVIEWED.md` reads
+      # (`judge-results.ts`): what failed and is read there does not fail the shard, and anything else
+      # that failed does, as does a suite that left no result. The verdict goes into the results kept.
+      - name: Judge this shard's results
+        if: always() && matrix.target != 'host' && steps.inventory.outcome == 'success'
+        env:
+          TARGET: ${{ matrix.target }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          NEXT_COMMIT="$(git -C nextjs rev-parse HEAD)" \
+            node adapter/tools/deploy-tests/src/judge-results.ts --next-dir nextjs \
+            --results "$RUNNER_TEMP/deploy-results"
+      # Named by the shard alone on a host, as a record reads them, and by the target as well on this
+      # machine, whose two targets share a night's run.
       - name: Save this shard's results
-        if: always() && matrix.target == 'host' && steps.inventory.outcome == 'success'
+        if: always() && steps.inventory.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: deploy-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          name: ${{ matrix.target == 'host' && format('deploy-results-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.shard) || format('deploy-results-{0}-{1}-{2}-{3}', github.run_id, github.run_attempt, matrix.target, matrix.shard) }}
           path: ${{ runner.temp }}/deploy-results
           if-no-files-found: error
           retention-days: 30
+
+  # What a run on this machine's targets came to on each of them: every shard's verdict summed into
+  # this job's summary (`report-results.ts`), with the shards that left none named. A host's run is
+  # read from its results instead, by whoever keeps its record.
+  report:
+    needs: [plan, deploy-tests]
+    if: always() && needs.plan.result == 'success' && !contains(needs.plan.outputs.matrix, '"target":"host"')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tools/deploy-tests/src
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # A shard that stopped before its results were kept left no artifact, and the report names it:
+      # none at all is a report of every shard missing, not a reason to stop before it.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: deploy-results-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/deploy-results
+      - name: Sum the shards' verdicts
+        env:
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: node tools/deploy-tests/src/report-results.ts --dir "$RUNNER_TEMP/deploy-results"

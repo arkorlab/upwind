@@ -131,7 +131,22 @@ runner ran: a shard whose setup failed before it has none, rather than a code no
 case's names and status and nothing it said — no message, no application URL, no project — except
 that a case failed only by Jest's `test.failing` refusal, its body having completed, says so
 (`failure: "failing-test-passed"`): a case upstream expects to fail on its own provider reads by
-that. The runner's targets keep none.
+that.
+
+### How a run on this machine is judged
+
+A run on this machine's targets keeps its results in the same form, as
+`deploy-results-<run>-<attempt>-<target>-<shard>`, and judges them where it ran
+(`src/judge-results.ts`). Every failure is read against [`REVIEWED.md`](REVIEWED.md): for each
+release of Next.js, the cases whose failure says nothing against this adapter, with the reason, the
+evidence and upstream's word where it has one, and the failure each was read from. A case read there
+does not fail its shard. Any other failure does, as does a suite that left no result. The verdict,
+names and counts and never a message, goes into the results kept (`verdict.json`) and into the job's
+summary, and a last job sums every shard's for each target (`src/report-results.ts`).
+
+A failure that is not this adapter's is recorded in `REVIEWED.md` and in `src/reviewed.ts`
+together, and a test holds the two to each other. A run of another release of Next.js reads nothing
+there until its failures have been read again.
 
 ### Choosing the installer
 

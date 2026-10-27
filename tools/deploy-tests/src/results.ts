@@ -4,7 +4,8 @@
  * left out — they quote the application's URLs, its output and whatever else the suite printed — but
  * a case that failed only because Jest's `test.failing` saw its body complete says so (`failure`):
  * that is how a case upstream expects to fail on its own provider reads where the body did what it
- * asked of a deployment here.
+ * asked of a deployment here. The messages are read where the run ran, to judge it (`judge.ts`),
+ * and are not kept.
  */
 
 /** Jest's own words for a `test.failing` case whose body completed. */
@@ -22,6 +23,17 @@ export interface KeptCase {
    * body completed is all it failed with, `other` for anything else.
    */
   readonly failure?: 'failing-test-passed' | 'other';
+}
+
+/** One case of a suite as Jest wrote it: its names and status, and what it failed with. */
+export interface JestCase extends Omit<KeptCase, 'failure'> {
+  /** For a failed case only; empty for any other. */
+  readonly failureMessages: readonly string[];
+}
+
+/** One suite's result as Jest wrote it, with every case's messages. */
+export interface JestSuite extends Omit<KeptSuite, 'cases'> {
+  readonly cases: readonly JestCase[];
 }
 
 /** One suite's result, as kept. */
@@ -72,33 +84,37 @@ function arrayOf(value: unknown, what: string): unknown[] {
 }
 
 /** A failed case's failure, as kept: Jest's `test.failing` refusal alone, or anything else. */
-function failureOf(messages: readonly string[]): 'failing-test-passed' | 'other' {
+export function failureOf(messages: readonly string[]): 'failing-test-passed' | 'other' {
   return messages.length === 1 && messages[0]?.includes(FAILING_TEST_PASSED) === true
     ? 'failing-test-passed'
     : 'other';
 }
 
-function keptCase(value: unknown): KeptCase {
+function jestCase(value: unknown): JestCase {
   const entry = recordOf(value, 'a case');
   const status = stringOf(entry['status'], "a case's status");
-  const kept = {
+  return {
     ancestorTitles: stringsOf(entry['ancestorTitles'], "a case's ancestor titles"),
     title: stringOf(entry['title'], "a case's title"),
     fullName: stringOf(entry['fullName'], "a case's full name"),
     status,
+    failureMessages:
+      status === 'failed'
+        ? stringsOf(entry['failureMessages'] ?? [], "a case's failure messages")
+        : [],
   };
-  if (status !== 'failed') {
-    return kept;
-  }
-  const messages = stringsOf(entry['failureMessages'] ?? [], "a case's failure messages");
-  return { ...kept, failure: failureOf(messages) };
+}
+
+function keptCase({ failureMessages, ...kept }: JestCase): KeptCase {
+  return kept.status === 'failed' ? { ...kept, failure: failureOf(failureMessages) } : kept;
 }
 
 /**
- * One suite's result as the run wrote it (`<suite>.results.json`, Jest's own JSON), kept as above.
- * The file's entry is the one Jest wrote for this suite, by its path.
+ * One suite's result as the run wrote it (`<suite>.results.json`, Jest's own JSON), with what each
+ * case failed with: for judging the run where it ran (`judge.ts`), never to be kept. The file's
+ * entry is the one Jest wrote for this suite, by its path.
  */
-export function keptSuite(path: string, raw: unknown): KeptSuite {
+export function jestSuite(path: string, raw: unknown): JestSuite {
   const file = recordOf(raw, `the result of ${path}`);
   const entries = arrayOf(file['testResults'], `the test results of ${path}`).map((entry) =>
     recordOf(entry, `a test result of ${path}`),
@@ -117,6 +133,12 @@ export function keptSuite(path: string, raw: unknown): KeptSuite {
     runtimeError:
       typeof file['numRuntimeErrorTestSuites'] === 'number' &&
       file['numRuntimeErrorTestSuites'] > 0,
-    cases: arrayOf(own['assertionResults'], `the cases of ${path}`).map((entry) => keptCase(entry)),
+    cases: arrayOf(own['assertionResults'], `the cases of ${path}`).map((entry) => jestCase(entry)),
   };
+}
+
+/** One suite's result as the run wrote it, kept as above: no case's messages. */
+export function keptSuite(path: string, raw: unknown): KeptSuite {
+  const suite = jestSuite(path, raw);
+  return { ...suite, cases: suite.cases.map((entry) => keptCase(entry)) };
 }
