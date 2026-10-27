@@ -175,10 +175,11 @@ function current(basis: NodeManifestCoalescedCjsBasis): Stored {
     assertNodeManifestOwnIdentity(control.snapshot, control.roots);
   assertNodeManifestIdentity(stored.identity, stored.identityRoots);
   owner(stored.input);
+  // The private basis already checked syntax; unchanged original bytes and registration
+  // preserve that result without reparsing the whole physical chunk on every use.
   if (
     JSON.stringify(stored.input.factory.projection) !== stored.projection ||
-    stored.input.factory.projection.original !== stored.physical.source ||
-    !originalSloppyPagesArrow(stored.input.factory.projection)
+    stored.input.factory.projection.original !== stored.physical.source
   )
     refuse('changed original factory');
   return stored;
@@ -231,16 +232,23 @@ export async function certifyNodeManifestCoalescedCjs(
   current(basis);
   return basis;
 }
-export function assertNodeManifestCoalescedCjsFactory(
+function checkedFactory(
   basis: NodeManifestCoalescedCjsBasis,
   projection: NodeManifestTurbopackProjection,
-): void {
+): Stored {
   const stored = current(basis);
   if (
     projection.original !== stored.physical.source ||
     JSON.stringify(projection) !== stored.projection
   )
     refuse('cross-factory projection');
+  return stored;
+}
+export function assertNodeManifestCoalescedCjsFactory(
+  basis: NodeManifestCoalescedCjsBasis,
+  projection: NodeManifestTurbopackProjection,
+): void {
+  checkedFactory(basis, projection);
 }
 export async function assertCurrentNodeManifestCoalescedCjs(
   basis: NodeManifestCoalescedCjsBasis,
@@ -455,6 +463,5 @@ export function assertNodeManifestCoalescedCjsPartitioned(
   basis: NodeManifestCoalescedCjsBasis,
   projection: NodeManifestTurbopackProjection,
 ): void {
-  assertNodeManifestCoalescedCjsFactory(basis, projection);
-  if (current(basis).partition === undefined) refuse('unchecked partition');
+  if (checkedFactory(basis, projection).partition === undefined) refuse('unchecked partition');
 }
