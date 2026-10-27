@@ -77,14 +77,28 @@ async function boundedFile(file: string, root: string): Promise<Uint8Array> {
   return bytes;
 }
 
-function inputFiles(input: BuildFunctionInput, instrumentation: string | undefined): Set<string> {
-  const files = new Set(input.entries.map((entry) => entry.filePath));
-  if (instrumentation !== undefined) files.add(instrumentation);
-  for (const file of input.files) files.add(file.filePath);
-  for (const entry of input.edgeEntries) for (const file of entry.files) files.add(file);
-  for (const manifest of input.manifests)
-    if (manifest.routeFile !== undefined) files.add(manifest.routeFile);
-  return files;
+function inputFiles(
+  input: BuildFunctionInput,
+  instrumentation: string | undefined,
+): { copyHard: Set<string>; requiredExec: Set<string> } {
+  const requiredExec = new Set(input.entries.map((entry) => entry.filePath));
+  if (instrumentation !== undefined) requiredExec.add(instrumentation);
+  const copyHard = new Set(requiredExec);
+  // Traced fs-read data remains mandatory to copy without becoming an executable alias root.
+  for (const file of input.files) copyHard.add(file.filePath);
+  for (const entry of input.edgeEntries)
+    for (const file of entry.files) {
+      copyHard.add(file);
+      requiredExec.add(file);
+    }
+  for (const manifest of input.manifests) {
+    const file = manifest.routeFile;
+    if (file !== undefined) {
+      copyHard.add(file);
+      requiredExec.add(file);
+    }
+  }
+  return { copyHard, requiredExec };
 }
 
 function traceAssetFiles(input: BuildFunctionInput): Set<string> {
@@ -164,6 +178,7 @@ async function physicalSources(
   files: Iterable<string>,
   traceAssets: Iterable<string>,
   layout: PhysicalLayout,
+  requiredExec: ReadonlySet<string>,
 ): Promise<PhysicalSources> {
   const sources: PhysicalSources = {
     files: new Map(),
@@ -171,10 +186,11 @@ async function physicalSources(
     originals: new Map(),
     required: new Set(),
   };
-  const hard = sources.required;
+  const hard = new Set<string>();
   for (const file of files) {
     const canonical = await realpath(file);
     hard.add(canonical);
+    if (requiredExec.has(file)) sources.required.add(canonical);
     await copyPhysicalSource(canonical, sources, layout);
   }
   const directories: TraceDirectory[] = [];
@@ -371,9 +387,13 @@ export async function nodePhysicalFiles(
       layout.nameOf,
     );
   const instrumentation = await projectNodeInstrumentation(input);
-  const owned = inputFiles(input, instrumentation);
-  for (const metadata of metadataFiles) owned.add(metadata.file);
-  const sources = await physicalSources(owned, traceAssetFiles(input), layout);
+  const { copyHard, requiredExec } = inputFiles(input, instrumentation);
+  for (const metadata of metadataFiles) {
+    const file = metadata.file;
+    copyHard.add(file);
+    requiredExec.add(file);
+  }
+  const sources = await physicalSources(copyHard, traceAssetFiles(input), layout, requiredExec);
   const links = new Map<string, string>();
   await collectAliases(input, native, sources, { layout, links, nextRewrites });
   if (selectModeMetadata !== undefined) {

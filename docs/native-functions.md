@@ -70,6 +70,11 @@ sources remain bundled, while sources shared with a route keep their raw physica
 Trace membership alone does not make an asset an execution dependency. Required Node imports
 are checked transitively, including startup hooks and proved runtime redirects. Unused trace
 assets cannot overwrite a required alias layout.
+
+Executable entries, project hooks and proved raw dependency sources seed required alias discovery.
+Copied data assets still require bounded regular files, but JavaScript text copied only as data does
+not become an executable root. If an executable module loads that asset, alias discovery promotes
+it and checks its dependency closure.
 The bootstrap guard checks the initial `NODE_ENV`, `NEXT_RUNTIME` and `TURBOPACK` properties at loader
 boundaries; changing them is unsupported. Other application environment variables remain mutable.
 
