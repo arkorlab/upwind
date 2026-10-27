@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertNodeJwtRealm,
+  assertNodeJwtRealmStructure,
   captureNodeJwtRealm,
   type NodeJwtBuiltinBasis,
 } from '../src/node-jwt-realm.ts';
@@ -447,5 +448,48 @@ describe('fixed WebSocket eager initialization realm', () => {
     Object.setPrototypeOf(cache, {});
 
     expect(checking(own)).toThrow('prototype changed');
+  });
+
+  it('defers only path-entry validation at an explicit cached-load boundary', () => {
+    const own = fixture();
+    const cache = object(own.loader['_pathCache']);
+    let calls = 0;
+    Object.defineProperty(cache, 'unrelated', {
+      get() {
+        calls += 1;
+        return '/bundle/unrelated.js';
+      },
+    });
+    cache['other'] = 0;
+
+    expect(() => {
+      assertNodeJwtRealmStructure(own.realm);
+    }).not.toThrow();
+    expect(checking(own)).toThrow('DATA string');
+    expect(calls).toBe(0);
+  });
+
+  it('preserves loader identity, null cache prototypes and bare builtin guards when cached', () => {
+    const own = fixture();
+    const cache = object(own.loader['_pathCache']);
+    own.loader['_pathCache'] = Object.create(null);
+
+    expect(() => {
+      assertNodeJwtRealmStructure(own.realm);
+    }).toThrow('descriptor changed');
+
+    own.loader['_pathCache'] = cache;
+    Object.setPrototypeOf(cache, {});
+
+    expect(() => {
+      assertNodeJwtRealmStructure(own.realm);
+    }).toThrow('prototype changed');
+
+    Object.setPrototypeOf(cache, null);
+    object(own.loader['_cache'])['crypto'] = { exports: {} };
+
+    expect(() => {
+      assertNodeJwtRealmStructure(own.realm);
+    }).toThrow('bare builtin shadowed');
   });
 });

@@ -49,6 +49,11 @@ interface PhysicalSources {
   readonly executable: Set<string>;
   readonly originals: Map<string, string>;
 }
+interface TraceDirectory {
+  readonly file: string;
+  readonly canonical: string;
+  readonly name: string;
+}
 
 function isMissingFile(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
@@ -83,14 +88,18 @@ async function projectInstrumentation(input: BuildFunctionInput): Promise<string
 function inputFiles(input: BuildFunctionInput, instrumentation: string | undefined): Set<string> {
   const files = new Set(input.entries.map((entry) => entry.filePath));
   if (instrumentation !== undefined) files.add(instrumentation);
-  if (input.entryTraces !== undefined) {
-    for (const trace of input.entryTraces)
-      for (const file of Object.values(trace.assets)) files.add(file);
-  }
   for (const file of input.files) files.add(file.filePath);
   for (const entry of input.edgeEntries) for (const file of entry.files) files.add(file);
   for (const manifest of input.manifests)
     if (manifest.routeFile !== undefined) files.add(manifest.routeFile);
+  return files;
+}
+
+function traceAssetFiles(input: BuildFunctionInput): Set<string> {
+  const files = new Set<string>();
+  const traces = input.entryTraces;
+  if (traces === undefined) return files;
+  for (const trace of traces) for (const file of Object.values(trace.assets)) files.add(file);
   return files;
 }
 
@@ -114,8 +123,54 @@ async function packageMetadata(
   }
 }
 
+async function copyPhysicalSource(
+  canonical: string,
+  sources: PhysicalSources,
+  layout: PhysicalLayout,
+): Promise<void> {
+  const name = layout.nameOf(canonical);
+  sources.files.set(name, await boundedFile(canonical, layout.root));
+  const mode = (await stat(canonical)).mode;
+  // eslint-disable-next-line no-bitwise -- POSIX executable permission bits are the artifact's file mode.
+  if ((mode & EXECUTABLE_BITS) !== 0) sources.executable.add(name);
+  sources.originals.set(canonical, name);
+  await packageMetadata(canonical, layout, sources.files);
+}
+
+function representedDirectory(marker: TraceDirectory, sources: PhysicalSources): boolean {
+  for (const [file, name] of sources.originals) {
+    if (
+      file !== marker.canonical &&
+      beneath(marker.canonical, file) !== undefined &&
+      name.startsWith(`${marker.name}/`) &&
+      sources.files.has(name)
+    )
+      return true;
+  }
+  return false;
+}
+
+async function assertTraceDirectories(
+  markers: readonly TraceDirectory[],
+  sources: PhysicalSources,
+): Promise<void> {
+  for (const marker of markers) {
+    const info = await stat(marker.canonical);
+    if (
+      (await realpath(marker.file)) !== marker.canonical ||
+      (await realpath(marker.canonical)) !== marker.canonical ||
+      !info.isDirectory() ||
+      info.size > MAX_FILE_BYTES
+    )
+      throw new AuditError('Node trace directory identity or type changed during collection');
+    if (!representedDirectory(marker, sources))
+      throw new AuditError('Node trace directory has no independently copied regular descendant');
+  }
+}
+
 async function physicalSources(
   files: Iterable<string>,
+  traceAssets: Iterable<string>,
   layout: PhysicalLayout,
 ): Promise<PhysicalSources> {
   const sources: PhysicalSources = {
@@ -123,16 +178,25 @@ async function physicalSources(
     executable: new Set(),
     originals: new Map(),
   };
+  const hard = new Set<string>();
   for (const file of files) {
     const canonical = await realpath(file);
-    const name = layout.nameOf(canonical);
-    sources.files.set(name, await boundedFile(canonical, layout.root));
-    const mode = (await stat(canonical)).mode;
-    // eslint-disable-next-line no-bitwise -- POSIX executable permission bits are the artifact's file mode.
-    if ((mode & EXECUTABLE_BITS) !== 0) sources.executable.add(name);
-    sources.originals.set(canonical, name);
-    await packageMetadata(canonical, layout, sources.files);
+    hard.add(canonical);
+    await copyPhysicalSource(canonical, sources, layout);
   }
+  const directories: TraceDirectory[] = [];
+  for (const file of traceAssets) {
+    const canonical = await realpath(file);
+    const name = layout.nameOf(canonical);
+    const info = await stat(canonical);
+    if (info.isDirectory() && info.size <= MAX_FILE_BYTES) {
+      if (hard.has(canonical))
+        throw new AuditError('Node trace directory overlaps a required regular input');
+      directories.push({ file, canonical, name });
+    } else if (!info.isFile() || info.size > MAX_FILE_BYTES || !sources.originals.has(canonical))
+      await copyPhysicalSource(canonical, sources, layout);
+  }
+  await assertTraceDirectories(directories, sources);
   return sources;
 }
 
@@ -316,7 +380,7 @@ export async function nodePhysicalFiles(
   const instrumentation = await projectInstrumentation(input);
   const owned = inputFiles(input, instrumentation);
   for (const metadata of metadataFiles) owned.add(metadata.file);
-  const sources = await physicalSources(owned, layout);
+  const sources = await physicalSources(owned, traceAssetFiles(input), layout);
   const links = new Map<string, string>();
   await collectAliases(input, native, sources, { layout, links, nextRewrites });
   if (selectModeMetadata !== undefined) {

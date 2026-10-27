@@ -22,7 +22,7 @@ vi.mock(import('node:fs/promises'), async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
-    readFile: vi.fn<typeof actual.readFile>().mockRejectedValue(new Error('unexpected file read')),
+    readFile: vi.fn<() => Promise<never>>().mockRejectedValue(new Error('unexpected file read')),
   };
 });
 

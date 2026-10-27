@@ -1,5 +1,6 @@
 import {
   assertNodeWsRealm,
+  assertNodeWsRealmStructure,
   captureNodeWsRealm,
   sealNodeLoader,
   type NodeWsRealm,
@@ -463,7 +464,7 @@ export function captureNodeJwtRealm(
 }
 
 /** No changed/customer getters, source rewrites, global freezing or application callbacks. */
-export function assertNodeJwtRealm(realm: NodeJwtRealm): void {
+function assertRealm(realm: NodeJwtRealm, structure: boolean): void {
   const state = getRealm(realm);
   if (state === undefined) fail('foreign realm snapshot');
   if (parentOf(state.globals) !== state.globalPrototype) fail('global prototype chain changed');
@@ -484,6 +485,15 @@ export function assertNodeJwtRealm(realm: NodeJwtRealm): void {
     if (parentOf(group.owner) !== group.prototype) fail('a required builtin shape changed');
     checkProperties(group.owner, group.properties);
   }
-  assertNodeWsRealm(state.websocket);
+  if (structure) assertNodeWsRealmStructure(state.websocket);
+  else assertNodeWsRealm(state.websocket);
   ambient(state);
+}
+
+export function assertNodeJwtRealm(realm: NodeJwtRealm): void {
+  assertRealm(realm, false);
+}
+/** Only a cached-load boundary may omit path-entry enumeration; resolvers need the full check. */
+export function assertNodeJwtRealmStructure(realm: NodeJwtRealm): void {
+  assertRealm(realm, true);
 }

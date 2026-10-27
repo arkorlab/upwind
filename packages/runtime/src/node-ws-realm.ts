@@ -120,6 +120,12 @@ export function assertNodeWsRealm(state: NodeWsRealm | undefined): void {
   if (state?.path !== undefined) assertPathCache(state.path);
 }
 
+/** Cached loads do not read path entries; their cache identity and prototype still matter. */
+export function assertNodeWsRealmStructure(state: NodeWsRealm | undefined): void {
+  if (state?.modules !== undefined) assertModuleCache(state.modules);
+  if (state?.path !== undefined) assertCachePrototype(state.path);
+}
+
 function cacheState(capture: Capture, loader: ObjectValue, key: string): CacheState {
   const cache = capture.fields(loader, [key])[0];
   if (cache === undefined) fail('missing resolver cache');

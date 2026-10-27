@@ -122,6 +122,47 @@ console.log('hook-and-sdk');`,
     expect(result).toBe('empty');
   });
 
+  it('keeps cached builtin loads bounded while the public assertion still checks every path entry', async () => {
+    const result = await scenario(
+      `const earlier=require('node:path');let calls=0,error;
+Object.defineProperty(Module._pathCache,'unused',{configurable:true,get(){calls+=1;throw new Error('customer getter ran');}});
+try{boot.assertCachedLoad();if(require('node:path')!==earlier)throw new Error('cached identity');
+try{boot.assert();}catch(value){error=value;}}
+finally{delete Module._pathCache.unused;}
+if(calls!==0||!String(error).includes('DATA string'))throw new Error('unsafe cached-load boundary');
+console.log('bounded');`,
+      {
+        install: `const boot=initializeNodeNextRequireHook(import.meta.url,config);
+boot.complete({load:Module._load,require:Module.prototype.require,compile:Module.prototype._compile});`,
+      },
+    );
+
+    expect(result).toBe('bounded');
+  });
+
+  it.each([
+    { prepare: '', load: "require.resolve('../app/missing.cjs');" },
+    {
+      prepare:
+        "require('../app/caller.cjs');const caller=require.cache[require.resolve('../app/caller.cjs')];",
+      load: "caller.require('./authored-context.shared-runtime');",
+    },
+  ])(
+    'checks all path descriptors before either resolver delegation %#',
+    async ({ prepare, load }) => {
+      const result = await scenario(
+        `${prepare}let calls=0,error;
+Object.defineProperty(Module._pathCache,'unused',{configurable:true,get(){calls+=1;throw new Error('customer getter ran');}});
+try{${load}}catch(value){error=value;}finally{delete Module._pathCache.unused;}
+if(calls!==0||!String(error).includes('DATA string'))throw new Error('unsafe resolver boundary');
+console.log('guarded');`,
+        { edge: true },
+      );
+
+      expect(result).toBe('guarded');
+    },
+  );
+
   it('supports the exact shared-runtime edge and a target loaded earlier through Node', async () => {
     const result = await scenario(
       `const earlier=require('../node_modules/next/dist/server/route-modules/pages/vendored/contexts/authored-context');

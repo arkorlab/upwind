@@ -38,6 +38,9 @@ package layout and binary bytes. `upwind/links.json` describes bounded internal 
 to restore during image preparation; the archive contains no symlink entries. `upwind/native.json`
 names only the proved, selected native modules and their hashes. The archive retains other regular
 owned trace files without rewriting their selection logic.
+An explicit directory in a route trace is supported when independently copied regular files
+already recreate that directory. Its untraced children are never discovered or copied. Standalone
+empty directories require a directory-aware archive contract and are currently refused.
 Package aliases have independent limits of 100,000 entries and 16 MiB of UTF-8 JSON metadata.
 Both limits are checked before the artifact is published.
 Proved `process.dlopen` binary lookups retain their original internal aliases as well as canonical

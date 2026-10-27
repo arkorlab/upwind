@@ -6,7 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { isProxy } from 'node:util/types';
 
 import { nodeInitializationBuiltins } from './node-initialization-builtins.ts';
-import { assertNodeJwtRealm, captureNodeJwtRealm } from './node-jwt-realm.ts';
+import {
+  assertNodeJwtRealm,
+  assertNodeJwtRealmStructure,
+  captureNodeJwtRealm,
+} from './node-jwt-realm.ts';
 import { assertNodeNextHookMap, captureNodeNextHookMap } from './node-next-hook-map.ts';
 import { nodeNextHookRecord } from './node-next-hook-record.ts';
 import { assertNodeWsModuleContext, captureNodeWsModuleContext } from './node-ws-module-context.ts';
@@ -26,6 +30,7 @@ export interface NodeNextHookExpected {
 export interface NodeNextHookBootstrap {
   readonly filename: string;
   assert(): void;
+  assertCachedLoad(): void;
   complete(expected: NodeNextHookExpected): void;
   restore(): void;
 }
@@ -269,7 +274,7 @@ export function initializeNodeNextRequireHook(
   let hookContext = initialContext;
   const callerContexts = new Map<string, ReturnType<typeof context>>();
   let activeEdge: (typeof edges)[number] | undefined;
-  function pristine(): void {
+  function pristine(cachedLoad = false): void {
     const slots = [loadSlot, resolveSlot, requireSlot, compileSlot];
     const current = [
       descriptorOf(loadSlot.owner, loadSlot.key),
@@ -284,7 +289,8 @@ export function initializeNodeNextRequireHook(
         index += 1;
         defineProperty(own.owner, own.key, own.descriptor);
       }
-      assertNodeJwtRealm(realm);
+      if (cachedLoad) assertNodeJwtRealmStructure(realm);
+      else assertNodeJwtRealm(realm);
     } finally {
       index = 0;
       while (index < slots.length) {
@@ -311,15 +317,21 @@ export function initializeNodeNextRequireHook(
       fail('hook cache evicted or replaced');
     checkExports();
   }
-  function assert(): void {
+  function assertState(cachedLoad: boolean): void {
     if (!completed) fail('SDK loader installation not completed');
     assertSlot(loadSlot, expected.load);
     assertSlot(resolveSlot, resolve);
     assertSlot(requireSlot, expected.require);
     assertSlot(compileSlot, expected.compile);
-    pristine();
+    pristine(cachedLoad);
     core();
     assertNodeWsModuleContext(hookContext, currentModule);
+  }
+  function assert(): void {
+    assertState(false);
+  }
+  function assertCachedLoad(): void {
+    assertState(true);
   }
   function resolverTarget(request: unknown, parent: unknown): string | undefined {
     if (typeof request !== 'string') fail('non-string Next resolution');
@@ -339,12 +351,15 @@ export function initializeNodeNextRequireHook(
   function resolve(this: unknown, ...args: unknown[]): unknown {
     if (completed) assert();
     else core();
-    const target = resolverTarget(args[0], args[1]);
-    const result: unknown = apply(nextResolve, this, args);
-    if (target !== undefined && result !== target) fail('qualified hook target changed');
-    if (completed) assert();
-    else core();
-    return result;
+    try {
+      const target = resolverTarget(args[0], args[1]);
+      const result: unknown = apply(nextResolve, this, args);
+      if (target !== undefined && result !== target) fail('qualified hook target changed');
+      return result;
+    } finally {
+      if (completed) assert();
+      else core();
+    }
   }
   function incoming(receiver: unknown, request: string) {
     const parent = object(receiver);
@@ -358,7 +373,7 @@ export function initializeNodeNextRequireHook(
     return edge;
   }
   function hookedRequire(this: unknown, ...args: unknown[]): unknown {
-    if (completed) assert();
+    if (completed) assertCachedLoad();
     else core();
     const request = args[0];
     if (typeof request !== 'string') fail('non-string Next require');
@@ -367,11 +382,15 @@ export function initializeNodeNextRequireHook(
     const previous = activeEdge;
     activeEdge = edge;
     try {
-      if (
-        edge !== undefined &&
-        apply(originalResolve, Module, [edge.request, this, false]) !== edge.target
-      )
-        fail('shared-runtime target changed');
+      if (edge !== undefined) {
+        assert();
+        try {
+          if (apply(originalResolve, Module, [edge.request, this, false]) !== edge.target)
+            fail('shared-runtime target changed');
+        } finally {
+          assert();
+        }
+      }
       const result: unknown = apply(nextRequire, this, args);
       if (edge !== undefined) {
         const target = cached(cache, edge.target, edge.targetDirectory);
@@ -381,7 +400,7 @@ export function initializeNodeNextRequireHook(
       return result;
     } finally {
       activeEdge = previous;
-      if (completed) assert();
+      if (completed) assertCachedLoad();
       else core();
     }
   }
@@ -438,6 +457,7 @@ export function initializeNodeNextRequireHook(
     return freeze({
       filename,
       assert,
+      assertCachedLoad,
       restore,
       complete(value: NodeNextHookExpected) {
         if (completed || restored) fail('SDK loader installation already completed');

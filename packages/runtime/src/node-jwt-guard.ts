@@ -361,10 +361,13 @@ function installPreparedGuards(
   const builtins = new Map<string, unknown>();
   const builtin = builtins.get.bind(builtins);
   function compile(this: unknown, ...args: unknown[]): unknown {
-    if (hookReady) hook?.assert();
     const filename = args[1];
-    if (hook !== undefined && filename === hook.filename) fail('Next hook cannot be reevaluated');
     const source = typeof filename === 'string' ? findSource(filename) : undefined;
+    if (hookReady) {
+      if (source === undefined) hook?.assertCachedLoad();
+      else hook?.assert();
+    }
+    if (hook !== undefined && filename === hook.filename) fail('Next hook cannot be reevaluated');
     if (source === undefined) return apply(originalCompile, this, args);
     assertSource(args[0], source, realm, this);
     const lease = enterNodeFixedLoadScope(scope, source.filename, this);
@@ -382,7 +385,7 @@ function installPreparedGuards(
   try {
     hooks = installNodeFixedLoadHooks(scope, {
       health() {
-        if (hookReady) hook?.assert();
+        if (hookReady) hook?.assertCachedLoad();
       },
       before({ filename, request, parent }) {
         const source = findSource(filename) ?? fail(MISSING_LOAD_SOURCE);
