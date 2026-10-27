@@ -131,7 +131,22 @@ runner ran: a shard whose setup failed before it has none, rather than a code no
 case's names and status and nothing it said — no message, no application URL, no project — except
 that a case failed only by Jest's `test.failing` refusal, its body having completed, says so
 (`failure: "failing-test-passed"`): a case upstream expects to fail on its own provider reads by
-that. The runner's targets keep none.
+that.
+
+### How a run on this machine is judged
+
+A run on this machine's targets keeps its results in the same form, as
+`deploy-results-<run>-<attempt>-<target>-<shard>`, and judges them where it ran
+(`src/judge-results.ts`). Every failure is read against [`REVIEWED.md`](REVIEWED.md): for each
+release of Next.js, the cases whose failure says nothing against this adapter, with the reason, the
+evidence and upstream's word where it has one, and the failure each was read from. A case read there
+does not fail its shard. Any other failure does, as does a suite that left no result. The verdict,
+names and counts and never a message, goes into the results kept (`verdict.json`) and into the job's
+summary, and a last job sums every shard's for each target (`src/report-results.ts`).
+
+A failure that is not this adapter's is recorded in `REVIEWED.md` and in `src/reviewed.ts`
+together, and a test holds the two to each other. A run of another release of Next.js reads nothing
+there until its failures have been read again.
 
 ### Choosing the installer
 
@@ -294,6 +309,11 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   (`__NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true`, `NODE_OPTIONS=--experimental-transform-types`). The
   deploy hook does the same for those suites, by the test file `run-tests.js` names in
   `JEST_SUITE_NAME`, and for no other; run outside `run-tests.js`, they fail as they would anywhere.
+- **`non-ascii-cache-item-name` is built with `VERCEL=1`.** Its fixture leaves its cache to the
+  deployment only where `VERCEL` is set at build, and otherwise configures a handler that keeps
+  nothing, while the case it runs when deployed expects its values to stay cached. The deploy hook sets
+  it for that suite's build alone, by `JEST_SUITE_NAME`, so that the case tests the deployment's cache,
+  as it does on Vercel. The deployment itself is not given it.
 - **No runtime logs.** The API serves a built deployment's build log, and an uploaded deployment has
   none, so what the logs hook shows is the build and the deployment. A suite that asserts on server
   output may fail for want of it.

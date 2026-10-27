@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { WorkerFunctionSpec as FunctionSpec } from '@stayingupwind/core/bundle';
+import type { WorkerFunctionSpec } from '@stayingupwind/core/bundle';
 
 const DECLARATION = /\.d\.[cm]?ts$/u;
 export interface DeclarationSource {
@@ -28,7 +28,7 @@ function compareNames(left: string, right: string): number {
 /** Independent source-to-emitted inventory: an unreadable trace or dropped/extra data fails CI. */
 export async function checkedDeclarationSources(
   app: string,
-  spec: Pick<FunctionSpec, 'modules'>,
+  spec: Pick<WorkerFunctionSpec, 'modules'>,
 ): Promise<DeclarationSource[]> {
   const traceFile = path.join(app, '.next', 'server', 'app', 'route.js.nft.json');
   const trace: unknown = JSON.parse(await readFile(traceFile, 'utf8'));

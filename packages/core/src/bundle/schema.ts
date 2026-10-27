@@ -462,7 +462,7 @@ const bundleSchema = z.object({
   /**
    * How this deployment's Functions fill a header's `$` references (`routerReferencesSchema`), so
    * that what the edge answers for them carries the values the Function would have given it. Said
-   * by a bundle of version 3 through 10, and by no other: absent from a
+   * by a bundle of version 3 through 12, and by no other: absent from a
    * bundle an earlier adapter wrote, whose Functions route with the router before.
    */
   routerReferences: routerReferencesSchema.optional(),

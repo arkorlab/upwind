@@ -198,6 +198,18 @@ case "${JEST_SUITE_NAME:-}" in
     export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--experimental-transform-types"
     echo 'a suite of a next.config Node.js loads itself: built with that loader, as Next.js builds it' >&2
     ;;
+  # This fixture configures a cache handler of its own unless `VERCEL` is set at build
+  # (`next.config.js`), and that handler keeps nothing: `get` answers `null`, and `set` stores no
+  # value. The case it runs when deployed expects its values to stay cached, as they do on Vercel,
+  # where no handler is configured and the deployment's own cache keeps them. Built with `VERCEL=1`,
+  # the application leaves its cache to the deployment here as well, which is what the case tests.
+  # Next.js 16.4.3 reads `VERCEL` elsewhere only to choose Open Graph's fallback `metadataBase`
+  # (`resolve-opengraph.js`) and to upload traces (`trace-uploader.js`); this fixture uses neither. The
+  # build alone is given it: the deployment's environment is the fixture's and the suite's.
+  *test/e2e/app-dir/non-ascii-cache-item-name/*)
+    export VERCEL=1
+    echo 'a fixture that leaves its cache to the deployment only on Vercel: built with VERCEL=1' >&2
+    ;;
 esac
 
 # What the build says is what `next.cliOutput` is read from, so it has to be kept and not only shown:
