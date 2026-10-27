@@ -29,6 +29,7 @@ const SLOTS = [
   { name: 'original Date.prototype.constructor', owner: 'datePrototype', key: 'constructor' },
   { name: 'crypto.randomBytes', owner: 'crypto', key: 'randomBytes' },
   { name: 'crypto.randomFillSync', owner: 'crypto', key: 'randomFillSync' },
+  { name: 'process.nextTick', owner: 'process', key: 'nextTick' },
 ] as const;
 
 function objectValue(value: unknown): value is ObjectValue {
@@ -103,6 +104,7 @@ function fixture() {
     globals,
     math,
     crypto,
+    process,
     error,
     errorPrototype: object(error['prototype']),
     datePrototype: object(date['prototype']),
@@ -152,6 +154,7 @@ function capture(own: ReturnType<typeof fixture>) {
     math: own.owners.math,
     dateCtor: own.date,
     crypto: own.owners.crypto,
+    process: own.process,
   });
 }
 
@@ -350,7 +353,7 @@ describe('fixed Next initialization hooks from authored owners only', () => {
     expect(own.calls).toStrictEqual({ getter: 0, application: 0 });
   });
 
-  it('integrates the seven exact slots into full and cached Next realm health and one scope', () => {
+  it('integrates the eight exact slots into full and cached Next realm health and one scope', () => {
     const own = fixture();
     const realm = captureNodeNextJwtRealm(own.globals, own.process, own.basis);
     applicationHooks(own);
@@ -402,6 +405,9 @@ describe('fixed Next initialization hooks from authored owners only', () => {
     { owner: 'crypto', key: 'createHash' },
     { owner: 'buffer', key: 'from' },
     { owner: 'otherPrototype', key: 'constructor' },
+    { owner: 'process', key: 'emit' },
+    { owner: 'process', key: 'binding' },
+    { owner: 'math', key: 'nextTick' },
   ] as const)('keeps $owner.$key strict even when Next hooks are enabled', ({ owner, key }) => {
     const own = fixture();
     const targets = {

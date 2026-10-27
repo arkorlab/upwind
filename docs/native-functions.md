@@ -81,8 +81,9 @@ protected initialization are rejected; other guarded builtin properties remain i
 
 With the qualified Next.js bootstrap, the same scoped restoration supports framework IO wrappers
 for `Math.random`, the global `Date` constructor and its original prototype constructor, and the
-builtin crypto `randomBytes`/`randomFillSync` functions. Those wrappers stay active during ordinary
-rendering and revalidation. Generic JWT/WebSocket installations keep their stricter IO checks.
+builtin crypto `randomBytes`/`randomFillSync` functions and `process.nextTick`. Those wrappers stay
+active during ordinary rendering, revalidation and asynchronous scheduling. Generic JWT/WebSocket
+installations keep their stricter IO checks.
 
 Native Functions initially do not support application-supplied `cacheHandler`/`cacheHandlers` or
 `experimental.optimizeCss`. Recorded builds that enable these options are refused before

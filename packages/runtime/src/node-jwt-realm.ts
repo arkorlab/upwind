@@ -405,6 +405,7 @@ function captureRealm(
       math: root(globalObject, 'Math').value,
       dateCtor: root(globalObject, 'Date').value,
       crypto: data(requiredObject(builtins), 'crypto'),
+      process: processObject,
     });
   }
   const roots = capture.roots;
@@ -455,7 +456,7 @@ function assertRealm(realm: NodeJwtRealm, structure: boolean): void {
   assertNodeErrorHooks(state.errorHooks);
   if (parentOf(state.globals) !== state.globalPrototype) fail('global prototype chain changed');
   checkRoots(state);
-  checkProperties(state.process, state.processProperties);
+  checkProperties(state.process, state.processProperties, state.errorHooks);
   let index = 0;
   while (index < state.snapshots.length) {
     const value = state.snapshots[index];

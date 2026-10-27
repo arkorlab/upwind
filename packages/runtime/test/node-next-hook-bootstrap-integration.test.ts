@@ -125,7 +125,8 @@ const APPLICATION_IO_HOOKS = `
 const nodeCrypto=require('node:crypto');
 const OriginalDate=Date,originalRandom=Math.random;
 const originalBytes=nodeCrypto.randomBytes,originalFill=nodeCrypto.randomFillSync;
-let ioCalls=0;
+const originalTick=process.nextTick;
+let ioCalls=0,tickCalls=0;
 const appRandom=()=>{ioCalls++;return originalRandom();};
 const appDate=Object.defineProperties(function Date(...args){
 ioCalls++;return new.target===undefined?Reflect.apply(OriginalDate,undefined,args):Reflect.construct(OriginalDate,args,new.target);
@@ -133,10 +134,12 @@ ioCalls++;return new.target===undefined?Reflect.apply(OriginalDate,undefined,arg
 appDate.now=()=>{ioCalls++;return OriginalDate.now();};
 const appBytes=(...args)=>{ioCalls++;return Reflect.apply(originalBytes,nodeCrypto,args);};
 const appFill=(...args)=>{ioCalls++;return Reflect.apply(originalFill,nodeCrypto,args);};
+const appTick=(...args)=>{tickCalls++;return Reflect.apply(originalTick,process,args);};
 Math.random=appRandom;globalThis.Date=appDate;
 Object.defineProperty(OriginalDate.prototype,'constructor',{value:appDate});
 nodeCrypto.randomBytes=appBytes;nodeCrypto.randomFillSync=appFill;
-const ioSlots=[[Math,'random'],[globalThis,'Date'],[OriginalDate.prototype,'constructor'],[nodeCrypto,'randomBytes'],[nodeCrypto,'randomFillSync']];
+process.nextTick=appTick;
+const ioSlots=[[Math,'random'],[globalThis,'Date'],[OriginalDate.prototype,'constructor'],[nodeCrypto,'randomBytes'],[nodeCrypto,'randomFillSync'],[process,'nextTick']];
 const savedIo=ioSlots.map(([owner,key])=>Object.getOwnPropertyDescriptor(owner,key));
 const loadJwt=()=>require('../node_modules/next/dist/compiled/jsonwebtoken/index.js');
 `;
@@ -146,7 +149,7 @@ for(let index=0;index<ioSlots.length;index++){
 const [owner,key]=ioSlots[index],saved=savedIo[index],actual=Object.getOwnPropertyDescriptor(owner,key);
 if(actual.value!==saved.value||actual.get!==saved.get||actual.set!==saved.set||actual.writable!==saved.writable||actual.configurable!==saved.configurable||actual.enumerable!==saved.enumerable)throw new Error('IO hook descriptor changed');
 }
-if(ioCalls!==0)throw new Error('application IO hook ran during protected initialization');
+if(ioCalls!==0||tickCalls!==0)throw new Error('application IO hook ran during protected initialization');
 `;
 
 describe.skipIf(!ENABLED)('fixed Next require-hook bootstrap (dedicated Linux CI)', () => {
@@ -159,6 +162,8 @@ const token=jwt.sign({value:'native'},'authored-ci-key');
 if(jwt.verify(token,'authored-ci-key').value!=='native')throw new Error('JWT mismatch');
 ioCalls=0;Date.now();new Date();Date();Math.random();nodeCrypto.randomBytes(1);nodeCrypto.randomFillSync(Buffer.alloc(1));
 if(ioCalls!==6)throw new Error('ordinary IO hooks were lost');
+const tick=await new Promise(resolve=>process.nextTick(resolve,'tick'));
+if(tick!=='tick'||tickCalls<1)throw new Error('ordinary nextTick scheduling was lost');
 console.log('next-io-hooks');`,
       { jwt: true },
     );

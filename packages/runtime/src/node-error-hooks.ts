@@ -146,13 +146,14 @@ export function captureNodeErrorHooks(errorCtor: unknown, prototype: unknown): N
   return capture([slot(errorCtor, 'prepareStackTrace'), slot(prototype, INSPECT)]);
 }
 
-/** Only the validated fixed Next bootstrap uses this finite seven-slot descriptor profile. */
+/** Only the validated fixed Next bootstrap uses this finite eight-slot descriptor profile. */
 export function captureNodeNextHooks(input: {
   readonly globals: unknown;
   readonly errorCtor: unknown;
   readonly math: unknown;
   readonly dateCtor: unknown;
   readonly crypto: unknown;
+  readonly process: unknown;
 }): NodeErrorHooks {
   const supplied = requiredObject(input);
   const globals = requiredObject(data(supplied, 'globals'));
@@ -160,6 +161,7 @@ export function captureNodeNextHooks(input: {
   const math = requiredObject(data(supplied, 'math'));
   const dateCtor = requiredObject(data(supplied, 'dateCtor'));
   const crypto = requiredObject(data(supplied, 'crypto'));
+  const process = requiredObject(data(supplied, 'process'));
   const errorPrototype = constructorPrototype(errorCtor);
   const datePrototype = constructorPrototype(dateCtor);
   if (
@@ -169,7 +171,8 @@ export function captureNodeNextHooks(input: {
     data(datePrototype, 'constructor') !== dateCtor ||
     typeof data(math, 'random') !== 'function' ||
     typeof data(crypto, 'randomBytes') !== 'function' ||
-    typeof data(crypto, 'randomFillSync') !== 'function'
+    typeof data(crypto, 'randomFillSync') !== 'function' ||
+    typeof data(process, 'nextTick') !== 'function'
   )
     fail();
   return capture([
@@ -180,6 +183,7 @@ export function captureNodeNextHooks(input: {
     slot(datePrototype, 'constructor'),
     slot(crypto, 'randomBytes'),
     slot(crypto, 'randomFillSync'),
+    slot(process, 'nextTick'),
   ]);
 }
 
