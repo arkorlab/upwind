@@ -1,7 +1,7 @@
 /* eslint-disable security/detect-non-literal-fs-filename -- Every path belongs to a test-created directory. */
 import { createHash } from 'node:crypto';
 import type * as Fs from 'node:fs/promises';
-import { mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -34,6 +34,7 @@ vi.mock(import('node:fs/promises'), async (original) => {
   return {
     ...fs,
     readdir: vi.fn(fs.readdir) as unknown as typeof fs.readdir,
+    rename: vi.fn(fs.rename),
     rm: vi.fn(fs.rm),
     stat: vi.fn(fs.stat) as unknown as typeof fs.stat,
   };
@@ -44,6 +45,8 @@ const HTTP_OK = 200;
 const HTTP_NOT_MODIFIED = 304;
 const MS_PER_SECOND = 1000;
 const MIB = 1024 * 1024;
+/** An entry's first bytes: the length of the header that follows them (`image-cache.ts`). */
+const HEADER_LENGTH_BYTES = 4;
 const IMAGES: ImagesConfig = {
   path: '/_next/image',
   basePath: '',
@@ -375,6 +378,72 @@ describe('images the native target keeps', () => {
 
     expect(sizes.reduce((sum, size) => sum + size, 0)).toBeLessThanOrEqual(allowed);
     await expect(hitOf(own[3]!)).resolves.toBeDefined();
+  });
+
+  it('counts an image another server wrote again, larger, at its size now (Codex)', async () => {
+    const allowed = 2200;
+    configureImageCache({ directory, maxBytes: allowed });
+    const small = inputOf({ params: { ...PARAMS, href: '/small.png' } });
+    const later = inputOf({ params: { ...PARAMS, href: '/later.png' } });
+    await kept(small, { ...IMAGE, bytes: new Uint8Array(100) });
+    // Another server sharing the directory writes the same image again, larger: the same entry, its
+    // header and then 1,300 bytes, written past this server's count.
+    const entry = await readFile(fileOf(small));
+    const headerEnd = HEADER_LENGTH_BYTES + entry.readUInt32BE(0);
+    await writeFile(
+      fileOf(small),
+      Buffer.concat([entry.subarray(0, headerEnd), Buffer.alloc(1300)]),
+    );
+
+    // This server writes on, past an eighth of what may be kept, and looks the directory over.
+    await kept(later, { ...IMAGE, bytes: new Uint8Array(900) });
+
+    const names = await readdir(directory);
+    const sizes = await Promise.all(
+      names.map(async (name) => (await stat(path.join(directory, name))).size),
+    );
+
+    expect(sizes.reduce((sum, size) => sum + size, 0)).toBeLessThanOrEqual(allowed);
+  });
+
+  it('looks the directory over once for the writes that come to the share at once (greptile)', async () => {
+    const image = { ...IMAGE, bytes: new Uint8Array(900) };
+    const first = inputOf({ params: { ...PARAMS, href: '/first.png' } });
+    configureImageCache({ directory, maxBytes: 10 * MIB });
+    await kept(first, image);
+    const entryBytes = (await stat(fileOf(first))).size;
+    // An eighth of what may be kept is one and a half entries: six writes, counted one after another,
+    // come to it again and again — each counted while a look is pending sees it reached.
+    configureImageCache({ directory, maxBytes: Math.floor(entryBytes * 1.5) * 8 });
+    const slots = await Promise.all(
+      [1, 2, 3, 4, 5, 6].map((index) =>
+        slotOf(inputOf({ params: { ...PARAMS, href: `/at-once-${String(index)}.png` } })),
+      ),
+    );
+    // Each write held as it would put its image in place, until all six are: then counted one after
+    // another, as many as are waiting before a look.
+    const held = Promise.withResolvers<undefined>();
+    let arrived = 0;
+    vi.mocked(rename).mockImplementation(async (from, to) => {
+      arrived += 1;
+      if (arrived === slots.length) held.resolve(undefined);
+      await held.promise;
+      const fs = await vi.importActual<typeof Fs>('node:fs/promises');
+      await fs.rename(from, to);
+    });
+    // The look the server begins as it starts, over before the writes.
+    await hitOf(first);
+    await settled();
+    vi.mocked(readdir).mockClear();
+
+    for (const slot of slots) slot.keep?.(image);
+    await settled();
+    // Back to the file system's own, for what follows.
+    vi.mocked(rename).mockReset();
+
+    // The writes past the share while a look is pending share it: two looks for the six, where each
+    // of them would otherwise have begun one of its own (four).
+    expect(vi.mocked(readdir).mock.calls.length).toBeLessThanOrEqual(2);
   });
 
   it('counts an image read after a restart, before anything is written, as used (Codex, greptile)', async () => {

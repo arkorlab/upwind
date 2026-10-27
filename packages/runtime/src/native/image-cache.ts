@@ -265,6 +265,8 @@ class DiskImages {
   #indexReady = false;
   /** The bytes this server wrote since it last looked the directory over. */
   #writtenSinceLook = 0;
+  /** The look the writes that came to the share began, while it runs. */
+  #lookAgain: Promise<void> | undefined;
   /**
    * The images used before the index was read off the directory, by when: the first look orders
    * each by the later of its use and its write (Codex, greptile). A server started again would
@@ -316,7 +318,20 @@ class DiskImages {
       this.#limit !== undefined &&
       this.#writtenSinceLook > this.#limit / LOOK_AFTER_SHARE_DIVISOR
     ) {
+      // One look for every write that came to the share at once, begun by the first and taken back
+      // from the count as it is (greptile): those queued behind it do not each begin another.
+      this.#writtenSinceLook = 0;
+      this.#lookAgain ??= this.#lookOnce();
+    }
+    if (this.#lookAgain !== undefined) await this.#lookAgain;
+  }
+
+  /** A look begun by writes, held while it runs for every write that would begin one. */
+  async #lookOnce(): Promise<void> {
+    try {
       await this.#sweep();
+    } finally {
+      this.#lookAgain = undefined;
     }
   }
 
@@ -387,8 +402,16 @@ class DiskImages {
         found.sort((left, right) => usedAt(left) - usedAt(right));
         for (const { name, size } of found) {
           // What a read let go after the look found it is gone, whatever the look read of it.
-          if (!this.#entries.has(name) && !letGo.has(name)) this.#count(name, size);
+          if (letGo.has(name)) continue;
+          // One indexed already keeps its place, at the size it has now: another server sharing the
+          // directory may have written it again, larger (Codex).
+          if (this.#entries.has(name)) this.#resize(name, size);
+          else this.#count(name, size);
         }
+        // What the index holds and the directory no longer lists, another server let go.
+        const listed = new Set(names);
+        // A `Map` goes on past a key taken out as it is iterated.
+        for (const name of this.#entries.keys()) if (!listed.has(name)) this.#forget(name);
         this.#indexReady = true;
         this.#usedBeforeIndex.clear();
         await this.#evict();
@@ -434,6 +457,14 @@ class DiskImages {
     this.#forget(name);
     this.#entries.set(name, size);
     this.#total += size;
+  }
+
+  /** An image indexed already, at the size it has now, where it stands among the others. */
+  #resize(name: string, size: number): void {
+    const was = this.#entries.get(name);
+    if (was === undefined) return;
+    this.#entries.set(name, size);
+    this.#total += size - was;
   }
 
   #forget(name: string): void {
