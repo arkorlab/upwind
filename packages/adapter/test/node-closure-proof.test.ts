@@ -47,9 +47,36 @@ describe('original Node executable closure proof', () => {
     ['block shadow', 'module.exports=[1,c=>{let point;{const c={y:2};point=c.y}return point}];'],
     ['ordinary member', 'module.exports=point=>point.y;'],
     ['ordinary context property', 'module.exports=[1,c=>c.id];'],
+    ['named class binder', 'module.exports=[1,c=>{const Value=class c{};return Value}];'],
+    [
+      'named class self member',
+      'module.exports=[1,c=>{return class c{static read(){return c.y}}}];',
+    ],
+    ['named class heritage self binding', 'module.exports=[1,c=>{return class c extends c.y{}}];'],
+    ['named class computed self key', 'module.exports=[1,c=>{return class c{[c.y](){}}}];'],
+    ['named function self member', 'module.exports=[1,c=>{return function c(){return c.y}}];'],
     ['followable external require', "module.exports=[1,c=>c.x('example',()=>require('example'))];"],
   ])('retains %s on the normal Node path', (_title, source) => {
     expect(dynamicNodeClosureRefusal(CHUNK, source)).toBeUndefined();
+  });
+
+  it.each([
+    'module.exports=[1,c=>{const Value=class c{};return c.y("external")}];',
+    'module.exports=[1,c=>{return class{static read(){return c.y("external")}}}];',
+    'module.exports=[1,c=>{return class local{static read(){return c.y("external")}}}];',
+    'module.exports=[1,c=>{return class local extends c.y{}}];',
+    'module.exports=[1,c=>{return class local{[c.y](){}}}];',
+  ])('keeps genuine outer context references refused beside class bindings: %s', (source) => {
+    expect(dynamicNodeClosureRefusal(CHUNK, source)).toBe('an unproved Turbopack external import');
+  });
+
+  it('keeps a genuine Node loader denied inside a class with a context-like self name', () => {
+    const source =
+      'module.exports=[1,c=>{const Mod=require("node:module");return class c{static read(){return Mod._load("untraced")}}}];';
+
+    expect(dynamicNodeClosureRefusal(CHUNK, source)).toBe(
+      'an unproved Node module loader or code compiler',
+    );
   });
 
   it.each([

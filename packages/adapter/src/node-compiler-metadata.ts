@@ -12,6 +12,7 @@ export function nodeClosureReference({ parent, key }: NodeCompilerMetadataVisit)
   if (parent === undefined) return true;
   if (parent.type.startsWith('Import')) return false;
   if (key === 'id' && parent.type === 'VariableDeclarator') return false;
+  if (key === 'id' && ['ClassExpression', 'FunctionExpression'].includes(parent.type)) return false;
   if (key === 'params' || (key === 'id' && parent.type.endsWith('Declaration'))) return false;
   if (
     (key === 'property' && parent.type === 'MemberExpression') ||

@@ -22,7 +22,7 @@ function input(retained: boolean, sha256 = SOURCE_SHA): NodeJwtCompilerInput {
       imports: new Map(),
       rendered: new Map(),
     },
-  } as NodeJwtCompilerInput;
+  } as unknown as NodeJwtCompilerInput;
 }
 
 describe('private fixed Next cache write proof boundaries', () => {

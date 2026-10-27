@@ -1,10 +1,64 @@
+import { parseAst } from 'rolldown/parseAst';
 import { describe, expect, it } from 'vitest';
 
+import { isNode } from '../src/lexical-scope.ts';
 import { dynamicNodeClosureRefusal } from '../src/node-closure-proof.ts';
+import { nodeClosureReference } from '../src/node-compiler-metadata.ts';
+import { visitTree } from '../src/node-manifest-consumer-ast.ts';
 
 const FILE = '/authored/ordinary-library.js';
 
+function program(code: string) {
+  const parsed: unknown = parseAst(code);
+  if (!isNode(parsed)) throw new Error('missing authored program');
+  return parsed;
+}
+
+function isReference(visit: ReturnType<typeof visitTree>[number]) {
+  return nodeClosureReference({
+    node: visit.node,
+    parent: visit.parent,
+    key: visit.key,
+    scopes: visit.scopes,
+  });
+}
+
+function binder(visits: ReturnType<typeof visitTree>, type: string) {
+  const visit = visits.find((item) => item.parent?.type === type && item.key === 'id');
+  if (visit === undefined) throw new Error('missing authored binder');
+  return visit;
+}
+
 describe('standard compiler metadata reads in original Node source', () => {
+  it.each([
+    ['ClassExpression', 'const Value=class Function{[Function.name](){return Function}};'],
+    ['FunctionExpression', 'const value=function Function(){return Function};'],
+  ])('separates the %s binding identifier from its genuine self references', (type, code) => {
+    const parsed = program(code);
+    const before = JSON.stringify(parsed);
+    const visits = visitTree(parsed).filter(
+      (visit) => visit.node.type === 'Identifier' && visit.node['name'] === 'Function',
+    );
+    const binding = binder(visits, type);
+    const references = visits.filter((visit) => visit !== binding);
+
+    expect(isReference(binding)).toBe(false);
+    expect(references.length).toBeGreaterThan(0);
+    expect(references.every((visit) => isReference(visit))).toBe(true);
+    expect(JSON.stringify(parsed)).toBe(before);
+  });
+
+  it('retains heritage and computed-key identifiers as genuine references', () => {
+    const parsed = program('const Value=class Self extends Outer{[key](){return Self}};');
+    const references = visitTree(parsed).filter(
+      (visit) =>
+        visit.node.type === 'Identifier' && ['key', 'Outer'].includes(String(visit.node['name'])),
+    );
+
+    expect(references).toHaveLength(2);
+    expect(references.every((visit) => isReference(visit))).toBe(true);
+  });
+
   it.each(['var', 'let', 'const'])('keeps a plain %s initializer read', (kind) => {
     const code = `${kind} bind=Function.prototype.bind;exports.bind=bind;`;
 
