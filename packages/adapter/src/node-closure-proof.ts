@@ -3,8 +3,20 @@ import { parseAst } from 'rolldown/parseAst';
 import { isNode, listOf, type Node, type Scope, scopeOpenedBy } from './lexical-scope.ts';
 import { nativeBindings, walk } from './native-ast.ts';
 import { hasRetainedWorkerCapability } from './native-worker.ts';
+import {
+  assignedNodeChoiceOrigin,
+  nodeNamespaceAliasUse,
+  type NodeClosureBuiltin as Builtin,
+  type NodeClosureOrigin as Origin,
+} from './node-closure-assigned-origins.ts';
 import { globalPatternRefusal } from './node-closure-globals.ts';
-import { hostObjectOf } from './node-closure-hosts.ts';
+import {
+  assignedNodeHosts,
+  hostObjectOf,
+  nodeHostBinding as bindingOf,
+  nodeHostIdentifier as isIdentifier,
+  type AssignedNodeHosts,
+} from './node-closure-hosts.ts';
 import { NODE_MODULE_LOADERS as MODULE_LOADERS } from './node-closure-module-loaders.ts';
 import {
   nodeClosureReference as isReference,
@@ -16,12 +28,7 @@ import { nodeWsLoaderSites, type NodeWsLoaderProof } from './node-ws-loader-proo
 
 export { originalNodeHostLoaderRefusal } from './node-original-host-proof.ts';
 
-type Builtin = 'child_process' | 'module' | 'process' | 'vm';
-interface Origin {
-  readonly builtin: Builtin;
-  readonly member?: string;
-}
-type Origins = ReadonlyMap<Node, Origin>;
+type Origins = ReadonlyMap<Node, Origin> & { readonly assigned?: AssignedNodeHosts };
 interface Visit {
   readonly node: Node;
   readonly parent: Node | undefined;
@@ -30,7 +37,7 @@ interface Visit {
 }
 interface Traversal {
   readonly program: Node;
-  readonly imports: ReadonlyMap<Node, Origin>;
+  readonly imports: Origins;
   readonly factories: ReadonlyMap<Node, string | null>;
   readonly contexts: Map<Scope, string>;
 }
@@ -64,18 +71,6 @@ const CHILD_PROCESS_EXECUTORS = new Set([
   'spawnSync',
 ]);
 
-function isIdentifier(
-  node: unknown,
-  name?: string,
-): node is Node & { readonly type: 'Identifier'; readonly name: string } {
-  return (
-    isNode(node) &&
-    node.type === 'Identifier' &&
-    typeof node['name'] === 'string' &&
-    (name === undefined || node['name'] === name)
-  );
-}
-
 function stringOf(node: unknown): string | undefined {
   if (!isNode(node)) return undefined;
   if (node.type === 'Literal' && typeof node['value'] === 'string') return node['value'];
@@ -103,18 +98,6 @@ function builtinOf(specifier: string | undefined): Builtin | undefined {
     : undefined;
 }
 
-function bindingOf(
-  name: string,
-  scopes: readonly Scope[],
-): { node: Node | undefined; scopes: readonly Scope[] } | undefined {
-  for (let at = scopes.length - 1; at >= 0; at -= 1) {
-    const scope = scopes[at];
-    if (scope?.declared.has(name) === true)
-      return { node: scope.bindings.get(name), scopes: scopes.slice(0, at + 1) };
-  }
-  return undefined;
-}
-
 function importedOrigins(program: Node): Map<Node, Origin> {
   const origins = new Map<Node, Origin>();
   for (const declaration of listOf(program, 'body')) {
@@ -137,7 +120,7 @@ function importedOrigins(program: Node): Map<Node, Origin> {
 function originOf(
   value: unknown,
   scopes: readonly Scope[],
-  imports: ReadonlyMap<Node, Origin>,
+  imports: Origins,
   seen = new Set<Node>(),
 ): Origin | undefined {
   let current = value;
@@ -151,6 +134,13 @@ function originOf(
       continue;
     }
     if (current.type === 'MemberExpression') return memberOrigin(current, scopes, imports, seen);
+    if (
+      (imports.assigned?.size ?? 0) > 0 &&
+      ['ConditionalExpression', 'LogicalExpression'].includes(current.type)
+    )
+      return assignedNodeChoiceOrigin(current, (choice) =>
+        originOf(choice, scopes, imports, new Set(seen)),
+      );
     return requiredOrigin(current, scopes);
   }
   return undefined;
@@ -159,7 +149,7 @@ function originOf(
 function identifierOrigin(
   name: string,
   scopes: readonly Scope[],
-  imports: ReadonlyMap<Node, Origin>,
+  imports: Origins,
   seen: Set<Node>,
 ): Origin | undefined {
   const binding = bindingOf(name, scopes);
@@ -170,10 +160,10 @@ function identifierOrigin(
 function memberOrigin(
   value: Node,
   scopes: readonly Scope[],
-  imports: ReadonlyMap<Node, Origin>,
+  imports: Origins,
   seen: Set<Node>,
 ): Origin | undefined {
-  const host = hostMemberOrigin(value, scopes);
+  const host = hostMemberOrigin(value, scopes, imports.assigned);
   if (host !== undefined) return host;
   const owner = originOf(value['object'], scopes, imports, seen);
   if (owner === undefined || owner.member !== undefined) return owner;
@@ -181,8 +171,12 @@ function memberOrigin(
   return member === 'default' ? owner : { builtin: owner.builtin, member: member ?? '*' };
 }
 
-function hostMemberOrigin(value: Node, scopes: readonly Scope[]): Origin | undefined {
-  const owner = hostObjectOf(value['object'], scopes);
+function hostMemberOrigin(
+  value: Node,
+  scopes: readonly Scope[],
+  assigned?: AssignedNodeHosts,
+): Origin | undefined {
+  const owner = hostObjectOf(value['object'], scopes, new Set(), assigned);
   const member = memberOf(value);
   if (owner === 'global' && member === 'process') return { builtin: 'process' };
   if (owner !== 'cjs-module') return undefined;
@@ -321,7 +315,7 @@ function childVisits(node: Node, scopes: readonly Scope[]): Visit[] {
 
 function visits(
   program: Node,
-  imports: ReadonlyMap<Node, Origin>,
+  imports: Origins,
   factoryNames: ReadonlyMap<Node, string | null>,
 ): { visits: Visit[]; contexts: ReadonlyMap<Scope, string> } {
   const found: Visit[] = [];
@@ -361,10 +355,17 @@ function isContext(
 
 function isNamespaceEscape(
   visit: Visit,
-  imports: ReadonlyMap<Node, Origin>,
-  builtin: 'child_process' | 'module',
+  imports: Origins,
+  builtin: 'child_process' | 'module' | 'process',
 ): boolean {
-  if (!['CallExpression', 'Identifier', 'MemberExpression'].includes(visit.node.type)) return false;
+  const processChoice =
+    builtin === 'process' &&
+    ['ConditionalExpression', 'LogicalExpression'].includes(visit.node.type);
+  if (
+    !processChoice &&
+    !['CallExpression', 'Identifier', 'MemberExpression'].includes(visit.node.type)
+  )
+    return false;
   const origin = originOf(visit.node, visit.scopes, imports);
   if (origin?.builtin !== builtin || origin.member !== undefined || !isReference(visit))
     return false;
@@ -375,10 +376,7 @@ function isNamespaceEscape(
   )
     return false;
   // A namespace alias remains tracked. All other exports/calls/returns would hand out a loader.
-  return !(
-    (visit.parent?.type === 'VariableDeclarator' && visit.key === 'init') ||
-    (visit.parent?.type === 'MemberExpression' && visit.key === 'object')
-  );
+  return !nodeNamespaceAliasUse(visit, builtin === 'process');
 }
 
 function destructuredMember(property: Node): string | undefined {
@@ -463,9 +461,13 @@ function loaderRefusal(
   compilers: ReadonlySet<Node>,
 ): string | undefined {
   const { node, scopes } = visit;
-  const globalPattern = globalPatternRefusal(node, scopes);
+  const globalPattern = globalPatternRefusal(node, scopes, imports.assigned);
   if (globalPattern !== undefined) return globalPattern;
-  if (!compilers.has(node) && isReference(visit) && isGlobalCompiler(node, scopes))
+  if (
+    !compilers.has(node) &&
+    isReference(visit) &&
+    isGlobalCompiler(node, scopes, imports.assigned)
+  )
     return 'an unproved JavaScript code compiler';
   if (isNamespaceRebinding(visit, imports)) return 'an unproved rebound Node loader namespace';
   if (
@@ -479,13 +481,16 @@ function loaderRefusal(
     return 'an unproved Node Module namespace escape';
   if (isNamespaceEscape(visit, imports, 'child_process'))
     return 'an unproved Node child-process namespace escape';
+  if ((imports.assigned?.size ?? 0) > 0 && isNamespaceEscape(visit, imports, 'process'))
+    return 'an unproved assigned Node process namespace escape';
   return undefined;
 }
 
-function isNamespaceRebinding(visit: Visit, imports: ReadonlyMap<Node, Origin>): boolean {
+function isNamespaceRebinding(visit: Visit, imports: Origins): boolean {
   const { node, scopes } = visit;
   if (node.type !== 'AssignmentExpression' || !isIdentifier(node['left'])) return false;
-  if (hostObjectOf(node['right'], scopes) !== undefined) return true;
+  if (imports.assigned?.has(node) === true) return false;
+  if (hostObjectOf(node['right'], scopes, new Set(), imports.assigned) !== undefined) return true;
   const origin = originOf(node['right'], scopes, imports);
   return origin !== undefined && origin.member === undefined;
 }
@@ -505,6 +510,7 @@ export function dynamicNodeClosureRefusal(
   const imports = importedOrigins(program);
   const factories = factoriesOf(program);
   const { visits: all, contexts } = visits(program, imports, factories);
+  const origins = Object.assign(imports, { assigned: assignedNodeHosts(all) });
   const serverChunk = /[/\\]server[/\\]chunks[/\\]/u.test(file);
   if (serverChunk && [...factories.values()].includes(null))
     return 'an unproved Turbopack factory context';
@@ -515,7 +521,7 @@ export function dynamicNodeClosureRefusal(
   for (const visit of all) {
     if (serverChunk && (isContextLoader(visit, contexts) || isContextEscape(visit, contexts)))
       return 'an unproved Turbopack external import';
-    const refusal = loaderRefusal(visit, imports, compilerSites);
+    const refusal = loaderRefusal(visit, origins, compilerSites);
     if (refusal !== undefined) return refusal;
   }
   return undefined;

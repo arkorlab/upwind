@@ -1,16 +1,23 @@
 import { parseAst } from 'rolldown/parseAst';
 
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
-import { hostObjectOf, hostPropertyName } from './node-closure-hosts.ts';
+import { hostObjectOf, hostPropertyName, type AssignedNodeHosts } from './node-closure-hosts.ts';
 import { declaration, identifier, reference, visitTree } from './node-manifest-consumer-ast.ts';
 
 const MAX_NODES = 100_000;
 
 /** Existing closure classification, shared without changing its ordinary refusal rules. */
-export function isGlobalCompiler(node: Node, scopes: readonly Scope[]): boolean {
+export function isGlobalCompiler(
+  node: Node,
+  scopes: readonly Scope[],
+  assigned?: AssignedNodeHosts,
+): boolean {
   if (identifier(node))
     return ['eval', 'Function'].includes(node.name) && declaration(node.name, scopes) === undefined;
-  if (node.type !== 'MemberExpression' || hostObjectOf(node['object'], scopes) !== 'global')
+  if (
+    node.type !== 'MemberExpression' ||
+    hostObjectOf(node['object'], scopes, new Set(), assigned) !== 'global'
+  )
     return false;
   return ['eval', 'Function'].includes(hostPropertyName(node) ?? '');
 }

@@ -2,7 +2,7 @@ import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
 import { isNode, listOf, type Node, type Scope } from './lexical-scope.ts';
-import { hostObjectOf, hostPropertyName } from './node-closure-hosts.ts';
+import { hostObjectOf, hostPropertyName, type AssignedNodeHosts } from './node-closure-hosts.ts';
 import {
   declaration,
   identifier,
@@ -69,14 +69,18 @@ function unsafeGlobalPattern(pattern: Node): boolean {
 }
 
 /** Destructuring must not hide a known global compiler or loader namespace from its later uses. */
-export function globalPatternRefusal(node: Node, scopes: readonly Scope[]): string | undefined {
+export function globalPatternRefusal(
+  node: Node,
+  scopes: readonly Scope[],
+  assigned?: AssignedNodeHosts,
+): string | undefined {
   const pattern = node.type === 'VariableDeclarator' ? node['id'] : node['left'];
   const value = node.type === 'VariableDeclarator' ? node['init'] : node['right'];
   if (
     !['AssignmentExpression', 'VariableDeclarator'].includes(node.type) ||
     !isNode(pattern) ||
     !['ArrayPattern', 'ObjectPattern'].includes(pattern.type) ||
-    hostObjectOf(value, scopes) !== 'global'
+    hostObjectOf(value, scopes, new Set(), assigned) !== 'global'
   )
     return undefined;
   return unsafeGlobalPattern(pattern)
