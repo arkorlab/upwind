@@ -204,13 +204,19 @@ class NodeBridge {
         });
         outgoing.once('error', reject);
         outgoing.once('response', (incoming) => {
-          const status = incoming.statusCode ?? HTTP_INTERNAL_ERROR;
-          const body =
-            NULL_BODY_STATUSES.has(status) || input.request.method === 'HEAD'
-              ? null
-              : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>);
-          if (body === null) incoming.resume();
-          resolve(new Response(body, { status, headers: messageHeaders(incoming) }));
+          try {
+            const status = incoming.statusCode ?? HTTP_INTERNAL_ERROR;
+            const body =
+              NULL_BODY_STATUSES.has(status) || input.request.method === 'HEAD'
+                ? null
+                : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>);
+            if (body === null) incoming.resume();
+            resolve(new Response(body, { status, headers: messageHeaders(incoming) }));
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(HANDLER_FAILED, { cause: error }));
+            incoming.destroy();
+            outgoing.destroy();
+          }
         });
         if (input.request.body === null) {
           outgoing.end();
