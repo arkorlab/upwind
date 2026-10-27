@@ -5,6 +5,10 @@ import { nativeBindings, walk } from './native-ast.ts';
 import { hasRetainedWorkerCapability } from './native-worker.ts';
 import { globalPatternRefusal } from './node-closure-globals.ts';
 import { hostObjectOf } from './node-closure-hosts.ts';
+import {
+  nodeClosureReference as isReference,
+  nodeCompilerMetadataSites,
+} from './node-compiler-metadata.ts';
 import { nodeJwtCompilerSite, type NodeJwtCompilerProof } from './node-jwt-compiler-proof.ts';
 import { isGlobalCompiler } from './node-jwt-compiler-sites.ts';
 
@@ -372,20 +376,6 @@ function isContext(
   return false;
 }
 
-/** A key or binding name is not a reference to the global or namespace it spells. */
-function isReference({ parent, key }: Visit): boolean {
-  if (parent === undefined) return true;
-  if (parent.type.startsWith('Import')) return false;
-  if (key === 'id' && parent.type === 'VariableDeclarator') return false;
-  if (key === 'params' || (key === 'id' && parent.type.endsWith('Declaration'))) return false;
-  if (
-    (key === 'property' && parent.type === 'MemberExpression') ||
-    (key === 'key' && (parent.type === 'Property' || parent.type === 'MethodDefinition'))
-  )
-    return parent['computed'] === true;
-  return true;
-}
-
 function isNamespaceEscape(
   visit: Visit,
   imports: ReadonlyMap<Node, Origin>,
@@ -484,11 +474,15 @@ function importRefusal(node: Node, imports: ReadonlyMap<Node, Origin>): string |
   return undefined;
 }
 
-function loaderRefusal(visit: Visit, imports: Origins, jwt?: Node): string | undefined {
+function loaderRefusal(
+  visit: Visit,
+  imports: Origins,
+  compilers: ReadonlySet<Node>,
+): string | undefined {
   const { node, scopes } = visit;
   const globalPattern = globalPatternRefusal(node, scopes);
   if (globalPattern !== undefined) return globalPattern;
-  if (node !== jwt && isReference(visit) && isGlobalCompiler(node, scopes))
+  if (!compilers.has(node) && isReference(visit) && isGlobalCompiler(node, scopes))
     return 'an unproved JavaScript code compiler';
   if (isNamespaceRebinding(visit, imports)) return 'an unproved rebound Node loader namespace';
   if (
@@ -531,10 +525,12 @@ export function dynamicNodeClosureRefusal(
   if (serverChunk && [...factories.values()].includes(null))
     return 'an unproved Turbopack factory context';
   const jwtSite = nodeJwtCompilerSite(jwt, file, code, program);
+  const compilerSites = new Set(nodeCompilerMetadataSites(all));
+  if (jwtSite !== undefined) compilerSites.add(jwtSite);
   for (const visit of all) {
     if (serverChunk && (isContextLoader(visit, contexts) || isContextEscape(visit, contexts)))
       return 'an unproved Turbopack external import';
-    const refusal = loaderRefusal(visit, imports, jwtSite);
+    const refusal = loaderRefusal(visit, imports, compilerSites);
     if (refusal !== undefined) return refusal;
   }
   return undefined;
