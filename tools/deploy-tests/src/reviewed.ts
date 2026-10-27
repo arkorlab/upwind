@@ -88,10 +88,11 @@ function snapshotChanges(
   const changed = end === -1 ? diff : diff.slice(0, end);
   const removed: string[] = [];
   const added: string[] = [];
+  // An empty line is marked by its sign alone, with no space after it.
   for (const line of changed) {
-    if (line.startsWith('- ')) {
+    if (line === '-' || line.startsWith('- ')) {
       removed.push(line.slice(2));
-    } else if (line.startsWith('+ ')) {
+    } else if (line === '+' || line.startsWith('+ ')) {
       added.push(line.slice(2));
     }
   }

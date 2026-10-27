@@ -219,6 +219,7 @@ describe('a snapshot that differs in indentation alone', () => {
 
   it('is not one whose words differ, nor a message that is not a snapshot’s', () => {
     expect(indentationOnly(INDENTED.replace('+   2 |', '+   3 |'))).toBe(false);
+    expect(indentationOnly(INDENTED.replace('+   2 |', '+   2 |\n-'))).toBe(false);
     expect(indentationOnly('Error: expect(received).toBe(expected)')).toBe(false);
   });
 });
