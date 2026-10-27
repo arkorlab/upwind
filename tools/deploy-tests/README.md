@@ -294,6 +294,11 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   (`__NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true`, `NODE_OPTIONS=--experimental-transform-types`). The
   deploy hook does the same for those suites, by the test file `run-tests.js` names in
   `JEST_SUITE_NAME`, and for no other; run outside `run-tests.js`, they fail as they would anywhere.
+- **`non-ascii-cache-item-name` is built with `VERCEL=1`.** Its fixture leaves its cache to the
+  deployment only where `VERCEL` is set at build, and otherwise configures a handler that keeps
+  nothing, while the case it runs when deployed expects its values to stay cached. The deploy hook sets
+  it for that suite's build alone, by `JEST_SUITE_NAME`, so that the case tests the deployment's cache,
+  as it does on Vercel. The deployment itself is not given it.
 - **No runtime logs.** The API serves a built deployment's build log, and an uploaded deployment has
   none, so what the logs hook shows is the build and the deployment. A suite that asserts on server
   output may fail for want of it.
