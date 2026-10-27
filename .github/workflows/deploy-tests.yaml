@@ -423,10 +423,22 @@ jobs:
       # of the checkout and loads what it just built.
       - name: Build Next.js
         working-directory: nextjs
+        # A few minutes on a runner: bounded well short of the job's own limit, which is there for a
+        # slow slice of suites, not for a build that stalled.
+        timeout-minutes: 30
         run: pnpm install && pnpm build && pnpm install
+      # Downloads and apt: a stall is tried again rather than holding the shard until the job's limit,
+      # as two shards were held on 2026-10-26, five and a half hours each before they were cancelled.
       - name: Install Chromium
         working-directory: nextjs
-        run: pnpm playwright install --with-deps chromium
+        timeout-minutes: 20
+        run: |
+          for attempt in 1 2 3; do
+            # Killed where it does not stop when asked, so that one stuck attempt leaves the others.
+            if timeout --kill-after=15s 6m pnpm playwright install --with-deps chromium; then exit 0; fi
+            echo "::warning::Chromium's install did not finish (attempt ${attempt} of 3)"
+          done
+          exit 1
       # The pnpm Corepack falls back to, made the one Next.js's harness pins every fixture to (its own
       # `packageManager`). A fixture that pins another manager pins no pnpm, and the deploy hook tells
       # Corepack not to fetch the newest for it (`COREPACK_DEFAULT_TO_LATEST=0`): what it runs then is
