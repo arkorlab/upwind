@@ -522,17 +522,27 @@ jobs:
           cp -r "$base" "$base-fixed-paused"
           perl -0pi -e "s/\n    await act\(async \(\) => \{/\n$pause\n    await act(async () => {/" "$base-fixed-paused/vary-params-base-dynamic.test.ts"
           grep -c "setTimeout(resolve, 400)" "$base-original-paused/vary-params-base-dynamic.test.ts" "$base-fixed-paused/vary-params-base-dynamic.test.ts"
+          # The native binding the isolated install takes (`test/lib/create-next-install.js`): Next.js's
+          # CI builds it; here, the one published for this version.
+          version="$(node -p "require('./packages/next/package.json').version")"
+          npm pack "@next/swc-linux-x64-gnu@$version" --pack-destination "$RUNNER_TEMP" > /dev/null
+          tar -xzf "$RUNNER_TEMP/next-swc-linux-x64-gnu-$version.tgz" -C "$RUNNER_TEMP"
+          mkdir -p packages/next-swc/native
+          cp "$RUNNER_TEMP/package/"*.node packages/next-swc/native/
+          ls packages/next-swc/native
           git status --short
           for variant in original-paused fixed-paused fixed; do
             dir="$base-$variant"
             [ "$variant" = fixed ] && dir="$base"
-            for attempt in 1; do
+            attempts='1 2'
+            [ "$variant" = original-paused ] && attempts='1'
+            for attempt in $attempts; do
               if node run-tests.js --type e2e -c 1 --retries 0 "$dir/vary-params-base-dynamic.test.ts" > "$RUNNER_TEMP/vpbd-$variant-$attempt.log" 2>&1; then
                 echo "VPBD $variant attempt $attempt: passed"
               else
                 echo "VPBD $variant attempt $attempt: failed"
                 grep -E "✕|Timed out waiting|Tests:" "$RUNNER_TEMP/vpbd-$variant-$attempt.log" | head -20
-                tail -60 "$RUNNER_TEMP/vpbd-$variant-$attempt.log"
+                tail -40 "$RUNNER_TEMP/vpbd-$variant-$attempt.log"
               fi
             done
           done
