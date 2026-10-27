@@ -49,6 +49,13 @@ case "$install_manager" in
     exit 1
     ;;
 esac
+# Scratch only: the install this suite's deploy-mode rewrite assumes.
+case "${JEST_SUITE_NAME:-}" in
+  *test/e2e/app-dir/next-dist-client-esm-import/*)
+    install_manager=npm
+    echo 'scratch: npm install for this suite' >&2
+    ;;
+esac
 
 # The suite's own variables (`createNext({ env })`): what the harness handed this hook beyond its own
 # environment, read before anything below sets a variable of its own (`src/suite-env.ts`). The harness
