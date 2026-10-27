@@ -22,7 +22,7 @@ function ordinary() {
   return 1;
 }
 function fixture() {
-  const proxies = new WeakSet<ObjectValue>();
+  const proxies = new WeakSet<object>();
   const prototype: ObjectValue = { require: () => 'authored operation never invoked' };
   const counter = { parentCalls: 0 };
   Object.defineProperty(prototype, 'parent', {
