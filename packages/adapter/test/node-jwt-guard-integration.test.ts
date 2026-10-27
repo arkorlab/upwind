@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 const execute = promisify(execFile);
+const ENABLED = process.env['UPWIND_NATIVE_FUNCTION_INTEGRATION'] === '1';
 const require = createRequire(import.meta.url);
 const GUARD = new URL('../../runtime/src/node-jwt-guard.ts', import.meta.url).href;
 const RECORD = {
@@ -63,7 +64,7 @@ ${after}
 
 const LOAD = `const jwt=require(filename.pathname);`;
 
-describe('fixed Node JWT evaluation guard (CI integration)', () => {
+describe.skipIf(!ENABLED)('fixed Node 24.22.1 JWT evaluation guard (dedicated Linux CI)', () => {
   it('loads the original source and preserves sign, verify and decode', async () => {
     const result = await scenario(
       '',

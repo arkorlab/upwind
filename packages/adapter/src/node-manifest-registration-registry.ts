@@ -341,7 +341,13 @@ function registerCallbacks(members: readonly Callback[], state: ViewBuilder): vo
 function assertCompleteRecords(input: RegistryInput, state: ViewBuilder): void {
   const registered = new Set(state.registrations.map((registration) => registration.moduleId));
   assertTurbopackCacheOwners(state.records, registered);
-  const factories = Map.groupBy(state.records, (record) => record.projection.moduleId);
+  const factories = new Map<NodeManifestTurbopackModuleId, NodeManifestRegistrationRecord[]>();
+  for (const record of state.records) {
+    const id = record.projection.moduleId;
+    const group = factories.get(id);
+    if (group === undefined) factories.set(id, [record]);
+    else group.push(record);
+  }
   assertTurbopackAsyncGraph({ distDir: input.distDir, tables: input.tables, factories });
 }
 function buildView(input: RegistryInput, checks: GroupCheck[]): NodeManifestRegistrationView {
