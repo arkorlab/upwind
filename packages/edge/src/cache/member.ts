@@ -216,13 +216,23 @@ const HTML_CONTENT_TYPE = 'text/html; charset=utf-8';
 export function ownRecordEntry(member: MemberOfClass, entryId?: string): RouteEntry {
   const { members } = member;
   return {
-    pathname: members.route,
-    status: 200,
-    shell: { sha256: '', byteLength: 0, contentType: HTML_CONTENT_TYPE, encoding: 'identity' },
-    headers: {},
+    ...shelllessEntry(members.route),
     // Whether the document is complete is the record's to say (`isCompleteDocument`).
     ...(entryId !== undefined && { cache: { entryId, kind: members.kind, delivery: 'resume' } }),
     ...(members.bypassFor !== undefined && { bypassFor: members.bypassFor }),
     ...(member.function !== undefined && { function: member.function }),
+  };
+}
+
+/**
+ * The route `route`, of a page the build made no shell of, as a document of it is served under
+ * (`ownRecordEntry`): no build shell named, and no Function, which the request's own finds.
+ */
+export function shelllessEntry(route: string): RouteEntry {
+  return {
+    pathname: route,
+    status: 200,
+    shell: { sha256: '', byteLength: 0, contentType: HTML_CONTENT_TYPE, encoding: 'identity' },
+    headers: {},
   };
 }

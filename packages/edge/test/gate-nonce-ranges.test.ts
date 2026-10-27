@@ -213,10 +213,10 @@ describe('nonce-bearing terminal gate ranges', () => {
     expect(body).toContain(TAIL);
   });
 
-  it('preserves an ordinary gate range without nonce opt-in', async () => {
+  it('preserves an ordinary gate range of a payload without nonce opt-in', async () => {
     const { response, body, asked } = await routed({
       settings: {},
-      headers: { range: RANGE, 'if-range': ETAG },
+      headers: { range: RANGE, 'if-range': ETAG, rsc: '1' },
     });
 
     expect(response.status).toBe(206);
@@ -224,6 +224,19 @@ describe('nonce-bearing terminal gate ranges', () => {
     expect(body).toBe(PART);
     expect(asked[0]?.get('range')).toBe(RANGE);
     expect(asked[0]?.get('if-range')).toBe(ETAG);
+  });
+
+  it('asks the gate for a navigation whole without nonce opt-in, which it may answer a shell', async () => {
+    const { response, body, asked, downstream } = await routed({
+      settings: {},
+      headers: { range: RANGE, 'if-range': ETAG },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.has('content-range')).toBe(false);
+    expect(body).toBe(WHOLE);
+    expect([asked[0]?.get('range'), asked[0]?.get('if-range')]).toStrictEqual([null, null]);
+    expect(downstream).toStrictEqual([]);
   });
 
   it('asks a payload gate for the whole response under nonce opt-in', async () => {

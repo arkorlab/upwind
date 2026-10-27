@@ -2,23 +2,43 @@ import { gateFor, type ProjectManifest, type RouteGate } from '@stayingupwind/co
 import {
   EDGE_DEBUG_HEADER,
   type ForwardingContext,
+  NAVIGATION_REQUEST_HEADERS,
   PatternBudgetExceededError,
   RSC_HEADER,
   keptByNobody,
   unsharedUnlessPublic,
 } from '@stayingupwind/core/request';
-import { isHtmlContentType, releaseStream, withDeadline } from '@stayingupwind/core/util';
 import {
+  type BoundedBody,
+  isHtmlContentType,
+  readBoundedBody,
+  releaseStream,
+  type TtlCache,
+  withDeadline,
+} from '@stayingupwind/core/util';
+import {
+  decodeGateShell,
+  GATE_ACCEPT_HEADER,
   GATE_ANSWER_HEADER,
+  GATE_CAPTURE,
+  GATE_CAPTURE_HEADER,
   GATE_DEPLOYMENT_HEADER,
   GATE_HEADER_PREFIX,
   GATE_PASS,
   GATE_ROUTE_HEADER,
+  GATE_SCOPE_DOCUMENTS,
+  GATE_SCOPE_HEADER,
+  GATE_SHELL,
+  type GateShell,
+  isGateShellType,
+  MAX_GATE_SHELL_BYTES,
+  reachesUncoded,
 } from '@stayingupwind/host/bindings';
 import type { CspNonceMode } from '@stayingupwind/host/delivery';
 
 import type { EdgeGates, EdgeHost } from '../edge-host.ts';
 import { buildPassthroughRequest } from '../forwarding.ts';
+import { documentGateKey } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import { appendConfigured, setConfigured } from './configured-headers.ts';
@@ -45,13 +65,19 @@ import { forwardedResponse, serviceUnavailableResponse } from './responses.ts';
  * The gate is handed the visitor's request as the deployment's Function would be (`gateRequest`),
  * told the route it is of (`GATE_ROUTE_HEADER`). An answer that says to go on (`GATE_PASS`) is let
  * go, and the request goes on as it would with no gate, its answer kept from shared caches even
- * where the application permits public caching: the gate admitted this visitor alone. Any other
- * answer is the visitor's,
- * status, headers and body as the gate gave them, finished as a Function's answer the edge hands
- * on is (`gateAnswer`) — and like such an answer, kept nowhere: no cache, no memory of the edge's
- * holds it, so the next request is the gate's to answer again. A gate the host binds none of, one
- * that fails, and one that does not answer in time (`GATE_TIMEOUT_MS`) are all answered that the
- * gate is unavailable, never with what the edge holds of the route.
+ * where the application permits public caching: the gate admitted this visitor alone — a `GET` the
+ * gate asks a capture of beside it (`GATE_CAPTURE_HEADER`) to the route's Function at once, told
+ * so, served from nothing the edge holds and kept by nobody (`GateCapture`). An answer that is a
+ * shell of the gate's own (`GATE_SHELL`) is read whole, and served as the route's runtime cache
+ * serves a generation: completed by the route's Function, read nothing else for
+ * (`GateShellDirective`), kept from shared caches as a pass's answer is. Any other answer is the
+ * visitor's, status, headers and body as the gate gave them, finished as a Function's answer the
+ * edge hands on is (`gateAnswer`) — and like such an answer, kept nowhere: no cache, no memory of
+ * the edge's holds it, so the next request is the gate's to answer again. A gate the host binds
+ * none of, one that fails, and one that does not answer in time (`GATE_TIMEOUT_MS`) are all
+ * answered that the gate is unavailable, never with what the edge holds of the route; and so,
+ * under a reason of its own, is a shell that is none, or that answers what no shell can
+ * (`shellOf`).
  *
  * Asked of `GET` and `HEAD` alone: any other method goes to the application's Function, a Server
  * Action's among them, as it does with no gate. Nor of a request whose validation the edge accepted,
@@ -73,6 +99,40 @@ const NORMAL_SOCKET_CLOSE = 1000;
  * whose gate did not answer, never handed on as though it had none.
  */
 const GATE_PATTERN_BUDGET = 'gate-pattern-budget';
+/** Why one was: its gate answered with a shell whose bytes are none (`decodeGateShell`). */
+const GATE_SHELL_MALFORMED = 'gate-shell-malformed';
+/**
+ * Why one was: its gate answered with a shell where the edge composes no document of one — for a
+ * `HEAD`, or for a router's request — or one whose render answered other than 200, the only status
+ * the edge composes a document under.
+ */
+const GATE_SHELL_UNSERVED = 'gate-shell-unserved';
+const OK_STATUS = 200;
+
+/**
+ * What a gate's answer has the edge do with the request in its place (`routeThroughGate`): hand a
+ * `GET` to the route's Function as a capture, or serve the gate's own shell.
+ */
+export type GateDirective = GateCapture | GateShellDirective;
+
+/**
+ * A capture a gate that said to go on asked for (`GATE_CAPTURE_HEADER`), of the route it was asked
+ * about: the request handed to that route's Function told so, and its answer kept by nobody.
+ */
+export interface GateCapture {
+  readonly kind: 'capture';
+  readonly route: string;
+}
+
+/** A shell a gate answered with (`GATE_SHELL`), read whole and checked (`shellOf`). */
+export interface GateShellDirective {
+  readonly kind: 'shell';
+  /** The gate that answered with it, which the document it is served as names. */
+  readonly gate: string;
+  readonly shell: GateShell;
+  /** How long the gate took to answer with it, its bytes read: what the shell's lookup took. */
+  readonly lookupMs: number;
+}
 
 /** What a request brings to its gate, once the deployment it is of is known to declare one. */
 export interface GateInput {
@@ -100,6 +160,14 @@ export interface GateInput {
   readonly cspNonce: { readonly mode: CspNonceMode; readonly strictDynamic: boolean } | undefined;
   /** The host's clock, read only where a gate is actually asked. */
   readonly now?: (() => number) | undefined;
+  /**
+   * Where the edge remembers the gates that decide a request that takes a shell alone
+   * (`GATE_SCOPE_HEADER`), and the manifest this deployment's are remembered by: of such a gate's
+   * route, any other request goes on unasked.
+   */
+  readonly documentGates?:
+    | { readonly memory: TtlCache<string, true>; readonly manifestId: string }
+    | undefined;
   /** A dispatched gate passed; its existing downstream request metric includes that dispatch. */
   readonly passed?: (() => void) | undefined;
   /** A terminal gate answer, before returning it; a pass is counted by its downstream handler. */
@@ -187,15 +255,22 @@ function gateRequest(input: GateInput, gate: RouteGate, signal: AbortSignal): Re
   const asked = buildPassthroughRequest(client, input.forwarding, input.host.credentials);
   stripGateHeaders(asked.headers);
   asked.headers.set(GATE_ROUTE_HEADER, gate.route);
+  const shell = takesShell(input.request);
+  if (shell) {
+    asked.headers.set(GATE_ACCEPT_HEADER, GATE_SHELL);
+  }
   const deployment = input.manifest.deployment.dplId;
   if (deployment !== undefined) {
     asked.headers.set(GATE_DEPLOYMENT_HEADER, deployment);
   }
+  // A shell is read whole, and so is what the edge gives a nonce of: a range of either is none.
+  if (shell || input.cspNonce !== undefined) {
+    asked.headers.delete('range');
+    asked.headers.delete('if-range');
+  }
   if (input.cspNonce !== undefined) {
     // Even a payload request can receive terminal HTML that needs nonce rewriting.
     asked.headers.set('accept-encoding', 'identity');
-    asked.headers.delete('range');
-    asked.headers.delete('if-range');
     // A document is any request but a payload's, `RSC: 1` alone, as read elsewhere.
     if (asked.headers.get(RSC_HEADER) !== '1') {
       for (const name of VALIDATOR_HEADERS) {
@@ -359,10 +434,155 @@ function gateAnswer(input: GateInput, gate: RouteGate, answer: Response): Respon
 }
 
 /**
- * The visitor's answer from the gate of `gate`'s route — the gate's own, or the edge's that it is
- * unavailable — or `undefined` where the gate says to go on.
+ * The capture a gate that says to go on asks for beside it (`GATE_CAPTURE_HEADER`), of a `GET`: a
+ * `HEAD` renders nothing to capture, and goes on as though its gate had said only to go on.
  */
-async function answeredAtGate(input: GateInput, gate: RouteGate): Promise<Response | undefined> {
+function captureOf(input: GateInput, gate: RouteGate, answer: Response): GateCapture | undefined {
+  return input.request.method === 'GET' && answer.headers.get(GATE_CAPTURE_HEADER) === GATE_CAPTURE
+    ? { kind: 'capture', route: gate.route }
+    : undefined;
+}
+
+/**
+ * Whether a shell can answer the request: a browser's navigation (`isNavigation`), a `GET` of a
+ * document, as `gateRequest` reads one — what its gate is told takes a shell, and nothing else.
+ */
+function takesShell(request: Request): boolean {
+  return (
+    request.method === 'GET' &&
+    request.headers.get(RSC_HEADER) !== '1' &&
+    isNavigation(request.headers)
+  );
+}
+
+/**
+ * Whether a request is a browser's navigation, as it says of itself (`NAVIGATION_REQUEST_HEADERS`):
+ * what the gate is told takes a shell (`GATE_ACCEPT_HEADER`). Any other request a gate lets
+ * through — a crawler's, a prefetch made as a resource's, a client's that says nothing — is served
+ * as the route serves it, and no shell need be made for it.
+ */
+function isNavigation(headers: Headers): boolean {
+  return Object.entries(NAVIGATION_REQUEST_HEADERS).every(
+    ([name, value]) => headers.get(name) === value,
+  );
+}
+
+/**
+ * When a gate was asked: as the host's clock read it (`started`), which what the edge observes of the
+ * request is measured by, and as time passes (`since`, `performance.now()`), which the time a gate
+ * is given is measured by — no clock set on or back meanwhile shortening or stretching it.
+ */
+interface Asked {
+  readonly started: number;
+  readonly since: number;
+}
+
+/**
+ * A gate's shell, read whole from `body` — within `left` ms, and no larger than a shell may be
+ * (`MAX_GATE_SHELL_BYTES`) — or the edge's answer where it is not: that the gate did not answer,
+ * where its bytes do not all arrive; malformed, where they are more.
+ */
+async function shellBytes(
+  gate: RouteGate,
+  body: ReadableStream<Uint8Array> | null,
+  left: number,
+): Promise<Uint8Array | Response> {
+  let read: BoundedBody;
+  try {
+    read = await readBoundedBody(body, {
+      limit: MAX_GATE_SHELL_BYTES,
+      stallMs: left,
+      budgetMs: left,
+    });
+  } catch (error) {
+    logWarn('a gate did not answer with its shell whole', {
+      gate: gate.name,
+      route: gate.route,
+      detail: describe(error),
+    });
+    return serviceUnavailableResponse(GATE_UNAVAILABLE);
+  }
+  if (read.kind === 'over-limit') {
+    releaseStream(read.body, 'gate');
+    return unserved(gate, GATE_SHELL_MALFORMED, 'larger than a shell may be');
+  }
+  return read.bytes;
+}
+
+/**
+ * The edge's answer in place of a gate's shell it does not serve: that the gate is unavailable,
+ * under `reason`, before any byte — said where the edge's warnings go, with why.
+ */
+function unserved(gate: RouteGate, reason: string, detail: string): Response {
+  logWarn('a gate answered with a shell the edge does not serve', {
+    gate: gate.name,
+    route: gate.route,
+    detail,
+  });
+  return serviceUnavailableResponse(reason);
+}
+
+/**
+ * The shell a gate answered with (`GATE_SHELL`), read whole — within what is left of the time a gate
+ * is given (`GATE_TIMEOUT_MS`), as it passes (`Asked.since`), whatever the host's clock is set to
+ * meanwhile, and no larger than a shell may be (`MAX_GATE_SHELL_BYTES`) — or the edge's answer
+ * before any byte where it is not served: that the gate did not answer, where its bytes do not all
+ * arrive; malformed, where they are no shell (`decodeGateShell`); unserved, where the request is one
+ * no shell answers, or the shell's render answered other than 200.
+ */
+async function shellOf(
+  input: GateInput,
+  gate: RouteGate,
+  answer: Response,
+  { started, since }: Asked,
+): Promise<GateShellDirective | Response> {
+  const { request } = input;
+  if (!takesShell(request)) {
+    releaseStream(answer.body, 'gate');
+    return unserved(gate, GATE_SHELL_UNSERVED, `a ${request.method} that is no navigation's`);
+  }
+  if (!isGateShellType(answer.headers.get('content-type'))) {
+    releaseStream(answer.body, 'gate');
+    return unserved(gate, GATE_SHELL_MALFORMED, 'an answer of another type');
+  }
+  // Its host's fetch undid a gzip or br of it, if any; no other coding is undone, but refused unread.
+  if (!reachesUncoded(answer.headers)) {
+    releaseStream(answer.body, 'gate');
+    return unserved(gate, GATE_SHELL_MALFORMED, 'an answer in a coding no host undoes');
+  }
+  const elapsed = (): number => (input.now?.() ?? started) - started;
+  const bytes = await shellBytes(gate, answer.body, GATE_TIMEOUT_MS - (performance.now() - since));
+  if (bytes instanceof Response) {
+    return bytes;
+  }
+  const decoded = decodeGateShell(bytes);
+  if (decoded.kind === 'malformed') {
+    return unserved(gate, GATE_SHELL_MALFORMED, decoded.reason);
+  }
+  const { shell } = decoded;
+  if (shell.header.route !== gate.route) {
+    return unserved(gate, GATE_SHELL_MALFORMED, `a shell of ${shell.header.route}`);
+  }
+  if (shell.header.status !== OK_STATUS) {
+    return unserved(
+      gate,
+      GATE_SHELL_UNSERVED,
+      `a render that answered ${String(shell.header.status)}`,
+    );
+  }
+  return { kind: 'shell', gate: gate.name, shell, lookupMs: elapsed() };
+}
+
+/**
+ * The visitor's answer from the gate of `gate`'s route — the gate's own, or the edge's that it is
+ * unavailable — what the gate directs the edge to do in its place (`GateDirective`), or `undefined`
+ * where the gate says only to go on.
+ */
+async function answeredAtGate(
+  input: GateInput,
+  gate: RouteGate,
+  asked: Asked,
+): Promise<Response | GateDirective | undefined> {
   const answer = await askGate(input, gate);
   if (answer === undefined) {
     return serviceUnavailableResponse(GATE_UNAVAILABLE);
@@ -371,26 +591,34 @@ async function answeredAtGate(input: GateInput, gate: RouteGate): Promise<Respon
     releaseAnswer(answer);
     return serviceUnavailableResponse(GATE_UNAVAILABLE);
   }
-  if (answer.headers.get(GATE_ANSWER_HEADER) === GATE_PASS) {
+  const said = answer.headers.get(GATE_ANSWER_HEADER);
+  if (said === GATE_PASS) {
     releaseStream(answer.body, 'gate');
-    return undefined;
+    if (answer.headers.get(GATE_SCOPE_HEADER) === GATE_SCOPE_DOCUMENTS) {
+      const key = documentGateOf(input, gate);
+      if (key !== undefined) {
+        input.documentGates?.memory.set(key, true);
+      }
+    }
+    return captureOf(input, gate, answer);
   }
-  return gateAnswer(input, gate, answer);
+  return said === GATE_SHELL
+    ? shellOf(input, gate, answer, asked)
+    : gateAnswer(input, gate, answer);
 }
 
 async function throughGate(
   input: GateInput,
   gate: RouteGate,
-  routed: () => Promise<Response>,
+  routed: (directive?: GateDirective) => Promise<Response>,
 ): Promise<Response> {
   const started = input.now?.() ?? 0;
-  const answer = await answeredAtGate(input, gate);
-  if (answer === undefined) {
+  const answer = await answeredAtGate(input, gate, { since: performance.now(), started });
+  if (answer === undefined || !(answer instanceof Response)) {
+    // A directive is a pass the edge acts on: the handler downstream counts the request, as a pass's,
+    // and what it answers this visitor is kept from shared caches as a pass's answer is.
     input.passed?.();
-    const response = await routed();
-    const admitted = new Response(response.body, response);
-    unsharedUnlessPublic(admitted.headers, false);
-    return admitted;
+    return unshared(await routed(answer));
   }
   const elapsed = (input.now?.() ?? started) - started;
   input.terminal?.(answer, gate.route, elapsed, input.host.gates !== undefined);
@@ -424,14 +652,41 @@ function gateOf(input: GateInput): RouteGate | Response | undefined {
   }
 }
 
+/** What the edge remembers `gate` under, where it remembers gates at all (`documentGates`). */
+function documentGateOf(input: GateInput, gate: RouteGate): string | undefined {
+  const remembered = input.documentGates;
+  return remembered === undefined
+    ? undefined
+    : documentGateKey(remembered.manifestId, gate.name, gate.route);
+}
+
+/**
+ * Whether `gate` is one that said it decides a request that takes a shell alone, and the request
+ * is none the edge would serve one for — a `HEAD`, the router's payload, a prefetch, a crawler's
+ * or a client's GET that says nothing of itself — nor one that says it is to be captured
+ * (`GATE_CAPTURE_HEADER`), which only its gate lets through as one. It goes on unasked, as the
+ * gate's pass would have it: routed as with no gate, and kept from shared caches as a pass's answer
+ * is (`unshared`), without the round trip to the gate.
+ */
+function goesOnUnasked(input: GateInput, gate: RouteGate): boolean {
+  const { request } = input;
+  if (takesShell(request) || request.headers.get(GATE_CAPTURE_HEADER) === GATE_CAPTURE) {
+    return false;
+  }
+  const key = documentGateOf(input, gate);
+  return key !== undefined && input.documentGates?.memory.get(key) === true;
+}
+
 /**
  * The request routed as it would be with no gate (`routed`), where it is of no gated route, or
- * where its gate says to go on; otherwise the gate's answer, or the edge's that the gate is
- * unavailable (above). Asked only of a `GET` or a `HEAD` of a deployment that declares a gate.
+ * where its gate says to go on — told what the gate directs in its place, where it directs anything
+ * (`GateDirective`); otherwise the gate's answer, or the edge's that the gate is unavailable
+ * (above). Asked only of a `GET` or a `HEAD` of a deployment that declares a gate, and not of a
+ * request a gate said it decides nothing of (`goesOnUnasked`).
  */
 export function routeThroughGate(
   input: GateInput,
-  routed: () => Promise<Response>,
+  routed: (directive?: GateDirective) => Promise<Response>,
 ): Promise<Response> {
   if (input.validated) {
     return routed();
@@ -441,7 +696,22 @@ export function routeThroughGate(
     input.terminal?.(gate, undefined, 0, false);
     return Promise.resolve(gate);
   }
-  return gate === undefined ? routed() : throughGate(input, gate, routed);
+  if (gate === undefined) {
+    return routed();
+  }
+  return goesOnUnasked(input, gate) ? goneOnUnasked(routed) : throughGate(input, gate, routed);
+}
+
+/** A request that goes on unasked (`goesOnUnasked`), routed as with no gate and kept from shared caches. */
+async function goneOnUnasked(routed: () => Promise<Response>): Promise<Response> {
+  return unshared(await routed());
+}
+
+/** What the handler downstream answers a request its gate passes, kept from shared caches. */
+function unshared(response: Response): Response {
+  const admitted = new Response(response.body, response);
+  unsharedUnlessPublic(admitted.headers, false);
+  return admitted;
 }
 
 /** Content codings describe the input bytes and are removed once the gate's HTML is decoded. */
