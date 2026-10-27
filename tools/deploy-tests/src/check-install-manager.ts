@@ -79,6 +79,8 @@ interface ManagerCall {
   readonly cache: boolean;
   /** The runtime cache's host the command was told to build with (`UPWIND_CACHE_HOST_MODULE`). */
   readonly cacheHost: string | null;
+  /** What the command was told to leave out of its Functions beside it (`UPWIND_UNSHIPPED_OUTPUTS`). */
+  readonly unshippedOutputs: string | null;
 }
 
 interface Scenario {
@@ -286,12 +288,20 @@ function checkSuccess(
     calls.some((call) => call.command === 'pnpm' && call.args.includes('run')) &&
       output?.stdout.trim() === `http://127.0.0.1:${String(hostPort)}`,
   );
-  const cacheHost = scenario.cache === 'hosted' ? hostedModule : null;
+  const hosted = scenario.cache === 'hosted';
+  const cacheHost = hosted ? hostedModule : null;
+  const unshippedOutputs = hosted ? 'prefetch-segments' : null;
   holds(
     `${scenario.name}: the build carries the runtime cache's host it was asked for, and no other`,
     calls
       .filter((call) => call.command === 'pnpm' && call.args.includes('run'))
       .every((call) => call.cacheHost === cacheHost),
+  );
+  holds(
+    `${scenario.name}: the build leaves the prefetch segments out beside the hosted cache, and only there`,
+    calls
+      .filter((call) => call.command === 'pnpm' && call.args.includes('run'))
+      .every((call) => call.unshippedOutputs === unshippedOutputs),
   );
 }
 
@@ -321,6 +331,7 @@ appendFileSync('manager-calls.jsonl', JSON.stringify({
   manager: process.env.ADAPTER_TEST_INSTALL_MANAGER !== undefined,
   cache: process.env.ADAPTER_TEST_CACHE !== undefined,
   cacheHost: process.env.UPWIND_CACHE_HOST_MODULE ?? null,
+  unshippedOutputs: process.env.UPWIND_UNSHIPPED_OUTPUTS ?? null,
 }) + '\n');
 `;
   const npm = String.raw`${shared}

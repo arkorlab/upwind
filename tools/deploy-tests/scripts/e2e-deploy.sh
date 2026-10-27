@@ -108,11 +108,13 @@ export NEXT_PRIVATE_TEST_MODE=e2e
 # `.arkor/node/` instead of Workers. A host builds with the adapter alone, unless the run asks for the
 # runtime cache a host serves behind its own edge (`ADAPTER_TEST_CACHE=hosted`): then its host goes
 # into every Function without the beacon a standalone cache's Functions keep, so that where the scope
-# stands is what the host's edge says, as it is for a deployment the host builds itself.
+# stands is what the host's edge says, and the prefetch segments stay out of them for that edge to
+# answer — as they are for a deployment the host builds itself.
 case "$target" in
   host)
     if [ "$cache" = hosted ]; then
       export UPWIND_CACHE_HOST_MODULE="${adapter_dir}/packages/cache/src/function/hosted.ts"
+      export UPWIND_UNSHIPPED_OUTPUTS=prefetch-segments
       if [ ! -f "$UPWIND_CACHE_HOST_MODULE" ]; then
         echo "no runtime cache host at ${UPWIND_CACHE_HOST_MODULE}" >&2
         exit 1
