@@ -89,6 +89,47 @@ describe('real Node HTTP bridge', () => {
     await Promise.all(held);
   });
 
+  it('rejects a Node-only status without an uncaught callback error and keeps the bridge usable', async () => {
+    const held: Promise<unknown>[] = [];
+    const disconnected = Promise.withResolvers<undefined>();
+    const invalid = invokeNodeHandler({
+      request: new Request('https://example.test/invalid-status', { method: 'POST' }),
+      requestMeta: {},
+      waitUntil: (promise) => {
+        held.push(promise);
+      },
+      handler: (_request, output) => {
+        output.statusCode = 700;
+        output.once('close', () => {
+          disconnected.resolve(undefined);
+        });
+        output.write('unrepresentable response');
+        return Promise.resolve();
+      },
+    });
+
+    await expect(invalid).rejects.toThrow(RangeError);
+
+    await disconnected.promise;
+    const response = await invokeNodeHandler({
+      request: new Request('https://example.test/after-invalid-status'),
+      requestMeta: {},
+      waitUntil: (promise) => {
+        held.push(promise);
+      },
+      handler: (_request, output) => {
+        output.statusCode = 201;
+        output.end('still available');
+        return Promise.resolve();
+      },
+    });
+
+    expect(response.status).toBe(201);
+    await expect(response.text()).resolves.toBe('still available');
+
+    await Promise.all(held);
+  });
+
   it('discards abandoned representation headers before the route error handler', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {
       // This route intentionally fails before its error page answers.
