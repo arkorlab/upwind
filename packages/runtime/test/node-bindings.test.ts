@@ -90,6 +90,59 @@ describe('node delegated bindings', () => {
     }
   });
 
+  it('shares consumed configuration and one lazy environment between independently evaluated copies', async () => {
+    vi.stubEnv('ARKOR_NODE_RUNTIME', JSON.stringify(config));
+    vi.stubEnv('NODE_BINDINGS_SNAPSHOT', 'before function evaluation');
+    try {
+      vi.resetModules();
+      const server = await import('../src/node-bindings.ts');
+      const configuration = server.nodeRuntimeConfiguration();
+      const afterServer = process.env['ARKOR_NODE_RUNTIME'];
+      vi.stubEnv('NODE_BINDINGS_SNAPSHOT', 'function evaluation');
+      vi.resetModules();
+      const functionRuntime = await import('../src/node-bindings.ts');
+      const sharedConfiguration = functionRuntime.nodeRuntimeConfiguration();
+      const environment = functionRuntime.nodeFunctionEnv();
+      vi.stubEnv('NODE_BINDINGS_SNAPSHOT', 'after environment snapshot');
+
+      expect(server.nodeRuntimeConfiguration).not.toBe(functionRuntime.nodeRuntimeConfiguration);
+      expect(sharedConfiguration).toBe(configuration);
+      expect(server.nodeFunctionEnv()).toBe(environment);
+      expect({
+        afterServer,
+        afterFunction: process.env['ARKOR_NODE_RUNTIME'],
+        privateEnvironment: Object.hasOwn(environment, 'ARKOR_NODE_RUNTIME'),
+        controlTokenLeaked: JSON.stringify(environment).includes(config.controlToken),
+      }).toStrictEqual({
+        afterServer: undefined,
+        afterFunction: undefined,
+        privateEnvironment: false,
+        controlTokenLeaked: false,
+      });
+      expect({
+        deployment: environment['NEXT_DEPLOYMENT_ID'],
+        cache: environment['ARKOR_CACHE_TOKEN'],
+        service: typeof (environment['SEARCH'] as { fetch: unknown }).fetch,
+        snapshot: environment['NODE_BINDINGS_SNAPSHOT'],
+        frozen: Object.isFrozen(environment),
+      }).toStrictEqual({
+        deployment: config.deploymentId,
+        cache: 'delegated',
+        service: 'function',
+        snapshot: 'function evaluation',
+        frozen: true,
+      });
+      expect({
+        root: Reflect.set(configuration, 'controlToken', 'changed'),
+        capabilities: Reflect.set(configuration.capabilities, 'cacheWrite', 'changed'),
+        services: Reflect.set(configuration.capabilities.services, 'SEARCH', 'changed'),
+      }).toStrictEqual({ root: false, capabilities: false, services: false });
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it.each(['gzip', 'br'])(
     'normalizes decoded %s capability responses with one native fetch',
     async (encoding) => {
@@ -114,6 +167,58 @@ describe('node delegated bindings', () => {
       transport.fetch.mockClear();
     },
   );
+
+  it.each([
+    { input: 'not a URL', init: undefined, service: false },
+    {
+      input: 'https://service.example/',
+      init: { method: 'GET', body: 'invalid GET body' },
+      service: false,
+    },
+    { input: 'file:///private/service', init: undefined, service: true },
+  ])('rejects invalid fetch input with a promise: $input', async ({ input, init, service }) => {
+    transport.fetch.mockClear();
+    const binding = nodeCapabilityFetcher(config.capabilities.services.SEARCH, service);
+    const result = binding.fetch(input, init);
+
+    await expect(result).rejects.toThrow(Error);
+    expect(transport.fetch).not.toHaveBeenCalled();
+  });
+
+  it('requests identity encoding for a range without changing the caller headers', async () => {
+    transport.fetch.mockClear();
+    transport.fetch.mockResolvedValueOnce(
+      new Response('part', {
+        status: 206,
+        headers: { 'content-range': 'bytes 0-3/10', 'content-length': '4' },
+      }),
+    );
+    const request = new Request('https://service.example/file', {
+      headers: { range: 'bytes=0-3', 'accept-encoding': 'gzip' },
+    });
+    const response = await nodeCapabilityFetcher(config.capabilities.services.SEARCH, true).fetch(
+      request,
+    );
+    const [input] = transport.fetch.mock.calls[0]!;
+    const forwarded = input as Request;
+
+    expect({
+      range: forwarded.headers.get('range'),
+      encoding: forwarded.headers.get('accept-encoding'),
+      originalEncoding: request.headers.get('accept-encoding'),
+      status: response.status,
+      contentRange: response.headers.get('content-range'),
+      body: await response.text(),
+    }).toStrictEqual({
+      range: 'bytes=0-3',
+      encoding: 'identity',
+      originalEncoding: 'gzip',
+      status: 206,
+      contentRange: 'bytes 0-3/10',
+      body: 'part',
+    });
+    expect(transport.fetch).toHaveBeenCalledTimes(1);
+  });
 
   it('keeps a double-slash service path on the sealed broker origin with body and sanitized headers', async () => {
     transport.fetch.mockClear();

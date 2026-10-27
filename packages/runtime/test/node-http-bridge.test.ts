@@ -89,6 +89,109 @@ describe('real Node HTTP bridge', () => {
     await Promise.all(held);
   });
 
+  it('discards abandoned representation headers before the route error handler', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {
+      // This route intentionally fails before its error page answers.
+    });
+    const held: Promise<unknown>[] = [];
+    const observed: unknown[] = [];
+    const response = await invokeNodeHandler({
+      request: new Request('https://example.test/failure', { method: 'POST' }),
+      requestMeta: {},
+      waitUntil: (promise) => {
+        held.push(promise);
+      },
+      handler: (_request, output) => {
+        output.setHeader('content-length', '0');
+        output.setHeader('content-encoding', 'gzip');
+        output.setHeader('content-range', 'bytes 0-9/10');
+        output.setHeader('content-type', 'application/octet-stream');
+        output.setHeader('etag', 'abandoned-entity');
+        output.setHeader('last-modified', 'Tue, 01 Jan 2030 00:00:00 GMT');
+        output.setHeader('transfer-encoding', 'chunked');
+        output.setHeader('set-cookie', 'retained=1; Path=/');
+        return Promise.reject(new Error('synthetic private handler failure'));
+      },
+      onFailure: (_request, output) => {
+        observed.push(
+          Object.fromEntries(
+            [
+              'content-length',
+              'content-encoding',
+              'content-range',
+              'content-type',
+              'etag',
+              'last-modified',
+              'transfer-encoding',
+            ].map((name) => [name, output.getHeader(name)]),
+          ),
+        );
+        output.statusCode = 503;
+        output.setHeader('content-type', 'text/plain');
+        output.end('route fallback');
+        return Promise.resolve();
+      },
+    });
+    const body = await response.text();
+    await Promise.all(held);
+
+    expect(observed).toStrictEqual([
+      {
+        'content-length': undefined,
+        'content-encoding': undefined,
+        'content-range': undefined,
+        'content-type': undefined,
+        etag: undefined,
+        'last-modified': undefined,
+        'transfer-encoding': undefined,
+      },
+    ]);
+    expect({ status: response.status, body }).toStrictEqual({
+      status: 503,
+      body: 'route fallback',
+    });
+    expect(response.headers.get('content-encoding')).toBeNull();
+    expect(response.headers.getSetCookie()).toStrictEqual(['retained=1; Path=/']);
+  });
+
+  it('clears a failed error handler representation before the generic fallback body', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {
+      // Both authored handlers intentionally fail before the generic response.
+    });
+    const held: Promise<unknown>[] = [];
+    const response = await invokeNodeHandler({
+      request: new Request('https://example.test/failure', { method: 'POST' }),
+      requestMeta: {},
+      waitUntil: (promise) => {
+        held.push(promise);
+      },
+      handler: (_request, output) => {
+        output.setHeader('content-length', '900');
+        output.setHeader('content-encoding', 'gzip');
+        return Promise.reject(new Error('synthetic private handler failure'));
+      },
+      onFailure: (_request, output) => {
+        output.setHeader('content-length', '0');
+        output.setHeader('content-encoding', 'br');
+        output.setHeader('etag', 'abandoned-fallback');
+        return Promise.reject(new Error('synthetic private fallback failure'));
+      },
+    });
+    const body = await response.text();
+    await Promise.all(held);
+
+    expect({ status: response.status, body }).toStrictEqual({
+      status: 500,
+      body: 'Internal Server Error',
+    });
+    expect([null, String(Buffer.byteLength(body))]).toContain(
+      response.headers.get('content-length'),
+    );
+    expect(response.headers.get('content-encoding')).toBeNull();
+    expect(response.headers.get('etag')).toBeNull();
+    expect(response.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+  });
+
   it('closes the real handler server through a separately evaluated service module copy', async () => {
     vi.resetModules();
     const first = await import('../src/node-http-bridge.ts');

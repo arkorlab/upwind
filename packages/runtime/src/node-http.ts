@@ -49,7 +49,10 @@ export function messageRequest(
 ): Request {
   const method = message.method ?? 'GET';
   const init: RequestInit & { duplex?: 'half' } = { method, headers, signal };
-  if (method !== 'GET' && method !== 'HEAD') {
+  const framed =
+    message.headers['transfer-encoding'] !== undefined ||
+    Number(message.headers['content-length']) > 0;
+  if (method !== 'GET' && method !== 'HEAD' && framed) {
     init.body = Readable.toWeb(message) as ReadableStream<Uint8Array>;
     init.duplex = 'half';
   }

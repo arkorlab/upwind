@@ -23,6 +23,15 @@ const HTTP_FORBIDDEN = 403;
 const HTTP_INTERNAL_ERROR = 500;
 const HTTP_NO_CONTENT = 204;
 const HANDLER_FAILED = 'Node handler failed';
+const REPRESENTATION_HEADERS = [
+  'content-length',
+  'content-encoding',
+  'content-range',
+  'content-type',
+  'etag',
+  'last-modified',
+  'transfer-encoding',
+];
 
 export function changesSomething(method: string): boolean {
   return !SAFE_METHODS.has(method);
@@ -38,12 +47,19 @@ function singleRedirectLocation(response: ServerResponse): void {
   };
 }
 
+function discardRepresentation(response: ServerResponse): void {
+  for (const header of REPRESENTATION_HEADERS) {
+    if (response.hasHeader(header)) response.removeHeader(header);
+  }
+}
+
 async function answerFailure(
   input: InvokeInput,
   request: IncomingMessage,
   response: ServerResponse,
   error: unknown,
 ): Promise<void> {
+  if (!response.headersSent) discardRepresentation(response);
   const { onFailure } = input;
   if (onFailure !== undefined && !response.headersSent) {
     const run: Run = input.run ?? ((work) => work());
@@ -59,6 +75,7 @@ async function answerFailure(
     response.destroy(error instanceof Error ? error : new Error(HANDLER_FAILED));
     return;
   }
+  discardRepresentation(response);
   response.statusCode = HTTP_INTERNAL_ERROR;
   response.setHeader('content-type', 'text/plain; charset=utf-8');
   response.end('Internal Server Error');

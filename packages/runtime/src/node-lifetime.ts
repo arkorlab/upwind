@@ -3,6 +3,10 @@ export interface NodeTaskSnapshot {
   readonly backgroundTasks: number;
   readonly draining: boolean;
 }
+interface IdleWait {
+  readonly promise: Promise<true>;
+  readonly forget: () => void;
+}
 
 /** Node keeps promises alive; the controller needs to know when it may let the VM sleep. */
 export class NodeLifetime {
@@ -33,6 +37,21 @@ export class NodeLifetime {
     return this.#active === 0 && this.#tasks.size === 0;
   }
 
+  #untilIdle(): IdleWait {
+    const idle = Promise.withResolvers<true>();
+    const changed = (): void => {
+      if (this.#idle()) idle.resolve(true);
+    };
+    this.#changed.add(changed);
+    changed();
+    return {
+      promise: idle.promise,
+      forget: () => {
+        this.#changed.delete(changed);
+      },
+    };
+  }
+
   snapshot(): NodeTaskSnapshot {
     return {
       activeRequests: this.#active,
@@ -57,23 +76,26 @@ export class NodeLifetime {
   }
 
   async drain(timeoutMs: number): Promise<boolean> {
-    if (this.#idle()) return true;
-    return await new Promise<boolean>((resolve) => {
-      const idle = this.#idle.bind(this);
-      const forget = this.#changed.delete.bind(this.#changed);
-      const timer = setTimeout(() => {
-        done(false);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<false>((resolve) => {
+      timer = setTimeout(() => {
+        resolve(false);
       }, timeoutMs);
-      function done(drained: boolean): void {
-        clearTimeout(timer);
-        forget(changed);
-        resolve(drained);
-      }
-      function changed(): void {
-        if (idle()) done(true);
-      }
-      this.#changed.add(changed);
-      changed();
     });
+    let waiting: IdleWait | undefined;
+    try {
+      for (;;) {
+        waiting = this.#untilIdle();
+        if (!(await Promise.race([waiting.promise, expired]))) return false;
+        waiting.forget();
+        waiting = undefined;
+        // Later reactions to a retained promise may register more work after the idle notification.
+        await Promise.resolve();
+        if (this.#idle()) return true;
+      }
+    } finally {
+      waiting?.forget();
+      clearTimeout(timer);
+    }
   }
 }
