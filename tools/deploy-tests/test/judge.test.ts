@@ -464,4 +464,21 @@ describe('a run’s verdicts summed for its report', () => {
     expect(run.stdout).toContain('| 4 | 15 | 2 | 4 | 0 | 0 | 2 | 0 |');
     expect(run.stdout).toContain('**1 shard left no verdict:** 2.');
   });
+
+  it('finds the one artifact a run kept, unpacked without a directory of its own', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'upwind-report-results-'));
+    dirs.push(base);
+    mkdirSync(path.join(base, 'results'));
+    writeFileSync(path.join(base, 'verdict.json'), JSON.stringify(verdictOf(1, 7)));
+    writeFileSync(path.join(base, 'results', 'feed.test.ts.json'), '{}');
+    const matrix = { include: [{ target: 'node', shard: 1 }] };
+    const run = spawnSync(process.execPath, [script, '--dir', base], {
+      encoding: 'utf8',
+      env: { PATH: process.env['PATH'], MATRIX: JSON.stringify(matrix) },
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('| 2 | 7 | 1 | 2 | 0 | 0 | 1 | 0 |');
+    expect(run.stdout).not.toContain('left no verdict');
+  });
 });

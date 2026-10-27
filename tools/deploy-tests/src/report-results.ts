@@ -6,8 +6,8 @@ import { describe, type ShardVerdict } from './verdicts.ts';
 
 /**
  * What a run on this machine's targets came to: the verdict of every shard (`verdict.json`, which
- * `judge-results.ts` wrote and the shard's artifact kept), downloaded into `--dir` one artifact a
- * directory, summed for each target into the job's summary. The shards the run was cut into, from
+ * `judge-results.ts` wrote and the shard's artifact kept), downloaded into `--dir`, summed for each
+ * target into the job's summary. The shards the run was cut into, from
  * the plan's matrix (`MATRIX`), name those that left no verdict. It reports and judges nothing: each
  * shard failed for itself.
  */
@@ -28,12 +28,14 @@ for (const { target, shard } of shards) {
   }
 }
 
+// One artifact a directory where the run kept several, and its files in `--dir` itself where it kept
+// one: the download action unpacks a single match without a directory of its own.
 const verdicts: ShardVerdict[] = [];
-const artifacts = existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : [];
-for (const entry of artifacts) {
-  const file = path.join(dir, entry.name, 'verdict.json');
-  if (entry.isDirectory() && existsSync(file)) {
-    verdicts.push(JSON.parse(readFileSync(file, 'utf8')) as ShardVerdict);
+const files = existsSync(dir) ? readdirSync(dir, { recursive: true, encoding: 'utf8' }) : [];
+for (const file of files) {
+  if (path.basename(file) === 'verdict.json') {
+    const text = readFileSync(path.join(dir, file), 'utf8');
+    verdicts.push(JSON.parse(text) as ShardVerdict);
   }
 }
 
