@@ -292,16 +292,29 @@ describe('closed aliases from environment-pruned layout hints', () => {
     },
   );
 
-  it('refuses a required directory parent that would hide a required trace-only binary child', async () => {
+  it('keeps a required trace-only child reachable through its required directory parent', async () => {
     const own = await requiredLayoutFixture('trace');
     await writeFile(
       own.entry,
       "require('./links');if(process.env.NODE_ENV!=='production')require('./missing');",
     );
 
-    await expect(nodePhysicalFiles(own.build, [])).rejects.toThrow(
-      'required aliases have incompatible topology',
+    const physical = await nodePhysicalFiles(own.build, []);
+    const physicalChild = path.join(
+      await realpath(path.dirname(own.alias)),
+      path.basename(own.alias),
     );
+    const archive = path.join(directory, 'required-trace-archive');
+    await staged(physical, archive);
+    const archivedAlias = path.join(archive, physical.nameOf(own.alias));
+
+    expect(physical.links).toContainEqual({
+      path: physical.nameOf(physicalChild),
+      target: physical.nameOf(own.target),
+    });
+    expect(physical.links.some((link) => link.path === physical.nameOf(own.alias))).toBe(false);
+    await expect(readFile(archivedAlias)).resolves.toStrictEqual(own.bytes);
+    await expect(readFile(own.target)).resolves.toStrictEqual(own.bytes);
   });
 
   it.each([false, true])(

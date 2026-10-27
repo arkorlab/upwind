@@ -33,6 +33,7 @@ import {
 import { proveNodeManifests, type NodeManifestProof } from './node-manifest-proof.ts';
 import {
   qualifyNodeNextRequireHook,
+  nodeNextRequireHookInspection,
   nodeNextRequireHookMetadata,
   type NodeNextRequireHookProof,
 } from './node-next-require-hook-proof.ts';
@@ -274,7 +275,9 @@ function assertRetainedClosures(
   for (const [file, module] of modules) {
     if (module.code === null || isNodeProofCompilerModule(file) || closure.modules.has(file))
       continue;
-    const inspection = manifests.inspectionCode(file, module.code);
+    const inspection =
+      nodeNextRequireHookInspection(closure.nextRequireHook, file, module.code) ??
+      manifests.inspectionCode(file, module.code);
     const refusal = dynamicNodeClosureRefusal(file, inspection, closure.jwt, {
       ws: closure.ws,
       nextRequireHook: closure.nextRequireHook,

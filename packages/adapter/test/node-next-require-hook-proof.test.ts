@@ -5,6 +5,7 @@ import type { ManifestModuleGraph } from '../src/node-manifest-graph.ts';
 import {
   nodeNextHookAliasData,
   nodeNextRequireHookGuardRecord,
+  nodeNextRequireHookInspection,
   nodeNextRequireHookMetadata,
   nodeNextRequireHookSites,
   qualifyNodeNextRequireHook,
@@ -84,6 +85,12 @@ describe('default Next hook alias selection DATA', () => {
 });
 
 describe('private fixed source proof boundaries', () => {
+  it('does not replace ordinary inspection without a private hook proof', () => {
+    const authored = 'const mod=require("module");mod._load("unknown");';
+
+    expect(nodeNextRequireHookInspection(undefined, FILE, authored)).toBeUndefined();
+  });
+
   it('does not authorize sites without a proof', () => {
     const sites = nodeNextRequireHookSites(undefined, 'unused', 'unused', {});
 
@@ -96,6 +103,9 @@ describe('private fixed source proof boundaries', () => {
     let called = false;
 
     expect(() => nodeNextRequireHookSites(forged, 'unused', 'unused', {})).toThrow(
+      'copied or missing proof',
+    );
+    expect(() => nodeNextRequireHookInspection(forged, FILE, 'authored')).toThrow(
       'copied or missing proof',
     );
     await expect(nodeNextRequireHookMetadata(forged)).rejects.toThrow('copied or missing proof');

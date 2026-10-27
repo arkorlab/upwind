@@ -87,6 +87,7 @@ interface State {
   readonly modes: Mode[];
   readonly callers: Map<string, Caller>;
   readonly codes: Map<string, string>;
+  readonly originals: Map<string, string>;
   readonly aliases: NodeNextHookAlias[];
   readonly sharedRuntimeEdges: NodeNextSharedRuntimeEdge[];
   aliasMetadata: string | undefined;
@@ -376,6 +377,7 @@ export async function qualifyNodeNextRequireHook(
     modes: [],
     callers: new Map(),
     codes: new Map(),
+    originals: new Map(),
     aliases: [],
     sharedRuntimeEdges: [],
     aliasMetadata: undefined,
@@ -394,11 +396,9 @@ export async function qualifyNodeNextRequireHook(
   for (const [id, own] of candidates) {
     const code = input.graph.rendered?.get(id);
     const edges = input.graph.imports?.get(id);
+    if (code === undefined || edges === undefined) refuse('missing rendered inventory');
+    if (!(await commonjs(state, id, own))) refuse('original CommonJS mode');
     if (
-      code === undefined ||
-      edges === undefined ||
-      nodeNextStaticRequireHookSites(parseAst(code)) === undefined ||
-      !(await commonjs(state, id, own)) ||
       edges.some((edge) => {
         return (
           !['module', 'path'].includes(edge.specifier) ||
@@ -406,8 +406,9 @@ export async function qualifyNodeNextRequireHook(
         );
       })
     )
-      refuse('rendered operation/CJS/builtin closure');
+      refuse('fixed builtin closure');
     state.codes.set(id, code);
+    state.originals.set(id, raw);
   }
   await incoming(state, ids);
   await aliasInventory(state);
@@ -415,6 +416,20 @@ export async function qualifyNodeNextRequireHook(
   const proof = Object.freeze<NodeNextRequireHookProof>({ [PROOF]: true });
   proofs.set(proof, state);
   return proof;
+}
+/** Audit the unchanged archive bytes, with the corresponding rendered inventory still sealed. */
+export function nodeNextRequireHookInspection(
+  proof: NodeNextRequireHookProof | undefined,
+  file: string,
+  code: string,
+): string | undefined {
+  if (proof === undefined) return undefined;
+  const state = stored(proof);
+  const original = state.originals.get(file);
+  if (original === undefined) return undefined;
+  current(state);
+  if (state.codes.get(file) !== code) refuse('changed rendered audit input');
+  return original;
 }
 export function nodeNextRequireHookSites(
   proof: NodeNextRequireHookProof | undefined,
@@ -424,10 +439,10 @@ export function nodeNextRequireHookSites(
 ): NodeNextRequireHookSites {
   if (proof === undefined) return { operations: new Set(), namespaceOperands: new Set() };
   const state = stored(proof);
-  if (!state.codes.has(file)) return { operations: new Set(), namespaceOperands: new Set() };
+  if (!state.originals.has(file)) return { operations: new Set(), namespaceOperands: new Set() };
   current(state);
   if (
-    state.codes.get(file) !== code ||
+    state.originals.get(file) !== code ||
     !isNode(program) ||
     JSON.stringify(program) !== JSON.stringify(parseAst(code))
   )
