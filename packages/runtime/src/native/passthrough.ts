@@ -7,6 +7,8 @@ import {
 } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
+import { keepsItsLength, keptItsLength } from '../kept-length.ts';
+
 /**
  * What the native target answers of everything the edge would pass on: as the edge passes a
  * Function's answer on (`passthrough.ts` in the edge, and its own answers for a middleware,
@@ -107,5 +109,10 @@ export function passedOn(request: Request, answer: Response): Response {
   const unchanged =
     headers.get(CACHE_CONTROL) === answer.headers.get(CACHE_CONTROL) &&
     SHARED_CACHE_CONTROL_HEADERS.every((name) => !answer.headers.has(name));
-  return unchanged ? answer : reframed(answer, headers);
+  if (unchanged) return answer;
+  // The same bytes under other headers: an answer that was to go out with its length still does
+  // (`keepsItsLength`) — a shipped not-found document the Function answered an unmatched URL with,
+  // which the edge too passes on by this rule (Codex).
+  const made = reframed(answer, headers);
+  return keptItsLength(answer) ? keepsItsLength(made) : made;
 }

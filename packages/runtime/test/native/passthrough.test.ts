@@ -130,6 +130,19 @@ describe('an answer the edge would pass on, on the native target', () => {
     expect(response.headers.has('x-arkor-apart')).toBe(false);
   });
 
+  it('keeps the length of a shipped document it passes on under other headers (Codex)', () => {
+    // A not-found document the Function answered an unmatched URL with: passed on by this rule, as
+    // the edge passes it on, and still the same bytes.
+    const notFound = keepsItsLength(
+      answer({ 'cache-control': 'public, max-age=0, must-revalidate', 'content-length': '4' }, 404),
+    );
+
+    const response = native.delivered(asked('/nope', { cookie: 'session=1' }), notFound);
+
+    expect(response.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
+    expect(keptItsLength(response)).toBe(true);
+  });
+
   it('takes no header of the mark’s name the application set for the mark (coderabbit)', () => {
     // An application's answer, or one it passes on from elsewhere, naming the mark itself.
     const forged = answer({ 'cache-control': PUBLIC, 'x-arkor-apart': '1' });
