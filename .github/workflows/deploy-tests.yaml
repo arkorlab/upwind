@@ -464,6 +464,9 @@ jobs:
       # deploy the same fixture again and say nothing about why the first one failed. A suite that fails does not stop the rest — the runner carries on
       # and reports every one at the end, which is what makes a long run an inventory. Its own job
       # summary lists the failures, so a shard's findings are readable without opening the log.
+      # Scratch only: the npm the hook's npm installer requires (`tools/deploy-tests/README.md`).
+      - name: Install npm 11.19.1
+        run: npm install -g npm@11.19.1 && npm --version
       - name: Run the suite
         working-directory: nextjs
         env:
