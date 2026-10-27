@@ -21,7 +21,8 @@ imports, loader environment overrides and ambiguous binary directories are not p
 Reviewed `node-gyp-build` also supports package-local standard prebuilds on the default
 Node/Linux x64/glibc host. Tuple and binary selection must have an unambiguous winner under
 the reviewed loader's precedence. Discovery next to the Node executable is unsupported.
-Prebuild lookup paths containing symlinks are currently refused.
+Local build candidates selected by either reviewed loader and prebuild lookup paths must be
+canonical. Symlinks in selected binary filenames or intermediate lookup directories are refused.
 Configured selector overrides remain refused. Applications that change native-loader selector
 environment variables before loading an addon are unsupported; startup checks do not prove
 that application code leaves those variables unchanged.

@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { AuditError } from './dependencies.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
+import { firstExistingNativeBinary as firstExisting } from './native-local-build.ts';
 import { nodeGypPrebuild } from './native-prebuilds.ts';
 
 const FIXTURE_BINDINGS = 'fd4a2e414af0b19ae18ef43baed3eaa37a918db5';
@@ -118,24 +119,6 @@ async function assertDefaultSelectors(importer: string): Promise<void> {
 function hasSelector(key: string): boolean {
   const value = process.env[key];
   return value !== undefined && value !== '';
-}
-
-async function firstExisting(
-  candidates: readonly string[],
-  owned: ReadonlySet<string>,
-): Promise<string | undefined> {
-  for (const candidate of candidates) {
-    try {
-      const actual = await realpath(candidate);
-      if (!owned.has(actual) || !(await stat(actual)).isFile())
-        throw new AuditError('Native loader first existing binary is not an owned regular file');
-      return actual;
-    } catch (error) {
-      if (!(error instanceof Error) || !('code' in error) || error.code !== MISSING_FILE)
-        throw error;
-    }
-  }
-  return undefined;
 }
 
 async function localNodeGypBinary(

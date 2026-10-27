@@ -6,6 +6,11 @@ import { beneath } from './build-paths.ts';
 import { AuditError } from './dependencies.ts';
 import { NodeAliasCompatibility } from './node-alias-compatibility.ts';
 import {
+  nodeAliasLookupError,
+  nodeAliasOutsideTrace,
+  OUTSIDE_CLOSED_TRACE,
+} from './node-alias-diagnostics.ts';
+import {
   previewCertifiedNodeCachePolicy,
   type NodeNextRewriteInput,
   type NodeNextRewriteProof,
@@ -45,7 +50,6 @@ type NodeModuleAliasOptions =
       readonly policy?: NodeAliasCachePolicy;
     };
 type NameOf = PhysicalLayout['nameOf'];
-const OUTSIDE_CLOSED_TRACE = 'The first existing Node package target is outside its closed trace';
 // Only these existing resolver refusals mean an alternative supplied no closed layout evidence.
 // Unknown AuditErrors, I/O failures and programming errors still propagate.
 const UNPROVED_HINTS: ReadonlySet<string> = new Set([
@@ -127,12 +131,12 @@ async function assertPackageTarget(target: string, context: PackageAliasContext)
   const info = await stat(target);
   const name = context.layout.nameOf(target);
   if (info.isFile()) {
-    if (!context.sources.originals.has(target)) throw new AuditError(OUTSIDE_CLOSED_TRACE);
+    if (!context.sources.originals.has(target)) throw nodeAliasOutsideTrace(target);
     return;
   }
   if (!info.isDirectory())
     throw new AuditError('A Node package alias requires a regular physical target');
-  if (!ownsDirectory(context.sources, target)) throw new AuditError(OUTSIDE_CLOSED_TRACE);
+  if (!ownsDirectory(context.sources, target)) throw nodeAliasOutsideTrace(target);
   const metadata = path.join(target, PACKAGE_MANIFEST);
   try {
     await stat(metadata);
@@ -518,8 +522,13 @@ export async function nodeModuleAliases(
   }
   // Complete every strict lookup first; no later layout hint can overwrite a required link.
   for (const { file, inventory } of inventories) {
-    for (const load of uniqueLoads(inventory.required).values())
-      await moduleAlias(file, load, context);
+    for (const load of uniqueLoads(inventory.required).values()) {
+      try {
+        await moduleAlias(file, load, context);
+      } catch (error) {
+        throw nodeAliasLookupError(error, layout.root, file, load);
+      }
+    }
   }
   // Trace and native lookup evidence is required too; its failures are never optional hints.
   await collectRequiredAliases?.();
