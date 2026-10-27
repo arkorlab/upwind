@@ -47,12 +47,15 @@ export interface KeptSuite {
   readonly cases: readonly KeptCase[];
 }
 
-/** The suites a `run-tests.js --print-tests` listing names, one a line, in its order. */
+/**
+ * The suites a `run-tests.js --print-tests` listing names, one a line, in its order. A path may hold
+ * spaces: the generator templates under `{{ toFileName name }}` are suites the manifest runs too.
+ */
 export function listedSuites(listing: string): string[] {
   return listing
     .split('\n')
     .map((line) => line.trim())
-    .filter((line) => /^test\/\S+\.test\.[jt]sx?$/u.test(line));
+    .filter((line) => /^test\/.+\.test\.[jt]sx?$/u.test(line));
 }
 
 function recordOf(value: unknown, what: string): Record<string, unknown> {
