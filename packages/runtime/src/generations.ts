@@ -19,7 +19,6 @@ import {
 import { afterBody } from './after-body.ts';
 import {
   answerFromPublishing,
-  answerFromRender,
   answerWith,
   documentWant,
   renderCompletedRscForVisitor,
@@ -31,7 +30,6 @@ import {
 } from './answers.ts';
 import type { NodeHandler } from './app-module.ts';
 import { nowMs } from './cache/clock.ts';
-import { requestContext } from './cache/context.ts';
 import { type CurrentGeneration, type CurrentLookup, currentGeneration } from './cache/current.ts';
 import { generationClassShell } from './cache/generation-tags.ts';
 import type { AttemptReason } from './cache/host.ts';
@@ -39,6 +37,7 @@ import { answeringAtOnce } from './cache/publishing.ts';
 import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
 import { servable } from './cache/servable.ts';
+import { offeredFromGeneration, offeredOncePublished, standingShared } from './delivery.ts';
 import { foundDynamic, rememberingDynamic } from './dynamic-misses.ts';
 import { nodeHandlerOf } from './entries.ts';
 import { outputOf } from './generation-outputs.ts';
@@ -58,6 +57,7 @@ import {
   upgradePathname,
   withPartialFallbackUpgrade,
 } from './partial-fallback.ts';
+import { answerFromJob, holdFirstPublish, laterOf, publishOf } from './regeneration-answers.ts';
 import { SEGMENT_PREFIX } from './representations.ts';
 import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
@@ -251,67 +251,6 @@ export async function withBackgroundRegeneration(
   });
 }
 
-/**
- * Hold the answer's end for the publish of an entry's first generation, as for the request's other
- * writes (`RequestWrites`): a request made once it was read whole reads the generation published,
- * rather than finding none and rendering a page of its own. An expired entry's regeneration holds
- * no answer so: the generation before it is there to be judged, and a publish behind a broad
- * invalidation waits for that invalidation's records to be rewritten first — a page held open for
- * it is one the browser has not finished loading, prefetching about it, for as long as the hold.
- */
-function holdFirstPublish(outcome: RegenerationOutcome): void {
-  // A request answered from a render this isolate is publishing of the entry waits for that
-  // publish as the request the render was made for does: its answer is the first generation's too.
-  const published =
-    outcome.kind === 'accepted' || outcome.kind === 'busy' ? outcome.published : undefined;
-  if (published !== undefined) {
-    requestContext()?.writes.add(published);
-  }
-}
-
-/**
- * The visitor's answer from a regeneration just made: the render, as soon as it is made, its
- * publish still under way behind the answer — which the outcome says (`accepted`) rather than claim
- * a commit the bytes went out ahead of; their own render when the entry could not be published
- * now; nothing when the entry is dynamic here, which leaves the request to the usual path.
- *
- * A render published as something a visitor may not be answered with — a redirect that does not
- * say where it leads — is one the visitor never saw, so the outcome the response carries says so
- * rather than `accepted`, which whatever reads it would take for the bytes that went out.
- */
-async function answerFromJob(
-  job: Job,
-  outcome: RegenerationOutcome,
-  want: Want,
-): Promise<Response | undefined> {
-  if (outcome.kind === 'accepted' && servable(outcome.render.status, outcome.render.headers)) {
-    const answered = await answerFromRender(job.input, job.target.handler, outcome.render, want);
-    return answered === undefined ? undefined : withOutcome(answered, 'accepted');
-  }
-  if (outcome.kind === 'skipped') {
-    return undefined;
-  }
-  // The render this isolate is publishing of the entry, or has just published: the page the requests
-  // after its publish are answered with, already made.
-  const publishing =
-    outcome.kind === 'busy' || outcome.kind === 'superseded' ? outcome.publishing : undefined;
-  const ours = await answerFromPublishing(job.input, job.target.handler, publishing, want);
-  if (ours !== undefined) {
-    return ours;
-  }
-  // A later generation the host holds, whose record its answer carried and this isolate now holds
-  // (`RegenerationOutcome.current`): the usual path answers with it, as with any record read.
-  if (laterOf(outcome) !== undefined) {
-    return undefined;
-  }
-  // `busy`, and `superseded` — a later generation than the one judged is the host's, which this
-  // isolate's read is behind — are answered alike otherwise: with a render of the visitor's own,
-  // kept by no one.
-  const own = await renderForVisitor(job.input, job.target, want);
-  const said = outcome.kind === 'accepted' ? 'unservable' : outcome.kind;
-  return own === undefined ? undefined : withOutcome(own, said);
-}
-
 export interface ForegroundAnswer {
   readonly response: Response | undefined;
   /** What to say of the regeneration when the usual path answers instead. */
@@ -462,6 +401,34 @@ async function renderSpeculative(
 }
 
 /**
+ * A miss rendered now, its publish the entry's first generation: answered from the render, or from a
+ * later generation the host holds; and what a host with no edge in front of it shares of the first
+ * generation once it is one (`offeredOncePublished`).
+ */
+async function answerFirstRender(
+  job: Job,
+  source: GenerationSource,
+  want: Want,
+): Promise<Response | undefined> {
+  const outcome = await runJob(job, 'miss', null);
+  holdFirstPublish(outcome);
+  const later = laterOf(outcome);
+  if (later !== undefined) {
+    return answerFromLater(job, { kind: outcome.kind, generation: later }, source, want);
+  }
+  const answered = await answerFromJob(job, outcome, want);
+  const published = publishOf(outcome);
+  const first = {
+    runtime: job.runtime,
+    descriptor: job.target.descriptor,
+    published,
+    elsewhere: outcome.kind === 'busy' && published === undefined,
+    fromRecord: (current: CurrentGeneration) => answerFromGeneration(job, current, source, want),
+  };
+  return answered && offeredOncePublished(job.input, first, source.representation, answered);
+}
+
+/**
  * An entry the cache holds no record of, as the request's `onMiss` says: rendered now and kept,
  * and the visitor answered from that render; rendered behind the build's answer; or left to the
  * build. `undefined` leaves the build's answer to the caller — and so does an entry a regeneration
@@ -484,12 +451,7 @@ async function answerMiss(
     });
   }
   if (onMiss === 'render' && once) {
-    const outcome = await runJob(job, 'miss', null);
-    holdFirstPublish(outcome);
-    const later = laterOf(outcome);
-    return later === undefined
-      ? answerFromJob(job, outcome, want)
-      : answerFromLater(job, { kind: outcome.kind, generation: later }, source, want);
+    return answerFirstRender(job, source, want);
   }
   if (onMiss === 'behind' && once) {
     scheduleJob(job, 'miss', null);
@@ -613,6 +575,12 @@ async function answerUnavailable(
  * from its render as soon as that is set. The uploads and the commit behind the render are round
  * trips to the host, and until they had settled each request of the isolate was answered with the
  * generation the render replaces, for as long as those took.
+ *
+ * But for a request the standing generation is everyone's for (`standingShared`): the edge serves
+ * it the standing record as it is, bytes and headers alike, whatever is regenerating it
+ * (`serveCurrentPage`), and only a request it leaves to the Function meets the render — as the
+ * visitor's. A render is never offered as everyone's by the record it is to replace: its bytes
+ * would go out under another generation's headers and admission (Codex, greptile).
  */
 async function answerFromStanding(
   job: Job,
@@ -621,7 +589,7 @@ async function answerFromStanding(
   want: Want,
 ): Promise<Response | undefined> {
   const publishing =
-    current.validity === 'stale'
+    current.validity === 'stale' && !standingShared(job.input, current, source.representation)
       ? answeringAtOnce(job.runtime, 'stale', current.entryId)?.render
       : undefined;
   return (
@@ -636,11 +604,12 @@ async function answerFromStanding(
  */
 async function answerFromGeneration(
   job: Job,
-  { pack, validity }: CurrentGeneration,
+  current: CurrentGeneration,
   source: GenerationSource,
   want: Want,
 ): Promise<Response | undefined> {
   const { input, runtime, store } = job;
+  const { pack, validity } = current;
   const { handler } = job.target;
   // What the record says is what the visitor would be told, and a record that cannot be answered
   // as written is not: the visitor gets a render of their own, as they would from a publish of it.
@@ -658,7 +627,7 @@ async function answerFromGeneration(
   if (body === undefined) {
     return pack.header.source === 'runtime' ? renderRequest(job, source.url) : undefined;
   }
-  return answerWith(input, handler, {
+  const answer = answerWith(input, handler, {
     ...want,
     body,
     // The bytes name themselves: a regeneration that produced the same body leaves what a client
@@ -673,14 +642,8 @@ async function answerFromGeneration(
     headers: pack.header.headers,
     cache: validity === 'stale' ? 'STALE' : 'HIT',
   });
-}
-
-/**
- * The later generation the host holds that a regeneration came back with, from the record the
- * host's answer for the lease carried (`RegenerationOutcome.current`).
- */
-function laterOf(outcome: RegenerationOutcome): CurrentGeneration | undefined {
-  return outcome.kind === 'busy' || outcome.kind === 'superseded' ? outcome.current : undefined;
+  // What a host with no edge in front of it shares of this generation, as the edge would.
+  return offeredFromGeneration(input, current, source.representation, answer);
 }
 
 /**

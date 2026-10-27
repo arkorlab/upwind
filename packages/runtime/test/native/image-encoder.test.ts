@@ -3,8 +3,10 @@ import { fileURLToPath } from 'node:url';
 import type { ImageRequestParams } from '@stayingupwind/core/images';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
+import type { EncodedImage } from '../../src/image-encoder.ts';
 import {
   encodeImageWith,
+  encodingOnce,
   holdsImage,
   loadSharp,
   type Sharp,
@@ -165,6 +167,27 @@ describe('the native image encoder', () => {
     const input = { bytes: BROKEN_PNG, upstreamType: 'image/png', params: PARAMS };
 
     expect(encodeImageWith(null, input)).toBeUndefined();
+  });
+
+  it('encodes an image asked for twice at once only once, and again once that is done', async () => {
+    const asIs: EncodedImage = { kind: 'as-is' };
+    const ended = Promise.withResolvers<EncodedImage>();
+    const encode = vi.fn(() => ended.promise);
+    const input = { bytes: new Uint8Array([1, 2, 3]), upstreamType: 'image/png', params: PARAMS };
+
+    const first = encodingOnce(input, encode);
+    const second = encodingOnce(input, encode);
+    const narrower = vi.fn(() => Promise.resolve(asIs));
+    const other = encodingOnce({ ...input, params: { ...PARAMS, width: 64 } }, narrower);
+    ended.resolve(asIs);
+
+    await expect(first).resolves.toBe(asIs);
+    await expect(second).resolves.toBe(asIs);
+    await expect(other).resolves.toBe(asIs);
+    expect(encode).toHaveBeenCalledExactlyOnceWith();
+    expect(narrower).toHaveBeenCalledExactlyOnceWith();
+    await expect(encodingOnce(input, () => Promise.resolve(asIs))).resolves.toBe(asIs);
+    expect(encodingOnce(input, vi.fn<() => Promise<EncodedImage> | undefined>())).toBeUndefined();
   });
 
   it('answers a client that holds the image, by its tag, compared weakly', () => {

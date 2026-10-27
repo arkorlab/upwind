@@ -465,7 +465,7 @@ export function edgeServablePrerenders(
  * read): the deployment's Function serves them whole, from the cache's generation of each. One on
  * the edge runtime has no generation — the Function runs it for every request.
  */
-export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
+export function routeHandlerPrerenders(bundle: ServingBundle): Prerender[] {
   const edgeRuntime = edgeRuntimeRoutes(bundle);
   const handlers = handlerRoutes(bundle);
   return bundle.prerenders.filter((prerender) => {
@@ -539,7 +539,7 @@ function resumesFromItself(prerender: Prerender): boolean {
 }
 
 /** The routes whose entrypoint answers with a response rather than rendering a document. */
-function handlerRoutes(bundle: DeploymentBundle): ReadonlySet<string> {
+function handlerRoutes(bundle: ServingBundle): ReadonlySet<string> {
   const handlers = new Set<string>();
   for (const entry of bundle.entrypoints) {
     if (DOCUMENT_KINDS.has(entry.kind)) {

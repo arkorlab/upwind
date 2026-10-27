@@ -15,6 +15,7 @@ import { nowMs } from './cache/clock.ts';
 import { type RequestContext, requestContextFor } from './cache/context.ts';
 import { catchUpWithScope } from './cache/pulls.ts';
 import { asksForCapture, handleCapture, keptByNobody } from './capture-invoke.ts';
+import { decidedApart, delivered, handedOn } from './delivery.ts';
 import {
   crawlerWantsWholePage,
   documentFromBuild,
@@ -40,9 +41,11 @@ import {
   requestChanges,
   type Routed,
 } from './handoff.ts';
+import { openImageCache } from './image-cache.ts';
 import {
   applicationHosts,
   fetchRemoteSource,
+  imageCacheInputOf,
   imageFallback,
   sourceRequest,
   sourceResponse,
@@ -98,6 +101,7 @@ import {
   withoutBody,
   withWritesLanded,
 } from './serve.ts';
+import { sourceInput } from './source-input.ts';
 import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { unrouted } from './unrouted.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
@@ -200,25 +204,6 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
 }
 
 /**
- * The request for an image's source, as a request of its own: routed afresh, its middleware run for
- * its own path or not at all. Nothing of what the image request's routing came to carries over — the
- * edge asks for a source as an anonymous request of its own (`fetchImageSource`) — so a source the
- * middleware never ran for is not answered as one it gated, nor under a status it never named.
- */
-function sourceInput(input: RoutedInput, source: Request): RoutedInput {
-  return {
-    ...input,
-    request: source,
-    initURL: source.url,
-    middlewareRan: undefined,
-    middlewareHeaders: undefined,
-    askedHeaders: undefined,
-    rewriteStatus: undefined,
-    routingHeaders: undefined,
-  };
-}
-
-/**
  * The source `/_next/image` names, unresized; the edge does the optimizing. The request is what
  * routing resolved — a rewrite may have led here. A path of the application is routed in full,
  * its middleware included: what protects `/private/avatar.png` protects it behind the optimizer
@@ -239,6 +224,11 @@ async function serveImageSource(
     return fallback.response;
   }
   const { params } = fallback;
+  // Looked up before its source is asked for, where the target keeps images (`image-cache.ts`).
+  const opening = openImageCache(imageCacheInputOf(input, store.manifest, params, images));
+  const slot = opening === undefined ? undefined : await opening;
+  if (slot?.hit !== undefined) return slot.hit;
+  const keep = slot?.keep;
   if (fallback.kind === 'remote') {
     const remote = await fetchRemoteSource({
       href: params.href,
@@ -247,7 +237,7 @@ async function serveImageSource(
     });
     return remote.kind === 'refused'
       ? remote.response
-      : sourceResponse({ source: remote.response, params, images, internal: false, request });
+      : sourceResponse({ source: remote.response, params, images, internal: false, request, keep });
   }
   const source = sourceRequest(request, params.href);
   // Routed already, by the Function that handed the image here: answered from there.
@@ -260,7 +250,7 @@ async function serveImageSource(
   if (misdirectedTo(answered) !== undefined) {
     return answered;
   }
-  return sourceResponse({ source: answered, params, images, internal: true, request });
+  return sourceResponse({ source: answered, params, images, internal: true, request, keep });
 }
 
 /**
@@ -331,6 +321,13 @@ async function routeAndServe(
     // The middleware's own answer may be streaming its side of the body back: that side stays.
     dropHandlerBody();
     return trace.response;
+  }
+  // The request as a middleware that ran handed it on, which an answer to it may have been told by
+  // as much as by what the client sent: a host that answers by the edge's rules judges both, as the
+  // edge does (`handedOn`). Not the middleware's own answer above, which the edge judges by the
+  // client's alone.
+  if (trace.requestHeaders !== undefined) {
+    handedOn(request, trace.requestHeaders);
   }
   // A middleware that ran may still read its side after routing — work it left to `waitUntil` —
   // and that side holds no more than a proxy may read, so it stays. One that never ran leaves the
@@ -434,7 +431,11 @@ async function answerResolved(
   const { images } = store.manifest.config;
   if (images !== undefined && routed.image) {
     const image = await serveImageSource(forwarded, store, images, routed);
-    return misdirectedTo(image) === undefined ? withRoutingHeaders(image, routed.headers) : image;
+    // Handed on as it came where its source is another Function's: the hand-off knows the answer
+    // itself (`misdirectedTo`), which one made again for the mark would not be (coderabbit).
+    return misdirectedTo(image) === undefined
+      ? withRoutingHeaders(decidedApart(image), routed.headers)
+      : image;
   }
   // The status this routing named, and the headers it collected: never an outer request's.
   const asked: RoutedInput = {
@@ -502,7 +503,7 @@ async function serveResolved(
     const status = staticFileStatus(resolved.route, store.manifest.config.basePath);
     const answer = await staticFileResponse(input, store, file, status);
     if (answer !== undefined) {
-      return answer;
+      return decidedApart(answer);
     }
   }
   if (hasBody(request.method)) {
@@ -627,7 +628,8 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
     }
     // Not answered before the host has recorded what the request invalidated — its headers neither,
     // nor a failure's (`onceRecorded`).
-    const response = withoutPlacementHeaders(await onceRecorded(context, routeRequest(input)));
+    const routed = withoutPlacementHeaders(await onceRecorded(context, routeRequest(input)));
+    const response = delivered(handled.request, routed);
     const answered = withoutBody(
       handled.request,
       withInvalidatedTags(response, context.invalidated),

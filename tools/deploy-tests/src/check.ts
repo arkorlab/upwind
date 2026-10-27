@@ -411,9 +411,11 @@ async function main(groups: readonly CheckGroup[]): Promise<void> {
     ADAPTER_TEST_HOOK_STARTED_MS: undefined,
     ADAPTER_TEST_INSTALL_MANAGER: undefined,
     ADAPTER_TEST_CACHE: undefined,
-    // The hook sets it for a host's build only where a scenario asks for the cache, so the shell's
-    // is kept out: the check of which host a build carries would otherwise read the shell's.
+    // The hook sets them for a host's build only where a scenario asks for the cache, so the shell's
+    // are kept out: the checks of which host a build carries, and of what it leaves out of its
+    // Functions, would otherwise read the shell's.
     UPWIND_CACHE_HOST_MODULE: undefined,
+    UPWIND_UNSHIPPED_OUTPUTS: undefined,
     ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
     ARKOR_API_TOKEN_FILE: tokenFile,
     ADAPTER_TEST_PROJECT_ID: 'p',

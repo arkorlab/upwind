@@ -3,3 +3,4 @@
 // eslint-disable-next-line import-x/no-default-export -- the generated Function's documented entry
 export { default } from '../function.ts';
 export { closeNodeBridge } from './entry.ts';
+export { configureImageCache } from './image-cache.ts';

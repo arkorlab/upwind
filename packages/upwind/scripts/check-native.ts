@@ -5,6 +5,7 @@ import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/pro
 import { createServer, type ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { gzipSync } from 'node:zlib';
@@ -16,6 +17,8 @@ const ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const START_MS = 30_000;
 const STOP_MS = 35_000;
 const REQUEST_MS = 20_000;
+/** How often a kept image is asked for again, until it is answered from what was kept. */
+const KEPT_POLL_MS = 100;
 const HTTP_OK = 200;
 const HTTP_SEE_OTHER = 303;
 const HTTP_NOT_MODIFIED = 304;
@@ -173,9 +176,20 @@ async function cached(site: URL): Promise<string> {
  * `/_next/image` resized and re-encoded by the `sharp` the artifact carries — the server here runs
  * away from the installation the build copied it from — and a client holding it answered 304.
  */
-async function images(site: URL, installed: string): Promise<void> {
+/** An image the server made: the tag and the bytes it went out with. */
+interface MadeImage {
+  readonly tag: string;
+  readonly bytes: Uint8Array;
+}
+
+/** The fixture's PNG, as `/_next/image` is asked for it on `site`. */
+function nativeImageOn(site: URL): URL {
+  return new URL(`/_next/image?url=%2Fnative.png&w=${NATIVE_IMAGE_WIDTH}&q=75`, site);
+}
+
+async function images(site: URL, installed: string): Promise<MadeImage> {
   const source = new Uint8Array(await (await get(site, '/native.png')).arrayBuffer());
-  const asked = new URL(`/_next/image?url=%2Fnative.png&w=${NATIVE_IMAGE_WIDTH}&q=75`, site);
+  const asked = nativeImageOn(site);
   const accept = { accept: WEBP };
   const response = await fetch(asked, { headers: accept, signal: AbortSignal.timeout(REQUEST_MS) });
   const bytes = new Uint8Array(await response.arrayBuffer());
@@ -196,6 +210,52 @@ async function images(site: URL, installed: string): Promise<void> {
   });
   await held.body?.cancel();
   assert.equal(held.status, HTTP_NOT_MODIFIED, 'a client holding the image must be answered 304');
+  await keptImage(asked, accept, { tag, bytes });
+  return { tag, bytes };
+}
+
+/**
+ * The image kept across a restart: the first time a server started again on the same cache is asked
+ * for it, answered from what the one before kept, its tag and bytes unchanged (greptile). Asked once:
+ * a miss that wrote it again would pass a check that asked until it hit.
+ */
+async function keptAcrossRestart(site: URL, made: MadeImage): Promise<void> {
+  const response = await fetch(nativeImageOn(site), {
+    headers: { accept: WEBP },
+    signal: AbortSignal.timeout(REQUEST_MS),
+  });
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  assert.equal(
+    response.headers.get('x-nextjs-cache'),
+    'HIT',
+    'a server started again must answer the image the one before kept',
+  );
+  assert.equal(response.headers.get('etag'), made.tag, 'a kept image must keep its entity tag');
+  assert.deepEqual(bytes, made.bytes, 'a kept image must be the one made');
+}
+
+/**
+ * The image kept on the server's disk once made (`runtime/src/native/image-cache.ts`), and asked for
+ * again: answered from what was kept, its tag and bytes the ones made. Kept once the answer has gone
+ * out, so asked for again until it is, for a while.
+ */
+async function keptImage(
+  asked: URL,
+  headers: Readonly<Record<string, string>>,
+  made: { readonly tag: string; readonly bytes: Uint8Array },
+): Promise<void> {
+  const end = Date.now() + REQUEST_MS;
+  for (;;) {
+    const again = await fetch(asked, { headers, signal: AbortSignal.timeout(REQUEST_MS) });
+    const bytes = new Uint8Array(await again.arrayBuffer());
+    if (again.headers.get('x-nextjs-cache') === 'HIT') {
+      assert.equal(again.headers.get('etag'), made.tag, 'a kept image must keep its entity tag');
+      assert.deepEqual(bytes, made.bytes, 'a kept image must be the one made');
+      return;
+    }
+    assert.ok(Date.now() < end, 'the image was never answered from what the server kept');
+    await sleep(KEPT_POLL_MS);
+  }
 }
 
 async function rewrites(site: URL): Promise<void> {
@@ -383,7 +443,7 @@ async function probe(out: string, source: string | undefined): Promise<void> {
     await basicRoutes(first.site, actionMarker);
     await ownPort(first.site);
     await rewrites(first.site);
-    await images(first.site, installed);
+    const madeImage = await images(first.site, installed);
     await ppr(first.site, () => {
       dynamic.released = true;
       for (const response of dynamic.pending) response.end('released');
@@ -416,6 +476,7 @@ async function probe(out: string, source: string | undefined): Promise<void> {
     const second = await runServer([path.join(native, 'server.mjs')], deployed, env);
     children.add(second);
     assert.equal(await cached(second.site), 'two', 'use cache must survive a restart');
+    await keptAcrossRestart(second.site, madeImage);
     assert.ok(
       (await (await get(second.site, '/isr')).text())
         .replaceAll('<!-- -->', '')

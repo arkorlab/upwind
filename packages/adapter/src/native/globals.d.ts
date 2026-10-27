@@ -7,5 +7,9 @@ declare module 'arkor:native-function' {
     ): Promise<Response>;
   };
   export function closeNodeBridge(timeoutMs?: number): Promise<boolean>;
+  /** Where the server keeps the images it makes (`runtime/src/native/image-cache.ts`). */
+  export function configureImageCache(
+    options: { readonly directory: string; readonly maxBytes?: number | undefined } | undefined,
+  ): void;
   export default entry;
 }

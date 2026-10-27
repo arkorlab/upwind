@@ -2,11 +2,12 @@ import { generationResponseHeaders } from '../cache/response-headers.ts';
 import { ROUTE_BODY_BUILD_HEADERS } from '../request/constants.ts';
 import { BuildPatternBudget } from './pattern-budget.ts';
 import type { BuildPatternMatcher } from './pattern-matcher.ts';
-import type { DeploymentBundle, Prerender } from './schema.ts';
+import type { Prerender } from './schema.ts';
 import {
   prerenderResponseHeaders,
   reproducesDynamicRouting,
   routeHandlerPrerenders,
+  type ServingBundle,
 } from './serving.ts';
 
 const HTTP_OK = 200;
@@ -39,7 +40,7 @@ function initialHeaders(prerender: Prerender): [string, string][] {
 
 /** The build's privacy vetoes are judged before a stored-response filter can remove them. */
 function publicBody(
-  bundle: DeploymentBundle,
+  bundle: ServingBundle,
   prerender: Prerender,
   patterns: BuildPatternMatcher,
 ): boolean {
@@ -66,7 +67,7 @@ function publicBody(
  * Function responses, even when a newer host assembles their manifest again.
  */
 export function edgeServableRouteBodies(
-  bundle: DeploymentBundle,
+  bundle: ServingBundle,
   patterns: BuildPatternMatcher = new BuildPatternBudget(),
 ): Prerender[] {
   if (bundle.routeBodyPrivacy !== 2 || !reproducesDynamicRouting(bundle)) {
