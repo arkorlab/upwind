@@ -254,7 +254,13 @@ console.log('getter-refused');`,
   });
 
   it('refuses an already evaluated dependency', async () => {
-    await expect(scenario(LOAD, '')).rejects.toThrow('qualified source already evaluated');
+    await expect(scenario(LOAD, '')).rejects.toThrow('semver cache populated before observation');
+  });
+
+  it('refuses an evaluated JWT source even when its dependency cache was cleared', async () => {
+    await expect(
+      scenario(`${LOAD}\ndelete require.cache[semverFilename.pathname];`, ''),
+    ).rejects.toThrow('qualified source already evaluated');
   });
 
   it('keeps the check on cache eviction and subsequent evaluation', async () => {
