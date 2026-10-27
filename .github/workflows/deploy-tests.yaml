@@ -461,7 +461,8 @@ jobs:
           listing="$RUNNER_TEMP/deploy-results/expected-tests.txt"
           # shellcheck disable=SC2086 -- both are several words, or none, on purpose
           node run-tests.js --type e2e $group $paths --print-tests >"$listing"
-          count="$(grep -Ec '^[[:space:]]*test/[^[:space:]]+\.test\.[jt]sx?[[:space:]]*$' "$listing" || true)"
+          # A path may hold spaces, as the generator templates under `{{ toFileName name }}` do.
+          count="$(grep -Ec '^[[:space:]]*test/.+\.test\.[jt]sx?[[:space:]]*$' "$listing" || true)"
           # A selection named by path that the manifest leaves nothing of would run nothing and pass,
           # and its results would say so: refused here instead. `all` is the manifest's own.
           if [ "$count" -eq 0 ] && [ -n "$paths" ]; then
