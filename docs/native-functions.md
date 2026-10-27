@@ -62,6 +62,7 @@ Four source-pinned Next.js runtime selectors use the same certified Turbopack po
 dependency analysis and the physical archive; application code receives no global Turbopack define.
 Original-module analysis preserves CommonJS exports so their dependency closure is checked before
 publication. An ES module whose public exports were removed from the audited graph is refused.
+This also applies when a namespace conversion does not attest the complete exported-name list.
 Raw archive sources come from route and project-hook reachability; host-hook-only
 sources remain bundled, while sources shared with a route keep their raw physical copy.
 The bootstrap guard checks the initial `NODE_ENV`, `NEXT_RUNTIME` and `TURBOPACK` properties at loader
