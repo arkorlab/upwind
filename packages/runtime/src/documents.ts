@@ -4,6 +4,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 import { renderDocumentForVisitor } from './answers.ts';
 import { builtPageResponse } from './built-page.ts';
+import { offeredFromFallback } from './delivery.ts';
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
@@ -127,12 +128,17 @@ export async function documentFromBuild(
   const status = shell.initialStatus ?? fallbackStatus;
   if (shell.postponed === undefined) {
     releaseStream(input.request.body, 'static document: handler body unused');
-    return builtPageResponse(input, store, shell, {
+    const built = builtPageResponse(input, store, shell, {
       document: shell,
       contentType: HTML_CONTENT_TYPE,
       status,
       allowHost: entry.kind === 'node' && shell.pathname === resolved.pathname,
     });
+    // A member the build left to its first request is answered with the route's loading fallback:
+    // what a host with no edge in front of it shares of that, as the edge would.
+    return shell.pathname === resolved.pathname
+      ? built
+      : offeredFromFallback(input, store, shell, await built);
   }
   if (entry.kind === 'edge') {
     return invokeEntry(input, entry, resolved.url);

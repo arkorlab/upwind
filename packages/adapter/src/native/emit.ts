@@ -31,7 +31,6 @@ import { collectPageBodies } from '../page-body-layout.ts';
 import { readProjectConfig } from '../project-config.ts';
 import { carriesMaps } from '../source-maps.ts';
 import { collectStaticFiles } from '../static-files.ts';
-import { staticPagesRuntimeFields } from '../static-pages.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from '../throwing-globals.ts';
 import { EDGE_ANSWER_SOURCE, EDGE_ANSWER_WRAPPER } from './edge-answer.ts';
 import {
@@ -43,6 +42,7 @@ import { imageEncoderFiles } from './encoder-files.ts';
 import { copyNativeFiles, nativeAssetSources, nativeTraceFiles } from './files.ts';
 import { nativeEdgeGraphPlugin } from './graph.ts';
 import { type ImageCacheField, imageCacheField } from './image-cache-field.ts';
+import { NATIVE_RUNTIME_FIELDS } from './runtime-fields.ts';
 
 const MIDDLEWARE_ID = '/_middleware';
 const SERVER_FILE = 'server.mjs';
@@ -205,6 +205,7 @@ function nativeModules(runtimeRoot: string, cacheHost: string): Plugin {
     'arkor:wasm': { id: '\0native-wasm', external: false },
   };
   const replacements = new Map([
+    [path.join(runtimeRoot, 'delivery.ts'), path.join(runtimeRoot, 'native/delivery.ts')],
     [path.join(runtimeRoot, 'environment.ts'), path.join(runtimeRoot, 'native/environment.ts')],
     [path.join(runtimeRoot, 'image-cache.ts'), path.join(runtimeRoot, 'native/image-cache.ts')],
     [path.join(runtimeRoot, 'image-encoder.ts'), path.join(runtimeRoot, 'native/image-encoder.ts')],
@@ -471,7 +472,7 @@ export async function emitNativeDeployment(
     staticFiles,
     ...(middleware !== undefined && { middleware: { matchers: middlewareMatchers(middleware) } }),
   };
-  const runtime = { ...base, ...staticPagesRuntimeFields(base) };
+  const runtime = { ...base, ...NATIVE_RUNTIME_FIELDS };
   await writeFile(
     path.join(outDir, 'runtime.json'),
     JSON.stringify({ ...runtime, prerenders: packPrerenders(prerenders) }),
