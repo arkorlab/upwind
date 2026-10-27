@@ -469,15 +469,20 @@ jobs:
             exit 1
           fi
           echo "shard $SHARD: $count suite(s) listed" >>"$GITHUB_STEP_SUMMARY"
-      # Downloads and apt: a stall is tried again rather than holding the shard until the job's limit,
-      # as two shards were held on 2026-10-26, five and a half hours each before they were cancelled.
+      # The headless shell alone and no apt, as Next.js's own CI installs Chromium
+      # (`.github/workflows/build_reusable.yml`, `--with-deps` for the other browsers only): the runner
+      # has the libraries it needs. Both stalls were in apt. On 2026-10-26 `apt-get update` held two
+      # shards five and a half hours, until they were cancelled. On 2026-10-27 a slow mirror ran an
+      # attempt past its six minutes, and its `apt-get`, which runs as root and so outlives the cut, held
+      # dpkg's lock against the two attempts after it. A download that stalls is tried again rather than
+      # holding the shard until the job's limit.
       - name: Install Chromium
         working-directory: nextjs
         timeout-minutes: 20
         run: |
           for attempt in 1 2 3; do
             # Killed where it does not stop when asked, so that one stuck attempt leaves the others.
-            if timeout --kill-after=15s 6m pnpm playwright install --with-deps chromium; then exit 0; fi
+            if timeout --kill-after=15s 6m pnpm playwright install --only-shell chromium; then exit 0; fi
             echo "::warning::Chromium's install did not finish (attempt ${attempt} of 3)"
           done
           exit 1

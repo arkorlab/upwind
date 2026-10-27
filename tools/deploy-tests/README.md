@@ -80,7 +80,8 @@ value. A fixture is minutes of building before the first call to the API, so a t
 is worth learning about first.
 
 Then, from a checkout of Next.js that has been built (`pnpm install && pnpm build && pnpm install`, and
-`pnpm playwright install --with-deps chromium`):
+`pnpm playwright install --only-shell chromium`, with `--with-deps` on a machine that lacks Chromium's
+libraries):
 
 ```console
 $ NEXT_TEST_MODE=deploy \
