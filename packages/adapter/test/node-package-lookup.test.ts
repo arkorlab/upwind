@@ -159,7 +159,7 @@ describe('inert legacy package subpath lookup data', () => {
     await expect(nodePackageDirectory(path.join(directory, 'missing'))).resolves.toBe(false);
   });
 
-  it.each(['dep/../other', 'dep/addon/', 'dep/addon?x', 'dep/addon#x', 'dep/%61ddon'])(
+  it.each(['dep/../other', 'dep/addon//', 'dep/addon?x', 'dep/addon#x', 'dep/%61ddon'])(
     'refuses the existing unsupported relative subpath boundary %s',
     async (specifier) => {
       await expect(selected(specifier)).rejects.toThrow('unproved export or physical topology');
