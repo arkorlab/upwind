@@ -48,15 +48,19 @@ and native shims are not applied to Node files. The existing shared cache and re
 retained through a Node transport, rather than replaced with an independent `next start` cache.
 
 The original Next.js manifest consumers and Turbopack runtime target Next.js 16.4.3. Changed
-compiler or template shapes are refused until their source contracts are reviewed. Qualification
-of the official native fixture remains incomplete: its default Turbopack build currently stops
-at the original-factory strictness check, before the emitted Function is invoked. Next.js tracks
-[minification losing strict mode](https://github.com/vercel/next.js/issues/100617) upstream.
-CI retains that failure and runs a separate diagnostic with server minification disabled;
-that diagnostic currently stops at an unproved JavaScript compiler in a bundled Next.js dependency,
-also before invocation. Disabling minification is not a verified workaround and does not establish
-default-build or hosted compatibility. The adapter leaves the project's minification setting
-unchanged. These restrictions apply to native Node artifacts;
+compiler or template shapes are refused until their source contracts are reviewed. A minified
+CommonJS Pages factory can retain its original sloppy arrow function when its physical module
+mode and closed userland partition are proved alongside the protected template. This inspection
+does not insert a strict directive or change the shipped JavaScript. The adapter leaves the
+project's minification setting unchanged.
+
+The fixed Next.js JWT dependency has a separate, source-reviewed initialization profile. It
+permits only its exact global-recovery compiler site after proving the original package, closed
+dependencies, CommonJS callers and completed route closure. The Node bootstrap checks the
+original bytes and required builtin state immediately before CommonJS evaluation, including
+after cache eviction. Changed sources, loader customization and unsupported compiler operations
+remain publication errors. This profile requires the default Node.js 24.22.1 loader and does not
+make arbitrary dynamic compilation portable. These restrictions apply to native Node artifacts;
 ordinary Worker output keeps its existing version support.
 
 Hook TypeScript is analyzed after compiler lowering and can be bundled as JavaScript. A dependency

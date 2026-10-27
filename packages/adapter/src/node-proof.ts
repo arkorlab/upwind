@@ -20,6 +20,11 @@ import type { BuildFunctionInput } from './function.ts';
 import { nativeLoadsPlugin, type NativeLoad } from './native-loads.ts';
 import { nodeCachePolicyPatch } from './node-cache-policy.ts';
 import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
+import {
+  qualifyNodeJwtCompiler,
+  nodeJwtCompilerMetadata,
+  type NodeJwtCompilerProof,
+} from './node-jwt-compiler-proof.ts';
 import type { ManifestGraphEdge, NodeManifestNormalization } from './node-manifest-graph.ts';
 import {
   prepareNodeManifestHandlerCompilerRoot,
@@ -79,6 +84,7 @@ export interface NodeFunctionProof {
   readonly originalModes: OriginalNodeModeScope;
   readonly normalization?: NodeManifestNormalization | undefined;
   readonly nextRewrites?: NodeNextRewriteProof;
+  readonly jwtCompiler?: NodeJwtCompilerProof | undefined;
 }
 
 function digest(bytes: Uint8Array): string {
@@ -245,14 +251,17 @@ function assertRetainedClosures(
   projectDir: string,
   chunk: OutputChunk,
   manifests: NodeManifestProof,
-  compilerModules: ReadonlySet<string>,
+  closure: {
+    readonly modules: ReadonlySet<string>;
+    readonly jwt: NodeJwtCompilerProof | undefined;
+  },
 ): void {
   const modules = Object.entries(chunk.modules);
   for (const [file, module] of modules) {
-    if (module.code === null || isNodeProofCompilerModule(file) || compilerModules.has(file))
+    if (module.code === null || isNodeProofCompilerModule(file) || closure.modules.has(file))
       continue;
     const inspection = manifests.inspectionCode(file, module.code);
-    const refusal = dynamicNodeClosureRefusal(file, inspection);
+    const refusal = dynamicNodeClosureRefusal(file, inspection, closure.jwt);
     if (refusal !== undefined) {
       const identity = retainedFileIdentity(projectDir, file);
       throw new AuditError(
@@ -425,6 +434,24 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     manifests,
   );
   const rewriteMetadata = nodeNextRewriteMetadata(nextRewrites);
+  const jwtCompiler = await qualifyNodeJwtCompiler({
+    graph: manifestGraph,
+    originalModes,
+    patches: graph.patches,
+    context: {
+      distDir: input.patch.distDir,
+      instrumentation: input.patch.instrumentation,
+      entries: input.entries,
+    },
+    manifests: {
+      ...(manifests.routeRewriteApprovals !== undefined && {
+        routeRewriteApprovals: manifests.routeRewriteApprovals,
+      }),
+      normalization: manifests.normalization,
+    },
+  });
+  const jwtMetadata =
+    jwtCompiler === undefined ? [] : (await nodeJwtCompilerMetadata(jwtCompiler)).files;
   const retainedHost = hostLoaders
     .retained(chunk)
     .find((site) => !compilerModules.has(site.importer));
@@ -434,7 +461,10 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
       `Original Node graph has an unproved original CommonJS host loader in ${identity}; refusing native publication`,
     );
   }
-  assertRetainedClosures(input.projectDir, chunk, manifests, compilerModules);
+  assertRetainedClosures(input.projectDir, chunk, manifests, {
+    modules: compilerModules,
+    jwt: jwtCompiler,
+  });
   const retained = await native.retained(chunk);
   if (retained.length === 0)
     throw new AuditError('The original Node graph has no retained, owned native capability');
@@ -448,6 +478,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   const files = includingLoaderSources(retainedSources(chunk, graph, entryFile), retained, [
     ...manifests.files,
     ...rewriteMetadata,
+    ...jwtMetadata,
   ]);
   const normalization = nodeNextRewriteNormalization(nextRewrites, manifests.normalization);
   await assertCurrentUsedNodeManifestHandlerCompilerRoot(compilerRootBinding, files);
@@ -457,6 +488,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     files,
     dependencies,
     nextRewrites,
+    ...(jwtCompiler !== undefined && { jwtCompiler }),
     ...(normalization !== undefined && { normalization }),
   };
 }

@@ -5,6 +5,8 @@ import { nativeBindings, walk } from './native-ast.ts';
 import { hasRetainedWorkerCapability } from './native-worker.ts';
 import { globalPatternRefusal } from './node-closure-globals.ts';
 import { hostObjectOf } from './node-closure-hosts.ts';
+import { nodeJwtCompilerSite, type NodeJwtCompilerProof } from './node-jwt-compiler-proof.ts';
+import { isGlobalCompiler } from './node-jwt-compiler-sites.ts';
 
 export { originalNodeHostLoaderRefusal } from './node-original-host-proof.ts';
 
@@ -13,6 +15,7 @@ interface Origin {
   readonly builtin: Builtin;
   readonly member?: string;
 }
+type Origins = ReadonlyMap<Node, Origin>;
 interface Visit {
   readonly node: Node;
   readonly parent: Node | undefined;
@@ -44,6 +47,7 @@ const MODULE_LOADERS = new Set([
   'registerHooks',
   'runMain',
   'wrap',
+  'wrapper',
 ]);
 const PROCESS_LOADERS = new Set([
   '_linkedBinding',
@@ -368,14 +372,6 @@ function isContext(
   return false;
 }
 
-function isGlobalCompiler(node: Node, scopes: readonly Scope[]): boolean {
-  if (isIdentifier(node))
-    return ['eval', 'Function'].includes(node.name) && bindingOf(node.name, scopes) === undefined;
-  if (node.type !== 'MemberExpression' || hostObjectOf(node['object'], scopes) !== 'global')
-    return false;
-  return ['eval', 'Function'].includes(memberOf(node) ?? '');
-}
-
 /** A key or binding name is not a reference to the global or namespace it spells. */
 function isReference({ parent, key }: Visit): boolean {
   if (parent === undefined) return true;
@@ -488,11 +484,11 @@ function importRefusal(node: Node, imports: ReadonlyMap<Node, Origin>): string |
   return undefined;
 }
 
-function loaderRefusal(visit: Visit, imports: ReadonlyMap<Node, Origin>): string | undefined {
+function loaderRefusal(visit: Visit, imports: Origins, jwt?: Node): string | undefined {
   const { node, scopes } = visit;
   const globalPattern = globalPatternRefusal(node, scopes);
   if (globalPattern !== undefined) return globalPattern;
-  if (isReference(visit) && isGlobalCompiler(node, scopes))
+  if (node !== jwt && isReference(visit) && isGlobalCompiler(node, scopes))
     return 'an unproved JavaScript code compiler';
   if (isNamespaceRebinding(visit, imports)) return 'an unproved rebound Node loader namespace';
   if (
@@ -518,7 +514,11 @@ function isNamespaceRebinding(visit: Visit, imports: ReadonlyMap<Node, Origin>):
 }
 
 /** Refuse executable closures the physical Node graph has not proved; never a Worker fallback. */
-export function dynamicNodeClosureRefusal(file: string, code: string): string | undefined {
+export function dynamicNodeClosureRefusal(
+  file: string,
+  code: string,
+  jwt?: NodeJwtCompilerProof,
+): string | undefined {
   const parsed = parseAst(code);
   const program: unknown = parsed;
   if (!isNode(program)) throw new TypeError('Node closure proof requires a JavaScript program');
@@ -530,10 +530,11 @@ export function dynamicNodeClosureRefusal(file: string, code: string): string | 
   const serverChunk = /[/\\]server[/\\]chunks[/\\]/u.test(file);
   if (serverChunk && [...factories.values()].includes(null))
     return 'an unproved Turbopack factory context';
+  const jwtSite = nodeJwtCompilerSite(jwt, file, code, program);
   for (const visit of all) {
     if (serverChunk && (isContextLoader(visit, contexts) || isContextEscape(visit, contexts)))
       return 'an unproved Turbopack external import';
-    const refusal = loaderRefusal(visit, imports);
+    const refusal = loaderRefusal(visit, imports, jwtSite);
     if (refusal !== undefined) return refusal;
   }
   return undefined;

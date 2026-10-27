@@ -15,6 +15,8 @@ import type { NativeLoad } from './native-loads.ts';
 import { nodeArtifactArchive } from './node-archive.ts';
 import { NodeArtifactFiles } from './node-artifact-files.ts';
 import { nodePhysicalFiles } from './node-files.ts';
+import { archivedNodeJwtGuardRecords } from './node-jwt-compiler-archive.ts';
+import { nodeJwtCompilerMetadata, type NodeJwtGuardRecord } from './node-jwt-compiler-proof.ts';
 import { nodeProjectInstrumentationSource } from './node-next-rewrite-proof.ts';
 import {
   assertFinalOriginalNodeModes,
@@ -345,24 +347,32 @@ async function nativeSelectors(native: readonly NativeLoad[]): Promise<string[]>
   return [...new Set(selectors.flat())];
 }
 
-async function serverSource(files: NodeArtifactFiles): Promise<string> {
+async function serverSource(
+  files: NodeArtifactFiles,
+  guards: readonly NodeJwtGuardRecord[],
+): Promise<string> {
   const selectors = await nativeSelectors(files.native);
   const module = fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-container'));
   const containerModule = jsLiteral(module);
   const cwd = jsLiteral(`/bundle/${files.physical.cwd}`);
   return [
     "import {env as runtimeEnv} from 'node:process';",
-    `import {startNodeContainer} from ${containerModule};`,
+    `import {startNodeContainer,installNodeJwtGuards} from ${containerModule};`,
     "runtimeEnv.NODE_ENV='production';runtimeEnv.NEXT_RUNTIME='nodejs';",
     `if(${JSON.stringify(selectors)}.some(key=>Boolean(runtimeEnv[key])))throw new Error('Native loader environment overrides are unsupported');`,
+    `installNodeJwtGuards(import.meta.url,${jsLiteral(guards)});`,
     `process.chdir(${cwd});`,
     "await startNodeContainer({loadEntry:async()=>{const {default:entry}=await import('./function.mjs');return entry;},port:8080});",
   ].join('\n');
 }
 
-async function addNodeServer(files: NodeArtifactFiles, work: string): Promise<void> {
+async function addNodeServer(
+  files: NodeArtifactFiles,
+  work: string,
+  guards: readonly NodeJwtGuardRecord[],
+): Promise<void> {
   const source = path.join(work, 'server-source.mjs');
-  await writeFile(source, await serverSource(files));
+  await writeFile(source, await serverSource(files, guards));
   const server = path.join(work, 'server.mjs');
   await bundleNode(files.input, { entry: source, outFile: server });
   files.add('upwind/server.mjs', new Uint8Array(await readFile(server)));
@@ -380,15 +390,19 @@ export async function buildNodeFunction(
   assertNativeSelection(selected, native);
   assertNodeTarget(input, native);
   const abi = assertNativeAbi();
-  const physical = await nodePhysicalFiles(
-    input,
-    native,
-    originalProof.normalization?.metadataFiles,
-    async (sourcePaths) => {
-      await usePhysicalOriginalNodeModes(originalProof.originalModes, sourcePaths);
-      return nodeOriginalModeMetadata(originalProof.originalModes);
-    },
-  );
+  const jwtMetadata =
+    originalProof.jwtCompiler === undefined
+      ? undefined
+      : await nodeJwtCompilerMetadata(originalProof.jwtCompiler);
+  const metadata = [
+    ...(originalProof.normalization?.metadataFiles ?? []),
+    ...(jwtMetadata?.files ?? []),
+    ...(jwtMetadata?.callers ?? []),
+  ];
+  const physical = await nodePhysicalFiles(input, native, metadata, async (sourcePaths) => {
+    await usePhysicalOriginalNodeModes(originalProof.originalModes, sourcePaths);
+    return nodeOriginalModeMetadata(originalProof.originalModes);
+  });
   const proof = {
     ...originalProof,
     files: nodeOriginalModeProofFiles(originalProof.originalModes, originalProof.files),
@@ -406,7 +420,8 @@ export async function buildNodeFunction(
   await addNodeEdge(files, work);
   files.addWasm();
   await addNodeRuntime(files, work);
-  await addNodeServer(files, work);
+  const guards = await archivedNodeJwtGuardRecords(proof.jwtCompiler, files, proof.nextRewrites);
+  await addNodeServer(files, work, guards);
   await files.assertAppEntryNormalization(proof.normalization);
   await files.assertNextRewrites();
   await assertFinalOriginalNodeModes(proof.originalModes, {
@@ -415,6 +430,13 @@ export async function buildNodeFunction(
     links: physical.links,
     nameOf: physical.nameOf,
   });
+  const finalGuards = await archivedNodeJwtGuardRecords(
+    proof.jwtCompiler,
+    files,
+    proof.nextRewrites,
+  );
+  if (JSON.stringify(finalGuards) !== JSON.stringify(guards))
+    throw new AuditError('Node JWT initialization records changed during bootstrap generation');
   const archiveFiles = [...files.files.values()];
   const archive = nodeArtifactArchive(archiveFiles);
   const bytes = archiveFiles.reduce((total, file) => total + file.bytes.byteLength, 0);
