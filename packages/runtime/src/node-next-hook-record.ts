@@ -41,9 +41,11 @@ type ProxyCheck = (value: unknown) => boolean;
 function fail(reason: string): never {
   throw new NativeError(`Unsupported Next hook record: ${reason}`);
 }
+function objectValue(value: unknown): value is ObjectValue {
+  return typeof value === 'object' && value !== null;
+}
 function object(value: unknown, isProxy: ProxyCheck): ObjectValue {
-  if (typeof value !== 'object' || value === null || isProxy(value))
-    fail('proxy or non-object DATA');
+  if (!objectValue(value) || isProxy(value)) fail('proxy or non-object DATA');
   return value;
 }
 function keys(value: unknown, names: readonly string[], isProxy: ProxyCheck): ObjectValue {

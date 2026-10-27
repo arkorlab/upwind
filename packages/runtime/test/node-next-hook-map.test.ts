@@ -198,14 +198,16 @@ describe('fixed Next hook alias Map DATA identity', () => {
   });
 
   it.each([
-    [['other', '/target']],
-    [['styled-jsx', '']],
-    [
-      ['styled-jsx', '/target'],
-      ['styled-jsx', '/target'],
-    ],
-    [...ENTRIES, ['other', '/target']],
-  ])('rejects invalid fixed expected inventory %#', (expected) => {
+    { expected: [['other', '/target']] },
+    { expected: [['styled-jsx', '']] },
+    {
+      expected: [
+        ['styled-jsx', '/target'],
+        ['styled-jsx', '/target'],
+      ],
+    },
+    { expected: [...ENTRIES, ['other', '/target']] },
+  ])('rejects invalid fixed expected inventory %#', ({ expected }) => {
     const own = fixture(0);
 
     expect(() => {

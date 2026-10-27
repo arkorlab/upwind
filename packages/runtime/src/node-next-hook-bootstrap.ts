@@ -186,8 +186,10 @@ function hookExports(value: unknown, expected: readonly (readonly [string, strin
   let index = 0;
   while (index < names.length) {
     const key = names[index];
+    const expectedKey = DEFAULT_KEYS[index];
     index += 1;
-    if (key !== DEFAULT_KEYS[index - 1] || typeof data(overrides, key) !== 'string')
+    if (typeof key !== 'string' || expectedKey === undefined) fail('default override key');
+    if (key !== expectedKey || typeof data(overrides, key) !== 'string')
       fail('default override inventory');
   }
   const map: unknown = values['hookPropertyMap'];
