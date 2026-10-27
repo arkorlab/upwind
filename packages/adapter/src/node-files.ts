@@ -9,6 +9,7 @@ import { AuditError } from './dependencies.ts';
 import type { BuildFunctionInput } from './function.ts';
 import type { NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
+import { projectNodeInstrumentation } from './node-bundle-closure.ts';
 import { assertNodeRelativeTopology, nodeModuleAliases } from './node-module-aliases.ts';
 import { nodeNativeAliases } from './node-native-aliases.ts';
 import type { NodeNextRewriteProof } from './node-next-rewrite-proof.ts';
@@ -73,16 +74,6 @@ async function boundedFile(file: string, root: string): Promise<Uint8Array> {
   if (bytes.byteLength !== info.size)
     throw new AuditError('Node artifact input changed while it was read');
   return bytes;
-}
-
-async function projectInstrumentation(input: BuildFunctionInput): Promise<string | undefined> {
-  if (input.patch.instrumentation === undefined) return undefined;
-  try {
-    return await realpath(path.join(input.patch.distDir, 'server', 'instrumentation.js'));
-  } catch (error) {
-    if (!isMissingFile(error)) throw error;
-    return undefined;
-  }
 }
 
 function inputFiles(input: BuildFunctionInput, instrumentation: string | undefined): Set<string> {
@@ -377,7 +368,7 @@ export async function nodePhysicalFiles(
       await realpath(load.binary),
       layout.nameOf,
     );
-  const instrumentation = await projectInstrumentation(input);
+  const instrumentation = await projectNodeInstrumentation(input);
   const owned = inputFiles(input, instrumentation);
   for (const metadata of metadataFiles) owned.add(metadata.file);
   const sources = await physicalSources(owned, traceAssetFiles(input), layout);

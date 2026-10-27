@@ -60,6 +60,7 @@ export function assertNodeProofFiles(
     readonly sourcePaths: ReadonlyMap<string, string>;
   },
   bundledInstrumentation: ReadonlyMap<string, string>,
+  mandatoryRaw: readonly OriginalNodeSource[] = [],
 ): void {
   const files = new Map(physical.files.map((file) => [file.name, file.bytes]));
   const sourceNames = new Map([...physical.sourcePaths].map(([name, file]) => [file, name]));
@@ -67,6 +68,10 @@ export function assertNodeProofFiles(
   const loaderFiles = new Set(
     proof.native.flatMap((load) => (load.loaderSources ?? []).map((source) => source.file)),
   );
+  for (const source of mandatoryRaw) {
+    loaderFiles.add(source.file);
+    assertCopiedSource(source, copied, undefined);
+  }
   for (const original of proof.files) {
     // A loader executes from the physical Node graph, even if a host hook bundled it too.
     const bundledHash = loaderFiles.has(original.file)

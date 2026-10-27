@@ -60,7 +60,10 @@ project's minification setting unchanged.
 The native bootstrap selects production Node.js and Turbopack before application loading.
 Four source-pinned Next.js runtime selectors use the same certified Turbopack policy in
 dependency analysis and the physical archive; application code receives no global Turbopack define.
-Its guard checks the initial `NODE_ENV`, `NEXT_RUNTIME` and `TURBOPACK` properties at loader
+Original-module analysis keeps unused exports so their dependency closure is checked before
+publication. Raw archive sources come from route and project-hook reachability; host-hook-only
+sources remain bundled, while sources shared with a route keep their raw physical copy.
+The bootstrap guard checks the initial `NODE_ENV`, `NEXT_RUNTIME` and `TURBOPACK` properties at loader
 boundaries; changing them is unsupported. Other application environment variables remain mutable.
 
 Native Functions initially do not support application-supplied `cacheHandler`/`cacheHandlers` or

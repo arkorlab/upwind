@@ -18,6 +18,13 @@ import {
 import { dynamicLoadsOf } from './dynamic-loads.ts';
 import type { BuildFunctionInput } from './function.ts';
 import { nativeLoadsPlugin, type NativeLoad } from './native-loads.ts';
+import {
+  includingNodeLoaderSources,
+  isNodeProofCompilerModule,
+  nodeRawSourceInventory,
+  projectNodeInstrumentation,
+  retainedNodeProofSources,
+} from './node-bundle-closure.ts';
 import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
 import {
   qualifyNodeJwtCompiler,
@@ -29,6 +36,11 @@ import {
   prepareNodeManifestHandlerCompilerRoot,
   assertCurrentUsedNodeManifestHandlerCompilerRoot,
 } from './node-manifest-handler-root.ts';
+import {
+  assertNodeManifestIdentity,
+  captureNodeManifestIdentity,
+  type NodeManifestIdentitySnapshot,
+} from './node-manifest-identity-snapshot.ts';
 import { proveNodeManifests, type NodeManifestProof } from './node-manifest-proof.ts';
 import {
   qualifyNodeNextCacheWrites,
@@ -47,6 +59,7 @@ import {
   assertCertifiedNodeRuntimePatches,
   nodeNextRewriteMetadata,
   nodeNextRewriteNormalization,
+  nodeNextBundledImports,
   type NodeNextRewriteProof,
 } from './node-next-rewrite-proof.ts';
 import { linkedOriginalNodeSource } from './node-original-graph-source.ts';
@@ -60,12 +73,12 @@ import {
 } from './node-ws-loader-proof.ts';
 
 export { assertNodeProofFiles } from './node-original-load-mode-archive.ts';
+export { isNodeProofCompilerModule } from './node-bundle-closure.ts';
 import type { AppliedPatch } from './patches/rolldown.ts';
 
 const BYTES_PER_MEBIBYTE = 1_048_576;
 const MAX_SOURCE_MEBIBYTES = 128;
 const MAX_SOURCE_BYTES = MAX_SOURCE_MEBIBYTES * BYTES_PER_MEBIBYTE;
-const ROLLDOWN_RUNTIME_MODULE = '\0rolldown/runtime.js';
 
 type NodeProofInput = Partial<
   Pick<BuildFunctionInput, 'manifests' | 'runtimeManifest' | 'repoRoot' | 'clientAssetPrefix'>
@@ -100,14 +113,26 @@ export interface NodeFunctionProof {
   readonly wsLoaders?: NodeWsLoaderProof | undefined;
   readonly nextRequireHook?: NodeNextRequireHookProof | undefined;
 }
+const RAW_SOURCES = new WeakMap<
+  NodeFunctionProof,
+  {
+    readonly sources: readonly OriginalNodeSource[];
+    readonly originalModes: OriginalNodeModeScope;
+    readonly snapshot: NodeManifestIdentitySnapshot;
+  }
+>();
+
+/** Only the completed proof instance exposes mandatory raw execution pins. */
+export function nodeProofRawSources(proof: NodeFunctionProof): readonly OriginalNodeSource[] {
+  const own = RAW_SOURCES.get(proof);
+  if (own?.originalModes !== proof.originalModes)
+    throw new AuditError('Original Node raw source pins require the completed proof instance');
+  assertNodeManifestIdentity(own.snapshot, [proof.files, proof.native]);
+  return own.sources;
+}
 
 function digest(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
-}
-
-/** Rolldown's generated interop helper has no physical input. No other virtual id is exempt. */
-export function isNodeProofCompilerModule(id: string): boolean {
-  return id === ROLLDOWN_RUNTIME_MODULE;
 }
 
 /** The bytes audited and bundled must be a bounded, regular physical source. */
@@ -289,45 +314,6 @@ function proofDependencies(
   );
 }
 
-function retainedSources(
-  chunk: OutputChunk,
-  graph: OriginalNodeGraph,
-  entryFile: string,
-): OriginalNodeSource[] {
-  return Object.keys(chunk.modules).flatMap((id) => {
-    if (isNodeProofCompilerModule(id)) return [];
-    const original = graph.sources.get(id);
-    if (original === undefined)
-      throw new AuditError('Original Node graph includes a source without physical-file proof');
-    if (original.file === entryFile) return [];
-    return [original];
-  });
-}
-
-function includingLoaderSources(
-  sources: readonly OriginalNodeSource[],
-  retained: readonly NativeLoad[],
-  manifests: readonly OriginalNodeSource[],
-): OriginalNodeSource[] {
-  const files = new Map(sources.map((source) => [source.file, source]));
-  for (const source of manifests) {
-    const previous = files.get(source.file);
-    if (previous !== undefined && previous.sha256 !== source.sha256)
-      throw new AuditError('Reviewed Next.js manifest changed during original Node proof');
-    files.set(source.file, source);
-  }
-  for (const load of retained) {
-    const loaders = load.loaderSources ?? [];
-    for (const source of loaders) {
-      const previous = files.get(source.file);
-      if (previous !== undefined && previous.sha256 !== source.sha256)
-        throw new AuditError('Reviewed native loader changed during original Node proof');
-      files.set(source.file, { file: source.file, sha256: source.sha256 });
-    }
-  }
-  return [...files.values()];
-}
-
 /** Prove the retained original Node graph independently from every Worker patch and stub. */
 export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunctionProof> {
   if (input.patch.cacheHandlers !== undefined)
@@ -348,6 +334,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     cwd: input.projectDir,
     input: entryFile,
     platform: 'node',
+    treeshake: false,
     resolve: { conditionNames: ['node', 'default'] },
     plugins: [originalNodeGraphPlugin(input, graph), hostLoaders.plugin, native.plugin],
     external(specifier) {
@@ -482,17 +469,31 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     dependencies,
     outputNameOf(input.projectDir, input.patch.distDir),
   );
-  const files = includingLoaderSources(retainedSources(chunk, graph, entryFile), retained, [
-    ...manifests.files,
-    ...rewriteMetadata,
-    ...jwtMetadata,
-    ...wsMetadata,
-    ...hookMetadata,
-    ...cacheWriteMetadata,
-  ]);
+  const files = includingNodeLoaderSources(
+    retainedNodeProofSources(chunk, graph, entryFile),
+    retained,
+    [
+      ...manifests.files,
+      ...rewriteMetadata,
+      ...jwtMetadata,
+      ...wsMetadata,
+      ...hookMetadata,
+      ...cacheWriteMetadata,
+    ],
+  );
   const normalization = nodeNextRewriteNormalization(nextRewrites, manifests.normalization);
   await assertCurrentUsedNodeManifestHandlerCompilerRoot(compilerRootBinding, files);
-  return {
+  const projectHook = await projectNodeInstrumentation(input);
+  const rawSources = nodeRawSourceInventory({
+    graph: manifestGraph,
+    roots: [
+      ...(await Promise.all(input.entries.map((entry) => realpath(entry.filePath)))),
+      ...(projectHook === undefined ? [] : [projectHook]),
+    ],
+    nativeFiles: new Set(retained.map((load) => load.binary)),
+    bundledImports: nodeNextBundledImports(nextRewrites, input),
+  });
+  const proof: NodeFunctionProof = {
     native: retained,
     originalModes,
     files,
@@ -503,4 +504,10 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     ...(nextRequireHook !== undefined && { nextRequireHook }),
     ...(normalization !== undefined && { normalization }),
   };
+  RAW_SOURCES.set(proof, {
+    sources: rawSources,
+    originalModes,
+    snapshot: captureNodeManifestIdentity([files, retained]),
+  });
+  return proof;
 }

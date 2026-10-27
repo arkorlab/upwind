@@ -38,7 +38,9 @@ import {
   assertNodeProofFiles,
   isNodeProofCompilerModule,
   nodeProofSource,
+  nodeProofRawSources,
   proveNodeFunction,
+  type NodeFunctionProof,
 } from './node-proof.ts';
 import { nodeSourceMaps } from './node-source-maps.ts';
 import { nodeWsLoaderMetadata } from './node-ws-loader-proof.ts';
@@ -46,9 +48,8 @@ import { nodeWsLoaderMetadata } from './node-ws-loader-proof.ts';
 const NO_CACHE_MODULE = '\0upwind-node-no-cache';
 const CLOUDFLARE_IMPORT_PREFIX = 'cloudflare:';
 
-function glibcReport(header: unknown): boolean {
-  return header !== null && typeof header === 'object' && 'glibcVersionRuntime' in header;
-}
+const glibcReport = (header: unknown): boolean =>
+  header !== null && typeof header === 'object' && 'glibcVersionRuntime' in header;
 
 export interface NodeBuiltFunction {
   readonly spec: NodeContainerFunctionSpec;
@@ -412,9 +413,7 @@ async function addNodeServer(
 }
 
 /** Add the sources and caller metadata needed by the fixed initialization guards. */
-async function nodeInitializationMetadata(
-  originalProof: Awaited<ReturnType<typeof proveNodeFunction>>,
-) {
+async function nodeInitializationMetadata(originalProof: NodeFunctionProof) {
   const jwtMetadata =
     originalProof.jwtCompiler === undefined
       ? undefined
@@ -428,6 +427,7 @@ async function nodeInitializationMetadata(
       ? undefined
       : await nodeNextRequireHookMetadata(originalProof.nextRequireHook);
   return [
+    ...nodeProofRawSources(originalProof),
     ...(originalProof.normalization?.metadataFiles ?? []),
     ...(jwtMetadata?.files ?? []),
     ...(jwtMetadata?.callers ?? []),
@@ -466,7 +466,7 @@ export async function buildNodeFunction(
   const work = path.join(input.outDir, 'work', `node-${input.name ?? input.kind}`);
   await mkdir(work, { recursive: true });
   const instrumentation = await addNodeInstrumentation(files, work, proof.nextRewrites);
-  assertNodeProofFiles(proof, physical, instrumentation);
+  assertNodeProofFiles(proof, physical, instrumentation, nodeProofRawSources(originalProof));
   files.rewriteNextFiles();
   await files.addNativeMetadata();
   await files.addNextManifests();

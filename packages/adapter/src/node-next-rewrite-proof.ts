@@ -8,6 +8,11 @@ import { jsLiteral } from './codegen.ts';
 import { AuditError } from './dependencies.ts';
 import type { BuildFunctionInput } from './function.ts';
 import {
+  nodeBundledImportInventory,
+  nodeHookSourceInventory,
+  type NodeBundledImport,
+} from './node-bundle-closure.ts';
+import {
   nodeCachePolicyConfig,
   nodeCachePolicyExpectedEdits,
   nodeCachePolicyPatch,
@@ -143,25 +148,6 @@ function instrumentationCallerRoot(
   }
   return root ?? refuse('loader root');
 }
-function hookClosure(graph: ManifestModuleGraph, hook: Source): ReadonlyMap<string, string> {
-  const roots = [...graph.sources].filter(([, value]) => value.file === hook.file);
-  if (roots.length !== 1 || roots[0]?.[1].sha256 !== hook.sha256) refuse('selected hook source');
-  const pending = roots.map(([id]) => id);
-  const visited = new Set<string>();
-  const sources = new Map<string, string>();
-  for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
-    if (visited.has(id)) continue;
-    visited.add(id);
-    const original = graph.sources.get(id);
-    if (original === undefined) continue;
-    sources.set(original.file, original.sha256);
-    const imports = graph.imports?.get(id);
-    if (imports === undefined) refuse('hook dependency inventory');
-    for (const edge of imports) pending.push(edge.target);
-  }
-  return sources;
-}
-
 function recognizedRewrite(
   applied: AppliedPatch,
   original: Source,
@@ -254,7 +240,7 @@ export async function certifyNodeNextRewrites(
     declaredHook,
     ownHook: projectHook,
     hook,
-    hookSources: hook === undefined ? new Map() : hookClosure(graph, hook),
+    hookSources: hook === undefined ? new Map() : nodeHookSourceInventory(graph, hook),
     records,
     metadata: Object.freeze(metadata),
     archive: new Map(),
@@ -290,6 +276,16 @@ function assertContext(input: NodeNextRewriteInput, state: StoredProof): void {
     input.patch.cacheHandlers !== undefined
   )
     refuse('selected context changed');
+}
+
+/** Only completed fixed instrumentation rewrites redirect these exact imports to a bundle. */
+export function nodeNextBundledImports(
+  proof: NodeNextRewriteProof | undefined,
+  input: NodeNextRewriteInput,
+): readonly NodeBundledImport[] {
+  const state = stored(proof);
+  assertContext(input, state);
+  return nodeBundledImportInventory(state.records.values(), state.hook, instrumentationPatch.name);
 }
 
 function patchFor(file: string) {
