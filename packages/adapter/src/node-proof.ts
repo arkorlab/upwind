@@ -32,6 +32,11 @@ import {
 } from './node-manifest-handler-root.ts';
 import { proveNodeManifests, type NodeManifestProof } from './node-manifest-proof.ts';
 import {
+  qualifyNodeNextRequireHook,
+  nodeNextRequireHookMetadata,
+  type NodeNextRequireHookProof,
+} from './node-next-require-hook-proof.ts';
+import {
   certifyNodeNextRewrites,
   approvedNodeCompilerModules,
   assertCertifiedNodeRuntimePatches,
@@ -91,6 +96,7 @@ export interface NodeFunctionProof {
   readonly nextRewrites?: NodeNextRewriteProof;
   readonly jwtCompiler?: NodeJwtCompilerProof | undefined;
   readonly wsLoaders?: NodeWsLoaderProof | undefined;
+  readonly nextRequireHook?: NodeNextRequireHookProof | undefined;
 }
 
 function digest(bytes: Uint8Array): string {
@@ -261,6 +267,7 @@ function assertRetainedClosures(
     readonly modules: ReadonlySet<string>;
     readonly jwt: NodeJwtCompilerProof | undefined;
     readonly ws: NodeWsLoaderProof | undefined;
+    readonly nextRequireHook: NodeNextRequireHookProof | undefined;
   },
 ): void {
   const modules = Object.entries(chunk.modules);
@@ -268,7 +275,10 @@ function assertRetainedClosures(
     if (module.code === null || isNodeProofCompilerModule(file) || closure.modules.has(file))
       continue;
     const inspection = manifests.inspectionCode(file, module.code);
-    const refusal = dynamicNodeClosureRefusal(file, inspection, closure.jwt, closure.ws);
+    const refusal = dynamicNodeClosureRefusal(file, inspection, closure.jwt, {
+      ws: closure.ws,
+      nextRequireHook: closure.nextRequireHook,
+    });
     if (refusal !== undefined) {
       const identity = retainedFileIdentity(projectDir, file);
       throw new AuditError(
@@ -461,9 +471,12 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   };
   const jwtCompiler = await qualifyNodeJwtCompiler(initializationInput);
   const wsLoaders = await qualifyNodeWsLoaders(initializationInput);
+  const nextRequireHook = await qualifyNodeNextRequireHook(initializationInput);
   const jwtMetadata =
     jwtCompiler === undefined ? [] : (await nodeJwtCompilerMetadata(jwtCompiler)).files;
   const wsMetadata = wsLoaders === undefined ? [] : (await nodeWsLoaderMetadata(wsLoaders)).files;
+  const hookMetadata =
+    nextRequireHook === undefined ? [] : (await nodeNextRequireHookMetadata(nextRequireHook)).files;
   const retainedHost = hostLoaders
     .retained(chunk)
     .find((site) => !compilerModules.has(site.importer));
@@ -477,6 +490,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     modules: compilerModules,
     jwt: jwtCompiler,
     ws: wsLoaders,
+    nextRequireHook,
   });
   const retained = await native.retained(chunk);
   if (retained.length === 0)
@@ -493,6 +507,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     ...rewriteMetadata,
     ...jwtMetadata,
     ...wsMetadata,
+    ...hookMetadata,
   ]);
   const normalization = nodeNextRewriteNormalization(nextRewrites, manifests.normalization);
   await assertCurrentUsedNodeManifestHandlerCompilerRoot(compilerRootBinding, files);
@@ -504,6 +519,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     nextRewrites,
     ...(jwtCompiler !== undefined && { jwtCompiler }),
     ...(wsLoaders !== undefined && { wsLoaders }),
+    ...(nextRequireHook !== undefined && { nextRequireHook }),
     ...(normalization !== undefined && { normalization }),
   };
 }

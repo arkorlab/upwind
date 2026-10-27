@@ -4,13 +4,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isProxy } from 'node:util/types';
 
-import { installNodeFixedLoadHooks } from './node-fixed-load-hooks.ts';
+import { installNodeFixedLoadHooks, type NodeFixedLoadHooks } from './node-fixed-load-hooks.ts';
 import {
   assertNodeFixedLoadScopeHealthy,
   createNodeFixedLoadScope,
   enterNodeFixedLoadScope,
   leaveNodeFixedLoadScope,
 } from './node-fixed-load-scope.ts';
+import {
+  nodeInitializationBuiltins,
+  type NodeInitializationBuiltins,
+} from './node-initialization-builtins.ts';
 import { assertNodeJwtRealm, captureNodeJwtRealm, type NodeJwtRealm } from './node-jwt-realm.ts';
 import {
   assertNodeJwtSemverCache,
@@ -19,6 +23,7 @@ import {
   rememberNodeJwtSemver,
   type NodeJwtSemverGuard,
 } from './node-jwt-semver-guard.ts';
+import { initializeNodeNextRequireHook } from './node-next-hook-bootstrap.ts';
 import {
   assertNodeWsModuleContext,
   captureNodeWsModuleContext,
@@ -319,11 +324,12 @@ function assertLoadState(
  * The WS profile additionally requires both optional native loads to remain unresolved.
  * Node 24.22.1: lib/internal/modules/cjs/loader.js and esm/translators.js.
  */
-export function installNodeJwtGuards(serverUrl: string, records: readonly unknown[]): void {
-  if (records.length === 0) return;
-  if (installation.completed) fail('initialization guard already installed');
-  if (process.versions.node !== '24.22.1' || process.execArgv.length > 0)
-    fail('requires the fixed default Node 24.22.1 loader');
+function installPreparedGuards(
+  serverUrl: string,
+  records: readonly unknown[],
+  hook: ReturnType<typeof initializeNodeNextRequireHook> | undefined,
+  captured: NodeInitializationBuiltins,
+): void {
   const server = fileURLToPath(serverUrl);
   const root = path.dirname(path.dirname(server));
   const require = createRequire(serverUrl);
@@ -351,10 +357,13 @@ export function installNodeJwtGuards(serverUrl: string, records: readonly unknow
     fail('missing default CommonJS evaluation method');
   const originalCompile = original;
   let realm: NodeJwtRealm;
+  let hookReady = false;
   const builtins = new Map<string, unknown>();
   const builtin = builtins.get.bind(builtins);
   function compile(this: unknown, ...args: unknown[]): unknown {
+    if (hookReady) hook?.assert();
     const filename = args[1];
+    if (hook !== undefined && filename === hook.filename) fail('Next hook cannot be reevaluated');
     const source = typeof filename === 'string' ? findSource(filename) : undefined;
     if (source === undefined) return apply(originalCompile, this, args);
     assertSource(args[0], source, realm, this);
@@ -369,9 +378,12 @@ export function installNodeJwtGuards(serverUrl: string, records: readonly unknow
       if (lease !== undefined) leaveNodeFixedLoadScope(scope, lease);
     }
   }
-  let restoreLoads: (() => void) | undefined;
+  let hooks: NodeFixedLoadHooks | undefined;
   try {
-    restoreLoads = installNodeFixedLoadHooks(scope, {
+    hooks = installNodeFixedLoadHooks(scope, {
+      health() {
+        if (hookReady) hook?.assert();
+      },
       before({ filename, request, parent }) {
         const source = findSource(filename) ?? fail(MISSING_LOAD_SOURCE);
         assertLoadState(source, request, parent, realm);
@@ -419,49 +431,35 @@ export function installNodeJwtGuards(serverUrl: string, records: readonly unknow
     );
     for (const source of sources) byFilename.set(source.filename, source);
     defineProperty(loader, '_compile', { ...descriptor, value: compile });
-    const buffer: unknown = require('node:buffer');
-    const crypto: unknown = require('node:crypto');
-    const stream: unknown = require('node:stream');
-    const util: unknown = require('node:util');
-    const websocket = {
-      crypto,
-      stream,
-      events: require('node:events') as unknown,
-      fs: require('node:fs') as unknown,
-      http: require('node:http') as unknown,
-      https: require('node:https') as unknown,
-      net: require('node:net') as unknown,
-      path: require('node:path') as unknown,
-      tls: require('node:tls') as unknown,
-      url: require('node:url') as unknown,
-      zlib: require('node:zlib') as unknown,
-    };
-    const values: readonly (readonly [string, unknown])[] = [
-      ['buffer', buffer],
-      ['crypto', crypto],
-      ['stream', stream],
-      ['util', util],
-      ['events', websocket.events],
-      ['http', websocket.http],
-      ['https', websocket.https],
-      ['net', websocket.net],
-      ['tls', websocket.tls],
-      ['url', websocket.url],
-      ['zlib', websocket.zlib],
-    ];
-    for (const [name, value] of values) builtins.set(name, value);
-    realm = captureNodeJwtRealm(globalThis, process, {
-      buffer,
-      crypto,
-      stream,
-      util,
-      loader: Module,
-      websocket,
-    });
+    for (const [name, value] of captured.values) builtins.set(name, value);
+    realm = captureNodeJwtRealm(globalThis, process, captured.basis);
+    hook?.complete({ load: hooks.load, require: hooks.require, compile });
+    hookReady = true;
     installation.completed = true;
   } catch (error) {
     defineProperty(loader, '_compile', descriptor);
-    restoreLoads?.();
+    hooks?.restore();
+    throw error;
+  }
+}
+
+/** Install fixed Node-only initialization before any application entry or instrumentation. */
+export function installNodeJwtGuards(
+  serverUrl: string,
+  records: readonly unknown[],
+  nextHook?: unknown,
+): void {
+  if (nextHook === undefined && records.length === 0) return;
+  if (installation.completed) fail('initialization guard already installed');
+  if (process.versions.node !== '24.22.1' || process.execArgv.length > 0)
+    fail('requires the fixed default Node 24.22.1 loader');
+  const captured = nodeInitializationBuiltins(createRequire(serverUrl));
+  const hook =
+    nextHook === undefined ? undefined : initializeNodeNextRequireHook(serverUrl, nextHook);
+  try {
+    installPreparedGuards(serverUrl, records, hook, captured);
+  } catch (error) {
+    hook?.restore();
     throw error;
   }
 }

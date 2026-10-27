@@ -17,9 +17,12 @@ import { NodeArtifactFiles } from './node-artifact-files.ts';
 import { nodePhysicalFiles } from './node-files.ts';
 import {
   archivedNodeJwtGuardRecords,
+  archivedNodeNextRequireHook,
   type NodeInitializationGuardRecord,
+  type NodeNextRequireHookArchive,
 } from './node-jwt-compiler-archive.ts';
 import { nodeJwtCompilerMetadata } from './node-jwt-compiler-proof.ts';
+import { nodeNextRequireHookMetadata } from './node-next-require-hook-proof.ts';
 import { nodeProjectInstrumentationSource } from './node-next-rewrite-proof.ts';
 import {
   assertFinalOriginalNodeModes,
@@ -354,6 +357,7 @@ async function nativeSelectors(native: readonly NativeLoad[]): Promise<string[]>
 async function serverSource(
   files: NodeArtifactFiles,
   guards: readonly NodeInitializationGuardRecord[],
+  nextHook: NodeNextRequireHookArchive | undefined,
 ): Promise<string> {
   const selectors = await nativeSelectors(files.native);
   const module = fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-container'));
@@ -369,12 +373,14 @@ async function serverSource(
       bytes: guard.bytes,
     };
   });
+  const hookArgument =
+    nextHook === undefined ? '' : `,${jsLiteral({ ...nextHook, record: { ...nextHook.record } })}`;
   return [
     "import {env as runtimeEnv} from 'node:process';",
     `import {startNodeContainer,installNodeJwtGuards} from ${containerModule};`,
     "runtimeEnv.NODE_ENV='production';runtimeEnv.NEXT_RUNTIME='nodejs';",
     `if(${JSON.stringify(selectors)}.some(key=>Boolean(runtimeEnv[key])))throw new Error('Native loader environment overrides are unsupported');`,
-    `installNodeJwtGuards(import.meta.url,${jsLiteral(records)});`,
+    `installNodeJwtGuards(import.meta.url,${jsLiteral(records)}${hookArgument});`,
     `process.chdir(${cwd});`,
     "await startNodeContainer({loadEntry:async()=>{const {default:entry}=await import('./function.mjs');return entry;},port:8080});",
   ].join('\n');
@@ -384,12 +390,40 @@ async function addNodeServer(
   files: NodeArtifactFiles,
   work: string,
   guards: readonly NodeInitializationGuardRecord[],
+  nextHook: NodeNextRequireHookArchive | undefined,
 ): Promise<void> {
   const source = path.join(work, 'server-source.mjs');
-  await writeFile(source, await serverSource(files, guards));
+  await writeFile(source, await serverSource(files, guards, nextHook));
   const server = path.join(work, 'server.mjs');
   await bundleNode(files.input, { entry: source, outFile: server });
   files.add('upwind/server.mjs', new Uint8Array(await readFile(server)));
+}
+
+/** Add the sources and caller metadata needed by the fixed initialization guards. */
+async function nodeInitializationMetadata(
+  originalProof: Awaited<ReturnType<typeof proveNodeFunction>>,
+) {
+  const jwtMetadata =
+    originalProof.jwtCompiler === undefined
+      ? undefined
+      : await nodeJwtCompilerMetadata(originalProof.jwtCompiler);
+  const wsMetadata =
+    originalProof.wsLoaders === undefined
+      ? undefined
+      : await nodeWsLoaderMetadata(originalProof.wsLoaders);
+  const hookMetadata =
+    originalProof.nextRequireHook === undefined
+      ? undefined
+      : await nodeNextRequireHookMetadata(originalProof.nextRequireHook);
+  return [
+    ...(originalProof.normalization?.metadataFiles ?? []),
+    ...(jwtMetadata?.files ?? []),
+    ...(jwtMetadata?.callers ?? []),
+    ...(wsMetadata?.files ?? []),
+    ...(wsMetadata?.callers ?? []),
+    ...(hookMetadata?.files ?? []),
+    ...(hookMetadata?.callers ?? []),
+  ];
 }
 
 /** A separate physical artifact; app modules are never passed through the Worker patch bundle. */
@@ -404,21 +438,7 @@ export async function buildNodeFunction(
   assertNativeSelection(selected, native);
   assertNodeTarget(input, native);
   const abi = assertNativeAbi();
-  const jwtMetadata =
-    originalProof.jwtCompiler === undefined
-      ? undefined
-      : await nodeJwtCompilerMetadata(originalProof.jwtCompiler);
-  const wsMetadata =
-    originalProof.wsLoaders === undefined
-      ? undefined
-      : await nodeWsLoaderMetadata(originalProof.wsLoaders);
-  const metadata = [
-    ...(originalProof.normalization?.metadataFiles ?? []),
-    ...(jwtMetadata?.files ?? []),
-    ...(jwtMetadata?.callers ?? []),
-    ...(wsMetadata?.files ?? []),
-    ...(wsMetadata?.callers ?? []),
-  ];
+  const metadata = await nodeInitializationMetadata(originalProof);
   const physical = await nodePhysicalFiles(input, native, metadata, async (sourcePaths) => {
     await usePhysicalOriginalNodeModes(originalProof.originalModes, sourcePaths);
     return nodeOriginalModeMetadata(originalProof.originalModes);
@@ -446,7 +466,12 @@ export async function buildNodeFunction(
     proof.nextRewrites,
     proof.wsLoaders,
   );
-  await addNodeServer(files, work, guards);
+  const nextHook = await archivedNodeNextRequireHook(
+    proof.nextRequireHook,
+    files,
+    proof.nextRewrites,
+  );
+  await addNodeServer(files, work, guards, nextHook);
   await files.assertAppEntryNormalization(proof.normalization);
   await files.assertNextRewrites();
   await assertFinalOriginalNodeModes(proof.originalModes, {
@@ -465,6 +490,13 @@ export async function buildNodeFunction(
     throw new AuditError(
       'Node dependency initialization records changed during bootstrap generation',
     );
+  const finalNextHook = await archivedNodeNextRequireHook(
+    proof.nextRequireHook,
+    files,
+    proof.nextRewrites,
+  );
+  if (JSON.stringify(finalNextHook) !== JSON.stringify(nextHook))
+    throw new AuditError('Next require hook records changed during bootstrap generation');
   const archiveFiles = [...files.files.values()];
   const archive = nodeArtifactArchive(archiveFiles);
   const bytes = archiveFiles.reduce((total, file) => total + file.bytes.byteLength, 0);

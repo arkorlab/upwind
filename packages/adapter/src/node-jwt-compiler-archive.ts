@@ -11,6 +11,12 @@ import {
 import { nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
 import { nodeJwtCallerPolicyArchiveInspection } from './node-jwt-unused-cache-import.ts';
 import {
+  nodeNextRequireHookMetadata,
+  nodeNextRequireHookGuardRecord,
+  type NodeNextRequireHookProof,
+  type NodeNextRequireHookGuardRecord,
+} from './node-next-require-hook-proof.ts';
+import {
   rewriteCertifiedNodeNextFile,
   type NodeNextRewriteProof,
 } from './node-next-rewrite-proof.ts';
@@ -24,6 +30,16 @@ import {
 } from './node-ws-loader-proof.ts';
 
 export type NodeInitializationGuardRecord = NodeJwtGuardRecord | NodeWsGuardRecord;
+
+export interface NodeNextRequireHookArchive {
+  readonly record: NodeNextRequireHookGuardRecord;
+  readonly aliases: readonly { readonly request: string; readonly target: string }[];
+  readonly sharedRuntimeEdges: readonly {
+    readonly caller: string;
+    readonly specifier: string;
+    readonly target: string;
+  }[];
+}
 
 function refuse(reason: string): never {
   throw new AuditError(`Unproved archived Node dependency initialization: ${reason}`);
@@ -125,4 +141,80 @@ async function assertMetadata(
   for (const missing of metadata.missing)
     if (files.files.has(coordinate(files, missing))) refuse('nearer package metadata added');
   for (const caller of metadata.callers) await assertCaller(caller, files, rewrites);
+}
+
+/** Keep the hook and its finite resolution targets tied to the final physical archive. */
+export async function archivedNodeNextRequireHook(
+  proof: NodeNextRequireHookProof | undefined,
+  files: NodeArtifactFiles,
+  rewrites: NodeNextRewriteProof | undefined,
+): Promise<NodeNextRequireHookArchive | undefined> {
+  if (proof === undefined) return undefined;
+  const metadata = await nodeNextRequireHookMetadata(proof);
+  const record = await nodeNextRequireHookGuardRecord(proof, files.physical.nameOf);
+  await assertNextHookMetadata(metadata, files, rewrites, record);
+  const bytes = files.files.get(record.archivePath)?.bytes;
+  if (bytes?.byteLength !== record.bytes || digest(bytes) !== record.sha256)
+    refuse('Next hook record does not describe the final physical source');
+  return Object.freeze({
+    record,
+    aliases: Object.freeze(
+      metadata.aliases.map(({ request, target }) =>
+        Object.freeze({ request, target: coordinate(files, target) }),
+      ),
+    ),
+    sharedRuntimeEdges: Object.freeze(
+      metadata.sharedRuntimeEdges.map(({ caller, specifier, target }) => {
+        return Object.freeze({
+          caller: coordinate(files, caller),
+          specifier,
+          target: coordinate(files, target),
+        });
+      }),
+    ),
+  });
+}
+
+async function assertNextHookMetadata(
+  metadata: Awaited<ReturnType<typeof nodeNextRequireHookMetadata>>,
+  files: NodeArtifactFiles,
+  rewrites: NodeNextRewriteProof | undefined,
+  record: NodeNextRequireHookGuardRecord,
+): Promise<void> {
+  const immutable = new Set([
+    record.archivePath,
+    ...metadata.aliases.map(({ target }) => coordinate(files, target)),
+    ...metadata.sharedRuntimeEdges.map(({ target }) => coordinate(files, target)),
+  ]);
+  const sharedCallers = new Map<string, string[]>();
+  for (const { caller, specifier } of metadata.sharedRuntimeEdges) {
+    const specifiers = sharedCallers.get(caller) ?? [];
+    specifiers.push(specifier);
+    sharedCallers.set(caller, specifiers);
+  }
+  const callers = new Map(metadata.callers.map((caller) => [caller.file, caller]));
+  const strict = [];
+  for (const source of metadata.files) {
+    const name = coordinate(files, source.file);
+    const incoming = callers.get(source.file);
+    const shared = sharedCallers.get(source.file);
+    if (
+      immutable.has(name) ||
+      source.file.endsWith('/package.json') ||
+      (incoming === undefined && shared === undefined)
+    ) {
+      strict.push(source);
+    } else {
+      await assertCaller(
+        {
+          ...source,
+          ...incoming,
+          specifiers: [...(incoming?.specifiers ?? []), ...(shared ?? [])],
+        },
+        files,
+        rewrites,
+      );
+    }
+  }
+  await assertMetadata({ ...metadata, files: strict }, files, rewrites);
 }

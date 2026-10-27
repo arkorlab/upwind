@@ -18,16 +18,23 @@ interface Load {
   readonly parent: unknown;
 }
 interface Callbacks {
+  health?(): void;
   before(load: Load): void;
   after(load: Load, result: unknown): void;
   failure(load: Load, error: unknown): boolean;
+}
+
+export interface NodeFixedLoadHooks {
+  readonly load: (this: unknown, ...args: unknown[]) => unknown;
+  readonly require: (this: unknown, ...args: unknown[]) => unknown;
+  restore(): void;
 }
 
 /** Preserve both the actual loader and the outer require tracing boundary, once per call. */
 export function installNodeFixedLoadHooks(
   scope: NodeFixedLoadScope,
   callbacks: Callbacks,
-): () => void {
+): NodeFixedLoadHooks {
   const loadDescriptor = descriptorOf(Module, '_load');
   const requireDescriptor = descriptorOf(Module.prototype, 'require');
   const originalLoad: unknown = loadDescriptor?.value;
@@ -43,6 +50,15 @@ export function installNodeFixedLoadHooks(
     throw new NativeError('Unsupported fixed Node loader methods');
   const loadMethod = originalLoad;
   const requireMethod = originalRequire;
+  function health(request: unknown, parent: unknown): void {
+    try {
+      callbacks.health?.();
+    } catch (error) {
+      const match = assertNodeFixedLoadScope(scope, request, parent);
+      if (match !== undefined) poisonNodeFixedLoadScope(scope, match.filename, error);
+      throw error;
+    }
+  }
   function observe(request: unknown, parent: unknown, run: () => unknown): unknown {
     const match = assertNodeFixedLoadScope(scope, request, parent);
     if (match === undefined) return run();
@@ -74,10 +90,20 @@ export function installNodeFixedLoadHooks(
     return result;
   }
   function load(this: unknown, ...args: unknown[]): unknown {
-    return observe(args[0], args[1], () => apply(loadMethod, this, args));
+    health(args[0], args[1]);
+    try {
+      return observe(args[0], args[1], () => apply(loadMethod, this, args));
+    } finally {
+      health(args[0], args[1]);
+    }
   }
   function require(this: unknown, ...args: unknown[]): unknown {
-    return observe(args[0], this, () => apply(requireMethod, this, args));
+    health(args[0], this);
+    try {
+      return observe(args[0], this, () => apply(requireMethod, this, args));
+    } finally {
+      health(args[0], this);
+    }
   }
   defineProperty(Module, '_load', { ...loadDescriptor, value: load });
   try {
@@ -86,8 +112,12 @@ export function installNodeFixedLoadHooks(
     defineProperty(Module, '_load', loadDescriptor);
     throw error;
   }
-  return () => {
-    defineProperty(Module.prototype, 'require', requireDescriptor);
-    defineProperty(Module, '_load', loadDescriptor);
-  };
+  return Object.freeze({
+    load,
+    require,
+    restore() {
+      defineProperty(Module.prototype, 'require', requireDescriptor);
+      defineProperty(Module, '_load', loadDescriptor);
+    },
+  });
 }

@@ -36,6 +36,11 @@ describe('original assignment host provenance with authored AST only', () => {
       `var host;const {env,stdout}=(${OPTIONAL_PROCESS})??{};exports.enabled=env&&stdout;`,
     ],
     ['standalone assignment', `${DECLARE}exports.version=host.process.version;`],
+    [
+      'direct process availability',
+      `${DECLARE}exports.version=host.process.version;exports.available=typeof process!=="undefined";`,
+    ],
+    ['assigned process availability', `${DECLARE}exports.kind=typeof host.process;`],
     ['let assignment', 'let host;host=globalThis;exports.version=host.process.version;'],
     [
       'different identifier',
@@ -71,6 +76,14 @@ describe('original assignment host provenance with authored AST only', () => {
   });
 
   it.each([
+    [
+      'availability does not permit a process escape',
+      `${DECLARE}exports.available=typeof process;exports.process=process;`,
+    ],
+    [
+      'availability does not permit a loader',
+      `${DECLARE}exports.available=typeof process;host.process.dlopen(module,'addon.node');`,
+    ],
     ['global declaration alias', `${DECLARE}const copy=host;exports.version=copy.process.version;`],
     [
       'captured assignment result',

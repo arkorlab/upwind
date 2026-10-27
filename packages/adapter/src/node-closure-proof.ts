@@ -17,14 +17,19 @@ import {
   nodeHostIdentifier as isIdentifier,
   type AssignedNodeHosts,
 } from './node-closure-hosts.ts';
-import { NODE_MODULE_LOADERS as MODULE_LOADERS } from './node-closure-module-loaders.ts';
+import {
+  NODE_MODULE_LOADERS as MODULE_LOADERS,
+  type NodeClosureLoaders,
+} from './node-closure-module-loaders.ts';
 import {
   nodeClosureReference as isReference,
   nodeCompilerMetadataSites,
 } from './node-compiler-metadata.ts';
 import { nodeJwtCompilerSite, type NodeJwtCompilerProof } from './node-jwt-compiler-proof.ts';
 import { isGlobalCompiler } from './node-jwt-compiler-sites.ts';
-import { nodeWsLoaderSites, type NodeWsLoaderProof } from './node-ws-loader-proof.ts';
+import { nodeNextRequireHookSites } from './node-next-require-hook-proof.ts';
+import type { NodeNextRequireHookSites } from './node-next-require-hook-sites.ts';
+import { nodeWsLoaderSites } from './node-ws-loader-proof.ts';
 
 export { originalNodeHostLoaderRefusal } from './node-original-host-proof.ts';
 
@@ -459,6 +464,7 @@ function loaderRefusal(
   visit: Visit,
   imports: Origins,
   compilers: ReadonlySet<Node>,
+  hook: NodeNextRequireHookSites,
 ): string | undefined {
   const { node, scopes } = visit;
   const globalPattern = globalPatternRefusal(node, scopes, imports.assigned);
@@ -471,13 +477,15 @@ function loaderRefusal(
     return 'an unproved JavaScript code compiler';
   if (isNamespaceRebinding(visit, imports)) return 'an unproved rebound Node loader namespace';
   if (
-    (node.type === 'MemberExpression' && isForbiddenOrigin(originOf(node, scopes, imports))) ||
+    (node.type === 'MemberExpression' &&
+      !hook.operations.has(node) &&
+      isForbiddenOrigin(originOf(node, scopes, imports))) ||
     isDestructuredLoader(node, scopes, imports)
   )
     return NODE_LOADER_REFUSAL;
   const imported = importRefusal(node, imports);
   if (imported !== undefined) return imported;
-  if (isNamespaceEscape(visit, imports, 'module'))
+  if (!hook.namespaceOperands.has(node) && isNamespaceEscape(visit, imports, 'module'))
     return 'an unproved Node Module namespace escape';
   if (isNamespaceEscape(visit, imports, 'child_process'))
     return 'an unproved Node child-process namespace escape';
@@ -500,7 +508,7 @@ export function dynamicNodeClosureRefusal(
   file: string,
   code: string,
   jwt?: NodeJwtCompilerProof,
-  ws?: NodeWsLoaderProof,
+  loaders?: NodeClosureLoaders,
 ): string | undefined {
   const parsed = parseAst(code);
   const program: unknown = parsed;
@@ -517,11 +525,13 @@ export function dynamicNodeClosureRefusal(
   const jwtSite = nodeJwtCompilerSite(jwt, file, code, program);
   const compilerSites = new Set(nodeCompilerMetadataSites(all));
   if (jwtSite !== undefined) compilerSites.add(jwtSite);
-  for (const site of nodeWsLoaderSites(ws, file, code, program)) compilerSites.add(site);
+  const wsSites = nodeWsLoaderSites(loaders?.ws, file, code, program);
+  for (const site of wsSites) compilerSites.add(site);
+  const hookSites = nodeNextRequireHookSites(loaders?.nextRequireHook, file, code, program);
   for (const visit of all) {
     if (serverChunk && (isContextLoader(visit, contexts) || isContextEscape(visit, contexts)))
       return 'an unproved Turbopack external import';
-    const refusal = loaderRefusal(visit, origins, compilerSites);
+    const refusal = loaderRefusal(visit, origins, compilerSites, hookSites);
     if (refusal !== undefined) return refusal;
   }
   return undefined;

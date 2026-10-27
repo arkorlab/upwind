@@ -122,6 +122,21 @@ async function physicalSources(
   return sources;
 }
 
+function traceAliasName(
+  logical: string,
+  physical: string,
+  links: ReadonlyMap<string, string>,
+): string {
+  let inherited = false;
+  for (const [alias, target] of links) {
+    if (!logical.startsWith(`${alias}/`)) continue;
+    if (path.posix.join(target, path.posix.relative(alias, logical)) !== physical)
+      throw new AuditError('Node artifact trace alias has unsupported intermediate topology');
+    inherited = true;
+  }
+  return inherited ? physical : logical;
+}
+
 async function recordTraceAlias(
   logical: string,
   physical: string,
@@ -132,8 +147,19 @@ async function recordTraceAlias(
   const alias = path.resolve(layout.traceRoot, logical);
   try {
     const target = await realpath(alias);
-    if (target !== path.resolve(alias) && target === (await realpath(physical)))
-      links.set(layout.nameOf(alias), layout.nameOf(target));
+    if (target !== path.resolve(alias) && target === (await realpath(physical))) {
+      // A package alias already preserves its directory. Keep a distinct child filename at
+      // that physical parent instead of emitting a child link hidden beneath the package link.
+      const parent = await realpath(path.dirname(alias));
+      const physicalAlias = path.join(parent, path.basename(alias));
+      const preserved = traceAliasName(layout.nameOf(alias), layout.nameOf(physicalAlias), links);
+      const destination = layout.nameOf(target);
+      if (preserved === destination) return;
+      const previous = links.get(preserved);
+      if (previous !== undefined && previous !== destination)
+        throw new AuditError('Node artifact trace aliases have conflicting physical targets');
+      links.set(preserved, destination);
+    }
   } catch (error) {
     if (!isMissingFile(error)) throw error;
   }
@@ -160,7 +186,13 @@ function emittedLinks(
   const ordered = [...links].toSorted(([a], [b]) => a.length - b.length || compareCodeUnits(a, b));
   const emitted: { path: string; target: string }[] = [];
   for (const [alias, target] of ordered) {
-    if (files.has(alias) || emitted.some((link) => alias.startsWith(`${link.path}/`))) continue;
+    if (files.has(alias)) continue;
+    const parent = emitted.find((link) => alias.startsWith(`${link.path}/`));
+    if (parent !== undefined) {
+      if (path.posix.join(parent.target, path.posix.relative(parent.path, alias)) !== target)
+        throw new AuditError('Node artifact alias conflicts with its emitted parent');
+      continue;
+    }
     if (alias === target || target.startsWith(`${alias}/`))
       throw new AuditError('Node artifact contains a cyclic alias');
     const physical = [...files.keys()];

@@ -33,6 +33,10 @@ export function nodeNamespaceAliasUse(
       visit.key === 'init' &&
       (!process || processMetadataPattern(visit.parent['id']))) ||
     (visit.parent?.type === 'MemberExpression' && visit.key === 'object') ||
+    (process &&
+      visit.parent?.type === 'UnaryExpression' &&
+      visit.parent['operator'] === 'typeof' &&
+      visit.key === 'argument') ||
     (process && ['ConditionalExpression', 'LogicalExpression'].includes(visit.parent?.type ?? ''))
   );
 }
