@@ -96,9 +96,13 @@ export function nodePackageSubpaths(
   metadata: unknown,
 ): PackageSubpaths {
   const relative = specifier === packageName ? '.' : `.${specifier.slice(packageName.length)}`;
-  if (relative !== '.' && !safeRelative(relative)) refuse();
-  if (!record(metadata) || metadata['exports'] === undefined || metadata['exports'] === null)
+  if (!record(metadata) || metadata['exports'] === undefined || metadata['exports'] === null) {
+    // A terminal slash is meaningful to CommonJS: it excludes same-name file candidates.
+    const checked = relative.endsWith('/') ? relative.slice(0, -1) : relative;
+    if (checked !== '.' && !safeRelative(checked)) refuse();
     return { exact: false, targets: [relative] };
+  }
+  if (relative !== '.' && !safeRelative(relative)) refuse();
   return { exact: true, targets: exportTargets(exportEntry(metadata['exports'], relative)) };
 }
 function missingTarget(error: unknown): boolean {

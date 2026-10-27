@@ -98,9 +98,14 @@ export async function nodePackageLegacySubpath(
   const target = nodePackageSubpaths(specifier, packageName, undefined).targets[0];
   if (target === undefined) throw new AuditError('Legacy Node package lookup lacks a subpath');
   const logical = path.resolve(directory, target);
-  if (!(await filesAt(logical, FILE_SUFFIXES)) && !(await directoryTarget(logical))) return false;
+  const directoryOnly = specifier.endsWith('/');
+  if (
+    (directoryOnly || !(await filesAt(logical, FILE_SUFFIXES))) &&
+    !(await directoryTarget(logical))
+  )
+    return false;
   // No MODULE_NOT_FOUND catch: invalid main/configuration and resolver errors must propagate.
-  createRequire(importer).resolve(logical);
+  createRequire(importer).resolve(directoryOnly ? `${logical}${path.sep}` : logical);
   return true;
 }
 
