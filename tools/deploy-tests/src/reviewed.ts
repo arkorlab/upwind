@@ -70,12 +70,10 @@ function headerMissing(file: string, lines: readonly string[]): Symptom {
   };
 }
 
-/**
- * An inline snapshot that differs from what was received in each line's leading whitespace and in
- * nothing else: the lines Jest marks removed and added, in order, are the same once that is taken
- * off.
- */
-export function indentationOnly(message: string): boolean {
+/** The lines an inline snapshot's failure marks removed and added, in order. */
+function snapshotChanges(
+  message: string,
+): { readonly removed: readonly string[]; readonly added: readonly string[] } | undefined {
   const lines = message.split('\n');
   const start = lines.findIndex((line) => line.startsWith('+ Received'));
   if (
@@ -83,7 +81,7 @@ export function indentationOnly(message: string): boolean {
     !message.includes('toMatchInlineSnapshot') ||
     lines[start - 1]?.startsWith('- Snapshot') !== true
   ) {
-    return false;
+    return undefined;
   }
   const diff = lines.slice(start + 1);
   const end = diff.findIndex((line) => /^\s+at /u.test(line));
@@ -92,12 +90,45 @@ export function indentationOnly(message: string): boolean {
   const added: string[] = [];
   for (const line of changed) {
     if (line.startsWith('- ')) {
-      removed.push(line.slice(2).trimStart());
+      removed.push(line.slice(2));
     } else if (line.startsWith('+ ')) {
-      added.push(line.slice(2).trimStart());
+      added.push(line.slice(2));
     }
   }
+  return { removed, added };
+}
+
+/**
+ * An inline snapshot that differs from what was received in each line's leading whitespace and in
+ * nothing else: the lines Jest marks removed and added, in order, are the same once that is taken
+ * off.
+ */
+export function indentationOnly(message: string): boolean {
+  const changes = snapshotChanges(message);
+  const removed = changes?.removed.map((line) => line.trimStart()) ?? [];
+  const added = changes?.added.map((line) => line.trimStart()) ?? [];
   return removed.length > 0 && removed.join('\n') === added.join('\n');
+}
+
+/** An inline snapshot that differs from what was received in exactly these lines. */
+function snapshotDiffers(removed: readonly string[], added: readonly string[]): Symptom {
+  return (message) => {
+    const changes = snapshotChanges(message);
+    return (
+      changes?.removed.join('\n') === removed.join('\n') &&
+      changes.added.join('\n') === added.join('\n')
+    );
+  };
+}
+
+/**
+ * A URL Vercel's build directory was expected in, received for the same file in another: what
+ * follows `file:///vercel/path0/` is the end of what was received, encoding and all.
+ */
+function inAnotherDirectory(message: string): boolean {
+  const expected = /Expected: "file:\/\/\/vercel\/path0\/([^"]+)"/u.exec(message)?.[1];
+  const received = /Received: "(file:\/\/\/[^"]+)"/u.exec(message)?.[1];
+  return expected !== undefined && received?.endsWith(`/${expected}`) === true;
 }
 
 /** A record's cases: each suite, with the full names of the cases read, or `*` for all of them. */
@@ -107,6 +138,14 @@ interface Group extends Pick<ReviewedCase, 'reading' | 'record' | 'symptom' | 't
 
 const GATE: Reading = 'deploy-gate';
 const EVERY_CASE = ['*'];
+const OTEL = 'test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts';
+const TRACE_RECORD = 'instrumentation-registered-per-function';
+
+/** Where Vercel registers instrumentation for these cases: in the route handler's own Function. */
+const REGISTERED_IN_THE_ROUTE_HANDLER = [
+  '[trace A] [remote]',
+  '└─ GET /route-handler (BaseServer.handleRequest) {http.target=/route-handler, http.route=/route-handler, next.route=/route-handler, http.status_code=200}',
+];
 
 const AT_16_4_3: readonly Group[] = [
   {
@@ -184,7 +223,7 @@ const AT_16_4_3: readonly Group[] = [
   {
     reading: 'vercel',
     record: 'vercels-build-directory',
-    symptom: inOrder('Expected: "file:///vercel/path0/'),
+    symptom: inAnotherDirectory,
     cases: {
       'test/e2e/app-dir/non-root-project-monorepo/non-root-project-monorepo.test.ts': [
         'non-root-project-monorepo import.meta.url should work during RSC',
@@ -207,12 +246,43 @@ const AT_16_4_3: readonly Group[] = [
   },
   {
     reading: 'vercel',
-    record: 'instrumentation-registered-per-function',
-    symptom: inOrder('toMatchInlineSnapshot', 'otel-middleware-trace.test.ts:'),
+    record: TRACE_RECORD,
+    symptom: snapshotDiffers(
+      [
+        '│  ├─ load instrumentation module (Instrumentation.loadModule)',
+        '│  ├─ prepare route module (RouteModule.prepare)',
+        '│  ├─ register instrumentation (Instrumentation.register)',
+      ],
+      ['│  ├─ prepare route module (RouteModule.prepare)'],
+    ),
     cases: {
-      'test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts': [
+      [OTEL]: [
         'otel-middleware-trace - proxy (nodejs runtime) traces a page rendered after NextResponse.next()',
+      ],
+    },
+  },
+  {
+    reading: 'vercel',
+    record: TRACE_RECORD,
+    symptom: snapshotDiffers(REGISTERED_IN_THE_ROUTE_HANDLER, [
+      '[trace A] GET (Next.request) {http.target=/page}',
+      '└─ middleware GET (Middleware.execute) {http.target=/page}',
+    ]),
+    cases: {
+      [OTEL]: [
         'otel-middleware-trace - proxy (nodejs runtime) traces instrumentation registration in the triggering request',
+      ],
+    },
+  },
+  {
+    reading: 'vercel',
+    record: TRACE_RECORD,
+    symptom: snapshotDiffers(REGISTERED_IN_THE_ROUTE_HANDLER, [
+      '[trace A] GET (Next.request) {http.target=/page}',
+      '└─ GET /page (BaseServer.handleRequest) {http.target=/page, http.route=/page, next.route=/page, http.status_code=200}',
+    ]),
+    cases: {
+      [OTEL]: [
         'otel-middleware-trace - middleware (edge runtime) traces instrumentation registration in the triggering request',
       ],
     },

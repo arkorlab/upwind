@@ -73,8 +73,9 @@ Upstream runs these suites against Vercel alone from v16.5.0-canary.7 (vercel/ne
 
 `non-root-project-monorepo` (4 of 10): when deployed, its `import.meta.url` cases expect
 `file:///vercel/path0/apps/web/…`, the directory Vercel builds in. What they receive is the same
-file, encoded as it should be, in the directory the fixture was built in here. Upstream runs this
-suite against Vercel alone from v16.5.0-canary.7 (vercel/next.js#99837).
+file, encoded as it should be, in the directory the fixture was built in here. The judge takes only
+a received URL that ends with what follows `file:///vercel/path0/` in the expected one, encoding and
+all. Upstream runs this suite against Vercel alone from v16.5.0-canary.7 (vercel/next.js#99837).
 
 #### An HTML 404 for a subresource
 
@@ -87,7 +88,10 @@ answer `text/plain`, as `next start` does; the cases' own names call it a plain 
 `otel-middleware-trace` (3 of its 24 deployed cases) snapshots which request `instrumentation.ts` is
 registered in, as Vercel deploys the application: its middleware, its pages and its route handlers
 each a Function of its own, each registering in the first request it serves. Here one server answers
-them all and registers once, in the first request it serves. The other 21 cases pass.
+them all and registers once, in the first request it serves. The judge takes each case's snapshot
+only where its changed lines are the ones recorded: the registration spans missing from the page's
+request, or the registration found under the page's request rather than the route handler's. The
+other 21 cases pass.
 
 ### Upstream
 

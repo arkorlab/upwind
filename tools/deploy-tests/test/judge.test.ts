@@ -174,6 +174,12 @@ describe('a shard judged against the reviewed cases', () => {
     );
   });
 
+  it('does not list a case that passed where a reading covers its whole suite', () => {
+    const verdict = judged([jestCase('feed native', 'passed')], ON_CLOUDFLARE);
+
+    expect(verdict.passedAnyway).toStrictEqual([]);
+  });
+
   it('lists a case reviewed as failing that passed', () => {
     const verdict = judged([jestCase('feed header', 'passed')]);
 
@@ -240,9 +246,6 @@ const RECORDED: Readonly<Record<string, readonly string[]>> = {
   'test/e2e/app-dir/not-found-non-document/not-found-non-document.test.ts': [
     'Error: expect(received).toContain(expected) // indexOf\n\nExpected substring: "text/html"\nReceived string:    "text/plain; charset=utf-8"',
   ],
-  'test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts': [
-    `Error: expect(received).toMatchInlineSnapshot(snapshot)\n\n- Snapshot  - 3\n+ Received  + 1\n\n- │  ├─ register instrumentation (Instrumentation.register)\n    at Object.toMatchInlineSnapshot (${AT}/otel-middleware-trace/otel-middleware-trace.test.ts:206:26)`,
-  ],
   'test/e2e/app-dir/next-dist-client-esm-import/next-dist-client-esm-import.test.ts': [
     "Error: Custom deploy script failed: Progress: resolved 1\n  Creating an optimized production build ...\nFATAL: An unexpected Turbopack error occurred:\n  x Expected ';', got 'ident'\n\nCaused by:\n- failed to parse source code",
   ],
@@ -255,6 +258,66 @@ const RECORDED: Readonly<Record<string, readonly string[]>> = {
   'test/e2e/prerender-native-module.test.ts': [NATIVE_ADDON],
   'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': [NATIVE_ADDON],
 };
+
+/** An inline snapshot's failure in the trace suite, with these lines of its diff. */
+function traceDiff(...lines: string[]): string {
+  return [
+    'Error: expect(received).toMatchInlineSnapshot(snapshot)',
+    '',
+    '- Snapshot  - 2',
+    '+ Received  + 2',
+    '',
+    ...lines,
+    `    at Object.toMatchInlineSnapshot (${AT}/otel-middleware-trace/otel-middleware-trace.test.ts:206:26)`,
+  ].join('\n');
+}
+
+const IN_THE_ROUTE_HANDLER = [
+  '- [trace A] [remote]',
+  '- └─ GET /route-handler (BaseServer.handleRequest) {http.target=/route-handler, http.route=/route-handler, next.route=/route-handler, http.status_code=200}',
+];
+
+/** What a case failed with at 16.4.3 where its suite's cases each failed their own way. */
+const RECORDED_CASES: Readonly<Record<string, readonly string[]>> = {
+  'otel-middleware-trace - proxy (nodejs runtime) traces a page rendered after NextResponse.next()':
+    [
+      traceDiff(
+        '@@ -1,10 +1,8 @@',
+        '  [trace A] GET (Next.request) {http.target=/page}',
+        '- │  ├─ load instrumentation module (Instrumentation.loadModule)',
+        '- │  ├─ prepare route module (RouteModule.prepare)',
+        '- │  ├─ register instrumentation (Instrumentation.register)',
+        '+ │  ├─ prepare route module (RouteModule.prepare)',
+        '  │  └─ render route (app) /page (AppRender.getBodyResult) {next.route=/page}',
+      ),
+    ],
+  'otel-middleware-trace - proxy (nodejs runtime) traces instrumentation registration in the triggering request':
+    [
+      traceDiff(
+        ...IN_THE_ROUTE_HANDLER,
+        '+ [trace A] GET (Next.request) {http.target=/page}',
+        '+ └─ middleware GET (Middleware.execute) {http.target=/page}',
+        '     ├─ load instrumentation module (Instrumentation.loadModule)',
+      ),
+    ],
+  'otel-middleware-trace - middleware (edge runtime) traces instrumentation registration in the triggering request':
+    [
+      traceDiff(
+        ...IN_THE_ROUTE_HANDLER,
+        '+ [trace A] GET (Next.request) {http.target=/page}',
+        '+ └─ GET /page (BaseServer.handleRequest) {http.target=/page, http.route=/page, next.route=/page, http.status_code=200}',
+        '     ├─ load instrumentation module (Instrumentation.loadModule)',
+      ),
+    ],
+};
+
+/** What a reviewed case was read from: Jest's refusal for a deploy gate, else what was recorded. */
+function recordedFor(entry: ReviewedCase): readonly string[] {
+  if (entry.reading === 'deploy-gate') {
+    return [GATE_PASSED];
+  }
+  return RECORDED_CASES[entry.fullName] ?? RECORDED[entry.suite] ?? [];
+}
 
 /** A heading's anchor, as GitHub makes it. */
 function anchorOf(heading: string): string {
@@ -305,10 +368,41 @@ describe('the reviewed cases', () => {
     expect(keys).toHaveLength(new Set(keys).size);
   });
 
+  it('read no other failure of the build-directory cases than the directory', () => {
+    const entry = REVIEWED.find(({ record: anchor }) => anchor === 'vercels-build-directory');
+    const expected =
+      'Expected: "file:///vercel/path0/apps/web/app/import-meta-url-encoded-rsc/with%20space.ts"';
+
+    expect(entry).toBeDefined();
+
+    for (const received of [
+      'Received: undefined',
+      'Received: "file:///tmp/next-test-1/apps/web/app/import-meta-url-encoded-rsc/with space.ts"',
+      'Received: "file:///tmp/next-test-1/apps/web/app/another-file.ts"',
+    ]) {
+      const { unexplained } = judgedAlone(entry!, 'node', `${expected}\n${received}`);
+
+      expect(unexplained).toHaveLength(1);
+    }
+  });
+
+  it('read no other change of a trace than where instrumentation was registered', () => {
+    const entry = REVIEWED.find(({ fullName }) => fullName.endsWith('after NextResponse.next()'));
+    const changed = traceDiff(
+      '- │  ├─ load instrumentation module (Instrumentation.loadModule)',
+      '- │  ├─ prepare route module (RouteModule.prepare)',
+      '- │  ├─ register instrumentation (Instrumentation.register)',
+      '- │  └─ render route (app) /page (AppRender.getBodyResult) {next.route=/page}',
+      '+ │  ├─ prepare route module (RouteModule.prepare)',
+    );
+
+    expect(entry).toBeDefined();
+    expect(judgedAlone(entry!, 'cloudflare', changed).unexplained).toHaveLength(1);
+  });
+
   it('read the failures they were read from', () => {
     for (const entry of REVIEWED) {
-      const messages =
-        entry.reading === 'deploy-gate' ? [GATE_PASSED] : (RECORDED[entry.suite] ?? []);
+      const messages = recordedFor(entry);
       const targets = entry.targets ?? (['cloudflare', 'node'] as const);
 
       expect(messages).not.toHaveLength(0);

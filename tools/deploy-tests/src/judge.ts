@@ -98,7 +98,11 @@ function reviewedFor(
   );
 }
 
-/** A case that passed: a deploy gate's body failed, and any other case passed. */
+/**
+ * A case that passed: a deploy gate's body failed, and any other case passed. A case reviewed by
+ * name as failing is listed as having passed anyway; one a suite-wide reading covers is not, since
+ * such a suite holds cases that pass as well.
+ */
 function passedCase(entry: ReviewedCase | undefined, read: Read | undefined): Outcome {
   if (entry?.reading === 'deploy-gate') {
     return {
@@ -106,7 +110,8 @@ function passedCase(entry: ReviewedCase | undefined, read: Read | undefined): Ou
       why: 'its body failed, which upstream expects of Vercel alone (reviewed as a deploy gate)',
     };
   }
-  const failsHere = read?.reading === 'vercel' || read?.reading === 'environment';
+  const failsHere =
+    entry?.fullName !== '*' && (read?.reading === 'vercel' || read?.reading === 'environment');
   return read !== undefined && failsHere ? { kind: 'passed', anyway: read } : { kind: 'passed' };
 }
 
