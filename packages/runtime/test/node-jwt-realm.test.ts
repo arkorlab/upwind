@@ -71,6 +71,9 @@ function fixture({ builtins = true, accessors = false } = {}) {
   function loader() {
     return environment;
   }
+  function authoredHash() {
+    return environment;
+  }
   const loaderModule = object(loader);
   let wrap: unknown = callback;
   let wrapper: unknown = ['authored prefix', 'authored suffix'];
@@ -101,6 +104,8 @@ function fixture({ builtins = true, accessors = false } = {}) {
       createSecretKey: callback,
       createPrivateKey: callback,
       createPublicKey: callback,
+      createHash: callback,
+      Hash: authoredHash,
     },
     stream: { Stream: stream },
     util: { inherits: callback, types, inspect: { defaultOptions: { colors: false } } },
@@ -471,9 +476,10 @@ describe('private Node JWT initialization preconditions', () => {
     expect(calls).toBe(0);
   });
 
-  it('seals Stream prototype fields', () => {
+  it.each(['stream', 'crypto'] as const)('seals %s prototype fields', (module) => {
     const own = fixture();
-    object(object(own.modules.stream.Stream)['prototype'])['changed'] = true;
+    const constructor = module === 'stream' ? own.modules.stream.Stream : own.modules.crypto.Hash;
+    object(object(constructor)['prototype'])['changed'] = true;
 
     expect(checking(own.realm)).toThrow('shape changed');
   });

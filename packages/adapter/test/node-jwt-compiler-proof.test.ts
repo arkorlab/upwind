@@ -19,6 +19,13 @@ import type { ManifestModuleGraph } from '../src/node-manifest-graph.ts';
 import { prepareOriginalNodeModes, originalNodeModeHash } from '../src/node-original-load-mode.ts';
 
 describe('fixed JWT compiler site DATA', () => {
+  it.each([undefined, null, 0, 'source text', {}])(
+    'declines a non-AST parser boundary value %s',
+    (value) => {
+      expect(nodeJwtGlobalRecoverySite(value)).toBeUndefined();
+    },
+  );
+
   it.each([
     "const Mod=require('node:module');Mod.wrapper[0]='unknown prefix';",
     "const {wrapper}=require('module');wrapper[0]='unknown prefix';",

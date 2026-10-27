@@ -355,12 +355,22 @@ async function serverSource(
   const module = fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-container'));
   const containerModule = jsLiteral(module);
   const cwd = jsLiteral(`/bundle/${files.physical.cwd}`);
+  const records = guards.map((guard) => {
+    return {
+      schema: guard.schema,
+      profile: guard.profile,
+      nodeVersion: guard.nodeVersion,
+      archivePath: guard.archivePath,
+      sha256: guard.sha256,
+      bytes: guard.bytes,
+    };
+  });
   return [
     "import {env as runtimeEnv} from 'node:process';",
     `import {startNodeContainer,installNodeJwtGuards} from ${containerModule};`,
     "runtimeEnv.NODE_ENV='production';runtimeEnv.NEXT_RUNTIME='nodejs';",
     `if(${JSON.stringify(selectors)}.some(key=>Boolean(runtimeEnv[key])))throw new Error('Native loader environment overrides are unsupported');`,
-    `installNodeJwtGuards(import.meta.url,${jsLiteral(guards)});`,
+    `installNodeJwtGuards(import.meta.url,${jsLiteral(records)});`,
     `process.chdir(${cwd});`,
     "await startNodeContainer({loadEntry:async()=>{const {default:entry}=await import('./function.mjs');return entry;},port:8080});",
   ].join('\n');

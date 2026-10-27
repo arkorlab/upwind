@@ -380,12 +380,18 @@ function sealBuiltinBasis(
   if (stream === undefined) fail('missing Stream constructor');
   capture.seal(stream);
   capture.seal(requiredObject(data(stream, 'prototype')));
-  capture.functions(requiredObject(data(basis, 'crypto')), [
+  const crypto = requiredObject(data(basis, 'crypto'));
+  capture.functions(crypto, [
     'KeyObject',
     'createSecretKey',
     'createPrivateKey',
     'createPublicKey',
+    'createHash',
   ]);
+  const constructor = capture.functions(crypto, ['Hash'])[0];
+  if (constructor === undefined) fail('missing Hash constructor');
+  capture.seal(constructor);
+  capture.chain(requiredObject(data(constructor, 'prototype')));
   const util = requiredObject(data(basis, 'util'));
   capture.functions(util, ['inherits']);
   const types = capture.fields(util, ['types'])[0];

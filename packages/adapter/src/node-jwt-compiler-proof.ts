@@ -5,7 +5,7 @@ import path from 'node:path';
 import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
-import type { Node } from './lexical-scope.ts';
+import { isNode, type Node } from './lexical-scope.ts';
 import { nodeJwtGlobalRecoverySite, nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
 import type { ManifestGraphFile, ManifestModuleGraph } from './node-manifest-graph.ts';
 import {
@@ -393,7 +393,7 @@ export function nodeJwtCompilerSite(
   proof: NodeJwtCompilerProof | undefined,
   file: string,
   code: string,
-  program: Node,
+  program: unknown,
 ): Node | undefined {
   if (proof === undefined) return undefined;
   const state = PROOFS.get(proof) ?? refuse(COPIED_PROOF);
@@ -401,7 +401,8 @@ export function nodeJwtCompilerSite(
   current(state);
   if (state.codes.get(file) !== code) refuse('foreign or changed rendered module');
   // Bind the supplied original parse, not a caller-constructed equivalent tree.
-  if (JSON.stringify(program) !== JSON.stringify(parseAst(code))) refuse('changed audit program');
+  if (!isNode(program) || JSON.stringify(program) !== JSON.stringify(parseAst(code)))
+    refuse('changed audit program');
   return nodeJwtGlobalRecoverySite(program) ?? refuse('changed rendered compiler site');
 }
 

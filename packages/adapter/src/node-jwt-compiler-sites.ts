@@ -20,7 +20,8 @@ function literal(value: unknown, expected: string): boolean {
 }
 
 /** Shape DATA only. This never grants a compiler exception without the private whole-source proof. */
-export function nodeJwtGlobalRecoverySite(program: Node): Node | undefined {
+export function nodeJwtGlobalRecoverySite(program: unknown): Node | undefined {
+  if (!isNode(program)) return undefined;
   const visits = visitTree(program);
   if (visits.length > MAX_NODES) return undefined;
   const parents = new Map(visits.map((visit) => [visit.node, visit.parent]));
@@ -52,7 +53,8 @@ export function nodeJwtGlobalRecoverySite(program: Node): Node | undefined {
 
 /** Every acquisition of this actual edge is a literal host require, never an ESM load role. */
 export function nodeJwtRequireOnly(code: string, specifier: string): boolean {
-  const program = parseAst(code, { sourceType: 'commonjs' });
+  const program: unknown = parseAst(code, { sourceType: 'commonjs' });
+  if (!isNode(program)) return false;
   const visits = visitTree(program);
   if (visits.length > MAX_NODES) return false;
   let found = false;
