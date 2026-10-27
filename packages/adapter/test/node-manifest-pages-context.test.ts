@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
+import { jsLiteral } from '../src/codegen.ts';
 import { AuditError } from '../src/dependencies.ts';
 import {
   certifyNodeManifestPagesContext,
@@ -113,7 +114,7 @@ describe('pinned standalone Pages context namespace selectors', () => {
   it.each(['', ',false'])(
     'accepts one exact static external thunk with interop spelling %s',
     (flag) => {
-      const call = `ctx.x(${JSON.stringify(SPECIFIER)},()=>require(${JSON.stringify(SPECIFIER)})${flag})`;
+      const call = `ctx.x(${jsLiteral(SPECIFIER)},()=>require(${jsLiteral(SPECIFIER)})${flag})`;
 
       expect(proof(`module.exports=${call}.vendored.contexts.RouterContext;`)?.specifier).toBe(
         SPECIFIER,
@@ -179,8 +180,8 @@ describe('pinned standalone Pages context namespace selectors', () => {
   );
 
   it('does not accept interop true or a mismatched external thunk', () => {
-    const yes = `ctx.x(${JSON.stringify(SPECIFIER)},()=>require(${JSON.stringify(SPECIFIER)}),true)`;
-    const mismatch = `ctx.x(${JSON.stringify(SPECIFIER)},()=>require('other'))`;
+    const yes = `ctx.x(${jsLiteral(SPECIFIER)},()=>require(${jsLiteral(SPECIFIER)}),true)`;
+    const mismatch = `ctx.x(${jsLiteral(SPECIFIER)},()=>require('other'))`;
 
     expect(refused(`module.exports=${yes}.vendored.contexts.RouterContext;`)).toBe(true);
     expect(refused(`module.exports=${mismatch}.vendored.contexts.RouterContext;`)).toBe(true);

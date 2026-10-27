@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { jsLiteral } from '../src/codegen.ts';
 import { AuditError } from '../src/dependencies.ts';
 import type { BuildFunctionInput } from '../src/function.ts';
 import type { NativeLoad } from '../src/native-loads.ts';
@@ -120,8 +121,8 @@ describe('closed aliases from environment-pruned layout hints', () => {
     await writeFile(target, esm ? 'export default 42;' : 'module.exports=42;');
     await symlink(path.relative(path.dirname(alias), target), alias);
     const code = esm
-      ? `import './mutator.cjs';export const load=()=>process.env.NODE_ENV!=='production'?import(${JSON.stringify(specifier)}):42;`
-      : `require('./mutator.cjs');if(process.env.NODE_ENV!=='production')module.exports=require(${JSON.stringify(specifier)});`;
+      ? `import './mutator.cjs';export const load=()=>process.env.NODE_ENV!=='production'?import(${jsLiteral(specifier)}):42;`
+      : `require('./mutator.cjs');if(process.env.NODE_ENV!=='production')module.exports=require(${jsLiteral(specifier)});`;
     await writeFile(entry, code);
     return {
       entry,

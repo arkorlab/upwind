@@ -204,7 +204,11 @@ describe('source-bound selected hoist helper', () => {
   });
 
   it('accepts genuine function-local strictness while preserving original bytes', () => {
-    const input = fixture({ prefix: '', helper: HOIST.replace('{', '{"use strict";') });
+    const body = HOIST.slice(HOIST.indexOf('{') + 1);
+    const input = fixture({
+      prefix: '',
+      helper: `function hoist(module,name){"use strict";${body}`,
+    });
     const before = input.factory.projection.original.code;
 
     expect(certify(input)).toBe('hoist');
