@@ -22,7 +22,7 @@ function ordinary() {
   return 1;
 }
 function fixture() {
-  const proxies = new WeakSet<object>();
+  const proxies = new WeakSet<ObjectValue>();
   const prototype: ObjectValue = { require: () => 'authored operation never invoked' };
   const counter = { parentCalls: 0 };
   Object.defineProperty(prototype, 'parent', {
@@ -34,7 +34,7 @@ function fixture() {
   });
   const input = {
     prototype,
-    isProxy: (value: unknown) => typeof value === 'object' && value !== null && proxies.has(value),
+    isProxy: (value: unknown) => isObject(value) && proxies.has(value),
     parentDescriptor: Object.getOwnPropertyDescriptor(prototype, 'parent'),
     filename: FILENAME,
     directory: DIRECTORY,
