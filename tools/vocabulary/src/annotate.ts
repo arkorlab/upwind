@@ -31,3 +31,13 @@ export function annotationOf(hit: Hit): string {
   ].join(',');
   return `::error ${properties}::${commandData(message)}`;
 }
+
+/** Exceptions are one escaped annotation, even when a repository filename contains newlines. */
+export function errorAnnotation(message: string): string {
+  return `::error title=vocabulary::${commandData(message)}`;
+}
+
+/** JSON string encoding preserves a plain diagnostic's line boundary and terminal controls. */
+export function plainDiagnostic(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
+}

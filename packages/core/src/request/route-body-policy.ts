@@ -1,4 +1,4 @@
-import { NEXT_URL_HEADER, RSC_VARY } from '@stayingupwind/core/request';
+import { NEXT_URL_HEADER, RSC_VARY } from './constants.ts';
 
 /** A transport filter must not erase an owner's denial of shared route-body delivery. */
 const PRIVACY_HEADERS: ReadonlySet<string> = new Set([

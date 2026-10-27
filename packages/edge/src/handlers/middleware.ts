@@ -19,6 +19,9 @@ import {
   HOP_BY_HOP_HEADERS,
   PLATFORM_HEADER_PREFIX,
   sanitizePassthroughHeaders,
+  keptByNobody,
+  unsharedUnlessPublic,
+  connectionRefusesSharing,
 } from '@stayingupwind/core/request';
 import { isDeadlineError, releaseStream, withDeadline } from '@stayingupwind/core/util';
 import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
@@ -35,14 +38,11 @@ import {
   anonymousRequest,
   badGatewayResponse,
   forwardedResponse,
-  keptByNobody,
   mergeScopedMiddlewareHeaders,
   middlewareProtocolHeader,
   nominatedBy,
   readMiddlewareAnswer,
-  unsharedUnlessPublic,
 } from './responses.ts';
-import { connectionRefusesSharing } from './route-body-policy.ts';
 import { readsCredentials, readsForwarding } from './routing-headers.ts';
 
 export { readsCredentials } from './routing-headers.ts';

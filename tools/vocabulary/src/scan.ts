@@ -136,8 +136,11 @@ export function hitsOfPath(file: string, terms: readonly Term[] = TERMS): Hit[] 
 /** What a file says, each hit at the line and column it starts at. */
 export function hitsOfFile(file: string, text: string, terms: readonly Term[] = TERMS): Hit[] {
   const starts = lineStarts(text);
+  let index = 0;
   return hitsIn(text, terms).map((found) => {
-    const index = starts.findLastIndex((start) => start <= found.at);
+    while (index + 1 < starts.length && (starts[index + 1] ?? Infinity) <= found.at) {
+      index += 1;
+    }
     const column = found.at - (starts[index] ?? 0) + 1;
     return { ...found, file, line: index + 1, column };
   });

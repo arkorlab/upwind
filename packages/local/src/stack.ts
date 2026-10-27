@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,6 +77,7 @@ const STORES = { edgeState: 'edge-state', cacheState: 'cache-state', artifacts: 
 
 /** The date the stack's own Workers run at; each Function keeps the one its build gave it. */
 const COMPATIBILITY_DATE = '2026-09-15';
+const AGENT_TOKEN_BYTES = 32;
 /** HTTP's default port is absent from the stack URL's host. */
 const HTTP_DEFAULT_PORT = 80;
 /**
@@ -447,6 +449,7 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
   const gates = gateServices(options.gates, new Set(Object.values(bundle.gates ?? {})));
   // A key of the stack's own, gone with it: what the scope's token is signed with.
   const cacheTokenKey = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+  const agentToken = randomBytes(AGENT_TOKEN_BYTES).toString('base64url');
   const token = await signCacheToken(cacheTokenKey, deploymentId, STANDALONE_NAMING);
   const { edge, cache, cacheRead, prefetch, agent, outbound } =
     options.scripts ?? (await bundleStackScripts());
@@ -537,6 +540,7 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
     { ...scriptWorker(WORKERS.prefetch, prefetch), r2Buckets: { ARTIFACTS: STORES.artifacts } },
     {
       ...scriptWorker(WORKERS.agent, agent),
+      bindings: { DEPLOY_AGENT_TOKEN: agentToken },
       kvNamespaces: { EDGE_STATE: STORES.edgeState },
       r2Buckets: { ARTIFACTS: STORES.artifacts },
       services: { CACHE_CONTROL: { name: WORKERS.cache, entrypoint: 'CacheControl' } },
@@ -553,7 +557,7 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
   ];
   const running = await runWorkers(workers, options.log ?? ignore, options.signals);
   try {
-    const target = agentTarget(await running.url(WORKERS.agent), bundleDir);
+    const target = agentTarget(await running.url(WORKERS.agent), bundleDir, agentToken);
     // A policy is published by whatever deploys, once, before any pointer names it.
     await target.edgeState.put(kvPolicyKey(policy.id), JSON.stringify(policy));
     const { staged, pointer } = await deployBundle(target, {

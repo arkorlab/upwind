@@ -1,4 +1,6 @@
 import {
+  BuildPatternBudget,
+  type BuildPatternMatcher,
   cacheablePrerenders,
   type DeploymentBundle,
   type Prerender,
@@ -42,9 +44,12 @@ export function cacheEntryIdsOf(bundle: DeploymentBundle): string[] {
 }
 
 /** Version three independently admits concrete parameter outputs, never a class generation. */
-export function cachePrerendersOf(bundle: DeploymentBundle): Prerender[] {
-  const prerenders = new Set(cacheablePrerenders(bundle));
-  for (const page of staticPagesMembersOf(bundle).keys()) prerenders.add(page);
+export function cachePrerendersOf(
+  bundle: DeploymentBundle,
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+): Prerender[] {
+  const prerenders = new Set(cacheablePrerenders(bundle, patterns));
+  for (const page of staticPagesMembersOf(bundle, patterns).keys()) prerenders.add(page);
   return [...prerenders];
 }
 

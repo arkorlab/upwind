@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { annotationOf } from './annotate.ts';
+import { annotationOf, errorAnnotation, plainDiagnostic } from './annotate.ts';
+import { boundedFile, MAX_SCAN_BYTES } from './read.ts';
 import { type Hit, hitsOfFile, hitsOfPath, selfCheck, textOf } from './scan.ts';
 
 /**
@@ -68,18 +68,23 @@ function listed(options: readonly string[]): string[] {
  */
 function gatedFiles(): { readonly file: string; readonly text: string | undefined }[] {
   const deleted = new Set(listed(['--deleted']));
+  let remaining = MAX_SCAN_BYTES;
   return listed(['--cached', '--others', '--exclude-standard'])
     .filter((file) => !deleted.has(file))
     .toSorted(byCodeUnit)
-    .map((file) => ({ file, text: textOf(file, readFileSync(path.join(REPO_ROOT, file))) }));
+    .map((file) => {
+      const bytes = boundedFile(REPO_ROOT, file, remaining);
+      remaining -= bytes.byteLength;
+      return { file, text: textOf(file, bytes) };
+    });
 }
 
 function report(hits: readonly Hit[], github: boolean): void {
   for (const hit of hits) {
     const where =
       hit.inPath === true
-        ? `${hit.file} (path)`
-        : `${hit.file}:${String(hit.line)}:${String(hit.column)}`;
+        ? `${plainDiagnostic(hit.file)} (path)`
+        : `${plainDiagnostic(hit.file)}:${String(hit.line)}:${String(hit.column)}`;
     if (github) {
       console.log(annotationOf(hit));
     } else {
@@ -120,7 +125,10 @@ function run(args: readonly string[]): number {
   try {
     return main(args);
   } catch (error) {
-    console.error(`vocabulary: ${error instanceof Error ? error.message : String(error)}`);
+    const message = `vocabulary: ${error instanceof Error ? error.message : String(error)}`;
+    console.error(
+      args.join(' ') === '--format github' ? errorAnnotation(message) : plainDiagnostic(message),
+    );
     return EXIT_USAGE;
   }
 }

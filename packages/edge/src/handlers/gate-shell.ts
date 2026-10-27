@@ -7,6 +7,7 @@ import {
 } from '@stayingupwind/core/manifest';
 import {
   allowRecoveryScript,
+  classifyRequest,
   isBotUserAgent,
   wantsBlockingMetadata,
 } from '@stayingupwind/core/request';
@@ -15,6 +16,7 @@ import type { ResolvedPolicy } from '@stayingupwind/host/delivery';
 import { RECOVERY_SCRIPT_CSP_SOURCE } from '@stayingupwind/host/splice';
 
 import { ownRecordEntry, shelllessEntry } from '../cache/member.ts';
+import { manifestForClassification } from '../classification.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import type { ServedGeneration } from './document-delivery.ts';
 import { type DocumentInput, handleDocument } from './document.ts';
@@ -51,6 +53,8 @@ const BYPASS_FOR = 'bypass-for';
 /** A navigation whose pathname names no route the build proved (`classifyRequest`). */
 const ROUTE_NOT_PROVED = 'route-not-proved';
 const APP_PAGE = 'app-page';
+/** What a request the edge classifies as a document is classified as (`classifyRequest`). */
+const DOCUMENT_CLASS = 'document';
 
 export interface GateShellInput {
   readonly request: Request<unknown, IncomingRequestCfProperties>;
@@ -184,6 +188,45 @@ export function routeEntryOf(
       Object.hasOwn(gated, entry.pathname) &&
       gated[entry.pathname] === route);
   return ofRoute ? entry : undefined;
+}
+
+/**
+ * The document a request its gate answered with a shell of the gate's own is served as, where the
+ * edge composes one for it: of a request it classifies as a document, that document where it is of
+ * the shell's route (`routeEntryOf`); else a page of the gate's route the build made no shell of
+ * (`gatedEntryOf`) — none of another, nor of a crawler Next.js renders a page whole for
+ * (`crawledWhole`). `classified` is what the classification reads of the request's headers.
+ */
+export function gateShellEntry(
+  manifest: ProjectManifest,
+  {
+    classified,
+    request,
+    url,
+    validated,
+  }: {
+    readonly classified: Headers;
+    readonly request: { readonly method: string; readonly headers: Headers };
+    readonly url: URL;
+    readonly validated: boolean;
+  },
+  route: string,
+): RouteEntry | undefined {
+  const classification = classifyRequest({
+    method: request.method,
+    url,
+    headers: classified,
+    manifest: manifestForClassification(manifest, validated),
+    deployment: manifest.deployment,
+  });
+  const unproved = classification.kind === 'passthrough' ? classification.reason : undefined;
+  const entry =
+    classification.kind === DOCUMENT_CLASS
+      ? routeEntryOf(manifest, classification.entry, route)
+      : gatedEntryOf(manifest, { headers: classified, url }, { route, unproved });
+  return entry === undefined || crawledWhole(manifest, request.headers.get('user-agent'))
+    ? undefined
+    : entry;
 }
 
 /**

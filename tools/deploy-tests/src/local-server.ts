@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { connect } from 'node:net';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -32,10 +33,15 @@ const START_MS = 180_000;
 /** How long a server may take to stop once asked, before it is made to. */
 const STOP_MS = 15_000;
 const POLL_MS = 250;
-/** How long one request of the readiness check may take. */
+/** How long one connection of the readiness check may take. */
 const ASK_MS = 5000;
 /** How much of what a server said goes with a failure to start it. */
 const TAIL_BYTES = 4000;
+/**
+ * How much of it the cleanup hook passes on: the end of a whole suite's serving, where a failure the
+ * suite saw as a status alone left its stack.
+ */
+const SERVED_TAIL_BYTES = 32_000;
 
 const REPO = path.join(import.meta.dirname, '..', '..', '..');
 const UPWIND_CLI = path.join(REPO, 'packages', 'upwind', 'src', 'cli.ts');
@@ -97,9 +103,9 @@ function printedIn(file: string): string {
   }
 }
 
-function tailOf(file: string): string {
+function tailOf(file: string, bytes = TAIL_BYTES): string {
   const all = printedIn(file);
-  return all.length > TAIL_BYTES ? `…${all.slice(-TAIL_BYTES)}` : all;
+  return all.length > bytes ? `…${all.slice(-bytes)}` : all;
 }
 
 function signalGroup(pid: number, signal: NodeJS.Signals): void {
@@ -139,21 +145,46 @@ async function servedAt(
   throw new Error(`the server did not say it serves in time:\n${tailOf(logFile)}`);
 }
 
-/** Wait until the site answers a request at all, whatever it answers. */
-async function answering(url: string, end: number): Promise<void> {
+/** Whether a connection to the address is taken, before `ASK_MS`: nothing is asked over it. */
+function accepts(url: URL): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect({
+      host: url.hostname.replace(/^\[(.*)\]$/u, '$1'),
+      port: Number(url.port),
+      timeout: ASK_MS,
+    });
+    const settle = (taken: boolean): void => {
+      socket.destroy();
+      resolve(taken);
+    };
+    socket.once('connect', () => {
+      settle(true);
+    });
+    socket.once('timeout', () => {
+      settle(false);
+    });
+    socket.once('error', () => {
+      settle(false);
+    });
+  });
+}
+
+/**
+ * Wait until the server takes a connection. A connection and no request: a request is one of the
+ * suite's to make, and the first the application sees is one of its tests' — a suite counts its
+ * renders (`root-layout-render-once`), or which runtime registered its instrumentation first
+ * (`instrumentation-hook`), and a `GET /` of this tool's ran the root layout and the middleware ahead
+ * of them.
+ */
+export async function accepting(url: string, end: number): Promise<void> {
+  const address = new URL(url);
   while (Date.now() < end) {
-    try {
-      const response = await fetch(url, {
-        redirect: 'manual',
-        signal: AbortSignal.timeout(ASK_MS),
-      });
-      await response.body?.cancel();
+    if (await accepts(address)) {
       return;
-    } catch {
-      await sleep(POLL_MS);
     }
+    await sleep(POLL_MS);
   }
-  throw new Error(`${url} did not answer in time`);
+  throw new Error(`${url} did not take a connection in time`);
 }
 
 /** Serve the fixture here; its URL, once it answers. */
@@ -196,7 +227,7 @@ export async function serveLocally(input: LocalServeInput): Promise<string> {
   const end = withinHook(Date.now() + START_MS, input.deadline);
   try {
     const url = new URL(await servedAt(child, logFile, ready, end)).origin;
-    await answering(url, end);
+    await accepting(url, end);
     input.log(`served at ${url}`);
     return url;
   } catch (error) {
@@ -205,17 +236,20 @@ export async function serveLocally(input: LocalServeInput): Promise<string> {
   }
 }
 
-/** Stop the server serving the fixture here, if there is one: asked first, then made to. */
-export async function stopLocally(appDir: string): Promise<void> {
+/**
+ * Stop the server serving the fixture here, if there is one: asked first, then made to. Whether there
+ * was one to stop.
+ */
+export async function stopLocally(appDir: string): Promise<boolean> {
   const file = path.join(appDir, PID_FILE);
   if (!existsSync(file)) {
-    return;
+    return false;
   }
   const pid = Number(readFileSync(file, 'utf8'));
   rmSync(file, { force: true });
   rmSync(path.join(appDir, ENV_FILE), { force: true });
   if (!Number.isSafeInteger(pid) || pid <= 0) {
-    return;
+    return false;
   }
   signalGroup(pid, 'SIGTERM');
   const end = Date.now() + STOP_MS;
@@ -224,4 +258,10 @@ export async function stopLocally(appDir: string): Promise<void> {
   }
   // Whatever of the group is left — workerd under a stack that did not let it go — is ended now.
   signalGroup(pid, 'SIGKILL');
+  return true;
+}
+
+/** The end of what the server serving the fixture here said, to its last line: its stopping too. */
+export function servedLog(appDir: string): string {
+  return tailOf(path.join(appDir, RUNTIME_LOG), SERVED_TAIL_BYTES);
 }

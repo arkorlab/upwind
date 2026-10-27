@@ -1,5 +1,7 @@
 import { generationResponseHeaders } from '../cache/response-headers.ts';
 import { ROUTE_BODY_BUILD_HEADERS } from '../request/constants.ts';
+import { BuildPatternBudget } from './pattern-budget.ts';
+import type { BuildPatternMatcher } from './pattern-matcher.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
 import {
   prerenderResponseHeaders,
@@ -36,11 +38,18 @@ function initialHeaders(prerender: Prerender): [string, string][] {
 }
 
 /** The build's privacy vetoes are judged before a stored-response filter can remove them. */
-function publicBody(bundle: DeploymentBundle, prerender: Prerender): boolean {
+function publicBody(
+  bundle: DeploymentBundle,
+  prerender: Prerender,
+  patterns: BuildPatternMatcher,
+): boolean {
   if (prerender.body === undefined || !nonHtml(prerender.body.contentType)) {
     return false;
   }
-  const headers = [...initialHeaders(prerender), ...prerenderResponseHeaders(bundle, prerender)];
+  const headers = [
+    ...initialHeaders(prerender),
+    ...prerenderResponseHeaders(bundle, prerender, patterns),
+  ];
   if (headers.some(([name, value]) => name.toLowerCase() === 'content-type' && !nonHtml(value))) {
     return false;
   }
@@ -56,7 +65,10 @@ function publicBody(bundle: DeploymentBundle, prerender: Prerender): boolean {
  * Only a bundle built with the privacy-preserving runtime opts in. Older bundles remain private
  * Function responses, even when a newer host assembles their manifest again.
  */
-export function edgeServableRouteBodies(bundle: DeploymentBundle): Prerender[] {
+export function edgeServableRouteBodies(
+  bundle: DeploymentBundle,
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+): Prerender[] {
   if (bundle.routeBodyPrivacy !== 2 || !reproducesDynamicRouting(bundle)) {
     return [];
   }
@@ -71,7 +83,7 @@ export function edgeServableRouteBodies(bundle: DeploymentBundle): Prerender[] {
       (prerender.initialStatus ?? HTTP_OK) === HTTP_OK &&
       (prerender.allowQuery?.length ?? 0) === 0 &&
       (prerender.allowHeader ?? []).every((name) => BUILD_HEADERS.has(name.toLowerCase())) &&
-      publicBody(bundle, prerender)
+      publicBody(bundle, prerender, patterns)
     );
   });
 }

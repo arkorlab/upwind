@@ -50,6 +50,11 @@ function png(length = PNG_SIGNATURE.byteLength): Uint8Array {
   return concatBytes([PNG_SIGNATURE, new Uint8Array(length - PNG_SIGNATURE.byteLength)]);
 }
 
+/** The client's request for the image, by its method. */
+function asked(method: string): Request {
+  return new Request('https://app.example/_next/image?url=x&w=64&q=75', { method });
+}
+
 function redirect(location: string): Response {
   return new Response(null, { status: HTTP_FOUND, headers: { location } });
 }
@@ -161,7 +166,7 @@ describe('the Worker’s own answer for an image source', () => {
       params: PARAMS,
       images: IMAGES,
       internal: false,
-      method: 'GET',
+      request: asked('GET'),
     });
 
     expect(response.status).toBe(HTTP_PAYLOAD_TOO_LARGE);
@@ -177,7 +182,7 @@ describe('the Worker’s own answer for an image source', () => {
       params: PARAMS,
       images: IMAGES,
       internal: false,
-      method: 'GET',
+      request: asked('GET'),
     });
 
     expect(response.status).toBe(HTTP_PAYLOAD_TOO_LARGE);
@@ -192,14 +197,14 @@ describe('the Worker’s own answer for an image source', () => {
       params: PARAMS,
       images: IMAGES,
       internal: false,
-      method: 'HEAD',
+      request: asked('HEAD'),
     });
     const get = await sourceResponse({
       source: new Response(body(bytes)),
       params: PARAMS,
       images: IMAGES,
       internal: false,
-      method: 'GET',
+      request: asked('GET'),
     });
     const got = new Uint8Array(await get.arrayBuffer());
 
@@ -219,7 +224,7 @@ describe('the Worker’s own answer for an image source', () => {
       params: PARAMS,
       images: IMAGES,
       internal: false,
-      method: 'GET',
+      request: asked('GET'),
     });
 
     expect(response.status).toBe(HTTP_BAD_REQUEST);

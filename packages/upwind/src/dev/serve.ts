@@ -17,6 +17,7 @@ import { type LocalResources, startLocalResources } from '../resources/local.ts'
 import { installAdapterPath } from './adapter.ts';
 import { displayAddress, internalAddress } from './address.ts';
 import { ensureAgentRules } from './agent-rules.ts';
+import { attestLocalAuth } from './auth-boundary.ts';
 import { printListening, printReady } from './banner.ts';
 import { type StopWatching, watchConfigFiles, watchSourceFiles } from './config-watch.ts';
 import { setEnv } from './env.ts';
@@ -192,7 +193,8 @@ export async function serveDev(options: DevOptions): Promise<void> {
     void answerOrFail(req, res);
   });
 
-  const bound = await listen(server, options.port, options.hostname);
+  const bound = await listen(server, options.port, options.hostname ?? '127.0.0.1');
+  using localAuth = attestLocalAuth(bound);
   devSession.address = displayAddress(options.hostname, bound.port);
   // The supervisor is told, so that a restart lands on this port rather than on another one the kernel
   // picks for a `--port 0` run, or on a port that has since been taken by something else. `connected`
@@ -282,6 +284,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
     await closeDevResources(async () => {
       await (await shutdown.local)?.dispose();
     }, closeApp);
+    localAuth[Symbol.dispose]();
   });
   const stopWatching = await watchConfigFiles(options.projectDir);
   shutdown.config = stopWatching;
@@ -402,5 +405,6 @@ export async function serveDev(options: DevOptions): Promise<void> {
   await closeDevResources(() => local.dispose(), closeApp);
   // Next.js's dev bundler keeps handles of its own, so this process would not end on its own. What
   // was asked for is over.
+  localAuth[Symbol.dispose]();
   process.exit(0);
 }

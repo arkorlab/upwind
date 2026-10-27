@@ -1,13 +1,17 @@
-import { staticFallbackParametersFor } from '@stayingupwind/core/bundle';
-import {
-  type CachePolicy,
-  type DecodedGenerationPack,
-  type GenerationPackHeader,
-  staticPageHeadersAllowSharing,
-  staticPageHasNoTransform,
-} from '@stayingupwind/core/cache';
-import type { StaticPageEntry } from '@stayingupwind/core/manifest';
-import { filterStoredResponseHeaders } from '@stayingupwind/core/request';
+import type { DecodedGenerationPack } from '../cache/pack.ts';
+import type { CachePolicy, GenerationPackHeader } from '../cache/schema.ts';
+import { staticPageHeadersAllowSharing, staticPageHasNoTransform } from '../cache/static-pages.ts';
+import type { StaticPageEntry } from '../manifest/schema.ts';
+import { filterStoredResponseHeaders } from '../request/headers.ts';
+import { staticFallbackParametersFor } from './fallback-pages.ts';
+
+/**
+ * Whether a generation the cache holds for a prerendered Pages page may be served as that page from
+ * a shared cache, and the headers it goes out with (`pageHeaders`): the record has to be the one the
+ * manifest's entry names, of the source and policy that entry's privacy allows, holding exactly one
+ * HTML artifact whose bytes it vouches for. The edge's check, which a host serving the same build
+ * without it makes alike.
+ */
 
 const HTTP_OK = 200;
 const FALLBACK_PRIVACY = 3;

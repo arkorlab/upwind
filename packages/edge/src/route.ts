@@ -22,7 +22,7 @@ import {
 import { answerAsset } from './handlers/asset-answer.ts';
 import { routeHostedFallbackPage } from './handlers/fallback-page.ts';
 import { capturedHeaders } from './handlers/gate-capture.ts';
-import { crawledWhole, gatedEntryOf, routeEntryOf, serveGateShell } from './handlers/gate-shell.ts';
+import { gateShellEntry, serveGateShell } from './handlers/gate-shell.ts';
 import {
   type GateCapture,
   type GateDirective,
@@ -65,6 +65,7 @@ import {
 import { EDGE_MODE } from './preview/pointer.ts';
 import { notDeployed, type PreviewState } from './preview/state.ts';
 import { coloOf, forwardingFor, type IncomingRequest } from './request-context.ts';
+import { lookAtScopeOf } from './scope-look.ts';
 import type { EdgeContext, RequestTimings, StaticFileContext } from './strategies/context.ts';
 import { edgeStrategyRegistry } from './strategies/registry.ts';
 
@@ -83,7 +84,6 @@ const FALLBACK_PRIVACY = 3;
 /** A probe of one app Worker of a split deployment (`fn`, signed): that Worker's to answer. */
 const FUNCTION_PROBE = 'function-probe';
 const NOT_DEPLOYED = 'not-deployed';
-const DOCUMENT_CLASS = 'document';
 /** Why a capture its gate asked for went to the route's Function (`GateCapture`). */
 const GATE_CAPTURE = 'gate-capture';
 
@@ -158,6 +158,7 @@ function passthroughFor(
   middleware?: MiddlewareOutcome & Partial<MiddlewareTiming>,
   { route, waited, capture }: Counted = {},
 ): Promise<Response> {
+  lookAtScopeOf(input);
   const { servedAgain } = input;
   const manifestReady = 'manifestReady' in input ? input.manifestReady : undefined;
   const passthrough: PassthroughInput = {
@@ -424,20 +425,12 @@ function routeGateShell(
     return routeWithManifest(input, forwarding);
   }
   const headers = headersToClassify(manifest, request.headers, input.host.credentials, forwarding);
-  const classification = classifyRequest({
-    method: request.method,
-    url,
-    headers,
-    manifest: manifestForClassification(manifest, state.validated),
-    deployment: manifest.deployment,
-  });
-  const shellRoute = directive.shell.header.route;
-  const unproved = classification.kind === 'passthrough' ? classification.reason : undefined;
-  const entry =
-    classification.kind === DOCUMENT_CLASS
-      ? routeEntryOf(manifest, classification.entry, shellRoute)
-      : gatedEntryOf(manifest, { headers, url }, { route: shellRoute, unproved });
-  if (entry === undefined || crawledWhole(manifest, request.headers.get('user-agent'))) {
+  const entry = gateShellEntry(
+    manifest,
+    { classified: headers, request, url, validated: state.validated },
+    directive.shell.header.route,
+  );
+  if (entry === undefined) {
     return routeWithManifest(input, forwarding);
   }
   return afterPolicy(input, (ready) => {

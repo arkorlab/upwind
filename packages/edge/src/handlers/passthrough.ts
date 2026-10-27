@@ -18,6 +18,8 @@ import {
   NEXT_ROUTER_PREFETCH_HEADER,
   type RequestClass,
   RSC_HEADER,
+  keptByNobody,
+  unsharedUnlessPublic,
 } from '@stayingupwind/core/request';
 
 import { takeInvalidation } from '../cache/condemned.ts';
@@ -37,11 +39,9 @@ import {
   anonymousRequest,
   badGatewayResponse,
   forwardedResponse,
-  keptByNobody,
   mergeScopedMiddlewareHeaders,
   nominatedBy,
   safeDiagnosticField,
-  unsharedUnlessPublic,
 } from './responses.ts';
 import {
   type Dispatched,

@@ -21,6 +21,25 @@ case "$target" in
     ;;
 esac
 
+# The runtime cache a build for a host is given (`ADAPTER_TEST_CACHE`): none, the adapter alone as a
+# release gives it to a project (`none`, the default); or the cache as a host serves it from behind
+# an edge of its own (`hosted`), whose Functions learn where the scope stands from that edge alone.
+# The targets on this machine serve a cache of their own, or none, and take no other.
+cache="${ADAPTER_TEST_CACHE:-none}"
+case "$cache" in
+  none) ;;
+  hosted)
+    if [ "$target" != host ]; then
+      echo 'ADAPTER_TEST_CACHE=hosted is for a host; the targets on this machine serve their own' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo 'ADAPTER_TEST_CACHE must be none or hosted when set' >&2
+    exit 1
+    ;;
+esac
+
 # Select only the install step. The harness's build and its appended pnpm post-build stay unchanged.
 install_manager="${ADAPTER_TEST_INSTALL_MANAGER-pnpm}"
 case "$install_manager" in
@@ -86,8 +105,20 @@ export NEXT_PRIVATE_TEST_MODE=e2e
 # reads. For Cloudflare's runtime, what `upwind deploy` builds with: the runtime cache's host in every
 # Function — this checkout's own, as `upwind build` names it from its sources — and the prefetch segments
 # left out of them, for the prefetch Worker to serve. For Node.js, the native target, which writes
-# `.arkor/node/` instead of Workers. A host builds as it always did: with the adapter alone.
+# `.arkor/node/` instead of Workers. A host builds with the adapter alone, unless the run asks for the
+# runtime cache a host serves behind its own edge (`ADAPTER_TEST_CACHE=hosted`): then its host goes
+# into every Function without the beacon a standalone cache's Functions keep, so that where the scope
+# stands is what the host's edge says, as it is for a deployment the host builds itself.
 case "$target" in
+  host)
+    if [ "$cache" = hosted ]; then
+      export UPWIND_CACHE_HOST_MODULE="${adapter_dir}/packages/cache/src/function/hosted.ts"
+      if [ ! -f "$UPWIND_CACHE_HOST_MODULE" ]; then
+        echo "no runtime cache host at ${UPWIND_CACHE_HOST_MODULE}" >&2
+        exit 1
+      fi
+    fi
+    ;;
   cloudflare)
     export UPWIND_CACHE_HOST_MODULE="${adapter_dir}/packages/cache/src/function/host.ts"
     export UPWIND_UNSHIPPED_OUTPUTS=prefetch-segments
@@ -120,6 +151,7 @@ esac
 fixture() {
   env -u ARKOR_API_URL -u ARKOR_API_TOKEN -u ARKOR_API_TOKEN_FILE -u ADAPTER_TEST_PROJECT_ID \
     -u ADAPTER_TEST_SETTLE_SECONDS -u ADAPTER_TEST_INSTALL_MANAGER -u ADAPTER_TEST_TARGET \
+    -u ADAPTER_TEST_CACHE \
     COREPACK_ENABLE_STRICT=0 COREPACK_DEFAULT_TO_LATEST=0 "$@"
 }
 

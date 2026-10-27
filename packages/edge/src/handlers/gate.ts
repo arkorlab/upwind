@@ -5,6 +5,8 @@ import {
   NAVIGATION_REQUEST_HEADERS,
   PatternBudgetExceededError,
   RSC_HEADER,
+  keptByNobody,
+  unsharedUnlessPublic,
 } from '@stayingupwind/core/request';
 import {
   type BoundedBody,
@@ -52,12 +54,7 @@ import { applyCspReporting } from './csp-reporting-headers.ts';
 import { gateBodyDecodedByFetch } from './gate-body-encoding.ts';
 import { decompressLive } from './live-compression.ts';
 import { headerRulesAsRouted } from './middleware.ts';
-import {
-  forwardedResponse,
-  keptByNobody,
-  serviceUnavailableResponse,
-  unsharedUnlessPublic,
-} from './responses.ts';
+import { forwardedResponse, serviceUnavailableResponse } from './responses.ts';
 
 /**
  * A request of a route the build declared a gate for (`ProjectManifest.gates`), asked of that gate

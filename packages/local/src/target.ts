@@ -42,9 +42,10 @@ async function refusedBy(response: Response, what: string): Promise<Error> {
  * Where a build is deployed to on a stack (`DeployTarget`): its blobs from the directory it was
  * built in, and the stack's stores and cache authority through its deploy agent, at `agent`.
  */
-export function agentTarget(agent: URL, bundleDir: string): DeployTarget {
+export function agentTarget(agent: URL, bundleDir: string, token: string): DeployTarget {
+  const authorization = `Bearer ${token}`;
   const read = async (route: string): Promise<Uint8Array | undefined> => {
-    const response = await fetch(new URL(route, agent));
+    const response = await fetch(new URL(route, agent), { headers: { authorization } });
     if (response.status === HTTP_NOT_FOUND) {
       await response.body?.cancel();
       return undefined;
@@ -61,7 +62,7 @@ export function agentTarget(agent: URL, bundleDir: string): DeployTarget {
   ): Promise<void> => {
     const response = await fetch(new URL(route, agent), {
       method: 'PUT',
-      headers,
+      headers: { ...headers, authorization },
       body: bodyOf(value),
     });
     if (!response.ok) {
@@ -72,7 +73,7 @@ export function agentTarget(agent: URL, bundleDir: string): DeployTarget {
   const call = async <T>(route: string, input: unknown): Promise<T> => {
     const response = await fetch(new URL(route, agent), {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization },
       body: JSON.stringify(input),
     });
     if (!response.ok) {

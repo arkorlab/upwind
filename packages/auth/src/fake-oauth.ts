@@ -5,7 +5,7 @@ import { createAuthEndpoint } from 'better-auth/api';
 import { authorizePage } from './authorize-page.ts';
 import { type Identity, readCode, signCode } from './code.ts';
 import { DEV_PROVIDER_ID } from './dev-provider.ts';
-import { isProduction } from './environment.ts';
+import { isLocalDevelopment } from './environment.ts';
 import { overrideProviders } from './override-providers.ts';
 
 /**
@@ -129,7 +129,7 @@ function nameFor(email: string): string {
  * none, which is what a project that has written nothing but `defineAuth()` has.
  */
 function standIns(ctx: AuthContext): readonly OAuthProvider[] {
-  if (isProduction()) {
+  if (!isLocalDevelopment()) {
     return ctx.socialProviders;
   }
   const replaced =
@@ -163,7 +163,7 @@ export function fakeOAuth(): BetterAuthPlugin {
     ...overrideProviders(standIns),
     endpoints: {
       upwindFakeAuthorize: createAuthEndpoint(AUTHORIZE_PATH, { method: 'GET' }, async (c) => {
-        if (isProduction() || c.request === undefined) {
+        if (!isLocalDevelopment() || c.request === undefined) {
           // No request at all means this was reached through `auth.api`, where a Better Auth
           // endpoint is an ordinary function call. Everything below is about a browser arriving
           // somewhere — the origin to come back to, the query the form filled in — so there is
