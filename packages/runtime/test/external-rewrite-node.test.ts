@@ -155,7 +155,9 @@ describe('external rewrites over real Node HTTP', () => {
     try {
       const response = await externalRewrite(request, new URL(`http://127.0.0.1:${port}/range`));
 
-      expect(encoding).toBe('identity');
+      const codings = new Set(encoding?.split(',').map((value) => value.trim()));
+
+      expect(codings).toStrictEqual(new Set(['identity']));
       expect(request.headers.get('accept-encoding')).toBe('gzip, br');
       expect({
         status: response.status,
@@ -189,7 +191,9 @@ describe('external rewrites over real Node HTTP', () => {
         new URL(`http://127.0.0.1:${port}/range`),
       );
 
-      expect(encoding).toBe('identity');
+      const codings = new Set(encoding?.split(',').map((value) => value.trim()));
+
+      expect(codings).toStrictEqual(new Set(['identity']));
       expect(response.status).toBe(502);
       expect(response.headers.has('content-range')).toBe(false);
       await expect(response.text()).resolves.toBe('rewrite target unavailable');
