@@ -167,9 +167,16 @@ async function observeSelectedExport(
       : `.${input.specifier.slice(input.packageName.length)}`;
   const selected = selectedExport(exportEntry(metadata['exports'], relative), input.selected.kind);
   if (typeof selected !== 'string') return;
-  const canonical = await realpath(path.resolve(input.directory, selected));
-  if (!(await stat(canonical)).isFile())
-    throw new AuditError('Node package export requires an exact regular target');
+  let canonical: string;
+  try {
+    canonical = await realpath(path.resolve(input.directory, selected));
+    if (!(await stat(canonical)).isFile())
+      throw new AuditError('Node package export requires an exact regular target');
+  } catch (error) {
+    // Keep the nearer package boundary even when its selected export was already absent.
+    if (!missingTarget(error)) throw error;
+    return;
+  }
   await input.selected.target(canonical);
 }
 

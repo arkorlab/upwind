@@ -178,6 +178,25 @@ describe('required Node alias closure from authored source bytes and tiny FS dat
     await expect(nodeModuleAliases(own.sources, own.layout, own.links)).resolves.toBeUndefined();
   });
 
+  it('keeps a nearer exports boundary with an absent target instead of using a farther package', async () => {
+    const own = await fixture();
+    const entry = await copiedSource(own, 'near/entry.cjs', `require('${DEPENDENCY}');`);
+    own.required.clear();
+    own.required.add(entry);
+    const metadata = JSON.stringify({ name: DEPENDENCY, exports: './missing.cjs' });
+    await copiedSource(own, `near/node_modules/${DEPENDENCY}/package.json`, metadata);
+    await copiedSource(own, 'store/far-package/package.json', metadata);
+    await copiedSource(own, 'store/far-package/missing.cjs', `require('${SUBDEPENDENCY}');`);
+    const fartherAlias = path.join(own.root, 'node_modules', DEPENDENCY);
+    await symlink('../store/far-package', fartherAlias);
+    await unclosedDependency(own);
+
+    await expect(nodeModuleAliases(own.sources, own.layout, own.links)).resolves.toBeUndefined();
+    expect(own.links.has(own.layout.nameOf(fartherAlias))).toBe(false);
+    expect(own.links.size).toBe(0);
+    expect([...own.required]).toStrictEqual([entry]);
+  });
+
   it('does not make an unreachable trace-only JS import a required refusal', async () => {
     const own = await fixture();
     await copiedSource(own, 'trace-only.cjs', `require('${SUBDEPENDENCY}');`);
