@@ -15,7 +15,7 @@ import { nowMs } from './cache/clock.ts';
 import { type RequestContext, requestContextFor } from './cache/context.ts';
 import { catchUpWithScope } from './cache/pulls.ts';
 import { asksForCapture, handleCapture, keptByNobody } from './capture-invoke.ts';
-import { delivered } from './delivery.ts';
+import { decidedApart, delivered, handedOn } from './delivery.ts';
 import {
   crawlerWantsWholePage,
   documentFromBuild,
@@ -333,6 +333,13 @@ async function routeAndServe(
     dropHandlerBody();
     return trace.response;
   }
+  // The request as a middleware that ran handed it on, which an answer to it may have been told by
+  // as much as by what the client sent: a host that answers by the edge's rules judges both, as the
+  // edge does (`handedOn`). Not the middleware's own answer above, which the edge judges by the
+  // client's alone.
+  if (trace.requestHeaders !== undefined) {
+    handedOn(request, trace.requestHeaders);
+  }
   // A middleware that ran may still read its side after routing — work it left to `waitUntil` —
   // and that side holds no more than a proxy may read, so it stays. One that never ran leaves the
   // side to nothing, and nothing more is copied into it.
@@ -435,7 +442,11 @@ async function answerResolved(
   const { images } = store.manifest.config;
   if (images !== undefined && routed.image) {
     const image = await serveImageSource(forwarded, store, images, routed);
-    return misdirectedTo(image) === undefined ? withRoutingHeaders(image, routed.headers) : image;
+    // Handed on as it came where its source is another Function's: the hand-off knows the answer
+    // itself (`misdirectedTo`), which one made again for the mark would not be (coderabbit).
+    return misdirectedTo(image) === undefined
+      ? withRoutingHeaders(decidedApart(image), routed.headers)
+      : image;
   }
   // The status this routing named, and the headers it collected: never an outer request's.
   const asked: RoutedInput = {
@@ -503,7 +514,7 @@ async function serveResolved(
     const status = staticFileStatus(resolved.route, store.manifest.config.basePath);
     const answer = await staticFileResponse(input, store, file, status);
     if (answer !== undefined) {
-      return answer;
+      return decidedApart(answer);
     }
   }
   if (hasBody(request.method)) {

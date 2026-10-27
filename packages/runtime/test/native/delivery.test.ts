@@ -393,6 +393,18 @@ describe('answers by the edge’s rules on the native target', () => {
     expect(response.headers.get('cache-control')).toBe(VISITOR);
   });
 
+  it('passes on a page it does not share as the edge passes on the Function’s answer', () => {
+    // A lifetime routing laid over the page for everyone, to a visitor with a cookie: theirs alone.
+    const response = answered(
+      native,
+      routed('/something', { headers: { cookie: 'a=1' } }),
+      current('pages'),
+      { 'cache-control': 'public, max-age=60' },
+    );
+
+    expect(response.headers.get('cache-control')).toBe('private, max-age=60');
+  });
+
   it('shares a prerendered route body under a shared revalidation where its record has no policy', () => {
     const response = answered(native, routed('/opengraph-image'), current('app-route'));
 

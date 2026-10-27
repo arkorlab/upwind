@@ -44,6 +44,9 @@ import type { Representation } from '../representations.ts';
 import type { RoutedInput } from '../serve.ts';
 import { getStore, type Store } from '../store.ts';
 import { FIRST_RECORD_MS, firstRecord, letGo, within } from './first-record.ts';
+import { leftApart, passedOn } from './passthrough.ts';
+
+export { decidedApart, handedOn } from './passthrough.ts';
 
 /**
  * The edge's rules for what goes out as everyone's, for a host with no edge in front of it: the
@@ -70,6 +73,10 @@ import { FIRST_RECORD_MS, firstRecord, letGo, within } from './first-record.ts';
  * `next.config` and the middleware's headers over it, the client's request and the whole answer
  * decide (`delivered`): shared, or the visitor's `private, no-store` once more. The platform's
  * headers never reach a client (`writeNativeResponse`).
+ *
+ * Whatever else the runtime answered, and what of the above is left to its visitor, goes out as the
+ * edge passes a Function's answer on (`passthrough.ts`); a shipped file and an image, decided apart,
+ * as their own rules left them.
  *
  * What the edge decides from its own machinery has its counterpart here: the generation the native
  * cache holds in place of one read from the edge's store, the visitor's own cookie and
@@ -569,8 +576,10 @@ function shared(headers: Headers, made: Offer, configured: ConfiguredHeaders): b
 }
 
 export function delivered(request: Request, answer: Response): Response {
+  const apart = leftApart(answer);
+  if (apart !== undefined) return apart;
   const value = answer.headers.get(OFFER);
-  if (value === null) return answer;
+  if (value === null) return passedOn(request, answer);
   const left = answer.headers.get(OFFERED_CACHE_CONTROL) ?? '';
   const out = new Response(answer.body, answer);
   const { headers } = out;
@@ -592,8 +601,9 @@ export function delivered(request: Request, answer: Response): Response {
     }
   }
   // The visitor's, as the Function answers it on the edge — but for a `Cache-Control` routing laid
-  // over the offer, which is what it would have laid over the visitor's too.
+  // over the offer, which is what it would have laid over the visitor's too — and passed on as the
+  // edge passes on the Function's answer.
   if ((headers.get(CACHE_CONTROL) ?? '') === left)
     headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
-  return out;
+  return passedOn(request, out);
 }
