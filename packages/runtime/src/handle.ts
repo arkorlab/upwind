@@ -15,6 +15,7 @@ import { nowMs } from './cache/clock.ts';
 import { type RequestContext, requestContextFor } from './cache/context.ts';
 import { catchUpWithScope } from './cache/pulls.ts';
 import { asksForCapture, handleCapture, keptByNobody } from './capture-invoke.ts';
+import { delivered } from './delivery.ts';
 import {
   crawlerWantsWholePage,
   documentFromBuild,
@@ -627,7 +628,8 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
     }
     // Not answered before the host has recorded what the request invalidated — its headers neither,
     // nor a failure's (`onceRecorded`).
-    const response = withoutPlacementHeaders(await onceRecorded(context, routeRequest(input)));
+    const routed = withoutPlacementHeaders(await onceRecorded(context, routeRequest(input)));
+    const response = delivered(handled.request, routed);
     const answered = withoutBody(
       handled.request,
       withInvalidatedTags(response, context.invalidated),
