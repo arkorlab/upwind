@@ -397,8 +397,8 @@ export function nodeJwtCompilerSite(
 ): Node | undefined {
   if (proof === undefined) return undefined;
   const state = PROOFS.get(proof) ?? refuse(COPIED_PROOF);
-  current(state);
   if (!state.codes.has(file)) return undefined;
+  current(state);
   if (state.codes.get(file) !== code) refuse('foreign or changed rendered module');
   // Bind the supplied original parse, not a caller-constructed equivalent tree.
   if (JSON.stringify(program) !== JSON.stringify(parseAst(code))) refuse('changed audit program');

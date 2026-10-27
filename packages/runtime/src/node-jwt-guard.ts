@@ -134,12 +134,13 @@ export function installNodeJwtGuards(serverUrl: string, records: readonly unknow
   const original: unknown = descriptor?.value;
   if (typeof original !== 'function' || descriptor === undefined || !hasOwn(descriptor, 'value'))
     fail('missing default CommonJS evaluation method');
+  const originalCompile = original;
   let realm: NodeJwtRealm;
   function compile(this: unknown, ...args: unknown[]): unknown {
     const filename = args[1];
     const source = typeof filename === 'string' ? findSource(filename) : undefined;
     if (source !== undefined) assertSource(args[0], source, realm);
-    return apply(original, this, args);
+    return apply(originalCompile, this, args);
   }
   defineProperty(loader, '_compile', { ...descriptor, value: compile });
   try {
