@@ -329,7 +329,7 @@ describe('private Node JWT initialization preconditions', () => {
     expect(checking(own.realm)).not.toThrow();
   });
 
-  it.each(['Function', 'Object', 'ArrayBuffer', 'Buffer', 'process'])(
+  it.each(['Function', 'Object', 'ArrayBuffer', 'Buffer', 'Error', 'TypeError', 'process'])(
     'refuses a replacement %s root',
     (key) => {
       const own = fixture();

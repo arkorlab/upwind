@@ -73,6 +73,12 @@ assets cannot overwrite a required alias layout.
 The bootstrap guard checks the initial `NODE_ENV`, `NEXT_RUNTIME` and `TURBOPACK` properties at loader
 boundaries; changing them is unsupported. Other application environment variables remain mutable.
 
+Application error formatting remains active during ordinary execution. During synchronous
+initialization of fixed JWT/WebSocket dependencies, the guard temporarily restores the bootstrap
+`Error.prepareStackTrace` and Error prototype inspect hooks, then restores the exact application
+descriptors on success or failure. Non-reversible replacements and changes made inside that
+protected initialization are rejected; other guarded builtin properties remain immutable.
+
 Native Functions initially do not support application-supplied `cacheHandler`/`cacheHandlers` or
 `experimental.optimizeCss`. Recorded builds that enable these options are refused before
 publication. Their fixed framework loading sites also throw an explicit unsupported-option error

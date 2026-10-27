@@ -15,7 +15,12 @@ import {
   nodeInitializationBuiltins,
   type NodeInitializationBuiltins,
 } from './node-initialization-builtins.ts';
-import { assertNodeJwtRealm, captureNodeJwtRealm, type NodeJwtRealm } from './node-jwt-realm.ts';
+import {
+  assertNodeJwtRealm,
+  captureNodeJwtRealm,
+  withNodeJwtRealmErrorHooks,
+  type NodeJwtRealm,
+} from './node-jwt-realm.ts';
 import {
   assertNodeJwtSemverCache,
   assertNodeJwtSemverStart,
@@ -369,17 +374,19 @@ function installPreparedGuards(
     }
     if (hook !== undefined && filename === hook.filename) fail('Next hook cannot be reevaluated');
     if (source === undefined) return apply(originalCompile, this, args);
-    assertSource(args[0], source, realm, this);
-    const lease = enterNodeFixedLoadScope(scope, source.filename, this);
-    try {
-      const result: unknown = apply(originalCompile, this, args);
-      if (lease !== undefined) assertNodeFixedLoadScopeHealthy(scope, lease);
-      if (source.record.profile === SEMVER_PROFILE && source.semver !== undefined)
-        rememberNodeJwtSemver(source.semver, this);
-      return result;
-    } finally {
-      if (lease !== undefined) leaveNodeFixedLoadScope(scope, lease);
-    }
+    return withNodeJwtRealmErrorHooks(realm, () => {
+      assertSource(args[0], source, realm, this);
+      const lease = enterNodeFixedLoadScope(scope, source.filename, this);
+      try {
+        const result: unknown = apply(originalCompile, this, args);
+        if (lease !== undefined) assertNodeFixedLoadScopeHealthy(scope, lease);
+        if (source.record.profile === SEMVER_PROFILE && source.semver !== undefined)
+          rememberNodeJwtSemver(source.semver, this);
+        return result;
+      } finally {
+        if (lease !== undefined) leaveNodeFixedLoadScope(scope, lease);
+      }
+    });
   }
   let hooks: NodeFixedLoadHooks | undefined;
   try {

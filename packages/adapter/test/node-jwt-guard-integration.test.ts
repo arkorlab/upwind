@@ -11,6 +11,7 @@ const execute = promisify(execFile);
 const ENABLED = process.env['UPWIND_NATIVE_FUNCTION_INTEGRATION'] === '1';
 const require = createRequire(import.meta.url);
 const GUARD = new URL('../../runtime/src/node-jwt-guard.ts', import.meta.url).href;
+const REALM = new URL('../../runtime/src/node-jwt-realm.ts', import.meta.url).href;
 const RECORD = {
   schema: 1,
   profile: 'next-16.4.3-jsonwebtoken-ncc-v1',
@@ -73,6 +74,14 @@ ${after}
 }
 
 const LOAD = `const jwt=require(filename.pathname);`;
+const APPLICATION_ERROR_HOOKS = `
+const inspectKey=Symbol.for('nodejs.util.inspect.custom');
+let hookCalls=0;
+const appPrepare=()=>{hookCalls++;return 'application-stack';};
+const appInspect=()=>{hookCalls++;return 'application-inspect';};
+Object.defineProperty(Error,'prepareStackTrace',{value:appPrepare,writable:true,configurable:true,enumerable:false});
+Object.defineProperty(Error.prototype,inspectKey,{value:appInspect,writable:true,configurable:true,enumerable:false});
+`;
 
 describe.skipIf(!ENABLED)('fixed Node 24.22.1 JWT evaluation guard (dedicated Linux CI)', () => {
   it('loads the original source and preserves sign, verify and decode', async () => {
@@ -87,6 +96,62 @@ console.log('unchanged-jwt');`,
 
     expect(result).toBe('unchanged-jwt');
   });
+
+  it('preserves application error hooks around genuine protected initialization', async () => {
+    const result = await scenario(
+      '',
+      `${APPLICATION_ERROR_HOOKS}
+${LOAD}
+if(hookCalls!==0||Error.prepareStackTrace!==appPrepare||Error.prototype[inspectKey]!==appInspect)throw new Error('protected initialization changed application hooks');
+const token=jwt.sign({value:'native'},'authored-ci-key');
+if(jwt.verify(token,'authored-ci-key').value!=='native')throw new Error('verify mismatch');
+if(new Error('visible').stack!=='application-stack')throw new Error('ordinary stack formatter was lost');
+if(require('node:util').inspect(new Error('visible'))!=='application-inspect')throw new Error('ordinary inspect hook was lost');
+console.log('application-error-hooks');`,
+    );
+
+    expect(result).toBe('application-error-hooks');
+  });
+
+  it('restores application error hooks when protected source validation throws', async () => {
+    const result = await scenario(
+      '',
+      `${APPLICATION_ERROR_HOOKS}
+let refused=false;
+try {${LOAD}}catch(error){refused=String(error).includes('qualified source changed');}
+if(!refused||hookCalls!==0||Error.prepareStackTrace!==appPrepare||Error.prototype[inspectKey]!==appInspect)throw new Error('throw path lost application hooks');
+console.log('error-hooks-restored');`,
+      true,
+    );
+
+    expect(result).toBe('error-hooks-restored');
+  });
+
+  it.each(['get', 'value'])(
+    'does not invoke inherited descriptor %s getters during protected cleanup',
+    async (key) => {
+      const before = `import {captureNodeJwtRealm,assertNodeJwtRealm,withNodeJwtRealmErrorHooks} from ${JSON.stringify(REALM)};
+const isolatedRealm=captureNodeJwtRealm(globalThis,process);`;
+      const result = await scenario(
+        before,
+        `${APPLICATION_ERROR_HOOKS}
+let getterReads=0;
+const appGetter=()=>{getterReads++;return appPrepare;};
+if(${JSON.stringify(key)}==='value')Object.defineProperty(Error,'prepareStackTrace',{get:appGetter,configurable:true,enumerable:false});
+const savedPrepare=Object.getOwnPropertyDescriptor(Error,'prepareStackTrace');
+let inheritedReads=0;
+Object.defineProperty(Object.prototype,${JSON.stringify(key)},{__proto__:null,get(){inheritedReads++;return undefined;},configurable:true});
+let refused=false;
+try {withNodeJwtRealmErrorHooks(isolatedRealm,()=>assertNodeJwtRealm(isolatedRealm));}catch(error){refused=String(error).includes('Unsupported Node JWT initialization');}
+delete Object.prototype[${JSON.stringify(key)}];
+const restored=Object.getOwnPropertyDescriptor(Error,'prepareStackTrace');
+if(!refused||inheritedReads!==0||getterReads!==0||hookCalls!==0||restored.value!==savedPrepare.value||restored.get!==savedPrepare.get||Error.prototype[inspectKey]!==appInspect)throw new Error('descriptor cleanup invoked an inherited getter or lost hooks');
+console.log('descriptor-cleanup-safe');`,
+      );
+
+      expect(result).toBe('descriptor-cleanup-safe');
+    },
+  );
 
   it('checks the actual compile source before executing it', async () => {
     await expect(scenario('', LOAD, true)).rejects.toThrow('qualified source changed');

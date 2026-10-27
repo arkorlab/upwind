@@ -1,4 +1,12 @@
 import {
+  assertNodeErrorHooks,
+  captureNodeErrorHooks,
+  nodeErrorHookKey,
+  sameNodeBuiltinDescriptor as sameDescriptor,
+  withPristineNodeErrorHooks,
+  type NodeErrorHooks,
+} from './node-error-hooks.ts';
+import {
   assertNodeWsRealm,
   assertNodeWsRealmStructure,
   captureNodeWsRealm,
@@ -103,6 +111,7 @@ interface RealmState {
   readonly processProperties: readonly Property[];
   readonly builtinProperties: readonly PropertyGroup[];
   readonly snapshots: readonly ObjectSnapshot[];
+  readonly errorHooks: NodeErrorHooks;
   readonly websocket: NodeWsRealm | undefined;
 }
 /** Actual CommonJS exports captured before app evaluation; loader is the Module export. */
@@ -154,21 +163,6 @@ function inheritedData(owner: ObjectValue, key: PropertyKey): unknown {
   }
   return undefined;
 }
-function sameDescriptor(
-  left: PropertyDescriptor | undefined,
-  right: PropertyDescriptor | undefined,
-): boolean {
-  if (left === undefined || right === undefined) return left === right;
-  if (
-    left.configurable !== right.configurable ||
-    left.enumerable !== right.enumerable ||
-    hasOwn(left, 'value') !== hasOwn(right, 'value')
-  )
-    return false;
-  return hasOwn(left, 'value')
-    ? left.writable === right.writable && sameValue(left.value, right.value)
-    : left.get === right.get && left.set === right.set;
-}
 function checkProperties(owner: ObjectValue, properties: readonly Property[]): void {
   let index = 0;
   while (index < properties.length) {
@@ -180,19 +174,33 @@ function checkProperties(owner: ObjectValue, properties: readonly Property[]): v
       );
   }
 }
-function checkObject(captured: ObjectSnapshot): void {
+function checkObject(captured: ObjectSnapshot, hooks: NodeErrorHooks): void {
   const keys = ownKeys(captured.object);
-  if (
-    parentOf(captured.object) !== captured.prototype ||
-    keys.length !== captured.properties.length
-  )
+  let actual = 0;
+  let index = 0;
+  while (index < keys.length) {
+    const key = keys[index];
+    index += 1;
+    if (key === undefined || !nodeErrorHookKey(hooks, captured.object, key)) actual += 1;
+  }
+  if (parentOf(captured.object) !== captured.prototype || actual !== captured.properties.length)
     fail('a required builtin shape changed');
-  for (let index = 0; index < keys.length; index += 1)
-    if (keys[index] !== captured.properties[index]?.key)
-      fail('a required builtin key order changed');
+  index = 0;
+  let expected = 0;
+  while (index < keys.length) {
+    const key = keys[index];
+    index += 1;
+    if (key !== undefined && nodeErrorHookKey(hooks, captured.object, key)) continue;
+    if (key !== captured.properties[expected]?.key) fail('a required builtin key order changed');
+    expected += 1;
+  }
   checkProperties(captured.object, captured.properties);
 }
-function snapshot(value: ObjectValue, policy: SnapshotPolicy = 'any'): ObjectSnapshot {
+function snapshot(
+  value: ObjectValue,
+  policy: SnapshotPolicy,
+  hooks: NodeErrorHooks | undefined,
+): ObjectSnapshot {
   const keys = ownKeys(value);
   const properties: Property[] = [];
   let index = 0;
@@ -200,6 +208,7 @@ function snapshot(value: ObjectValue, policy: SnapshotPolicy = 'any'): ObjectSna
     const key = keys[index];
     index += 1;
     if (key === undefined) fail('missing builtin key');
+    if (nodeErrorHookKey(hooks, value, key)) continue;
     const item = property(value, key);
     if (
       policy === 'data' ||
@@ -282,6 +291,7 @@ class BuiltinCapture {
   readonly groups: PropertyGroup[] = [];
   readonly roots: Root[] = [];
   websocket: NodeWsRealm | undefined;
+  errorHooks: NodeErrorHooks | undefined;
 
   trustedRoot(owner: ObjectValue, key: PropertyKey): ObjectValue {
     const binding = root(owner, key);
@@ -290,7 +300,7 @@ class BuiltinCapture {
   }
 
   seal(value: ObjectValue, policy: SnapshotPolicy = 'any'): void {
-    const captured = snapshot(value, policy);
+    const captured = snapshot(value, policy, this.errorHooks);
     if (!this.values.has(value)) {
       this.values.add(value);
       this.snapshots.push(captured);
@@ -436,6 +446,8 @@ export function captureNodeJwtRealm(
     if (key === undefined) fail('missing builtin root');
     const binding = root(globalObject, key);
     roots.push(binding);
+    if (key === 'Error')
+      capture.errorHooks = captureNodeErrorHooks(binding.value, data(binding.value, 'prototype'));
     capture.seal(binding.value);
     if (key === 'Buffer') globalBuffer = binding.value;
     const prototype = data(binding.value, 'prototype');
@@ -458,6 +470,7 @@ export function captureNodeJwtRealm(
     processProperties,
     builtinProperties: freeze(capture.groups),
     snapshots: freeze(capture.snapshots),
+    errorHooks: capture.errorHooks ?? fail('missing Error hooks'),
     websocket: capture.websocket,
   };
   ambient(state);
@@ -470,6 +483,7 @@ export function captureNodeJwtRealm(
 function assertRealm(realm: NodeJwtRealm, structure: boolean): void {
   const state = getRealm(realm);
   if (state === undefined) fail('foreign realm snapshot');
+  assertNodeErrorHooks(state.errorHooks);
   if (parentOf(state.globals) !== state.globalPrototype) fail('global prototype chain changed');
   checkRoots(state);
   checkProperties(state.process, state.processProperties);
@@ -478,7 +492,7 @@ function assertRealm(realm: NodeJwtRealm, structure: boolean): void {
     const value = state.snapshots[index];
     index += 1;
     if (value === undefined) fail('missing builtin snapshot');
-    checkObject(value);
+    checkObject(value, state.errorHooks);
   }
   index = 0;
   while (index < state.builtinProperties.length) {
@@ -499,4 +513,10 @@ export function assertNodeJwtRealm(realm: NodeJwtRealm): void {
 /** Only a cached-load boundary may omit path-entry enumeration; resolvers need the full check. */
 export function assertNodeJwtRealmStructure(realm: NodeJwtRealm): void {
   assertRealm(realm, true);
+}
+
+/** Only fixed, synchronous dependency initialization temporarily uses the captured Error hooks. */
+export function withNodeJwtRealmErrorHooks<T>(realm: NodeJwtRealm, callback: () => T): T {
+  const state = getRealm(realm) ?? fail('foreign realm snapshot');
+  return withPristineNodeErrorHooks(state.errorHooks, callback);
 }
