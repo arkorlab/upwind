@@ -9,6 +9,7 @@ import { AuditError } from './dependencies.ts';
 import type { BuildFunctionInput } from './function.ts';
 import {
   nodeCachePolicyConfig,
+  nodeCachePolicyExpectedEdits,
   nodeCachePolicyPatch,
   nodeCachePolicyRemovedRanges,
 } from './node-cache-policy.ts';
@@ -290,7 +291,10 @@ export function previewCertifiedNodeCachePolicy(
   if (!nodeCachePolicyPatch.target.test(file) || record.sha256 !== digest(code))
     refuse('inspection source lacks a matching cache policy certificate');
   const result = nodeCachePolicyPatch.apply(code, file, input.patch);
-  if (result.edits !== 2 || digest(result.contents) !== record.analysisSha256)
+  if (
+    result.edits !== nodeCachePolicyExpectedEdits(code) ||
+    digest(result.contents) !== record.analysisSha256
+  )
     refuse('inspection analysis mapping changed');
   return Object.freeze({
     analysis: result.contents,

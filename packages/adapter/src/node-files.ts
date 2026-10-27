@@ -11,6 +11,7 @@ import type { NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
 import { assertNodeRelativeTopology, nodeModuleAliases } from './node-module-aliases.ts';
 import { nodeNativeAliases } from './node-native-aliases.ts';
+import type { NodeNextRewriteProof } from './node-next-rewrite-proof.ts';
 import { nodePhysicalLayout, type NodePhysicalLayout } from './node-physical-layout.ts';
 
 const MAX_FILE_BYTES = 134_217_728;
@@ -36,6 +37,12 @@ interface ModeMetadataFile {
 type ModeMetadataSelector = (
   sourcePaths: ReadonlyMap<string, string>,
 ) => Promise<readonly ModeMetadataFile[]>;
+type PhysicalFileOptions =
+  | ModeMetadataSelector
+  | {
+      readonly selectModeMetadata?: ModeMetadataSelector;
+      readonly nextRewrites?: NodeNextRewriteProof | undefined;
+    };
 interface PhysicalSources {
   readonly files: Map<string, Uint8Array>;
   readonly executable: Set<string>;
@@ -265,12 +272,19 @@ async function collectAliases(
   input: BuildFunctionInput,
   native: readonly NativeLoad[],
   sources: PhysicalSources,
-  context: { readonly layout: PhysicalLayout; readonly links: Map<string, string> },
+  context: {
+    readonly layout: PhysicalLayout;
+    readonly links: Map<string, string>;
+    readonly nextRewrites: NodeNextRewriteProof | undefined;
+  },
 ): Promise<void> {
-  const { layout, links } = context;
-  await nodeModuleAliases(sources, layout, links, async () => {
-    await traceAliases(input, layout, links);
-    await nodeNativeAliases(native, sources, layout, links);
+  const { layout, links, nextRewrites } = context;
+  await nodeModuleAliases(sources, layout, links, {
+    collectRequiredAliases: async () => {
+      await traceAliases(input, layout, links);
+      await nodeNativeAliases(native, sources, layout, links);
+    },
+    policy: { proof: nextRewrites, input },
   });
   // Keep the native guard's final check after every optional layout transaction.
   await nodeNativeAliases(native, sources, layout, links);
@@ -281,8 +295,10 @@ export async function nodePhysicalFiles(
   input: BuildFunctionInput,
   native: readonly NativeLoad[],
   metadataFiles: readonly { readonly file: string; readonly sha256: string }[] = [],
-  selectModeMetadata?: ModeMetadataSelector,
+  options?: PhysicalFileOptions,
 ): Promise<NodePhysicalFiles> {
+  const selectModeMetadata = typeof options === 'function' ? options : options?.selectModeMetadata;
+  const nextRewrites = typeof options === 'function' ? undefined : options?.nextRewrites;
   const layout = await nodePhysicalLayout(input);
   for (const load of native)
     assertNodeRelativeTopology(
@@ -295,13 +311,13 @@ export async function nodePhysicalFiles(
   for (const metadata of metadataFiles) owned.add(metadata.file);
   const sources = await physicalSources(owned, layout);
   const links = new Map<string, string>();
-  await collectAliases(input, native, sources, { layout, links });
+  await collectAliases(input, native, sources, { layout, links, nextRewrites });
   if (selectModeMetadata !== undefined) {
     // The callback sees an isolated coordinate map, never the owned bytes or collections.
     const selected = await selectModeMetadata(physicalSourcePaths(sources));
     if (await addModeMetadata(sources, layout, selected, metadataFiles)) {
       links.clear();
-      await collectAliases(input, native, sources, { layout, links });
+      await collectAliases(input, native, sources, { layout, links, nextRewrites });
     } else await nodeNativeAliases(native, sources, layout, links);
   }
   return {

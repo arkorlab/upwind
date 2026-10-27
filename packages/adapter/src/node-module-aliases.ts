@@ -6,6 +6,11 @@ import { beneath } from './build-paths.ts';
 import { AuditError } from './dependencies.ts';
 import { NodeAliasCompatibility } from './node-alias-compatibility.ts';
 import {
+  previewCertifiedNodeCachePolicy,
+  type NodeNextRewriteInput,
+  type NodeNextRewriteProof,
+} from './node-next-rewrite-proof.ts';
+import {
   nodePackageCandidate,
   nodePackageHasExports,
   nodePackageImportsDirectory,
@@ -29,6 +34,16 @@ interface NodeModuleAliasSources {
   readonly files: ReadonlyMap<string, Uint8Array>;
   readonly originals: ReadonlyMap<string, string>;
 }
+interface NodeAliasCachePolicy {
+  readonly proof: NodeNextRewriteProof | undefined;
+  readonly input: NodeNextRewriteInput;
+}
+type NodeModuleAliasOptions =
+  | (() => Promise<void>)
+  | {
+      readonly collectRequiredAliases?: () => Promise<void>;
+      readonly policy?: NodeAliasCachePolicy;
+    };
 type NameOf = PhysicalLayout['nameOf'];
 const OUTSIDE_CLOSED_TRACE = 'The first existing Node package target is outside its closed trace';
 // Only these existing resolver refusals mean an alternative supplied no closed layout evidence.
@@ -472,16 +487,33 @@ function uniqueLoads(loads: readonly NodeSourceSpecifier[]): Map<string, NodeSou
   return new Map(loads.map((load) => [`${load.kind}:${load.specifier}`, load]));
 }
 
+function aliasInventory(
+  file: string,
+  bytes: Uint8Array | undefined,
+  policy: NodeAliasCachePolicy | undefined,
+): NodeSpecifierInventory {
+  if (policy?.proof === undefined) return originalNodeSpecifierInventory(file, bytes);
+  const preview = previewCertifiedNodeCachePolicy(policy.proof, policy.input, {
+    file,
+    code: new TextDecoder().decode(bytes),
+  });
+  const analysis = preview === undefined ? bytes : new TextEncoder().encode(preview.analysis);
+  return originalNodeSpecifierInventory(file, analysis);
+}
+
 export async function nodeModuleAliases(
   sources: NodeModuleAliasSources,
   layout: PhysicalLayout,
   links: Map<string, string>,
-  collectRequiredAliases?: () => Promise<void>,
+  options?: NodeModuleAliasOptions,
 ): Promise<void> {
+  const collectRequiredAliases =
+    typeof options === 'function' ? options : options?.collectRequiredAliases;
+  const policy = typeof options === 'function' ? undefined : options?.policy;
   const context = { sources, layout, links };
   const inventories: { file: string; inventory: NodeSpecifierInventory }[] = [];
   for (const [file, name] of sources.originals) {
-    const inventory = originalNodeSpecifierInventory(file, sources.files.get(name));
+    const inventory = aliasInventory(file, sources.files.get(name), policy);
     inventories.push({ file, inventory });
   }
   // Complete every strict lookup first; no later layout hint can overwrite a required link.

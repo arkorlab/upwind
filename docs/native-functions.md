@@ -54,6 +54,13 @@ mode and closed userland partition are proved alongside the protected template. 
 does not insert a strict directive or change the shipped JavaScript. The adapter leaves the
 project's minification setting unchanged.
 
+Native Functions initially do not support application-supplied `cacheHandler`/`cacheHandlers` or
+`experimental.optimizeCss`. Recorded builds that enable these options are refused before
+publication. Their fixed framework loading sites also throw an explicit unsupported-option error
+in the Node archive, so a runtime override cannot invoke a dependency omitted by that policy.
+The default shared cache and rendering paths remain available. This policy does not replace a
+missing dependency with a stub or allow unresolved application imports.
+
 The fixed Next.js JWT dependency has a separate, source-reviewed initialization profile. It
 permits only its exact global-recovery compiler site after proving the original package, closed
 dependencies, CommonJS callers and completed route closure. The Node bootstrap checks the

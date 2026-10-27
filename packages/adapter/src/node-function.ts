@@ -439,9 +439,12 @@ export async function buildNodeFunction(
   assertNodeTarget(input, native);
   const abi = assertNativeAbi();
   const metadata = await nodeInitializationMetadata(originalProof);
-  const physical = await nodePhysicalFiles(input, native, metadata, async (sourcePaths) => {
-    await usePhysicalOriginalNodeModes(originalProof.originalModes, sourcePaths);
-    return nodeOriginalModeMetadata(originalProof.originalModes);
+  const physical = await nodePhysicalFiles(input, native, metadata, {
+    selectModeMetadata: async (sourcePaths) => {
+      await usePhysicalOriginalNodeModes(originalProof.originalModes, sourcePaths);
+      return nodeOriginalModeMetadata(originalProof.originalModes);
+    },
+    nextRewrites: originalProof.nextRewrites,
   });
   const proof = {
     ...originalProof,
