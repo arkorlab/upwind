@@ -1,11 +1,13 @@
 import {
   assertNodeErrorHooks,
   captureNodeErrorHooks,
+  captureNodeNextHooks,
   nodeErrorHookKey,
   sameNodeBuiltinDescriptor as sameDescriptor,
   withPristineNodeErrorHooks,
   type NodeErrorHooks,
 } from './node-error-hooks.ts';
+import { LOADER_ENV, PROCESS_KEYS, ROOTS, TYPE_PREDICATES } from './node-jwt-realm-fields.ts';
 import {
   assertNodeWsRealm,
   assertNodeWsRealmStructure,
@@ -24,60 +26,6 @@ const hasOwn = Object.hasOwn;
 const freeze = Object.freeze;
 const truthy = Boolean;
 const NativeError = Error;
-
-const ROOTS = [
-  'Array',
-  'ArrayBuffer',
-  'Buffer',
-  'DataView',
-  'Date',
-  'Error',
-  'Float32Array',
-  'Float64Array',
-  'Function',
-  'Int8Array',
-  'Int16Array',
-  'Int32Array',
-  'Map',
-  'Math',
-  'Number',
-  'Object',
-  'Promise',
-  'Reflect',
-  'RegExp',
-  'Set',
-  'String',
-  'Symbol',
-  'TypeError',
-  'Uint8Array',
-  'Uint8ClampedArray',
-  'Uint16Array',
-  'Uint32Array',
-  'WeakMap',
-  'clearTimeout',
-  'isFinite',
-  'parseFloat',
-  'parseInt',
-  'setTimeout',
-] as const;
-const PROCESS_KEYS = [
-  'binding',
-  'emit',
-  'emitWarning',
-  'nextTick',
-  'env',
-  'versions',
-  'version',
-] as const;
-const LOADER_ENV = ['NODE_OPTIONS', 'NODE_PATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH'] as const;
-const TYPE_PREDICATES = [
-  'isArrayBuffer',
-  'isDate',
-  'isMap',
-  'isRegExp',
-  'isSet',
-  'isTypedArray',
-] as const;
 
 type ObjectValue = Record<PropertyKey, unknown>;
 type SnapshotPolicy = 'any' | 'enumerable-data' | 'data';
@@ -163,11 +111,16 @@ function inheritedData(owner: ObjectValue, key: PropertyKey): unknown {
   }
   return undefined;
 }
-function checkProperties(owner: ObjectValue, properties: readonly Property[]): void {
+function checkProperties(
+  owner: ObjectValue,
+  properties: readonly Property[],
+  hooks?: NodeErrorHooks,
+): void {
   let index = 0;
   while (index < properties.length) {
     const item = properties[index];
     index += 1;
+    if (item !== undefined && nodeErrorHookKey(hooks, owner, item.key)) continue;
     if (item === undefined || !sameDescriptor(item.descriptor, descriptorOf(owner, item.key)))
       fail(
         `a required builtin descriptor changed (${typeof item?.key === 'string' ? item.key : '<symbol>'})`,
@@ -247,8 +200,9 @@ function checkRoots(state: RealmState): void {
   while (index < state.roots.length) {
     const binding = state.roots[index];
     index += 1;
+    if (binding === undefined) fail('a required builtin descriptor changed');
+    if (nodeErrorHookKey(state.errorHooks, binding.owner, binding.property.key)) continue;
     if (
-      binding === undefined ||
       !sameDescriptor(
         binding.property.descriptor,
         descriptorOf(binding.owner, binding.property.key),
@@ -292,6 +246,11 @@ class BuiltinCapture {
   readonly roots: Root[] = [];
   websocket: NodeWsRealm | undefined;
   errorHooks: NodeErrorHooks | undefined;
+
+  errorRoot(key: string, value: ObjectValue): void {
+    if (key === 'Error' && this.errorHooks === undefined)
+      this.errorHooks = captureNodeErrorHooks(value, data(value, 'prototype'));
+  }
 
   trustedRoot(owner: ObjectValue, key: PropertyKey): ObjectValue {
     const binding = root(owner, key);
@@ -390,6 +349,7 @@ function sealBuiltinBasis(
   capture.seal(stream);
   capture.seal(requiredObject(data(stream, 'prototype')));
   const crypto = requiredObject(data(basis, 'crypto'));
+  for (const key of ['randomBytes', 'randomFillSync']) capture.optional(crypto, key);
   capture.functions(crypto, [
     'KeyObject',
     'createSecretKey',
@@ -426,10 +386,11 @@ function captureProcess(capture: BuiltinCapture, process: ObjectValue): readonly
   return freeze(properties);
 }
 /** Capture only trusted builtin basis, before any application module is evaluated. */
-export function captureNodeJwtRealm(
+function captureRealm(
   globals: unknown,
   process: unknown,
-  builtins?: NodeJwtBuiltinBasis,
+  builtins: NodeJwtBuiltinBasis | undefined,
+  next: boolean,
 ): NodeJwtRealm {
   const globalObject = requiredObject(globals);
   const processObject = requiredObject(process);
@@ -437,6 +398,15 @@ export function captureNodeJwtRealm(
   if (!object(environment)) fail('missing Node environment');
   const capture = new BuiltinCapture();
   for (const key of ['NODE_ENV', 'NEXT_RUNTIME', 'TURBOPACK']) capture.optional(environment, key);
+  if (next) {
+    capture.errorHooks = captureNodeNextHooks({
+      globals: globalObject,
+      errorCtor: root(globalObject, 'Error').value,
+      math: root(globalObject, 'Math').value,
+      dateCtor: root(globalObject, 'Date').value,
+      crypto: data(requiredObject(builtins), 'crypto'),
+    });
+  }
   const roots = capture.roots;
   let globalBuffer: ObjectValue | undefined;
   let index = 0;
@@ -446,8 +416,7 @@ export function captureNodeJwtRealm(
     if (key === undefined) fail('missing builtin root');
     const binding = root(globalObject, key);
     roots.push(binding);
-    if (key === 'Error')
-      capture.errorHooks = captureNodeErrorHooks(binding.value, data(binding.value, 'prototype'));
+    capture.errorRoot(key, binding.value);
     capture.seal(binding.value);
     if (key === 'Buffer') globalBuffer = binding.value;
     const prototype = data(binding.value, 'prototype');
@@ -500,7 +469,7 @@ function assertRealm(realm: NodeJwtRealm, structure: boolean): void {
     index += 1;
     if (group === undefined) fail('missing builtin property group');
     if (parentOf(group.owner) !== group.prototype) fail('a required builtin shape changed');
-    checkProperties(group.owner, group.properties);
+    checkProperties(group.owner, group.properties, state.errorHooks);
   }
   if (structure) assertNodeWsRealmStructure(state.websocket);
   else assertNodeWsRealm(state.websocket);
@@ -519,4 +488,22 @@ export function assertNodeJwtRealmStructure(realm: NodeJwtRealm): void {
 export function withNodeJwtRealmErrorHooks<T>(realm: NodeJwtRealm, callback: () => T): T {
   const state = getRealm(realm) ?? fail('foreign realm snapshot');
   return withPristineNodeErrorHooks(state.errorHooks, callback);
+}
+
+/** The generic realm retains strict IO descriptors; only the two Error hooks are customizable. */
+export function captureNodeJwtRealm(
+  globals: unknown,
+  process: unknown,
+  builtins?: NodeJwtBuiltinBasis,
+): NodeJwtRealm {
+  return captureRealm(globals, process, builtins, false);
+}
+
+/** Trusted fixed Next bootstrap only, after its record/source/default-loader validation. */
+export function captureNodeNextJwtRealm(
+  globals: unknown,
+  process: unknown,
+  builtins: NodeJwtBuiltinBasis,
+): NodeJwtRealm {
+  return captureRealm(globals, process, builtins, true);
 }

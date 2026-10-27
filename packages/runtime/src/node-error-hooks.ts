@@ -14,6 +14,7 @@ interface Slot {
   readonly key: PropertyKey;
   readonly baseline: PropertyDescriptor | undefined;
 }
+type SavedDescriptors = Readonly<Record<number, PropertyDescriptor | undefined>>;
 interface State {
   readonly slots: readonly Slot[];
   depth: number;
@@ -82,16 +83,19 @@ function reversible(state: State, own: Slot, current: PropertyDescriptor | undef
   )
     poison(state);
 }
-function preflight(state: State): readonly (PropertyDescriptor | undefined)[] {
+function preflight(state: State): SavedDescriptors {
   if (state.poisoned) fail();
-  const first = state.slots[0] ?? fail();
-  const second = state.slots[1] ?? fail();
-  const descriptors = [
-    capturedDescriptor(first.owner, first.key),
-    capturedDescriptor(second.owner, second.key),
-  ];
-  reversible(state, first, descriptors[0]);
-  reversible(state, second, descriptors[1]);
+  const descriptors: Record<number, PropertyDescriptor | undefined> & { __proto__: null } = {
+    __proto__: null,
+  };
+  let index = 0;
+  while (index < state.slots.length) {
+    const own = state.slots[index] ?? fail();
+    const descriptor = capturedDescriptor(own.owner, own.key);
+    descriptors[index] = descriptor;
+    index += 1;
+    reversible(state, own, descriptor);
+  }
   return descriptors;
 }
 function put(own: Slot, descriptor: PropertyDescriptor | undefined): void {
@@ -101,7 +105,7 @@ function put(own: Slot, descriptor: PropertyDescriptor | undefined): void {
   } else defineProperty(own.owner, own.key, descriptor);
   if (!sameNodeBuiltinDescriptor(descriptorOf(own.owner, own.key), descriptor)) fail();
 }
-function restore(state: State, saved: readonly (PropertyDescriptor | undefined)[]): void {
+function restore(state: State, saved: SavedDescriptors): void {
   let index = 0;
   while (index < state.slots.length) {
     const own = state.slots[index];
@@ -116,19 +120,67 @@ function restore(state: State, saved: readonly (PropertyDescriptor | undefined)[
   }
 }
 
+function capture(slots: readonly Slot[]): NodeErrorHooks {
+  const token = freeze({ [BRAND]: true as const });
+  setState(token, { slots: freeze(slots), depth: 0, poisoned: false });
+  return token;
+}
+function data(owner: ObjectValue, key: string): unknown {
+  const descriptor = descriptorOf(owner, key);
+  if (descriptor === undefined || !hasOwn(descriptor, 'value')) fail();
+  const value: unknown = descriptor.value;
+  return value;
+}
+function requiredObject(value: unknown): ObjectValue {
+  return object(value) ? value : fail();
+}
+function constructorPrototype(value: unknown): ObjectValue {
+  if (typeof value !== 'function' || !object(value)) fail();
+  return requiredObject(data(value, 'prototype'));
+}
+
 /** Trusted pre-app Error owners only; capture DATA/absence without invoking either hook. */
 export function captureNodeErrorHooks(errorCtor: unknown, prototype: unknown): NodeErrorHooks {
-  if (typeof errorCtor !== 'function' || !object(errorCtor) || !object(prototype)) fail();
-  const descriptor = descriptorOf(errorCtor, 'prototype');
-  if (descriptor === undefined || !hasOwn(descriptor, 'value') || descriptor.value !== prototype)
+  if (constructorPrototype(errorCtor) !== prototype || !object(errorCtor) || !object(prototype))
     fail();
-  const token = freeze({ [BRAND]: true as const });
-  setState(token, {
-    slots: freeze([slot(errorCtor, 'prepareStackTrace'), slot(prototype, INSPECT)]),
-    depth: 0,
-    poisoned: false,
-  });
-  return token;
+  return capture([slot(errorCtor, 'prepareStackTrace'), slot(prototype, INSPECT)]);
+}
+
+/** Only the validated fixed Next bootstrap uses this finite seven-slot descriptor profile. */
+export function captureNodeNextHooks(input: {
+  readonly globals: unknown;
+  readonly errorCtor: unknown;
+  readonly math: unknown;
+  readonly dateCtor: unknown;
+  readonly crypto: unknown;
+}): NodeErrorHooks {
+  const supplied = requiredObject(input);
+  const globals = requiredObject(data(supplied, 'globals'));
+  const errorCtor = requiredObject(data(supplied, 'errorCtor'));
+  const math = requiredObject(data(supplied, 'math'));
+  const dateCtor = requiredObject(data(supplied, 'dateCtor'));
+  const crypto = requiredObject(data(supplied, 'crypto'));
+  const errorPrototype = constructorPrototype(errorCtor);
+  const datePrototype = constructorPrototype(dateCtor);
+  if (
+    data(globals, 'Error') !== errorCtor ||
+    data(globals, 'Date') !== dateCtor ||
+    data(globals, 'Math') !== math ||
+    data(datePrototype, 'constructor') !== dateCtor ||
+    typeof data(math, 'random') !== 'function' ||
+    typeof data(crypto, 'randomBytes') !== 'function' ||
+    typeof data(crypto, 'randomFillSync') !== 'function'
+  )
+    fail();
+  return capture([
+    slot(errorCtor, 'prepareStackTrace'),
+    slot(errorPrototype, INSPECT),
+    slot(math, 'random'),
+    slot(globals, 'Date'),
+    slot(datePrototype, 'constructor'),
+    slot(crypto, 'randomBytes'),
+    slot(crypto, 'randomFillSync'),
+  ]);
 }
 
 /** Read-only health check; customizable descriptors must remain synchronously reversible. */
@@ -144,18 +196,19 @@ export function nodeErrorHookKey(
 ): boolean {
   if (hooks === undefined) return false;
   const state = stored(hooks);
-  const first = state.slots[0];
-  const second = state.slots[1];
-  return (
-    (first !== undefined && first.owner === owner && first.key === key) ||
-    (second !== undefined && second.owner === owner && second.key === key)
-  );
+  let index = 0;
+  while (index < state.slots.length) {
+    const own = state.slots[index];
+    index += 1;
+    if (own !== undefined && own.owner === owner && own.key === key) return true;
+  }
+  return false;
 }
 
 /** Synchronous protected initialization only; ordinary application formatting stays installed. */
 export function withPristineNodeErrorHooks<T>(token: NodeErrorHooks, callback: () => T): T {
   const state = stored(token);
-  // Check BOTH slots before installing either baseline, including restoration feasibility.
+  // Check ALL slots before installing any baseline, including restoration feasibility.
   const saved = preflight(state);
   state.depth += 1;
   let installed = false;

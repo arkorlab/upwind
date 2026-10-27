@@ -79,6 +79,11 @@ initialization of fixed JWT/WebSocket dependencies, the guard temporarily restor
 descriptors on success or failure. Non-reversible replacements and changes made inside that
 protected initialization are rejected; other guarded builtin properties remain immutable.
 
+With the qualified Next.js bootstrap, the same scoped restoration supports framework IO wrappers
+for `Math.random`, the global `Date` constructor and its original prototype constructor, and the
+builtin crypto `randomBytes`/`randomFillSync` functions. Those wrappers stay active during ordinary
+rendering and revalidation. Generic JWT/WebSocket installations keep their stricter IO checks.
+
 Native Functions initially do not support application-supplied `cacheHandler`/`cacheHandlers` or
 `experimental.optimizeCss`. Recorded builds that enable these options are refused before
 publication. Their fixed framework loading sites also throw an explicit unsupported-option error

@@ -18,6 +18,7 @@ import {
 import {
   assertNodeJwtRealm,
   captureNodeJwtRealm,
+  captureNodeNextJwtRealm,
   withNodeJwtRealmErrorHooks,
   type NodeJwtRealm,
 } from './node-jwt-realm.ts';
@@ -442,7 +443,10 @@ function installPreparedGuards(
     for (const source of sources) byFilename.set(source.filename, source);
     defineProperty(loader, '_compile', { ...descriptor, value: compile });
     for (const [name, value] of captured.values) builtins.set(name, value);
-    realm = captureNodeJwtRealm(globalThis, process, captured.basis);
+    realm =
+      hook === undefined
+        ? captureNodeJwtRealm(globalThis, process, captured.basis)
+        : captureNodeNextJwtRealm(globalThis, process, captured.basis);
     hook?.complete({ load: hooks.load, require: hooks.require, compile });
     hookReady = true;
     installation.completed = true;

@@ -9,7 +9,7 @@ import { nodeInitializationBuiltins } from './node-initialization-builtins.ts';
 import {
   assertNodeJwtRealm,
   assertNodeJwtRealmStructure,
-  captureNodeJwtRealm,
+  captureNodeNextJwtRealm,
 } from './node-jwt-realm.ts';
 import { assertNodeNextHookMap, captureNodeNextHookMap } from './node-next-hook-map.ts';
 import { nodeNextHookRecord } from './node-next-hook-record.ts';
@@ -257,7 +257,11 @@ export function initializeNodeNextRequireHook(
   const compileSlot = slot(Module.prototype, '_compile');
   const originalCompile = method(compileSlot.descriptor.value);
   const originalResolve = method(resolveSlot.descriptor.value);
-  const realm = captureNodeJwtRealm(globalThis, process, nodeInitializationBuiltins(require).basis);
+  const realm = captureNodeNextJwtRealm(
+    globalThis,
+    process,
+    nodeInitializationBuiltins(require).basis,
+  );
   const initialContext = context(filename);
   let currentModule: ObjectValue | undefined;
   let hookNamespace: unknown;

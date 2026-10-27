@@ -22,12 +22,32 @@ const RECORD = {
   sha256: 'e82f0ceba88d025c725ea3062974ad9d7a54a892df8c34a525cb129202387db8',
   bytes: 3066,
 };
+const JWT_RECORD = {
+  schema: 1,
+  profile: 'next-16.4.3-jsonwebtoken-ncc-v1',
+  nodeVersion: '24.22.1',
+  archivePath: 'node_modules/next/dist/compiled/jsonwebtoken/index.js',
+  sha256: '056c2dddba96faa35f4dc0740228a241990561290ff3bd5456c7c7dbc5a7a6b9',
+  bytes: 121_051,
+};
 interface Options {
   readonly before?: string;
   readonly changed?: boolean;
   readonly install?: string;
   readonly aliases?: boolean;
   readonly edge?: boolean;
+  readonly jwt?: boolean;
+  readonly jwtChanged?: boolean;
+}
+
+async function copyJwt(directory: string, changed: boolean): Promise<void> {
+  const jwt = path.join(directory, JWT_RECORD.archivePath);
+  const semver = path.join(directory, 'node_modules/next/dist/lib/semver-noop.js');
+  await mkdir(path.dirname(jwt), { recursive: true });
+  await mkdir(path.dirname(semver), { recursive: true });
+  await copyFile(require.resolve('next/dist/compiled/jsonwebtoken'), jwt);
+  await copyFile(require.resolve('next/dist/lib/semver-noop'), semver);
+  if (changed) await writeFile(jwt, `${await readFile(jwt, 'utf8')}\nglobalThis.changed=true;`);
 }
 
 /** Real Node/Next execution belongs only to the dedicated Linux CI lane. */
@@ -75,6 +95,7 @@ async function scenario(after: string, options: Options = {}): Promise<string> {
       });
     }
     const config = { record: RECORD, aliases, sharedRuntimeEdges };
+    if (options.jwt === true) await copyJwt(directory, options.jwtChanged === true);
     await writeFile(
       server,
       `import {createRequire,Module} from 'node:module';
@@ -83,8 +104,9 @@ import {initializeNodeNextRequireHook} from ${JSON.stringify(BOOTSTRAP)};
 const require=createRequire(import.meta.url);
 const hook=new URL('../${HOOK}',import.meta.url).pathname;
 const config=${JSON.stringify(config)};
+const records=${JSON.stringify(options.jwt === true ? [JWT_RECORD] : [])};
 ${options.before ?? ''}
-${options.install ?? 'installNodeJwtGuards(import.meta.url,[],config);'}
+${options.install ?? 'installNodeJwtGuards(import.meta.url,records,config);'}
 ${after}
 `,
     );
@@ -99,7 +121,89 @@ ${after}
   }
 }
 
+const APPLICATION_IO_HOOKS = `
+const nodeCrypto=require('node:crypto');
+const OriginalDate=Date,originalRandom=Math.random;
+const originalBytes=nodeCrypto.randomBytes,originalFill=nodeCrypto.randomFillSync;
+let ioCalls=0;
+const appRandom=()=>{ioCalls++;return originalRandom();};
+const appDate=Object.defineProperties(function Date(...args){
+ioCalls++;return new.target===undefined?Reflect.apply(OriginalDate,undefined,args):Reflect.construct(OriginalDate,args,new.target);
+},Object.getOwnPropertyDescriptors(OriginalDate));
+appDate.now=()=>{ioCalls++;return OriginalDate.now();};
+const appBytes=(...args)=>{ioCalls++;return Reflect.apply(originalBytes,nodeCrypto,args);};
+const appFill=(...args)=>{ioCalls++;return Reflect.apply(originalFill,nodeCrypto,args);};
+Math.random=appRandom;globalThis.Date=appDate;
+Object.defineProperty(OriginalDate.prototype,'constructor',{value:appDate});
+nodeCrypto.randomBytes=appBytes;nodeCrypto.randomFillSync=appFill;
+const ioSlots=[[Math,'random'],[globalThis,'Date'],[OriginalDate.prototype,'constructor'],[nodeCrypto,'randomBytes'],[nodeCrypto,'randomFillSync']];
+const savedIo=ioSlots.map(([owner,key])=>Object.getOwnPropertyDescriptor(owner,key));
+const loadJwt=()=>require('../node_modules/next/dist/compiled/jsonwebtoken/index.js');
+`;
+
+const ASSERT_IO_RESTORED = `
+for(let index=0;index<ioSlots.length;index++){
+const [owner,key]=ioSlots[index],saved=savedIo[index],actual=Object.getOwnPropertyDescriptor(owner,key);
+if(actual.value!==saved.value||actual.get!==saved.get||actual.set!==saved.set||actual.writable!==saved.writable||actual.configurable!==saved.configurable||actual.enumerable!==saved.enumerable)throw new Error('IO hook descriptor changed');
+}
+if(ioCalls!==0)throw new Error('application IO hook ran during protected initialization');
+`;
+
 describe.skipIf(!ENABLED)('fixed Next require-hook bootstrap (dedicated Linux CI)', () => {
+  it('preserves Next IO hooks across cached loads and genuine protected JWT initialization', async () => {
+    const result = await scenario(
+      `${APPLICATION_IO_HOOKS}
+require('node:path');const jwt=loadJwt();
+${ASSERT_IO_RESTORED}
+const token=jwt.sign({value:'native'},'authored-ci-key');
+if(jwt.verify(token,'authored-ci-key').value!=='native')throw new Error('JWT mismatch');
+ioCalls=0;Date.now();new Date();Date();Math.random();nodeCrypto.randomBytes(1);nodeCrypto.randomFillSync(Buffer.alloc(1));
+if(ioCalls!==6)throw new Error('ordinary IO hooks were lost');
+console.log('next-io-hooks');`,
+      { jwt: true },
+    );
+
+    expect(result).toBe('next-io-hooks');
+  });
+
+  it('never invokes application IO getters during health checks or protected initialization', async () => {
+    const result = await scenario(
+      `${APPLICATION_IO_HOOKS}
+let getterCalls=0;
+for(let index=0;index<ioSlots.length;index++){
+const [owner,key]=ioSlots[index],saved=savedIo[index];
+Object.defineProperty(owner,key,{configurable:true,enumerable:saved.enumerable,get(){getterCalls++;return saved.value;}});
+savedIo[index]=Object.getOwnPropertyDescriptor(owner,key);
+}
+require('node:path');const jwt=loadJwt();
+${ASSERT_IO_RESTORED}
+if(getterCalls!==0||typeof jwt.verify!=='function')throw new Error('IO getter ran');
+console.log('opaque-next-io');`,
+      { jwt: true },
+    );
+
+    expect(result).toBe('opaque-next-io');
+  });
+
+  it('restores every Next IO descriptor when fixed source validation fails', async () => {
+    const result = await scenario(
+      `${APPLICATION_IO_HOOKS}
+let refused=false;try{loadJwt();}catch(error){refused=String(error).includes('qualified source changed');}
+${ASSERT_IO_RESTORED}
+if(!refused)throw new Error('changed JWT was not refused');
+console.log('next-io-restored');`,
+      { jwt: true, jwtChanged: true },
+    );
+
+    expect(result).toBe('next-io-restored');
+  });
+
+  it('still refuses changes to other Math methods with a qualified Next hook', async () => {
+    await expect(scenario("Math.floor=()=>0;require('node:path');")).rejects.toThrow(
+      'required builtin',
+    );
+  });
+
   it('preserves the original hook exports, default aliases and ordinary Node loads', async () => {
     const result = await scenario(
       `const value=require(hook);
