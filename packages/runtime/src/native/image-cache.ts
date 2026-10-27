@@ -39,7 +39,9 @@ import { encoderAvailable, holdsImage } from './image-encoder.ts';
  * in a directory of the images' own under the server's cache root, and as many bytes of them as
  * `images.maximumDiskCacheSize` allows — absent, half the disk free where they are kept — the ones
  * used longest ago let go first (`getOrInitDiskLRU`). An image past its lifetime is a miss and is let
- * go when it is read, and every hour the directory is looked over for the ones nobody read since.
+ * go when it is read, and every hour the directory is looked over for the ones nobody read since —
+ * and sooner where this server has written an eighth of what may be kept since it last looked, so
+ * that what another server sharing the directory writes is counted too.
  */
 
 const KIB = 1024;
@@ -233,6 +235,14 @@ interface Found {
   readonly written: number;
 }
 
+/**
+ * The share of what may be kept that this server writes, since it last looked the directory over,
+ * before it looks again: another server may share the directory, and what it writes is counted only
+ * by a look (greptile). Each server then keeps at most this share past what may be kept between
+ * looks, rather than as much as is allowed until the hour's.
+ */
+const LOOK_AFTER_SHARE_DIVISOR = 8;
+
 /** The images kept in one directory, and what of the disk they take, by when each was last used. */
 class DiskImages {
   readonly #directory: string;
@@ -253,6 +263,8 @@ class DiskImages {
   #letGoDuringLook: Set<string> | undefined;
   /** Whether the index has been read off the directory: until then, a use is kept aside. */
   #indexReady = false;
+  /** The bytes this server wrote since it last looked the directory over. */
+  #writtenSinceLook = 0;
   /**
    * The images used before the index was read off the directory, by when: the first look orders
    * each by the later of its use and its write (Codex, greptile). A server started again would
@@ -297,8 +309,15 @@ class DiskImages {
     }
     await this.#exclusive(async () => {
       this.#count(name, bytes.byteLength);
+      this.#writtenSinceLook += bytes.byteLength;
       await this.#evict();
     });
+    if (
+      this.#limit !== undefined &&
+      this.#writtenSinceLook > this.#limit / LOOK_AFTER_SHARE_DIVISOR
+    ) {
+      await this.#sweep();
+    }
   }
 
   /** `work`, in its turn: after whatever else changes the index has had its own. */
@@ -349,6 +368,7 @@ class DiskImages {
    */
   async #sweep(): Promise<void> {
     await this.#exclusive(async () => {
+      this.#writtenSinceLook = 0;
       const letGo = new Set<string>();
       this.#letGoDuringLook = letGo;
       try {

@@ -1,7 +1,7 @@
 /* eslint-disable security/detect-non-literal-fs-filename -- Every path belongs to a test-created directory. */
 import { createHash } from 'node:crypto';
 import type * as Fs from 'node:fs/promises';
-import { mkdtemp, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -347,6 +347,34 @@ describe('images the native target keeps', () => {
     await expect(hitOf(first)).resolves.toBeDefined();
     await expect(hitOf(second)).resolves.toBeUndefined();
     await expect(hitOf(third)).resolves.toBeDefined();
+  });
+
+  it('looks the directory over again as another server sharing it writes to it (greptile)', async () => {
+    const image = { ...IMAGE, bytes: new Uint8Array(700) };
+    const allowed = 8000;
+    configureImageCache({ directory, maxBytes: allowed });
+    const own = [0, 1, 2, 3].map((index) =>
+      inputOf({ params: { ...PARAMS, href: `/own-${String(index)}.png` } }),
+    );
+    await kept(own[0]!, image);
+    // Another server sharing the directory: as many entries again as are allowed, of its own.
+    const entry = await readFile(fileOf(own[0]!));
+    for (let index = 0; index < 12; index += 1) {
+      await writeFile(path.join(directory, `other-${String(index)}.img`), entry);
+    }
+
+    // This server writes on, past an eighth of what may be kept since it looked.
+    for (const input of own.slice(1)) {
+      await kept(input, image);
+    }
+
+    const names = await readdir(directory);
+    const sizes = await Promise.all(
+      names.map(async (name) => (await stat(path.join(directory, name))).size),
+    );
+
+    expect(sizes.reduce((sum, size) => sum + size, 0)).toBeLessThanOrEqual(allowed);
+    await expect(hitOf(own[3]!)).resolves.toBeDefined();
   });
 
   it('counts an image read after a restart, before anything is written, as used (Codex, greptile)', async () => {
