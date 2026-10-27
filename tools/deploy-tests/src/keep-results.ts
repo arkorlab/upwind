@@ -5,17 +5,17 @@ import { parseArgs } from 'node:util';
 import { keptSuite, listedSuites } from './results.ts';
 
 /**
- * Keeps a shard's results for a compatibility record in `--output` (`results.ts`): who measured what
- * (`metadata.json`), beside the suites the shard was to run (`expected-tests.txt`) and the runner's
- * exit code (`runner-exit-code.txt`), which the workflow wrote there before, and for each of those
- * suites that left a result, `results/<suite>.json`. A suite that left none — the shard stopped, or
- * the suite never started — has no file, which is how the record finds it incomplete; so has one
- * whose result cannot be read as Jest's, said here by its path alone.
+ * Keeps a shard's results for a compatibility record in `--output` (`results.ts`): who measured
+ * what (`metadata.json`), beside the suites the shard was to run (`expected-tests.txt`) and the
+ * runner's exit code (`runner-exit-code.txt`, where it ran), which the workflow wrote there before,
+ * and for each of those suites that left a result, `results/<suite>.json`. A suite that left none —
+ * the shard stopped, or the suite never started — has no file, which is how the record finds it
+ * incomplete; so has one whose result cannot be read as Jest's, said here by its path alone.
  *
  * The identity is the workflow's, through the environment: the run and its attempt, when the plan
- * was made and when this shard ended, the selection and how many pieces it was cut into, this shard,
- * where each application was served and with which cache, and the commits of Next.js and of this
- * adapter.
+ * was made and when this shard ended, the selection and how many pieces it was cut into, this
+ * shard, where each application was served and with which cache, and the commits of Next.js and of
+ * this adapter.
  */
 const { values } = parseArgs({
   options: {

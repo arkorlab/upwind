@@ -462,6 +462,12 @@ jobs:
           # shellcheck disable=SC2086 -- both are several words, or none, on purpose
           node run-tests.js --type e2e $group $paths --print-tests >"$listing"
           count="$(grep -Ec '^[[:space:]]*test/[^[:space:]]+\.test\.[jt]sx?[[:space:]]*$' "$listing" || true)"
+          # A selection named by path that the manifest leaves nothing of would run nothing and pass,
+          # and its results would say so: refused here instead. `all` is the manifest's own.
+          if [ "$count" -eq 0 ] && [ -n "$paths" ]; then
+            echo 'the deploy manifest leaves none of the suites named: the run would run none' >&2
+            exit 1
+          fi
           echo "shard $SHARD: $count suite(s) listed" >>"$GITHUB_STEP_SUMMARY"
       # Downloads and apt: a stall is tried again rather than holding the shard until the job's limit,
       # as two shards were held on 2026-10-26, five and a half hours each before they were cancelled.

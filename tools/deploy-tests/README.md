@@ -124,7 +124,8 @@ Each shard of a run on a host keeps a public artifact, `deploy-results-<run>-<at
 a compatibility record to be made from: `metadata.json` (the run and its attempt, when it was planned
 and when the shard ended, the selection and its pieces, the target, the cache, and the commits of
 Next.js and of this adapter), `expected-tests.txt` (the suites the shard was to run, listed before it
-ran them, so that one it never reached is known to be missing), `runner-exit-code.txt`, and
+ran them, so that one it never reached is known to be missing), `runner-exit-code.txt` (where the
+runner ran: a shard whose setup failed before it has none, rather than a code nothing returned), and
 `results/<suite>.json` for each suite that left a result (`src/keep-results.ts`). A result keeps each
 case's names and status and nothing it said — no message, no application URL, no project — except
 that a case failed only by Jest's `test.failing` refusal, its body having completed, says so
