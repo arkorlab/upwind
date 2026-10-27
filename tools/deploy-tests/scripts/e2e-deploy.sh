@@ -196,6 +196,11 @@ case "${JEST_SUITE_NAME:-}" in
     export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--experimental-transform-types"
     echo 'a suite of a next.config Node.js loads itself: built with that loader, as Next.js builds it' >&2
     ;;
+  *test/e2e/app-dir/non-ascii-cache-item-name/*)
+    # Scratch only: the fixture keeps its own cache handler unless VERCEL is set.
+    export VERCEL=1
+    echo 'scratch: VERCEL=1 for this build' >&2
+    ;;
 esac
 
 # What the build says is what `next.cliOutput` is read from, so it has to be kept and not only shown:
