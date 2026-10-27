@@ -4,7 +4,11 @@ export {
   UPWIND_AUTH_LOCAL_DEV_ENV,
   UPWIND_AUTH_SECRET_ENV,
 } from './auth.ts';
-export { UPWIND_CACHE_HOST_MODULE_ENV, UPWIND_UNSHIPPED_OUTPUTS_ENV } from './deploy.ts';
+export {
+  UPWIND_CACHE_HOST_MODULE_ENV,
+  UPWIND_UNSHIPPED_OUTPUTS_ENV,
+  UPWIND_UNSHIPPED_PRERENDER_BODIES_ENV,
+} from './deploy.ts';
 export {
   isUpwindInternalPath,
   UPWIND_DEV_ADDRESS_ENV,
