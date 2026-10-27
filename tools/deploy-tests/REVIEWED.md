@@ -112,13 +112,14 @@ vercel/next.js#99706 from v16.5.0-canary.16. Its `#loading-component` never show
 
 #### `vary-params-base-dynamic`
 
-Any of its cases (3 of 15 failed once on `cloudflare`). The test's `act` waits 500 ms for at least
-one request to start. But the prefetches it means to catch are started by the page's own links as it
-loads, and are over before `act` begins when the browser is slow to get there. Started at once after
-hydration, `act` never timed out. Started 50 ms after, it timed out in 4 of 10 runs on `next start`
-16.4.3 with no adapter, and in 14 of 20 on each target; started 400 ms after, in every run. A fix
-upstream is planned. The judge reads only `act`'s own timeout ("Timed out waiting for a request to be
-initiated").
+Any of its cases (3 of 15 failed once on `cloudflare`). The test reveals an accordion's link inside
+`act`, which waits 500 ms for at least one request to start. The home page it starts from also shows
+links to the same routes, which can prefetch them when they enter the viewport, before `act` starts;
+where those prefetches finish first, the revealed link is served from the cache and starts nothing.
+Started at once after hydration, `act` never timed out. Started 50 ms after, it timed out in 4 of 10
+runs on `next start` 16.4.3 with no adapter, and in 14 of 20 on each target; started 400 ms after, in
+every run. vercel/next.js#100776 starts the test from a page whose only links are the accordions'.
+The judge reads only `act`'s own timeout ("Timed out waiting for a request to be initiated").
 
 ### The environment
 
