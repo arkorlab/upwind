@@ -438,6 +438,8 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     graph: manifestGraph,
     originalModes,
     patches: graph.patches,
+    rewrites: nextRewrites,
+    rewriteInput: { projectDir: input.projectDir, patch: input.patch, entries: input.entries },
     context: {
       distDir: input.patch.distDir,
       instrumentation: input.patch.instrumentation,

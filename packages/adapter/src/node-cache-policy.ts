@@ -47,6 +47,32 @@ function refuse(reason: string): never {
   throw new AuditError(`Native Node custom-cache policy ${reason}; refusing native publication`);
 }
 
+interface RemovedRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+function removedRange(source: string, pattern: RegExp): RemovedRange {
+  pattern.lastIndex = 0;
+  const matches = [...source.matchAll(pattern)];
+  const match = matches[0];
+  if (match === undefined || matches.length !== 1) refuse('import edit bounds');
+  return Object.freeze({ start: match.index, end: match.index + match[0].length });
+}
+
+/** Original-offset DATA from the same two physical policy patterns; not rewrite authority. */
+export function nodeCachePolicyRemovedRanges(source: string): readonly RemovedRange[] {
+  const ranges = [
+    removedRange(source, HANDLERS_IMPORT),
+    removedRange(source, HANDLER_IMPORT),
+  ].toSorted((left, right) => left.start - right.start);
+  const first = ranges[0];
+  const second = ranges[1];
+  if (first === undefined || second === undefined || first.end > second.start)
+    refuse('overlapping import edit bounds');
+  return Object.freeze(ranges);
+}
+
 function assertObjectKeys(node: Node): void {
   if (node.type !== 'ObjectExpression') return;
   const names = new Set<string>();

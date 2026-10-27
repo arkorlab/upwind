@@ -9,6 +9,7 @@ import {
   type NodeJwtGuardRecord,
 } from './node-jwt-compiler-proof.ts';
 import { nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
+import { nodeJwtCallerPolicyArchiveInspection } from './node-jwt-unused-cache-import.ts';
 import {
   rewriteCertifiedNodeNextFile,
   type NodeNextRewriteProof,
@@ -51,7 +52,17 @@ async function assertCaller(
       refuse('caller changed without its existing exact rewrite certificate');
   }
   const code = Buffer.from(bytes).toString('utf8');
-  if (caller.specifiers.some((specifier) => !nodeJwtRequireOnly(code, specifier)))
+  const inspection =
+    caller.policy === undefined
+      ? code
+      : nodeJwtCallerPolicyArchiveInspection(caller.policy, {
+          rewrites,
+          input: files.input,
+          file: caller.file,
+          name,
+          code,
+        });
+  if (caller.specifiers.some((specifier) => !nodeJwtRequireOnly(inspection, specifier)))
     refuse('archived caller lost its literal CommonJS load role');
 }
 

@@ -7,7 +7,11 @@ import type { OutputChunk } from 'rolldown';
 import { jsLiteral } from './codegen.ts';
 import { AuditError } from './dependencies.ts';
 import type { BuildFunctionInput } from './function.ts';
-import { nodeCachePolicyConfig, nodeCachePolicyPatch } from './node-cache-policy.ts';
+import {
+  nodeCachePolicyConfig,
+  nodeCachePolicyPatch,
+  nodeCachePolicyRemovedRanges,
+} from './node-cache-policy.ts';
 import { reviewedFrameworkSource } from './node-manifest-framework.ts';
 import type { ManifestModuleGraph, ManifestRouteSource } from './node-manifest-graph.ts';
 import type { NodeManifestNormalization } from './node-manifest-normalization.ts';
@@ -264,6 +268,34 @@ function assertContext(input: NodeNextRewriteInput, state: StoredProof): void {
 
 function patchFor(file: string) {
   return POLICY_PATCHES.find((patch) => patch.target.test(file));
+}
+
+/** A private certificate-backed inspection preview; no physical archive bookkeeping is changed. */
+export function previewCertifiedNodeCachePolicy(
+  proof: NodeNextRewriteProof | undefined,
+  input: NodeNextRewriteInput,
+  original: { readonly file: string; readonly code: string },
+):
+  | {
+      readonly analysis: string;
+      readonly removed: readonly { readonly start: number; readonly end: number }[];
+    }
+  | undefined {
+  if (proof === undefined) return undefined;
+  const state = stored(proof);
+  assertContext(input, state);
+  const { file, code } = original;
+  const record = state.records.get(file);
+  if (record?.patch !== nodeCachePolicyPatch.name) return undefined;
+  if (!nodeCachePolicyPatch.target.test(file) || record.sha256 !== digest(code))
+    refuse('inspection source lacks a matching cache policy certificate');
+  const result = nodeCachePolicyPatch.apply(code, file, input.patch);
+  if (result.edits !== 2 || digest(result.contents) !== record.analysisSha256)
+    refuse('inspection analysis mapping changed');
+  return Object.freeze({
+    analysis: result.contents,
+    removed: nodeCachePolicyRemovedRanges(code),
+  });
 }
 
 /** Every physical policy rewrite needs its own completed source/caller certificate. */

@@ -7,6 +7,10 @@ import { parseAst } from 'rolldown/parseAst';
 import { AuditError } from './dependencies.ts';
 import { isNode, type Node } from './lexical-scope.ts';
 import { nodeJwtGlobalRecoverySite, nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
+import {
+  nodeJwtCallerInspection,
+  type NodeJwtCallerPolicyProof,
+} from './node-jwt-unused-cache-import.ts';
 import type { ManifestGraphFile, ManifestModuleGraph } from './node-manifest-graph.ts';
 import {
   assertCurrentNodeManifestHandlerFiles,
@@ -19,6 +23,7 @@ import {
   type NodeManifestIdentitySnapshot,
 } from './node-manifest-identity-snapshot.ts';
 import type { NodeManifestProof } from './node-manifest-proof.ts';
+import type { NodeNextRewriteInput, NodeNextRewriteProof } from './node-next-rewrite-proof.ts';
 import {
   assertOriginalCommonJsMode,
   assertOriginalNodeModesGraph,
@@ -50,6 +55,8 @@ export interface NodeJwtCompilerInput {
   readonly patches: readonly AppliedPatch[];
   readonly context: Parameters<typeof checkedNodeRouteRewriteSources>[0]['context'];
   readonly manifests: Pick<NodeManifestProof, 'routeRewriteApprovals' | 'normalization'>;
+  readonly rewrites?: NodeNextRewriteProof | undefined;
+  readonly rewriteInput?: NodeNextRewriteInput | undefined;
 }
 export interface NodeJwtGuardRecord {
   readonly schema: 1;
@@ -70,6 +77,7 @@ interface Directory {
 }
 interface Caller extends ManifestGraphFile {
   readonly specifiers: readonly string[];
+  readonly policy?: NodeJwtCallerPolicyProof | undefined;
 }
 interface State {
   readonly input: NodeJwtCompilerInput;
@@ -77,6 +85,8 @@ interface State {
   readonly data: ManifestModuleGraph;
   readonly originals: ReadonlyMap<string, ManifestGraphFile>;
   readonly scope: OriginalNodeModeScope;
+  readonly rewrites: NodeNextRewriteProof | undefined;
+  readonly rewriteInput: NodeNextRewriteInput | undefined;
   readonly patched: ReadonlySet<string>;
   readonly callers: Map<string, Caller>;
   readonly files: NodeManifestHandlerFile[];
@@ -209,8 +219,16 @@ async function callerIsCommonJs(
   const edges = imports?.filter((edge) => edge.target === id);
   if (edges === undefined || edges.length === 0 || !(await commonjs(state, caller, own)))
     return false;
+  const inspection = nodeJwtCallerInspection({
+    rewrites: state.rewrites,
+    input: state.rewriteInput,
+    file: own.file,
+    code,
+    specifiers: edges.map((edge) => edge.specifier),
+  });
+  if (inspection === undefined) return false;
   for (const edge of edges) {
-    if (!nodeJwtRequireOnly(code, edge.specifier)) return false;
+    if (!nodeJwtRequireOnly(inspection.code, edge.specifier)) return false;
     if (
       imports?.some((other) => other.specifier === edge.specifier && !ids.has(other.target)) ===
       true
@@ -225,6 +243,7 @@ async function callerIsCommonJs(
     Object.freeze({
       ...own,
       specifiers: Object.freeze([...specifiers]),
+      ...(inspection.policy !== undefined && { policy: inspection.policy }),
     }),
   );
   return true;
@@ -355,6 +374,8 @@ export async function qualifyNodeJwtCompiler(
     data,
     originals: new Map(input.graph.sources),
     scope: input.originalModes,
+    rewrites: input.rewrites,
+    rewriteInput: input.rewriteInput,
     patched: new Set(input.patches.map((patch) => patch.file)),
     callers: new Map(),
     files: [],
@@ -379,8 +400,9 @@ export async function qualifyNodeJwtCompiler(
     if (ids.has(file) || file === first.file) return refuse(UNSUPPORTED);
   const codes = await renderedCodes(state, candidates);
   if (codes === undefined) return refuse(UNSUPPORTED);
-  if (!(await incoming(state, ids)) || !(await dependencies(state, ids, root)))
-    return refuse(UNSUPPORTED);
+  if (!(await incoming(state, ids))) return refuse(`${UNSUPPORTED}: retained incoming load roles`);
+  if (!(await dependencies(state, ids, root)))
+    return refuse(`${UNSUPPORTED}: fixed builtin and semver dependency closure`);
   const proof = Object.freeze<NodeJwtCompilerProof>({ [PROOF]: true });
   const sealed = { ...state, codes };
   await fresh(sealed);
