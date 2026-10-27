@@ -420,29 +420,51 @@ describe('images the native target keeps', () => {
         slotOf(inputOf({ params: { ...PARAMS, href: `/at-once-${String(index)}.png` } })),
       ),
     );
-    // Each write held as it would put its image in place, until all six are: then counted one after
-    // another, as many as are waiting before a look.
+    // Each write reaches its rename only after the initial index has finished. Hold the next look
+    // explicitly, and finish all six real renames before any write starts counting its image.
     const held = Promise.withResolvers<undefined>();
+    const renamed = Promise.withResolvers<undefined>();
+    const scanEntered = Promise.withResolvers<undefined>();
+    const releaseScan = Promise.withResolvers<undefined>();
+    const fs = await vi.importActual<typeof Fs>('node:fs/promises');
     let arrived = 0;
+    let completed = 0;
     vi.mocked(rename).mockImplementation(async (from, to) => {
       arrived += 1;
-      if (arrived === slots.length) held.resolve(undefined);
+      if (arrived === slots.length) {
+        vi.mocked(readdir).mockClear();
+        vi.mocked(readdir).mockImplementationOnce((async (file: string) => {
+          scanEntered.resolve(undefined);
+          await releaseScan.promise;
+          return await fs.readdir(file);
+        }) as unknown as typeof fs.readdir);
+        held.resolve(undefined);
+      }
       await held.promise;
-      const fs = await vi.importActual<typeof Fs>('node:fs/promises');
       await fs.rename(from, to);
+      completed += 1;
+      if (completed === slots.length) renamed.resolve(undefined);
+      await renamed.promise;
     });
-    // The look the server begins as it starts, over before the writes.
+    // Start the server's initial look; the rename gate above waits for it before measuring scans.
     await hitOf(first);
     await settled();
-    vi.mocked(readdir).mockClear();
 
     for (const slot of slots) slot.keep?.(image);
-    await settled();
-    // Back to the file system's own, for what follows.
-    vi.mocked(rename).mockReset();
+    const written = settled();
+    try {
+      await scanEntered.promise;
 
-    // The writes past the share while a look is pending share it: two looks for the six, where each
-    // of them would otherwise have begun one of its own (four).
+      expect(completed).toBe(slots.length);
+    } finally {
+      releaseScan.resolve(undefined);
+      await written;
+      // Back to the file system's own, for what follows.
+      vi.mocked(rename).mockReset();
+    }
+
+    // The writes past the share reuse the pending look: at most two looks for the six, rather than
+    // scheduling a separate look whenever another write reaches the share.
     expect(vi.mocked(readdir).mock.calls.length).toBeLessThanOrEqual(2);
   });
 
