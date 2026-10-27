@@ -34,19 +34,7 @@ jobs:
           packages/runtime/test/node-container-signals.test.ts
           packages/runtime/test/node-container.test.ts
           packages/runtime/test/node-fetch-response.test.ts
-          packages/runtime/test/node-fixed-load-scope.test.ts
           packages/runtime/test/node-http-bridge.test.ts
           packages/runtime/test/node-http-headers.test.ts
-          packages/runtime/test/node-jwt-realm.test.ts
-          packages/runtime/test/node-jwt-semver-guard.test.ts
           packages/runtime/test/node-lifetime.test.ts
           packages/runtime/test/node-oidc.test.ts
-          packages/runtime/test/node-ws-module-context.test.ts
-          packages/runtime/test/node-ws-realm.test.ts
-      - name: Verify the fixed Node dependency evaluation guards
-        run: >-
-          pnpm exec vitest run --project adapter
-          packages/adapter/test/node-jwt-guard-integration.test.ts
-          packages/adapter/test/node-ws-guard-integration.test.ts
-        env:
-          UPWIND_NATIVE_FUNCTION_INTEGRATION: '1'

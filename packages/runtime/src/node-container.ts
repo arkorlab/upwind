@@ -11,8 +11,6 @@ import {
 } from './node-http.ts';
 import { NodeLifetime, type NodeTaskSnapshot } from './node-lifetime.ts';
 
-export { installNodeJwtGuards } from './node-jwt-guard.ts';
-
 const CONTROL_HEADER = 'x-upwind-control-token';
 const URL_HEADER = 'x-upwind-request-url';
 const CONTAINER_PORT = 8080;
