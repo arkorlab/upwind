@@ -4,6 +4,8 @@ import path from 'node:path';
 import type { FunctionSpec } from '@stayingupwind/core/bundle';
 import type { MiniflareOptions, MiniflareWorkerConfig } from 'miniflare';
 
+import { workerSpec } from './worker-function.ts';
+
 type Bindings = NonNullable<MiniflareWorkerConfig['env']>;
 
 /**
@@ -13,10 +15,11 @@ type Bindings = NonNullable<MiniflareWorkerConfig['env']>;
  */
 export async function functionWorker(
   name: string,
-  spec: FunctionSpec,
+  input: FunctionSpec,
   out: string,
   env: Bindings = {},
 ): Promise<NonNullable<MiniflareOptions['workers']>[number]> {
+  const spec = workerSpec(input);
   type Modules = NonNullable<MiniflareWorkerConfig['manifest']>['modules'];
   const modules: Modules = {};
   for (const module of spec.modules) {

@@ -3,7 +3,7 @@ import path from 'node:path';
 import {
   type CloudflareWorkflowDeclaration,
   type DeploymentBundle,
-  type FunctionSpec,
+  type WorkerFunctionSpec,
   type SourceMapRef,
   cloudflareWorkflowDeclarationsSchema,
   CLOUDFLARE_WORKFLOW_BUNDLE_VERSION,
@@ -51,7 +51,7 @@ export async function buildCloudflareWorkflowFunctions(input: {
   readonly sourceMaps?: SourceMapsOption;
   readonly distDir?: string;
 }): Promise<{
-  functions: Readonly<Record<string, FunctionSpec>>;
+  functions: Readonly<Record<string, WorkerFunctionSpec>>;
   sourceMaps: SourceMapRef[];
   dependencies: Readonly<Record<string, FunctionDependencies>>;
   declarations: CloudflareWorkflowDeclaration[];

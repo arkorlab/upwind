@@ -2,6 +2,7 @@ import type { DeploymentBundle } from '@stayingupwind/core/bundle';
 import type { Miniflare } from 'miniflare';
 
 import { functionWorker } from './function-worker.ts';
+import { workerApp } from './worker-function.ts';
 
 /**
  * Two requests for one `"use cache"` entry, in one isolate, the second while the first is still
@@ -238,7 +239,7 @@ export async function useCacheConcurrencyHolds(
   const reads = new Reads();
   const runtime = new Miniflare({
     workers: [
-      await functionWorker('use-cache-concurrency', bundle.functions.app, out, {
+      await functionWorker('use-cache-concurrency', workerApp(bundle), out, {
         [READS_BINDING]: {
           type: 'fetcher',
           handler: async (request) => {
