@@ -13,6 +13,7 @@ import { assertNodeRelativeTopology, nodeModuleAliases } from './node-module-ali
 import { nodeNativeAliases } from './node-native-aliases.ts';
 import type { NodeNextRewriteProof } from './node-next-rewrite-proof.ts';
 import { nodePhysicalLayout, type NodePhysicalLayout } from './node-physical-layout.ts';
+import { retainedFileIdentity } from './node-proof-diagnostics.ts';
 
 const MAX_FILE_BYTES = 134_217_728;
 const EXECUTABLE_BITS = 0o111;
@@ -53,10 +54,16 @@ function isMissingFile(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
-async function boundedFile(file: string): Promise<Uint8Array> {
+async function boundedFile(file: string, root: string): Promise<Uint8Array> {
   const info = await stat(file);
-  if (!info.isFile() || info.size > MAX_FILE_BYTES)
-    throw new AuditError('Node artifact requires bounded, regular input files');
+  if (!info.isFile() || info.size > MAX_FILE_BYTES) {
+    let kind = 'nonregular';
+    if (info.isFile()) kind = 'regular';
+    else if (info.isDirectory()) kind = 'directory';
+    throw new AuditError(
+      `Node artifact requires bounded, regular input files: ${retainedFileIdentity(root, file)} (kind=${kind}, bytes=${info.size}, maxBytes=${MAX_FILE_BYTES})`,
+    );
+  }
   const bytes = new Uint8Array(await readFile(file));
   if (bytes.byteLength !== info.size)
     throw new AuditError('Node artifact input changed while it was read');
@@ -99,7 +106,7 @@ async function packageMetadata(
   ) {
     const manifest = path.join(dir, PACKAGE_MANIFEST);
     try {
-      files.set(layout.nameOf(manifest), await boundedFile(manifest));
+      files.set(layout.nameOf(manifest), await boundedFile(manifest, layout.root));
     } catch (error) {
       if (!isMissingFile(error)) throw error;
     }
@@ -119,7 +126,7 @@ async function physicalSources(
   for (const file of files) {
     const canonical = await realpath(file);
     const name = layout.nameOf(canonical);
-    sources.files.set(name, await boundedFile(canonical));
+    sources.files.set(name, await boundedFile(canonical, layout.root));
     const mode = (await stat(canonical)).mode;
     // eslint-disable-next-line no-bitwise -- POSIX executable permission bits are the artifact's file mode.
     if ((mode & EXECUTABLE_BITS) !== 0) sources.executable.add(name);
@@ -250,7 +257,7 @@ async function addModeMetadata(
       throw new AuditError('Node physical mode metadata requires a canonical package.json');
     const name = layout.nameOf(file);
     const previous = sources.files.get(name);
-    const bytes = previous ?? (await boundedFile(file));
+    const bytes = previous ?? (await boundedFile(file, layout.root));
     const info = await stat(file);
     if (!info.isFile() || info.size > MAX_FILE_BYTES || bytes.byteLength !== info.size)
       throw new AuditError('Node physical mode metadata changed after its source snapshot');
