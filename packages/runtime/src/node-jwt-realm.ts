@@ -175,7 +175,9 @@ function checkProperties(owner: ObjectValue, properties: readonly Property[]): v
     const item = properties[index];
     index += 1;
     if (item === undefined || !sameDescriptor(item.descriptor, descriptorOf(owner, item.key)))
-      fail('a required builtin descriptor changed');
+      fail(
+        `a required builtin descriptor changed (${typeof item?.key === 'string' ? item.key : '<symbol>'})`,
+      );
   }
 }
 function checkObject(captured: ObjectSnapshot): void {
