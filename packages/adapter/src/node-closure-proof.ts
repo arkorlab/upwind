@@ -5,12 +5,14 @@ import { nativeBindings, walk } from './native-ast.ts';
 import { hasRetainedWorkerCapability } from './native-worker.ts';
 import { globalPatternRefusal } from './node-closure-globals.ts';
 import { hostObjectOf } from './node-closure-hosts.ts';
+import { NODE_MODULE_LOADERS as MODULE_LOADERS } from './node-closure-module-loaders.ts';
 import {
   nodeClosureReference as isReference,
   nodeCompilerMetadataSites,
 } from './node-compiler-metadata.ts';
 import { nodeJwtCompilerSite, type NodeJwtCompilerProof } from './node-jwt-compiler-proof.ts';
 import { isGlobalCompiler } from './node-jwt-compiler-sites.ts';
+import { nodeWsLoaderSites, type NodeWsLoaderProof } from './node-ws-loader-proof.ts';
 
 export { originalNodeHostLoaderRefusal } from './node-original-host-proof.ts';
 
@@ -34,25 +36,6 @@ interface Traversal {
 }
 const NODE_LOADER_REFUSAL = 'an unproved Node module loader or code compiler';
 
-const MODULE_LOADERS = new Set([
-  '_cache',
-  '_compile',
-  '_extensions',
-  '_findPath',
-  '_load',
-  '_resolveFilename',
-  'constructor',
-  'createRequire',
-  'createRequireFromPath',
-  'load',
-  'Module',
-  'prototype',
-  'register',
-  'registerHooks',
-  'runMain',
-  'wrap',
-  'wrapper',
-]);
 const PROCESS_LOADERS = new Set([
   '_linkedBinding',
   'binding',
@@ -512,6 +495,7 @@ export function dynamicNodeClosureRefusal(
   file: string,
   code: string,
   jwt?: NodeJwtCompilerProof,
+  ws?: NodeWsLoaderProof,
 ): string | undefined {
   const parsed = parseAst(code);
   const program: unknown = parsed;
@@ -527,6 +511,7 @@ export function dynamicNodeClosureRefusal(
   const jwtSite = nodeJwtCompilerSite(jwt, file, code, program);
   const compilerSites = new Set(nodeCompilerMetadataSites(all));
   if (jwtSite !== undefined) compilerSites.add(jwtSite);
+  for (const site of nodeWsLoaderSites(ws, file, code, program)) compilerSites.add(site);
   for (const visit of all) {
     if (serverChunk && (isContextLoader(visit, contexts) || isContextEscape(visit, contexts)))
       return 'an unproved Turbopack external import';

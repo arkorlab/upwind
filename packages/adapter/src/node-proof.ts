@@ -41,6 +41,11 @@ import {
 } from './node-next-rewrite-proof.ts';
 import { originalHostLoadersPlugin } from './node-original-host-loaders.ts';
 import { prepareOriginalNodeModes, type OriginalNodeModeScope } from './node-original-load-mode.ts';
+import {
+  qualifyNodeWsLoaders,
+  nodeWsLoaderMetadata,
+  type NodeWsLoaderProof,
+} from './node-ws-loader-proof.ts';
 
 export { assertNodeProofFiles } from './node-original-load-mode-archive.ts';
 import { instrumentationPatch } from './patches/instrumentation.ts';
@@ -85,6 +90,7 @@ export interface NodeFunctionProof {
   readonly normalization?: NodeManifestNormalization | undefined;
   readonly nextRewrites?: NodeNextRewriteProof;
   readonly jwtCompiler?: NodeJwtCompilerProof | undefined;
+  readonly wsLoaders?: NodeWsLoaderProof | undefined;
 }
 
 function digest(bytes: Uint8Array): string {
@@ -254,6 +260,7 @@ function assertRetainedClosures(
   closure: {
     readonly modules: ReadonlySet<string>;
     readonly jwt: NodeJwtCompilerProof | undefined;
+    readonly ws: NodeWsLoaderProof | undefined;
   },
 ): void {
   const modules = Object.entries(chunk.modules);
@@ -261,7 +268,7 @@ function assertRetainedClosures(
     if (module.code === null || isNodeProofCompilerModule(file) || closure.modules.has(file))
       continue;
     const inspection = manifests.inspectionCode(file, module.code);
-    const refusal = dynamicNodeClosureRefusal(file, inspection, closure.jwt);
+    const refusal = dynamicNodeClosureRefusal(file, inspection, closure.jwt, closure.ws);
     if (refusal !== undefined) {
       const identity = retainedFileIdentity(projectDir, file);
       throw new AuditError(
@@ -434,7 +441,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     manifests,
   );
   const rewriteMetadata = nodeNextRewriteMetadata(nextRewrites);
-  const jwtCompiler = await qualifyNodeJwtCompiler({
+  const initializationInput = {
     graph: manifestGraph,
     originalModes,
     patches: graph.patches,
@@ -451,9 +458,12 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
       }),
       normalization: manifests.normalization,
     },
-  });
+  };
+  const jwtCompiler = await qualifyNodeJwtCompiler(initializationInput);
+  const wsLoaders = await qualifyNodeWsLoaders(initializationInput);
   const jwtMetadata =
     jwtCompiler === undefined ? [] : (await nodeJwtCompilerMetadata(jwtCompiler)).files;
+  const wsMetadata = wsLoaders === undefined ? [] : (await nodeWsLoaderMetadata(wsLoaders)).files;
   const retainedHost = hostLoaders
     .retained(chunk)
     .find((site) => !compilerModules.has(site.importer));
@@ -466,6 +476,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   assertRetainedClosures(input.projectDir, chunk, manifests, {
     modules: compilerModules,
     jwt: jwtCompiler,
+    ws: wsLoaders,
   });
   const retained = await native.retained(chunk);
   if (retained.length === 0)
@@ -481,6 +492,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     ...manifests.files,
     ...rewriteMetadata,
     ...jwtMetadata,
+    ...wsMetadata,
   ]);
   const normalization = nodeNextRewriteNormalization(nextRewrites, manifests.normalization);
   await assertCurrentUsedNodeManifestHandlerCompilerRoot(compilerRootBinding, files);
@@ -491,6 +503,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     dependencies,
     nextRewrites,
     ...(jwtCompiler !== undefined && { jwtCompiler }),
+    ...(wsLoaders !== undefined && { wsLoaders }),
     ...(normalization !== undefined && { normalization }),
   };
 }

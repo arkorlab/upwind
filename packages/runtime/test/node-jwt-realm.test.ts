@@ -94,9 +94,11 @@ function fixture({ builtins = true, accessors = false } = {}) {
     },
   });
   loaderModule['_extensions'] = { '.js': callback, '.json': callback, '.node': callback };
+  loaderModule['_cache'] = Object.create(null);
   for (const key of ['_load', '_resolveFilename', 'createRequire', 'register', 'registerHooks'])
     loaderModule[key] = callback;
   object(loaderModule['prototype'])['_compile'] = callback;
+  object(loaderModule['prototype'])['load'] = callback;
   const modules = {
     buffer: { Buffer: buffer, SlowBuffer: slow },
     crypto: {

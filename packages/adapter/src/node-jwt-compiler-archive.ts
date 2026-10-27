@@ -15,9 +15,18 @@ import {
   type NodeNextRewriteProof,
 } from './node-next-rewrite-proof.ts';
 import { nodeProofSource } from './node-proof.ts';
+import { nodeWsOptionalArchiveRefusal } from './node-ws-archive-absence.ts';
+import {
+  nodeWsLoaderMetadata,
+  nodeWsGuardRecord,
+  type NodeWsLoaderProof,
+  type NodeWsGuardRecord,
+} from './node-ws-loader-proof.ts';
+
+export type NodeInitializationGuardRecord = NodeJwtGuardRecord | NodeWsGuardRecord;
 
 function refuse(reason: string): never {
-  throw new AuditError(`Unproved archived Node JWT initialization: ${reason}`);
+  throw new AuditError(`Unproved archived Node dependency initialization: ${reason}`);
 }
 
 function digest(bytes: Uint8Array): string {
@@ -71,9 +80,38 @@ export async function archivedNodeJwtGuardRecords(
   proof: NodeJwtCompilerProof | undefined,
   files: NodeArtifactFiles,
   rewrites: NodeNextRewriteProof | undefined,
-): Promise<readonly NodeJwtGuardRecord[]> {
-  if (proof === undefined) return [];
-  const metadata = await nodeJwtCompilerMetadata(proof);
+  ws?: NodeWsLoaderProof,
+): Promise<readonly NodeInitializationGuardRecord[]> {
+  const profiles = [
+    ...(proof === undefined ? [] : [await nodeJwtCompilerMetadata(proof)]),
+    ...(ws === undefined ? [] : [await nodeWsLoaderMetadata(ws)]),
+  ];
+  for (const metadata of profiles) await assertMetadata(metadata, files, rewrites);
+  const records = [
+    ...(proof === undefined ? [] : [await nodeJwtGuardRecord(proof, files.physical.nameOf)]),
+    ...(ws === undefined ? [] : [await nodeWsGuardRecord(ws, files.physical.nameOf)]),
+  ];
+  for (const record of records) {
+    const bytes = files.files.get(record.archivePath)?.bytes;
+    if (bytes?.byteLength !== record.bytes || digest(bytes) !== record.sha256)
+      refuse('guard record does not describe the final physical source');
+    if (record.profile === 'next-16.4.3-ws-ncc-v1') {
+      const refusal = nodeWsOptionalArchiveRefusal(
+        record.archivePath,
+        [...files.files.keys()],
+        files.physical.links,
+      );
+      if (refusal !== undefined) refuse(refusal);
+    }
+  }
+  return Object.freeze(records);
+}
+
+async function assertMetadata(
+  metadata: Awaited<ReturnType<typeof nodeJwtCompilerMetadata>>,
+  files: NodeArtifactFiles,
+  rewrites: NodeNextRewriteProof | undefined,
+): Promise<void> {
   for (const source of metadata.files) {
     const name = coordinate(files, source.file);
     const bytes = files.files.get(name)?.bytes;
@@ -87,9 +125,4 @@ export async function archivedNodeJwtGuardRecords(
   for (const missing of metadata.missing)
     if (files.files.has(coordinate(files, missing))) refuse('nearer package metadata added');
   for (const caller of metadata.callers) await assertCaller(caller, files, rewrites);
-  const record = await nodeJwtGuardRecord(proof, files.physical.nameOf);
-  const bytes = files.files.get(record.archivePath)?.bytes;
-  if (bytes?.byteLength !== record.bytes || digest(bytes) !== record.sha256)
-    refuse('guard record does not describe the final physical source');
-  return Object.freeze([record]);
 }

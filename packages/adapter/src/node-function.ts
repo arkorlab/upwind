@@ -15,8 +15,11 @@ import type { NativeLoad } from './native-loads.ts';
 import { nodeArtifactArchive } from './node-archive.ts';
 import { NodeArtifactFiles } from './node-artifact-files.ts';
 import { nodePhysicalFiles } from './node-files.ts';
-import { archivedNodeJwtGuardRecords } from './node-jwt-compiler-archive.ts';
-import { nodeJwtCompilerMetadata, type NodeJwtGuardRecord } from './node-jwt-compiler-proof.ts';
+import {
+  archivedNodeJwtGuardRecords,
+  type NodeInitializationGuardRecord,
+} from './node-jwt-compiler-archive.ts';
+import { nodeJwtCompilerMetadata } from './node-jwt-compiler-proof.ts';
 import { nodeProjectInstrumentationSource } from './node-next-rewrite-proof.ts';
 import {
   assertFinalOriginalNodeModes,
@@ -31,6 +34,7 @@ import {
   proveNodeFunction,
 } from './node-proof.ts';
 import { nodeSourceMaps } from './node-source-maps.ts';
+import { nodeWsLoaderMetadata } from './node-ws-loader-proof.ts';
 
 const NO_CACHE_MODULE = '\0upwind-node-no-cache';
 const CLOUDFLARE_IMPORT_PREFIX = 'cloudflare:';
@@ -349,7 +353,7 @@ async function nativeSelectors(native: readonly NativeLoad[]): Promise<string[]>
 
 async function serverSource(
   files: NodeArtifactFiles,
-  guards: readonly NodeJwtGuardRecord[],
+  guards: readonly NodeInitializationGuardRecord[],
 ): Promise<string> {
   const selectors = await nativeSelectors(files.native);
   const module = fileURLToPath(import.meta.resolve('@stayingupwind/runtime/node-container'));
@@ -379,7 +383,7 @@ async function serverSource(
 async function addNodeServer(
   files: NodeArtifactFiles,
   work: string,
-  guards: readonly NodeJwtGuardRecord[],
+  guards: readonly NodeInitializationGuardRecord[],
 ): Promise<void> {
   const source = path.join(work, 'server-source.mjs');
   await writeFile(source, await serverSource(files, guards));
@@ -404,10 +408,16 @@ export async function buildNodeFunction(
     originalProof.jwtCompiler === undefined
       ? undefined
       : await nodeJwtCompilerMetadata(originalProof.jwtCompiler);
+  const wsMetadata =
+    originalProof.wsLoaders === undefined
+      ? undefined
+      : await nodeWsLoaderMetadata(originalProof.wsLoaders);
   const metadata = [
     ...(originalProof.normalization?.metadataFiles ?? []),
     ...(jwtMetadata?.files ?? []),
     ...(jwtMetadata?.callers ?? []),
+    ...(wsMetadata?.files ?? []),
+    ...(wsMetadata?.callers ?? []),
   ];
   const physical = await nodePhysicalFiles(input, native, metadata, async (sourcePaths) => {
     await usePhysicalOriginalNodeModes(originalProof.originalModes, sourcePaths);
@@ -430,7 +440,12 @@ export async function buildNodeFunction(
   await addNodeEdge(files, work);
   files.addWasm();
   await addNodeRuntime(files, work);
-  const guards = await archivedNodeJwtGuardRecords(proof.jwtCompiler, files, proof.nextRewrites);
+  const guards = await archivedNodeJwtGuardRecords(
+    proof.jwtCompiler,
+    files,
+    proof.nextRewrites,
+    proof.wsLoaders,
+  );
   await addNodeServer(files, work, guards);
   await files.assertAppEntryNormalization(proof.normalization);
   await files.assertNextRewrites();
@@ -444,9 +459,12 @@ export async function buildNodeFunction(
     proof.jwtCompiler,
     files,
     proof.nextRewrites,
+    proof.wsLoaders,
   );
   if (JSON.stringify(finalGuards) !== JSON.stringify(guards))
-    throw new AuditError('Node JWT initialization records changed during bootstrap generation');
+    throw new AuditError(
+      'Node dependency initialization records changed during bootstrap generation',
+    );
   const archiveFiles = [...files.files.values()];
   const archive = nodeArtifactArchive(archiveFiles);
   const bytes = archiveFiles.reduce((total, file) => total + file.bytes.byteLength, 0);

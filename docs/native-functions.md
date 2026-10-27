@@ -63,6 +63,17 @@ remain publication errors. This profile requires the default Node.js 24.22.1 loa
 make arbitrary dynamic compilation portable. These restrictions apply to native Node artifacts;
 ordinary Worker output keeps its existing version support.
 
+The same guard observes the original `semver-noop` dependency evaluation and checks its genuine
+cached namespace before JWT initialization. Scoped load and require boundaries preserve Node's
+monitoring hooks while checking that fixed dependencies return the qualified module values.
+
+The fixed Next.js WebSocket dependency has a separate absent-only profile for its two literal
+`eval("require")` optional loaders. Its original CommonJS source and synchronous JavaScript
+fallbacks stay unchanged. Both optional targets must remain unresolved during proof, final
+archive validation and immediately before evaluation. A resolvable target, a changed source or
+a changed builtin descriptor is refused. This does not authorize arbitrary `eval`, unresolved
+loaders or uninspected native packages. The profile uses the same default Node.js 24.22.1 guard.
+
 Hook TypeScript is analyzed after compiler lowering and can be bundled as JavaScript. A dependency
 executed from its original file must use syntax the target Node runtime can execute directly.
 Raw JSX and TypeScript features requiring transformation, such as enums, need compilation first.

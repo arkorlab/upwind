@@ -1,3 +1,10 @@
+import {
+  assertNodeWsRealm,
+  captureNodeWsRealm,
+  sealNodeLoader,
+  type NodeWsRealm,
+} from './node-ws-realm.ts';
+
 /** Preconditions for separately reviewed, unmodified Node-only JWT initialization. */
 const descriptorOf = Object.getOwnPropertyDescriptor;
 const ownKeys = Reflect.ownKeys;
@@ -95,6 +102,7 @@ interface RealmState {
   readonly processProperties: readonly Property[];
   readonly builtinProperties: readonly PropertyGroup[];
   readonly snapshots: readonly ObjectSnapshot[];
+  readonly websocket: NodeWsRealm | undefined;
 }
 /** Actual CommonJS exports captured before app evaluation; loader is the Module export. */
 export interface NodeJwtBuiltinBasis {
@@ -103,6 +111,7 @@ export interface NodeJwtBuiltinBasis {
   readonly stream: unknown;
   readonly util: unknown;
   readonly loader?: unknown;
+  readonly websocket?: unknown;
 }
 const REALM = Symbol('Node JWT initialization realm');
 export interface NodeJwtRealm {
@@ -269,6 +278,13 @@ class BuiltinCapture {
   readonly snapshots: ObjectSnapshot[] = [];
   readonly groups: PropertyGroup[] = [];
   readonly roots: Root[] = [];
+  websocket: NodeWsRealm | undefined;
+
+  trustedRoot(owner: ObjectValue, key: PropertyKey): ObjectValue {
+    const binding = root(owner, key);
+    this.roots.push(binding);
+    return binding.value;
+  }
 
   seal(value: ObjectValue, policy: SnapshotPolicy = 'any'): void {
     const captured = snapshot(value, policy);
@@ -329,31 +345,11 @@ class BuiltinCapture {
     return found;
   }
 }
-function sealLoader(capture: BuiltinCapture, loader: ObjectValue): void {
-  const wrap = root(loader, 'wrap');
-  if (typeof wrap.value !== 'function') fail('missing loader wrap');
-  const wrapper = root(loader, 'wrapper');
-  capture.roots.push(wrap, wrapper);
-  capture.seal(wrapper.value, 'data');
-  capture.functions(loader, [
-    '_load',
-    '_resolveFilename',
-    'createRequire',
-    'register',
-    'registerHooks',
-  ]);
-  const prototype = capture.fields(loader, ['prototype'])[0];
-  if (prototype === undefined) fail('missing loader prototype');
-  capture.functions(prototype, ['_compile']);
-  const extensions = capture.fields(loader, ['_extensions'])[0];
-  if (extensions === undefined) fail('missing loader extensions');
-  capture.functions(extensions, ['.js', '.json', '.node']);
-  capture.optional(extensions, '.cjs');
-}
 function sealBuiltinBasis(
   capture: BuiltinCapture,
   basis: ObjectValue,
   globalBuffer: ObjectValue | undefined,
+  globals: ObjectValue,
 ): void {
   const buffers = capture.functions(requiredObject(data(basis, 'buffer')), [
     'Buffer',
@@ -399,7 +395,8 @@ function sealBuiltinBasis(
   capture.seal(types, 'data');
   capture.functions(types, TYPE_PREDICATES);
   const loader = data(basis, 'loader');
-  if (loader !== undefined) sealLoader(capture, requiredObject(loader));
+  if (loader !== undefined) sealNodeLoader(capture, requiredObject(loader));
+  capture.websocket = captureNodeWsRealm(capture, basis, globals);
 }
 function captureProcess(capture: BuiltinCapture, process: ObjectValue): readonly Property[] {
   const properties: Property[] = [];
@@ -446,7 +443,8 @@ export function captureNodeJwtRealm(
   const processProperties = captureProcess(capture, processObject);
   const globalPrototype = parentOf(globalObject);
   if (globalPrototype !== null) capture.chain(globalPrototype);
-  if (builtins !== undefined) sealBuiltinBasis(capture, requiredObject(builtins), globalBuffer);
+  if (builtins !== undefined)
+    sealBuiltinBasis(capture, requiredObject(builtins), globalBuffer, globalObject);
   const state: RealmState = {
     globals: globalObject,
     process: processObject,
@@ -456,6 +454,7 @@ export function captureNodeJwtRealm(
     processProperties,
     builtinProperties: freeze(capture.groups),
     snapshots: freeze(capture.snapshots),
+    websocket: capture.websocket,
   };
   ambient(state);
   const realm = freeze({ [REALM]: true as const });
@@ -485,5 +484,6 @@ export function assertNodeJwtRealm(realm: NodeJwtRealm): void {
     if (parentOf(group.owner) !== group.prototype) fail('a required builtin shape changed');
     checkProperties(group.owner, group.properties);
   }
+  assertNodeWsRealm(state.websocket);
   ambient(state);
 }

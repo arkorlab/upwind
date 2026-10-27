@@ -21,7 +21,12 @@ const RECORD = {
 };
 
 /** Real loader/source integration: CI only; never part of local source-only controls. */
-async function scenario(before: string, after: string, changed = false): Promise<string> {
+async function scenario(
+  before: string,
+  after: string,
+  changed = false,
+  semverChanged = false,
+): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), 'upwind-jwt-guard-'));
   try {
     const vendor = path.join(directory, 'node_modules/next');
@@ -38,6 +43,10 @@ async function scenario(before: string, after: string, changed = false): Promise
     );
     await copyFile(require.resolve('next/package.json'), path.join(vendor, 'package.json'));
     if (changed) await writeFile(jwt, `${await readFile(jwt, 'utf8')}\nglobalThis.changed=true;`);
+    if (semverChanged) {
+      const semver = path.join(vendor, 'dist/lib/semver-noop.js');
+      await writeFile(semver, `${await readFile(semver, 'utf8')}\nglobalThis.semverChanged=true;`);
+    }
     const server = path.join(upwind, 'server.mjs');
     await writeFile(
       server,
@@ -45,6 +54,7 @@ async function scenario(before: string, after: string, changed = false): Promise
 import {installNodeJwtGuards} from ${JSON.stringify(GUARD)};
 const require=createRequire(import.meta.url);
 const filename=new URL('../node_modules/next/dist/compiled/jsonwebtoken/index.js',import.meta.url);
+const semverFilename=new URL('../node_modules/next/dist/lib/semver-noop.js',import.meta.url);
 const record=${JSON.stringify(RECORD)};
 ${before}
 installNodeJwtGuards(import.meta.url,[record]);
@@ -80,6 +90,140 @@ console.log('unchanged-jwt');`,
 
   it('checks the actual compile source before executing it', async () => {
     await expect(scenario('', LOAD, true)).rejects.toThrow('qualified source changed');
+  });
+
+  it('checks the actual semver source before executing it', async () => {
+    await expect(scenario('', LOAD, false, true)).rejects.toThrow('qualified source changed');
+  });
+
+  it('accepts the genuine dependency cache and genuine Node cache eviction', async () => {
+    const result = await scenario(
+      '',
+      `
+require(semverFilename.pathname);
+${LOAD}
+delete require.cache[filename.pathname];
+const second=require(filename.pathname);
+delete require.cache[filename.pathname];
+delete require.cache[semverFilename.pathname];
+const third=require(filename.pathname);
+if(typeof second.sign!=='function'||typeof third.sign!=='function')throw new Error('genuine re-evaluation changed');
+console.log('genuine-semver-cache');`,
+    );
+
+    expect(result).toBe('genuine-semver-cache');
+  });
+
+  it.each([
+    [
+      'replacement module',
+      `require.cache[semverFilename.pathname]={exports:{satisfies(){calls++;return true;}},loaded:true};`,
+    ],
+    [
+      'replacement namespace',
+      `require(semverFilename.pathname);require.cache[semverFilename.pathname].exports=Object.defineProperty({},'satisfies',{get(){calls++;return ()=>true;}});`,
+    ],
+    [
+      'loaded getter',
+      `require(semverFilename.pathname);Object.defineProperty(require.cache[semverFilename.pathname],'loaded',{get(){calls++;return true;},configurable:true});`,
+    ],
+  ])('refuses an unobserved semver %s without calling it', async (_kind, mutate) => {
+    const result = await scenario(
+      '',
+      `
+let calls=0;
+${mutate}
+let refused=false;
+try {${LOAD}} catch(error){refused=String(error).includes('Unsupported Node JWT semver state');}
+if(!refused||calls!==0)throw new Error('unobserved semver value was called or accepted');
+console.log('semver-refused');`,
+    );
+
+    expect(result).toBe('semver-refused');
+  });
+
+  it('refuses a changed default Module.load before it can bypass dependency compilation', async () => {
+    const result = await scenario(
+      '',
+      `
+const Module=require('node:module'),load=Module.prototype.load;
+let bypassed=false;
+Module.prototype.load=function(file){
+ if(file===semverFilename.pathname){bypassed=true;this.exports={satisfies:()=>true};this.loaded=true;return;}
+ return Reflect.apply(load,this,[file]);
+};
+let refused=false;
+try {${LOAD}} catch(error){refused=String(error).includes('Unsupported Node');}
+if(!refused||bypassed)throw new Error('custom load bypassed the compile guard');
+console.log('load-refused');`,
+    );
+
+    expect(result).toBe('load-refused');
+  });
+
+  it('blocks same-path load-cache prepopulation before qualified initialization', async () => {
+    const result = await scenario(
+      '',
+      `
+const scoped=require('node:module').createRequire(filename.pathname);
+let refused=false;
+try {scoped('crypto')} catch(error){refused=String(error).includes('Unsupported fixed Node load scope');}
+if(!refused)throw new Error('same-path prepopulation was accepted');
+${LOAD}
+if(typeof jwt.sign!=='function')throw new Error('subsequent genuine initialization failed');
+console.log('history-fenced');`,
+    );
+
+    expect(result).toBe('history-fenced');
+  });
+
+  it('preserves require tracing and rechecks state after its end subscribers', async () => {
+    const result = await scenario(
+      '',
+      `
+const channel=require('node:diagnostics_channel').tracingChannel('module.require');
+let observed=0;
+channel.subscribe({end(context){if(context.id==='next/dist/lib/semver-noop')observed++;}});
+${LOAD}
+if(observed===0||typeof jwt.verify!=='function')throw new Error('tracing was suppressed');
+console.log('tracing-preserved');`,
+    );
+
+    expect(result).toBe('tracing-preserved');
+    await expect(
+      scenario(
+        '',
+        `
+require('node:diagnostics_channel').tracingChannel('module.require').subscribe({
+ end(context){if(context.id==='next/dist/lib/semver-noop')globalThis.define=()=>{};}
+});
+${LOAD}`,
+      ),
+    ).rejects.toThrow('Unsupported Node');
+  });
+
+  it.each(['buffer', 'crypto', 'stream', 'util'])(
+    'refuses a cached bare %s replacement',
+    async (name) => {
+      await expect(
+        scenario('', `require.cache[${JSON.stringify(name)}]={exports:{}};\n${LOAD}`),
+      ).rejects.toThrow('Unsupported Node JWT initialization');
+    },
+  );
+
+  it('refuses a bare builtin cache getter without invoking it', async () => {
+    const result = await scenario(
+      '',
+      `
+let calls=0;
+Object.defineProperty(require.cache,'crypto',{get(){calls++;return {exports:{}};},configurable:true});
+let refused=false;
+try {${LOAD}} catch(error){refused=String(error).includes('Unsupported Node JWT initialization');}
+if(!refused||calls!==0)throw new Error('builtin cache getter was called or accepted');
+console.log('cache-getter-refused');`,
+    );
+
+    expect(result).toBe('cache-getter-refused');
   });
 
   it.each([
