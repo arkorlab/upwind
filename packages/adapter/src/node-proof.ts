@@ -22,7 +22,6 @@ import {
   includingNodeLoaderSources,
   isNodeProofCompilerModule,
   nodeRawSourceInventory,
-  projectNodeInstrumentation,
   renderedNodeSourceExports,
   retainedNodeProofSources,
   type NodeSourceExports,
@@ -68,6 +67,7 @@ import { linkedOriginalNodeSource } from './node-original-graph-source.ts';
 import { originalHostLoadersPlugin } from './node-original-host-loaders.ts';
 import { prepareOriginalNodeModes, type OriginalNodeModeScope } from './node-original-load-mode.ts';
 import { retainedFileIdentity } from './node-proof-diagnostics.ts';
+import { nodeRawFunctionInputs } from './node-raw-function-inputs.ts';
 import {
   qualifyNodeWsLoaders,
   nodeWsLoaderMetadata,
@@ -492,14 +492,10 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   );
   const normalization = nodeNextRewriteNormalization(nextRewrites, manifests.normalization);
   await assertCurrentUsedNodeManifestHandlerCompilerRoot(compilerRootBinding, files);
-  const projectHook = await projectNodeInstrumentation(input);
   const rawSources = nodeRawSourceInventory({
     graph: manifestGraph,
     exports: renderedNodeSourceExports(chunk, graph.exports),
-    roots: [
-      ...(await Promise.all(input.entries.map((entry) => realpath(entry.filePath)))),
-      ...(projectHook === undefined ? [] : [projectHook]),
-    ],
+    ...(await nodeRawFunctionInputs(input, nextRequireHook)),
     nativeFiles: new Set(retained.map((load) => load.binary)),
     bundledImports: nodeNextBundledImports(nextRewrites, input),
   });

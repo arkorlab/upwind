@@ -37,6 +37,19 @@ interface RawSourceInput {
   readonly nativeFiles: ReadonlySet<string>;
   readonly exports: ReadonlyMap<string, NodeSourceExports>;
   readonly bundledImports?: readonly NodeBundledImport[];
+  readonly runtimeImports?: readonly NodeBundledImport[] | undefined;
+}
+
+function runtimeDependencies(source: NodeProofSource, input: RawSourceInput): readonly string[] {
+  return (input.runtimeImports ?? []).flatMap((edge) => {
+    if (edge.from.file !== source.file) return [];
+    if (edge.from.sha256 !== source.sha256) refuse('runtime caller source changed');
+    const targets = [...input.graph.sources].filter(
+      ([, target]) => target.file === edge.to.file && target.sha256 === edge.to.sha256,
+    );
+    if (targets.length !== 1) refuse('missing or ambiguous runtime dependency');
+    return [targets[0]?.[0] ?? refuse('missing runtime dependency')];
+  });
 }
 
 function refuse(reason: string): never {
@@ -127,6 +140,7 @@ export function nodeRawSourceInventory(input: RawSourceInput): readonly NodeProo
     if (previous !== undefined && previous.sha256 !== source.sha256)
       refuse('conflicting raw source digests');
     sources.set(source.file, Object.freeze({ ...source }));
+    pending.push(...runtimeDependencies(source, input));
     for (const edge of imports) {
       if (
         isBuiltin(edge.target) ||

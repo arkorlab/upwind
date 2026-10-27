@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { beneath } from './build-paths.ts';
 import { AuditError } from './dependencies.ts';
+import type { NodeSourceSpecifier } from './node-source-specifiers.ts';
 
 const MAX_DEPTH = 8;
 const MAX_NODES = 64;
@@ -105,6 +106,24 @@ export function nodePackageSubpaths(
   if (relative !== '.' && !safeRelative(relative)) refuse();
   return { exact: true, targets: exportTargets(exportEntry(metadata['exports'], relative)) };
 }
+/** Default Node loader conditions only; the native host admits no custom loader flags.
+ * Keep the existing all-branch layout inventory separate from this execution leaf selection.
+ */
+function selectedExport(
+  value: unknown,
+  kind: NodeSourceSpecifier['kind'],
+): string | null | undefined {
+  if (value === null || typeof value === 'string') return value;
+  if (!record(value)) refuse();
+  const conditions = new Set(['default', kind, 'module-sync', 'node', 'node-addons']);
+  for (const [condition, target] of Object.entries(value)) {
+    if (!conditions.has(condition)) continue;
+    const selected = selectedExport(target, kind);
+    if (selected !== undefined) return selected;
+  }
+  return undefined;
+}
+
 function missingTarget(error: unknown): boolean {
   return (
     error instanceof Error && 'code' in error && ['ENOENT', 'ENOTDIR'].includes(String(error.code))
@@ -121,20 +140,47 @@ async function isFilePackageRoot(
   return file;
 }
 
-/** Restore candidate aliases inside the canonical package, not below its root symlink. */
-export async function preserveNodePackageSubpaths(input: {
+interface PackageSubpathAliases {
   readonly directory: string;
   readonly specifier: string;
   readonly packageName: string;
   readonly metadata: Uint8Array | undefined;
   readonly relativeAlias: (target: string) => Promise<void>;
   readonly exactAlias: (target: string) => Promise<void>;
-}): Promise<void> {
+  readonly selected?:
+    | {
+        readonly kind: NodeSourceSpecifier['kind'];
+        readonly target: (canonical: string) => Promise<void>;
+      }
+    | undefined;
+}
+
+async function observeSelectedExport(
+  input: PackageSubpathAliases,
+  metadata: unknown,
+): Promise<void> {
+  if (input.selected === undefined) return;
+  if (!record(metadata)) refuse();
+  const relative =
+    input.specifier === input.packageName
+      ? '.'
+      : `.${input.specifier.slice(input.packageName.length)}`;
+  const selected = selectedExport(exportEntry(metadata['exports'], relative), input.selected.kind);
+  if (typeof selected !== 'string') return;
+  const canonical = await realpath(path.resolve(input.directory, selected));
+  if (!(await stat(canonical)).isFile())
+    throw new AuditError('Node package export requires an exact regular target');
+  await input.selected.target(canonical);
+}
+
+/** Restore candidate aliases inside the canonical package, not below its root symlink. */
+export async function preserveNodePackageSubpaths(input: PackageSubpathAliases): Promise<void> {
   // The caller already proved ownership of this canonical package root, including file roots.
   if (await isFilePackageRoot(input.directory, input.specifier, input.packageName)) return;
   const metadata: unknown =
     input.metadata === undefined ? undefined : JSON.parse(new TextDecoder().decode(input.metadata));
   const subpaths = nodePackageSubpaths(input.specifier, input.packageName, metadata);
+  if (subpaths.exact) await observeSelectedExport(input, metadata);
   for (const target of subpaths.targets) {
     if (!subpaths.exact) {
       await input.relativeAlias(target);

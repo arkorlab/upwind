@@ -65,6 +65,9 @@ publication. An ES module whose public exports were removed from the audited gra
 This also applies when a namespace conversion does not attest the complete exported-name list.
 Raw archive sources come from route and project-hook reachability; host-hook-only
 sources remain bundled, while sources shared with a route keep their raw physical copy.
+Trace membership alone does not make an asset an execution dependency. Required Node imports
+are checked transitively, including startup hooks and proved runtime redirects. Unused trace
+assets cannot overwrite a required alias layout.
 The bootstrap guard checks the initial `NODE_ENV`, `NEXT_RUNTIME` and `TURBOPACK` properties at loader
 boundaries; changing them is unsupported. Other application environment variables remain mutable.
 

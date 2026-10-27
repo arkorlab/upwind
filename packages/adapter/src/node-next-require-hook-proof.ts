@@ -25,6 +25,7 @@ import {
   type NodeManifestIdentitySnapshot,
 } from './node-manifest-identity-snapshot.ts';
 import { nodeNextHookAliasRoleData } from './node-next-hook-alias-role.ts';
+import { nodeNextHookRawClosureData } from './node-next-hook-raw-role.ts';
 import {
   nodeNextStaticRequireHookSites,
   type NodeNextRequireHookSites,
@@ -469,6 +470,18 @@ export async function nodeNextRequireHookMetadata(proof: NodeNextRequireHookProo
     callers: Object.freeze([...state.callers.values()]),
     aliases: Object.freeze([...state.aliases]),
     sharedRuntimeEdges: Object.freeze([...state.sharedRuntimeEdges]),
+  });
+}
+/** Actual startup/load roles only; resolution-only aliases and package pins stay metadata. */
+export async function nodeNextRequireHookRawClosure(
+  proof: NodeNextRequireHookProof,
+): Promise<ReturnType<typeof nodeNextHookRawClosureData>> {
+  const state = stored(proof);
+  await fresh(state);
+  return nodeNextHookRawClosureData({
+    file: state.file,
+    files: state.files,
+    edges: state.sharedRuntimeEdges,
   });
 }
 export async function nodeNextRequireHookGuardRecord(

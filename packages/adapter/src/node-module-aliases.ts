@@ -5,11 +5,8 @@ import path from 'node:path';
 import { beneath } from './build-paths.ts';
 import { AuditError } from './dependencies.ts';
 import { NodeAliasCompatibility } from './node-alias-compatibility.ts';
-import {
-  nodeAliasLookupError,
-  nodeAliasOutsideTrace,
-  OUTSIDE_CLOSED_TRACE,
-} from './node-alias-diagnostics.ts';
+import { nodeAliasLookupError, nodeAliasOutsideTrace } from './node-alias-diagnostics.ts';
+import { NodeAliasInventory, uniqueLoads, unprovedHint } from './node-alias-inventory.ts';
 import {
   previewCertifiedNodeNextPolicy,
   type NodeNextRewriteInput,
@@ -38,7 +35,7 @@ const COMMONJS_SUFFIXES = ['', '.js', '.json', '.node'] as const;
 interface NodeModuleAliasSources {
   readonly files: ReadonlyMap<string, Uint8Array>;
   readonly originals: ReadonlyMap<string, string>;
-  /** Diagnostic provenance only; never changes alias admission or lookup order. */
+  /** Required raw inputs seed strict alias closure; absent means legacy all-sources-strict. */
   readonly required?: ReadonlySet<string>;
 }
 interface NodeAliasCachePolicy {
@@ -52,41 +49,6 @@ type NodeModuleAliasOptions =
       readonly policy?: NodeAliasCachePolicy;
     };
 type NameOf = PhysicalLayout['nameOf'];
-// Only these existing resolver refusals mean an alternative supplied no closed layout evidence.
-// Unknown AuditErrors, I/O failures and programming errors still propagate.
-const UNPROVED_HINTS: ReadonlySet<string> = new Set([
-  'Absolute Node module imports cannot be relocated into an artifact',
-  'An absolute Node package entry cannot be relocated into an artifact',
-  'A Node package alias requires a regular physical target',
-  'A relative Node module lookup has no proved physical alias',
-  'A relative package entry escapes its closed physical directory',
-  'A relative package entry has no closed metadata',
-  'Invalid Node package import scope metadata',
-  'Native Function relocation changes a relative module or native binary lookup; refusing publication',
-  'Node artifact input escapes both its tracing root and build output',
-  'Node package export metadata is absent from its physical artifact',
-  'Node package export requires an exact regular target',
-  'Node package import external alias has no closed physical target',
-  'Node package import has an unproved builtin target',
-  'Node package import has an unproved external target',
-  'Node package import has no closed package scope',
-  'Node package import requires a literal target; conditions and chains are unsupported',
-  'Node package import requires an exact regular target file',
-  'Node package import requires a proved exact mapping; patterns are unsupported',
-  'Node package import scope metadata is not closed',
-  'Node package import target escapes its package scope',
-  'Node package subpath has unproved export or physical topology',
-  OUTSIDE_CLOSED_TRACE,
-]);
-
-function unprovedHint(error: unknown): boolean {
-  return (
-    (error instanceof AuditError && UNPROVED_HINTS.has(error.message)) ||
-    (error instanceof Error &&
-      'code' in error &&
-      ['ENOENT', 'ENOTDIR', 'MODULE_NOT_FOUND'].includes(String(error.code)))
-  );
-}
 function isMissingFile(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
@@ -121,6 +83,7 @@ interface PackageAliasContext {
   readonly links: Map<string, string>;
   readonly kind: NodeSourceSpecifier['kind'];
   readonly lookup?: 'imports-target';
+  readonly strictTargets?: NodeAliasInventory | undefined;
 }
 type ModuleAliasContext = Omit<PackageAliasContext, 'kind' | 'lookup'>;
 
@@ -134,6 +97,7 @@ async function assertPackageTarget(target: string, context: PackageAliasContext)
   const name = context.layout.nameOf(target);
   if (info.isFile()) {
     if (!context.sources.originals.has(target)) throw nodeAliasOutsideTrace(target);
+    context.strictTargets?.promote(target);
     return;
   }
   if (!info.isDirectory())
@@ -255,7 +219,13 @@ async function packageSubpathAliases(
         ? relativeAliases(file, target, context)
         : relativePackageImport(file, target, context);
     },
-    exactAlias: (target) => relativePackageImport(file, target, context),
+    // Other condition branches retain layout aliases without becoming execution roots.
+    exactAlias: (target) =>
+      relativePackageImport(file, target, { ...context, strictTargets: undefined }),
+    selected:
+      context.strictTargets === undefined
+        ? undefined
+        : { kind: context.kind, target: (target) => assertPackageTarget(target, context) },
   });
 }
 
@@ -489,10 +459,6 @@ async function alternativeAlias(
   }
 }
 
-function uniqueLoads(loads: readonly NodeSourceSpecifier[]): Map<string, NodeSourceSpecifier> {
-  return new Map(loads.map((load) => [`${load.kind}:${load.specifier}`, load]));
-}
-
 function aliasInventory(
   file: string,
   bytes: Uint8Array | undefined,
@@ -517,16 +483,21 @@ export async function nodeModuleAliases(
     typeof options === 'function' ? options : options?.collectRequiredAliases;
   const policy = typeof options === 'function' ? undefined : options?.policy;
   const context = { sources, layout, links };
-  const inventories: { file: string; inventory: NodeSpecifierInventory }[] = [];
+  const inventories = new Map<string, NodeSpecifierInventory>();
   for (const [file, name] of sources.originals) {
-    const inventory = aliasInventory(file, sources.files.get(name), policy);
-    inventories.push({ file, inventory });
+    const bytes = sources.files.get(name);
+    if (bytes !== undefined) inventories.set(file, aliasInventory(file, bytes, policy));
   }
-  // Complete every strict lookup first; no later layout hint can overwrite a required link.
-  for (const { file, inventory } of inventories) {
+  const worklist = new NodeAliasInventory(
+    inventories,
+    sources.required ?? sources.originals.keys(),
+  );
+  // Complete every strict lookup and its copied targets before considering layout hints.
+  for (let row = worklist.next(); row !== undefined; row = worklist.next()) {
+    const { file, inventory } = row;
     for (const load of uniqueLoads(inventory.required).values()) {
       try {
-        await moduleAlias(file, load, context);
+        await moduleAlias(file, load, { ...context, strictTargets: worklist });
       } catch (error) {
         throw nodeAliasLookupError(error, layout.root, file, {
           ...load,
@@ -538,9 +509,6 @@ export async function nodeModuleAliases(
   // Trace and native lookup evidence is required too; its failures are never optional hints.
   await collectRequiredAliases?.();
   const hierarchy = new NodeAliasCompatibility(links);
-  for (const { file, inventory } of inventories) {
-    const required = uniqueLoads(inventory.required);
-    for (const [key, load] of uniqueLoads(inventory.alternatives))
-      if (!required.has(key)) await alternativeAlias(file, load, context, hierarchy);
-  }
+  for (const { file, loads } of worklist.hints())
+    for (const load of loads) await alternativeAlias(file, load, context, hierarchy);
 }
