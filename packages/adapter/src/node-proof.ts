@@ -23,7 +23,9 @@ import {
   isNodeProofCompilerModule,
   nodeRawSourceInventory,
   projectNodeInstrumentation,
+  renderedNodeSourceExports,
   retainedNodeProofSources,
+  type NodeSourceExports,
 } from './node-bundle-closure.ts';
 import { dynamicNodeClosureRefusal } from './node-closure-proof.ts';
 import {
@@ -99,6 +101,7 @@ interface OriginalNodeGraph {
   readonly roots: Set<string>;
   readonly patches: AppliedPatch[];
   readonly externals: Set<string>;
+  readonly exports: Map<string, NodeSourceExports>;
 }
 
 export interface NodeFunctionProof {
@@ -226,6 +229,11 @@ function originalNodeGraphPlugin(input: NodeProofInput, graph: OriginalNodeGraph
         // eslint-disable-next-line unicorn/no-this-outside-of-class -- Importers must come from Rolldown's resolved graph, not source-name guesses.
         const module = this.getModuleInfo(id);
         if (module === null) continue;
+        graph.exports.set(id, {
+          format: module.inputFormat,
+          declared: Object.freeze([...module.exports]),
+          rendered: [],
+        });
         graph.importers.set(id, [...module.importers, ...module.dynamicImporters]);
         if (module.isEntry) graph.roots.add(id);
         graph.imports.set(
@@ -328,13 +336,14 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
     roots: new Set(),
     patches: [],
     externals: new Set(),
+    exports: new Map(),
   };
   const hostLoaders = originalHostLoadersPlugin(graph.sources);
   await using bundle = await rolldown({
     cwd: input.projectDir,
     input: entryFile,
     platform: 'node',
-    treeshake: false,
+    treeshake: { commonjs: false },
     resolve: { conditionNames: ['node', 'default'] },
     plugins: [originalNodeGraphPlugin(input, graph), hostLoaders.plugin, native.plugin],
     external(specifier) {
@@ -486,6 +495,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   const projectHook = await projectNodeInstrumentation(input);
   const rawSources = nodeRawSourceInventory({
     graph: manifestGraph,
+    exports: renderedNodeSourceExports(chunk, graph.exports),
     roots: [
       ...(await Promise.all(input.entries.map((entry) => realpath(entry.filePath)))),
       ...(projectHook === undefined ? [] : [projectHook]),

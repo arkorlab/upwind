@@ -83,7 +83,7 @@ describe.skipIf(!ENABLED)('complete original Node export closure (dedicated CI)'
     );
   });
 
-  it('refuses a hidden loader helper behind an otherwise unused ES module export', async () => {
+  it('refuses raw ES module exports eliminated from the audited graph', async () => {
     const dependency = path.join(distDir, 'server/dependency.mjs');
     await writeFile(
       dependency,
@@ -92,7 +92,20 @@ describe.skipIf(!ENABLED)('complete original Node export closure (dedicated CI)'
     await writeEntry('./dependency.mjs');
 
     await expect(proveNodeFunction(input([dependency]))).rejects.toThrow(
-      'load the bundler could not follow',
+      'raw source export was eliminated',
     );
+  });
+
+  it('keeps an ES module whose complete public namespace is retained', async () => {
+    const dependency = path.join(distDir, 'server/dependency.mjs');
+    await writeFile(dependency, 'export const first=17;export const second=42;');
+    await writeFile(
+      entry,
+      "exports.value=require('./dependency.mjs');exports.native=()=>require('./addon.node');",
+    );
+
+    const proof = await proveNodeFunction(input([dependency]));
+
+    expect(nodeProofRawSources(proof).map((source) => source.file)).toContain(dependency);
   });
 });

@@ -4,6 +4,7 @@ import {
   nodeRawSourceInventory,
   type NodeBundledImport,
   type NodeProofSource,
+  type NodeSourceExports,
 } from '../src/node-bundle-closure.ts';
 import type { ManifestGraphEdge } from '../src/node-manifest-graph.ts';
 
@@ -20,6 +21,7 @@ function graph() {
     retained: new Set<string>(),
     rendered: new Map<string, string>(),
     imports: new Map<string, readonly ManifestGraphEdge[]>(),
+    exports: new Map<string, NodeSourceExports>(),
   };
 }
 
@@ -34,6 +36,7 @@ function add(
   own.retained.add(id);
   own.rendered.set(id, 'module.exports={};');
   own.imports.set(id, []);
+  own.exports.set(id, { format: 'cjs', declared: [], rendered: [] });
   return source;
 }
 
@@ -65,6 +68,7 @@ function selected(
 ): readonly NodeProofSource[] {
   return nodeRawSourceInventory({
     graph: own,
+    exports: own.exports,
     roots: options.roots ?? [ROUTE],
     nativeFiles: options.nativeFiles ?? new Set(),
     ...(options.bundledImports !== undefined && { bundledImports: options.bundledImports }),
@@ -161,6 +165,62 @@ describe('original raw source closure from authored graph DATA', () => {
     expect(selected(own)).toStrictEqual([{ file: ROUTE, sha256: SHA256 }]);
   });
 
+  it('accepts an ESM module only when every declared public export remains rendered', () => {
+    const own = graph();
+    add(own, 'route-id', ROUTE);
+    own.exports.set('route-id', {
+      format: 'es',
+      declared: ['default', 'handler'],
+      rendered: ['handler', 'default'],
+    });
+
+    expect(selected(own)).toStrictEqual([{ file: ROUTE, sha256: SHA256 }]);
+  });
+
+  it('refuses an ESM public export eliminated from rendered analysis', () => {
+    const own = graph();
+    add(own, 'route-id', ROUTE);
+    own.exports.set('route-id', {
+      format: 'es',
+      declared: ['handler', 'unusedPublic'],
+      rendered: ['handler'],
+    });
+
+    expect(() => selected(own)).toThrow('raw source export was eliminated');
+  });
+
+  it('refuses a raw module with missing export information', () => {
+    const own = graph();
+    add(own, 'route-id', ROUTE);
+    own.exports.delete('route-id');
+
+    expect(() => selected(own)).toThrow('raw source');
+  });
+
+  it('accepts unknown format only as an empty side-effect-only export inventory', () => {
+    const own = graph();
+    add(own, 'route-id', ROUTE);
+    own.exports.set('route-id', { format: 'unknown', declared: [], rendered: [] });
+
+    expect(selected(own)).toStrictEqual([{ file: ROUTE, sha256: SHA256 }]);
+  });
+
+  it.each(['declared', 'rendered'] as const)(
+    'refuses unknown format with a nonempty %s export inventory',
+    (field) => {
+      const own = graph();
+      add(own, 'route-id', ROUTE);
+      own.exports.set('route-id', {
+        format: 'unknown',
+        declared: [],
+        rendered: [],
+        [field]: ['public'],
+      });
+
+      expect(() => selected(own)).toThrow('raw source');
+    },
+  );
+
   it.each([
     { kind: 'code-null', inventory: 'rendered' },
     { kind: 'unretained', inventory: 'retained' },
@@ -183,6 +243,7 @@ describe('original raw source closure from authored graph DATA', () => {
     expect(() => {
       return nodeRawSourceInventory({
         graph: { ...own, [field]: undefined },
+        exports: own.exports,
         roots: [ROUTE],
         nativeFiles: new Set(),
       });

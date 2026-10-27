@@ -21,6 +21,11 @@ export interface NodeBundledImport {
   readonly from: NodeProofSource;
   readonly to: NodeProofSource;
 }
+export interface NodeSourceExports {
+  readonly format: 'es' | 'cjs' | 'unknown';
+  readonly declared: readonly string[];
+  readonly rendered: readonly string[];
+}
 interface RawSourceInput {
   readonly graph: {
     readonly sources: ReadonlyMap<string, NodeProofSource>;
@@ -30,6 +35,7 @@ interface RawSourceInput {
   };
   readonly roots: readonly string[];
   readonly nativeFiles: ReadonlySet<string>;
+  readonly exports: ReadonlyMap<string, NodeSourceExports>;
   readonly bundledImports?: readonly NodeBundledImport[];
 }
 
@@ -67,13 +73,40 @@ function bundledImport(
   });
 }
 
-function rawModule(graph: RawSourceInput['graph'], id: string) {
+function rawModule(input: RawSourceInput, id: string) {
+  const { graph } = input;
   const source = graph.sources.get(id);
   if (!physicalSource(source) || !graph.retained.has(id) || graph.rendered?.has(id) !== true)
     refuse('raw source lacks retained rendered physical proof');
   const imports = graph.imports?.get(id);
   if (imports === undefined) refuse('raw source has no resolved import inventory');
+  const exports = input.exports.get(id);
+  if (exports === undefined) refuse('raw source has no export inventory');
+  if (exports.format === 'unknown' && (exports.declared.length > 0 || exports.rendered.length > 0))
+    refuse('raw source export format is ambiguous');
+  if (exports.format === 'es' && exports.declared.some((name) => !exports.rendered.includes(name)))
+    refuse('raw source export was eliminated');
   return { source, imports };
+}
+
+/** Join actual compiler export inventories as DATA; this grants no source or loader role. */
+export function renderedNodeSourceExports(
+  chunk: Pick<OutputChunk, 'modules'>,
+  original: ReadonlyMap<string, NodeSourceExports>,
+): ReadonlyMap<string, NodeSourceExports> {
+  return new Map(
+    Object.entries(chunk.modules).flatMap(([id, module]) => {
+      const info = original.get(id);
+      return info === undefined
+        ? []
+        : [
+            [
+              id,
+              Object.freeze({ ...info, rendered: Object.freeze([...module.renderedExports]) }),
+            ] as const,
+          ];
+    }),
+  );
 }
 
 /** DATA selection only. Completed proof ownership and source audits remain the caller's duty. */
@@ -89,7 +122,7 @@ export function nodeRawSourceInventory(input: RawSourceInput): readonly NodeProo
   for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
     if (visited.has(id)) continue;
     visited.add(id);
-    const { source, imports } = rawModule(graph, id);
+    const { source, imports } = rawModule(input, id);
     const previous = sources.get(source.file);
     if (previous !== undefined && previous.sha256 !== source.sha256)
       refuse('conflicting raw source digests');
