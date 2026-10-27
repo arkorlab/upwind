@@ -26,6 +26,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+        id: build
       - name: Create an isolated artifact mount
         run: sudo install -d -m 0777 /bundle
       - name: Compile, package and invoke a real native addon
@@ -34,10 +35,6 @@ jobs:
           UPWIND_NATIVE_FUNCTION_INTEGRATION: '1'
       - name: Verify failure diagnostic filesystem boundaries
         run: pnpm exec vitest run --project adapter packages/adapter/test/native-next-diagnostics.test.ts
-      - name: Verify the fixed Next require hook bootstrap
-        run: pnpm exec vitest run --project runtime packages/runtime/test/node-next-hook-bootstrap-integration.test.ts
-        env:
-          UPWIND_NATIVE_FUNCTION_INTEGRATION: '1'
       - name: Verify the fixed Node dependency evaluation guard
         run: pnpm exec vitest run --project adapter packages/adapter/test/node-jwt-guard-integration.test.ts
         env:
@@ -87,3 +84,8 @@ jobs:
           path: ${{ runner.temp }}/upwind-native-next-server-minification-off/upwind-native-next-diagnostics
           if-no-files-found: warn
           retention-days: 1
+      - name: Verify the fixed Next require hook bootstrap
+        if: always() && !cancelled() && steps.build.outcome == 'success'
+        run: pnpm exec vitest run --project runtime packages/runtime/test/node-next-hook-bootstrap-integration.test.ts
+        env:
+          UPWIND_NATIVE_FUNCTION_INTEGRATION: '1'

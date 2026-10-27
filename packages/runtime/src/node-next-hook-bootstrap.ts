@@ -297,9 +297,13 @@ export function initializeNodeNextRequireHook(
     }
   }
   function core(): void {
+    const entry = descriptorOf(cache, filename);
     if (
       restored ||
       currentModule === undefined ||
+      entry === undefined ||
+      !hasOwn(entry, 'value') ||
+      entry.value !== currentModule ||
       cached(cache, filename, directory) !== currentModule ||
       data(currentModule, 'loaded') !== true ||
       data(currentModule, 'exports') !== hookNamespace
