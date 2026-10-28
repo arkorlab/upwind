@@ -445,6 +445,7 @@ jobs:
           TESTS: ${{ needs.plan.outputs.tests }}
           SHARD: ${{ matrix.shard }}
           TOTAL: ${{ needs.plan.outputs.total }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/deploy-results"
@@ -468,6 +469,15 @@ jobs:
             exit 1
           fi
           echo "shard $SHARD: $count suite(s) listed" >>"$GITHUB_STEP_SUMMARY"
+          # What the run below is given (`Run the suite`): on this machine's targets two minutes a suite,
+          # thirty at the least, and never past the job's own limit; on a host, that limit.
+          minutes=340
+          if [ "$TARGET" != 'host' ]; then
+            minutes=$((count * 2))
+            if [ "$minutes" -lt 30 ]; then minutes=30; fi
+            if [ "$minutes" -gt 340 ]; then minutes=340; fi
+          fi
+          echo "minutes=$minutes" >>"$GITHUB_OUTPUT"
       # The headless shell alone and no apt, as Next.js's own CI installs Chromium
       # (`.github/workflows/build_reusable.yml`, `--with-deps` for the other browsers only): the runner
       # has the libraries it needs. Both stalls were in apt. On 2026-10-26 `apt-get update` held two
@@ -502,12 +512,13 @@ jobs:
       # deploy the same fixture again and say nothing about why the first one failed. A suite that fails does not stop the rest — the runner carries on
       # and reports every one at the end, which is what makes a long run an inventory. Its own job
       # summary lists the failures, so a shard's findings are readable without opening the log.
-      # On this machine's targets a slice runs in minutes (on 2026-10-27, 4.6 at the most of 128), so a
-      # runner that has not ended in thirty has stopped: one waited for a Jest process that never
-      # exited, five and a half hours, to the job's limit. A host's slice keeps the job's limit.
+      # On this machine's targets a night's slice of about eighteen suites runs in minutes (on
+      # 2026-10-27, 4.6 at the most of 128), so a runner far past that has stopped: one waited for a
+      # Jest process that never exited, five and a half hours, to the job's limit. The listing above
+      # scales the limit with the suites the shard holds; a host's slice keeps the job's limit.
       - name: Run the suite
         working-directory: nextjs
-        timeout-minutes: ${{ matrix.target == 'host' && 340 || 30 }}
+        timeout-minutes: ${{ fromJSON(steps.inventory.outputs.minutes) }}
         env:
           NEXT_TEST_MODE: deploy
           # What a suite's hooks and tests may take. A deploy is the suite's `beforeAll`: a fixture of a few
