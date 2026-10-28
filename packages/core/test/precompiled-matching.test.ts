@@ -44,7 +44,8 @@ const MAX_SUBSTRING_MATCH_LENGTH = 4096;
 const MANIFEST = largeManifest();
 
 // The matching as it was, kept here to be compared with: the rules of `next.config` without regard
-// to case, as Next.js's router matches them, and the dynamic classes with it.
+// to case, as Next.js's router matches them, and the dynamic routes so too, the class of the route
+// the router resolves served only to a pathname that spells its pattern with case.
 
 /**
  * Kept by its source and flags, only so that asking tens of thousands of requests stays quick: a
@@ -152,9 +153,14 @@ function firstMatchBefore(
     return { entry: undefined, index: -1 };
   }
   const index = routes.findIndex(
-    (route) => compiled(route.sourceRegex).test(url.pathname) && heldBefore(route, url, headers),
+    (route) =>
+      compiled(route.sourceRegex, 'i').test(url.pathname) && heldBefore(route, url, headers),
   );
-  const route = routes[index]?.route;
+  const routed = routes[index];
+  const route =
+    routed !== undefined && compiled(routed.sourceRegex).test(url.pathname)
+      ? routed.route
+      : undefined;
   return {
     entry:
       route !== undefined && Object.hasOwn(manifest.routes, route)
@@ -415,17 +421,17 @@ describe('patterns compiled once per list', () => {
 
   /**
    * The skip, checked against the engine rather than against the reading of it: no route taken to
-   * need a marker matches a pathname without one.
+   * need a marker matches, as the router matches, a pathname that spells none in any case.
    */
   it('skips for a document only routes no pathname without a data marker matches', () => {
     const plain = PATHNAMES.filter((pathname) =>
-      DATA_MARKERS.every((marker) => !pathname.includes(marker)),
+      DATA_MARKERS.every((marker) => !pathname.toLowerCase().includes(marker)),
     );
     const skipped = (MANIFEST.dynamicRoutes ?? []).filter((route) =>
       DATA_MARKERS.some((marker) => requiresLiteral(route.sourceRegex, marker)),
     );
     const escapes = skipped.flatMap((route) => {
-      const regex = compiled(route.sourceRegex);
+      const regex = compiled(route.sourceRegex, 'i');
       return plain
         .filter((pathname) => regex.test(pathname))
         .map((pathname) => `${route.sourceRegex} ${pathname}`);

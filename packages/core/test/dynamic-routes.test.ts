@@ -197,6 +197,32 @@ describe('matchDynamicRoute', () => {
     ).toBeUndefined();
   });
 
+  /**
+   * The router matches the dynamic routes without regard to case, so a case variant of a member is
+   * its class's to the router, whatever a later class's pattern matches as the variant is spelled.
+   * The edge serves a class only of the route the router resolves a pathname to, and only to the
+   * spelling the class was built for: the variant is the Function's.
+   */
+  it('serves no later class to a case variant of an earlier class’s member', () => {
+    const generic = '/[locale]/[orgSlug]';
+    const pattern = '^[/]?/(?<nxtPlocale>[^/]+?)/(?<nxtPorgSlug>[^/]+?)(?:/)?$';
+    const classed = {
+      ...manifest,
+      routes: { ...manifest.routes, [generic]: entryAt(generic) },
+      dynamicRoutes: DYNAMIC_ROUTES.map((route) =>
+        route.sourceRegex === pattern ? { ...route, route: generic } : route,
+      ),
+    };
+    const at = (path: string): string | undefined => {
+      const url = new URL(`https://app.example.app${path}`);
+      return matchDynamicRoute(classed, url, new Headers())?.pathname;
+    };
+
+    expect(at('/ja/acme')).toBe(generic);
+    expect(at('/en/acme')).toBe('/en/[orgSlug]');
+    expect(at('/EN/acme')).toBeUndefined();
+  });
+
   /** A matcher whose conditions fail is passed over, and the next class gets its turn. */
   it('honours has conditions, moving on when they fail', () => {
     expect(routeOf(classify('/en/acme/proj', { 'x-beta': '1' }))).toBe('/en/[orgSlug]/[projectId]');
