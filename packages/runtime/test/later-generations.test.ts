@@ -141,6 +141,34 @@ function holding(now: HeldValue | undefined): Weighing {
   return { judge: () => Promise.resolve('fresh'), reread: () => Promise.resolve(now) };
 }
 
+/** `value`, `ms` after it is asked for, by the timers the test runs. */
+function after<T>(ms: number, value: T): Promise<T> {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve(value);
+    }, ms);
+  });
+}
+
+/** Whether a promise has settled yet, and what it came to, as a test's fake clock moves on. */
+interface Settling<T> {
+  done: boolean;
+  value?: T;
+}
+
+/** What `promise` has come to so far (`state`), and the moment it has settled (`settled`). */
+function settling<T>(promise: Promise<T>): {
+  readonly state: Settling<T>;
+  readonly settled: Promise<void>;
+} {
+  const state: Settling<T> = { done: false };
+  const settled = (async () => {
+    state.value = await promise;
+    state.done = true;
+  })();
+  return { state, settled };
+}
+
 /** The value a read found, as a read holds it. */
 function heldFrom(memo: DataMemo): HeldValue {
   const held = heldIn(memo);
@@ -1101,6 +1129,7 @@ describe('a value the host keeps later than the one read', () => {
 
   afterEach(() => {
     configureCacheHandlers(undefined);
+    vi.useRealTimers();
   });
 
   const REQUEST = { key: KEY, kind: 'data:use-cache', handler: 'default' } as const;
@@ -1490,6 +1519,118 @@ describe('a value the host keeps later than the one read', () => {
     );
 
     expect(judged).toStrictEqual({ held, validity: 'stale' });
+  });
+
+  /**
+   * Past a value judged stale, what the read asks there — the later value, its judgement, the one
+   * past it, what the isolate holds of the key — is waited for 200 ms at the most together, not
+   * each: given each 200 ms, a later value read in 150 ms whose tags took 100 ms to bring up held
+   * the render 250 ms, and the steps together came to some 800 ms.
+   */
+  it('answers the value read once 200 ms past it have gone by, whatever is still asked', async () => {
+    const runtime = hostedBy(runtimeFor(answering), {
+      getNewerData: () => after(150, LATER_VALUE),
+    });
+    const held = heldFrom(await withClock(T0, () => readData(runtime, REQUEST)));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const weighing: Weighing = {
+      judge: () => after(100, 'fresh'),
+      reread: () => Promise.resolve(undefined),
+    };
+
+    const answered = settling(
+      withClock(T0, () => laterIfAny(runtime, REQUEST, { held, validity: 'stale' }, weighing)),
+    );
+    await vi.advanceTimersByTimeAsync(199);
+    const before = answered.state.done;
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(before).toBe(false);
+    expect(answered.state).toStrictEqual({ done: true, value: { held, validity: 'stale' } });
+
+    await answered.settled;
+  });
+
+  /**
+   * A later value that stands no better than stale is asked past, but not once the wait has gone by:
+   * the one past it would be a read no render waits for.
+   */
+  it('asks nothing past a later value once the wait has gone by', async () => {
+    const stale: DataRead = { ...LATER_VALUE, dependencyRevision: 4 };
+    const asked: number[] = [];
+    const runtime = hostedBy(runtimeFor(answering), {
+      getNewerData: (_request, than) => {
+        asked.push(than);
+        return after(150, than < 4 ? stale : LATER_VALUE);
+      },
+    });
+    const held = heldFrom(await withClock(T0, () => readData(runtime, REQUEST)));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    // Its tags brought up in what is left of the wait, to the millisecond.
+    const weighing: Weighing = {
+      judge: (value) => after(50, value.revision === 4 ? 'stale' : 'fresh'),
+      reread: () => Promise.resolve(undefined),
+    };
+
+    const answered = settling(
+      withClock(T0, () => laterIfAny(runtime, REQUEST, { held, validity: 'stale' }, weighing)),
+    );
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(asked).toStrictEqual([3]);
+    expect(answered.state).toMatchObject({
+      done: true,
+      value: { held: { revision: 4 }, validity: 'stale' },
+    });
+
+    await answered.settled;
+  });
+
+  /**
+   * Where a write of the key overtook the later value, what the isolate holds of the key now is
+   * read again — and that read, which can go to the host, is waited for no longer than the rest: a
+   * miss at the deadline, and the render computes the value itself.
+   */
+  it('answers a miss at the deadline where what overtook the later value is not read again in time', async () => {
+    const isolate: { runtime?: CacheRuntime } = {};
+    const runtime = hostedBy(runtimeFor(answering), {
+      getNewerData: () => {
+        // The write is still out when the later value comes back: it fences the reads under way.
+        if (isolate.runtime !== undefined) {
+          const written = { key: KEY, entry: READ.entry, bytes: encoder.encode('written') };
+          void writeData(isolate.runtime, written).catch(ignore);
+        }
+        return Promise.resolve(LATER_VALUE);
+      },
+      setData: () => {
+        return new Promise(() => {
+          // The write never lands while the test looks.
+        });
+      },
+    });
+    isolate.runtime = runtime;
+    const held = heldFrom(await withClock(T0, () => readData(runtime, REQUEST)));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const stalled: Weighing = {
+      judge: () => Promise.resolve('fresh'),
+      reread: () => {
+        return new Promise(() => {
+          // What the isolate holds of the key is never read again.
+        });
+      },
+    };
+
+    const answered = settling(
+      withClock(T0, () => laterIfAny(runtime, REQUEST, { held, validity: 'stale' }, stalled)),
+    );
+    await vi.advanceTimersByTimeAsync(199);
+    const before = answered.state.done;
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(before).toBe(false);
+    expect(answered.state).toStrictEqual({ done: true, value: undefined });
+
+    await answered.settled;
   });
 
   it('orders the key from its revision though its bytes cannot be read', async () => {
