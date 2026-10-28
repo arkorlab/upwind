@@ -153,15 +153,39 @@ export interface DispatchInput {
   /** The app Worker the entry's route is in, for a deployment split across several. */
   readonly function: string | undefined;
   /**
-   * For a detached ask (`triggerDetached`): told once the runtime's answer says it accepted the
-   * regeneration, which it begins as it answers.
+   * For a detached ask (`triggerDetached`), or a regeneration in the foreground
+   * (`foregroundDocument`): told once the runtime's answer says it accepted the regeneration, which
+   * it begins as it answers a detached ask, and publishes behind the render it answers with in the
+   * foreground.
    */
   readonly onAccepted?: (() => void) | undefined;
   /**
-   * For a detached ask: told once it will not begin here — answered without the runtime accepting
-   * it, or not answered at all — never beside `onAccepted`.
+   * For either: told once it will not begin here — answered without the runtime accepting it, or
+   * not answered at all — never beside `onAccepted`.
    */
   readonly onDeclined?: (() => void) | undefined;
+}
+
+/**
+ * What hears the runtime's answer for the regeneration asked (`PassthroughInput.onAnswered`), and
+ * marks `heard` as it does: `undefined` where nothing is told of it. An answer the edge composes
+ * itself — the Worker unreachable, or gone and the request routed again — never comes here: it is
+ * none of the runtime's, and its caller tells `onDeclined` of it, once the passthrough has settled.
+ */
+function hearing(
+  input: DispatchInput,
+  heard: { answered: boolean },
+): ((answer: Response) => void) | undefined {
+  const { onAccepted, onDeclined } = input;
+  if (onAccepted === undefined && onDeclined === undefined) return undefined;
+  return (answer) => {
+    heard.answered = true;
+    if (regenerationAccepted(answer)) {
+      onAccepted?.();
+    } else {
+      onDeclined?.();
+    }
+  };
 }
 
 /**
@@ -179,35 +203,46 @@ function keptPastTheVisitor(request: Request): Request {
  * the read of the record that turned out to have expired, which the request waited on first. Where
  * the Workers that served the record are gone, the request is routed again from the pointer KV
  * holds now, as any passthrough of it is (`EdgeContext.whenGone`).
+ *
+ * What the runtime says of the regeneration is told as its answer comes in (`onAccepted`,
+ * `onDeclined`), synchronously and before the answer goes on: what is told starts its reads behind
+ * the response, and the response waits on none of them.
  */
-export function foregroundDocument(
+export async function foregroundDocument(
   edge: EdgeContext,
   input: DispatchInput,
   { recordLookupMs }: PassthroughWait = {},
 ): Promise<Response> {
-  return handlePassthrough({
-    request: keptPastTheVisitor(input.request),
-    forwarding: edge.forwarding,
-    runtime: edge.runtime,
-    host: edge.host,
-    app: edge.app,
-    cspReportingPath: edge.cspReportingPath,
-    function: input.function ?? PRIMARY_FUNCTION,
-    scopeId: input.target.pack.header.scopeId,
-    reason: 'regenerate',
-    privateDelivery: edge.privateDelivery,
-    middleware: input.middleware,
-    headers: regenerationHeaders(edge, 'foreground', input.target),
-    whenGone: edge.whenGone,
-    metrics: {
-      ...passthroughMetrics(
-        edge,
-        input.target.pack.header.route,
-        edge.timings.middlewareMs ?? input.middleware?.middlewareMs,
-      ),
-      ...(recordLookupMs !== undefined && { recordLookupMs }),
-    },
-  });
+  const heard = { answered: false };
+  try {
+    return await handlePassthrough({
+      request: keptPastTheVisitor(input.request),
+      forwarding: edge.forwarding,
+      runtime: edge.runtime,
+      host: edge.host,
+      app: edge.app,
+      cspReportingPath: edge.cspReportingPath,
+      function: input.function ?? PRIMARY_FUNCTION,
+      scopeId: input.target.pack.header.scopeId,
+      reason: 'regenerate',
+      privateDelivery: edge.privateDelivery,
+      middleware: input.middleware,
+      headers: regenerationHeaders(edge, 'foreground', input.target),
+      whenGone: edge.whenGone,
+      metrics: {
+        ...passthroughMetrics(
+          edge,
+          input.target.pack.header.route,
+          edge.timings.middlewareMs ?? input.middleware?.middlewareMs,
+        ),
+        ...(recordLookupMs !== undefined && { recordLookupMs }),
+      },
+      onAnswered: hearing(input, heard),
+    });
+  } finally {
+    // An answer the edge composed itself, or none, is none of the runtime's (`hearing`).
+    if (!heard.answered) input.onDeclined?.();
+  }
 }
 
 /**
@@ -253,7 +288,7 @@ async function askDetached(
   asked: (soFar: () => number) => void,
   onDispatched?: (read: () => Dispatched | undefined) => void,
 ): Promise<void> {
-  const { onAccepted, onDeclined } = input;
+  const { onDeclined } = input;
   // Set where the Worker's answer comes back; read once the passthrough returns, or has thrown.
   const heard = { answered: false };
   try {
@@ -270,17 +305,7 @@ async function askDetached(
       headers: regenerationHeaders(edge, 'detached', input.target),
       onAsked: asked,
       onDispatched,
-      onAnswered:
-        onAccepted === undefined && onDeclined === undefined
-          ? undefined
-          : (answer) => {
-              heard.answered = true;
-              if (regenerationAccepted(answer)) {
-                onAccepted?.();
-              } else {
-                onDeclined?.();
-              }
-            },
+      onAnswered: hearing(input, heard),
     });
     // An answer the edge composed itself (the Worker unreachable, gone) is none of the runtime's.
     if (!heard.answered) onDeclined?.();

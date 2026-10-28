@@ -11,16 +11,21 @@ import type { GenerationLoad } from './generation-loader.ts';
  * (`evaluateFreshness`), so no two of them serve different things.
  *
  * Served fresh or stale; a stale one regenerated behind the response. Expired, it is not served:
- * the deployment's Worker regenerates in the foreground and its render is the response. Without
- * a record, or with one that cannot be read, the build's own shell answers as it always has: the
- * build's generation is what the record would have said before anything regenerated, and a
- * record that is missing is most often one KV has not shown this region yet. A record this isolate
- * holds answers whatever KV says, past its hold as within it (`generation-hold.ts`); to a read KV
- * is out of reach for, this data center's copy answers when it has one (`generation-loader.ts`),
- * and otherwise a record this isolate came to hold meanwhile, unless that one has expired. A record
- * a Function's response condemned in this isolate — one that carries a tag the response said was
- * invalidated at once, written before the revision it said — is judged expired, whatever it says of
- * itself (`condemned.ts`).
+ * the deployment's Worker regenerates in the foreground and its render is the response — and the
+ * record that render publishes is read for behind it at the authority as well as KV, since this
+ * data center's KV may go on answering with the expired one for its 30-second cache and the new
+ * one's propagation, and every request until then would be rendered again (`cache/document.ts`).
+ * Without a record, or with one that cannot be read, the build's own shell answers as it always
+ * has: the build's generation is what the record would have said before anything regenerated, and
+ * a record that is missing is most often one KV has not shown this region yet. A record this
+ * isolate holds answers whatever KV says, past its hold as within it (`generation-hold.ts`); to a
+ * read KV is out of reach for, this data center's copy answers when it has one
+ * (`generation-loader.ts`), and otherwise a record this isolate came to hold meanwhile, unless that
+ * one has expired. A record a Function's response condemned in this isolate — one that carries a
+ * tag the response said was invalidated at once, written before the revision it said — is judged
+ * expired, whatever it says of itself (`condemned.ts`). One invalidated with a window is handed to
+ * the Function, which serves it stale and regenerates it; the decision carries it (`pack`), for the
+ * authority to be read behind the response for the record that replaces it, as for one expired.
  */
 
 const OK_STATUS = 200;
@@ -39,7 +44,17 @@ export type GenerationDecision =
     }
   | { readonly kind: 'regenerate'; readonly pack: DecodedGenerationPack; readonly lookupMs: number }
   | { readonly kind: 'build'; readonly reason: string; readonly lookupMs: number }
-  | { readonly kind: 'passthrough'; readonly reason: string; readonly lookupMs: number };
+  | {
+      readonly kind: 'passthrough';
+      readonly reason: string;
+      readonly lookupMs: number;
+      /**
+       * The record invalidated with a window that the Function is handed the request for
+       * (`INVALIDATED_REASON`), for the authority to be read behind it for the record that replaces
+       * it (`readReplacementBehind`). None for a record of another status, which is what it says.
+       */
+      readonly pack?: DecodedGenerationPack | undefined;
+    };
 
 function validityOf(pack: DecodedGenerationPack, now: number): Validity {
   const { header } = pack;
@@ -78,7 +93,7 @@ function decideRecord(read: RecordRead, now: number, condemned: Condemned): Gene
     return { kind: 'regenerate', pack, lookupMs };
   }
   if (condemnation === 'stale') {
-    return { kind: 'passthrough', reason: INVALIDATED_REASON, lookupMs };
+    return { kind: 'passthrough', reason: INVALIDATED_REASON, pack, lookupMs };
   }
   return { kind: 'serve', pack, validity, source, readBytes, lookupMs };
 }
