@@ -140,7 +140,9 @@ A run on this machine's targets keeps its results in the same form, as
 (`src/judge-results.ts`). Every failure is read against [`REVIEWED.md`](REVIEWED.md): for each
 release of Next.js, the cases whose failure says nothing against this adapter, with the reason, the
 evidence and upstream's word where it has one, and the failure each was read from. A case read there
-does not fail its shard. Any other failure does, as does a suite that left no result. The verdict,
+does not fail its shard. Any other failure does, as does a suite that left no result, and so does a
+runner that did not finish: on these targets the run is given thirty minutes, where a slice takes a
+few, and a runner stopped there wrote no exit code beside the results. The verdict,
 names and counts and never a message, goes into the results kept (`verdict.json`) and into the job's
 summary, and a last job sums every shard's for each target (`src/report-results.ts`).
 

@@ -5,15 +5,16 @@ import { parseArgs } from 'node:util';
 import { fails, judge } from './judge.ts';
 import { type JestSuite, jestSuite, listedSuites } from './results.ts';
 import { REVIEWED } from './reviewed.ts';
-import { describe, type ShardVerdict } from './verdicts.ts';
+import { describe, type ShardVerdict, shardFails } from './verdicts.ts';
 
 /**
  * Judges a shard of a run on this machine's targets (`judge.ts`) where it ran: the suites it was to
  * run (`expected-tests.txt` in `--results`, written before it ran them) by what each left in
  * `--next-dir` (`<suite>.results.json`), against the reviewed cases of the Next.js release checked
  * out there. The verdict goes beside the shard's results (`verdict.json`) and into the job's summary,
- * and the shard fails where it holds a failure the reviewed cases do not account for, or a suite that
- * left no result.
+ * and the shard fails where it holds a failure the reviewed cases do not account for, a suite that
+ * left no result, or a runner that did not finish: one that wrote no exit code beside the results
+ * (`runner-exit-code.txt`), stopped at its step's time limit or never started.
  *
  * Where it ran, from the environment: the target (`TARGET`), the shard (`SHARD`) and the commit of
  * Next.js (`NEXT_COMMIT`).
@@ -78,6 +79,7 @@ const verdict: ShardVerdict = {
     REVIEWED,
   ),
   shard,
+  runnerFinished: existsSync(path.join(resultsDir, 'runner-exit-code.txt')),
 };
 writeFileSync(path.join(resultsDir, 'verdict.json'), `${JSON.stringify(verdict, undefined, 2)}\n`);
 const text = describe(target, [verdict]);
@@ -86,6 +88,6 @@ const summary = process.env['GITHUB_STEP_SUMMARY'];
 if (summary !== undefined && summary !== '') {
   appendFileSync(summary, text);
 }
-if (fails(verdict)) {
+if (shardFails(verdict, fails)) {
   process.exitCode = 1;
 }

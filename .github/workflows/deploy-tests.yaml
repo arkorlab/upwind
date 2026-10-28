@@ -502,8 +502,12 @@ jobs:
       # deploy the same fixture again and say nothing about why the first one failed. A suite that fails does not stop the rest — the runner carries on
       # and reports every one at the end, which is what makes a long run an inventory. Its own job
       # summary lists the failures, so a shard's findings are readable without opening the log.
+      # On this machine's targets a slice runs in minutes (on 2026-10-27, 4.6 at the most of 128), so a
+      # runner that has not ended in thirty has stopped: one waited for a Jest process that never
+      # exited, five and a half hours, to the job's limit. A host's slice keeps the job's limit.
       - name: Run the suite
         working-directory: nextjs
+        timeout-minutes: ${{ matrix.target == 'host' && 340 || 30 }}
         env:
           NEXT_TEST_MODE: deploy
           # What a suite's hooks and tests may take. A deploy is the suite's `beforeAll`: a fixture of a few
