@@ -468,6 +468,7 @@ describe('a shard judged by the workflow', () => {
     results: Record<string, unknown>,
     listed = Object.keys(results),
     runnerFinished = true,
+    ended: readonly string[] = [],
   ) {
     const base = mkdtempSync(path.join(os.tmpdir(), 'upwind-judge-results-'));
     dirs.push(base);
@@ -480,6 +481,9 @@ describe('a shard judged by the workflow', () => {
     writeFileSync(path.join(output, 'expected-tests.txt'), `${listed.join('\n')}\n`);
     if (runnerFinished) {
       writeFileSync(path.join(output, 'runner-exit-code.txt'), '1\n');
+    }
+    if (ended.length > 0) {
+      writeFileSync(path.join(output, 'watchdog.json'), JSON.stringify({ ended }));
     }
     for (const [suite, body] of Object.entries(results)) {
       mkdirSync(path.join(nextDir, path.dirname(suite)), { recursive: true });
@@ -536,6 +540,21 @@ describe('a shard judged by the workflow', () => {
     expect(run.status).toBe(1);
     expect(verdict).toMatchObject({ runnerFinished: false, unexplained: [] });
     expect(readFileSync(summary, 'utf8')).toContain('**1 shard whose runner did not finish:** 3.');
+  });
+
+  it('names a suite whose Jest process the watchdog ended, without failing the shard for it', () => {
+    const { run, output, summary } = shard({ [GATED]: gatedResult([GATED_CASE]) }, [GATED], true, [
+      GATED,
+    ]);
+    const verdict = JSON.parse(
+      readFileSync(path.join(output, 'verdict.json'), 'utf8'),
+    ) as ShardVerdict;
+
+    expect(run.status).toBe(0);
+    expect(verdict.ended).toStrictEqual([GATED]);
+    expect(readFileSync(summary, 'utf8')).toContain(
+      `whose Jest process did not exit after its result, and was ended`,
+    );
   });
 
   it('fails a shard with a failure nobody reviewed, or a suite that left no result', () => {

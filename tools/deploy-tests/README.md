@@ -143,9 +143,14 @@ evidence and upstream's word where it has one, and the failure each was read fro
 does not fail its shard. Any other failure does, as does a suite that left no result, and so does a
 runner that did not finish: on these targets the run is given two minutes a suite, thirty at the
 least, where a night's slice takes a few in all, and a runner stopped there wrote no exit code beside
-the results. The verdict,
-names and counts and never a message, goes into the results kept (`verdict.json`) and into the job's
-summary, and a last job sums every shard's for each target (`src/report-results.ts`).
+the results. The verdict, names and counts and never a message, goes into the results kept
+(`verdict.json`) and into the job's summary, and a last job sums every shard's for each target
+(`src/report-results.ts`).
+
+The run goes through a watchdog (`src/runner-watchdog.ts`). Where every suite has left its result and
+the runner still waits five minutes later, a Jest process has not exited: the watchdog writes what
+the processes are doing to the job's log and ends it, and the summary names its suite, whose result
+stands.
 
 A failure that is not this adapter's is recorded in `REVIEWED.md` and in `src/reviewed.ts`
 together, and a test holds the two to each other. A run of another release of Next.js reads nothing

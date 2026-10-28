@@ -576,8 +576,16 @@ jobs:
           if [ "$(printf '%s' "$TESTS" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')" != 'all' ]; then
             paths="$TESTS"
           fi
+          # On this machine's targets the runner is watched (`runner-watchdog.ts`): where every suite has
+          # left its result and the runner still waits minutes later, a Jest process did not exit, and is
+          # ended once what it is doing is in the log.
+          runner=(node run-tests.js)
+          if [ "$ADAPTER_TEST_TARGET" != 'host' ]; then
+            runner=(node "$ADAPTER_DIR/tools/deploy-tests/src/runner-watchdog.ts" --next-dir . \
+              --results "$RUNNER_TEMP/deploy-results" -- node run-tests.js)
+          fi
           # shellcheck disable=SC2086 -- both are several words, or none, on purpose
-          if node run-tests.js --type e2e -c "$CONCURRENCY" --retries 0 $group $paths; then
+          if "${runner[@]}" --type e2e -c "$CONCURRENCY" --retries 0 $group $paths; then
             result=0
           else
             result=$?

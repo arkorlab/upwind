@@ -78,6 +78,7 @@ const config: KnipConfig = {
         'src/read-suite-env.ts',
         'src/install-npm.ts',
         'src/serve-cloudflare.ts',
+        'src/runner-watchdog.ts',
       ],
       // Local release-verification fixtures use the host's GnuPG installation.
       ignoreBinaries: ['gpg', 'gpgconf'],
