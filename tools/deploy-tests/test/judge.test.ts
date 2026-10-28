@@ -238,11 +238,13 @@ describe('a snapshot that differs in indentation alone', () => {
   });
 });
 
-const NATIVE_ADDON =
+const NATIVE_CONTAINER =
+  'Error: Custom deploy script failed: Progress: resolved 1\nthe server ended before it served:\n' +
+  'Error: upwind-app requires a native Node Container, which this local stack does not run';
+const NATIVE_REFUSED =
   'Error: Custom deploy script failed: Progress: resolved 1\n> Build error occurred\n' +
-  'Error [AuditError]: @stayingupwind/adapter: the app Function would not run:\n' +
-  '  - a load the bundler could not follow: bindings/index.js:30: require(binary)\n\n' +
-  'This Function also traces native Node.js addons from these server entries:';
+  'Error [AuditError]: Unproved Next.js Turbopack consumer graph uncertified duplicate module ' +
+  'registration; refusing native publication';
 
 /** What each reviewed suite failed with at 16.4.3, cut short: the parts its symptom reads. */
 const RECORDED: Readonly<Record<string, readonly string[]>> = {
@@ -270,8 +272,8 @@ const RECORDED: Readonly<Record<string, readonly string[]>> = {
   'test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts': [
     `Error: Timed out waiting for a request to be initiated.\n    at act (${AT}/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts:104:11)`,
   ],
-  'test/e2e/prerender-native-module.test.ts': [NATIVE_ADDON],
-  'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': [NATIVE_ADDON],
+  'test/e2e/prerender-native-module.test.ts': [NATIVE_CONTAINER],
+  'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': [NATIVE_REFUSED],
 };
 
 /** An inline snapshot's failure in the trace suite, with these lines of its diff. */
