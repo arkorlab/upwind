@@ -49,6 +49,41 @@ function expensiveBundle(kind: 'middleware' | 'policy'): DeploymentBundle {
 }
 
 describe('manifest assembly pattern refusals', () => {
+  it('assembles many document paths beside an affordable static-asset header rule', async () => {
+    const bundle = fixtureBundle();
+    const page = rootPrerender();
+    const pathnames = Array.from(
+      { length: 1500 },
+      (_, index) => `/en/acme/docs/${'reference-section/'.repeat(5)}page-${index}`,
+    );
+    bundle.entrypoints = pathnames.map((pathname) => {
+      return {
+        id: pathname,
+        pathname,
+        kind: 'app-page',
+      };
+    });
+    bundle.prerenders = pathnames.map((pathname) => {
+      return {
+        ...page,
+        id: pathname,
+        pathname,
+        route: pathname,
+        parentOutputId: pathname,
+      };
+    });
+    bundle.routing.beforeMiddleware.push({
+      sourceRegex:
+        '/_next/static/(?:[^/]+/pages|pages|chunks|immutable|runtime|css|image|media|build-example)/.+',
+      headers: { 'cache-control': 'public, max-age=31536000, immutable' },
+    });
+
+    const assembled = await assemble(bundle);
+
+    expect(assembled.kind).toBe('assembled');
+    expect(assembled).toHaveProperty('routes.length', pathnames.length);
+  });
+
   it.each(['middleware', 'policy'] as const)('refuses an expensive %s expression', async (kind) => {
     const bundle = expensiveBundle(kind);
 
