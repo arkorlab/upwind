@@ -5,6 +5,8 @@ import { AuditError, auditFunction, type FunctionDependencies } from './dependen
 export interface NativeAddonEntryTrace {
   readonly id: string;
   readonly assets: Readonly<Record<string, string>>;
+  /** Ownership proof for entry files omitted by NFT; never additional shipped data files. */
+  readonly importers?: readonly string[] | undefined;
 }
 
 const MAX_ENTRIES = 5;

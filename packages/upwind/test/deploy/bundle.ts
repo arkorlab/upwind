@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type { DeploymentBundle, WorkerFunctionSpec } from '@stayingupwind/core/bundle';
+import type {
+  DeploymentBundle,
+  FunctionSpec,
+  WorkerFunctionSpec,
+} from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
 
 /**
@@ -58,7 +62,7 @@ export function deployableFunction(dir: string): WorkerFunctionSpec {
 
 /** A build of one page, as its bundle reads, with whatever the test changes. */
 export function bundleOf(
-  app: WorkerFunctionSpec,
+  app: FunctionSpec,
   extra: Partial<DeploymentBundle> = {},
 ): DeploymentBundle {
   return {

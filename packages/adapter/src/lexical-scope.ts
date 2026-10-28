@@ -181,6 +181,18 @@ export function scopeOpenedBy(node: Node): Scope | undefined {
     case 'FunctionExpression': {
       return functionScope(node);
     }
+    case 'ClassExpression': {
+      // The self-name is local even in the heritage expression's temporal dead zone.
+      const name = node['id'];
+      if (!isNode(name) || name.type !== 'Identifier' || typeof name['name'] !== 'string') {
+        return undefined;
+      }
+      return {
+        declared: new Set([name['name']]),
+        constants: new Set(),
+        bindings: new Map([[name['name'], node]]),
+      };
+    }
     case 'BlockStatement': {
       return lexicalScope(listOf(node, 'body'));
     }

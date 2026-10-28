@@ -32,6 +32,36 @@ const SETTINGS: DeploySettings = {
 const NO_SECRETS: ReadonlyMap<string, string> = new Map();
 
 describe('checking a build before a deploy', () => {
+  it('refuses native Function artifacts before any Worker-only deployment preparation', async () => {
+    const dir = projectDir();
+    const app = deployableFunction(dir);
+    writeBundle(
+      dir,
+      bundleOf(app, {
+        v: 11,
+        routerReferences: 'one-pass',
+        functions: {
+          app: {
+            runtime: 'node-container',
+            entrypoint: 'upwind/server.mjs',
+            artifact: { sha256: 'a'.repeat(64), byteLength: 2048, contentType: 'application/gzip' },
+            abi: {
+              nodeVersion: '24.22.1',
+              nodeAbi: '137',
+              platform: 'linux',
+              arch: 'x64',
+              libc: 'glibc',
+            },
+          },
+        },
+      }),
+    );
+
+    await expect(
+      preflight({ projectDir: dir, settings: SETTINGS, secrets: NO_SECRETS }),
+    ).rejects.toThrow(/Container-capable host/u);
+  });
+
   it('finds nothing wrong with a build made for one', async () => {
     const dir = projectDir();
     const bundle = bundleOf(deployableFunction(dir));

@@ -178,6 +178,7 @@ export interface SplitInput {
   readonly repoRoot?: string | undefined;
   readonly distDir: string;
   readonly budget: PlanBudget;
+  readonly reservedFunctions?: number | undefined;
 }
 
 /** A file's size, or nothing for one that is not there to weigh. */
@@ -494,6 +495,7 @@ export async function planSplit(input: SplitInput): Promise<PlannedFunction[]> {
     items: weights.items,
     base: baseWeight(input, units, weights.items),
     budget: input.budget,
+    reservedFunctions: input.reservedFunctions,
   });
 }
 

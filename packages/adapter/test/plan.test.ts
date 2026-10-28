@@ -1,3 +1,5 @@
+import { MAX_APP_FUNCTIONS } from '@stayingupwind/core/bundle';
+import { compareCodeUnits } from '@stayingupwind/core/util';
 import { describe, expect, it } from 'vitest';
 
 import { type PlanInput, type PlanItem, planFunctions, type PlanUnit } from '../src/plan.ts';
@@ -158,6 +160,43 @@ describe('the plan', () => {
 
     expect(plan.map((planned) => planned.ids)).toStrictEqual([['/a', '/b'], ['/heavy']]);
   });
+
+  it('reserves a native owner slot before forcing the cheapest remaining Worker merge', () => {
+    const ids = Array.from(
+      { length: MAX_APP_FUNCTIONS },
+      (_, at) => `/r${String(at).padStart(2, '0')}`,
+    );
+    const own = input({
+      units: ids.map((id) => unit([id], [id])),
+      items: new Map(ids.map((id) => [id, code(100 * KIB)])),
+      base: { bytes: 0, codeBytes: 0 },
+      budget: { maxBytes: 10_000 * KIB, maxCodeBytes: 150 * KIB },
+    });
+    const ordinary = planFunctions(own);
+    const reserved = planFunctions({ ...own, reservedFunctions: 1 });
+    const reversed = planFunctions({
+      ...own,
+      units: own.units.toReversed(),
+      items: new Map([...own.items].toReversed()),
+      reservedFunctions: 1,
+    });
+
+    expect(ordinary).toHaveLength(MAX_APP_FUNCTIONS);
+    expect(planFunctions({ ...own, reservedFunctions: 0 })).toStrictEqual(ordinary);
+    expect(reserved).toHaveLength(MAX_APP_FUNCTIONS - 1);
+    expect(reserved.flatMap((planned) => planned.ids).toSorted(compareCodeUnits)).toStrictEqual(
+      ids,
+    );
+    expect(reserved.filter((planned) => planned.ids.length === 2)).toHaveLength(1);
+    expect(reversed).toStrictEqual(reserved);
+  });
+
+  it.each([-1, MAX_APP_FUNCTIONS, 1.5, NaN, Infinity])(
+    'refuses invalid reserved Function count %s instead of relaxing the total cap',
+    (reservedFunctions) => {
+      expect(() => planFunctions({ ...SECTIONS, reservedFunctions })).toThrow(RangeError);
+    },
+  );
 
   it('makes no more Functions than a deployment may run as, whatever the budget', () => {
     const many = Array.from({ length: 40 }, (_, at) => `/r${String(at).padStart(2, '0')}`);

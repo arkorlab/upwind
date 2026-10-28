@@ -1,9 +1,18 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2023"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["node"],
     "allowImportingTsExtensions": true
   },
-  "include": ["eslint.config.ts", "knip.config.ts", "vitest.config.ts", "types/**/*.d.ts"]
+  "include": [
+    "eslint.config.ts",
+    "knip.config.ts",
+    "vitest.config.ts",
+    "types/**/*.d.ts",
+    "tools/native-pages-handler-profile-ci.mts",
+    "tools/native-pages-handler-profile/select.mts",
+    "tools/native-addon-next-ci.mts",
+    "tools/native-addon-next-artifact.mts"
+  ]
 }

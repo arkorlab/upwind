@@ -220,7 +220,11 @@ describe('native diagnostic trace ownership during Function assembly', () => {
 
       const app = inputAt(0);
       const middlewareInput = inputAt(1);
-      const hook = { id: INSTRUMENTATION_HOOK_FILENAME, assets: HOOK_ASSETS };
+      const hook = {
+        id: INSTRUMENTATION_HOOK_FILENAME,
+        assets: HOOK_ASSETS,
+        importers: [HOOK_FILE],
+      };
 
       expect({
         appHook: app.patch.instrumentation,

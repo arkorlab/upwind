@@ -1,0 +1,148 @@
+# Native Node.js Functions
+
+The adapter keeps ordinary Functions on Workers. When a retained server load requires a native
+Node.js addon, a host that supports bundle versions 11 and 12 can run the complete owning Function
+in a Node Container instead. Build tooling merely appearing in an output trace does not select
+that backend. Static files, prerendered responses and current cache generations retain their
+existing edge delivery paths; only work that needs the Function reaches its compute backend.
+
+Classification requires both a retained load and its owned binary. Direct CommonJS `.node`
+loads, default `process.dlopen` calls with a statically known file, and reviewed `bindings` and
+`node-gyp-build` loader shapes are recognized. Unknown dynamic loads are refused before publication.
+A package name or a `.node` trace alone is insufficient. Unmodified ES-module imports of `.node`
+files are refused because Node.js itself does not support them; use the package's Node-compatible
+entrypoint. No native exports are fabricated.
+
+Existing precisely guarded Worker-safe JavaScript or WebAssembly fallbacks keep their Worker
+backend. A guarded direct native load does not prove such a fallback and is refused. A retained
+Node worker with owned native child dependencies is also refused: main-graph binary proof does not
+prove the complete child's load closure in this backend's first version. Absolute build-machine
+imports, loader environment overrides and ambiguous binary directories are not portable proof.
+Reviewed `node-gyp-build` also supports package-local standard prebuilds on the default
+Node/Linux x64/glibc host. Tuple and binary selection must have an unambiguous winner under
+the reviewed loader's precedence. Discovery next to the Node executable is unsupported.
+Local build candidates selected by either reviewed loader and prebuild lookup paths must be
+canonical. Symlinks in selected binary filenames or intermediate lookup directories are refused.
+Configured selector overrides remain refused. Applications that change native-loader selector
+environment variables before loading an addon are unsupported; startup checks do not prove
+that application code leaves those variables unchanged.
+
+Routes sharing one built module remain together. Pages Router pages and API routes remain together
+because `res.revalidate()` can render another page. Shared middleware, error pages and instrumentation
+remain part of their owning Functions. A shared native dependency cannot silently move an explicitly
+Edge-runtime route into Node; a layout that cannot retain that contract is refused.
+Common Edge middleware can still be part of the Node Function's request pipeline; its standalone
+middleware Function and explicitly Edge-runtime route owners remain Workers.
+
+The Node artifact is a content-addressed tar.gz of regular physical files. It preserves Node's
+package layout and binary bytes. `upwind/links.json` describes bounded internal aliases for the host
+to restore during image preparation; the archive contains no symlink entries. `upwind/native.json`
+names only the proved, selected native modules and their hashes. The archive retains other regular
+owned trace files without rewriting their selection logic.
+An explicit directory in a route trace is supported when independently copied regular files
+already recreate that directory. Its untraced children are never discovered or copied. Standalone
+empty directories require a directory-aware archive contract and are currently refused.
+Package aliases have independent limits of 100,000 entries and 16 MiB of UTF-8 JSON metadata.
+Both limits are checked before the artifact is published.
+Proved `process.dlopen` binary lookups retain their original internal aliases as well as canonical
+binary files; changed targets, relocation mismatches and alias conflicts are refused.
+The host verifies the artifact,
+Node ABI and Linux x64 glibc target before publishing it. Worker loader hooks, process substitutes
+and native shims are not applied to Node files. The existing shared cache and request runtime is
+retained through a Node transport, rather than replaced with an independent `next start` cache.
+
+The original Next.js manifest consumers and Turbopack runtime target Next.js 16.4.3. Changed
+compiler or template shapes are refused until their source contracts are reviewed. A minified
+CommonJS Pages factory can retain its original sloppy arrow function when its physical module
+mode and closed userland partition are proved alongside the protected template. This inspection
+does not insert a strict directive or change the shipped JavaScript. The adapter leaves the
+project's minification setting unchanged.
+The native bootstrap selects production Node.js and Turbopack before application loading.
+Four source-pinned Next.js runtime selectors use the same certified Turbopack policy in
+dependency analysis and the physical archive; application code receives no global Turbopack define.
+Original-module analysis preserves CommonJS exports so their dependency closure is checked before
+publication. An ES module whose public exports were removed from the audited graph is refused.
+This also applies when a namespace conversion does not attest the complete exported-name list.
+The analysis ignores purity annotations and package `sideEffects` hints because the shipped files
+retain their original executable statements.
+Raw archive sources come from route and project-hook reachability; host-hook-only
+sources remain bundled, while sources shared with a route keep their raw physical copy.
+Trace membership alone does not make an asset an execution dependency. Required Node imports
+are checked transitively, including startup hooks and proved runtime redirects. Unused trace
+assets cannot overwrite a required alias layout.
+
+Executable entries, project hooks and proved raw dependency sources seed required alias discovery.
+Copied data assets still require bounded regular files, but JavaScript text copied only as data does
+not become an executable root. If an executable module loads that asset, alias discovery promotes
+it and checks its dependency closure.
+The bootstrap guard checks the initial `NODE_ENV`, `NEXT_RUNTIME` and `TURBOPACK` properties at loader
+boundaries; changing them is unsupported. Other application environment variables remain mutable.
+
+Application error formatting remains active during ordinary execution. During synchronous
+initialization of fixed JWT/WebSocket dependencies, the guard temporarily restores the bootstrap
+`Error.prepareStackTrace` and Error prototype inspect hooks, then restores the exact application
+descriptors on success or failure. Non-reversible replacements and changes made inside that
+protected initialization are rejected; other guarded builtin properties remain immutable.
+
+With the qualified Next.js bootstrap, the same scoped restoration supports framework IO wrappers
+for `Math.random`, the global `Date` constructor and its original prototype constructor, and the
+builtin crypto `randomBytes`/`randomFillSync` functions and `process.nextTick`. Those wrappers stay
+active during ordinary rendering, revalidation and asynchronous scheduling. Generic JWT/WebSocket
+installations keep their stricter IO checks.
+
+Native Functions initially do not support application-supplied `cacheHandler`/`cacheHandlers` or
+`experimental.optimizeCss`. Recorded builds that enable these options are refused before
+publication. Their fixed framework loading sites also throw an explicit unsupported-option error
+in the Node archive, so a runtime override cannot invoke a dependency omitted by that policy.
+The default shared cache and rendering paths remain available. This policy does not replace a
+missing dependency with a stub or allow unresolved application imports.
+
+The fixed Next.js JWT dependency has a separate, source-reviewed initialization profile. It
+permits only its exact global-recovery compiler site after proving the original package, closed
+dependencies, CommonJS callers and completed route closure. The Node bootstrap checks the
+original bytes and required builtin state immediately before CommonJS evaluation, including
+after cache eviction. Changed sources, loader customization and unsupported compiler operations
+remain publication errors. This profile requires the default Node.js 24.22.1 loader and does not
+make arbitrary dynamic compilation portable. These restrictions apply to native Node artifacts;
+ordinary Worker output keeps its existing version support.
+
+The same guard observes the original `semver-noop` dependency evaluation and checks its genuine
+cached namespace before JWT initialization. Scoped load and require boundaries preserve Node's
+monitoring hooks while checking that fixed dependencies return the qualified module values.
+
+The fixed Next.js WebSocket dependency has a separate absent-only profile for its two literal
+`eval("require")` optional loaders. Its original CommonJS source and synchronous JavaScript
+fallbacks stay unchanged. Both optional targets must remain unresolved during proof, final
+archive validation and immediately before evaluation. A resolvable target, a changed source or
+a changed builtin descriptor is refused. This does not authorize arbitrary `eval`, unresolved
+loaders or uninspected native packages. The profile uses the same default Node.js 24.22.1 guard.
+
+Hook TypeScript is analyzed after compiler lowering and can be bundled as JavaScript. A dependency
+executed from its original file must use syntax the target Node runtime can execute directly.
+Raw JSX and TypeScript features requiring transformation, such as enums, need compilation first.
+Raw TypeScript under an archived `node_modules` directory also requires compilation.
+
+Package `imports` aliases (`#name`) support exact `package.json` mappings to literal relative files
+or external packages. Conditional, pattern and chained mappings are refused before publication
+until their resolution can be proved without changing the original package metadata.
+
+Bare package subpaths preserve proved internal aliases for direct lookups and exact `exports`
+entries with bounded literal condition targets. Export patterns, target arrays and unclosed
+symlink targets are refused. An unused conditional symlink can also cause refusal when its target
+is outside the closed trace. Package metadata remains unchanged. Environment-pruned dependency
+branches can contribute aliases only to already closed targets; these layout hints never add source
+files or weaken required dependency checks.
+
+The first backend supports plain environment values, shared cache access and delegated HTTP
+services. A host can also provide the optional, scoped `ARKOR_OIDC.token({ audience })` facade.
+Only audience options cross that broker; the Worker retains deployment identity and issuer access.
+This capability does not provide arbitrary RPC or additional native bindings. Native storage bindings, Durable Objects, Cloudflare Workflows, custom cache-handler
+closures and unproved native loaders are refused. The direct CLI and local Miniflare stack also
+refuse artifacts they cannot execute. These errors preserve the application's runtime contract.
+
+The dedicated Linux CI control compiles and executes a real N-API binary, creates the actual adapter
+artifact, starts its Node HTTP entry, and checks that independent Worker and Edge routes remain on
+Workers. A separate CI step verifies a pinned, unchanged Next.js 16.4.3 native fixture, builds it
+with the actual adapter and invokes its emitted Node entry on loopback, including `/blog/second`
+with `fallback: true`. This checks the artifact and Node transport; hosted cache and deployment
+integration still require operator rollout verification. No CI result is implied by this document.
