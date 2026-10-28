@@ -3,7 +3,7 @@ import { type DataGetRequest, type DataGetResponse } from '@stayingupwind/host/c
 
 import type { AuthorityHost } from '../authority-host.ts';
 import { createLogger, detailOf } from '../logger.ts';
-import { type DataRecord, dataRecordSchema } from '../scope/records.ts';
+import { type DataRecord, dataRecordSchema } from '../scope/data-record.ts';
 
 /** The same projection, read locally by either gateway; no authority call is needed. */
 const RECORD_CACHE_TTL_SECONDS = 30;

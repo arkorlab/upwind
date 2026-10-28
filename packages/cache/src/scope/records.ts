@@ -5,7 +5,6 @@ import {
   encodeGenerationPack,
   type GenerationPackHeader,
   type InvalidationState,
-  invalidationStateSchema,
   MAX_PACK_HEADER_BYTES,
   NEXT_ONE_YEAR_SECONDS,
   type OutputSnapshot,
@@ -23,9 +22,8 @@ import {
   dataEntryMetadataSchema,
   MAX_INLINE_DATA_VALUE_BYTES,
 } from '@stayingupwind/host/cache';
-import { toZod } from '@stayingupwind/host/zod';
-import { z } from 'zod';
 
+import { DATA_RECORD_SCHEMA_VERSION, type DataRecord } from './data-record.ts';
 import { condemnedOf } from './generations.ts';
 import { BlobLengthError, type BlobStore, type CarriedValue } from './io.ts';
 import type { PackHeaderFields } from './pack-header-fields.ts';
@@ -38,6 +36,7 @@ import {
 } from './rows.ts';
 import { staticPageHeadersOf, staticPagePrivacyOf } from './static-page-privacy.ts';
 
+export type { DataRecord } from './data-record.ts';
 export type { PackHeaderFields } from './pack-header-fields.ts';
 
 /**
@@ -46,7 +45,6 @@ export type { PackHeaderFields } from './pack-header-fields.ts';
  * checked against the digest the generation recorded before they are laid out.
  */
 
-const DATA_RECORD_SCHEMA_VERSION = 1;
 /** The roles whose bytes travel inside the record itself; the rest are read through the authority. */
 const RECORD_BODY_ROLES: ReadonlySet<string> = new Set(['html', 'route-body']);
 const RECORD_STATE_ROLE = 'postponed';
@@ -59,30 +57,6 @@ const SHA256_HEX_LENGTH = 64;
 const ANY_DIGEST = '0'.repeat(SHA256_HEX_LENGTH);
 /** No number prints wider in JSON than this one does: `-1.7976931348623157e+308`. */
 const WIDEST_NUMBER = -Number.MAX_VALUE;
-
-const dataValueSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('inline'), base64: z.string() }),
-  z.object({
-    kind: z.literal('ref'),
-    artifactId: z.string().min(1),
-    storageRef: z.string().min(1),
-    byteLength: z.number().int().nonnegative(),
-  }),
-]);
-
-/** The data-cache record in KV, read by the gateway alone: its storage key never leaves it. */
-export const dataRecordSchema = z.object({
-  schemaVersion: z.literal(DATA_RECORD_SCHEMA_VERSION),
-  scopeId: z.string().min(1),
-  entryId: z.string().min(1),
-  generationId: z.string().min(1),
-  revision: z.number().int().nonnegative(),
-  dependencyRevision: z.number().int().nonnegative(),
-  entry: toZod(dataEntryMetadataSchema),
-  value: dataValueSchema,
-  invalidation: toZod(invalidationStateSchema).optional(),
-});
-export type DataRecord = z.infer<typeof dataRecordSchema>;
 
 export interface RecordDeps {
   readonly blobs: BlobStore;
