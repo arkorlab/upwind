@@ -1,6 +1,10 @@
 import { tagKindOf } from '@stayingupwind/core/cache';
 import { isDeadlineError } from '@stayingupwind/core/util';
-import type { TagRevision, TagsDeltaResponse } from '@stayingupwind/host/cache';
+import {
+  MAX_DELTA_PAGE_TAGS,
+  type TagRevision,
+  type TagsDeltaResponse,
+} from '@stayingupwind/host/cache';
 import type { FetchLike } from '@stayingupwind/runtime/cache-host';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -237,5 +241,26 @@ describe('an authority delta cursor', () => {
       message: 'the delta from revision 4 does not move past it',
     });
     expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('what a Function asks of the authority’s tags', () => {
+  /**
+   * A fresh isolate pages through the scope's whole history, a round trip a page: it asks each for
+   * as many tags as a page may hold, where the gateway's own default is half of it.
+   */
+  it('asks each page of the delta for as many tags as a page may hold', async () => {
+    const send = vi.fn<FetchLike>().mockResolvedValue(Response.json({ ok: true, result: DELTA }));
+    const { subject } = gateway(send);
+
+    await subject.tagsDelta(4);
+
+    const asked = new URL(requiredRequest(send).url);
+
+    expect(asked.pathname.endsWith('/tags/delta')).toBe(true);
+    expect(Object.fromEntries(asked.searchParams)).toStrictEqual({
+      since: '4',
+      limit: String(MAX_DELTA_PAGE_TAGS),
+    });
   });
 });

@@ -31,6 +31,7 @@ import {
   type InvalidateRequest,
   type InvalidateResponse,
   invalidateResponseSchema,
+  MAX_DELTA_PAGE_TAGS,
   NO_SUCH_ENDPOINT,
   type StartAttemptRequest,
   type StartAttemptResponse,
@@ -638,9 +639,15 @@ export class Gateway {
     );
   }
 
-  /** One delta page, including its body, read within the authority deadline. */
+  /**
+   * One delta page, including its body, read within the authority deadline: as many tags as a page
+   * may hold (`MAX_DELTA_PAGE_TAGS`). A fresh isolate pages through the scope's whole history, one
+   * round trip a page, and what it reads of each row is one lookup of the authority's: the gateway's
+   * own 500 a page took twice the round trips for the same history.
+   */
   tagsDelta(since: number): Promise<TagsDeltaResponse> {
-    return this.#authorityTagRead(`/tags/delta?since=${since}`, async (response, signal) => {
+    const path = `/tags/delta?since=${since}&limit=${MAX_DELTA_PAGE_TAGS}`;
+    return this.#authorityTagRead(path, async (response, signal) => {
       const delta = await this.#result(response, tagsDeltaResponseSchema, undefined, signal);
       // A repeated page would leave its reader asking for the same invalidations forever.
       if (!deltaMovesOn(since, delta)) {
