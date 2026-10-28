@@ -44,18 +44,13 @@ function isAssignment(node: Node): node is AssignmentNode {
   return ['AssignmentExpression', 'UpdateExpression'].includes(node.type);
 }
 
-function assignmentBinds(node: Node, name: string, members: boolean): boolean {
-  if (node.type === 'UnaryExpression' && node.operator === 'delete')
-    return patternNames(node.argument, members).includes(name);
+function assignedPattern(node: Node): Node | undefined {
+  if (node.type === 'UnaryExpression' && node.operator === 'delete') return node.argument;
   if (node.type === 'ForInStatement' || node.type === 'ForOfStatement') {
-    const target = node.left;
-    return target.type === 'VariableDeclaration'
-      ? target.declarations.some((entry) => patternNames(entry.id, members).includes(name))
-      : patternNames(target, members).includes(name);
+    return node.left;
   }
-  if (!isAssignment(node)) return false;
-  const target = node.type === 'AssignmentExpression' ? node.left : node.argument;
-  return patternNames(target, members).includes(name);
+  if (!isAssignment(node)) return undefined;
+  return node.type === 'AssignmentExpression' ? node.left : node.argument;
 }
 
 export function required(node: Node): string | undefined {
@@ -179,24 +174,49 @@ function recordPatterns(scopes: ReadonlyMap<Node, NativeScope | undefined>): voi
   }
 }
 
-function initializesBinding(
-  node: Node,
-  name: string,
-  declaration: Node | null | undefined,
-): boolean {
-  return (
-    node.type === 'VariableDeclarator' &&
-    node !== declaration &&
-    node.init !== null &&
-    patternNames(node.id).includes(name)
-  );
+interface BindingActivity {
+  binding: boolean;
+  members: boolean;
+  readonly initializers: Set<Node>;
+}
+
+function assignedNames(node: Node, members: boolean): readonly string[] {
+  const target = assignedPattern(node);
+  if (target === undefined) return [];
+  return target.type === 'VariableDeclaration'
+    ? target.declarations.flatMap((entry) => patternNames(entry.id, members))
+    : patternNames(target, members);
+}
+
+/** Index writes once; a query must not walk a multi-megabyte bundle for every local name. */
+function bindingActivities(
+  scopes: ReadonlyMap<Node, NativeScope | undefined>,
+): ReadonlyMap<NativeScope | undefined, ReadonlyMap<string, BindingActivity>> {
+  const indexed = new Map<NativeScope | undefined, Map<string, BindingActivity>>();
+  function activity(scope: NativeScope | undefined, name: string): BindingActivity {
+    const owner = bindingScope(scope, name);
+    const names = indexed.get(owner) ?? new Map<string, BindingActivity>();
+    indexed.set(owner, names);
+    const known = names.get(name);
+    if (known !== undefined) return known;
+    const value = { binding: false, members: false, initializers: new Set<Node>() };
+    names.set(name, value);
+    return value;
+  }
+  for (const [node, scope] of scopes) {
+    for (const name of assignedNames(node, false)) activity(scope, name).binding = true;
+    for (const name of assignedNames(node, true)) activity(scope, name).members = true;
+    if (node.type === 'VariableDeclarator' && node.init !== null) {
+      for (const name of patternNames(node.id)) activity(scope, name).initializers.add(node);
+    }
+  }
+  return indexed;
 }
 
 /** Resolve a native operation's own scope; unrelated parameters must not hide a global load. */
 export function nativeBindings(program: Node): NativeBindings {
   const sources = importSources(program);
   const scopes = new Map<Node, NativeScope | undefined>();
-  const unchanged = new Map<NativeScope | undefined, Map<string, boolean>>();
   let moduleSyntax =
     program.type === 'Program' &&
     program.body.some((node) => node.type.startsWith('Import') || node.type.startsWith('Export'));
@@ -211,31 +231,24 @@ export function nativeBindings(program: Node): NativeBindings {
     for (const child of nodes(visit.node)) pending.push({ node: child, parent: scope });
   }
   recordPatterns(scopes);
+  const activities = bindingActivities(scopes);
   return {
     moduleSyntax,
     lookup: (node, name) => nativeBinding(scopes.get(node), name),
     importSource: (node) => sources.get(node),
     unmodified(node, name, members) {
       const binding = bindingScope(scopes.get(node), name);
-      const key = members ? `${name}:members` : `${name}:binding`;
-      const cached = unchanged.get(binding)?.get(key);
-      if (cached !== undefined) return cached;
+      const activity = activities.get(binding)?.get(name);
+      if (activity === undefined) return true;
       const declaration = nativeBinding(scopes.get(node), name);
-      let result = true;
-      for (const [candidate, scope] of scopes) {
-        if (
-          (assignmentBinds(candidate, name, members) ||
-            initializesBinding(candidate, name, declaration)) &&
-          bindingScope(scope, name) === binding
-        ) {
-          result = false;
-          break;
-        }
-      }
-      const checks = unchanged.get(binding) ?? new Map<string, boolean>();
-      checks.set(key, result);
-      unchanged.set(binding, checks);
-      return result;
+      return (
+        !activity[members ? 'members' : 'binding'] &&
+        (activity.initializers.size === 0 ||
+          (activity.initializers.size === 1 &&
+            declaration !== undefined &&
+            declaration !== null &&
+            activity.initializers.has(declaration)))
+      );
     },
   };
 }

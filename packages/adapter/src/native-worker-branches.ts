@@ -195,8 +195,12 @@ export function scalarWorkerBinding(
     const key = property.key.type === 'Identifier' ? property.key.name : stringOf(property.key);
     if (key === undefined || keys.has(key)) return false;
     keys.add(key);
-    if (property.value.name === name && context.bindings.unmodified(property.value, name, true))
-      field = key;
+    if (property.value.name === name) {
+      field =
+        SCALAR_FIELDS.has(key) && context.bindings.unmodified(property.value, name, true)
+          ? key
+          : undefined;
+    }
   }
   return scalarSelection(declaration.init, field, context);
 }
