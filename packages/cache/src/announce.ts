@@ -4,8 +4,16 @@ import type { AuthorityHost } from './authority-host.ts';
  * How long a Function's invalidation waits at the most for the host to have told the scope's copies
  * elsewhere that it moved (`AuthorityHost.announce`): a request made once the answer is in finds
  * them told, where the host told them in time.
+ *
+ * Short, since every `revalidatePath`, `revalidateTag` and `updateTag` waits for it, and so do a
+ * Server Action's answer and the at-once headers the edge in front of it acts on. Measured on a
+ * host on 2026-10-28, the telling took hundreds of milliseconds, up to the whole second this was
+ * until then, and held each answer by as much: an `updateTag` action whose work was done in a tenth
+ * of a second was answered in 0.8–1.6 s. Past this the telling goes on behind the answer, as it
+ * always did past the second, and an edge isolate that looks before it lands learns of the move at
+ * a later look.
  */
-const ANNOUNCE_WAIT_MS = 1000;
+const ANNOUNCE_WAIT_MS = 300;
 
 /**
  * What the host's telling comes to, its failures — the host's to log — included; none to tell. A
@@ -58,8 +66,8 @@ export async function announceMoved(
 /**
  * Tell the host the scope moved, behind the answer (`waitUntil`) and without waiting for it: for an
  * invalidation the host asks for itself, through its control entrypoint — a resource's change, or
- * one of its own — which it may make for many scopes in turn, a second's wait on each holding up
- * the rest, and which reads nothing of the copies once answered; and for each chunk of a
+ * one of its own — which it may make for many scopes in turn, a wait on each holding up the rest,
+ * and which reads nothing of the copies once answered; and for each chunk of a
  * Function's invalidation that more follow (`InvalidateRequest.more`).
  */
 export function announceBehind(
