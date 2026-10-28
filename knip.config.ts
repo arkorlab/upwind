@@ -13,7 +13,11 @@ const config: KnipConfig = {
   workspaces: {
     // `playwright` is installed and run inside the Next.js checkout the deploy-tests workflow makes,
     // which is not a dependency of this repository and never will be.
-    '.': { ignoreBinaries: ['playwright'] },
+    '.': {
+      ignoreBinaries: ['playwright'],
+      // CI invokes the pinned official native fixture control directly.
+      entry: ['tools/native-addon-next-ci.mts'],
+    },
     // Native host templates are bundled by path; their Function import is generated per build.
     'packages/adapter': {
       entry: ['src/native/server.ts'],
@@ -86,7 +90,12 @@ const config: KnipConfig = {
   // Applications the matrix builds with a Next.js of their own, not code of this repository's — and
   // the site, which is an application too: its own project, its own lockfile, and its own install of
   // the published packages, none of which this workspace's dependency graph knows anything about.
-  ignore: ['fixtures/**', 'web-site/**'],
+  ignore: [
+    'fixtures/**',
+    'web-site/**',
+    // Pinned public compiler inputs are copied into an isolated CI project with its own install.
+    'tools/native-pages-handler-profile/fixture/**',
+  ],
 };
 
 export default config;

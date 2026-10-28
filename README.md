@@ -442,6 +442,12 @@ namespace through the same SDK accessor, with no added serving hop. Configuratio
 see the [adapter contract](packages/adapter/README.md#container-enabled-objects) and
 [local Docker setup](packages/upwind/README.md#local-containers).
 
+A Container-capable host can also isolate Next.js Functions that require runtime native addons.
+The adapter produces Node artifacts only for their route owners, keeping independent Functions
+on Workers and existing edge cache delivery unchanged. This requires the host to support bundle
+versions 11/12; automatic image provisioning is not yet available in the standalone CLI.
+See [native Function classification, artifacts and limits](docs/native-functions.md).
+
 ## ⏰ Scheduled work
 
 ```ts

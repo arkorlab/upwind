@@ -91,7 +91,9 @@ interface LaidOut {
   readonly built: readonly {
     readonly name: string;
     readonly built: {
-      readonly spec: { readonly modules: FunctionUpload['modules'] };
+      readonly spec:
+        | { readonly modules: FunctionUpload['modules']; readonly runtime?: undefined }
+        | { readonly runtime: 'node-container' };
       readonly dependencies: { readonly size: FunctionUpload['size'] };
     };
   }[];
@@ -103,6 +105,8 @@ function firstOverLimit(
   laidOut: LaidOut,
 ): { readonly name: string; readonly upload: FunctionUpload; readonly over: string } | undefined {
   for (const { name, built } of laidOut.built) {
+    // The archive has its own Node artifact limit; Worker module limits cannot weigh it.
+    if (built.spec.runtime === 'node-container') continue;
     const over = overLimit(built.dependencies.size);
     if (over !== undefined) {
       return { name, upload: { modules: built.spec.modules, size: built.dependencies.size }, over };

@@ -9,7 +9,7 @@ import {
   manifestHead,
   type SourceMapRef,
 } from '@stayingupwind/core/bundle';
-import { type OutputChunk, rolldown } from 'rolldown';
+import { type OutputChunk, type Plugin, rolldown } from 'rolldown';
 
 import { type AppBundleSinks, appBundleOptions } from './app-bundle.ts';
 import { appEntrySource } from './app-entry.ts';
@@ -17,6 +17,8 @@ import { type BlobStore, contentTypeFor } from './blobs.ts';
 import { buildPaths } from './build-paths.ts';
 import {
   auditTracedFiles,
+  AuditError,
+  auditNativePlacement,
   auditFunctionSize,
   bundled,
   bundleDependencies,
@@ -34,6 +36,7 @@ import type { KeptMaps } from './kept-maps.ts';
 import { bundleLinkedExternals, type LinkedExternals } from './linked-externals.ts';
 import type { TextModule } from './manifests.ts';
 import { auditNativeFunction, type NativeAddonEntryTrace } from './native-addons.ts';
+import { NativeFunctionRequiredError, nativeLoadsPlugin, type NativeLoad } from './native-loads.ts';
 import { type PageRuntimeRequire, withPageRuntimeAsReact } from './page-runtime-react.ts';
 import { auditExternalPagesApiDist } from './patches/external-pages-api-dist.ts';
 import {
@@ -105,10 +108,12 @@ export interface BuildFunctionInput {
   readonly projectDir: string;
   /** The trusted repository root Next.js used to name explicitly traced declarations. */
   readonly repoRoot?: string | undefined;
+  /** Trusted normalized build config, computed with Next.js's client asset-prefix rule. */
+  readonly clientAssetPrefix?: string | undefined;
   readonly outDir: string;
   readonly patch: PatchContext;
   readonly entries: readonly EntryModule[];
-  /** Existing route traces used only to explain a rejected app graph, never to admit one. */
+  /** Owned route traces; native admission additionally requires a retained, proved load site. */
   readonly entryTraces?: readonly NativeAddonEntryTrace[] | undefined;
   /** The entrypoints `next build` put on the edge runtime; they go into a bundle of their own. */
   readonly edgeEntries: readonly EdgeEntry[];
@@ -189,7 +194,12 @@ function runtimeEntry(): string {
 async function bundleApp(
   input: BuildFunctionInput,
   workDir: string,
-): Promise<{ outFile: string; trace: BundleTrace; linked: ReadonlySet<string> }> {
+): Promise<{
+  outFile: string;
+  trace: BundleTrace;
+  linked: ReadonlySet<string>;
+  native: readonly NativeLoad[];
+}> {
   const entryFile = path.join(workDir, `${nameOf(input)}-entry.cjs`);
   const outFile = path.join(workDir, `${nameOf(input)}-${APP_MODULE}`);
   await writeFile(
@@ -197,13 +207,21 @@ async function bundleApp(
     appEntrySource(input.entries, buildPaths(input.projectDir, input.patch.distDir)),
   );
   // The middleware's Function, with the page runtime as React alone where that is enough.
+  const native = nativeLoadsPlugin(input.entryTraces ?? [], {
+    placementProbe: input.kind === 'app',
+  });
   const { chunk, sinks } =
     input.kind === 'middleware'
-      ? await withPageRuntimeAsReact(
-          (reactOnly) => writeAppBundle(input, entryFile, outFile, reactOnly),
-          input.patch.chunks,
-        )
-      : await writeAppBundle(input, entryFile, outFile, false);
+      ? await withPageRuntimeAsReact((reactOnly) => {
+          return writeAppBundle(input, entryFile, outFile, {
+            reactOnly,
+            nativeCapabilities: native.plugin,
+          });
+        }, input.patch.chunks)
+      : await writeAppBundle(input, entryFile, outFile, {
+          reactOnly: false,
+          nativeCapabilities: native.plugin,
+        });
   return {
     outFile,
     trace: {
@@ -215,6 +233,7 @@ async function bundleApp(
       dynamicLoads: dynamicLoadsInChunk(chunk),
     },
     linked: sinks.linked,
+    native: await native.retained(chunk),
   };
 }
 
@@ -226,12 +245,13 @@ async function writeAppBundle(
   input: BuildFunctionInput,
   entryFile: string,
   outFile: string,
-  reactOnly: boolean,
+  options: { readonly reactOnly: boolean; readonly nativeCapabilities: Plugin },
 ): Promise<{
   readonly chunk: OutputChunk;
   readonly sinks: AppBundleSinks;
   readonly pageRuntime: readonly PageRuntimeRequire[];
 }> {
+  const { reactOnly, nativeCapabilities } = options;
   const sinks: AppBundleSinks = {
     patches: [],
     stubs: [],
@@ -246,6 +266,7 @@ async function writeAppBundle(
       entryFile,
       {
         patch: input.patch,
+        nativeCapabilities,
         wasm: input.wasm,
         ...(carriesMaps(input.sourceMaps) && { sourceMaps: true, keptMaps: input.keptMaps }),
         ...(input.kind === 'workflow' && { workflowFunction: true }),
@@ -390,6 +411,67 @@ async function linkedSource(linked: LinkedExternals): Promise<string> {
   return sources.join('\n');
 }
 
+/** Register each traced data module in its original order before the Function audit. */
+async function addFunctionData(
+  input: BuildFunctionInput,
+  modules: FunctionModule[],
+  applied: readonly AppliedPatch[],
+): Promise<void> {
+  const name = nameOf(input);
+  for (const manifest of input.manifests) {
+    modules.push({
+      name: manifest.name,
+      type: 'text',
+      blob: await input.blobStore.putText(manifest.contents, contentTypeFor(manifest.name)),
+    });
+  }
+  for (const blob of input.blobs) {
+    modules.push({
+      name: blobModuleName(blob.sha256),
+      type: 'data',
+      blob: await input.blobStore.put(blob.bytes, 'application/octet-stream'),
+    });
+  }
+  const wasmModules = input.wasm.modules;
+  // Whenever the runtime bundle was built with a `./wasm.mjs` to import — which is decided
+  // before the app bundle has resolved its `?module` imports — the module has to be there, even
+  // if in the end nothing read any of the WebAssembly the traces offered.
+  if (input.wasm.hasCandidates) {
+    modules.push({
+      name: WASM_ENTRY_MODULE,
+      type: 'esm',
+      blob: await input.blobStore.putText(wasmEntrySource(wasmModules), 'text/javascript'),
+    });
+    for (const module of wasmModules) {
+      modules.push({
+        name: wasmModuleName(module.sha256),
+        type: 'wasm',
+        blob: await input.blobStore.put(module.bytes, 'application/wasm'),
+      });
+    }
+  }
+  // `next/og`'s fallback font, when the bundle carries the library that reads it. Only then: it
+  // is 126 KiB an application that renders no image never has to carry.
+  const font = await ogFallbackFont(applied);
+  if (font !== undefined) {
+    modules.push({
+      name: OG_FONT_MODULE,
+      type: 'data',
+      blob: await input.blobStore.put(font, 'font/ttf'),
+    });
+  }
+  // A file the application reads is found at its path in the project, which no module of the
+  // Function's own may hold as well (`auditTracedFiles`).
+  auditTracedFiles(name, modules, input.files);
+  for (const file of input.files) {
+    modules.push({
+      name: file.name,
+      type: 'data',
+      blob: await input.blobStore.putFile(file.filePath, contentTypeFor(file.filePath)),
+    });
+  }
+}
+
 /**
  * Bundle one Function and register its modules as blobs: the upload specification, and the record
  * of what went into it — audited, so a Function that would not run fails the build.
@@ -458,58 +540,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
     },
     ...(await linkedModules(input.blobStore, linked)),
   ];
-  for (const manifest of input.manifests) {
-    modules.push({
-      name: manifest.name,
-      type: 'text',
-      blob: await input.blobStore.putText(manifest.contents, contentTypeFor(manifest.name)),
-    });
-  }
-  for (const blob of input.blobs) {
-    modules.push({
-      name: blobModuleName(blob.sha256),
-      type: 'data',
-      blob: await input.blobStore.put(blob.bytes, 'application/octet-stream'),
-    });
-  }
-  const wasmModules = input.wasm.modules;
-  // Whenever the runtime bundle was built with a `./wasm.mjs` to import — which is decided
-  // before the app bundle has resolved its `?module` imports — the module has to be there, even
-  // if in the end nothing read any of the WebAssembly the traces offered.
-  if (input.wasm.hasCandidates) {
-    modules.push({
-      name: WASM_ENTRY_MODULE,
-      type: 'esm',
-      blob: await input.blobStore.putText(wasmEntrySource(wasmModules), 'text/javascript'),
-    });
-    for (const module of wasmModules) {
-      modules.push({
-        name: wasmModuleName(module.sha256),
-        type: 'wasm',
-        blob: await input.blobStore.put(module.bytes, 'application/wasm'),
-      });
-    }
-  }
-  // `next/og`'s fallback font, when the bundle carries the library that reads it. Only then: it
-  // is 126 KiB an application that renders no image never has to carry.
-  const font = await ogFallbackFont(app.trace.patches);
-  if (font !== undefined) {
-    modules.push({
-      name: OG_FONT_MODULE,
-      type: 'data',
-      blob: await input.blobStore.put(font, 'font/ttf'),
-    });
-  }
-  // A file the application reads is found at its path in the project, which no module of the
-  // Function's own may hold as well (`auditTracedFiles`).
-  auditTracedFiles(name, modules, input.files);
-  for (const file of input.files) {
-    modules.push({
-      name: file.name,
-      type: 'data',
-      blob: await input.blobStore.putFile(file.filePath, contentTypeFor(file.filePath)),
-    });
-  }
+  await addFunctionData(input, modules, app.trace.patches);
   const { distDir } = input.patch;
   const size = await functionSize(input.outDir, modules);
   const dependencies: FunctionDependencies = {
@@ -522,18 +553,27 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
     }),
   };
   auditWasmLoader(name, input.patch, app.trace.patches);
-  auditFunctionSize(name, { modules, size }, input.deferSizeAudit === true);
+  const sources = {
+    app: await readFile(appFile, 'utf8'),
+    ...(edge !== undefined && { edge: await readFile(edge.outFile, 'utf8') }),
+    ...(linked !== undefined && { linked: await linkedSource(linked) }),
+  };
+  if (app.native.length > 0) {
+    auditNativePlacement(name, sources, dependencies, outputNameOf(input.projectDir, distDir));
+    if (input.kind !== 'app')
+      throw new AuditError(
+        `Native Node.js addons are unsupported in the ${input.kind} Function; automatic Container placement is limited to app Functions`,
+      );
+    throw new NativeFunctionRequiredError(app.native);
+  }
   auditNativeFunction({
     name,
-    sources: {
-      app: await readFile(appFile, 'utf8'),
-      ...(edge !== undefined && { edge: await readFile(edge.outFile, 'utf8') }),
-      ...(linked !== undefined && { linked: await linkedSource(linked) }),
-    },
+    sources,
     dependencies,
     output: outputNameOf(input.projectDir, distDir),
     entryTraces: input.entryTraces ?? [],
   });
+  auditFunctionSize(name, { modules, size }, input.deferSizeAudit === true);
   return {
     spec: {
       mainModule: RUNTIME_MODULE,

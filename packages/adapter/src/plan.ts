@@ -58,6 +58,21 @@ export interface PlanInput {
   /** What every Function carries whatever routes it holds: the runtime, the manifests, the error pages. */
   readonly base: { readonly bytes: number; readonly codeBytes: number };
   readonly budget: PlanBudget;
+  /** Internal slots held for separately placed native Functions; absent for Worker-only builds. */
+  readonly reservedFunctions?: number | undefined;
+}
+
+/** The Worker planner cannot consume slots already held by another backend. */
+export function appFunctionLimit(reservedFunctions = 0): number {
+  if (
+    !Number.isSafeInteger(reservedFunctions) ||
+    reservedFunctions < 0 ||
+    reservedFunctions >= MAX_APP_FUNCTIONS
+  )
+    throw new RangeError(
+      'Reserved app Function count must be a safe integer below the total limit',
+    );
+  return MAX_APP_FUNCTIONS - reservedFunctions;
 }
 
 /** One Function of a plan, with what the plan expects it to weigh. */
@@ -174,10 +189,12 @@ class Planner {
   readonly #bytes: Float64Array;
   readonly #code: Uint8Array;
   readonly #input: PlanInput;
+  readonly #maxFunctions: number;
   #budget: PlanBudget;
 
   constructor(input: PlanInput) {
     this.#input = input;
+    this.#maxFunctions = appFunctionLimit(input.reservedFunctions);
     const names = [...input.items.keys()].toSorted(compareCodeUnits);
     const index = new Map(names.map((name, at) => [name, at]));
     this.#bytes = Float64Array.from(names, (name) => input.items.get(name)?.bytes ?? 0);
@@ -359,11 +376,11 @@ class Planner {
 
   run(): Cluster[] {
     this.#mergeWhile(1);
-    // A deployment runs as at most so many Functions (`MAX_APP_FUNCTIONS`): past it, the cheapest
-    // merges go on whatever the budgets say, since a plan the bundle cannot carry is no plan.
-    if (this.#clusters.filter((cluster) => cluster !== undefined).length > MAX_APP_FUNCTIONS) {
+    // Leave reserved backend slots available: past the remaining cap, the cheapest merges go on
+    // whatever the budgets say, since a plan the bundle cannot carry is no plan.
+    if (this.#clusters.filter((cluster) => cluster !== undefined).length > this.#maxFunctions) {
       this.#budget = { maxBytes: Infinity, maxCodeBytes: Infinity };
-      this.#mergeWhile(MAX_APP_FUNCTIONS);
+      this.#mergeWhile(this.#maxFunctions);
     }
     return this.#clusters.filter((cluster): cluster is Cluster => cluster !== undefined);
   }

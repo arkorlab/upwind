@@ -1,0 +1,421 @@
+import { createHash } from 'node:crypto';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import path from 'node:path';
+
+import { compareCodeUnits } from '@stayingupwind/core/util';
+
+import { beneath } from './build-paths.ts';
+import { AuditError } from './dependencies.ts';
+import type { BuildFunctionInput } from './function.ts';
+import type { NativeLoad } from './native-loads.ts';
+import type { NodeArchiveFile } from './node-archive.ts';
+import { projectNodeInstrumentation } from './node-bundle-closure.ts';
+import { assertNodeRelativeTopology, nodeModuleAliases } from './node-module-aliases.ts';
+import { nodeNativeAliases } from './node-native-aliases.ts';
+import type { NodeNextRewriteProof } from './node-next-rewrite-proof.ts';
+import { nodePhysicalLayout, type NodePhysicalLayout } from './node-physical-layout.ts';
+import { retainedFileIdentity } from './node-proof-diagnostics.ts';
+
+const MAX_FILE_BYTES = 134_217_728;
+const EXECUTABLE_BITS = 0o111;
+const PACKAGE_MANIFEST = 'package.json';
+
+export interface NodePhysicalFiles {
+  readonly files: NodeArchiveFile[];
+  /** Build-machine source locations; never serialized into the public archive. */
+  readonly sourcePaths: ReadonlyMap<string, string>;
+  readonly links: readonly { readonly path: string; readonly target: string }[];
+  readonly cwd: string;
+  /** The original compiled project hook, distinct from the generated host composition. */
+  readonly instrumentation: string | undefined;
+  readonly nameOf: (file: string) => string;
+}
+
+type PhysicalLayout = NodePhysicalLayout;
+interface ModeMetadataFile {
+  readonly file: string;
+  readonly sha256: string;
+}
+type ModeMetadataSelector = (
+  sourcePaths: ReadonlyMap<string, string>,
+) => Promise<readonly ModeMetadataFile[]>;
+type PhysicalFileOptions =
+  | ModeMetadataSelector
+  | {
+      readonly selectModeMetadata?: ModeMetadataSelector;
+      readonly nextRewrites?: NodeNextRewriteProof | undefined;
+    };
+interface PhysicalSources {
+  readonly files: Map<string, Uint8Array>;
+  readonly executable: Set<string>;
+  readonly originals: Map<string, string>;
+  readonly required: Set<string>;
+}
+interface TraceDirectory {
+  readonly file: string;
+  readonly canonical: string;
+  readonly name: string;
+}
+
+function isMissingFile(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+}
+
+async function boundedFile(file: string, root: string): Promise<Uint8Array> {
+  const info = await stat(file);
+  if (!info.isFile() || info.size > MAX_FILE_BYTES) {
+    let kind = 'nonregular';
+    if (info.isFile()) kind = 'regular';
+    else if (info.isDirectory()) kind = 'directory';
+    throw new AuditError(
+      `Node artifact requires bounded, regular input files: ${retainedFileIdentity(root, file)} (kind=${kind}, bytes=${info.size}, maxBytes=${MAX_FILE_BYTES})`,
+    );
+  }
+  const bytes = new Uint8Array(await readFile(file));
+  if (bytes.byteLength !== info.size)
+    throw new AuditError('Node artifact input changed while it was read');
+  return bytes;
+}
+
+function inputFiles(
+  input: BuildFunctionInput,
+  instrumentation: string | undefined,
+): { copyHard: Set<string>; requiredExec: Set<string> } {
+  const requiredExec = new Set(input.entries.map((entry) => entry.filePath));
+  if (instrumentation !== undefined) requiredExec.add(instrumentation);
+  const copyHard = new Set(requiredExec);
+  // Traced fs-read data remains mandatory to copy without becoming an executable alias root.
+  for (const file of input.files) copyHard.add(file.filePath);
+  for (const entry of input.edgeEntries)
+    for (const file of entry.files) {
+      copyHard.add(file);
+      requiredExec.add(file);
+    }
+  for (const manifest of input.manifests) {
+    const file = manifest.routeFile;
+    if (file !== undefined) {
+      copyHard.add(file);
+      requiredExec.add(file);
+    }
+  }
+  return { copyHard, requiredExec };
+}
+
+function traceAssetFiles(input: BuildFunctionInput): Set<string> {
+  const files = new Set<string>();
+  const traces = input.entryTraces;
+  if (traces === undefined) return files;
+  for (const trace of traces) for (const file of Object.values(trace.assets)) files.add(file);
+  return files;
+}
+
+async function packageMetadata(
+  file: string,
+  layout: PhysicalLayout,
+  files: Map<string, Uint8Array>,
+): Promise<void> {
+  for (
+    let dir = path.dirname(file);
+    beneath(layout.root, dir) !== undefined;
+    dir = path.dirname(dir)
+  ) {
+    const manifest = path.join(dir, PACKAGE_MANIFEST);
+    try {
+      files.set(layout.nameOf(manifest), await boundedFile(manifest, layout.root));
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    }
+    if (dir === layout.root) break;
+  }
+}
+
+async function copyPhysicalSource(
+  canonical: string,
+  sources: PhysicalSources,
+  layout: PhysicalLayout,
+): Promise<void> {
+  const name = layout.nameOf(canonical);
+  sources.files.set(name, await boundedFile(canonical, layout.root));
+  const mode = (await stat(canonical)).mode;
+  // eslint-disable-next-line no-bitwise -- POSIX executable permission bits are the artifact's file mode.
+  if ((mode & EXECUTABLE_BITS) !== 0) sources.executable.add(name);
+  sources.originals.set(canonical, name);
+  await packageMetadata(canonical, layout, sources.files);
+}
+
+function representedDirectory(marker: TraceDirectory, sources: PhysicalSources): boolean {
+  for (const [file, name] of sources.originals) {
+    if (
+      file !== marker.canonical &&
+      beneath(marker.canonical, file) !== undefined &&
+      name.startsWith(`${marker.name}/`) &&
+      sources.files.has(name)
+    )
+      return true;
+  }
+  return false;
+}
+
+async function assertTraceDirectories(
+  markers: readonly TraceDirectory[],
+  sources: PhysicalSources,
+): Promise<void> {
+  for (const marker of markers) {
+    const info = await stat(marker.canonical);
+    if (
+      (await realpath(marker.file)) !== marker.canonical ||
+      (await realpath(marker.canonical)) !== marker.canonical ||
+      !info.isDirectory() ||
+      info.size > MAX_FILE_BYTES
+    )
+      throw new AuditError('Node trace directory identity or type changed during collection');
+    if (!representedDirectory(marker, sources))
+      throw new AuditError('Node trace directory has no independently copied regular descendant');
+  }
+}
+
+async function physicalSources(
+  files: Iterable<string>,
+  traceAssets: Iterable<string>,
+  layout: PhysicalLayout,
+  requiredExec: ReadonlySet<string>,
+): Promise<PhysicalSources> {
+  const sources: PhysicalSources = {
+    files: new Map(),
+    executable: new Set(),
+    originals: new Map(),
+    required: new Set(),
+  };
+  const hard = new Set<string>();
+  for (const file of files) {
+    const canonical = await realpath(file);
+    hard.add(canonical);
+    if (requiredExec.has(file)) sources.required.add(canonical);
+    await copyPhysicalSource(canonical, sources, layout);
+  }
+  const directories: TraceDirectory[] = [];
+  for (const file of traceAssets) {
+    const canonical = await realpath(file);
+    const name = layout.nameOf(canonical);
+    const info = await stat(canonical);
+    if (info.isDirectory() && info.size <= MAX_FILE_BYTES) {
+      if (hard.has(canonical))
+        throw new AuditError('Node trace directory overlaps a required regular input');
+      directories.push({ file, canonical, name });
+    } else if (!info.isFile() || info.size > MAX_FILE_BYTES || !sources.originals.has(canonical))
+      await copyPhysicalSource(canonical, sources, layout);
+  }
+  await assertTraceDirectories(directories, sources);
+  return sources;
+}
+
+function traceAliasName(
+  logical: string,
+  physical: string,
+  links: ReadonlyMap<string, string>,
+): string {
+  let inherited = false;
+  for (const [alias, target] of links) {
+    if (!logical.startsWith(`${alias}/`)) continue;
+    if (path.posix.join(target, path.posix.relative(alias, logical)) !== physical)
+      throw new AuditError('Node artifact trace alias has unsupported intermediate topology');
+    inherited = true;
+  }
+  return inherited ? physical : logical;
+}
+
+async function recordTraceAlias(
+  logical: string,
+  physical: string,
+  layout: PhysicalLayout,
+  links: Map<string, string>,
+): Promise<void> {
+  if (path.isAbsolute(logical) || logical.includes('\\')) return;
+  const alias = path.resolve(layout.traceRoot, logical);
+  try {
+    const target = await realpath(alias);
+    if (target !== path.resolve(alias) && target === (await realpath(physical))) {
+      // A package alias already preserves its directory. Keep a distinct child filename at
+      // that physical parent instead of emitting a child link hidden beneath the package link.
+      const parent = await realpath(path.dirname(alias));
+      const physicalAlias = path.join(parent, path.basename(alias));
+      const preserved = traceAliasName(layout.nameOf(alias), layout.nameOf(physicalAlias), links);
+      const destination = layout.nameOf(target);
+      if (preserved === destination) return;
+      const previous = links.get(preserved);
+      if (previous !== undefined && previous !== destination)
+        throw new AuditError('Node artifact trace aliases have conflicting physical targets');
+      links.set(preserved, destination);
+    }
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+  }
+}
+
+async function traceAliases(
+  input: BuildFunctionInput,
+  layout: PhysicalLayout,
+  links: Map<string, string>,
+): Promise<void> {
+  // Asset keys can retain a logical import alias that values canonicalize away.
+  if (input.entryTraces !== undefined) {
+    for (const trace of input.entryTraces) {
+      for (const [logical, physical] of Object.entries(trace.assets))
+        await recordTraceAlias(logical, physical, layout, links);
+    }
+  }
+}
+
+function emittedLinks(
+  links: ReadonlyMap<string, string>,
+  files: ReadonlyMap<string, Uint8Array>,
+): { path: string; target: string }[] {
+  const ordered = [...links].toSorted(([a], [b]) => a.length - b.length || compareCodeUnits(a, b));
+  const emitted: { path: string; target: string }[] = [];
+  for (const [alias, target] of ordered) {
+    if (files.has(alias)) continue;
+    const parent = emitted.find((link) => alias.startsWith(`${link.path}/`));
+    if (parent !== undefined) {
+      if (path.posix.join(parent.target, path.posix.relative(parent.path, alias)) !== target)
+        throw new AuditError('Node artifact alias conflicts with its emitted parent');
+      continue;
+    }
+    if (alias === target || target.startsWith(`${alias}/`))
+      throw new AuditError('Node artifact contains a cyclic alias');
+    const physical = [...files.keys()];
+    if (physical.every((file) => file !== target && !file.startsWith(`${target}/`)))
+      throw new AuditError('Node artifact alias has no physical target');
+    emitted.push({ path: alias, target });
+  }
+  return emitted;
+}
+
+function physicalSourcePaths(sources: PhysicalSources): ReadonlyMap<string, string> {
+  return new Map([...sources.originals].map(([file, name]) => [name, file]));
+}
+function metadataDigests(pins: readonly ModeMetadataFile[]): ReadonlyMap<string, string> {
+  const selected = new Map<string, string>();
+  for (const pin of pins) {
+    const file = pin.file;
+    const sha256 = pin.sha256;
+    const previous = selected.get(file);
+    if (previous !== undefined && previous !== sha256)
+      throw new AuditError('Node physical mode metadata has conflicting source digests');
+    selected.set(file, sha256);
+  }
+  return selected;
+}
+function modeMetadataPins(
+  pins: readonly ModeMetadataFile[],
+  prior: readonly ModeMetadataFile[],
+): ReadonlyMap<string, string> {
+  const expected = metadataDigests(prior);
+  const selected = metadataDigests(pins);
+  for (const [file, sha256] of selected) {
+    const previous = expected.get(file);
+    if (previous !== undefined && previous !== sha256)
+      throw new AuditError('Node physical mode metadata has conflicting source digests');
+  }
+  return selected;
+}
+async function addModeMetadata(
+  sources: PhysicalSources,
+  layout: PhysicalLayout,
+  pins: readonly ModeMetadataFile[],
+  prior: readonly ModeMetadataFile[],
+): Promise<boolean> {
+  let added = false;
+  for (const [file, sha256] of modeMetadataPins(pins, prior)) {
+    if (path.basename(file) !== PACKAGE_MANIFEST || (await realpath(file)) !== file)
+      throw new AuditError('Node physical mode metadata requires a canonical package.json');
+    const name = layout.nameOf(file);
+    const previous = sources.files.get(name);
+    const bytes = previous ?? (await boundedFile(file, layout.root));
+    const info = await stat(file);
+    if (!info.isFile() || info.size > MAX_FILE_BYTES || bytes.byteLength !== info.size)
+      throw new AuditError('Node physical mode metadata changed after its source snapshot');
+    if (createHash('sha256').update(bytes).digest('hex') !== sha256)
+      throw new AuditError('Node physical mode metadata conflicts with copied bytes');
+    sources.files.set(name, bytes);
+    sources.originals.set(file, name);
+    // eslint-disable-next-line no-bitwise -- Preserve the explicitly copied metadata's POSIX mode.
+    if ((info.mode & EXECUTABLE_BITS) === 0) {
+      sources.executable.delete(name);
+    } else {
+      sources.executable.add(name);
+    }
+    added ||= previous === undefined;
+  }
+  return added;
+}
+async function collectAliases(
+  input: BuildFunctionInput,
+  native: readonly NativeLoad[],
+  sources: PhysicalSources,
+  context: {
+    readonly layout: PhysicalLayout;
+    readonly links: Map<string, string>;
+    readonly nextRewrites: NodeNextRewriteProof | undefined;
+  },
+): Promise<void> {
+  const { layout, links, nextRewrites } = context;
+  await nodeModuleAliases(sources, layout, links, {
+    collectRequiredAliases: async () => {
+      await traceAliases(input, layout, links);
+      await nodeNativeAliases(native, sources, layout, links);
+    },
+    policy: { proof: nextRewrites, input },
+  });
+  // Keep the native guard's final check after every optional layout transaction.
+  await nodeNativeAliases(native, sources, layout, links);
+}
+
+/** Physical traces plus explicit internal aliases; no user module is evaluated or rebundled. */
+export async function nodePhysicalFiles(
+  input: BuildFunctionInput,
+  native: readonly NativeLoad[],
+  metadataFiles: readonly { readonly file: string; readonly sha256: string }[] = [],
+  options?: PhysicalFileOptions,
+): Promise<NodePhysicalFiles> {
+  const selectModeMetadata = typeof options === 'function' ? options : options?.selectModeMetadata;
+  const nextRewrites = typeof options === 'function' ? undefined : options?.nextRewrites;
+  const layout = await nodePhysicalLayout(input);
+  for (const load of native)
+    assertNodeRelativeTopology(
+      await realpath(load.importer),
+      await realpath(load.binary),
+      layout.nameOf,
+    );
+  const instrumentation = await projectNodeInstrumentation(input);
+  const { copyHard, requiredExec } = inputFiles(input, instrumentation);
+  for (const metadata of metadataFiles) {
+    const file = metadata.file;
+    copyHard.add(file);
+    requiredExec.add(file);
+  }
+  const sources = await physicalSources(copyHard, traceAssetFiles(input), layout, requiredExec);
+  const links = new Map<string, string>();
+  await collectAliases(input, native, sources, { layout, links, nextRewrites });
+  if (selectModeMetadata !== undefined) {
+    // The callback sees an isolated coordinate map, never the owned bytes or collections.
+    const selected = await selectModeMetadata(physicalSourcePaths(sources));
+    if (await addModeMetadata(sources, layout, selected, metadataFiles)) {
+      links.clear();
+      await collectAliases(input, native, sources, { layout, links, nextRewrites });
+    } else await nodeNativeAliases(native, sources, layout, links);
+  }
+  return {
+    files: [...sources.files].map(([name, bytes]) => {
+      return {
+        name,
+        bytes,
+        ...(sources.executable.has(name) && { executable: true }),
+      };
+    }),
+    links: emittedLinks(links, sources.files),
+    sourcePaths: physicalSourcePaths(sources),
+    cwd: layout.cwd,
+    instrumentation,
+    nameOf: layout.nameOf,
+  };
+}

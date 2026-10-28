@@ -48,7 +48,12 @@ import { kvPolicyKey } from '@stayingupwind/host/storage';
 import { assertHostOnly, bundleWorker } from './bundle.ts';
 import { deploymentFunctions, type FunctionStores } from './functions.ts';
 import { gateServices, type LocalGate } from './gates.ts';
-import { type LocalWorker, runWorkers, type SignalHandling } from './miniflare.ts';
+import {
+  type LocalWorker,
+  type RunningWorkers,
+  runWorkers,
+  type SignalHandling,
+} from './miniflare.ts';
 import { type Loopback, loopbackFor } from './ports.ts';
 import { LOCAL_PORT_BINDING, requestedRuntimePort, runtimePortBinding } from './runtime-port.ts';
 import { agentTarget } from './target.ts';
@@ -437,6 +442,14 @@ function policyOf(asked: DeliveryPolicy | undefined): DeliveryPolicy {
   return policy;
 }
 
+/** How many ports a stack that was named none starts on, where each it probed was taken before it bound it. */
+const START_ATTEMPTS = 3;
+
+/** Whether a start failed for an address another process holds (Miniflare's `ERR_ADDRESS_IN_USE`). */
+function addressInUse(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ERR_ADDRESS_IN_USE';
+}
+
 /** Start a stack, and deploy the build in `options.bundleDir` to it. */
 export async function startStack(options: StackOptions): Promise<LocalStack> {
   const { bundleDir, cspNonce } = options;
@@ -485,77 +498,99 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
     named.add(name);
   }
   const { stores, manifest } = storesOf(options.storage, named);
-  const socket = await loopbackFor(askedPort);
-  const functions = deploymentFunctions(bundleDir, bundle, {
-    text: [
-      ...own.map(([name, value]) => ({ name, value, secret: false })),
-      ...bound.text,
-      runtimePortBinding(socket),
-      ...(manifest === undefined ? [] : [manifest]),
-    ],
-    services,
-    stores,
-    workflowText: own.map(([name, value]) => ({ name, value, secret: false })),
-  });
-  const names = siteNamesOf(socket, options.hostnames ?? []);
-  const workers: LocalWorker[] = [
-    {
-      ...scriptWorker(WORKERS.edge, edge),
-      // Live compression reads `node:zlib`, which the runtime has under this flag.
-      compatibilityFlags: ['nodejs_compat'],
-      // Each name the site is reached by, a check's among them, as a deployed edge lists its own.
-      bindings: { HOSTNAMES: names.hostnames, POINTER_KEY },
-      kvNamespaces: { EDGE_STATE: STORES.edgeState, CACHE_STATE: STORES.cacheState },
-      r2Buckets: { ARTIFACTS: STORES.artifacts },
-      ...(options.images === true && { images: IMAGES_BINDING }),
-      services: {
-        ...Object.fromEntries(
-          functions.workers.map((worker) => [functionBinding(worker.name), worker.name]),
-        ),
-        // Where a scope stands, so an invalidation reaches the edge within a moment, as deployed.
-        CACHE_SIGNALS: { name: WORKERS.cache, entrypoint: 'CacheSignals' },
+  /** What the stack runs, laid out for the site's socket: the Functions are told its port. */
+  const layoutOf = (socket: Loopback) => {
+    const functions = deploymentFunctions(bundleDir, bundle, {
+      text: [
+        ...own.map(([name, value]) => ({ name, value, secret: false })),
+        ...bound.text,
+        runtimePortBinding(socket),
+        ...(manifest === undefined ? [] : [manifest]),
+      ],
+      services,
+      stores,
+      workflowText: own.map(([name, value]) => ({ name, value, secret: false })),
+    });
+    const names = siteNamesOf(socket, options.hostnames ?? []);
+    const workers: LocalWorker[] = [
+      {
+        ...scriptWorker(WORKERS.edge, edge),
+        // Live compression reads `node:zlib`, which the runtime has under this flag.
+        compatibilityFlags: ['nodejs_compat'],
+        // Each name the site is reached by, a check's among them, as a deployed edge lists its own.
+        bindings: { HOSTNAMES: names.hostnames, POINTER_KEY },
+        kvNamespaces: { EDGE_STATE: STORES.edgeState, CACHE_STATE: STORES.cacheState },
+        r2Buckets: { ARTIFACTS: STORES.artifacts },
+        ...(options.images === true && { images: IMAGES_BINDING }),
+        services: {
+          ...Object.fromEntries(
+            functions.workers.map((worker) => [functionBinding(worker.name), worker.name]),
+          ),
+          // Where a scope stands, so an invalidation reaches the edge within a moment, as deployed.
+          CACHE_SIGNALS: { name: WORKERS.cache, entrypoint: 'CacheSignals' },
+        },
+        // Each gate the stack was told of, under the name a deployed edge binds it by.
+        handlers: gates,
+        socket,
+        entrypointSockets: [BACKSTAGE_ENTRYPOINT],
       },
-      // Each gate the stack was told of, under the name a deployed edge binds it by.
-      handlers: gates,
-      socket,
-      entrypointSockets: [BACKSTAGE_ENTRYPOINT],
-    },
-    {
-      ...scriptWorker(WORKERS.outbound, outbound),
-      bindings: { SITE_ORIGINS: names.origins },
-      services: { EDGE: WORKERS.edge },
-    },
-    {
-      ...scriptWorker(WORKERS.cache, cache),
-      bindings: { CACHE_TOKEN_KEY: cacheTokenKey },
-      kvNamespaces: { CACHE_STATE: STORES.cacheState },
-      r2Buckets: { ARTIFACTS: STORES.artifacts },
-      durableObjects: { CACHE_SCOPE: 'CacheScope' },
-    },
-    {
-      ...scriptWorker(WORKERS.cacheRead, cacheRead),
-      bindings: { CACHE_TOKEN_KEY: cacheTokenKey },
-      kvNamespaces: { CACHE_STATE: STORES.cacheState },
-    },
-    { ...scriptWorker(WORKERS.prefetch, prefetch), r2Buckets: { ARTIFACTS: STORES.artifacts } },
-    {
-      ...scriptWorker(WORKERS.agent, agent),
-      bindings: { DEPLOY_AGENT_TOKEN: agentToken },
-      kvNamespaces: { EDGE_STATE: STORES.edgeState },
-      r2Buckets: { ARTIFACTS: STORES.artifacts },
-      services: { CACHE_CONTROL: { name: WORKERS.cache, entrypoint: 'CacheControl' } },
-      socket: {},
-    },
-    // What each Function fetches itself, the site's own pages among it, through the router.
-    ...functions.workers.map((worker) => ({ ...worker, outbound: WORKERS.outbound })),
-    ...(functions.backgroundWorkers ?? []).map((worker) => {
-      return {
-        ...worker,
-        outbound: WORKERS.outbound,
-      };
-    }),
-  ];
-  const running = await runWorkers(workers, options.log ?? ignore, options.signals);
+      {
+        ...scriptWorker(WORKERS.outbound, outbound),
+        bindings: { SITE_ORIGINS: names.origins },
+        services: { EDGE: WORKERS.edge },
+      },
+      {
+        ...scriptWorker(WORKERS.cache, cache),
+        bindings: { CACHE_TOKEN_KEY: cacheTokenKey },
+        kvNamespaces: { CACHE_STATE: STORES.cacheState },
+        r2Buckets: { ARTIFACTS: STORES.artifacts },
+        durableObjects: { CACHE_SCOPE: 'CacheScope' },
+      },
+      {
+        ...scriptWorker(WORKERS.cacheRead, cacheRead),
+        bindings: { CACHE_TOKEN_KEY: cacheTokenKey },
+        kvNamespaces: { CACHE_STATE: STORES.cacheState },
+      },
+      { ...scriptWorker(WORKERS.prefetch, prefetch), r2Buckets: { ARTIFACTS: STORES.artifacts } },
+      {
+        ...scriptWorker(WORKERS.agent, agent),
+        bindings: { DEPLOY_AGENT_TOKEN: agentToken },
+        kvNamespaces: { EDGE_STATE: STORES.edgeState },
+        r2Buckets: { ARTIFACTS: STORES.artifacts },
+        services: { CACHE_CONTROL: { name: WORKERS.cache, entrypoint: 'CacheControl' } },
+        socket: {},
+      },
+      // What each Function fetches itself, the site's own pages among it, through the router.
+      ...functions.workers.map((worker) => ({ ...worker, outbound: WORKERS.outbound })),
+      ...(functions.backgroundWorkers ?? []).map((worker) => {
+        return {
+          ...worker,
+          outbound: WORKERS.outbound,
+        };
+      }),
+    ];
+    return { functions, names, workers };
+  };
+  // The site's port is probed and let go before Miniflare binds it (`loopbackFor`), so another
+  // process can take it in between. Where none was named, the stack starts again on another.
+  const portNamed = askedPort !== undefined && askedPort !== 0;
+  const log = options.log ?? ignore;
+  const start = async (
+    attempt: number,
+  ): Promise<ReturnType<typeof layoutOf> & { readonly running: RunningWorkers }> => {
+    const socket = await loopbackFor(askedPort);
+    const layout = layoutOf(socket);
+    try {
+      return { ...layout, running: await runWorkers(layout.workers, log, options.signals) };
+    } catch (error) {
+      if (portNamed || attempt >= START_ATTEMPTS || !addressInUse(error)) {
+        throw error;
+      }
+      log(`port ${String(socket.port)} was taken before the stack bound it: starting on another`);
+      return start(attempt + 1);
+    }
+  };
+  const { functions, names, running } = await start(1);
   try {
     const target = agentTarget(await running.url(WORKERS.agent), bundleDir, agentToken);
     // A policy is published by whatever deploys, once, before any pointer names it.

@@ -410,8 +410,14 @@ export function withInvalidatedTags(response: Response, invalidated: Invalidated
  * How long the end of a response waits for the cache writes its request handed over behind it
  * (`RequestWrites`): past this its body ends all the same, and the writes go on in `waitUntil` as
  * they did. Shorter than a write waits for the one of its key ahead of it (`WRITE_PATIENCE_MS`).
+ *
+ * 4.5 s from 2026-10-28, 2 s until then. Measured on a host that day, a first render's publish
+ * held its response's end 1.0–1.6 s with nothing else running, and under a full run's load
+ * outlasted the 2 s: the request after the response, in another isolate, found the entry's lease
+ * held, rendered the page itself, and answered a document of its own. Only the end waits, and only
+ * while a write is out; the first byte is the same.
  */
-export const WRITES_LAND_WITHIN_MS = 2000;
+export const WRITES_LAND_WITHIN_MS = 4500;
 
 /**
  * `response`, ending only once the cache writes its request handed over have landed

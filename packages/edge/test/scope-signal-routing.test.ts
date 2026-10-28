@@ -156,6 +156,7 @@ describe('what looks at scope signals as it is routed', () => {
     { pathname: '/unknown' },
     { pathname: '/unknown', method: 'HEAD' },
     { pathname: '/_next/data/build/index.json' },
+    { pathname: '/_next/data/build/index.json', method: 'HEAD' },
     { pathname: '/', mode: 'passthrough' as const },
     { pathname: '/', generations: false },
   ])('looks at the scope behind a request it reads no record for, %j', async (request) => {

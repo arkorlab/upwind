@@ -9124,65 +9124,75 @@ describe('what the check makes of the middleware', () => {
       });
     });
 
-    // Five checks of a stack in a row, each asking for every route and part it can reach: about
-    // three seconds here, and past the default five on a busy runner, where its probe then lands
-    // in the next test's state.
-    it('asks the middleware on its own about a request its matchers cover, and fails where it fails', async () => {
-      answers.set('/a.txt', {
+    it.each([
+      {
+        name: 'a file its matchers cover',
         // Behind the middleware, which makes it one visitor's.
         headers: { ...asText, 'cache-control': GATED, 'x-arkor-edge': `${FILE_EDGE};mw=hit` },
-        body: 'kept bytes',
-      });
-      const covering = withMiddleware(stackOf([], files), [{ sourceRegex: String.raw`^/a\.txt$` }]);
-      const covered = await checkStack(covering);
-      const coveredAsked = state.middlewareAsked;
+        matchers: [{ sourceRegex: String.raw`^/a\.txt$` }],
+        probe: undefined,
+        asked: '/a.txt',
+        result: { checked: 2, failures: [], skipped: [] },
+      },
+      {
+        name: 'nothing outside its regex-only matchers',
+        headers: asText,
+        matchers: [{ sourceRegex: '^/api/(.*)$' }],
+        // Covering nothing the check asks for, and written as a pattern alone: asked about nothing,
+        // as whatever it made of a request it does not cover, it could make of no visitor's.
+        probe: { kind: 'failed', reason: 'Error: no route under /api' },
+        asked: undefined,
+        result: {
+          checked: 1,
+          failures: [],
+          skipped: [
+            {
+              path: 'middleware',
+              reason:
+                'not asked: its matchers cover none of the pages and files the check asks for, nor a pathname they spell',
+            },
+          ],
+        },
+      },
+      {
+        name: 'a pathname its source spells',
+        headers: asText,
+        // As the application wrote it: asked about what that spells, which its matchers cover.
+        matchers: [{ source: '/api/:path*', sourceRegex: '^/api(?:/(.*))?$' }],
+        probe: undefined,
+        asked: '/api',
+        result: { checked: 2, failures: [], skipped: [] },
+      },
+    ])('asks the middleware on its own about $name', async (scenario) => {
+      answers.set('/a.txt', { headers: scenario.headers, body: 'kept bytes' });
+      state.middlewareProbe = scenario.probe;
+      const result = await checkStack(withMiddleware(stackOf([], files), scenario.matchers));
+
+      expect(result).toStrictEqual(scenario.result);
+      expect(state.middlewareAsked).toBe(scenario.asked);
+    });
+
+    it.each([
+      {
+        name: 'fails to load',
+        probe: { kind: 'failed', reason: 'Error: no module named "./chunk.js"' },
+        reason: 'asked about /api as the edge asks it, failed: Error: no module named "./chunk.js"',
+      },
+      {
+        name: 'answers 500',
+        probe: { kind: 'responded', status: 500 },
+        reason: 'asked about /api as the edge asks it, answered 500',
+      },
+    ])('fails where the middleware $name', async (scenario) => {
       answers.set('/a.txt', { headers: asText, body: 'kept bytes' });
-      // Covering nothing the check asks for, and written as a pattern alone: asked about nothing,
-      // as whatever it made of a request it does not cover, it could make of no visitor's.
-      const apiOnly = withMiddleware(stackOf([], files), [{ sourceRegex: '^/api/(.*)$' }]);
-      state.middlewareAsked = undefined;
-      state.middlewareProbe = { kind: 'failed', reason: 'Error: no route under /api' };
-      const unmatched = await checkStack(apiOnly);
-      const unmatchedAsked = state.middlewareAsked;
-      // As the application wrote it: asked about what that spells, which its matchers cover.
-      const spelling = withMiddleware(stackOf([], files), [
+      state.middlewareProbe = scenario.probe;
+      const stack = withMiddleware(stackOf([], files), [
         { source: '/api/:path*', sourceRegex: '^/api(?:/(.*))?$' },
       ]);
-      state.middlewareProbe = undefined;
-      const spelled = await checkStack(spelling);
-      const spelledAsked = state.middlewareAsked;
-      state.middlewareProbe = { kind: 'failed', reason: 'Error: no module named "./chunk.js"' };
-      const threw = await checkStack(spelling);
-      state.middlewareProbe = { kind: 'responded', status: 500 };
-      const erred = await checkStack(spelling);
+      const result = await checkStack(stack);
 
-      expect(covered).toStrictEqual({ checked: 2, failures: [], skipped: [] });
-      expect(coveredAsked).toBe('/a.txt');
-      expect(unmatched).toStrictEqual({
-        checked: 1,
-        failures: [],
-        skipped: [
-          {
-            path: 'middleware',
-            reason:
-              'not asked: its matchers cover none of the pages and files the check asks for, nor a pathname they spell',
-          },
-        ],
-      });
-      expect(unmatchedAsked).toBeUndefined();
-      expect(spelled).toStrictEqual({ checked: 2, failures: [], skipped: [] });
-      expect(spelledAsked).toBe('/api');
-      expect(threw.failures).toStrictEqual([
-        {
-          path: 'middleware',
-          reason:
-            'asked about /api as the edge asks it, failed: Error: no module named "./chunk.js"',
-        },
-      ]);
-      expect(erred.failures).toStrictEqual([
-        { path: 'middleware', reason: 'asked about /api as the edge asks it, answered 500' },
-      ]);
-    }, 20_000);
+      expect(result.failures).toStrictEqual([{ path: 'middleware', reason: scenario.reason }]);
+    });
 
     it.each([
       {

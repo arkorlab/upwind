@@ -12,9 +12,12 @@ import type { BlobRef, DeploymentBundle } from '@stayingupwind/core/bundle';
 import { EDGE_DEBUG_HEADER } from '@stayingupwind/core/request';
 import { createId } from '@stayingupwind/core/util';
 import {
+  encodeGateShell,
   GATE_ANSWER_HEADER,
   GATE_PASS,
   GATE_ROUTE_HEADER,
+  GATE_SHELL,
+  GATE_SHELL_CONTENT_TYPE,
   GATE_URL_HEADER,
 } from '@stayingupwind/host/bindings';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -332,6 +335,60 @@ describe('a gate the Worker that asked it lets go of', () => {
 
         await expect(answer.text()).resolves.toBe('TimeoutError');
         await expect(letGoWithin(gate, LET_GO_MS)).resolves.toBe(true);
+      } finally {
+        await running.dispose();
+        await gate.close();
+      }
+    },
+    START_MS,
+  );
+});
+
+/** A Worker that asks its gate, as the edge does, and answers with the bytes the gate answered. */
+const READER = `
+export default {
+  async fetch(request, env) {
+    const answer = await env.GATE__CHECKER.fetch('https://site.example/gated');
+    return new Response(await answer.arrayBuffer(), {
+      headers: { 'content-type': answer.headers.get('content-type') ?? '' },
+    });
+  },
+};
+`;
+
+describe('a shell a gate answers a stack’s Worker with', () => {
+  /**
+   * Its bytes reach the Worker that asked as the gate sent them — the state a resume reads among
+   * them, which holds what no text does — through the binding Node answers and the loopback it
+   * answers on.
+   */
+  it(
+    'reaches the Worker byte for byte',
+    async () => {
+      const gate = await startGate();
+      const postponed = Uint8Array.from({ length: 256 }, (_, index) => index);
+      const fields = { status: 200, headers: {}, route: GATED, seq: 1, id: 'shell-1' };
+      const shell = encodeGateShell(fields, Buffer.from('<!DOCTYPE html><main>…'), postponed);
+      gate.answer = () => {
+        return {
+          status: 200,
+          headers: { [GATE_ANSWER_HEADER]: GATE_SHELL, 'content-type': GATE_SHELL_CONTENT_TYPE },
+          body: Buffer.from(shell),
+        };
+      };
+      const reader = {
+        name: 'reader',
+        modules: [{ name: 'index.mjs', type: 'ESModule' as const, contents: READER }],
+        compatibilityDate: '2026-09-15',
+        handlers: gateServices({ [GATE]: { url: gate.url.href } }),
+        socket: {},
+      };
+      const running = await runWorkers([reader], ignore);
+      try {
+        const answer = await fetch(await running.url('reader'));
+
+        expect(answer.headers.get('content-type')).toBe(GATE_SHELL_CONTENT_TYPE);
+        expect(new Uint8Array(await answer.arrayBuffer())).toStrictEqual(shell);
       } finally {
         await running.dispose();
         await gate.close();

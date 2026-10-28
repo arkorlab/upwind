@@ -66,6 +66,12 @@ describe('the suites a shard was to run', () => {
 
     expect(listedSuites(listing)).toStrictEqual([SUITE, 'test/e2e/app-dir/feed/other.test.tsx']);
   });
+
+  it('include a path with spaces, as Next.js names its generator templates', () => {
+    const template = 'test/e2e/test-template/{{ toFileName name }}/{{ toFileName name }}.test.ts';
+
+    expect(listedSuites(`${SUITE}\n  ${template}\n`)).toStrictEqual([SUITE, template]);
+  });
 });
 
 describe('a suite kept for a record', () => {
