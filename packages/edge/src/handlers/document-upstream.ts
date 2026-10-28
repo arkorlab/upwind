@@ -7,6 +7,7 @@ import type { ContinuationFailureKind } from '../reports.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import type { ShellLoadResult } from '../strategies/shell-loader.ts';
+import { handNonceToRender } from './csp-nonce.ts';
 import type { DocumentInput } from './document.ts';
 import { sendReport } from './observer.ts';
 import { dispatchesMade } from './upstream.ts';
@@ -111,21 +112,26 @@ export async function unsettle(settled: Promise<Upstream>): Promise<Response> {
 /**
  * The request the continuation is asked for: the client's, or the request as the middleware left
  * it — its rewrite target and its headers — with the URL the client asked for kept on the context
- * for the runtime to see.
+ * for the runtime to see. Told the document's nonce, where it carries one, as Next.js reads the one
+ * it renders with (`handNonceToRender`): nothing past the shell is stamped but by the render itself.
  */
-export function continuationRequest(input: DocumentInput): { client: Request; edge: EdgeContext } {
+export function continuationRequest(
+  input: DocumentInput,
+  nonce: string | undefined,
+): { client: Request; edge: EdgeContext } {
   const { middleware } = input;
-  const stripped = stripEdgeHeaders(input.request.headers);
-  if (middleware?.kind !== 'continue') {
-    return { client: new Request(input.request, { headers: stripped }), edge: input.edge };
+  const continued = middleware?.kind === 'continue' ? middleware : undefined;
+  const headers = stripEdgeHeaders(continued?.requestHeaders ?? input.request.headers);
+  if (nonce !== undefined) {
+    handNonceToRender(headers, nonce);
   }
-  const client = new Request(middleware.url.href, {
-    method: input.request.method,
-    headers: stripEdgeHeaders(middleware.requestHeaders),
-  });
+  if (continued === undefined) {
+    return { client: new Request(input.request, { headers }), edge: input.edge };
+  }
+  const client = new Request(continued.url.href, { method: input.request.method, headers });
   return {
     client,
-    edge: middleware.rewritten ? { ...input.edge, originalUrl: input.request.url } : input.edge,
+    edge: continued.rewritten ? { ...input.edge, originalUrl: input.request.url } : input.edge,
   };
 }
 

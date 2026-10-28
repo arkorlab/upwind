@@ -3,6 +3,7 @@ import type { GenerationPackHeader } from '@stayingupwind/core/cache';
 import type { RouteEntry } from '@stayingupwind/core/manifest';
 import {
   brotliWire,
+  buildRecoveryBytes,
   gzipWire,
   identityWire,
   joinedWire,
@@ -13,13 +14,17 @@ import type { ServedValidity } from '../cache/decision.ts';
 import type { DetachedRegeneration } from '../cache/regenerate.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { ShellLoadResult } from '../strategies/shell-loader.ts';
+import { noncedBody } from './csp-nonce.ts';
 import { IDENTITY_ENCODING, type ShellDelivery } from './document-headers.ts';
 
 /**
  * Which wire a document the edge composes goes out on, once its shell and any rendering of it have
  * been read: a rendering's pre-compressed head, alone or under a second layer, or the identity
- * shell, compressed on the way out where the client takes a coding (`ShellDelivery`).
+ * shell, compressed on the way out where the client takes a coding (`ShellDelivery`) — and the body
+ * that goes out on it, a nonce stamped on its shell where it carries one (`documentBody`).
  */
+
+const RECOVERY_HTML = buildRecoveryBytes();
 
 /**
  * The pre-compressed head to put on the wire, or `undefined` when there is none to use. A
@@ -165,4 +170,52 @@ export function deliveryFor(input: DeliveryInput): ShellDelivery {
   return input.layering === 'on'
     ? { ...common, wire: joinedWire(head), outbound: 'layered', variesByAgent: true }
     : { ...common, wire: head, outbound: 'none', variesByAgent: true };
+}
+
+/**
+ * What the splice puts on the wire for the shell, and what it appends where the resume fails: the
+ * delivery's wire and the recovery script as they are, or — for a document with a nonce, whose shell
+ * goes ahead of the splice, stamped (`noncedBody`) — no shell at all, and the script with the nonce
+ * written into it, as nothing stamps it after.
+ */
+export function spliceShell(
+  shell: Uint8Array,
+  delivery: ShellDelivery,
+  nonce: string | undefined,
+): { readonly shell: Uint8Array; readonly wire?: WireEncoding; readonly recoveryHtml: Uint8Array } {
+  if (nonce === undefined) {
+    return { shell, wire: delivery.wire, recoveryHtml: RECOVERY_HTML };
+  }
+  return { shell: new Uint8Array(), recoveryHtml: buildRecoveryBytes({ nonce }) };
+}
+
+/**
+ * The body of a document the edge composes: the shell as the wire carries it, then what the splice
+ * puts behind it where a resume completes the document (`rest`) — or, for one with a nonce, the
+ * shell stamped with it and the rest after it as it came (`noncedBody`).
+ */
+export function documentBody(
+  entry: RouteEntry,
+  shell: { readonly bytes: Uint8Array; readonly wire: WireEncoding },
+  nonce: string | undefined,
+  rest?: ReadableStream<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  if (nonce !== undefined) {
+    return noncedBody(shell.bytes, entry.shell.contentType, nonce, rest);
+  }
+  return rest ?? wireBody(shell.wire);
+}
+
+/** A document complete as it is: the wire's shell as the body, ended, nothing spliced behind it. */
+function wireBody(wire: WireEncoding): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(wire.shell);
+      const end = wire.finish();
+      if (end.byteLength > 0) {
+        controller.enqueue(end);
+      }
+      controller.close();
+    },
+  });
 }

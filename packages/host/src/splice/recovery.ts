@@ -10,7 +10,17 @@ export interface RecoveryHtmlOptions {
   readonly cookieName?: string | undefined;
   readonly maxAgeSeconds?: number | undefined;
   readonly loopGuardSeconds?: number | undefined;
+  /**
+   * The nonce of the document the script is appended to, which it then carries itself: nothing
+   * stamps what follows a shell (`noncedBody`, in the edge), and a policy the script's hash was
+   * never added to — one a middleware set at request time — still runs it by the nonce. A nonce is
+   * never in the hash, which is taken over the script alone.
+   */
+  readonly nonce?: string | undefined;
 }
+
+/** A nonce as CSP spells one (`base64-value`): nothing that could leave the attribute it is in. */
+const NONCE_VALUE = /^[\w+/-]+={0,2}$/u;
 
 const MS_PER_SECOND = 1000;
 
@@ -102,7 +112,12 @@ const ESCAPE_PREFIX = `"'">]]>-->${END_TAGS}${LEAVE_FOREIGN_CONTENT}`;
  * window. If storage cannot retain that guard, no automatic reload is attempted.
  */
 export function buildRecoveryHtml(options: RecoveryHtmlOptions = {}): string {
-  return `${ESCAPE_PREFIX}${RECOVERY_MARKER}<script>${buildRecoveryScript(options)}</script></body></html>`;
+  const { nonce } = options;
+  if (nonce !== undefined && !NONCE_VALUE.test(nonce)) {
+    throw new TypeError('a recovery script is given a nonce, not markup');
+  }
+  const named = nonce === undefined ? '' : ` nonce="${nonce}"`;
+  return `${ESCAPE_PREFIX}${RECOVERY_MARKER}<script${named}>${buildRecoveryScript(options)}</script></body></html>`;
 }
 
 /** The recovery script on its own: what a Content-Security-Policy hash has to be taken over. */

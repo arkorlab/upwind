@@ -1,5 +1,5 @@
 import { acceptsCspNonce, applyCspNonce } from '@stayingupwind/core/request';
-import { toBase64 } from '@stayingupwind/core/util';
+import { releaseStream, toBase64 } from '@stayingupwind/core/util';
 import { type CspNonceMode, SCRIPT_PRELOAD_LINKS } from '@stayingupwind/host/delivery';
 
 /**
@@ -10,6 +10,11 @@ import { type CspNonceMode, SCRIPT_PRELOAD_LINKS } from '@stayingupwind/host/del
  * is no half of a server to trust — so once the edge composes the document, the edge is what has to
  * mint the value. Replaying the one the origin minted at proof time would hand every visitor the
  * same nonce, which is the one thing a nonce may never be.
+ *
+ * And what wrote a script is what names it with the nonce: the edge the shell's, whose bytes it
+ * serves (`noncedBody`), and Next.js those of the render that completes the shell for the request,
+ * told the nonce with the request it renders (`handNonceToRender`). Nothing names a script that
+ * reached the render from anywhere else — a visitor's input reflected into it among them.
  */
 
 /** 128 bits, which is what the CSP specification asks of a nonce. */
@@ -196,27 +201,145 @@ export function applyNonceToHeaders(
 }
 
 /**
- * Give the document's scripts the nonce its headers now carry.
+ * Hand the render that completes a document the nonce its response carries, where Next.js reads the
+ * one it renders with: off the request's `content-security-policy` — its `-report-only` where that
+ * is absent — as the first nonce `script-src` names (`getScriptNonceFromHeader`, in every release
+ * the adapter supports). It gives that nonce to the scripts it writes itself — the framework's, the
+ * page's bundles, the data it inlines, React's own — and to nothing else, which is the whole of what
+ * a nonce is for.
+ *
+ * Whatever the visitor or the middleware sent under either name is replaced: the render names this
+ * response's nonce, or none. Under the enforcing name whatever the mode, as Next.js reads that one
+ * first, and without `'strict-dynamic'`, which says nothing to a render: the response's policies are
+ * as `applyNonceToHeaders` makes them, and this is no policy of the response's.
+ */
+export function handNonceToRender(headers: Headers, nonce: string): void {
+  headers.set(CSP_HEADER, `script-src 'nonce-${nonce}'`);
+  headers.delete(REPORT_ONLY_HEADER);
+}
+
+/**
+ * Give a document's scripts the nonce its headers now carry: a document whole, which nothing
+ * resumes — a build's or a generation's complete in itself, a gate's own answer — or a shell, as
+ * far as its last byte and no further (`noncedBody`).
  *
  * Every `<script>` is stamped, whether or not it had one, and so is every link that preloads one
- * (`SCRIPT_PRELOAD_LINKS`); any other element that did have one is rewritten. The shell's own
- * scripts are included — the document a browser receives has to name one nonce throughout, and
- * half of it is the shell.
- *
- * Over the whole response, not only the continuation. The shell's boundary is a chunk arrival, so
- * it can fall inside a tag; a parser started there would misread the tag it landed in. From byte
- * zero every tag reaches the parser whole.
+ * (`SCRIPT_PRELOAD_LINKS`); any other element that did have one is rewritten. One that names this
+ * nonce already is left as it is, to the byte: stamping a document a second time then changes it
+ * only where it does not name the nonce, which is how `@stayingupwind/local` holds a whole document
+ * — the shell the edge stamped, and the render past it Next.js named — to leaving no script out.
+ * Nothing the edge stamps names it beforehand, the nonce being minted for the response.
  *
  * Time-to-first-byte survives it. The nonce is the edge's own, decided before the response was
  * constructed, so nothing here waits on the origin, and `HTMLRewriter` emits each chunk as soon as
- * it is known not to be interesting — with the origin held open the document still reaches the
- * client as far as the first `<script>` the parser has to stop at.
+ * it is known not to be interesting.
  */
 export function rewriteDocumentNonces(response: Response, nonce: string): Response {
   const stamp = {
     element(element: Element): void {
-      element.setAttribute(NONCE_ATTRIBUTE, nonce);
+      if (element.getAttribute(NONCE_ATTRIBUTE) !== nonce) {
+        element.setAttribute(NONCE_ATTRIBUTE, nonce);
+      }
     },
   };
   return new HTMLRewriter().on(NONCE_ELEMENTS, stamp).transform(response);
+}
+
+function ignore(): void {
+  // A chunk read ahead that failed is met where it is read, or let go with a reader that left.
+}
+
+/**
+ * `first`, then `rest`, as one body: `rest` handed on only once `first` has ended, a chunk at a time
+ * as whoever reads the body asks for one, and let go of with a reader that leaves — `rest` is the
+ * splice, whose cancel lets the resume go — or with a `first` that fails before it.
+ *
+ * But read a chunk ahead from the start, as it would be at the head of the body. The splice reads
+ * the resume only as fast as its own stream is read, and until the resume's first byte its budget is
+ * the first byte's: held until a client had taken the whole shell, that byte would be read — and
+ * reported — as late as the client was slow, and a client slow enough would have the resume given
+ * up on. The chunk read ahead is the empty one the splice opens with where the shell goes ahead of
+ * it, and once it is out of the way the splice reads the resume as it always did.
+ */
+function followedBy(
+  first: ReadableStream<Uint8Array>,
+  rest: ReadableStream<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  const head = first.getReader();
+  const tail = rest.getReader();
+  let ahead: Promise<ReadableStreamReadResult<Uint8Array>> | undefined = tail.read();
+  void ahead.catch(ignore);
+  let headEnded = false;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      for (;;) {
+        let read: ReadableStreamReadResult<Uint8Array>;
+        if (headEnded) {
+          read = await (ahead ?? tail.read());
+          ahead = undefined;
+        } else {
+          try {
+            read = await head.read();
+          } catch (error) {
+            releaseStream(tail, 'the shell failed before its continuation');
+            throw error;
+          }
+        }
+        if (!read.done) {
+          // An empty chunk is nothing to hand on: read again, rather than hand the reader nothing.
+          if (read.value.byteLength > 0) {
+            controller.enqueue(read.value);
+            return;
+          }
+        } else if (headEnded) {
+          controller.close();
+          return;
+        } else {
+          headEnded = true;
+        }
+      }
+    },
+    cancel(reason: unknown) {
+      const why = reason instanceof Error ? reason.message : String(reason);
+      releaseStream(head, why);
+      releaseStream(tail, why);
+    },
+  });
+}
+
+/**
+ * A document's body with the nonce its headers now carry on its shell and on nothing after it: the
+ * shell stamped as a document is (`rewriteDocumentNonces`), and then `rest` — what the splice puts
+ * behind the shell, where a resume completes it — as it came.
+ *
+ * The shell alone. A nonce is a server's word that it wrote a script, and of a document a resume
+ * completes the edge wrote the shell and nothing more: what follows is the application's render
+ * for this one request, carrying whatever a visitor got into it, and Next.js has named its
+ * own scripts in it already, with the nonce it was handed (`handNonceToRender`). Stamped here as
+ * well, a `<script>` that reached the render from a visitor would run, and one whose `src` the
+ * policy's hosts refuse would be fetched all the same: a nonce that matches answers for an element
+ * before any host is looked at (CSP3 §6.7.3.3). The one script of the edge's own past the shell is
+ * named where it is written (`RecoveryHtmlOptions.nonce`).
+ *
+ * From the shell's first byte to its last, and neither falls inside a tag. A shell is a prelude of
+ * React's — what it flushed of its completed segments, with the closing `</body></html>` taken off
+ * by Next.js (`createStripDocumentClosingTagsTransform`) — so every tag that begins in it ends in it,
+ * and it is stamped alone as it would be at the head of the whole document. One that ended inside a
+ * start tag would leave that one element unnamed: refused by the policy, never trusted by it.
+ *
+ * Time-to-first-byte is what it was, and the rewriter does less. The shell is in hand and its nonce
+ * was minted before the resume was sent; the rewriter reads nothing of the resume, which is handed
+ * on once the shell has gone out, as it comes, through no parser at all.
+ */
+export function noncedBody(
+  shell: Uint8Array,
+  contentType: string,
+  nonce: string,
+  rest?: ReadableStream<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  const document = new Response(shell, { headers: { 'content-type': contentType } });
+  // A response made of bytes has a body, and so does what a rewriter makes of one; the Workers
+  // declaration leaves both open.
+  const stamped = rewriteDocumentNonces(document, nonce).body as ReadableStream<Uint8Array>;
+  return rest === undefined ? stamped : followedBy(stamped, rest);
 }

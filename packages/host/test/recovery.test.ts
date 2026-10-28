@@ -195,6 +195,30 @@ describe('buildRecoveryHtml', () => {
   });
 
   /**
+   * Appended past a shell, where nothing stamps a document with its nonce, the script names the
+   * nonce itself — and only on itself: its hash is taken over the script, which is the same bytes.
+   */
+  it('carries the nonce of the document it is appended to, its hash as it was', async () => {
+    const nonce = 'cmVjb3Zlcnkgbm9uY2U+/w==';
+    const html = buildRecoveryHtml({ nonce });
+    const script = html.slice(
+      html.indexOf(`<script nonce="${nonce}">`) + `<script nonce="${nonce}">`.length,
+      html.lastIndexOf('</script>'),
+    );
+
+    expect(html).toContain(`${RECOVERY_MARKER}<script nonce="${nonce}">`);
+    expect(html.replace(` nonce="${nonce}"`, '')).toBe(buildRecoveryHtml());
+    await expect(sourceOf(script)).resolves.toBe(RECOVERY_SCRIPT_CSP_SOURCE);
+  });
+
+  it.each(['"><script>alert(1)</script>', 'a b', ''])(
+    'refuses a nonce that is no nonce: %j',
+    (nonce) => {
+      expect(() => buildRecoveryHtml({ nonce })).toThrow(TypeError);
+    },
+  );
+
+  /**
    * The continuation is cut at an arbitrary byte, so the recovery script can land in whatever
    * tokenizer state the origin was in. Every one of them has to be left before the script, or the
    * parser reads it as raw text (or as template content, which never executes) and the user is

@@ -107,7 +107,7 @@ function composed(example: Example, complete = false, middlewareHeaders?: Header
     privateDelivery: false,
     timings: { pointerMs: undefined, manifestMs: undefined, middlewareMs: undefined },
   };
-  const { headers } = documentHeaders({
+  const headers = documentHeaders({
     entry,
     complete,
     headers: prepared,
@@ -121,7 +121,7 @@ function composed(example: Example, complete = false, middlewareHeaders?: Header
       outbound: 'none',
       variesByAgent: false,
     },
-    mintNonce: undefined,
+    nonce: undefined,
     hosted: 'cont=resume',
     middleware:
       middlewareHeaders === undefined
