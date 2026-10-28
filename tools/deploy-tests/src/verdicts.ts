@@ -3,6 +3,16 @@ import type { Read, Verdict } from './judge.ts';
 /** A shard's verdict, as `judge-results.ts` writes it beside its results (`verdict.json`). */
 export interface ShardVerdict extends Verdict {
   readonly shard: number;
+  /**
+   * Whether the runner ended and said how (`runner-exit-code.txt`): not where it was stopped, at its
+   * step's time limit, or never ran, after a step before it failed. Absent in a verdict from before.
+   */
+  readonly runnerFinished?: boolean;
+}
+
+/** Whether a shard's verdict fails it: as `fails` has it, or where its runner did not finish. */
+export function shardFails(verdict: ShardVerdict, failed: (verdict: Verdict) => boolean): boolean {
+  return failed(verdict) || verdict.runnerFinished === false;
 }
 
 /** As much of a commit as a summary names it by. */
@@ -71,6 +81,14 @@ export function describe(
   const silent = expected.filter((shard) => !seen.has(shard));
   if (silent.length > 0) {
     lines.push('', `**${counted(silent.length, 'shard')} left no verdict:** ${silent.join(', ')}.`);
+  }
+  const stopped = verdicts.filter(({ runnerFinished }) => runnerFinished === false);
+  if (stopped.length > 0) {
+    const shards = stopped.map(({ shard }) => String(shard)).join(', ');
+    lines.push(
+      '',
+      `**${counted(stopped.length, 'shard')} whose runner did not finish:** ${shards}. Its job's log names the suite it was still running.`,
+    );
   }
   const unexplained = verdicts.flatMap(({ shard, unexplained: list }) =>
     list.map(({ suite, fullName, why }) => failureLine(shard, suite, fullName, why)),

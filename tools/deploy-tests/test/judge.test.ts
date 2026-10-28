@@ -464,7 +464,11 @@ describe('a shard judged by the workflow', () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function shard(results: Record<string, unknown>, listed = Object.keys(results)) {
+  function shard(
+    results: Record<string, unknown>,
+    listed = Object.keys(results),
+    runnerFinished = true,
+  ) {
     const base = mkdtempSync(path.join(os.tmpdir(), 'upwind-judge-results-'));
     dirs.push(base);
     const nextDir = path.join(base, 'nextjs');
@@ -474,6 +478,9 @@ describe('a shard judged by the workflow', () => {
     writeFileSync(path.join(nextDir, 'packages/next/package.json'), '{"version":"16.4.3"}');
     mkdirSync(output);
     writeFileSync(path.join(output, 'expected-tests.txt'), `${listed.join('\n')}\n`);
+    if (runnerFinished) {
+      writeFileSync(path.join(output, 'runner-exit-code.txt'), '1\n');
+    }
     for (const [suite, body] of Object.entries(results)) {
       mkdirSync(path.join(nextDir, path.dirname(suite)), { recursive: true });
       writeFileSync(path.join(nextDir, `${suite}.results.json`), JSON.stringify(body));
@@ -517,6 +524,18 @@ describe('a shard judged by the workflow', () => {
     expect(readFileSync(summary, 'utf8')).toContain(
       `- \`${GATED}\`: Jest reported an error of the file outside its cases`,
     );
+  });
+
+  it('fails a shard whose runner did not finish, though every suite left a result', () => {
+    // As on 2026-10-27: every suite's result written, and the runner stopped at its time limit.
+    const { run, output, summary } = shard({ [GATED]: gatedResult([GATED_CASE]) }, [GATED], false);
+    const verdict = JSON.parse(
+      readFileSync(path.join(output, 'verdict.json'), 'utf8'),
+    ) as ShardVerdict;
+
+    expect(run.status).toBe(1);
+    expect(verdict).toMatchObject({ runnerFinished: false, unexplained: [] });
+    expect(readFileSync(summary, 'utf8')).toContain('**1 shard whose runner did not finish:** 3.');
   });
 
   it('fails a shard with a failure nobody reviewed, or a suite that left no result', () => {
