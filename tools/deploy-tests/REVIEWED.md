@@ -127,18 +127,16 @@ The judge reads only `act`'s own timeout ("Timed out waiting for a request to be
 
 `prerender-native-module` (3 of 3) and `turbopack-reports` (1 of 1) load a native Node.js addon from
 server code, which Cloudflare's runtime cannot load. Since #332 the adapter builds such a Function to
-run in a native Node Container instead, and the local stack runs no Container. So on this target:
+run in a native Node Container instead, and the local stack runs no Container. So on this target both
+build, and the stack refuses to start their Container ("requires a native Node Container, which this
+local stack does not run"): `prerender-native-module`'s whole app is one Function, `upwind-app`;
+`turbopack-reports` keeps `/` on a Worker and its native page in `upwind-app-2`.
 
-- `prerender-native-module` builds, and the stack refuses to start it ("requires a native Node
-  Container, which this local stack does not run").
-- `turbopack-reports` is refused at build, before any stack: the adapter's audit cannot prove the
-  Turbopack graph it would publish in a Container ("Unproved Next.js Turbopack consumer graph
-  uncertified duplicate module registration; refusing native publication"). `upwind deploy` builds
-  the same way and would be refused as well; that is the native publication's to answer. On this
-  target the suite cannot run either way.
-
-On `node`, both pass. Read again after #332, on 2026-10-28 (run 40642267498). Before it, the audit
-refused both Functions at build ("the app Function would not run").
+On `node`, both pass. Read again after #388, on 2026-10-28 (run 40693197755, its branch). Before it,
+the adapter refused `turbopack-reports` at build ("Unproved Next.js Turbopack consumer graph uncertified
+duplicate module registration"): #332's proof covers only the Pages Router, and #388 packages an App
+Router Function with the whole server output instead. Before #332, the audit refused both Functions
+at build ("the app Function would not run").
 
 ### Not read here
 

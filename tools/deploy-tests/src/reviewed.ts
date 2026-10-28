@@ -326,17 +326,10 @@ const AT_16_4_3: readonly Group[] = [
       DEPLOY_FAILED,
       'requires a native Node Container, which this local stack does not run',
     ),
-    cases: { 'test/e2e/prerender-native-module.test.ts': EVERY_CASE },
-  },
-  {
-    reading: 'environment',
-    record: 'native-addons-on-cloudflare',
-    targets: ['cloudflare'],
-    symptom: inOrder(
-      DEPLOY_FAILED,
-      '[AuditError]: Unproved Next.js Turbopack consumer graph uncertified duplicate module registration; refusing native publication',
-    ),
-    cases: { 'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': EVERY_CASE },
+    cases: {
+      'test/e2e/prerender-native-module.test.ts': EVERY_CASE,
+      'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': EVERY_CASE,
+    },
   },
 ];
 

@@ -241,6 +241,11 @@ describe('a snapshot that differs in indentation alone', () => {
 const NATIVE_CONTAINER =
   'Error: Custom deploy script failed: Progress: resolved 1\nthe server ended before it served:\n' +
   'Error: upwind-app requires a native Node Container, which this local stack does not run';
+/** The App Router suite's, whose native route is split off into a Function of its own. */
+const NATIVE_SPLIT_CONTAINER =
+  'Error: Custom deploy script failed: Progress: resolved 1\nthe server ended before it served:\n' +
+  'Error: upwind-app-2 requires a native Node Container, which this local stack does not run';
+/** What the App Router suite failed with before #388: refused at build, with no stack to start. */
 const NATIVE_REFUSED =
   'Error: Custom deploy script failed: Progress: resolved 1\n> Build error occurred\n' +
   'Error [AuditError]: Unproved Next.js Turbopack consumer graph uncertified duplicate module ' +
@@ -273,7 +278,7 @@ const RECORDED: Readonly<Record<string, readonly string[]>> = {
     `Error: Timed out waiting for a request to be initiated.\n    at act (${AT}/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts:104:11)`,
   ],
   'test/e2e/prerender-native-module.test.ts': [NATIVE_CONTAINER],
-  'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': [NATIVE_REFUSED],
+  'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': [NATIVE_SPLIT_CONTAINER],
 };
 
 /** An inline snapshot's failure in the trace suite, with these lines of its diff. */
@@ -417,15 +422,11 @@ describe('the reviewed cases', () => {
     expect(judgedAlone(entry!, 'cloudflare', changed).unexplained).toHaveLength(1);
   });
 
-  it('read no other native publication refusal than the one recorded', () => {
+  it('no longer read the App Router suite refused at build', () => {
     const entry = REVIEWED.find(({ suite }) => suite.endsWith('turbopack-reports.test.ts'));
-    const other =
-      'Error: Custom deploy script failed: Progress: resolved 1\n> Build error occurred\n' +
-      'Error [AuditError]: Unproved Next.js Turbopack consumer graph registration projection ' +
-      'disagreement; refusing native publication';
 
     expect(entry).toBeDefined();
-    expect(judgedAlone(entry!, 'cloudflare', other).unexplained).toHaveLength(1);
+    expect(judgedAlone(entry!, 'cloudflare', NATIVE_REFUSED).unexplained).toHaveLength(1);
   });
 
   it('read the failures they were read from', () => {
