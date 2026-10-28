@@ -72,19 +72,100 @@ export function initUrlOf(request: Request): string {
 }
 
 /**
- * The path and query a resume renders for, with the query keys Next.js reads its own route
- * parameters from (`nxtPorgSlug`) left out. The edge sends a class shell's member by its own
- * path, and the parameters come from that path: a key smuggled into the query is not given the
- * chance to compete with it.
+ * Where a key of a query may begin with one of `BYPASS_QUERY_PREFIXES`, read off a URL or its query
+ * as text: after a `?` or a `&`, each letter spelled as it is or escaped, which the query's parser
+ * reads back as the same letter (`%6ExtPid` is `nxtPid`). Wider than the prefixes — in either case of
+ * each letter, after any `?` or `&` of the text, a path's own among them — and never narrower: what it
+ * finds is judged key by key (`isRouteParameterKey`).
+ */
+const ROUTE_PARAMETER_KEY_START = /[&?](?:n|%6e)(?:x|%78)(?:t|%74)(?:[ip]|%49|%50)/iu;
+
+/**
+ * Whether Next.js reads `key` as its own rather than the application's: a route parameter
+ * (`nxtPorgSlug`) or an interception marker (`nxtI…`), which a handler Next.js's own server does not
+ * wrap takes its route parameters from, over what its path matches (`normalizeQueryParams`, in
+ * `RouteModule.prepare`) — what routing writes into a dynamic route's destination for them. The
+ * prefix alone is an ordinary key, as Next.js reads it (`normalizeNextQueryParam`).
+ */
+export function isRouteParameterKey(key: string): boolean {
+  return BYPASS_QUERY_PREFIXES.some(
+    (prefix) => key.length > prefix.length && key.startsWith(prefix),
+  );
+}
+
+/**
+ * The key of one pair of a query (`name=value`), as Next.js reads it: by the query's own parser,
+ * handed the pair behind a `&`, which it skips, so that a `?` the pair begins with stays the key's
+ * own, as it does within a query.
+ */
+function keyOf(pair: string): string {
+  return new URLSearchParams(`&${pair}`).keys().next().value ?? '';
+}
+
+/**
+ * Take the keys Next.js reads as its own (`isRouteParameterKey`) out of `url`'s query, and say
+ * whether there were any. Every other pair stays where it was, spelled as it was.
+ *
+ * They are routing's to write: a dynamic route names its parameters in the query it hands the
+ * route's handler (`?nxtPid=$nxtPid`), and the handler reads them from there. Next.js fixed the
+ * same keys sent by a client (GHSA-492v-c6pp-mqqv) only for the requests its own server routes, so
+ * a client's are not handed on here: a page's parameters are the ones routing matched from its
+ * path. Only a query that may hold one (`ROUTE_PARAMETER_KEY_START`) is split into its pairs; any
+ * other is left as it is, unparsed.
+ *
+ * What is kept is set behind a `?` of its own: the URL takes one leading `?` off whatever it is set
+ * to, and handed the pairs alone, it took the one a first pair began with — a pair that is no route
+ * parameter (`?nxtPid`, a key of its own, after the query's own `?`) came back as one (`nxtPid`).
+ */
+export function dropRouteParameterKeys(url: URL): boolean {
+  const { search } = url;
+  if (!ROUTE_PARAMETER_KEY_START.test(search)) {
+    return false;
+  }
+  const pairs = search.slice(1).split('&');
+  const kept = pairs.filter((pair) => !isRouteParameterKey(keyOf(pair)));
+  if (kept.length === pairs.length) {
+    return false;
+  }
+  url.search = kept.length === 0 ? '' : `?${kept.join('&')}`;
+  return true;
+}
+
+/**
+ * What a request is handled with (`input`), its request without the keys of its query Next.js reads
+ * as its own (`dropRouteParameterKeys`): a copy of both where the query held one, and `input` itself
+ * otherwise — as for every request an application's own links make, which is neither parsed nor
+ * copied (`ROUTE_PARAMETER_KEY_START`, read off the request's URL).
+ *
+ * What a handler is told the client asked for (`initURL`) follows, where it is the request's own
+ * URL: an image's source is told the URL it is asked by (`sourceInput`), and kept as it was, that
+ * still held a key the request no longer did.
+ */
+export function withoutRouteParameterKeys<
+  T extends { readonly request: Request; readonly initURL?: string },
+>(input: T): T {
+  const href = input.request.url;
+  if (!ROUTE_PARAMETER_KEY_START.test(href)) {
+    return input;
+  }
+  const url = new URL(href);
+  if (!dropRouteParameterKeys(url)) {
+    return input;
+  }
+  const request = new Request(url, input.request);
+  return input.initURL === href
+    ? { ...input, request, initURL: request.url }
+    : { ...input, request };
+}
+
+/**
+ * The path and query a resume renders for, without the keys Next.js reads its own route parameters
+ * from (`dropRouteParameterKeys`). The edge sends a class shell's member by its own path, and the
+ * parameters come from that path.
  */
 export function resumeUrl(request: Request): string {
   const url = new URL(request.url);
-  const smuggled = [...url.searchParams.keys()].filter((key) =>
-    BYPASS_QUERY_PREFIXES.some((prefix) => key.startsWith(prefix)),
-  );
-  for (const key of smuggled) {
-    url.searchParams.delete(key);
-  }
+  dropRouteParameterKeys(url);
   return `${url.pathname}${url.search}`;
 }
 

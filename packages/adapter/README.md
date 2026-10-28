@@ -728,6 +728,19 @@ project that has to stay on 16.2 keeps a deployment that works and is told what 
 that a newer security release exists. A static export is warned for nothing: it carries no Next.js
 server code.
 
+Routing is the other side of that line. A deployment's requests are routed by upwind — its edge,
+and its runtime through the `@next/routing` upwind ships with — rather than by Next.js's own server,
+so an advisory against that layer is fixed in upwind's runtime, whatever Next.js the project
+installed: a fix in Next.js's router never runs in a deployment, and a project on a release without
+one is covered all the same.
+[GHSA-492v-c6pp-mqqv](https://github.com/vercel/next.js/security/advisories/GHSA-492v-c6pp-mqqv) is
+one. A handler Next.js's own server does not wrap takes its route parameters from the query keys
+routing writes them into (`nxtP…`, and `nxtI…` for an interception marker), over what its path
+matches, and the fix Next.js released holds only for the requests its own server routes. The runtime
+takes every such key a client sends out of the query before it runs the middleware or routes the
+request (`dropRouteParameterKeys`, in `packages/runtime/src/incoming.ts`), so a page of either router
+is handed only the parameters routing matched from its path.
+
 ### What a build before 16.3 does not carry
 
 16.2 reaches the whole of this adapter. Three of the things the bundle is built out of arrived in

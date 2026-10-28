@@ -248,7 +248,8 @@ describe('what a resolved route is looked up as', () => {
 
   /**
    * A member of a route built with `fallback: false` resolves by its own name, which names no
-   * entrypoint; the route it was built from is the page whose handler takes the URL asked for.
+   * entrypoint; the route it was built from is the page whose handler takes the URL asked for, with
+   * the parameter routing reads off the member's name after it, as either router's page is handed.
    */
   it('hands a member of a closed route the URL a rewrite was asked by, as it hands its route', () => {
     const manifest = manifestOf(true);
@@ -277,7 +278,7 @@ describe('what a resolved route is looked up as', () => {
       asked('/docs/alias'),
     );
 
-    expect(resolved.url).toBe('/docs/alias');
+    expect(resolved.url).toBe('/docs/alias?nxtPid=a');
   });
 
   /**
