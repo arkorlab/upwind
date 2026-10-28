@@ -21,9 +21,10 @@ import type { ShellLoadResult } from '../src/strategies/shell-loader.ts';
 
 /**
  * The record that replaces one the edge does not serve — past its expiry or condemned, rendered by
- * the Function in the foreground — read for at the authority behind the response, while this data
- * center's KV goes on answering with the record replaced: the document path as it runs, with only
- * the Function's answers, KV's and the authority's records made up, and the clock the test's.
+ * the Function in the foreground, or invalidated with a window and handed to it — read for at the
+ * authority behind the response, while this data center's KV goes on answering with the record
+ * replaced: the document path as it runs, with only the Function's answers, KV's and the
+ * authority's records made up, and the clock the test's.
  */
 
 const startResume = vi.hoisted(() =>
@@ -253,6 +254,17 @@ function invalidatedAtOnce(test: Fixture): void {
   takeInvalidation(test.edge.runtime.memory, SCOPE, { value: TAG, bound: '2' });
 }
 
+/**
+ * The authority said the scope's signals invalidated the page's tag with a window at revision 2:
+ * the record KV answers with is the Function's to serve stale and regenerate.
+ */
+function invalidatedWithAWindow(test: Fixture): void {
+  test.edge.runtime.memory.invalidations.takeEach(SCOPE, {
+    atOnce: [],
+    windowed: [{ tag: TAG, revision: 2 }],
+  });
+}
+
 /** Nothing told: a record past its expiry says so itself. */
 function nothingTold(): void {
   // The record's own policy and timestamp put it past its expiry.
@@ -376,35 +388,106 @@ describe('the record that replaces one the edge does not serve, read for at the 
     await test.drain();
   });
 
-  it('answers for a record regenerated in the foreground before the authority does', async () => {
-    const test = await fixture({ outcome: 'busy', publishedAt: T0 });
-    const authority = Promise.withResolvers<ArrayBuffer | undefined>();
+  it('reads the authority behind a record invalidated with a window once a second, and serves what replaces it shell-first', async () => {
+    const test = await fixture({ renderedAt: T0 });
 
-    test.currentRecord.mockReturnValueOnce(authority.promise);
+    invalidatedWithAWindow(test);
 
-    const response = await test.open();
-    await vi.advanceTimersByTimeAsync(0);
+    await expect(test.visit()).resolves.toBe('the Function');
 
+    await test.until(T0 + 500);
+
+    // Within the second, another visitor's is handed on with no read of its own.
+    await expect(test.visit()).resolves.toBe('the Function');
     expect(test.currentRecord).toHaveBeenCalledTimes(1);
-    await expect(response.text()).resolves.toBe(RENDERED);
-    expect(test.held()).toBe(1);
 
-    authority.resolve(test.published.bytes);
-    await vi.advanceTimersByTimeAsync(0);
+    await test.until(T0 + 1300);
 
+    // A second on, and once the authority holds the record that replaces it: read, and held.
+    await expect(test.visit()).resolves.toBe('the Function');
     expect(test.held()).toBe(2);
+
+    await test.until(NEXT_VISIT_AT);
+
+    await expect(test.visit()).resolves.toBe(`<html><body><p id="date">date 2</p>${SUFFIX}`);
+    expect(test.passthrough.mock.calls.map(([reason]) => reason)).toStrictEqual([
+      'invalidated',
+      'invalidated',
+      'invalidated',
+    ]);
+    expect(test.currentRecord.mock.calls).toStrictEqual([
+      [SCOPE, ENTRY_ID, 1],
+      [SCOPE, ENTRY_ID, 1],
+    ]);
 
     await test.drain();
   });
 
   it.each([
-    { gate: 'under a hold of zero', options: { holdMs: 0 }, method: 'GET' },
-    { gate: 'without an authority', options: { kvOnly: true }, method: 'GET' },
-    { gate: 'behind a HEAD', options: {}, method: 'HEAD' },
+    {
+      record: 'regenerated in the foreground',
+      renderedAt: EXPIRED_AT,
+      prepare: nothingTold,
+      body: RENDERED,
+      heldBefore: 1,
+    },
+    {
+      record: 'invalidated with a window',
+      renderedAt: T0,
+      prepare: invalidatedWithAWindow,
+      body: 'the Function',
+      heldBefore: undefined,
+    },
   ])(
-    'reads nothing of the authority $gate, for a record past its expiry',
-    async ({ options, method }) => {
-      const test = await fixture({ ...options, outcome: 'busy', publishedAt: T0 });
+    'answers for a record $record before the authority does',
+    async ({ renderedAt, prepare, body, heldBefore }) => {
+      const test = await fixture({ renderedAt, outcome: 'busy', publishedAt: T0 });
+      const authority = Promise.withResolvers<ArrayBuffer | undefined>();
+
+      prepare(test);
+
+      test.currentRecord.mockReturnValueOnce(authority.promise);
+
+      const response = await test.open();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(test.currentRecord).toHaveBeenCalledTimes(1);
+      await expect(response.text()).resolves.toBe(body);
+      expect(test.held()).toBe(heldBefore);
+
+      authority.resolve(test.published.bytes);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(test.held()).toBe(2);
+
+      await test.drain();
+    },
+  );
+
+  it.each([
+    { gate: 'under a hold of zero', record: 'expired', options: { holdMs: 0 }, method: 'GET' },
+    { gate: 'without an authority', record: 'expired', options: { kvOnly: true }, method: 'GET' },
+    { gate: 'behind a HEAD', record: 'expired', options: {}, method: 'HEAD' },
+    { gate: 'under a hold of zero', record: 'invalidated', options: { holdMs: 0 }, method: 'GET' },
+    {
+      gate: 'without an authority',
+      record: 'invalidated',
+      options: { kvOnly: true },
+      method: 'GET',
+    },
+    { gate: 'behind a HEAD', record: 'invalidated', options: {}, method: 'HEAD' },
+  ])(
+    'reads nothing of the authority $gate, for a record $record',
+    async ({ record: kind, options, method }) => {
+      const expired = kind === 'expired';
+      const test = await fixture({
+        ...options,
+        renderedAt: expired ? EXPIRED_AT : T0,
+        outcome: 'busy',
+        publishedAt: T0,
+      });
+
+      (expired ? nothingTold : invalidatedWithAWindow)(test);
 
       await test.visit(method);
 

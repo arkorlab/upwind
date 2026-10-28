@@ -41,13 +41,14 @@ import { lookAtScopeBehind } from './scope-signal.ts';
  * status, which is handed on, or whose freshness cannot be told, or served to a `HEAD`.
  *
  * Where the Function answers in place of a record — past its `expire` or condemned by an at-once
- * invalidation, regenerated in the foreground — the authority is read as well, behind the
- * response, for the record that replaces it: what the regeneration publishes, followed once the
- * runtime has accepted it (`followRegeneration`), or else whatever later record it holds, a second
- * apart at the most (`readReplacementBehind`). KV goes on answering with the record replaced for its
- * 30-second cache and the replacement's propagation, and a condemned record is never held
- * (`condemned.ts`), so that each request reads it again before its first byte: every request for
- * the entry until KV shows the replacement would be the Function's render rather than a shell first.
+ * invalidation, regenerated in the foreground, or invalidated with a window and handed on — the
+ * authority is read as well, behind the response, for the record that replaces it: what the
+ * regeneration publishes, followed once the runtime has accepted it (`followRegeneration`), or else
+ * whatever later record it holds, a second apart at the most (`readReplacementBehind`). KV goes on
+ * answering with the record replaced for its 30-second cache and the replacement's propagation, and
+ * neither a condemned record nor an invalidated one is ever held (`condemned.ts`), so that each
+ * request reads it again before its first byte: every request for the entry until KV shows the
+ * replacement would be the Function's render rather than a shell first.
  *
  * A hold of zero holds nothing, and every request reads the record before its first byte: a
  * setting for measuring the read, not for serving.
@@ -296,11 +297,18 @@ export function readServedAgain(
  * The Function answers a request in place of `pack`, which the edge will not serve, and nothing
  * follows what it publishes: a record past its expiry or condemned whose foreground regeneration
  * the runtime did not accept — another render of the entry under way, a later record already the
- * authority's, no answer at all. The authority is read behind the response for the record that
- * replaces it, as for a record served stale, once per `STALE_HOLD_MS` at the most
- * (`readCurrentBehind`): whether this isolate holds `pack` or not — a condemned record never is.
- * Adopted through the loader's own checks, a later record is served by the next request, rather
- * than every request being the Function's until KV shows it here.
+ * authority's, no answer at all — or one invalidated with a window, which the Function serves stale
+ * and regenerates (`decideGeneration`). The authority is read behind the response for the record
+ * that replaces it, as for a record served stale, once per `STALE_HOLD_MS` at the most
+ * (`readCurrentBehind`): whether this isolate holds `pack` or not — a condemned record, or one
+ * invalidated, never is. Adopted through the loader's own checks, a later record is served by the
+ * next request, rather than every request being the Function's until KV shows it here.
+ *
+ * The read asks for a record later than `pack`'s revision. Until one written after the
+ * invalidation exists, the authority may answer each time with one before it, invalidated as well,
+ * which is answered and not held (`adoptDecoded`): asked again a cadence on, and no more often,
+ * within the isolate's two background slots — as a partial fallback's invalidated completion is
+ * read on its own cadence (`partial-fallback.ts`).
  */
 export function readReplacementBehind(
   edge: EdgeContext,

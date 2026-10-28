@@ -23,7 +23,9 @@ import type { GenerationLoad } from './generation-loader.ts';
  * (`generation-loader.ts`), and otherwise a record this isolate came to hold meanwhile, unless that
  * one has expired. A record a Function's response condemned in this isolate — one that carries a
  * tag the response said was invalidated at once, written before the revision it said — is judged
- * expired, whatever it says of itself (`condemned.ts`).
+ * expired, whatever it says of itself (`condemned.ts`). One invalidated with a window is handed to
+ * the Function, which serves it stale and regenerates it; the decision carries it (`pack`), for the
+ * authority to be read behind the response for the record that replaces it, as for one expired.
  */
 
 const OK_STATUS = 200;
@@ -42,7 +44,17 @@ export type GenerationDecision =
     }
   | { readonly kind: 'regenerate'; readonly pack: DecodedGenerationPack; readonly lookupMs: number }
   | { readonly kind: 'build'; readonly reason: string; readonly lookupMs: number }
-  | { readonly kind: 'passthrough'; readonly reason: string; readonly lookupMs: number };
+  | {
+      readonly kind: 'passthrough';
+      readonly reason: string;
+      readonly lookupMs: number;
+      /**
+       * The record invalidated with a window that the Function is handed the request for
+       * (`INVALIDATED_REASON`), for the authority to be read behind it for the record that replaces
+       * it (`readReplacementBehind`). None for a record of another status, which is what it says.
+       */
+      readonly pack?: DecodedGenerationPack | undefined;
+    };
 
 function validityOf(pack: DecodedGenerationPack, now: number): Validity {
   const { header } = pack;
@@ -81,7 +93,7 @@ function decideRecord(read: RecordRead, now: number, condemned: Condemned): Gene
     return { kind: 'regenerate', pack, lookupMs };
   }
   if (condemnation === 'stale') {
-    return { kind: 'passthrough', reason: INVALIDATED_REASON, lookupMs };
+    return { kind: 'passthrough', reason: INVALIDATED_REASON, pack, lookupMs };
   }
   return { kind: 'serve', pack, validity, source, readBytes, lookupMs };
 }

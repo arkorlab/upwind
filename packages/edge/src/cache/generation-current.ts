@@ -252,10 +252,10 @@ function startRead(
 }
 
 /**
- * Ask behind a served build or stale record, or one the Function answers in place of — expired, or
- * condemned (`readReplacementBehind`). Regional KV can still answer absent or with A after the
- * authority holds B: its current record, verified by the loader, lets later requests use B without
- * making this response wait or lowering the regional cache's TTL.
+ * Ask behind a served build or stale record, or one the Function answers in place of — expired,
+ * condemned, invalidated with a window (`readReplacementBehind`). Regional KV can still answer
+ * absent or with A after the authority holds B: its current record, verified by the loader, lets
+ * later requests use B without making this response wait or lowering the regional cache's TTL.
  *
  * The deadline bounds the whole operation, including validation and keeping the copy. Its fence
  * forbids adoption after the deadline. An RPC cannot be cancelled through this host contract, so
@@ -287,8 +287,9 @@ function requestCurrentBehind(
 }
 
 /**
- * Refresh only behind a stale generation, or one the edge does not serve — expired, or condemned —
- * whatever this isolate holds of it; normal fresh delivery asks no authority.
+ * Refresh only behind a stale generation, or one the edge does not serve — expired, condemned, or
+ * invalidated with a window — whatever this isolate holds of it; normal fresh delivery asks no
+ * authority.
  */
 export function readCurrentBehind(
   edge: EdgeContext,
