@@ -19,8 +19,9 @@ import { replaceLegacyRecoverySource, type WireEncoding } from '@stayingupwind/h
 
 import { serverTiming, type ServerTimingEntry } from '../observability/server-timing.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { acceptsNonce, applyNonceToHeaders, cspMarkers } from './csp-nonce.ts';
+import { acceptsNonce, applyNonceToHeaders, cspMarkers, mintCspNonce } from './csp-nonce.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
+import type { DocumentInput } from './document.ts';
 import { mergeScopedMiddlewareHeaders } from './responses.ts';
 
 /** The headers a composed document goes out under: what it is, how it is encoded, who answered. */
@@ -220,10 +221,10 @@ export interface DocumentHeaderInput {
   readonly strategyId: string;
   readonly shell: ShellDelivery;
   /**
-   * Mints the nonce, for a project that handed CSP nonces to the edge; `undefined` for one that
-   * did not. Called only once the final policy is known — see `documentHeaders`.
+   * The nonce minted for the document (`documentNonce`), which its policies are given here;
+   * `undefined` for a document the edge stamps none into.
    */
-  readonly mintNonce: (() => string) | undefined;
+  readonly nonce: string | undefined;
   /** What `x-arkor-edge` says about the document beyond the shell that answered it. */
   readonly hosted: string;
   /** What the application's middleware set, when the edge ran it and it let the request on. */
@@ -240,10 +241,57 @@ export interface DocumentHeaderInput {
   readonly record: RecordTiming | undefined;
 }
 
-/** The response's headers, and the nonce (if any) the body must be stamped with to match them. */
-export interface DocumentHeaders {
-  readonly headers: Headers;
-  readonly nonce: string | undefined;
+/**
+ * Whether the policies a document goes out under have somewhere for a nonce (`acceptsNonce`): those
+ * prepared for it (`replayedDocumentHeaders`) — the build's, with the rules `next.config` matched on
+ * this request laid over them — and what the middleware set laid over those, as `documentHeaders`
+ * lays it, where one of its own replaces the document's. Nothing else that function does changes a
+ * policy but the recovery script's hash, which has no say in where a nonce goes; so this is asked
+ * before the document's resume is dispatched, which is handed the nonce it renders with.
+ */
+function takesNonce(
+  headers: Headers,
+  edge: EdgeContext,
+  middleware: DocumentHeaderInput['middleware'],
+): boolean {
+  if (middleware === undefined) {
+    return acceptsNonce(headers);
+  }
+  const laid = new Headers(headers);
+  mergeScopedMiddlewareHeaders(laid, middleware.responseHeaders, edge.forwarding);
+  return acceptsNonce(laid);
+}
+
+/** What of a document says whether the edge mints it a nonce, and whether its policy takes one. */
+type Stamped = Pick<DocumentInput, 'edge' | 'entry' | 'generation' | 'middleware'>;
+
+/**
+ * Whether a document is one the edge may stamp a nonce into; see `documentNonce` below.
+ *
+ * Only a route the runtime cache has an entry for — for a hosted build, nearly every prerender —
+ * and so the build's own shell of such a route as well, validation included: a validation
+ * compares a document of a project that opted in with the nonces taken out. A route without an
+ * entry goes out as its build wrote it, opt-in or no. And a gate's shell, whatever entry serves
+ * it (`gatedEntryOf`): a render every visitor is answered, whose nonce would be every visitor's.
+ */
+function mintsNonce({ edge, entry, generation }: Stamped): boolean {
+  return edge.cspNonce && (entry.cache !== undefined || generation?.gate !== undefined);
+}
+
+/**
+ * The nonce a document goes out with, where it is one the edge stamps (`mintsNonce`) and the policy
+ * it goes out under has somewhere for one (`takesNonce`): minted before its resume is dispatched,
+ * which is handed it to render with (`continuationRequest`). That policy is known by then — the
+ * build's, narrowed by the rules `next.config` matched on this request, and replaced where the
+ * middleware set one of its own — and minting is a draw of sixteen random bytes, which puts nothing
+ * in front of the shell: it was drawn ahead of the first byte all along.
+ */
+export function documentNonce(input: Stamped, headers: Headers): string | undefined {
+  if (!mintsNonce(input)) {
+    return undefined;
+  }
+  const middleware = input.middleware?.kind === 'continue' ? input.middleware : undefined;
+  return takesNonce(headers, input.edge, middleware) ? mintCspNonce() : undefined;
 }
 
 /**
@@ -382,8 +430,8 @@ function timingEntries(header: DocumentHeaderInput): ServerTimingEntry[] {
   return entries;
 }
 
-export function documentHeaders(header: DocumentHeaderInput): DocumentHeaders {
-  const { entry, edge, shell, headers } = header;
+export function documentHeaders(header: DocumentHeaderInput): Headers {
+  const { entry, edge, shell, headers, nonce } = header;
   headers.set('content-type', entry.shell.contentType);
   if (header.nextCache !== undefined) {
     headers.set(NEXT_CACHE_HEADER, header.nextCache);
@@ -426,12 +474,11 @@ export function documentHeaders(header: DocumentHeaderInput): DocumentHeaders {
   if (shell.variesByAgent) {
     varyOn(headers, USER_AGENT_HEADER);
   }
-  // Only now: the policy this response carries is the one the build recorded, narrowed by the
-  // rules `next.config` matched on this request and by whatever the middleware set. Deciding from
-  // the build's copy alone would mint no nonce for a rule that adds a placeholder, and would stamp
-  // the body with one the replacing policy does not allow.
-  const nonce =
-    header.mintNonce !== undefined && acceptsNonce(headers) ? header.mintNonce() : undefined;
+  // Only now, every policy that replaces the build's having had its say: the rules `next.config`
+  // matched on this request, laid as the headers were prepared, and the middleware's, laid above —
+  // the policy the nonce was minted for (`takesNonce`). Decided from the build's copy alone, a rule
+  // that adds a placeholder would have none, and the body would be stamped with a nonce a replacing
+  // policy does not allow.
   if (nonce !== undefined) {
     applyNonceToHeaders(headers, nonce, edge.cspNonceMode, edge.cspStrictDynamic);
   }
@@ -446,5 +493,5 @@ export function documentHeaders(header: DocumentHeaderInput): DocumentHeaders {
   );
   applyPreloads(headers, header);
   applyCspReporting(headers, edge.cspReportingPath);
-  return { headers, nonce };
+  return headers;
 }

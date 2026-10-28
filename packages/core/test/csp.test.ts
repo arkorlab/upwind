@@ -223,7 +223,8 @@ describe('applyCspNonce', () => {
   /**
    * A policy set at request time — by a middleware that mints its own, as Next.js documents — names
    * its own nonce, under `style-src` as much as `script-src`. The edge stamps its nonce on every
-   * element that carried one, so each directive that named a nonce has to name the edge's instead.
+   * element of the shell that carried one, and hands it to the render past the shell in the
+   * middleware's place, so each directive that named a nonce has to name the edge's instead.
    */
   it('replaces every nonce a policy set at request time names', () => {
     const live = "script-src 'nonce-mw==' 'strict-dynamic'; style-src 'self' 'nonce-mw=='";
