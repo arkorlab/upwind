@@ -20,7 +20,7 @@ import {
 import { NEXT_DATA_HEADER, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
-import { edgeJudgesHeaderRules, stripPlatformHeaders } from './incoming.ts';
+import { edgeJudgesHeaderRules, isRouteParameterKey, stripPlatformHeaders } from './incoming.ts';
 import { escapedNameOf, namesWithSpellings, prerenderedName } from './name-spellings.ts';
 import type { Resolved } from './outputs.ts';
 import { misdirectedTo } from './placement.ts';
@@ -571,11 +571,6 @@ function isTemplate(pathname: string): boolean {
   return pathname.includes('[');
 }
 
-/** What `@next/routing` writes into a dynamic route's destination for its parameters. */
-const ROUTE_PARAM_PREFIXES = ['nxtP', 'nxtI'];
-/** The Pages Router's kinds of route, whose `query` holds the parameters a rewrite named. */
-const PAGES_ROUTER: ReadonlySet<string> = new Set(['pages', 'pages-api']);
-
 /**
  * The route a rewrite landed on, where `@next/routing` let a dynamic route claim a page of the
  * build's own.
@@ -607,9 +602,7 @@ export function landedRoute(
     return { route, target };
   }
   const query = Object.fromEntries(
-    Object.entries(target.query).filter(([key]) =>
-      ROUTE_PARAM_PREFIXES.every((prefix) => !key.startsWith(prefix)),
-    ),
+    Object.entries(target.query).filter(([key]) => !isRouteParameterKey(key)),
   );
   return { route: page, target: { ...target, query } };
 }
@@ -625,8 +618,8 @@ export function landedRoute(
  * under is named off the route itself either way (`resolvedPathname`, in `RouteModule.prepare`).
  *
  * A `next.config` rewrite the handler applies again itself, to that URL (`handleRewrites`, in
- * `RouteModule.prepare`), so it is handed that URL as it came — an App Router route with the
- * route's parameters after it (`withRouteParameters`). A middleware's it cannot, so the path asked
+ * `RouteModule.prepare`), so it is handed that URL as it came — with the route's parameters after
+ * it (`withRouteParameters`). A middleware's it cannot, so the path asked
  * for comes with the query routing ended on: what the middleware added, and the route's
  * parameters, which the handler takes from the query and leaves out of `req.url` (`nxtP…`,
  * `normalizeCdnUrl`) — "deployed proxies include query values added while resolving rewrites in
@@ -652,16 +645,11 @@ function handlerUrl(
   ) {
     return routed;
   }
+  const query = routeQuery(store, route, target, withoutTrailingSlash(target.pathname));
   if (asked.rewrite !== undefined) {
-    const query = routeQuery(store, route, target, withoutTrailingSlash(target.pathname));
     return `${inLocaleOf(store, url.pathname, target.pathname)}${queryString(query)}`;
   }
-  return PAGES_ROUTER.has(kind)
-    ? `${url.pathname}${url.search}`
-    : `${url.pathname}${withRouteParameters(
-        url.search,
-        routeQuery(store, route, target, withoutTrailingSlash(target.pathname)),
-      )}`;
+  return `${url.pathname}${withRouteParameters(url.search, query)}`;
 }
 
 /**
@@ -674,12 +662,19 @@ function handlerUrl(
  * the platform handed it as `nxtP…` (`RouteModule.prepare`, "Remove any normalized params from the
  * query"), so without them a page's `searchParams` said its own `params` as well
  * (`app-dir/rewrite-with-search-params`).
+ *
+ * A page of the Pages Router is handed them as well — one a rewrite led to, and one `i18n` put the
+ * default locale in front of — since either router's handler takes its parameters from them over
+ * what it matches its path to: it renders what routing matched, as it does wherever it is handed the
+ * URL routing ended on, and as a render the runtime makes of the page by its path alone does
+ * (`routingParameters`). No key of the query asked for competes with them: a client's are taken out
+ * before routing (`dropRouteParameterKeys`, in `handleFull`), so each parameter is named once.
  */
 function withRouteParameters(search: string, query: Record<string, string | string[]>): string {
   const parameters = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     const items = Array.isArray(value) ? value : [value];
-    if (ROUTE_PARAM_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+    if (isRouteParameterKey(key)) {
       for (const item of items) {
         parameters.append(key, item);
       }

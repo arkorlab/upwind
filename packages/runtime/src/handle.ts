@@ -51,6 +51,7 @@ import {
   sourceResponse,
 } from './image-fallback.ts';
 import {
+  dropRouteParameterKeys,
   edgeJudgesHeaderRules,
   edgeRewriteStatusOf,
   hasBody,
@@ -259,9 +260,19 @@ async function serveImageSource(
  * (`withHeaderRulesLeft`) — the Function that handed a request over left them out of the routing it
  * hands over, as the same request's headers told it to — and a redirect ahead of routing carries
  * none to leave out.
+ *
+ * Its query goes on without the keys Next.js reads a route parameter from, which only routing
+ * writes (`dropRouteParameterKeys`): nothing after this — the middleware, routing, a handler, the
+ * source of an image — is handed a client's. Neither the edge nor the runtime sends one here of its
+ * own: a render of a page by its path alone — a regeneration, a resume — hands the handler its URL
+ * directly, and a Function that routed a request for another carries the URL routing came to in the
+ * hand-off (`ROUTED_HEADER`), not in the request's.
  */
-async function handleFull(input: RoutedInput, store: Store): Promise<Response> {
-  const url = new URL(input.request.url);
+async function handleFull(given: RoutedInput, store: Store): Promise<Response> {
+  const url = new URL(given.request.url);
+  const input = dropRouteParameterKeys(url)
+    ? { ...given, request: new Request(url, given.request) }
+    : given;
   const handedOff = input.request.headers.get(ROUTED_HEADER);
   if (handedOff !== null) {
     return withHeaderRulesLeft(input.request, await serveHandedOff(input, store, url, handedOff));
