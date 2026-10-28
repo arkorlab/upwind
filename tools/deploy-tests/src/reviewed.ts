@@ -334,8 +334,7 @@ const AT_16_4_3: readonly Group[] = [
     targets: ['cloudflare'],
     symptom: inOrder(
       DEPLOY_FAILED,
-      '[AuditError]: Unproved Next.js Turbopack consumer graph',
-      'refusing native publication',
+      '[AuditError]: Unproved Next.js Turbopack consumer graph uncertified duplicate module registration; refusing native publication',
     ),
     cases: { 'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': EVERY_CASE },
   },

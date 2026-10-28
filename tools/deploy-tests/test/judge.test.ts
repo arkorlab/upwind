@@ -417,6 +417,17 @@ describe('the reviewed cases', () => {
     expect(judgedAlone(entry!, 'cloudflare', changed).unexplained).toHaveLength(1);
   });
 
+  it('read no other native publication refusal than the one recorded', () => {
+    const entry = REVIEWED.find(({ suite }) => suite.endsWith('turbopack-reports.test.ts'));
+    const other =
+      'Error: Custom deploy script failed: Progress: resolved 1\n> Build error occurred\n' +
+      'Error [AuditError]: Unproved Next.js Turbopack consumer graph registration projection ' +
+      'disagreement; refusing native publication';
+
+    expect(entry).toBeDefined();
+    expect(judgedAlone(entry!, 'cloudflare', other).unexplained).toHaveLength(1);
+  });
+
   it('read the failures they were read from', () => {
     for (const entry of REVIEWED) {
       const messages = recordedFor(entry);
