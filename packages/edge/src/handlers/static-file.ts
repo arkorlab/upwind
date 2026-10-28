@@ -18,6 +18,7 @@ import {
   keptByNobody,
   removeSharedCacheOverrides,
   GATED_CACHE_CONTROL,
+  PRIVATE_IMMUTABLE_CACHE_CONTROL,
   REVALIDATE_CACHE_CONTROL,
 } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
@@ -77,6 +78,13 @@ export interface StaticFileInput {
   readonly middlewareMs?: number | undefined;
   /** What `next.config`'s header rules set on this request, as the application would have. */
   readonly configured?: ConfiguredHeaders | undefined;
+  /**
+   * Whether the request named this file itself: asked for it, or for it still where a middleware
+   * rewrite kept it (`staticFileKey`) — not another path a rewrite landed it on the file from. A
+   * build-hashed name is what says the bytes under it never change; the answer for another path is
+   * the middleware's choice for this one request, and the next may be landed elsewhere.
+   */
+  readonly ownName?: boolean | undefined;
 }
 
 /**
@@ -104,7 +112,12 @@ const ENTITY_HEADERS: ReadonlySet<string> = new Set([
 ]);
 /**
  * A file the middleware had a say on is what one visitor was allowed; a shared cache must not hand
- * it to the next, however immutable the bytes. The visitor's own cache may keep it, revalidated.
+ * it to the next, however immutable the bytes. The visitor's own cache may keep it, revalidated —
+ * or, where it is a build-hashed file as itself that nothing else made one visitor's
+ * (`heldAsTheFile`), for the year Next.js has every browser keep such a file. The bytes under that
+ * name never change, and the visitor holds them already: all a revalidation could still do is have
+ * the middleware refuse that visitor what it has, and every later view of a page paid a round trip
+ * and a run of the middleware for each script and style sheet it cannot render without.
  *
  * Unless the middleware wrote a `Cache-Control` itself: that is the author saying what this file's
  * answer may be held as, for this request, and it stands as it would in the application
@@ -150,6 +163,26 @@ interface CacheControlOverride {
 
 const UNSHARED_NO_STORE: CacheControlOverride = { value: NO_STORE_CACHE_CONTROL, unshared: true };
 const UNSHARED_GATED: CacheControlOverride = { value: GATED_CACHE_CONTROL, unshared: true };
+const UNSHARED_IMMUTABLE: CacheControlOverride = {
+  value: PRIVATE_IMMUTABLE_CACHE_CONTROL,
+  unshared: true,
+};
+
+/**
+ * Whether the answer is a build-hashed file as itself, which the visitor's browser may keep for as
+ * long as anyone may keep the file: marked immutable, at the name the request asked for
+ * (`ownName`), and under its own status — not one the middleware gave a rewrite (`rewriteStatus`),
+ * which is its say on this one request, and which a browser keeping it for a year would go on
+ * answering with after the middleware had changed its mind.
+ */
+function heldAsTheFile(input: StaticFileInput): boolean {
+  return (
+    input.file.immutable &&
+    input.ownName === true &&
+    input.middleware?.rewriteStatus === undefined &&
+    answersAsItself(input)
+  );
+}
 
 /**
  * Validation must never leave a response in a shared cache; live traffic gets the file's own. A
@@ -173,7 +206,12 @@ function cacheControlFor(
     // middleware alone, which is the only way to see what the two of them came to together.
     const shareable = input.configured?.conditioned !== true && !answered.has('set-cookie');
     const chosen = shareable ? middlewareCacheControl(input.middleware) : undefined;
-    return chosen === undefined ? UNSHARED_GATED : { value: chosen, unshared: false };
+    if (chosen !== undefined) {
+      return { value: chosen, unshared: false };
+    }
+    // Nothing it wrote: kept from shared caches all the same, and by the visitor alone for the
+    // file's year where the bytes are all the answer is (`heldAsTheFile`), revalidated otherwise.
+    return shareable && heldAsTheFile(input) ? UNSHARED_IMMUTABLE : UNSHARED_GATED;
   }
   // A rule the request itself selected makes this answer one visitor's, whatever the file's own
   // lifetime says. An immutable hashed file is still the same bytes to everyone — but the headers
