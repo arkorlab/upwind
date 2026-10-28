@@ -172,7 +172,7 @@ export async function materializeNativeArtifact(
   const bundleJson: unknown = JSON.parse(await readFile(bundleFile, 'utf8'));
   const bundle = deploymentBundleSchema.parse(bundleJson);
   const native = appFunctions(bundle).filter(([, spec]) => isNodeContainerFunction(spec));
-  assert.equal(native.length, 1, 'The fixed Pages fixture must emit one native Function');
+  assert.equal(native.length, 1, 'The fixed fixture must emit one native Function');
   const selected = native[0];
   assert.ok(selected !== undefined);
   const [functionName, spec] = selected;
