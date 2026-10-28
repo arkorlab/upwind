@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppModule, NodeHandler } from '../src/app-module.ts';
 import { handleRequest } from '../src/handle.ts';
-import { dropRouteParameterKeys, resumeUrl } from '../src/incoming.ts';
+import { dropRouteParameterKeys, resumeUrl, withoutRouteParameterKeys } from '../src/incoming.ts';
 import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { getStore, routerDynamicRoutes, type Store } from '../src/store.ts';
 
@@ -194,6 +194,23 @@ describe('a query key a client sends that Next.js reads a route parameter from',
       name: 'id',
       value: '123',
     },
+    {
+      // `?nxtPid` is a key of its own after the query's `?`, and stays one once the first goes.
+      label: 'leaves a key after it that begins with a `?` that key, though it reads like one',
+      path: '/admin/123?nxtPdiscard=x&?nxtPid=456',
+      localized: true,
+      handed: '/admin/123??nxtPid=456&nxtPid=123',
+      name: 'id',
+      value: '123',
+    },
+    {
+      label: 'leaves an ordinary key after it that begins with a `?` as it was spelled',
+      path: '/admin/123?nxtPdiscard=x&?q=1',
+      localized: true,
+      handed: '/admin/123??q=1&nxtPid=123',
+      name: 'id',
+      value: '123',
+    },
   ] as const)('$label', async ({ path, localized, handed, name, value }) => {
     const url = await handedFor(path, localized);
 
@@ -257,7 +274,57 @@ describe('dropRouteParameterKeys', () => {
     expect(url.href).toBe(`${HOST}/a`);
   });
 
+  /**
+   * A URL takes one leading `?` off what its query is set to. Set to the pairs that are left alone,
+   * it took the one the first of them began with, and a key of its own (`?nxtPid`) became one Next.js
+   * reads a parameter from (`nxtPid`).
+   */
+  it.each([
+    ['one that reads like a parameter', '?nxtPslug=b&?nxtPid=2', '??nxtPid=2', ['?nxtPid']],
+    ['an ordinary one', '?nxtPslug=b&?q=1', '??q=1', ['?q']],
+    ['every one left', '?nxtPslug=b&?x=1&?y=2', '??x=1&?y=2', ['?x', '?y']],
+  ])('keeps the `?` a key left after it begins with: %s', (_label, query, left, keys) => {
+    const url = new URL(`${HOST}/a${query}`);
+
+    expect(dropRouteParameterKeys(url)).toBe(true);
+    expect(url.search).toBe(left);
+    expect([...url.searchParams.keys()]).toStrictEqual(keys);
+  });
+
+  it('leaves a query whose every pair begins with a `?` as it was', () => {
+    const url = new URL(`${HOST}/a??x=1&?nxtPid=2`);
+
+    expect(dropRouteParameterKeys(url)).toBe(false);
+    expect(url.href).toBe(`${HOST}/a??x=1&?nxtPid=2`);
+  });
+
   it('is what a resume of a shell renders for', () => {
     expect(resumeUrl(new Request(`${HOST}/a?q=a%20b&nxtPslug=b`))).toBe('/a?q=a%20b');
+  });
+});
+
+describe('withoutRouteParameterKeys', () => {
+  it('hands back what it was handed where the request’s query holds no such key', () => {
+    const input = { request: new Request(`${HOST}/a?q=%E2%9C%93&nxtP=1&?nxtPid=2`), other: 1 };
+
+    expect(withoutRouteParameterKeys(input)).toBe(input);
+  });
+
+  it('hands back a copy whose request is without them, the same request otherwise', async () => {
+    const request = new Request(`${HOST}/a?nxtPslug=b&q=1`, {
+      method: 'POST',
+      headers: { 'x-asked': '1' },
+      body: 'sent',
+    });
+    const input = { request, other: 1 };
+
+    const copy = withoutRouteParameterKeys(input);
+
+    expect(copy).not.toBe(input);
+    expect(copy.other).toBe(1);
+    expect(copy.request.url).toBe(`${HOST}/a?q=1`);
+    expect(copy.request.method).toBe('POST');
+    expect(copy.request.headers.get('x-asked')).toBe('1');
+    await expect(copy.request.text()).resolves.toBe('sent');
   });
 });

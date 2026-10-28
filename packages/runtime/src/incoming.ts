@@ -72,12 +72,13 @@ export function initUrlOf(request: Request): string {
 }
 
 /**
- * Where a key of a query may begin with one of `BYPASS_QUERY_PREFIXES`: at the query's start or
- * after a `&`, each letter spelled as it is or escaped, which the query's parser reads back as the
- * same letter (`%6ExtPid` is `nxtPid`). Wider than the prefixes, in either case of each letter, and
- * never narrower: what it finds is judged key by key (`isRouteParameterKey`).
+ * Where a key of a query may begin with one of `BYPASS_QUERY_PREFIXES`, read off a URL or its query
+ * as text: after a `?` or a `&`, each letter spelled as it is or escaped, which the query's parser
+ * reads back as the same letter (`%6ExtPid` is `nxtPid`). Wider than the prefixes — in either case of
+ * each letter, after any `?` or `&` of the text, a path's own among them — and never narrower: what it
+ * finds is judged key by key (`isRouteParameterKey`).
  */
-const ROUTE_PARAMETER_KEY_START = /(?:^\?|&)(?:n|%6e)(?:x|%78)(?:t|%74)(?:[ip]|%49|%50)/iu;
+const ROUTE_PARAMETER_KEY_START = /[&?](?:n|%6e)(?:x|%78)(?:t|%74)(?:[ip]|%49|%50)/iu;
 
 /**
  * Whether Next.js reads `key` as its own rather than the application's: a route parameter
@@ -111,6 +112,10 @@ function keyOf(pair: string): string {
  * a client's are not handed on here: a page's parameters are the ones routing matched from its
  * path. Only a query that may hold one (`ROUTE_PARAMETER_KEY_START`) is split into its pairs; any
  * other is left as it is, unparsed.
+ *
+ * What is kept is set behind a `?` of its own: the URL takes one leading `?` off whatever it is set
+ * to, and handed the pairs alone, it took the one a first pair began with — a pair that is no route
+ * parameter (`?nxtPid`, a key of its own, after the query's own `?`) came back as one (`nxtPid`).
  */
 export function dropRouteParameterKeys(url: URL): boolean {
   const { search } = url;
@@ -122,8 +127,24 @@ export function dropRouteParameterKeys(url: URL): boolean {
   if (kept.length === pairs.length) {
     return false;
   }
-  url.search = kept.join('&');
+  url.search = kept.length === 0 ? '' : `?${kept.join('&')}`;
   return true;
+}
+
+/**
+ * What a request is handled with (`input`), its request without the keys of its query Next.js reads
+ * as its own (`dropRouteParameterKeys`): a copy of both where the query held one, and `input` itself
+ * otherwise — as for every request an application's own links make, which is neither parsed nor
+ * copied (`ROUTE_PARAMETER_KEY_START`, read off the request's URL).
+ */
+export function withoutRouteParameterKeys<T extends { readonly request: Request }>(input: T): T {
+  const { request } = input;
+  const href = request.url;
+  if (!ROUTE_PARAMETER_KEY_START.test(href)) {
+    return input;
+  }
+  const url = new URL(href);
+  return dropRouteParameterKeys(url) ? { ...input, request: new Request(url, request) } : input;
 }
 
 /**
