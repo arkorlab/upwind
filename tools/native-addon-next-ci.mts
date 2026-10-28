@@ -1,8 +1,10 @@
 /**
- * CI only: build the fixed official native-addon fixture with the actual adapter, then run its
+ * CI only: build a fixed official native-addon fixture with the actual adapter, then run its
  * emitted Node Function on loopback. No Cloudflare service, credentials, browser or next start.
- * Usage: node tools/native-addon-next-ci.mts <pinned-next-checkout>/test/e2e/prerender-native-module
- * Optional diagnostic: append --server-minification=off. This is a separate build condition.
+ * Usage: node tools/native-addon-next-ci.mts <pinned-next-checkout>/test/e2e/<fixture>, where
+ * <fixture> is one of `FIXTURES`. The adapter is named by `NEXT_ADAPTER_PATH`, so a fixture's own
+ * Next.js config stays as it is. Optional diagnostic: append --server-minification=off. This is
+ * a separate build condition.
  * The Linux runner must provide an empty, writable /bundle, Node24.22.1, pnpm12.15.0 and a C++
  * toolchain/Python for node-gyp. Run after the SDK's normal build. This is not a hosted measurement.
  */
@@ -16,6 +18,7 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -44,22 +47,18 @@ const BUNDLE_ROOT = '/bundle';
 const OWNER_MARKER = '.upwind-native-next-ci-owner';
 const TOKEN = randomBytes(TOKEN_BYTES).toString('base64url');
 type ServerMinification = 'default' | 'off';
-const PINNED_FILES: Readonly<Record<string, string>> = {
-  '.npmrc': '951a2b6e795f12e7e5e47a7ce71ab649cbb6e614',
-  'bindings/index.js': 'fd4a2e414af0b19ae18ef43baed3eaa37a918db5',
-  'bindings/package.json': 'a942bce5029cb83ffbf14d56d1d871ade3eba2e5',
-  'native-addon-wrapper/index.js': '3c4a1356340798dd8f18b0e03fffdc4f3e99a1df',
-  'native-addon-wrapper/package.json': 'be8bcc6a8708932ecdccd4e9b1484f0711656b3d',
-  'native-addon/addon.cc': '2436d072feb14ad567e0abfe4309d2a02ac7b837',
-  'native-addon/binding.gyp': '9c111067225943ff066f9a7b12d1891a642d3ca0',
-  'native-addon/index.js': '52a1e8bf48a95cede2d325c2540aa6e679450339',
-  'native-addon/package.json': '37c6888cf9a97330eb2f19c6c2679b8a36d8d679',
-  'package.json': '22e1cf3cb2033b62c0e13cb70bdf4dca04874943',
-  'pages/blog/[slug].js': 'fc0337f79e7b1aee3da96da05fd4c3116e7911c5',
-  'pages/index.js': '39a9c6502ed04e370cf4f31db959c35874bceaa9',
-  'pnpm-workspace.yaml': '68e8462f659082028ecf628c03a4b6f7bc32ae8a',
-  'users.json': 'f683b73c83219124be7ca5d5c27d0bf4aa62afd2',
-};
+const FIXTURE_CONFIG = 'next.config.js';
+const FIXTURE_OWN_CONFIG = 'next.config.fixture.cjs';
+interface Fixture {
+  /** Every file of the upstream directory, by its Git blob. */
+  readonly pinned: Readonly<Record<string, string>>;
+  /** Pinned files the build leaves out, such as a suite's own test file beside its app. */
+  readonly excluded: readonly string[];
+  /** Packages the build needs beyond Next.js and React, at exact versions. */
+  readonly dependencies: Readonly<Record<string, string>>;
+  /** Checks the running Function, and names the paths it checked. */
+  readonly smoke: (identity: NativeFixtureIdentity) => Promise<readonly string[]>;
+}
 
 function record(value: unknown): Record<string, unknown> {
   assert.ok(
@@ -114,22 +113,23 @@ async function inventory(directory: string, prefix = ''): Promise<string[]> {
   return files;
 }
 
-async function copyFixture(source: string, target: string): Promise<void> {
+async function copyFixture(source: string, target: string, fixture: Fixture): Promise<void> {
   assert.deepEqual(
     (await inventory(source)).toSorted(compareNames),
-    Object.keys(PINNED_FILES).toSorted(compareNames),
+    Object.keys(fixture.pinned).toSorted(compareNames),
     'Official fixture inventory changed',
   );
-  for (const [name, expectedBlob] of Object.entries(PINNED_FILES)) {
+  for (const [name, expectedBlob] of Object.entries(fixture.pinned)) {
     const bytes = await readFile(path.join(source, name));
     const blob = gitBlob(bytes);
     assert.equal(blob, expectedBlob, `Official fixture source changed: ${name}`);
+    if (fixture.excluded.includes(name)) continue;
     await mkdir(path.dirname(path.join(target, name)), { recursive: true });
     await writeFile(path.join(target, name), bytes, { flag: 'wx' });
   }
 }
 
-function environment(userConfig: string, globalConfig: string): NodeJS.ProcessEnv {
+function environment(userConfig: string, globalConfig: string, adapter: string): NodeJS.ProcessEnv {
   return {
     PATH: process.env['PATH'],
     HOME: process.env['HOME'],
@@ -137,10 +137,34 @@ function environment(userConfig: string, globalConfig: string): NodeJS.ProcessEn
     NODE_ENV: 'development',
     CI: 'true',
     NEXT_TELEMETRY_DISABLED: '1',
+    NEXT_ADAPTER_PATH: adapter,
     npm_config_userconfig: userConfig,
     npm_config_globalconfig: globalConfig,
     npm_config_registry: 'https://registry.npmjs.org',
   };
+}
+
+async function present(file: string): Promise<boolean> {
+  try {
+    await lstat(file);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/** The diagnostic condition, over the copy: a fixture's own config is kept beneath it. */
+async function disableServerMinification(directory: string): Promise<void> {
+  const config = path.join(directory, FIXTURE_CONFIG);
+  const own = await present(config);
+  if (own) await rename(config, path.join(directory, FIXTURE_OWN_CONFIG));
+  const base = own ? `require('./${FIXTURE_OWN_CONFIG}')` : '{}';
+  await writeFile(
+    config,
+    `const base = ${base};\nmodule.exports = {...base, experimental: {...base.experimental, serverMinification: false}};\n`,
+    { flag: 'wx' },
+  );
 }
 
 const processes = new NativeNextProcesses();
@@ -149,9 +173,10 @@ async function prepare(
   source: string,
   directory: string,
   env: NodeJS.ProcessEnv,
-  serverMinification: ServerMinification,
+  build: { readonly fixture: Fixture; readonly serverMinification: ServerMinification },
 ): Promise<void> {
-  await copyFixture(source, directory);
+  const { fixture, serverMinification } = build;
+  await copyFixture(source, directory, fixture);
   const packageFile = path.join(directory, 'package.json');
   const originalJson: unknown = JSON.parse(await readFile(packageFile, 'utf8'));
   const original = record(originalJson);
@@ -172,6 +197,7 @@ async function prepare(
         packageManager: manager,
         dependencies: {
           ...record(original['dependencies']),
+          ...fixture.dependencies,
           next: NEXT_VERSION,
           react: REACT_VERSION,
           'react-dom': REACT_VERSION,
@@ -188,14 +214,7 @@ async function prepare(
     path.join(directory, 'pnpm-workspace.yaml'),
     `${workspace}\nminimumReleaseAge: 1440\nminimumReleaseAgeExclude:\n  - next\n  - '@next/*'\nverifyDepsBeforeRun: false\nstrictPeerDependencies: true\n`,
   );
-  const adapter = path.join(ROOT, 'packages/adapter/dist/index.js');
-  assert.ok((await lstat(adapter)).isFile(), 'Build the SDK before this CI helper');
-  const diagnostic = serverMinification === 'off' ? ',experimental:{serverMinification:false}' : '';
-  await writeFile(
-    path.join(directory, 'next.config.mjs'),
-    `export default {adapterPath:${JSON.stringify(adapter)}${diagnostic}};\n`,
-    { flag: 'wx' },
-  );
+  if (serverMinification === 'off') await disableServerMinification(directory);
   assert.equal(
     (await processes.command(['--version'], directory, { env, capture: true })).trim(),
     PNPM_VERSION,
@@ -314,7 +333,57 @@ async function waitForReady(child: ChildProcess): Promise<void> {
   assert.ok(ready && !state.failed, 'The emitted Node Function did not become ready');
 }
 
-async function smoke(identity: NativeFixtureIdentity, env: NodeJS.ProcessEnv): Promise<void> {
+async function pagesSmoke(identity: NativeFixtureIdentity): Promise<readonly string[]> {
+  const firstResponse = await request('/blog/first');
+  const first = nextData(await bodyOf(firstResponse));
+  assert.deepEqual(record(first['props'])['pageProps'], expected('first'));
+  // Browser fallback fetches this exact Pages data route after receiving its initial shell.
+  await bodyOf(await request('/blog/second'));
+  const secondResponse = await request(
+    `/_next/data/${encodeURIComponent(identity.buildId)}/blog/second.json`,
+    true,
+  );
+  const secondJson: unknown = JSON.parse(await bodyOf(secondResponse));
+  const second = record(secondJson);
+  assert.deepEqual(second['pageProps'], expected('second'));
+  return ['/blog/first', '/blog/second'];
+}
+
+const FIXTURES: Readonly<Record<string, Fixture>> = {
+  'prerender-native-module': {
+    pinned: {
+      '.npmrc': '951a2b6e795f12e7e5e47a7ce71ab649cbb6e614',
+      'bindings/index.js': 'fd4a2e414af0b19ae18ef43baed3eaa37a918db5',
+      'bindings/package.json': 'a942bce5029cb83ffbf14d56d1d871ade3eba2e5',
+      'native-addon-wrapper/index.js': '3c4a1356340798dd8f18b0e03fffdc4f3e99a1df',
+      'native-addon-wrapper/package.json': 'be8bcc6a8708932ecdccd4e9b1484f0711656b3d',
+      'native-addon/addon.cc': '2436d072feb14ad567e0abfe4309d2a02ac7b837',
+      'native-addon/binding.gyp': '9c111067225943ff066f9a7b12d1891a642d3ca0',
+      'native-addon/index.js': '52a1e8bf48a95cede2d325c2540aa6e679450339',
+      'native-addon/package.json': '37c6888cf9a97330eb2f19c6c2679b8a36d8d679',
+      'package.json': '22e1cf3cb2033b62c0e13cb70bdf4dca04874943',
+      'pages/blog/[slug].js': 'fc0337f79e7b1aee3da96da05fd4c3116e7911c5',
+      'pages/index.js': '39a9c6502ed04e370cf4f31db959c35874bceaa9',
+      'pnpm-workspace.yaml': '68e8462f659082028ecf628c03a4b6f7bc32ae8a',
+      'users.json': 'f683b73c83219124be7ca5d5c27d0bf4aa62afd2',
+    },
+    excluded: [],
+    dependencies: {},
+    smoke: pagesSmoke,
+  },
+};
+
+function fixtureOf(source: string): Fixture {
+  const fixture = FIXTURES[path.basename(source)];
+  assert.ok(fixture !== undefined, `Not a fixed native fixture: ${path.basename(source)}`);
+  return fixture;
+}
+
+async function smoke(
+  identity: NativeFixtureIdentity,
+  env: NodeJS.ProcessEnv,
+  fixture: Fixture,
+): Promise<readonly string[]> {
   assert.ok(!processes.interrupted, 'The CI control was interrupted');
   const runtime = {
     v: 1,
@@ -331,18 +400,7 @@ async function smoke(identity: NativeFixtureIdentity, env: NodeJS.ProcessEnv): P
   });
   try {
     await waitForReady(child);
-    const firstResponse = await request('/blog/first');
-    const first = nextData(await bodyOf(firstResponse));
-    assert.deepEqual(record(first['props'])['pageProps'], expected('first'));
-    // Browser fallback fetches this exact Pages data route after receiving its initial shell.
-    await bodyOf(await request('/blog/second'));
-    const secondResponse = await request(
-      `/_next/data/${encodeURIComponent(identity.buildId)}/blog/second.json`,
-      true,
-    );
-    const secondJson: unknown = JSON.parse(await bodyOf(secondResponse));
-    const second = record(secondJson);
-    assert.deepEqual(second['pageProps'], expected('second'));
+    return await fixture.smoke(identity);
   } finally {
     await processes.stop(child);
   }
@@ -405,6 +463,9 @@ async function main(): Promise<void> {
     'Unset inherited Node loaders/options for this control',
   );
   const { source, serverMinification } = argumentsOf(process.argv.slice(2));
+  const fixture = fixtureOf(source);
+  const adapter = path.join(ROOT, 'packages/adapter/dist/index.js');
+  assert.ok((await lstat(adapter)).isFile(), 'Build the SDK before this CI helper');
   const conditions = {
     bundler: 'turbopack',
     serverMinification,
@@ -419,9 +480,10 @@ async function main(): Promise<void> {
   await writeFile(path.join(BUNDLE_ROOT, OWNER_MARKER), TOKEN, { flag: 'wx' });
   const temporaryRoot = await realpath(runnerTemp);
   const directory = await mkdtemp(path.join(temporaryRoot, 'upwind-native-next-'));
-  const fixture = path.join(directory, 'fixture');
+  const fixtureDirectory = path.join(directory, 'fixture');
   let failed = false;
   let validated = false;
+  let paths: readonly string[] | undefined;
   process.once('SIGTERM', cancel);
   process.once('SIGINT', cancel);
   try {
@@ -429,9 +491,9 @@ async function main(): Promise<void> {
     const globalConfig = path.join(directory, 'global.npmrc');
     await writeFile(config, 'registry=https://registry.npmjs.org\n');
     await writeFile(globalConfig, 'registry=https://registry.npmjs.org\n');
-    await mkdir(fixture);
-    const env = environment(config, globalConfig);
-    await prepare(await realpath(source), fixture, env, serverMinification);
+    await mkdir(fixtureDirectory);
+    const env = environment(config, globalConfig, adapter);
+    await prepare(await realpath(source), fixtureDirectory, env, { fixture, serverMinification });
     validated = true;
     console.log(
       JSON.stringify({
@@ -441,17 +503,23 @@ async function main(): Promise<void> {
         ...conditions,
       }),
     );
-    await processes.command(['exec', 'next', 'build'], fixture, {
+    await processes.command(['exec', 'next', 'build'], fixtureDirectory, {
       env: { ...env, NODE_ENV: 'production' },
     });
-    const identity = await materializeNativeArtifact(fixture, BUNDLE_ROOT, NODE_VERSION);
-    await smoke(identity, env);
+    const identity = await materializeNativeArtifact(fixtureDirectory, BUNDLE_ROOT, NODE_VERSION);
+    paths = await smoke(identity, env, fixture);
     assert.ok(!processes.interrupted, 'The CI control was interrupted');
   } catch (error) {
     failed = true;
     throw error;
   } finally {
-    await finish({ directory, fixture, runnerTemp: temporaryRoot, failed, validated });
+    await finish({
+      directory,
+      fixture: fixtureDirectory,
+      runnerTemp: temporaryRoot,
+      failed,
+      validated,
+    });
   }
   console.log(
     JSON.stringify({
@@ -459,8 +527,9 @@ async function main(): Promise<void> {
       ...conditions,
       nextVersion: NEXT_VERSION,
       nextCommit: NEXT_COMMIT,
+      fixture: path.basename(source),
       nativeFunctions: 1,
-      paths: ['/blog/first', '/blog/second'],
+      paths,
       nativeContextAware: true,
     }),
   );
