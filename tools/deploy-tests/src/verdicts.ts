@@ -8,6 +8,11 @@ export interface ShardVerdict extends Verdict {
    * step's time limit, or never ran, after a step before it failed. Absent in a verdict from before.
    */
   readonly runnerFinished?: boolean;
+  /**
+   * The suites whose Jest process wrote its result and did not exit, which the watchdog ended
+   * (`runner-watchdog.ts`). Their results stand; the job's log holds what the processes were doing.
+   */
+  readonly ended?: readonly string[];
 }
 
 /** Whether a shard's verdict fails it: as `fails` has it, or where its runner did not finish. */
@@ -81,6 +86,13 @@ export function describe(
   const silent = expected.filter((shard) => !seen.has(shard));
   if (silent.length > 0) {
     lines.push('', `**${counted(silent.length, 'shard')} left no verdict:** ${silent.join(', ')}.`);
+  }
+  const ended = verdicts.flatMap(({ shard, ended: suites = [] }) =>
+    suites.map((suite) => `- \`${suite}\` (shard ${String(shard)})`),
+  );
+  if (ended.length > 0) {
+    const heading = `**${counted(ended.length, 'suite')} whose Jest process did not exit after its result, and was ended** — the job's log holds what it was doing:`;
+    lines.push('', heading, '', ...ended);
   }
   const stopped = verdicts.filter(({ runnerFinished }) => runnerFinished === false);
   if (stopped.length > 0) {

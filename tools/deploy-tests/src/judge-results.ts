@@ -71,6 +71,16 @@ for (const suite of listed) {
   }
 }
 
+/** The suites the watchdog ended a Jest process of (`runner-watchdog.ts`), where it ended any. */
+function endedByWatchdog(): string[] {
+  const file = path.join(resultsDir ?? '.', 'watchdog.json');
+  if (!existsSync(file)) {
+    return [];
+  }
+  const { ended } = JSON.parse(readFileSync(file, 'utf8')) as { readonly ended?: unknown };
+  return Array.isArray(ended) ? ended.filter((suite) => typeof suite === 'string') : [];
+}
+
 const verdict: ShardVerdict = {
   ...judge(
     { target, next: { version: next.version, commit: required('NEXT_COMMIT') } },
@@ -80,6 +90,7 @@ const verdict: ShardVerdict = {
   ),
   shard,
   runnerFinished: existsSync(path.join(resultsDir, 'runner-exit-code.txt')),
+  ended: endedByWatchdog(),
 };
 writeFileSync(path.join(resultsDir, 'verdict.json'), `${JSON.stringify(verdict, undefined, 2)}\n`);
 const text = describe(target, [verdict]);
