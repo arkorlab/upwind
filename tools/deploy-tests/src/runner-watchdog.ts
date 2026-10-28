@@ -187,8 +187,13 @@ function act(): void {
   }
   setTimeout(() => {
     for (const { pid } of jest) {
-      if (alive(pid)) {
-        process.kill(pid, 'SIGKILL');
+      // One that goes between the look and the kill is gone already.
+      try {
+        if (alive(pid)) {
+          process.kill(pid, 'SIGKILL');
+        }
+      } catch {
+        // Gone already.
       }
     }
   }, TERM_GRACE_MS).unref();
