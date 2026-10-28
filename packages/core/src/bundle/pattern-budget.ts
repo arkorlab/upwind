@@ -98,8 +98,12 @@ export class BuildPatternBudget {
     }
     const cost = compiled[field];
     let steps = cost === null ? Infinity : stepsAt(cost, value.length);
-    if (steps > spend.remaining()) {
-      steps = this.shortOfLiteral(compiled, value, lineFree, spend);
+    // A cheap miss still matters across thousands of build paths. Read its smaller bound where
+    // scanning for a required literal can cost less than testing the whole pattern; keeping the
+    // whole bound for every miss can exhaust the operation even when no individual match would.
+    const scan = Math.max(1, value.length) * (flags === 'i' ? 2 : 1);
+    if (steps > Math.min(spend.remaining(), scan)) {
+      steps = Math.min(steps, this.shortOfLiteral(compiled, value, lineFree, spend));
     }
     spend.take(Math.max(1, steps));
     return compiled.pattern;

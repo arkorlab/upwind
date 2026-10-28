@@ -19,6 +19,12 @@ import { fixtureBundle, staticPrerender } from './fixtures/bundle.ts';
 
 const SOURCE = '^/a*a*a*a*!$';
 const PATHNAME = `/${'a'.repeat(200)}b`;
+const STATIC_HEADER =
+  '/_next/static/(?:[^/]+/pages|pages|chunks|immutable|runtime|css|image|media|build-example)/.+';
+
+function documentPathname(index: number): string {
+  return `/ja/acme/docs/reference/another-section/page-${index}.segments/_full.segment.rsc`;
+}
 
 describe('explicit build pattern allowances', () => {
   it('retains flags, captures, and the missing-literal shortcut', () => {
@@ -26,6 +32,49 @@ describe('explicit build pattern allowances', () => {
 
     expect(patterns.exec('^/(?<slug>[^/]+)$', 'i', '/Foo')?.groups?.['slug']).toBe('Foo');
     expect(patterns.test('^/literal/a*a*a*a*!$', 'i', PATHNAME)).toBe(false);
+  });
+
+  it.each(['test', 'exec'] as const)(
+    'charges missing literals before affordable %s calls accumulate across a large build',
+    (method) => {
+      const patterns = new BuildPatternBudget();
+
+      for (let index = 0; index < 12_000; index += 1) {
+        expect(patterns[method](STATIC_HEADER, 'i', documentPathname(index))).toBe(
+          method === 'test' ? false : null,
+        );
+      }
+
+      // A proved miss still pays for its source, scans and bounded regex execution.
+      const bounded = new BuildPatternBudget(1024);
+
+      expect(() => {
+        for (let index = 0; index < 100; index += 1)
+          bounded[method](STATIC_HEADER, 'i', documentPathname(index));
+      }).toThrow(BuildPatternBudgetExceededError);
+    },
+  );
+
+  it('preserves unanchored matches, case and captures after an earlier literal miss', () => {
+    const patterns = new BuildPatternBudget();
+    // eslint-disable-next-line require-unicode-regexp -- Next's router uses the legacy i flag.
+    const native = /\/_next\/static\/(?<bucket>chunks|pages)\/(?<asset>.+)/i;
+    const pathname = '/prefix/_NEXT/STATIC/CHUNKS/file.js';
+
+    expect(patterns.exec(native.source, 'i', '/en/acme/documentation')).toBeNull();
+    expect(patterns.exec(native.source, 'i', pathname)).toStrictEqual(native.exec(pathname));
+  });
+
+  it('still refuses an expensive match where the literal is present', () => {
+    const source = '^/assets/a*a*a*a*!$';
+    const pathname = `/ASSETS/${'a'.repeat(200)}b`;
+
+    expect(() => new BuildPatternBudget().test(source, 'i', pathname)).toThrow(
+      BuildPatternBudgetExceededError,
+    );
+    expect(() => new BuildPatternBudget().exec(source, 'i', pathname)).toThrow(
+      BuildPatternBudgetExceededError,
+    );
   });
 
   it.each([MAX_NESTING + 1, 800])(
