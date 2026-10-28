@@ -42,6 +42,7 @@ import {
   nativeFetch,
   type TagDelta,
   type TagInvalidations,
+  type TagWindow,
   type UploadedArtifact,
 } from '@stayingupwind/runtime/cache-host';
 
@@ -580,6 +581,16 @@ class GatewayHost implements CacheHost {
   async tagsDelta(since: number): Promise<TagDelta> {
     const delta = await this.#gateway.tagsDelta(since);
     return { ...delta, tags: delta.tags.filter((tag) => tag.kind === tagKindOf(tag.value)) };
+  }
+
+  /**
+   * The newest invalidations past `since` that took effect at `from` or later, of Next.js's tags
+   * alone, as `tagsDelta` leaves them: a platform-delivery tag sharing a tag's value expires nothing
+   * of the data cache.
+   */
+  async tagsRecent(since: number, from: number): Promise<TagWindow> {
+    const recent = await this.#gateway.tagsRecent(since, from);
+    return { ...recent, tags: recent.tags.filter((tag) => tag.kind === tagKindOf(tag.value)) };
   }
 
   /** Where the scope's tags stand, as the data center's copy says (`ScopeBeacon`), if one is kept. */

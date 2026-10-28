@@ -584,7 +584,7 @@ export function answersTheRead(
   return answer.entry.kind === read.kind && answer.entry.handler === read.handler;
 }
 
-/** `GET /tags/delta?since=<revision>` */
+/** `GET /tags/delta?since=<revision>&limit=<count>` */
 const tagHistoryMarkSchema = z.object({
   revision: z.number().int().positive(),
   staleAt: z.number().int(),
@@ -679,6 +679,53 @@ export function deltaMovesOn(
 ): boolean {
   return !delta.truncated || delta.revision > since;
 }
+
+/**
+ * Whether no tag a window of recent invalidations holds stands past the revision it was read at, nor
+ * any earlier deadline one carries: a reader stands there once it holds the window, and a row past
+ * it would be an invalidation it took in at a revision it does not stand at.
+ */
+function standsPastItsTags(window: {
+  readonly revision: number;
+  readonly tags: readonly Pick<TagDeltaEntry, 'revision' | 'history'>[];
+}): boolean {
+  return window.tags.every((tag) => {
+    return (
+      tag.revision <= window.revision &&
+      tag.history?.every((mark) => mark.revision <= window.revision) !== false
+    );
+  });
+}
+
+/**
+ * `GET /tags/recent?since=<revision>&from=<unix ms>&limit=<count>`: the invalidations past `since`
+ * that took effect at `from` or later, each as it was recorded — a row for each invalidation of a
+ * tag, or a tag's fold of those retention folded, which counts as all it stands for — oldest first,
+ * the newest `limit` of them at the most (`MAX_DELTA_PAGE_TAGS`, which a larger one is held to), and
+ * `truncated` where there were more. What an isolate whose view of the tags is behind its scope may
+ * still find its reads behind on, in one round trip: the delta brings the scope's whole history, a
+ * page at a time and oldest first, and the newest last.
+ *
+ * Read at the scope's revision (`revision`): every such invalidation up to there is in a window that
+ * is not truncated. Never a page of the delta: a truncated window is cut at its oldest end, not where
+ * a revision ends, so it says nothing of where a reader that pages the delta may stand — the delta's
+ * own shape refuses it (`standsAtItsTags`) — and a reader that holds a window stands at its revision
+ * for what it judges a request's reads by, never for what it commits (`TagState.seen`, in the
+ * runtime). Its rows carry no history: each is one invalidation, or one fold.
+ */
+export const tagsRecentResponseSchema = z
+  .object({
+    /** The scope's revision the window was read at. */
+    revision: z.number().int().nonnegative(),
+    /** Set where the window held more than the answer: the oldest are the ones left out. */
+    truncated: z.boolean(),
+    tags: z.array(tagDeltaEntrySchema).max(MAX_DELTA_PAGE_TAGS),
+  })
+  .refine(standsPastItsTags, {
+    message: 'a window holds no tag revision past the one it was read at',
+    path: ['revision'],
+  });
+export type TagsRecentResponse = z.infer<typeof tagsRecentResponseSchema>;
 
 /** Regional reads are bounded independently of the number of tags in a deployment. */
 export const tagsGetRequestSchema = z.object({

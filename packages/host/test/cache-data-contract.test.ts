@@ -20,6 +20,7 @@ import {
   tagDeltaEntrySchema,
   tagsDeltaResponseSchema,
   tagsGetResponseSchema,
+  tagsRecentResponseSchema,
 } from '../src/cache/gateway-contract.ts';
 
 /** An entry's metadata: a `use cache` entry's under the handler that made it, a fetch entry's under none. */
@@ -373,6 +374,59 @@ describe('a page of the delta', () => {
     expect(
       tagsDeltaResponseSchema.safeParse({ ...page, revision: 9, truncated: false }).success,
     ).toBe(true);
+  });
+});
+
+/** A window of recent invalidations holding `count` records, cut at its oldest end. */
+function recentWindow(count: number) {
+  return { revision: 1, truncated: true, ...tagsAnswer(count) };
+}
+
+describe('a window of recent invalidations', () => {
+  /**
+   * Cut at its oldest end where it held more, a window stands at the scope's revision, past the
+   * newest invalidation it holds: what a truncated page of the delta may not do, as a reader of the
+   * delta would stand past the invalidations the next page brings.
+   */
+  it('stands past the newest invalidation it holds, though more were left out', () => {
+    const window = {
+      revision: 9,
+      truncated: true,
+      tags: [
+        { ...tagRecord('a'), revision: 7 },
+        { ...tagRecord('b'), revision: 8 },
+      ],
+    };
+
+    expect(tagsRecentResponseSchema.safeParse(window).success).toBe(true);
+    expect(tagsDeltaResponseSchema.safeParse({ ...window, floor: 0 }).success).toBe(false);
+  });
+
+  it('holds no invalidation, nor earlier deadline, past the revision it was read at', () => {
+    const past = { revision: 9, truncated: false, tags: [{ ...tagRecord('a'), revision: 10 }] };
+    const pastHistory = {
+      revision: 9,
+      truncated: false,
+      tags: [
+        {
+          ...tagRecord('a'),
+          revision: 9,
+          history: [{ revision: 10, staleAt: 1, hardExpireAt: null }],
+        },
+      ],
+    };
+
+    expect(tagsRecentResponseSchema.safeParse(past).success).toBe(false);
+    expect(tagsRecentResponseSchema.safeParse(pastHistory).success).toBe(false);
+  });
+
+  it('holds no more invalidations than a page of the delta may', () => {
+    expect(tagsRecentResponseSchema.safeParse(recentWindow(MAX_DELTA_PAGE_TAGS)).success).toBe(
+      true,
+    );
+    expect(tagsRecentResponseSchema.safeParse(recentWindow(MAX_DELTA_PAGE_TAGS + 1)).success).toBe(
+      false,
+    );
   });
 });
 

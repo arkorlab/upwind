@@ -1,17 +1,20 @@
-import { tagKindOf } from '@stayingupwind/core/cache';
+import { type TagKind, tagKindOf } from '@stayingupwind/core/cache';
 import { isDeadlineError } from '@stayingupwind/core/util';
 import {
   MAX_DELTA_PAGE_TAGS,
+  NO_SUCH_ENDPOINT,
   type TagRevision,
   type TagsDeltaResponse,
+  type TagsRecentResponse,
 } from '@stayingupwind/host/cache';
 import type { FetchLike } from '@stayingupwind/runtime/cache-host';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { cacheHostFor } from '../src/function/cache-host.ts';
 import { Gateway } from '../src/function/gateway.ts';
 
-type Method = 'revision' | 'delta';
-const METHODS: readonly Method[] = ['revision', 'delta'];
+type Method = 'revision' | 'delta' | 'recent';
+const METHODS: readonly Method[] = ['revision', 'delta', 'recent'];
 const REVISION: TagRevision = { revision: 5, invalidatedAt: 123 };
 const DELTA: TagsDeltaResponse = {
   revision: 5,
@@ -20,13 +23,21 @@ const DELTA: TagsDeltaResponse = {
   tags: [],
   latest: REVISION,
 };
+const RECENT: TagsRecentResponse = { revision: 5, truncated: false, tags: [] };
+/** The moment a window of recent invalidations is asked from. */
+const FROM = 1_800_000_000_000;
 
-function resultOf(method: Method): TagRevision | TagsDeltaResponse {
-  return method === 'revision' ? REVISION : DELTA;
+type Answer = TagRevision | TagsDeltaResponse | TagsRecentResponse;
+
+function resultOf(method: Method): Answer {
+  return { revision: REVISION, delta: DELTA, recent: RECENT }[method];
 }
 
-function read(subject: Gateway, method: Method): Promise<TagRevision | TagsDeltaResponse> {
-  return method === 'revision' ? subject.tagRevision() : subject.tagsDelta(4);
+function read(subject: Gateway, method: Method): Promise<Answer> {
+  if (method === 'revision') {
+    return subject.tagRevision();
+  }
+  return method === 'delta' ? subject.tagsDelta(4) : subject.tagsRecent(4, FROM);
 }
 
 function gateway(send: FetchLike) {
@@ -244,6 +255,19 @@ describe('an authority delta cursor', () => {
   });
 });
 
+/** A tag's record as the authority answers it, of the kind its value names unless said. */
+function recordOf(value: string, revision: number, kind: TagKind = tagKindOf(value)) {
+  return {
+    tagId: `tag-${value}`,
+    kind,
+    value,
+    revision,
+    staleAt: 123,
+    hardExpireAt: null,
+    meaning: 'immediate',
+  } as const;
+}
+
 describe('what a Function asks of the authority’s tags', () => {
   /**
    * A fresh isolate pages through the scope's whole history, a round trip a page: it asks each for
@@ -262,5 +286,85 @@ describe('what a Function asks of the authority’s tags', () => {
       since: '4',
       limit: String(MAX_DELTA_PAGE_TAGS),
     });
+  });
+
+  it('asks a window of recent invalidations from a revision and a moment, as many as a page holds', async () => {
+    const send = vi.fn<FetchLike>().mockResolvedValue(Response.json({ ok: true, result: RECENT }));
+    const { subject } = gateway(send);
+
+    await subject.tagsRecent(4, FROM);
+
+    const asked = new URL(requiredRequest(send).url);
+
+    expect(asked.origin).toBe('https://authority.invalid');
+    expect(asked.pathname.endsWith('/tags/recent')).toBe(true);
+    expect(Object.fromEntries(asked.searchParams)).toStrictEqual({
+      since: '4',
+      from: String(FROM),
+      limit: String(MAX_DELTA_PAGE_TAGS),
+    });
+  });
+
+  /**
+   * A window cut at its oldest end stands at the scope's revision, past the newest invalidation it
+   * holds: what no page of the delta may do, and what a window is.
+   */
+  it('takes a truncated window that stands past the newest invalidation it holds', async () => {
+    const window = { revision: 9, truncated: true, tags: [recordOf('posts', 8)] };
+    const send = vi.fn<FetchLike>().mockResolvedValue(Response.json({ ok: true, result: window }));
+    const { subject } = gateway(send);
+
+    await expect(subject.tagsRecent(4, FROM)).resolves.toStrictEqual(window);
+  });
+
+  /**
+   * A gateway from before the window answers a route it does not have, or whatever stands in front
+   * of it answers 404 with no envelope: the runtime is told the call is unsupported, and catches up
+   * through the delta alone. A 404 of something else is that refusal.
+   */
+  it.each([
+    {
+      answer: { ok: false, error: { code: 'not_found', message: NO_SUCH_ENDPOINT } },
+      code: 'unsupported',
+    },
+    { answer: 'no such route', code: 'unsupported' },
+    {
+      answer: { ok: false, error: { code: 'not_found', message: 'no such scope' } },
+      code: 'not_found',
+    },
+  ])('says a window a gateway answers 404 to is $code', async ({ answer, code }) => {
+    const response =
+      typeof answer === 'string'
+        ? new Response(answer, { status: 404 })
+        : Response.json(answer, { status: 404 });
+    const send = vi.fn<FetchLike>().mockResolvedValue(response);
+    const { subject } = gateway(send);
+
+    await expect(subject.tagsRecent(4, FROM)).rejects.toMatchObject({ code, status: 404 });
+  });
+
+  /** The runtime's tags are Next.js's: a platform-delivery tag sharing a value expires nothing. */
+  it('leaves a platform tag out of the window a Function’s host answers', async () => {
+    const window = {
+      revision: 9,
+      truncated: false,
+      tags: [recordOf('products', 7, 'platform-delivery'), recordOf('products', 8)],
+    };
+    const send = vi.fn<FetchLike>().mockResolvedValue(Response.json({ ok: true, result: window }));
+    const binding = cacheHostFor({
+      copyCache: 'tag-window-copies',
+      copyKeyOrigin: 'https://copies.invalid',
+    })({
+      env: {
+        ARKOR_CACHE_GATEWAY_URL: 'https://authority.invalid',
+        ARKOR_CACHE_TOKEN: 'scope-token',
+        NEXT_DEPLOYMENT_ID: 'scope_tag_window',
+      },
+      fetchImpl: send,
+    });
+
+    const recent = await binding?.host.tagsRecent?.(0, FROM);
+
+    expect(recent).toStrictEqual({ ...window, tags: [recordOf('products', 8)] });
   });
 });

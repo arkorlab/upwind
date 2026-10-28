@@ -40,6 +40,8 @@ import {
   tagRevisionSchema,
   type TagsDeltaResponse,
   tagsDeltaResponseSchema,
+  type TagsRecentResponse,
+  tagsRecentResponseSchema,
   uploadArtifactsResponseSchema,
 } from '@stayingupwind/host/cache';
 import {
@@ -373,6 +375,27 @@ export class Gateway {
     });
   }
 
+  /**
+   * What a call that failed answered, as the error it stands for — or, where it is a gateway from
+   * before the route (`what`), `unsupported`, as `CacheHost` says: a 404 that says there is no such
+   * route (`NO_SUCH_ENDPOINT`), or one with no envelope from whatever stands in front of it. Read by
+   * its status before its body, which such an answer may not have as JSON; a `not_found` of what the
+   * call names is the call's to fail on.
+   */
+  async #unlessNoSuchRoute(
+    response: Response,
+    what: string,
+    signal?: AbortSignal,
+  ): Promise<CacheHostError> {
+    const failure = await this.#failureOf(response, signal);
+    const noSuchRoute =
+      response.status === HTTP_NOT_FOUND &&
+      (failure.code === 'internal' || failure.message === NO_SUCH_ENDPOINT);
+    return noSuchRoute
+      ? new CacheHostError(what, { code: 'unsupported', status: response.status })
+      : failure;
+  }
+
   /** Both tag metadata reads cross to the authority, regardless of a nearby read gateway. */
   #authorityTagRead<T>(
     path: string,
@@ -457,21 +480,10 @@ export class Gateway {
       headers: this.#headers({ 'content-type': JSON_TYPE }),
       body: JSON.stringify({ fencingToken: first.fencingToken, artifacts }),
     });
-    // Its status before its body, which a gateway's answer may not have as JSON. A gateway from
-    // before the call has no such route — its answer to one it does not have, or a 404 with no
-    // envelope from whatever stands in front of it — and the runtime is told so as the contract
+    // A gateway from before the call has no such route, and the runtime is told so as the contract
     // says (`unsupported`), where a `not_found` of the attempt is the attempt's to fail on.
     if (!response.ok) {
-      const failure = await this.#failureOf(response);
-      const noSuchRoute =
-        response.status === HTTP_NOT_FOUND &&
-        (failure.code === 'internal' || failure.message === NO_SUCH_ENDPOINT);
-      throw noSuchRoute
-        ? new CacheHostError('the gateway takes no batch of uploads', {
-            code: 'unsupported',
-            status: response.status,
-          })
-        : failure;
+      throw await this.#unlessNoSuchRoute(response, 'the gateway takes no batch of uploads');
     }
     const uploaded = (await this.#result(response, uploadArtifactsResponseSchema)).artifacts;
     if (
@@ -657,6 +669,21 @@ export class Gateway {
         });
       }
       return delta;
+    });
+  }
+
+  /**
+   * The newest invalidations past `since` that took effect at `from` or later (`/tags/recent`), as
+   * many as a page may hold, read within the authority deadline as the delta is; `unsupported` from
+   * a gateway from before the route (`#unlessNoSuchRoute`).
+   */
+  tagsRecent(since: number, from: number): Promise<TagsRecentResponse> {
+    const path = `/tags/recent?since=${since}&from=${from}&limit=${MAX_DELTA_PAGE_TAGS}`;
+    return this.#authorityTagRead(path, async (response, signal) => {
+      if (!response.ok) {
+        throw await this.#unlessNoSuchRoute(response, 'the gateway reads no recent tags', signal);
+      }
+      return this.#result(response, tagsRecentResponseSchema, undefined, signal);
     });
   }
 
