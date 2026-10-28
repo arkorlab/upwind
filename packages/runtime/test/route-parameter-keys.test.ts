@@ -1,4 +1,5 @@
 import type { Route } from '@stayingupwind/core/bundle';
+import type { ImagesConfig } from '@stayingupwind/core/images';
 import { BYPASS_QUERY_PREFIXES } from '@stayingupwind/core/request';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -63,11 +64,31 @@ function dynamicRoutes(localized: boolean): Route[] {
   ];
 }
 
-/** The deployment, as much of it as routing a request to either page reads. */
+const IMAGE_PATH = '/_next/image';
+/** An optimizer that takes any source of the application's own, whatever its query. */
+const IMAGES: ImagesConfig = {
+  path: IMAGE_PATH,
+  basePath: '',
+  sizes: [64],
+  qualities: [75],
+  formats: ['image/webp'],
+  minimumCacheTTL: 60,
+  maximumRedirects: 2,
+  maximumResponseBody: 4096,
+  remotePatterns: [],
+  domains: [],
+  localPatterns: [{ pathname: '^.*$' }],
+  dangerouslyAllowLocalIP: false,
+  dangerouslyAllowSVG: false,
+  contentSecurityPolicy: "script-src 'none'; frame-src 'none'; sandbox;",
+  contentDispositionType: 'attachment',
+};
+
+/** The deployment, as much of it as routing a request to either page, or to an image of one, reads. */
 function deployment(localized: boolean): Store {
   const manifest = {
     buildId: 'build',
-    config: { basePath: '', i18n: localized ? I18N : null },
+    config: { basePath: '', i18n: localized ? I18N : null, images: IMAGES },
     routing: {
       beforeMiddleware: [],
       middlewareMatchers: [],
@@ -85,7 +106,7 @@ function deployment(localized: boolean): Store {
   };
   return {
     manifest,
-    pathnames: [PAGE, APP_PAGE],
+    pathnames: [PAGE, APP_PAGE, IMAGE_PATH],
     slashSpellings: new Map(),
     dynamicRoutes: routerDynamicRoutes(manifest as unknown as Store['manifest']),
     staticFiles: new Map(),
@@ -237,6 +258,43 @@ describe('a query that names no route parameter', () => {
   });
 });
 
+/**
+ * An image's source the client names with such a key (`/_next/image?url=…`): routed as a request of
+ * its own, which comes in by no door but the image request's, and is rid of the key as it is routed
+ * (`handleFull`). What the page is told the client asked for (`requestMeta.initURL`) is that request's
+ * URL, and follows it: it held the key the page's own URL no longer did.
+ */
+describe('an image’s source named with a route parameter’s key', () => {
+  beforeEach(() => {
+    vi.stubGlobal('__ARKOR_FUNCTION_KIND__', 'app');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('hands the page neither its URL nor the URL it was asked by with the key', async () => {
+    vi.mocked(getStore).mockReturnValue(deployment(false));
+    const source = encodeURIComponent('/admin/123?nxtPid=456&q=1');
+
+    const response = await handleRequest({
+      app: APP,
+      edge: { entries: {} },
+      request: new Request(`${HOST}${IMAGE_PATH}?url=${source}&w=64&q=75`),
+      waitUntil: () => {
+        // Nothing is scheduled for these renders.
+      },
+    });
+    await response.body?.cancel();
+    const calls = vi.mocked(invokeNodeHandler).mock.calls;
+
+    expect(calls.map(([call]) => [call.url, call.requestMeta['initURL']])).toStrictEqual([
+      ['/admin/123?q=1&nxtPid=123', `${HOST}/admin/123?q=1`],
+    ]);
+  });
+});
+
 describe('dropRouteParameterKeys', () => {
   it('takes out the keys Next.js reads as its own, and says it did', () => {
     const url = new URL(`${HOST}/a?nxtPslug=b&q=1&nxtIid=2&%6ExtPid=3&n%78t%50name=4`);
@@ -326,5 +384,16 @@ describe('withoutRouteParameterKeys', () => {
     expect(copy.request.method).toBe('POST');
     expect(copy.request.headers.get('x-asked')).toBe('1');
     await expect(copy.request.text()).resolves.toBe('sent');
+  });
+
+  it('has the URL the request was asked by follow where it is the request’s own', () => {
+    const request = new Request(`${HOST}/a?nxtPslug=b&q=1`);
+
+    expect(withoutRouteParameterKeys({ request, initURL: request.url }).initURL).toBe(
+      `${HOST}/a?q=1`,
+    );
+    expect(withoutRouteParameterKeys({ request, initURL: `${HOST}/asked` }).initURL).toBe(
+      `${HOST}/asked`,
+    );
   });
 });

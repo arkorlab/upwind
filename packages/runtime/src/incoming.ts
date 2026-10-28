@@ -136,15 +136,26 @@ export function dropRouteParameterKeys(url: URL): boolean {
  * as its own (`dropRouteParameterKeys`): a copy of both where the query held one, and `input` itself
  * otherwise — as for every request an application's own links make, which is neither parsed nor
  * copied (`ROUTE_PARAMETER_KEY_START`, read off the request's URL).
+ *
+ * What a handler is told the client asked for (`initURL`) follows, where it is the request's own
+ * URL: an image's source is told the URL it is asked by (`sourceInput`), and kept as it was, that
+ * still held a key the request no longer did.
  */
-export function withoutRouteParameterKeys<T extends { readonly request: Request }>(input: T): T {
-  const { request } = input;
-  const href = request.url;
+export function withoutRouteParameterKeys<
+  T extends { readonly request: Request; readonly initURL?: string },
+>(input: T): T {
+  const href = input.request.url;
   if (!ROUTE_PARAMETER_KEY_START.test(href)) {
     return input;
   }
   const url = new URL(href);
-  return dropRouteParameterKeys(url) ? { ...input, request: new Request(url, request) } : input;
+  if (!dropRouteParameterKeys(url)) {
+    return input;
+  }
+  const request = new Request(url, input.request);
+  return input.initURL === href
+    ? { ...input, request, initURL: request.url }
+    : { ...input, request };
 }
 
 /**
