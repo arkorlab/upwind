@@ -110,7 +110,8 @@ function inputFiles(
 async function serverOutputFiles(distDir: string): Promise<string[]> {
   const files: string[] = [];
   const walk = async (dir: string): Promise<void> => {
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
       const file = path.join(dir, entry.name);
       if (entry.isDirectory()) await walk(file);
       else if (!entry.isFile())
@@ -121,7 +122,8 @@ async function serverOutputFiles(distDir: string): Promise<string[]> {
     }
   };
   await walk(path.join(distDir, 'server'));
-  for (const entry of await readdir(distDir, { withFileTypes: true })) {
+  const roots = await readdir(distDir, { withFileTypes: true });
+  for (const entry of roots) {
     if (
       entry.isFile() &&
       (entry.name === 'BUILD_ID' ||
@@ -425,8 +427,8 @@ export async function nodePhysicalFiles(
     copyHard.add(file);
     requiredExec.add(file);
   }
-  if (serverOutput)
-    for (const file of await serverOutputFiles(input.patch.distDir)) copyHard.add(file);
+  const output = serverOutput ? await serverOutputFiles(input.patch.distDir) : [];
+  for (const file of output) copyHard.add(file);
   const sources = await physicalSources(copyHard, traceAssetFiles(input), layout, requiredExec);
   const links = new Map<string, string>();
   await collectAliases(input, native, sources, { layout, links, nextRewrites });

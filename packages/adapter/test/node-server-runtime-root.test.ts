@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { assertServerRuntimeRoot } from '../src/node-function.ts';
+import { assertServerRuntimeRoot } from '../src/node-server-function.ts';
 
 const directories: string[] = [];
 

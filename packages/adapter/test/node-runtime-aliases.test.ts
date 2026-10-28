@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { nodeRuntimeAlias } from '../src/node-function.ts';
+import { nodeRuntimeAlias } from '../src/node-function-parts.ts';
 
 const RUNTIME = '/sdk/packages/runtime/src';
 
