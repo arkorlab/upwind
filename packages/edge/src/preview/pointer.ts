@@ -5,7 +5,7 @@ import type { EdgeBindings } from '../bindings.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
 import { type HeldPointer, routeSuspectKey } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
-import { getManifest, getPolicyForPointer } from './manifest.ts';
+import { getManifest, getPolicyForPointer, holdsManifest } from './manifest.ts';
 import { boundedLookup, type HoldRefresh, type Lookup, MISSING } from './storage.ts';
 
 export const EDGE_MODE: EdgePointer['mode'] = 'edge';
@@ -47,6 +47,21 @@ export interface PointerKind<P extends EdgePointer, T> {
    * edge's own reasons (`adoptedAtOnce`): pure, and asked only when a read lands.
    */
   adoptedAtOnce?(served: P | null, next: P): boolean;
+  /**
+   * The manifests a refreshed pointer names beside its own (`manifestId`), for a host whose pointer
+   * sends some paths to other deployments: read with the pointer's own before the pointer is adopted
+   * (`readAhead`), so that the first request after a release waits for none of them either. Asked
+   * as a refresh lands that is read ahead — not one adopted at once, which reads nothing ahead —
+   * with the pointer that was served (`null` where there was none) and whether this isolate holds a
+   * manifest already (`held`), which uses nothing it holds; a held one costs no read either way,
+   * answered from memory as the pointer's own is. Pure; an id named twice, or the pointer's own
+   * named again, is read once, and a hook that throws has nothing read beside the pointer's own.
+   */
+  manifestsAhead?(
+    served: P | null,
+    next: P,
+    held: (manifestId: string) => boolean,
+  ): readonly string[];
   /** Told of each live read (`LiveRead.observer`), the cold ones before the answer. */
   readonly observer?: PointerReadObserver<P, T> | undefined;
 }
@@ -363,21 +378,59 @@ interface PointerReads {
 }
 
 /**
- * Read what a refreshed pointer names that this isolate does not hold yet, before the pointer is
- * adopted: a manifest another deployment brought, a policy the pointer moved to. Adopted first, the
- * pointer would send the next request to wait on those reads before its first byte, in every
- * isolate after every deployment; read here, behind a response, the next request finds them held.
- * Once, whatever it comes to: a manifest neither store has, or cannot give, is the request's to
- * find as before, so a deployment — or the rollback that undoes a broken one — is held back by one
- * read at most. What this isolate holds is not read again, so a pointer that names nothing new — a
- * demotion, say — is adopted at once; and so is one that serves from the edge no more, is another
- * project's (`changesProject`), turns a setting it carries on or off (`changesSettings`), or is one
- * its host adopts at once for a field of its own (`PointerKind.adoptedAtOnce`), whatever it names.
+ * The manifests a refreshed pointer is read ahead with (`readAhead`): its own, and those its kind
+ * names beside it (`PointerKind.manifestsAhead`), each once. The kind is the host's own code, asked
+ * in a `try` of its own as its observer is told: what it throws is logged and costs only the reads
+ * it would have named, never the refresh. A refresh that rejected here would never adopt what its
+ * read found, and a hook that throws every time would keep the isolate on the pointer it holds.
  */
-async function readAhead(
-  { env, runtime, holdRefresh }: PointerReads,
-  next: EdgePointer,
+function manifestsNamed<P extends EdgePointer>(
+  { kind, runtime }: Pick<KeyRead<P>, 'kind' | 'runtime'>,
+  served: P | null,
+  next: P,
+): ReadonlySet<string> {
+  const named = new Set<string>();
+  if (next.manifestId !== undefined) {
+    named.add(next.manifestId);
+  }
+  try {
+    const held = (manifestId: string): boolean => holdsManifest(runtime, manifestId);
+    const ahead = kind.manifestsAhead?.(served, next, held);
+    if (ahead !== undefined) {
+      for (const manifestId of ahead) {
+        named.add(manifestId);
+      }
+    }
+  } catch (error) {
+    logWarn('the host pointer kind threw', {
+      asked: 'manifestsAhead',
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return named;
+}
+
+/**
+ * Read what a refreshed pointer names that this isolate does not hold yet, before the pointer is
+ * adopted: a manifest another deployment brought, a policy the pointer moved to — and, for a host
+ * whose pointer sends some paths to other deployments, the manifests of those it names beside its
+ * own (`PointerKind.manifestsAhead`), which the first request after a release would otherwise wait
+ * on as much. Adopted first, the pointer would send the next request to wait on those reads before
+ * its first byte, in every isolate after every deployment; read here, behind a response, the next
+ * request finds them held. Once, whatever it comes to: a manifest neither store has, or cannot give,
+ * is the request's to find as before, so a deployment — or the rollback that undoes a broken one —
+ * is held back by one read at most, all of them read together. What this isolate holds is not read
+ * again, so a pointer that names nothing new — a demotion, say — is adopted at once; and so is one
+ * that serves from the edge no more, is another project's (`changesProject`), turns a setting it
+ * carries on or off (`changesSettings`), or is one its host adopts at once for a field of its own
+ * (`PointerKind.adoptedAtOnce`), whatever it names.
+ */
+async function readAhead<P extends EdgePointer>(
+  at: Pick<KeyRead<P>, 'kind'> & PointerReads,
+  served: P | null,
+  next: P,
 ): Promise<void> {
+  const { env, runtime, holdRefresh } = at;
   // Only a pointer that serves from the edge answers from its manifest and its policy. One that
   // does not — a passthrough, or a site disabled (`mode`) — is a safety that takes effect at once,
   // and waits on no read of either.
@@ -391,9 +444,9 @@ async function readAhead(
   // (`holdAbsence`). It is a live read all the same, KV's day and the hedge included: the next
   // requests take what it read.
   const reads: Promise<unknown>[] = [getPolicyForPointer(env, runtime, next, holdRefresh)];
-  if (next.manifestId !== undefined) {
+  for (const manifestId of manifestsNamed(at, served, next)) {
     reads.push(
-      getManifest(env, runtime, next.manifestId, {
+      getManifest(env, runtime, manifestId, {
         namedSince: next.updatedAt,
         keep: holdRefresh,
         holdAbsence: false,
@@ -521,7 +574,7 @@ async function refreshPointer<P extends EdgePointer>(
     !takesEffectAtOnce(at, answered.read)
   ) {
     reads.warming.set(refresh.ticket, answered);
-    await readAhead(at, answered.read.value);
+    await readAhead(at, served.pointer as P | null, answered.read.value);
   }
   adopt(at, answered, refresh.ticket);
   if (
