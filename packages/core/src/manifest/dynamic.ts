@@ -92,10 +92,10 @@ function decodes(pathname: string): boolean {
 
 function patternMatch(compiled: CompiledRule<Patterned>, pathname: string): RegExpExecArray | null {
   // As Next.js compiled it, without the unicode flag, under the flags it was compiled with
-  // (`compiledRules`): with case for a dynamic class — the runtime picks a class's shell by a
-  // case-sensitive pattern, so a case variant is served by the Function rather than handed a shell
-  // built for another spelling — and without, as the router matches them, for a rule of
-  // `next.config`.
+  // (`compiledRules`): with case where the edge serves a dynamic class — the runtime picks a class's
+  // shell by a case-sensitive pattern, so a case variant is served by the Function rather than
+  // handed a shell built for another spelling — and without, as the router matches them, for the
+  // route it resolves (`RoutePatterns`) and for a rule of `next.config`.
   return execWithin(patternOf(compiled), pathname);
 }
 
@@ -112,16 +112,21 @@ function patternMatches(compiled: CompiledRule<Patterned>, pathname: string): bo
  */
 const DATA_ROUTE_MARKERS: readonly string[] = ['.rsc', '/_next/data/'];
 
+/**
+ * A dynamic route's pattern twice over: as the deployment's router matches it, without regard to
+ * case — the runtime leaves `@next/routing`'s `caseSensitive` unset — and with case, as the edge
+ * serves the route's class only to the spelling it was built for (`dynamicRouteFor`).
+ */
+type RoutePatterns = Readonly<Record<'routed' | 'cased', CompiledRule<DynamicRoute>>>;
+
 interface DynamicRouteTable {
   /** Every route, in Next.js's order. */
-  readonly all: readonly CompiledRule<DynamicRoute>[];
+  readonly all: readonly RoutePatterns[];
   /** The same, less each route only a pathname spelling a data marker can match. */
-  readonly pages: readonly CompiledRule<DynamicRoute>[];
+  readonly pages: readonly RoutePatterns[];
 }
 
 const dynamicRouteTables = new WeakMap<readonly DynamicRoute[], DynamicRouteTable>();
-/** The same tables with each pattern matched without regard to case (`routedDynamicRouteFor`). */
-const caselessRouteTables = new WeakMap<readonly DynamicRoute[], DynamicRouteTable>();
 
 /**
  * Whether only a pathname that spells a data marker can match the route: proved of its pattern
@@ -136,25 +141,35 @@ function matchesOnlyData(compiled: CompiledRule<DynamicRoute>): boolean {
 }
 
 /**
- * The routes a pathname is asked of, in Next.js's order: every one, for a pathname that spells a
- * data marker; for any other — every page a visitor navigates to — all but the routes it cannot
- * match, which finds the same first match without asking those. Matched without regard to case
- * (`caseless`), a pattern holds for a marker spelled in any case, and the pathname is read so.
+ * The route the router resolves a request's pathname to: the first, in Next.js's order, whose
+ * pattern — as the router matches it — and conditions hold. Asked of every route for a pathname that
+ * spells a data marker, in any case as the router matches; for any other — every page a visitor
+ * navigates to — of all but the routes it cannot match, which finds the same first match without
+ * asking those.
  */
-function dynamicRoutesFor(
+function routedPatterns(
   routes: readonly DynamicRoute[],
-  pathname: string,
-  caseless = false,
-): readonly CompiledRule<DynamicRoute>[] {
-  const tables = caseless ? caselessRouteTables : dynamicRouteTables;
-  let table = tables.get(routes);
+  url: URL,
+  headers: Headers,
+): RoutePatterns | undefined {
+  let table = dynamicRouteTables.get(routes);
   if (table === undefined) {
-    const all = compiledRules(routes, caseless ? 'i' : '');
-    table = { all, pages: all.filter((compiled) => !matchesOnlyData(compiled)) };
-    tables.set(routes, table);
+    const cased = compiledRules(routes);
+    // The same list compiled twice over, each route at the same place in both.
+    const all = compiledRules(routes, 'i').flatMap((routed, at) => {
+      const twin = cased[at];
+      return twin === undefined ? [] : [{ routed, cased: twin }];
+    });
+    table = { all, pages: all.filter(({ routed }) => !matchesOnlyData(routed)) };
+    dynamicRouteTables.set(routes, table);
   }
-  const spelled = caseless ? pathname.toLowerCase() : pathname;
-  return DATA_ROUTE_MARKERS.some((marker) => spelled.includes(marker)) ? table.all : table.pages;
+  const { pathname } = url;
+  const spelled = pathname.toLowerCase();
+  const data = DATA_ROUTE_MARKERS.some((marker) => spelled.includes(marker));
+  return (data ? table.all : table.pages).find(
+    // A pattern that matches but whose conditions fail is passed over, as Next.js passes it over.
+    ({ routed }) => patternMatches(routed, pathname) && conditionsHold(routed.rule, url, headers),
+  );
 }
 
 /**
@@ -309,9 +324,12 @@ export function memberRouteFor(
 
 /**
  * The dynamic route Next.js would pick for a pathname no exact route names, whatever the class
- * holds — a shell or nothing: the first whose pattern and conditions hold, unless a redirect or a
- * rewrite of `next.config` claims the request ahead of the dynamic routes. `undefined` for none, and
- * for a pathname the edge leaves alone (`isCanonicalPathname`).
+ * holds — a shell or nothing: the first whose pattern and conditions hold as the router matches
+ * them (`routedDynamicRouteFor`), unless a redirect or a rewrite of `next.config` claims the request
+ * ahead of the dynamic routes — and only where the pathname spells that route's pattern with case,
+ * as the class was built for. `undefined` for none, for a case variant — the Function's to answer,
+ * and no member of a later class whose pattern matches it as spelled — and for a pathname the edge
+ * leaves alone (`isCanonicalPathname`).
  *
  * `matchDynamicRoute` reads the class's shell off it; a reader that wants the route itself — which
  * app Function its code is in, say (`functionFor`) — asks this, and so the two never disagree.
@@ -331,14 +349,10 @@ export function dynamicRouteFor(
   if (isReserved(manifest, url, headers, false)) {
     return undefined;
   }
-  const { pathname } = url;
-  for (const compiled of dynamicRoutesFor(manifest.dynamicRoutes, pathname)) {
-    // A pattern that matches but whose conditions fail is passed over, as Next.js passes it over.
-    if (patternMatches(compiled, pathname) && conditionsHold(compiled.rule, url, headers)) {
-      return compiled.rule;
-    }
-  }
-  return undefined;
+  const cased = routedPatterns(manifest.dynamicRoutes, url, headers)?.cased;
+  // `/POSTS/a` is `/posts/[slug]`'s to the router, and none of `/[category]/[slug]`'s, which its
+  // spelling matches.
+  return cased !== undefined && patternMatches(cased, url.pathname) ? cased.rule : undefined;
 }
 
 /**
@@ -358,10 +372,7 @@ export function routedDynamicRouteFor(
   if (manifest.dynamicRoutes === undefined || !isCanonicalPathname(url.pathname, true)) {
     return undefined;
   }
-  const { pathname } = url;
-  return dynamicRoutesFor(manifest.dynamicRoutes, pathname, true).find(
-    (compiled) => patternMatches(compiled, pathname) && conditionsHold(compiled.rule, url, headers),
-  )?.rule;
+  return routedPatterns(manifest.dynamicRoutes, url, headers)?.routed.rule;
 }
 
 /**

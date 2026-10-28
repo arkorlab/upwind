@@ -248,6 +248,25 @@ describe('the class a pathname is a member of', () => {
     expect(memberAt(manifest, '/en/posts/hello')).toBeUndefined();
   });
 
+  /**
+   * The router matches the classes without regard to case, so it resolves a case variant of a
+   * member to that member's class: a later class whose pattern matches the variant as spelled does
+   * not serve it.
+   */
+  it('is none for a case variant of a member, whatever a later class matches', () => {
+    const sections = { route: '/[locale]/[section]/[slug]', kind: 'app-page' } as const;
+    const manifest = manifestWith([
+      POSTS_ROUTE,
+      {
+        sourceRegex: '^[/]?/en/(?<nxtPsection>[^/]+?)/(?<nxtPslug>[^/]+?)(?:/)?$',
+        members: sections,
+      },
+    ]);
+
+    expect(memberAt(manifest, '/en/POSTS/hello')).toBeUndefined();
+    expect(memberAt(manifest, '/en/other/hello')?.members).toStrictEqual(sections);
+  });
+
   it('is none for a class with a shell', () => {
     const manifest = manifestWith([
       {
