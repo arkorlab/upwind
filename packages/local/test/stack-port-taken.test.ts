@@ -30,8 +30,9 @@ vi.mock(import('../src/ports.ts'), async (importOriginal) => {
 });
 
 const START_MS = 60_000;
-const ANSWER = 'answered by the Function';
-const APP = `export default { fetch() { return new Response(${JSON.stringify(ANSWER)}); } };`;
+// The Function answers with the port it was told it listens on (`PORT`), so a retried start can
+// be seen to have told it the port it bound rather than the one that was taken.
+const APP = 'export default { fetch(request, env) { return new Response(env.PORT); } };';
 
 async function writeBundle(dir: string): Promise<string> {
   const blobs = path.join(dir, '.arkor/blobs');
@@ -161,7 +162,7 @@ describe('a stack whose probed port is taken before it binds it', () => {
 
         expect(new URL(stack.url).port).not.toBe(String(port));
         expect(response.status).toBe(200);
-        await expect(response.text()).resolves.toBe(ANSWER);
+        await expect(response.text()).resolves.toBe(new URL(stack.url).port);
         expect(said).toContain(
           `port ${String(port)} was taken before the stack bound it: starting on another`,
         );
