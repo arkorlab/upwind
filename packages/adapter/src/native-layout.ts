@@ -20,7 +20,7 @@ import type { RouteCode } from './collect.ts';
 import { AuditError } from './dependencies.ts';
 import { INSTRUMENTATION_NATIVE_OWNER } from './native-addon-entries.ts';
 import type { NativeLoad } from './native-loads.ts';
-import { buildNodeFunction } from './node-function.ts';
+import { buildNodeFunction, type NodeFunctionFiles } from './node-function.ts';
 import type { PlanBudget } from './plan.ts';
 import { carriesBlob, everyFunction, placedEntrypoints } from './split.ts';
 
@@ -59,6 +59,16 @@ export function nativeRouteOwners(
   return native;
 }
 
+/**
+ * No proof covers the App Router's manifest consumers: a Node Function holding any App Router route
+ * carries the whole server output instead of a proved closure of it.
+ */
+function nodeFunctionFiles(routes: readonly RouteCode[]): NodeFunctionFiles {
+  return routes.some((route) => route.kind === 'app-page' || route.kind === 'app-route')
+    ? 'server'
+    : 'proved';
+}
+
 /** A native requirement does not license unrelated audit failures or move cache hits to compute. */
 export async function nativeFunctionLayout<
   M extends {
@@ -91,7 +101,7 @@ export async function nativeFunctionLayout<
       undefined,
       false,
     );
-    const built = await buildNodeFunction(input, options.loads);
+    const built = await buildNodeFunction(input, options.loads, nodeFunctionFiles(context.routes));
     return {
       runtimeManifest,
       built: [{ name: PRIMARY_FUNCTION, built }],
@@ -161,7 +171,8 @@ export async function nativeFunctionLayout<
       'A native Function would carry an Edge-runtime entrypoint; refusing publication',
     );
   const input = await appFunctionInput(context, json, { name, routes: held }, false);
-  built.push({ name, built: await buildNodeFunction(input, options.loads) });
+  const carries = nodeFunctionFiles(context.routes.filter((route) => held.has(route.id)));
+  built.push({ name, built: await buildNodeFunction(input, options.loads, carries) });
   return {
     runtimeManifest,
     built,

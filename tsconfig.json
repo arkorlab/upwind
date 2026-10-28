@@ -13,6 +13,7 @@
     "tools/native-pages-handler-profile-ci.mts",
     "tools/native-pages-handler-profile/select.mts",
     "tools/native-addon-next-ci.mts",
-    "tools/native-addon-next-artifact.mts"
+    "tools/native-addon-next-artifact.mts",
+    "tools/native-addon-next-fixtures.mts"
   ]
 }

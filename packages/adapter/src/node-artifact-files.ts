@@ -10,6 +10,7 @@ import type { BuildFunctionInput } from './function.ts';
 import type { NativeLoad } from './native-loads.ts';
 import type { NodeArchiveFile } from './node-archive.ts';
 import type { NodePhysicalFiles } from './node-files.ts';
+import { rewritePinnedNodeNextFile } from './node-next-pinned-rewrite.ts';
 import {
   assertNodeNextRewriteArchive,
   rewriteCertifiedNodeNextFile,
@@ -19,6 +20,7 @@ import {
 import type { NodeFunctionProof } from './node-proof.ts';
 import { fetchCacheWaitUntilPatch } from './patches/fetch-cache-wait-until.ts';
 import { resourceCacheBridgePatch } from './patches/resource-cache-bridge.ts';
+import type { AppliedPatch } from './patches/rolldown.ts';
 
 /** Only shared-cache/render semantics. No Worker loader, VM, native, fs or process substitutes. */
 const NODE_PATCHES = [fetchCacheWaitUntilPatch, resourceCacheBridgePatch];
@@ -137,6 +139,7 @@ function rewrittenNextFile(
 /** Physical app files plus explicit generated metadata, all constructed during the build. */
 export class NodeArtifactFiles {
   #normalizedEntry: string | undefined;
+  readonly #pinnedRewrites = new Map<string, string>();
   readonly #nextRewrites: NodeNextRewriteProof | undefined;
   readonly files: Map<string, NodeArchiveFile>;
   readonly input: BuildFunctionInput;
@@ -186,6 +189,40 @@ export class NodeArtifactFiles {
         proof: this.#nextRewrites,
       });
       if (rewritten !== undefined) this.files.set(file.name, rewritten);
+    }
+  }
+
+  /**
+   * The server output's rewrites, without a proof: each recorded by the digest of what it wrote,
+   * for `assertServerRewrites` to find unchanged when the artifact is packed.
+   */
+  async rewriteServerFiles(): Promise<readonly AppliedPatch[]> {
+    const hook = this.input.patch.instrumentation !== undefined;
+    const applied: AppliedPatch[] = [];
+    for (const file of this.physical.files) {
+      const original = this.physical.sourcePaths.get(file.name);
+      if (original === undefined || !/\.[cm]?js$/u.test(original)) continue;
+      const rewritten = rewritePinnedNodeNextFile(
+        this.input,
+        { file: original, code: Buffer.from(file.bytes).toString('utf8') },
+        hook,
+      );
+      if (rewritten === undefined) continue;
+      const bytes = new TextEncoder().encode(rewritten.contents);
+      this.files.set(file.name, { ...file, bytes });
+      this.#pinnedRewrites.set(file.name, await sha256Hex(bytes));
+      applied.push(...rewritten.applied);
+    }
+    return applied;
+  }
+
+  async assertServerRewrites(): Promise<void> {
+    for (const [name, sha256] of this.#pinnedRewrites) {
+      const bytes = this.files.get(name)?.bytes;
+      if (bytes === undefined || (await sha256Hex(bytes)) !== sha256)
+        throw new AuditError(
+          'A rewritten Next.js file changed before the Node artifact was packed',
+        );
     }
   }
 

@@ -23,6 +23,8 @@ const ENABLED = process.env['UPWIND_NATIVE_FUNCTION_INTEGRATION'] === '1';
 const CONTROL = 'native-function-ci-control-token-0000000000000000000000';
 const ADDRESS = 'http://127.0.0.1:8080';
 type NativeFixtureKind = 'direct' | 'prebuild';
+/** An App Router route carries the whole server output; a Pages API route, its proved closure. */
+type NativeRouteKind = 'app-route' | 'pages-api';
 const BINARY_PATHS: Readonly<Record<NativeFixtureKind, RegExp>> = {
   direct: /\/addon\.node$/u,
   prebuild: /\/prebuilds\/linux-x64\/node\.napi\.glibc\.node$/u,
@@ -41,7 +43,7 @@ __attribute__((visibility("default"))) napi_value napi_register_module_v1(napi_e
 }
 `;
 
-function runtimeManifest(deploymentId: string) {
+function runtimeManifest(deploymentId: string, routeKind: NativeRouteKind) {
   return {
     v: 3,
     routerReferences: 'one-pass' as const,
@@ -72,7 +74,7 @@ function runtimeManifest(deploymentId: string) {
       },
     },
     entrypoints: [
-      { id: '/native', pathname: '/native', kind: 'app-route' as const },
+      { id: '/native', pathname: '/native', kind: routeKind },
       { id: '/worker', pathname: '/worker', kind: 'app-route' as const },
       { id: '/edge', pathname: '/edge', kind: 'app-route' as const, runtime: 'edge' as const },
     ],
@@ -81,11 +83,16 @@ function runtimeManifest(deploymentId: string) {
   };
 }
 
-async function contextOf(directory: string, kind: NativeFixtureKind): Promise<FunctionsContext> {
+async function contextOf(
+  directory: string,
+  kind: NativeFixtureKind,
+  routeKind: NativeRouteKind,
+): Promise<FunctionsContext> {
   const distDir = path.join(directory, '.next');
   const outDir = path.join(directory, '.arkor');
   const server = path.join(distDir, 'server');
   await mkdir(server, { recursive: true });
+  await writeFile(path.join(distDir, 'required-server-files.json'), '{"version":1,"config":{}}\n');
   await writeFile(
     path.join(directory, 'package.json'),
     '{"name":"native-function-ci","version":"1.0.0"}\n',
@@ -144,7 +151,7 @@ async function contextOf(directory: string, kind: NativeFixtureKind): Promise<Fu
   const routes: RouteCode[] = [
     {
       id: '/native',
-      kind: 'app-route',
+      kind: routeKind,
       module: { id: '/native', filePath: native },
       edge: undefined,
       chunks: [],
@@ -272,14 +279,19 @@ describe.skipIf(!ENABLED)('linux native Function artifact integration', () => {
     }
   });
 
-  it.each(['direct', 'prebuild'] as const)(
-    'loads a real %s N-API binary through the assembled Node artifact and keeps another Function on Workers',
-    async (kind) => {
+  it.each([
+    ['direct', 'app-route'],
+    ['prebuild', 'app-route'],
+    ['direct', 'pages-api'],
+    ['prebuild', 'pages-api'],
+  ] as const)(
+    'loads a real %s N-API binary for an %s route through the assembled Node artifact and keeps another Function on Workers',
+    async (kind, routeKind) => {
       const prefix = path.join(tmpdir(), 'upwind-native-runtime-ci-');
       const temporary = await mkdtemp(prefix);
       directory = await realpath(temporary);
-      const context = await contextOf(directory, kind);
-      const manifest = runtimeManifest(createId('dpl'));
+      const context = await contextOf(directory, kind, routeKind);
+      const manifest = runtimeManifest(createId('dpl'), routeKind);
       const functions = await appFunctionsOf(context, manifest, undefined);
       const primary = functions.built.find((entry) => entry.name === 'app');
       const native = functions.built.find((entry) => isNodeContainerFunction(entry.built.spec));
