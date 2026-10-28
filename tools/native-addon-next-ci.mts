@@ -30,6 +30,7 @@ import {
   type NativeFixtureIdentity,
 } from './native-addon-next-artifact.mts';
 import { retainNativeNextDiagnostics } from './native-addon-next-diagnostics.mts';
+import { fixtureOf, record, type Fixture } from './native-addon-next-fixtures.mts';
 import { NativeNextProcesses, pause } from './native-addon-next-process.mts';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -49,25 +50,6 @@ const TOKEN = randomBytes(TOKEN_BYTES).toString('base64url');
 type ServerMinification = 'default' | 'off';
 const FIXTURE_CONFIG = 'next.config.js';
 const FIXTURE_OWN_CONFIG = 'next.config.fixture.cjs';
-interface Fixture {
-  /** Every file of the upstream directory, by its Git blob. */
-  readonly pinned: Readonly<Record<string, string>>;
-  /** Pinned files the build leaves out, such as a suite's own test file beside its app. */
-  readonly excluded: readonly string[];
-  /** Packages the build needs beyond Next.js and React, at exact versions. */
-  readonly dependencies: Readonly<Record<string, string>>;
-  /** Checks the running Function, and names the paths it checked. */
-  readonly smoke: (identity: NativeFixtureIdentity) => Promise<readonly string[]>;
-}
-
-function record(value: unknown): Record<string, unknown> {
-  assert.ok(
-    typeof value === 'object' && value !== null && !Array.isArray(value),
-    'Expected a JSON object',
-  );
-  return value as Record<string, unknown>;
-}
-
 function argumentsOf(values: readonly string[]): {
   readonly source: string;
   readonly serverMinification: ServerMinification;
@@ -126,6 +108,10 @@ async function copyFixture(source: string, target: string, fixture: Fixture): Pr
     if (fixture.excluded.includes(name)) continue;
     await mkdir(path.dirname(path.join(target, name)), { recursive: true });
     await writeFile(path.join(target, name), bytes, { flag: 'wx' });
+  }
+  for (const [name, code] of Object.entries(fixture.added)) {
+    await mkdir(path.dirname(path.join(target, name)), { recursive: true });
+    await writeFile(path.join(target, name), code, { flag: 'wx' });
   }
 }
 
@@ -261,48 +247,19 @@ async function bodyOf(response: Response): Promise<string> {
   return Buffer.concat(parts).toString();
 }
 
-function request(pathname: string, data = false): Promise<Response> {
+function request(
+  pathname: string,
+  headers: Readonly<Record<string, string>> = {},
+): Promise<Response> {
   return fetch(`http://127.0.0.1:8080${pathname}`, {
     headers: {
+      ...headers,
       'x-upwind-control-token': TOKEN,
       'x-upwind-request-url': `https://native-ci.test${pathname}`,
-      ...(data && { 'x-nextjs-data': '1' }),
     },
     redirect: 'manual',
     signal: AbortSignal.timeout(PROBE_MS),
   });
-}
-
-function nextData(html: string): Record<string, unknown> {
-  const start = html.indexOf('<script id="__NEXT_DATA__"');
-  assert.ok(start !== -1, 'Missing Next data script');
-  const content = html.indexOf('>', start);
-  const end = html.indexOf('</script>', content);
-  assert.ok(content !== -1 && end !== -1, 'Malformed Next data script');
-  return record(JSON.parse(html.slice(content + 1, end)));
-}
-
-interface PageProperties {
-  readonly params: { readonly slug: string };
-  readonly blog: true;
-  readonly contextAware: true;
-  readonly users: readonly {
-    readonly id: number;
-    readonly first_name: string;
-    readonly last_name: string;
-  }[];
-}
-
-function expected(slug: string): PageProperties {
-  return {
-    params: { slug },
-    blog: true,
-    contextAware: true,
-    users: [
-      { id: 1, first_name: 'john', last_name: 'deux' },
-      { id: 2, first_name: 'zeit', last_name: 'geist' },
-    ],
-  };
 }
 
 async function waitForReady(child: ChildProcess): Promise<void> {
@@ -333,52 +290,6 @@ async function waitForReady(child: ChildProcess): Promise<void> {
   assert.ok(ready && !state.failed, 'The emitted Node Function did not become ready');
 }
 
-async function pagesSmoke(identity: NativeFixtureIdentity): Promise<readonly string[]> {
-  const firstResponse = await request('/blog/first');
-  const first = nextData(await bodyOf(firstResponse));
-  assert.deepEqual(record(first['props'])['pageProps'], expected('first'));
-  // Browser fallback fetches this exact Pages data route after receiving its initial shell.
-  await bodyOf(await request('/blog/second'));
-  const secondResponse = await request(
-    `/_next/data/${encodeURIComponent(identity.buildId)}/blog/second.json`,
-    true,
-  );
-  const secondJson: unknown = JSON.parse(await bodyOf(secondResponse));
-  const second = record(secondJson);
-  assert.deepEqual(second['pageProps'], expected('second'));
-  return ['/blog/first', '/blog/second'];
-}
-
-const FIXTURES: Readonly<Record<string, Fixture>> = {
-  'prerender-native-module': {
-    pinned: {
-      '.npmrc': '951a2b6e795f12e7e5e47a7ce71ab649cbb6e614',
-      'bindings/index.js': 'fd4a2e414af0b19ae18ef43baed3eaa37a918db5',
-      'bindings/package.json': 'a942bce5029cb83ffbf14d56d1d871ade3eba2e5',
-      'native-addon-wrapper/index.js': '3c4a1356340798dd8f18b0e03fffdc4f3e99a1df',
-      'native-addon-wrapper/package.json': 'be8bcc6a8708932ecdccd4e9b1484f0711656b3d',
-      'native-addon/addon.cc': '2436d072feb14ad567e0abfe4309d2a02ac7b837',
-      'native-addon/binding.gyp': '9c111067225943ff066f9a7b12d1891a642d3ca0',
-      'native-addon/index.js': '52a1e8bf48a95cede2d325c2540aa6e679450339',
-      'native-addon/package.json': '37c6888cf9a97330eb2f19c6c2679b8a36d8d679',
-      'package.json': '22e1cf3cb2033b62c0e13cb70bdf4dca04874943',
-      'pages/blog/[slug].js': 'fc0337f79e7b1aee3da96da05fd4c3116e7911c5',
-      'pages/index.js': '39a9c6502ed04e370cf4f31db959c35874bceaa9',
-      'pnpm-workspace.yaml': '68e8462f659082028ecf628c03a4b6f7bc32ae8a',
-      'users.json': 'f683b73c83219124be7ca5d5c27d0bf4aa62afd2',
-    },
-    excluded: [],
-    dependencies: {},
-    smoke: pagesSmoke,
-  },
-};
-
-function fixtureOf(source: string): Fixture {
-  const fixture = FIXTURES[path.basename(source)];
-  assert.ok(fixture !== undefined, `Not a fixed native fixture: ${path.basename(source)}`);
-  return fixture;
-}
-
 async function smoke(
   identity: NativeFixtureIdentity,
   env: NodeJS.ProcessEnv,
@@ -400,7 +311,7 @@ async function smoke(
   });
   try {
     await waitForReady(child);
-    return await fixture.smoke(identity);
+    return await fixture.smoke(identity, { request, body: bodyOf });
   } finally {
     await processes.stop(child);
   }

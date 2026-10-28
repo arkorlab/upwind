@@ -10,12 +10,9 @@ import { jsLiteral } from './codegen.ts';
 import {
   AuditError,
   auditNodeFunction,
-  bundled,
-  functionDependencies,
   outputNameOf,
   type FunctionDependencies,
 } from './dependencies.ts';
-import { dynamicLoadsOf } from './dynamic-loads.ts';
 import type { BuildFunctionInput } from './function.ts';
 import { nativeLoadsPlugin, type NativeLoad } from './native-loads.ts';
 import {
@@ -66,6 +63,7 @@ import {
 import { linkedOriginalNodeSource } from './node-original-graph-source.ts';
 import { originalHostLoadersPlugin } from './node-original-host-loaders.ts';
 import { prepareOriginalNodeModes, type OriginalNodeModeScope } from './node-original-load-mode.ts';
+import { nodeProofDependencies } from './node-proof-dependencies.ts';
 import { retainedFileIdentity } from './node-proof-diagnostics.ts';
 import { nodeRawFunctionInputs } from './node-raw-function-inputs.ts';
 import {
@@ -300,33 +298,8 @@ function assertRetainedClosures(
   }
 }
 
-function proofDependencies(
-  input: NodeProofInput,
-  chunk: OutputChunk,
-  graph: OriginalNodeGraph,
-  compilerModules: ReadonlySet<string>,
-): FunctionDependencies {
-  return functionDependencies(
-    input.projectDir,
-    input.patch.distDir,
-    {
-      inputs: Object.entries(chunk.modules).map(([file, module]) => bundled(file, module)),
-      externals: [...graph.externals],
-      patches: graph.patches,
-      stubs: [],
-      wasmModules: [],
-      // Exact, byte-sealed production runtimes have separately proven compiler operations.
-      // Their actual target chunks still pass the ordinary retained-code audit.
-      dynamicLoads: Object.entries(chunk.modules).flatMap(([file, module]) =>
-        module.code === null || compilerModules.has(file) ? [] : dynamicLoadsOf(file, module.code),
-      ),
-    },
-    { modules: [], size: { bytes: Buffer.byteLength(chunk.code), gzipBytes: 0 } },
-  );
-}
-
-/** Prove the retained original Node graph independently from every Worker patch and stub. */
-export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunctionProof> {
+/** The original Node graph as Rolldown retains it, before any proof is made about it. */
+async function originalNodeGraph(input: NodeProofInput) {
   if (input.patch.cacheHandlers !== undefined)
     throw new AuditError('Native Node proof does not support custom cache handler closures');
   const entryFile = await proofEntry(input);
@@ -375,6 +348,28 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) throw new AuditError('Original Node graph produced no proof chunk');
   await assertRetainedSourceBytes(chunk, graph);
+  return { entryFile, native, graph, hostLoaders, chunk };
+}
+
+/**
+ * The native loads the original Node graph retains, and the specifiers it leaves to Node, with
+ * nothing else proved: for a Function whose artifact carries the whole server output rather than
+ * a proved closure of it.
+ */
+export async function selectNodeNativeLoads(input: NodeProofInput): Promise<{
+  readonly native: readonly NativeLoad[];
+  readonly externals: readonly string[];
+}> {
+  const { native, graph, chunk } = await originalNodeGraph(input);
+  const retained = await native.retained(chunk);
+  if (retained.length === 0)
+    throw new AuditError('The original Node graph has no retained, owned native capability');
+  return { native: retained, externals: [...graph.externals] };
+}
+
+/** Prove the retained original Node graph independently from every Worker patch and stub. */
+export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunctionProof> {
+  const { entryFile, native, graph, hostLoaders, chunk } = await originalNodeGraph(input);
   const compilerRootBinding = await prepareNodeManifestHandlerCompilerRoot(
     Object.freeze({ projectDir: input.projectDir, distDir: input.patch.distDir }),
     Object.keys(chunk.modules).flatMap((id) => {
@@ -478,7 +473,7 @@ export async function proveNodeFunction(input: NodeProofInput): Promise<NodeFunc
   const retained = await native.retained(chunk);
   if (retained.length === 0)
     throw new AuditError('The original Node graph has no retained, owned native capability');
-  const dependencies = proofDependencies(input, chunk, graph, compilerModules);
+  const dependencies = nodeProofDependencies(input, chunk, graph, compilerModules);
   auditNodeFunction(
     input.name ?? input.kind,
     { app: chunk.code },

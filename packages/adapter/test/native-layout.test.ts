@@ -236,6 +236,62 @@ describe('native Function ownership', () => {
   });
 });
 
+/** What each native Function the layout builds carries, in the order it builds them. */
+async function carried(routes: RouteCode[], owner: string): Promise<unknown[]> {
+  await nativeFunctionLayout(context(routes), manifest(routes), {
+    budget: undefined,
+    loads: load(owner),
+    weighOnly: false,
+  });
+  return vi.mocked(buildNodeFunction).mock.calls.map((call) => call[2]);
+}
+
+describe('what a native Function carries', () => {
+  beforeEach(() => {
+    vi.mocked(buildFunction).mockReset().mockImplementation(worker);
+    vi.mocked(buildNodeFunction).mockReset().mockImplementation(node);
+  });
+
+  it.each(['app-page', 'app-route'] as const)(
+    'carries the whole server output for a Function holding an App Router %s',
+    async (kind) => {
+      await expect(carried([route('/native', kind)], '/native')).resolves.toStrictEqual(['server']);
+    },
+  );
+
+  it('carries the whole server output when only a shared App Router error page comes along', async () => {
+    const routes = [
+      route('/native', 'pages'),
+      route('/worker', 'pages'),
+      route('/_not-found', 'app-page'),
+    ];
+
+    await expect(carried(routes, '/native')).resolves.toStrictEqual(['server']);
+    expect(
+      vi
+        .mocked(buildNodeFunction)
+        .mock.calls.map(([input]) => input.entries.map((entry) => entry.id)),
+    ).toStrictEqual([['/native', '/worker', '/_not-found']]);
+  });
+
+  it('carries the whole server output for a split Function that holds a native App Router page', async () => {
+    const routes = [route('/native', 'app-page'), route('/worker', 'app-page')];
+
+    await expect(carried(routes, '/native')).resolves.toStrictEqual(['server']);
+    expect(
+      vi
+        .mocked(buildNodeFunction)
+        .mock.calls.map(([input]) => input.entries.map((entry) => entry.id)),
+    ).toStrictEqual([['/native']]);
+  });
+
+  it('keeps the proved closure for a Pages Router Function', async () => {
+    const routes = [route('/blog', 'pages'), route('/api/revalidate', 'pages-api')];
+
+    await expect(carried(routes, '/blog')).resolves.toStrictEqual(['proved']);
+  });
+});
+
 describe('native Function reserved layout', () => {
   beforeEach(() => {
     vi.mocked(buildFunction).mockReset().mockImplementation(worker);

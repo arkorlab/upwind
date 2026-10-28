@@ -34,6 +34,22 @@ Edge-runtime route into Node; a layout that cannot retain that contract is refus
 Common Edge middleware can still be part of the Node Function's request pipeline; its standalone
 middleware Function and explicitly Edge-runtime route owners remain Workers.
 
+A Function that holds an App Router route is packaged differently. The proofs described below cover
+the Pages Router's manifest consumers and templates; nothing proves the App Router's yet. Its artifact
+therefore carries the whole server output, as `next start` reads it: every file under
+`<distDir>/server` and the root manifests, besides its entries and their traced packages, rather than
+a proved closure of them. A project with an `app/` directory gives every Function the shared
+`/_not-found` page, so its native Function is always packaged this way, even when the native load
+is in a Pages Router route. Only the native loads are proved, by the same loader classification,
+binary selection, ABI and digests as for any Node Function, and a Cloudflare platform import in the
+Function's own graph is refused. The shared-cache rewrites still apply; the instrumentation loader
+and the custom-cache guard are rewritten only over their reviewed Next.js 16.4.3 bytes, and any
+other bytes at those paths are refused. The Turbopack selectors are left to the bootstrap's
+`TURBOPACK`. Such an artifact does not have the manifest-consumer and closure proofs, the JWT,
+WebSocket and environment initialization guards, or an alias proof for packages that only server
+chunks load: a missing package link shows when the route runs, not at build. A distDir that would be
+moved away from the project is refused, because Turbopack's runtime finds the project from it.
+
 The Node artifact is a content-addressed tar.gz of regular physical files. It preserves Node's
 package layout and binary bytes. `upwind/links.json` describes bounded internal aliases for the host
 to restore during image preparation; the archive contains no symlink entries. `upwind/native.json`
@@ -144,5 +160,8 @@ The dedicated Linux CI control compiles and executes a real N-API binary, create
 artifact, starts its Node HTTP entry, and checks that independent Worker and Edge routes remain on
 Workers. A separate CI step verifies a pinned, unchanged Next.js 16.4.3 native fixture, builds it
 with the actual adapter and invokes its emitted Node entry on loopback, including `/blog/second`
-with `fallback: true`. This checks the artifact and Node transport; hosted cache and deployment
+with `fallback: true`. The unchanged App Router fixture `test/e2e/app-dir/turbopack-reports` is built
+and invoked the same way. Its pages are prerendered, so the control adds one page rendered for each
+request, and checks that a route left on Workers is refused by the Node entry. This checks the
+artifact and Node transport; hosted cache and deployment
 integration still require operator rollout verification. No CI result is implied by this document.

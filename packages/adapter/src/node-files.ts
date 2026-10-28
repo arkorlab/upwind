@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { compareCodeUnits } from '@stayingupwind/core/util';
@@ -44,6 +44,8 @@ type PhysicalFileOptions =
   | {
       readonly selectModeMetadata?: ModeMetadataSelector;
       readonly nextRewrites?: NodeNextRewriteProof | undefined;
+      /** Carry every file of the server output, not only what the entries and their traces name. */
+      readonly serverOutput?: boolean;
     };
 interface PhysicalSources {
   readonly files: Map<string, Uint8Array>;
@@ -99,6 +101,37 @@ function inputFiles(
     }
   }
   return { copyHard, requiredExec };
+}
+
+/**
+ * Every regular file of `<distDir>/server`, with the root manifests beside it, as `next start` reads
+ * them: copied whole, never named an executable root. A link or a special file in it is refused.
+ */
+async function serverOutputFiles(distDir: string): Promise<string[]> {
+  const files: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(file);
+      else if (!entry.isFile())
+        throw new AuditError(
+          `Node server output holds a link or special file: ${retainedFileIdentity(distDir, file)}`,
+        );
+      else if (!entry.name.endsWith('.nft.json')) files.push(file);
+    }
+  };
+  await walk(path.join(distDir, 'server'));
+  const roots = await readdir(distDir, { withFileTypes: true });
+  for (const entry of roots) {
+    if (
+      entry.isFile() &&
+      (entry.name === 'BUILD_ID' ||
+        (entry.name.endsWith('.json') && !entry.name.endsWith('.nft.json')))
+    )
+      files.push(path.join(distDir, entry.name));
+  }
+  return files;
 }
 
 function traceAssetFiles(input: BuildFunctionInput): Set<string> {
@@ -379,6 +412,7 @@ export async function nodePhysicalFiles(
 ): Promise<NodePhysicalFiles> {
   const selectModeMetadata = typeof options === 'function' ? options : options?.selectModeMetadata;
   const nextRewrites = typeof options === 'function' ? undefined : options?.nextRewrites;
+  const serverOutput = typeof options !== 'function' && options?.serverOutput === true;
   const layout = await nodePhysicalLayout(input);
   for (const load of native)
     assertNodeRelativeTopology(
@@ -393,6 +427,8 @@ export async function nodePhysicalFiles(
     copyHard.add(file);
     requiredExec.add(file);
   }
+  const output = serverOutput ? await serverOutputFiles(input.patch.distDir) : [];
+  for (const file of output) copyHard.add(file);
   const sources = await physicalSources(copyHard, traceAssetFiles(input), layout, requiredExec);
   const links = new Map<string, string>();
   await collectAliases(input, native, sources, { layout, links, nextRewrites });

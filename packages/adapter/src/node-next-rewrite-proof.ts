@@ -37,8 +37,9 @@ import { resourceCacheBridgePatch } from './patches/resource-cache-bridge.ts';
 import type { AppliedPatch } from './patches/rolldown.ts';
 import { turbopackRuntimePatch } from './patches/turbopack-runtime.ts';
 
-const LOADER = 'dist/server/lib/router-utils/instrumentation-globals.external.js';
-const LOADER_SHA = '2afb1d2dea656c51d29466c5c92770c1d012fcee49e28cf10dc1510c881f6d46';
+/** Next.js 16.4.3's instrumentation hook loader, by its path in the package and its reviewed bytes. */
+export const LOADER = 'dist/server/lib/router-utils/instrumentation-globals.external.js';
+export const LOADER_SHA = '2afb1d2dea656c51d29466c5c92770c1d012fcee49e28cf10dc1510c881f6d46';
 const MAX_SOURCE_BYTES = 134_217_728;
 const PROOF: unique symbol = Symbol('Node Next.js rewrite proof');
 export interface NodeNextRewriteProof {
