@@ -158,9 +158,10 @@ export function applyCspNonce(value: string, nonce: string): string {
 
 /**
  * A policy that names nonces of its own — one set at request time, by a middleware that mints them
- * — with each replaced by the one minted here. The edge stamps its nonce on every element that
- * carried one, a `<style>` as much as a `<script>`, so a directive still naming the middleware's
- * would refuse exactly what the edge stamped. A policy that names none is returned as it came.
+ * — with each replaced by the one minted here. The edge stamps its nonce on every element of the
+ * shell that carried one, a `<style>` as much as a `<script>`, and hands it to the render past the
+ * shell in the middleware's place, so a directive still naming the middleware's would refuse
+ * exactly what carries the edge's. A policy that names none is returned as it came.
  */
 function withNonceReplaced(policy: string, source: string): string {
   const directives = parseCsp(policy);

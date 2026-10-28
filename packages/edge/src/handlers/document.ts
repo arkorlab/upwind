@@ -11,11 +11,9 @@ import { MIDDLEWARE_SET_COOKIE_HEADER, type MiddlewareResult } from '@stayingupw
 import { negotiateContentEncoding, routeDebugValue } from '@stayingupwind/core/request';
 import type { ContinuationResume, ResolvedPolicy } from '@stayingupwind/host/delivery';
 import {
-  buildRecoveryBytes,
   createSplice,
   type MiddlewareCookies,
   type SpliceOutcome,
-  type WireEncoding,
 } from '@stayingupwind/host/splice';
 
 import { logWarn } from '../observability/logger.ts';
@@ -23,8 +21,13 @@ import { serverTiming, type ServerTimingEntry } from '../observability/server-ti
 import type { EdgeContext } from '../strategies/context.ts';
 import { resumeContinuation } from '../strategies/continuation-resume.ts';
 import { loadShell, type ShellLoadResult, storageReadsOf } from '../strategies/shell-loader.ts';
-import { mintCspNonce, rewriteDocumentNonces } from './csp-nonce.ts';
-import { deliveryFor, type Layering, type ServedGeneration } from './document-delivery.ts';
+import {
+  deliveryFor,
+  documentBody,
+  type Layering,
+  type ServedGeneration,
+  spliceShell,
+} from './document-delivery.ts';
 import {
   delegateCorruptDocument,
   delegateSandboxedDocument,
@@ -34,6 +37,7 @@ import {
   ACCEPT_ENCODING_HEADER,
   documentCacheControl,
   documentHeaders,
+  documentNonce,
   foldedAsSet,
   foldedHeadersOf,
   IDENTITY_ENCODING,
@@ -121,7 +125,6 @@ export interface DocumentInput {
 const OK_STATUS = 200;
 /** Every document can go out in either; what differs is whether the shell was compressed ahead. */
 const CONTENT_ENCODINGS: ReadonlySet<ShellEncoding> = new Set<ShellEncoding>(['br', 'gzip']);
-const RECOVERY_HTML = buildRecoveryBytes();
 /** The source a generation's bytes are reported under, so a reader can tell them from a shell's. */
 const GENERATION_SOURCE_PREFIX = 'gen-';
 
@@ -372,6 +375,8 @@ interface Composition {
   /** Selected shell/rendering is ready: response preparation begins without awaiting its body. */
   readonly startedAt: number;
   readonly headers: Headers;
+  /** The document's nonce (`documentNonce`): its policies are given it, and its body has it. */
+  readonly nonce: string | undefined;
   /**
    * The headers recorded with what is served, and those the rules of `next.config` that matched
    * the request set before the ones a document does not carry were taken out: any may say it must
@@ -382,19 +387,6 @@ interface Composition {
   readonly complete: boolean;
   /** `null` for a `HEAD`, answered with the headers the `GET` would carry and nothing else. */
   readonly body: ReadableStream<Uint8Array> | null;
-}
-
-/**
- * Whether this response is one the edge may stamp a nonce into; see `mintNonce` below.
- *
- * Only a route the runtime cache has an entry for — for a hosted build, nearly every prerender —
- * and so the build's own shell of such a route as well, validation included: a validation
- * compares a document of a project that opted in with the nonces taken out. A route without an
- * entry goes out as its build wrote it, opt-in or no. And a gate's shell, whatever entry serves
- * it (`gatedEntryOf`): a render every visitor is answered, whose nonce would be every visitor's.
- */
-function mintsNonce({ edge, entry, generation }: DocumentInput): boolean {
-  return edge.cspNonce && (entry.cache !== undefined || generation?.gate !== undefined);
 }
 
 /**
@@ -422,16 +414,14 @@ function recordTimingOf(input: DocumentInput): RecordTiming | undefined {
 function composedResponse(input: DocumentInput, composition: Composition): Response {
   const { entry, resolved, edge } = input;
   const { delivery } = composition;
-  const { headers, nonce } = documentHeaders({
+  const headers = documentHeaders({
     entry,
     complete: composition.complete,
     headers: composition.headers,
     edge,
     strategyId: resolved.shell.id,
     shell: delivery,
-    // Minted inside, once the rules of `next.config` and the middleware have had their say over
-    // the build's policy: what the nonce has to match is the policy this response carries.
-    mintNonce: mintsNonce(input) ? mintCspNonce : undefined,
+    nonce: composition.nonce,
     hosted: documentMarker(input, composition.complete),
     middleware: input.middleware?.kind === 'continue' ? input.middleware : undefined,
     nextCache: nextCacheOf(input, composition.complete),
@@ -449,15 +439,8 @@ function composedResponse(input: DocumentInput, composition: Composition): Respo
   if (composition.body === null) {
     return new Response(null, { status: OK_STATUS, headers });
   }
-  const composed = new Response(composition.body, { status: OK_STATUS, headers });
-  // The nonce goes into the markup, so it goes in before any compression on the way out; the
-  // rewriter sees the whole document from byte zero either way.
-  const document = nonce === undefined ? composed : rewriteDocumentNonces(composed, nonce);
-  const body: ReadableStream<Uint8Array> | null = document.body;
-  if (body === null) {
-    return document;
-  }
-  return new Response(onTheWayOut(body, delivery), {
+  // A nonce is already in the markup (`documentBody`), ahead of any compression on the way out.
+  return new Response(onTheWayOut(composition.body, delivery), {
     status: OK_STATUS,
     headers,
     // The body is already in its declared encoding; left to itself the runtime would encode it
@@ -490,20 +473,6 @@ function composeDocument(input: DocumentInput, composition: Composition): Respon
 /** What stands for the continuation of a document that has none, should the shell fail it. */
 function noContinuation(): Promise<Upstream> {
   return settle(Promise.reject(new Error('the document has no continuation')));
-}
-
-/** A document complete as it is: the wire's shell as the body, ended, nothing spliced behind it. */
-function wireBody(wire: WireEncoding): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(wire.shell);
-      const end = wire.finish();
-      if (end.byteLength > 0) {
-        controller.enqueue(end);
-      }
-      controller.close();
-    },
-  });
 }
 
 /**
@@ -646,6 +615,8 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
   }
   const delegated = delegateSandboxedDocument(input, complete, headers, shellLookup);
   if (delegated !== undefined) return delegated;
+  // Ahead of the resume, which renders with it (`documentNonce`).
+  const nonce = documentNonce(input, headers);
   const encoding = negotiateContentEncoding(clientAcceptEncoding(input.request), CONTENT_ENCODINGS);
   const layering = layeringFor(input, complete, encoding);
   const rendering = usableRendering(input, encoding);
@@ -656,7 +627,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     rendering === undefined || head
       ? undefined
       : trackRendering(loadShell(rendering, resolved.shell, input.edge));
-  const { client, edge } = continuationRequest(input);
+  const { client, edge } = continuationRequest(input, nonce);
   const handle =
     complete || head
       ? undefined
@@ -714,10 +685,13 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     return composeDocument(input, {
       startedAt: compositionStarted,
       headers,
+      nonce,
       recorded: [recorded, rules.headers],
       delivery,
       complete,
-      body: head ? null : wireBody(delivery.wire),
+      body: head
+        ? null
+        : documentBody(entry, { bytes: shell.read.bytes, wire: delivery.wire }, nonce),
     });
   }
   // The report adds a redispatch separately; an unavailable dispatcher sent no first request.
@@ -733,6 +707,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     return composeDocument(input, {
       startedAt: compositionStarted,
       headers,
+      nonce,
       recorded: [recorded, rules.headers],
       delivery,
       complete: false,
@@ -740,11 +715,9 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     });
   }
   const splice = createSplice({
-    shell: shell.read.bytes,
-    wire: delivery.wire,
+    ...spliceShell(shell.read.bytes, delivery, nonce),
     upstream: unsettle(upstream),
     ...middlewareCookiesOf(input),
-    recoveryHtml: RECOVERY_HTML,
     now: edge.runtime.now,
     // Never past the total. The two come from different documents — the manifest and the policy —
     // and a first-byte budget larger than the whole budget would be the only deadline that applied.
@@ -767,9 +740,15 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
   return composeDocument(input, {
     startedAt: compositionStarted,
     headers,
+    nonce,
     recorded: [recorded, rules.headers],
     delivery,
     complete: false,
-    body: splice.readable,
+    body: documentBody(
+      entry,
+      { bytes: shell.read.bytes, wire: delivery.wire },
+      nonce,
+      splice.readable,
+    ),
   });
 }

@@ -255,7 +255,8 @@ export interface PassthroughInput {
   readonly onDispatched?: ((read: () => Dispatched | undefined) => void) | undefined;
   /**
    * Handed the Worker's answer before the edge's protocol is taken off it: what the runtime says on
-   * it of the regeneration the request asked for (`CACHE_OUTCOME_HEADER`, `triggerDetached`).
+   * it of the regeneration the request asked for (`CACHE_OUTCOME_HEADER`, `triggerDetached`,
+   * `foregroundDocument`).
    */
   readonly onAnswered?: ((answer: Response) => void) | undefined;
 }

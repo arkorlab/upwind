@@ -1,3 +1,4 @@
+import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
 import type { RouteEntry } from '@stayingupwind/core/manifest';
 import type { ResolvedPolicy, RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
@@ -12,11 +13,12 @@ import { buildWasInvalidated } from './build-invalidated.ts';
 import { condemnedIn } from './condemned.ts';
 import { decideGeneration, type GenerationDecision } from './decision.ts';
 import { followRegeneration, readAbsentRecordBehind } from './generation-current.ts';
-import { heldGeneration, readServedAgain } from './generation-hold.ts';
+import { heldGeneration, readReplacementBehind, readServedAgain } from './generation-hold.ts';
 import { type GenerationKey, type GenerationLoad, readGeneration } from './generation-loader.ts';
 import { memberInHand, type MemberLoad, type MemberRead } from './member.ts';
 import {
   allowAnotherAsk,
+  type DispatchInput,
   foregroundDocument,
   regenerationHeaders,
   type RegenerationTarget,
@@ -32,6 +34,12 @@ import {
  * the build's shell would not have cost: the record is the shell. Where this isolate holds nothing
  * of the entry, the build's shell is read beside the record (`startRecordRead`), so that a record
  * that turns out to be none to serve costs the first byte no second read after the first.
+ *
+ * A record it does not serve — past its expiry or condemned, rendered by the Function in the
+ * foreground (`regenerateInFront`), or invalidated with a window and handed to it (`handOn`) — has
+ * the record that replaces it read for at the authority behind the response: the requests after it
+ * are served a shell first again once this isolate holds that one, not once this data center's KV
+ * shows it, which every request until then would otherwise have the Function render.
  *
  * A member of a dynamic route the build did not prerender is answered by the class shell's
  * record. Under `runtimeCache.concreteUpgrade` the member's own record is read beside it
@@ -287,6 +295,39 @@ function serveRecord(
 }
 
 /**
+ * The record that replaces `pack`, which the edge will not serve, read for behind the response: at
+ * the authority, a second apart at the most (`readReplacementBehind`); through its own cadence for a
+ * partial fallback's target (`refreshRecord`).
+ */
+function readReplacement(input: CachedDocumentInput, pack: DecodedGenerationPack): void {
+  if (input.refreshRecord !== undefined) {
+    input.refreshRecord();
+    return;
+  }
+  readReplacementBehind(input.edge, pack, input.settings);
+}
+
+/**
+ * A record the edge does not serve, handed to the Function for the reason the decision gives. One
+ * invalidated with a window (`pack`) is the Function's to serve stale and regenerate, request after
+ * request, until this isolate holds the record that replaces it — which this data center's KV
+ * would show it only once its 30-second cache and the replacement's propagation are over. So that
+ * record is read for as the request is handed on: the read of the authority goes out behind the
+ * dispatch (`readCurrentBehind`), and the response waits on nothing of it. Not behind a `HEAD`,
+ * behind which no regeneration in the foreground is followed either (`regenerateInFront`).
+ */
+function handOn(
+  input: CachedDocumentInput,
+  decision: Extract<GenerationDecision, { kind: 'passthrough' }>,
+  waited: PassthroughWait,
+): Promise<Response> {
+  if (decision.pack !== undefined && input.request.method !== 'HEAD') {
+    readReplacement(input, decision.pack);
+  }
+  return input.passthrough(decision.reason, input.middleware, input.entry.pathname, waited);
+}
+
+/**
  * The member's own record answers when it is one to serve or to regenerate; otherwise the class
  * shell's record answers, and the member's is worth asking for when none exists or the one that
  * does cannot be read — not when KV could not be asked, which the class read met too, and not
@@ -314,20 +355,38 @@ function serveMember(
       return { response: regenerateInFront(input, target, decided.recordMs) };
     }
     case 'passthrough': {
-      const waited = { recordLookupMs: decided.recordMs };
-      return {
-        response: input.passthrough(
-          decision.reason,
-          input.middleware,
-          input.entry.pathname,
-          waited,
-        ),
-      };
+      return { response: handOn(input, decision, { recordLookupMs: decided.recordMs }) };
     }
     case 'build': {
       return { upgrade: member.load.kind !== 'unavailable' };
     }
   }
+}
+
+/**
+ * What follows a regeneration in the foreground once the runtime has answered it, behind the render
+ * the response is: where it accepted it, the authority read for what it publishes, as for a stale
+ * record's regeneration (`followRegeneration`); where it did not — another render of the entry
+ * under way, a later record already the authority's, no answer at all — the authority read for the
+ * record that replaces this one now, a second apart at the most (`readReplacementBehind`). Nothing
+ * for a partial fallback's target, which is read through its own cadence (`refreshRecord`).
+ */
+function followInFront(
+  input: CachedDocumentInput,
+  target: RegenerationTarget,
+): Pick<DispatchInput, 'onAccepted' | 'onDeclined'> {
+  if (input.refreshRecord !== undefined) {
+    return {};
+  }
+  const { edge, settings } = input;
+  return {
+    onAccepted: () => {
+      followRegeneration(edge, target.pack, settings);
+    },
+    onDeclined: () => {
+      readReplacementBehind(edge, target.pack, settings);
+    },
+  };
 }
 
 /**
@@ -346,13 +405,17 @@ function regenerateInFront(
     return input.passthrough('head-expired', input.middleware, input.entry.pathname, waited);
   }
   // The render the response is publishes the record that replaces this one, which every request
-  // regenerates in the foreground until the isolate holds that one: read again a second on.
+  // regenerates in the foreground until the isolate holds that one: KV is read again a second on,
+  // where the isolate holds this one (`readTargetAgain`); and, once the runtime has answered, the
+  // authority, held or not — a record condemned by an at-once invalidation never is, and KV goes on
+  // answering with it for its 30-second cache and more (`followInFront`).
   readTargetAgain(input, target);
   const dispatch = {
     request: input.request,
     middleware: middlewareOf(input),
     target,
     function: input.entry.function,
+    ...followInFront(input, target),
   };
   return foregroundDocument(input.edge, dispatch, waited);
 }
@@ -445,7 +508,7 @@ export async function serveCachedDocument(incoming: CachedDocumentInput): Promis
       return serveBuild(decided, read, decision.reason);
     }
     case 'passthrough': {
-      return input.passthrough(decision.reason, input.middleware, input.entry.pathname, waited);
+      return handOn(input, decision, waited);
     }
     case 'regenerate': {
       const target = { pack: decision.pack, entryId: key.entryId, ...own };

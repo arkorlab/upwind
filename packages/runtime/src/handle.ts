@@ -56,6 +56,7 @@ import {
   hasBody,
   isRscRequest,
   wantsBlockingMetadata,
+  withoutRouteParameterKeys,
 } from './incoming.ts';
 import { isRead, methodNotAllowed, readsOnly } from './methods.ts';
 import { answerMiddlewareOnly, MIDDLEWARE_ENTRY_ID } from './middleware-invoke.ts';
@@ -259,8 +260,18 @@ async function serveImageSource(
  * (`withHeaderRulesLeft`) — the Function that handed a request over left them out of the routing it
  * hands over, as the same request's headers told it to — and a redirect ahead of routing carries
  * none to leave out.
+ *
+ * Its query goes on without the keys Next.js reads a route parameter from, which only routing
+ * writes (`withoutRouteParameterKeys`): nothing after this — the middleware, routing, a handler — is
+ * handed a client's. A client's own request comes here rid of them already, as it came in
+ * (`handleRequest`), and goes on as the same request; one routed within it — an image's source,
+ * named in the image's query — is rid of them here. Neither the edge nor the runtime sends one here
+ * of its own: a render of a page by its path alone — a regeneration, a resume — hands the handler its
+ * URL directly, and a Function that routed a request for another carries the URL routing came to in
+ * the hand-off (`ROUTED_HEADER`), not in the request's.
  */
-async function handleFull(input: RoutedInput, store: Store): Promise<Response> {
+async function handleFull(given: RoutedInput, store: Store): Promise<Response> {
+  const input = withoutRouteParameterKeys(given);
   const url = new URL(input.request.url);
   const handedOff = input.request.headers.get(ROUTED_HEADER);
   if (handedOff !== null) {
@@ -610,8 +621,17 @@ async function onceRecorded(context: RequestContext, routed: Promise<Response>):
  * stand first (`catchUpWithScope`), routed, and answered once what it invalidated is recorded
  * (`onceRecorded`), telling the edge what it invalidated at once, with the end of its body held for
  * the cache writes it handed over (`withWritesLanded`).
+ *
+ * Its query is rid of the keys Next.js reads a route parameter from as it comes in
+ * (`withoutRouteParameterKeys`), and it is one request from there on, whatever answers it: what is
+ * noted of it on the way by the request itself — the request headers its middleware handed on
+ * (`handedOn`) — is there for the request it is answered for (`delivered`). Rid of them further in,
+ * on a copy, the middleware's word was noted for the copy and never read, and where the runtime
+ * decides what a shared cache may keep (`native/delivery.ts`), an answer to credentials the
+ * middleware handed on went out as everyone's.
  */
-export async function handleRequest(handled: HandleInput): Promise<Response> {
+export async function handleRequest(given: HandleInput): Promise<Response> {
+  const handled = withoutRouteParameterKeys(given);
   const context = requestContextFor({
     tables: { app: handled.app, edge: handled.edge, waitUntil: handled.waitUntil },
     runtime: handled.cache,

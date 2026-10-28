@@ -205,7 +205,8 @@ async function servedFailure(
       ? built
       : await stampedOf(stack, built, nonced.nonce);
   const judged = { answer, setByApplication, shell, head, partial, ...codedOf(read) };
-  // The rest of it as the shell: its every script named by the nonce, and the preloads of them.
+  // The rest of it as the shell, rendered by Next.js with the nonce the edge handed it: its every
+  // script named by the nonce, and the preloads of them.
   return (
     shellFailure(served.route, judged) ??
     (nonced.kind === 'minted' ? unstampedFailure(answer) : undefined) ??

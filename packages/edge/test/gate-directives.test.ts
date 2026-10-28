@@ -874,16 +874,22 @@ describe('a shell its gate answers with', () => {
     const kept = 'a2VwdCBieSB0aGUgZ2F0ZQ==';
     const html = `${GATE_HTML}<script nonce="${kept}">1</script>`;
     const headers = { ...SHELL.headers, 'content-security-policy': `script-src 'nonce-${kept}'` };
-    const { response, body } = await served(
+    const { response, body, dispatched, document } = await served(
       navigation('/posts/abc'),
       () => shellAnswer(encodeGateShell({ ...SHELL, headers }, encodeUtf8(html), POSTPONED)),
       { ...settings, pointer: { cspNonce: true, cspNonceMode: 'enforce' } },
     );
     const minted = /'nonce-([^']+)'/u.exec(response.headers.get('content-security-policy') ?? '');
+    const resumes = dispatched.filter(({ headers: asked }) => asked.has(RESUME_STATE_HEADER));
 
     expect(minted?.[1]).toBeDefined();
     expect(minted?.[1]).not.toBe(kept);
     expect(body).toContain(`<script nonce="${minted?.[1] ?? ''}">1</script>`);
+    // The resume renders what follows the shell with the response's nonce, and nothing stamps it.
+    expect(resumes.map(({ headers: asked }) => asked.get('content-security-policy'))).toStrictEqual(
+      [`script-src 'nonce-${minted?.[1] ?? ''}'`],
+    );
+    expect(body.endsWith(document.suffixText)).toBe(true);
   });
 
   /**

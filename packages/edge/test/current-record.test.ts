@@ -11,7 +11,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { recordCopyUrl } from '../src/cache/generation-copy.ts';
 import { readAbsentRecordBehind } from '../src/cache/generation-current.ts';
-import { loadGeneration, readServedAgain } from '../src/cache/generation-hold.ts';
+import {
+  loadGeneration,
+  readReplacementBehind,
+  readServedAgain,
+} from '../src/cache/generation-hold.ts';
 import { readGeneration } from '../src/cache/generation-loader.ts';
 import type { EdgeHost } from '../src/edge-host.ts';
 import type { EdgeRuntime } from '../src/edge-runtime.ts';
@@ -495,7 +499,7 @@ describe('a stale served record behind regional KV', () => {
     expect(authority).not.toHaveBeenCalled();
   });
 
-  it('adds no authority read to the existing foreground-regeneration refresh', async () => {
+  it("reads only KV again for a foreground regeneration, whose answer the authority's read follows", async () => {
     const authority = vi.fn(() => Promise.resolve(undefined));
     const test = fixture(await record(1), authority);
     await loadGeneration(test.edge, KEY, SETTINGS);
@@ -508,5 +512,23 @@ describe('a stale served record behind regional KV', () => {
 
     expect(authority).not.toHaveBeenCalled();
     expect(test.kv.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads the replacement of a record this isolate does not hold, though not for a validation', async () => {
+    const authority = vi.fn(() => Promise.resolve(undefined));
+    const test = fixture(await record(1), authority);
+    const pack = packOf(await record(1));
+    const validation = { ...test.edge, validated: true } as EdgeContext;
+
+    readReplacementBehind(validation, pack, SETTINGS);
+    await drain(test);
+
+    expect(authority).not.toHaveBeenCalled();
+
+    readReplacementBehind(test.edge, pack, SETTINGS);
+    await drain(test);
+
+    expect(authority).toHaveBeenCalledExactlyOnceWith(SCOPE, ENTRY, 1);
+    expect(held(test)).toBeUndefined();
   });
 });

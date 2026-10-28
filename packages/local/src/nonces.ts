@@ -11,8 +11,9 @@ import { BACKSTAGE_ROUTES, NONCE_PARAMS, type StampedDigest } from './workers/pr
  * A document's nonce, as a site that opted in has the edge mint one for each document it composes
  * (`StackOptions.cspNonce`; `documentHeaders` in the edge): minted where the policies the
  * application laid on the document have somewhere for one to go, put in them as the setting says,
- * and stamped on the document's scripts — the build's shell among them (`documents.ts`). What the
- * edge makes of a nonce is asked of its own code, on the stack's backstage.
+ * stamped on the scripts of the shell (`documents.ts`), and handed to the render that completes the
+ * shell, which names its own scripts with it (`handNonceToRender` in the edge). What the edge makes
+ * of a nonce is asked of its own code, on the stack's backstage.
  */
 
 /** The policies a nonce goes in (`CSP_HEADERS` in the edge). */
@@ -129,10 +130,11 @@ export async function noncedOf(stack: LocalStack, answer: Reading, laid: Headers
 /**
  * Where a copy of a document goes as it streams (`ReadOptions.copyTo`), to be stamped again with the
  * nonce the edge says it minted for it, by the edge's own code (`BACKSTAGE_ROUTES.stampedDigest`):
- * a document the edge stamped throughout — its shell and what followed it — is the same bytes
- * stamped again. None for one it says it minted no nonce for, or that is coded and read as it came
- * (`codingFailure` judges that); one read undone of its coding (`decoded`) is copied undone, and
- * stamped again as such.
+ * a document that names it throughout — its shell, which the edge stamped, and what followed it,
+ * which Next.js rendered with it — is the same bytes stamped again, the edge leaving an element that
+ * names it as it is. None for one it says it minted no nonce for, or that is coded and read as it
+ * came (`codingFailure` judges that); one read undone of its coding (`decoded`) is copied undone,
+ * and stamped again as such.
  */
 export function restampAt(
   stack: LocalStack,
@@ -165,10 +167,12 @@ function stampedDigestIn(text: string): StampedDigest | undefined {
 }
 
 /**
- * Why a document the edge minted a nonce for does not name it throughout, as the edge stamps it
- * (`rewriteDocumentNonces`) — on every script, every preload of one and every element that names
- * a nonce, in its shell and in what followed it: stamped again with it, it is other bytes. Judged
- * where a copy of it was stamped again as it streamed (`restampAt`).
+ * Why a document the edge minted a nonce for does not name it throughout — on every script, every
+ * preload of one and every element that names a nonce, in its shell, as the edge stamps it
+ * (`rewriteDocumentNonces`), and in what followed it, as Next.js renders it with the nonce the edge
+ * handed it: stamped again with it, it is other bytes. Past the shell the edge stamps nothing, so a
+ * script there that the render did not name goes out unnamed, and is reported here. Judged where a
+ * copy of it was stamped again as it streamed (`restampAt`).
  */
 export function unstampedFailure(answer: Reading): string | undefined {
   const { copied } = answer;
