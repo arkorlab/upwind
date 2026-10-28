@@ -61,8 +61,8 @@ import {
 import {
   ArtifactRoom,
   functionReadBudget,
-  projectedLength,
   readArtifactWhole,
+  readWhole,
   saidLength,
   type ReadBudget,
 } from './read-budget.ts';
@@ -372,30 +372,6 @@ export class Gateway {
     });
   }
 
-  /**
-   * The answer's bytes, read whole once the isolate has room for them (`ReadBudget`): the room the
-   * artifact's copy holds, where it does, and room of the answer's own otherwise. One given up
-   * while it waits for room lets go of its body unread.
-   */
-  async #readWhole(
-    response: Response,
-    signal: AbortSignal,
-    room: ArtifactRoom,
-  ): Promise<Uint8Array> {
-    let release: () => void;
-    try {
-      release = await room.hold(projectedLength(response), signal);
-    } catch (error) {
-      releaseStream(response.body, 'an artifact read given up before its body');
-      throw error;
-    }
-    try {
-      return new Uint8Array(await response.arrayBuffer());
-    } finally {
-      release();
-    }
-  }
-
   /** Both tag metadata reads cross to the authority, regardless of a nearby read gateway. */
   #authorityTagRead<T>(
     path: string,
@@ -541,7 +517,7 @@ export class Gateway {
   /**
    * The delivery record of an entry, as the edge reads it; `undefined` when there is none. Given up
    * past `RECORD_READ_DEADLINE_MS`, and called off once `signal` aborts: either, its body and all.
-   * Read whole in room of its own, as an artifact is (`#readWhole`), where the gateway says how long
+   * Read whole in room of its own, as an artifact is (`readWhole`), where the gateway says how long
    * it is, which both gateways do; an answer that says nothing, a gateway's from before they said
    * it, is read as it always was, in no room.
    */
@@ -563,7 +539,7 @@ export class Gateway {
       if (saidLength(response) === undefined) {
         return new Uint8Array(await response.arrayBuffer());
       }
-      return this.#readWhole(response, asked, new ArtifactRoom(this.#reading));
+      return readWhole(response, asked, new ArtifactRoom(this.#reading));
     });
   }
 
