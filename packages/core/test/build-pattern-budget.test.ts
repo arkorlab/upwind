@@ -65,6 +65,27 @@ describe('explicit build pattern allowances', () => {
     expect(patterns.exec(native.source, 'i', pathname)).toStrictEqual(native.exec(pathname));
   });
 
+  it.each(['', 'i'] as const)(
+    'skips a literal scan that cannot save work with flags %s',
+    (flags) => {
+      const patterns = new BuildPatternBudget();
+      const source = '/documentation/reference/another/section';
+      const pathname = '/missing/documentation/page-with-a-different-name';
+      const includes = vi.spyOn(String.prototype, 'includes');
+      let result: RegExpExecArray | null;
+      let scans: number;
+      try {
+        result = patterns.exec(source, flags, pathname);
+        scans = includes.mock.contexts.filter((value) => value === pathname).length;
+      } finally {
+        includes.mockRestore();
+      }
+
+      expect(result).toBeNull();
+      expect(scans).toBe(0);
+    },
+  );
+
   it('still refuses an expensive match where the literal is present', () => {
     const source = '^/assets/a*a*a*a*!$';
     const pathname = `/ASSETS/${'a'.repeat(200)}b`;
