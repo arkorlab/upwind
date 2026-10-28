@@ -138,6 +138,8 @@ interface Group extends Pick<ReviewedCase, 'reading' | 'record' | 'symptom' | 't
 }
 
 const GATE: Reading = 'deploy-gate';
+/** How Next.js's harness says the deploy hook failed, the build or the server it starts. */
+const DEPLOY_FAILED = 'Custom deploy script failed';
 const EVERY_CASE = ['*'];
 const OTEL = 'test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts';
 const TRACE_RECORD = 'instrumentation-registered-per-function';
@@ -291,11 +293,7 @@ const AT_16_4_3: readonly Group[] = [
   {
     reading: 'upstream',
     record: 'next-dist-client-esm-import',
-    symptom: inOrder(
-      'Custom deploy script failed',
-      "Expected ';', got 'ident'",
-      'failed to parse source code',
-    ),
+    symptom: inOrder(DEPLOY_FAILED, "Expected ';', got 'ident'", 'failed to parse source code'),
     cases: {
       'test/e2e/app-dir/next-dist-client-esm-import/next-dist-client-esm-import.test.ts':
         EVERY_CASE,
@@ -325,14 +323,20 @@ const AT_16_4_3: readonly Group[] = [
     record: 'native-addons-on-cloudflare',
     targets: ['cloudflare'],
     symptom: inOrder(
-      'Custom deploy script failed',
-      '[AuditError]: @stayingupwind/adapter: the app Function would not run:',
-      'native Node.js addons',
+      DEPLOY_FAILED,
+      'requires a native Node Container, which this local stack does not run',
     ),
-    cases: {
-      'test/e2e/prerender-native-module.test.ts': EVERY_CASE,
-      'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': EVERY_CASE,
-    },
+    cases: { 'test/e2e/prerender-native-module.test.ts': EVERY_CASE },
+  },
+  {
+    reading: 'environment',
+    record: 'native-addons-on-cloudflare',
+    targets: ['cloudflare'],
+    symptom: inOrder(
+      DEPLOY_FAILED,
+      '[AuditError]: Unproved Next.js Turbopack consumer graph uncertified duplicate module registration; refusing native publication',
+    ),
+    cases: { 'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': EVERY_CASE },
   },
 ];
 

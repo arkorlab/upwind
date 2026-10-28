@@ -126,8 +126,19 @@ The judge reads only `act`'s own timeout ("Timed out waiting for a request to be
 #### Native addons on `cloudflare`
 
 `prerender-native-module` (3 of 3) and `turbopack-reports` (1 of 1) load a native Node.js addon from
-server code, which Cloudflare's runtime cannot load. The adapter's audit refuses the Function at
-build ("the app Function would not run"). On `node`, both pass.
+server code, which Cloudflare's runtime cannot load. Since #332 the adapter builds such a Function to
+run in a native Node Container instead, and the local stack runs no Container. So on this target:
+
+- `prerender-native-module` builds, and the stack refuses to start it ("requires a native Node
+  Container, which this local stack does not run").
+- `turbopack-reports` is refused at build, before any stack: the adapter's audit cannot prove the
+  Turbopack graph it would publish in a Container ("Unproved Next.js Turbopack consumer graph
+  uncertified duplicate module registration; refusing native publication"). `upwind deploy` builds
+  the same way and would be refused as well; that is the native publication's to answer. On this
+  target the suite cannot run either way.
+
+On `node`, both pass. Read again after #332, on 2026-10-28 (run 40642267498). Before it, the audit
+refused both Functions at build ("the app Function would not run").
 
 ### Not read here
 
