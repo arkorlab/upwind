@@ -12,11 +12,12 @@ import { buildWasInvalidated } from './build-invalidated.ts';
 import { condemnedIn } from './condemned.ts';
 import { decideGeneration, type GenerationDecision } from './decision.ts';
 import { followRegeneration, readAbsentRecordBehind } from './generation-current.ts';
-import { heldGeneration, readServedAgain } from './generation-hold.ts';
+import { heldGeneration, readReplacementBehind, readServedAgain } from './generation-hold.ts';
 import { type GenerationKey, type GenerationLoad, readGeneration } from './generation-loader.ts';
 import { memberInHand, type MemberLoad, type MemberRead } from './member.ts';
 import {
   allowAnotherAsk,
+  type DispatchInput,
   foregroundDocument,
   regenerationHeaders,
   type RegenerationTarget,
@@ -32,6 +33,12 @@ import {
  * the build's shell would not have cost: the record is the shell. Where this isolate holds nothing
  * of the entry, the build's shell is read beside the record (`startRecordRead`), so that a record
  * that turns out to be none to serve costs the first byte no second read after the first.
+ *
+ * A record it does not serve — past its expiry or condemned, rendered by the Function in the
+ * foreground (`regenerateInFront`) — has the record that replaces it read for at the authority
+ * behind the response: the requests after it are served a shell first again once this isolate
+ * holds that one, not once this data center's KV shows it, which every request until then would
+ * otherwise have the Function render.
  *
  * A member of a dynamic route the build did not prerender is answered by the class shell's
  * record. Under `runtimeCache.concreteUpgrade` the member's own record is read beside it
@@ -331,6 +338,32 @@ function serveMember(
 }
 
 /**
+ * What follows a regeneration in the foreground once the runtime has answered it, behind the render
+ * the response is: where it accepted it, the authority read for what it publishes, as for a stale
+ * record's regeneration (`followRegeneration`); where it did not — another render of the entry
+ * under way, a later record already the authority's, no answer at all — the authority read for the
+ * record that replaces this one now, a second apart at the most (`readReplacementBehind`). Nothing
+ * for a partial fallback's target, which is read through its own cadence (`refreshRecord`).
+ */
+function followInFront(
+  input: CachedDocumentInput,
+  target: RegenerationTarget,
+): Pick<DispatchInput, 'onAccepted' | 'onDeclined'> {
+  if (input.refreshRecord !== undefined) {
+    return {};
+  }
+  const { edge, settings } = input;
+  return {
+    onAccepted: () => {
+      followRegeneration(edge, target.pack, settings);
+    },
+    onDeclined: () => {
+      readReplacementBehind(edge, target.pack, settings);
+    },
+  };
+}
+
+/**
  * A record past its expiry, regenerated in the foreground for a `GET`: the response is the render
  * the regeneration writes. A `HEAD` is the application's instead, as a `HEAD` of a document a
  * resume completes is (`head-expired`): the whole page rendered and published for its headers
@@ -346,13 +379,17 @@ function regenerateInFront(
     return input.passthrough('head-expired', input.middleware, input.entry.pathname, waited);
   }
   // The render the response is publishes the record that replaces this one, which every request
-  // regenerates in the foreground until the isolate holds that one: read again a second on.
+  // regenerates in the foreground until the isolate holds that one: KV is read again a second on,
+  // where the isolate holds this one (`readTargetAgain`); and, once the runtime has answered, the
+  // authority, held or not — a record condemned by an at-once invalidation never is, and KV goes on
+  // answering with it for its 30-second cache and more (`followInFront`).
   readTargetAgain(input, target);
   const dispatch = {
     request: input.request,
     middleware: middlewareOf(input),
     target,
     function: input.entry.function,
+    ...followInFront(input, target),
   };
   return foregroundDocument(input.edge, dispatch, waited);
 }

@@ -40,6 +40,15 @@ import { lookAtScopeBehind } from './scope-signal.ts';
  * the whole hold however stale it is, and so does one whose serving asks for none — of another
  * status, which is handed on, or whose freshness cannot be told, or served to a `HEAD`.
  *
+ * Where the Function answers in place of a record — past its `expire` or condemned by an at-once
+ * invalidation, regenerated in the foreground — the authority is read as well, behind the
+ * response, for the record that replaces it: what the regeneration publishes, followed once the
+ * runtime has accepted it (`followRegeneration`), or else whatever later record it holds, a second
+ * apart at the most (`readReplacementBehind`). KV goes on answering with the record replaced for its
+ * 30-second cache and the replacement's propagation, and a condemned record is never held
+ * (`condemned.ts`), so that each request reads it again before its first byte: every request for
+ * the entry until KV shows the replacement would be the Function's render rather than a shell first.
+ *
  * A hold of zero holds nothing, and every request reads the record before its first byte: a
  * setting for measuring the read, not for serving.
  */
@@ -50,6 +59,11 @@ import { lookAtScopeBehind } from './scope-signal.ts';
  * waits for nothing more.
  */
 const STALE_HOLD_MS = 1000;
+
+/** `STALE_HOLD_MS`, or the policy's hold where that is shorter. */
+function staleHoldOf(settings: RuntimeCacheSettings): number {
+  return Math.min(settings.holdMs, STALE_HOLD_MS);
+}
 
 export interface GenerationKey {
   readonly scopeId: string;
@@ -250,7 +264,9 @@ export function heldGeneration(
  * since, or none — nor under a hold of zero, which holds nothing. Served stale (`servedStale`), the
  * authority is read for it as well, a second on (`readCurrentBehind`): not by the request that asked
  * for its regeneration, which the authority is read for once the runtime has begun it
- * (`followRegeneration`).
+ * (`followRegeneration`). Nor for a foreground regeneration, read for here in KV alone: the
+ * authority is read for it once the runtime has answered it, whether this isolate holds the record
+ * or not (`followRegeneration`, `readReplacementBehind`).
  */
 export function readServedAgain(
   edge: EdgeContext,
@@ -267,13 +283,31 @@ export function readServedAgain(
   const held = memory.generations.get(recordKey);
   const now = edge.runtime.now();
   if (held?.pack === pack) {
-    const cadenceMs = Math.min(settings.holdMs, STALE_HOLD_MS);
+    const cadenceMs = staleHoldOf(settings);
     if (options.servedStale === true) readCurrentBehind(edge, pack, settings, cadenceMs);
     if (now - held.readAt >= cadenceMs) {
       memory.generations.set(recordKey, { ...held, readAt: now }, held.bytes);
       edge.ctx.waitUntil(refresh(edge, key, settings, options));
     }
   }
+}
+
+/**
+ * The Function answers a request in place of `pack`, which the edge will not serve, and nothing
+ * follows what it publishes: a record past its expiry or condemned whose foreground regeneration
+ * the runtime did not accept — another render of the entry under way, a later record already the
+ * authority's, no answer at all. The authority is read behind the response for the record that
+ * replaces it, as for a record served stale, once per `STALE_HOLD_MS` at the most
+ * (`readCurrentBehind`): whether this isolate holds `pack` or not — a condemned record never is.
+ * Adopted through the loader's own checks, a later record is served by the next request, rather
+ * than every request being the Function's until KV shows it here.
+ */
+export function readReplacementBehind(
+  edge: EdgeContext,
+  pack: DecodedGenerationPack,
+  settings: RuntimeCacheSettings,
+): void {
+  readCurrentBehind(edge, pack, settings, staleHoldOf(settings));
 }
 
 /**

@@ -31,7 +31,9 @@ const MAX_RECORD_BYTES = MAX_RECORD_MIB * KIB * KIB;
  * publish — counted from there, not from the ask, which a long resume puts seconds before it: a
  * regeneration that has published nothing by then — one dynamic here, one that failed, one behind a
  * lease held elsewhere — is left to the reads behind the stale requests after it
- * (`readCurrentBehind`).
+ * (`readCurrentBehind`). A foreground regeneration is followed from its answer, which comes once
+ * its render is made, with only its upload and commit still to come: its publish is the likelier to
+ * be found by the first read.
  */
 const FOLLOW_FIRST_MS = 800;
 const FOLLOW_EVERY_MS = 300;
@@ -250,9 +252,10 @@ function startRead(
 }
 
 /**
- * Ask behind a served build or stale record. Regional KV can still answer absent or with A after
- * the authority holds B: its current record, verified by the loader, lets later requests use B
- * without making this response wait or lowering the regional cache's TTL.
+ * Ask behind a served build or stale record, or one the Function answers in place of — expired, or
+ * condemned (`readReplacementBehind`). Regional KV can still answer absent or with A after the
+ * authority holds B: its current record, verified by the loader, lets later requests use B without
+ * making this response wait or lowering the regional cache's TTL.
  *
  * The deadline bounds the whole operation, including validation and keeping the copy. Its fence
  * forbids adoption after the deadline. An RPC cannot be cancelled through this host contract, so
@@ -283,7 +286,10 @@ function requestCurrentBehind(
   if (read !== undefined) edge.ctx.waitUntil(read);
 }
 
-/** Refresh only behind a stale generation; normal fresh delivery asks no authority. */
+/**
+ * Refresh only behind a stale generation, or one the edge does not serve — expired, or condemned —
+ * whatever this isolate holds of it; normal fresh delivery asks no authority.
+ */
 export function readCurrentBehind(
   edge: EdgeContext,
   pack: DecodedGenerationPack,
@@ -342,6 +348,12 @@ async function follow(
  * identity, digests, revision and invalidations (`adoptCurrentRecord`) — or the isolate holds a
  * later record however it came: `FOLLOW_READS` reads at the most, none begun past `FOLLOW_FOR_MS`
  * from now, where the regeneration has begun.
+ *
+ * So too for a record past its expiry or condemned, whose regeneration in the foreground the
+ * runtime accepted as it answered with its render, publishing it behind that answer: until this
+ * isolate holds what it publishes, every request for the entry is rendered in the foreground again,
+ * and a condemned record, never held, is read again from KV by each of them for as long as KV keeps
+ * answering with it (`cache/document.ts`).
  *
  * Each read holds one of the isolate's background slots while it is out, and none is held between
  * reads: the follow-up leaves them to every other read while it waits. One at a time for an entry
