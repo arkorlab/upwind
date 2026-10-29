@@ -47,19 +47,18 @@ import {
 } from './resource-changes.ts';
 import type { TickOptions } from './retention-run.ts';
 import { ScopeContext } from './scope-context.ts';
+import { scopeCompletion, scopeProjection, type ScopeSettleHost } from './scope-settle.ts';
 import { tickScope } from './scope-tick.ts';
 import { seedRepairCopier } from './seed-repair-copy.ts';
 import type { SeedRepairVerification } from './seed-repair.ts';
 import * as seed from './seed.ts';
 import { countSettleFailures, retryDelayMs, settleRetryMs } from './settle-retry.ts';
+import { chainSettlePhases } from './settle-schedule.ts';
 import {
-  chainSettle,
-  finishSettle,
   type OwnRecords,
   requireScopeMarker,
   type SettleDeps,
   type SettleOutcome,
-  settlePending,
   type SettleRun,
 } from './settle.ts';
 import {
@@ -119,9 +118,14 @@ export class CacheScope extends DurableObject<CacheBindings> {
     defer: (at) => this.#alarm.postpone(at),
     input: (now) => this.#pipeline.input(now),
   });
+  /** Delivery/tag writes stay ordered, independently of history storage and delivery. */
+  #projecting: Promise<void> = Promise.resolve();
+  /** Full completion, including ordered history and retry work: maintenance drains this fence. */
   #settling: Promise<void> = Promise.resolve();
-  /** Settle runs asked for and not begun: a run's slice gives way to them (`othersWaiting`). */
+  /** Projections asked for and not begun: a run's slice gives way to them (`othersWaiting`). */
   #waiting = 0;
+  /** History runs asked for and not begun, used only by the history's yielding policy. */
+  #historyWaiting = 0;
   #faults: TestFaults = {};
   #testLimits: Partial<ScopeLimits> = {};
   #logger: Logger | undefined;
@@ -203,10 +207,10 @@ export class CacheScope extends DurableObject<CacheBindings> {
    * is answered with `seed`. Both are decided under the lock, where erasure happens.
    *
    * A change that committed waits for its run to attempt its delivery and tag records; a public
-   * projection KV refuses is retried after the answer (`#settle`). Its run waits for the preceding
-   * runs as well, an invalidation's rewrite say. An operation that never leaves such a record —
-   * a lease, a heartbeat, an upload's record, a failed attempt's
-   * end, a seed — is answered as it commits instead (`AT_ONCE`, `SEED`). Its answer is read from
+   * projection KV refuses is retried after the answer (`#settle`). Its projection waits for earlier
+   * projections, an invalidation's rewrite say, but not their history. An operation that never
+   * leaves such a record — a lease, a heartbeat, an upload's record, a failed attempt's end, a
+   * seed — is answered as it commits instead (`AT_ONCE`, `SEED`). Its answer is read from
    * its own transaction, and nothing its caller does next is held to what a run writes: KV is read
    * where the caller runs, behind by its cache and its propagation whatever has been written, and
    * a render is held to the tags by its own pull of the delta, which the authority answers from
@@ -246,10 +250,10 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   /**
-   * Settles run one after another; a caller waits for the run that follows its commit — for the
-   * whole of it (`done`), or only until what its change owes is done (`answered`, see
-   * `settlePending`), or not at all where it owes nothing before its answer (`answerNow`). A run
-   * that cannot arm its retry fails the caller's wait; an owned private mark must also be written.
+   * Projections run one after another, as do history and retry work, but a previous run's history
+   * does not hold the next projection back. A caller waits for full completion (`done`), only its
+   * projection (`answered`), or neither (`answerNow`). Maintenance always waits for full completion.
+   * A run that cannot arm its retry fails the caller's wait; an owned private mark must be written.
    * `from` is what a change left behind as it committed (`ownRecordsOf`), whose records its run
    * writes, or `null` when it committed nothing; the alarm's runs leave it out and write the backlog.
    * `timing` is where a change that
@@ -261,35 +265,33 @@ export class CacheScope extends DurableObject<CacheBindings> {
     timing?: Timing,
   ): SettleRun {
     this.#waiting += 1;
-    const run = chainSettle(this.#settling, this.#log, async (answered) => {
-      this.#waiting -= 1;
-      timing?.lap('settle-wait');
-      // Awaited on its own: as the argument of `ended?.(…)`, the run would not happen at all for a
-      // caller with no `ended`.
-      const outcome = await this.#runSettle(answered, from, timing);
-      ended?.(outcome);
-    });
+    this.#historyWaiting += 1;
+    const host = this.#settleHost();
+    const run = chainSettlePhases(
+      { projected: this.#projecting, done: this.#settling },
+      this.#log,
+      scopeProjection(host, from, timing),
+      scopeCompletion(host, ended, timing),
+    );
+    this.#projecting = run.projected;
     this.#settling = run.done;
     return run;
   }
 
-  async #runSettle(
-    answered: () => void,
-    from: OwnRecords | null | undefined,
-    timing: Timing | undefined,
-  ): Promise<SettleOutcome> {
-    if (!this.#scope.tables) {
-      // Erased while the run waited its turn: nothing of the scope is left to settle.
-      return { pending: false, failed: false, continued: false };
-    }
-    let outcome: SettleOutcome;
-    try {
-      outcome = await settlePending({ ...this.#deps(), timing }, answered, from);
-    } catch (error) {
-      this.#log.error('settle failed', { detail: detailOf(error) });
-      outcome = { pending: true, failed: true, continued: false };
-    }
-    return finishSettle(outcome, from?.controlTags, this.#afterSettle.bind(this));
+  #settleHost(): ScopeSettleHost {
+    return {
+      tables: () => this.#scope.tables,
+      deps: () => this.#deps(),
+      log: this.#log,
+      projectStarted: () => {
+        this.#waiting -= 1;
+      },
+      historyStarted: () => {
+        this.#historyWaiting -= 1;
+      },
+      historyWaiting: () => this.#historyWaiting > 0,
+      after: this.#afterSettle.bind(this),
+    };
   }
 
   /**
@@ -676,7 +678,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     this.#testLimits = limits;
   }
 
-  /** Test configurations only: how many settle runs are asked for and not yet begun. */
+  /** Test configurations only: how many projections are asked for and not yet begun. */
   testWaitingRuns(): number {
     this.#requireTestHooks();
     return this.#waiting;

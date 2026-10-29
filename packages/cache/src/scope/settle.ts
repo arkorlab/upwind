@@ -34,6 +34,8 @@ import {
 } from './tag-projection.ts';
 import { timedDeps, type Timing } from './timing.ts';
 
+export { chainSettle } from './settle-serial.ts';
+
 /**
  * What happens after a commit, until it has happened. Two things are owed once a transaction
  * commits: the delivery record of every entry whose current generation changed, and whatever the
@@ -578,90 +580,30 @@ export interface SettleRun {
   readonly answerNow: () => void;
 }
 
-/**
- * Start a run once the one before it is over. Its change waits for `answered`, which comes early
- * when the run says so, or at once when the change does (`answerNow`), and otherwise with the end
- * of the run — or with its failure, so a run that fails before its change has an answer fails the
- * change as well.
- */
-export function chainSettle(
-  previous: Promise<void>,
-  log: Logger,
-  run: (answered: () => void) => Promise<void>,
-): SettleRun {
-  const answer = Promise.withResolvers<undefined>();
-  void answer.promise.catch(() => {
-    // Not every caller asks for the answer — `tick` waits for `done`, which carries the same
-    // failure — and one nobody asked for must not go unhandled.
-  });
-  const said = { early: false };
-  const answerNow = (): void => {
-    said.early = true;
-    answer.resolve(undefined);
-  };
-  const done = (async (): Promise<void> => {
-    try {
-      await previous;
-    } catch (error) {
-      // What a run waits for is that the one before it is over, not that it went well. Passed
-      // on, one failure would fail every later run before it began — and with it every mutation
-      // after, each committed and answered as an error — for as long as the object stayed in
-      // memory. The run that follows a failure is the one that would repair it.
-      log.warn('previous settle interrupted', { detail: detailOf(error) });
-    }
-    await run(answerNow);
-  })();
-  const over = async (): Promise<void> => {
-    await done;
-    answer.resolve(undefined);
-  };
-  void over().catch((error: unknown) => {
-    if (said.early) {
-      // The change had its answer; what is still owed, the next run or the alarm settles.
-      log.error('settle failed after the answer', { detail: detailOf(error) });
-    } else {
-      answer.reject(error);
-    }
-  });
-  return { answered: answer.promise, done, answerNow };
-}
-
 function projectionContinued(projection: PromiseSettledResult<Projection>): boolean {
   return projection.status === 'fulfilled' && projection.value.cut && projection.value.written > 0;
 }
 
 /**
- * Do what is owed, as far as it goes; never throws. `from` is what the change this run answers
- * left behind as it committed (`ownRecordsOf`), whose delivery records it rewrites — `null` for a
- * change that committed nothing, a heartbeat or a refusal, whose run rewrites none; the alarm's
- * runs, which answer no change, leave it out and rewrite the backlog.
- *
- * `answered` is told once what a change owes before it is answered is done — the delivery and tag
- * records it changed, and the scope's marker when it retired it — and none of it fell short. Of its
- * delivery records that is one slice (`projectRecords`): all of them for a commit or a small
- * invalidation, the first for a large one, whose rest the alarm comes back for at once. A run that
- * fell short says nothing early, and its change waits for all of it.
- *
- * What the host's history owes follows the answer, the change's own with the acknowledgment of
- * its delivery records, which its projection recorded: nothing is served or judged from it, so
- * neither a regeneration's commit nor an `updateTag` waits on it. The object goes on with it once
- * it has answered, as it does with any I/O under way; what fails is owed to the alarm (`pending`,
- * `failed`), and what a reset of the object cuts short — a deploy, say — to the next change's run
- * or to the alarm the change armed before its answer. A change that follows before the run is over
- * waits for it as for any run before its own, unless the history leaves its share to that
- * change's run (`HistoryDeps.othersWaiting`) — or unless it leaves no record of its own, a lease
- * say, and waits for no run at all (`SettleRun.answerNow`).
- *
- * Where the run is to say how long its parts took (`SettleDeps.timing`), what it waits on in KV and
- * in storage is timed as far as its change's answer waits for it: what the history does once the
- * change is answered is not, since the answer says its timing as it goes, and would hold such a
- * call only had it ended by then.
+ * Only small completion metadata survives projection: queued history must not retain carried
+ * data values, delivery records or the chunks that built them.
  */
-export async function settlePending(
+export interface ProjectionOutcome {
+  readonly early: boolean;
+  readonly failed: boolean;
+  readonly continued: boolean;
+  readonly controlTagsFailed?: boolean;
+}
+
+/**
+ * Write what a change owes before its answer: its delivery and tag records, the retirement marker,
+ * and a continuation alarm for a partial rewrite. `null` rewrites no delivery records; an alarm
+ * leaves `from` out to rewrite the backlog. History is a separate phase (`publishPending`).
+ */
+export async function projectPending(
   deps: SettleDeps,
-  answered?: () => void,
   from?: OwnRecords | null,
-): Promise<SettleOutcome> {
+): Promise<ProjectionOutcome> {
   const waited = deps.timing === undefined ? deps : timedDeps(deps, deps.timing);
   const [projection, marker, tags] = await Promise.allSettled([
     projectRecords(waited, from),
@@ -674,28 +616,56 @@ export async function settlePending(
   const cut = projection.status === 'fulfilled' && projection.value.cut;
   const continuation = !shortfall && cut ? await Promise.allSettled([deps.continueSoon()]) : [];
   const early = !shortfall && continuation.every((outcome) => outcome.status === 'fulfilled');
-  if (early) {
-    answered?.();
-  }
-  const [records, delivery, historyContinued] = await deps.history.publish(early ? deps : waited);
   // Every outcome is asked, not the first that answers: an outage fails several of these at once,
   // and the ones `||` would have skipped are the ones nothing else would ever say.
   const rejected = [
-    failure(deps, 'history storage', records),
     failure(deps, 'scope marker', marker),
     failure(deps, 'tag records', tags),
-    failure(deps, 'history delivery', delivery),
     failure(deps, 'delivery records', projection),
     ...continuation.map((outcome) => failure(deps, 'continuation alarm', outcome)),
   ];
   const failed = rejected.includes(true) || projectionFailed;
+  return {
+    early,
+    failed,
+    continued: projectionContinued(projection),
+    ...((from?.controlTags.projected === false ||
+      (tags.status === 'rejected' && tags.reason instanceof ControlTagProjectionError)) && {
+      controlTagsFailed: true,
+    }),
+  };
+}
+
+/** History and its retry outcome, with no reference to the projection's values or record bytes. */
+export async function publishPending(
+  deps: SettleDeps,
+  projection: ProjectionOutcome,
+): Promise<SettleOutcome> {
+  const waited =
+    projection.early || deps.timing === undefined ? deps : timedDeps(deps, deps.timing);
+  const [records, delivery, historyContinued] = await deps.history.publish(waited);
+  const rejected = [
+    failure(deps, 'history storage', records),
+    failure(deps, 'history delivery', delivery),
+  ];
+  const failed = projection.failed || rejected.includes(true);
   const pending = workRemains(deps);
   return {
     pending,
     failed,
-    continued: historyContinued === true || projectionContinued(projection),
-    ...(tags.status === 'rejected' &&
-      tags.reason instanceof ControlTagProjectionError && { controlTagsFailed: true }),
+    continued: historyContinued === true || projection.continued,
+    ...(projection.controlTagsFailed === true && { controlTagsFailed: true }),
     ...(pending && !failed && waitOf(deps)),
   };
+}
+
+/** The complete serial run, retained for hosts that do not schedule its phases separately. */
+export async function settlePending(
+  deps: SettleDeps,
+  answered?: () => void,
+  from?: OwnRecords | null,
+): Promise<SettleOutcome> {
+  const projection = await projectPending(deps, from);
+  if (projection.early) answered?.();
+  return publishPending(deps, projection);
 }
