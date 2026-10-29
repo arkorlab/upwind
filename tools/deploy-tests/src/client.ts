@@ -84,6 +84,8 @@ const SERVER_ATTEMPTS = 4;
 const SERVER_FIRST_WAIT_MS = 1000;
 const SERVER_MAX_WAIT_MS = 8000;
 const SERVER_ERROR = 500;
+/** An API refusal is one bounded log line, even when the host returned a much larger message. */
+const MAX_REFUSAL_MESSAGE = 2048;
 
 export interface ApiErrorOptions extends ErrorOptions {
   readonly code: string;
@@ -193,16 +195,36 @@ async function retrying<T>(call: () => Promise<T>, options: Retries): Promise<T>
   return call();
 }
 
-/** A refusal, with the code it carries and nothing else of what it said. */
-function refusalOf(status: number, body: string): ApiError {
+/** Remove credentials before normalizing or shortening any text that the API may have echoed. */
+function diagnosticText(value: string, privateValues: ReadonlySet<string>): string {
+  let redacted = value;
+  const secrets = [...privateValues].toSorted((left, right) => right.length - left.length);
+  for (const secret of secrets) {
+    if (secret.length > 0) redacted = redacted.replaceAll(secret, '[redacted]');
+  }
+  return redacted.replaceAll(/[\p{Cc}\p{Cf}\p{Z}]+/gu, ' ').trim();
+}
+
+/** Keep the host's reason beside its status and code, without printing arbitrary response bodies. */
+function refusalOf(status: number, body: string, privateValues: ReadonlySet<string>): ApiError {
   let code = 'unknown';
+  let detail = '';
   try {
     const error = optionalRecord(asRecord(JSON.parse(body))['error']);
-    code = error === undefined ? code : (optionalString(error['code']) ?? code);
+    if (typeof error?.['code'] === 'string') code = error['code'];
+    if (typeof error?.['message'] === 'string') detail = error['message'];
   } catch {
     // A body that is not the API's shape says nothing beyond the status, which is enough to act on.
   }
-  return new ApiError(`HTTP ${String(status)} (${code})`, { code, status });
+  const reason = diagnosticText(detail, privateValues);
+  const prefix = `HTTP ${String(status)} (${diagnosticText(code, privateValues)})`;
+  const message = reason === '' ? prefix : `${prefix}: ${reason}`;
+  return new ApiError(
+    message.length > MAX_REFUSAL_MESSAGE
+      ? `${message.slice(0, MAX_REFUSAL_MESSAGE - 1)}…`
+      : message,
+    { code, status },
+  );
 }
 
 /**
@@ -211,6 +233,15 @@ function refusalOf(status: number, body: string): ApiError {
  * came after it would come to a hook the harness has already cut off.
  */
 export function createClient(config: Config, until?: AbortSignal): Client {
+  const privateValues = new Set([config.token]);
+
+  function rememberSecrets(entries: readonly EnvEntry[]): void {
+    for (const entry of entries) {
+      if (entry.secret && entry.value !== null && entry.value !== '')
+        privateValues.add(entry.value);
+    }
+  }
+
   async function once(
     method: string,
     path: string,
@@ -232,7 +263,7 @@ export function createClient(config: Config, until?: AbortSignal): Client {
     });
     const text = await response.text();
     if (!response.ok) {
-      throw refusalOf(response.status, text);
+      throw refusalOf(response.status, text, privateValues);
     }
     return text === '' ? {} : (JSON.parse(text) as unknown);
   }
@@ -297,7 +328,7 @@ export function createClient(config: Config, until?: AbortSignal): Client {
       if (!Array.isArray(entries)) {
         throw new TypeError('the API answered no environment');
       }
-      return entries.map((entry) => {
+      const environment = entries.map((entry) => {
         const record = asRecord(entry);
         return {
           name: asString(record['name']),
@@ -308,8 +339,11 @@ export function createClient(config: Config, until?: AbortSignal): Client {
           secret: asBoolean(record['secret']),
         };
       });
+      rememberSecrets(environment);
+      return environment;
     },
     async putEnv(env: readonly EnvEntry[]): Promise<void> {
+      rememberSecrets(env);
       await request('PUT', `${project}/env`, JSON.stringify({ env }), 'application/json');
     },
     async createDeployment(bundle: DeploymentBundle): Promise<string[]> {
