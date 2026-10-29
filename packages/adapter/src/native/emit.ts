@@ -21,6 +21,7 @@ import {
   middlewareMatchers,
   middlewareOutput,
 } from '../collect.ts';
+import { edgeProcessPlugin } from '../edge-process.ts';
 import type { EdgeEntry } from '../edge.ts';
 import { ensureStaticRoutes } from '../ensure-static.ts';
 import { exists } from '../fs.ts';
@@ -304,6 +305,10 @@ async function emitNativeEdge(
           return null;
         },
       },
+      // Last: it reprints a chunk it rewrites, which the plugins above match by the text they find.
+      edgeProcessPlugin(
+        entries.flatMap((edge) => edge.files.map((file) => path.join(outDir, pathOf(file)))),
+      ),
     ],
     transform: {
       target: 'es2023',
