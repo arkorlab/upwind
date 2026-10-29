@@ -1,5 +1,6 @@
-import { detectDomainLocale, getAcceptLanguageLocale, getCookieLocale } from '@next/routing';
+import { detectDomainLocale } from '@next/routing';
 
+import { preferredLanguage } from './locale-language.ts';
 import type { Store } from './store.ts';
 
 type Config = Pick<Store['manifest']['config'], 'basePath' | 'i18n' | 'trailingSlash'>;
@@ -49,6 +50,26 @@ function domainRedirect(
   return `${scheme}://${destination.domain}/${isDefault ? '' : preferred}`;
 }
 
+/** Next's cookie parser decodes the first named value, including quoted values. */
+function cookieLocale(headers: Headers, locales: readonly string[]): string | undefined {
+  const header = headers.get('cookie');
+  if (header === null) return undefined;
+  for (const part of header.split(';')) {
+    const at = part.indexOf('=');
+    if (at === -1 || part.slice(0, at).trim() !== 'NEXT_LOCALE') continue;
+    let value = part.slice(at + 1).trim();
+    if (value.startsWith('"')) value = value.slice(1, -1);
+    try {
+      value = decodeURIComponent(value);
+    } catch {
+      // The cookie parser leaves malformed escapes unchanged.
+    }
+    const normalized = value.toLowerCase();
+    return locales.find((locale) => locale.toLowerCase() === normalized);
+  }
+  return undefined;
+}
+
 /** Next.js's root locale negotiation, before its routing tables or middleware run. */
 export function preferredLocaleRedirect(
   config: Config,
@@ -60,20 +81,12 @@ export function preferredLocaleRedirect(
   if (!isRoot(basePath, url.pathname)) return undefined;
   const domains = domainsOf(i18n);
   const domain = detectDomainLocale(domains, url.hostname);
-  let preferred: string | undefined;
-  try {
-    preferred = getAcceptLanguageLocale(headers.get('accept-language') ?? '', i18n.locales);
-  } catch {
-    // Next's getLocaleRedirect ignores an invalid Accept-Language header.
-  }
+  const preferred = preferredLanguage(headers.get('accept-language') ?? '', i18n.locales);
   const redirect = domainRedirect(domain, preferred, domains);
   if (redirect !== undefined) return redirect;
   const fallback = domain?.defaultLocale ?? i18n.defaultLocale;
   const detected =
-    domain?.defaultLocale ??
-    getCookieLocale(headers.get('cookie') ?? undefined, i18n.locales) ??
-    preferred ??
-    i18n.defaultLocale;
+    domain?.defaultLocale ?? cookieLocale(headers, i18n.locales) ?? preferred ?? i18n.defaultLocale;
   if (detected.toLowerCase() === fallback.toLowerCase()) return undefined;
   const slash = config.trailingSlash ? '/' : '';
   return `${basePath}/${detected}${slash}${url.search}${url.hash}`;

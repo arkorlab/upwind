@@ -27,7 +27,12 @@ const app: AppModule = { entries: { [TARGET]: () => ({ handler }) } };
 function deployment(placedIn?: string): Store {
   const manifest = {
     buildId: 'build',
-    config: { basePath: '/base' },
+    config: {
+      basePath: '/base',
+      trailingSlash: false,
+      skipTrailingSlashRedirect: false,
+      poweredByHeader: false,
+    },
     entrypoints: [
       {
         id: TARGET,
