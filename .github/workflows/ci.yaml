@@ -219,6 +219,8 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Base64 encoding and error contracts on both Node releases
+        run: pnpm --filter @stayingupwind/core exec vitest run --config vitest.config.mts test/bytes.test.ts
       # Packing the generated application needs the same built packages as the unit suites.
       - run: pnpm build
       # One real Next.js build plus an HTTP request through the emitted Function. The remaining

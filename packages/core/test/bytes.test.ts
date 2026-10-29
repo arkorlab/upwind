@@ -93,9 +93,11 @@ describe('bytes', () => {
   it('refuses what is not base64', () => {
     // One character cannot make a byte; `=` is padding only where it ends a whole group of four,
     // and `*` is no character of the alphabet.
-    expect(() => fromBase64('a')).toThrow(DOMException);
-    expect(() => fromBase64('YQ=')).toThrow(DOMException);
-    expect(() => fromBase64('Y*==')).toThrow(DOMException);
+    const errorType = Object.hasOwn(Uint8Array, 'fromBase64') ? SyntaxError : DOMException;
+
+    expect(() => fromBase64('a')).toThrow(errorType);
+    expect(() => fromBase64('YQ=')).toThrow(errorType);
+    expect(() => fromBase64('Y*==')).toThrow(errorType);
   });
 
   it('orders strings by code units', () => {
