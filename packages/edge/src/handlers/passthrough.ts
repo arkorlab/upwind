@@ -1,10 +1,12 @@
 import type { AppRuntime, ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
 import {
+  encodeLocaleRequest,
   HEADER_RULES_AFTER_COOKIE_COUNT_HEADER,
   HEADER_RULES_JUDGED_HEADER,
   HEADER_RULES_LEFT_HEADER,
   INVALIDATED_REVISION_HEADER,
   INVALIDATED_TAGS_HEADER,
+  LOCALE_REQUEST_HEADER,
   MIDDLEWARE_DONE_HEADER,
   MIDDLEWARE_REWRITE_STATUS_HEADER,
   MIDDLEWARE_SET_COOKIE_HEADER,
@@ -365,6 +367,9 @@ function markMiddlewareDone(
   middleware: NonNullable<PassthroughInput['middleware']>,
 ): void {
   request.headers.set(MIDDLEWARE_DONE_HEADER, '1');
+  if (middleware.localeRequest !== undefined) {
+    request.headers.set(LOCALE_REQUEST_HEADER, encodeLocaleRequest(middleware.localeRequest));
+  }
   // The header rules of `next.config`, judged on the request as the client sent it, which the edge
   // lays on the answer itself where the runtime says it left them off (`HEADER_RULES_LEFT_HEADER`).
   if (middleware.judgedRules !== undefined) {

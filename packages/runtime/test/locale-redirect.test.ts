@@ -103,4 +103,75 @@ describe('root locale redirects', () => {
       preferredLocaleRedirect(config, new URL('https://example.test/'), new Headers()),
     ).toBeUndefined();
   });
+
+  it('negotiates the bare root before a basePath routing miss, as Next.js does', () => {
+    const config = { basePath: '/base', trailingSlash: false, i18n: I18N };
+
+    expect(
+      preferredLocaleRedirect(
+        config,
+        new URL('https://example.test/'),
+        new Headers({ 'accept-language': 'fr' }),
+      ),
+    ).toBe('/base/fr');
+  });
+
+  it('does not negotiate a nonroot request rewritten to the root by edge middleware', () => {
+    const config = { basePath: '/base', trailingSlash: false, i18n: I18N };
+
+    expect(
+      preferredLocaleRedirect(
+        config,
+        new URL('https://example.test/base'),
+        new Headers({ 'accept-language': 'fr' }),
+        { initURL: 'https://example.test/base/landing' },
+      ),
+    ).toBeUndefined();
+  });
+
+  it('negotiates the original root and original query even after an edge middleware rewrite', () => {
+    const config = { basePath: '/base', trailingSlash: false, i18n: I18N };
+
+    expect(
+      preferredLocaleRedirect(
+        config,
+        new URL('https://example.test/base/inspect?added=1'),
+        new Headers({ 'accept-language': 'fr' }),
+        { initURL: 'https://example.test/base?q=client' },
+      ),
+    ).toBe('/base/fr?q=client');
+  });
+
+  it.each([
+    { language: 'fr', cookie: null, expected: '/base/fr' },
+    { language: null, cookie: 'NEXT_LOCALE=fr', expected: '/base/fr' },
+    { language: null, cookie: null, expected: undefined },
+  ])('negotiates original headers across middleware overrides: $language/$cookie', (original) => {
+    const config = { basePath: '/base', trailingSlash: false, i18n: I18N };
+
+    expect(
+      preferredLocaleRedirect(
+        config,
+        new URL('https://example.test/base'),
+        new Headers({ 'accept-language': 'en', cookie: 'NEXT_LOCALE=en' }),
+        { initURL: 'https://example.test/base', localeRequest: original },
+      ),
+    ).toBe(original.expected);
+  });
+
+  it('ignores a locale added by middleware when the client supplied neither preference', () => {
+    const config = { basePath: '/base', trailingSlash: false, i18n: I18N };
+
+    expect(
+      preferredLocaleRedirect(
+        config,
+        new URL('https://example.test/base/inspect'),
+        new Headers({ 'accept-language': 'fr', cookie: 'NEXT_LOCALE=fr' }),
+        {
+          initURL: 'https://example.test/base',
+          localeRequest: { language: null, cookie: null },
+        },
+      ),
+    ).toBeUndefined();
+  });
 });

@@ -4,6 +4,7 @@ import {
   INVALIDATED_REVISION_HEADER,
   INVALIDATED_TAGS_HEADER,
   invalidatedTagsValue,
+  type LocaleRequest,
 } from '@stayingupwind/core/paas';
 import { anyConditionHolds, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
@@ -66,6 +67,8 @@ export interface HandleInput extends EntryTables {
 export interface RoutedInput extends HandleInput {
   /** What Next.js is told the client asked for: `requestMeta.initURL`. */
   readonly initURL: string;
+  /** Original locale negotiation headers, retained across edge middleware overrides. */
+  readonly localeRequest?: LocaleRequest | undefined;
   /** The context every render of the request runs in: its clock and its platform hooks. */
   readonly run: Run;
   /**

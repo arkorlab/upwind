@@ -34,7 +34,7 @@ import {
   markedRewrites,
 } from './rewritten-path.ts';
 import { routeQuery } from './route-parameters.ts';
-import { HTTP_OK } from './serve.ts';
+import { HTTP_OK, type RoutedInput } from './serve.ts';
 import { entrypointKindOf, type Store } from './store.ts';
 
 /**
@@ -505,12 +505,13 @@ export async function redirectedBeforeRouting(
   store: Store,
   url: URL,
   headers: Headers,
+  original?: Pick<RoutedInput, 'initURL' | 'localeRequest'>,
 ): Promise<Response | undefined> {
   const collapsed = withoutRepeatedSlashes(url);
   if (collapsed !== undefined) {
     return redirectResponse(collapsed, HTTP_PERMANENT_REDIRECT, undefined);
   }
-  const locale = preferredLocaleRedirect(store.manifest.config, url, headers);
+  const locale = preferredLocaleRedirect(store.manifest.config, url, headers, original);
   if (locale !== undefined) {
     return redirectResponse(locale, HTTP_TEMPORARY_REDIRECT, undefined);
   }

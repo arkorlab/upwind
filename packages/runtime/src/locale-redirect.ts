@@ -1,6 +1,7 @@
 import { detectDomainLocale } from '@next/routing';
 
 import { preferredLanguage } from './locale-language.ts';
+import type { RoutedInput } from './serve.ts';
 import type { Store } from './store.ts';
 
 type Config = Pick<Store['manifest']['config'], 'basePath' | 'i18n' | 'trailingSlash'>;
@@ -27,6 +28,7 @@ function domainsOf(i18n: I18n): Domain[] | undefined {
 }
 
 function isRoot(basePath: string, requested: string): boolean {
+  // Next negotiates bare `/` before rejecting paths outside a configured basePath.
   const pathname =
     basePath !== '' && (requested === basePath || requested.startsWith(`${basePath}/`))
       ? requested.slice(basePath.length) || '/'
@@ -51,8 +53,7 @@ function domainRedirect(
 }
 
 /** Next's cookie parser decodes the first named value, including quoted values. */
-function cookieLocale(headers: Headers, locales: readonly string[]): string | undefined {
-  const header = headers.get('cookie');
+function cookieLocale(header: string | null, locales: readonly string[]): string | undefined {
   if (header === null) return undefined;
   for (const part of header.split(';')) {
     const at = part.indexOf('=');
@@ -75,19 +76,27 @@ export function preferredLocaleRedirect(
   config: Config,
   url: URL,
   headers: Headers,
+  original?: Pick<RoutedInput, 'initURL' | 'localeRequest'>,
 ): string | undefined {
   const { i18n, basePath } = config;
   if (i18n === null || i18n === undefined || i18n.localeDetection === false) return undefined;
-  if (!isRoot(basePath, url.pathname)) return undefined;
+  // The edge can already have rewritten the request. Negotiate on the client's URL, before that
+  // middleware decision, rather than interpreting its destination as a new root request.
+  const { initURL, localeRequest } = original ?? {};
+  const requested = initURL === undefined || initURL === url.href ? url : new URL(initURL, url);
+  if (!isRoot(basePath, requested.pathname)) return undefined;
   const domains = domainsOf(i18n);
-  const domain = detectDomainLocale(domains, url.hostname);
-  const preferred = preferredLanguage(headers.get('accept-language') ?? '', i18n.locales);
+  const domain = detectDomainLocale(domains, requested.hostname);
+  const language =
+    localeRequest === undefined ? headers.get('accept-language') : localeRequest.language;
+  const preferred = preferredLanguage(language ?? '', i18n.locales);
   const redirect = domainRedirect(domain, preferred, domains);
   if (redirect !== undefined) return redirect;
   const fallback = domain?.defaultLocale ?? i18n.defaultLocale;
+  const cookie = localeRequest === undefined ? headers.get('cookie') : localeRequest.cookie;
   const detected =
-    domain?.defaultLocale ?? cookieLocale(headers, i18n.locales) ?? preferred ?? i18n.defaultLocale;
+    domain?.defaultLocale ?? cookieLocale(cookie, i18n.locales) ?? preferred ?? i18n.defaultLocale;
   if (detected.toLowerCase() === fallback.toLowerCase()) return undefined;
   const slash = config.trailingSlash ? '/' : '';
-  return `${basePath}/${detected}${slash}${url.search}${url.hash}`;
+  return `${basePath}/${detected}${slash}${requested.search}${requested.hash}`;
 }

@@ -67,7 +67,8 @@ function selectionsOf(
     if (part === '') continue;
     const fields = part.split(';', MAX_FIELD_PARTS + 1);
     const language = fields[0]?.toLowerCase();
-    if (language === undefined || language === '' || fields.length > MAX_FIELD_PARTS) return undefined;
+    if (language === undefined || language === '' || fields.length > MAX_FIELD_PARTS)
+      return undefined;
     named.add(language);
     const quality = qualityOf(fields[1]);
     if (quality === undefined) return undefined;

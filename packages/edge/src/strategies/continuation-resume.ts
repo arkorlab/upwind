@@ -1,6 +1,8 @@
 import {
   CACHE_ROUTE_ESCAPED_HEADER,
   CACHE_ROUTE_HEADER,
+  encodeLocaleRequest,
+  LOCALE_REQUEST_HEADER,
   ORIGINAL_URL_HEADER,
   pathHeaders,
   RESUME_PRERENDER_ESCAPED_HEADER,
@@ -81,6 +83,9 @@ function resumeRequest(input: ContinuationStart<EdgeContext>, signal: AbortSigna
   }
   if (ctx.originalUrl !== undefined) {
     upstream.headers.set(ORIGINAL_URL_HEADER, ctx.originalUrl);
+  }
+  if (ctx.localeRequest !== undefined) {
+    upstream.headers.set(LOCALE_REQUEST_HEADER, encodeLocaleRequest(ctx.localeRequest));
   }
   if (input.headers !== undefined) {
     const told = Object.entries(input.headers);

@@ -1,7 +1,11 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import type { ImagesConfig } from '@stayingupwind/core/images';
 import type { ProjectManifest, ReservedRoute, StaticFileEntry } from '@stayingupwind/core/manifest';
-import { MIDDLEWARE_DONE_HEADER } from '@stayingupwind/core/paas';
+import {
+  decodeLocaleRequest,
+  LOCALE_REQUEST_HEADER,
+  MIDDLEWARE_DONE_HEADER,
+} from '@stayingupwind/core/paas';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { blobObjectKey } from '@stayingupwind/host/storage';
@@ -66,6 +70,7 @@ function escaped(pathname: string): string {
 }
 
 interface Case {
+  readonly i18nRoot?: boolean;
   /** What the source's middleware answers, given the source's path and the file it may rewrite to. */
   readonly middleware: (paths: { readonly source: string; readonly target: string }) => Response;
   /** The rules ahead of the filesystem, given the same paths. */
@@ -77,7 +82,7 @@ interface Case {
 
 /** An optimizer request for a shipped source its middleware covers, and what was asked of whom. */
 async function optimized(example: Case) {
-  const source = `/gated/${crypto.randomUUID()}.png`;
+  const source = example.i18nRoot === true ? '/index' : `/gated/${crypto.randomUUID()}.png`;
   const target = `/gated/${crypto.randomUUID()}.png`;
   const paths = { source, target };
   const stored = { source: png(`stored at ${source}`), target: png(`stored at ${target}`) };
@@ -87,7 +92,10 @@ async function optimized(example: Case) {
   const manifest: ProjectManifest = {
     ...site.manifest,
     deployment: { ...site.manifest.deployment, dplId: DPL },
-    middleware: { matchers: [{ sourceRegex: '^/gated/' }] },
+    middleware: {
+      matchers: [{ sourceRegex: example.i18nRoot === true ? '^/index$' : '^/gated/' }],
+    },
+    ...(example.i18nRoot === true && { spelledPrefix: { basePath: '', locales: ['en', 'fr'] } }),
     staticFiles: { [source]: own, [target]: other },
     reservedRoutes: [...example.reserved(paths)],
   };
@@ -187,6 +195,31 @@ function claimedForVariant(paths: { readonly source: string }): readonly Reserve
 }
 
 describe('a shipped image source the middleware changed', () => {
+  it('keeps the anonymous root locale inputs when source middleware adds locale headers', async () => {
+    const result = await optimized({
+      i18nRoot: true,
+      middleware: (paths) => {
+        return new Response(null, {
+          headers: {
+            'x-middleware-rewrite': `https://${HOST}${paths.target}`,
+            'x-middleware-override-headers': 'accept-language,cookie',
+            'x-middleware-request-accept-language': 'fr',
+            'x-middleware-request-cookie': 'NEXT_LOCALE=fr',
+          },
+        });
+      },
+      reserved: (paths) => claiming(paths.target),
+    });
+
+    expect(result.response.status).toBe(200);
+    expect(result.worker).toHaveLength(1);
+    expect(result.worker[0]?.headers.get('accept-language')).toBe('fr');
+    expect(result.worker[0]?.headers.get('cookie')).toBe('NEXT_LOCALE=fr');
+    expect(
+      decodeLocaleRequest(result.worker[0]?.headers.get(LOCALE_REQUEST_HEADER) ?? ''),
+    ).toStrictEqual({ language: null, cookie: null });
+  });
+
   it('asks the Worker for a path it rewrote the source to that a rule claims', async () => {
     const result = await optimized({
       middleware: rewritingTo,

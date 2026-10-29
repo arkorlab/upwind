@@ -57,6 +57,7 @@ import {
   edgeRewriteStatusOf,
   hasBody,
   isRscRequest,
+  initialRequestOf,
   wantsBlockingMetadata,
   withoutRouteParameterKeys,
 } from './incoming.ts';
@@ -95,7 +96,6 @@ import {
   type HandleInput,
   HTTP_NOT_FOUND,
   HTTP_OK,
-  initUrlOf,
   INVALIDATIONS_RECORDED_WITHIN_MS,
   invokeEntry,
   resume,
@@ -281,7 +281,7 @@ async function handleFull(given: RoutedInput, store: Store): Promise<Response> {
   }
   const headers = routedHeaders(input.request, url, store.manifest.config.basePath);
   return (
-    (await redirectedBeforeRouting(store, url, headers)) ??
+    (await redirectedBeforeRouting(store, url, headers, input)) ??
     withHeaderRulesLeft(input.request, await routeAndServe(input, store, url, headers))
   );
 }
@@ -644,7 +644,7 @@ export async function handleRequest(given: HandleInput): Promise<Response> {
     clock: handled.clock,
     invalidated: handled.invalidated,
   });
-  const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
+  const input: RoutedInput = { ...handled, ...initialRequestOf(handled.request), run: context.run };
   return context.run(async () => {
     if (handled.cache !== undefined) {
       await catchUpWithScope(handled.cache, handled.request, handled.waitUntil);
