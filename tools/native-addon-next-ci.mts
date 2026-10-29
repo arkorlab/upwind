@@ -32,6 +32,7 @@ import {
 import { retainNativeNextDiagnostics } from './native-addon-next-diagnostics.mts';
 import { fixtureOf, record, type Fixture } from './native-addon-next-fixtures.mts';
 import { NativeNextProcesses, pause } from './native-addon-next-process.mts';
+import { prepareNode26Addon } from './native-addon-node26.mts';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const NEXT_VERSION = '16.4.3';
@@ -163,6 +164,7 @@ async function prepare(
 ): Promise<void> {
   const { fixture, serverMinification } = build;
   await copyFixture(source, directory, fixture);
+  await prepareNode26Addon(directory, NODE_VERSION);
   const packageFile = path.join(directory, 'package.json');
   const originalJson: unknown = JSON.parse(await readFile(packageFile, 'utf8'));
   const original = record(originalJson);
@@ -384,6 +386,7 @@ async function main(): Promise<void> {
     bundler: 'turbopack',
     serverMinification,
     diagnosticOnly: serverMinification === 'off',
+    nativeAddonCompatibility: NODE_VERSION === '26.13.0' ? 'node26-current-isolate-v1' : null,
   };
   const runnerTemp = process.env['RUNNER_TEMP'];
   assert.ok(runnerTemp !== undefined, 'Pass RUNNER_TEMP for the isolated control');

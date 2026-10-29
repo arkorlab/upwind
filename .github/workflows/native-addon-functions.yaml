@@ -55,7 +55,7 @@ jobs:
         run: pnpm exec vitest run --project adapter packages/adapter/test/node-raw-closure-integration.test.ts
         env:
           UPWIND_NATIVE_FUNCTION_INTEGRATION: '1'
-      - name: Check out the unchanged Next.js 16.4.3 native fixtures
+      - name: Check out the fixed Next.js 16.4.3 native fixtures
         shell: bash
         run: |
           set -euo pipefail

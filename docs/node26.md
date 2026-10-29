@@ -29,3 +29,9 @@ and rejection after source, loader, realm and cache mutation on both reviewed re
 
 The independent Pages compiler corpus keeps its original Node 24 producer and immutable input
 pins. Its output is historical qualification data, not a declaration of the current toolchain.
+
+The real-Next native addon CI verifies the original fixture blobs before copying them. On Node 26,
+the copy's single `context->GetIsolate()` call uses `v8::Isolate::GetCurrent()` instead: V8 removed
+the Context method. Both Git blob identities and the exact substitution are logged, and build
+results name `node26-current-isolate-v1`. The Node 24 copy and the checked-out upstream inputs
+remain unchanged; this compatibility edit is never applied to application sources.
