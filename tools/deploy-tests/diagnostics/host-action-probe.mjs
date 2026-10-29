@@ -49,7 +49,9 @@ async function probe(label) {
       void (async () => {
         const reader = copy.body.getReader(); const decoder = new TextDecoder(); let text = '';
         for (;;) { const { value, done } = await reader.read(); if (done) break; text += decoder.decode(value, { stream: true });
-          item.numbers = [...new Set(text.match(/\b0\.\d{6,}\b/g) ?? [])]; item.lastChunkAt = performance.now(); }
+          item.numbers = [...new Set(text.match(/\b0\.\d{6,}\b/g) ?? [])];
+          item.justputit = [...text.matchAll(/"id":"justputit"[^}]{0,200}?"children":"([^"\n]+)"/g)].map(m => m[1]);
+          item.lastChunkAt = performance.now(); }
         item.completeAt = performance.now();
       })().catch(() => { item.failed = true; });
       return res;
@@ -104,7 +106,9 @@ async function probe(label) {
 try {
   await probe('serial-1');
   await probe('serial-2');
-  await Promise.all(Array.from({ length: 4 }, (_, i) => probe('parallel-' + i)));
+  for (let batch = 0; batch < 3; batch++) {
+    await Promise.all(Array.from({ length: 4 }, (_, i) => probe('parallel-' + batch + '-' + i)));
+  }
 } finally {
   await browser.close();
 }
