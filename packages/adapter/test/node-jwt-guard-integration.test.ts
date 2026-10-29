@@ -84,6 +84,18 @@ Object.defineProperty(Error.prototype,inspectKey,{value:appInspect,writable:true
 `;
 
 describe.skipIf(!ENABLED)('fixed Node JWT evaluation guard (dedicated Linux CI)', () => {
+  it.runIf(process.versions.node === '26.13.0')(
+    'refuses a supplied SlowBuffer accessor without invoking it',
+    async () => {
+      await expect(
+        scenario(
+          `Object.defineProperty(require('node:buffer'),'SlowBuffer',{configurable:true,get(){throw new Error('application getter ran');}});`,
+          '',
+        ),
+      ).rejects.toThrow('unexpected SlowBuffer export');
+    },
+  );
+
   it('rejects a record for the other reviewed Node release', async () => {
     const other = process.versions.node === '24.22.1' ? '26.13.0' : '24.22.1';
     await expect(scenario(`record.nodeVersion=${JSON.stringify(other)};`, '')).rejects.toThrow(
