@@ -293,16 +293,36 @@ async function importConfigModule(file: string, absolute: string): Promise<unkno
 }
 
 /** Where the platform's configuration for this build is, if the project wrote one. */
-async function findConfigFile(
+export async function findProjectConfigFile(
   projectDir: string,
-  names: readonly string[],
+  hostConfigFiles: readonly string[] = [],
 ): Promise<string | undefined> {
-  for (const name of names) {
+  for (const name of configFileOrder(hostConfigFiles)) {
     if (await exists(path.join(projectDir, name))) {
       return name;
     }
   }
   return undefined;
+}
+
+/** The selected file's unvalidated value, for tools that read additional project settings. */
+export interface ProjectConfigFile {
+  readonly file: string | undefined;
+  readonly value: unknown;
+}
+
+/** Read the same single file as the adapter, including Node-evaluated TypeScript exports. */
+export async function readProjectConfigFile(
+  projectDir: string,
+  hostConfigFiles: readonly string[] = [],
+): Promise<ProjectConfigFile> {
+  const file = await findProjectConfigFile(projectDir, hostConfigFiles);
+  if (file === undefined) return { file: undefined, value: {} };
+  const absolute = path.join(projectDir, file);
+  const value = file.endsWith('.ts')
+    ? await importConfigModule(file, absolute)
+    : parseJsonFile(file, await readFile(absolute, 'utf8'), file.endsWith('.jsonc'));
+  return { file, value };
 }
 
 /**
@@ -316,14 +336,10 @@ export async function readProjectConfig(
   projectDir: string,
   hostConfigFiles: readonly string[] = [],
 ): Promise<ProjectConfig> {
-  const file = await findConfigFile(projectDir, configFileOrder(hostConfigFiles));
+  const { file, value } = await readProjectConfigFile(projectDir, hostConfigFiles);
   if (file === undefined) {
     return EMPTY_PROJECT_CONFIG;
   }
-  const absolute = path.join(projectDir, file);
-  const value = file.endsWith('.ts')
-    ? await importConfigModule(file, absolute)
-    : parseJsonFile(file, await readFile(absolute, 'utf8'), file.endsWith('.jsonc'));
   if (file === VERCEL_CONFIG) {
     const parsed = projectConfigSchema.safeParse(value);
     if (!parsed.success) {

@@ -17,11 +17,13 @@
   ],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./project-config": "./src/project-config.ts"
   },
   "publishConfig": {
     "exports": {
-      ".": "./dist/index.js"
+      ".": "./dist/index.js",
+      "./project-config": "./dist/project-config.js"
     }
   },
   "scripts": {

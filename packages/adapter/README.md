@@ -196,6 +196,13 @@ only — and may export a function, so what a project declares can be computed. 
 parse, a key whose shape is wrong, or a schedule that cannot be run fails the build with the file
 named: the alternative is a deployment whose jobs quietly never fire.
 
+Build tools can import `findProjectConfigFile` and `readProjectConfigFile` from
+`@stayingupwind/adapter/project-config`. Both use this same filename order and accept additional
+host filenames before `vercel.json`. The finder returns the selected filename without executing
+it. The reader returns `{ file, value }`, preserving settings for the caller to validate; an absent
+file returns `{ file: undefined, value: {} }`. TypeScript evaluation runs project code, so callers
+must provide the same isolation and time limits they use for a build.
+
 ## A large application, split across Functions
 
 A Function has a size limit, and every byte of its code is compiled when it starts. An application
