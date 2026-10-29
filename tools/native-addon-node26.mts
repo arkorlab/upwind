@@ -9,6 +9,7 @@ const BEFORE = 'context->GetIsolate()';
 const AFTER = 'v8::Isolate::GetCurrent()';
 
 function blob(source: Buffer): string {
+  // eslint-disable-next-line sonarjs/hashing -- Git blob identity must use Git's SHA-1 format; this is not a signature or credential hash.
   return createHash('sha1').update(`blob ${source.length}\0`).update(source).digest('hex');
 }
 
@@ -19,7 +20,7 @@ export async function prepareNode26Addon(directory: string, version: string): Pr
   assert.equal(blob(original), ORIGINAL, 'Node 26 compatibility requires the fixed upstream addon');
   const source = original.toString('utf8');
   assert.equal(source.split(BEFORE).length, 2, 'The fixed V8 context call must occur once');
-  const updated = Buffer.from(source.replace(BEFORE, AFTER));
+  const updated = Buffer.from(source.replace(BEFORE, () => AFTER));
   await writeFile(file, updated);
   console.log(
     JSON.stringify({
