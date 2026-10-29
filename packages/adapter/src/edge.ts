@@ -224,13 +224,14 @@ export function edgeBundleOptions(
     }),
     plugins: [
       globalObjectPlugin(),
-      edgeProcessPlugin(settings.chunks ?? []),
       externalsPlugin(onExternal),
       // No patch reaches this bundle, so there is nothing for the map to be wrong about; see
       // `sourceMapsPlugin` for why order matters where one does.
       ...(settings.sourceMaps === undefined ? [] : [sourceMapsPlugin(settings.sourceMaps.kept)]),
       // Turbopack writes an edge entry's chunks as it writes the app's (`const-export-setters.ts`).
       constExportSettersPlugin(),
+      // Last: it reprints a chunk it rewrites, which the plugins above match by the text they find.
+      edgeProcessPlugin(settings.chunks ?? []),
     ],
     transform: {
       inject: GLOBAL_OBJECT,
