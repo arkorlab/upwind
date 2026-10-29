@@ -26,12 +26,14 @@ describe('the project configuration file reader', () => {
   it('preserves settings the adapter does not interpret', async () => {
     const value = { crons: 'validated by the caller', services: { api: { root: 'api' } } };
     const dir = projectWith('upwind.json', value);
+
     await expect(readProjectConfigFile(dir)).resolves.toStrictEqual({ file: 'upwind.json', value });
   });
 
   it('selects a TypeScript file without executing it', async () => {
     const dir = projectWith('upwind.json', {});
     writeFileSync(path.join(dir, 'upwind.config.ts'), "throw new Error('executed');");
+
     await expect(findProjectConfigFile(dir)).resolves.toBe('upwind.config.ts');
     await expect(readProjectConfigFile(dir)).rejects.toThrow('executed');
   });
@@ -42,6 +44,7 @@ describe('the project configuration file reader', () => {
       path.join(dir, 'custom.config.ts'),
       'export default async () => ({ services: { api: { root: "api" } } });',
     );
+
     await expect(readProjectConfigFile(dir, ['custom.config.ts'])).resolves.toStrictEqual({
       file: 'custom.config.ts',
       value: { services: { api: { root: 'api' } } },
@@ -50,6 +53,7 @@ describe('the project configuration file reader', () => {
 
   it('returns an empty value when no configuration exists', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'upwind-empty-config-'));
+
     await expect(readProjectConfigFile(dir)).resolves.toStrictEqual({ file: undefined, value: {} });
   });
 });
