@@ -27,7 +27,7 @@
   "scripts": {
     "build": "node scripts/build.ts",
     "prepack": "node scripts/build.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
     "@jridgewell/sourcemap-codec": "catalog:",
@@ -43,6 +43,7 @@
     "miniflare": "catalog:",
     "next": "catalog:",
     "typescript": "catalog:",
+    "typescript-api": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
