@@ -108,6 +108,7 @@ jobs:
   # Everything that can be answered before a runner does anything expensive: what the selection means,
   # how many pieces it is in, and how many of them may run at once.
   plan:
+    if: inputs.tests != 'diagnose-regressions'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -330,6 +331,7 @@ jobs:
           fi
 
   deploy-tests:
+    if: inputs.tests != 'diagnose-regressions'
     needs: plan
     name: ${{ matrix.target }} ${{ matrix.shard }}/${{ needs.plan.outputs.total }}
     runs-on: ubuntu-latest
@@ -673,3 +675,39 @@ jobs:
         env:
           MATRIX: ${{ needs.plan.outputs.matrix }}
         run: node tools/deploy-tests/src/report-results.ts --dir "$RUNNER_TEMP/deploy-results"
+
+  diagnose-action:
+    if: inputs.tests == 'diagnose-regressions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+      - name: Install the diagnostic browser
+        run: |
+          npm install --prefix "$RUNNER_TEMP/regression-probe" --ignore-scripts --no-audit --no-fund playwright@1.61.0
+          "$RUNNER_TEMP/regression-probe/node_modules/.bin/playwright" install --only-shell chromium
+      - name: Keep the test credential in a file
+        env:
+          TOKEN: ${{ secrets.ARKOR_API_TOKEN }}
+          PROJECT_IDS: ${{ secrets.ADAPTER_TEST_PROJECT_IDS }}
+          PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$TOKEN" >"$RUNNER_TEMP/regression-token"
+          ids="$(printf '%s' "${PROJECT_IDS:-$PROJECT_ID}" | tr -d '\r')"
+          set -f
+          set -- $ids
+          echo "::add-mask::$1"
+          echo "ADAPTER_TEST_PROJECT_ID=$1" >>"$GITHUB_ENV"
+      - name: Observe the kept action fixture
+        env:
+          ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
+          ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/regression-token
+          PLAYWRIGHT_MODULE: ${{ runner.temp }}/regression-probe/node_modules/playwright/index.mjs
+        run: node tools/deploy-tests/diagnostics/host-action-probe.mjs
