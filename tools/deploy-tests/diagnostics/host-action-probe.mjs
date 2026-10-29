@@ -31,36 +31,41 @@ const observations = [];
 async function probe(label) {
   const context = await browser.newContext();
   const page = await context.newPage();
-  await page.addInitScript(() => {
-    const fetchOriginal = window.fetch;
-    window.diagnosticFetches = [];
-    window.fetch = async (...args) => {
-      const sentAt = performance.now();
-      const res = await fetchOriginal(...args);
-      const url = new URL(res.url);
-      if (url.origin !== location.origin) return res;
-      const init = args[1] ?? {};
-      const headers = new Headers(init.headers);
-      const item = { path: url.pathname, foo: url.searchParams.get('foo'), method: init.method ?? 'GET', sentAt,
-        headersAt: performance.now(), prefetch: headers.get('next-router-prefetch'), segment: headers.get('next-router-segment-prefetch'),
-        revalidated: res.headers.get('x-action-revalidated'), edge: res.headers.get('x-arkor-edge')?.split(';')[0], numbers: [] };
-      window.diagnosticFetches.push(item);
-      const copy = res.clone();
-      void (async () => {
-        const reader = copy.body.getReader(); const decoder = new TextDecoder(); let text = '';
-        for (;;) { const { value, done } = await reader.read(); if (done) break; text += decoder.decode(value, { stream: true });
-          item.numbers = [...new Set(text.match(/\b0\.\d{6,}\b/g) ?? [])];
-          item.justputit = [...text.matchAll(/"id":"justputit"[^}]{0,200}?"children":"([^"\n]+)"/g)].map(m => m[1]);
-          item.lastChunkAt = performance.now(); }
-        item.completeAt = performance.now();
-      })().catch(() => { item.failed = true; });
-      return res;
-    };
-  });
   page.setDefaultTimeout(20000);
   const record = { label, network: [], snapshots: [] };
   observations.push(record);
   let start = null;
+  const captured = [];
+  const requests = new Map();
+  const buffers = new Map();
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Network.enable');
+  cdp.on('Network.requestWillBeSent', ({ requestId, request, type }) => {
+    if (!request.url.startsWith(target) || type !== 'Fetch') return;
+    const url = new URL(request.url);
+    if (url.pathname !== '/revalidate') return;
+    const item = { method: request.method, path: url.pathname, foo: url.searchParams.get('foo'), sentAt: performance.now(), numbers: [] };
+    requests.set(requestId, item); captured.push(item); buffers.set(requestId, '');
+  });
+  const addBytes = (id, bytes) => {
+    const item = requests.get(id); if (!item || !bytes) return;
+    const text = buffers.get(id) + Buffer.from(bytes, 'base64').toString('utf8');
+    buffers.set(id, text);
+    item.numbers = [...new Set(text.match(/\b0\.\d{6,}\b/g) ?? [])];
+    item.justputit = [...text.matchAll(/"id":"justputit"[^}]{0,200}?"children":"([^"\n]+)"/g)].map(m => m[1]);
+    item.lastChunkAt = performance.now();
+  };
+  cdp.on('Network.responseReceived', async ({ requestId, response }) => {
+    const item = requests.get(requestId); if (!item) return;
+    item.headersAt = performance.now(); item.status = response.status;
+    const h = Object.fromEntries(Object.entries(response.headers).map(([k,v]) => [k.toLowerCase(),v]));
+    item.revalidated = h['x-action-revalidated']; item.edge = h['x-arkor-edge']?.split(';')[0];
+    try { const r = await cdp.send('Network.streamResourceContent', { requestId }); addBytes(requestId, r.bufferedData); }
+    catch { item.captureFailed = true; }
+  });
+  cdp.on('Network.dataReceived', ({ requestId, data }) => addBytes(requestId, data));
+  cdp.on('Network.loadingFinished', ({ requestId }) => { const item=requests.get(requestId); if(item)item.completeAt=performance.now(); });
+  cdp.on('Network.loadingFailed', ({ requestId, canceled }) => { const item=requests.get(requestId); if(item){item.canceled=canceled;item.failedAt=performance.now();} });
   const pending = new Set();
   page.on('response', (res) => {
     if (start === null || !res.url().startsWith(target)) return;
@@ -82,14 +87,14 @@ async function probe(label) {
   try {
     await page.goto(target + '/revalidate', { waitUntil: 'networkidle' });
     record.initial = await page.locator('#justputit').textContent();
-    record.actionBrowserTime = await page.evaluate(() => performance.now());
+    record.actionBrowserTime = performance.now();
     start = performance.now();
     await page.locator('#redirect-revalidate-client').click();
     for (const ms of [500,1500,2500,3500,5500,10000]) {
       await page.waitForTimeout(Math.max(0, ms - (performance.now() - start)));
       await snapshot(String(ms));
     }
-    record.fetchesBeforeReload = await page.evaluate(() => window.diagnosticFetches);
+    record.fetchesBeforeReload = structuredClone(captured);
     await page.reload({ waitUntil: 'networkidle' });
     await snapshot('reload');
     record.changedAt2500 = record.snapshots.find(s => s.label === '2500')?.value !== record.initial;
