@@ -79,6 +79,8 @@ export interface Resolved {
   readonly route: string;
   readonly pathname: string;
   readonly url: string;
+  /** The authoritative Pages query, kept separate from the source URL visible to the application. */
+  readonly query?: Record<string, string | string[]> | undefined;
 }
 
 /** The type a prerender's body was recorded with; a route handler's is whatever it answered. */

@@ -39,6 +39,7 @@ import {
   applyRequestChanges,
   decodeHandOff,
   handOffOf,
+  resolvedFromHandOff,
   requestChanges,
   type Routed,
 } from './handoff.ts';
@@ -454,6 +455,7 @@ async function answerResolved(
     ...forwarded,
     rewriteStatus: routed.status,
     routingHeaders: routed.headers,
+    routingQuery: resolved.query,
   };
   const answer = withRoutingHeaders(
     await serveResolved(asked, store, resolved, url),
@@ -475,14 +477,11 @@ async function serveHandedOff(
   value: string,
 ): Promise<Response> {
   const handOff = decodeHandOff(value);
-  if (handOff === undefined) {
+  if (handOff === undefined)
     return new Response('the routing handed over does not read', { status: HTTP_BAD_REQUEST });
-  }
-  const resolved: Resolved = { route: handOff.route, pathname: handOff.pathname, url: handOff.url };
+  const resolved = resolvedFromHandOff(handOff);
   const owner = ownerOfResolved(store, resolved);
-  if (owner !== undefined) {
-    return misdirected(owner, input.request.body, value);
-  }
+  if (owner !== undefined) return misdirected(owner, input.request.body, value);
   const headers = applyRequestChanges(
     routedHeaders(input.request, url, store.manifest.config.basePath),
     handOff,

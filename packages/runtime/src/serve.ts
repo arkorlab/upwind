@@ -109,6 +109,8 @@ export interface RoutedInput extends HandleInput {
    * rules judges it by what it will carry: the `Last-Modified` it is given, a cookie beside it.
    */
   readonly routingHeaders?: Headers | undefined;
+  /** A Pages handler's effective query, separate from the original URL used for asPath/req.url. */
+  readonly routingQuery?: Record<string, string | string[]> | undefined;
 }
 
 export { initUrlOf, resumeUrl, stripPlatformHeaders } from './incoming.ts';
@@ -118,6 +120,7 @@ export function baseRequestMeta(input: RoutedInput): Record<string, unknown> {
     minimalMode: true,
     relativeProjectDir: '.',
     initURL: input.initURL,
+    ...(input.routingQuery !== undefined && { query: { ...input.routingQuery } }),
     // What the Pages Router asks the platform for when a render ends in `notFound: true`, or
     // when a `fallback: false` route is asked for a member the build did not make.
     render404,
