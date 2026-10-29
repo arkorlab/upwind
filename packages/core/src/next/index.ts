@@ -12,6 +12,7 @@ export {
   resourceCacheBridgeRevalidations,
   type ResourceCacheBridgeResult,
 } from './resource-cache-bridge.ts';
+export { rendersFormActionsWithResumeData } from './form-actions.ts';
 export {
   isWebSocketResponseBridgeSource,
   webSocketResponseBridge,

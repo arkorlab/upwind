@@ -1,3 +1,5 @@
+import { order, releaseOf } from './releases.ts';
+
 /**
  * What is known here about Next.js's own releases, rather than about a deployment.
  *
@@ -54,44 +56,6 @@ export const SECURITY_RELEASE_URL =
  * Moves with `SECURITY_FLOOR`, to the first canary that carries the next release's fixes.
  */
 export const SECURITY_CANARY_FLOOR = '16.5.0-canary.14';
-
-/**
- * `major.minor.patch`, and nothing a prerelease or build suffix adds to it — but a canary's own
- * number, which is the one suffix a floor is ever kept for (`SECURITY_CANARY_FLOOR`).
- *
- * Anchored at both ends, with the suffix having to begin the way a suffix does. Reading the leading
- * numbers and stopping would make `16.3.0nonsense` a release and warn about it, and a version this
- * cannot read is one it has to say nothing about rather than guess at.
- */
-const RELEASE = /^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?<suffix>[-+].*)?$/u;
-/** A canary's suffix, `-canary.N`, with a build suffix after it where one is given. */
-const CANARY = /^-canary\.(?<number>\d+)(?:\+.*)?$/u;
-
-interface Release {
-  readonly major: number;
-  readonly minor: number;
-  readonly patch: number;
-  /** The `N` of a `-canary.N`, for a canary; nothing for a release or another prerelease. */
-  readonly canary?: number;
-}
-
-function releaseOf(version: string): Release | undefined {
-  const groups = RELEASE.exec(version)?.groups;
-  if (groups === undefined) {
-    return undefined;
-  }
-  const canary = CANARY.exec(groups['suffix'] ?? '')?.groups?.['number'];
-  return {
-    major: Number(groups['major']),
-    minor: Number(groups['minor']),
-    patch: Number(groups['patch']),
-    ...(canary !== undefined && { canary: Number(canary) }),
-  };
-}
-
-function order(a: Release, b: Release): number {
-  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
-}
 
 /** The release or canary a version is held to and falls short of: what a warning names. */
 export interface SecurityFloor {

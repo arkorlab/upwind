@@ -318,6 +318,34 @@ describe('the postponed state a post to an App Router page is rendered with', ()
     expect(vi.mocked(invokeNodeHandler)).toHaveBeenCalledExactlyOnceWith(handedNone());
   });
 
+  /**
+   * A form posted without JavaScript names its action in its body, not in a header. The Next.js
+   * that renders such a post whole with the state (vercel/next.js#100740) is handed it as a fetch
+   * action is; one before it answered with what follows the shell, and is handed none.
+   */
+  it.each([
+    ['multipart/form-data; boundary=x', '16.5.0-canary.28', BUILD_STATE],
+    ['application/x-www-form-urlencoded', '16.5.0', BUILD_STATE],
+    ['multipart/form-data; boundary=x', '16.5.0-canary.27', undefined],
+    ['multipart/form-data; boundary=x', '16.4.3', undefined],
+  ])('for a form posted as %s, under Next.js %s, is %s', async (type, nextVersion, state) => {
+    const store = deployment();
+    vi.mocked(getStore).mockReturnValue({ ...store, manifest: { ...store.manifest, nextVersion } });
+
+    await handleRequest({
+      app,
+      edge: { entries: {} },
+      request: post({ 'content-type': type }),
+      waitUntil: () => {
+        // Nothing is scheduled for an action this page answers.
+      },
+    });
+
+    expect(vi.mocked(invokeNodeHandler)).toHaveBeenCalledExactlyOnceWith(
+      state === undefined ? handedNone() : handed(state),
+    );
+  });
+
   it('is none for a post that runs no action', async () => {
     await handleRequest({
       app,
