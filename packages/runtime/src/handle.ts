@@ -39,6 +39,7 @@ import {
   applyRequestChanges,
   decodeHandOff,
   handOffOf,
+  resolvedFromHandOff,
   requestChanges,
   type Routed,
 } from './handoff.ts';
@@ -56,6 +57,7 @@ import {
   edgeRewriteStatusOf,
   hasBody,
   isRscRequest,
+  initialRequestOf,
   wantsBlockingMetadata,
   withoutRouteParameterKeys,
 } from './incoming.ts';
@@ -94,7 +96,6 @@ import {
   type HandleInput,
   HTTP_NOT_FOUND,
   HTTP_OK,
-  initUrlOf,
   INVALIDATIONS_RECORDED_WITHIN_MS,
   invokeEntry,
   resume,
@@ -280,7 +281,7 @@ async function handleFull(given: RoutedInput, store: Store): Promise<Response> {
   }
   const headers = routedHeaders(input.request, url, store.manifest.config.basePath);
   return (
-    (await redirectedBeforeRouting(store, url, headers)) ??
+    (await redirectedBeforeRouting(store, url, headers, input)) ??
     withHeaderRulesLeft(input.request, await routeAndServe(input, store, url, headers))
   );
 }
@@ -454,6 +455,7 @@ async function answerResolved(
     ...forwarded,
     rewriteStatus: routed.status,
     routingHeaders: routed.headers,
+    routingQuery: resolved.query,
   };
   const answer = withRoutingHeaders(
     await serveResolved(asked, store, resolved, url),
@@ -475,14 +477,11 @@ async function serveHandedOff(
   value: string,
 ): Promise<Response> {
   const handOff = decodeHandOff(value);
-  if (handOff === undefined) {
+  if (handOff === undefined)
     return new Response('the routing handed over does not read', { status: HTTP_BAD_REQUEST });
-  }
-  const resolved: Resolved = { route: handOff.route, pathname: handOff.pathname, url: handOff.url };
+  const resolved = resolvedFromHandOff(handOff);
   const owner = ownerOfResolved(store, resolved);
-  if (owner !== undefined) {
-    return misdirected(owner, input.request.body, value);
-  }
+  if (owner !== undefined) return misdirected(owner, input.request.body, value);
   const headers = applyRequestChanges(
     routedHeaders(input.request, url, store.manifest.config.basePath),
     handOff,
@@ -645,7 +644,7 @@ export async function handleRequest(given: HandleInput): Promise<Response> {
     clock: handled.clock,
     invalidated: handled.invalidated,
   });
-  const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
+  const input: RoutedInput = { ...handled, ...initialRequestOf(handled.request), run: context.run };
   return context.run(async () => {
     if (handled.cache !== undefined) {
       await catchUpWithScope(handled.cache, handled.request, handled.waitUntil);

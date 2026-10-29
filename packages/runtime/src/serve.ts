@@ -4,6 +4,7 @@ import {
   INVALIDATED_REVISION_HEADER,
   INVALIDATED_TAGS_HEADER,
   invalidatedTagsValue,
+  type LocaleRequest,
 } from '@stayingupwind/core/paas';
 import { anyConditionHolds, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
@@ -66,6 +67,8 @@ export interface HandleInput extends EntryTables {
 export interface RoutedInput extends HandleInput {
   /** What Next.js is told the client asked for: `requestMeta.initURL`. */
   readonly initURL: string;
+  /** Original locale negotiation headers, retained across edge middleware overrides. */
+  readonly localeRequest?: LocaleRequest | undefined;
   /** The context every render of the request runs in: its clock and its platform hooks. */
   readonly run: Run;
   /**
@@ -109,6 +112,8 @@ export interface RoutedInput extends HandleInput {
    * rules judges it by what it will carry: the `Last-Modified` it is given, a cookie beside it.
    */
   readonly routingHeaders?: Headers | undefined;
+  /** A Pages handler's effective query, separate from the original URL used for asPath/req.url. */
+  readonly routingQuery?: Record<string, string | string[]> | undefined;
 }
 
 export { initUrlOf, resumeUrl, stripPlatformHeaders } from './incoming.ts';
@@ -118,6 +123,7 @@ export function baseRequestMeta(input: RoutedInput): Record<string, unknown> {
     minimalMode: true,
     relativeProjectDir: '.',
     initURL: input.initURL,
+    ...(input.routingQuery !== undefined && { query: { ...input.routingQuery } }),
     // What the Pages Router asks the platform for when a render ends in `notFound: true`, or
     // when a `fallback: false` route is asked for a member the build did not make.
     render404,

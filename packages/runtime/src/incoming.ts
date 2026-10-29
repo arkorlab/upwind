@@ -1,4 +1,6 @@
 import {
+  decodeLocaleRequest,
+  LOCALE_REQUEST_HEADER,
   HEADER_RULES_JUDGED_HEADER,
   MIDDLEWARE_DONE_HEADER,
   MIDDLEWARE_REWRITE_STATUS_HEADER,
@@ -13,6 +15,7 @@ import {
 } from '@stayingupwind/core/request';
 
 import type { ServedObservation } from './cache/host.ts';
+import type { RoutedInput } from './serve.ts';
 
 /**
  * What an incoming request says about itself.
@@ -69,6 +72,15 @@ export function initUrlOf(request: Request): string {
   const original = request.headers.get(ORIGINAL_URL_HEADER);
   const url = new URL(request.url);
   return original === null ? request.url : new URL(original, url.origin).href;
+}
+
+/** Trusted edge metadata is read once, before routing strips platform headers. */
+export function initialRequestOf(request: Request): Pick<RoutedInput, 'initURL' | 'localeRequest'> {
+  const carried = request.headers.get(LOCALE_REQUEST_HEADER);
+  return {
+    initURL: initUrlOf(request),
+    localeRequest: carried === null ? undefined : decodeLocaleRequest(carried),
+  };
 }
 
 /**

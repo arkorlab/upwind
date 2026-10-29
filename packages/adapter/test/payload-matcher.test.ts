@@ -1,10 +1,13 @@
 import { createRequire } from 'node:module';
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
+import { middlewareApplies } from '../../core/src/paas/middleware.ts';
 import { matcherHolds } from '../../core/src/paas/payload-matcher.ts';
 import {
   budgetPatterns,
+  createPatternBudget,
+  type PatternBudget,
   PatternBudgetExceededError,
 } from '../../core/src/request/pattern-budget.ts';
 
@@ -15,19 +18,47 @@ import {
  * application's Function before the middleware.
  */
 
-const require = createRequire(import.meta.url);
+const require = createRequire(process.env['UPWIND_MATCHER_NEXT_PACKAGE'] ?? import.meta.url);
+interface Config {
+  readonly basePath?: string;
+  readonly i18n?: { readonly locales: readonly string[]; readonly defaultLocale: string };
+}
+interface MatcherInput {
+  readonly source: string;
+  readonly locale?: false;
+  readonly has?: {
+    readonly type: 'header';
+    readonly key: string;
+    readonly value: string;
+  }[];
+  readonly missing?: {
+    readonly type: 'cookie';
+    readonly key: string;
+    readonly value: string;
+  }[];
+}
 const { getMiddlewareMatchers } = require('next/dist/build/analysis/get-page-static-info.js') as {
   getMiddlewareMatchers: (
-    matchers: string[],
-    config: { readonly basePath: string; readonly i18n: undefined },
-  ) => { readonly regexp: string }[];
+    matchers: readonly (string | MatcherInput)[],
+    config: Config,
+  ) => {
+    readonly regexp: string;
+    readonly has?: MatcherInput['has'];
+    readonly missing?: MatcherInput['missing'];
+  }[];
 };
 
+function emittedMatcher(source: string | MatcherInput, config: Config) {
+  const [matcher] = getMiddlewareMatchers([source], config);
+  if (matcher === undefined) throw new Error('Next emitted no matcher');
+  return matcher;
+}
+
 /** The matcher Next.js writes for `source`, compiled as the edge compiles it. */
-function matcherOf(source: string): RegExp {
-  const [matcher] = getMiddlewareMatchers([source], { basePath: '', i18n: undefined });
+function matcherOf(source: string | MatcherInput, config: Config = {}): RegExp {
+  const matcher = emittedMatcher(source, config);
   // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp -- Next.js's own matchers, compiled as the edge compiles them: case-insensitive, without `u`
-  return new RegExp(matcher?.regexp ?? '', 'i');
+  return new RegExp(matcher.regexp, 'i');
 }
 
 const SOURCES = [
@@ -38,6 +69,18 @@ const SOURCES = [
   '/blog/:slug',
   '/:path*',
 ];
+
+const I18N = { locales: ['en', 'ja'], defaultLocale: 'en' };
+const MODERN_PAYLOAD_END = String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
+const supportsSegmentPayloads = matcherOf('/:path*').source.endsWith(MODERN_PAYLOAD_END);
+const CONFIGS: readonly Config[] = [
+  {},
+  { basePath: '/base' },
+  { i18n: I18N },
+  { basePath: '/base', i18n: I18N },
+  { basePath: '/é', i18n: I18N },
+];
+const requestScope: { current: PatternBudget | undefined } = { current: undefined };
 
 const PATHS = [
   '/',
@@ -71,9 +114,13 @@ const PATHS = [
   '/blog/a/b',
 ];
 
-describe('a matcher of Next.js 16.4, tested a part at a time', () => {
+describe('a Next.js middleware matcher, tested a part at a time', () => {
   beforeAll(() => {
-    budgetPatterns();
+    budgetPatterns(() => requestScope.current);
+  });
+
+  afterEach(() => {
+    requestScope.current = undefined;
   });
 
   it.each(SOURCES)('answers as the matcher Next.js writes for %s does', (source) => {
@@ -107,13 +154,16 @@ describe('a matcher of Next.js 16.4, tested a part at a time', () => {
     expect(matcherHolds(matcher, `/rewritten/${'c'.repeat(200)}`)).toBe(true);
   });
 
-  it('answers yes where one way holds, though the head is not allowed against another', () => {
-    const matcher = matcherOf('/:locale/:path*');
-    // Too long for the head whole, and a segment that splits a short head off.
-    const path = `/en/a.segments/${'x'.repeat(40_000)}.segment.rsc`;
+  it.skipIf(!supportsSegmentPayloads)(
+    'answers yes where one way holds, though the head is not allowed against another',
+    () => {
+      const matcher = matcherOf('/:locale/:path*');
+      // Too long for the head whole, and a segment that splits a short head off.
+      const path = `/en/a.segments/${'x'.repeat(40_000)}.segment.rsc`;
 
-    expect(matcherHolds(matcher, path)).toBe(true);
-  });
+      expect(matcherHolds(matcher, path)).toBe(true);
+    },
+  );
 
   it('reads where a line terminator rules segments out once, however many places there are', () => {
     const matcher = matcherOf('/:locale/:path*');
@@ -125,13 +175,16 @@ describe('a matcher of Next.js 16.4, tested a part at a time', () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
-  it('refuses a path with more places a segment could begin than it splits', () => {
-    const matcher = matcherOf('/:locale/:path*');
+  it.skipIf(!supportsSegmentPayloads)(
+    'refuses a path with more places a segment could begin than it splits',
+    () => {
+      const matcher = matcherOf('/:locale/:path*');
 
-    expect(() => matcherHolds(matcher, `/en/${'a.segments/'.repeat(17)}x.segment.rsc`)).toThrow(
-      PatternBudgetExceededError,
-    );
-  });
+      expect(() => matcherHolds(matcher, `/en/${'a.segments/'.repeat(17)}x.segment.rsc`)).toThrow(
+        PatternBudgetExceededError,
+      );
+    },
+  );
 
   it('does not split a matcher that reads past what it matches', () => {
     // `/:locale/:path*` with a lookahead in its first parameter, as an application could write it.
@@ -145,4 +198,140 @@ describe('a matcher of Next.js 16.4, tested a part at a time', () => {
       PatternBudgetExceededError,
     );
   });
+
+  it.each(CONFIGS)(
+    'agrees with Next locale matching for %j within each request budget',
+    (config) => {
+      const paths = [
+        ...PATHS,
+        '/en/account/profile',
+        '/ja/docs/a-normal-article-with-a-long-slug',
+        '/_next/',
+        '/_next',
+        '/en/_next/',
+        '/_next/data/b/_next/',
+        '/_next/data/b/en/docs/article.json',
+        '/_next/data/b/en/docs/a.segments/x.segment.rsc/',
+        '/_next/data/x#y.segments/a#b.segment.rsc',
+        '/en/a.segments/b\u{2028}c.segment.rsc',
+        '/EN/DOCS/a.RSC',
+        '/K/docs/a.rsc',
+        '/en/docs/hello%20world',
+      ];
+      for (const source of ['/:path*', '/docs/:path*', '/docs/:slug']) {
+        for (const input of [source, { source, locale: false as const }]) {
+          const matcher = matcherOf(input, config);
+          for (const path of paths) {
+            requestScope.current = createPatternBudget();
+            const value = `${config.basePath ?? ''}${path}`;
+
+            expect(matcherHolds(matcher, value), `${source}: ${JSON.stringify(value)}`).toBe(
+              matcher.test(value),
+            );
+          }
+        }
+      }
+    },
+  );
+
+  it('keeps header and cookie conditions beside the locale matcher', () => {
+    const emitted = emittedMatcher(
+      {
+        source: '/docs/:path*',
+        has: [{ type: 'header', key: 'x-preview', value: 'enabled' }],
+        missing: [{ type: 'cookie', key: 'disabled', value: '1' }],
+      },
+      { basePath: '/base', i18n: I18N },
+    );
+    const matchers = [{ sourceRegex: emitted.regexp, has: emitted.has, missing: emitted.missing }];
+    const url = new URL('https://example.test/base/en/docs/a-normal-article-with-a-long-slug');
+    const headers = [
+      new Headers({ 'x-preview': 'enabled' }),
+      new Headers(),
+      new Headers({ 'x-preview': 'enabled', cookie: 'disabled=1' }),
+    ];
+
+    expect(headers.map((value) => middlewareApplies(matchers, url, value))).toStrictEqual([
+      true,
+      false,
+      false,
+    ]);
+  });
+
+  it('charges a conclusive locale mismatch to the shared request budget', () => {
+    const matcher = matcherOf('/:path*', { i18n: I18N });
+    const path = '/_next/static/chunks/example.js';
+    requestScope.current = { remaining: 1400 };
+
+    expect(matcherHolds(matcher, path)).toBe(false);
+    expect(requestScope.current.remaining).toBeLessThan(1400);
+    expect(() => {
+      for (let retry = 0; retry < 4; retry += 1) matcherHolds(matcher, path);
+    }).toThrow(PatternBudgetExceededError);
+  });
+
+  it('does not strip RSC or segment suffixes from a JSON-only matcher', () => {
+    const modern = String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
+    const legacy = String.raw`(\.json)?[\/#\?]?$`;
+    const source = matcherOf('/docs/article', { i18n: I18N }).source.split(modern).join(legacy);
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp -- Next's own literal matcher with the 16.2.0 JSON-only payload grammar
+    const matcher = new RegExp(source, 'i');
+    const paths = [
+      '/en/docs/article',
+      '/en/docs/article.json',
+      '/en/docs/article.rsc',
+      '/en/docs/article.RSC',
+      '/en/docs/article.segments/x.segment.rsc',
+      '/_next/data/b/en/docs/article.json',
+      '/_next/data/b/en/docs/article.rsc',
+    ];
+
+    expect(paths.map((path) => matcherHolds(matcher, path))).toStrictEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+    ]);
+  });
+
+  it('keeps segment-looking text as an ordinary pathname in a JSON-only matcher', () => {
+    const legacy = String.raw`(\.json)?[\/#\?]?$`;
+    const source = matcherOf('/:locale/:path*').source.split(MODERN_PAYLOAD_END).join(legacy);
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp -- a legacy matcher has no segment payload grammar to split or count
+    const matcher = new RegExp(source, 'i');
+    const path = `/en/${'a.segments/'.repeat(17)}x.segment.rsc`;
+
+    expect(matcherHolds(matcher, path)).toBe(true);
+  });
+
+  it('does not use a locale mismatch before proving the complete remaining grammar', () => {
+    const { source } = matcherOf('/:path*', { i18n: I18N });
+    const legacy = String.raw`(\.json)?[\/#\?]?$`;
+    const tail = source.endsWith(legacy)
+      ? legacy
+      : String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp -- Next's expression with an alternative outside its locale guard
+    const matcher = new RegExp(source.split(tail).join(`|^/_next/.*${tail}`), 'i');
+
+    expect(() => matcherHolds(matcher, `/_next/${'a'.repeat(200)}`)).toThrow(
+      PatternBudgetExceededError,
+    );
+  });
+
+  it.each(['?', '*', '+', '{0,1}', '{1}', '{2}'])(
+    'does not resolve a quantified locale assertion (%s)',
+    (quantifier) => {
+      const { source } = matcherOf('/:path*', { i18n: I18N });
+      const locale = String.raw`(?:\/((?!_next\/)[^/.]{1,}))`;
+      // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp -- malformed variants of Next's known guard must stay unsupported
+      const matcher = new RegExp(source.split(locale).join(locale + quantifier), 'i');
+
+      expect(() => matcherHolds(matcher, `/_next/${'a'.repeat(80)}`)).toThrow(
+        PatternBudgetExceededError,
+      );
+    },
+  );
 });

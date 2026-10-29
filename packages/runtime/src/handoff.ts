@@ -22,6 +22,8 @@ export interface HandOff {
   readonly route: Resolved['route'];
   readonly pathname: Resolved['pathname'];
   readonly url: Resolved['url'];
+  /** A Pages rewrite's effective query, separate from its original public URL. */
+  readonly query?: Resolved['query'];
   /** The response headers routing collected (`resolvedHeaders`), in order, a cookie per entry. */
   readonly headers: readonly (readonly [string, string])[];
   /** The status a middleware gave its rewrite, where it gave one other than 200. */
@@ -52,6 +54,20 @@ function isPairs(value: unknown): value is (readonly [string, string])[] {
   return Array.isArray(value) && value.every((pair) => isPair(pair));
 }
 
+function isQuery(value: unknown): value is Record<string, string | string[]> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((item) => {
+      return (
+        typeof item === 'string' ||
+        (Array.isArray(item) && item.every((part) => typeof part === 'string'))
+      );
+    })
+  );
+}
+
 function isHandOff(value: unknown): value is HandOff {
   if (typeof value !== 'object' || value === null) {
     return false;
@@ -61,6 +77,7 @@ function isHandOff(value: unknown): value is HandOff {
     typeof handOff['route'] === 'string' &&
     typeof handOff['pathname'] === 'string' &&
     typeof handOff['url'] === 'string' &&
+    (handOff['query'] === undefined || isQuery(handOff['query'])) &&
     isPairs(handOff['headers']) &&
     (handOff['status'] === undefined || typeof handOff['status'] === 'number') &&
     (handOff['image'] === undefined || handOff['image'] === true) &&
@@ -85,6 +102,16 @@ export function decodeHandOff(value: string): HandOff | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Project only the resolved route's fields, including its optional Pages query. */
+export function resolvedFromHandOff(handOff: HandOff): Resolved {
+  return {
+    route: handOff.route,
+    pathname: handOff.pathname,
+    url: handOff.url,
+    ...(handOff.query !== undefined && { query: handOff.query }),
+  };
 }
 
 /**
@@ -124,6 +151,7 @@ export function handOffOf(
     route: resolved.route,
     pathname: resolved.pathname,
     url: resolved.url,
+    ...(resolved.query !== undefined && { query: resolved.query }),
     headers: [...(headers ?? [])],
     ...(status !== undefined && { status }),
     ...(image && { image }),

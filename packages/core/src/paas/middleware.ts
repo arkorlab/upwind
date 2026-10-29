@@ -1,6 +1,7 @@
 import type { MiddlewareMatcher } from '../manifest/schema.ts';
 import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
 import { conditionsHold } from '../request/conditions.ts';
+import type { LocaleRequest } from './locale-request.ts';
 import { matcherHolds } from './payload-matcher.ts';
 
 /**
@@ -66,6 +67,8 @@ export type MiddlewareResult =
       readonly requestHeaders: Headers;
       readonly responseHeaders: Headers;
       readonly setCookie: string | undefined;
+      /** Edge-owned provenance, attached after decoding a successful middleware continuation. */
+      readonly localeRequest?: LocaleRequest | undefined;
     }
   /** A rewrite to another origin: fetched from there, as the request the middleware left. */
   | {

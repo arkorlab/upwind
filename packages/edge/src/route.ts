@@ -31,6 +31,7 @@ import {
   routeThroughGate,
 } from './handlers/gate.ts';
 import { routeHostedDocument } from './handlers/hosted-document.ts';
+import { rootLocaleRequest } from './handlers/locale-request.ts';
 import {
   dispatchedFor,
   type MiddlewareOutcome,
@@ -230,9 +231,7 @@ function passthroughFor(
   // Only a request the host observes pays for the observer; any other keeps the forwarding's own
   // promise.
   const observed = observationOf(input);
-  if (observed === undefined) {
-    return handlePassthrough(passthrough);
-  }
+  if (observed === undefined) return handlePassthrough(passthrough);
   const forwarding = handlePassthrough({ ...passthrough, observedBody: observed.forwarded });
   return observed.finish === undefined ? forwarding : finishObserved(forwarding, observed.finish);
 }
@@ -267,6 +266,7 @@ function edgeContextFor(
     forwarding,
     app: state.app,
     originalUrl: undefined,
+    localeRequest: rootLocaleRequest(manifest, input.url, request.headers, host.credentials),
     policy: state.policy,
     cspNonce: state.cspNonce,
     cspNonceMode: state.cspNonceMode,

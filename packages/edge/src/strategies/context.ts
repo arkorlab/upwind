@@ -1,4 +1,5 @@
 import type { AppRuntime } from '@stayingupwind/core/manifest';
+import type { LocaleRequest } from '@stayingupwind/core/paas';
 import type { ForwardingContext } from '@stayingupwind/core/request';
 import type { CspNonceMode, DeliveryPolicy } from '@stayingupwind/host/delivery';
 
@@ -59,6 +60,8 @@ export interface EdgeContext {
   readonly app: AppRuntime | undefined;
   /** The URL the client asked for, when a middleware rewrote the request being served. */
   readonly originalUrl: string | undefined;
+  /** Original root locale inputs; never reconstructed from middleware-overridden headers. */
+  readonly localeRequest?: LocaleRequest | undefined;
   readonly policy: DeliveryPolicy;
   /** The project handed CSP nonces to the edge, so every document gets one minted here. */
   readonly cspNonce: boolean;

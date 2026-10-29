@@ -26,6 +26,12 @@ export {
   readMiddlewareResponse,
 } from './middleware.ts';
 export {
+  decodeLocaleRequest,
+  encodeLocaleRequest,
+  type LocaleRequest,
+  localeRequestOf,
+} from './locale-request.ts';
+export {
   CACHE_ENTRY_HEADER,
   CACHE_OUTCOME_HEADER,
   CACHE_ROUTE_ESCAPED_HEADER,
@@ -49,6 +55,7 @@ export {
   invalidatedTagsValue,
   IP_COUNTRY_HEADER,
   isRegenerateMode,
+  LOCALE_REQUEST_HEADER,
   MIDDLEWARE_DONE_HEADER,
   MIDDLEWARE_ONLY_HEADER,
   MIDDLEWARE_REWRITE_STATUS_HEADER,

@@ -12,15 +12,8 @@ import {
   staticFileBuildWithoutDpl,
   type StaticFileEntry,
 } from '@stayingupwind/core/manifest';
-import {
-  MIDDLEWARE_DONE_HEADER,
-  MIDDLEWARE_REWRITE_STATUS_HEADER,
-  MIDDLEWARE_SET_COOKIE_HEADER,
-  ORIGINAL_URL_HEADER,
-} from '@stayingupwind/core/paas';
-import { REDIRECT_STATUSES, sanitizePassthroughHeaders } from '@stayingupwind/core/request';
+import { REDIRECT_STATUSES } from '@stayingupwind/core/request';
 import { isDeadlineError, limitBody, releaseStream } from '@stayingupwind/core/util';
-import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { dnsSpelling, isUnderAnyDomain } from '@stayingupwind/host/domains';
 
 import { logWarn } from '../observability/logger.ts';
@@ -28,7 +21,9 @@ import type { EdgeContext } from '../strategies/context.ts';
 import { headersAfterMiddleware } from './hosted-route.ts';
 import { withImagePatternRequests } from './image-pattern-requests.ts';
 import { sourceUnder } from './image-source-identity.ts';
+import { rewrittenImageRequest } from './image-source-rewrite.ts';
 import { imageWithin, releaseLateSource } from './image-stream.ts';
+import { rootLocaleRequest } from './locale-request.ts';
 import { decideMiddleware, type MiddlewareContinued, middlewareMatches } from './middleware.ts';
 import { readStaticFileStream, type StoredStream } from './static-file.ts';
 import { dispatchesMade, dispatchesOf, fetchUpstream, functionOfRequest } from './upstream.ts';
@@ -125,6 +120,7 @@ function localPathname(href: string): string {
 function anonymousSource(edge: EdgeContext): EdgeContext {
   return {
     ...edge,
+    localeRequest: undefined,
     forwarding: { ...edge.forwarding, clientIp: undefined, clientCountry: undefined },
   };
 }
@@ -288,42 +284,6 @@ function shippedSourceAt(manifest: ProjectManifest, url: URL): StaticFileEntry |
     : staticFileBuildWithoutDpl(entry, manifest.deployment.dplId);
 }
 
-/**
- * A source's request as the middleware left it, with the Worker told the middleware ran — and the
- * status it gave its rewrite, which the Worker answers the route under as one it ran the middleware
- * for itself (`MIDDLEWARE_REWRITE_STATUS_HEADER`), and the cookies it set, which the route reads as
- * the client's own: Next.js's router puts them on the request for the route a middleware rewrote
- * to (`resolve-routes.js`), and a passthrough hands them on so too (`markMiddlewareDone`).
- */
-function rewrittenRequest(
-  edge: EdgeContext,
-  original: Request,
-  middleware: MiddlewareContinued,
-): Request {
-  // Without what no application is handed, as a passthrough's request goes without it
-  // (`buildPassthroughRequest`): the edge's own headers, which tell the Worker what to do, whether
-  // the middleware named one among the request's or answered with one, the middleware protocol's,
-  // and the host's credentials. Under the forwarding headers `localRequest` sends: the client's
-  // address and country are no source's.
-  const headers = withoutHostCredentials(
-    sanitizePassthroughHeaders(middleware.requestHeaders, {
-      ...edge.forwarding,
-      clientIp: undefined,
-      clientCountry: undefined,
-    }),
-    edge.host.credentials,
-  );
-  headers.set(MIDDLEWARE_DONE_HEADER, '1');
-  headers.set(ORIGINAL_URL_HEADER, original.url);
-  if (middleware.rewriteStatus !== undefined) {
-    headers.set(MIDDLEWARE_REWRITE_STATUS_HEADER, String(middleware.rewriteStatus));
-  }
-  if (middleware.setCookie !== undefined) {
-    headers.set(MIDDLEWARE_SET_COOKIE_HEADER, middleware.setCookie);
-  }
-  return new Request(middleware.url.href, { headers, redirect: 'manual', signal: original.signal });
-}
-
 /** What a source of the application's own is fetched with. */
 interface LocalContext {
   readonly edge: EdgeContext;
@@ -480,7 +440,7 @@ function shippedAfterMiddleware(
  * request rewritten to it is served — the Worker carries none of `_next/static` — and any other
  * path is asked of the Worker, which is told the middleware ran, as is a request it changed that a
  * rule ahead of the filesystem claims (`shippedAfterMiddleware`); a status the middleware gave its
- * rewrite is the answer's, whether a file's (`sourceUnder`) or the Worker's (`rewrittenRequest`);
+ * rewrite is the answer's, whether a file's (`sourceUnder`) or the Worker's (`rewrittenImageRequest`);
  * what it answers itself is the source only if it is one, as under Next.js, and a redirect to a
  * login page is not. A middleware whose own Worker failed is asked of the application's
  * (`decideMiddleware`), which carries none of `_next/static` and could not answer for the file
@@ -502,7 +462,16 @@ async function fetchBlob(
     return readBlob(local, source.file, 0);
   }
   const deadline = edge.runtime.now() + SOURCE_FETCH_BUDGET_MS;
-  const { outcome, dispatches } = await decideMiddleware(edge, request, deadline);
+  const middlewareEdge = {
+    ...edge,
+    localeRequest: rootLocaleRequest(
+      local.manifest,
+      new URL(request.url),
+      request.headers,
+      edge.host.credentials,
+    ),
+  };
+  const { outcome, dispatches } = await decideMiddleware(middlewareEdge, request, deadline);
   const left = (): number => deadline - edge.runtime.now();
   switch (outcome.kind) {
     case 'skipped': {
@@ -512,7 +481,7 @@ async function fetchBlob(
       const ship = () => shippedAfterMiddleware(local, source, request, outcome);
       const shipped = withImagePatternRequests(dispatches, ship);
       if (shipped === undefined) {
-        return fetchLocal(local, rewrittenRequest(edge, request, outcome), {
+        return fetchLocal(local, rewrittenImageRequest(edge, request, outcome), {
           earlier: dispatches,
           budgetMs: left(),
         });

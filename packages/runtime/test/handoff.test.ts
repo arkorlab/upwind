@@ -45,6 +45,15 @@ describe('a routing hand-off', () => {
     expect(decodeHandOff(value)).toBeUndefined();
   });
 
+  it.each([null, [], { phase: 1 }, { tag: ['one', 2] }, { phase: { nested: 'value' } }])(
+    'refuses an invalid effective query %j',
+    (query) => {
+      const value = Buffer.from(JSON.stringify({ ...HAND_OFF, query })).toString('base64url');
+
+      expect(decodeHandOff(value)).toBeUndefined();
+    },
+  );
+
   it('carries only what the middleware changed of the request headers', () => {
     const before = new Headers({ accept: 'text/html', 'x-client': 'yes', 'x-same': '1' });
     const after = new Headers({ accept: 'text/html', 'x-from-proxy': '1', 'x-same': '1' });

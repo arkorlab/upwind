@@ -505,7 +505,13 @@ async function runMiddlewareIn(
   if (result.kind !== 'responded') {
     releaseStream(response.body, 'middleware');
   }
-  return { ...decided(result, response), middlewareMs };
+  const outcome = decided(result, response);
+  return {
+    ...outcome,
+    ...(outcome.kind === 'continue' &&
+      edge.localeRequest !== undefined && { localeRequest: edge.localeRequest }),
+    middlewareMs,
+  };
 }
 
 type ExternalRewrite = Extract<MiddlewareResult, { kind: 'external-rewrite' }>;

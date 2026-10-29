@@ -11,10 +11,12 @@ export function sourceInput(input: RoutedInput, source: Request): RoutedInput {
     ...input,
     request: source,
     initURL: source.url,
+    localeRequest: undefined,
     middlewareRan: undefined,
     middlewareHeaders: undefined,
     askedHeaders: undefined,
     rewriteStatus: undefined,
     routingHeaders: undefined,
+    routingQuery: undefined,
   };
 }

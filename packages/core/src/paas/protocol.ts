@@ -59,6 +59,8 @@ export const RESUME_PRERENDER_HEADER = 'x-arkor-prerender';
 export const RESUME_PRERENDER_ESCAPED_HEADER = 'x-arkor-prerender-escaped';
 /** The URL the client asked for, when the request path is a rewrite of it. */
 export const ORIGINAL_URL_HEADER = 'x-arkor-original-url';
+/** Original locale inputs before edge middleware overrides request headers; contains no other cookies. */
+export const LOCALE_REQUEST_HEADER = 'x-arkor-locale-request';
 /**
  * The resume state of a generation made at runtime travels as the request body, since the runtime's
  * bundle does not hold it: `body` says so, and the length header says how much to read.
@@ -157,6 +159,7 @@ export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
   RESUME_PRERENDER_HEADER,
   RESUME_PRERENDER_ESCAPED_HEADER,
   ORIGINAL_URL_HEADER,
+  LOCALE_REQUEST_HEADER,
   RESUME_STATE_HEADER,
   RESUME_STATE_LENGTH_HEADER,
   REGENERATE_HEADER,

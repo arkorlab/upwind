@@ -126,12 +126,24 @@ export function continuationRequest(
     handNonceToRender(headers, nonce);
   }
   if (continued === undefined) {
-    return { client: new Request(input.request, { headers }), edge: input.edge };
+    const edge =
+      input.edge.localeRequest === undefined
+        ? input.edge
+        : { ...input.edge, localeRequest: undefined };
+    return { client: new Request(input.request, { headers }), edge };
   }
   const client = new Request(continued.url.href, { method: input.request.method, headers });
+  const edge =
+    continued.rewritten || continued.localeRequest !== input.edge.localeRequest
+      ? {
+          ...input.edge,
+          ...(continued.rewritten && { originalUrl: input.request.url }),
+          localeRequest: continued.localeRequest,
+        }
+      : input.edge;
   return {
     client,
-    edge: continued.rewritten ? { ...input.edge, originalUrl: input.request.url } : input.edge,
+    edge,
   };
 }
 

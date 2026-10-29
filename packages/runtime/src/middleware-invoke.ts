@@ -3,7 +3,8 @@ import { onLoopbackOrigin } from '@stayingupwind/core/paas';
 
 import { middlewareHandler } from './entries.ts';
 import { hasBody } from './incoming.ts';
-import { type MiddlewareInvoker, routedHeaders } from './routing.ts';
+import { preferredLocaleRedirect } from './locale-redirect.ts';
+import { type MiddlewareInvoker, redirectResponse, routedHeaders } from './routing.ts';
 import type { HandleInput, RoutedInput } from './serve.ts';
 import { deploymentConfig, type Store } from './store.ts';
 
@@ -14,6 +15,7 @@ import { deploymentConfig, type Store } from './store.ts';
 
 export const MIDDLEWARE_ENTRY_ID = '/_middleware';
 const HTTP_OK = 200;
+const HTTP_TEMPORARY_REDIRECT = 307;
 /** What a Pages Router data URL ends in. */
 const DATA_SUFFIX = '.json';
 const REWRITE_HEADER = 'x-middleware-rewrite';
@@ -143,14 +145,20 @@ export function middlewareInvoker(
 
 /**
  * The middleware alone, run ahead of a shell the edge serves itself: its raw response, for the edge
- * to apply. It reads one thing of the manifest — the base path, which tells a data request apart
- * (`routedHeaders`) — and reads it without the store, which is built over every route, prerender
- * and file the deployment has: the middleware Function, whose first request that shell waits on,
- * carries only the head of the manifest (`deploymentConfig`).
+ * to apply. It reads the routing configuration — the base path tells a data request apart
+ * (`routedHeaders`), and root locale negotiation precedes user middleware — without the store,
+ * which is built over every route, prerender and file the deployment has. The middleware Function,
+ * whose first request that shell waits on, carries only the manifest head (`deploymentConfig`).
  */
 export async function answerMiddlewareOnly(input: RoutedInput): Promise<Response> {
   const { request } = input;
-  const headers = routedHeaders(request, new URL(request.url), deploymentConfig().basePath);
+  const config = deploymentConfig();
+  const url = new URL(request.url);
+  const headers = routedHeaders(request, url, config.basePath);
+  const locale = preferredLocaleRedirect(config, url, headers, input);
+  if (locale !== undefined) {
+    return redirectResponse(locale, HTTP_TEMPORARY_REDIRECT, undefined);
+  }
   const response = await runMiddleware(input, new Request(request, { headers }));
   return response ?? new Response(null, { status: HTTP_OK, headers: { 'x-middleware-next': '1' } });
 }

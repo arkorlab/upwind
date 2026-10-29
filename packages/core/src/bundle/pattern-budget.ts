@@ -1,4 +1,5 @@
 import { payloadHeadOf, payloadHeadsOf } from '../paas/payload-matcher.ts';
+import { localeMiddlewareSource } from '../request/middleware-locale.ts';
 import {
   BUDGET,
   literalGate,
@@ -8,7 +9,6 @@ import {
   stepsAt,
 } from '../request/pattern-cost.ts';
 import { nestingDepth } from '../request/pattern-tree.ts';
-import { localeMiddlewareSource } from './middleware-locale.ts';
 
 /** Independent of request routing: no assembly enables the edge's isolate-wide switch. */
 const MATCHES_PER_BUILD = 1024;
@@ -166,7 +166,7 @@ export class BuildPatternBudget {
     if (head === null) throw new BuildPatternBudgetExceededError();
     const flags = compiled.pattern.ignoreCase ? 'i' : '';
     spend.take(Math.max(1, value.length) * SPLIT_WORK_PER_UNIT);
-    const split = payloadHeadsOf(value, compiled.pattern.ignoreCase);
+    const split = payloadHeadsOf(compiled.pattern, value);
     if (split === undefined) throw new BuildPatternBudgetExceededError();
     const bounded = this.compiledFor(head.source, flags, spend);
     let refused: BuildPatternBudgetExceededError | undefined;

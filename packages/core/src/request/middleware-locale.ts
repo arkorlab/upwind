@@ -1,6 +1,6 @@
-import { literalAt, quantifierAt } from '../request/pattern-syntax.ts';
+import { literalAt, quantifierAt } from './pattern-syntax.ts';
 
-/** The exact optional data prefix and locale guard emitted by Next.js 16.4.2 and 16.4.3. */
+/** The canonical optional data prefix and locale guard emitted by supported Next.js builds. */
 const DATA = String.raw`(?:\/(_next\/data\/[^/]{1,}))?`;
 const LOCALE = String.raw`(?:\/((?!_next\/)[^/.]{1,}))`;
 const LOCALE_WITHOUT_LOOKAHEAD = String.raw`(?:\/([^/.]{1,}))`;
@@ -25,6 +25,49 @@ type LocaleSource =
   | { readonly kind: 'source'; readonly source: string };
 const UNSUPPORTED = { kind: 'unsupported' } as const;
 
+interface LocalePattern {
+  readonly prefix: string;
+  readonly length: number;
+  readonly probe: string;
+  readonly page: string;
+  readonly data: string;
+}
+
+/** At most three derived sources per compiled matcher; no visitor pathname is retained. */
+const patterns = new WeakMap<RegExp, LocalePattern | null>();
+
+function localePattern(pattern: RegExp): LocalePattern | null {
+  const known = patterns.get(pattern);
+  if (known !== undefined) return known;
+  const { source, flags } = pattern;
+  const dataAt = source.indexOf(DATA);
+  const localeAt = dataAt + DATA.length;
+  let parsed: LocalePattern | null = null;
+  if (
+    (flags === '' || flags === 'i') &&
+    source.startsWith('^') &&
+    dataAt >= 1 &&
+    source.startsWith(LOCALE, localeAt) &&
+    quantifierAt(source, localeAt + LOCALE.length) === undefined
+  ) {
+    const base = source.slice(1, dataAt);
+    const length = literalLength(base);
+    if (length !== undefined) {
+      const before = source.slice(0, dataAt);
+      const after = `${LOCALE_WITHOUT_LOOKAHEAD}${source.slice(localeAt + LOCALE.length)}`;
+      parsed = {
+        prefix: `^${base}`,
+        length,
+        probe: `${before}${DATA}${after}`,
+        page: `${before}${after}`,
+        data: `${before}${DATA.slice(0, -1)}${after}`,
+      };
+    }
+  }
+  patterns.set(pattern, parsed);
+  return parsed;
+}
+
 /**
  * Resolve only Next's canonical locale lookahead against the ORIGINAL path. Truncating a path
  * before the separator of `/_next/` would otherwise turn its failed lookahead into a success.
@@ -37,29 +80,17 @@ export function localeMiddlewareSource(
   value: string,
   prefixHolds: (source: string) => boolean,
 ): LocaleSource {
-  const { source } = pattern;
-  const dataAt = source.indexOf(DATA);
-  const localeAt = dataAt + DATA.length;
-  if (
-    !source.startsWith('^') ||
-    dataAt < 1 ||
-    !source.startsWith(LOCALE, localeAt) ||
-    quantifierAt(source, localeAt + LOCALE.length) !== undefined
-  ) {
-    return UNSUPPORTED;
-  }
-  const base = source.slice(1, dataAt);
-  const length = literalLength(base);
-  if (length === undefined) return UNSUPPORTED;
-  const probe = `${source.slice(0, localeAt)}${LOCALE_WITHOUT_LOOKAHEAD}${source.slice(localeAt + LOCALE.length)}`;
-  const mismatch = { kind: 'mismatch', source: probe } as const;
-  if (!prefixHolds(`^${base}`)) return mismatch;
+  const parsed = localePattern(pattern);
+  if (parsed === null) return UNSUPPORTED;
+  const { length } = parsed;
+  const mismatch = { kind: 'mismatch', source: parsed.probe } as const;
+  if (!prefixHolds(parsed.prefix)) return mismatch;
   // ASCII-only folding has the exact length and matching semantics of these ASCII names under /i.
   const folded = pattern.ignoreCase
     ? value.replaceAll(UPPER_CASE, (letter) => letter.toLowerCase())
     : value;
   if (folded[length] !== '/') return mismatch;
-  let data = '';
+  let data = false;
   let localeStart = length + 1;
   if (folded.startsWith('/_next/', length)) {
     if (!folded.startsWith(DATA_PATH, length)) return mismatch;
@@ -67,11 +98,11 @@ export function localeMiddlewareSource(
     const slash = folded.indexOf('/', buildStart);
     if (slash <= buildStart) return mismatch;
     localeStart = slash + 1;
-    data = DATA.slice(0, -1);
+    data = true;
   }
   if (folded.startsWith('_next/', localeStart)) return mismatch;
   return {
     kind: 'source',
-    source: `${source.slice(0, dataAt)}${data}${LOCALE_WITHOUT_LOOKAHEAD}${source.slice(localeAt + LOCALE.length)}`,
+    source: data ? parsed.data : parsed.page,
   };
 }

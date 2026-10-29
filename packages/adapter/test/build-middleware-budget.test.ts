@@ -7,8 +7,8 @@ import {
   BuildPatternBudgetExceededError,
 } from '../../core/src/bundle/pattern-budget.ts';
 
-/** Next.js 16.4.2 and 16.4.3 emit the same payload/locale grammar; exercise the pinned generator. */
-const require = createRequire(import.meta.url);
+/** Exercise the pinned generator, including 16.2.0's JSON-only payload grammar in the floor lane. */
+const require = createRequire(process.env['UPWIND_MATCHER_NEXT_PACKAGE'] ?? import.meta.url);
 const { getMiddlewareMatchers } = require('next/dist/build/analysis/get-page-static-info.js') as {
   getMiddlewareMatchers: (source: string, config: Config) => { regexp: string }[];
 };
@@ -64,6 +64,32 @@ const PATHS = [
 ];
 
 describe('build matching against pinned Next middleware grammar', () => {
+  it('does not strip RSC or segment suffixes from the 16.2.0 JSON-only grammar', () => {
+    const emitted = getMiddlewareMatchers('/docs/article', CONFIGS[2] ?? {})[0]?.regexp ?? '';
+    const modern = String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
+    const legacy = String.raw`(\.json)?[\/#\?]?$`;
+    const source = emitted.split(modern).join(legacy);
+    const paths = [
+      '/en/docs/article',
+      '/en/docs/article.json',
+      '/en/docs/article.rsc',
+      '/en/docs/article.RSC',
+      '/en/docs/article.segments/x.segment.rsc',
+      '/_next/data/b/en/docs/article.json',
+      '/_next/data/b/en/docs/article.rsc',
+    ];
+
+    expect(paths.map((path) => new BuildPatternBudget().test(source, 'i', path))).toStrictEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+    ]);
+  });
+
   it.each(CONFIGS)('agrees with native matching for %j', (config) => {
     for (const source of SOURCES) {
       const emitted = getMiddlewareMatchers(source, config)[0]?.regexp;
@@ -83,7 +109,10 @@ describe('build matching against pinned Next middleware grammar', () => {
 
   it('does not trust locale mismatch shortcuts before the complete head proof', () => {
     const emitted = getMiddlewareMatchers('/:path*', CONFIGS[2] ?? {})[0]?.regexp ?? '';
-    const tail = String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
+    const legacy = String.raw`(\.json)?[\/#\?]?$`;
+    const tail = emitted.endsWith(legacy)
+      ? legacy
+      : String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
     const source = emitted.split(tail).join(`|^/_next/.*${tail}`);
     const path = `/_next/${'a'.repeat(200)}`;
 

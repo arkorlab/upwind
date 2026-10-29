@@ -21,6 +21,7 @@ import { NEXT_DATA_HEADER, NULL_BODY_STATUSES } from '@stayingupwind/core/reques
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { edgeJudgesHeaderRules, isRouteParameterKey, stripPlatformHeaders } from './incoming.ts';
+import { preferredLocaleRedirect } from './locale-redirect.ts';
 import { escapedNameOf, namesWithSpellings, prerenderedName } from './name-spellings.ts';
 import type { Resolved } from './outputs.ts';
 import { misdirectedTo } from './placement.ts';
@@ -33,7 +34,7 @@ import {
   markedRewrites,
 } from './rewritten-path.ts';
 import { routeQuery } from './route-parameters.ts';
-import { HTTP_OK } from './serve.ts';
+import { HTTP_OK, type RoutedInput } from './serve.ts';
 import { entrypointKindOf, type Store } from './store.ts';
 
 /**
@@ -43,6 +44,7 @@ import { entrypointKindOf, type Store } from './store.ts';
 
 const STATIC_ASSETS_PREFIX = '/_next/static/';
 const HTTP_PERMANENT_REDIRECT = 308;
+const HTTP_TEMPORARY_REDIRECT = 307;
 const HTTP_BAD_REQUEST = 400;
 /** What asks with these `Sec-Fetch-Dest` values cannot show a page (Next.js's own list). */
 const SUBRESOURCE_DESTINATIONS: ReadonlySet<string> = new Set([
@@ -97,8 +99,10 @@ function routingHas(
 type RoutingI18n = NonNullable<Parameters<typeof resolveRoutes>[0]['i18n']>;
 
 export function routingI18n(i18n: NonNullable<Store['manifest']['config']['i18n']>): RoutingI18n {
-  const out: RoutingI18n = { defaultLocale: i18n.defaultLocale, locales: i18n.locales };
-  if (i18n.localeDetection === false) out.localeDetection = false;
+  // Negotiation already used the original request before middleware. Keep locale normalization
+  // here, without negotiating again from a rewritten destination or middleware's changed headers.
+  const { defaultLocale, locales } = i18n;
+  const out: RoutingI18n = { defaultLocale, locales, localeDetection: false };
   if (i18n.domains !== undefined) {
     out.domains = i18n.domains.map((domain) => {
       const entry: NonNullable<RoutingI18n['domains']>[number] = {
@@ -503,10 +507,15 @@ export async function redirectedBeforeRouting(
   store: Store,
   url: URL,
   headers: Headers,
+  original?: Pick<RoutedInput, 'initURL' | 'localeRequest'>,
 ): Promise<Response | undefined> {
   const collapsed = withoutRepeatedSlashes(url);
   if (collapsed !== undefined) {
     return redirectResponse(collapsed, HTTP_PERMANENT_REDIRECT, undefined);
+  }
+  const locale = preferredLocaleRedirect(store.manifest.config, url, headers, original);
+  if (locale !== undefined) {
+    return redirectResponse(locale, HTTP_TEMPORARY_REDIRECT, undefined);
   }
   return internalRedirect(store, url, headers);
 }
@@ -617,9 +626,11 @@ export function landedRoute(
  * "should have the canonical url pathname on rewrite"). What the build keeps the route's output
  * under is named off the route itself either way (`resolvedPathname`, in `RouteModule.prepare`).
  *
- * A `next.config` rewrite the handler applies again itself, to that URL (`handleRewrites`, in
- * `RouteModule.prepare`), so it is handed that URL as it came — with the route's parameters after
- * it (`withRouteParameters`). A middleware's it cannot, so the path asked
+ * An App Router handler applies a `next.config` rewrite again itself, to that URL (`handleRewrites`,
+ * in `RouteModule.prepare`), so it is handed that URL as it came — with the route's parameters after
+ * it (`withRouteParameters`). A Pages handler receives routing's query through `requestMeta.query`,
+ * separate from the source URL: its prepare removes `basePath` before it rechecks rewrites, whose
+ * sources still carry that prefix. A middleware's rewrite the handler cannot reapply, so the path asked
  * for comes with the query routing ended on: what the middleware added, and the route's
  * parameters, which the handler takes from the query and leaves out of `req.url` (`nxtP…`,
  * `normalizeCdnUrl`) — "deployed proxies include query values added while resolving rewrites in
@@ -634,7 +645,7 @@ function handlerUrl(
   route: string,
   target: NonNullable<ResolveRoutesResult['invocationTarget']>,
   asked: Asked,
-): string {
+): Pick<Resolved, 'url' | 'query'> {
   const routed = `${target.pathname}${queryString(target.query)}`;
   const { url } = asked;
   const kind = answeringKind(store, route);
@@ -643,13 +654,16 @@ function handlerUrl(
     url.pathname === target.pathname ||
     isPagesDataRequestPath(store.manifest.config.basePath, url.pathname)
   ) {
-    return routed;
+    return { url: routed };
   }
   const query = routeQuery(store, route, target, withoutTrailingSlash(target.pathname));
   if (asked.rewrite !== undefined) {
-    return `${inLocaleOf(store, url.pathname, target.pathname)}${queryString(query)}`;
+    return { url: `${inLocaleOf(store, url.pathname, target.pathname)}${queryString(query)}` };
   }
-  return `${url.pathname}${withRouteParameters(url.search, query)}`;
+  return {
+    url: `${url.pathname}${withRouteParameters(url.search, query)}`,
+    ...((kind === 'pages' || kind === 'pages-api') && { query }),
+  };
 }
 
 /**
@@ -752,6 +766,6 @@ export function resolvedOf(
   return {
     route: page,
     pathname: prerenderedName(store, withoutTrailingSlash(target.pathname)),
-    url: handlerUrl(store, page, target, asked),
+    ...handlerUrl(store, page, target, asked),
   };
 }

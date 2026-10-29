@@ -7,3 +7,7 @@ This product is licensed under either of
   * MIT license (LICENSE-MIT)
 
 at your option.
+
+src/locale-language.ts follows Next.js's accept-header implementation:
+Copyright (c) 2025 Vercel, Inc.
+Licensed under the MIT license; the permission and warranty terms are in LICENSE-MIT.

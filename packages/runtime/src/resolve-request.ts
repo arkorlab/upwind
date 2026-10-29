@@ -141,7 +141,7 @@ export async function withRoutingOf(
 ): Promise<Response> {
   const url = new URL(input.request.url);
   const headers = routedHeaders(input.request, url, store.manifest.config.basePath);
-  const before = await redirectedBeforeRouting(store, url, headers);
+  const before = await redirectedBeforeRouting(store, url, headers, input);
   if (before !== undefined) {
     return exitAnswer(input, answer, () => before);
   }
