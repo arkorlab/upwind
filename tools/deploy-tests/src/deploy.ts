@@ -658,6 +658,7 @@ function explained(error: unknown): unknown {
       'the host does not deploy this Next.js. The suite builds with whatever the upstream checkout ' +
         'is, and the adapter supports a range (`SUPPORTED_NEXT_RANGE`) — a checkout outside it is ' +
         'refused for every fixture, not just this one.',
+      { cause: error },
     );
   }
   return error;
