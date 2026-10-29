@@ -4,7 +4,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
-import ts from 'typescript';
+import { ScriptTarget } from 'typescript-api/ast';
+import { API, ModuleKind } from 'typescript-api/sync';
 
 const REQUEST_MS = 10_000;
 const CLEANUP_MS = 5000;
@@ -80,14 +81,14 @@ async function bounded<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> 
   }
 }
 
-function compiled(source: string): string {
-  return ts.transpileModule(source, {
-    compilerOptions: { target: ts.ScriptTarget.ES2023, module: ts.ModuleKind.ESNext },
+function compiled(api: API, source: string): string {
+  return api.transpileModule(source, {
+    compilerOptions: { target: ScriptTarget.ES2023, module: ModuleKind.ESNext },
   }).outputText;
 }
 
-function compiledBridge(source: string): string {
-  return compiled(source)
+function compiledBridge(api: API, source: string): string {
+  return compiled(api, source)
     .replace("'./tasks.ts'", "'./tasks.mjs'")
     .replace("'@stayingupwind/core/next'", "'./websocket-response-bridge.mjs'")
     .replace("'@stayingupwind/core/request'", "'./websocket-upgrade.mjs'");
@@ -251,20 +252,28 @@ async function exercise(
   }
 }
 
+using api = new API({ cwd: ROOT });
 const source = await readFile(path.join(ROOT, 'packages/runtime/src/node-bridge.ts'), 'utf8');
 assert.equal(source.split(HOLD).length, 2, 'the bridge lifetime boundary moved');
 const previous = source.replace(HOLD, () => GUARDED_HOLD);
-const tasks = compiled(await readFile(path.join(ROOT, 'packages/runtime/src/tasks.ts'), 'utf8'));
+const tasks = compiled(
+  api,
+  await readFile(path.join(ROOT, 'packages/runtime/src/tasks.ts'), 'utf8'),
+);
 const invocation = compiled(
+  api,
   await readFile(path.join(ROOT, 'packages/runtime/src/invocation.ts'), 'utf8'),
 );
 const reframe = compiled(
+  api,
   await readFile(path.join(ROOT, 'packages/runtime/src/reframe.ts'), 'utf8'),
 );
 const websocketResponse = compiled(
+  api,
   await readFile(path.join(ROOT, 'packages/core/src/next/websocket-response-bridge.ts'), 'utf8'),
 );
 const websocketUpgrade = compiled(
+  api,
   await readFile(path.join(ROOT, 'packages/core/src/request/websocket.ts'), 'utf8'),
 );
 const lanes: Lane[] = [];
@@ -304,7 +313,7 @@ async function collect(bridge: string, lane: Lane): Promise<void> {
 }
 try {
   for (const mode of ['previous-method-guard', 'retained'] as const) {
-    const bridge = compiledBridge(mode === 'retained' ? source : previous);
+    const bridge = compiledBridge(api, mode === 'retained' ? source : previous);
     for (const method of ['GET', 'POST'] as const) {
       const lane: Lane = {
         kind: 'immediate-end',
@@ -331,7 +340,7 @@ try {
     egressAttempts: 0,
     stage: 'created',
   };
-  await collect(compiledBridge(source), later);
+  await collect(compiledBridge(api, source), later);
   assert.equal(failures.length, 0, 'one or more finite handler lifetime controls failed');
   proof.status = 'success';
 } catch (error) {

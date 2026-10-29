@@ -69,6 +69,8 @@ catalog:
   tldts: 7.4.19
   wrangler: 4.152.0
   typescript: 6.0.3
+  # The owned compiler API consumers use 7.1; lint and legacy compatibility proofs stay on 6.
+  typescript-api: npm:typescript@7.1.0-beta
   typescript-eslint: 8.72.0
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
   # lint rules they are held to beside the rest.
