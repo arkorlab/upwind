@@ -285,6 +285,31 @@ describe('a request to an application with i18n, answered', () => {
 });
 
 describe('a page regenerated in the foreground, in an application with i18n', () => {
+  it.each([
+    { label: 'a non-root rewritten to the root', initPath: '/landing' },
+    {
+      label: 'a root whose absent locale inputs middleware replaced',
+      initPath: '/',
+      localeRequest: { language: null, cookie: null },
+    },
+  ])('does not negotiate again for $label', async ({ initPath, localeRequest }) => {
+    const request = new Request('https://app.example/', {
+      headers: { 'accept-language': 'fr', cookie: 'NEXT_LOCALE=fr' },
+    });
+    const input = {
+      request,
+      initURL: new URL(initPath, request.url).href,
+      ...(localeRequest !== undefined && { localeRequest }),
+    } as unknown as RoutedInput;
+    const render = new Response('the originally requested page');
+    // This passes through both the original-request check and @next/routing's real resolver.
+    const answer = await withRoutingOf(input, storeOf(), render);
+
+    expect(answer.status).toBe(200);
+    expect(answer.headers.has('location')).toBe(false);
+    await expect(answer.text()).resolves.toBe('the originally requested page');
+  });
+
   it("is answered with Next.js's own trailing-slash redirect, as the usual path answers it", async () => {
     const request = new Request('https://app.example/about/');
     const input = { request, initURL: request.url } as unknown as RoutedInput;

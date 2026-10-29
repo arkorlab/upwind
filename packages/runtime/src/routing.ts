@@ -99,8 +99,10 @@ function routingHas(
 type RoutingI18n = NonNullable<Parameters<typeof resolveRoutes>[0]['i18n']>;
 
 export function routingI18n(i18n: NonNullable<Store['manifest']['config']['i18n']>): RoutingI18n {
-  const out: RoutingI18n = { defaultLocale: i18n.defaultLocale, locales: i18n.locales };
-  if (i18n.localeDetection === false) out.localeDetection = false;
+  // Negotiation already used the original request before middleware. Keep locale normalization
+  // here, without negotiating again from a rewritten destination or middleware's changed headers.
+  const { defaultLocale, locales } = i18n;
+  const out: RoutingI18n = { defaultLocale, locales, localeDetection: false };
   if (i18n.domains !== undefined) {
     out.domains = i18n.domains.map((domain) => {
       const entry: NonNullable<RoutingI18n['domains']>[number] = {
