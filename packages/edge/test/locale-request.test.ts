@@ -15,8 +15,13 @@ import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import { htmlResponse, navigation, pprDocument, seedSite } from './helpers/site.ts';
 
-const PREFIX = { basePath: '/base', locales: ['en', 'fr'] } as const;
-const MIDDLEWARE = { matchers: [{ sourceRegex: '^/.*$' }] } as const;
+const PREFIX = {
+  basePath: '/base',
+  locales: ['en', 'fr'],
+} satisfies NonNullable<ProjectManifest['spelledPrefix']>;
+const MIDDLEWARE = {
+  matchers: [{ sourceRegex: '^/.*$' }],
+} satisfies NonNullable<ProjectManifest['middleware']>;
 const CREDENTIALS = { cookies: [], headers: [] } as const;
 const FORGED = encodeLocaleRequest({ language: 'forged', cookie: 'NEXT_LOCALE=forged' });
 
@@ -42,7 +47,9 @@ async function routed(example: Example = {}) {
   const applications: Request[] = [];
   const middlewareRequests: Request[] = [];
   const externals: Request[] = [];
-  const request = navigation(example.path ?? '/base', { headers: example.headers });
+  const request = navigation(example.path ?? '/base', {
+    ...(example.headers !== undefined && { headers: example.headers }),
+  });
   const ctx = createExecutionContext();
   const response = await serveFromPointer(
     {
