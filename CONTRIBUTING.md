@@ -78,8 +78,8 @@ uncommitted beside it. It has its own lockfile and its own install, `pnpm lint`,
 ## Development setup
 
 Node 26 — the repository names `26.13.0` — and pnpm 12. You do not install pnpm yourself:
-`packageManager` names the exact version, and Corepack fetches it. Corepack ships with Node but is
-not on until you say so, which is the one step a fresh machine needs.
+`packageManager` names the exact version, and Corepack fetches it. Node 26 requires installing Corepack
+separately and enabling it once per machine.
 
 ```bash
 npm install -g corepack@latest

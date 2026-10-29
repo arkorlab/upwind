@@ -315,8 +315,9 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   suites under `next-config-ts-native-ts` and `-mts` await at the top level of their configs on
   purpose, and Next.js's CI builds them alone with Node.js's loader turned on
   (`__NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true`, `NODE_OPTIONS=--experimental-transform-types`). The
-  deploy hook does the same for those suites, by the test file `run-tests.js` names in
-  `JEST_SUITE_NAME`, and for no other; run outside `run-tests.js`, they fail as they would anywhere.
+  deploy hook selects that loader for those suites, by the test file `run-tests.js` names in
+  `JEST_SUITE_NAME`, and adds the transformation flag only on runtimes that support it. Node 26
+  uses its built-in type stripping. Run outside `run-tests.js`, these suites fail as they would anywhere.
 - **`non-ascii-cache-item-name` is built with `VERCEL=1`.** Its fixture leaves its cache to the
   deployment only where `VERCEL` is set at build, and otherwise configures a handler that keeps
   nothing, while the case it runs when deployed expects its values to stay cached. The deploy hook sets

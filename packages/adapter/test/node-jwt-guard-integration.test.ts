@@ -74,6 +74,11 @@ ${after}
 }
 
 const LOAD = `const jwt=require(filename.pathname);`;
+// Prepare the reviewed Node 26 builtin before deliberately violating the guarded load order.
+// These cases must reach the cache guard, rather than fail inside the old JWT dependency first.
+const PRELOAD = `const {initializeNodeSlowBuffer}=await import(${JSON.stringify(new URL('node-slow-buffer.ts', GUARD).href)});
+initializeNodeSlowBuffer(require('node:buffer'));
+${LOAD}`;
 const APPLICATION_ERROR_HOOKS = `
 const inspectKey=Symbol.for('nodejs.util.inspect.custom');
 let hookCalls=0;
@@ -339,12 +344,14 @@ console.log('getter-refused');`,
   });
 
   it('refuses an already evaluated dependency', async () => {
-    await expect(scenario(LOAD, '')).rejects.toThrow('semver cache populated before observation');
+    await expect(scenario(PRELOAD, '')).rejects.toThrow(
+      'semver cache populated before observation',
+    );
   });
 
   it('refuses an evaluated JWT source even when its dependency cache was cleared', async () => {
     await expect(
-      scenario(`${LOAD}\ndelete require.cache[semverFilename.pathname];`, ''),
+      scenario(`${PRELOAD}\ndelete require.cache[semverFilename.pathname];`, ''),
     ).rejects.toThrow('qualified source already evaluated');
   });
 
