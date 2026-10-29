@@ -195,7 +195,9 @@ echo "build command: ${build_command}" >&2
 case "${JEST_SUITE_NAME:-}" in
   *test/e2e/app-dir/next-config-ts-native-ts/* | *test/e2e/app-dir/next-config-ts-native-mts/*)
     export __NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true
-    export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--experimental-transform-types"
+    if node -e "process.exit(process.allowedNodeEnvironmentFlags.has('--experimental-transform-types') ? 0 : 1)"; then
+      export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--experimental-transform-types"
+    fi
     echo 'a suite of a next.config Node.js loads itself: built with that loader, as Next.js builds it' >&2
     ;;
   # This fixture configures a cache handler of its own unless `VERCEL` is set at build

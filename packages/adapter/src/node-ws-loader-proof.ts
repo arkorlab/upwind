@@ -3,10 +3,12 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
+import type { GuardedNodeVersion } from '@stayingupwind/core/util';
 import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
 import { isNode, type Node } from './lexical-scope.ts';
+import { nodeGuardVersion } from './node-guard-version.ts';
 import type { NodeJwtCompilerInput } from './node-jwt-compiler-proof.ts';
 import { nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
 import {
@@ -63,7 +65,7 @@ export type NodeWsLoaderInput = NodeJwtCompilerInput;
 export interface NodeWsGuardRecord {
   readonly schema: 1;
   readonly profile: 'next-16.4.3-ws-ncc-v1';
-  readonly nodeVersion: '24.22.1';
+  readonly nodeVersion: GuardedNodeVersion;
   readonly archivePath: string;
   readonly sha256: string;
   readonly bytes: typeof WS_BYTES;
@@ -464,7 +466,7 @@ export async function nodeWsGuardRecord(
   return Object.freeze<NodeWsGuardRecord>({
     schema: 1,
     profile: 'next-16.4.3-ws-ncc-v1',
-    nodeVersion: '24.22.1',
+    nodeVersion: nodeGuardVersion(),
     archivePath,
     sha256: WS_SHA256,
     bytes: WS_BYTES,

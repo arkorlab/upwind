@@ -58,3 +58,4 @@ export {
 export { addressInCidrs, type Cidr, parseCidr, parseCidrs, parseIp } from './ip.ts';
 export { ByteLru, Lru, type SharedBytes, TtlCache, type TtlPeek } from './lru.ts';
 export { releaseStream } from './stream.ts';
+export { isGuardedNodeVersion, type GuardedNodeVersion } from './node-version.ts';

@@ -34,6 +34,12 @@ function read(value: unknown) {
 }
 
 describe('fixed Next require-hook bootstrap DATA', () => {
+  it.each(['24.22.1', '26.13.0'])('accepts the reviewed Node %s record', (version) => {
+    const own = input();
+    own.record.nodeVersion = version;
+    expect(nodeNextHookRecord(own, isProxy).record.nodeVersion).toBe(version);
+  });
+
   it.each([0, 1, 2, 3])('copies %i ordered default aliases without loading modules', (count) => {
     const own = input();
     own.aliases = own.aliases.slice(0, count);

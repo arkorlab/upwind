@@ -17,12 +17,16 @@ jobs:
     name: Linux native Function artifact
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24.22.1, 26.13.0]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.22.1
+          node-version: ${{ matrix.node }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
@@ -70,7 +74,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: native-next-compiled-js-${{ github.run_id }}-${{ github.run_attempt }}
+          name: native-next-compiled-js-${{ matrix.node }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/upwind-native-next-diagnostics
           if-no-files-found: warn
           retention-days: 1
@@ -88,7 +92,7 @@ jobs:
         if: failure() && steps.official_native_diagnostic.outcome == 'failure'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: native-next-server-minification-off-js-${{ github.run_id }}-${{ github.run_attempt }}
+          name: native-next-server-minification-off-js-${{ matrix.node }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/upwind-native-next-server-minification-off/upwind-native-next-diagnostics
           if-no-files-found: warn
           retention-days: 1
@@ -106,7 +110,7 @@ jobs:
         if: failure() && steps.official_native_app.outcome == 'failure'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: native-next-app-router-js-${{ github.run_id }}-${{ github.run_attempt }}
+          name: native-next-app-router-js-${{ matrix.node }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/upwind-native-next-app-router/upwind-native-next-diagnostics
           if-no-files-found: warn
           retention-days: 1

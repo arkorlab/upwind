@@ -15,7 +15,7 @@ const REALM = new URL('../../runtime/src/node-jwt-realm.ts', import.meta.url).hr
 const RECORD = {
   schema: 1,
   profile: 'next-16.4.3-jsonwebtoken-ncc-v1',
-  nodeVersion: '24.22.1',
+  nodeVersion: process.versions.node,
   archivePath: 'node_modules/next/dist/compiled/jsonwebtoken/index.js',
   sha256: '056c2dddba96faa35f4dc0740228a241990561290ff3bd5456c7c7dbc5a7a6b9',
   bytes: 121_051,
@@ -83,7 +83,14 @@ Object.defineProperty(Error,'prepareStackTrace',{value:appPrepare,writable:true,
 Object.defineProperty(Error.prototype,inspectKey,{value:appInspect,writable:true,configurable:true,enumerable:false});
 `;
 
-describe.skipIf(!ENABLED)('fixed Node 24.22.1 JWT evaluation guard (dedicated Linux CI)', () => {
+describe.skipIf(!ENABLED)('fixed Node JWT evaluation guard (dedicated Linux CI)', () => {
+  it('rejects a record for the other reviewed Node release', async () => {
+    const other = process.versions.node === '24.22.1' ? '26.13.0' : '24.22.1';
+    await expect(scenario(`record.nodeVersion=${JSON.stringify(other)};`, '')).rejects.toThrow(
+      'invalid build-produced source record',
+    );
+  });
+
   it('loads the original source and preserves sign, verify and decode', async () => {
     const result = await scenario(
       '',

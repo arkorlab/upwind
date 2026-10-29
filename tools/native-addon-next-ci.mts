@@ -5,7 +5,7 @@
  * <fixture> is one of `FIXTURES`. The adapter is named by `NEXT_ADAPTER_PATH`, so a fixture's own
  * Next.js config stays as it is. Optional diagnostic: append --server-minification=off. This is
  * a separate build condition.
- * The Linux runner must provide an empty, writable /bundle, Node24.22.1, pnpm12.15.0 and a C++
+ * The Linux runner must provide an empty, writable /bundle, Node24.22.1 or Node26.13.0, pnpm12.15.0 and a C++
  * toolchain/Python for node-gyp. Run after the SDK's normal build. This is not a hosted measurement.
  */
 import assert from 'node:assert/strict';
@@ -36,7 +36,7 @@ import { NativeNextProcesses, pause } from './native-addon-next-process.mts';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const NEXT_VERSION = '16.4.3';
 const NEXT_COMMIT = '29bbeab09981148ade186e8599ecdede15abc281';
-const NODE_VERSION = '24.22.1';
+const NODE_VERSION = process.versions.node;
 const PNPM_VERSION = '12.15.0';
 const REACT_VERSION = '19.3.0';
 const PROBE_MS = 30_000;
@@ -362,7 +362,10 @@ async function main(): Promise<void> {
   assert.equal(process.env['CI'], 'true', 'This helper runs only in isolated Linux CI');
   assert.equal(process.platform, 'linux');
   assert.equal(process.arch, 'x64');
-  assert.equal(process.versions.node, NODE_VERSION);
+  assert.ok(
+    NODE_VERSION === '24.22.1' || NODE_VERSION === '26.13.0',
+    'Pinned producer Node required',
+  );
   const report = record(process.report.getReport());
   const reportHeader = record(report['header']);
   assert.ok(
