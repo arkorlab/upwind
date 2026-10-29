@@ -209,4 +209,105 @@ describe('edgeBundleOptions', () => {
     expect(output[0].code).not.toContain('process.env.NEXT_RUNTIME');
     expect(externals).toStrictEqual(['node:async_hooks']);
   });
+
+  /** The edge bundle built from `entry`, required as the Function requires it. */
+  async function built(entry: string, chunks: readonly string[]): Promise<unknown> {
+    await using bundle = await rolldown(
+      edgeBundleOptions(
+        dir,
+        entry,
+        () => {
+          // Nothing here is left to the Worker.
+        },
+        { chunks },
+      ),
+    );
+    const file = path.join(dir, 'edge.cjs');
+    await bundle.write({ format: 'cjs', file });
+    return createRequire(file)(file);
+  }
+
+  /**
+   * Next.js's edge runtime hands its chunks a `process` with the environment and nothing of
+   * Node.js's, and code tells the runtimes apart by it (`switchable-runtime`); the Function's own
+   * `process` named its Node.js version on an edge page.
+   */
+  it("gives the chunks the edge runtime's process, and leaves everything else the Function's", async () => {
+    const chunk = path.join(dir, 'chunk.js');
+    await writeFile(
+      chunk,
+      [
+        // As Next.js's edge globals do: the `process` a chunk sees is made the global one.
+        'if (process !== globalThis.process) { globalThis.process = process; }',
+        '(globalThis.TURBOPACK ||= []).push(() => {',
+        '  function own() {',
+        '    const process = { version: "a binding of its own" };',
+        '    return process.version;',
+        '  }',
+        '  let thrown;',
+        '  try { process.nextTick(() => {}); } catch (error) { thrown = error.message; }',
+        '  return {',
+        "    runtime: process.version ? 'Node.js ' + process.version : 'Edge/Browser',",
+        '    platform: process.platform,',
+        '    env: process.env.UPWIND_EDGE_PROCESS_CASE,',
+        '    pinned: process.env.NEXT_RUNTIME,',
+        '    own: own(),',
+        '    thrown,',
+        '  };',
+        '});',
+        '',
+      ].join('\n'),
+    );
+    const host = path.join(dir, 'host.cjs');
+    await writeFile(host, 'module.exports = () => process.version;\n');
+    const entry = path.join(dir, 'entry.cjs');
+    await writeFile(
+      entry,
+      'require("./chunk.js");\nmodule.exports = { chunk: globalThis.TURBOPACK.at(-1), host: require("./host.cjs") };\n',
+    );
+    const global = process;
+    vi.stubEnv('UPWIND_EDGE_PROCESS_CASE', 'read');
+    try {
+      const loaded = (await built(entry, [chunk])) as {
+        chunk: () => Record<string, unknown>;
+        host: () => string;
+      };
+
+      expect(loaded.chunk()).toStrictEqual({
+        runtime: 'Edge/Browser',
+        platform: undefined,
+        env: 'read',
+        pinned: 'edge',
+        own: 'a binding of its own',
+        thrown:
+          'A Node.js API is used (process.nextTick) which is not supported in the Edge Runtime.\nLearn more: https://nextjs.org/docs/api-reference/edge-runtime',
+      });
+      expect(process).toBe(global);
+      expect(loaded.host()).toBe(process.version);
+    } finally {
+      vi.unstubAllEnvs();
+      Reflect.deleteProperty(globalThis, 'TURBOPACK');
+    }
+  });
+
+  it('leaves a chunk that reads nothing of Node.js as Turbopack wrote it', async () => {
+    const chunk = path.join(dir, 'chunk.js');
+    await writeFile(chunk, 'module.exports = process.env.HOME;\n');
+    const entry = path.join(dir, 'entry.cjs');
+    await writeFile(entry, 'module.exports = require("./chunk.js");\n');
+    await using bundle = await rolldown(
+      edgeBundleOptions(
+        dir,
+        entry,
+        () => {
+          // Nothing here is left to the Worker.
+        },
+        { chunks: [chunk] },
+      ),
+    );
+    const { output } = await bundle.generate({ format: 'cjs' });
+
+    expect(output[0].code).not.toContain('upwind:edge-process');
+    expect(output[0].code).toContain('process.env.HOME');
+  });
 });
