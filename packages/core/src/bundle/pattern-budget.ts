@@ -166,7 +166,7 @@ export class BuildPatternBudget {
     if (head === null) throw new BuildPatternBudgetExceededError();
     const flags = compiled.pattern.ignoreCase ? 'i' : '';
     spend.take(Math.max(1, value.length) * SPLIT_WORK_PER_UNIT);
-    const split = payloadHeadsOf(value, compiled.pattern.ignoreCase);
+    const split = payloadHeadsOf(compiled.pattern, value);
     if (split === undefined) throw new BuildPatternBudgetExceededError();
     const bounded = this.compiledFor(head.source, flags, spend);
     let refused: BuildPatternBudgetExceededError | undefined;

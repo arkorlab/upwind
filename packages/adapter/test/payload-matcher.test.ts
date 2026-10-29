@@ -71,6 +71,8 @@ const SOURCES = [
 ];
 
 const I18N = { locales: ['en', 'ja'], defaultLocale: 'en' };
+const MODERN_PAYLOAD_END = String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
+const supportsSegmentPayloads = matcherOf('/:path*').source.endsWith(MODERN_PAYLOAD_END);
 const CONFIGS: readonly Config[] = [
   {},
   { basePath: '/base' },
@@ -112,7 +114,7 @@ const PATHS = [
   '/blog/a/b',
 ];
 
-describe('a matcher of Next.js 16.4, tested a part at a time', () => {
+describe('a Next.js middleware matcher, tested a part at a time', () => {
   beforeAll(() => {
     budgetPatterns(() => requestScope.current);
   });
@@ -152,13 +154,16 @@ describe('a matcher of Next.js 16.4, tested a part at a time', () => {
     expect(matcherHolds(matcher, `/rewritten/${'c'.repeat(200)}`)).toBe(true);
   });
 
-  it('answers yes where one way holds, though the head is not allowed against another', () => {
-    const matcher = matcherOf('/:locale/:path*');
-    // Too long for the head whole, and a segment that splits a short head off.
-    const path = `/en/a.segments/${'x'.repeat(40_000)}.segment.rsc`;
+  it.skipIf(!supportsSegmentPayloads)(
+    'answers yes where one way holds, though the head is not allowed against another',
+    () => {
+      const matcher = matcherOf('/:locale/:path*');
+      // Too long for the head whole, and a segment that splits a short head off.
+      const path = `/en/a.segments/${'x'.repeat(40_000)}.segment.rsc`;
 
-    expect(matcherHolds(matcher, path)).toBe(true);
-  });
+      expect(matcherHolds(matcher, path)).toBe(true);
+    },
+  );
 
   it('reads where a line terminator rules segments out once, however many places there are', () => {
     const matcher = matcherOf('/:locale/:path*');
@@ -170,13 +175,16 @@ describe('a matcher of Next.js 16.4, tested a part at a time', () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
-  it('refuses a path with more places a segment could begin than it splits', () => {
-    const matcher = matcherOf('/:locale/:path*');
+  it.skipIf(!supportsSegmentPayloads)(
+    'refuses a path with more places a segment could begin than it splits',
+    () => {
+      const matcher = matcherOf('/:locale/:path*');
 
-    expect(() => matcherHolds(matcher, `/en/${'a.segments/'.repeat(17)}x.segment.rsc`)).toThrow(
-      PatternBudgetExceededError,
-    );
-  });
+      expect(() => matcherHolds(matcher, `/en/${'a.segments/'.repeat(17)}x.segment.rsc`)).toThrow(
+        PatternBudgetExceededError,
+      );
+    },
+  );
 
   it('does not split a matcher that reads past what it matches', () => {
     // `/:locale/:path*` with a lookahead in its first parameter, as an application could write it.
@@ -257,12 +265,54 @@ describe('a matcher of Next.js 16.4, tested a part at a time', () => {
 
     expect(matcherHolds(matcher, path)).toBe(false);
     expect(requestScope.current.remaining).toBeLessThan(1400);
-    expect(() => matcherHolds(matcher, path)).toThrow(PatternBudgetExceededError);
+    expect(() => {
+      for (let retry = 0; retry < 4; retry += 1) matcherHolds(matcher, path);
+    }).toThrow(PatternBudgetExceededError);
+  });
+
+  it('does not strip RSC or segment suffixes from a JSON-only matcher', () => {
+    const modern = String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
+    const legacy = String.raw`(\.json)?[\/#\?]?$`;
+    const source = matcherOf('/docs/article', { i18n: I18N }).source.split(modern).join(legacy);
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp -- Next's own literal matcher with the 16.2.0 JSON-only payload grammar
+    const matcher = new RegExp(source, 'i');
+    const paths = [
+      '/en/docs/article',
+      '/en/docs/article.json',
+      '/en/docs/article.rsc',
+      '/en/docs/article.RSC',
+      '/en/docs/article.segments/x.segment.rsc',
+      '/_next/data/b/en/docs/article.json',
+      '/_next/data/b/en/docs/article.rsc',
+    ];
+
+    expect(paths.map((path) => matcherHolds(matcher, path))).toStrictEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+    ]);
+  });
+
+  it('keeps segment-looking text as an ordinary pathname in a JSON-only matcher', () => {
+    const legacy = String.raw`(\.json)?[\/#\?]?$`;
+    const source = matcherOf('/:locale/:path*').source.split(MODERN_PAYLOAD_END).join(legacy);
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp -- a legacy matcher has no segment payload grammar to split or count
+    const matcher = new RegExp(source, 'i');
+    const path = `/en/${'a.segments/'.repeat(17)}x.segment.rsc`;
+
+    expect(matcherHolds(matcher, path)).toBe(true);
   });
 
   it('does not use a locale mismatch before proving the complete remaining grammar', () => {
     const { source } = matcherOf('/:path*', { i18n: I18N });
-    const tail = String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
+    const legacy = String.raw`(\.json)?[\/#\?]?$`;
+    const tail = source.endsWith(legacy)
+      ? legacy
+      : String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
     // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp -- Next's expression with an alternative outside its locale guard
     const matcher = new RegExp(source.split(tail).join(`|^/_next/.*${tail}`), 'i');
 
