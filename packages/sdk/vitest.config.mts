@@ -5,5 +5,6 @@ export default defineConfig({
     name: 'sdk',
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    exclude: ['test/workers/**'],
   },
 });

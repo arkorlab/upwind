@@ -1,9 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
+import { WEBSOCKET_RESPONSE_SYMBOL } from '@stayingupwind/core/next';
+import { isWebSocketUpgrade } from '@stayingupwind/core/request';
 import { handleAsNodeRequest } from 'cloudflare:node';
 
 import { changesSomething, type InvokeInput, type Run } from './invocation.ts';
-import { sentAsEncoded } from './reframe.ts';
+import { sentAsEncoded, withHeadersChanged } from './reframe.ts';
 import { runWithTaskScheduler } from './tasks.ts';
 
 /**
@@ -75,6 +77,8 @@ const CUT_AT_A_COMMA: ReadonlySet<string> = new Set([
 interface Dispatch {
   readonly input: InvokeInput;
   readonly url: string;
+  /** Present only for an upgrade: its native transport never enters Node's HTTP serializer. */
+  readonly upgrade?: { response?: Response };
 }
 
 interface BridgedRequest extends IncomingMessage {
@@ -249,6 +253,26 @@ function onRequest(req: IncomingMessage, res: ServerResponse): void {
   restoreHost(req, dispatch.input.request.url);
   settableSocket(req);
   singleRedirectLocation(res);
+  if (dispatch.upgrade !== undefined) {
+    const upgrade = dispatch.upgrade;
+    Reflect.set(res, Symbol.for(WEBSOCKET_RESPONSE_SYMBOL), (response: Response): void => {
+      upgrade.response = withHeadersChanged(response, (headers) => {
+        for (const [name, value] of Object.entries(res.getHeaders())) {
+          if (value === undefined) continue;
+          headers.delete(name);
+          const fields = Array.isArray(value) ? value : [value];
+          for (const field of fields) {
+            headers.append(name, String(field));
+          }
+        }
+      });
+      // Finish only the internal HTTP invocation. Its response is replaced with the captured
+      // native handshake below; a WebSocket cannot pass through workerd's node:http serializer.
+      res.statusCode = HTTP_NO_CONTENT;
+      res.statusMessage = 'No Content';
+      res.end();
+    });
+  }
   const handled = handle(dispatch, req, res);
   retainHandler(dispatch.input, res, handled);
 }
@@ -352,6 +376,12 @@ function asWritten(response: Response): Response {
 
 export async function invokeNodeHandler(input: InvokeInput): Promise<Response> {
   const target = new URL(input.request.url);
-  const dispatch: Dispatch = { input, url: input.url ?? `${target.pathname}${target.search}` };
-  return asWritten(await handleAsNodeRequest(bridge.port(), input.request, undefined, dispatch));
+  const upgrade = isWebSocketUpgrade(input.request) ? {} : undefined;
+  const dispatch: Dispatch = {
+    input,
+    url: input.url ?? `${target.pathname}${target.search}`,
+    ...(upgrade !== undefined && { upgrade }),
+  };
+  const response = await handleAsNodeRequest(bridge.port(), input.request, undefined, dispatch);
+  return dispatch.upgrade?.response ?? asWritten(response);
 }

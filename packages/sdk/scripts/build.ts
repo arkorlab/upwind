@@ -37,6 +37,7 @@ const ENTRIES = [
   'ai',
   'service',
   'workflow',
+  'websocket',
 ] as const;
 
 async function modules(): Promise<number> {
@@ -45,6 +46,7 @@ async function modules(): Promise<number> {
     // Neither Node nor a browser: this runs wherever the application does, which is a Function as
     // often as it is a development server.
     platform: 'neutral',
+    external: [/^node:/u, 'ws'],
   });
   const { output } = await build.write({
     dir: OUT_DIR,
