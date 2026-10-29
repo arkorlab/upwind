@@ -39,6 +39,11 @@ async function finishAfter<T>(
   await finish(await projection);
 }
 
+/** Observe a fence immediately, even while its full-completion observer waits on earlier history. */
+async function projectedOnce(projection: Promise<unknown>): Promise<void> {
+  await projection;
+}
+
 /**
  * Preserve full completion for maintenance while letting the next projection start once this
  * projection is over. `answered` is independent: an AT_ONCE mutation may resolve it before either
@@ -57,21 +62,26 @@ export function chainSettlePhases<T extends { readonly early: boolean }>(
     answer.resolve(undefined);
   };
   const projection = projectAfter(previous.projected, log, project, answerNow);
-  const projected = projection.then(() => {});
+  const projected = projectedOnce(projection);
   const done = finishAfter(previous.done, projection, log, finish);
   // A projection may fail while the previous history is still running. Hear it immediately,
   // while leaving the full run to report that failure after its predecessor has drained.
-  void projected.catch(() => {});
-  void answer.promise.catch(() => {});
-  void done.then(
-    () => answer.resolve(undefined),
-    (error: unknown) => {
-      if (said.early) {
-        log.error('settle failed after the answer', { detail: detailOf(error) });
-      } else {
-        answer.reject(error);
-      }
-    },
-  );
+  void projected.catch(() => {
+    // The full run reports the failure after its predecessor's history has drained.
+  });
+  void answer.promise.catch(() => {
+    // A maintenance caller may only wait for full completion, which reports the same failure.
+  });
+  const over = async (): Promise<void> => {
+    await done;
+    answer.resolve(undefined);
+  };
+  void over().catch((error: unknown) => {
+    if (said.early) {
+      log.error('settle failed after the answer', { detail: detailOf(error) });
+    } else {
+      answer.reject(error);
+    }
+  });
   return { answered: answer.promise, projected, done, answerNow };
 }

@@ -47,6 +47,7 @@ import {
 } from './resource-changes.ts';
 import type { TickOptions } from './retention-run.ts';
 import { ScopeContext } from './scope-context.ts';
+import { scopeCompletion, scopeProjection, type ScopeSettleHost } from './scope-settle.ts';
 import { tickScope } from './scope-tick.ts';
 import { seedRepairCopier } from './seed-repair-copy.ts';
 import type { SeedRepairVerification } from './seed-repair.ts';
@@ -54,11 +55,7 @@ import * as seed from './seed.ts';
 import { countSettleFailures, retryDelayMs, settleRetryMs } from './settle-retry.ts';
 import { chainSettlePhases } from './settle-schedule.ts';
 import {
-  finishSettle,
   type OwnRecords,
-  projectPending,
-  type ProjectionOutcome,
-  publishPending,
   requireScopeMarker,
   type SettleDeps,
   type SettleOutcome,
@@ -269,67 +266,31 @@ export class CacheScope extends DurableObject<CacheBindings> {
   ): SettleRun {
     this.#waiting += 1;
     this.#historyWaiting += 1;
+    const host = this.#settleHost();
     const run = chainSettlePhases(
       { projected: this.#projecting, done: this.#settling },
       this.#log,
-      this.#projectionOf(from, timing),
-      this.#completionOf(ended, timing),
+      scopeProjection(host, from, timing),
+      scopeCompletion(host, ended, timing),
     );
     this.#projecting = run.projected;
     this.#settling = run.done;
     return run;
   }
 
-  /** Separate callbacks keep a queued history run from capturing projection-only byte owners. */
-  #projectionOf(
-    from: OwnRecords | null | undefined,
-    timing: Timing | undefined,
-  ): () => Promise<ProjectionOutcome> {
-    return async () => {
-      this.#waiting -= 1;
-      timing?.lap('settle-wait');
-      if (!this.#scope.tables) return { early: true, failed: false, continued: false };
-      try {
-        return await projectPending({ ...this.#deps(), timing }, from);
-      } catch (error) {
-        this.#log.error('settle projection failed', { detail: detailOf(error) });
-        return {
-          early: false,
-          failed: true,
-          continued: false,
-          ...(from?.controlTags.projected === false && { controlTagsFailed: true }),
-        };
-      }
-    };
-  }
-
-  #completionOf(
-    ended: ((outcome: SettleOutcome) => void) | undefined,
-    timing: Timing | undefined,
-  ): (projection: ProjectionOutcome) => Promise<void> {
-    return async (projection) => {
-      this.#historyWaiting -= 1;
-      let outcome: SettleOutcome;
-      if (!this.#scope.tables) {
-        outcome = { pending: false, failed: false, continued: false };
-      } else {
-        try {
-          outcome = await publishPending(
-            { ...this.#deps(), timing, othersWaiting: () => this.#historyWaiting > 0 },
-            projection,
-          );
-        } catch (error) {
-          this.#log.error('settle history failed', { detail: detailOf(error) });
-          outcome = {
-            pending: true,
-            failed: true,
-            continued: false,
-            ...(projection.controlTagsFailed === true && { controlTagsFailed: true }),
-          };
-        }
-        await finishSettle(outcome, undefined, this.#afterSettle.bind(this));
-      }
-      ended?.(outcome);
+  #settleHost(): ScopeSettleHost {
+    return {
+      tables: () => this.#scope.tables,
+      deps: () => this.#deps(),
+      log: this.#log,
+      projectStarted: () => {
+        this.#waiting -= 1;
+      },
+      historyStarted: () => {
+        this.#historyWaiting -= 1;
+      },
+      historyWaiting: () => this.#historyWaiting > 0,
+      after: this.#afterSettle.bind(this),
     };
   }
 
