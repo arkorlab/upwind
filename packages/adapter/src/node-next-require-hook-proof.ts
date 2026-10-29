@@ -102,9 +102,6 @@ function refuse(reason: string): never {
 function stored(proof: NodeNextRequireHookProof): State {
   return proofs.get(proof) ?? refuse('copied or missing proof');
 }
-function digest(bytes: Uint8Array | string): string {
-  return createHash('sha256').update(bytes).digest('hex');
-}
 function approved(input: NodeJwtCompilerInput) {
   assertOriginalNodeModesGraph(input.originalModes, input.graph);
   const routes = checkedNodeRouteRewriteSources({
@@ -125,7 +122,7 @@ async function source(state: State, file: string, expected?: string): Promise<st
   if (!info.isFile() || info.size > MAX_SOURCE_BYTES || (await realpath(file)) !== file)
     refuse('noncanonical regular source');
   const bytes = await readFile(file);
-  const sha256 = digest(bytes);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
   if (bytes.length !== info.size || (expected !== undefined && sha256 !== expected))
     refuse('source changed or digest mismatch');
   const previous = state.files.get(file);

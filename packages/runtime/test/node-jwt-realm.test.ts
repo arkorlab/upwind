@@ -386,6 +386,7 @@ describe('private Node JWT initialization preconditions', () => {
       assertNodeJwtRealm(own.realm);
       own.versions.node = nodeVersion === '24.22.1' ? '26.13.0' : '24.22.1';
       own.process.version = `v${own.versions.node}`;
+
       expect(checking(own.realm)).toThrow('descriptor changed (version)');
     },
   );

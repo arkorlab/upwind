@@ -37,6 +37,7 @@ describe('fixed Next require-hook bootstrap DATA', () => {
   it.each(['24.22.1', '26.13.0'])('accepts the reviewed Node %s record', (version) => {
     const own = input();
     own.record.nodeVersion = version;
+
     expect(nodeNextHookRecord(own, isProxy).record.nodeVersion).toBe(version);
   });
 

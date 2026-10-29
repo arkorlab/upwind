@@ -98,6 +98,7 @@ describe.skipIf(!ENABLED)('fixed Node JWT evaluation guard (dedicated Linux CI)'
 
   it('rejects a record for the other reviewed Node release', async () => {
     const other = process.versions.node === '24.22.1' ? '26.13.0' : '24.22.1';
+
     await expect(scenario(`record.nodeVersion=${JSON.stringify(other)};`, '')).rejects.toThrow(
       'invalid build-produced source record',
     );
