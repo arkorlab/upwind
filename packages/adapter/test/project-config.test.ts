@@ -8,13 +8,55 @@ import { promisify } from 'node:util';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { CONFIG_FILES, configFileOrder, readProjectConfig } from '../src/project-config.ts';
+import {
+  CONFIG_FILES,
+  configFileOrder,
+  findProjectConfigFile,
+  readProjectConfig,
+  readProjectConfigFile,
+} from '../src/project-config.ts';
 
 function projectWith(file: string, value: unknown): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'upwind-project-config-'));
   writeFileSync(path.join(dir, file), JSON.stringify(value));
   return dir;
 }
+
+describe('the project configuration file reader', () => {
+  it('preserves settings the adapter does not interpret', async () => {
+    const value = { crons: 'validated by the caller', services: { api: { root: 'api' } } };
+    const dir = projectWith('upwind.json', value);
+
+    await expect(readProjectConfigFile(dir)).resolves.toStrictEqual({ file: 'upwind.json', value });
+  });
+
+  it('selects a TypeScript file without executing it', async () => {
+    const dir = projectWith('upwind.json', {});
+    writeFileSync(path.join(dir, 'upwind.config.ts'), "throw new Error('executed');");
+
+    await expect(findProjectConfigFile(dir)).resolves.toBe('upwind.config.ts');
+    await expect(readProjectConfigFile(dir)).rejects.toThrow('executed');
+  });
+
+  it('reads host filenames and asynchronous exports through the same loader', async () => {
+    const dir = projectWith('vercel.json', { ignored: true });
+    writeFileSync(
+      path.join(dir, 'custom.config.ts'),
+      'export default async () => ({ services: { api: { root: "api" } } });',
+    );
+
+    await expect(readProjectConfigFile(dir, ['custom.config.ts'])).resolves.toStrictEqual({
+      file: 'custom.config.ts',
+      value: { services: { api: { root: 'api' } } },
+    });
+  });
+
+  it('returns an empty value when no configuration exists', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'upwind-empty-config-'));
+
+    await expect(readProjectConfigFile(dir)).resolves.toStrictEqual({ file: undefined, value: {} });
+  });
+});
 
 describe("a project's deploy settings", () => {
   it('are read from its own file, whole', async () => {
