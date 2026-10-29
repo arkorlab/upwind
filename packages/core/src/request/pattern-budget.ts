@@ -82,6 +82,16 @@ export function budgetPatterns(current?: () => PatternBudget | undefined): void 
   budget.tooShort ??= createShortPatternCheck(budget, costs);
 }
 
+/** Reserve bounded decomposition work before inspecting a path outside the regexp engine. */
+export function reservePatternWork(pattern: RegExp, valueLength: number, steps: number): void {
+  if (!budget.on) return;
+  const current = budget.current?.();
+  if (!Number.isFinite(steps) || steps < 1 || steps > (current?.remaining ?? BUDGET)) {
+    throw new PatternBudgetExceededError({ source: pattern.source, valueLength });
+  }
+  if (current !== undefined) current.remaining -= steps;
+}
+
 function costFor(pattern: RegExp, lineFree: boolean): PatternCost | null {
   let known = costs.get(pattern);
   if (known === undefined) {

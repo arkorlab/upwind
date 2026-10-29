@@ -8,7 +8,7 @@ import {
 } from '../../core/src/bundle/pattern-budget.ts';
 
 /** Next.js 16.4.2 and 16.4.3 emit the same payload/locale grammar; exercise the pinned generator. */
-const require = createRequire(import.meta.url);
+const require = createRequire(process.env['UPWIND_MATCHER_NEXT_PACKAGE'] ?? import.meta.url);
 const { getMiddlewareMatchers } = require('next/dist/build/analysis/get-page-static-info.js') as {
   getMiddlewareMatchers: (source: string, config: Config) => { regexp: string }[];
 };

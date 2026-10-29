@@ -1,4 +1,5 @@
 import { payloadHeadOf, payloadHeadsOf } from '../paas/payload-matcher.ts';
+import { localeMiddlewareSource } from '../request/middleware-locale.ts';
 import {
   BUDGET,
   literalGate,
@@ -8,7 +9,6 @@ import {
   stepsAt,
 } from '../request/pattern-cost.ts';
 import { nestingDepth } from '../request/pattern-tree.ts';
-import { localeMiddlewareSource } from './middleware-locale.ts';
 
 /** Independent of request routing: no assembly enables the edge's isolate-wide switch. */
 const MATCHES_PER_BUILD = 1024;

@@ -1,5 +1,11 @@
-import { PatternBudgetExceededError, testWithin } from '../request/pattern-budget.ts';
-import { type Alternatives, parseAlternatives } from '../request/pattern-tree.ts';
+import { localeMiddlewareSource } from '../request/middleware-locale.ts';
+import {
+  PatternBudgetExceededError,
+  reservePatternWork,
+  testWithin,
+} from '../request/pattern-budget.ts';
+import { MAX_NESTING } from '../request/pattern-cost.ts';
+import { type Alternatives, nestingDepth, parseAlternatives } from '../request/pattern-tree.ts';
 
 /**
  * A middleware matcher of Next.js 16.4's, tested a part at a time where the edge would not test it
@@ -38,6 +44,15 @@ const UPPER_CASE = /[A-Z]/gu;
 
 /** Each matcher's head, or `null` for one that is not split, worked out the first time it is needed. */
 const heads = new WeakMap<RegExp, RegExp | null>();
+const LOCALE_WORK_PER_UNIT = 16;
+
+interface LocaleMatchers {
+  readonly prefixes: Map<string, RegExp>;
+  readonly heads: Map<string, RegExp | null>;
+}
+
+/** Only the canonical prefix and three heads of each matcher, never a cache of visitor paths. */
+const localeMatchers = new WeakMap<RegExp, LocaleMatchers>();
 
 /** Whether one node reads nothing but the characters it matches, at `index` of a sequence `length` long. */
 function nodeReadsOnlyItself(
@@ -71,7 +86,11 @@ function headOf(pattern: RegExp): RegExp | null {
   if (head === undefined) {
     head = null;
     const { source, flags } = pattern;
-    if (source.startsWith('^') && source.endsWith(PAYLOAD_END)) {
+    if (
+      source.startsWith('^') &&
+      source.endsWith(PAYLOAD_END) &&
+      nestingDepth(source) <= MAX_NESTING
+    ) {
       const own = `${source.slice(0, -PAYLOAD_END.length)}$`;
       const alternatives = parseAlternatives(own, 0, own.length);
       if (alternatives?.length === 1 && readsOnlyItself(alternatives, true)) {
@@ -82,6 +101,41 @@ function headOf(pattern: RegExp): RegExp | null {
     heads.set(pattern, head);
   }
   return head;
+}
+
+/** Remove Next's one known lookahead only after judging it on the complete original path. */
+function localeHeadOf(
+  pattern: RegExp,
+  path: string,
+): { readonly head: RegExp | null; readonly impossible: boolean } {
+  reservePatternWork(
+    pattern,
+    path.length,
+    Math.max(1, pattern.source.length) + Math.max(1, path.length) * LOCALE_WORK_PER_UNIT,
+  );
+  let compiled = localeMatchers.get(pattern);
+  if (compiled === undefined) {
+    compiled = { prefixes: new Map(), heads: new Map() };
+    localeMatchers.set(pattern, compiled);
+  }
+  const locale = localeMiddlewareSource(pattern, path, (source) => {
+    let prefix = compiled.prefixes.get(source);
+    if (prefix === undefined) {
+      // eslint-disable-next-line security/detect-non-literal-regexp -- the cached literal prefix of Next's own matcher
+      prefix = new RegExp(source, pattern.flags);
+      compiled.prefixes.set(source, prefix);
+    }
+    return testWithin(prefix, path);
+  });
+  if (locale.kind === 'unsupported') return { head: null, impossible: false };
+  let head = compiled.heads.get(locale.source);
+  if (head === undefined) {
+    // eslint-disable-next-line security/detect-non-literal-regexp -- only Next's canonical locale guard has been resolved
+    head = headOf(new RegExp(locale.source, pattern.flags));
+    compiled.heads.set(locale.source, head);
+  }
+  // A mismatch is conclusive only after the complete remaining grammar has passed the head proof.
+  return { head, impossible: head !== null && locale.kind === 'mismatch' };
 }
 
 /**
@@ -177,7 +231,11 @@ export function matcherHolds(pattern: RegExp, path: string): boolean {
   try {
     return testWithin(pattern, path);
   } catch (error) {
-    const head = error instanceof PatternBudgetExceededError ? headOf(pattern) : null;
+    if (!(error instanceof PatternBudgetExceededError)) throw error;
+    const plain = headOf(pattern);
+    const { head, impossible } =
+      plain === null ? localeHeadOf(pattern, path) : { head: plain, impossible: false };
+    if (impossible) return false;
     const split = head === null ? undefined : headsOf(path, pattern.flags.includes('i'));
     if (head === null || split === undefined) {
       throw error;

@@ -217,6 +217,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Packing the generated application needs the same built packages as the unit suites.
       - run: pnpm build
+      - name: Locale middleware matcher contracts on the supported floor
+        run: |
+          next_floor_dir="$RUNNER_TEMP/middleware-next-162"
+          npm install --prefix "$next_floor_dir" --ignore-scripts --omit=optional --no-package-lock --no-audit --no-fund next@16.2.0
+          UPWIND_MATCHER_NEXT_PACKAGE="$next_floor_dir/package.json" pnpm exec vitest run --project adapter packages/adapter/test/payload-matcher.test.ts packages/adapter/test/build-middleware-budget.test.ts
       # One real Next.js build plus an HTTP request through the emitted Function. The remaining
       # fixtures and Next.js releases stay in the scheduled matrix workflow.
       - name: External output integration
