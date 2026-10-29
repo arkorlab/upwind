@@ -31,6 +31,30 @@ const observations = [];
 async function probe(label) {
   const context = await browser.newContext();
   const page = await context.newPage();
+  await page.addInitScript(() => {
+    const fetchOriginal = window.fetch;
+    window.diagnosticFetches = [];
+    window.fetch = async (...args) => {
+      const sentAt = performance.now();
+      const res = await fetchOriginal(...args);
+      const url = new URL(res.url);
+      if (url.origin !== location.origin) return res;
+      const init = args[1] ?? {};
+      const headers = new Headers(init.headers);
+      const item = { path: url.pathname, foo: url.searchParams.get('foo'), method: init.method ?? 'GET', sentAt,
+        headersAt: performance.now(), prefetch: headers.get('next-router-prefetch'), segment: headers.get('next-router-segment-prefetch'),
+        revalidated: res.headers.get('x-action-revalidated'), edge: res.headers.get('x-arkor-edge')?.split(';')[0], numbers: [] };
+      window.diagnosticFetches.push(item);
+      const copy = res.clone();
+      void (async () => {
+        const reader = copy.body.getReader(); const decoder = new TextDecoder(); let text = '';
+        for (;;) { const { value, done } = await reader.read(); if (done) break; text += decoder.decode(value, { stream: true });
+          item.numbers = [...new Set(text.match(/\b0\.\d{6,}\b/g) ?? [])]; item.lastChunkAt = performance.now(); }
+        item.completeAt = performance.now();
+      })().catch(() => { item.failed = true; });
+      return res;
+    };
+  });
   page.setDefaultTimeout(20000);
   const record = { label, network: [], snapshots: [] };
   observations.push(record);
@@ -56,12 +80,14 @@ async function probe(label) {
   try {
     await page.goto(target + '/revalidate', { waitUntil: 'networkidle' });
     record.initial = await page.locator('#justputit').textContent();
+    record.actionBrowserTime = await page.evaluate(() => performance.now());
     start = performance.now();
     await page.locator('#redirect-revalidate-client').click();
     for (const ms of [500,1500,2500,3500,5500,10000]) {
       await page.waitForTimeout(Math.max(0, ms - (performance.now() - start)));
       await snapshot(String(ms));
     }
+    record.fetchesBeforeReload = await page.evaluate(() => window.diagnosticFetches);
     await page.reload({ waitUntil: 'networkidle' });
     await snapshot('reload');
     record.changedAt2500 = record.snapshots.find(s => s.label === '2500')?.value !== record.initial;
