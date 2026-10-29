@@ -39,9 +39,11 @@ name: Deploy tests
 # for most of a job's six hours, or past them.
 
 on:
-  # Every night, both targets on the runner over the whole manifest (`plan`).
+  # Every night, both targets on the runner over the whole manifest (`plan`): the supported
+  # release first, then the latest published canary in a separate run.
   schedule:
     - cron: '23 17 * * *'
+    - cron: '23 18 * * *'
   workflow_dispatch:
     inputs:
       target:
@@ -86,8 +88,8 @@ on:
 permissions: {}
 
 env:
-  # The Next.js a night's run tests against: the one a dispatch defaults to (`nextjsRef`), which moves
-  # with it.
+  # The supported release a night's first run tests against: the one a dispatch defaults to
+  # (`nextjsRef`), which moves with it. The other run resolves npm's canary below.
   NIGHTLY_NEXTJS_REF: 'v16.4.3'
   # The pieces the runner's targets are cut into, a night's run and a dispatch that names none: as fine
   # as the plan cuts. Both targets in 64 pieces each is 128 jobs, inside the 256 a matrix holds, and
@@ -109,6 +111,7 @@ jobs:
   # how many pieces it is in, and how many of them may run at once.
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       total: ${{ steps.plan.outputs.total }}
@@ -123,6 +126,7 @@ jobs:
         id: plan
         env:
           EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
           TARGET: ${{ inputs.target }}
           NEXTJS_REF: ${{ inputs.nextjsRef }}
           TESTS: ${{ inputs.tests }}
@@ -143,7 +147,32 @@ jobs:
             SHARDS="$RUNNER_SHARDS"
             ONLY=''
             CONCURRENCY=''
-            nextjs="$NIGHTLY_NEXTJS_REF"
+            case "$SCHEDULE" in
+              '23 17 * * *') nextjs="$NIGHTLY_NEXTJS_REF" ;;
+              '23 18 * * *')
+                # Resolve the published version once, then its exact tag's commit: every shard must
+                # test the same source even if npm publishes another canary while the run queues.
+                version="$(curl --fail --silent --show-error --location --retry 2 \
+                  --connect-timeout 10 --max-time 30 https://registry.npmjs.org/-/package/next/dist-tags \
+                  | jq -er '.canary | select(type == "string")
+                    | select(test("\\A[0-9]+[.][0-9]+[.][0-9]+-canary[.][0-9]+\\z"))')"
+                tag="refs/tags/v$version"
+                refs="$(git ls-remote --exit-code https://github.com/vercel/next.js.git "$tag" "$tag^{}")"
+                # Annotated tags name a tag object first; the peeled ref names the commit. A
+                # lightweight tag already names the commit itself.
+                nextjs="$(printf '%s\n' "$refs" | awk -v tag="$tag" '
+                  $2 == tag { direct = $1 }
+                  $2 == tag "^{}" { peeled = $1 }
+                  END { print (peeled != "" ? peeled : direct) }
+                ')"
+                if [[ ! "$nextjs" =~ ^[0-9a-f]{40}$ ]]; then
+                  echo 'the published Next.js canary tag must resolve to a commit SHA' >&2
+                  exit 1
+                fi
+                echo "Next.js canary: v$version ($nextjs)" >>"$GITHUB_STEP_SUMMARY"
+                ;;
+              *) echo 'unrecognized deploy-tests schedule' >&2; exit 1 ;;
+            esac
           else
             targets="$TARGET"
             nextjs="$NEXTJS_REF"
