@@ -9,6 +9,28 @@ import { WebSocketServer } from 'ws';
 
 import { handleNodeWebSocket } from '../../src/websocket.ts';
 
+const SOCKETIO_STAGE_MS = 1500;
+
+async function socketIoStage<T>(
+  promise: Promise<T>,
+  stage: string,
+  messages: readonly string[],
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${stage} timed out; received packets: ${JSON.stringify(messages)}`));
+        }, SOCKETIO_STAGE_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function request(): Request {
   return new Request('https://example.com/socket?EIO=4&transport=websocket', {
     headers: {
@@ -220,14 +242,18 @@ describe('real ws on Workers', () => {
       }
     });
 
-    await expect(echoed.promise).resolves.toBe('42["echo","hello"]');
+    try {
+      await expect(socketIoStage(echoed.promise, 'Socket.IO event echo', messages)).resolves.toBe(
+        '42["echo","hello"]',
+      );
 
-    await heartbeat.promise;
+      await socketIoStage(heartbeat.promise, 'Engine.IO application heartbeat', messages);
 
-    expect(messages.some((value) => value.startsWith('0{"sid":'))).toBe(true);
-
-    socket.close(1000);
-    engine.close();
+      expect(messages.some((value) => value.startsWith('0{"sid":'))).toBe(true);
+    } finally {
+      socket.close(1000);
+      engine.close();
+    }
   });
 
   it('rejects messages larger than the bridge limit', async () => {

@@ -1,5 +1,10 @@
 import { once } from 'node:events';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import { WebSocketPair } from 'miniflare';
@@ -209,5 +214,77 @@ describe('development native WebSocket transport', () => {
     await pairClosed.promise;
 
     expect(client.readyState).toBe(WebSocket.CLOSED);
+  });
+
+  it.each([
+    { name: 'an unoffered subprotocol', protocol: 'unoffered', version: '13', status: 500 },
+    { name: 'an invalid wire handshake', protocol: 'echo', version: '12', status: 400 },
+  ])('closes the application pair after rejecting $name', async ({ protocol, version, status }) => {
+    const restore = installWebSocketGlobals();
+    cleanup.push(() => {
+      restore();
+      return Promise.resolve();
+    });
+    const pairClosed = Promise.withResolvers<number>();
+    const { address } = await listening((_request, response) => {
+      const pair = new WebSocketPair();
+      pair[1].accept();
+      pair[1].addEventListener('close', (event) => {
+        pairClosed.resolve(event.code);
+      });
+      const init = {
+        status: 101,
+        webSocket: pair[0],
+        headers: { 'sec-websocket-protocol': protocol },
+      };
+      return handed(response, new Response(null, init));
+    });
+    const url = new URL(address);
+    url.protocol = 'http:';
+    const rejected = new Promise<number | undefined>((resolve, reject) => {
+      const request = httpRequest(url, {
+        headers: {
+          connection: 'Upgrade',
+          upgrade: 'websocket',
+          'sec-websocket-key': 'AQIDBAUGBwgJCgsMDQ4PEA==',
+          'sec-websocket-version': version,
+          'sec-websocket-protocol': 'echo',
+        },
+      });
+      request.once('response', (answer) => {
+        answer.resume();
+        resolve(answer.statusCode);
+      });
+      request.once('error', reject);
+      request.end();
+    });
+
+    await expect(rejected).resolves.toBe(status);
+    await expect(pairClosed.promise).resolves.toBe(1001);
+  });
+
+  it('closes the application pair if coupling rejects an already accepted response endpoint', async () => {
+    const restore = installWebSocketGlobals();
+    cleanup.push(() => {
+      restore();
+      return Promise.resolve();
+    });
+    const pairClosed = Promise.withResolvers<number>();
+    const { address } = await listening((_request, response) => {
+      const pair = new WebSocketPair();
+      pair[1].accept();
+      pair[1].addEventListener('close', (event) => {
+        pairClosed.resolve(event.code);
+      });
+      pair[0].accept();
+      const init = { status: 101, webSocket: pair[0] };
+      return handed(response, new Response(null, init));
+    });
+    const client = new WebSocket(address);
+    const closed = closeEvent(client);
+    await once(client, 'open');
+
+    await expect(pairClosed.promise).resolves.toBe(1001);
+    expect((await closed)[0]).toBe(1006);
   });
 });

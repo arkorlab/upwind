@@ -304,6 +304,18 @@ class UpgradeSocket extends Duplex {
     return combined.subarray(boundary + HEADER_END.length);
   }
 
+  #settleCleanRejection(error: Error | null): void {
+    const rejection = this.#rejection;
+    if (error !== null || rejection === undefined || !this.#pending || this.#signal.aborted) return;
+    try {
+      const body = rejection.bytes === 0 ? null : Buffer.concat(rejection.chunks);
+      this.#settle(new Response(body, { status: rejection.status, headers: rejection.headers }));
+    } catch (error_) {
+      this.#pending = false;
+      this.#reject(errorOf(error_));
+    }
+  }
+
   override _read(): void {
     // Native WebSocket events push incoming bytes; there is no pull API on that transport.
   }
@@ -362,6 +374,7 @@ class UpgradeSocket extends Duplex {
   override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
     clearTimeout(this.#timeout);
     this.#signal.removeEventListener('abort', this.#onAbort);
+    this.#settleCleanRejection(error);
     if (this.#pending) {
       this.#pending = false;
       this.#reject(

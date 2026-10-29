@@ -94,47 +94,63 @@ export function createDevWebSocketBridge(): DevWebSocketBridge {
       [RESPONSE]: {
         value: (answer: NativeResponse): void => {
           const worker = answer.webSocket;
-          if (worker === null || worker === undefined || answer.status !== SWITCHING_PROTOCOLS) {
+          if (worker === null || worker === undefined) {
             throw new TypeError(
               'upwind: a native WebSocket response needs status 101 and a socket',
             );
           }
-          if (closing !== undefined || socket.destroyed) {
-            // Compilation can finish after the peer has left. Deliver a close to the application's
-            // side too, so its per-connection timers/listeners can be released.
-            worker.accept();
-            worker.close(GOING_AWAY, 'Client disconnected before upgrade');
+          const closeUnhanded = (): void => {
+            // Invalid response metadata, a rejected wire handshake, or a peer leaving during
+            // compilation must still let the application release its connection resources.
+            try {
+              worker.accept();
+              worker.close(GOING_AWAY, 'WebSocket upgrade was not accepted');
+            } catch {
+              // A socket already consumed elsewhere cannot be reclaimed; preserve the rejection.
+            }
+          };
+          const handoff = { accepted: false };
+          try {
+            if (answer.status !== SWITCHING_PROTOCOLS) {
+              throw new TypeError('upwind: a native WebSocket response needs status 101');
+            }
+            if (closing !== undefined || socket.destroyed) {
+              response.finished = true;
+              response.emit('finish');
+              return;
+            }
+            const outgoing = response.getHeaders();
+            const field = outgoing['sec-websocket-protocol'];
+            // NodeNextResponse.appendHeader stores even a single protocol as a one-element array.
+            const protocol = Array.isArray(field) && field.length === 1 ? field[0] : field;
+            if (
+              protocol !== undefined &&
+              (typeof protocol !== 'string' ||
+                request.headers['sec-websocket-protocol']
+                  ?.split(',')
+                  .map((part) => part.trim())
+                  .includes(protocol) !== true)
+            ) {
+              throw new TypeError(
+                'upwind: the response selected a WebSocket subprotocol the client did not offer',
+              );
+            }
+            headers.set(request, outgoing);
             response.finished = true;
+            server.handleUpgrade(request, socket, head, (client: WebSocket) => {
+              handoff.accepted = true;
+              client.on('error', () => {
+                client.terminate();
+              });
+              void coupleWebSocket(client, worker).catch(() => {
+                closeUnhanded();
+                client.terminate();
+              });
+            });
             response.emit('finish');
-            return;
+          } finally {
+            if (!handoff.accepted) closeUnhanded();
           }
-          const outgoing = response.getHeaders();
-          const field = outgoing['sec-websocket-protocol'];
-          // NodeNextResponse.appendHeader stores even a single protocol as a one-element array.
-          const protocol = Array.isArray(field) && field.length === 1 ? field[0] : field;
-          if (
-            protocol !== undefined &&
-            (typeof protocol !== 'string' ||
-              request.headers['sec-websocket-protocol']
-                ?.split(',')
-                .map((part) => part.trim())
-                .includes(protocol) !== true)
-          ) {
-            throw new TypeError(
-              'upwind: the response selected a WebSocket subprotocol the client did not offer',
-            );
-          }
-          headers.set(request, outgoing);
-          response.finished = true;
-          server.handleUpgrade(request, socket, head, (client: WebSocket) => {
-            client.on('error', () => {
-              client.terminate();
-            });
-            void coupleWebSocket(client, worker).catch(() => {
-              client.terminate();
-            });
-          });
-          response.emit('finish');
         },
       },
     });

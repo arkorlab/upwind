@@ -156,7 +156,14 @@ describe('page outputs before the Node.js renderer is needed', () => {
     );
 
     await expect(upgrade.text()).resolves.toBe('resumed');
-    expect(invokeNodeHandler).toHaveBeenCalledExactlyOnceWith();
+    expect(invokeNodeHandler).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ url: PAGE }),
+    );
+
+    const invoked = vi.mocked(invokeNodeHandler).mock.calls[0]?.[0];
+
+    expect(invoked?.request).toBeInstanceOf(Request);
+    expect(invoked?.request.headers.get('upgrade')).toBe('WebSocket');
     expect(serveFromGeneration).not.toHaveBeenCalled();
   });
 

@@ -55,7 +55,10 @@ export function eagerNextUpgradeListener(source: string): string {
   return replaceOnce(
     source,
     /getRequestHandler\(\)\s*\{\s*return async[^{}]+\{\s*this\.setupWebSocketHandler\(this\.options\.httpServer, req\);/gu,
-    (match) => match.replace('{', '{ this.setupWebSocketHandler(this.options.httpServer);'),
+    (match) => {
+      const insertion = match.indexOf('{') + 1;
+      return `${match.slice(0, insertion)} this.setupWebSocketHandler(this.options.httpServer);${match.slice(insertion)}`;
+    },
     'custom server listener',
   );
 }

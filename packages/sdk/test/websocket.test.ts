@@ -83,6 +83,46 @@ describe('handleNodeWebSocket handshake', () => {
     await expect(response.text()).resolves.toBe('no access');
   });
 
+  it.each([401, 403])(
+    'forwards a buffered HTTP %s rejection when its socket is destroyed cleanly',
+    async (status) => {
+      const response = await handleNodeWebSocket(request(), (_req, socket) => {
+        socket.write(
+          `HTTP/1.1 ${String(status)} Denied\r\nContent-Length: 9\r\nx-auth: denied\r\n`,
+        );
+        socket.write('Set-Cookie: first=1\r\nSet-Cookie: second=2\r\n\r');
+        socket.write('\nno');
+        socket.write(' access');
+        socket.destroy();
+      });
+
+      expect(response.status).toBe(status);
+      expect(response.headers.get('x-auth')).toBe('denied');
+      expect(response.headers.getSetCookie()).toStrictEqual(['first=1', 'second=2']);
+      await expect(response.text()).resolves.toBe('no access');
+    },
+  );
+
+  it('preserves socket failures after HTTP rejection bytes were buffered', async () => {
+    const response = handleNodeWebSocket(request(), (_req, socket) => {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\nnot authorized');
+      socket.destroy(new Error('rejection transport failed'));
+    });
+
+    await expect(response).rejects.toThrow('rejection transport failed');
+  });
+
+  it('preserves cancellation after HTTP rejection bytes were buffered', async () => {
+    const abort = new AbortController();
+    const response = handleNodeWebSocket(request({ signal: abort.signal }), (_req, socket) => {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\nnot authorized');
+      abort.abort(new Error('client disconnected during rejection'));
+      socket.destroy();
+    });
+
+    await expect(response).rejects.toThrow('client disconnected during rejection');
+  });
+
   it('rejects negotiated compression explicitly before requiring a Workers runtime', async () => {
     const server = new WebSocketServer({ noServer: true, perMessageDeflate: true });
 
