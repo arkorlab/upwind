@@ -491,7 +491,7 @@ describe('the routing a host composes', () => {
       },
     );
 
-    expect(response.headers.get('x-arkor-edge')).toBe('passthrough;reason=route-not-proved');
+    expect(response.headers.get('x-arkor-edge')).toBe('passthrough;reason=websocket-upgrade');
     expect(body).toBe('from the Function');
     expect(asked).toStrictEqual(['/']);
   });

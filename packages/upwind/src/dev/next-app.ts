@@ -9,6 +9,7 @@ import { packageVersion } from '../manifest.ts';
 import { installNextResourceCacheLoader } from '../resources/next-cache-loader.ts';
 import { installNextRestartLoader } from './next-restart-loader.ts';
 import { completeNextStartup } from './next-startup.ts';
+import { installWebSocketDev } from './websocket-loader.ts';
 
 /**
  * Next.js's development server, run the way Next.js documents a custom server: `next({ dev: true })`,
@@ -72,14 +73,15 @@ export async function startNextApp(options: {
   }
   installNextResourceCacheLoader();
   installNextRestartLoader();
+  installWebSocketDev();
   const module = (await import(pathToFileURL(entry).href)) as { default: NextFactory };
   const app = module.default({
     dev: true,
     dir: options.projectDir,
     port: options.port,
     // Handed over so Next.js puts its own `upgrade` listener on this server: HMR and the error
-    // overlay speak over a WebSocket, and that connection is Next.js's to answer. Nothing of
-    // `/__upwind` is served over one, which is why there is no second listener competing for it.
+    // overlay speak over a WebSocket. The dev bridge runs after Next's own HMR/origin checks,
+    // on this same listener, before an application upgrade enters the ordinary Next router.
     httpServer: options.httpServer,
     // Neither the bundler nor the environment is named here, because neither needs to be. The factory
     // sets `TURBOPACK` to `auto` for a custom server, which is Next 16's own default, and Next.js sets

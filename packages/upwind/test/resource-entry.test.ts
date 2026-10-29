@@ -8,9 +8,9 @@ const resources = vi.hoisted(() => {
   };
 });
 
-vi.mock(import('../src/resources/local.ts'), () => {
+vi.mock(import('../src/resources/shared.ts'), () => {
   resources.loaded.push('local');
-  return { startLocalResources: resources.start };
+  return { getOrStartLocalResources: resources.start };
 });
 
 vi.mock(import('../src/resources/next-cache-loader.ts'), () => {

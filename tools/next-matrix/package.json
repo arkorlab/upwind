@@ -13,9 +13,11 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@types/ws": "catalog:",
     "miniflare": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "ws": "catalog:"
   },
   "engines": {
     "node": ">=24"

@@ -9,6 +9,7 @@ import {
   RESUME_PRERENDER_HEADER,
   ROUTED_HEADER,
 } from '@stayingupwind/core/paas';
+import { isWebSocketUpgrade } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { nowMs } from './cache/clock.ts';
@@ -564,6 +565,9 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
     return new Response('middleware function', { status: HTTP_NOT_FOUND });
   }
   const store = getStore();
+  // A handshake is always decided by this request's route, never an HTTP generation, capture or
+  // resume protocol. Routing and middleware still decide which route may accept it.
+  if (isWebSocketUpgrade(request)) return handleFull(input, store);
   const elsewhere = misdirectedAhead(store, request);
   if (elsewhere !== undefined) {
     return asksForCapture(request) ? keptByNobody(elsewhere) : elsewhere;

@@ -17,6 +17,7 @@ import type { Patch } from './types.ts';
 import { useCacheCrossRequestPatch } from './use-cache-cross-request.ts';
 import { vercelOgFontPatch, vercelOgImageResponsePatch, vercelOgPatch } from './vercel-og.ts';
 import { runtimeWasmLoaderPatch, wasmLoaderPatch } from './wasm-loader.ts';
+import { webSocketResponsePatch } from './websocket-response.ts';
 import { workflowQuickjsWasmPatch } from './workflow-quickjs.ts';
 
 export { FUNCTION_BANNER } from './banner.ts';
@@ -34,6 +35,7 @@ export type { Copy, Patch, PatchContext } from './types.ts';
 
 /** Every rewrite of Next.js's output the Function build applies. */
 export const PATCHES: readonly Patch[] = [
+  webSocketResponsePatch,
   externalPagesApiDistPatch,
   turbopackRuntimePatch,
   turbopackRootPatch,

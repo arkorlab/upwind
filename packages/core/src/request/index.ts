@@ -87,3 +87,4 @@ export { connectionRefusesSharing, policyRefusesSharing } from './route-body-pol
 export { computeRscCacheBustingParam, type RscCacheBustingInput } from './rsc.ts';
 export { STATIC_PAGE_PRIVATE_HEADERS } from './static-pages.ts';
 export { varyOn } from './vary.ts';
+export { isWebSocketUpgrade } from './websocket.ts';

@@ -13,7 +13,8 @@ import { prepareAuth } from '../auth/prepare.ts';
 import { answerInternal } from '../internal/router.ts';
 import { ownVersion } from '../manifest.ts';
 import { takeRemoteAiCredentials } from '../resources/local-ai.ts';
-import { type LocalResources, startLocalResources } from '../resources/local.ts';
+import type { LocalResources } from '../resources/local.ts';
+import { getOrStartLocalResources } from '../resources/shared.ts';
 import { installAdapterPath } from './adapter.ts';
 import { displayAddress, internalAddress } from './address.ts';
 import { ensureAgentRules } from './agent-rules.ts';
@@ -27,6 +28,7 @@ import { reachable } from './probe.ts';
 import { beforeRestart, restart, stopDuringStartup } from './restart.ts';
 import { createSession } from './session.ts';
 import { closeDevResources } from './shutdown.ts';
+import { closeWebSocketDev } from './websocket-loader.ts';
 
 /**
  * One `upwind dev` run: upwind holds the port, and Next.js is behind it.
@@ -282,6 +284,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
     server.close();
     server.closeAllConnections();
     await closeDevResources(async () => {
+      await closeWebSocketDev();
       await (await shutdown.local)?.dispose();
     }, closeApp);
     localAuth[Symbol.dispose]();
@@ -298,7 +301,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // Also before Next.js, and for a harder reason: the application's own modules may look for their
   // storage as they are evaluated, and everything Next.js evaluates it evaluates after this line.
   // In this process, because Next.js runs in this one — a supervisor's bindings would reach nothing.
-  const startingLocal = startLocalResources(options.projectDir, {
+  const startingLocal = getOrStartLocalResources(options.projectDir, {
     // This run answers its own interrupts, above, and disposes of the runtime on its way out.
     answersSignals: true,
     mode: 'development',
@@ -354,11 +357,17 @@ export async function serveDev(options: DevOptions): Promise<void> {
     // The runtime this run started goes with the run. Its own exit hook would kill it anyway; doing
     // it here means the directories under `.upwind/` are released before `cli.ts` ends the process,
     // rather than while it is ending.
-    await closeDevResources(() => local.dispose(), closeApp);
+    await closeDevResources(async () => {
+      await closeWebSocketDev();
+      await local.dispose();
+    }, closeApp);
     throw error;
   }
   if (isStopping()) {
-    await closeDevResources(() => local.dispose(), closeApp);
+    await closeDevResources(async () => {
+      await closeWebSocketDev();
+      await local.dispose();
+    }, closeApp);
     return;
   }
   // Next.js has read the config, and with it the adapter this run named and the address it gave;
@@ -402,7 +411,10 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // child two seconds after it signals one, and a `SIGKILL` runs
   // no exit hook, so a runtime still up at that point is a runtime nothing reaps. Nothing is left to
   // read storage by now — the port is closed and the connections with it.
-  await closeDevResources(() => local.dispose(), closeApp);
+  await closeDevResources(async () => {
+    await closeWebSocketDev();
+    await local.dispose();
+  }, closeApp);
   // Next.js's dev bundler keeps handles of its own, so this process would not end on its own. What
   // was asked for is over.
   localAuth[Symbol.dispose]();

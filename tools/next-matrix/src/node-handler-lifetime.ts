@@ -86,6 +86,13 @@ function compiled(source: string): string {
   }).outputText;
 }
 
+function compiledBridge(source: string): string {
+  return compiled(source)
+    .replace("'./tasks.ts'", "'./tasks.mjs'")
+    .replace("'@stayingupwind/core/next'", "'./websocket-response-bridge.mjs'")
+    .replace("'@stayingupwind/core/request'", "'./websocket-upgrade.mjs'");
+}
+
 interface State {
   readonly held: number;
   readonly completed: boolean;
@@ -110,12 +117,14 @@ interface BridgeModules {
   readonly tasks: string;
   readonly invocation: string;
   readonly reframe: string;
+  readonly websocketResponse: string;
+  readonly websocketUpgrade: string;
 }
 
 /** Run the actual bridge in workerd; the observer is an in-process service, never the network. */
 async function exercise(
   bridge: string,
-  { tasks, invocation, reframe }: BridgeModules,
+  { tasks, invocation, reframe, websocketResponse, websocketUpgrade }: BridgeModules,
   lane: Lane,
 ): Promise<void> {
   const release = Promise.withResolvers<undefined>();
@@ -133,6 +142,16 @@ async function exercise(
         { type: 'ESModule', path: '/lifetime/tasks.mjs', contents: tasks },
         { type: 'ESModule', path: '/lifetime/invocation.ts', contents: invocation },
         { type: 'ESModule', path: '/lifetime/reframe.ts', contents: reframe },
+        {
+          type: 'ESModule',
+          path: '/lifetime/websocket-response-bridge.mjs',
+          contents: websocketResponse,
+        },
+        {
+          type: 'ESModule',
+          path: '/lifetime/websocket-upgrade.mjs',
+          contents: websocketUpgrade,
+        },
       ],
       // The Function pins these in packages/adapter/src/function.ts.
       compatibilityDate: '2026-09-15',
@@ -242,6 +261,12 @@ const invocation = compiled(
 const reframe = compiled(
   await readFile(path.join(ROOT, 'packages/runtime/src/reframe.ts'), 'utf8'),
 );
+const websocketResponse = compiled(
+  await readFile(path.join(ROOT, 'packages/core/src/next/websocket-response-bridge.ts'), 'utf8'),
+);
+const websocketUpgrade = compiled(
+  await readFile(path.join(ROOT, 'packages/core/src/request/websocket.ts'), 'utf8'),
+);
 const lanes: Lane[] = [];
 const failures: {
   readonly kind: Lane['kind'];
@@ -263,7 +288,11 @@ await mkdir(directory, { recursive: true });
 async function collect(bridge: string, lane: Lane): Promise<void> {
   lanes.push(lane);
   try {
-    await exercise(bridge, { tasks, invocation, reframe }, lane);
+    await exercise(
+      bridge,
+      { tasks, invocation, reframe, websocketResponse, websocketUpgrade },
+      lane,
+    );
   } catch (error) {
     failures.push({
       kind: lane.kind,
@@ -275,10 +304,7 @@ async function collect(bridge: string, lane: Lane): Promise<void> {
 }
 try {
   for (const mode of ['previous-method-guard', 'retained'] as const) {
-    const bridge = compiled(mode === 'retained' ? source : previous).replace(
-      "'./tasks.ts'",
-      "'./tasks.mjs'",
-    );
+    const bridge = compiledBridge(mode === 'retained' ? source : previous);
     for (const method of ['GET', 'POST'] as const) {
       const lane: Lane = {
         kind: 'immediate-end',
@@ -305,7 +331,7 @@ try {
     egressAttempts: 0,
     stage: 'created',
   };
-  await collect(compiled(source).replace("'./tasks.ts'", "'./tasks.mjs'"), later);
+  await collect(compiledBridge(source), later);
   assert.equal(failures.length, 0, 'one or more finite handler lifetime controls failed');
   proof.status = 'success';
 } catch (error) {

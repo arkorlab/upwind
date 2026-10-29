@@ -36,10 +36,10 @@ if (
   process.env[PRERENDER_WORKER_ENV] !== undefined &&
   process.env['UPWIND_BUILD_TARGET'] !== 'node'
 ) {
-  const { startLocalResources } = await import('./local.ts');
+  const { getOrStartLocalResources } = await import('./shared.ts');
   const { installNextResourceCacheLoader } = await import('./next-cache-loader.ts');
   installNextResourceCacheLoader();
-  await startLocalResources(process.env[PROJECT_DIR_ENV] ?? process.cwd(), {
+  await getOrStartLocalResources(process.env[PROJECT_DIR_ENV] ?? process.cwd(), {
     // This process is ended by the pool that started it — `SIGTERM`, half a second after it asks —
     // and the runtime's own handlers are what kill the runtime when that happens.
     answersSignals: false,

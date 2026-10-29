@@ -204,7 +204,7 @@ jobs:
   integration:
     name: Build integrations
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -223,6 +223,10 @@ jobs:
         run: |
           matrix_next_version="$(node -p 'require("./packages/adapter/node_modules/next/package.json").version')"
           pnpm check:matrix --fixture next-external-output --versions "$matrix_next_version"
+      - name: WebSocket Worker and development integration
+        run: |
+          matrix_next_version="$(node -p 'require("./packages/adapter/node_modules/next/package.json").version')"
+          UPWIND_WEBSOCKET_DEV_CHECK=1 pnpm check:matrix --fixture next-websocket --versions "16.2.0,$matrix_next_version"
       # The compiler a new application installs is independent of this workspace's catalog. Pack
       # its own dependencies locally so a release PR does not require its version on npm already.
       - name: Generated application typecheck

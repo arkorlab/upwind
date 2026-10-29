@@ -13,3 +13,8 @@ export {
   type ResourceCacheBridgeResult,
 } from './resource-cache-bridge.ts';
 export { rendersFormActionsWithResumeData } from './form-actions.ts';
+export {
+  isWebSocketResponseBridgeSource,
+  webSocketResponseBridge,
+  WEBSOCKET_RESPONSE_SYMBOL,
+} from './websocket-response-bridge.ts';

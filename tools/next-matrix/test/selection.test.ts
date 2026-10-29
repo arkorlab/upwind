@@ -13,6 +13,7 @@ describe('dedicated proof fixture selection', () => {
     const selected = selectFixtures(fixtures, undefined);
 
     expect(selected.map((fixture) => fixture.name)).toStrictEqual([
+      'next-websocket',
       'next-edge-instrumentation-baseline',
       'next-edge-instrumentation',
       'next-edge-instrumentation-no-own',
