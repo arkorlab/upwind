@@ -198,8 +198,14 @@ are testing: with it set, they expect the adapter's answers; without it, the bui
 input takes upstream paths, or `all` for everything the manifest allows; `shards` cuts `all` into that
 many pieces (upstream's own `-g n/total`), and `only` runs one piece on its own, for taking a slice again
 after it was cut short. On the runner's targets nothing is shared, so a run is cut as finely as the
-workflow cuts — 64 pieces unless `shards` says otherwise, all at once — and every night both targets run
-the whole manifest that way. What follows is a host's.
+workflow cuts — 64 pieces unless `shards` says otherwise, all at once. Every night both targets run
+the whole manifest in two separate runs: the supported release at 17:23 UTC (02:23 JST), and the latest
+published `next@canary` at 18:23 UTC (03:23 JST). Each run has 128 jobs. The canary run reads npm's
+dist-tag once and resolves that version's Git tag to a commit SHA, which every shard checks out. Its
+plan summary names the version and SHA; a failed lookup stops the plan. Results and summaries stay
+separate for each run, and canary failures are judged on their own version and commit, without the
+supported release's reviewed exceptions. Both targets run locally on the runner, with no hosted
+deployment or credentials. What follows is a host's.
 
 **Queueing behind one project, a full run is bounded by two of GitHub's limits at once**, and they pull in
 opposite directions. The manifest selects around 1,100 suites, about six hundred of which deploy — the
