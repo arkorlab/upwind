@@ -55,16 +55,21 @@ const config: KnipConfig = {
     // them are named here rather than looked for through files this has not built.
     'packages/sdk': {
       entry: [
-        'src/{index,db,kv,blob,durable-object,ai,service}.ts',
+        'src/{index,db,kv,blob,durable-object,ai,service,websocket}.ts',
         'scripts/check-ai-types.ts',
         'test/consumer-types/service.ts',
+        'test/consumer-types/websocket.ts',
       ],
     },
     // Reached by path rather than by import: it is the module `upwind build` tells the processes
     // below it to `--import`, so nothing in this repository imports it and `bin` does not lead there.
     'packages/upwind': {
       // The Workers a deploy ships are bundled by path, so each is an entry of its own.
-      entry: ['src/resources/entry.ts', 'src/deploy/workers/{agent,edge}.ts'],
+      entry: [
+        'src/resources/entry.ts',
+        'src/websocket-dev.ts',
+        'src/deploy/workers/{agent,edge}.ts',
+      ],
       // Imported by `@stayingupwind/local`, which the command's `dist` bundles, and kept out of that
       // bundle for the Public Suffix List it carries: the command installs it instead.
       ignoreDependencies: ['tldts'],

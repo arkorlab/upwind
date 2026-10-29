@@ -87,6 +87,10 @@ export function namesIn(expected: readonly Expected[]): string[] {
 }
 
 export const FIXTURE_COVERAGE = {
+  'next-websocket': {
+    expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT, 'websocket-response'],
+    chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT, 'websocket-response'],
+  },
   'next-edge-instrumentation-baseline': {
     sourceFixture: 'next-edge-instrumentation',
     adapterFile: 'adapter-node.mjs',

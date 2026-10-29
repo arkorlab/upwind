@@ -54,6 +54,23 @@ or by environment, which is how a host builds an application without touching it
 NEXT_ADAPTER_PATH=$(node -e "console.log(require.resolve('@stayingupwind/adapter'))") next build
 ```
 
+## WebSocket route handlers
+
+A dynamic App Router `GET` can return a native Cloudflare `Response` with status `101` and a
+`webSocket`, either from `WebSocketPair` or a Durable Object's `fetch()`. The runtime preserves the
+socket through Next.js's cookie merge, routing headers and the Node HTTP bridge. Middleware and
+rewrites run before the route accepts the connection; a normal HTTP response rejects the handshake.
+Upgrade requests invoke the route directly rather than reading a prerender or response generation.
+Application data caching and revalidation retain their existing semantics.
+
+Make the route dynamic by reading its request headers or using `await connection()`. An upgrade
+cannot be prerendered or cached as an HTTP response. Native Workers manage the accepted connection;
+there is no Node server `upgrade` event or TCP socket exposed by this integration. For opt-in `ws`
+and Socket.IO compatibility, see the [SDK WebSocket helper](../sdk/README.md#websockets-in-route-handlers).
+
+`upwind dev` provides the same route transport locally. Direct `next dev` needs the explicit
+development preload described in the [CLI documentation](../upwind/README.md#websocket-development).
+
 The adapter uses the stable [Next.js Adapter API](https://nextjs.org/docs/app/api-reference/adapters)
 (`modifyConfig`, `onBuildComplete`), whose shape changes only in a major release. This file is
 the record of what it reads from that API, what it makes of it, and where it reaches past the

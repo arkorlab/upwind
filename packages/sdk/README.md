@@ -1,5 +1,88 @@
 # @stayingupwind/sdk
 
+## WebSockets in Route Handlers
+
+Workers-native Route Handlers can return `new Response(null, { status: 101, webSocket: client })`
+from a `WebSocketPair`, or forward the upgrade response returned by a Durable Object's `fetch()`.
+Use Cloudflare's native API directly for those endpoints.
+
+For an existing Node WebSocket implementation, install the optional `ws >=8.22.0 <9` peer and import
+the separate `@stayingupwind/sdk/websocket` entry point:
+
+```ts
+// app/api/socket/route.ts
+import { handleNodeWebSocket } from '@stayingupwind/sdk/websocket';
+import { WebSocketServer } from 'ws';
+
+const server = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+
+export function GET(request: Request) {
+  // Check the request's Origin and application credentials before accepting it.
+  return handleNodeWebSocket(request, (req, socket, head) => {
+    server.handleUpgrade(req, socket, head, (ws) => {
+      ws.on('error', console.error);
+      ws.on('message', (data, binary) => ws.send(data, { binary }));
+    });
+  });
+}
+```
+
+The helper returns `Promise<Response>` and accepts a Node upgrade callback with `IncomingMessage`,
+`Duplex`, and an empty `Buffer` head. It also waits for asynchronous `verifyClient` callbacks. A
+normal HTTP request receives `426`, invalid WebSocket protocol headers receive `400`, and HTTP
+rejections written by the callback retain their status, headers, cookies, and body. Unexpected
+callback failures reject the promise so Next.js can report them.
+
+`ws` is loaded only after a valid upgrade request. Importing other SDK entry points does not load
+the bridge or require that peer. The helper opens no HTTP server and makes no extra network request.
+
+Socket.IO can bind to a separately constructed Engine.IO instance without attaching another HTTP
+server. Install `socket.io` and `engine.io` in the application:
+
+```ts
+import { handleNodeWebSocket } from '@stayingupwind/sdk/websocket';
+import { Server as Engine } from 'engine.io';
+import { Server } from 'socket.io';
+
+const engine = new Engine({
+  transports: ['websocket'],
+  allowUpgrades: false,
+  perMessageDeflate: false,
+});
+const io = new Server({ serveClient: false });
+io.bind(engine);
+io.on('connection', (socket) => {
+  socket.on('echo', (value) => socket.emit('echo', value));
+});
+
+export function GET(request: Request) {
+  return handleNodeWebSocket(request, (req, socket, head) => {
+    engine.handleUpgrade(req, socket, head);
+  });
+}
+```
+
+The Socket.IO client must also select `transports: ['websocket']`. Application-level Engine.IO
+heartbeat packets are supported. HTTP polling, polling upgrades, raw TCP operations, WebSocket
+compression/extensions, and Node protocol `ping()`/`pong()` frames are outside this bridge's
+contract. Negotiated extensions fail before returning an upgrade; sending a protocol ping or pong
+fails the connection explicitly. No pong or client-liveness result is fabricated. Incoming native
+protocol pings are handled by Cloudflare and are not surfaced as Node events.
+
+Handshakes have a 10-second deadline and a 16-KiB header limit. Messages and the bridge's incoming
+queue are bounded at 32 MiB; Cloudflare controls its own native transport buffering. Keep server
+instances per isolate, and use Durable Objects for coordination across connections or instances.
+Rooms, state recovery, and broadcasts are not automatically shared between Worker isolates.
+
+Use `upwind dev` for local WebSocket routes. Native `WebSocketPair` and this helper use the same
+route-level API locally and in Workers. A plain Next.js development server needs the development
+preload described by the CLI documentation.
+
+The implementation follows Cloudflare's [WebSocket API](https://developers.cloudflare.com/workers/runtime-apis/websockets/)
+and uses [ws's maintained frame codecs](https://github.com/websockets/ws/blob/8.22.0/wrapper.mjs).
+Cloudflare's [`node:http` bridge](https://developers.cloudflare.com/workers/runtime-apis/nodejs/http/)
+does not provide raw upgrade sockets.
+
 ## Cloudflare Workflows
 
 Use a published Workflow capability by name, or select the sole Workflow through the subpath:

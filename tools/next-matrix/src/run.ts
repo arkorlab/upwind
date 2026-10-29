@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,7 @@ import { largePrerenderHolds } from './large-prerender.ts';
 import { checkFixtureVersions, selectFixtures } from './selection.ts';
 import { twoslashHolds } from './twoslash.ts';
 import { useCacheConcurrencyHolds } from './use-cache-concurrency.ts';
+import { websocketHolds } from './websocket.ts';
 
 /**
  * Builds real applications with real Next.js versions, and holds each build to what the adapter
@@ -267,6 +268,7 @@ async function workflowHolds(
 
 /** What each fixture has to show, by name — every name `coverage.ts` has, and no other. */
 const HOLDS: Readonly<Record<FixtureName, Holds>> = {
+  'next-websocket': websocketHolds,
   'next-edge-instrumentation-baseline': instrumentationHolds,
   'next-edge-instrumentation': instrumentationHolds,
   'next-edge-instrumentation-no-own': instrumentationHolds,
@@ -501,6 +503,20 @@ async function build(fixture: Fixture, version: string, keep: boolean): Promise<
       );
     }
     await run(process.execPath, [await npmCli(), 'install', '--no-audit', '--no-fund'], installDir);
+    if (fixture.name === 'next-websocket') {
+      // Exercise the SDK's built package through its actual exports, without publishing it.
+      const sdk = path.join(app, 'node_modules', '@stayingupwind', 'sdk');
+      await cp(path.join(ROOT, 'packages', 'sdk', 'dist'), path.join(sdk, 'dist'), {
+        recursive: true,
+      });
+      await cp(path.join(ROOT, 'packages', 'sdk', MANIFEST), path.join(sdk, MANIFEST));
+      // Local Durable Objects resolve the project's adapter, including its installed dependencies.
+      await symlink(
+        path.join(ROOT, 'packages', 'adapter'),
+        path.join(app, 'node_modules', '@stayingupwind', 'adapter'),
+        'dir',
+      );
+    }
     // Next.js's own entry under this Node, rather than the launcher npm wrote into `.bin`: that
     // one is a shell script on Unix and a `.cmd` on Windows, and `execFile` runs neither without
     // a shell. The file below is the same JavaScript both of them end up running.

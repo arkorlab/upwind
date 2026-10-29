@@ -2,6 +2,7 @@ import type { AppRuntime, ProjectManifest } from '@stayingupwind/core/manifest';
 import { MIDDLEWARE_DONE_HEADER } from '@stayingupwind/core/paas';
 import {
   classifyRequest,
+  isWebSocketUpgrade,
   type ForwardingContext,
   PatternBudgetExceededError,
   type RequestClass,
@@ -323,21 +324,24 @@ function routeWithinBudget(input: GateObservedRoutingInput): Promise<Response> {
   if (state.function !== undefined) {
     return passthrough(FUNCTION_PROBE);
   }
-  const hosted = hostedFirst({
-    request,
-    url,
-    app: state.app,
-    manifest: state.manifest,
-    edge: (manifest) => edgeContextFor(input, manifest, forwarding),
-    policyReady: (manifest) => {
-      return 'policyReady' in input
-        ? afterDeferredPolicy(input, (ready) =>
-            Promise.resolve(edgeContextFor(ready, manifest, forwarding)),
-          )
-        : edgeContextFor(input, manifest, forwarding);
-    },
-    passthrough,
-  });
+  // An upgrade cannot be answered with a file, image or shell. Route gates still run below.
+  const hosted = isWebSocketUpgrade(request)
+    ? undefined
+    : hostedFirst({
+        request,
+        url,
+        app: state.app,
+        manifest: state.manifest,
+        edge: (manifest) => edgeContextFor(input, manifest, forwarding),
+        policyReady: (manifest) => {
+          return 'policyReady' in input
+            ? afterDeferredPolicy(input, (ready) =>
+                Promise.resolve(edgeContextFor(ready, manifest, forwarding)),
+              )
+            : edgeContextFor(input, manifest, forwarding);
+        },
+        passthrough,
+      });
   if (hosted !== undefined) {
     return hosted;
   }
@@ -421,7 +425,7 @@ function routeGateShell(
   directive: GateShellDirective,
 ): Promise<Response> {
   const { request, url, state } = input;
-  if (state.mode !== EDGE_MODE) {
+  if (isWebSocketUpgrade(request) || state.mode !== EDGE_MODE) {
     return routeWithManifest(input, forwarding);
   }
   const headers = headersToClassify(manifest, request.headers, input.host.credentials, forwarding);
@@ -504,6 +508,9 @@ function routeWithManifest(
 ): Promise<Response> {
   const { request, url, state } = input;
   const passthrough = (reason: string): Promise<Response> => passthroughFor(input, reason);
+  if (isWebSocketUpgrade(request)) {
+    return passthrough('websocket-upgrade');
+  }
   if (state.manifest?.cache !== undefined) {
     transferInvalidations(
       input.runtime.memory,

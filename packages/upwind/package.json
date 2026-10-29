@@ -19,9 +19,17 @@
     "NOTICE"
   ],
   "type": "module",
+  "exports": {
+    "./websocket-dev": "./src/websocket-dev.ts",
+    "./package.json": "./package.json"
+  },
   "publishConfig": {
     "bin": {
       "upwind": "./dist/cli.js"
+    },
+    "exports": {
+      "./websocket-dev": "./dist/websocket-dev.js",
+      "./package.json": "./package.json"
     }
   },
   "scripts": {
@@ -35,7 +43,8 @@
     "miniflare": "catalog:",
     "rolldown": "catalog:",
     "tldts": "catalog:",
-    "wrangler": "catalog:"
+    "wrangler": "catalog:",
+    "ws": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
@@ -45,6 +54,7 @@
     "@stayingupwind/host": "workspace:*",
     "@stayingupwind/local": "workspace:*",
     "@types/node": "catalog:",
+    "@types/ws": "catalog:",
     "next": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

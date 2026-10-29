@@ -5,7 +5,7 @@ import {
   queryDependent,
   underBasePath,
 } from '@stayingupwind/core/bundle';
-import { MIDDLEWARE_PREFETCH_HEADER } from '@stayingupwind/core/request';
+import { isWebSocketUpgrade, MIDDLEWARE_PREFETCH_HEADER } from '@stayingupwind/core/request';
 
 import { notFound, rscFromBuild } from './documents.ts';
 import { deferredEntryFor, entryFor } from './entries.ts';
@@ -210,6 +210,7 @@ export async function serveRouteHandler(
   }
   const built = store.prerendersByPathname.get(resolved.pathname);
   if (
+    isWebSocketUpgrade(input.request) ||
     entry.kind === 'edge' ||
     bypassesPrerender(store, input.request, built, resolved.url) ||
     built?.body === undefined ||

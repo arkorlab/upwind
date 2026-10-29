@@ -25,9 +25,10 @@ import { writeShipped } from './shipped.ts';
  * data under a licence of its own — so both are dependencies of this package rather than code in
  * its `dist/`.
  *
- * Two entries, not one. The second is the module `upwind build` tells the processes below it to
+ * The resources entry is the module `upwind build` tells the processes below it to
  * `--import` (`src/resources/entry-path.ts`), which has to be a file of its own for a child to be
- * able to name it. Whatever the two share, Rolldown puts in a chunk beside them.
+ * able to name it. The WebSocket development preload is another public entry, so a project can
+ * keep its own `next dev` command. Rolldown shares their common code in adjacent chunks.
  */
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -39,6 +40,7 @@ async function main(): Promise<void> {
     input: {
       cli: path.join(ROOT, 'src/cli.ts'),
       'resources-entry': path.join(ROOT, 'src/resources/entry.ts'),
+      'websocket-dev': path.join(ROOT, 'src/websocket-dev.ts'),
     },
     platform: 'node',
     // The Workers' sources are reached only by a run from this repository's sources
@@ -50,6 +52,7 @@ async function main(): Promise<void> {
       /^wrangler$/u,
       /^rolldown(\/|$)/u,
       /^tldts$/u,
+      /^ws$/u,
     ],
   });
   // No `banner`: the hashbang is `src/cli.ts`'s own and Rolldown carries it to the top of the

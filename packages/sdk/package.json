@@ -49,6 +49,10 @@
     "./service": {
       "types": "./dist/service.d.ts",
       "default": "./dist/service.js"
+    },
+    "./websocket": {
+      "types": "./dist/websocket.d.ts",
+      "default": "./dist/websocket.js"
     }
   },
   "scripts": {
@@ -57,13 +61,26 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cloudflare/workers-types": "catalog:"
+    "@cloudflare/workers-types": "catalog:",
+    "@types/node": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
     "@stayingupwind/core": "workspace:*",
-    "@types/node": "catalog:",
+    "@types/ws": "catalog:",
+    "engine.io": "catalog:",
     "rolldown": "catalog:",
+    "socket.io": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "ws": "catalog:"
+  },
+  "peerDependencies": {
+    "ws": ">=8.22.0 <9"
+  },
+  "peerDependenciesMeta": {
+    "ws": {
+      "optional": true
+    }
   }
 }

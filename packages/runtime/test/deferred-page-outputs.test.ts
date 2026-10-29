@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import type { Prerender } from '@stayingupwind/core/bundle';
+import { CAPTURE_HEADER, CACHE_ROUTE_HEADER } from '@stayingupwind/core/paas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppModule, NodeHandler } from '../src/app-module.ts';
@@ -124,6 +125,39 @@ describe('page outputs before the Node.js renderer is needed', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.resetAllMocks();
+  });
+
+  it('invokes a WebSocket GET despite a prerender, leaving ordinary GET on the built output', async () => {
+    const store = deployment();
+    vi.mocked(getStore).mockReturnValue({
+      ...store,
+      manifest: {
+        ...store.manifest,
+        entrypoints: [{ id: PAGE, pathname: PAGE, kind: 'app-route' }],
+      },
+    });
+    const load = vi.fn(() => ({ handler: () => Promise.resolve() }));
+    const ordinary = await handle(load, new Request(`https://app.test${PAGE}`));
+
+    await expect(ordinary.text()).resolves.toBe(HTML);
+    expect(invokeNodeHandler).not.toHaveBeenCalled();
+
+    vi.mocked(serveFromGeneration).mockClear();
+    const upgrade = await handle(
+      load,
+      new Request(`https://app.test${PAGE}`, {
+        headers: {
+          upgrade: 'WebSocket',
+          // Even trusted HTTP artifact modes cannot replace an upgrade's route invocation.
+          [CAPTURE_HEADER]: '1',
+          [CACHE_ROUTE_HEADER]: '/another-route',
+        },
+      }),
+    );
+
+    await expect(upgrade.text()).resolves.toBe('resumed');
+    expect(invokeNodeHandler).toHaveBeenCalledExactlyOnceWith();
+    expect(serveFromGeneration).not.toHaveBeenCalled();
   });
 
   it.each([PAGE, '/[slug]'])(

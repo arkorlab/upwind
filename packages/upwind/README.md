@@ -108,7 +108,7 @@ custom server:
 client → upwind's http.Server
           ├─ /__upwind, /__upwind/… → answered here; Next.js never sees it
           └─ everything else        → next({ dev: true }) → prepare() → getRequestHandler()
-upgrade  → Next.js (HMR and the error overlay speak over a WebSocket of their own)
+upgrade  → Next.js HMR/origin checks → application router → native WebSocket response
 ```
 
 That API is a thin wrapper over the same `getRequestHandlers` the `next dev` worker runs, so the dev
@@ -139,6 +139,29 @@ older Next.js still has to be runnable.
 
 Everything is resolved from the project, not from this package: the Next.js that runs an application
 is the copy the application itself depends on, and so is the adapter below.
+
+## WebSocket development
+
+`upwind dev` supports WebSocket Route Handlers automatically. Use the same `WebSocketPair` and
+`Response(null, { status: 101, webSocket })` that the Worker uses, or the explicit
+`handleNodeWebSocket(request, callback)` helper from `@stayingupwind/sdk/websocket` for supported
+`ws` and Socket.IO upgrade callbacks. The SDK helper uses the same bounded adapter in development
+and deployment; attaching a Node listener or opening a listening port is not required.
+
+To keep a direct `next dev` command, preload the development bridge before Next starts:
+
+```bash
+NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import upwind/websocket-dev" pnpm exec next dev
+```
+
+The preload starts local SDK resources once in the actual Next server process, including Durable
+Objects. It does not claim local storage in the Next CLI parent. When used with `upwind dev`, both
+entrypoints share the CLI's existing resource owner and startup options.
+
+Next handles its own HMR and development origin checks first. Application upgrades then run through
+its ordinary routing, including `proxy.ts`, rewrites, headers and cookies. An external rewrite keeps
+Next's WebSocket proxy. Accepted connections close when the development server stops or restarts.
+The preload is development-only and is not imported by deployed Workers or `next start`.
 
 ## `/__upwind`
 
@@ -178,8 +201,8 @@ The rules every endpoint here is held to:
 - **`cache-control: no-store`.** Every answer describes a moment.
 - **An unknown path answers with the paths that are known**, so a typo in a tool's URL says so
   rather than looking like a server that is not running.
-- **HTTP only.** Nothing here is served over a WebSocket: the one upgrade listener on this server is
-  Next.js's, which is what HMR needs.
+- **HTTP only.** These internal endpoints are not WebSocket endpoints. The project's WebSocket
+  Route Handlers and Next's HMR use Next's upgrade listener.
 
 ## The prefix is reserved twice
 
