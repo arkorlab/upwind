@@ -10,6 +10,7 @@ import { constExportSettersPlugin } from './const-export-setters.ts';
 import { bundled, type BundleTrace } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import type { EdgeInstrumentation } from './edge-instrumentation.ts';
+import { edgeProcessPlugin } from './edge-process.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import { externalsPlugin, FUNCTION_BANNER } from './patches/index.ts';
 import { sourceMapsPlugin, sourcemapOutput } from './source-maps.ts';
@@ -198,6 +199,8 @@ export function edgeBundleOptions(
   settings: {
     readonly sourceMaps?: { readonly kept?: KeptMaps | undefined } | undefined;
     readonly hostInstrumentation?: boolean;
+    /** The files Next.js built for the edge runtime, which read its `process` (`edge-process.ts`). */
+    readonly chunks?: readonly string[];
   } = {},
 ): InputOptions {
   return {
@@ -221,6 +224,7 @@ export function edgeBundleOptions(
     }),
     plugins: [
       globalObjectPlugin(),
+      edgeProcessPlugin(settings.chunks ?? []),
       externalsPlugin(onExternal),
       // No patch reaches this bundle, so there is nothing for the map to be wrong about; see
       // `sourceMapsPlugin` for why order matters where one does.
@@ -302,6 +306,10 @@ export async function bundleEdge(
     edgeBundleOptions(input.projectDir, entryFile, (specifier) => externals.add(specifier), {
       sourceMaps: input.sourceMaps === true ? { kept: input.keptMaps } : undefined,
       hostInstrumentation: input.instrumentation !== undefined,
+      chunks: [
+        ...input.entries.flatMap((entry) => entry.files),
+        ...(input.instrumentation?.files ?? []),
+      ],
     }),
   );
   const { output } = await bundle.write({
