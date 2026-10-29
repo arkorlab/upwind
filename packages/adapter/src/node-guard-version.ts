@@ -2,6 +2,8 @@ import { isGuardedNodeVersion, type GuardedNodeVersion } from '@stayingupwind/co
 
 import { AuditError } from './dependencies.ts';
 
+export type { GuardedNodeVersion };
+
 /** The native artifact executes under the same exact Node loader as its producer. */
 export function nodeGuardVersion(): GuardedNodeVersion {
   const version = process.versions.node;

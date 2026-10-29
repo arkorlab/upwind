@@ -9,13 +9,13 @@ function SlowBuffer(size: number): Buffer {
 Object.setPrototypeOf(SlowBuffer, Uint8Array);
 Object.setPrototypeOf(SlowBuffer.prototype, Uint8Array.prototype);
 
-let installed: object | undefined;
+const installed: { buffer: Record<string, unknown> | undefined } = { buffer: undefined };
 
 /** Trusted pre-app setup only. Never replace a supplied export or accept a changed installation. */
-export function initializeNodeSlowBuffer(buffer: object): void {
+export function initializeNodeSlowBuffer(buffer: Record<string, unknown>): void {
   if (process.versions.node !== '26.13.0') return;
   const descriptor = Object.getOwnPropertyDescriptor(buffer, 'SlowBuffer');
-  if (installed === buffer) {
+  if (installed.buffer === buffer) {
     if (
       descriptor?.value !== SlowBuffer ||
       descriptor.writable !== true ||
@@ -33,5 +33,5 @@ export function initializeNodeSlowBuffer(buffer: object): void {
     enumerable: true,
     configurable: true,
   });
-  installed = buffer;
+  installed.buffer = buffer;
 }

@@ -2,12 +2,11 @@ import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { GuardedNodeVersion } from '@stayingupwind/core/util';
 import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
 import { isNode, type Node } from './lexical-scope.ts';
-import { nodeGuardVersion } from './node-guard-version.ts';
+import { nodeGuardVersion, type GuardedNodeVersion } from './node-guard-version.ts';
 import { nodeJwtGlobalRecoverySite, nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
 import {
   nodeJwtCallerInspection,

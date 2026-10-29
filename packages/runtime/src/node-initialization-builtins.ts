@@ -10,7 +10,7 @@ export interface NodeInitializationBuiltins {
 
 /** Native builtins only, captured before installing any dependency-owned loader hook. */
 export function nodeInitializationBuiltins(require: NodeJS.Require): NodeInitializationBuiltins {
-  const buffer = require('node:buffer') as object;
+  const buffer = require('node:buffer') as Record<string, unknown>;
   initializeNodeSlowBuffer(buffer);
   const crypto: unknown = require('node:crypto');
   const stream: unknown = require('node:stream');

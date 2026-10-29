@@ -3,12 +3,11 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-import type { GuardedNodeVersion } from '@stayingupwind/core/util';
 import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
 import { isNode } from './lexical-scope.ts';
-import { nodeGuardVersion } from './node-guard-version.ts';
+import { nodeGuardVersion, type GuardedNodeVersion } from './node-guard-version.ts';
 import type { NodeJwtCompilerInput } from './node-jwt-compiler-proof.ts';
 import { nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
 import {
