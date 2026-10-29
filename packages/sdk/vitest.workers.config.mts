@@ -37,6 +37,12 @@ export default defineConfig({
     name: 'sdk:workers',
     include: ['test/workers/**/*.test.ts'],
     fsModuleCache: false,
+    // Engine.IO's CJS parser getters need a bundled dependency graph in workerd's test loader.
+    deps: {
+      optimizer: {
+        ssr: { enabled: true, include: ['engine.io-parser', 'socket.io-parser'] },
+      },
+    },
     env: { WS_NO_BUFFER_UTIL: '1', WS_NO_UTF_8_VALIDATE: '1' },
   },
 });

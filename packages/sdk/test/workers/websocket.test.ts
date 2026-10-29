@@ -179,6 +179,42 @@ describe('real ws on Workers', () => {
     server.close();
   });
 
+  it('preserves an empty Node close frame without turning it into a bridge failure', async () => {
+    const server = new WebSocketServer({ noServer: true });
+    const nodeClosed = Promise.withResolvers<number>();
+    const response = await handleNodeWebSocket(request(), (incoming, socket, head) => {
+      server.handleUpgrade(incoming, socket, head, (ws) => {
+        ws.on('message', () => {
+          ws.close();
+        });
+        ws.on('close', (code) => {
+          nodeClosed.resolve(code);
+        });
+      });
+    });
+    const socket = client(response);
+    const nativeClosed = new Promise<{ code: number; reason: string; wasClean: boolean }>(
+      (resolve) => {
+        socket.addEventListener(
+          'close',
+          (event) => {
+            resolve({ code: event.code, reason: event.reason, wasClean: event.wasClean });
+          },
+          { once: true },
+        );
+      },
+    );
+    try {
+      socket.send('close without a status');
+
+      await expect(nativeClosed).resolves.toStrictEqual({ code: 1005, reason: '', wasClean: true });
+      await expect(nodeClosed.promise).resolves.toBe(1005);
+    } finally {
+      socket.close();
+      server.close();
+    }
+  });
+
   it('fails protocol ping explicitly and closes the native connection without a fabricated pong', async () => {
     const server = new WebSocketServer({ noServer: true });
     const failure = Promise.withResolvers<Error>();

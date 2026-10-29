@@ -205,7 +205,8 @@ class UpgradeSocket extends Duplex {
     });
     this.#receiver.on('conclude', (code: number, reason: Buffer) => {
       try {
-        this.#native?.close(code === CLOSE_NO_STATUS ? undefined : code, reason.toString('utf8'));
+        if (code === CLOSE_NO_STATUS) this.#native?.close();
+        else this.#native?.close(code, reason.toString('utf8'));
       } catch (error) {
         this.destroy(errorOf(error));
       }
