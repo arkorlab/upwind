@@ -32,7 +32,7 @@ export function methodNotAllowed(): Response {
  * Whether a request may be a Server Action as Next.js judges one before it refuses a method
  * (`getIsPossibleServerAction`): a `POST` that names an action, or one a form sent.
  */
-function possibleServerAction(request: Request): boolean {
+export function possibleServerAction(request: Request): boolean {
   if (request.method !== 'POST') {
     return false;
   }

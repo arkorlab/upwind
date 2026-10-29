@@ -1,4 +1,5 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
+import { rendersFormActionsWithResumeData } from '@stayingupwind/core/next';
 import { NEXT_ACTION_HEADER } from '@stayingupwind/core/request';
 
 import { nowMs } from './cache/clock.ts';
@@ -8,6 +9,7 @@ import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
 import { descriptorFor } from './generations.ts';
+import { possibleServerAction } from './methods.ts';
 import { invokeNodeHandler } from './node-bridge.ts';
 import type { Resolved } from './outputs.ts';
 import { baseRequestMeta, invokeEntry, type RoutedInput } from './serve.ts';
@@ -97,6 +99,16 @@ async function answeredFrom(
   return own ?? ofClass;
 }
 
+/** Whether a post is an action whose re-render the page's postponed state is handed to. */
+function isActionHandedState(request: Request, store: Store): boolean {
+  if (request.headers.has(NEXT_ACTION_HEADER)) {
+    return true;
+  }
+  return (
+    possibleServerAction(request) && rendersFormActionsWithResumeData(store.manifest.nextVersion)
+  );
+}
+
 /**
  * The postponed state a server action's re-render is handed, for an App Router page with one: its
  * current generation's, else the build's shell's. Next.js re-renders the page after the action
@@ -105,6 +117,10 @@ async function answeredFrom(
  * postponed state for server actions when in minimal mode"). Rendered without it, the re-render
  * computed them afresh, and a value cached for the page changed under the action
  * (`resume-data-cache`, "should use RDC for server action re-renders").
+ *
+ * An action a form posted without JavaScript names none in its headers, and is handed the state
+ * only where the build's Next.js renders such a post whole with it
+ * (`rendersFormActionsWithResumeData`); an earlier one answered it with what follows the shell.
  *
  * None where the current generation rendered whole, and so has none: the page was answered from
  * that generation, and the build's state would hand the re-render what the regeneration replaced.
@@ -117,7 +133,7 @@ async function actionPostponedFor(
   resolved: Resolved,
 ): Promise<string | undefined> {
   if (
-    !input.request.headers.has(NEXT_ACTION_HEADER) ||
+    !isActionHandedState(input.request, store) ||
     entrypointKindOf(store, resolved.route) !== 'app-page' ||
     isDraftRequest(store, input.request)
   ) {
