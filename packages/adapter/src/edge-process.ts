@@ -26,7 +26,10 @@ import { jsLiteral } from './codegen.ts';
  * Next.js's immediate scheduler keeps the `process.nextTick` it wraps under
  * `Symbol.for('next.fast-set-immediate.originals')`, made by whichever copy runs first, so a
  * throwing `nextTick` read by an edge page went into every `process.nextTick` call the Node.js
- * routes made after it, and the first one threw out of the process.
+ * routes made after it, and the first one threw out of the process. The exception is the functions
+ * that end the process (`TERMINATING`): the Node.js runtime keeps none of them, and an edge
+ * entrypoint that called one would end the server every route shares, where Next.js's edge runtime
+ * throws instead.
  *
  * `process.env` and `process` itself are left as they are, and so is every module that is not one
  * of the chunks: the generated entry, and a host's instrumentation. The replacement is Oxc's
@@ -40,22 +43,49 @@ import { jsLiteral } from './codegen.ts';
 const MODULE = 'upwind:edge-process';
 const VIRTUAL = `\0${MODULE}`;
 
+const UNSUPPORTED_MESSAGE =
+  'which is not supported in the Edge Runtime.\\nLearn more: https://nextjs.org/docs/api-reference/edge-runtime';
+
+/** The functions of `process` that end it, which an edge chunk is handed one that throws for. */
+const TERMINATING: readonly string[] = ['abort', 'exit', 'kill', 'reallyExit'];
+
 /**
- * The host's own enumerable keys but `env` and its functions, as Next.js enumerates them. A key that
- * is an accessor is not read (`stdout` would open the stream), and is a value here.
+ * The host's own enumerable keys but `env` and its functions other than `TERMINATING`, as Next.js
+ * enumerates them. A key that is an accessor is not read (`stdout` would open the stream), and is a
+ * value here.
  */
-function nodeOnlyValues(): readonly string[] {
+function nodeOnlyKeys(): readonly string[] {
   return Object.keys(process).filter((key) => {
     return (
       key !== 'env' &&
       /^[A-Z_a-z$][\w$]*$/u.test(key) &&
-      typeof Object.getOwnPropertyDescriptor(process, key)?.value !== 'function'
+      (TERMINATING.includes(key) ||
+        typeof Object.getOwnPropertyDescriptor(process, key)?.value !== 'function')
     );
   });
 }
 
-/** The module the reads are taken to: none of the values, and a place for what a chunk writes. */
-const MODULE_SOURCE = "'use strict';\nmodule.exports = {};\n";
+/**
+ * The module the reads are taken to: a function that throws, as Next.js's does, for each of
+ * `TERMINATING`, none of the values, and a place for what a chunk writes.
+ */
+function moduleSource(keys: readonly string[]): string {
+  return [
+    "'use strict';",
+    'function unsupported(name) {',
+    '  return () => {',
+    `    throw new Error('A Node.js API is used (' + name + ') ${UNSUPPORTED_MESSAGE}');`,
+    '  };',
+    '}',
+    'module.exports = {',
+    ...TERMINATING.filter((key) => keys.includes(key)).map((key) => {
+      const name = jsLiteral(`process.${key}`);
+      return `  ${jsLiteral(key)}: unsupported(${name}),`;
+    }),
+    '};',
+    '',
+  ].join('\n');
+}
 
 function escaped(key: string): string {
   return key.replaceAll('$', String.raw`\$`);
@@ -71,7 +101,7 @@ async function realOrAsWritten(file: string): Promise<string> {
 
 /** Give the chunks named the edge runtime's `process`; `chunks`, the files Next.js listed. */
 export function edgeProcessPlugin(chunks: readonly string[]): Plugin {
-  const keys = nodeOnlyValues();
+  const keys = nodeOnlyKeys();
   const define = Object.fromEntries(
     keys.map((key) => [`process.${key}`, `require(${jsLiteral(MODULE)}).${key}`]),
   );
@@ -92,7 +122,7 @@ export function edgeProcessPlugin(chunks: readonly string[]): Plugin {
       }
     },
     resolveId: (source) => (source === MODULE ? VIRTUAL : null),
-    load: (id) => (id === VIRTUAL ? MODULE_SOURCE : null),
+    load: (id) => (id === VIRTUAL ? moduleSource(keys) : null),
     transform: {
       filter: { code: reads },
       handler(code, id) {

@@ -244,6 +244,8 @@ describe('edgeBundleOptions', () => {
         '    const process = { version: "a binding of its own" };',
         '    return process.version;',
         '  }',
+        '  let thrown;',
+        '  try { process.exit(1); } catch (error) { thrown = error.message; }',
         '  return {',
         "    runtime: process.version ? 'Node.js ' + process.version : 'Edge/Browser',",
         '    platform: process.platform,',
@@ -251,6 +253,7 @@ describe('edgeBundleOptions', () => {
         '    pinned: process.env.NEXT_RUNTIME,',
         '    own: own(),',
         '    nextTick: process.nextTick,',
+        '    thrown,',
         '  };',
         '});',
         '',
@@ -278,6 +281,8 @@ describe('edgeBundleOptions', () => {
         pinned: 'edge',
         own: 'a binding of its own',
         nextTick: Reflect.get(process, 'nextTick'),
+        thrown:
+          'A Node.js API is used (process.exit) which is not supported in the Edge Runtime.\nLearn more: https://nextjs.org/docs/api-reference/edge-runtime',
       });
       expect(process).toBe(global);
       expect(loaded.host()).toBe(process.version);
