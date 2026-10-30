@@ -10,19 +10,6 @@ set -euo pipefail
 # Where everything is, from this script's own place rather than from one another.
 tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The Node.js the application is built and served under, where the run names one other than the
-# harness's (`ADAPTER_TEST_NODE_DIR`, a directory holding `node`): first on the `PATH` of everything
-# below, the server this starts included. A build and the server that loads it then agree on it, as
-# the adapter requires of a native Function.
-if [ -n "${ADAPTER_TEST_NODE_DIR:-}" ]; then
-  if [ ! -x "${ADAPTER_TEST_NODE_DIR}/node" ]; then
-    echo "ADAPTER_TEST_NODE_DIR holds no node: ${ADAPTER_TEST_NODE_DIR}" >&2
-    exit 1
-  fi
-  export PATH="${ADAPTER_TEST_NODE_DIR}:${PATH}"
-fi
-echo "Node.js $(node --version) builds and serves the application" >&2
-
 # Where the application is served: a host (the default), or this machine — Cloudflare's runtime, by a
 # local stack on workerd, or Node.js's, by the native server `upwind start` runs.
 target="${ADAPTER_TEST_TARGET:-host}"
@@ -72,6 +59,20 @@ export ADAPTER_TEST_SUITE_ENV
 # When the suite's hook began, for the deployment to end its waits where the hook's timeout would cut it
 # off (`src/hook.ts`): the build below spends the same time.
 export ADAPTER_TEST_HOOK_STARTED_MS="${ADAPTER_TEST_HOOK_STARTED_MS:-$(node -p 'Date.now()')}"
+
+# The Node.js the application is built and served under, where the run names one other than the
+# harness's (`ADAPTER_TEST_NODE_DIR`, a directory holding `node`): first on the `PATH` of everything
+# below, the server this starts included. A build and the server that loads it then agree on it, as
+# the adapter requires of a native Function. Only after the suite's variables are read above, which
+# would otherwise take this `PATH` for one of the suite's and hand it to the application.
+if [ -n "${ADAPTER_TEST_NODE_DIR:-}" ]; then
+  if [ ! -x "${ADAPTER_TEST_NODE_DIR}/node" ]; then
+    echo "ADAPTER_TEST_NODE_DIR holds no node: ${ADAPTER_TEST_NODE_DIR}" >&2
+    exit 1
+  fi
+  export PATH="${ADAPTER_TEST_NODE_DIR}:${PATH}"
+fi
+echo "Node.js $(node --version) builds and serves the application" >&2
 
 repo_root="$(cd "${tool_dir}/../.." && pwd)"
 # The contract's own variable, and it names the adapter's repository: keep it working, since the
