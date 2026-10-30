@@ -23,7 +23,11 @@ A reading is one of four:
 
 Read at commit `29bbeab09981148ade186e8599ecdede15abc281`, from the night's run of 2026-10-26 (run
 40369598264) and from both targets run again at `d2df8807` (runs 40453829649 and 40453835497). Each
-reading holds on both targets unless it says otherwise.
+reading holds on both targets unless it says otherwise, and under both Node.js versions a night's run
+builds and serves the applications under (24 and 26) unless it names one. A reading for the lane's
+own Node.js is tried before one for every Node.js: under Node.js 26 a suite can fail before it gets as
+far as the failure its other reading records. The readings for Node.js 26 were read from the whole
+manifest run under it on both targets on 2026-10-30 (runs 41023438620 and 41023442374).
 
 ### Deploy gates
 
@@ -121,7 +125,31 @@ runs on `next start` 16.4.3 with no adapter, and in 14 of 20 on each target; sta
 every run. vercel/next.js#100776 starts the test from a page whose only links are the accordions'.
 The judge reads only `act`'s own timeout ("Timed out waiting for a request to be initiated").
 
+#### Preview mode on Node.js 26
+
+Under Node.js 26, on `node` (12 cases of `prerender-preview`, `preview-fallback` and `prerender`).
+`res.setPreviewData` signs its cookie with the `jsonwebtoken` Next.js 16.4.3 compiles in
+(`next/dist/compiled/jsonwebtoken`). Its `buffer-equal-constant-time` reads
+`require('buffer').SlowBuffer.prototype` as it loads, and Node.js 26 has no `SlowBuffer`.
+`require('next/dist/compiled/jsonwebtoken')` throws on Node.js 26.13.0 with no adapter ("Cannot read
+properties of undefined (reading 'prototype')"). So the route answers 500 and sets no preview cookie,
+and the pages read without one render as no preview. v16.5.0-canary.30 signs with `fast-jwt`
+instead. On `cloudflare`, workerd's `buffer` still has `SlowBuffer`, and the cases pass.
+
 ### The environment
+
+#### Native addons on Node.js 26
+
+Under Node.js 26, on both targets: `prerender-native-module` (3 of 3) and `turbopack-reports` (1 of
+1). Their fixture's addon is built from source at install (`node-gyp rebuild`), and its `addon.cc`
+calls `v8::Context::GetIsolate`, which the V8 of Node.js 26 no longer has. The install fails ("has no
+member named 'GetIsolate'"), and with it the deploy hook, before anything of the adapter's runs.
+
+#### `SlowBuffer` on Node.js 26
+
+Under Node.js 26, on `node`: `edge-runtime-node-compatibility`'s two `node:buffer` cases expect
+`SlowBuffer` among `node:buffer`'s keys. Node.js 26 removed it, and on `node` the edge runtime's
+`node:buffer` is the Function's own. On `cloudflare` it is workerd's, which keeps it.
 
 #### Native addons on `cloudflare`
 

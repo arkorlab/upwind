@@ -4,11 +4,6 @@ import type { Read, Verdict } from './judge.ts';
 export interface ShardVerdict extends Verdict {
   readonly shard: number;
   /**
-   * The major version of the Node.js the shard's applications were built and served under (`NODE`):
-   * a night's run has a lane for each. Absent in a verdict from before there were lanes.
-   */
-  readonly node?: string;
-  /**
    * Whether the runner ended and said how (`runner-exit-code.txt`): not where it was stopped, at its
    * step's time limit, or never ran, after a step before it failed. Absent in a verdict from before.
    */

@@ -11,6 +11,14 @@
 /** The targets on this machine (`target.ts`), which this record is for. */
 export type RunnerTarget = 'cloudflare' | 'node';
 
+/** The Node.js versions a run builds and serves the applications under (its lanes), by major. */
+export type NodeLine = '24' | '26';
+
+/** Whether `value` names one of the lanes' Node.js versions. */
+export function isNodeLine(value: string): value is NodeLine {
+  return value === '24' || value === '26';
+}
+
 /**
  * How a reviewed case reads:
  * - `deploy-gate`: upstream registers the case `test.failing` when deployed, for what Vercel does not
@@ -31,6 +39,8 @@ export interface ReviewedCase {
   readonly fullName: string;
   /** Where the reading holds; on both targets where absent. */
   readonly targets?: readonly RunnerTarget[];
+  /** Under which Node.js the reading holds; under every one where absent. */
+  readonly nodes?: readonly NodeLine[];
   readonly reading: Reading;
   /** For every reading but `deploy-gate`, whose failure is Jest's own refusal and nothing else. */
   readonly symptom?: Symptom;
@@ -133,11 +143,24 @@ function inAnotherDirectory(message: string): boolean {
 }
 
 /** A record's cases: each suite, with the full names of the cases read, or `*` for all of them. */
-interface Group extends Pick<ReviewedCase, 'reading' | 'record' | 'symptom' | 'targets'> {
+interface Group extends Pick<ReviewedCase, 'nodes' | 'reading' | 'record' | 'symptom' | 'targets'> {
   readonly cases: Readonly<Record<string, readonly string[]>>;
 }
 
 const GATE: Reading = 'deploy-gate';
+/** The lane that builds and serves the applications under Node.js 26. */
+const ON_NODE_26: readonly NodeLine[] = ['26'];
+/**
+ * How a preview request fails where the server could not sign its cookie: the API route answers
+ * 500 and sets no cookie, and the pages read without one render as no preview.
+ */
+const NO_PREVIEW_COOKIE: readonly string[] = [
+  'Expected: 200\nReceived: 500',
+  'Received has value: null',
+  '-   "preview": true,',
+  '-   "isPreview": true,',
+  'Unexpected end of JSON input',
+];
 /** How Next.js's harness says the deploy hook failed, the build or the server it starts. */
 const DEPLOY_FAILED = 'Custom deploy script failed';
 const EVERY_CASE = ['*'];
@@ -316,6 +339,56 @@ const AT_16_4_3: readonly Group[] = [
     cases: {
       'test/e2e/app-dir/segment-cache/vary-params-base-dynamic/vary-params-base-dynamic.test.ts':
         EVERY_CASE,
+    },
+  },
+  {
+    reading: 'upstream',
+    record: 'preview-mode-on-nodejs-26',
+    targets: ['node'],
+    nodes: ON_NODE_26,
+    symptom: (message) => NO_PREVIEW_COOKIE.some((part) => message.includes(part)),
+    cases: {
+      'test/e2e/prerender-preview/prerender-preview.test.ts': [
+        'Prerender Preview Mode should enable preview mode',
+        'Prerender Preview Mode should expire cookies with a maxAge',
+        'Prerender Preview Mode should set custom path cookies',
+        'Prerender Preview Mode should not return fallback page on preview request',
+        'Prerender Preview Mode should pass the preview data to API routes',
+      ],
+      'test/e2e/preview-fallback/preview-fallback.test.ts': [
+        'Preview mode with fallback pages should get preview cookie correctly',
+        'Preview mode with fallback pages should not write preview index SSG page to cache',
+        'Preview mode with fallback pages should not write preview dynamic prerendered SSG page to cache no fallback',
+        'Preview mode with fallback pages should not write preview dynamic SSG page to cache no fallback',
+        'Preview mode with fallback pages should not write preview dynamic prerendered SSG page to cache with fallback',
+        'Preview mode with fallback pages should not write preview dynamic non-prerendered SSG page to cache with fallback',
+      ],
+      'test/e2e/prerender.test.ts': [
+        'Prerender should revalidate on-demand revalidate with preview cookie',
+      ],
+    },
+  },
+  {
+    reading: 'environment',
+    record: 'native-addons-on-nodejs-26',
+    nodes: ON_NODE_26,
+    symptom: inOrder(DEPLOY_FAILED, 'has no member named', 'GetIsolate'),
+    cases: {
+      'test/e2e/prerender-native-module.test.ts': EVERY_CASE,
+      'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': EVERY_CASE,
+    },
+  },
+  {
+    reading: 'environment',
+    record: 'slowbuffer-on-nodejs-26',
+    targets: ['node'],
+    nodes: ON_NODE_26,
+    symptom: inOrder('"exposedKeys": ArrayContaining [', '-     "SlowBuffer",'),
+    cases: {
+      'test/e2e/app-dir/edge-runtime-node-compatibility/edge-runtime-node-compatibility.test.ts': [
+        'edge runtime node compatibility [app] supports node:buffer',
+        'edge runtime node compatibility [pages/api] supports node:buffer',
+      ],
     },
   },
   {

@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 
 import { fails, judge } from './judge.ts';
 import { type JestSuite, jestSuite, listedSuites } from './results.ts';
-import { REVIEWED } from './reviewed.ts';
+import { isNodeLine, REVIEWED } from './reviewed.ts';
 import { describe, laneOf, type ShardVerdict, shardFails } from './verdicts.ts';
 
 /**
@@ -46,10 +46,10 @@ if (target !== 'cloudflare' && target !== 'node') {
   );
 }
 // The lane's Node.js, where the run names one: a major version, as the plan's matrix has it.
-const node =
-  process.env['NODE'] === undefined || process.env['NODE'] === '' ? undefined : process.env['NODE'];
-if (node !== undefined && !/^\d{1,3}$/u.test(node)) {
-  throw new Error(`judge-results: NODE is a major version of Node.js, not ${node}`);
+const nodeAsked = process.env['NODE'];
+const node = nodeAsked === undefined || nodeAsked === '' ? undefined : nodeAsked;
+if (node !== undefined && !isNodeLine(node)) {
+  throw new Error(`judge-results: NODE is 24 or 26, the lanes' Node.js, not ${node}`);
 }
 const shard = Number(required('SHARD'));
 if (!Number.isSafeInteger(shard) || shard < 1) {
@@ -89,13 +89,16 @@ function endedByWatchdog(): string[] {
 
 const verdict: ShardVerdict = {
   ...judge(
-    { target, next: { version: next.version, commit: required('NEXT_COMMIT') } },
+    {
+      target,
+      ...(node !== undefined && { node }),
+      next: { version: next.version, commit: required('NEXT_COMMIT') },
+    },
     listed,
     results,
     REVIEWED,
   ),
   shard,
-  ...(node !== undefined && { node }),
   runnerFinished: existsSync(path.join(resultsDir, 'runner-exit-code.txt')),
   ended: endedByWatchdog(),
 };
