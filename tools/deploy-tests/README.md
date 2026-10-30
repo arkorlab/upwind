@@ -194,7 +194,10 @@ application or one of its packages (`node src/main.ts bundle` prints which) — 
 an adapter made to answer otherwise than one Vercel's own builder made, and read it to know which they
 are testing: with it set, they expect the adapter's answers; without it, the builder's.
 
-`.github/workflows/deploy-tests.yaml` is the same thing on a runner, dispatched by hand. Its `tests`
+`.github/workflows/deploy-tests.yaml` is the same thing on a runner, dispatched by hand, and run by
+every push to a pull request: `node` over the whole manifest against the supported release, 64 jobs,
+with no credentials, so a pull request from a fork runs it too. A newer push to the same pull request
+cancels the run before it; other pull requests' runs, the nightly runs and dispatches are left alone. Its `tests`
 input takes upstream paths, or `all` for everything the manifest allows; `shards` cuts `all` into that
 many pieces (upstream's own `-g n/total`), and `only` runs one piece on its own, for taking a slice again
 after it was cut short. On the runner's targets nothing is shared, so a run is cut as finely as the
