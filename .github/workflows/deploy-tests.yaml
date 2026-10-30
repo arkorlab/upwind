@@ -385,9 +385,13 @@ jobs:
           ref: ${{ needs.plan.outputs.nextjs }}
           path: nextjs
           fetch-depth: 25
+      # Node.js 24, not the 26 this repository builds with: the suite runs out of Next.js's checkout, and
+      # its harness does not load on 26. `run-tests.js` requires `yargs/yargs`, an extensionless file in
+      # a `"type": "module"` package, which 26 reads as an ES module ("require is not defined in ES
+      # module scope"). This repository keeps Node.js 24 working, and every shard ran on it until 26.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 26.13.0
+          node-version: 24
       # Corepack rather than `pnpm/action-setup`, which reads one `packageManager` from where it runs:
       # there are two checkouts here and no manifest above them, and they do not agree on a version.
       # This way each directory's own `packageManager` is honoured — Next.js's inside `nextjs`, this
