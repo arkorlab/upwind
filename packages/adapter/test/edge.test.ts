@@ -232,7 +232,7 @@ describe('edgeBundleOptions', () => {
    * Node.js's, and code tells the runtimes apart by it (`switchable-runtime`); the Function's own
    * `process` named its Node.js version on an edge page.
    */
-  it("gives the chunks the edge runtime's process, and leaves everything else the Function's", async () => {
+  it("gives the chunks the edge runtime's values of process, and leaves everything else the Function's", async () => {
     const chunk = path.join(dir, 'chunk.js');
     await writeFile(
       chunk,
@@ -245,13 +245,14 @@ describe('edgeBundleOptions', () => {
         '    return process.version;',
         '  }',
         '  let thrown;',
-        '  try { process.nextTick(() => {}); } catch (error) { thrown = error.message; }',
+        '  try { process.exit(1); } catch (error) { thrown = error.message; }',
         '  return {',
         "    runtime: process.version ? 'Node.js ' + process.version : 'Edge/Browser',",
         '    platform: process.platform,',
         '    env: process.env.UPWIND_EDGE_PROCESS_CASE,',
         '    pinned: process.env.NEXT_RUNTIME,',
         '    own: own(),',
+        '    nextTick: process.nextTick,',
         '    thrown,',
         '  };',
         '});',
@@ -279,14 +280,46 @@ describe('edgeBundleOptions', () => {
         env: 'read',
         pinned: 'edge',
         own: 'a binding of its own',
+        nextTick: Reflect.get(process, 'nextTick'),
         thrown:
-          'A Node.js API is used (process.nextTick) which is not supported in the Edge Runtime.\nLearn more: https://nextjs.org/docs/api-reference/edge-runtime',
+          'A Node.js API is used (process.exit) which is not supported in the Edge Runtime.\nLearn more: https://nextjs.org/docs/api-reference/edge-runtime',
       });
       expect(process).toBe(global);
       expect(loaded.host()).toBe(process.version);
     } finally {
       vi.unstubAllEnvs();
       Reflect.deleteProperty(globalThis, 'TURBOPACK');
+    }
+  });
+
+  /**
+   * The chunks share the Node.js runtime's global object, and what they keep on it the Node.js
+   * runtime reads: Next.js's immediate scheduler keeps the `process.nextTick` it wraps under a
+   * global symbol, made by whichever copy runs first. A `nextTick` that threw, read by an edge page,
+   * was then called by every Node.js route after it.
+   */
+  it("leaves the functions of process the Function's, which the Node.js runtime may read back", async () => {
+    const originals = Symbol.for('next.fast-set-immediate.originals');
+    const chunk = path.join(dir, 'chunk.js');
+    await writeFile(
+      chunk,
+      [
+        "const originals = Symbol.for('next.fast-set-immediate.originals');",
+        'globalThis[originals] ??= { nextTick: process.nextTick, version: process.version };',
+        '',
+      ].join('\n'),
+    );
+    const entry = path.join(dir, 'entry.cjs');
+    await writeFile(entry, 'require("./chunk.js");\n');
+    try {
+      await built(entry, [chunk]);
+
+      expect(Reflect.get(globalThis, originals)).toStrictEqual({
+        nextTick: Reflect.get(process, 'nextTick'),
+        version: undefined,
+      });
+    } finally {
+      Reflect.deleteProperty(globalThis, originals);
     }
   });
 
