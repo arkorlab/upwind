@@ -1,4 +1,11 @@
-import { deriveEntry, type DecodedGenerationPack } from '@stayingupwind/core/cache';
+import {
+  deriveEntry,
+  type DecodedGenerationPack,
+  admitPublication,
+  publicationExpired,
+  publicationForBuild,
+  publicationForRoute,
+} from '@stayingupwind/core/cache';
 import {
   type ConfiguredHeaders,
   foldedHeadersFor,
@@ -129,6 +136,7 @@ function partialPartGeneration(
       partial.load,
       input.edge.runtime.now(),
       condemnedIn(input.edge.runtime.memory, input.edge.app?.deploymentId),
+      input.manifest.publication,
     );
     // Generic build parts do not describe a completed member's HTML. Missing or incompatible
     // representations remain with the Function, which can resume that member's own record.
@@ -181,6 +189,7 @@ async function partGeneration(input: PartInput, part: PartAnswer): Promise<PartG
     load,
     input.edge.runtime.now(),
     condemnedIn(input.edge.runtime.memory, input.edge.app?.deploymentId),
+    input.manifest.publication,
   );
   if (decision.kind === 'build') {
     return { kind: upgradesMember(settings, entry, pathname) ? 'function' : 'build' };
@@ -353,13 +362,24 @@ function refreshPart(
 }
 
 /** The immutable router part is eligible only while its build generation remains eligible. */
-function answerBuildPart(
+async function answerBuildPart(
   input: PartInput,
   part: PartAnswer,
   fallback: () => Promise<Response>,
   generation: Extract<PartGeneration, { readonly kind: 'build' }>,
 ): Promise<Response> {
   if (part.buildPart === undefined) return fallback();
+  if (
+    publicationExpired(
+      part.entry.cache?.buildTags?.map((tag) => tag.value) ?? [],
+      input.edge.runtime.now(),
+      publicationForBuild(
+        input.manifest.publication,
+        part.entry.cache?.route ?? part.entry.pathname,
+      ),
+    )
+  )
+    return fallback();
   // A fresh accepted build record already proved its revision against every observed receipt.
   const key =
     generation.acceptedRecord === undefined ? generationKeyOf(input, part.entry) : undefined;
@@ -372,13 +392,19 @@ function answerBuildPart(
   ) {
     return fallback();
   }
-  return answer(input, {
+  const response = await answer(input, {
     entry: part.entry,
     middleware: part.middleware,
     kind: part.kind,
     segment: part.buildPart,
     startedAt: part.startedAt,
   });
+  return admitPublication(
+    response,
+    part.entry.cache?.buildTags?.map((tag) => tag.value) ?? [],
+    input.edge.runtime.now(),
+    publicationForBuild(input.manifest.publication, part.entry.cache?.route ?? part.entry.pathname),
+  );
 }
 
 async function answerPart(input: PartInput, part: PartAnswer): Promise<Response> {
@@ -437,7 +463,7 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
       };
     },
   };
-  return answer(input, {
+  const response = await answer(input, {
     entry,
     middleware,
     kind,
@@ -455,6 +481,12 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
       },
     },
   });
+  return admitPublication(
+    response,
+    generation.pack.header.tags.map((tag) => tag.value),
+    input.edge.runtime.now(),
+    publicationForRoute(input.manifest.publication, part.entry.cache?.route ?? part.entry.pathname),
+  );
 }
 
 /** Serve a segment belonging to the exact HTML generation this isolate holds. */

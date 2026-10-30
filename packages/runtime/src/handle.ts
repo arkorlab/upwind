@@ -13,7 +13,7 @@ import { isWebSocketUpgrade } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { nowMs } from './cache/clock.ts';
-import { type RequestContext, requestContextFor } from './cache/context.ts';
+import { requestContextFor } from './cache/context.ts';
 import { catchUpWithScope } from './cache/pulls.ts';
 import { asksForCapture, handleCapture, keptByNobody } from './capture-invoke.ts';
 import { decidedApart, delivered, handedOn } from './delivery.ts';
@@ -70,6 +70,7 @@ import {
   ownerOfResolved,
   withoutPlacementHeaders,
 } from './placement.ts';
+import { admitRequestPublication, requirePublication, onceRecorded } from './publication.ts';
 import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
 import { routingOf, untraced, withRoutingOf } from './resolve-request.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
@@ -95,7 +96,6 @@ import {
   HTTP_NOT_FOUND,
   HTTP_OK,
   initUrlOf,
-  INVALIDATIONS_RECORDED_WITHIN_MS,
   invokeEntry,
   resume,
   type RoutedInput,
@@ -504,6 +504,7 @@ async function serveResolved(
   resolved: Resolved,
   asked: URL,
 ): Promise<Response> {
+  requirePublication(input.cache, resolved.route);
   const { request } = input;
   const file = store.staticFiles.get(resolved.route);
   if (file !== undefined) {
@@ -611,13 +612,6 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
  * too: its failure is answered with what the request invalidated as well (`function.ts`), as the
  * change the action made stands whatever became of its render.
  */
-async function onceRecorded(context: RequestContext, routed: Promise<Response>): Promise<Response> {
-  try {
-    return await routed;
-  } finally {
-    await context.invalidated.recorded(INVALIDATIONS_RECORDED_WITHIN_MS);
-  }
-}
 
 /**
  * Answer a request a deployment's Function was handed: in the context it runs in (`run`) — its
@@ -653,7 +647,7 @@ export async function handleRequest(given: HandleInput): Promise<Response> {
     // Not answered before the host has recorded what the request invalidated — its headers neither,
     // nor a failure's (`onceRecorded`).
     const routed = withoutPlacementHeaders(await onceRecorded(context, routeRequest(input)));
-    const response = delivered(handled.request, routed);
+    const response = admitRequestPublication(delivered(handled.request, routed), context);
     const answered = withoutBody(
       handled.request,
       withInvalidatedTags(response, context.invalidated),

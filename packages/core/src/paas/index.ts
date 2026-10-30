@@ -5,6 +5,11 @@ export {
   UPWIND_AUTH_SECRET_ENV,
 } from './auth.ts';
 export {
+  observePublicationGrant,
+  observePublicationTags,
+  PUBLICATION_OBSERVER,
+} from './publication.ts';
+export {
   UPWIND_CACHE_HOST_MODULE_ENV,
   UPWIND_UNSHIPPED_OUTPUTS_ENV,
   UPWIND_UNSHIPPED_PRERENDER_BODIES_ENV,

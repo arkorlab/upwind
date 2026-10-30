@@ -6,6 +6,7 @@ import {
   splitFunctionNameSchema,
 } from '../bundle/carried.ts';
 import { KEY_SCHEMA_VERSION, MAX_TAGS_PER_ENTRY } from '../cache/keys.ts';
+import { publicationRequirementSchema } from '../cache/publication-schema.ts';
 import { generationTagSchema } from '../cache/tag-schema.ts';
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
 import { imagesConfigSchema } from '../images/config.ts';
@@ -53,6 +54,7 @@ export const MANIFEST_SCHEMA_VERSION = 6;
 export const REQUEST_FILE_KEYS_SCHEMA_VERSION = 7;
 /** Paired Pages members and loading classes require a reader that understands version three. */
 export const PAGES_FALLBACK_SCHEMA_VERSION = 8;
+export const PUBLICATION_MANIFEST_SCHEMA_VERSION = 9;
 /** The first version a manifest may store what its routes repeat in `tables` at (above). */
 export const TABLES_SCHEMA_VERSION = 6;
 /** The version before, which `routerReferences` was first published at. */
@@ -75,6 +77,7 @@ export const READ_MANIFEST_SCHEMA_VERSIONS = [
   ...CANONICAL_FILE_SCHEMA_VERSIONS,
   REQUEST_FILE_KEYS_SCHEMA_VERSION,
   PAGES_FALLBACK_SCHEMA_VERSION,
+  PUBLICATION_MANIFEST_SCHEMA_VERSION,
 ] as const;
 const HTTP_OK = 200;
 
@@ -714,6 +717,7 @@ const projectFields = {
    * all the same. What keeps an edge that does not know the field from serving a deployment that
    * declares a gate is the order a host rolls out in: the edge before what publishes such a manifest.
    */
+  publication: publicationRequirementSchema.optional(),
   gates: routeGatesSchema.optional(),
   /**
    * The pathnames Next.js resolves exactly that are of a gated route — the route's own, and every
@@ -731,38 +735,61 @@ const projectFields = {
  * Version selection keeps formerly unknown fields unknown to the versions that ignored them.
  * This is a discriminated schema: parse/safeParse remain public, rather than object-only helpers.
  */
-export const projectManifestSchema = z.discriminatedUnion('schemaVersion', [
-  z
-    .object({
-      ...manifestFields,
-      schemaVersion: z.literal(CANONICAL_FILE_SCHEMA_VERSIONS),
-      ...projectFields,
-      staticPages: fixedStaticPagesSchema,
-    })
-    .refine((manifest) => manifest.pagesFallbacks === undefined, {
-      message: 'Pages loading classes require manifest schema version 8',
-      path: ['pagesFallbacks'],
-    }),
-  z
-    .object({
-      ...manifestFields,
-      schemaVersion: z.literal(REQUEST_FILE_KEYS_SCHEMA_VERSION),
-      ...projectFields,
-      staticPages: fixedStaticPagesSchema,
-      /** Actual request URL keys, including retained files of the previous build. */
-      staticFileRequestKeys: z.literal(true).optional(),
-    })
-    .refine((manifest) => manifest.pagesFallbacks === undefined, {
-      message: 'Pages loading classes require manifest schema version 8',
-      path: ['pagesFallbacks'],
-    }),
-  z.object({
-    ...manifestFields,
-    schemaVersion: z.literal(PAGES_FALLBACK_SCHEMA_VERSION),
-    ...projectFields,
-    staticFileRequestKeys: z.literal(true).optional(),
-  }),
-]);
+export const projectManifestSchema = z
+  .discriminatedUnion('schemaVersion', [
+    z
+      .object({
+        ...manifestFields,
+        schemaVersion: z.literal(CANONICAL_FILE_SCHEMA_VERSIONS),
+        ...projectFields,
+        staticPages: fixedStaticPagesSchema,
+      })
+      .refine((manifest) => manifest.pagesFallbacks === undefined, {
+        message: 'Pages loading classes require manifest schema version 8',
+        path: ['pagesFallbacks'],
+      }),
+    z
+      .object({
+        ...manifestFields,
+        schemaVersion: z.literal(REQUEST_FILE_KEYS_SCHEMA_VERSION),
+        ...projectFields,
+        staticPages: fixedStaticPagesSchema,
+        /** Actual request URL keys, including retained files of the previous build. */
+        staticFileRequestKeys: z.literal(true).optional(),
+      })
+      .refine((manifest) => manifest.pagesFallbacks === undefined, {
+        message: 'Pages loading classes require manifest schema version 8',
+        path: ['pagesFallbacks'],
+      }),
+    z
+      .object({
+        ...manifestFields,
+        schemaVersion: z.literal([
+          PAGES_FALLBACK_SCHEMA_VERSION,
+          PUBLICATION_MANIFEST_SCHEMA_VERSION,
+        ]),
+        ...projectFields,
+        staticFileRequestKeys: z.literal(true).optional(),
+      })
+      .refine(
+        (manifest) => {
+          return (
+            manifest.schemaVersion !== PUBLICATION_MANIFEST_SCHEMA_VERSION ||
+            manifest.publication !== undefined
+          );
+        },
+        { message: 'Publication manifests require the publication capability.' },
+      ),
+  ])
+  .refine(
+    (manifest) => {
+      return (
+        manifest.publication === undefined ||
+        manifest.schemaVersion === PUBLICATION_MANIFEST_SCHEMA_VERSION
+      );
+    },
+    { message: 'Publication requires manifest schema version 9.' },
+  );
 export type ProjectManifest = z.infer<typeof projectManifestSchema> & {
   readonly staticFileRequestKeys?: true | undefined;
 };

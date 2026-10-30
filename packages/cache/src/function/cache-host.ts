@@ -1,4 +1,9 @@
-import { decodeGenerationPack, MAX_TAGS_PER_CALL, tagKindOf } from '@stayingupwind/core/cache';
+import {
+  type PublicationRequirement,
+  decodeGenerationPack,
+  MAX_TAGS_PER_CALL,
+  tagKindOf,
+} from '@stayingupwind/core/cache';
 import { type ScopeRevision, TEST_CLOCK_HEADER } from '@stayingupwind/core/paas';
 import { fromBase64 } from '@stayingupwind/core/util';
 import {
@@ -308,7 +313,10 @@ class GatewayHost implements CacheHost {
    */
   readonly #leased = new Map<string, LeaseHeld>();
 
-  constructor(gateway: Gateway, copies: Copies) {
+  readonly publication: CacheHostOptions['publication'];
+
+  constructor(gateway: Gateway, copies: Copies, publication?: CacheHostOptions['publication']) {
+    this.publication = publication;
     this.#gateway = gateway;
     this.#copies = copies.data;
     this.#records = copies.records;
@@ -607,11 +615,17 @@ export function cacheHostFor(
   naming: FunctionCacheNaming,
   options: CacheHostOptions = {},
 ): (init: CacheHostInit) => CacheHostBinding | undefined {
-  return (init) => createCacheHost(naming, init, options);
+  return (init) => {
+    const binding = createCacheHost(naming, init, options);
+    if (binding === undefined && options.publication !== undefined)
+      throw new Error('A publication-protected Function requires its configured cache host.');
+    return binding;
+  };
 }
 
 /** What a host decides beside its names. */
 export interface CacheHostOptions {
+  readonly publication?: PublicationRequirement | undefined;
   /**
    * Whether the Function keeps its data center's copy of where its scope's tags stand, asked of
    * the authority again every moment it has traffic (`ScopeBeacon`): for a host with nothing in
@@ -644,14 +658,18 @@ function createCacheHost(
     readFetchImpl: read?.fetchImpl,
   });
   return {
-    host: new GatewayHost(gateway, {
-      data: DataCopies.of(naming, { scopeId, token }, gateway.reading),
-      records: RecordCopies.of(naming, { scopeId, token }, gateway.reading),
-      beacon:
-        options.scopeBeacon === true
-          ? ScopeBeacon.of(naming, { scopeId, token }, () => gateway.tagRevision())
-          : undefined,
-    }),
+    host: new GatewayHost(
+      gateway,
+      {
+        data: DataCopies.of(naming, { scopeId, token }, gateway.reading),
+        records: RecordCopies.of(naming, { scopeId, token }, gateway.reading),
+        beacon:
+          options.scopeBeacon === true
+            ? ScopeBeacon.of(naming, { scopeId, token }, () => gateway.tagRevision())
+            : undefined,
+      },
+      options.publication,
+    ),
     scopeId,
     clockOf: clockReader(init.env),
   };

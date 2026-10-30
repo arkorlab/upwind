@@ -9,6 +9,19 @@ export {
   type RepairPackArtifactTuple,
 } from './artifact-locator.ts';
 export { publicArtifactRef, publicOutputSnapshot } from './artifacts.ts';
+export { admitPublication } from './publication-response.ts';
+export {
+  type PublicationGrant,
+  type PublicationRequirement,
+  publicationIdentity,
+  publicationTagOf,
+  publicationDeadline,
+  publicationExpired,
+  isPublicationTag,
+  publicationForRoute,
+  publicationForBuild,
+  publicationTimeFor,
+} from './publication.ts';
 export {
   evaluateFreshness,
   type Freshness,

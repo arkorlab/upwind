@@ -1,5 +1,10 @@
 import { htmlType, pageHeaders } from '@stayingupwind/core/bundle';
-import { staticPageHeadersAllowSharing, staticPageHasNoTransform } from '@stayingupwind/core/cache';
+import {
+  admitPublication,
+  publicationForRoute,
+  staticPageHeadersAllowSharing,
+  staticPageHasNoTransform,
+} from '@stayingupwind/core/cache';
 import type { ConfiguredHeaders, StaticPageEntry } from '@stayingupwind/core/manifest';
 import {
   classifyRequest,
@@ -131,6 +136,7 @@ async function servePage(
     load,
     edge.runtime.now(),
     condemnedIn(edge.runtime.memory, edge.app?.deploymentId),
+    input.manifest.publication,
   );
   const isr = entry.staticPagePrivacy === 2;
   if (!pageDecisionAgrees(decision, isr)) {
@@ -247,7 +253,12 @@ export function serveCurrentPage(
     observeMetric(edge.host, point);
   }
   if (stale) readServedAgain(edge, decision.pack, settings, { servedStale: true });
-  return response;
+  return admitPublication(
+    response,
+    decision.pack.header.tags.map((tag) => tag.value),
+    edge.runtime.now(),
+    publicationForRoute(input.manifest.publication, entry.route),
+  );
 }
 
 /** Reuse the existing routing gate and current-record read, with no HTML rewriting or new RPC. */

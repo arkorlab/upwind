@@ -1,5 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+import type { PublicationRequirement } from '@stayingupwind/core/cache';
+import { PUBLICATION_OBSERVER } from '@stayingupwind/core/paas';
+
 import type { EntryTables } from '../entries.ts';
 import type { Run } from '../node-bridge.ts';
 import { withClock } from './clock.ts';
@@ -12,6 +15,8 @@ import type { CacheRuntime } from './runtime.ts';
  */
 
 export interface RequestContext {
+  readonly publication: Set<string>;
+  publicationRequirement?: PublicationRequirement;
   /**
    * The entrypoints, as this request looks them up: with its `waitUntil`, which holds what a hook's
    * lookup begins evaluating (`EntryTables`).
@@ -258,7 +263,9 @@ export function requestContextFor(input: {
   readonly clock: number | undefined;
   readonly invalidated?: InvalidatedTags | undefined;
 }): RequestContext {
+  installPublicationObserver();
   const context: RequestContext = {
+    publication: new Set(),
     tables: input.tables,
     runtime: input.runtime,
     request: input.request,
@@ -273,6 +280,17 @@ export function requestContextFor(input: {
 }
 
 const contexts = new AsyncLocalStorage<RequestContext>();
+
+const publicationState = { installed: false };
+function installPublicationObserver(): void {
+  if (publicationState.installed) return;
+  publicationState.installed = true;
+  Object.assign(globalThis, {
+    [PUBLICATION_OBSERVER]: (tag: string): void => {
+      contexts.getStore()?.publication.add(tag);
+    },
+  });
+}
 
 export interface ResourceChangeReceipt {
   readonly context: RequestContext | undefined;

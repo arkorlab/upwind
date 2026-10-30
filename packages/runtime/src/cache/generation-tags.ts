@@ -11,6 +11,7 @@ import {
 
 import { isClassShell } from '../store.ts';
 import type { CapturedRender } from './capture.ts';
+import { requestContext } from './context.ts';
 import { RegenerationError } from './lease.ts';
 import { refusedTags } from './tag-bounds.ts';
 
@@ -38,6 +39,8 @@ export function generationTagValues(
       ? []
       : implicitTagsFor(appPathFor(descriptor.kind, descriptor.route), concrete);
   const values = new Set(recorded);
+  const publication = requestContext()?.publication;
+  if (publication !== undefined) for (const value of publication) values.add(value);
   for (const value of implicit) {
     values.add(value);
   }

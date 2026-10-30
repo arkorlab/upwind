@@ -1,6 +1,9 @@
 import {
   type InvalidationState,
   MAX_TAGS_PER_CALL,
+  publicationExpired,
+  publicationDeadline,
+  publicationTimeFor,
   type TagHistoryMark,
   type Validity,
   withTagHistory,
@@ -687,6 +690,11 @@ export class TagState {
    * one the view missed, whatever its time says, for the same reason.
    */
   validityOf(tags: readonly string[], timestamp: number, now: number, held?: number): Validity {
+    if (
+      publicationDeadline(tags) !== undefined &&
+      publicationExpired(tags, publicationTimeFor(this, now))
+    )
+      return 'expired';
     let validity: Validity = 'fresh';
     for (const tag of tags) {
       if (held !== undefined && this.#heldBy(tag, timestamp, held)) {

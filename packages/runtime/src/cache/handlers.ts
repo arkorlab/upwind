@@ -30,6 +30,7 @@ import {
 } from './held-writes.ts';
 import type { DataEntryMetadata, InvalidateOutcome, InvalidateRequest } from './host.ts';
 import * as ownMarks from './own-marks.ts';
+import { reusePublication, mergeTags, publicationReadable } from './publication.ts';
 import {
   fetchedAgainBehind,
   holdForRevalidation,
@@ -273,15 +274,6 @@ async function invalidateLogged(
 }
 
 /** Both lists as one, in order, without repeats. */
-function mergeTags(first: readonly string[] | undefined, second: readonly string[] | undefined) {
-  const tags = new Set(first);
-  if (second !== undefined) {
-    for (const tag of second) {
-      tags.add(tag);
-    }
-  }
-  return [...tags];
-}
 
 // ---- the fetch cache ------------------------------------------------------------------------
 
@@ -400,9 +392,7 @@ export class PlatformFetchCache {
       runtime.log('fetch cache read failed', { detail: detail(error) });
       return null;
     }
-    if (held === undefined) {
-      return null;
-    }
+    if (!publicationReadable(runtime, held, now)) return null;
     const judge = async (value: HeldValue): Promise<Validity> => {
       await runtime.tags.syncLocal(runtime.host, value.entry.tags, now);
       return judgedValidity(runtime.tags, {
@@ -448,6 +438,7 @@ export class PlatformFetchCache {
     if (fetchedAgainBehind(validity, nowMs() - entry.timestamp, ctx.revalidate, value.revalidate)) {
       holdForRevalidation(runtime, FETCH_STORE, cacheKey);
     }
+    if (!reusePublication(entry.tags, nowMs())) return null;
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };
   }
 
@@ -580,9 +571,7 @@ async function getUseCache(
     useCacheHeld(runtime, kind, cacheKey),
     runtime.tags.syncLocal(runtime.host, [...softTags, ...knownResourceTags()], now),
   ]);
-  if (held === undefined) {
-    return undefined;
-  }
+  if (!publicationReadable(runtime, held, now)) return undefined;
   const judge = async (value: HeldValue): Promise<Validity> => {
     await runtime.tags.syncLocal(runtime.host, value.entry.tags, now);
     return judgedValidity(runtime.tags, {
@@ -615,6 +604,7 @@ async function getUseCache(
   if (validity === 'stale' && ageMs <= entry.expire * MS_PER_SECOND) {
     holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
   }
+  if (!reusePublication(entry.tags, nowMs())) return undefined;
   return {
     value: new Blob([judged.held.bytes as BlobPart]).stream(),
     tags: [...entry.tags],

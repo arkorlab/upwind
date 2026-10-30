@@ -102,7 +102,7 @@ function scenario(load: GenerationLoad) {
   return { input, invalidations, passthrough, shell, waitUntil };
 }
 
-async function freshRecord(): Promise<GenerationLoad> {
+async function freshRecord(): Promise<Extract<GenerationLoad, { kind: 'generation' }>> {
   const html = new TextEncoder().encode('fresh generation');
   const bytes = encodeGenerationPack(
     {
@@ -255,5 +255,84 @@ describe('document selection with a negatively cached record after updateTag', (
     expect(mocks.regenerate).not.toHaveBeenCalled();
     expect(mocks.refresh).not.toHaveBeenCalled();
     expect(test.waitUntil).toHaveBeenCalledExactlyOnceWith(test.shell);
+  });
+});
+
+describe('bounded publication admission', () => {
+  const identity = 'a'.repeat(64);
+  const requirement = { version: 1 as const, identities: [identity], routes: ['/update-tag-test'] };
+
+  it.each(['none', 'unusable'] as const)(
+    'never revives a protected build when a %s record has no grant',
+    async (kind) => {
+      vi.clearAllMocks();
+      const load: GenerationLoad =
+        kind === 'none' ? { kind, lookupMs: 0 } : { kind, reason: 'corrupt', lookupMs: 0 };
+      const test = scenario(load);
+
+      test.input.manifest.publication = requirement;
+
+      await expect((await serveCachedDocument(test.input)).text()).resolves.toBe(
+        'new runtime render',
+      );
+      expect(test.passthrough).toHaveBeenCalledTimes(1);
+      expect(mocks.document).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps a host-proven independent static shell available', async () => {
+    vi.clearAllMocks();
+    const test = scenario({ kind: 'none', lookupMs: 0 });
+
+    test.input.manifest.publication = { ...requirement, independentBuild: ['/update-tag-test'] };
+
+    await expect((await serveCachedDocument(test.input)).text()).resolves.toBe('old build');
+    expect(test.passthrough).not.toHaveBeenCalled();
+  });
+
+  it('checks the same grant again after response preparation without another lookup', async () => {
+    vi.clearAllMocks();
+    const load = await freshRecord();
+    load.pack.header.tags = [
+      { kind: 'next-explicit', value: `upwind:publication:v1:${identity}:${String(NOW + 1)}` },
+    ];
+    const test = scenario(load);
+
+    test.input.manifest.publication = requirement;
+
+    let now = NOW;
+    Object.assign(test.input.edge.runtime, { now: () => now });
+    mocks.document.mockImplementationOnce(() => {
+      now = NOW + 1;
+      return Promise.resolve(new Response('old'));
+    });
+
+    expect((await serveCachedDocument(test.input)).status).toBe(503);
+    expect(test.passthrough).not.toHaveBeenCalled();
+  });
+
+  it('checks a shipped build grant again after asynchronous shell composition', async () => {
+    vi.clearAllMocks();
+    const test = scenario({ kind: 'none', lookupMs: 0 });
+    const until = NOW + 1;
+
+    test.input.manifest.publication = requirement;
+
+    test.input.entry.cache = {
+      ...CACHE,
+      buildTags: [
+        { kind: 'next-explicit', value: `upwind:publication:v1:${identity}:${String(until)}` },
+      ],
+    };
+
+    let now = NOW;
+    Object.assign(test.input.edge.runtime, { now: () => now });
+    mocks.document.mockImplementationOnce(() => {
+      now = until;
+      return Promise.resolve(new Response('expired build'));
+    });
+
+    expect((await serveCachedDocument(test.input)).status).toBe(503);
+    expect(test.passthrough).not.toHaveBeenCalled();
   });
 });

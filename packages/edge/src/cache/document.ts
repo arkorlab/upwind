@@ -1,4 +1,10 @@
-import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
+import {
+  type DecodedGenerationPack,
+  admitPublication,
+  publicationExpired,
+  publicationForBuild,
+  publicationForRoute,
+} from '@stayingupwind/core/cache';
 import type { RouteEntry } from '@stayingupwind/core/manifest';
 import type { ResolvedPolicy, RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
@@ -226,7 +232,7 @@ function followAsked(
 }
 
 /** Serve a record fresh or stale; stale, regenerated behind the response. */
-function serveRecord(
+async function serveRecord(
   decided: Decided,
   decision: Extract<GenerationDecision, { kind: 'serve' }>,
   target: RegenerationTarget,
@@ -257,7 +263,7 @@ function serveRecord(
           onDeclined: followed?.declined,
         })
       : undefined;
-  return handleDocument({
+  const response = await handleDocument({
     ...document,
     generation: {
       pack: decision.pack,
@@ -292,6 +298,23 @@ function serveRecord(
           : undefined,
     },
   });
+  return admitRecord(response, input, decision.pack);
+}
+
+function admitRecord(
+  response: Response,
+  input: CachedDocumentInput,
+  pack: DecodedGenerationPack,
+): Response {
+  return admitPublication(
+    response,
+    pack.header.tags.map((tag) => tag.value),
+    input.edge.runtime.now(),
+    publicationForRoute(
+      input.manifest.publication,
+      input.entry.cache?.route ?? input.entry.pathname,
+    ),
+  );
 }
 
 /**
@@ -344,6 +367,7 @@ function serveMember(
     member.load,
     decided.now,
     condemnedIn(input.edge.runtime.memory, input.edge.app?.deploymentId),
+    input.manifest.publication,
   );
   switch (decision.kind) {
     case 'serve': {
@@ -428,8 +452,24 @@ function buildRecordRefresh(input: CachedDocumentInput, reason: string): (() => 
 }
 
 /** A missing record cannot make an immutable build eligible again after its exact invalidation. */
-function serveBuild(decided: Decided, read: RecordRead, reason: string): Promise<Response> {
+async function serveBuild(decided: Decided, read: RecordRead, reason: string): Promise<Response> {
   const { input } = decided;
+  const required = publicationForBuild(
+    input.manifest.publication,
+    input.entry.cache?.route ?? input.entry.pathname,
+  );
+  if (
+    publicationExpired(
+      input.entry.cache?.buildTags?.map((tag) => tag.value) ?? [],
+      input.edge.runtime.now(),
+      required,
+    )
+  ) {
+    abandonShell(input.edge, read);
+    return input.passthrough('publication-expired', input.middleware, input.entry.pathname, {
+      recordLookupMs: decided.recordMs,
+    });
+  }
   if (input.noBuild !== undefined) {
     // The read that found nothing to serve was waited for all the same.
     return input.noBuild(decided.recordMs);
@@ -441,12 +481,18 @@ function serveBuild(decided: Decided, read: RecordRead, reason: string): Promise
     });
   }
   const recordRead = { lookupMs: decided.recordMs, description: reason };
-  return handleDocument({
+  const response = await handleDocument({
     ...decided.document,
     recordRead,
     shellRead: read.shell,
     onBuildServed: buildRecordRefresh(input, reason),
   });
+  return admitPublication(
+    response,
+    input.entry.cache?.buildTags?.map((tag) => tag.value) ?? [],
+    input.edge.runtime.now(),
+    required,
+  );
 }
 
 export async function serveCachedDocument(incoming: CachedDocumentInput): Promise<Response> {
@@ -493,6 +539,7 @@ export async function serveCachedDocument(incoming: CachedDocumentInput): Promis
     load,
     decided.now,
     condemnedIn(edge.runtime.memory, edge.app?.deploymentId),
+    input.manifest.publication,
   );
   if (decision.kind !== 'build') {
     abandonShell(edge, read);

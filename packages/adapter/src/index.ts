@@ -343,6 +343,7 @@ async function onBuildComplete(
   // Publication adds capabilities the host needs; routing reference semantics also travel with
   // the Function so its own static admission agrees with the published bundle.
   const bundle: DeploymentBundle = deploymentBundleSchema.parse({
+    publicationGrants: 1,
     ...functions.runtimeManifest,
     // How the Functions this adapter builds fill a header's `$` references: with the router the
     // runtime is built on, `@next/routing` 16.4 or later. The edge fills them that way for it.

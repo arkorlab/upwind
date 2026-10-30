@@ -1,6 +1,13 @@
 import { completeAppPageBody, type Prerender } from '@stayingupwind/core/bundle';
+import {
+  admitPublication,
+  publicationForBuild,
+  parseCacheTagsHeader,
+} from '@stayingupwind/core/cache';
 import { NO_STORE_CACHE_CONTROL, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 
+import { nowMs } from './cache/clock.ts';
+import { buildPublicationExpired } from './publication.ts';
 import {
   type HTML_CONTENT_TYPE,
   prerenderHeaders,
@@ -10,6 +17,8 @@ import {
   withCacheState,
 } from './serve.ts';
 import { hasBundleBlob, type Store } from './store.ts';
+
+const CACHE_TAGS = 'x-next-cache-tags';
 
 interface PageAnswer {
   readonly document: Prerender;
@@ -33,12 +42,34 @@ export function builtPageResponse(
   how: PageAnswer,
 ): Response | Promise<Response> {
   const finish = (response: Response): Response => {
+    if (buildPublicationExpired(input, how.document, how.document.route)) {
+      return admitPublication(
+        response,
+        parseCacheTagsHeader(
+          new Headers(how.document.initialHeaders as HeadersInit).get(CACHE_TAGS) ?? undefined,
+        ),
+        nowMs(),
+        publicationForBuild(input.cache?.host.publication, how.document.route),
+      );
+    }
     if (how.contentType === RSC_CONTENT_TYPE) {
       response.headers.delete('link');
       response.headers.set('cache-control', NO_STORE_CACHE_CONTROL);
       response.headers.set('vary', store.manifest.routing.rsc.varyHeader);
     }
-    return withCacheState(response, 'HIT');
+    return admitPublication(
+      withCacheState(response, 'HIT'),
+      [
+        ...parseCacheTagsHeader(
+          new Headers(how.document.initialHeaders as HeadersInit).get(CACHE_TAGS) ?? undefined,
+        ),
+        ...parseCacheTagsHeader(
+          new Headers(prerender.initialHeaders as HeadersInit).get(CACHE_TAGS) ?? undefined,
+        ),
+      ],
+      nowMs(),
+      publicationForBuild(input.cache?.host.publication, how.document.route),
+    );
   };
   if (input.request.method === 'HEAD') {
     // A configured reader can supply an omitted body without HEAD fetching it. With no reader,

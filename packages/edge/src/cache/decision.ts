@@ -1,4 +1,7 @@
 import {
+  type PublicationRequirement,
+  publicationForBuild,
+  publicationForRoute,
   type DecodedGenerationPack,
   evaluateFreshness,
   type Validity,
@@ -56,9 +59,20 @@ export type GenerationDecision =
       readonly pack?: DecodedGenerationPack | undefined;
     };
 
-function validityOf(pack: DecodedGenerationPack, now: number): Validity {
+function validityOf(
+  pack: DecodedGenerationPack,
+  now: number,
+  publication?: PublicationRequirement,
+): Validity {
   const { header } = pack;
   return evaluateFreshness({
+    tags: header.tags.map((tag) => tag.value),
+    ...(publication !== undefined && {
+      publication:
+        header.source === 'build'
+          ? publicationForBuild(publication, header.route)
+          : publicationForRoute(publication, header.route),
+    }),
     policy: header.policy,
     cacheTimestamp: header.cacheTimestamp,
     invalidation: header.invalidation,
@@ -82,12 +96,17 @@ export type Condemned = (pack: DecodedGenerationPack) => 'expired' | 'stale' | u
 /** Why a record invalidated with a window goes to the Function (`condemnationOf`). */
 const INVALIDATED_REASON = 'invalidated';
 
-function decideRecord(read: RecordRead, now: number, condemned: Condemned): GenerationDecision {
+function decideRecord(
+  read: RecordRead,
+  now: number,
+  condemned: Condemned,
+  publication?: PublicationRequirement,
+): GenerationDecision {
   const { pack, source, readBytes, lookupMs } = read;
   if (pack.header.status !== OK_STATUS) {
     return { kind: 'passthrough', reason: `generation-status-${pack.header.status}`, lookupMs };
   }
-  const validity = validityOf(pack, now);
+  const validity = validityOf(pack, now, publication);
   const condemnation = condemned(pack);
   if (validity === 'expired' || condemnation === 'expired') {
     return { kind: 'regenerate', pack, lookupMs };
@@ -102,11 +121,12 @@ export function decideGeneration(
   load: GenerationLoad,
   now: number,
   condemned: Condemned,
+  publication?: PublicationRequirement,
 ): GenerationDecision {
   switch (load.kind) {
     case 'generation': {
       const { pack, source, readBytes, lookupMs } = load;
-      return decideRecord({ pack, source, readBytes, lookupMs }, now, condemned);
+      return decideRecord({ pack, source, readBytes, lookupMs }, now, condemned, publication);
     }
     case 'none': {
       return { kind: 'build', reason: 'no-record', lookupMs: load.lookupMs };
@@ -122,6 +142,7 @@ export function decideGeneration(
         { pack: load.held, source: 'memory', readBytes: undefined, lookupMs: load.lookupMs },
         now,
         condemned,
+        publication,
       );
       // The held record still proves that this entry has expired. Reverting to the build would
       // resurrect older content and bypass its hard expiry; ask the runtime to regenerate just

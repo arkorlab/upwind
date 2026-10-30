@@ -4,7 +4,9 @@ import {
   type RouteEntryKind,
   type RuntimeCacheControl,
   runtimeCacheControlFromHeader,
+  parseCacheTagsHeader,
 } from '@stayingupwind/core/cache';
+import { observePublicationTags } from '@stayingupwind/core/paas';
 
 import { readWithin } from './body.ts';
 
@@ -124,6 +126,7 @@ function captureCallback(): {
     if (cacheControl === undefined || cacheControl.revalidate === 0) {
       return false;
     }
+    observePublicationTags(parseCacheTagsHeader(flatHeaders(value.headers)['x-next-cache-tags']));
     render = {
       html: new TextEncoder().encode(value.html.toUnchunkedString()),
       postponed: value.postponed,

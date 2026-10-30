@@ -21,7 +21,7 @@ import {
   staticPagesMembersOf,
   staticFallbackPagesOf,
 } from '@stayingupwind/core/bundle';
-import { KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
+import { type PublicationRequirement, KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
 import type { DeploymentFingerprint } from '@stayingupwind/core/deployment';
 import {
   type AppRuntime,
@@ -43,6 +43,7 @@ import {
   SUPPORTED_NEXT_RANGE,
 } from '@stayingupwind/host/next-support';
 
+import { publicationFields, unsupportedPublication } from './publication.ts';
 import { routeBodiesOf } from './route-bodies.ts';
 import {
   documentHeaderRule,
@@ -151,6 +152,8 @@ export function routedPages(runtimeCache: boolean | undefined): ServableOptions 
 }
 
 export interface AssembleManifestInput {
+  /** Host-sealed publication identities, selected after the application's data generation is staged. */
+  readonly publication?: PublicationRequirement;
   readonly bundle: DeploymentBundle;
   /** The bundle of the deployment served just before this one, whose `_next/static` files stay. */
   readonly previous: DeploymentBundle | undefined;
@@ -288,6 +291,7 @@ export function unsupportedNext(
 /** Why a build cannot be represented by what this edge serves. */
 function manifestRefusal(input: AssembleManifestInput): string | undefined {
   return (
+    unsupportedPublication(input) ??
     foreignFingerprint(input.bundle, input.fingerprint) ??
     foreignFunctions(input) ??
     unreachableFunctions(input) ??
@@ -397,7 +401,7 @@ async function assembleWithin(
     generatedAt: input.generatedAt,
     originHost: input.originHost,
     deployment: input.fingerprint,
-    routes,
+    ...publicationFields(input.publication, bundle, routes),
     routeBodies,
     staticPages,
     pagesFallbacks,

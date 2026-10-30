@@ -1,15 +1,22 @@
 import type { BlobRef, Prerender } from '@stayingupwind/core/bundle';
+import {
+  admitPublication,
+  publicationForBuild,
+  parseCacheTagsHeader,
+} from '@stayingupwind/core/cache';
 import { NO_STORE_CACHE_CONTROL, SEGMENT_TREE_PATH } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { renderDocumentForVisitor } from './answers.ts';
 import { builtPageResponse } from './built-page.ts';
+import { nowMs } from './cache/clock.ts';
 import { offeredFromFallback } from './delivery.ts';
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
 import { isCrawler, isRscRequest, rscBase } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
+import { buildPublicationExpired } from './publication.ts';
 import {
   bypassesPrerender,
   concatShell,
@@ -103,6 +110,10 @@ export async function documentFromBuild(
   // A draft, or a request a condition of the build's bypasses, asks for the page as it is now; the
   // shell was written before either existed. A crawler asks for the page rather than the fallback.
   const shell = findShell(store, resolved.route, resolved.pathname);
+  if (buildPublicationExpired(input, shell, resolved.route))
+    return invokeEntry(input, entry, resolved.url, {
+      onFailure: failureAnswer(store, entry, resolved.route),
+    });
   if (
     bypassesPrerender(store, input.request, shell, resolved.url) ||
     (shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request))
@@ -201,6 +212,7 @@ async function builtSegment(
   if (segment === null || segment === '' || document === undefined) {
     return undefined;
   }
+  if (buildPublicationExpired(input, document, document.route)) return undefined;
   const segmentOf = (segmentPath: string): Prerender | undefined => {
     const name = `${rscBase(document.pathname)}${rsc.prefetchSegmentDirSuffix}${segmentPath}`;
     const prerender = store.prerendersByPathname.get(`${name}${rsc.prefetchSegmentSuffix}`);
@@ -233,7 +245,14 @@ async function builtSegment(
   // The bytes as the store holds them: a view onto the bundle's own buffer, which is what every
   // other blob is answered with here. Copying would be a copy per prefetch of a file the store is
   // holding on purpose; only the host's bytes are copied, and only where they come from.
-  return new Response(bytes, { status: HTTP_OK, headers });
+  return admitPublication(
+    new Response(bytes, { status: HTTP_OK, headers }),
+    parseCacheTagsHeader(
+      new Headers(document.initialHeaders as HeadersInit).get('x-next-cache-tags') ?? undefined,
+    ),
+    nowMs(),
+    publicationForBuild(input.cache?.host.publication, document.route),
+  );
 }
 
 /**
