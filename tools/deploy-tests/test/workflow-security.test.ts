@@ -40,6 +40,15 @@ process.stdout.write(process.env[command === 'curl' ? 'PLAN_REGISTRY' : 'PLAN_RE
 process.exit(Number(process.env[command === 'curl' ? 'PLAN_CURL_STATUS' : 'PLAN_GIT_STATUS']));
 `;
 
+/** Every shard of `targets` under each of `nodes`, in the order the plan lists them. */
+function lanes(targets: readonly string[], nodes: readonly string[], total: number) {
+  return targets.flatMap((target) => {
+    return nodes.flatMap((node) =>
+      Array.from({ length: total }, (_, index) => ({ target, node, shard: index + 1 })),
+    );
+  });
+}
+
 describe('workflow security', () => {
   const repository = path.resolve(import.meta.dirname, '../../..');
   const script = path.join(repository, '.github/scripts/verify-release.sh');
@@ -273,6 +282,7 @@ describe('workflow security', () => {
         ONLY: '',
         CONCURRENCY: '',
         CACHE: '',
+        NODE: '',
         PROJECT_IDS: '',
         PROJECT_ID: '',
         GITHUB_OUTPUT: output,
@@ -316,7 +326,7 @@ describe('workflow security', () => {
   });
 
   it.each([STABLE_SCHEDULE, CANARY_SCHEDULE])(
-    'runs both local targets over the whole manifest on schedule %s',
+    'runs both local targets under Node.js 24 and 26 over the whole manifest on schedule %s',
     (schedule) => {
       const result = plan('ignored', {
         EVENT: 'schedule',
@@ -327,22 +337,62 @@ describe('workflow security', () => {
         CONCURRENCY: '8',
       });
       const total = Number(workflowSetting('RUNNER_SHARDS'));
-      const matrix = {
-        include: ['cloudflare', 'node'].flatMap((target) =>
-          Array.from({ length: total }, (_, index) => ({ target, shard: index + 1 })),
-        ),
-      };
+      const matrix = { include: lanes(['cloudflare', 'node'], ['24', '26'], total) };
       const output = readFileSync(result.output, 'utf8');
 
       expect(result.status).toBe(0);
       expect(total).toBe(64);
-      expect(matrix.include).toHaveLength(128);
+      expect(matrix.include).toHaveLength(256);
       expect(deployTestsWorkflow()).toContain(`    - cron: '${schedule}'`);
       expect(output).toContain(`matrix=${JSON.stringify(matrix)}\n`);
-      expect(output).toContain('total=64\nparallel=128\nconcurrency=2\n');
+      expect(output).toContain('total=64\nparallel=256\nconcurrency=2\n');
       expect(output).toContain('tests=all\ncache=none\n');
     },
   );
+
+  it('runs node alone under Node.js 24 over the whole manifest on a pull request', () => {
+    const result = plan('ignored', {
+      EVENT: 'pull_request',
+      TARGET: 'host',
+      TESTS: 'ignored',
+      NODE: '26',
+      ONLY: '9',
+    });
+    const matrix = { include: lanes(['node'], ['24'], 64) };
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(output).toContain(`matrix=${JSON.stringify(matrix)}\n`);
+    expect(output).toContain(`nextjs=${workflowSetting('NIGHTLY_NEXTJS_REF')}\n`);
+  });
+
+  it('runs a dispatch under the Node.js versions it names', () => {
+    const result = plan('v16.4.3', { TARGET: 'cloudflare', NODE: '24 26', SHARDS: '2' });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(result.output, 'utf8')).toContain(
+      `matrix=${JSON.stringify({ include: lanes(['cloudflare'], ['24', '26'], 2) })}\n`,
+    );
+    expect(result.summary).toContain('cloudflare under Node.js 24 26');
+  });
+
+  it.each(['22', '26 24', '24\nmatrix={}', 'latest'])(
+    'refuses a Node.js the lanes do not have: %j',
+    (node) => {
+      const result = plan('v16.4.3', { NODE: node });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('node must be 24, 26 or both');
+      expect(existsSync(result.output)).toBe(false);
+    },
+  );
+
+  it('refuses Node.js 26 for a host, which builds and serves on its own runtime', () => {
+    const result = plan('v16.4.3', { TARGET: 'host', NODE: '26', PROJECT_IDS: 'project-1' });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('node must be 24 there');
+  });
 
   function canaryPlan(reply: NetworkReply = {}) {
     return plan('', { EVENT: 'schedule', SCHEDULE: CANARY_SCHEDULE }, reply);

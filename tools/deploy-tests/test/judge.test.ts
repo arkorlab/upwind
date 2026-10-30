@@ -281,6 +281,25 @@ const RECORDED: Readonly<Record<string, readonly string[]>> = {
   'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': [NATIVE_SPLIT_CONTAINER],
 };
 
+/** What the native suites failed with under Node.js 26: their addon, built at install, did not build. */
+const NATIVE_ON_26 =
+  'Error: Custom deploy script failed: Node.js v26.13.0 builds and serves the application\n' +
+  '.../node_modules/native-addon install: ../addon.cc:8:35: error: ‘class v8::Context’ has no member named ‘GetIsolate’';
+
+/** What a record's cases failed with, where it reads a suite that another record reads otherwise. */
+const RECORDED_RECORDS: Readonly<Record<string, readonly string[]>> = {
+  'native-addons-on-nodejs-26': [NATIVE_ON_26],
+  'preview-mode-on-nodejs-26': [
+    'Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 200\nReceived: 500',
+    'Error: expect(received).toMatch(expected)\n\nMatcher error: received value must be a string\n\nReceived has value: null',
+    'Error: expect(received).toEqual(expected) // deep equality\n\n- Expected  - 2\n+ Received  + 2\n\n  Object {\n-   "preview": true,\n-   "previewData": Object {},\n+   "preview": false,\n+   "previewData": null,\n  }',
+    'SyntaxError: Unexpected end of JSON input\n    at JSON.parse (<anonymous>)',
+  ],
+  'slowbuffer-on-nodejs-26': [
+    'Error: expect(received).toEqual(expected) // deep equality\n\n- Expected  -  4\n+ Received  + 13\n\n  Object {\n    "Buffer === B.Buffer": true,\n-   "exposedKeys": ArrayContaining [\n-     "constants",\n+   "exposedKeys": Array [\n+     "Buffer",\n      "kMaxLength",\n-     "Buffer",\n-     "SlowBuffer",\n+     "btoa",',
+  ],
+};
+
 /** An inline snapshot's failure in the trace suite, with these lines of its diff. */
 function traceDiff(...lines: string[]): string {
   return [
@@ -338,7 +357,9 @@ function recordedFor(entry: ReviewedCase): readonly string[] {
   if (entry.reading === 'deploy-gate') {
     return [GATE_PASSED];
   }
-  return RECORDED_CASES[entry.fullName] ?? RECORDED[entry.suite] ?? [];
+  return (
+    RECORDED_RECORDS[entry.record] ?? RECORDED_CASES[entry.fullName] ?? RECORDED[entry.suite] ?? []
+  );
 }
 
 /** A heading's anchor, as GitHub makes it. */
@@ -349,12 +370,20 @@ function anchorOf(heading: string): string {
     .replaceAll(/\s/gu, '-');
 }
 
-/** A reviewed case judged on its own, failed with `message`. */
-function judgedAlone(entry: ReviewedCase, target: Measured['target'], message: string): Verdict {
+/**
+ * A reviewed case judged on its own, failed with `message`, under the Node.js `node` names: by
+ * default the first the case is read for, or none where it is read for every one.
+ */
+function judgedAlone(
+  entry: ReviewedCase,
+  target: Measured['target'],
+  message: string,
+  node: Measured['node'] = entry.nodes?.[0],
+): Verdict {
   const name = entry.fullName === '*' ? 'any case' : entry.fullName;
   const result = suiteOf([jestCase(name, 'failed', [message])], {}, entry.suite);
   return judge(
-    { target, next: entry.next },
+    { target, ...(node !== undefined && { node }), next: entry.next },
     [entry.suite],
     new Map([[entry.suite, result]]),
     REVIEWED,
@@ -380,10 +409,11 @@ describe('the reviewed cases', () => {
     expect(misread).toStrictEqual([]);
   });
 
-  it('read no case twice on one target', () => {
+  it('read no case twice on one target under one Node.js', () => {
     const keys = REVIEWED.flatMap((entry) => {
       return (entry.targets ?? ['cloudflare', 'node']).map(
-        (target) => `${entry.next.commit} ${target} ${entry.suite} ${entry.fullName}`,
+        (target) =>
+          `${entry.next.commit} ${target} ${entry.nodes?.join(',') ?? 'every'} ${entry.suite} ${entry.fullName}`,
       );
     });
 
@@ -427,6 +457,49 @@ describe('the reviewed cases', () => {
 
     expect(entry).toBeDefined();
     expect(judgedAlone(entry!, 'cloudflare', NATIVE_REFUSED).unexplained).toHaveLength(1);
+  });
+
+  /**
+   * Under Node.js 26 the native suites fail at install, before they get as far as the refusal the
+   * reading for every Node.js records on `cloudflare`: the lane's own reading is tried first.
+   */
+  it("read a lane's own failure before the one recorded for every Node.js", () => {
+    const entry = REVIEWED.find(
+      ({ suite, record: anchor }) =>
+        suite === 'test/e2e/prerender-native-module.test.ts' && anchor.includes('cloudflare'),
+    );
+
+    expect(entry).toBeDefined();
+    expect(judgedAlone(entry!, 'cloudflare', NATIVE_ON_26, '26').unexplained).toStrictEqual([]);
+    expect(judgedAlone(entry!, 'cloudflare', NATIVE_ON_26, '24').unexplained).toHaveLength(1);
+    expect(judgedAlone(entry!, 'cloudflare', NATIVE_CONTAINER, '24').unexplained).toStrictEqual([]);
+  });
+
+  it('read nothing for Node.js 26 under 24, nor where the run names no Node.js', () => {
+    const lanes = REVIEWED.filter(({ nodes }) => nodes !== undefined);
+
+    expect(lanes).not.toHaveLength(0);
+
+    for (const entry of lanes) {
+      const target = entry.targets?.[0] ?? 'node';
+      const [message = ''] = recordedFor(entry);
+
+      expect(judgedAlone(entry, target, message, '24').unexplained).toHaveLength(1);
+    }
+    const [preview] = lanes;
+    const result = suiteOf(
+      [jestCase(preview!.fullName, 'failed', [...recordedFor(preview!)])],
+      {},
+      preview!.suite,
+    );
+    const { unexplained } = judge(
+      { target: 'node', next: preview!.next },
+      [preview!.suite],
+      new Map([[preview!.suite, result]]),
+      REVIEWED,
+    );
+
+    expect(unexplained).toHaveLength(1);
   });
 
   it('read the failures they were read from', () => {
@@ -634,6 +707,37 @@ describe('a run’s verdicts summed for its report', () => {
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('| 4 | 15 | 2 | 4 | 0 | 0 | 2 | 0 |');
     expect(run.stdout).toContain('**1 shard left no verdict:** 2.');
+  });
+
+  /** A night's run has a lane for each Node.js: one target's shards under each are summed apart. */
+  it('sums each lane apart, a target under each Node.js the run names', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'upwind-report-results-'));
+    dirs.push(base);
+    for (const [name, verdict] of [
+      ['deploy-results-7-1-node-node24-1', { ...verdictOf(1, 10), node: '24' }],
+      ['deploy-results-7-1-node-node26-1', { ...verdictOf(1, 3), node: '26' }],
+    ] as const) {
+      mkdirSync(path.join(base, name));
+      writeFileSync(path.join(base, name, 'verdict.json'), JSON.stringify(verdict));
+    }
+    const matrix = {
+      include: ['24', '26'].flatMap((node) =>
+        [1, 2].map((shard) => ({ target: 'node', node, shard })),
+      ),
+    };
+    const run = spawnSync(process.execPath, [script, '--dir', base], {
+      encoding: 'utf8',
+      env: { PATH: process.env['PATH'], MATRIX: JSON.stringify(matrix) },
+    });
+    const [under24, under26] = run.stdout.split('### ').slice(1);
+
+    expect(run.status).toBe(0);
+    expect(under24).toContain('`node, Node.js 24`');
+    expect(under24).toContain('| 2 | 10 | 1 | 2 | 0 | 0 | 1 | 0 |');
+    expect(under24).toContain('**1 shard left no verdict:** 2.');
+    expect(under26).toContain('`node, Node.js 26`');
+    expect(under26).toContain('| 2 | 3 | 1 | 2 | 0 | 0 | 1 | 0 |');
+    expect(under26).toContain('**1 shard left no verdict:** 2.');
   });
 
   it('finds the one artifact a run kept, unpacked without a directory of its own', () => {

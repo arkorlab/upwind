@@ -1,5 +1,5 @@
 import { failureOf, type JestSuite } from './results.ts';
-import type { Reading, ReviewedCase, RunnerTarget, Symptom } from './reviewed.ts';
+import type { NodeLine, Reading, ReviewedCase, RunnerTarget, Symptom } from './reviewed.ts';
 
 /**
  * A shard's results on this machine's targets, judged against the reviewed cases (`reviewed.ts`):
@@ -8,9 +8,14 @@ import type { Reading, ReviewedCase, RunnerTarget, Symptom } from './reviewed.ts
  * counts and readings, as `keep-results.ts` keeps them: never a message.
  */
 
-/** What a run measured: where, and which release of Next.js. */
+/** What a run measured: where, under which Node.js, and which release of Next.js. */
 export interface Measured {
   readonly target: RunnerTarget;
+  /**
+   * The major version of the Node.js the applications were built and served under, where the run
+   * names one (its lane). Absent in a verdict from before there were lanes.
+   */
+  readonly node?: NodeLine;
   readonly next: { readonly version: string; readonly commit: string };
 }
 
@@ -89,12 +94,19 @@ function reviewedFor(
       entry.next.version === measured.next.version &&
       entry.next.commit === measured.next.commit &&
       entry.suite === suite &&
-      (entry.targets === undefined || entry.targets.includes(measured.target))
+      (entry.targets === undefined || entry.targets.includes(measured.target)) &&
+      (entry.nodes === undefined ||
+        (measured.node !== undefined && entry.nodes.includes(measured.node)))
     );
   });
+  // A reading for the run's own Node.js before one for every Node.js, so that a lane where a case
+  // fails for its Node.js is read so; and the case's own before its suite's.
+  const ranked = holding.toSorted(
+    (a, b) => Number(b.nodes !== undefined) - Number(a.nodes !== undefined),
+  );
   return (
-    holding.find((entry) => entry.fullName === fullName) ??
-    holding.find((entry) => entry.fullName === '*')
+    ranked.find((entry) => entry.fullName === fullName) ??
+    ranked.find((entry) => entry.fullName === '*')
   );
 }
 
@@ -254,6 +266,7 @@ export function judge(
   return {
     version: 1,
     target: measured.target,
+    ...(measured.node !== undefined && { node: measured.node }),
     next: measured.next,
     suites: { listed: listed.length, missing },
     cases: { ...tally.cases, reviewed: tally.reviewed },

@@ -15,6 +15,11 @@ export interface ShardVerdict extends Verdict {
   readonly ended?: readonly string[];
 }
 
+/** What a summary names a lane by: the target, and the Node.js where the run names one. */
+export function laneOf(target: string, node: string | undefined): string {
+  return node === undefined ? target : `${target}, Node.js ${node}`;
+}
+
 /** Whether a shard's verdict fails it: as `fails` has it, or where its runner did not finish. */
 export function shardFails(verdict: ShardVerdict, failed: (verdict: Verdict) => boolean): boolean {
   return failed(verdict) || verdict.runnerFinished === false;

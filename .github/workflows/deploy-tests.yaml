@@ -7,7 +7,8 @@ name: Deploy tests
 # Apart from CI, for two reasons. On a host it needs credentials, which a pull request from a fork must
 # never be given. And every target deploys — each suite is an application installed, built and served, a
 # minute of it at the least. So it is dispatched by hand, and the two targets on the runner, which need
-# no credential, also run every night over the whole manifest. Every push to a pull request runs `node`
+# no credential, also run every night over the whole manifest, once for each Node.js the applications
+# are built and served under (24 and 26). Every push to a pull request runs `node`
 # over the whole manifest against the supported release; a newer push to the same pull request cancels
 # the run before it. CI checks the hooks themselves on every pull request (`check:deploy-tests`,
 # `check:deploy-tests-local`).
@@ -44,8 +45,8 @@ on:
   # Every push to a pull request: `node` over the whole manifest against the supported release. It
   # needs no credential, so a pull request from a fork runs it too.
   pull_request:
-  # Every night, both targets on the runner over the whole manifest (`plan`): the supported
-  # release first, then the latest published canary in a separate run.
+  # Every night, both targets on the runner over the whole manifest (`plan`), under Node.js 24 and 26:
+  # the supported release first, then the latest published canary in a separate run.
   schedule:
     - cron: '23 17 * * *'
     - cron: '23 18 * * *'
@@ -89,6 +90,14 @@ on:
         options:
           - none
           - hosted
+      node:
+        description: 'On the runner: the Node.js each application is built and served under, or both'
+        default: '24'
+        type: choice
+        options:
+          - '24'
+          - '26'
+          - '24 26'
 
 permissions: {}
 
@@ -141,6 +150,7 @@ jobs:
           ONLY: ${{ inputs.only }}
           CONCURRENCY: ${{ inputs.concurrency }}
           CACHE: ${{ inputs.cache }}
+          NODE: ${{ inputs.node }}
           # Counted, never printed: the count is not a project anybody can name, the ids are.
           PROJECT_IDS: ${{ secrets.ADAPTER_TEST_PROJECT_IDS }}
           PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
@@ -151,6 +161,7 @@ jobs:
           # dispatch is what it was asked for.
           if [ "$EVENT" = 'pull_request' ]; then
             targets='node'
+            nodes='24'
             TESTS='all'
             SHARDS="$RUNNER_SHARDS"
             ONLY=''
@@ -158,6 +169,7 @@ jobs:
             nextjs="$NIGHTLY_NEXTJS_REF"
           elif [ "$EVENT" = 'schedule' ]; then
             targets='cloudflare node'
+            nodes='24 26'
             TESTS='all'
             SHARDS="$RUNNER_SHARDS"
             ONLY=''
@@ -190,6 +202,7 @@ jobs:
             esac
           else
             targets="$TARGET"
+            nodes="${NODE:-24}"
             nextjs="$NEXTJS_REF"
           fi
           # Outputs are line-oriented records. Refuse input that could introduce another record.
@@ -200,6 +213,16 @@ jobs:
             host | cloudflare | node | 'cloudflare node') ;;
             *) echo "target must be host, cloudflare or node, not '$targets'" >&2; exit 1 ;;
           esac
+          # The Node.js each application is built and served under. The harness itself runs on 24
+          # (the job's own steps). A host builds and serves on its own runtime, so it takes 24 alone.
+          case "$nodes" in
+            24 | 26 | '24 26') ;;
+            *) echo "node must be 24, 26 or both, not '$nodes'" >&2; exit 1 ;;
+          esac
+          if [ "$targets" = 'host' ] && [ "$nodes" != '24' ]; then
+            echo 'a host builds and serves on its own runtime: node must be 24 there' >&2
+            exit 1
+          fi
           selection="$(printf '%s' "$TESTS" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
           if [ -z "$selection" ]; then
             echo 'no tests were selected: name upstream paths, or `all` for the whole manifest' >&2
@@ -299,11 +322,18 @@ jobs:
           include=''
           jobs=0
           for target in $targets; do
-            for shard in $(printf '%s' "$shards" | tr -d '[]' | tr ',' ' '); do
-              include="${include:+$include,}{\"target\":\"$target\",\"shard\":$shard}"
-              jobs=$((jobs + 1))
+            for node in $nodes; do
+              for shard in $(printf '%s' "$shards" | tr -d '[]' | tr ',' ' '); do
+                include="${include:+$include,}{\"target\":\"$target\",\"node\":\"$node\",\"shard\":$shard}"
+                jobs=$((jobs + 1))
+              done
             done
           done
+          # A matrix holds 256 jobs: both targets under both Node.js versions in 64 pieces is all of it.
+          if [ "$jobs" -gt 256 ]; then
+            echo "the run would be $jobs jobs, past the 256 a matrix holds: cut it into fewer shards" >&2
+            exit 1
+          fi
           # On the runner nothing is shared, and every job runs at once; on a host, as many as there
           # are projects for (below).
           parallel="$jobs"
@@ -358,7 +388,7 @@ jobs:
           if [ -n "$ONLY" ]; then
             echo "$targets, $selection: shard $only of $total, on its own" >>"$GITHUB_STEP_SUMMARY"
           else
-            echo "$targets, $selection in $total shard(s) each, $parallel at a time, $concurrency suite(s) at once in each" \
+            echo "$targets under Node.js $nodes, $selection in $total shard(s) each, $parallel at a time, $concurrency suite(s) at once in each" \
               >>"$GITHUB_STEP_SUMMARY"
             # Said out loud, because one at a time where more was asked for is a list to fix rather than
             # a run to wonder about. Which ids, and how many, stay out of it.
@@ -375,7 +405,7 @@ jobs:
 
   deploy-tests:
     needs: plan
-    name: ${{ matrix.target }} ${{ matrix.shard }}/${{ needs.plan.outputs.total }}
+    name: ${{ matrix.target }} ${{ matrix.shard }}/${{ needs.plan.outputs.total }} (Node.js ${{ matrix.node }})
     runs-on: ubuntu-latest
     # Under the six hours a job is allowed, with room for a slice that runs long to be reported rather
     # than cut off mid-suite.
@@ -403,6 +433,18 @@ jobs:
           path: nextjs
           fetch-depth: 25
           persist-credentials: false
+      # The Node.js the applications are built and served under, where the lane is not the harness's:
+      # the deploy hooks put it first on their own `PATH` (`ADAPTER_TEST_NODE_DIR`), and the harness,
+      # set up after it, keeps 24 for itself. Exactly the version the adapter guards a native Function
+      # by (`isGuardedNodeVersion`), since a build and the server that loads it must agree on it.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: matrix.node == '26'
+        with:
+          node-version: 26.13.0
+      - name: Note where the applications' Node.js is
+        id: application-node
+        if: matrix.node == '26'
+        run: echo "dir=$(dirname "$(command -v node)")" >>"$GITHUB_OUTPUT"
       # Node.js 24, not the 26 this repository builds with: the suite runs out of Next.js's checkout, and
       # its harness does not load on 26. `run-tests.js` requires `yargs/yargs`, an extensionless file in
       # a `"type": "module"` package, which 26 reads as an ES module ("require is not defined in ES
@@ -597,6 +639,8 @@ jobs:
           NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-cleanup.sh
           # Where each application is served: a host, or this runner (`tools/deploy-tests/src/target.ts`).
           ADAPTER_TEST_TARGET: ${{ matrix.target }}
+          # The Node.js each application is built and served under, where it is not the harness's 24.
+          ADAPTER_TEST_NODE_DIR: ${{ steps.application-node.outputs.dir }}
           # The runtime cache a host's builds are given, as the plan read it (`e2e-deploy.sh`).
           ADAPTER_TEST_CACHE: ${{ needs.plan.outputs.cache }}
           # The host to deploy to, and nothing on the runner's targets. Secrets rather than anything
@@ -681,19 +725,20 @@ jobs:
         if: always() && matrix.target != 'host' && steps.inventory.outcome == 'success'
         env:
           TARGET: ${{ matrix.target }}
+          NODE: ${{ matrix.node }}
           SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
           NEXT_COMMIT="$(git -C nextjs rev-parse HEAD)" \
             node adapter/tools/deploy-tests/src/judge-results.ts --next-dir nextjs \
             --results "$RUNNER_TEMP/deploy-results"
-      # Named by the shard alone on a host, as a record reads them, and by the target as well on this
-      # machine, whose two targets share a night's run.
+      # Named by the shard alone on a host, as a record reads them, and by the target and the Node.js as
+      # well on this machine, whose two targets under two Node.js versions share a night's run.
       - name: Save this shard's results
         if: always() && steps.inventory.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ matrix.target == 'host' && format('deploy-results-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.shard) || format('deploy-results-{0}-{1}-{2}-{3}', github.run_id, github.run_attempt, matrix.target, matrix.shard) }}
+          name: ${{ matrix.target == 'host' && format('deploy-results-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.shard) || format('deploy-results-{0}-{1}-{2}-node{3}-{4}', github.run_id, github.run_attempt, matrix.target, matrix.node, matrix.shard) }}
           path: ${{ runner.temp }}/deploy-results
           if-no-files-found: error
           retention-days: 30
