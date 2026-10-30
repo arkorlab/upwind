@@ -5,7 +5,7 @@ import { parseArgs } from 'node:util';
 import { fails, judge } from './judge.ts';
 import { type JestSuite, jestSuite, listedSuites } from './results.ts';
 import { REVIEWED } from './reviewed.ts';
-import { describe, type ShardVerdict, shardFails } from './verdicts.ts';
+import { describe, laneOf, type ShardVerdict, shardFails } from './verdicts.ts';
 
 /**
  * Judges a shard of a run on this machine's targets (`judge.ts`) where it ran: the suites it was to
@@ -16,8 +16,8 @@ import { describe, type ShardVerdict, shardFails } from './verdicts.ts';
  * left no result, or a runner that did not finish: one that wrote no exit code beside the results
  * (`runner-exit-code.txt`), stopped at its step's time limit or never started.
  *
- * Where it ran, from the environment: the target (`TARGET`), the shard (`SHARD`) and the commit of
- * Next.js (`NEXT_COMMIT`).
+ * Where it ran, from the environment: the target (`TARGET`), the Node.js of its lane where it has one
+ * (`NODE`), the shard (`SHARD`) and the commit of Next.js (`NEXT_COMMIT`).
  */
 const { values } = parseArgs({
   options: {
@@ -44,6 +44,12 @@ if (target !== 'cloudflare' && target !== 'node') {
   throw new Error(
     `judge-results: TARGET is one of this machine's, cloudflare or node, not ${target}`,
   );
+}
+// The lane's Node.js, where the run names one: a major version, as the plan's matrix has it.
+const node =
+  process.env['NODE'] === undefined || process.env['NODE'] === '' ? undefined : process.env['NODE'];
+if (node !== undefined && !/^\d{1,3}$/u.test(node)) {
+  throw new Error(`judge-results: NODE is a major version of Node.js, not ${node}`);
 }
 const shard = Number(required('SHARD'));
 if (!Number.isSafeInteger(shard) || shard < 1) {
@@ -89,11 +95,12 @@ const verdict: ShardVerdict = {
     REVIEWED,
   ),
   shard,
+  ...(node !== undefined && { node }),
   runnerFinished: existsSync(path.join(resultsDir, 'runner-exit-code.txt')),
   ended: endedByWatchdog(),
 };
 writeFileSync(path.join(resultsDir, 'verdict.json'), `${JSON.stringify(verdict, undefined, 2)}\n`);
-const text = describe(target, [verdict]);
+const text = describe(laneOf(target, node), [verdict]);
 console.log(text);
 const summary = process.env['GITHUB_STEP_SUMMARY'];
 if (summary !== undefined && summary !== '') {

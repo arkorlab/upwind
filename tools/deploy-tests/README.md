@@ -203,7 +203,13 @@ many pieces (upstream's own `-g n/total`), and `only` runs one piece on its own,
 after it was cut short. On the runner's targets nothing is shared, so a run is cut as finely as the
 workflow cuts — 64 pieces unless `shards` says otherwise, all at once. Every night both targets run
 the whole manifest in two separate runs: the supported release at 17:23 UTC (02:23 JST), and the latest
-published `next@canary` at 18:23 UTC (03:23 JST). Each run has 128 jobs. The canary run reads npm's
+published `next@canary` at 18:23 UTC (03:23 JST). Each run builds and serves the applications under
+Node.js 24 and under Node.js 26, so it has 256 jobs, the most a matrix holds. A dispatch picks either
+or both with `node` (24 unless it says otherwise), and a pull request's run takes 24. The harness itself
+runs on Node.js 24.22.1 either way, since Next.js's `run-tests.js` does not load on 26. Under 26, the
+deploy and cleanup hooks put Node.js 26.13.0 first on their own `PATH` (`ADAPTER_TEST_NODE_DIR`), so the
+application's install, its build and the server that serves it all run on it. The job summary and the
+report name each lane: `node, Node.js 26`. The canary run reads npm's
 dist-tag once and resolves that version's Git tag to a commit SHA, which every shard checks out. Its
 plan summary names the version and SHA; a failed lookup stops the plan. Results and summaries stay
 separate for each run, and canary failures are judged on their own version and commit, without the

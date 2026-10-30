@@ -636,6 +636,37 @@ describe('a run’s verdicts summed for its report', () => {
     expect(run.stdout).toContain('**1 shard left no verdict:** 2.');
   });
 
+  /** A night's run has a lane for each Node.js: one target's shards under each are summed apart. */
+  it('sums each lane apart, a target under each Node.js the run names', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'upwind-report-results-'));
+    dirs.push(base);
+    for (const [name, verdict] of [
+      ['deploy-results-7-1-node-node24-1', { ...verdictOf(1, 10), node: '24' }],
+      ['deploy-results-7-1-node-node26-1', { ...verdictOf(1, 3), node: '26' }],
+    ] as const) {
+      mkdirSync(path.join(base, name));
+      writeFileSync(path.join(base, name, 'verdict.json'), JSON.stringify(verdict));
+    }
+    const matrix = {
+      include: ['24', '26'].flatMap((node) =>
+        [1, 2].map((shard) => ({ target: 'node', node, shard })),
+      ),
+    };
+    const run = spawnSync(process.execPath, [script, '--dir', base], {
+      encoding: 'utf8',
+      env: { PATH: process.env['PATH'], MATRIX: JSON.stringify(matrix) },
+    });
+    const [under24, under26] = run.stdout.split('### ').slice(1);
+
+    expect(run.status).toBe(0);
+    expect(under24).toContain('`node, Node.js 24`');
+    expect(under24).toContain('| 2 | 10 | 1 | 2 | 0 | 0 | 1 | 0 |');
+    expect(under24).toContain('**1 shard left no verdict:** 2.');
+    expect(under26).toContain('`node, Node.js 26`');
+    expect(under26).toContain('| 2 | 3 | 1 | 2 | 0 | 0 | 1 | 0 |');
+    expect(under26).toContain('**1 shard left no verdict:** 2.');
+  });
+
   it('finds the one artifact a run kept, unpacked without a directory of its own', () => {
     const base = mkdtempSync(path.join(os.tmpdir(), 'upwind-report-results-'));
     dirs.push(base);

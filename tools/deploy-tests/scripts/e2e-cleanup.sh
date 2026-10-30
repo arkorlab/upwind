@@ -10,4 +10,8 @@
 set -euo pipefail
 
 tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Under the Node.js the deploy hook ran under (`e2e-deploy.sh`).
+if [ -n "${ADAPTER_TEST_NODE_DIR:-}" ]; then
+  export PATH="${ADAPTER_TEST_NODE_DIR}:${PATH}"
+fi
 node "${tool_dir}/src/main.ts" release || true

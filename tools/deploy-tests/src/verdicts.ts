@@ -4,6 +4,11 @@ import type { Read, Verdict } from './judge.ts';
 export interface ShardVerdict extends Verdict {
   readonly shard: number;
   /**
+   * The major version of the Node.js the shard's applications were built and served under (`NODE`):
+   * a night's run has a lane for each. Absent in a verdict from before there were lanes.
+   */
+  readonly node?: string;
+  /**
    * Whether the runner ended and said how (`runner-exit-code.txt`): not where it was stopped, at its
    * step's time limit, or never ran, after a step before it failed. Absent in a verdict from before.
    */
@@ -13,6 +18,11 @@ export interface ShardVerdict extends Verdict {
    * (`runner-watchdog.ts`). Their results stand; the job's log holds what the processes were doing.
    */
   readonly ended?: readonly string[];
+}
+
+/** What a summary names a lane by: the target, and the Node.js where the run names one. */
+export function laneOf(target: string, node: string | undefined): string {
+  return node === undefined ? target : `${target}, Node.js ${node}`;
 }
 
 /** Whether a shard's verdict fails it: as `fails` has it, or where its runner did not finish. */
