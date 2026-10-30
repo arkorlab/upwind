@@ -700,10 +700,12 @@ jobs:
 
   # What a run on this machine's targets came to on each of them: every shard's verdict summed into
   # this job's summary (`report-results.ts`), with the shards that left none named. A host's run is
-  # read from its results instead, by whoever keeps its record.
+  # read from its results instead, by whoever keeps its record. Not for a run that was cancelled: a
+  # newer push to a pull request cancels the run before it, which would otherwise hold the pull
+  # request's group until this job ended.
   report:
     needs: [plan, deploy-tests]
-    if: always() && needs.plan.result == 'success' && !contains(needs.plan.outputs.matrix, '"target":"host"')
+    if: ${{ !cancelled() && needs.plan.result == 'success' && !contains(needs.plan.outputs.matrix, '"target":"host"') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
