@@ -1,22 +1,17 @@
 import type { BlobRef, Prerender } from '@stayingupwind/core/bundle';
-import {
-  admitPublication,
-  publicationForBuild,
-  parseCacheTagsHeader,
-} from '@stayingupwind/core/cache';
+import { parseCacheTagsHeader } from '@stayingupwind/core/cache';
 import { NO_STORE_CACHE_CONTROL, SEGMENT_TREE_PATH } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { renderDocumentForVisitor } from './answers.ts';
 import { builtPageResponse } from './built-page.ts';
-import { nowMs } from './cache/clock.ts';
 import { offeredFromFallback } from './delivery.ts';
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
 import { isCrawler, isRscRequest, rscBase } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
-import { buildPublicationExpired } from './publication.ts';
+import { admitBuildPublication, buildPublicationExpired } from './publication.ts';
 import {
   bypassesPrerender,
   concatShell,
@@ -51,6 +46,7 @@ const ERROR_ENTRY_ID = '/_error';
 const NOT_FOUND_PAGE = '/404';
 const RSC_SUFFIX = '.rsc';
 const CACHE_CONTROL = 'cache-control';
+const CACHE_TAGS = 'x-next-cache-tags';
 
 /** The state that resumes a prerender of the build, as the bundle carries it. */
 export function postponedOf(store: Store, prerender: Prerender): string | undefined {
@@ -160,7 +156,12 @@ export async function documentFromBuild(
   // The headers are the shell's; nothing a resume renders would change them, so `HEAD` is
   // answered without one.
   if (input.request.method === 'HEAD') {
-    return new Response(null, { status, headers });
+    return admitBuildPublication(
+      input,
+      shell.route,
+      new Response(null, { status, headers }),
+      parseCacheTagsHeader(headers.get(CACHE_TAGS) ?? undefined),
+    );
   }
   const rest = resume({
     input,
@@ -168,7 +169,13 @@ export async function documentFromBuild(
     postponed: postponedOf(store, shell),
     url: resolved.url,
   });
-  return new Response(concatShell(store.readBlob(shell.body.sha256), rest), { status, headers });
+  const body = concatShell(store.readBlob(shell.body.sha256), rest);
+  return admitBuildPublication(
+    input,
+    shell.route,
+    new Response(body, { status, headers }),
+    parseCacheTagsHeader(headers.get(CACHE_TAGS) ?? undefined),
+  );
 }
 
 /**
@@ -245,13 +252,16 @@ async function builtSegment(
   // The bytes as the store holds them: a view onto the bundle's own buffer, which is what every
   // other blob is answered with here. Copying would be a copy per prefetch of a file the store is
   // holding on purpose; only the host's bytes are copied, and only where they come from.
-  return admitPublication(
+  return admitBuildPublication(
+    input,
+    document.route,
     new Response(bytes, { status: HTTP_OK, headers }),
-    parseCacheTagsHeader(
-      new Headers(document.initialHeaders as HeadersInit).get('x-next-cache-tags') ?? undefined,
-    ),
-    nowMs(),
-    publicationForBuild(input.cache?.host.publication, document.route),
+    [
+      ...parseCacheTagsHeader(
+        new Headers(document.initialHeaders as HeadersInit).get(CACHE_TAGS) ?? undefined,
+      ),
+      ...parseCacheTagsHeader(headers.get(CACHE_TAGS) ?? undefined),
+    ],
   );
 }
 

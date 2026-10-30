@@ -1,3 +1,5 @@
+import { copyBuildPublication } from './publication.ts';
+
 /**
  * The answers whose body goes out as the application encoded it (`encodeBody: 'manual'`, set by
  * `node-bridge.ts`). workerd keeps the setting on the `Response` but does not let it be read, so the
@@ -28,7 +30,7 @@ export function withHeadersChanged(
     asEncoded.add(changed);
   }
   change(changed.headers);
-  return changed;
+  return copyBuildPublication(response, changed);
 }
 
 /**
@@ -49,5 +51,5 @@ export function withStatus(response: Response, status: number, body: BodyInit | 
   if (encoded) {
     asEncoded.add(made);
   }
-  return made;
+  return copyBuildPublication(response, made);
 }

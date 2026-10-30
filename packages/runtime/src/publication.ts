@@ -5,7 +5,9 @@ import {
   admitPublication,
   parseCacheTagsHeader,
   publicationForRoute,
+  type PublicationRequirement,
 } from '@stayingupwind/core/cache';
+import { observePublicationTags } from '@stayingupwind/core/paas';
 
 import type { RoutedInput } from './serve.ts';
 const HTTP_CLIENT_ERROR = 400;
@@ -18,6 +20,14 @@ import {
 } from './cache/context.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 
+const independentResponses = new WeakMap<Response, PublicationRequirement>();
+
+export function copyBuildPublication(source: Response, target: Response): Response {
+  const proof = independentResponses.get(source);
+  if (proof !== undefined) independentResponses.set(target, proof);
+  return target;
+}
+
 export function requirePublication(runtime: CacheRuntime | undefined, route: string): void {
   const context = requestContext();
   const required = publicationForRoute(runtime?.host.publication, route);
@@ -29,7 +39,11 @@ export function admitRequestPublication(response: Response, context: RequestCont
     ...context.publication,
     ...parseCacheTagsHeader(response.headers.get('x-next-cache-tags') ?? undefined),
   ];
-  const required = response.status < HTTP_CLIENT_ERROR ? context.publicationRequirement : undefined;
+  const required =
+    response.status < HTTP_CLIENT_ERROR &&
+    independentResponses.get(response) !== context.publicationRequirement
+      ? context.publicationRequirement
+      : undefined;
   return admitPublication(response, tags, nowMs(), required);
 }
 
@@ -52,18 +66,25 @@ export function buildPublicationExpired(
   const tags = parseCacheTagsHeader(
     new Headers(shell?.initialHeaders as HeadersInit).get('x-next-cache-tags') ?? undefined,
   );
-  const expired = publicationExpired(
+  return publicationExpired(
     tags,
     nowMs(),
     publicationForBuild(input.cache?.host.publication, route),
   );
-  if (
-    !expired &&
-    shell !== undefined &&
-    input.cache?.host.publication?.independentBuild?.includes(route) === true
-  ) {
-    const context = requestContext();
-    if (context !== undefined) delete context.publicationRequirement;
-  }
-  return expired;
+}
+
+/** A shipped-data proof belongs only to the actual response selected from that build. */
+export function admitBuildPublication(
+  input: RoutedInput,
+  route: string,
+  response: Response,
+  tags: readonly string[],
+): Response {
+  const publication = input.cache?.host.publication;
+  const required = publicationForBuild(publication, route);
+  const admitted = admitPublication(response, tags, nowMs(), required);
+  observePublicationTags(tags);
+  const proof = publicationForRoute(publication, route);
+  if (proof !== undefined && required === undefined) independentResponses.set(admitted, proof);
+  return admitted;
 }

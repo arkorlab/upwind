@@ -23,7 +23,8 @@ export function admitPublication(
   }
   if (publicationDeadline(tags) !== undefined) {
     // Cache API/internal records retain their own grants. No outer cache may bypass admission.
-    const headers = new Headers(response.headers);
+    const admitted = new Response(response.body, response);
+    const { headers } = admitted;
     for (const header of ['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control'])
       headers.delete(header);
     headers.set(
@@ -32,11 +33,7 @@ export function admitPublication(
         ? 'private, no-store'
         : 'private, no-cache, must-revalidate',
     );
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
+    return admitted;
   }
   return response;
 }

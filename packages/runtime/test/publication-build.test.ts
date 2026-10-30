@@ -1,0 +1,116 @@
+import type { Prerender } from '@stayingupwind/core/bundle';
+import { describe, expect, it, vi } from 'vitest';
+
+import { afterBody } from '../src/after-body.ts';
+import { requestContextFor } from '../src/cache/context.ts';
+import type { CacheRuntime } from '../src/cache/runtime.ts';
+import { documentFromBuild } from '../src/documents.ts';
+import { admitRequestPublication, requirePublication } from '../src/publication.ts';
+import { withHeadersChanged } from '../src/reframe.ts';
+import type { RoutedInput } from '../src/serve.ts';
+import type { Store } from '../src/store.ts';
+
+// The live edge handler is real; the unused Workers-only Node bridge is not started.
+vi.mock(import('../src/node-bridge.ts'), () => ({ invokeNodeHandler: vi.fn() }));
+
+const ROUTE = '/items';
+const NOW = 1_800_000_000_000;
+const publication = {
+  version: 1 as const,
+  identities: ['a'.repeat(64)],
+  routes: [ROUTE],
+  independentBuild: [ROUTE],
+};
+
+function scenario(draft: boolean) {
+  const shell = {
+    id: 'items',
+    route: ROUTE,
+    pathname: ROUTE,
+    body: { sha256: 'shell' },
+  } as Prerender;
+  const store = {
+    manifest: { config: { basePath: '' }, bypassToken: 'draft' },
+    shellsByRoute: new Map([[ROUTE, { pages: new Map([[ROUTE, shell]]), patterns: [] }]]),
+    readBlob: () => new TextEncoder().encode('independent shell'),
+  } as unknown as Store;
+  const request = new Request(`https://fixture.test${ROUTE}`, {
+    headers: draft ? { cookie: '__prerender_bypass=draft' } : {},
+  });
+  // This boundary reads only the sealed host metadata, never a cache backend.
+  const cache = { host: { publication } } as unknown as CacheRuntime;
+  const tables = { app: { entries: {} }, edge: { entries: {} } };
+  const waitUntil = vi.fn();
+  const context = requestContextFor({
+    tables,
+    runtime: cache,
+    request,
+    startedAt: NOW,
+    waitUntil,
+    clock: NOW,
+  });
+  const input: RoutedInput = {
+    ...tables,
+    request,
+    cache,
+    waitUntil,
+    run: context.run,
+    initURL: request.url,
+  };
+  const handler = vi.fn(() => {
+    return Promise.resolve(
+      new Response('live data without a grant', {
+        headers: { 'cache-control': 'public,s-maxage=3600' },
+      }),
+    );
+  });
+  const render = () => {
+    return documentFromBuild(
+      input,
+      store,
+      {
+        route: ROUTE,
+        pathname: ROUTE,
+        url: ROUTE,
+      },
+      { entry: { kind: 'edge', handler }, status: 200 },
+    );
+  };
+  return { context, input, handler, render };
+}
+
+describe('independent build publication proof', () => {
+  it('does not exempt a live draft response merely because an independent shell exists', async () => {
+    const test = scenario(true);
+    const response = await test.context.run(async () => {
+      requirePublication(test.input.cache, ROUTE);
+      return admitRequestPublication(await test.render(), test.context);
+    });
+
+    expect(test.handler).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(503);
+  });
+
+  it('exempts only the selected shipped response and leaves subsequent live output protected', async () => {
+    const test = scenario(false);
+
+    await test.context.run(async () => {
+      requirePublication(test.input.cache, ROUTE);
+      const built = await test.render();
+      const ended = vi.fn();
+      const rewrapped = withHeadersChanged(built, (headers) => {
+        headers.set('x-test', 'preserved');
+      });
+      const response = admitRequestPublication(afterBody(rewrapped, ended), test.context);
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('independent shell');
+      expect(ended).toHaveBeenCalledTimes(1);
+      expect(
+        admitRequestPublication(new Response('different live output'), test.context).status,
+      ).toBe(503);
+    });
+
+    expect(test.handler).not.toHaveBeenCalled();
+  });
+});

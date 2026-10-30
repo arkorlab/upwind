@@ -143,6 +143,7 @@ async function handleResume(
   if (prerender === undefined) {
     return new Response(`unknown prerender ${prerenderId}`, { status: HTTP_NOT_FOUND });
   }
+  requirePublication(input.cache, prerender.route);
   const entry = await entryFor(input, prerender.route);
   if (entry === undefined) {
     return new Response(`no entrypoint for ${prerender.route}`, { status: HTTP_NOT_FOUND });
@@ -646,8 +647,11 @@ export async function handleRequest(given: HandleInput): Promise<Response> {
     }
     // Not answered before the host has recorded what the request invalidated — its headers neither,
     // nor a failure's (`onceRecorded`).
-    const routed = withoutPlacementHeaders(await onceRecorded(context, routeRequest(input)));
-    const response = admitRequestPublication(delivered(handled.request, routed), context);
+    const routed = admitRequestPublication(
+      await onceRecorded(context, routeRequest(input)),
+      context,
+    );
+    const response = delivered(handled.request, withoutPlacementHeaders(routed));
     const answered = withoutBody(
       handled.request,
       withInvalidatedTags(response, context.invalidated),

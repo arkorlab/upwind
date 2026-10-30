@@ -14,6 +14,7 @@ import {
   pathFromHeaders,
   REGENERATE_HEADER,
   type RegenerateMode,
+  observePublicationTags,
 } from '@stayingupwind/core/paas';
 
 import { afterBody } from './after-body.ts';
@@ -57,6 +58,7 @@ import {
   upgradePathname,
   withPartialFallbackUpgrade,
 } from './partial-fallback.ts';
+import { admitBuildPublication, requirePublication } from './publication.ts';
 import { answerFromJob, holdFirstPublish, laterOf, publishOf } from './regeneration-answers.ts';
 import { SEGMENT_PREFIX } from './representations.ts';
 import { routingParameters } from './route-parameters.ts';
@@ -136,6 +138,7 @@ async function targetOf(input: RoutedInput, store: Store): Promise<Target | unde
 async function jobOf(input: RoutedInput, store: Store): Promise<Job | undefined> {
   const runtime = input.cache;
   const target = await targetOf(input, store);
+  if (target !== undefined) requirePublication(runtime, target.descriptor.route);
   return runtime === undefined || target === undefined
     ? undefined
     : { input, store, runtime, target };
@@ -621,6 +624,7 @@ async function answerFromGeneration(
   const resumed =
     pack.header.source === 'build' ? undefined : resumeRsc(input, handler, want, pack.postponed);
   if (resumed !== undefined) {
+    observePublicationTags(pack.header.tags.map((tag) => tag.value));
     return resumed;
   }
   const body = await outputOf(runtime, store, pack, source);
@@ -643,7 +647,12 @@ async function answerFromGeneration(
     cache: validity === 'stale' ? 'STALE' : 'HIT',
   });
   // What a host with no edge in front of it shares of this generation, as the edge would.
-  return offeredFromGeneration(input, current, source.representation, answer);
+  const response = offeredFromGeneration(input, current, source.representation, answer);
+  const tags = pack.header.tags.map((tag) => tag.value);
+  observePublicationTags(tags);
+  return pack.header.source === 'build'
+    ? admitBuildPublication(input, source.route, response, tags)
+    : response;
 }
 
 /**
