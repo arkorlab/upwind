@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isProxy } from 'node:util/types';
 
+import { isGuardedNodeVersion, type GuardedNodeVersion } from '@stayingupwind/core/util';
+
 import { installNodeFixedLoadHooks, type NodeFixedLoadHooks } from './node-fixed-load-hooks.ts';
 import {
   assertNodeFixedLoadScopeHealthy,
@@ -76,7 +78,7 @@ const MISSING_LOAD_SOURCE = 'missing qualified load source';
 /** Build-produced data. It does not grant a compiler exception on its own. */
 interface GuardRecord {
   readonly schema: 1;
-  readonly nodeVersion: '24.22.1';
+  readonly nodeVersion: GuardedNodeVersion;
   readonly archivePath: string;
 }
 export type NodeJwtGuardRecord = GuardRecord &
@@ -135,16 +137,18 @@ function sourceRecord(value: unknown): NodeJwtGuardRecord {
     if (!hasOwn(descriptor, 'value')) fail('source record contains accessors');
     record[name] = descriptor.value;
   }
+  const nodeVersion = record['nodeVersion'];
   if (
+    !isGuardedNodeVersion(nodeVersion) ||
+    nodeVersion !== process.versions.node ||
     record['schema'] !== 1 ||
-    record['nodeVersion'] !== '24.22.1' ||
     typeof record['archivePath'] !== 'string' ||
     !archiveName(record['archivePath'])
   )
     fail('invalid build-produced source record');
   const common = {
     schema: 1,
-    nodeVersion: '24.22.1',
+    nodeVersion,
     archivePath: record['archivePath'],
   } as const;
   if (
@@ -207,7 +211,7 @@ function sourceGroup(root: string, value: unknown, require: NodeJS.Require): Gua
     {
       schema: 1,
       profile: SEMVER_PROFILE,
-      nodeVersion: '24.22.1',
+      nodeVersion: record.nodeVersion,
       archivePath: `${record.archivePath.slice(0, -JWT_SUFFIX.length)}/dist/lib/semver-noop.js`,
       sha256: SEMVER_SHA256,
       bytes: SEMVER_BYTES,
@@ -328,7 +332,7 @@ function assertLoadState(
  * The fixed Node loader calls _compile immediately before executing CommonJS source.
  * Keep its source, receiver and arguments unchanged; no preload or evaluation retry.
  * The WS profile additionally requires both optional native loads to remain unresolved.
- * Node 24.22.1: lib/internal/modules/cjs/loader.js and esm/translators.js.
+ * Reviewed Node 24.22.1 and 26.13.0: lib/internal/modules/cjs/loader.js and esm/translators.js.
  */
 function installPreparedGuards(
   serverUrl: string,
@@ -465,8 +469,8 @@ export function installNodeJwtGuards(
 ): void {
   if (nextHook === undefined && records.length === 0) return;
   if (installation.completed) fail('initialization guard already installed');
-  if (process.versions.node !== '24.22.1' || process.execArgv.length > 0)
-    fail('requires the fixed default Node 24.22.1 loader');
+  if (!isGuardedNodeVersion(process.versions.node) || process.execArgv.length > 0)
+    fail('requires a fixed default Node 24.22.1 or 26.13.0 loader');
   const captured = nodeInitializationBuiltins(createRequire(serverUrl));
   const hook =
     nextHook === undefined ? undefined : initializeNodeNextRequireHook(serverUrl, nextHook);

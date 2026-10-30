@@ -41,18 +41,18 @@ function callback(): number {
 
 /** Authored objects only: no actual Node realm, builtin module, loader or application executes. */
 function fixture(
-  { builtins = true, accessors = false } = {},
+  { builtins = true, accessors = false, nodeVersion = '24.22.1' } = {},
   initialEnvironment: Readonly<Record<string, string>> = {},
 ) {
   const globals: Record<PropertyKey, unknown> = {};
   const globalPrototype: Record<PropertyKey, unknown> = {};
   Object.setPrototypeOf(globals, globalPrototype);
   const environment: Record<PropertyKey, unknown> = { ...initialEnvironment };
-  const versions = { node: '24.22.1' };
+  const versions = { node: nodeVersion };
   const process = {
     env: environment,
     versions,
-    version: 'v24.22.1',
+    version: `v${nodeVersion}`,
     binding: callback,
     emitWarning: callback,
     nextTick: callback,
@@ -376,6 +376,18 @@ describe('private Node JWT initialization preconditions', () => {
       own.environment[key] = 'authored override';
 
       expect(checking(own.realm)).toThrow('loader environment override');
+    },
+  );
+
+  it.each(['24.22.1', '26.13.0'])(
+    'captures Node %s and rejects switching to the other reviewed loader',
+    (nodeVersion) => {
+      const own = fixture({ nodeVersion });
+      assertNodeJwtRealm(own.realm);
+      own.versions.node = nodeVersion === '24.22.1' ? '26.13.0' : '24.22.1';
+      own.process.version = `v${own.versions.node}`;
+
+      expect(checking(own.realm)).toThrow('descriptor changed (version)');
     },
   );
 

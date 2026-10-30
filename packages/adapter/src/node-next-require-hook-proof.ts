@@ -7,6 +7,7 @@ import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
 import { isNode } from './lexical-scope.ts';
+import { nodeGuardVersion, type GuardedNodeVersion } from './node-guard-version.ts';
 import type { NodeJwtCompilerInput } from './node-jwt-compiler-proof.ts';
 import { nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
 import {
@@ -55,7 +56,7 @@ export interface NodeNextRequireHookProof {
 export interface NodeNextRequireHookGuardRecord {
   readonly schema: 1;
   readonly profile: 'next-16.4.3-require-hook-v1';
-  readonly nodeVersion: '24.22.1';
+  readonly nodeVersion: GuardedNodeVersion;
   readonly archivePath: string;
   readonly sha256: typeof SHA256;
   readonly bytes: typeof BYTES;
@@ -101,9 +102,6 @@ function refuse(reason: string): never {
 function stored(proof: NodeNextRequireHookProof): State {
   return proofs.get(proof) ?? refuse('copied or missing proof');
 }
-function digest(bytes: Uint8Array | string): string {
-  return createHash('sha256').update(bytes).digest('hex');
-}
 function approved(input: NodeJwtCompilerInput) {
   assertOriginalNodeModesGraph(input.originalModes, input.graph);
   const routes = checkedNodeRouteRewriteSources({
@@ -124,7 +122,7 @@ async function source(state: State, file: string, expected?: string): Promise<st
   if (!info.isFile() || info.size > MAX_SOURCE_BYTES || (await realpath(file)) !== file)
     refuse('noncanonical regular source');
   const bytes = await readFile(file);
-  const sha256 = digest(bytes);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
   if (bytes.length !== info.size || (expected !== undefined && sha256 !== expected))
     refuse('source changed or digest mismatch');
   const previous = state.files.get(file);
@@ -502,7 +500,7 @@ export async function nodeNextRequireHookGuardRecord(
   return Object.freeze({
     schema: 1,
     profile: 'next-16.4.3-require-hook-v1',
-    nodeVersion: '24.22.1',
+    nodeVersion: nodeGuardVersion(),
     archivePath,
     sha256: SHA256,
     bytes: BYTES,

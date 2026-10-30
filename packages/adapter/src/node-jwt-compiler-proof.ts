@@ -6,6 +6,7 @@ import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
 import { isNode, type Node } from './lexical-scope.ts';
+import { nodeGuardVersion, type GuardedNodeVersion } from './node-guard-version.ts';
 import { nodeJwtGlobalRecoverySite, nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
 import {
   nodeJwtCallerInspection,
@@ -61,7 +62,7 @@ export interface NodeJwtCompilerInput {
 export interface NodeJwtGuardRecord {
   readonly schema: 1;
   readonly profile: 'next-16.4.3-jsonwebtoken-ncc-v1';
-  readonly nodeVersion: '24.22.1';
+  readonly nodeVersion: GuardedNodeVersion;
   readonly archivePath: string;
   readonly sha256: string;
   readonly bytes: typeof JWT_BYTES;
@@ -463,7 +464,7 @@ export async function nodeJwtGuardRecord(
   return Object.freeze<NodeJwtGuardRecord>({
     schema: 1,
     profile: 'next-16.4.3-jsonwebtoken-ncc-v1',
-    nodeVersion: '24.22.1',
+    nodeVersion: nodeGuardVersion(),
     archivePath,
     sha256: JWT_SHA256,
     bytes: JWT_BYTES,

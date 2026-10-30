@@ -15,7 +15,7 @@ const REALM = new URL('../../runtime/src/node-jwt-realm.ts', import.meta.url).hr
 const RECORD = {
   schema: 1,
   profile: 'next-16.4.3-jsonwebtoken-ncc-v1',
-  nodeVersion: '24.22.1',
+  nodeVersion: process.versions.node,
   archivePath: 'node_modules/next/dist/compiled/jsonwebtoken/index.js',
   sha256: '056c2dddba96faa35f4dc0740228a241990561290ff3bd5456c7c7dbc5a7a6b9',
   bytes: 121_051,
@@ -74,6 +74,11 @@ ${after}
 }
 
 const LOAD = `const jwt=require(filename.pathname);`;
+// Prepare the reviewed Node 26 builtin before deliberately violating the guarded load order.
+// These cases must reach the cache guard, rather than fail inside the old JWT dependency first.
+const PRELOAD = `const {initializeNodeSlowBuffer}=await import(${JSON.stringify(new URL('node-slow-buffer.ts', GUARD).href)});
+initializeNodeSlowBuffer(require('node:buffer'));
+${LOAD}`;
 const APPLICATION_ERROR_HOOKS = `
 const inspectKey=Symbol.for('nodejs.util.inspect.custom');
 let hookCalls=0;
@@ -83,7 +88,27 @@ Object.defineProperty(Error,'prepareStackTrace',{value:appPrepare,writable:true,
 Object.defineProperty(Error.prototype,inspectKey,{value:appInspect,writable:true,configurable:true,enumerable:false});
 `;
 
-describe.skipIf(!ENABLED)('fixed Node 24.22.1 JWT evaluation guard (dedicated Linux CI)', () => {
+describe.skipIf(!ENABLED)('fixed Node JWT evaluation guard (dedicated Linux CI)', () => {
+  it.runIf(process.versions.node === '26.13.0')(
+    'refuses a supplied SlowBuffer accessor without invoking it',
+    async () => {
+      await expect(
+        scenario(
+          `Object.defineProperty(require('node:buffer'),'SlowBuffer',{configurable:true,get(){throw new Error('application getter ran');}});`,
+          '',
+        ),
+      ).rejects.toThrow('unexpected SlowBuffer export');
+    },
+  );
+
+  it('rejects a record for the other reviewed Node release', async () => {
+    const other = process.versions.node === '24.22.1' ? '26.13.0' : '24.22.1';
+
+    await expect(scenario(`record.nodeVersion=${JSON.stringify(other)};`, '')).rejects.toThrow(
+      'invalid build-produced source record',
+    );
+  });
+
   it('loads the original source and preserves sign, verify and decode', async () => {
     const result = await scenario(
       '',
@@ -319,12 +344,14 @@ console.log('getter-refused');`,
   });
 
   it('refuses an already evaluated dependency', async () => {
-    await expect(scenario(LOAD, '')).rejects.toThrow('semver cache populated before observation');
+    await expect(scenario(PRELOAD, '')).rejects.toThrow(
+      'semver cache populated before observation',
+    );
   });
 
   it('refuses an evaluated JWT source even when its dependency cache was cleared', async () => {
     await expect(
-      scenario(`${LOAD}\ndelete require.cache[semverFilename.pathname];`, ''),
+      scenario(`${PRELOAD}\ndelete require.cache[semverFilename.pathname];`, ''),
     ).rejects.toThrow('qualified source already evaluated');
   });
 

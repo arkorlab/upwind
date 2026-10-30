@@ -1,6 +1,7 @@
 import { Module } from 'node:module';
 
 import type { NodeJwtBuiltinBasis } from './node-jwt-realm.ts';
+import { initializeNodeSlowBuffer } from './node-slow-buffer.ts';
 
 export interface NodeInitializationBuiltins {
   readonly basis: NodeJwtBuiltinBasis;
@@ -9,7 +10,8 @@ export interface NodeInitializationBuiltins {
 
 /** Native builtins only, captured before installing any dependency-owned loader hook. */
 export function nodeInitializationBuiltins(require: NodeJS.Require): NodeInitializationBuiltins {
-  const buffer: unknown = require('node:buffer');
+  const buffer = require('node:buffer') as Record<string, unknown>;
+  initializeNodeSlowBuffer(buffer);
   const crypto: unknown = require('node:crypto');
   const stream: unknown = require('node:stream');
   const util: unknown = require('node:util');

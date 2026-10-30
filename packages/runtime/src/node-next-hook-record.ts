@@ -1,9 +1,11 @@
+import { isGuardedNodeVersion, type GuardedNodeVersion } from '@stayingupwind/core/util';
+
 type ObjectValue = Record<PropertyKey, unknown>;
 const SOURCE_BYTES = 3066;
 export interface NodeNextHookRecord {
   readonly schema: 1;
   readonly profile: 'next-16.4.3-require-hook-v1';
-  readonly nodeVersion: '24.22.1';
+  readonly nodeVersion: GuardedNodeVersion;
   readonly archivePath: string;
   readonly sha256: 'e82f0ceba88d025c725ea3062974ad9d7a54a892df8c34a525cb129202387db8';
   readonly bytes: typeof SOURCE_BYTES;
@@ -102,10 +104,11 @@ function record(value: unknown, isProxy: ProxyCheck): NodeNextHookRecord {
     ['schema', 'profile', 'nodeVersion', 'archivePath', 'sha256', 'bytes'],
     isProxy,
   );
+  const nodeVersion = data(owner, 'nodeVersion');
   if (
+    !isGuardedNodeVersion(nodeVersion) ||
     data(owner, 'schema') !== 1 ||
     data(owner, 'profile') !== 'next-16.4.3-require-hook-v1' ||
-    data(owner, 'nodeVersion') !== '24.22.1' ||
     data(owner, 'sha256') !== 'e82f0ceba88d025c725ea3062974ad9d7a54a892df8c34a525cb129202387db8' ||
     data(owner, 'bytes') !== SOURCE_BYTES
   )
@@ -117,7 +120,7 @@ function record(value: unknown, isProxy: ProxyCheck): NodeNextHookRecord {
   return freeze({
     schema: 1,
     profile: 'next-16.4.3-require-hook-v1',
-    nodeVersion: '24.22.1',
+    nodeVersion,
     archivePath,
     sha256: 'e82f0ceba88d025c725ea3062974ad9d7a54a892df8c34a525cb129202387db8',
     bytes: SOURCE_BYTES,

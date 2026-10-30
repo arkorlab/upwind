@@ -17,7 +17,7 @@ const HOOK = 'node_modules/next/dist/server/require-hook.js';
 const RECORD = {
   schema: 1,
   profile: 'next-16.4.3-require-hook-v1',
-  nodeVersion: '24.22.1',
+  nodeVersion: process.versions.node,
   archivePath: HOOK,
   sha256: 'e82f0ceba88d025c725ea3062974ad9d7a54a892df8c34a525cb129202387db8',
   bytes: 3066,
@@ -25,7 +25,7 @@ const RECORD = {
 const JWT_RECORD = {
   schema: 1,
   profile: 'next-16.4.3-jsonwebtoken-ncc-v1',
-  nodeVersion: '24.22.1',
+  nodeVersion: process.versions.node,
   archivePath: 'node_modules/next/dist/compiled/jsonwebtoken/index.js',
   sha256: '056c2dddba96faa35f4dc0740228a241990561290ff3bd5456c7c7dbc5a7a6b9',
   bytes: 121_051,
