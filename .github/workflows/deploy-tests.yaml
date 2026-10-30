@@ -7,8 +7,10 @@ name: Deploy tests
 # Apart from CI, for two reasons. On a host it needs credentials, which a pull request from a fork must
 # never be given. And every target deploys — each suite is an application installed, built and served, a
 # minute of it at the least. So it is dispatched by hand, and the two targets on the runner, which need
-# no credential, also run every night over the whole manifest. CI checks the hooks themselves on every
-# pull request (`check:deploy-tests`, `check:deploy-tests-local`).
+# no credential, also run every night over the whole manifest. Every push to a pull request runs `node`
+# over the whole manifest against the supported release; a newer push to the same pull request cancels
+# the run before it. CI checks the hooks themselves on every pull request (`check:deploy-tests`,
+# `check:deploy-tests-local`).
 #
 # What follows of projects and queues is a host's: on the runner each application has a server of its
 # own, every shard runs at once, and each runs two suites at a time.
@@ -39,6 +41,9 @@ name: Deploy tests
 # for most of a job's six hours, or past them.
 
 on:
+  # Every push to a pull request: `node` over the whole manifest against the supported release. It
+  # needs no credential, so a pull request from a fork runs it too.
+  pull_request:
   # Every night, both targets on the runner over the whole manifest (`plan`): the supported
   # release first, then the latest published canary in a separate run.
   schedule:
@@ -88,8 +93,8 @@ on:
 permissions: {}
 
 env:
-  # The supported release a night's first run tests against: the one a dispatch defaults to
-  # (`nextjsRef`), which moves with it. The other run resolves npm's canary below.
+  # The supported release a night's first run and a pull request's run test against: the one a dispatch
+  # defaults to (`nextjsRef`), which moves with it. The other night's run resolves npm's canary below.
   NIGHTLY_NEXTJS_REF: 'v16.4.3'
   # The pieces the runner's targets are cut into, a night's run and a dispatch that names none: as fine
   # as the plan cuts. Both targets in 64 pieces each is 128 jobs, inside the 256 a matrix holds, and
@@ -101,10 +106,12 @@ env:
 
 # Never two runs on a host at once: they would be deploying into the same projects. The runner's
 # targets share nothing, so each of their runs is a group of its own — one group for them all would
-# hold one run and one waiting, and cancel the one waiting when another was dispatched.
+# hold one run and one waiting, and cancel the one waiting when another was dispatched. A pull request's
+# runs are a group of their own, one a pull request: a newer push cancels the run of the one before it,
+# and never another pull request's run, a night's or a dispatch.
 concurrency:
-  group: ${{ github.event_name != 'schedule' && inputs.target == 'host' && 'deploy-tests-host' || format('deploy-tests-{0}', github.run_id) }}
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('deploy-tests-pr-{0}', github.event.pull_request.number) || github.event_name != 'schedule' && inputs.target == 'host' && 'deploy-tests-host' || format('deploy-tests-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Everything that can be answered before a runner does anything expensive: what the selection means,
@@ -140,8 +147,16 @@ jobs:
         run: |
           set -euo pipefail
           # A night's run is both of the runner's targets over the whole manifest, cut as finely as
-          # `RUNNER_SHARDS` says; a dispatch is what it was asked for.
-          if [ "$EVENT" = 'schedule' ]; then
+          # `RUNNER_SHARDS` says; a pull request's, `node` alone, against the supported release; a
+          # dispatch is what it was asked for.
+          if [ "$EVENT" = 'pull_request' ]; then
+            targets='node'
+            TESTS='all'
+            SHARDS="$RUNNER_SHARDS"
+            ONLY=''
+            CONCURRENCY=''
+            nextjs="$NIGHTLY_NEXTJS_REF"
+          elif [ "$EVENT" = 'schedule' ]; then
             targets='cloudflare node'
             TESTS='all'
             SHARDS="$RUNNER_SHARDS"
@@ -374,9 +389,11 @@ jobs:
       max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
+      # No token left in either checkout: a pull request's run builds and serves code from a fork.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: adapter
+          persist-credentials: false
       # The suite is upstream's, run unmodified: its own manifest decides which suites deploy mode
       # selects, and this repository rewrites no expectation of theirs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -385,6 +402,7 @@ jobs:
           ref: ${{ needs.plan.outputs.nextjs }}
           path: nextjs
           fetch-depth: 25
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26.13.0
@@ -688,6 +706,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: tools/deploy-tests/src
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: package.json
