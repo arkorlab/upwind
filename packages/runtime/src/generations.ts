@@ -14,7 +14,6 @@ import {
   pathFromHeaders,
   REGENERATE_HEADER,
   type RegenerateMode,
-  observePublicationTags,
 } from '@stayingupwind/core/paas';
 
 import { afterBody } from './after-body.ts';
@@ -34,6 +33,7 @@ import { nowMs } from './cache/clock.ts';
 import { type CurrentGeneration, type CurrentLookup, currentGeneration } from './cache/current.ts';
 import { generationClassShell } from './cache/generation-tags.ts';
 import type { AttemptReason } from './cache/host.ts';
+import { observeFreshPublication } from './cache/publication.ts';
 import { answeringAtOnce } from './cache/publishing.ts';
 import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
@@ -624,7 +624,10 @@ async function answerFromGeneration(
   const resumed =
     pack.header.source === 'build' ? undefined : resumeRsc(input, handler, want, pack.postponed);
   if (resumed !== undefined) {
-    observePublicationTags(pack.header.tags.map((tag) => tag.value));
+    observeFreshPublication(
+      pack.header.tags.map((tag) => tag.value),
+      nowMs(),
+    );
     return resumed;
   }
   const body = await outputOf(runtime, store, pack, source);
@@ -649,7 +652,7 @@ async function answerFromGeneration(
   // What a host with no edge in front of it shares of this generation, as the edge would.
   const response = offeredFromGeneration(input, current, source.representation, answer);
   const tags = pack.header.tags.map((tag) => tag.value);
-  observePublicationTags(tags);
+  observeFreshPublication(tags, nowMs());
   return pack.header.source === 'build'
     ? admitBuildPublication(input, source.route, response, tags)
     : response;

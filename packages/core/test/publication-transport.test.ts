@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { publicationDeadline } from '../src/cache/publication.ts';
+import { resourceSnapshotTag } from '../src/cache/resource-snapshot.ts';
 import { PLATFORM_REQUEST_HEADERS } from '../src/paas/protocol.ts';
 import {
   enforcePublicationPolicy,
@@ -49,6 +50,36 @@ describe('selected publication grant transport', () => {
 
     expect(parseResumePublicationHeader(header ?? null)).toStrictEqual([early]);
     expect(publicationDeadline(parseResumePublicationHeader(header ?? null))).toBe(60_000);
+  });
+
+  it('retains original resource witnesses and canonical tags alongside renewed children', () => {
+    const old = resourceSnapshotTag({ resourceId: ID, version: 4 });
+    const fresh = resourceSnapshotTag({ resourceId: ID, version: 9 });
+    const selected = parseResumePublicationHeader(
+      resumePublicationHeader(['source-resource', early, old, fresh]) ?? null,
+    );
+
+    expect(selected).toContain('source-resource');
+    expect(selected).toContain(old);
+    expect(selected).not.toContain(fresh);
+  });
+
+  it('encodes canonical Unicode resource tags as bounded HTTP-safe JSON', () => {
+    const canonical = 'resource:界😀';
+    const witness = resourceSnapshotTag({ resourceId: ID, version: 4 });
+    const encoded = resumePublicationHeader([early, witness, canonical]);
+    const headers = new Headers({ [PUBLICATION_RESUME_HEADER]: encoded ?? '' });
+
+    expect(parseResumePublicationHeader(headers.get(PUBLICATION_RESUME_HEADER))).toContain(
+      canonical,
+    );
+    expect(() => {
+      return resumePublicationHeader([
+        early,
+        witness,
+        ...Array.from({ length: 8 }, (_, index) => `${String(index)}:${'界'.repeat(200)}`),
+      ]);
+    }).toThrow('transport bound');
   });
 
   it('bounds the handoff and reserves it from public application requests', () => {

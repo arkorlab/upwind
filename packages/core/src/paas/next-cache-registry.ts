@@ -94,11 +94,21 @@ export function installNextCacheRegistry(): void {
   };
 }
 
+function sharedStore(store: NextCacheStore | undefined): boolean {
+  return store?.type === 'cache' || store?.type === 'unstable-cache';
+}
+
 /** Add the read dependency before Next collects and propagates the cache entry's tags. */
 export function tagNextCacheRead(tag: string): void {
   for (const storage of registry().units) {
     const store = storage.getStore();
-    if (store?.type === 'cache') {
+    // Next persists unstable_cache's original options.tags, not tags observed during its callback.
+    if (
+      store?.type === 'unstable-cache' &&
+      (tag.startsWith('upwind:publication:') || tag.startsWith('upwind:resource-snapshot:'))
+    )
+      throw new Error('unstable_cache cannot preserve publication dependencies.');
+    if (store !== undefined && sharedStore(store)) {
       store.tags ??= [];
       const tags = store.tags;
       if (!tags.includes(tag)) {
@@ -110,7 +120,7 @@ export function tagNextCacheRead(tag: string): void {
 
 /** Private authority results may use a request/private cache, never a shared component cache. */
 export function inPublicNextCache(): boolean {
-  return [...registry().units].some((storage) => storage.getStore()?.type === 'cache');
+  return [...registry().units].some((storage) => sharedStore(storage.getStore()));
 }
 
 export function currentNextWorkStores(): NextWorkStore[] {

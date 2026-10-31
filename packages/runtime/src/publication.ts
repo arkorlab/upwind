@@ -29,13 +29,14 @@ export function requirePublication(runtime: CacheRuntime | undefined, route: str
     context.publicationRequirement = required;
     // The explicit v2 capability proves before-value instrumentation, even when an outer
     // Suspense boundary flushes before its protected descendant has started its first read.
-    if (required.version === 2) context.publicationReadStarted = true;
+    if (required.version !== 1) context.publicationReadStarted = true;
   }
 }
 
 export function admitRequestPublication(response: Response, context: RequestContext): Response {
   const tags = [
     ...context.publication,
+    ...(context.resourceTags ?? []),
     ...parseCacheTagsHeader(response.headers.get(CACHE_TAGS) ?? undefined),
   ];
   const independent =

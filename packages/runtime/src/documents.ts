@@ -11,7 +11,13 @@ import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
 import { isCrawler, isRscRequest, rscBase } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
-import { admitBuildPublication, admitBuildSource, buildPublicationExpired } from './publication.ts';
+import { copyBuildPublication } from './publication-proof.ts';
+import {
+  admitBuildPublication,
+  admitBuildSource,
+  buildPublicationExpired,
+  requirePublication,
+} from './publication.ts';
 import {
   bypassesPrerender,
   concatShell,
@@ -403,6 +409,7 @@ async function lastNotFound(
 ): Promise<Response> {
   const fallback = rsc ? undefined : await errorPageEntry(input, store);
   if (fallback !== undefined) {
+    requirePublication(input.cache, fallback.route);
     return invokeEntry(input, fallback.entry, `${at.pathname}${at.search}`, {
       onFailure: failureAnswer(store, fallback.entry, fallback.route),
       status: HTTP_NOT_FOUND,
@@ -447,14 +454,22 @@ export async function notFound(input: RoutedInput, store: Store, at: URL): Promi
         ? undefined
         : staticResponse(store, stored, HTML_CONTENT_TYPE, stored.initialStatus ?? HTTP_NOT_FOUND));
     if (page !== undefined) {
+      const route = stored?.route ?? pathname;
+      requirePublication(input.cache, route);
       releaseStream(input.request.body, 'static not found: handler body unused');
-      return page;
+      return admitBuildPublication(
+        input,
+        route,
+        page,
+        parseCacheTagsHeader(page.headers.get(CACHE_TAGS) ?? undefined),
+      );
     }
   }
   if (rendered === undefined) {
     return lastNotFound(input, store, at, rsc);
   }
   const { entry, route } = rendered;
+  requirePublication(input.cache, route);
   const resolved: Resolved = { route, pathname: route, url: `${at.pathname}${at.search}` };
   if (!rsc) {
     const document = await documentFromBuild(input, store, resolved, {
@@ -467,7 +482,10 @@ export async function notFound(input: RoutedInput, store: Store, at: URL): Promi
     if (document.status !== HTTP_OK) {
       return document;
     }
-    return new Response(document.body, { status: HTTP_NOT_FOUND, headers: document.headers });
+    return copyBuildPublication(
+      document,
+      new Response(document.body, { status: HTTP_NOT_FOUND, headers: document.headers }),
+    );
   }
   const payload = await rscFromBuild(input, store, entry, resolved);
   // A payload rendered goes out under the status the not-found stands for; a render that failed,

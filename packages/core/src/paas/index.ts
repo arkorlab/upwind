@@ -15,6 +15,7 @@ export {
   privatePublicationIdentity,
   PUBLICATION_READ_OBSERVER,
 } from './publication-read.ts';
+export { observeResourceSnapshot, RESOURCE_SNAPSHOT_OBSERVER } from './resource-snapshot.ts';
 export {
   UPWIND_CACHE_HOST_MODULE_ENV,
   UPWIND_UNSHIPPED_OUTPUTS_ENV,

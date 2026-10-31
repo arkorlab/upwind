@@ -444,7 +444,7 @@ export class PlatformFetchCache {
     if (fetchedAgainBehind(validity, nowMs() - entry.timestamp, ctx.revalidate, value.revalidate)) {
       holdForRevalidation(runtime, FETCH_STORE, cacheKey);
     }
-    if (!reusePublication(entry.tags, nowMs())) return null;
+    if (!reusePublication(entry.tags, nowMs(), runtime.host.publication)) return null;
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };
   }
 
@@ -607,7 +607,7 @@ async function getUseCache(
   if (validity === 'stale' && ageMs <= entry.expire * MS_PER_SECOND) {
     holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
   }
-  if (!reusePublication(entry.tags, nowMs())) return undefined;
+  if (!reusePublication(entry.tags, nowMs(), runtime.host.publication)) return undefined;
   return {
     value: new Blob([judged.held.bytes as BlobPart]).stream(),
     tags: [...entry.tags],

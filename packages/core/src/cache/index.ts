@@ -11,6 +11,13 @@ export {
 export { publicArtifactRef, publicOutputSnapshot } from './artifacts.ts';
 export { admitPublication } from './publication-response.ts';
 export { publicationRequirementSchema } from './publication-schema.ts';
+export { SNAPSHOT_PUBLICATION_VERSION } from './publication-version.ts';
+export {
+  RESOURCE_SNAPSHOT_PREFIX,
+  resourceSnapshotTag,
+  resourceSnapshotOf,
+  type ResourceSnapshotWitness,
+} from './resource-snapshot.ts';
 export {
   type PublicationGrant,
   type PublicationRequirement,

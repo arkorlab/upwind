@@ -1,3 +1,5 @@
+import { isUnstableCacheSource, unstableCacheRegistrations } from './unstable-cache-bridge.ts';
+
 /** Shared by the Function bundler and Node's synchronous build/dev loader. No Next dependency. */
 const CACHE_STORAGE = 'upwind.next-cache-storage@1';
 const REVALIDATION = 'upwind.next-revalidation@1';
@@ -52,7 +54,7 @@ function isRevalidationModule(source: string): boolean {
 }
 
 export function isResourceCacheBridgeSource(source: string): boolean {
-  return isCacheWrapper(source) || isRevalidationModule(source);
+  return isCacheWrapper(source) || isRevalidationModule(source) || isUnstableCacheSource(source);
 }
 
 function preceding(
@@ -142,6 +144,10 @@ function revalidationDeclarations(source: string): RevalidationDeclaration[] {
   return [...declarations.values()];
 }
 
+export function resourceCacheBridgeUnstableRegistrations(source: string): number {
+  return unstableCacheRegistrations(source).length;
+}
+
 /** The adapter counts the same native providers that the build/dev transform recognizes. */
 export function resourceCacheBridgeRevalidations(source: string): number {
   return isRevalidationModule(source) ? revalidationDeclarations(source).length : 0;
@@ -196,7 +202,11 @@ export function resourceCacheBridge(source: string): ResourceCacheBridgeResult {
   if (cacheWrapper && (snapshots.edits === 0 || caches.length !== snapshots.edits)) {
     throw new Error('resource-cache-bridge: Next cache context and clean snapshot counts differ');
   }
-  const insertions = [...caches, ...revalidationRegistrations(snapshots.contents)];
+  const insertions = [
+    ...caches,
+    ...revalidationRegistrations(snapshots.contents),
+    ...unstableCacheRegistrations(snapshots.contents),
+  ];
   return {
     contents: insertRegistrations(snapshots.contents, insertions),
     edits: insertions.length + snapshots.edits,

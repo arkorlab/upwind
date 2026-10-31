@@ -41,6 +41,8 @@ export function generationTagValues(
   const values = new Set(recorded);
   const publication = publicationContext()?.publication;
   if (publication !== undefined) for (const value of publication) values.add(value);
+  const resources = publicationContext()?.resourceTags;
+  if (resources !== undefined) for (const value of resources) values.add(value);
   for (const value of implicit) {
     values.add(value);
   }
@@ -54,10 +56,13 @@ export function generationTagValues(
 
 /** Fresh foreground answers carry the same local dependencies as their eventual record. */
 export function withGenerationPublication(render: CapturedRender): CapturedRender {
-  const publication = publicationContext()?.publication;
-  if (publication === undefined || publication.size === 0) return render;
+  const context = publicationContext();
+  const publication = context?.publication;
+  const resources = context?.resourceTags;
+  if ((publication?.size ?? 0) + (resources?.size ?? 0) === 0) return render;
   const tags = new Set(parseCacheTagsHeader(render.headers['x-next-cache-tags']));
-  for (const tag of publication) tags.add(tag);
+  if (publication !== undefined) for (const tag of publication) tags.add(tag);
+  if (resources !== undefined) for (const tag of resources) tags.add(tag);
   return { ...render, headers: { ...render.headers, 'x-next-cache-tags': [...tags].join(',') } };
 }
 

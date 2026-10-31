@@ -1,7 +1,15 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import type { PublicationRequirement } from '@stayingupwind/core/cache';
-import { PUBLICATION_OBSERVER, PUBLICATION_READ_OBSERVER } from '@stayingupwind/core/paas';
+import {
+  MAX_TAGS_PER_ENTRY,
+  resourceSnapshotOf,
+  type PublicationRequirement,
+} from '@stayingupwind/core/cache';
+import {
+  PUBLICATION_OBSERVER,
+  PUBLICATION_READ_OBSERVER,
+  RESOURCE_SNAPSHOT_OBSERVER,
+} from '@stayingupwind/core/paas';
 
 import type { EntryTables } from '../entries.ts';
 import type { Run } from '../node-bridge.ts';
@@ -19,6 +27,7 @@ export interface PublicationContext {
   readonly publication: Set<string>;
   publicationReadStarted?: boolean;
   publicationRequirement?: PublicationRequirement;
+  resourceTags?: Set<string>;
 }
 
 export interface RequestContext extends PublicationContext {
@@ -298,6 +307,29 @@ export function publicationContext(): PublicationContext | undefined {
   return scope !== undefined && scope.owner === owner ? scope.state : owner;
 }
 
+/** Original resource witnesses survive cached child reads and ordinary root captures alike. */
+export function observeResourceTags(tags: readonly string[]): void {
+  if (tags.every((tag) => !tag.startsWith('upwind:resource-snapshot:'))) return;
+  for (const tag of tags) resourceSnapshotOf(tag);
+  const context = publicationContext();
+  if (context === undefined) return;
+  context.resourceTags ??= new Set();
+  for (const tag of tags) {
+    context.resourceTags.add(tag);
+    if (context.resourceTags.size > MAX_TAGS_PER_ENTRY)
+      throw new Error('The render has too many resource snapshot tags.');
+  }
+  if (
+    !livePublicationState(
+      context.publication,
+      [...(context.resourceTags ?? [])],
+      context.publicationRequirement,
+      nowMs(),
+    ).valid
+  )
+    throw new Error('Publication unavailable');
+}
+
 /** Publication state follows callbacks re-entering the existing request/clock runner. */
 export function publicationRun(run: Run): Run {
   let scope:
@@ -312,6 +344,7 @@ export function publicationRun(run: Run): Run {
           owner,
           state: {
             publication: new Set(),
+            resourceTags: new Set(),
             publicationReadStarted: false,
             ...(required !== undefined && { publicationRequirement: required }),
           },
@@ -333,8 +366,12 @@ function installPublicationObserver(): void {
       if (context === undefined) return;
       context.publication.add(tag);
       if (
-        !livePublicationState(context.publication, [], context.publicationRequirement, nowMs())
-          .valid
+        !livePublicationState(
+          context.publication,
+          [...(context.resourceTags ?? [])],
+          context.publicationRequirement,
+          nowMs(),
+        ).valid
       )
         throw new Error('Publication unavailable');
     },
@@ -342,6 +379,7 @@ function installPublicationObserver(): void {
       const context = publicationContext();
       if (context !== undefined) context.publicationReadStarted = true;
     },
+    [RESOURCE_SNAPSHOT_OBSERVER]: observeResourceTags,
   });
 }
 

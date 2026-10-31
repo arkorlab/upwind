@@ -29,8 +29,14 @@ export function admitPublicationStream(
   headers: readonly string[],
   required: PublicationRequirement | undefined,
 ): Response {
-  const state = (): { readonly valid: boolean; readonly ready: boolean } =>
-    livePublicationState(context.publication, headers, required, nowMs());
+  const state = (): { readonly valid: boolean; readonly ready: boolean } => {
+    return livePublicationState(
+      context.publication,
+      [...headers, ...(context.resourceTags ?? [])],
+      required,
+      nowMs(),
+    );
+  };
   const initial = state();
   if (!initial.valid || (!initial.ready && context.publicationReadStarted !== true))
     return markPublicationPolicy(

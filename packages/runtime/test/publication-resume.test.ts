@@ -29,7 +29,11 @@ const ID = 'a'.repeat(64);
 const NOW = 1_800_000_000_000;
 const HEADER = `${PLATFORM_HEADER_PREFIX}publication-resume`;
 
-async function answer(tags?: readonly string[], initialHeaders?: Prerender['initialHeaders']) {
+async function answer(
+  tags?: readonly string[],
+  initialHeaders?: Prerender['initialHeaders'],
+  snapshots = false,
+) {
   const headers = new Headers({
     [CACHE_ROUTE_HEADER]: '/items',
     [RESUME_STATE_HEADER]: RESUME_STATE_BODY,
@@ -42,7 +46,15 @@ async function answer(tags?: readonly string[], initialHeaders?: Prerender['init
     headers,
   });
   const cache = {
-    host: { publication: { version: 1, identities: [ID], routes: ['/items'] } },
+    host: {
+      publication: {
+        version: snapshots ? 3 : 1,
+        valueObservers: true,
+        resourceSnapshots: true,
+        identities: [ID],
+        routes: ['/items'],
+      },
+    },
   } as unknown as CacheRuntime;
   const tables = { app: { entries: {} }, edge: { entries: {} } };
   const context = requestContextFor({
@@ -103,6 +115,23 @@ describe('selected publication grants on continuation resumes', () => {
       }),
     ).rejects.toThrow('Publication unavailable');
     expect(invokeNodeHandler).not.toHaveBeenCalled();
+  });
+
+  it('keeps the reused shell resource watermark when its suffix performs no new read', async () => {
+    const response = await answer(
+      undefined,
+      {
+        'x-next-cache-tags': [
+          `upwind:publication:v1:${ID}:${String(NOW + 1000)}`,
+          'source-resource',
+          `upwind:resource-snapshot:v1:${ID}:4`,
+        ],
+      },
+      true,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe('suffix without another data read');
   });
 
   it('keeps a missing selected-generation grant closed', async () => {

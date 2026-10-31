@@ -1,4 +1,6 @@
 import { sha256HexOfText } from '../artifact/hash.ts';
+import { SNAPSHOT_PUBLICATION_VERSION } from './publication-version.ts';
+import { resourceSnapshotOf } from './resource-snapshot.ts';
 
 /** A trusted publisher's absolute admission deadline, independent of cache freshness. */
 export interface PublicationGrant {
@@ -25,6 +27,12 @@ export type PublicationRequirement = PublicationSources &
         readonly version: 2;
         /** Every protected value is observed before use, including nested streamed/cached reads. */
         readonly valueObservers: true;
+      }
+    | {
+        readonly version: typeof SNAPSHOT_PUBLICATION_VERSION;
+        readonly valueObservers: true;
+        /** Cache publications validate the producer's original resource versions. */
+        readonly resourceSnapshots: true;
       }
   );
 
@@ -95,11 +103,22 @@ export function isPublicationTag(tag: string): boolean {
   return tag.startsWith('upwind:publication:');
 }
 
+function snapshotMissing(tags: readonly string[], required?: PublicationRequirement): boolean {
+  if (required?.version !== SNAPSHOT_PUBLICATION_VERSION) return false;
+  try {
+    // Check all tags: one valid witness cannot conceal another malformed reserved tag.
+    return tags.map((tag) => resourceSnapshotOf(tag)).every((witness) => witness === undefined);
+  } catch {
+    return true;
+  }
+}
+
 /** An invalid bound is already expired. Combining dependencies can only shorten a bound. */
 export function publicationDeadline(
   tags: readonly string[],
   required?: PublicationRequirement,
 ): number | undefined {
+  if (snapshotMissing(tags, required)) return 0;
   let deadline: number | undefined;
   const found = new Set<string>();
   for (const tag of tags) {

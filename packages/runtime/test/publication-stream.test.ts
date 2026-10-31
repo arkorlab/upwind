@@ -211,16 +211,19 @@ describe('publication observations during a streamed response', () => {
     ).rejects.toThrow('Publication unavailable');
   });
 
-  it('refuses a private result inside a shared Next component cache', async () => {
-    installNextCacheRegistry();
-    const stores = new AsyncLocalStorage<NextCacheStore>();
-    const register = Reflect.get(globalThis, Symbol.for(NEXT_CACHE_STORAGE_SYMBOL_KEY)) as (
-      storage: NextStorage<NextCacheStore>,
-    ) => void;
-    register(stores);
+  it.each(['cache', 'unstable-cache'])(
+    'refuses a private result inside a shared Next %s scope',
+    async (type) => {
+      installNextCacheRegistry();
+      const stores = new AsyncLocalStorage<NextCacheStore>();
+      const register = Reflect.get(globalThis, Symbol.for(NEXT_CACHE_STORAGE_SYMBOL_KEY)) as (
+        storage: NextStorage<NextCacheStore>,
+      ) => void;
+      register(stores);
 
-    await expect(
-      stores.run({ type: 'cache' }, () => observePrivatePublication(grant)),
-    ).rejects.toThrow('Private publication cannot enter a shared cache.');
-  });
+      await expect(stores.run({ type }, () => observePrivatePublication(grant))).rejects.toThrow(
+        'Private publication cannot enter a shared cache.',
+      );
+    },
+  );
 });
