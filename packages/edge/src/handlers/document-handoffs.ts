@@ -1,5 +1,13 @@
 import { sandboxBlocksRecovery } from '@stayingupwind/core/request';
+import type {
+  ContinuationHandle,
+  ContinuationResume,
+  ContinuationStart,
+} from '@stayingupwind/host/delivery';
 
+import type { EdgeContext } from '../strategies/context.ts';
+import { PublicationResumeUnavailableError } from '../strategies/continuation-publication.ts';
+import { resumeContinuation } from '../strategies/continuation-resume.ts';
 import type { ShellLoadResult } from '../strategies/shell-loader.ts';
 import type { DocumentInput } from './document.ts';
 import { abandonShellRead, withShellAccounting } from './observer.ts';
@@ -27,14 +35,58 @@ export function delegateCorruptDocument(
   input: DocumentInput,
   shellLookup: Promise<ShellLoadResult>,
 ): Promise<Response> {
+  return delegateDocument(input, shellLookup, 'shell-corrupt');
+}
+
+function delegateDocument(
+  input: DocumentInput,
+  shellLookup: Promise<ShellLoadResult>,
+  reason: string,
+): Promise<Response> {
   (input.generation?.onAbandoned ?? input.onBuildAbandoned)?.();
   if (input.generation !== undefined) {
     input.edge.ctx.waitUntil(shellLookup);
-    return input.passthrough('shell-corrupt', input.middleware, input.entry.pathname);
+    return input.passthrough(reason, input.middleware, input.entry.pathname);
   }
   const accounted = withShellAccounting(input);
   abandonShellRead(accounted.edge, shellLookup);
-  return accounted.passthrough('shell-corrupt', input.middleware, input.entry.pathname);
+  return accounted.passthrough(reason, input.middleware, input.entry.pathname);
+}
+
+/** Keep the shared strategy's start contract; only this document can choose a whole render. */
+export function startDocumentContinuation(
+  selection: { readonly complete: boolean; readonly head: boolean },
+  input: () => ContinuationStart<EdgeContext>,
+): { readonly handle: ContinuationHandle | undefined; readonly unavailable?: true } {
+  if (selection.complete || selection.head) return { handle: undefined };
+  try {
+    return { handle: resumeContinuation.start(input()) };
+  } catch (error) {
+    if (error instanceof PublicationResumeUnavailableError)
+      return { handle: undefined, unavailable: true };
+    throw error;
+  }
+}
+
+/** A build keeps its state in the Worker; a regenerated shell carries its original state. */
+export function documentResumeOf(
+  generation: DocumentInput['generation'],
+): ContinuationResume | undefined {
+  if (generation === undefined || generation.pack.header.source === 'build') return undefined;
+  const { postponed } = generation.pack;
+  return postponed === undefined
+    ? undefined
+    : { kind: 'runtime', state: postponed, route: generation.pack.header.route };
+}
+
+/** No selected bytes or response headers have escaped when the proof handoff is refused. */
+export function delegateUnresumableDocument(
+  input: DocumentInput,
+  shellLookup: Promise<ShellLoadResult>,
+  rendering: Promise<unknown> | undefined,
+): Promise<Response> {
+  if (rendering !== undefined) input.edge.ctx.waitUntil(rendering);
+  return delegateDocument(input, shellLookup, 'publication-handoff-unavailable');
 }
 
 /**
