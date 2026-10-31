@@ -470,7 +470,7 @@ function composeDocument(input: DocumentInput, composition: Composition): Respon
   input.onBuildServed?.();
   return input.generation === undefined
     ? publication.admitBuiltDocument(input, response)
-    : response;
+    : publication.admitGateDocument(input, response);
 }
 
 /** What stands for the continuation of a document that has none, should the shell fail it. */
@@ -580,7 +580,10 @@ function servedFromRecord(edge: EdgeContext, generation: ServedGeneration | unde
  * application's (`headToApplication`).
  */
 export async function handleDocument(input: DocumentInput): Promise<Response> {
-  if (input.generation === undefined && publication.builtDocumentExpired(input)) {
+  if (
+    (input.generation === undefined && publication.builtDocumentExpired(input)) ||
+    publication.gateDocumentExpired(input)
+  ) {
     if (input.shellRead !== undefined) input.edge.ctx.waitUntil(input.shellRead);
     return input.passthrough('publication-expired', input.middleware, input.entry.pathname);
   }
