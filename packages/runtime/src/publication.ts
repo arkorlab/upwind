@@ -8,9 +8,6 @@ import {
 } from '@stayingupwind/core/cache';
 import { observePublicationTags } from '@stayingupwind/core/paas';
 
-import type { RoutedInput } from './serve.ts';
-const HTTP_CLIENT_ERROR = 400;
-
 import { nowMs } from './cache/clock.ts';
 import {
   INVALIDATIONS_RECORDED_WITHIN_MS,
@@ -19,6 +16,7 @@ import {
 } from './cache/context.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { buildPublicationOf, markBuildPublication } from './publication-proof.ts';
+import type { RoutedInput } from './serve.ts';
 
 export function requirePublication(runtime: CacheRuntime | undefined, route: string): void {
   const context = requestContext();
@@ -32,10 +30,9 @@ export function admitRequestPublication(response: Response, context: RequestCont
     ...parseCacheTagsHeader(response.headers.get('x-next-cache-tags') ?? undefined),
   ];
   const required =
-    response.status < HTTP_CLIENT_ERROR &&
-    buildPublicationOf(response) !== context.publicationRequirement
-      ? context.publicationRequirement
-      : undefined;
+    buildPublicationOf(response) === context.publicationRequirement
+      ? undefined
+      : context.publicationRequirement;
   return admitPublication(response, tags, nowMs(), required);
 }
 

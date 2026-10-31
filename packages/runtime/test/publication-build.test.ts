@@ -80,6 +80,50 @@ function scenario(draft: boolean) {
 }
 
 describe('independent build publication proof', () => {
+  it('preserves a current granted error and an unprotected error response', async () => {
+    const test = scenario(false);
+    const response = await test.context.run(() => {
+      requirePublication(test.input.cache, ROUTE);
+      return admitRequestPublication(
+        new Response('current authorized error', {
+          status: 403,
+          headers: {
+            'x-next-cache-tags': `upwind:publication:v1:${publication.identities[0]}:${String(NOW + 60_000)}`,
+          },
+        }),
+        test.context,
+      );
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.text()).resolves.toBe('current authorized error');
+
+    const plain = scenario(false);
+    const denied = new Response('plain error', { status: 404 });
+
+    expect(admitRequestPublication(denied, plain.context)).toBe(denied);
+  });
+
+  it.each([403, 404, 500])(
+    'requires a grant for protected live error output (status=%s)',
+    async (status) => {
+      const test = scenario(false);
+      const response = await test.context.run(() => {
+        requirePublication(test.input.cache, ROUTE);
+        return admitRequestPublication(
+          new Response('retired data in an error body', {
+            status,
+            headers: { 'cache-control': 'public,s-maxage=3600' },
+          }),
+          test.context,
+        );
+      });
+
+      expect(response.status).toBe(503);
+      await expect(response.text()).resolves.not.toContain('retired data');
+    },
+  );
+
   it('does not exempt a live draft response merely because an independent shell exists', async () => {
     const test = scenario(true);
     const response = await test.context.run(async () => {
