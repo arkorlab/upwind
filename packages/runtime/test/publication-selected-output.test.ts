@@ -2,11 +2,13 @@ import type { Prerender } from '@stayingupwind/core/bundle';
 import { observePublicationTags } from '@stayingupwind/core/paas';
 import { describe, expect, it, vi } from 'vitest';
 
-import { answerWith } from '../src/answers.ts';
+import { answerFromRender, answerWith } from '../src/answers.ts';
+import type { CapturedRender } from '../src/cache/capture.ts';
 import { publicationRun, requestContextFor } from '../src/cache/context.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { notFound } from '../src/documents.ts';
 import { entryFor } from '../src/entries.ts';
+import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { admitRequestPublication, requirePublication } from '../src/publication.ts';
 import type { RoutedInput } from '../src/serve.ts';
 import type { Store } from '../src/store.ts';
@@ -57,6 +59,60 @@ function context(route: string, independent = false, rsc = false) {
 }
 
 describe('publication of the selected output', () => {
+  it.each([1, 2, 3] as const)(
+    'observes a selected fresh RSC resume before cached values run (version=%s)',
+    async (version) => {
+      const { state, input } = context('/items', false, true);
+      const witness = `upwind:resource-snapshot:v1:${ID}:4`;
+      const tags = [GRANT, 'resource:items', witness];
+      Object.assign(input.cache.host, {
+        publication: {
+          version,
+          ...(version >= 2 && { valueObservers: true }),
+          ...(version >= 3 && { resourceSnapshots: true }),
+          identities: [ID],
+          routes: ['/items'],
+        },
+      });
+      const render: CapturedRender = {
+        html: new Uint8Array(),
+        postponed: 'saved values',
+        rscData: new Uint8Array(),
+        segments: new Map(),
+        headers: { 'x-next-cache-tags': tags.join(',') },
+        status: 200,
+        cacheControl: { revalidate: false },
+        data: undefined,
+      };
+      vi.mocked(invokeNodeHandler).mockImplementationOnce(() => {
+        expect(state.publication.size).toBe(1);
+        expect(state.resourceTags).toContain(witness);
+
+        return Promise.resolve(new Response('fresh RSC'));
+      });
+
+      const response = await state.run(async () => {
+        requirePublication(input.cache, '/items');
+        await publicationRun(state.run)(() => {
+          observePublicationTags(tags);
+          return Promise.resolve();
+        });
+
+        expect(state.publication.size).toBe(0);
+
+        const selected = await answerFromRender(input, vi.fn(), render, {
+          representation: 'rsc',
+          url: '/items',
+        });
+        if (selected === undefined) throw new Error('The selected RSC must resume.');
+        return admitRequestPublication(selected, state);
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('fresh RSC');
+    },
+  );
+
   it('observes a fresh route-body grant before response header filtering loses it', async () => {
     const { state, input } = context('/api/items');
     const answer = await state.run(async () => {

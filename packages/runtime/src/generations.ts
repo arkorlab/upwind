@@ -622,12 +622,13 @@ async function answerFromGeneration(
   // Build records hold only the document's state; let rscFromBuild choose the RSC twin's own
   // state. A runtime navigation resumes directly, without reading its static RSC artifact first.
   const resumed =
-    pack.header.source === 'build' ? undefined : resumeRsc(input, handler, want, pack.postponed);
+    pack.header.source === 'build'
+      ? undefined
+      : resumeRsc(input, handler, want, {
+          postponed: pack.postponed,
+          tags: () => pack.header.tags.map((tag) => tag.value),
+        });
   if (resumed !== undefined) {
-    observeFreshPublication(
-      pack.header.tags.map((tag) => tag.value),
-      nowMs(),
-    );
     return resumed;
   }
   const body = await outputOf(runtime, store, pack, source);

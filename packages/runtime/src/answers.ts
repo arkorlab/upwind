@@ -117,7 +117,10 @@ export async function answerFromRender(
   render: CapturedRender,
   want: Want,
 ): Promise<Response | undefined> {
-  const resumed = resumeRsc(input, handler, want, render.postponed);
+  const resumed = resumeRsc(input, handler, want, {
+    postponed: render.postponed,
+    tags: () => parseCacheTagsHeader(render.headers['x-next-cache-tags']),
+  });
   if (resumed !== undefined) {
     return resumed;
   }
@@ -165,11 +168,16 @@ export function resumeRsc(
   input: RoutedInput,
   handler: NodeHandler,
   want: Want,
-  postponed: string | Uint8Array | undefined,
+  selected: {
+    readonly postponed: string | Uint8Array | undefined;
+    readonly tags: () => readonly string[];
+  },
 ): Promise<Response> | undefined {
+  const { postponed } = selected;
   if (postponed === undefined || want.prefetch === true || want.representation !== 'rsc') {
     return undefined;
   }
+  observeFreshPublication(selected.tags(), nowMs());
   return resume({
     input,
     handler,
