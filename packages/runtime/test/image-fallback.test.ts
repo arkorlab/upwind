@@ -2,7 +2,11 @@ import type { ImageRequestParams, ImagesConfig } from '@stayingupwind/core/image
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { describe, expect, it, vi } from 'vitest';
 
+import { requestContextFor } from '../src/cache/context.ts';
+import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { fetchRemoteSource, sourceResponse } from '../src/image-fallback.ts';
+import { markBuildPublication } from '../src/publication-proof.ts';
+import { admitRequestPublication } from '../src/publication.ts';
 
 /**
  * What the Worker's own answer for `/_next/image` holds a source to — the fallback for when the
@@ -92,6 +96,47 @@ function remote(net: FakeNetwork, images = IMAGES) {
 }
 
 describe('publication-tagged optimized image sources', () => {
+  it('keeps an independent source proof on its derived image through final admission', async () => {
+    const required = {
+      version: 2 as const,
+      valueObservers: true as const,
+      identities: ['a'.repeat(64)],
+      routes: ['/image'],
+      independentBuild: ['/image'],
+    };
+    const request = asked('GET');
+    const runtime = { host: { publication: required } } as unknown as CacheRuntime;
+    const context = requestContextFor({
+      tables: { app: { entries: {} }, edge: { entries: {} } },
+      runtime,
+      request,
+      startedAt: Date.now(),
+      waitUntil: vi.fn(),
+      clock: undefined,
+    });
+    context.publicationRequirement = required;
+    context.publicationReadStarted = true;
+    const source = new Response(body(png()), { headers: { 'content-type': 'image/png' } });
+    markBuildPublication(source, required);
+    const response = await context.run(async () => {
+      const derived = await sourceResponse({
+        source,
+        params: PARAMS,
+        images: IMAGES,
+        internal: true,
+        request,
+        publicationProtected: true,
+      });
+      return admitRequestPublication(derived, context);
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.arrayBuffer()).resolves.toHaveProperty(
+      'byteLength',
+      PNG_SIGNATURE.byteLength,
+    );
+  });
+
   it.each([1, 60_000])(
     'never keeps a protected image beyond its source grant (%s)',
     async (left) => {

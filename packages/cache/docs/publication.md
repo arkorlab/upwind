@@ -84,6 +84,13 @@ grant is retained on the uncached image response. This prevents the optimizer's 
 outliving the source bound. Remote images and build-hashed static images keep their usual cache
 behavior.
 
+An independent shipped shell does not exempt its live postponed suffix. The suffix keeps normal
+before-value and stream admission; an independent image source's proof follows only its derived
+image response. Continuations coalesce renewed tags by identity to the earliest original bound.
+A regeneration collects publication dependencies in its own scope, separate from the predecessor
+being served, while keeping the same request, resource receipts and cache-write context. A reused
+old child remains an old dependency; a render that reads only fresh data can advance its bound.
+
 The publisher must persist its issuance ceiling **before** emitting grants, fence renewal by owner
 and data generation, and stop old-generation issuance during withdrawal. Waiting for the maximum
 issued deadline belongs in preparation, outside a short activation transaction. Purges can speed

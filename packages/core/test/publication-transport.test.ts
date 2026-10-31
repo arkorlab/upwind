@@ -25,7 +25,7 @@ describe('selected publication grant transport', () => {
     const encoded = resumePublicationHeader(['ordinary-resource', late, early]);
     const selected = parseResumePublicationHeader(encoded ?? null);
 
-    expect(selected).toStrictEqual([late, early]);
+    expect(selected).toStrictEqual([early]);
     expect(publicationDeadline(selected)).toBe(60_000);
     expect(resumePublicationHeader(['ordinary-resource'])).toBeUndefined();
   });
@@ -40,11 +40,27 @@ describe('selected publication grant transport', () => {
     },
   );
 
+  it('resumes a valid generation with a thousand renewed tags using the original minimum', () => {
+    const tags = Array.from(
+      { length: 1024 },
+      (_, index) => `upwind:publication:v1:${ID}:${String(60_000 + index)}`,
+    );
+    const header = resumePublicationHeader(tags);
+
+    expect(parseResumePublicationHeader(header ?? null)).toStrictEqual([early]);
+    expect(publicationDeadline(parseResumePublicationHeader(header ?? null))).toBe(60_000);
+  });
+
   it('bounds the handoff and reserves it from public application requests', () => {
     expect(() => parseResumePublicationHeader(' '.repeat(8193))).toThrow('transport bound');
-    expect(() => resumePublicationHeader(Array.from({ length: 65 }, () => early))).toThrow(
-      'Invalid selected publication grants.',
-    );
+    expect(() => {
+      return resumePublicationHeader(
+        Array.from(
+          { length: 65 },
+          (_, index) => `upwind:publication:v1:${index.toString(16).padStart(64, '0')}:60000`,
+        ),
+      );
+    }).toThrow('Invalid selected publication grants.');
     expect(PLATFORM_REQUEST_HEADERS).toContain(PUBLICATION_RESUME_HEADER);
     expect(handedOnAsSent(PUBLICATION_RESUME_HEADER)).toBe(false);
     expect(handedOnAsSent(PUBLICATION_POLICY_HEADER)).toBe(false);

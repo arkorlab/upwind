@@ -1,11 +1,14 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
 import type { PublicationRequirement } from '@stayingupwind/core/cache';
+import { observePublicationTags } from '@stayingupwind/core/paas';
 import { describe, expect, it, vi } from 'vitest';
 
 import { afterBody } from '../src/after-body.ts';
+import type { NodeHandler } from '../src/app-module.ts';
 import { requestContextFor } from '../src/cache/context.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { documentFromBuild } from '../src/documents.ts';
+import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { admitRequestPublication, requirePublication } from '../src/publication.ts';
 import { withHeadersChanged } from '../src/reframe.ts';
 import type { RoutedInput } from '../src/serve.ts';
@@ -23,12 +26,17 @@ const publication = {
   independentBuild: [ROUTE],
 };
 
-function scenario(draft: boolean, required: PublicationRequirement = publication) {
+function scenario(
+  draft: boolean,
+  required: PublicationRequirement = publication,
+  postponed = false,
+) {
   const shell = {
     id: 'items',
     route: ROUTE,
     pathname: ROUTE,
     body: { sha256: 'shell' },
+    ...(postponed && { postponed: '{}' }),
   } as Prerender;
   const store = {
     manifest: { config: { basePath: '' }, bypassToken: 'draft' },
@@ -48,7 +56,7 @@ function scenario(draft: boolean, required: PublicationRequirement = publication
     request,
     startedAt: NOW,
     waitUntil,
-    clock: NOW,
+    clock: postponed ? undefined : NOW,
   });
   const input: RoutedInput = {
     ...tables,
@@ -74,7 +82,12 @@ function scenario(draft: boolean, required: PublicationRequirement = publication
         pathname: ROUTE,
         url: ROUTE,
       },
-      { entry: { kind: 'edge', handler }, status: 200 },
+      {
+        entry: postponed
+          ? { kind: 'node', handler: vi.fn<NodeHandler>() }
+          : { kind: 'edge', handler },
+        status: 200,
+      },
     );
   };
   return { context, input, handler, render };
@@ -94,6 +107,42 @@ describe('independent build publication proof', () => {
       expect(admitted.headers.get('cache-control')).toBe(original);
       await expect(admitted.text()).resolves.toBe('independent shell');
     });
+  });
+
+  it('never treats a postponed suffix as static proof after its live grant expires', async () => {
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(NOW - performance.timeOrigin);
+    const test = scenario(false, { ...publication, version: 2, valueObservers: true }, true);
+    let suffix: ReadableStreamDefaultController<Uint8Array> | undefined;
+    vi.mocked(invokeNodeHandler).mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            suffix = controller;
+          },
+        }),
+      ),
+    );
+    try {
+      const response = await test.context.run(async () => {
+        requirePublication(test.input.cache, ROUTE);
+        observePublicationTags([
+          `upwind:publication:v1:${publication.identities[0]}:${String(NOW + 1000)}`,
+        ]);
+        return admitRequestPublication(await test.render(), test.context);
+      });
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+
+      expect(new TextDecoder().decode(first.value)).toBe('independent shell');
+
+      clock.mockReturnValue(NOW + 1000 - performance.timeOrigin);
+      suffix!.enqueue(new TextEncoder().encode('expired live suffix'));
+      suffix!.close();
+
+      await expect(reader.read()).rejects.toThrow('Publication unavailable');
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('preserves a current granted error and an unprotected error response', async () => {

@@ -13,7 +13,7 @@ import { nowMs } from './cache/clock.ts';
 import {
   INVALIDATIONS_RECORDED_WITHIN_MS,
   type RequestContext,
-  requestContext,
+  publicationContext,
 } from './cache/context.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { buildPublicationOf, markBuildPublication } from './publication-proof.ts';
@@ -23,7 +23,7 @@ import type { RoutedInput } from './serve.ts';
 const CACHE_TAGS = 'x-next-cache-tags';
 
 export function requirePublication(runtime: CacheRuntime | undefined, route: string): void {
-  const context = requestContext();
+  const context = publicationContext();
   const required = publicationForRoute(runtime?.host.publication, route);
   if (context !== undefined && required !== undefined) {
     context.publicationRequirement = required;
@@ -85,6 +85,19 @@ export function buildPublicationExpired(
   );
 }
 
+/** Build bytes retain their original bounds without exempting a live continuation. */
+export function admitBuildSource(
+  input: RoutedInput,
+  route: string,
+  response: Response,
+  tags: readonly string[],
+): Response {
+  const required = publicationForBuild(input.cache?.host.publication, route);
+  const admitted = admitPublication(response, tags, nowMs(), required);
+  observePublicationTags(tags);
+  return admitted;
+}
+
 /** A shipped-data proof belongs only to the actual response selected from that build. */
 export function admitBuildPublication(
   input: RoutedInput,
@@ -94,8 +107,7 @@ export function admitBuildPublication(
 ): Response {
   const publication = input.cache?.host.publication;
   const required = publicationForBuild(publication, route);
-  const admitted = admitPublication(response, tags, nowMs(), required);
-  observePublicationTags(tags);
+  const admitted = admitBuildSource(input, route, response, tags);
   const proof = publicationForRoute(publication, route);
   if (proof !== undefined && required === undefined) markBuildPublication(admitted, proof);
   return admitted;

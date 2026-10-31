@@ -35,6 +35,7 @@ import {
 } from './image-publication.ts';
 import { ImageDestinationError } from './image-source-error.ts';
 import { fetchImageSource } from './image-source-fetch.ts';
+import { copyBuildPublication } from './publication-proof.ts';
 
 /**
  * `/_next/image` reaching the Function itself.
@@ -386,7 +387,10 @@ export async function sourceResponse(input: SourceResponseInput): Promise<Respon
   const sourceTag =
     input.source.headers.get('etag') ??
     (made !== undefined || input.keep === undefined ? undefined : `"${await sha256Hex(bytes)}"`);
-  return answered(input, { bytes, contentType, etag: sourceTag }, made ?? encoded, publication);
+  return copyBuildPublication(
+    source,
+    answered(input, { bytes, contentType, etag: sourceTag }, made ?? encoded, publication),
+  );
 }
 
 /** A transformation the encoder made, with its entity tag. */

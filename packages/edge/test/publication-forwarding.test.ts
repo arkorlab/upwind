@@ -36,6 +36,8 @@ async function scenario(layer: 'middleware' | 'rules') {
     reason: 'publication',
     middleware: {
       kind: 'continue',
+      rewritten: false,
+      setCookie: undefined,
       url: new URL(request.url),
       requestHeaders: new Headers(),
       responseHeaders: new Headers(layer === 'middleware' ? mutable : {}),

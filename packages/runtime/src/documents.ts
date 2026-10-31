@@ -11,7 +11,7 @@ import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
 import { isCrawler, isRscRequest, rscBase } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
-import { admitBuildPublication, buildPublicationExpired } from './publication.ts';
+import { admitBuildPublication, admitBuildSource, buildPublicationExpired } from './publication.ts';
 import {
   bypassesPrerender,
   concatShell,
@@ -172,7 +172,7 @@ export async function documentFromBuild(
     url: resolved.url,
   });
   const body = concatShell(store.readBlob(shell.body.sha256), rest);
-  return admitBuildPublication(
+  return admitBuildSource(
     input,
     shell.route,
     new Response(body, { status, headers }),

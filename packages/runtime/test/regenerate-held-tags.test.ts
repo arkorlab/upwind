@@ -1,8 +1,12 @@
+import { AsyncResource } from 'node:async_hooks';
+
 import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
+import { observePublicationTags } from '@stayingupwind/core/paas';
 import { TtlCache } from '@stayingupwind/core/util';
 import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
 
 import { withClock } from '../src/cache/clock.ts';
+import { requestContextFor, requestContext } from '../src/cache/context.ts';
 import { configureCacheHandlers, PlatformFetchCache } from '../src/cache/handlers.ts';
 import type {
   CacheHost,
@@ -70,6 +74,7 @@ interface Scenario {
   readonly tags: readonly string[];
   /** What it reads behind its answer, in work handed to `waitUntil`, once the render is over. */
   readonly behind?: readonly Read[] | undefined;
+  readonly publication?: { readonly served: string; readonly fresh: string };
 }
 
 /** The moment every clock of these tests reads: the isolate's, and what a request acts at. */
@@ -210,6 +215,9 @@ interface Regenerated {
   readonly answers: unknown[];
   readonly logged: readonly string[];
   readonly answeredAtOnce: boolean | undefined;
+  readonly publication: readonly string[] | undefined;
+  readonly renderTags: string | undefined;
+  readonly sameContext: boolean;
 }
 
 /** A regeneration of the route, its render reading as `scenario` says. */
@@ -238,35 +246,59 @@ async function regenerated(scenario: Scenario): Promise<Regenerated> {
   asking.runtime = runtime;
   configureCacheHandlers(runtime);
   let answers: unknown[] = [];
+  const outside = new AsyncResource('external-next-handler');
+  const request = new Request(`https://app.test${FEED.pathname}`);
+  const context =
+    scenario.publication === undefined
+      ? undefined
+      : requestContextFor({
+          tables: { app: { entries: {} }, edge: { entries: {} } },
+          runtime,
+          request,
+          startedAt: NOW - SECOND,
+          waitUntil: vi.fn(),
+          clock: NOW,
+        });
+  if (scenario.publication !== undefined) context?.publication.add(scenario.publication.served);
+  let sameContext = true;
   vi.mocked(invokeNodeHandler).mockImplementation(async (input) => {
     const run = input.run ?? ((work) => work());
-    return run(async () => {
-      answers = await readEach(scenario.reads);
-      input.waitUntil(
-        (async () => {
-          await rendered.promise;
-          await readEach(scenario.behind ?? []);
-          done.resolve(undefined);
-        })(),
-      );
-      return new Response('{}', {
-        headers: { 'cache-control': CACHE_CONTROL, 'x-next-cache-tags': scenario.tags.join(',') },
+    return outside.runInAsyncScope(() => {
+      return run(async () => {
+        if (scenario.publication !== undefined) {
+          sameContext = requestContext() === context;
+          observePublicationTags([scenario.publication.fresh]);
+        }
+        answers = await readEach(scenario.reads);
+        input.waitUntil(
+          (async () => {
+            await rendered.promise;
+            await readEach(scenario.behind ?? []);
+            done.resolve(undefined);
+          })(),
+        );
+        return new Response('{}', {
+          headers: { 'cache-control': CACHE_CONTROL, 'x-next-cache-tags': scenario.tags.join(',') },
+        });
       });
     });
   });
   const pending: Promise<unknown>[] = [];
   const outcome = await withClock(NOW, () => {
-    return regenerate({
-      runtime,
-      request: new Request(`https://app.test${FEED.pathname}`),
-      handler: () => Promise.reject(new Error('the bridge is replaced')),
-      target: { descriptor: FEED, reason: 'expired' },
-      previewToken: undefined,
-      waitUntil: (promise) => {
-        pending.push(promise);
-      },
-      run: (work) => work(),
-    });
+    const render = () => {
+      return regenerate({
+        runtime,
+        request,
+        handler: () => Promise.reject(new Error('the bridge is replaced')),
+        target: { descriptor: FEED, reason: 'expired' },
+        previewToken: undefined,
+        waitUntil: (promise) => {
+          pending.push(promise);
+        },
+        run: context?.run ?? ((work) => work()),
+      });
+    };
+    return context === undefined ? render() : context.run(render);
   });
   if (outcome.kind === 'accepted') {
     await outcome.published;
@@ -275,13 +307,67 @@ async function regenerated(scenario: Scenario): Promise<Regenerated> {
   // them lets it go here, rather than leaving it to wait for good.
   rendered.resolve(undefined);
   await Promise.allSettled(pending);
-  return { commit: commits[0], answers, logged, answeredAtOnce: asking.answered };
+  outside.emitDestroy();
+  return {
+    commit: commits[0],
+    answers,
+    logged,
+    answeredAtOnce: asking.answered,
+    publication: context === undefined ? undefined : [...context.publication],
+    renderTags:
+      outcome.kind === 'accepted' ? outcome.render.headers['x-next-cache-tags'] : undefined,
+    sameContext,
+  };
 }
 
 describe('what a regeneration commits of what its render held of each tag', () => {
   afterEach(() => {
     configureCacheHandlers(undefined);
     vi.mocked(invokeNodeHandler).mockReset();
+  });
+
+  it.each([NOW, NOW + SECOND])(
+    'renews an independent replacement without inheriting served grant %s',
+    async (until) => {
+      const prefix = `upwind:publication:v1:${'a'.repeat(64)}:`;
+      const served = `${prefix}${String(until)}`;
+      const fresh = `${prefix}${String(NOW + 60 * SECOND)}`;
+      const made = await regenerated({
+        later: 0,
+        copies: [],
+        entries: {},
+        reads: [],
+        tags: [],
+        publication: { served, fresh },
+      });
+
+      expect(made.logged).toStrictEqual([]);
+      expect(made.commit?.generation.tags.map((tag) => tag.value)).toContain(fresh);
+      expect(made.commit?.generation.tags.map((tag) => tag.value)).not.toContain(served);
+      expect(made.renderTags).toContain(fresh);
+      expect(made.renderTags).not.toContain(served);
+      expect(made.publication).toStrictEqual([served]);
+      expect(made.sameContext).toBe(true);
+    },
+  );
+
+  it('retains an old bound when the replacement really reuses a cached dependency carrying it', async () => {
+    const prefix = `upwind:publication:v1:${'a'.repeat(64)}:`;
+    const served = `${prefix}${String(NOW + SECOND)}`;
+    const fresh = `${prefix}${String(NOW + 60 * SECOND)}`;
+    const made = await regenerated({
+      later: 0,
+      copies: [],
+      entries: { child: entryOf([served], NOW) },
+      reads: [{ key: 'child', tags: [] }],
+      tags: [],
+      publication: { served, fresh },
+    });
+
+    expect(made.commit?.generation.tags.map((tag) => tag.value)).toContain(served);
+    expect(made.commit?.generation.tags.map((tag) => tag.value)).toContain(fresh);
+    expect(made.renderTags).toContain(served);
+    expect(made.publication).toStrictEqual([served]);
   });
 
   /**

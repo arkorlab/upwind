@@ -468,7 +468,9 @@ function composeDocument(input: DocumentInput, composition: Composition): Respon
   }
   response.headers.append('server-timing', serverTiming(entries));
   input.onBuildServed?.();
-  return response;
+  return input.generation === undefined
+    ? publication.admitBuiltDocument(input, response)
+    : response;
 }
 
 /** What stands for the continuation of a document that has none, should the shell fail it. */
@@ -589,10 +591,7 @@ export async function handleDocument(input: DocumentInput): Promise<Response> {
     }
     return headToApplication(input);
   }
-  const response = await deliverDocument(input, complete);
-  return input.generation === undefined
-    ? publication.admitBuiltDocument(input, response)
-    : response;
+  return deliverDocument(input, complete);
 }
 
 /** The document the edge answers itself: its shell, and what a resume renders behind it. */

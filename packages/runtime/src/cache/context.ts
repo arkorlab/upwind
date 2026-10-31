@@ -15,10 +15,13 @@ import type { CacheRuntime } from './runtime.ts';
  * itself, the execution context's `waitUntil`, and the context every render of the request runs in.
  */
 
-export interface RequestContext {
+export interface PublicationContext {
   readonly publication: Set<string>;
   publicationReadStarted?: boolean;
   publicationRequirement?: PublicationRequirement;
+}
+
+export interface RequestContext extends PublicationContext {
   /**
    * The entrypoints, as this request looks them up: with its `waitUntil`, which holds what a hook's
    * lookup begins evaluating (`EntryTables`).
@@ -283,6 +286,42 @@ export function requestContextFor(input: {
 }
 
 const contexts = new AsyncLocalStorage<RequestContext>();
+const publicationScopes = new AsyncLocalStorage<{
+  readonly owner: RequestContext | undefined;
+  readonly state: PublicationContext;
+}>();
+
+/** Publication dependencies of this render, separate from a predecessor served by its request. */
+export function publicationContext(): PublicationContext | undefined {
+  const owner = contexts.getStore();
+  const scope = publicationScopes.getStore();
+  return scope !== undefined && scope.owner === owner ? scope.state : owner;
+}
+
+/** Publication state follows callbacks re-entering the existing request/clock runner. */
+export function publicationRun(run: Run): Run {
+  let scope:
+    | { readonly owner: RequestContext | undefined; readonly state: PublicationContext }
+    | undefined;
+  return (work) => {
+    return run(() => {
+      const owner = contexts.getStore();
+      if (scope === undefined) {
+        const required = publicationContext()?.publicationRequirement;
+        scope = {
+          owner,
+          state: {
+            publication: new Set(),
+            publicationReadStarted: false,
+            ...(required !== undefined && { publicationRequirement: required }),
+          },
+        };
+      }
+      if (scope.owner !== owner) throw new Error('The publication request context changed.');
+      return publicationScopes.run(scope, work);
+    });
+  };
+}
 
 const publicationState = { installed: false };
 function installPublicationObserver(): void {
@@ -290,7 +329,7 @@ function installPublicationObserver(): void {
   publicationState.installed = true;
   Object.assign(globalThis, {
     [PUBLICATION_OBSERVER]: (tag: string): void => {
-      const context = contexts.getStore();
+      const context = publicationContext();
       if (context === undefined) return;
       context.publication.add(tag);
       if (
@@ -300,7 +339,7 @@ function installPublicationObserver(): void {
         throw new Error('Publication unavailable');
     },
     [PUBLICATION_READ_OBSERVER]: (): void => {
-      const context = contexts.getStore();
+      const context = publicationContext();
       if (context !== undefined) context.publicationReadStarted = true;
     },
   });

@@ -9,7 +9,7 @@ import type { NodeHandler } from '../app-module.ts';
 import type { Run } from '../node-bridge.ts';
 import type { CapturedRender } from './capture.ts';
 import { nowMs } from './clock.ts';
-import { asRegeneration } from './context.ts';
+import { asRegeneration, publicationRun } from './context.ts';
 import {
   type CurrentGeneration,
   forgetRecord,
@@ -17,7 +17,11 @@ import {
   publishedRecordOf,
   rememberRecord,
 } from './current.ts';
-import { generationTags, generationTagValues } from './generation-tags.ts';
+import {
+  generationTags,
+  generationTagValues,
+  withGenerationPublication,
+} from './generation-tags.ts';
 import { HeldTags } from './held-tags.ts';
 import {
   type AttemptOutcome,
@@ -224,7 +228,7 @@ async function renderStatic(
     throw new Error(`the render answered ${answered}`);
   }
   if (captured === undefined) return undefined;
-  return staticPageRender(input, request, captured);
+  return staticPageRender(input, request, withGenerationPublication(captured));
 }
 
 interface Uploads {
@@ -484,7 +488,12 @@ async function publish(
  * follows is round trips to the host that change nothing the render says, and whoever answers from
  * the render waits for none of them. `published` says what came of them.
  */
-export async function regenerate(input: RegenerationInput): Promise<RegenerationOutcome> {
+export function regenerate(input: RegenerationInput): Promise<RegenerationOutcome> {
+  const scoped = { ...input, run: publicationRun(input.run) };
+  return scoped.run(() => regenerateInContext(scoped));
+}
+
+async function regenerateInContext(input: RegenerationInput): Promise<RegenerationOutcome> {
   const { runtime, target } = input;
   // This isolate's own regeneration of the entry, its render made and its publish out, holds the
   // lease: the host would turn this one away. Its render answers instead of a page of the visitor's

@@ -1,3 +1,4 @@
+import { admitPublication } from '@stayingupwind/core/cache';
 import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manifest';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { describe, expect, it, vi } from 'vitest';
@@ -48,7 +49,10 @@ function fixture(until?: number, independent = false) {
       ...(independent && { independentBuild: ['/items'] }),
     },
   };
-  const policy = { ...DEFAULT_DELIVERY_POLICY, runtimeCache: { generations: 'off' as const } };
+  const policy = {
+    ...DEFAULT_DELIVERY_POLICY,
+    runtimeCache: { ...DEFAULT_DELIVERY_POLICY.runtimeCache, generations: 'off' as const },
+  };
   const edge = {
     env: {},
     runtime: { now: () => NOW, memory: createEdgeMemory(() => NOW) },
@@ -103,6 +107,31 @@ describe('publication admission without generation-record caching', () => {
       );
     },
   );
+
+  it('keeps a freshly admitted live fallback when only the unused shipped grant expires', async () => {
+    const test = fixture(NOW + 1000);
+    const clock = vi.spyOn(test.input.edge.runtime, 'now');
+
+    test.passthrough.mockImplementation(() => {
+      clock.mockReturnValue(NOW + 1000);
+      const tag = `upwind:publication:v1:${ID}:${String(NOW + 60_000)}`;
+      return Promise.resolve(
+        admitPublication(new Response('fresh from runtime'), [tag], NOW + 1000),
+      );
+    });
+
+    try {
+      const response = await handleDocument({
+        ...test.input,
+        shellRead: Promise.resolve({ kind: 'missing' }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('fresh from runtime');
+    } finally {
+      clock.mockRestore();
+    }
+  });
 
   it('keeps an independently proven static build available', async () => {
     const test = fixture(undefined, true);
