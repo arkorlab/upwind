@@ -10,7 +10,7 @@ import type { Store } from '../src/store.ts';
 
 vi.mock(import('../src/entries.ts'), () => {
   return {
-    entryFor: vi.fn(() => Promise.resolve({ kind: 'node', handler: vi.fn() })),
+    entryFor: vi.fn(() => Promise.resolve({ kind: 'node' as const, handler: vi.fn() })),
     deferredEntryFor: vi.fn(),
   };
 });
@@ -70,7 +70,7 @@ function scenario(data: boolean, independent: boolean, draft: boolean, tagged = 
   });
   const tables = { app: { entries: {} }, edge: { entries: {} } };
   const context = requestContextFor({
-    ...tables,
+    tables,
     runtime: cache,
     request,
     startedAt: NOW,
