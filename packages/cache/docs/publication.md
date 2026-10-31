@@ -78,7 +78,7 @@ issued deadline belongs in preparation, outside a short activation transaction. 
 up convergence but are not withdrawal acknowledgements. An old release must be unable to obtain a
 new grant for a different committed generation/release, even through a retained deployment URL.
 
-This contract assumes trusted publisher code and the platform's normal clock/expiry semantics.
+This contract assumes trusted publisher code and the host's normal clock/expiry semantics.
 It does not establish a global clock-skew bound or a globally synchronized purge barrier. An ACK
 may certify that compliant serving layers no longer admit old-generation responses under that
 contract. It cannot revoke already admitted streams, downloaded browser/router/offline copies, or
