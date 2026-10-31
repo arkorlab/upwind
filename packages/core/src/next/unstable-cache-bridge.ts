@@ -1,6 +1,7 @@
 const STORAGE_KEY = 'upwind.next-cache-storage@1';
+// Production minification can append this initializer to an earlier variable declaration.
 const STORES =
-  /(?<![\w$])(?:const|let|var)\s+(?<store>[\w$]+)\s*=\s*\{\s*type:\s*["']unstable-cache["']/gu;
+  /(?:(?<![\w$])(?:const|let|var)\s+|,\s*)(?<store>[\w$]+)\s*=\s*\{\s*type:\s*(?<quote>["'`])unstable-cache\k<quote>/gu;
 const RUNS =
   /(?<![\w$.])(?<storage>(?:[\w$]+\.)?workUnitAsyncStorage)\.run\(\s*(?<store>[\w$]+)\s*,/gu;
 
