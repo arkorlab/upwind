@@ -10,7 +10,7 @@ import { routeHostedBody, type RouteBodyInput } from '../src/handlers/route-body
 const mocks = vi.hoisted(() => {
   return {
     entry: {
-      kind: 'route-body',
+      kind: 'route-body' as const,
       pathname: '/icon',
       route: '/icon',
       entryId: 'entry',
@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => {
 vi.mock(import('@stayingupwind/core/request'), async (original) => {
   return {
     ...(await original()),
-    classifyRequest: vi.fn(() => ({ kind: 'route-body', entry: mocks.entry })),
+    classifyRequest: vi.fn(() => ({ kind: 'route-body' as const, entry: mocks.entry })),
   };
 });
 vi.mock(import('../src/handlers/hosted-gate.ts'), () => {
