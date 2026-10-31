@@ -117,6 +117,7 @@ interface BridgeModules {
   readonly tasks: string;
   readonly invocation: string;
   readonly reframe: string;
+  readonly publicationProof: string;
   readonly websocketResponse: string;
   readonly websocketUpgrade: string;
 }
@@ -124,7 +125,14 @@ interface BridgeModules {
 /** Run the actual bridge in workerd; the observer is an in-process service, never the network. */
 async function exercise(
   bridge: string,
-  { tasks, invocation, reframe, websocketResponse, websocketUpgrade }: BridgeModules,
+  {
+    tasks,
+    invocation,
+    reframe,
+    publicationProof,
+    websocketResponse,
+    websocketUpgrade,
+  }: BridgeModules,
   lane: Lane,
 ): Promise<void> {
   const release = Promise.withResolvers<undefined>();
@@ -142,6 +150,7 @@ async function exercise(
         { type: 'ESModule', path: '/lifetime/tasks.mjs', contents: tasks },
         { type: 'ESModule', path: '/lifetime/invocation.ts', contents: invocation },
         { type: 'ESModule', path: '/lifetime/reframe.ts', contents: reframe },
+        { type: 'ESModule', path: '/lifetime/publication-proof.ts', contents: publicationProof },
         {
           type: 'ESModule',
           path: '/lifetime/websocket-response-bridge.mjs',
@@ -261,6 +270,9 @@ const invocation = compiled(
 const reframe = compiled(
   await readFile(path.join(ROOT, 'packages/runtime/src/reframe.ts'), 'utf8'),
 );
+const publicationProof = compiled(
+  await readFile(path.join(ROOT, 'packages/runtime/src/publication-proof.ts'), 'utf8'),
+);
 const websocketResponse = compiled(
   await readFile(path.join(ROOT, 'packages/core/src/next/websocket-response-bridge.ts'), 'utf8'),
 );
@@ -290,7 +302,7 @@ async function collect(bridge: string, lane: Lane): Promise<void> {
   try {
     await exercise(
       bridge,
-      { tasks, invocation, reframe, websocketResponse, websocketUpgrade },
+      { tasks, invocation, reframe, publicationProof, websocketResponse, websocketUpgrade },
       lane,
     );
   } catch (error) {

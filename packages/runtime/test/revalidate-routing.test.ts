@@ -234,6 +234,7 @@ function revalidate(
       tables: { app: { entries: {} }, edge: { entries: {} } },
       runtime: { scopeId: SCOPE } as CacheRuntime,
       startedAt: 0,
+      publication: new Set<string>(),
       fetchStarts: new Map(),
       waitUntil: () => {
         // Regeneration is replaced; no background work is started.

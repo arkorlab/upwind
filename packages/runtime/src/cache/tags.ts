@@ -1,12 +1,16 @@
 import {
   type InvalidationState,
   MAX_TAGS_PER_CALL,
+  publicationExpired,
+  publicationDeadline,
+  publicationTimeFor,
   type TagHistoryMark,
   type Validity,
   withTagHistory,
 } from '@stayingupwind/core/cache';
 import { Lru } from '@stayingupwind/core/util';
 
+import { wallClockMs } from './clock.ts';
 import type { CacheHost, InvalidateOutcome, TagInvalidation } from './host.ts';
 import { TagLosses } from './tag-losses.ts';
 
@@ -687,6 +691,10 @@ export class TagState {
    * one the view missed, whatever its time says, for the same reason.
    */
   validityOf(tags: readonly string[], timestamp: number, now: number, held?: number): Validity {
+    if (publicationDeadline(tags) !== undefined) {
+      const live = publicationTimeFor(this, wallClockMs());
+      if (publicationExpired(tags, Math.max(now, live))) return 'expired';
+    }
     let validity: Validity = 'fresh';
     for (const tag of tags) {
       if (held !== undefined && this.#heldBy(tag, timestamp, held)) {

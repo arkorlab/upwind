@@ -33,6 +33,7 @@ import { nowMs } from './cache/clock.ts';
 import { type CurrentGeneration, type CurrentLookup, currentGeneration } from './cache/current.ts';
 import { generationClassShell } from './cache/generation-tags.ts';
 import type { AttemptReason } from './cache/host.ts';
+import { observeFreshPublication } from './cache/publication.ts';
 import { answeringAtOnce } from './cache/publishing.ts';
 import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
@@ -57,6 +58,7 @@ import {
   upgradePathname,
   withPartialFallbackUpgrade,
 } from './partial-fallback.ts';
+import { admitBuildPublication, requirePublication } from './publication.ts';
 import { answerFromJob, holdFirstPublish, laterOf, publishOf } from './regeneration-answers.ts';
 import { SEGMENT_PREFIX } from './representations.ts';
 import { routingParameters } from './route-parameters.ts';
@@ -136,6 +138,7 @@ async function targetOf(input: RoutedInput, store: Store): Promise<Target | unde
 async function jobOf(input: RoutedInput, store: Store): Promise<Job | undefined> {
   const runtime = input.cache;
   const target = await targetOf(input, store);
+  if (target !== undefined) requirePublication(runtime, target.descriptor.route);
   return runtime === undefined || target === undefined
     ? undefined
     : { input, store, runtime, target };
@@ -619,7 +622,12 @@ async function answerFromGeneration(
   // Build records hold only the document's state; let rscFromBuild choose the RSC twin's own
   // state. A runtime navigation resumes directly, without reading its static RSC artifact first.
   const resumed =
-    pack.header.source === 'build' ? undefined : resumeRsc(input, handler, want, pack.postponed);
+    pack.header.source === 'build'
+      ? undefined
+      : resumeRsc(input, handler, want, {
+          postponed: pack.postponed,
+          tags: () => pack.header.tags.map((tag) => tag.value),
+        });
   if (resumed !== undefined) {
     return resumed;
   }
@@ -643,7 +651,12 @@ async function answerFromGeneration(
     cache: validity === 'stale' ? 'STALE' : 'HIT',
   });
   // What a host with no edge in front of it shares of this generation, as the edge would.
-  return offeredFromGeneration(input, current, source.representation, answer);
+  const response = offeredFromGeneration(input, current, source.representation, answer);
+  const tags = pack.header.tags.map((tag) => tag.value);
+  observeFreshPublication(tags, nowMs());
+  return pack.header.source === 'build'
+    ? admitBuildPublication(input, source.route, response, tags)
+    : response;
 }
 
 /**

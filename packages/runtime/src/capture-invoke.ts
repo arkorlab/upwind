@@ -19,6 +19,7 @@ import { TAG_SYNC_DEADLINE_MS } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { renderStatically } from './cache/static-render.ts';
 import { nodeHandlerOf } from './entries.ts';
+import { requirePublication } from './publication.ts';
 import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender, type RoutedInput } from './serve.ts';
 import { entrypointKindOf, findShell, type Store, variesOnQuery } from './store.ts';
@@ -200,6 +201,7 @@ async function answerCapture(input: RoutedInput, store: Store): Promise<Response
     return page;
   }
   const { pathname } = page;
+  requirePublication(input.cache, page.route);
   if (input.cache !== undefined && !(await tagsBroughtUp(input, input.cache))) {
     return refused(
       `the tags were not brought up for ${pathname}: its render would read by a view behind the host's`,

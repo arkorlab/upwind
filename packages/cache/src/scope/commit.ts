@@ -25,6 +25,7 @@ import type { BlobStore } from './io.ts';
 import { type IsrWrite, isrWriteOf, sameOutputs } from './metering.ts';
 import { type PackHeaderFields, unwritableRecord } from './records.ts';
 import type { RepairJob, RepairPending, RepairStep } from './repair-jobs.ts';
+import { resourceSnapshotFailure, supersedeResourceSnapshot } from './resource-snapshots.ts';
 import {
   type AttemptRow,
   type EntryRow,
@@ -293,6 +294,11 @@ export interface Publication {
 function publish(input: TxInput, plan: CommitPlan, state: Publication): CommitOutcome {
   const { sql, scopeId, now, revision } = input;
   const { attempt, entry, outputs } = state;
+  const snapshot = resourceSnapshotFailure(
+    sql,
+    plan.request.generation.tags.map((tag) => tag.value),
+  );
+  if (snapshot !== undefined) return supersedeResourceSnapshot(input, attempt, snapshot);
   const { generation } = plan.request;
   const current =
     entry.current_generation_id === null

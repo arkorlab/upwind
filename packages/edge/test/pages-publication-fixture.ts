@@ -216,6 +216,7 @@ async function createPagesPublicationFixture() {
   const dispatch = vi.mocked(handlePassthrough);
   return {
     serve,
+    fallback,
     member,
     edge,
     manifest,

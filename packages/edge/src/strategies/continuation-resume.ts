@@ -1,4 +1,5 @@
 import {
+  PUBLICATION_RESUME_HEADER,
   CACHE_ROUTE_ESCAPED_HEADER,
   CACHE_ROUTE_HEADER,
   ORIGINAL_URL_HEADER,
@@ -16,6 +17,7 @@ import { lookAtScopeBehind } from '../cache/scope-signal.ts';
 import { buildResumeRequest } from '../forwarding.ts';
 import { fetchUpstream } from '../handlers/upstream.ts';
 import type { EdgeContext } from './context.ts';
+import { continuationPublicationHeader } from './continuation-publication.ts';
 
 function setAll(headers: Headers, values: Record<string, string>): void {
   for (const [name, value] of Object.entries(values)) {
@@ -65,6 +67,8 @@ function resumeRequest(input: ContinuationStart<EdgeContext>, signal: AbortSigna
   // `next-resume` among it — is stripped from them (`sanitizeContinuationHeaders`), and these are
   // the edge's to set.
   upstream.headers.set(NEXT_RESUME_HEADER, '1');
+  const publication = continuationPublicationHeader(input.publicationTags ?? []);
+  if (publication !== undefined) upstream.headers.set(PUBLICATION_RESUME_HEADER, publication);
   if (resume?.kind === 'runtime') {
     upstream.headers.set(RESUME_STATE_HEADER, RESUME_STATE_BODY);
     upstream.headers.set(RESUME_STATE_LENGTH_HEADER, String(resume.state.byteLength));

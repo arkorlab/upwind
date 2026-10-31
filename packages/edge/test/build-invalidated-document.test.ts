@@ -102,7 +102,7 @@ function scenario(load: GenerationLoad) {
   return { input, invalidations, passthrough, shell, waitUntil };
 }
 
-async function freshRecord(): Promise<GenerationLoad> {
+async function freshRecord(): Promise<Extract<GenerationLoad, { kind: 'generation' }>> {
   const html = new TextEncoder().encode('fresh generation');
   const bytes = encodeGenerationPack(
     {
@@ -255,5 +255,51 @@ describe('document selection with a negatively cached record after updateTag', (
     expect(mocks.regenerate).not.toHaveBeenCalled();
     expect(mocks.refresh).not.toHaveBeenCalled();
     expect(test.waitUntil).toHaveBeenCalledExactlyOnceWith(test.shell);
+  });
+});
+
+describe('bounded publication admission', () => {
+  const identity = 'a'.repeat(64);
+  const requirement = { version: 1 as const, identities: [identity], routes: ['/update-tag-test'] };
+
+  it.each(['none', 'unusable'] as const)(
+    'never revives a protected build when a %s record has no grant',
+    async (kind) => {
+      vi.clearAllMocks();
+      const load: GenerationLoad =
+        kind === 'none' ? { kind, lookupMs: 0 } : { kind, reason: 'corrupt', lookupMs: 0 };
+      const test = scenario(load);
+
+      test.input.manifest.publication = requirement;
+
+      await expect((await serveCachedDocument(test.input)).text()).resolves.toBe(
+        'new runtime render',
+      );
+      expect(test.passthrough).toHaveBeenCalledTimes(1);
+      expect(mocks.document).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps a host-proven independent static shell available', async () => {
+    vi.clearAllMocks();
+    const test = scenario({ kind: 'none', lookupMs: 0 });
+
+    test.input.manifest.publication = { ...requirement, independentBuild: ['/update-tag-test'] };
+
+    await expect((await serveCachedDocument(test.input)).text()).resolves.toBe('old build');
+    expect(test.passthrough).not.toHaveBeenCalled();
+  });
+
+  it('keeps a host-proven independent build record available at final document admission', async () => {
+    vi.clearAllMocks();
+    const load = await freshRecord();
+    load.pack.header.source = 'build';
+    load.pack.header.tags = [];
+    const test = scenario(load);
+
+    test.input.manifest.publication = { ...requirement, independentBuild: ['/update-tag-test'] };
+
+    expect((await serveCachedDocument(test.input)).status).toBe(200);
+    expect(test.passthrough).not.toHaveBeenCalled();
   });
 });

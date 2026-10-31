@@ -1,8 +1,20 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+import {
+  MAX_TAGS_PER_ENTRY,
+  resourceSnapshotOf,
+  type PublicationRequirement,
+} from '@stayingupwind/core/cache';
+import {
+  PUBLICATION_OBSERVER,
+  PUBLICATION_READ_OBSERVER,
+  RESOURCE_SNAPSHOT_OBSERVER,
+} from '@stayingupwind/core/paas';
+
 import type { EntryTables } from '../entries.ts';
 import type { Run } from '../node-bridge.ts';
-import { withClock } from './clock.ts';
+import { livePublicationState } from '../publication-state.ts';
+import { withClock, nowMs } from './clock.ts';
 import type { CacheRuntime } from './runtime.ts';
 
 /**
@@ -11,7 +23,14 @@ import type { CacheRuntime } from './runtime.ts';
  * itself, the execution context's `waitUntil`, and the context every render of the request runs in.
  */
 
-export interface RequestContext {
+export interface PublicationContext {
+  readonly publication: Set<string>;
+  publicationReadStarted?: boolean;
+  publicationRequirement?: PublicationRequirement;
+  resourceTags?: Set<string>;
+}
+
+export interface RequestContext extends PublicationContext {
   /**
    * The entrypoints, as this request looks them up: with its `waitUntil`, which holds what a hook's
    * lookup begins evaluating (`EntryTables`).
@@ -258,7 +277,10 @@ export function requestContextFor(input: {
   readonly clock: number | undefined;
   readonly invalidated?: InvalidatedTags | undefined;
 }): RequestContext {
+  installPublicationObserver();
   const context: RequestContext = {
+    publication: new Set(),
+    publicationReadStarted: false,
     tables: input.tables,
     runtime: input.runtime,
     request: input.request,
@@ -273,6 +295,93 @@ export function requestContextFor(input: {
 }
 
 const contexts = new AsyncLocalStorage<RequestContext>();
+const publicationScopes = new AsyncLocalStorage<{
+  readonly owner: RequestContext | undefined;
+  readonly state: PublicationContext;
+}>();
+
+/** Publication dependencies of this render, separate from a predecessor served by its request. */
+export function publicationContext(): PublicationContext | undefined {
+  const owner = contexts.getStore();
+  const scope = publicationScopes.getStore();
+  return scope !== undefined && scope.owner === owner ? scope.state : owner;
+}
+
+/** Original resource witnesses survive cached child reads and ordinary root captures alike. */
+export function observeResourceTags(tags: readonly string[]): void {
+  if (tags.every((tag) => !tag.startsWith('upwind:resource-snapshot:'))) return;
+  for (const tag of tags) resourceSnapshotOf(tag);
+  const context = publicationContext();
+  if (context === undefined) return;
+  context.resourceTags ??= new Set();
+  for (const tag of tags) {
+    context.resourceTags.add(tag);
+    if (context.resourceTags.size > MAX_TAGS_PER_ENTRY)
+      throw new Error('The render has too many resource snapshot tags.');
+  }
+  if (
+    !livePublicationState(
+      context.publication,
+      [...(context.resourceTags ?? [])],
+      context.publicationRequirement,
+      nowMs(),
+    ).valid
+  )
+    throw new Error('Publication unavailable');
+}
+
+/** Publication state follows callbacks re-entering the existing request/clock runner. */
+export function publicationRun(run: Run): Run {
+  let scope:
+    | { readonly owner: RequestContext | undefined; readonly state: PublicationContext }
+    | undefined;
+  return (work) => {
+    return run(() => {
+      const owner = contexts.getStore();
+      if (scope === undefined) {
+        const required = publicationContext()?.publicationRequirement;
+        scope = {
+          owner,
+          state: {
+            publication: new Set(),
+            resourceTags: new Set(),
+            publicationReadStarted: false,
+            ...(required !== undefined && { publicationRequirement: required }),
+          },
+        };
+      }
+      if (scope.owner !== owner) throw new Error('The publication request context changed.');
+      return publicationScopes.run(scope, work);
+    });
+  };
+}
+
+const publicationState = { installed: false };
+function installPublicationObserver(): void {
+  if (publicationState.installed) return;
+  publicationState.installed = true;
+  Object.assign(globalThis, {
+    [PUBLICATION_OBSERVER]: (tag: string): void => {
+      const context = publicationContext();
+      if (context === undefined) return;
+      context.publication.add(tag);
+      if (
+        !livePublicationState(
+          context.publication,
+          [...(context.resourceTags ?? [])],
+          context.publicationRequirement,
+          nowMs(),
+        ).valid
+      )
+        throw new Error('Publication unavailable');
+    },
+    [PUBLICATION_READ_OBSERVER]: (): void => {
+      const context = publicationContext();
+      if (context !== undefined) context.publicationReadStarted = true;
+    },
+    [RESOURCE_SNAPSHOT_OBSERVER]: observeResourceTags,
+  });
+}
 
 export interface ResourceChangeReceipt {
   readonly context: RequestContext | undefined;

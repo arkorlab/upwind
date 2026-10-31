@@ -31,6 +31,12 @@ import {
 import type { DataEntryMetadata, InvalidateOutcome, InvalidateRequest } from './host.ts';
 import * as ownMarks from './own-marks.ts';
 import {
+  reusePublication,
+  mergeTags,
+  publicationReadable,
+  observeFreshPublication,
+} from './publication.ts';
+import {
   fetchedAgainBehind,
   holdForRevalidation,
   revalidated,
@@ -273,15 +279,6 @@ async function invalidateLogged(
 }
 
 /** Both lists as one, in order, without repeats. */
-function mergeTags(first: readonly string[] | undefined, second: readonly string[] | undefined) {
-  const tags = new Set(first);
-  if (second !== undefined) {
-    for (const tag of second) {
-      tags.add(tag);
-    }
-  }
-  return [...tags];
-}
 
 // ---- the fetch cache ------------------------------------------------------------------------
 
@@ -377,10 +374,11 @@ export class PlatformFetchCache {
     cacheKey: string,
     ctx: FetchGetContext,
   ): Promise<{ value: CachedFetchValue; lastModified: number } | null> {
+    if (ctx.kind !== FETCH_KIND) return null;
+    // Dynamic fetches can return streaming bytes before set runs behind their cloned body.
+    observeFreshPublication(mergeTags(ctx.tags, ctx.softTags), nowMs());
     const current = state.current;
-    if (current === undefined || ctx.kind !== FETCH_KIND) {
-      return null;
-    }
+    if (current === undefined) return null;
     const { runtime } = current;
     const now = nowMs();
     const context = requestContext();
@@ -400,9 +398,7 @@ export class PlatformFetchCache {
       runtime.log('fetch cache read failed', { detail: detail(error) });
       return null;
     }
-    if (held === undefined) {
-      return null;
-    }
+    if (!publicationReadable(runtime, held, now)) return null;
     const judge = async (value: HeldValue): Promise<Validity> => {
       await runtime.tags.syncLocal(runtime.host, value.entry.tags, now);
       return judgedValidity(runtime.tags, {
@@ -448,6 +444,7 @@ export class PlatformFetchCache {
     if (fetchedAgainBehind(validity, nowMs() - entry.timestamp, ctx.revalidate, value.revalidate)) {
       holdForRevalidation(runtime, FETCH_STORE, cacheKey);
     }
+    if (!reusePublication(entry.tags, nowMs(), runtime.host.publication)) return null;
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };
   }
 
@@ -486,19 +483,16 @@ export class PlatformFetchCache {
   set(cacheKey: string, data: CachedFetchValue | null, ctx: FetchSetContext): Promise<void> {
     const current = state.current;
     const context = requestContext();
-    if (
-      current === undefined ||
-      context === undefined ||
-      data === null ||
-      ctx.fetchCache !== true ||
-      isCapture()
-    ) {
+    if (context === undefined || data === null || ctx.fetchCache !== true) {
       return Promise.resolve();
     }
     try {
+      const tags = mergeTags(data.tags, ctx.tags);
+      observeFreshPublication(tags, nowMs());
+      if (current === undefined || isCapture()) return Promise.resolve();
       const entry: DataEntryMetadata = {
         kind: DATA_FETCH,
-        tags: mergeTags(data.tags, ctx.tags),
+        tags,
         stale: 0,
         // A result fetched before an invalidation must keep that age when its body finishes.
         // The host fences a write against its current tag marks by this timestamp.
@@ -580,9 +574,7 @@ async function getUseCache(
     useCacheHeld(runtime, kind, cacheKey),
     runtime.tags.syncLocal(runtime.host, [...softTags, ...knownResourceTags()], now),
   ]);
-  if (held === undefined) {
-    return undefined;
-  }
+  if (!publicationReadable(runtime, held, now)) return undefined;
   const judge = async (value: HeldValue): Promise<Validity> => {
     await runtime.tags.syncLocal(runtime.host, value.entry.tags, now);
     return judgedValidity(runtime.tags, {
@@ -615,6 +607,7 @@ async function getUseCache(
   if (validity === 'stale' && ageMs <= entry.expire * MS_PER_SECOND) {
     holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
   }
+  if (!reusePublication(entry.tags, nowMs(), runtime.host.publication)) return undefined;
   return {
     value: new Blob([judged.held.bytes as BlobPart]).stream(),
     tags: [...entry.tags],

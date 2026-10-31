@@ -1,5 +1,7 @@
 import type { AppRuntime, ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
 import {
+  publicationPolicy,
+  enforcePublicationPolicy,
   HEADER_RULES_AFTER_COOKIE_COUNT_HEADER,
   HEADER_RULES_JUDGED_HEADER,
   HEADER_RULES_LEFT_HEADER,
@@ -683,6 +685,7 @@ async function forwardPassthrough(input: PassthroughInput, signal: AbortSignal):
     return failedPassthrough(input, 'app-unreachable');
   }
   // Read before the header goes with every other the edge's protocol reserves, below.
+  const publication = publicationPolicy(originResponse.headers);
   takeResponseInvalidation(input, originResponse);
   input.onAnswered?.(originResponse);
   const response = forwardedResponse(originResponse, input.forwarding, input.request.method);
@@ -694,6 +697,7 @@ async function forwardPassthrough(input: PassthroughInput, signal: AbortSignal):
   if (input.privateDelivery === true) {
     keptByNobody(headers);
   }
+  enforcePublicationPolicy(headers, publication);
   headers.set(EDGE_DEBUG_HEADER, passthroughDebug(input, originResponse));
   // Ordinary passthroughs do not name a manifest; foreground regeneration names its selected
   // deployment above. Whether the validation header was accepted is only the edge's to say. Taken

@@ -1,4 +1,4 @@
-import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
+import { parseCacheTagsHeader, type RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import { CACHE_OUTCOME_HEADER } from '@stayingupwind/core/paas';
 import { NULL_BODY_STATUSES, ROUTER_PROTOCOL_HEADERS } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
@@ -10,6 +10,8 @@ import {
   renderAppPage,
   renderCaptured,
 } from './cache/capture.ts';
+import { nowMs } from './cache/clock.ts';
+import { observeFreshPublication } from './cache/publication.ts';
 import { servable } from './cache/servable.ts';
 import { foundDynamic } from './dynamic-misses.ts';
 import type { GenerationSource } from './generation-source.ts';
@@ -67,6 +69,7 @@ export interface Answer extends Want {
 
 /** The visitor's answer: a document — a shell, then their own resume of it — or an output whole. */
 export function answerWith(input: RoutedInput, handler: NodeHandler, answer: Answer): Response {
+  observeFreshPublication(parseCacheTagsHeader(answer.headers['x-next-cache-tags']), nowMs());
   const headers = answerHeaders(answer.representation, answer.headers, answer.partial);
   if (answer.postponed === undefined) {
     headers.set(NEXT_CACHE_HEADER, answer.cache);
@@ -114,7 +117,10 @@ export async function answerFromRender(
   render: CapturedRender,
   want: Want,
 ): Promise<Response | undefined> {
-  const resumed = resumeRsc(input, handler, want, render.postponed);
+  const resumed = resumeRsc(input, handler, want, {
+    postponed: render.postponed,
+    tags: () => parseCacheTagsHeader(render.headers['x-next-cache-tags']),
+  });
   if (resumed !== undefined) {
     return resumed;
   }
@@ -162,11 +168,16 @@ export function resumeRsc(
   input: RoutedInput,
   handler: NodeHandler,
   want: Want,
-  postponed: string | Uint8Array | undefined,
+  selected: {
+    readonly postponed: string | Uint8Array | undefined;
+    readonly tags: () => readonly string[];
+  },
 ): Promise<Response> | undefined {
+  const { postponed } = selected;
   if (postponed === undefined || want.prefetch === true || want.representation !== 'rsc') {
     return undefined;
   }
+  observeFreshPublication(selected.tags(), nowMs());
   return resume({
     input,
     handler,
@@ -244,6 +255,10 @@ async function streamForVisitor(
     releaseStream(response.body, 'dynamic here: the usual path answers');
     return undefined;
   }
+  observeFreshPublication(
+    parseCacheTagsHeader(response.headers.get('x-next-cache-tags') ?? undefined),
+    nowMs(),
+  );
   const init = {
     status: response.status,
     headers: answerHeaders(want.representation, Object.fromEntries(response.headers), false),

@@ -503,6 +503,8 @@ const bundleSchema = z.object({
    * the host before the adapter its builds declare gates with.
    */
   gates: routeGatesSchema.optional(),
+  /** The Function runtime enforces absolute publication grants, including build fallback. */
+  publicationGrants: z.literal(1).optional(),
   /** Host registrations; their code is carried separately from the Next.js Functions. */
   durableObjects: durableObjectDeclarationsSchema.optional(),
   cloudflareWorkflows: cloudflareWorkflowDeclarationsSchema.optional(),

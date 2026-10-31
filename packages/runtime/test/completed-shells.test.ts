@@ -256,6 +256,7 @@ function revalidate({ runtime }: Cache, path: string): Promise<void> {
     runtime,
     request: new Request(`${HOST}/api/revalidate`),
     startedAt: T0,
+    publication: new Set<string>(),
     fetchStarts: new Map<string, number>(),
     waitUntil: () => {
       // What the regeneration hands the runtime is what the call itself waits on.

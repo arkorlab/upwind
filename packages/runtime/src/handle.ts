@@ -1,7 +1,7 @@
 import { isPagesDataPathname } from '@stayingupwind/core/bundle';
-import type { ImagesConfig } from '@stayingupwind/core/images';
 import { staticFileStatus } from '@stayingupwind/core/manifest';
 import {
+  withPublicationPolicy,
   MIDDLEWARE_DONE_HEADER,
   MIDDLEWARE_ONLY_HEADER,
   pathFromHeaders,
@@ -13,7 +13,7 @@ import { isWebSocketUpgrade } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { nowMs } from './cache/clock.ts';
-import { type RequestContext, requestContextFor } from './cache/context.ts';
+import { requestContextFor } from './cache/context.ts';
 import { catchUpWithScope } from './cache/pulls.ts';
 import { asksForCapture, handleCapture, keptByNobody } from './capture-invoke.ts';
 import { decidedApart, delivered, handedOn } from './delivery.ts';
@@ -42,15 +42,7 @@ import {
   requestChanges,
   type Routed,
 } from './handoff.ts';
-import { openImageCache } from './image-cache.ts';
-import {
-  applicationHosts,
-  fetchRemoteSource,
-  imageCacheInputOf,
-  imageFallback,
-  sourceRequest,
-  sourceResponse,
-} from './image-fallback.ts';
+import { serveImageSource } from './image-serving.ts';
 import {
   edgeJudgesHeaderRules,
   edgeRewriteStatusOf,
@@ -70,8 +62,10 @@ import {
   ownerOfResolved,
   withoutPlacementHeaders,
 } from './placement.ts';
+import { admitRequestPublication, requirePublication, onceRecorded } from './publication.ts';
 import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
 import { routingOf, untraced, withRoutingOf } from './resolve-request.ts';
+import { observeResumePublication } from './resume-publication.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
 import { resumeUrlOf } from './route-parameters.ts';
 import {
@@ -95,7 +89,6 @@ import {
   HTTP_NOT_FOUND,
   HTTP_OK,
   initUrlOf,
-  INVALIDATIONS_RECORDED_WITHIN_MS,
   invokeEntry,
   resume,
   type RoutedInput,
@@ -103,7 +96,6 @@ import {
   withoutBody,
   withWritesLanded,
 } from './serve.ts';
-import { sourceInput } from './source-input.ts';
 import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { unrouted } from './unrouted.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
@@ -143,6 +135,7 @@ async function handleResume(
   if (prerender === undefined) {
     return new Response(`unknown prerender ${prerenderId}`, { status: HTTP_NOT_FOUND });
   }
+  observeResumePublication(input, prerender.route, prerender.initialHeaders);
   const entry = await entryFor(input, prerender.route);
   if (entry === undefined) {
     return new Response(`no entrypoint for ${prerender.route}`, { status: HTTP_NOT_FOUND });
@@ -203,56 +196,6 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
   }
   // Nothing kept the render; `documentFromBuild` answers a crawler with one all the same.
   return documentFromBuild(input, store, resolved, { entry, status: HTTP_OK });
-}
-
-/**
- * The source `/_next/image` names, unresized; the edge does the optimizing. The request is what
- * routing resolved — a rewrite may have led here. A path of the application is routed in full,
- * its middleware included: what protects `/private/avatar.png` protects it behind the optimizer
- * too, as under Next.js, whose optimizer asks its router the same way. Nothing of the client's
- * request goes to a URL of the internet, nor to the application.
- */
-async function serveImageSource(
-  input: RoutedInput,
-  store: Store,
-  images: ImagesConfig,
-  routed: Pick<Routed, 'resolved' | 'source'>,
-): Promise<Response> {
-  const { resolved } = routed;
-  const { request } = input;
-  const query = new URL(resolved.url, request.url).searchParams;
-  const fallback = imageFallback(request, query, images);
-  if (fallback.kind === 'response') {
-    return fallback.response;
-  }
-  const { params } = fallback;
-  // Looked up before its source is asked for, where the target keeps images (`image-cache.ts`).
-  const opening = openImageCache(imageCacheInputOf(input, store.manifest, params, images));
-  const slot = opening === undefined ? undefined : await opening;
-  if (slot?.hit !== undefined) return slot.hit;
-  const keep = slot?.keep;
-  if (fallback.kind === 'remote') {
-    const remote = await fetchRemoteSource({
-      href: params.href,
-      images,
-      ownHosts: applicationHosts(request),
-    });
-    return remote.kind === 'refused'
-      ? remote.response
-      : sourceResponse({ source: remote.response, params, images, internal: false, request, keep });
-  }
-  const source = sourceRequest(request, params.href);
-  // Routed already, by the Function that handed the image here: answered from there.
-  if (routed.source !== undefined) {
-    source.headers.set(ROUTED_HEADER, routed.source);
-  }
-  const answered = await handleFull(sourceInput(input, source), store);
-  // A source another app Function holds is that Function's to fetch: the request for the image goes
-  // there whole, and its source is local when it arrives (`answerResolved`).
-  if (misdirectedTo(answered) !== undefined) {
-    return answered;
-  }
-  return sourceResponse({ source: answered, params, images, internal: true, request, keep });
 }
 
 /**
@@ -442,7 +385,13 @@ async function answerResolved(
   const { resolved } = routed;
   const { images } = store.manifest.config;
   if (images !== undefined && routed.image) {
-    const image = await serveImageSource(forwarded, store, images, routed);
+    const image = await serveImageSource({
+      input: forwarded,
+      store,
+      images,
+      routed,
+      routeSource: (source) => handleFull(source, store),
+    });
     // Handed on as it came where its source is another Function's: the hand-off knows the answer
     // itself (`misdirectedTo`), which one made again for the mark would not be (coderabbit).
     return misdirectedTo(image) === undefined
@@ -504,6 +453,7 @@ async function serveResolved(
   resolved: Resolved,
   asked: URL,
 ): Promise<Response> {
+  requirePublication(input.cache, resolved.route);
   const { request } = input;
   const file = store.staticFiles.get(resolved.route);
   if (file !== undefined) {
@@ -611,13 +561,6 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
  * too: its failure is answered with what the request invalidated as well (`function.ts`), as the
  * change the action made stands whatever became of its render.
  */
-async function onceRecorded(context: RequestContext, routed: Promise<Response>): Promise<Response> {
-  try {
-    return await routed;
-  } finally {
-    await context.invalidated.recorded(INVALIDATIONS_RECORDED_WITHIN_MS);
-  }
-}
 
 /**
  * Answer a request a deployment's Function was handed: in the context it runs in (`run`) — its
@@ -652,8 +595,13 @@ export async function handleRequest(given: HandleInput): Promise<Response> {
     }
     // Not answered before the host has recorded what the request invalidated — its headers neither,
     // nor a failure's (`onceRecorded`).
-    const routed = withoutPlacementHeaders(await onceRecorded(context, routeRequest(input)));
-    const response = delivered(handled.request, routed);
+    const routed = admitRequestPublication(
+      await onceRecorded(context, routeRequest(input)),
+      context,
+    );
+    const response = withPublicationPolicy(
+      delivered(handled.request, withoutPlacementHeaders(routed)),
+    );
     const answered = withoutBody(
       handled.request,
       withInvalidatedTags(response, context.invalidated),

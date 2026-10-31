@@ -1,5 +1,10 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import {
+  admitPublication,
+  publicationExpired,
+  type PublicationRequirement,
+} from '@stayingupwind/core/cache';
+import {
   allowedImageDestination,
   BYPASS_IMAGE_TYPES,
   detectImageType,
@@ -20,10 +25,17 @@ import {
   releaseStream,
 } from '@stayingupwind/core/util';
 
+import { nowMs } from './cache/clock.ts';
 import type { ImageCacheInput, KeptImage } from './image-cache.ts';
 import { encodeImage, type EncodedImage, holdsImage } from './image-encoder.ts';
+import {
+  imagePublicationHeaders,
+  imagePublicationTags,
+  protectedImageSource,
+} from './image-publication.ts';
 import { ImageDestinationError } from './image-source-error.ts';
 import { fetchImageSource } from './image-source-fetch.ts';
+import { copyBuildPublication } from './publication-proof.ts';
 
 /**
  * `/_next/image` reaching the Function itself.
@@ -103,6 +115,9 @@ export function imageFallback(
 export function imageCacheInputOf(
   input: {
     readonly request: Request;
+    readonly cache?:
+      | { readonly host: { readonly publication?: PublicationRequirement | undefined } }
+      | undefined;
     readonly middlewareRan?: true | undefined;
     readonly waitUntil: (promise: Promise<unknown>) => void;
   },
@@ -116,6 +131,7 @@ export function imageCacheInputOf(
     images,
     deploymentId: deployment.deploymentId,
     middlewareRan: input.middlewareRan === true,
+    publicationProtected: protectedImageSource(params, input.cache?.host.publication),
     waitUntil: input.waitUntil,
   };
 }
@@ -268,6 +284,7 @@ function refusalStatus(source: Response, internal: boolean): number {
 }
 
 interface SourceResponseInput {
+  readonly publicationProtected?: boolean | undefined;
   readonly source: Response;
   readonly params: ImageRequestParams;
   readonly images: ImagesConfig;
@@ -328,6 +345,9 @@ async function readSource(
  */
 export async function sourceResponse(input: SourceResponseInput): Promise<Response> {
   const { source, params, images, internal } = input;
+  const publication = imagePublicationTags(source);
+  if (publicationExpired(publication, nowMs()))
+    return admitPublication(source, publication, nowMs());
   const invalid = internal ? INTERNAL_INVALID : UPSTREAM_INVALID;
   if (!source.ok || source.body === null) {
     releaseStream(source.body, 'image source refused');
@@ -367,7 +387,10 @@ export async function sourceResponse(input: SourceResponseInput): Promise<Respon
   const sourceTag =
     input.source.headers.get('etag') ??
     (made !== undefined || input.keep === undefined ? undefined : `"${await sha256Hex(bytes)}"`);
-  return answered(input, { bytes, contentType, etag: sourceTag }, made ?? encoded);
+  return copyBuildPublication(
+    source,
+    answered(input, { bytes, contentType, etag: sourceTag }, made ?? encoded, publication),
+  );
 }
 
 /** A transformation the encoder made, with its entity tag. */
@@ -382,6 +405,7 @@ function answered(
     readonly etag: string | undefined;
   },
   encoded: Made | EncodedImage | undefined,
+  publication: readonly string[],
 ): Response {
   const { params, images, request } = input;
   const failed = encoded?.kind === 'failed';
@@ -403,14 +427,23 @@ function answered(
     config: images,
     cache: 'MISS',
   });
-  if (etag !== undefined && input.keep !== undefined) {
+  const protectedSource = imagePublicationHeaders(headers, publication, input.publicationProtected);
+  if (!protectedSource && etag !== undefined && input.keep !== undefined) {
     input.keep({ bytes, contentType, etag, maxAge, fallback: failed });
   }
   if (holdsImage(request, headers.get('etag') ?? undefined)) {
-    return new Response(null, { status: HTTP_NOT_MODIFIED, headers });
+    return admitPublication(
+      new Response(null, { status: HTTP_NOT_MODIFIED, headers }),
+      publication,
+      nowMs(),
+    );
   }
   headers.set('content-length', String(bytes.byteLength));
   // Read into a buffer of its own, which is what the runtime's `Response` asks a body to be over.
   const body = bytes as Uint8Array<ArrayBuffer>;
-  return new Response(request.method === 'HEAD' ? null : body, { headers });
+  return admitPublication(
+    new Response(request.method === 'HEAD' ? null : body, { headers }),
+    publication,
+    nowMs(),
+  );
 }

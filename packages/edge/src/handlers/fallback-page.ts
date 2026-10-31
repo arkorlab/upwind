@@ -397,6 +397,7 @@ async function serve(
     load,
     input.edge.runtime.now(),
     condemnedIn(input.edge.runtime.memory, input.edge.app?.deploymentId),
+    input.manifest.publication,
   );
   const delivery = { configured, settings, startedAt, dispatches };
   if (chosen.data) return dataPage(chosen, decision, delivery);

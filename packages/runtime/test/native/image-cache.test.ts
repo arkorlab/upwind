@@ -15,7 +15,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ImageCacheInput, ImageCacheSlot, KeptImage } from '../../src/image-cache.ts';
-import { sourceResponse } from '../../src/image-fallback.ts';
+import { imageCacheInputOf, sourceResponse } from '../../src/image-fallback.ts';
 import { configureImageCache, imageKeyOf, openImageCache } from '../../src/native/image-cache.ts';
 import { loadSharp } from '../../src/native/image-encoder.ts';
 
@@ -151,6 +151,30 @@ describe('images the native target keeps', () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     await rm(directory, { recursive: true, force: true });
+  });
+
+  it('never reads a previously kept local image before its protected source is admitted', async () => {
+    const input = inputOf({ params: { ...PARAMS, href: '/dynamic.png', isStatic: false } });
+    await kept(input);
+
+    await expect(hitOf(input)).resolves.toBeDefined();
+
+    const protectedInput = imageCacheInputOf(
+      {
+        request: input.request,
+        waitUntil: input.waitUntil,
+        cache: {
+          host: {
+            publication: { version: 1, identities: ['a'.repeat(64)], routes: ['/dynamic.png'] },
+          },
+        },
+      },
+      { deploymentId: input.deploymentId },
+      input.params,
+      input.images,
+    );
+
+    expect(openImageCache(protectedInput)).toBeUndefined();
   });
 
   it('keeps nothing until the server says where, nor where the application allows none', () => {

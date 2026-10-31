@@ -1,8 +1,13 @@
 import type { ImageRequestParams, ImagesConfig } from '@stayingupwind/core/images';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { requestContextFor } from '../src/cache/context.ts';
+import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { fetchRemoteSource, sourceResponse } from '../src/image-fallback.ts';
+import { markBuildPublication } from '../src/publication-proof.ts';
+import { admitBuildSource, admitRequestPublication } from '../src/publication.ts';
+import type { RoutedInput } from '../src/serve.ts';
 
 /**
  * What the Worker's own answer for `/_next/image` holds a source to — the fallback for when the
@@ -90,6 +95,137 @@ function remote(net: FakeNetwork, images = IMAGES) {
     fetchImpl: net.fetchImpl,
   });
 }
+
+describe('publication-tagged optimized image sources', () => {
+  it('retains a shipped image source snapshot through optimization and final v3 admission', async () => {
+    const id = 'a'.repeat(64);
+    const witness = `upwind:resource-snapshot:v1:${id}:4`;
+    const tags = [
+      `upwind:publication:v1:${id}:${String(Date.now() + 60_000)}`,
+      'resource:image',
+      witness,
+    ];
+    const required = {
+      version: 3 as const,
+      valueObservers: true as const,
+      resourceSnapshots: true as const,
+      identities: [id],
+      routes: ['/image'],
+    };
+    const request = asked('GET');
+    const runtime = { host: { publication: required } } as unknown as CacheRuntime;
+    const context = requestContextFor({
+      tables: { app: { entries: {} }, edge: { entries: {} } },
+      runtime,
+      request,
+      startedAt: Date.now(),
+      waitUntil: vi.fn(),
+      clock: undefined,
+    });
+    context.publicationRequirement = required;
+    context.publicationReadStarted = true;
+    const input: RoutedInput = {
+      request,
+      initURL: request.url,
+      app: { entries: {} },
+      edge: { entries: {} },
+      cache: runtime,
+      run: context.run,
+      waitUntil: vi.fn(),
+    };
+    const rawSource = new Response(body(png()), {
+      headers: { 'content-type': 'image/png', 'x-next-cache-tags': tags.join(',') },
+    });
+    const response = await context.run(async () => {
+      const source = admitBuildSource(input, '/image', rawSource, tags);
+
+      expect(context.resourceTags).toContain(witness);
+
+      const derived = await sourceResponse({
+        source,
+        params: PARAMS,
+        images: IMAGES,
+        internal: true,
+        request,
+        publicationProtected: true,
+      });
+      return admitRequestPublication(derived, context);
+    });
+
+    expect(response.headers.get('x-next-cache-tags')).toContain(witness);
+    expect(response.headers.get('x-next-cache-tags')).toContain('resource:image');
+    await expect(response.arrayBuffer()).resolves.toHaveProperty(
+      'byteLength',
+      PNG_SIGNATURE.byteLength,
+    );
+  });
+
+  it('keeps an independent source proof on its derived image through final admission', async () => {
+    const required = {
+      version: 2 as const,
+      valueObservers: true as const,
+      identities: ['a'.repeat(64)],
+      routes: ['/image'],
+      independentBuild: ['/image'],
+    };
+    const request = asked('GET');
+    const runtime = { host: { publication: required } } as unknown as CacheRuntime;
+    const context = requestContextFor({
+      tables: { app: { entries: {} }, edge: { entries: {} } },
+      runtime,
+      request,
+      startedAt: Date.now(),
+      waitUntil: vi.fn(),
+      clock: undefined,
+    });
+    context.publicationRequirement = required;
+    context.publicationReadStarted = true;
+    const source = new Response(body(png()), { headers: { 'content-type': 'image/png' } });
+    markBuildPublication(source, required);
+    const response = await context.run(async () => {
+      const derived = await sourceResponse({
+        source,
+        params: PARAMS,
+        images: IMAGES,
+        internal: true,
+        request,
+        publicationProtected: true,
+      });
+      return admitRequestPublication(derived, context);
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.arrayBuffer()).resolves.toHaveProperty(
+      'byteLength',
+      PNG_SIGNATURE.byteLength,
+    );
+  });
+
+  it.each([1, 60_000])(
+    'never keeps a protected image beyond its source grant (%s)',
+    async (left) => {
+      const source = new Response(body(png()), {
+        headers: {
+          'x-next-cache-tags': `upwind:publication:v1:${'a'.repeat(64)}:${String(Date.now() + left)}`,
+          'cache-control': 'public,max-age=3600',
+          etag: '"source"',
+        },
+      });
+      const keep = vi.fn();
+      const answer = await sourceResponse({
+        source,
+        params: PARAMS,
+        images: IMAGES,
+        internal: true,
+        request: asked('GET'),
+        keep,
+      });
+
+      expect(keep).not.toHaveBeenCalled();
+      expect(answer.headers.get('cache-control')).toContain('no-store');
+    },
+  );
+});
 
 describe('the Worker’s own answer for an image source', () => {
   it('follows a remote source’s redirects up to the configured count, nothing forwarded', async () => {

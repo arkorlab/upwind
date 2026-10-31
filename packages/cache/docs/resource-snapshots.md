@@ -1,0 +1,13 @@
+# Resource snapshot witnesses
+
+A resource publisher calls `observeResourceSnapshot({ resourceId, version, tag })` before returning values. The resource ID is an opaque lowercase SHA-256 identity, `version` is a nonnegative safe integer in the same domain as the publisher's resource-change versions, and `tag` is the canonical invalidation tag. The observer synchronously tags the actual Next cache units and the host's request capture. It performs no network or database lookup.
+
+The version describes the original read. A cached child keeps its saved witness when reused; reading a newer parent does not renew that child's version. When several witnesses name one resource, cache publication uses their minimum version. Malformed or unsupported tags in the reserved `upwind:resource-snapshot:` namespace fail closed.
+
+Route commits and data-cache writes validate witnesses inside their existing authority transaction. A bounded lookup joins the supplied resource IDs to `resource_heads` through its primary key. Every head must exist, its delivered version must be no newer than the original witness, and its canonical tag must be present in the generation's dependencies. A stale route publisher loses its lease without replacing the previous generation; a stale data write is refused before unchanged-write acknowledgement or repair adoption. Existing generations remain available under their normal freshness and SWR rules.
+
+Publication requirement version 3 requires both `valueObservers: true` and `resourceSnapshots: true`. Versions 1 and 2 retain their previous contracts. A host may claim version 3 only after it has verified the producer/capture path and its cache authority. `CacheScope.resourceSnapshotCapability()` returns literal `1` without SQL so deployment or background admission can include that proof in an existing control response. An older authority without the method cannot acknowledge that capability. Visitors need no extra handshake.
+
+Missing resource heads refuse only cache publication. A host may deliver a baseline resource version through background maintenance before enabling reusable outputs; it must not invent a newer witness or add a preflight to a foreground read. Ordinary writes without resource witnesses retain the existing path and perform no additional witness SQL.
+
+Protected publication reads use shared component caches that retain observed dependencies. Next.js `unstable_cache` persists its initial options tags rather than tags observed inside its callback, so publication and resource-snapshot observations inside that callback fail closed. Private results are also refused there. Ordinary `unstable_cache` functions and request/private component caches keep their existing behavior.

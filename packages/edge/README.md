@@ -13,6 +13,11 @@ Function's to answer whole. Around that, the edge serves:
 A pointer names what a site serves: a manifest, a delivery policy, the Functions behind them, and
 whether the edge serves from its shells at all.
 
+A selected shell carries its original publication grants and resource witnesses into its resume.
+If that proof is unsafe for the header transport or exceeds its 8 KiB bound, the Function renders
+a fresh whole document before any selected headers or bytes are sent. The edge never truncates or
+drops witnesses to resume the old shell; other continuation failures keep their existing handling.
+
 A request begins its cache scope check when it reads a generation or dispatches to the deployment's
 Function, as a whole request or a shell's continuation. Neither waits for the check. Documents keep
 their generation-read timing, so a cold build shell can be read beside its record while the scope

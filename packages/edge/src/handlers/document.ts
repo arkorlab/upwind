@@ -9,7 +9,7 @@ import {
 } from '@stayingupwind/core/manifest';
 import { MIDDLEWARE_SET_COOKIE_HEADER, type MiddlewareResult } from '@stayingupwind/core/paas';
 import { negotiateContentEncoding, routeDebugValue } from '@stayingupwind/core/request';
-import type { ContinuationResume, ResolvedPolicy } from '@stayingupwind/host/delivery';
+import type { ResolvedPolicy } from '@stayingupwind/host/delivery';
 import {
   createSplice,
   type MiddlewareCookies,
@@ -19,7 +19,6 @@ import {
 import { logWarn } from '../observability/logger.ts';
 import { serverTiming, type ServerTimingEntry } from '../observability/server-timing.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { resumeContinuation } from '../strategies/continuation-resume.ts';
 import { loadShell, type ShellLoadResult, storageReadsOf } from '../strategies/shell-loader.ts';
 import {
   deliveryFor,
@@ -30,8 +29,12 @@ import {
 } from './document-delivery.ts';
 import {
   delegateCorruptDocument,
+  delegateExpiredDocument,
   delegateSandboxedDocument,
+  delegateUnresumableDocument,
+  documentResumeOf,
   headToApplication,
+  startDocumentContinuation,
 } from './document-handoffs.ts';
 import {
   ACCEPT_ENCODING_HEADER,
@@ -46,15 +49,15 @@ import {
   type ShellDelivery,
   USER_AGENT_HEADER,
 } from './document-headers.ts';
+import * as publication from './document-publication.ts';
 import { reportOutcome } from './document-report.ts';
 import {
   continuationRequest,
   fallbackToApp,
   followResume,
-  settle,
+  noContinuation,
   shellFailure,
   unsettle,
-  type Upstream,
 } from './document-upstream.ts';
 import { decodesLayeredBrotli } from './layered-clients.ts';
 import { onTheWayOut } from './live-compression.ts';
@@ -357,20 +360,6 @@ function generationShell(generation: ServedGeneration): Promise<ShellLoadResult>
   });
 }
 
-/**
- * What the resume completes: the build's own state for the build's generation, which the Worker
- * holds under the prerender's id; a regenerated one's state travels with the request.
- */
-function resumeOf(generation: ServedGeneration | undefined): ContinuationResume | undefined {
-  if (generation === undefined || generation.pack.header.source === 'build') {
-    return undefined;
-  }
-  const { postponed } = generation.pack;
-  return postponed === undefined
-    ? undefined
-    : { kind: 'runtime', state: postponed, route: generation.pack.header.route };
-}
-
 interface Composition {
   /** Selected shell/rendering is ready: response preparation begins without awaiting its body. */
   readonly startedAt: number;
@@ -467,12 +456,9 @@ function composeDocument(input: DocumentInput, composition: Composition): Respon
   }
   response.headers.append('server-timing', serverTiming(entries));
   input.onBuildServed?.();
-  return response;
-}
-
-/** What stands for the continuation of a document that has none, should the shell fail it. */
-function noContinuation(): Promise<Upstream> {
-  return settle(Promise.reject(new Error('the document has no continuation')));
+  return input.generation === undefined
+    ? publication.admitBuiltDocument(input, response)
+    : publication.admitGenerationDocument(input, response);
 }
 
 /**
@@ -577,6 +563,12 @@ function servedFromRecord(edge: EdgeContext, generation: ServedGeneration | unde
  * application's (`headToApplication`).
  */
 export async function handleDocument(input: DocumentInput): Promise<Response> {
+  if (
+    (input.generation === undefined && publication.builtDocumentExpired(input)) ||
+    publication.gateDocumentExpired(input)
+  ) {
+    return delegateExpiredDocument(input);
+  }
   const complete = isCompleteDocument(input);
   if (!complete && input.request.method === 'HEAD') {
     if (input.shellRead !== undefined) {
@@ -628,17 +620,20 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
       ? undefined
       : trackRendering(loadShell(rendering, resolved.shell, input.edge));
   const { client, edge } = continuationRequest(input, nonce);
-  const handle =
-    complete || head
-      ? undefined
-      : resumeContinuation.start({
-          request: client,
-          entry,
-          manifest,
-          ctx: edge,
-          resume: resumeOf(generation),
-          headers: toldBesideResume(input, generation),
-        });
+  const continuation = startDocumentContinuation({ complete, head }, () => {
+    return {
+      request: client,
+      entry,
+      manifest,
+      ctx: edge,
+      resume: documentResumeOf(generation),
+      publicationTags: publication.documentPublicationTags(input),
+      headers: toldBesideResume(input, generation),
+    };
+  });
+  if (continuation.unavailable === true)
+    return delegateUnresumableDocument(input, shellLookup, encodedRead);
+  const { handle } = continuation;
   // The resume goes with a client that leaves before a splice holds it (`followClient`).
   const { upstream, clientLeft, ended, release } = followResume(input, handle);
   servedFromRecord(edge, generation);

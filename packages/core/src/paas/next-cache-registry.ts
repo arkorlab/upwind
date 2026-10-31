@@ -25,12 +25,14 @@ export interface NextRevalidationProvider {
 
 interface Registry {
   readonly units: Set<NextStorage<NextCacheStore>>;
+  readonly legacyAncestors: WeakSet<NextCacheStore>;
   readonly revalidation: Map<
     NextStorage<NextWorkStore>,
     Map<NextStorage<NextCacheStore>, NextRevalidationProvider>
   >;
 }
 
+const LEGACY_CACHE = 'unstable-cache';
 const STATE_KEY = Symbol.for('upwind.next-cache-registry@1');
 interface RegistryHolder {
   [STATE_KEY]?: Registry;
@@ -45,6 +47,7 @@ function registry(): Registry {
   if (held !== undefined) return held;
   const created: Registry = {
     units: new Set(),
+    legacyAncestors: new WeakSet(),
     revalidation: new Map(),
   };
   holder()[STATE_KEY] = created;
@@ -56,8 +59,17 @@ export function installNextCacheRegistry(): void {
   const hooks = globalThis as Record<symbol, unknown>;
   hooks[Symbol.for(NEXT_CACHE_STORAGE_SYMBOL_KEY)] ??= <T extends NextStorage<NextCacheStore>>(
     storage: T,
+    store?: NextCacheStore,
+    parent?: NextCacheStore,
   ): T => {
-    registry().units.add(storage);
+    const state = registry();
+    state.units.add(storage);
+    if (
+      store !== undefined &&
+      parent !== undefined &&
+      (parent.type === LEGACY_CACHE || state.legacyAncestors.has(parent))
+    )
+      state.legacyAncestors.add(store);
     return storage;
   };
   hooks[Symbol.for(NEXT_REVALIDATION_SYMBOL_KEY)] ??= (
@@ -94,11 +106,22 @@ export function installNextCacheRegistry(): void {
   };
 }
 
+function sharedStore(store: NextCacheStore | undefined): boolean {
+  return store?.type === 'cache' || store?.type === LEGACY_CACHE;
+}
+
 /** Add the read dependency before Next collects and propagates the cache entry's tags. */
 export function tagNextCacheRead(tag: string): void {
   for (const storage of registry().units) {
     const store = storage.getStore();
-    if (store?.type === 'cache') {
+    // Next persists unstable_cache's original options.tags, not tags observed during its callback.
+    if (
+      store !== undefined &&
+      (store.type === LEGACY_CACHE || registry().legacyAncestors.has(store)) &&
+      (tag.startsWith('upwind:publication:') || tag.startsWith('upwind:resource-snapshot:'))
+    )
+      throw new Error('unstable_cache cannot preserve publication dependencies.');
+    if (store !== undefined && sharedStore(store)) {
       store.tags ??= [];
       const tags = store.tags;
       if (!tags.includes(tag)) {
@@ -106,6 +129,11 @@ export function tagNextCacheRead(tag: string): void {
       }
     }
   }
+}
+
+/** Private authority results may use a request/private cache, never a shared component cache. */
+export function inPublicNextCache(): boolean {
+  return [...registry().units].some((storage) => sharedStore(storage.getStore()));
 }
 
 export function currentNextWorkStores(): NextWorkStore[] {

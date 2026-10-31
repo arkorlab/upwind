@@ -1,5 +1,5 @@
 import { sha256HexOfText } from '@stayingupwind/core/artifact';
-import { cacheKeyDigestOf } from '@stayingupwind/core/cache';
+import { cacheKeyDigestOf, publicationDeadline } from '@stayingupwind/core/cache';
 import { readBoundedBody, releaseStream } from '@stayingupwind/core/util';
 import {
   answersTheRead,
@@ -127,7 +127,11 @@ function now(): number {
 function withdrawalOf(copy: DataGetResponse): number | undefined {
   const { entry, invalidation } = copy;
   const expiry = entry.expire > 0 ? entry.timestamp + entry.expire * MS_PER_SECOND : undefined;
-  const hard = invalidation?.hardExpireAt;
+  const publication = publicationDeadline(entry.tags);
+  const hard =
+    publication === undefined
+      ? invalidation?.hardExpireAt
+      : Math.min(publication, invalidation?.hardExpireAt ?? publication);
   if (expiry === undefined || hard === undefined) {
     return expiry ?? hard;
   }

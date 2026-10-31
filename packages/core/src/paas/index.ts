@@ -5,6 +5,18 @@ export {
   UPWIND_AUTH_SECRET_ENV,
 } from './auth.ts';
 export {
+  observePublicationGrant,
+  observePublicationTags,
+  PUBLICATION_OBSERVER,
+} from './publication.ts';
+export {
+  beginPublicationRead,
+  observePrivatePublication,
+  privatePublicationIdentity,
+  PUBLICATION_READ_OBSERVER,
+} from './publication-read.ts';
+export { observeResourceSnapshot, RESOURCE_SNAPSHOT_OBSERVER } from './resource-snapshot.ts';
+export {
   UPWIND_CACHE_HOST_MODULE_ENV,
   UPWIND_UNSHIPPED_OUTPUTS_ENV,
   UPWIND_UNSHIPPED_PRERENDER_BODIES_ENV,
@@ -123,3 +135,18 @@ export {
   type ResourceWarmProps,
   type ResourceWarmResult,
 } from './resource-changes.ts';
+
+export {
+  PUBLICATION_RESUME_HEADER,
+  resumePublicationHeader,
+  parseResumePublicationHeader,
+} from './publication-resume.ts';
+
+export {
+  PUBLICATION_POLICY_HEADER,
+  publicationPolicy,
+  markPublicationPolicy,
+  enforcePublicationPolicy,
+  withPublicationPolicy,
+  type PublicationPolicy,
+} from './publication-policy.ts';
