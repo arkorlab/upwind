@@ -27,7 +27,7 @@ catalog:
   '@oxc-project/types': 0.155.0
   # The runtime's suites check that its random-safe request context keeps Sentry's own random
   # reads working in workerd, as an application that reports to Sentry makes them. Tests only.
-  '@sentry/core': 11.9.0
+  '@sentry/core': 11.10.0
   '@types/node': 24.19.2
   '@types/ws': 8.18.2
   ws: 8.22.0
