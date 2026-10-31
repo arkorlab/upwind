@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import { copyBuildPublication } from './publication.ts';
+import { copyBuildPublication } from './publication-proof.ts';
 
 /**
  * Once the response is done with, do this, once: the visitor's bytes come first. Done with is sent

@@ -1,4 +1,4 @@
-import { copyBuildPublication } from './publication.ts';
+import { copyBuildPublication } from './publication-proof.ts';
 
 /**
  * The answers whose body goes out as the application encoded it (`encodeBody: 'manual'`, set by

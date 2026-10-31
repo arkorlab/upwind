@@ -123,6 +123,7 @@ function revalidate(
     runtime,
     request,
     startedAt: T0,
+    publication: new Set<string>(),
     fetchStarts: new Map<string, number>(),
     waitUntil: () => {
       // What the regeneration hands the runtime is what the call itself waits on.

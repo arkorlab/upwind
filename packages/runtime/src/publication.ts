@@ -5,7 +5,6 @@ import {
   admitPublication,
   parseCacheTagsHeader,
   publicationForRoute,
-  type PublicationRequirement,
 } from '@stayingupwind/core/cache';
 import { observePublicationTags } from '@stayingupwind/core/paas';
 
@@ -19,14 +18,7 @@ import {
   requestContext,
 } from './cache/context.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
-
-const independentResponses = new WeakMap<Response, PublicationRequirement>();
-
-export function copyBuildPublication(source: Response, target: Response): Response {
-  const proof = independentResponses.get(source);
-  if (proof !== undefined) independentResponses.set(target, proof);
-  return target;
-}
+import { buildPublicationOf, markBuildPublication } from './publication-proof.ts';
 
 export function requirePublication(runtime: CacheRuntime | undefined, route: string): void {
   const context = requestContext();
@@ -41,7 +33,7 @@ export function admitRequestPublication(response: Response, context: RequestCont
   ];
   const required =
     response.status < HTTP_CLIENT_ERROR &&
-    independentResponses.get(response) !== context.publicationRequirement
+    buildPublicationOf(response) !== context.publicationRequirement
       ? context.publicationRequirement
       : undefined;
   return admitPublication(response, tags, nowMs(), required);
@@ -85,6 +77,6 @@ export function admitBuildPublication(
   const admitted = admitPublication(response, tags, nowMs(), required);
   observePublicationTags(tags);
   const proof = publicationForRoute(publication, route);
-  if (proof !== undefined && required === undefined) independentResponses.set(admitted, proof);
+  if (proof !== undefined && required === undefined) markBuildPublication(admitted, proof);
   return admitted;
 }
