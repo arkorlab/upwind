@@ -15,7 +15,7 @@ packages:
 catalog:
   # Cloudflare's own types for the storage objects `@stayingupwind/sdk` hands an application. They
   # are in that package's public declarations, so they are a dependency of it and not a dev one.
-  '@cloudflare/workers-types': 5.20261024.1
+  '@cloudflare/workers-types': 5.20261030.1
   '@eslint/js': 10.0.1
   # What the adapter reads a build's source maps with: `sourcemap-codec` for a map's mappings as
   # numbers and back (`projectOnly`), `trace-mapping` for the index maps Turbopack writes when debug
@@ -24,10 +24,10 @@ catalog:
   '@jridgewell/trace-mapping': 0.3.31
   '@next/routing': 16.4.3
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
-  '@oxc-project/types': 0.155.0
+  '@oxc-project/types': 0.156.0
   # The runtime's suites check that its random-safe request context keeps Sentry's own random
   # reads working in workerd, as an application that reports to Sentry makes them. Tests only.
-  '@sentry/core': 11.9.0
+  '@sentry/core': 11.10.0
   '@types/node': 24.19.2
   '@types/ws': 8.18.2
   ws: 8.22.0
@@ -35,7 +35,7 @@ catalog:
   engine.io: 6.6.11
   # What `@stayingupwind/auth` wraps. A peer dependency there, so a project brings its own copy and
   # this pin is what the repository builds and typechecks against — the same arrangement as `next`.
-  better-auth: 1.7.12
+  better-auth: 1.7.14
   eslint: 10.13.0
   eslint-config-prettier: 10.1.8
   eslint-import-resolver-typescript: 4.4.5
@@ -47,8 +47,8 @@ catalog:
   # It is here because the cheaper checks miss what CodeQL's `js/polynomial-redos` reports: a
   # pattern whose match attempt is linear but is attempted from every position in the subject is
   # quadratic, and neither `regexp/no-super-linear-backtracking` nor `no-super-linear-move` says so.
-  eslint-plugin-redos: 4.5.0
-  eslint-plugin-regexp: 3.3.1
+  eslint-plugin-redos: 4.6.2
+  eslint-plugin-regexp: 3.3.2
   eslint-plugin-security: 4.2.0
   eslint-plugin-sonarjs: 4.2.2
   eslint-plugin-unicorn: 79.0.0
@@ -56,20 +56,20 @@ catalog:
   # Reads a project's own config at build time, the way wrangler reads its own. Build-time only:
   # nothing of it reaches a Function.
   jsonc-parser: 3.3.1
-  knip: 6.42.1
+  knip: 6.44.0
   # The workerd `upwind dev` and `upwind build` bind a project's local storage to. Follow the
   # registry's `beta` channel for v5: `latest` still names v4, whose workerd is from July and older
   # than the compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
   # `@stayingupwind/adapter`). Keep this aligned with the version Wrangler uses.
-  miniflare: 5.20261019.2-beta
+  miniflare: 5.20261023.3-beta
   next: 16.4.3
-  oxfmt: 0.74.0
-  rolldown: 1.2.15
+  oxfmt: 0.75.0
+  rolldown: 1.2.16
   # The Public Suffix List, by which `local:check` refuses a cookie for a domain no site holds.
   tldts: 7.4.19
-  wrangler: 4.152.0
+  wrangler: 4.156.0
   typescript: 6.0.3
-  typescript-eslint: 8.72.0
+  typescript-eslint: 8.72.1
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
   # lint rules they are held to beside the rest.
   vitest: 5.0.5
@@ -80,10 +80,10 @@ catalog:
   # build in an isolate that builds it before its first request.
   zod: 4.6.7
   # What `@stayingupwind/cache`'s gateway routes a Function's requests with.
-  hono: 4.13.13
+  hono: 4.13.14
   # Runs `@stayingupwind/cache`'s suites inside workerd, with its own pinned Wrangler and
   # Miniflare, independently of the top-level development runtime.
-  '@cloudflare/vitest-plugin': 1.4.7
+  '@cloudflare/vitest-plugin': 1.4.11
 
 # Only these dependencies may run install scripts.
 allowBuilds:
@@ -105,6 +105,13 @@ strictPeerDependencies: true
 # pinned; these dependencies do not run on a deployed Function's request path.
 # Zod v4's bounded collection validation is patched for CVE-2023-54404 in 4.6.6.
 overrides:
+  # GHSA-g3hv-75wg-m249: these lint consumers use the maintained matcher API.
+  # import-x alone needs its removed makeRe calls adapted by the exact-version patch.
+  'eslint>minimatch': 11.0.3
+  '@eslint/config-array>minimatch': 11.0.3
+  '@typescript-eslint/typescript-estree>minimatch': 11.0.3
+  'eslint-plugin-import-x>minimatch': 11.0.3
+  'eslint-plugin-sonarjs>minimatch': 11.0.3
   # API 1.10 splits the facade from its global state, so Turbopack's embedded copies escape
   # the adapter's whole-module deduplication. Keep one API initializer per Function.
   '@opentelemetry/api': 1.9.1
@@ -113,8 +120,6 @@ overrides:
   'sharp@>=0.35.0 <0.35.5': 0.35.5
   'source-map-js@>=1.0.0 <1.2.2': 1.2.2
   'zod@>=4.0.0 <4.6.6': 4.6.7
-  # GHSA-g3hv-75wg-m249: bound minimatch's glob preprocessing in build/lint tooling.
-  'minimatch@>=10.0.0 <11.0.1': 11.0.1
 
 # pnpm runs an implicit install before every `pnpm run` by default, and that install takes no lock
 # (pnpm/pnpm#14551), so a second checkout running a script at the same time races it over
@@ -129,3 +134,6 @@ minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
   - next
   - '@next/*'
+
+patchedDependencies:
+  eslint-plugin-import-x@4.17.1: patches/eslint-plugin-import-x@4.17.1.patch
