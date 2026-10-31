@@ -31,17 +31,22 @@ function scenario(
   required: PublicationRequirement = publication,
   postponed = false,
 ) {
-  const shell = {
+  const shell: Prerender = {
     id: 'items',
     route: ROUTE,
     pathname: ROUTE,
-    body: { sha256: 'shell' },
-    ...(postponed && { postponed: '{}' }),
-  } as Prerender;
+    parentOutputId: 'items',
+    groupId: 0,
+    body: { sha256: 'shell', byteLength: 17, contentType: 'text/html' },
+    ...(postponed && {
+      postponed: { sha256: 'postponed', byteLength: 2, contentType: 'application/json' },
+    }),
+  };
   const store = {
     manifest: { config: { basePath: '' }, bypassToken: 'draft' },
     shellsByRoute: new Map([[ROUTE, { pages: new Map([[ROUTE, shell]]), patterns: [] }]]),
-    readBlob: () => new TextEncoder().encode('independent shell'),
+    readBlob: (digest: string) =>
+      new TextEncoder().encode(digest === 'postponed' ? '{}' : 'independent shell'),
   } as unknown as Store;
   const request = new Request(`https://fixture.test${ROUTE}`, {
     headers: draft ? { cookie: '__prerender_bypass=draft' } : {},
