@@ -67,7 +67,7 @@ catalog:
   rolldown: 1.2.15
   # The Public Suffix List, by which `local:check` refuses a cookie for a domain no site holds.
   tldts: 7.4.19
-  wrangler: 4.152.0
+  wrangler: 4.156.0
   typescript: 6.0.3
   typescript-eslint: 8.72.0
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
