@@ -35,7 +35,7 @@ catalog:
   engine.io: 6.6.11
   # What `@stayingupwind/auth` wraps. A peer dependency there, so a project brings its own copy and
   # this pin is what the repository builds and typechecks against — the same arrangement as `next`.
-  better-auth: 1.7.12
+  better-auth: 1.7.14
   eslint: 10.13.0
   eslint-config-prettier: 10.1.8
   eslint-import-resolver-typescript: 4.4.5
