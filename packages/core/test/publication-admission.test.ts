@@ -94,6 +94,19 @@ describe('publication admission', () => {
     expect(legacy.schemaVersion).toBe(6);
     expect(manifest.schemaVersion).toBe(9);
     expect(parseProjectManifest(serializeManifest(manifest)).publication).toStrictEqual(required);
+
+    const streamed = { ...required, version: 2 as const, valueObservers: true as const };
+    const streamedManifest = buildProjectManifest({ ...base, publication: streamed });
+
+    expect(parseProjectManifest(serializeManifest(streamedManifest)).publication).toStrictEqual(
+      streamed,
+    );
+    expect(
+      projectManifestSchema.safeParse({
+        ...streamedManifest,
+        publication: { ...required, version: 2 },
+      }).success,
+    ).toBe(false);
     expect(projectManifestSchema.safeParse({ ...manifest, schemaVersion: 8 }).success).toBe(false);
 
     const absent = { ...manifest };

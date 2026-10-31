@@ -16,23 +16,39 @@ import {
 } from './cache/context.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { buildPublicationOf, markBuildPublication } from './publication-proof.ts';
+import { admitPublicationStream } from './publication-stream.ts';
 import type { RoutedInput } from './serve.ts';
+
+const CACHE_TAGS = 'x-next-cache-tags';
 
 export function requirePublication(runtime: CacheRuntime | undefined, route: string): void {
   const context = requestContext();
   const required = publicationForRoute(runtime?.host.publication, route);
-  if (context !== undefined && required !== undefined) context.publicationRequirement = required;
+  if (context !== undefined && required !== undefined) {
+    context.publicationRequirement = required;
+    // The explicit v2 capability proves before-value instrumentation, even when an outer
+    // Suspense boundary flushes before its protected descendant has started its first read.
+    if (required.version === 2) context.publicationReadStarted = true;
+  }
 }
 
 export function admitRequestPublication(response: Response, context: RequestContext): Response {
   const tags = [
     ...context.publication,
-    ...parseCacheTagsHeader(response.headers.get('x-next-cache-tags') ?? undefined),
+    ...parseCacheTagsHeader(response.headers.get(CACHE_TAGS) ?? undefined),
   ];
-  const required =
-    buildPublicationOf(response) === context.publicationRequirement
-      ? undefined
-      : context.publicationRequirement;
+  const independent =
+    context.publicationRequirement !== undefined &&
+    buildPublicationOf(response) === context.publicationRequirement;
+  if (independent) return admitPublication(response, tags, nowMs());
+  const required = context.publicationRequirement;
+  if (context.publicationReadStarted || context.publication.size > 0)
+    return admitPublicationStream(
+      response,
+      context,
+      parseCacheTagsHeader(response.headers.get(CACHE_TAGS) ?? undefined),
+      required,
+    );
   return admitPublication(response, tags, nowMs(), required);
 }
 
@@ -53,7 +69,7 @@ export function buildPublicationExpired(
   route: string,
 ): boolean {
   const tags = parseCacheTagsHeader(
-    new Headers(shell?.initialHeaders as HeadersInit).get('x-next-cache-tags') ?? undefined,
+    new Headers(shell?.initialHeaders as HeadersInit).get(CACHE_TAGS) ?? undefined,
   );
   return publicationExpired(
     tags,

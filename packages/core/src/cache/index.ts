@@ -10,6 +10,7 @@ export {
 } from './artifact-locator.ts';
 export { publicArtifactRef, publicOutputSnapshot } from './artifacts.ts';
 export { admitPublication } from './publication-response.ts';
+export { publicationRequirementSchema } from './publication-schema.ts';
 export {
   type PublicationGrant,
   type PublicationRequirement,

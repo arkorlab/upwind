@@ -10,6 +10,12 @@ export {
   PUBLICATION_OBSERVER,
 } from './publication.ts';
 export {
+  beginPublicationRead,
+  observePrivatePublication,
+  privatePublicationIdentity,
+  PUBLICATION_READ_OBSERVER,
+} from './publication-read.ts';
+export {
   UPWIND_CACHE_HOST_MODULE_ENV,
   UPWIND_UNSHIPPED_OUTPUTS_ENV,
   UPWIND_UNSHIPPED_PRERENDER_BODIES_ENV,

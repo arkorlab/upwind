@@ -1,11 +1,12 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { PublicationRequirement } from '@stayingupwind/core/cache';
-import { PUBLICATION_OBSERVER } from '@stayingupwind/core/paas';
+import { PUBLICATION_OBSERVER, PUBLICATION_READ_OBSERVER } from '@stayingupwind/core/paas';
 
 import type { EntryTables } from '../entries.ts';
 import type { Run } from '../node-bridge.ts';
-import { withClock } from './clock.ts';
+import { livePublicationState } from '../publication-state.ts';
+import { withClock, nowMs } from './clock.ts';
 import type { CacheRuntime } from './runtime.ts';
 
 /**
@@ -16,6 +17,7 @@ import type { CacheRuntime } from './runtime.ts';
 
 export interface RequestContext {
   readonly publication: Set<string>;
+  publicationReadStarted: boolean;
   publicationRequirement?: PublicationRequirement;
   /**
    * The entrypoints, as this request looks them up: with its `waitUntil`, which holds what a hook's
@@ -266,6 +268,7 @@ export function requestContextFor(input: {
   installPublicationObserver();
   const context: RequestContext = {
     publication: new Set(),
+    publicationReadStarted: false,
     tables: input.tables,
     runtime: input.runtime,
     request: input.request,
@@ -287,7 +290,18 @@ function installPublicationObserver(): void {
   publicationState.installed = true;
   Object.assign(globalThis, {
     [PUBLICATION_OBSERVER]: (tag: string): void => {
-      contexts.getStore()?.publication.add(tag);
+      const context = contexts.getStore();
+      if (context === undefined) return;
+      context.publication.add(tag);
+      if (
+        !livePublicationState(context.publication, [], context.publicationRequirement, nowMs())
+          .valid
+      )
+        throw new Error('Publication unavailable');
+    },
+    [PUBLICATION_READ_OBSERVER]: (): void => {
+      const context = contexts.getStore();
+      if (context !== undefined) context.publicationReadStarted = true;
     },
   });
 }

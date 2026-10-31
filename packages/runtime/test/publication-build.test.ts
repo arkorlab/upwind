@@ -1,4 +1,5 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
+import type { PublicationRequirement } from '@stayingupwind/core/cache';
 import { describe, expect, it, vi } from 'vitest';
 
 import { afterBody } from '../src/after-body.ts';
@@ -22,7 +23,7 @@ const publication = {
   independentBuild: [ROUTE],
 };
 
-function scenario(draft: boolean) {
+function scenario(draft: boolean, required: PublicationRequirement = publication) {
   const shell = {
     id: 'items',
     route: ROUTE,
@@ -38,7 +39,7 @@ function scenario(draft: boolean) {
     headers: draft ? { cookie: '__prerender_bypass=draft' } : {},
   });
   // This boundary reads only the sealed host metadata, never a cache backend.
-  const cache = { host: { publication } } as unknown as CacheRuntime;
+  const cache = { host: { publication: required } } as unknown as CacheRuntime;
   const tables = { app: { entries: {} }, edge: { entries: {} } };
   const waitUntil = vi.fn();
   const context = requestContextFor({
@@ -80,6 +81,21 @@ function scenario(draft: boolean) {
 }
 
 describe('independent build publication proof', () => {
+  it('keeps a selected independent v2 shell cacheable despite an unresolved live-read capability', async () => {
+    const test = scenario(false, { ...publication, version: 2, valueObservers: true });
+
+    await test.context.run(async () => {
+      requirePublication(test.input.cache, ROUTE);
+      const built = await test.render();
+      const original = built.headers.get('cache-control');
+      const admitted = admitRequestPublication(built, test.context);
+
+      expect(test.context.publicationReadStarted).toBe(true);
+      expect(admitted.headers.get('cache-control')).toBe(original);
+      await expect(admitted.text()).resolves.toBe('independent shell');
+    });
+  });
+
   it('preserves a current granted error and an unprotected error response', async () => {
     const test = scenario(false);
     const response = await test.context.run(() => {

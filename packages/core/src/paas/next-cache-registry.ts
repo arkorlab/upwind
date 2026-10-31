@@ -108,6 +108,11 @@ export function tagNextCacheRead(tag: string): void {
   }
 }
 
+/** Private authority results may use a request/private cache, never a shared component cache. */
+export function inPublicNextCache(): boolean {
+  return [...registry().units].some((storage) => storage.getStore()?.type === 'cache');
+}
+
 export function currentNextWorkStores(): NextWorkStore[] {
   const stores = new Set<NextWorkStore>();
   for (const storage of registry().revalidation.keys()) {

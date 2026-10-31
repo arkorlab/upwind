@@ -10,14 +10,23 @@ export interface PublicationGrant {
 }
 
 /** Required readers must understand this capability before publishing its manifest. */
-export interface PublicationRequirement {
-  readonly version: 1;
+interface PublicationSources {
   readonly identities: readonly string[];
   /** Source route identities whose cacheable responses require a grant. */
   readonly routes: readonly string[];
   /** Host proof that these routes' shipped shells contain no protected data. */
   readonly independentBuild?: readonly string[] | undefined;
 }
+
+export type PublicationRequirement = PublicationSources &
+  (
+    | { readonly version: 1 }
+    | {
+        readonly version: 2;
+        /** Every protected value is observed before use, including nested streamed/cached reads. */
+        readonly valueObservers: true;
+      }
+  );
 
 const PREFIX = 'upwind:publication:v1:';
 const IDENTITY = /^[a-f0-9]{64}$/u;
