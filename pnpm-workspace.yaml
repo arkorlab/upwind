@@ -64,7 +64,7 @@ catalog:
   miniflare: 5.20261019.2-beta
   next: 16.4.3
   oxfmt: 0.74.0
-  rolldown: 1.2.15
+  rolldown: 1.2.16
   # The Public Suffix List, by which `local:check` refuses a cookie for a domain no site holds.
   tldts: 7.4.19
   wrangler: 4.152.0
