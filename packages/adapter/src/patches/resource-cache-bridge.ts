@@ -7,6 +7,8 @@ import {
 
 import { occurrencesOf, type Patch, Rewrite } from './types.ts';
 
+const CACHE_REGISTRATION_EDITS = 3;
+
 export const resourceCacheBridgePatch: Patch = {
   name: 'resource-cache-bridge',
   target:
@@ -23,10 +25,11 @@ export const resourceCacheBridgePatch: Patch = {
       throw check.fail(error instanceof Error ? error.message : String(error));
     }
     const expected =
-      occurrencesOf(
-        source,
-        /(?<![\w$.])(?:[\w$]+\.)?workUnitAsyncStorage\.run\(\s*[\w$]+\s*,\s*\(\)\s*=>\s*(?:[\w$]+\.)?dynamicAccessAsyncStorage\.run\(/gu,
-      ) +
+      CACHE_REGISTRATION_EDITS *
+        occurrencesOf(
+          source,
+          /(?<![\w$.])(?:[\w$]+\.)?workUnitAsyncStorage\.run\(\s*[\w$]+\s*,\s*\(\)\s*=>\s*(?:[\w$]+\.)?dynamicAccessAsyncStorage\.run\(/gu,
+        ) +
       occurrencesOf(source, /(?<![\w$.])[\w$]+\.runInCleanSnapshot\([\w$]+,\s*[\w$]+,/gu) +
       resourceCacheBridgeRevalidations(source) +
       resourceCacheBridgeUnstableRegistrations(source);

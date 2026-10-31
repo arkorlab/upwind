@@ -64,7 +64,57 @@ function nativeCache() {
   ) => void;
   evaluate(load, module, module.exports);
   if (module.exports.unstable_cache === undefined) throw new Error('Native cache export missing');
-  return { work, set, incrementalCache, cache: module.exports.unstable_cache };
+  return { work, unit, set, incrementalCache, cache: module.exports.unstable_cache };
+}
+
+function coldSharedCache(
+  unit: AsyncLocalStorage<NextCacheStore>,
+  read: () => Promise<string>,
+): Promise<string> {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- Exercise the installed native cache entry's exact work-unit transition.
+  const source = readFileSync(
+    require.resolve('next/dist/server/use-cache/use-cache-wrapper'),
+    'utf8',
+  );
+  const load = (id: string): unknown => {
+    if (id.endsWith('work-async-storage.external'))
+      return {
+        workAsyncStorage: {
+          run: (_store: unknown, callback: (...args: unknown[]) => unknown, ...args: unknown[]) =>
+            callback(...args),
+        },
+      };
+    if (id.endsWith('work-unit-async-storage.external'))
+      return {
+        workUnitAsyncStorage: unit,
+        getHmrRefreshHash: vi.fn(),
+        getServerComponentsHmrCache: vi.fn(),
+        getDraftModeProviderForCacheScope: vi.fn(),
+      };
+    if (id.endsWith('dynamic-access-async-storage.external'))
+      return { dynamicAccessAsyncStorage: { run: read } };
+    return {};
+  };
+  // The real native wrapper creates the cache store and enters it. Serialization is outside this boundary regression.
+  // eslint-disable-next-line sonarjs/code-eval -- Trusted installed Next source, with test-owned serializer and exact shared storage.
+  const entry = new Script(`(function(require,exports){${resourceCacheBridge(source).contents}
+return generateCacheEntry;})`).runInThisContext() as (
+    loader: typeof load,
+    exports: Record<string, unknown>,
+  ) => (work: Record<string, unknown>, context: Record<string, unknown>) => Promise<string>;
+  return entry(load, {})(
+    {
+      cacheLifeProfiles: { default: { revalidate: 100, expire: 100, stale: 100 } },
+      runInCleanSnapshot: (restore: (...args: unknown[]) => Promise<string>, ...args: unknown[]) =>
+        unit.exit(() => restore(...args)),
+    },
+    { kind: 'default', outerWorkUnitStore: unit.getStore() },
+  );
+}
+
+async function protectedValue(): Promise<string> {
+  await observePublicationGrant({ ...grant, validUntil: 1_900_000_000_000 });
+  return 'protected nested value';
 }
 
 describe('native unstable_cache publication boundary', () => {
@@ -91,21 +141,46 @@ describe('native unstable_cache publication boundary', () => {
     },
   );
 
-  it('keeps ordinary native unstable_cache callbacks cacheable', async () => {
-    const { work, set, incrementalCache, cache } = nativeCache();
+  it.each([1, 2])(
+    'refuses a protected cold shared fill at depth %s inside the native legacy cache',
+    async (depth) => {
+      const { work, unit, set, incrementalCache, cache } = nativeCache();
+      const read = cache(() => {
+        return coldSharedCache(
+          unit,
+          depth === 1 ? protectedValue : () => coldSharedCache(unit, protectedValue),
+        );
+      });
 
-    await expect(
-      work.run(
-        { incrementalCache },
-        cache(() => Promise.resolve('ordinary value')),
-      ),
-    ).resolves.toBe('ordinary value');
-    expect(set).toHaveBeenCalledExactlyOnceWith(
-      'key',
-      expect.objectContaining({ kind: 'FETCH' }),
-      expect.objectContaining({ tags: [] }),
-    );
-  });
+      await expect(work.run({ incrementalCache }, read)).rejects.toThrow(
+        'unstable_cache cannot preserve publication dependencies.',
+      );
+      expect(set).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'keeps ordinary native unstable_cache callbacks cacheable with nested=%s',
+    async (nested) => {
+      const { work, unit, set, incrementalCache, cache } = nativeCache();
+
+      await expect(
+        work.run(
+          { incrementalCache },
+          cache(() => {
+            return nested
+              ? coldSharedCache(unit, () => Promise.resolve('ordinary value'))
+              : Promise.resolve('ordinary value');
+          }),
+        ),
+      ).resolves.toBe('ordinary value');
+      expect(set).toHaveBeenCalledExactlyOnceWith(
+        'key',
+        expect.objectContaining({ kind: 'FETCH' }),
+        expect.objectContaining({ tags: [] }),
+      );
+    },
+  );
 
   it('refuses authenticated private values before the native cache can persist them', async () => {
     const { work, set, incrementalCache, cache } = nativeCache();

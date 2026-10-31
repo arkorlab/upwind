@@ -1,6 +1,7 @@
 import { isUnstableCacheSource, unstableCacheRegistrations } from './unstable-cache-bridge.ts';
 
 /** Shared by the Function bundler and Node's synchronous build/dev loader. No Next dependency. */
+const CACHE_REGISTRATION_EDITS = 3;
 const CACHE_STORAGE = 'upwind.next-cache-storage@1';
 const REVALIDATION = 'upwind.next-revalidation@1';
 const EXPORT_PREFIX = 'export ';
@@ -18,7 +19,7 @@ const REVALIDATION_ARRAY_EXPORTS = /["']revalidateTag["']\s*,\s*\(\)\s*=>\s*(?<n
 const SNAPSHOTS =
   /(?<![\w$.])(?<snapshot>[\w$]+)\.runInCleanSnapshot\((?<restore>[\w$]+),\s*(?<work>[\w$]+),/gu;
 const DYNAMIC_RUNS =
-  /(?<![\w$.])(?<unit>(?:[\w$]+\.)?workUnitAsyncStorage)\.run\(\s*[\w$]+\s*,\s*\(\)\s*=>\s*(?:[\w$]+\.)?dynamicAccessAsyncStorage\.run\(/gu;
+  /(?<![\w$.])(?<unit>(?:[\w$]+\.)?workUnitAsyncStorage)\.run\(\s*(?<store>[\w$]+)\s*,\s*\(\)\s*=>\s*(?:[\w$]+\.)?dynamicAccessAsyncStorage\.run\(/gu;
 const WORK_RUNS =
   /(?<![\w$.])(?<storage>(?:[\w$]+\.)?workAsyncStorage)\.run\(\s*[\w$]+\s*,\s*(?<entry>[\w$]+)\s*,/gu;
 const WORK_GETTERS = /(?<![\w$.])(?<storage>(?:[\w$]+\.)?workAsyncStorage)\.getStore\(/u;
@@ -85,7 +86,7 @@ function restorePrimarySnapshots(source: string): ResourceCacheBridgeResult {
   return { contents, edits };
 }
 
-function cacheRegistration(source: string, dynamic: RegExpExecArray): Insertion {
+function cacheRegistration(source: string, dynamic: RegExpExecArray): Insertion[] {
   const work = preceding(source, WORK_RUNS, dynamic.index);
   const storage = work?.groups?.['storage'];
   const unitStorage = dynamic.groups?.['unit'];
@@ -103,14 +104,29 @@ function cacheRegistration(source: string, dynamic: RegExpExecArray): Insertion 
   if (index === -1 || index >= dynamic.index) {
     throw new Error('resource-cache-bridge: Next cache context entry was not found');
   }
-  return {
-    index,
-    text: `;globalThis[Symbol.for("${CACHE_STORAGE}")]?.(${unitStorage});globalThis[Symbol.for("${REVALIDATION}")]?.({workStorage:${storage},unitStorage:${unitStorage}});`,
-  };
+  const context = /^function [\w$]+\(\s*[\w$]+\s*,\s*(?<context>[\w$]+)\s*,/u.exec(
+    source.slice(index),
+  )?.groups?.['context'];
+  const store = dynamic.groups?.['store'];
+  if (context === undefined || store === undefined)
+    throw new Error('resource-cache-bridge: Next cache parent context was not found');
+  return [
+    {
+      index,
+      text: `;globalThis[Symbol.for("${CACHE_STORAGE}")]?.(${unitStorage});globalThis[Symbol.for("${REVALIDATION}")]?.({workStorage:${storage},unitStorage:${unitStorage}});`,
+    },
+    { index: dynamic.index, text: `(globalThis[Symbol.for("${CACHE_STORAGE}")]?.(` },
+    {
+      index: dynamic.index + unitStorage.length,
+      text: `,${store},${context}.outerWorkUnitStore)??${unitStorage})`,
+    },
+  ];
 }
 
 function cacheRegistrations(source: string): Insertion[] {
-  return Array.from(source.matchAll(DYNAMIC_RUNS), (dynamic) => cacheRegistration(source, dynamic));
+  return [...source.matchAll(DYNAMIC_RUNS)].flatMap((dynamic) =>
+    cacheRegistration(source, dynamic),
+  );
 }
 
 function revalidationDeclarations(source: string): RevalidationDeclaration[] {
@@ -199,7 +215,10 @@ export function resourceCacheBridge(source: string): ResourceCacheBridgeResult {
   const cacheWrapper = isCacheWrapper(source);
   const snapshots = cacheWrapper ? restorePrimarySnapshots(source) : { contents: source, edits: 0 };
   const caches = cacheWrapper ? cacheRegistrations(snapshots.contents) : [];
-  if (cacheWrapper && (snapshots.edits === 0 || caches.length !== snapshots.edits)) {
+  if (
+    cacheWrapper &&
+    (snapshots.edits === 0 || caches.length !== snapshots.edits * CACHE_REGISTRATION_EDITS)
+  ) {
     throw new Error('resource-cache-bridge: Next cache context and clean snapshot counts differ');
   }
   const insertions = [
