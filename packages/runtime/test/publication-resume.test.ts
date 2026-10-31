@@ -1,3 +1,4 @@
+import type { Prerender } from '@stayingupwind/core/bundle';
 import {
   CACHE_ROUTE_HEADER,
   RESUME_STATE_BODY,
@@ -11,6 +12,7 @@ import { requestContextFor } from '../src/cache/context.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { admitRequestPublication } from '../src/publication.ts';
+import { observeResumePublication } from '../src/resume-publication.ts';
 import { handleRuntimeResume } from '../src/runtime-resume.ts';
 import type { RoutedInput } from '../src/serve.ts';
 import type { Store } from '../src/store.ts';
@@ -27,7 +29,7 @@ const ID = 'a'.repeat(64);
 const NOW = 1_800_000_000_000;
 const HEADER = `${PLATFORM_HEADER_PREFIX}publication-resume`;
 
-async function answer(tags?: readonly string[]) {
+async function answer(tags?: readonly string[], initialHeaders?: Prerender['initialHeaders']) {
   const headers = new Headers({
     [CACHE_ROUTE_HEADER]: '/items',
     [RESUME_STATE_HEADER]: RESUME_STATE_BODY,
@@ -64,9 +66,10 @@ async function answer(tags?: readonly string[]) {
     prerendersByPathname: new Map(),
     dynamicRoutes: [],
   } as unknown as Store;
-  return context.run(async () =>
-    admitRequestPublication(await handleRuntimeResume(input, store), context),
-  );
+  return context.run(async () => {
+    observeResumePublication(input, '/items', initialHeaders);
+    return admitRequestPublication(await handleRuntimeResume(input, store), context);
+  });
 }
 
 describe('selected publication grants on continuation resumes', () => {
@@ -75,6 +78,31 @@ describe('selected publication grants on continuation resumes', () => {
 
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe('suffix without another data read');
+  });
+
+  it('retains all tags from Next prerender multi-value headers without another data read', async () => {
+    const tags = [
+      `upwind:publication:v1:${ID}:${String(NOW + 1000)}`,
+      `upwind:publication:v1:${ID}:${String(NOW + 2000)}`,
+    ];
+    const response = await answer(undefined, { 'X-Next-Cache-Tags': ['resource', ...tags] });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe('suffix without another data read');
+  });
+
+  it('does not discard an expired member of a multi-value prerender header', async () => {
+    vi.mocked(invokeNodeHandler).mockClear();
+
+    await expect(
+      answer(undefined, {
+        'x-next-cache-tags': [
+          `upwind:publication:v1:${ID}:${String(NOW)}`,
+          `upwind:publication:v1:${ID}:${String(NOW + 1000)}`,
+        ],
+      }),
+    ).rejects.toThrow('Publication unavailable');
+    expect(invokeNodeHandler).not.toHaveBeenCalled();
   });
 
   it('keeps a missing selected-generation grant closed', async () => {
