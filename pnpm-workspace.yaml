@@ -113,6 +113,8 @@ overrides:
   'sharp@>=0.35.0 <0.35.5': 0.35.5
   'source-map-js@>=1.0.0 <1.2.2': 1.2.2
   'zod@>=4.0.0 <4.6.6': 4.6.7
+  # GHSA-g3hv-75wg-m249: bound minimatch's glob preprocessing in build/lint tooling.
+  'minimatch@>=10.0.0 <11.0.1': 11.0.1
 
 # pnpm runs an implicit install before every `pnpm run` by default, and that install takes no lock
 # (pnpm/pnpm#14551), so a second checkout running a script at the same time races it over
