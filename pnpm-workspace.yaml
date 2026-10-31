@@ -80,7 +80,7 @@ catalog:
   # build in an isolate that builds it before its first request.
   zod: 4.6.7
   # What `@stayingupwind/cache`'s gateway routes a Function's requests with.
-  hono: 4.13.13
+  hono: 4.13.14
   # Runs `@stayingupwind/cache`'s suites inside workerd, with its own pinned Wrangler and
   # Miniflare, independently of the top-level development runtime.
   '@cloudflare/vitest-plugin': 1.4.7
