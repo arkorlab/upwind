@@ -38,6 +38,14 @@ export function delegateCorruptDocument(
   return delegateDocument(input, shellLookup, 'shell-corrupt');
 }
 
+/** No continuation was dispatched, so its ask and speculative build read remain this request's. */
+export function delegateExpiredDocument(input: DocumentInput): Promise<Response> {
+  const accounted = withShellAccounting(input);
+  (input.generation?.onAbandoned ?? input.onBuildAbandoned)?.();
+  abandonShellRead(accounted.edge, input.shellRead);
+  return accounted.passthrough('publication-expired', input.middleware, input.entry.pathname);
+}
+
 function delegateDocument(
   input: DocumentInput,
   shellLookup: Promise<ShellLoadResult>,
@@ -79,14 +87,25 @@ export function documentResumeOf(
     : { kind: 'runtime', state: postponed, route: generation.pack.header.route };
 }
 
+interface SpeculativeRendering {
+  readonly pending: Promise<void>;
+  readonly ready: () => ShellLoadResult | undefined;
+}
+
+async function abandonedRendering(rendering: SpeculativeRendering): Promise<ShellLoadResult> {
+  await rendering.pending;
+  return rendering.ready() ?? { kind: 'unavailable', detail: 'The shell rendering failed.' };
+}
+
 /** No selected bytes or response headers have escaped when the proof handoff is refused. */
 export function delegateUnresumableDocument(
   input: DocumentInput,
   shellLookup: Promise<ShellLoadResult>,
-  rendering: Promise<unknown> | undefined,
+  rendering: SpeculativeRendering | undefined,
 ): Promise<Response> {
-  if (rendering !== undefined) input.edge.ctx.waitUntil(rendering);
-  return delegateDocument(input, shellLookup, 'publication-handoff-unavailable');
+  const accounted = withShellAccounting(input);
+  if (rendering !== undefined) abandonShellRead(accounted.edge, abandonedRendering(rendering));
+  return delegateDocument(accounted, shellLookup, 'publication-handoff-unavailable');
 }
 
 /**

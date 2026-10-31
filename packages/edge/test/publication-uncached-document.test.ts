@@ -183,7 +183,7 @@ function cachedFixture(source: 'record' | 'build', mode: 'head' | 'sandbox' | 'r
   const entry = {
     ...test.input.entry,
     headers,
-    cache: { ...test.input.entry.cache!, delivery: 'partial' as const },
+    cache: { ...test.input.entry.cache!, delivery: 'resume' as const },
   };
   const input: CachedDocumentInput = {
     ...test.input,
@@ -275,6 +275,7 @@ describe('publication admission without generation-record caching', () => {
         'publication-expired',
         undefined,
         '/items',
+        expect.any(Object),
       );
     },
   );

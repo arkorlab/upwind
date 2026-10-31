@@ -1,14 +1,18 @@
+import { sha256Hex } from '@stayingupwind/core/artifact';
 import { resourceSnapshotTag } from '@stayingupwind/core/cache';
 import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manifest';
 import { parseResumePublicationHeader, PUBLICATION_RESUME_HEADER } from '@stayingupwind/core/paas';
 import { NEXT_RESUME_HEADER } from '@stayingupwind/core/request';
-import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
+import { DEFAULT_DELIVERY_POLICY, type ShellRead } from '@stayingupwind/host/delivery';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleDocument, type DocumentInput } from '../src/handlers/document.ts';
+import { observeRequestMetric } from '../src/handlers/observer.ts';
 import { fetchUpstream } from '../src/handlers/upstream.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
+import type { EdgeMetric } from '../src/observability/metrics.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
+import type { ShellLoadResult } from '../src/strategies/shell-loader.ts';
 
 vi.mock(import('../src/handlers/upstream.ts'), async (original) => {
   const imported = await original();
@@ -60,6 +64,7 @@ function fixture(tags: readonly string[]) {
     },
   };
   const tasks: Promise<unknown>[] = [];
+  const metric = vi.fn<EdgeContext['host']['observer']['metric']>();
   const edge = {
     runtime: { now: () => NOW, memory: createEdgeMemory(() => NOW) },
     ctx: {
@@ -71,7 +76,7 @@ function fixture(tags: readonly string[]) {
     host: {
       names: {},
       credentials: { cookies: [], headers: [] },
-      observer: { metric: vi.fn(), recordServed: vi.fn(), imageTransformed: vi.fn() },
+      observer: { metric, recordServed: vi.fn(), imageTransformed: vi.fn() },
     },
     forwarding: { previewDomain: 'test', previewHost: 'site.test', clientIp: undefined },
     validated: false,
@@ -82,7 +87,7 @@ function fixture(tags: readonly string[]) {
     timings: {},
     app: manifest.app,
   } as unknown as EdgeContext;
-  const passthrough = vi.fn(() =>
+  const passthrough = vi.fn<DocumentInput['passthrough']>(() =>
     Promise.resolve(new Response('fresh complete document', { headers: { 'x-fresh': 'yes' } })),
   );
   const onBuildAbandoned = vi.fn();
@@ -105,7 +110,60 @@ function fixture(tags: readonly string[]) {
     onBuildAbandoned,
     passthrough,
   };
-  return { input, passthrough, onBuildAbandoned, tasks };
+  return { input, passthrough, onBuildAbandoned, tasks, metric };
+}
+
+function recordFallback(world: ReturnType<typeof fixture>, input: DocumentInput): void {
+  world.passthrough.mockImplementation((_reason, _middleware, _route, waited) => {
+    observeRequestMetric({ ...input.edge, abandonedShells: waited?.abandonedShells }, {
+      subrequests: 1,
+    } as EdgeMetric);
+    return Promise.resolve(new Response('fresh complete document'));
+  });
+}
+
+async function encodedFixture(source: 'backend' | 'missing' | 'memory') {
+  const world = fixture([GRANT, WITNESS, 'resource:unsafe\0tag']);
+  const compressed = new Blob(['encoded shell'])
+    .stream()
+    .pipeThrough(new CompressionStream('gzip'));
+  const bytes = new Uint8Array(await new Response(compressed).arrayBuffer());
+  const sha256 = await sha256Hex(bytes);
+  const pending = Promise.withResolvers<ShellRead | undefined>();
+  const getShell = vi.fn(() => pending.promise);
+  if (source === 'memory')
+    world.input.edge.runtime.memory.shells.set(sha256, bytes, bytes.byteLength);
+  const policy = {
+    ...DEFAULT_DELIVERY_POLICY,
+    shell: { ...DEFAULT_DELIVERY_POLICY.shell, memoryLru: true, cacheApiLayer: false },
+  };
+  const input: DocumentInput = {
+    ...world.input,
+    request: new Request(world.input.request, { headers: { 'accept-encoding': 'gzip' } }),
+    edge: { ...world.input.edge, policy },
+    entry: {
+      ...world.input.entry,
+      shellEncodings: {
+        gzip: {
+          sha256,
+          byteLength: bytes.byteLength,
+          contentType: 'text/html',
+          encoding: 'gzip',
+          crc32: 0,
+        },
+      },
+    },
+    resolved: { ...world.input.resolved, policy, shell: { id: 'kv', getShell } },
+  };
+  recordFallback(world, input);
+  return {
+    ...world,
+    input,
+    getShell,
+    finish: () => {
+      pending.resolve(source === 'missing' ? undefined : { bytes, source: 'kv', latencyMs: 0 });
+    },
+  };
 }
 
 describe('selected publication handoff refusal', () => {
@@ -113,6 +171,43 @@ describe('selected publication handoff refusal', () => {
     vi.mocked(fetchUpstream).mockReset();
     vi.mocked(fetchUpstream).mockResolvedValue(new Response('</body></html>'));
   });
+
+  it('returns an undispatched build regeneration ask and accounts for its late shell after expiry', async () => {
+    const world = fixture([`upwind:publication:v1:${ID}:${String(NOW)}`, WITNESS]);
+    const pending = Promise.withResolvers<ShellLoadResult>();
+    const input: DocumentInput = { ...world.input, shellRead: pending.promise };
+    recordFallback(world, input);
+    const response = await handleDocument(input);
+
+    await expect(response.text()).resolves.toBe('fresh complete document');
+
+    pending.resolve({ kind: 'ok', read: { bytes: new Uint8Array(), source: 'kv', latencyMs: 0 } });
+    await Promise.all(world.tasks);
+
+    expect(world.onBuildAbandoned).toHaveBeenCalledTimes(1);
+    expect(world.metric.mock.calls[0]?.[0].subrequests).toBe(2);
+    expect(fetchUpstream).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { source: 'backend' as const, calls: 1, subrequests: 2 },
+    { source: 'missing' as const, calls: 1, subrequests: 2 },
+    { source: 'memory' as const, calls: 0, subrequests: 1 },
+  ])(
+    'accounts for a discarded $source encoding without waiting to send the fresh answer',
+    async ({ source, calls, subrequests }) => {
+      const world = await encodedFixture(source);
+      const response = await handleDocument(world.input);
+
+      await expect(response.text()).resolves.toBe('fresh complete document');
+
+      world.finish();
+      await Promise.all(world.tasks);
+
+      expect(world.getShell).toHaveBeenCalledTimes(calls);
+      expect(world.metric.mock.calls[0]?.[0].subrequests).toBe(subrequests);
+    },
+  );
 
   it.each([
     {

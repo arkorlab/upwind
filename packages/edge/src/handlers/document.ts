@@ -29,6 +29,7 @@ import {
 } from './document-delivery.ts';
 import {
   delegateCorruptDocument,
+  delegateExpiredDocument,
   delegateSandboxedDocument,
   delegateUnresumableDocument,
   documentResumeOf,
@@ -566,8 +567,7 @@ export async function handleDocument(input: DocumentInput): Promise<Response> {
     (input.generation === undefined && publication.builtDocumentExpired(input)) ||
     publication.gateDocumentExpired(input)
   ) {
-    if (input.shellRead !== undefined) input.edge.ctx.waitUntil(input.shellRead);
-    return input.passthrough('publication-expired', input.middleware, input.entry.pathname);
+    return delegateExpiredDocument(input);
   }
   const complete = isCompleteDocument(input);
   if (!complete && input.request.method === 'HEAD') {
@@ -632,7 +632,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     };
   });
   if (continuation.unavailable === true)
-    return delegateUnresumableDocument(input, shellLookup, encodedRead?.pending);
+    return delegateUnresumableDocument(input, shellLookup, encodedRead);
   const { handle } = continuation;
   // The resume goes with a client that leaves before a splice holds it (`followClient`).
   const { upstream, clientLeft, ended, release } = followResume(input, handle);
