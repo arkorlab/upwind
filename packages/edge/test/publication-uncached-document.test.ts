@@ -11,15 +11,14 @@ import type { EdgeContext } from '../src/strategies/context.ts';
 
 const NOW = 1_800_000_000_000;
 const ID = 'a'.repeat(64);
-const resume = vi.hoisted(() =>
-  vi.fn(() => ({
-    response: Promise.resolve(new Response('</body></html>')),
-    abort: vi.fn(),
-  })),
-);
-vi.mock('../src/strategies/continuation-resume.ts', () => ({
-  resumeContinuation: { start: resume },
-}));
+const resume = vi.hoisted(() => {
+  return vi.fn(() => {
+    return { response: Promise.resolve(new Response('</body></html>')), abort: vi.fn() };
+  });
+});
+vi.mock(import('../src/strategies/continuation-resume.ts'), () => {
+  return { resumeContinuation: { start: resume } };
+});
 
 function gate(until?: number) {
   const html = new TextEncoder().encode('<html><body>gate values');
@@ -164,7 +163,7 @@ describe('publication admission without generation-record caching', () => {
 
       expect(response.status).toBe(503);
       await expect(response.text()).resolves.not.toContain('gate values');
-      expect(resume).toHaveBeenCalledOnce();
+      expect(resume).toHaveBeenCalledTimes(1);
     } finally {
       clock.mockRestore();
     }
@@ -176,7 +175,7 @@ describe('publication admission without generation-record caching', () => {
 
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toContain('gate values');
-    expect(resume).toHaveBeenCalledOnce();
+    expect(resume).toHaveBeenCalledTimes(1);
   });
 
   it.each(['x-next-cache-tags', 'X-Next-Cache-Tags'])(
