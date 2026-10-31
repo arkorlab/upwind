@@ -1,9 +1,9 @@
 import { admitPublication } from '@stayingupwind/core/cache';
 import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manifest';
-import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
+import { DEFAULT_DELIVERY_POLICY, runtimeCacheOf } from '@stayingupwind/host/delivery';
 import { describe, expect, it, vi } from 'vitest';
 
-import { handleDocument } from '../src/handlers/document.ts';
+import { handleDocument, type DocumentInput } from '../src/handlers/document.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
 
@@ -51,7 +51,7 @@ function fixture(until?: number, independent = false) {
   };
   const policy = {
     ...DEFAULT_DELIVERY_POLICY,
-    runtimeCache: { ...DEFAULT_DELIVERY_POLICY.runtimeCache, generations: 'off' as const },
+    runtimeCache: { ...runtimeCacheOf(DEFAULT_DELIVERY_POLICY), generations: 'off' as const },
   };
   const edge = {
     env: {},
@@ -68,7 +68,7 @@ function fixture(until?: number, independent = false) {
     app: manifest.app,
   } as unknown as EdgeContext;
   const passthrough = vi.fn(() => Promise.resolve(new Response('fresh from runtime')));
-  const input = {
+  const input: DocumentInput = {
     request: new Request<unknown, IncomingRequestCfProperties>('https://site.test/items', {
       headers: { 'accept-encoding': 'identity' },
     }),
