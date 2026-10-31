@@ -288,3 +288,8 @@ export function fallbackToApp(
     resumeDispatches,
   });
 }
+
+/** What stands for the continuation of a document that has none, should the shell fail it. */
+export function noContinuation(): Promise<Upstream> {
+  return settle(Promise.reject(new Error('the document has no continuation')));
+}

@@ -52,10 +52,9 @@ import {
   continuationRequest,
   fallbackToApp,
   followResume,
-  settle,
+  noContinuation,
   shellFailure,
   unsettle,
-  type Upstream,
 } from './document-upstream.ts';
 import { decodesLayeredBrotli } from './layered-clients.ts';
 import { onTheWayOut } from './live-compression.ts';
@@ -470,12 +469,7 @@ function composeDocument(input: DocumentInput, composition: Composition): Respon
   input.onBuildServed?.();
   return input.generation === undefined
     ? publication.admitBuiltDocument(input, response)
-    : publication.admitGateDocument(input, response);
-}
-
-/** What stands for the continuation of a document that has none, should the shell fail it. */
-function noContinuation(): Promise<Upstream> {
-  return settle(Promise.reject(new Error('the document has no continuation')));
+    : publication.admitGenerationDocument(input, response);
 }
 
 /**

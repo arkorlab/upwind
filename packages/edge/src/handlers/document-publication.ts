@@ -67,13 +67,19 @@ export function gateDocumentExpired(input: GateDocument): boolean {
   );
 }
 
-export function admitGateDocument(input: GateDocument, response: Response): Response {
-  if (input.generation?.gate === undefined) return response;
+/** Only composed bytes use this source; delegated responses keep their own original admission. */
+export function admitGenerationDocument(input: GateDocument, response: Response): Response {
+  const { generation } = input;
+  if (generation === undefined) return response;
+  const requirementFor =
+    generation.gate === undefined && generation.pack.header.source === 'build'
+      ? publicationForBuild
+      : publicationForRoute;
   return admitPublication(
     response,
     documentPublicationTags(input),
     input.edge.runtime.now(),
-    gateRequirement(input),
+    requirementFor(input.manifest.publication, generation.pack.header.route),
   );
 }
 

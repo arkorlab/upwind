@@ -1,9 +1,7 @@
 import {
   type DecodedGenerationPack,
-  admitPublication,
   publicationExpired,
   publicationForBuild,
-  publicationForRoute,
 } from '@stayingupwind/core/cache';
 import type { RouteEntry } from '@stayingupwind/core/manifest';
 import type { ResolvedPolicy, RuntimeCacheSettings } from '@stayingupwind/host/delivery';
@@ -263,7 +261,7 @@ async function serveRecord(
           onDeclined: followed?.declined,
         })
       : undefined;
-  const response = await handleDocument({
+  return handleDocument({
     ...document,
     generation: {
       pack: decision.pack,
@@ -298,21 +296,6 @@ async function serveRecord(
           : undefined,
     },
   });
-  return admitRecord(response, input, decision.pack);
-}
-
-function admitRecord(
-  response: Response,
-  input: CachedDocumentInput,
-  pack: DecodedGenerationPack,
-): Response {
-  const requirementFor = pack.header.source === 'build' ? publicationForBuild : publicationForRoute;
-  return admitPublication(
-    response,
-    pack.header.tags.map((tag) => tag.value),
-    input.edge.runtime.now(),
-    requirementFor(input.manifest.publication, input.entry.cache?.route ?? input.entry.pathname),
-  );
 }
 
 /**
@@ -479,18 +462,12 @@ async function serveBuild(decided: Decided, read: RecordRead, reason: string): P
     });
   }
   const recordRead = { lookupMs: decided.recordMs, description: reason };
-  const response = await handleDocument({
+  return handleDocument({
     ...decided.document,
     recordRead,
     shellRead: read.shell,
     onBuildServed: buildRecordRefresh(input, reason),
   });
-  return admitPublication(
-    response,
-    input.entry.cache?.buildTags?.map((tag) => tag.value) ?? [],
-    input.edge.runtime.now(),
-    required,
-  );
 }
 
 export async function serveCachedDocument(incoming: CachedDocumentInput): Promise<Response> {

@@ -1,8 +1,14 @@
-import { admitPublication } from '@stayingupwind/core/cache';
+import {
+  admitPublication,
+  decodeGenerationPack,
+  encodeGenerationPack,
+  policyFromBuild,
+} from '@stayingupwind/core/cache';
 import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manifest';
 import { DEFAULT_DELIVERY_POLICY, runtimeCacheOf } from '@stayingupwind/host/delivery';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { serveCachedDocument, type CachedDocumentInput } from '../src/cache/document.ts';
 import { documentPublicationTags } from '../src/handlers/document-publication.ts';
 import { handleDocument, type DocumentInput } from '../src/handlers/document.ts';
 import { gateGeneration } from '../src/handlers/gate-shell.ts';
@@ -11,13 +17,12 @@ import type { EdgeContext } from '../src/strategies/context.ts';
 
 const NOW = 1_800_000_000_000;
 const ID = 'a'.repeat(64);
-const resume = vi.hoisted(() => {
-  return vi.fn(() => {
-    return { response: Promise.resolve(new Response('</body></html>')), abort: vi.fn() };
-  });
-});
+const resume = vi.hoisted(() =>
+  vi.fn(() => ({ response: Promise.resolve(new Response('</body></html>')), abort: vi.fn() })),
+);
 vi.mock(import('../src/strategies/continuation-resume.ts'), () => {
-  return { resumeContinuation: { start: resume } };
+  const resumeContinuation = { start: resume };
+  return { resumeContinuation };
 });
 
 function gate(until?: number) {
@@ -135,6 +140,76 @@ function fixture(until?: number, independent = false) {
   return { input, passthrough };
 }
 
+function cachedFixture(source: 'record' | 'build', mode: 'head' | 'sandbox' | 'resume') {
+  const until = NOW + 1000;
+  const test = fixture(until);
+  const key = { scopeId: 'scope', entryId: 'entry' };
+  const tag = `upwind:publication:v1:${ID}:${String(until)}`;
+  const headers = {
+    'content-type': 'text/html',
+    ...(mode === 'sandbox' && { 'content-security-policy': 'sandbox' }),
+  };
+  const html = new TextEncoder().encode('<html><body>old selected bytes');
+  const postponed = new TextEncoder().encode('state');
+  const decoded = decodeGenerationPack(
+    encodeGenerationPack(
+      {
+        schemaVersion: 1,
+        ...key,
+        generationId: 'generation',
+        seq: 2,
+        revision: 7,
+        source: 'runtime',
+        kind: 'app-page',
+        route: '/items',
+        pathname: '/items',
+        cacheTimestamp: NOW,
+        producedAt: NOW,
+        policy: policyFromBuild({ initialRevalidate: false }),
+        status: 200,
+        headers,
+        tags: [{ kind: 'next-explicit', value: tag }],
+        htmlSha256: 'c'.repeat(64),
+        htmlLength: html.byteLength,
+        postponedSha256: 'd'.repeat(64),
+        postponedLength: postponed.byteLength,
+        artifacts: [],
+      },
+      html,
+      postponed,
+    ),
+  );
+  if (decoded.kind !== 'ok') throw new Error('Invalid document fixture.');
+  const entry = {
+    ...test.input.entry,
+    headers,
+    cache: { ...test.input.entry.cache!, delivery: 'partial' as const },
+  };
+  const input: CachedDocumentInput = {
+    ...test.input,
+    entry,
+    request: new Request('https://site.test/items', { method: mode === 'head' ? 'HEAD' : 'GET' }),
+    key,
+    settings: runtimeCacheOf(test.input.edge.policy),
+    generationRead: {
+      load: Promise.resolve(
+        source === 'record'
+          ? {
+              kind: 'generation' as const,
+              pack: decoded.pack,
+              source: 'memory',
+              lookupMs: 0,
+              readBytes: undefined,
+            }
+          : { kind: 'none' as const, lookupMs: 0 },
+      ),
+      shell: Promise.resolve({ kind: 'ok', read: { bytes: html, source: 'memory', latencyMs: 0 } }),
+    },
+    member: undefined,
+  };
+  return { ...test, input, until };
+}
+
 describe('publication admission without generation-record caching', () => {
   beforeEach(() => {
     resume.mockClear();
@@ -236,4 +311,58 @@ describe('publication admission without generation-record caching', () => {
     expect(response.status).toBe(200);
     expect(test.passthrough).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['record', 'head'],
+    ['record', 'sandbox'],
+    ['build', 'head'],
+    ['build', 'sandbox'],
+  ] as const)(
+    'keeps independently admitted passthrough after the abandoned %s expires (%s)',
+    async (source, mode) => {
+      const test = cachedFixture(source, mode);
+      const clock = vi.spyOn(test.input.edge.runtime, 'now');
+
+      test.passthrough.mockImplementation(() => {
+        clock.mockReturnValue(test.until);
+        const tag = `upwind:publication:v1:${ID}:${String(NOW + 60_000)}`;
+        return Promise.resolve(
+          admitPublication(new Response('fresh from runtime'), [tag], test.until),
+        );
+      });
+
+      try {
+        const response = await serveCachedDocument(test.input);
+
+        expect(response.status).toBe(200);
+        await expect(response.text()).resolves.toBe('fresh from runtime');
+        expect(test.passthrough).toHaveBeenCalledTimes(1);
+        expect(resume).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it.each(['record', 'build'] as const)(
+    'rechecks the original %s deadline when its bytes compose',
+    async (source) => {
+      const test = cachedFixture(source, 'resume');
+      const clock = vi.spyOn(test.input.edge.runtime, 'now');
+      resume.mockImplementationOnce(() => {
+        clock.mockReturnValue(test.until);
+        return { response: Promise.resolve(new Response('</body></html>')), abort: vi.fn() };
+      });
+      try {
+        const response = await serveCachedDocument(test.input);
+
+        expect(response.status).toBe(503);
+        await expect(response.text()).resolves.not.toContain('old selected bytes');
+        expect(test.passthrough).not.toHaveBeenCalled();
+        expect(resume).toHaveBeenCalledTimes(1);
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
 });
