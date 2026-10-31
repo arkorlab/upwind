@@ -1,5 +1,8 @@
 import { pageDataArtifact } from '@stayingupwind/core/bundle';
 import {
+  admitPublication,
+  publicationForBuild,
+  publicationForRoute,
   staticPageDataHeadersAllowSharing,
   staticPageHasNoTransform,
 } from '@stayingupwind/core/cache';
@@ -132,5 +135,12 @@ export async function servePairedPageData(
   } else observeMetric(edge.host, point);
   if (decision.validity === 'stale')
     readServedAgain(edge, decision.pack, settings, { servedStale: true });
-  return response;
+  const requirementFor =
+    decision.pack.header.source === 'build' ? publicationForBuild : publicationForRoute;
+  return admitPublication(
+    response,
+    decision.pack.header.tags.map((tag) => tag.value),
+    edge.runtime.now(),
+    requirementFor(input.manifest.publication, entry.route),
+  );
 }

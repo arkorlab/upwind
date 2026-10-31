@@ -11,6 +11,7 @@ import { TtlCache } from '@stayingupwind/core/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NEXT_CACHE_STORAGE_SYMBOL_KEY } from '../../core/src/paas/next-cache-registry.ts';
+import { withClock } from '../src/cache/clock.ts';
 import { requestContextFor } from '../src/cache/context.ts';
 import { configureCacheHandlers, useCacheHandler } from '../src/cache/handlers.ts';
 import type { CacheHost } from '../src/cache/host.ts';
@@ -91,6 +92,7 @@ const grant = {
 describe('publication-aware Next cache handlers', () => {
   afterEach(() => {
     configureCacheHandlers(undefined);
+    vi.restoreAllMocks();
   });
 
   it('retains a read child deadline when a parent is written under a renewed grant', async () => {
@@ -212,9 +214,33 @@ describe('publication-aware Next cache handlers', () => {
   it('cannot resurrect a cached grant after its runtime clock rolls back', async () => {
     const tag = await publicationTagOf(grant);
     const state = new TagState({ holdMs: HOLD_MS });
+    const clock = vi
+      .spyOn(performance, 'now')
+      .mockReturnValue(grant.validUntil - 1 - performance.timeOrigin);
 
     expect(state.validityOf([tag], NOW, grant.validUntil - 1)).toBe('fresh');
+
+    clock.mockReturnValue(grant.validUntil - performance.timeOrigin);
+
     expect(state.validityOf([tag], NOW, grant.validUntil)).toBe('expired');
+
+    clock.mockReturnValue(grant.validUntil - 1 - performance.timeOrigin);
+
     expect(state.validityOf([tag], NOW, grant.validUntil - 1)).toBe('expired');
+  });
+
+  it('does not confuse an overlapping historical read with a live clock rollback', async () => {
+    const tag = await publicationTagOf(grant);
+    const state = new TagState({ holdMs: HOLD_MS });
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(NOW + 10 - performance.timeOrigin);
+
+    expect(state.validityOf([tag], NOW, NOW + 2)).toBe('fresh');
+
+    clock.mockReturnValue(NOW + 11 - performance.timeOrigin);
+
+    await expect(
+      withClock(NOW, () => Promise.resolve(state.validityOf([tag], NOW, NOW + 1))),
+    ).resolves.toBe('fresh');
+    expect(state.validityOf([tag], NOW, NOW + 3)).toBe('fresh');
   });
 });

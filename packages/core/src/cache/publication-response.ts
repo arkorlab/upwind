@@ -27,12 +27,14 @@ export function admitPublication(
     const { headers } = admitted;
     for (const header of ['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control'])
       headers.delete(header);
-    headers.set(
-      'cache-control',
-      response.headers.get('cache-control')?.includes('no-store') === true
-        ? 'private, no-store'
-        : 'private, no-cache, must-revalidate',
-    );
+    const control = response.headers.get('cache-control')?.toLowerCase() ?? '';
+    const policy = control.includes('no-store')
+      ? 'private, no-store'
+      : 'private, no-cache, must-revalidate';
+    const transform = control.split(',').some((directive) => directive.trim() === 'no-transform')
+      ? ', no-transform'
+      : '';
+    headers.set('cache-control', policy + transform);
     return admitted;
   }
   return response;

@@ -6,6 +6,7 @@ import {
   buildProjectManifest,
   parseProjectManifest,
   serializeManifest,
+  staticFileKey,
 } from '../src/manifest/manifest.ts';
 import { projectManifestSchema } from '../src/manifest/schema.ts';
 
@@ -14,6 +15,31 @@ const required = { version: 1 as const, identities: [identity], routes: ['/'] };
 const tag = `upwind:publication:v1:${identity}:60000`;
 
 describe('publication admission', () => {
+  it.each(['public, max-age=3600, no-transform', 'private, no-store, no-transform'])(
+    'preserves transform prohibition while narrowing %s',
+    (control) => {
+      const response = admitPublication(
+        new Response('encoded', { headers: { 'cache-control': control } }),
+        [tag],
+        1,
+      );
+
+      expect(response.headers.get('cache-control')).toContain('no-transform');
+      expect(response.headers.get('cache-control')).toContain('private');
+    },
+  );
+
+  it.each([7, 9] as const)('retains request-key file lookup for schema %s', (schemaVersion) => {
+    const manifest = {
+      schemaVersion,
+      staticFiles: {},
+      staticFileRequestKeys: true as const,
+      staticFileAssetPrefix: { basePath: '', assetPrefix: '/cdn' },
+    };
+
+    expect(staticFileKey(manifest, '/cdn/_next/static/missing.js')).toBeUndefined();
+  });
+
   it('refuses expiry and 304 reuse and removes outer stale caches without changing Next cache profiles', () => {
     const original = new Response('public', {
       headers: { 'cdn-cache-control': 'public,max-age=3600,stale-if-error=9999' },

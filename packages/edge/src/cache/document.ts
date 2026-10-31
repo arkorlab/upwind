@@ -306,14 +306,12 @@ function admitRecord(
   input: CachedDocumentInput,
   pack: DecodedGenerationPack,
 ): Response {
+  const requirementFor = pack.header.source === 'build' ? publicationForBuild : publicationForRoute;
   return admitPublication(
     response,
     pack.header.tags.map((tag) => tag.value),
     input.edge.runtime.now(),
-    publicationForRoute(
-      input.manifest.publication,
-      input.entry.cache?.route ?? input.entry.pathname,
-    ),
+    requirementFor(input.manifest.publication, input.entry.cache?.route ?? input.entry.pathname),
   );
 }
 

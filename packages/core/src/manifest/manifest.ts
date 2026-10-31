@@ -31,6 +31,7 @@ import {
   type RouteEntry,
   type ProjectManifest,
   projectManifestSchema,
+  REQUEST_FILE_KEYS_SCHEMA_VERSION,
   type SpelledPrefix,
   type StaticFileAssetPrefix,
   type StaticFileEntry,

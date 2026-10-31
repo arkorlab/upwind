@@ -290,6 +290,19 @@ describe('bounded publication admission', () => {
     expect(test.passthrough).not.toHaveBeenCalled();
   });
 
+  it('keeps a host-proven independent build record available at final document admission', async () => {
+    vi.clearAllMocks();
+    const load = await freshRecord();
+    load.pack.header.source = 'build';
+    load.pack.header.tags = [];
+    const test = scenario(load);
+
+    test.input.manifest.publication = { ...requirement, independentBuild: ['/update-tag-test'] };
+
+    expect((await serveCachedDocument(test.input)).status).toBe(200);
+    expect(test.passthrough).not.toHaveBeenCalled();
+  });
+
   it('checks the same grant again after response preparation without another lookup', async () => {
     vi.clearAllMocks();
     const load = await freshRecord();
