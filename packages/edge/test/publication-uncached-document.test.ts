@@ -69,7 +69,9 @@ function fixture(until?: number, independent = false) {
   } as unknown as EdgeContext;
   const passthrough = vi.fn(() => Promise.resolve(new Response('fresh from runtime')));
   const input = {
-    request: new Request('https://site.test/items', { headers: { 'accept-encoding': 'identity' } }),
+    request: new Request<unknown, IncomingRequestCfProperties>('https://site.test/items', {
+      headers: { 'accept-encoding': 'identity' },
+    }),
     entry,
     manifest,
     edge,
