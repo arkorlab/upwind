@@ -463,6 +463,7 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
       };
     },
   };
+  const delivery = { delegated: false };
   const response = await answer(input, {
     entry,
     middleware,
@@ -470,7 +471,10 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
     startedAt,
     generation,
     strategy,
-    onUnavailable: (storageReads) => fallback({ regeneration: detached, storageReads }),
+    onUnavailable: (storageReads) => {
+      delivery.delegated = true;
+      return fallback({ regeneration: detached, storageReads });
+    },
     detached,
     segment: {
       artifact: {
@@ -481,6 +485,7 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
       },
     },
   });
+  if (delivery.delegated) return response;
   return admitPublication(
     response,
     generation.pack.header.tags.map((tag) => tag.value),

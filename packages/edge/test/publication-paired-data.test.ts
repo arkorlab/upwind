@@ -1,4 +1,4 @@
-import type { GenerationPackHeader } from '@stayingupwind/core/cache';
+import { admitPublication, type GenerationPackHeader } from '@stayingupwind/core/cache';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DATA, PAGE, pagesPublicationFixture } from './pages-publication-fixture.ts';
@@ -64,4 +64,52 @@ describe('paired Pages data publication admission', () => {
       await test.drain();
     },
   );
+
+  it('keeps a fresh live response when an unavailable paired artifact outlives its old grant', async () => {
+    const test = await pagesPublicationFixture();
+    const identity = 'a'.repeat(64);
+    let now = test.edge.runtime.now();
+    const until = now + 1000;
+    Object.assign(test.edge.runtime, { now: () => now });
+
+    test.manifest.publication = {
+      version: 1,
+      identities: [identity],
+      routes: ['/fallback-true/[slug]'],
+    };
+
+    const record = await test.member(PAGE, {
+      tags: [
+        { kind: 'next-explicit', value: `upwind:publication:v1:${identity}:${String(until)}` },
+      ],
+    });
+    const data = pairedArtifact(record.pack.header);
+
+    test.edge.runtime.memory.shells.delete(data.sha256);
+
+    test.kv.mockImplementation((key) => Promise.resolve(key === record.key ? record.bytes : null));
+
+    test.get.mockResolvedValue(null);
+
+    test.fallback.mockImplementation(() => {
+      now = until;
+      return Promise.resolve(
+        admitPublication(
+          new Response('fresh authorized data'),
+          [`upwind:publication:v1:${identity}:${String(until + 60_000)}`],
+          now,
+        ),
+      );
+    });
+
+    const response = await test.serve(DATA);
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe('fresh authorized data');
+    expect(test.get).toHaveBeenCalledWith(data.storageRef);
+    expect(test.fallback).toHaveBeenCalledTimes(1);
+    expect(test.dispatch).not.toHaveBeenCalled();
+
+    await test.drain();
+  });
 });
