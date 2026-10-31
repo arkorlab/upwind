@@ -55,17 +55,17 @@ function context(route: string, independent = false, rsc = false) {
     run: state.run,
     waitUntil: vi.fn(),
   };
-  return { state, input };
+  return { state, input, cache };
 }
 
 describe('publication of the selected output', () => {
   it.each([1, 2, 3] as const)(
     'observes a selected fresh RSC resume before cached values run (version=%s)',
     async (version) => {
-      const { state, input } = context('/items', false, true);
+      const { state, input, cache } = context('/items', false, true);
       const witness = `upwind:resource-snapshot:v1:${ID}:4`;
       const tags = [GRANT, 'resource:items', witness];
-      Object.assign(input.cache.host, {
+      Object.assign(cache.host, {
         publication: {
           version,
           ...(version >= 2 && { valueObservers: true }),
