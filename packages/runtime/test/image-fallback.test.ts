@@ -1,6 +1,6 @@
 import type { ImageRequestParams, ImagesConfig } from '@stayingupwind/core/images';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { fetchRemoteSource, sourceResponse } from '../src/image-fallback.ts';
 
@@ -90,6 +90,33 @@ function remote(net: FakeNetwork, images = IMAGES) {
     fetchImpl: net.fetchImpl,
   });
 }
+
+describe('publication-tagged optimized image sources', () => {
+  it.each([1, 60_000])(
+    'never keeps a protected image beyond its source grant (%s)',
+    async (left) => {
+      const source = new Response(body(png()), {
+        headers: {
+          'x-next-cache-tags': `upwind:publication:v1:${'a'.repeat(64)}:${String(Date.now() + left)}`,
+          'cache-control': 'public,max-age=3600',
+          etag: '"source"',
+        },
+      });
+      const keep = vi.fn();
+      const answer = await sourceResponse({
+        source,
+        params: PARAMS,
+        images: IMAGES,
+        internal: true,
+        request: asked('GET'),
+        keep,
+      });
+
+      expect(keep).not.toHaveBeenCalled();
+      expect(answer.headers.get('cache-control')).toContain('no-store');
+    },
+  );
+});
 
 describe('the Worker’s own answer for an image source', () => {
   it('follows a remote source’s redirects up to the configured count, nothing forwarded', async () => {

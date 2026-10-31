@@ -17,7 +17,7 @@ import type { CacheRuntime } from './runtime.ts';
 
 export interface RequestContext {
   readonly publication: Set<string>;
-  publicationReadStarted: boolean;
+  publicationReadStarted?: boolean;
   publicationRequirement?: PublicationRequirement;
   /**
    * The entrypoints, as this request looks them up: with its `waitUntil`, which holds what a hook's

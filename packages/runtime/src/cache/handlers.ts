@@ -30,7 +30,12 @@ import {
 } from './held-writes.ts';
 import type { DataEntryMetadata, InvalidateOutcome, InvalidateRequest } from './host.ts';
 import * as ownMarks from './own-marks.ts';
-import { reusePublication, mergeTags, publicationReadable } from './publication.ts';
+import {
+  reusePublication,
+  mergeTags,
+  publicationReadable,
+  observeFreshPublication,
+} from './publication.ts';
 import {
   fetchedAgainBehind,
   holdForRevalidation,
@@ -369,10 +374,11 @@ export class PlatformFetchCache {
     cacheKey: string,
     ctx: FetchGetContext,
   ): Promise<{ value: CachedFetchValue; lastModified: number } | null> {
+    if (ctx.kind !== FETCH_KIND) return null;
+    // Dynamic fetches can return streaming bytes before set runs behind their cloned body.
+    observeFreshPublication(mergeTags(ctx.tags, ctx.softTags), nowMs());
     const current = state.current;
-    if (current === undefined || ctx.kind !== FETCH_KIND) {
-      return null;
-    }
+    if (current === undefined) return null;
     const { runtime } = current;
     const now = nowMs();
     const context = requestContext();
@@ -477,19 +483,16 @@ export class PlatformFetchCache {
   set(cacheKey: string, data: CachedFetchValue | null, ctx: FetchSetContext): Promise<void> {
     const current = state.current;
     const context = requestContext();
-    if (
-      current === undefined ||
-      context === undefined ||
-      data === null ||
-      ctx.fetchCache !== true ||
-      isCapture()
-    ) {
+    if (context === undefined || data === null || ctx.fetchCache !== true) {
       return Promise.resolve();
     }
     try {
+      const tags = mergeTags(data.tags, ctx.tags);
+      observeFreshPublication(tags, nowMs());
+      if (current === undefined || isCapture()) return Promise.resolve();
       const entry: DataEntryMetadata = {
         kind: DATA_FETCH,
-        tags: mergeTags(data.tags, ctx.tags),
+        tags,
         stale: 0,
         // A result fetched before an invalidation must keep that age when its body finishes.
         // The host fences a write against its current tag marks by this timestamp.

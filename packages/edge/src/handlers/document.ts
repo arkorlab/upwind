@@ -46,6 +46,7 @@ import {
   type ShellDelivery,
   USER_AGENT_HEADER,
 } from './document-headers.ts';
+import * as publication from './document-publication.ts';
 import { reportOutcome } from './document-report.ts';
 import {
   continuationRequest,
@@ -577,6 +578,10 @@ function servedFromRecord(edge: EdgeContext, generation: ServedGeneration | unde
  * application's (`headToApplication`).
  */
 export async function handleDocument(input: DocumentInput): Promise<Response> {
+  if (input.generation === undefined && publication.builtDocumentExpired(input)) {
+    if (input.shellRead !== undefined) input.edge.ctx.waitUntil(input.shellRead);
+    return input.passthrough('publication-expired', input.middleware, input.entry.pathname);
+  }
   const complete = isCompleteDocument(input);
   if (!complete && input.request.method === 'HEAD') {
     if (input.shellRead !== undefined) {
@@ -584,7 +589,10 @@ export async function handleDocument(input: DocumentInput): Promise<Response> {
     }
     return headToApplication(input);
   }
-  return deliverDocument(input, complete);
+  const response = await deliverDocument(input, complete);
+  return input.generation === undefined
+    ? publication.admitBuiltDocument(input, response)
+    : response;
 }
 
 /** The document the edge answers itself: its shell, and what a resume renders behind it. */
@@ -637,6 +645,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
           manifest,
           ctx: edge,
           resume: resumeOf(generation),
+          publicationTags: publication.documentPublicationTags(input),
           headers: toldBesideResume(input, generation),
         });
   // The resume goes with a client that leaves before a splice holds it (`followClient`).

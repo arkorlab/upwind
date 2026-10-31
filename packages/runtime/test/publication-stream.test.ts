@@ -90,7 +90,7 @@ describe('publication observations during a streamed response', () => {
       valueObservers: true as const,
     };
     await context.run(() => {
-      requirePublication({ host: { publication } } as CacheRuntime, '/items');
+      requirePublication({ host: { publication } } as unknown as CacheRuntime, '/items');
       return Promise.resolve();
     });
     const reader = admitRequestPublication(response, context).body!.getReader();
@@ -131,7 +131,7 @@ describe('publication observations during a streamed response', () => {
 
     source().close();
 
-    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    await expect(reader.read()).resolves.toStrictEqual({ done: true, value: undefined });
   });
 
   it('rejects a late expired child before its values and bytes can be emitted', async () => {

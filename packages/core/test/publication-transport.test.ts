@@ -1,0 +1,84 @@
+import { describe, expect, it } from 'vitest';
+
+import { publicationDeadline } from '../src/cache/publication.ts';
+import { PLATFORM_REQUEST_HEADERS } from '../src/paas/protocol.ts';
+import {
+  enforcePublicationPolicy,
+  markPublicationPolicy,
+  publicationPolicy,
+  PUBLICATION_POLICY_HEADER,
+  withPublicationPolicy,
+} from '../src/paas/publication-policy.ts';
+import {
+  parseResumePublicationHeader,
+  PUBLICATION_RESUME_HEADER,
+  resumePublicationHeader,
+} from '../src/paas/publication-resume.ts';
+import { handedOnAsSent } from '../src/request/headers.ts';
+
+const ID = 'a'.repeat(64);
+const early = `upwind:publication:v1:${ID}:60000`;
+const late = `upwind:publication:v1:${ID}:90000`;
+
+describe('selected publication grant transport', () => {
+  it('carries the selected bounds without substituting a renewed parent bound', () => {
+    const encoded = resumePublicationHeader(['ordinary-resource', late, early]);
+    const selected = parseResumePublicationHeader(encoded ?? null);
+
+    expect(selected).toStrictEqual([late, early]);
+    expect(publicationDeadline(selected)).toBe(60_000);
+    expect(resumePublicationHeader(['ordinary-resource'])).toBeUndefined();
+  });
+
+  it.each([`upwind:publication:private:${ID}`, 'upwind:publication:v1:bad:60000'])(
+    'refuses non-public authority proof on the transport (%s)',
+    (tag) => {
+      expect(() => resumePublicationHeader([tag])).toThrow('Invalid selected publication grants.');
+      expect(() => parseResumePublicationHeader(JSON.stringify([tag]))).toThrow(
+        'Invalid selected publication grants.',
+      );
+    },
+  );
+
+  it('bounds the handoff and reserves it from public application requests', () => {
+    expect(() => parseResumePublicationHeader(' '.repeat(8193))).toThrow('transport bound');
+    expect(() => resumePublicationHeader(Array.from({ length: 65 }, () => early))).toThrow(
+      'Invalid selected publication grants.',
+    );
+    expect(PLATFORM_REQUEST_HEADERS).toContain(PUBLICATION_RESUME_HEADER);
+    expect(handedOnAsSent(PUBLICATION_RESUME_HEADER)).toBe(false);
+    expect(handedOnAsSent(PUBLICATION_POLICY_HEADER)).toBe(false);
+  });
+});
+
+describe('publication restrictions after final header decisions', () => {
+  it('restores the producer restriction after a later rule makes the response public', () => {
+    const source = markPublicationPolicy(
+      new Response('bounded', { headers: { 'cache-control': 'private, no-store, no-transform' } }),
+    );
+    source.headers.set('cache-control', 'public, max-age=3600');
+    source.headers.set('cdn-cache-control', 'public, max-age=3600');
+    const response = withPublicationPolicy(source);
+
+    expect(response.headers.get('cache-control')).toBe('private, no-store, no-transform');
+    expect(response.headers.has('cdn-cache-control')).toBe(false);
+  });
+
+  it('keeps a later no-store restriction and matches exact directive names', () => {
+    const source = markPublicationPolicy(
+      new Response('bounded', { headers: { 'cache-control': 'private, x-no-store-hint=1' } }),
+    );
+    const restriction = publicationPolicy(source.headers);
+    const headers = new Headers({ 'cache-control': 'no-store, no-transform' });
+    enforcePublicationPolicy(headers, restriction);
+
+    expect(restriction).toStrictEqual({ mode: 'revalidate', noTransform: false });
+    expect(headers.get('cache-control')).toBe('private, no-store, no-transform');
+
+    const ordinary = new Response('public', {
+      headers: { 'cache-control': 'public, max-age=3600' },
+    });
+
+    expect(withPublicationPolicy(ordinary)).toBe(ordinary);
+  });
+});

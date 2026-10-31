@@ -7,7 +7,7 @@ import {
 } from '@stayingupwind/core/paas';
 
 import { nodeHandlerOf } from './entries.ts';
-import { requirePublication } from './publication.ts';
+import { observeResumePublication } from './resume-publication.ts';
 import { readResumeState } from './resume-state.ts';
 import { resumeUrlOf } from './route-parameters.ts';
 import { HTTP_NOT_FOUND, resume, type RoutedInput, stripPlatformHeaders } from './serve.ts';
@@ -30,7 +30,7 @@ export function carriesResumeState(request: Request): boolean {
 export async function handleRuntimeResume(input: RoutedInput, store: Store): Promise<Response> {
   const route =
     pathFromHeaders(input.request.headers, CACHE_ROUTE_HEADER, CACHE_ROUTE_ESCAPED_HEADER) ?? '';
-  requirePublication(input.cache, route);
+  observeResumePublication(input, route);
   const handler = await nodeHandlerOf(input, route);
   if (handler === undefined) {
     return new Response(`no Node.js entrypoint for ${route}`, { status: HTTP_NOT_FOUND });

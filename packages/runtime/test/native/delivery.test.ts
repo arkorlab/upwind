@@ -2,11 +2,14 @@ import type { DeploymentBundle, Prerender } from '@stayingupwind/core/bundle';
 import type { GenerationPackHeader, RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { requestContextFor } from '../../src/cache/context.ts';
 import { type CurrentGeneration, currentGeneration } from '../../src/cache/current.ts';
 import type { CacheRuntime } from '../../src/cache/runtime.ts';
 import type { FirstPublish } from '../../src/delivery.ts';
 import * as shared from '../../src/delivery.ts';
 import * as native from '../../src/native/delivery.ts';
+import { markBuildPublication } from '../../src/publication-proof.ts';
+import { admitRequestPublication } from '../../src/publication.ts';
 import type { RoutedInput } from '../../src/serve.ts';
 import { getStore, type Store } from '../../src/store.ts';
 
@@ -550,6 +553,36 @@ function answeredAs(
   for (const [name, value] of Object.entries(routing)) laid.headers.set(name, value);
   return native.delivered(input.request, laid);
 }
+
+describe('independent native loading fallbacks', () => {
+  it.each([false, true])(
+    'keeps the trusted shipped proof through fallback offers (middleware=%s)',
+    (middleware) => {
+      vi.mocked(getStore).mockReturnValue({ manifest: fallbackBundle() } as unknown as Store);
+      const input = routed(MEMBER, {}, middleware);
+      const proof = {
+        version: 1 as const,
+        identities: ['a'.repeat(64)],
+        routes: [FALLBACK_ROUTE],
+        independentBuild: [FALLBACK_ROUTE],
+      };
+      const context = requestContextFor({
+        tables: { app: { entries: {} }, edge: { entries: {} } },
+        runtime: undefined,
+        request: input.request,
+        startedAt: Date.now(),
+        waitUntil: vi.fn(),
+        clock: undefined,
+      });
+      context.publicationRequirement = proof;
+      const response = loadingAnswer();
+      markBuildPublication(response, proof);
+      const offered = native.offeredFromFallback(input, getStore(), SHELL, response);
+
+      expect(admitRequestPublication(offered, context).status).toBe(200);
+    },
+  );
+});
 
 describe('a member of a fallback: true route, and what a rewrite or routing left on an answer', () => {
   beforeEach(() => {

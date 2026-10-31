@@ -43,3 +43,9 @@ export function publicationReadable(
 ): held is HeldValue {
   return held !== undefined && !publicationReadExpired(runtime, held.entry, now);
 }
+
+/** A fresh fetch carries its declared bound before Next can hand its value to a render. */
+export function observeFreshPublication(tags: readonly string[], now: number): void {
+  observePublicationTags(tags);
+  if (publicationExpired(tags, now)) throw new Error('Publication unavailable');
+}

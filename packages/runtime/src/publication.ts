@@ -1,12 +1,13 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
 import {
+  publicationDeadline,
   publicationExpired,
   publicationForBuild,
   admitPublication,
   parseCacheTagsHeader,
   publicationForRoute,
 } from '@stayingupwind/core/cache';
-import { observePublicationTags } from '@stayingupwind/core/paas';
+import { markPublicationPolicy, observePublicationTags } from '@stayingupwind/core/paas';
 
 import { nowMs } from './cache/clock.ts';
 import {
@@ -40,16 +41,22 @@ export function admitRequestPublication(response: Response, context: RequestCont
   const independent =
     context.publicationRequirement !== undefined &&
     buildPublicationOf(response) === context.publicationRequirement;
-  if (independent) return admitPublication(response, tags, nowMs());
+  if (independent) {
+    const admitted = admitPublication(response, tags, nowMs());
+    return publicationDeadline(tags) === undefined ? admitted : markPublicationPolicy(admitted);
+  }
   const required = context.publicationRequirement;
-  if (context.publicationReadStarted || context.publication.size > 0)
+  if (context.publicationReadStarted === true || context.publication.size > 0)
     return admitPublicationStream(
       response,
       context,
       parseCacheTagsHeader(response.headers.get(CACHE_TAGS) ?? undefined),
       required,
     );
-  return admitPublication(response, tags, nowMs(), required);
+  const admitted = admitPublication(response, tags, nowMs(), required);
+  return required === undefined && publicationDeadline(tags) === undefined
+    ? admitted
+    : markPublicationPolicy(admitted);
 }
 
 export async function onceRecorded(

@@ -97,6 +97,23 @@ export interface BuiltDocument {
  * document whole and its shell is left where it is. A shell with nothing postponed is the whole
  * document already, and answers for either runtime.
  */
+function documentWithoutBuild(
+  input: RoutedInput,
+  store: Store,
+  resolved: Resolved,
+  entry: Entry,
+): Promise<Response> {
+  if (
+    store.manifest.config.cacheComponents === true &&
+    entry.kind === 'node' &&
+    entrypointKindOf(store, resolved.route) === 'app-page'
+  )
+    return renderDocumentForVisitor(input, entry.handler, resolved.url);
+  return invokeEntry(input, entry, resolved.url, {
+    onFailure: failureAnswer(store, entry, resolved.route),
+  });
+}
+
 export async function documentFromBuild(
   input: RoutedInput,
   store: Store,
@@ -107,9 +124,7 @@ export async function documentFromBuild(
   // shell was written before either existed. A crawler asks for the page rather than the fallback.
   const shell = findShell(store, resolved.route, resolved.pathname);
   if (buildPublicationExpired(input, shell, resolved.route))
-    return invokeEntry(input, entry, resolved.url, {
-      onFailure: failureAnswer(store, entry, resolved.route),
-    });
+    return documentWithoutBuild(input, store, resolved, entry);
   if (
     bypassesPrerender(store, input.request, shell, resolved.url) ||
     (shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request))
@@ -118,20 +133,7 @@ export async function documentFromBuild(
       onFailure: failureAnswer(store, entry, resolved.route),
     });
   }
-  if (shell?.body === undefined) {
-    // An unbuilt App Router member can still prerender a shell. Capture its postponed state and
-    // resume it for this request; the exported handler alone sends only that initial shell.
-    if (
-      store.manifest.config.cacheComponents === true &&
-      entry.kind === 'node' &&
-      entrypointKindOf(store, resolved.route) === 'app-page'
-    ) {
-      return renderDocumentForVisitor(input, entry.handler, resolved.url);
-    }
-    return invokeEntry(input, entry, resolved.url, {
-      onFailure: failureAnswer(store, entry, resolved.route),
-    });
-  }
+  if (shell?.body === undefined) return documentWithoutBuild(input, store, resolved, entry);
   const status = shell.initialStatus ?? fallbackStatus;
   if (shell.postponed === undefined) {
     releaseStream(input.request.body, 'static document: handler body unused');

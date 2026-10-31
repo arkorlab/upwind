@@ -1,9 +1,14 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
+import { observePublicationTags } from '@stayingupwind/core/paas';
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 
 import type { AppModule, NodeHandler } from '../src/app-module.ts';
+import { requestContextFor } from '../src/cache/context.ts';
+import type { CacheRuntime } from '../src/cache/runtime.ts';
+import { documentFromBuild } from '../src/documents.ts';
 import { handleRequest } from '../src/handle.ts';
 import { type InvokeInput, invokeNodeHandler } from '../src/node-bridge.ts';
+import { admitRequestPublication, requirePublication } from '../src/publication.ts';
 import { getStore, type Store } from '../src/store.ts';
 
 /**
@@ -130,6 +135,42 @@ describe('a blocking member asked for where no cache keeps a render', () => {
 
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe(`${STATIC_PART}${RESUMED}`);
+  });
+
+  it('captures and resumes a protected Cache Components fallback after rejecting its ungranted build', async () => {
+    const store = deployment();
+    const identity = 'a'.repeat(64);
+    const until = Date.now() + 60_000;
+    const cache = {
+      host: { publication: { version: 1, identities: [identity], routes: [ITEMS] } },
+    } as unknown as CacheRuntime;
+    const request = new Request(`https://app.test${MEMBER}`);
+    const tables = { app, edge: { entries: {} } };
+    const context = requestContextFor({
+      tables,
+      runtime: cache,
+      request,
+      startedAt: Date.now(),
+      waitUntil: vi.fn(),
+      clock: undefined,
+    });
+    vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+      observePublicationTags([`upwind:publication:v1:${identity}:${String(until)}`]);
+      return postponing(input);
+    });
+    const response = await context.run(async () => {
+      requirePublication(cache, ITEMS);
+      const answer = await documentFromBuild(
+        { ...tables, request, initURL: request.url, cache, waitUntil: vi.fn(), run: context.run },
+        store,
+        { route: ITEMS, pathname: MEMBER, url: MEMBER },
+        { entry: { kind: 'node', handler: page }, status: 200 },
+      );
+      return admitRequestPublication(answer, context);
+    });
+
+    await expect(response.text()).resolves.toBe(`${STATIC_PART}${RESUMED}`);
+    expect(invokeNodeHandler).toHaveBeenCalledTimes(2);
   });
 
   it('is rendered once and resumed once', async () => {

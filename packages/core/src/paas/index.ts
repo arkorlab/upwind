@@ -134,3 +134,18 @@ export {
   type ResourceWarmProps,
   type ResourceWarmResult,
 } from './resource-changes.ts';
+
+export {
+  PUBLICATION_RESUME_HEADER,
+  resumePublicationHeader,
+  parseResumePublicationHeader,
+} from './publication-resume.ts';
+
+export {
+  PUBLICATION_POLICY_HEADER,
+  publicationPolicy,
+  markPublicationPolicy,
+  enforcePublicationPolicy,
+  withPublicationPolicy,
+  type PublicationPolicy,
+} from './publication-policy.ts';

@@ -1,4 +1,6 @@
 import {
+  PUBLICATION_RESUME_HEADER,
+  resumePublicationHeader,
   CACHE_ROUTE_ESCAPED_HEADER,
   CACHE_ROUTE_HEADER,
   ORIGINAL_URL_HEADER,
@@ -65,6 +67,8 @@ function resumeRequest(input: ContinuationStart<EdgeContext>, signal: AbortSigna
   // `next-resume` among it — is stripped from them (`sanitizeContinuationHeaders`), and these are
   // the edge's to set.
   upstream.headers.set(NEXT_RESUME_HEADER, '1');
+  const publication = resumePublicationHeader(input.publicationTags ?? []);
+  if (publication !== undefined) upstream.headers.set(PUBLICATION_RESUME_HEADER, publication);
   if (resume?.kind === 'runtime') {
     upstream.headers.set(RESUME_STATE_HEADER, RESUME_STATE_BODY);
     upstream.headers.set(RESUME_STATE_LENGTH_HEADER, String(resume.state.byteLength));

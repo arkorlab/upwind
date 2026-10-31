@@ -1,4 +1,5 @@
 import { admitPublication, type PublicationRequirement } from '@stayingupwind/core/cache';
+import { markPublicationPolicy } from '@stayingupwind/core/paas';
 import { cacheDirectives } from '@stayingupwind/core/request';
 
 import { nowMs } from './cache/clock.ts';
@@ -18,7 +19,7 @@ function privateResponse(response: Response, body: ReadableStream<Uint8Array> | 
     ? ', no-transform'
     : '';
   admitted.headers.set('cache-control', `private, no-store${transform}`);
-  return admitted;
+  return markPublicationPolicy(admitted);
 }
 
 /** Live observations can arrive after headers; a streamed page is never a shared cache proof. */
@@ -31,12 +32,14 @@ export function admitPublicationStream(
   const state = (): { readonly valid: boolean; readonly ready: boolean } =>
     livePublicationState(context.publication, headers, required, nowMs());
   const initial = state();
-  if (!initial.valid || (!initial.ready && !context.publicationReadStarted))
-    return admitPublication(response, ['upwind:publication:invalid'], nowMs());
+  if (!initial.valid || (!initial.ready && context.publicationReadStarted !== true))
+    return markPublicationPolicy(
+      admitPublication(response, ['upwind:publication:invalid'], nowMs()),
+    );
   if (response.body === null) {
     return initial.ready
       ? privateResponse(response, null)
-      : admitPublication(response, ['upwind:publication:invalid'], nowMs());
+      : markPublicationPolicy(admitPublication(response, ['upwind:publication:invalid'], nowMs()));
   }
   const reader = response.body.getReader();
   const body = new ReadableStream<Uint8Array>(

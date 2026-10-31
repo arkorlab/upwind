@@ -161,6 +161,8 @@ function optimized(
   if (gated !== undefined) {
     return Promise.resolve(refuseImage(answer, gated, 'image-source-gated'));
   }
+  if (manifest.publication !== undefined && !parsed.params.isAbsolute && !parsed.params.isStatic)
+    return input.passthrough('publication-image', answer.middleware);
   return handleImage({
     ...answer,
     manifest,

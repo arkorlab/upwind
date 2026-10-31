@@ -13,7 +13,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NEXT_CACHE_STORAGE_SYMBOL_KEY } from '../../core/src/paas/next-cache-registry.ts';
 import { withClock } from '../src/cache/clock.ts';
 import { requestContextFor } from '../src/cache/context.ts';
-import { configureCacheHandlers, useCacheHandler } from '../src/cache/handlers.ts';
+import {
+  configureCacheHandlers,
+  PlatformFetchCache,
+  useCacheHandler,
+} from '../src/cache/handlers.ts';
 import type { CacheHost } from '../src/cache/host.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { TagState } from '../src/cache/tags.ts';
@@ -93,6 +97,69 @@ describe('publication-aware Next cache handlers', () => {
   afterEach(() => {
     configureCacheHandlers(undefined);
     vi.restoreAllMocks();
+  });
+
+  it.each([false, true])(
+    'records declared cold fetch bounds before a miss can hand out streaming values (storage=%s)',
+    async (configured) => {
+      const tag = await publicationTagOf(grant);
+      const runtime = runtimeOf(hostOf(unasked));
+      configureCacheHandlers(configured ? runtime : undefined);
+      const request = requestOf(runtime, []);
+      const pending = request.run(() =>
+        new PlatformFetchCache().get('cold', { kind: 'FETCH', tags: [tag] }),
+      );
+
+      expect(request.publication).toContain(tag);
+      await expect(pending).resolves.toBeNull();
+    },
+  );
+
+  it('refuses an expired declared fetch bound before any host read or response body', async () => {
+    const tag = await publicationTagOf({ ...grant, validUntil: NOW });
+    const host = hostOf(unasked);
+    const read = vi.spyOn(host, 'getData');
+    const runtime = runtimeOf(host);
+    configureCacheHandlers(runtime);
+    const request = requestOf(runtime, []);
+
+    await expect(
+      request.run(() => new PlatformFetchCache().get('cold', { kind: 'FETCH', tags: [tag] })),
+    ).rejects.toThrow('Publication unavailable');
+    expect(read).not.toHaveBeenCalled();
+    expect(request.publication).toContain(tag);
+  });
+
+  it('records a fresh tagged fetch before final admission even when its cache write is still pending', async () => {
+    const tag = await publicationTagOf(grant);
+    const blocked = Promise.withResolvers<{
+      entryId: string;
+      generationId: string;
+      revision: number;
+    }>();
+    const host = hostOf(vi.fn<CacheHost['setData']>(() => blocked.promise));
+    const runtime = runtimeOf(host);
+    configureCacheHandlers(runtime);
+    const behind: Promise<unknown>[] = [];
+    const request = requestOf(runtime, behind);
+    const cache = new PlatformFetchCache();
+    await request.run(() => {
+      return cache.set(
+        'cold',
+        {
+          kind: 'FETCH',
+          data: { headers: {}, body: '', status: 200, url: 'https://source.test' },
+          revalidate: 60,
+          tags: [tag],
+        },
+        { fetchCache: true, tags: [] },
+      );
+    });
+
+    expect(request.publication).toContain(tag);
+
+    blocked.resolve({ entryId: 'entry', generationId: 'generation', revision: 1 });
+    await Promise.all(behind);
   });
 
   it('retains a read child deadline when a parent is written under a renewed grant', async () => {

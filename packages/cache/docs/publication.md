@@ -72,6 +72,18 @@ the deadline again after asynchronous preparation. Protected responses forbid an
 from bypassing that check; their cacheable internal records remain available at the edge. A detected
 clock rollback closes that runtime's protected admission until it is replaced.
 
+A continuation carries the selected shell or generation's original public grant tags through the
+existing internal resume request. The bounded transport excludes private proof and is stripped
+from public incoming requests. The resumed output does not need another authority read merely to
+repeat a grant, and a selected child bound cannot be replaced by a newer parent grant. Final
+middleware and configured header rules cannot make a protected response publicly cacheable.
+
+Local dynamic image sources in a protected deployment bypass the optimizer's shared image cache,
+including native disk hits. Their sources are read through the normal application router and any
+grant is retained on the uncached image response. This prevents the optimizer's minimum TTL from
+outliving the source bound. Remote images and build-hashed static images keep their usual cache
+behavior.
+
 The publisher must persist its issuance ceiling **before** emitting grants, fence renewal by owner
 and data generation, and stop old-generation issuance during withdrawal. Waiting for the maximum
 issued deadline belongs in preparation, outside a short activation transaction. Purges can speed

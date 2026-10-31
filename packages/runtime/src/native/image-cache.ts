@@ -591,7 +591,7 @@ function answerFrom({ request, params, images }: ImageCacheInput, image: KeptIma
 
 export const openImageCache: ImageCacheOpener = (input) => {
   const { images } = configured;
-  if (images === undefined) return;
+  if (images === undefined || input.publicationProtected === true) return;
   return (async (): Promise<ImageCacheSlot> => {
     const key = imageKeyOf(input);
     const image = await images.read(key);
