@@ -82,6 +82,16 @@ describe('selected publication grant transport', () => {
     }).toThrow('transport bound');
   });
 
+  it('carries a resource-only selected generation without inventing a publication grant', () => {
+    const witness = resourceSnapshotTag({ resourceId: ID, version: 4 });
+    const selected = parseResumePublicationHeader(
+      resumePublicationHeader(['resource:only', witness]) ?? null,
+    );
+
+    expect(selected).toStrictEqual(['resource:only', witness]);
+    expect(publicationDeadline(selected)).toBeUndefined();
+  });
+
   it('bounds the handoff and reserves it from public application requests', () => {
     expect(() => parseResumePublicationHeader(' '.repeat(8193))).toThrow('transport bound');
     expect(() => {

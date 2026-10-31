@@ -31,7 +31,7 @@ function checked(tags: unknown): readonly string[] {
       grants += 1;
     } else if (resourceSnapshotOf(tag) !== undefined) snapshots += 1;
   }
-  if (grants > MAX_GRANTS || (tags.length > grants && (snapshots === 0 || grants === 0)))
+  if (grants > MAX_GRANTS || (snapshots === 0 && tags.length > grants))
     throw new TypeError(INVALID_GRANTS);
   return tags as string[];
 }

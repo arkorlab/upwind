@@ -7,7 +7,7 @@ import {
   parseCacheTagsHeader,
   publicationForRoute,
 } from '@stayingupwind/core/cache';
-import { markPublicationPolicy, observePublicationTags } from '@stayingupwind/core/paas';
+import { markPublicationPolicy } from '@stayingupwind/core/paas';
 
 import { nowMs } from './cache/clock.ts';
 import {
@@ -15,6 +15,7 @@ import {
   type RequestContext,
   publicationContext,
 } from './cache/context.ts';
+import { observeFreshPublication } from './cache/publication.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { buildPublicationOf, markBuildPublication } from './publication-proof.ts';
 import { admitPublicationStream } from './publication-stream.ts';
@@ -95,7 +96,7 @@ export function admitBuildSource(
 ): Response {
   const required = publicationForBuild(input.cache?.host.publication, route);
   const admitted = admitPublication(response, tags, nowMs(), required);
-  observePublicationTags(tags);
+  observeFreshPublication(tags, nowMs());
   return admitted;
 }
 

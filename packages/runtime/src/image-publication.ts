@@ -1,6 +1,7 @@
 import {
   isPublicationTag,
   parseCacheTagsHeader,
+  resourceSnapshotOf,
   type PublicationRequirement,
 } from '@stayingupwind/core/cache';
 import type { ImageRequestParams } from '@stayingupwind/core/images';
@@ -14,9 +15,11 @@ export function protectedImageSource(
 }
 
 export function imagePublicationTags(source: Response): string[] {
-  return parseCacheTagsHeader(source.headers.get('x-next-cache-tags') ?? undefined).filter((tag) =>
-    isPublicationTag(tag),
-  );
+  const tags = parseCacheTagsHeader(source.headers.get('x-next-cache-tags') ?? undefined);
+  const snapshots = tags.map((tag) => resourceSnapshotOf(tag));
+  return tags.some((tag) => isPublicationTag(tag)) || snapshots.some((read) => read !== undefined)
+    ? tags
+    : [];
 }
 
 /** Image derivatives retain the source's bound and never acquire the optimizer's minimum TTL. */

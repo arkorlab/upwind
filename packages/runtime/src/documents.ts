@@ -493,5 +493,8 @@ export async function notFound(input: RoutedInput, store: Store, at: URL): Promi
   if (!payload.ok) {
     return payload;
   }
-  return new Response(payload.body, { status: HTTP_NOT_FOUND, headers: payload.headers });
+  return copyBuildPublication(
+    payload,
+    new Response(payload.body, { status: HTTP_NOT_FOUND, headers: payload.headers }),
+  );
 }
