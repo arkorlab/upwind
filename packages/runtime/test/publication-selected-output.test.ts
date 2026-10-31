@@ -44,7 +44,15 @@ function context(route: string, independent = false, rsc = false) {
     clock: NOW,
     waitUntil: vi.fn(),
   });
-  const input = { request, cache, run: state.run, waitUntil: vi.fn() } as RoutedInput;
+  const input: RoutedInput = {
+    request,
+    initURL: request.url,
+    app: { entries: {} },
+    edge: { entries: {} },
+    cache,
+    run: state.run,
+    waitUntil: vi.fn(),
+  };
   return { state, input };
 }
 

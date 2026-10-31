@@ -124,7 +124,15 @@ describe('publication-tagged optimized image sources', () => {
     });
     context.publicationRequirement = required;
     context.publicationReadStarted = true;
-    const input = { request, cache: runtime, run: context.run, waitUntil: vi.fn() } as RoutedInput;
+    const input: RoutedInput = {
+      request,
+      initURL: request.url,
+      app: { entries: {} },
+      edge: { entries: {} },
+      cache: runtime,
+      run: context.run,
+      waitUntil: vi.fn(),
+    };
     const rawSource = new Response(body(png()), {
       headers: { 'content-type': 'image/png', 'x-next-cache-tags': tags.join(',') },
     });
