@@ -12,7 +12,11 @@ import { notFound, rscFromBuild } from './documents.ts';
 import { deferredEntryFor, entryFor } from './entries.ts';
 import { type GenerationSource, serveFromGeneration, speculative } from './generations.ts';
 import { notFoundData } from './pages-not-found.ts';
-import { admitBuildPublication, requirePublication } from './publication.ts';
+import {
+  admitBuildPublication,
+  buildPublicationExpired,
+  requirePublication,
+} from './publication.ts';
 import { rscRepresentation } from './representations.ts';
 import {
   bypassesPrerender,
@@ -197,6 +201,8 @@ export async function servePagesData(
     return invokeEntry(input, entry, target.url);
   }
   const built = store.prerendersByPathname.get(target.data);
+  const usableBuild =
+    built?.body !== undefined && !buildPublicationExpired(input, built, template.route);
   const current = await serveFromGeneration(
     input,
     store,
@@ -206,14 +212,14 @@ export async function servePagesData(
       url: target.url,
       representation: 'pages-data',
       dataPathname: target.data,
-      onMiss: built?.body === undefined ? 'render' : 'build',
+      onMiss: usableBuild ? 'build' : 'render',
     },
     entry.handler,
   );
   if (current !== undefined) {
     return current;
   }
-  if (built?.body !== undefined) {
+  if (usableBuild && !buildPublicationExpired(input, built, template.route)) {
     return shippedOutput(input, store, built, JSON_UTF8_TYPE);
   }
   return invokeEntry(input, entry, target.url);
@@ -256,11 +262,14 @@ export async function serveRouteHandler(
       pathname: resolved.pathname,
       url: resolved.url,
       representation: 'route-body',
-      onMiss: 'build',
+      onMiss: buildPublicationExpired(input, built, resolved.route) ? 'render' : 'build',
     },
     entry.handler,
   );
-  return current ?? shippedOutput(input, store, built, recordedContentType(built));
+  if (current !== undefined) return current;
+  return buildPublicationExpired(input, built, resolved.route)
+    ? invokeEntry(input, entry, resolved.url)
+    : shippedOutput(input, store, built, recordedContentType(built));
 }
 
 /**

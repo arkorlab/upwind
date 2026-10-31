@@ -1,8 +1,10 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { requestContextFor } from '../src/cache/context.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
+import { serveFromGeneration } from '../src/generations.ts';
+import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { servePagesData, serveRouteHandler } from '../src/outputs.ts';
 import { admitRequestPublication, requirePublication } from '../src/publication.ts';
 import type { RoutedInput } from '../src/serve.ts';
@@ -38,7 +40,12 @@ const DATA = '/_next/data/build/items.json';
 const NOW = 1_800_000_000_000;
 const IDENTITY = 'a'.repeat(64);
 
-function scenario(data: boolean, independent: boolean, draft: boolean, tagged = false) {
+function scenario(
+  data: boolean,
+  independent: boolean,
+  draft: boolean,
+  options: { tagged?: boolean; until?: number; wallClock?: boolean } = {},
+) {
   const path = data ? DATA : ROUTE;
   const built = {
     id: 'items',
@@ -47,9 +54,12 @@ function scenario(data: boolean, independent: boolean, draft: boolean, tagged = 
     routeType: 'route',
     body: { sha256: 'built' },
     initialRevalidate: false,
-    initialHeaders: tagged
-      ? { 'x-next-cache-tags': `upwind:publication:v1:${IDENTITY}:${String(NOW + 1000)}` }
-      : {},
+    initialHeaders:
+      options.tagged === true
+        ? {
+            'x-next-cache-tags': `upwind:publication:v1:${IDENTITY}:${String(options.until ?? NOW + 1000)}`,
+          }
+        : {},
   } as Prerender;
   const shell = { ...built, pathname: ROUTE };
   const store = {
@@ -75,7 +85,7 @@ function scenario(data: boolean, independent: boolean, draft: boolean, tagged = 
     request,
     startedAt: NOW,
     waitUntil: vi.fn(),
-    clock: NOW,
+    clock: options.wallClock === true ? undefined : NOW,
   });
   const input: RoutedInput = {
     ...tables,
@@ -101,6 +111,47 @@ function scenario(data: boolean, independent: boolean, draft: boolean, tagged = 
 }
 
 describe('publication admission for direct shipped output', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(invokeNodeHandler)
+      .mockReset()
+      .mockResolvedValue(new Response('live ungranted output'));
+  });
+
+  it('renders live when a Pages generation lookup crosses the shipped grant deadline', async () => {
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(NOW - performance.timeOrigin);
+    vi.mocked(serveFromGeneration).mockImplementationOnce(() => {
+      clock.mockReturnValue(NOW + 1000 - performance.timeOrigin);
+      return Promise.resolve(undefined);
+    });
+    vi.mocked(invokeNodeHandler).mockResolvedValueOnce(
+      new Response('fresh after lookup', {
+        headers: { 'x-next-cache-tags': `upwind:publication:v1:${IDENTITY}:${String(NOW + 2000)}` },
+      }),
+    );
+    const response = await scenario(true, false, false, { tagged: true, wallClock: true }).answer();
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe('fresh after lookup');
+  });
+
+  it.each([false, true])(
+    'renders a current live response after protected shipped expiry (data=%s)',
+    async (data) => {
+      vi.mocked(invokeNodeHandler).mockResolvedValueOnce(
+        new Response('fresh granted output', {
+          headers: {
+            'x-next-cache-tags': `upwind:publication:v1:${IDENTITY}:${String(NOW + 1000)}`,
+          },
+        }),
+      );
+      const response = await scenario(data, false, false, { tagged: true, until: 1 }).answer();
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('fresh granted output');
+    },
+  );
+
   it.each([false, true])(
     'protects canonical Pages data before shipped or draft fallback (draft=%s)',
     async (draft) => {
@@ -129,6 +180,6 @@ describe('publication admission for direct shipped output', () => {
   });
 
   it('accepts an actual matching grant on a protected shipped data response', async () => {
-    expect((await scenario(true, false, false, true).answer()).status).toBe(200);
+    expect((await scenario(true, false, false, { tagged: true }).answer()).status).toBe(200);
   });
 });

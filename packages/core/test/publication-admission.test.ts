@@ -15,6 +15,20 @@ const required = { version: 1 as const, identities: [identity], routes: ['/'] };
 const tag = `upwind:publication:v1:${identity}:60000`;
 
 describe('publication admission', () => {
+  it('matches cache directives without treating extension names as no-store', () => {
+    const response = admitPublication(
+      new Response('valid', {
+        headers: { 'cache-control': 'public, x-no-store-hint=1, no-transform' },
+      }),
+      [tag],
+      1,
+    );
+
+    expect(response.headers.get('cache-control')).toBe(
+      'private, no-cache, must-revalidate, no-transform',
+    );
+  });
+
   it.each(['public, max-age=3600, no-transform', 'private, no-store, no-transform'])(
     'preserves transform prohibition while narrowing %s',
     (control) => {

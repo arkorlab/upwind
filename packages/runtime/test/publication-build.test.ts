@@ -84,7 +84,7 @@ describe('independent build publication proof', () => {
     const test = scenario(false);
     const response = await test.context.run(() => {
       requirePublication(test.input.cache, ROUTE);
-      return admitRequestPublication(
+      const admitted = admitRequestPublication(
         new Response('current authorized error', {
           status: 403,
           headers: {
@@ -93,6 +93,7 @@ describe('independent build publication proof', () => {
         }),
         test.context,
       );
+      return Promise.resolve(admitted);
     });
 
     expect(response.status).toBe(403);
@@ -110,13 +111,14 @@ describe('independent build publication proof', () => {
       const test = scenario(false);
       const response = await test.context.run(() => {
         requirePublication(test.input.cache, ROUTE);
-        return admitRequestPublication(
+        const admitted = admitRequestPublication(
           new Response('retired data in an error body', {
             status,
             headers: { 'cache-control': 'public,s-maxage=3600' },
           }),
           test.context,
         );
+        return Promise.resolve(admitted);
       });
 
       expect(response.status).toBe(503);

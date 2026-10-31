@@ -1,3 +1,4 @@
+import { cacheDirectives } from '../request/cache-control.ts';
 import { releaseStream } from '../util/stream.ts';
 import {
   publicationDeadline,
@@ -27,13 +28,16 @@ export function admitPublication(
     const { headers } = admitted;
     for (const header of ['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control'])
       headers.delete(header);
-    const control = response.headers.get('cache-control')?.toLowerCase() ?? '';
-    const policy = control.includes('no-store')
+    const control = response.headers.get('cache-control') ?? '';
+    const directives = new Set(
+      cacheDirectives(control).map(
+        (directive) => directive.split('=', 1)[0]?.trim().toLowerCase() ?? '',
+      ),
+    );
+    const policy = directives.has('no-store')
       ? 'private, no-store'
       : 'private, no-cache, must-revalidate';
-    const transform = control.split(',').some((directive) => directive.trim() === 'no-transform')
-      ? ', no-transform'
-      : '';
+    const transform = directives.has('no-transform') ? ', no-transform' : '';
     headers.set('cache-control', policy + transform);
     return admitted;
   }
