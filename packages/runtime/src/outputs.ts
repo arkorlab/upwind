@@ -5,12 +5,14 @@ import {
   queryDependent,
   underBasePath,
 } from '@stayingupwind/core/bundle';
+import { parseCacheTagsHeader } from '@stayingupwind/core/cache';
 import { isWebSocketUpgrade, MIDDLEWARE_PREFETCH_HEADER } from '@stayingupwind/core/request';
 
 import { notFound, rscFromBuild } from './documents.ts';
 import { deferredEntryFor, entryFor } from './entries.ts';
 import { type GenerationSource, serveFromGeneration, speculative } from './generations.ts';
 import { notFoundData } from './pages-not-found.ts';
+import { admitBuildPublication, requirePublication } from './publication.ts';
 import { rscRepresentation } from './representations.ts';
 import {
   bypassesPrerender,
@@ -119,6 +121,25 @@ function dataTargetOf(store: Store, resolved: Resolved): DataTarget {
   return { page: resolved.pathname, data, url: `${data}${search}` };
 }
 
+/** The selected shipped representation alone carries the build's publication proof. */
+function shippedOutput(
+  input: RoutedInput,
+  store: Store,
+  built: Prerender,
+  contentType: string,
+): Response {
+  const response = withCacheState(
+    staticResponse(store, built, contentType, built.initialStatus ?? HTTP_OK),
+    'HIT',
+  );
+  return admitBuildPublication(
+    input,
+    built.route,
+    response,
+    parseCacheTagsHeader(response.headers.get('x-next-cache-tags') ?? undefined),
+  );
+}
+
 /**
  * A Pages Router data route: the props of the page's current generation, as the page's own
  * `getStaticProps` returned them. The route resolves to the data template of a page; the page's
@@ -134,6 +155,12 @@ export async function servePagesData(
 ): Promise<Response> {
   const target = dataTargetOf(store, resolved);
   const template = store.prerendersByPathname.get(resolved.route);
+  requirePublication(
+    input.cache,
+    template?.route ??
+      pageOfDataPathname(store.manifest.buildId, store.manifest.config.basePath, resolved.route) ??
+      target.page,
+  );
   // No prerender: props from `getServerSideProps`, through the route's own entrypoint — and for a
   // middleware's prefetch of them, nothing at all (`prefetchSkipped`).
   if (template === undefined) {
@@ -187,10 +214,7 @@ export async function servePagesData(
     return current;
   }
   if (built?.body !== undefined) {
-    return withCacheState(
-      staticResponse(store, built, JSON_UTF8_TYPE, built.initialStatus ?? HTTP_OK),
-      'HIT',
-    );
+    return shippedOutput(input, store, built, JSON_UTF8_TYPE);
   }
   return invokeEntry(input, entry, target.url);
 }
@@ -236,13 +260,7 @@ export async function serveRouteHandler(
     },
     entry.handler,
   );
-  return (
-    current ??
-    withCacheState(
-      staticResponse(store, built, recordedContentType(built), built.initialStatus ?? HTTP_OK),
-      'HIT',
-    )
-  );
+  return current ?? shippedOutput(input, store, built, recordedContentType(built));
 }
 
 /**

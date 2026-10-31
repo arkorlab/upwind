@@ -4,7 +4,11 @@ import {
   narrowCacheControl,
   noTransform,
 } from '@stayingupwind/core/bundle';
-import { admitPublication, publicationForRoute } from '@stayingupwind/core/cache';
+import {
+  admitPublication,
+  publicationForRoute,
+  publicationForBuild,
+} from '@stayingupwind/core/cache';
 import {
   type ConfiguredHeaders,
   isReserved,
@@ -349,7 +353,9 @@ function serveCurrentBody(
     response,
     decision.pack.header.tags.map((tag) => tag.value),
     edge.runtime.now(),
-    publicationForRoute(input.manifest.publication, entry.route),
+    decision.pack.header.source === 'build'
+      ? publicationForBuild(input.manifest.publication, entry.route)
+      : publicationForRoute(input.manifest.publication, entry.route),
   );
 }
 
