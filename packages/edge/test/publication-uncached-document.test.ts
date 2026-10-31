@@ -3,6 +3,7 @@ import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manif
 import { DEFAULT_DELIVERY_POLICY, runtimeCacheOf } from '@stayingupwind/host/delivery';
 import { describe, expect, it, vi } from 'vitest';
 
+import { documentPublicationTags } from '../src/handlers/document-publication.ts';
 import { handleDocument, type DocumentInput } from '../src/handlers/document.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
@@ -95,6 +96,17 @@ function fixture(until?: number, independent = false) {
 }
 
 describe('publication admission without generation-record caching', () => {
+  it.each(['x-next-cache-tags', 'X-Next-Cache-Tags'])(
+    'reads only the selected publication header (%s) without parsing unused metadata',
+    (name) => {
+      const test = fixture();
+      const tag = `upwind:publication:v1:${ID}:${String(NOW + 60_000)}`;
+      const entry = { ...test.input.entry, headers: { [name]: tag, 'x-unused': 'a\0b' } };
+
+      expect(documentPublicationTags({ entry })).toStrictEqual([tag]);
+    },
+  );
+
   it.each([undefined, NOW])(
     'never serves an ungranted or expired complete build (%s)',
     async (until) => {

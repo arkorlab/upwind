@@ -15,10 +15,11 @@ interface BuiltDocument {
 }
 
 function tags(input: { readonly entry: RouteEntry }): string[] {
-  return [
-    ...(input.entry.cache?.buildTags?.map((tag) => tag.value) ?? []),
-    ...parseCacheTagsHeader(new Headers(input.entry.headers).get('x-next-cache-tags') ?? undefined),
-  ];
+  const values = input.entry.cache?.buildTags?.map((tag) => tag.value) ?? [];
+  for (const [name, value] of Object.entries(input.entry.headers)) {
+    if (name.toLowerCase() === 'x-next-cache-tags') values.push(...parseCacheTagsHeader(value));
+  }
+  return values;
 }
 
 function requirement(input: BuiltDocument) {
