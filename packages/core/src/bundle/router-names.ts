@@ -16,6 +16,7 @@ export interface RouterNamed {
   readonly config: {
     readonly basePath: string;
     readonly trailingSlash: boolean;
+    readonly skipTrailingSlashRedirect?: boolean | undefined;
     readonly i18n?: { readonly locales: readonly string[] } | null | undefined;
     readonly images?: { readonly path: string } | undefined;
   };
@@ -44,16 +45,20 @@ function takesTrailingSlash(pathname: string): boolean {
 
 /**
  * The pages named with a trailing slash that are the page without it: every page that takes one,
- * where the application keeps its pages there; and, in an application with `i18n` that does not,
- * the root of each locale. `@next/routing` routes the application's root as `/<locale>/`, the
- * default locale put in front of the root's own slash, and Next.js serves `/<locale>/` as that
- * locale's root when no redirect takes the slash off first (`internalRedirect`).
+ * where the application keeps its pages there, or where no redirect takes the slash off
+ * (`skipTrailingSlashRedirect`): Next.js's router looks a path up without its trailing slash
+ * (`getItem`, `server/lib/router-utils/filesystem.ts`), so with no redirect ahead of it a page is
+ * found at both spellings, where `@next/routing` matches only the one it is handed. And, in an
+ * application with `i18n` that does neither, the root of each locale. `@next/routing` routes the
+ * application's root as `/<locale>/`, the default locale put in front of the root's own slash, and
+ * Next.js serves `/<locale>/` as that locale's root when no redirect takes the slash off first
+ * (`internalRedirect`).
  */
 function slashSpellingsOf(
   config: RouterNamed['config'],
   named: readonly string[],
 ): Map<string, string> {
-  if (config.trailingSlash) {
+  if (config.trailingSlash || config.skipTrailingSlashRedirect === true) {
     return new Map(
       named
         .filter((pathname) => takesTrailingSlash(pathname))
