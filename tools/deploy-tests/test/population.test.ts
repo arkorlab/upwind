@@ -229,6 +229,30 @@ function code(source: string): string {
     .join('\n');
 }
 
+/** Every name `pattern` captures in a copy. */
+function namesIn(copy: string, pattern: RegExp): string[] {
+  return [...copy.matchAll(pattern)].map(([, name = '']) => name);
+}
+
+/**
+ * Whether a copy registers the case `fullName`, as Jest names it: the names of its suites — a
+ * `describe`, or a row of a `describe.each` — then its own title, each written in the copy.
+ */
+function registers(copy: string, fullName: string): boolean {
+  const suites = [
+    ...namesIn(copy, /\bdescribe\('((?:[^'\\]|\\.)*)'/gu),
+    ...namesIn(copy, /\bdescription: '((?:[^'\\]|\\.)*)'/gu),
+  ];
+  const titles = namesIn(copy, /\bit\('((?:[^'\\]|\\.)*)'/gu);
+  const from = (rest: string): boolean => {
+    return (
+      titles.includes(rest) ||
+      suites.some((suite) => rest.startsWith(`${suite} `) && from(rest.slice(suite.length + 1)))
+    );
+  };
+  return from(fullName);
+}
+
 /** The gates a copy's comments set (`@gate`, `@force-gate`), a line each. */
 function gates(source: string): string[] {
   return source.split('\n').filter((line) => /@(?:force-)?gate\b/u.test(line));
@@ -247,14 +271,14 @@ describe('the copies of cases deploy mode skips', () => {
     'hold a copy of %s, beside it, as of the release the nights run',
     (_, { next, upstream, source, file, cases }) => {
       const copy = readFileSync(path.join(kept, source), 'utf8');
-      const titles = [...copy.matchAll(/\bit\('((?:[^'\\]|\\.)*)'/gu)].map(([, title]) => title);
 
       expect(workflow).toContain(`  NIGHTLY_NEXTJS_REF: 'v${next.version}'`);
       expect(path.posix.dirname(file)).toBe(path.posix.dirname(upstream));
       expect(file.endsWith('.skipped-in-deploy.test.ts')).toBe(true);
       // Said where it came from, under which license.
-      expect(copy).toContain(`// From ${upstream}\n// at ${next.commit} (v${next.version}).`);
-      expect(copy).toContain('// Copyright (c) 2025 Vercel, Inc.');
+      expect(copy).toContain(
+        `// Copyright (c) 2025 Vercel, Inc.\n//\n// From ${upstream}\n// at ${next.commit} (v${next.version}).`,
+      );
       // Nothing of it asks whether it is deployed, in code or by a gate.
       expect(code(copy)).not.toMatch(/isNextDeploy/u);
 
@@ -262,12 +286,35 @@ describe('the copies of cases deploy mode skips', () => {
         expect(gate).not.toMatch(/deploy|adapter/u);
       }
 
-      // Every case it is recorded to register, it registers.
+      // Every case it is recorded to register, it registers, each under its own name.
+      expect(new Set(cases).size).toBe(cases.length);
+
       for (const fullName of cases) {
-        expect(titles.some((title) => fullName.endsWith(` ${title}`))).toBe(true);
+        expect(registers(copy, fullName)).toBe(true);
       }
     },
   );
+
+  it('are held to the names their copy registers, every row of a `describe.each` among them', () => {
+    const copy = [
+      "describe('runtime prefetching', () => {",
+      '  describe.each([',
+      "    { description: 'in a page' },",
+      "    { description: 'in a private cache' },",
+      "  ])('$description', () => {",
+      "    it('includes root params', async () => {})",
+    ].join('\n');
+
+    expect(registers(copy, 'runtime prefetching in a page includes root params')).toBe(true);
+    expect(registers(copy, 'runtime prefetching in a private cache includes root params')).toBe(
+      true,
+    );
+    // A row gone from the copy is a case it no longer registers.
+    expect(
+      registers(copy, 'runtime prefetching passed to a public cache includes root params'),
+    ).toBe(false);
+    expect(registers(copy, 'runtime prefetching in a page includes search params')).toBe(false);
+  });
 
   it('are each written to a file of their own', () => {
     const files = SUPPLEMENTS.map(({ file }) => file);

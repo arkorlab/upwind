@@ -7,8 +7,9 @@
 // Run by upwind's deploy tests among what Next.js skips in deploy mode
 // (tools/deploy-tests/README.md).
 // Upstream skips the read of the stale value right after the revalidation where the
-// suite is deployed (`if (!isNextDeploy)`); here it is made, as it is under `next start`.
-// Nothing else is changed.
+// suite is deployed (`if (!isNextDeploy)`), since its own deployments serve no stale entry
+// there; here it is made, as it is under `next start`, which is what this copy asks of a
+// deployment. Nothing else is changed.
 import { nextTestSetup } from 'e2e-utils'
 import { randomUUID } from 'crypto'
 import { join } from 'path'

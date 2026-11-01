@@ -8,7 +8,8 @@
 // (tools/deploy-tests/README.md).
 // Upstream skips the prefetch of, and the navigation to, a root param that
 // generateStaticParams did not name where the suite is deployed (`if (!isNextDeploy)`); here
-// they are made, as they are under `next start`. Nothing else is changed.
+// they are made, as they are under `next start`. Nothing else is changed: the check of
+// `next.cliOutput` after each case stays, as upstream's deployed run keeps it.
 import { nextTestSetup } from 'e2e-utils'
 import { waitFor } from 'next-test-utils'
 import type * as Playwright from 'playwright'
