@@ -17,7 +17,7 @@ import {
   HEADER_RULES_LEFT_HEADER,
   ORIGINAL_URL_HEADER,
 } from '@stayingupwind/core/paas';
-import { NEXT_DATA_HEADER, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
+import { NEXT_DATA_HEADER, NULL_BODY_STATUSES, redirectAnswer } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { edgeJudgesHeaderRules, isRouteParameterKey, stripPlatformHeaders } from './incoming.ts';
@@ -25,6 +25,7 @@ import { escapedNameOf, namesWithSpellings, prerenderedName } from './name-spell
 import type { Resolved } from './outputs.ts';
 import { misdirectedTo } from './placement.ts';
 import { withHeadersChanged, withStatus } from './reframe.ts';
+import { renderQuery, withRouteParameters } from './render-query.ts';
 import {
   AFTER_FILES,
   BEFORE_FILES,
@@ -32,7 +33,7 @@ import {
   FALLBACK,
   markedRewrites,
 } from './rewritten-path.ts';
-import { routeQuery } from './route-parameters.ts';
+import { appRouteParameters, routeQuery } from './route-parameters.ts';
 import { HTTP_OK } from './serve.ts';
 import { entrypointKindOf, type Store } from './store.ts';
 
@@ -304,7 +305,11 @@ export function withRewriteStatus(
   return withStatus(response, status, null);
 }
 
-/** A redirect routing decided, whether from a rule or the middleware, with everything else it set. */
+/**
+ * A redirect routing decided, whether from a rule or the middleware, with everything else it set,
+ * answered as Next.js's server answers it (`redirectAnswer`): its destination for a body, and on a
+ * permanent redirect a `Refresh` as well.
+ */
 export function redirectResponse(
   url: string,
   status: number,
@@ -312,7 +317,7 @@ export function redirectResponse(
 ): Response {
   const out = new Headers(headers);
   out.set('location', url);
-  return new Response(null, { status, headers: out });
+  return redirectAnswer(url, status, out);
 }
 
 type Config = Store['manifest']['config'];
@@ -629,13 +634,19 @@ export function landedRoute(
  * A member of a route the build closed resolves by its own name, which names no entrypoint: the
  * route it was built from does, and that is the page whose handler is asked.
  */
-function handlerUrl(
-  store: Store,
-  route: string,
-  target: NonNullable<ResolveRoutesResult['invocationTarget']>,
-  asked: Asked,
-): string {
-  const routed = `${target.pathname}${queryString(target.query)}`;
+type Target = NonNullable<ResolveRoutesResult['invocationTarget']> & { separated?: true };
+
+function handlerUrl(store: Store, route: string, target: Target, asked: Asked): string {
+  // A catch-all with an escaped slash is handed over as metadata, preserving its segment
+  // boundaries. A prefixed query would override those arrays after decoding and splitting them
+  // (RouteModule.prepare), so no route parameter is duplicated there for this render.
+  const targetQuery =
+    target.separated === true
+      ? Object.fromEntries(
+          Object.entries(target.query).filter(([key]) => key === 'nxtP' || !key.startsWith('nxtP')),
+        )
+      : target.query;
+  const routed = `${target.pathname}${queryString(targetQuery)}`;
   const { url } = asked;
   const kind = answeringKind(store, route);
   if (
@@ -645,46 +656,14 @@ function handlerUrl(
   ) {
     return routed;
   }
-  const query = routeQuery(store, route, target, withoutTrailingSlash(target.pathname));
+  const query =
+    target.separated === true
+      ? targetQuery
+      : routeQuery(store, route, target, withoutTrailingSlash(target.pathname));
   if (asked.rewrite !== undefined) {
     return `${inLocaleOf(store, url.pathname, target.pathname)}${queryString(query)}`;
   }
   return `${url.pathname}${withRouteParameters(url.search, query)}`;
-}
-
-/**
- * The query asked for, with the route's parameters as routing ended on (`nxtP…`, `nxtI…`) after
- * it, the query itself left as it was spelled.
- *
- * An App Router route that a `next.config` rewrite led to applies the rewrite again, and the
- * rewrite puts the dynamic route's parameters in the query it renders (`handleRewrites`, in
- * `server-utils.ts`), which is its `searchParams`. It takes them out again only for the parameters
- * the platform handed it as `nxtP…` (`RouteModule.prepare`, "Remove any normalized params from the
- * query"), so without them a page's `searchParams` said its own `params` as well
- * (`app-dir/rewrite-with-search-params`).
- *
- * A page of the Pages Router is handed them as well — one a rewrite led to, and one `i18n` put the
- * default locale in front of — since either router's handler takes its parameters from them over
- * what it matches its path to: it renders what routing matched, as it does wherever it is handed the
- * URL routing ended on, and as a render the runtime makes of the page by its path alone does
- * (`routingParameters`). No key of the query asked for competes with them: a client's are taken out
- * before routing (`dropRouteParameterKeys`, in `handleFull`), so each parameter is named once.
- */
-function withRouteParameters(search: string, query: Record<string, string | string[]>): string {
-  const parameters = new URLSearchParams();
-  for (const [key, value] of Object.entries(query)) {
-    const items = Array.isArray(value) ? value : [value];
-    if (isRouteParameterKey(key)) {
-      for (const item of items) {
-        parameters.append(key, item);
-      }
-    }
-  }
-  const added = parameters.toString();
-  if (added === '') {
-    return search;
-  }
-  return search === '' ? `?${added}` : `${search}&${added}`;
 }
 
 /**
@@ -749,9 +728,20 @@ export function resolvedOf(
   // slash (`/about%20us/`) is that slash spelling (`/about us/`) first.
   const unescaped = escapedNameOf(store, route) ?? route;
   const page = store.slashSpellings.get(unescaped) ?? unescaped;
+  const requestPathname = withoutTrailingSlash(target.pathname);
+  const params = appRouteParameters(store, page, requestPathname);
+  const url = handlerUrl(
+    store,
+    page,
+    params === undefined ? target : { ...target, separated: true },
+    asked,
+  );
   return {
     route: page,
-    pathname: prerenderedName(store, withoutTrailingSlash(target.pathname)),
-    url: handlerUrl(store, page, target, asked),
+    pathname: prerenderedName(store, requestPathname),
+    url,
+    ...(params !== undefined && {
+      parameters: { params, query: renderQuery(target.query) },
+    }),
   };
 }

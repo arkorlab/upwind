@@ -22,6 +22,8 @@ import {
   keptByNobody,
   unsharedUnlessPublic,
   connectionRefusesSharing,
+  REDIRECT_STATUSES,
+  redirectAnswer,
 } from '@stayingupwind/core/request';
 import { isDeadlineError, releaseStream, withDeadline } from '@stayingupwind/core/util';
 import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
@@ -754,7 +756,8 @@ function withoutMiddlewareProtocol(headers: Headers): void {
 /**
  * A redirect or a whole response the middleware produced for `request`, handed to the client as
  * such: without what of it is the middleware protocol's, under the headers the rules of
- * `next.config` set (`layConfiguredUnder`).
+ * `next.config` set (`layConfiguredUnder`). A redirect that brings no body of its own
+ * (`NextResponse.redirect`) is answered as Next.js's server answers it (`redirectAnswer`).
  */
 export function middlewareResponse(
   edge: EdgeContext,
@@ -773,5 +776,9 @@ export function middlewareResponse(
   headers.set(EDGE_DEBUG_HEADER, 'passthrough;reason=middleware');
   applyCspReporting(headers, edge.cspReportingPath);
   recordMiddlewareAnswer(edge, 'middleware', answered);
+  const location = headers.get('location');
+  if (location !== null && answer.body === null && REDIRECT_STATUSES.has(answer.status)) {
+    return redirectAnswer(location, answer.status, headers);
+  }
   return answer;
 }

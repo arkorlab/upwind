@@ -286,6 +286,9 @@ describe('the header rules ahead of the middleware, where the edge ran it', () =
     expect(response.headers.get('location')).toBe(TARGET);
     expect(response.headers.get('x-changed')).toBeNull();
     expect(response.headers.get(HEADER_RULES_LEFT_HEADER)).toBe('1');
+    // Its destination for a body, and a `Refresh`, as Next.js's server answers a permanent redirect.
+    expect(response.headers.get('refresh')).toBe(`0;url=${TARGET}`);
+    await expect(response.text()).resolves.toBe(TARGET);
   });
 
   /**

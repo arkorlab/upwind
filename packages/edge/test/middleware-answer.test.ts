@@ -266,9 +266,38 @@ describe('an answer the middleware gives', () => {
         retained ? ['rule=1; Path=/', 'mw=1; Path=/'] : [],
       );
       expect(response.headers.get('x-public')).toBe('retained');
-      await expect(response.text()).resolves.toBe(middleware === refusal ? 'denied' : '');
+      await expect(response.text()).resolves.toBe(
+        middleware === refusal ? 'denied' : 'https://site.example/login',
+      );
     },
   );
+
+  /**
+   * A redirect the middleware answers with and brings no body of its own is answered as Next.js's
+   * server answers one (`router-server.js`): its destination for a body, and on a permanent redirect
+   * a `Refresh` as well. One with a body of its own keeps it.
+   */
+  it.each([
+    { status: 307, body: null, refresh: null },
+    { status: 308, body: null, refresh: '0;url=https://site.example/login' },
+    { status: 307, body: 'moved', refresh: null },
+  ])('answers a middleware redirect $status with body $body as Next.js does', async (answer) => {
+    const response = await throughMiddleware('/', {
+      middleware: () => {
+        return new Response(answer.body, {
+          status: answer.status,
+          headers: { location: 'https://site.example/login' },
+        });
+      },
+    });
+
+    expect(response.status).toBe(answer.status);
+    expect(response.headers.get('refresh')).toBe(answer.refresh);
+    expect(response.headers.get('content-type')).toBe(
+      answer.body === null ? null : 'text/plain;charset=UTF-8',
+    );
+    await expect(response.text()).resolves.toBe(answer.body ?? 'https://site.example/login');
+  });
 
   it.each([FILE, '/api/hello'])(
     'drops fields nominated by continuing middleware Connection on %s',
