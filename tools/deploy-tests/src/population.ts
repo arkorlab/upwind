@@ -214,7 +214,9 @@ export interface SkippedPopulation {
 /**
  * The suites the skipped population runs, from the deploy manifest: those it excludes whole, out of
  * the suites its include rules select (`selected`, `excluded` resolved against the checkout), and
- * those it lists cases of. A suite both listed and excluded is excluded, as the runner has it.
+ * those it lists cases of. A suite both listed and excluded is excluded, as the runner has it. A
+ * listed suite is not held to the include rules: the runner selects a suite named in `suites` by its
+ * name, whatever the rules say (`test/get-test-filter.js`), so upstream runs it, less those cases.
  */
 export function manifestPopulation(
   manifest: DeployManifest,

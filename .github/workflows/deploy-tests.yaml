@@ -77,7 +77,7 @@ on:
           test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
         type: string
       shards:
-        description: 'How many pieces to cut `all` into, 1 to 64 — when empty, a piece a project on a host (at most 32; 6 under six projects) and 64 on the runner'
+        description: 'How many pieces to cut `all` into, 1 to 64 — when empty, a piece a project on a host (at most 32; 6 under six projects), 64 on the runner, and 8 for `population: skipped`'
         default: ''
         type: string
       only:
