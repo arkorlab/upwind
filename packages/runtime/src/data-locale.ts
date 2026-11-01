@@ -7,24 +7,31 @@ type RoutingI18n = NonNullable<Parameters<typeof resolveRoutes>[0]['i18n']>;
 /** What a Pages Router data request's path ends with. */
 const DATA_SUFFIX = '.json';
 
+/** What of the manifest says whether and how a data request is localized. */
+type DataManifest = Pick<Store['manifest'], 'buildId'> & {
+  readonly config: Pick<Store['manifest']['config'], 'basePath'>;
+  readonly routing: Pick<Store['manifest']['routing'], 'middlewareMatchers'>;
+};
+
 /**
  * A Pages Router data request that names no locale, given the default one, as Next.js's router
- * gives it ("Match normalized _next/data requests against the same locale-prefixed internal
- * pathname shape used by direct page requests", `server/lib/router-utils/resolve-routes.js`).
- * `@next/routing` puts the default locale in front of a page's path, but not of a data request's
- * (16.4.3, and 16.5.0-canary.36 the same), while the data route Next.js writes for an application
- * with `i18n` reads the first segment as the locale: `/_next/data/<build>/about.json` read `about`
- * as one and found no page, where Next.js answers it as `/en/about`. The default is the domain's
- * where one is configured, as it is for a page (`internalPathname`). Any other request is
- * returned as it came.
+ * gives it in an application with a middleware ("Match normalized _next/data requests against the
+ * same locale-prefixed internal pathname shape used by direct page requests", in its
+ * `middleware_next_data` route, `server/lib/router-utils/resolve-routes.js`): `/about.json`'s data
+ * is `/en/about`'s. `@next/routing` puts the default locale in front of a page's path, but never of
+ * a data request's (16.4.3, and 16.5.0-canary.36 the same), while the data route Next.js writes for
+ * an application with `i18n` reads the first segment as the locale: `about` was read as one, and
+ * no page was found. Next.js does it only where the application has a middleware; without one,
+ * such a request is a 404 there too, and is left as it came. The default is the domain's where one
+ * is configured, as it is for a page (`internalPathname`). Any other request is returned as it came.
  */
-export function localizedDataUrl(
-  config: Pick<Store['manifest']['config'], 'basePath'>,
-  i18n: RoutingI18n,
-  buildId: string,
-  url: URL,
-): URL {
-  const prefix = `${config.basePath}/_next/data/${buildId}/`;
+export function localizedDataUrl(manifest: DataManifest, i18n: RoutingI18n, url: URL): URL {
+  if (manifest.routing.middlewareMatchers.length === 0) {
+    return url;
+  }
+  // Spelled as the router reads a data request (`normalizeNextDataUrl`): the base path as it is
+  // configured, against the path as it came. A request it does not read as data is not localized.
+  const prefix = `${manifest.config.basePath}/_next/data/${manifest.buildId}/`;
   const { pathname } = url;
   if (!pathname.startsWith(prefix) || !pathname.endsWith(DATA_SUFFIX)) {
     return url;

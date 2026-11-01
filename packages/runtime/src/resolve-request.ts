@@ -71,7 +71,7 @@ export function routingOf(
   const url =
     routingI18nOf === undefined
       ? asked.url
-      : localizedDataUrl(config, routingI18nOf, buildId, asked.url);
+      : localizedDataUrl(store.manifest, routingI18nOf, asked.url);
   return resolveRoutes({
     url,
     buildId,
