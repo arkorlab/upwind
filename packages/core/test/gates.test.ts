@@ -1388,6 +1388,23 @@ describe('the gate a request is asked of', () => {
     });
   });
 
+  /** The base path's own root takes the slash whatever its last segment reads like (`/docs.v1/`). */
+  it('is the base path root’s behind a slash no redirect takes off, a dotted one too', () => {
+    for (const basePath of ['/docs', '/docs.v1']) {
+      const bundle = bundleOf({
+        gates: { [basePath]: 'checker' },
+        config: { ...bundleOf().config, basePath, skipTrailingSlashRedirect: true },
+        entrypoints: [{ id: '/', kind: 'app-page', pathname: basePath }],
+        prerenders: [],
+        staticFiles: [],
+        routing: { ...bundleOf().routing, dynamicRoutes: [] },
+      });
+      const based = manifestOf(bundle, { spelledPrefix: { basePath } });
+
+      expect(gateOf(based, `${basePath}/`)).toStrictEqual({ route: basePath, name: 'checker' });
+    }
+  });
+
   /** A page's payload is a name of its own, which the build writes only where it prerendered it. */
   it('is none for the payload of a page the build named no payload of', () => {
     const gated = manifestOf(bundleOf({ gates: { '/private': 'checker' } }));

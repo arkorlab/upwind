@@ -650,8 +650,9 @@ function namedFileKey(
  * A file whose last segment names no file, in an application with `trailingSlash`, by the spelling
  * the router finds it by (`staticFileTrailingSlash`): Next.js redirects `/manual` to `/manual/`
  * and answers the file there, so `/manual/` is the file `/manual` (`routerSpellings`) — and where
- * `skipTrailingSlashRedirect` leaves the redirect out, the router still finds the file so. A name
- * with an extension has no such spelling: the redirect takes the slash off it.
+ * `skipTrailingSlashRedirect` leaves the redirect out, with `trailingSlash` or without it, the
+ * router still finds the file so. A name with an extension has no such spelling: the redirect
+ * takes the slash off it.
  */
 function slashedFileKey(
   manifest: FileLookup,

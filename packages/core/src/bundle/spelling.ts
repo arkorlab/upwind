@@ -172,18 +172,18 @@ export function requestedPathname(
  * `server/lib/router-utils/filesystem.ts`). The runtime hands its router the same spellings
  * (`routerPathnames`), and what the edge holds of a route — the gate it asks, the Function it sends
  * a request to, what it serves by name — is found by these: a spelling the router resolves and
- * these leave out would reach a gated page with no gate asked.
+ * these leave out would reach a gated page with no gate asked. The base path's own root takes the
+ * slash whatever its last segment reads like, as `requestedPathname` gives it.
  */
 export function routerSpellings(
   bundle: Pick<DeploymentBundle, 'config'>,
   pathname: string,
 ): string[] {
-  const { skipTrailingSlashRedirect, trailingSlash } = bundle.config;
+  const { basePath, skipTrailingSlashRedirect, trailingSlash } = bundle.config;
   const takesSlash =
     (trailingSlash || skipTrailingSlashRedirect) &&
-    namesNoFile(pathname) &&
-    !isTemplate(pathname) &&
-    !pathname.endsWith('/');
+    ((basePath !== '' && pathname === basePath) ||
+      (namesNoFile(pathname) && !isTemplate(pathname) && !pathname.endsWith('/')));
   return [
     ...new Set([
       pathname,

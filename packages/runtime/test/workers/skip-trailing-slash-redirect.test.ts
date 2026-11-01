@@ -29,16 +29,22 @@ const SLASH_REDIRECT: Route = {
 interface Application {
   readonly skipTrailingSlashRedirect: boolean;
   readonly i18n?: { readonly defaultLocale: string; readonly locales: string[] };
+  readonly basePath?: string;
 }
 
-/** A Pages Router application with one page, `/another`, under each locale where it has any. */
-function storeOf({ skipTrailingSlashRedirect, i18n }: Application): Store {
+/**
+ * A Pages Router application with one page, `/another`, under each locale where it has any; and
+ * under a base path, the root as well.
+ */
+function storeOf({ skipTrailingSlashRedirect, i18n, basePath = '' }: Application): Store {
   const pages =
-    i18n === undefined ? ['/another'] : i18n.locales.map((locale) => `/${locale}/another`);
+    i18n === undefined
+      ? [...(basePath === '' ? [] : [basePath]), `${basePath}/another`]
+      : i18n.locales.map((locale) => `/${locale}/another`);
   const manifest = {
     buildId: BUILD_ID,
     config: {
-      basePath: '',
+      basePath,
       trailingSlash: false,
       skipTrailingSlashRedirect,
       poweredByHeader: true,
@@ -74,7 +80,7 @@ async function routed(application: Application, path: string) {
   const result = await resolveRoutes({
     url,
     buildId: BUILD_ID,
-    basePath: '',
+    basePath: application.basePath ?? '',
     requestBody: new ReadableStream(),
     headers: new Headers(),
     pathnames: store.pathnames,
@@ -112,6 +118,18 @@ describe('a page asked for with a trailing slash no redirect takes off', () => {
     await expect(routed(skipping, '/ja-jp/another/')).resolves.toMatchObject({
       page: '/ja-jp/another',
     });
+  });
+
+  /** Next.js finds the root by its spelling with the slash too, whatever its last segment reads like. */
+  it('is the root under a base path, a dotted one too', async () => {
+    for (const basePath of ['/docs', '/docs.v1']) {
+      const skipping = { skipTrailingSlashRedirect: true, basePath };
+
+      await expect(routed(skipping, `${basePath}/`)).resolves.toMatchObject({ page: basePath });
+      await expect(routed(skipping, `${basePath}/another/`)).resolves.toMatchObject({
+        page: `${basePath}/another`,
+      });
+    }
   });
 
   it('is left to the redirect where nothing skips it', async () => {
