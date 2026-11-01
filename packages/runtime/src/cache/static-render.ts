@@ -101,6 +101,9 @@ function staticRequest(input: StaticRenderInput): Request {
  * served, in place of the application's not-found page.
  */
 export async function renderStatically(input: StaticRenderInput): Promise<StaticRendering> {
+  if (input.renderPathname === null) {
+    throw new Error('A static render needs an addressable request path');
+  }
   const request = staticRequest(input);
   let answered: number | undefined;
   const captured = await renderCaptured(input.kind, async (meta) => {

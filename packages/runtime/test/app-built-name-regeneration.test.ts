@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { NodeHandler } from '../src/app-module.ts';
 import { withClock } from '../src/cache/clock.ts';
+import { regenerate } from '../src/cache/regenerate.ts';
 import { type CacheRuntime, createCacheRuntime } from '../src/cache/runtime.ts';
 import { type GenerationSource, serveFromGeneration } from '../src/generations.ts';
 import { type InvokeInput, invokeNodeHandler } from '../src/node-bridge.ts';
@@ -305,6 +306,43 @@ describe('an App Router generation rendered by the build’s member name', () =>
     expect(staticRenderParameters(store, ROUTE, pathname, 'request').routeParams).toStrictEqual({
       slug: ['100 ', 'a/b'],
     });
+  });
+
+  it('records an unaddressable built member as a failed regeneration without invoking or publishing it', async () => {
+    const pathname = '/docs/../100%';
+    const store = deployment(pathname);
+    const parameters = staticRenderParameters(store, ROUTE, pathname);
+    const authority = fakeAuthority(SCOPE);
+    const pending: Promise<unknown>[] = [];
+
+    const outcome = await withClock(NOW, () => {
+      return regenerate({
+        runtime: runtimeFor(authority),
+        request: new Request(HOST),
+        handler,
+        target: {
+          descriptor: { kind: 'app-page', route: ROUTE, pathname },
+          reason: 'manual',
+          ...parameters,
+        },
+        previewToken: undefined,
+        waitUntil: (work) => {
+          pending.push(work);
+        },
+        run: (work) => work(),
+      });
+    });
+
+    await settle(pending);
+
+    expect(parameters.renderPathname).toBeNull();
+    expect(outcome).toMatchObject({
+      kind: 'failed',
+      error: 'A static render needs an addressable request path',
+    });
+    expect(invokeNodeHandler).not.toHaveBeenCalled();
+    expect(authority.commits).toHaveLength(0);
+    expect(authority.failures).toHaveLength(1);
   });
 
   it.each(['/another?from=another', '/docs/changed%2Fvalue?from=another'])(

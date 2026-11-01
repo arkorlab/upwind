@@ -409,8 +409,8 @@ export interface StaticRouteParameters {
   readonly parameters?: Readonly<Record<string, string>> | undefined;
   /** App Router values, preserving the segment boundaries of a catch-all. */
   readonly routeParams?: Readonly<Record<string, string | string[]>> | undefined;
-  /** A request spelling of a build's name; the descriptor keeps the original cache key. */
-  readonly renderPathname?: string | undefined;
+  /** A request spelling of a build's name, or null when no request can address that name. */
+  readonly renderPathname?: string | null | undefined;
   /** Resolve configured rewrite query values only for the special static-render path. */
   readonly prepareQuery?: StaticQuery | undefined;
 }
@@ -436,10 +436,7 @@ export function staticRenderParameters(
   if (named === undefined) return {};
   if (!app) return { parameters: queryParameters(named) };
   if (entrypoint?.runtime === 'edge') return {};
-  const renderPathname = built ? requestPathOf(pathname) : undefined;
-  if (built && renderPathname === undefined) {
-    throw new Error('A static render needs an addressable request path');
-  }
+  const renderPathname = built ? (requestPathOf(pathname) ?? null) : undefined;
   const routeParams = metadataParameters(named);
   return {
     routeParams,
