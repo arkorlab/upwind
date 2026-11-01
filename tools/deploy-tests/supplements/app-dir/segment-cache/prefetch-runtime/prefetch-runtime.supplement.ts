@@ -8,13 +8,13 @@
 // (tools/deploy-tests/README.md).
 // Upstream skips the prefetch of, and the navigation to, a root param that
 // generateStaticParams did not name where the suite is deployed (`if (!isNextDeploy)`); here
-// they are made, as they are under `next start`. Nothing else is changed: the check of
-// `next.cliOutput` after each case stays, as upstream's deployed run keeps it.
+// they are made, as they are under `next start`. The check of `next.cliOutput` after each
+// case is left out: a deployment's output holds its build, not what it served. Nothing else
+// is changed.
 import { nextTestSetup } from 'e2e-utils'
 import { waitFor } from 'next-test-utils'
 import type * as Playwright from 'playwright'
 import { createRouterAct } from 'router-act'
-import { UNEXPECTED_CACHE_MISS_MESSAGE } from 'next/src/server/use-cache/use-cache-errors'
 
 describe('runtime prefetching', () => {
   const { next, isNextDev } = nextTestSetup({
@@ -24,32 +24,6 @@ describe('runtime prefetching', () => {
     it('is skipped', () => {})
     return
   }
-
-  let currentCliOutputIndex = 0
-  beforeEach(() => {
-    resetCliOutput()
-  })
-
-  const getCliOutput = () => {
-    if (next.cliOutput.length < currentCliOutputIndex) {
-      // cliOutput shrank since we started the test, so something (like a `sandbox`) reset the logs
-      currentCliOutputIndex = 0
-    }
-    return next.cliOutput.slice(currentCliOutputIndex)
-  }
-
-  const resetCliOutput = () => {
-    currentCliOutputIndex = next.cliOutput.length
-  }
-
-  // We never expect to see this logged here.
-  afterEach(() => {
-    if (getCliOutput().includes(UNEXPECTED_CACHE_MISS_MESSAGE)) {
-      throw new Error(
-        `A test unexpectedly logged "${UNEXPECTED_CACHE_MISS_MESSAGE}"`
-      )
-    }
-  })
 
   describe.each([
     {

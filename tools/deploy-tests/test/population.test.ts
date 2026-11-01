@@ -279,8 +279,9 @@ describe('the copies of cases deploy mode skips', () => {
       expect(copy).toContain(
         `// Copyright (c) 2025 Vercel, Inc.\n//\n// From ${upstream}\n// at ${next.commit} (v${next.version}).`,
       );
-      // Nothing of it asks whether it is deployed, in code or by a gate.
-      expect(code(copy)).not.toMatch(/isNextDeploy/u);
+      // Nothing of it asks whether it is deployed, in code or by a gate, nor reads the server's own
+      // output, which a deployment does not hand back.
+      expect(code(copy)).not.toMatch(/isNextDeploy|cliOutput/u);
 
       for (const gate of gates(copy)) {
         expect(gate).not.toMatch(/deploy|adapter/u);
