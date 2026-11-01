@@ -1,3 +1,4 @@
+import { resolveRoutes } from '@next/routing';
 import { describe, expect, it } from 'vitest';
 
 import { localizedDataUrl } from '../src/data-locale.ts';
@@ -9,8 +10,17 @@ const I18N = {
   domains: [{ domain: 'example.fr', defaultLocale: 'fr' }],
 };
 
+/** A deployment of an application with `i18n` and a middleware, under `basePath`. */
+function manifest(basePath = '', middleware = true) {
+  return {
+    buildId: BUILD,
+    config: { basePath },
+    routing: { middlewareMatchers: middleware ? [{ sourceRegex: '^/.*$' }] : [] },
+  };
+}
+
 function localized(href: string, basePath = ''): string {
-  const url = localizedDataUrl({ basePath }, I18N, BUILD, new URL(href));
+  const url = localizedDataUrl(manifest(basePath), I18N, new URL(href));
   return `${url.pathname}${url.search}`;
 }
 
@@ -38,6 +48,14 @@ describe('a Pages Router data request that names no locale', () => {
   });
 });
 
+describe('a data request that names no locale, in an application without a middleware', () => {
+  it('is routed as it came: Next.js reads it under no locale either, and answers 404', () => {
+    const url = new URL('https://example.com/_next/data/build/about.json');
+
+    expect(localizedDataUrl(manifest('', false), I18N, url)).toBe(url);
+  });
+});
+
 describe('any other request', () => {
   it.each([
     // A locale named already, in any case Next.js reads one in.
@@ -52,6 +70,95 @@ describe('any other request', () => {
   ])('is routed as it came: %s', (href) => {
     const url = new URL(href);
 
-    expect(localizedDataUrl({ basePath: '' }, I18N, BUILD, url)).toBe(url);
+    expect(localizedDataUrl(manifest(), I18N, url)).toBe(url);
+  });
+});
+
+/**
+ * The names and data routes Next.js 16.4.3 writes for a Pages Router application with `i18n`
+ * (`en`, `es`, `localeDetection: false`) and a middleware: a catch-all page, and a home page with
+ * `getStaticProps`, prerendered a locale with its data. The data route reads the locale off the
+ * first segment.
+ */
+const PATHNAMES = [
+  '/[...route]',
+  `/_next/data/${BUILD}/[...route].json`,
+  '/en/[...route]',
+  `/_next/data/${BUILD}/en/[...route].json`,
+  '/es/[...route]',
+  `/_next/data/${BUILD}/es/[...route].json`,
+  '/en',
+  '/es',
+  `/_next/data/${BUILD}/en.json`,
+  `/_next/data/${BUILD}/es.json`,
+];
+const DYNAMIC_ROUTES = [
+  {
+    sourceRegex: `^/_next/data/${BUILD}[/]?(?<nextLocale>[^/]{1,})/(?<nxtProute>.+?)\\.json(?:/)?$`,
+    destination: `/_next/data/${BUILD}/$nextLocale/[...route].json?nxtProute=$nxtProute`,
+  },
+  {
+    sourceRegex: '^[/]?(?<nextLocale>[^/]{1,})/(?<nxtProute>.+?)(?:/)?$',
+    destination: '/$nextLocale/[...route]?nxtProute=$nxtProute',
+  },
+];
+const ROUTED_I18N = { defaultLocale: 'en', locales: ['en', 'es'], localeDetection: false as const };
+
+/** What `@next/routing` resolves `url` to, by those tables. */
+async function routed(url: URL) {
+  const result = await resolveRoutes({
+    url,
+    buildId: BUILD,
+    basePath: '',
+    requestBody: new ReadableStream(),
+    headers: new Headers(),
+    pathnames: PATHNAMES,
+    i18n: ROUTED_I18N,
+    routes: {
+      beforeMiddleware: [],
+      middlewareMatchers: [],
+      beforeFiles: [],
+      afterFiles: [],
+      dynamicRoutes: DYNAMIC_ROUTES,
+      onMatch: [],
+      fallback: [],
+      shouldNormalizeNextData: true,
+    },
+    invokeMiddleware: () => Promise.resolve({}),
+  });
+  return { page: result.resolvedPathname, locale: result.routeMatches?.['nextLocale'] };
+}
+
+describe('a data request that names no locale, routed by the tables Next.js writes', () => {
+  it('finds no page as it came, and its default locale’s page once localized', async () => {
+    const asked = new URL(`https://example.com/_next/data/${BUILD}/middleware/works.json`);
+
+    await expect(routed(asked)).resolves.toStrictEqual({ page: undefined, locale: undefined });
+
+    const withLocale = localizedDataUrl(manifest(), ROUTED_I18N, asked);
+
+    await expect(routed(withLocale)).resolves.toStrictEqual({
+      page: '/en/[...route]',
+      locale: 'en',
+    });
+  });
+
+  it('finds the default locale’s home page for the home page’s data', async () => {
+    const asked = new URL(`https://example.com/_next/data/${BUILD}/index.json`);
+
+    await expect(routed(asked)).resolves.toStrictEqual({ page: undefined, locale: undefined });
+
+    const withLocale = localizedDataUrl(manifest(), ROUTED_I18N, asked);
+
+    await expect(routed(withLocale)).resolves.toStrictEqual({
+      page: `/_next/data/${BUILD}/en.json`,
+      locale: undefined,
+    });
+  });
+
+  it('finds the page a request names the locale of as it did', async () => {
+    const asked = new URL(`https://example.com/_next/data/${BUILD}/es/middleware/works.json`);
+
+    await expect(routed(asked)).resolves.toStrictEqual({ page: '/es/[...route]', locale: 'es' });
   });
 });
