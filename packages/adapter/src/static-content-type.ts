@@ -21,13 +21,21 @@ export async function staticFileContentType(
   return (await recordedContentType(output.filePath)) ?? contentTypeFor(output.pathname);
 }
 
-/** The `Content-Type` the `.meta` beside a prerendered `.body` records, where it records one. */
+/**
+ * The `Content-Type` the `.meta` beside a prerendered `.body` records, where it records one: none
+ * where there is no `.meta`, or one that is not JSON or names no type. A `.meta` there and unreadable
+ * stops the build rather than serving the guess this record replaces.
+ */
 async function recordedContentType(bodyPath: string): Promise<string | undefined> {
   let text: string;
   try {
     text = await readFile(`${bodyPath.slice(0, -'.body'.length)}.meta`, 'utf8');
-  } catch {
-    return undefined;
+  } catch (error) {
+    // No record beside it is a build that left none; a record that cannot be read is not that.
+    if ((error as { readonly code?: unknown }).code === 'ENOENT') {
+      return undefined;
+    }
+    throw error;
   }
   const headers = (parsed(text) as { readonly headers?: unknown } | null | undefined)?.headers;
   if (typeof headers !== 'object' || headers === null) {
