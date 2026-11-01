@@ -372,6 +372,18 @@ describe('the copies of cases deploy mode skips', () => {
     expect(written.stale).toMatchObject([{ upstream: SUITE, actual: 'none' }]);
   });
 
+  it('stop the step where Git fails otherwise than by finding no such directory', () => {
+    const { dir } = checkout({ [SUITE]: 'upstream\n' });
+    const outside = {
+      upstream: '../outside/routes.test.ts',
+      file: '../outside/routes.skipped-in-deploy.test.ts',
+    };
+
+    expect(() =>
+      writeSupplements(dir, [supplementOf('c'.repeat(40), 'f'.repeat(40), outside)], copies()),
+    ).toThrow('outside repository');
+  });
+
   it('are refused on the commit they were copied from, where the directory does not match', () => {
     const { dir, commit } = checkout({ [SUITE]: 'upstream\n' });
 
