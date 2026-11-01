@@ -126,7 +126,9 @@ export interface SkippedPopulation {
 /**
  * The suites the skipped population runs, from the deploy manifest: those it excludes whole, out of
  * the suites its include rules select (`selected`, `excluded` resolved against the checkout), and
- * those it lists cases of. A suite both listed and excluded is excluded, as the runner has it.
+ * those it lists cases of. A suite both listed and excluded is excluded, as the runner has it. A
+ * listed suite is not held to the include rules: the runner selects a suite named in `suites` by its
+ * name, whatever the rules say (`test/get-test-filter.js`), so upstream runs it, less those cases.
  */
 export function manifestPopulation(
   manifest: DeployManifest,
@@ -174,6 +176,15 @@ function git(nextDir: string, ...args: string[]): string {
   return execFileSync('git', ['-C', nextDir, ...args], { encoding: 'utf8' }).trim();
 }
 
+/** The Git tree of `dir` at the checkout's commit, or `none` where the commit has no such directory. */
+function treeOf(nextDir: string, dir: string): string {
+  try {
+    return git(nextDir, 'rev-parse', '--verify', '--quiet', `HEAD:${dir}`);
+  } catch {
+    return 'none';
+  }
+}
+
 /** The directory of the tool's copies. */
 const SUPPLEMENTS_DIR = path.resolve(import.meta.dirname, '../supplements');
 
@@ -195,7 +206,7 @@ export function writeSupplements(
     if (path.posix.dirname(file) !== path.posix.dirname(upstream) || !file.endsWith('.test.ts')) {
       throw new Error(`the copy of ${upstream} must be a .test.ts beside it, not ${file}`);
     }
-    const actual = git(nextDir, 'rev-parse', `HEAD:${path.posix.dirname(upstream)}`);
+    const actual = treeOf(nextDir, path.posix.dirname(upstream));
     if (actual !== tree) {
       if (commit === supplement.next.commit) {
         throw new Error(

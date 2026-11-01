@@ -42,7 +42,7 @@ function write(dir: string, file: string, body: string): void {
   writeFileSync(path.join(dir, file), body);
 }
 
-/** A checkout of `files`, committed: its commit, and the tree of each directory asked for. */
+/** A checkout of `files`, committed: its directory and its commit. */
 function checkout(files: Readonly<Record<string, string>>): { dir: string; commit: string } {
   const dir = temporary();
   for (const [file, body] of Object.entries(files)) write(dir, file, body);
@@ -157,6 +157,15 @@ describe('what the deploy manifest skips', () => {
     });
   });
 
+  it('runs a listed suite whatever the include rules say, since the runner selects it by name', () => {
+    const population = manifestPopulation(MANIFEST, new Set(), new Set());
+
+    expect(Object.keys(population.listed)).toStrictEqual([
+      'test/e2e/listed/listed.test.ts',
+      'test/e2e/both/both.test.ts',
+    ]);
+  });
+
   it('is not an excluded path the include rules never selected', () => {
     const population = manifestPopulation(
       MANIFEST,
@@ -259,6 +268,15 @@ describe('the copies of cases deploy mode skips', () => {
     expect(existsSync(path.join(dir, supplement.file))).toBe(false);
   });
 
+  it('are left out and said on another commit, where the directory is gone', () => {
+    const { dir } = checkout({ 'test/e2e/elsewhere/elsewhere.test.ts': '' });
+
+    const written = writeSupplements(dir, [supplementOf('c'.repeat(40), 'f'.repeat(40))], copies());
+
+    expect(written.supplements).toStrictEqual([]);
+    expect(written.stale).toMatchObject([{ upstream: SUITE, actual: 'none' }]);
+  });
+
   it('are refused on the commit they were copied from, where the directory does not match', () => {
     const { dir, commit } = checkout({ [SUITE]: 'upstream\n' });
 
@@ -326,6 +344,9 @@ describe('the skipped population of a checkout', () => {
       encoding: 'utf8',
       env: { PATH: process.env['PATH'], GITHUB_STEP_SUMMARY: summary },
     });
+
+    expect({ status: run.status, stderr: run.stderr }).toMatchObject({ status: 0 });
+
     const manifest = JSON.parse(
       readFileSync(path.join(output, 'skipped-manifest.json'), 'utf8'),
     ) as DeployManifest;
@@ -333,7 +354,6 @@ describe('the skipped population of a checkout', () => {
       readonly excluded: readonly string[];
     };
 
-    expect(run.status).toBe(0);
     expect(Object.keys(manifest.suites)).toStrictEqual([
       'test/e2e/both/both.test.ts',
       'test/e2e/excluded/excluded.test.ts',
