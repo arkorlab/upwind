@@ -60,12 +60,12 @@ function prerender(pathname: string, fields: Partial<Prerender> = {}): Prerender
 }
 
 /** The route's class shell, and its payload, as the build made them; `ensureStatic` as it says. */
-function deployment(ensureStatic: boolean): Store {
+function deployment(ensureStatic: boolean, built = true): Store {
   const postponed = { sha256: 'postponed', byteLength: 1, contentType: 'application/json' };
   const shell = prerender(DOCS, {
     routeType: 'fallback',
     renderingMode: 'PARTIALLY_STATIC',
-    body: { sha256: 'shell', byteLength: 1, contentType: 'text/html' },
+    ...(built && { body: { sha256: 'shell', byteLength: 1, contentType: 'text/html' } }),
     postponed,
     ...(ensureStatic && { ensureStatic: 'navigation' as const }),
   });
@@ -177,12 +177,15 @@ function cache(): Cache {
 }
 
 /** A client navigation's payload request for `/docs/new`, read to its end, its work settled. */
-async function navigate(cached: Cache | undefined): Promise<string> {
+async function navigate(
+  cached: Cache | undefined,
+  headers: Record<string, string> = {},
+): Promise<string> {
   const pending: Promise<unknown>[] = [];
   const response = await handleRequest({
     app,
     edge: { entries: {} },
-    request: new Request(`${HOST}/docs/new?_rsc=n`, { headers: { rsc: '1' } }),
+    request: new Request(`${HOST}/docs/new?_rsc=n`, { headers: { rsc: '1', ...headers } }),
     waitUntil: (promise) => {
       pending.push(promise);
     },
@@ -234,5 +237,50 @@ describe('a navigation to a member the build did not render', () => {
 
     expect(answer).toBe(`resumed from ${CLASS_STATE}`);
     expect(kept()).toStrictEqual([]);
+  });
+
+  it('renders a cold member dynamically when its static capture fails', async () => {
+    vi.mocked(getStore).mockReturnValue(deployment(false, false));
+    vi.mocked(invokeNodeHandler).mockImplementation((call) =>
+      call.requestMeta['onCacheEntry'] === undefined
+        ? rendering(call)
+        : Promise.resolve(new Response('Internal Server Error', { status: 500 })),
+    );
+    const shared = cache();
+
+    const answer = await navigate(shared);
+
+    expect(answer).toBe('resumed from ');
+    expect(kept()).toStrictEqual(['/docs/new', '/docs/new']);
+    expect(leases(shared.authority)).toBe(1);
+    expect(
+      vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => call.requestMeta['postponed']),
+    ).toStrictEqual([undefined, undefined, '']);
+  });
+
+  it('renders a cold member dynamically without a cache to create its static state', async () => {
+    vi.mocked(getStore).mockReturnValue(deployment(false, false));
+
+    const answer = await navigate(undefined);
+
+    expect(answer).toBe('resumed from ');
+    expect(kept()).toStrictEqual([]);
+    expect(invokeNodeHandler).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        requestMeta: expect.objectContaining({ minimalMode: true, postponed: '' }),
+      }),
+    );
+  });
+
+  it('keeps an automatic prefetch on the static path after a cache miss', async () => {
+    vi.mocked(getStore).mockReturnValue(deployment(false));
+
+    const answer = await navigate(undefined, { 'next-router-prefetch': '1' });
+
+    expect(answer).toBe(`resumed from ${CLASS_STATE}`);
+    expect(kept()).toStrictEqual([]);
+    expect(
+      vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => call.requestMeta['postponed']),
+    ).toStrictEqual([CLASS_STATE]);
   });
 });

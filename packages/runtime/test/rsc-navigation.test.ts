@@ -3,8 +3,9 @@ import { policyFromCacheControl } from '@stayingupwind/core/cache';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppModule, NodeHandler, WebHandler } from '../src/app-module.ts';
-import { createCacheRuntime } from '../src/cache/runtime.ts';
+import { type CacheRuntime, createCacheRuntime } from '../src/cache/runtime.ts';
 import { handleRequest } from '../src/handle.ts';
+import { isMetadataOnlyRscRequest } from '../src/incoming.ts';
 import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { getStore, type Store } from '../src/store.ts';
 import { fakeAuthority } from './authority.ts';
@@ -50,6 +51,7 @@ const STORED_TREE = '0:{"tree":{}}';
 const PRELOAD = '</_next/static/media/geist.woff2>; rel=preload; as=font; crossorigin';
 const CONFIG_LINK = '</configured.css>; rel=preload; as=style';
 const MIDDLEWARE_LINK = '</middleware.css>; rel=preload; as=style';
+const METADATA_ONLY_TREE = encodeURIComponent(JSON.stringify(['', {}, null, 'metadata-only']));
 const blobs = new Map([
   ['postponed', encoder.encode(BUILD_STATE)],
   ['shell', encoder.encode('<html>shell</html>')],
@@ -157,7 +159,7 @@ async function regenerated() {
   return createCacheRuntime({ env: ENV, now: () => T0, fetchImpl: authority.fetchImpl });
 }
 
-async function ask(headers: Record<string, string>): Promise<Response> {
+async function ask(headers: Record<string, string>, cache?: CacheRuntime): Promise<Response> {
   return handleRequest({
     app,
     edge: { entries: {} },
@@ -165,7 +167,7 @@ async function ask(headers: Record<string, string>): Promise<Response> {
     waitUntil: () => {
       // Nothing is scheduled for these answers.
     },
-    cache: await regenerated(),
+    cache: cache ?? (await regenerated()),
     clock: T0 + 1000,
   });
 }
@@ -194,6 +196,26 @@ describe("a client router's request for the payload of a page with dynamic parts
     expect(vi.mocked(invokeNodeHandler)).toHaveBeenCalledExactlyOnceWith(
       resumedFrom(GENERATION_STATE),
     );
+  });
+
+  it('renders only the head without reading the shared generation or capturing a full page', async () => {
+    const fetchImpl = vi.fn(() => Promise.reject(new Error('no cache read is needed')));
+    const cache = createCacheRuntime({ env: ENV, now: () => T0, fetchImpl });
+
+    const response = await ask({ 'next-router-state-tree': METADATA_ONLY_TREE }, cache);
+
+    await expect(response.text()).resolves.toBe('rendered');
+    expect(vi.mocked(invokeNodeHandler)).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        request: expect.any(Request),
+        url: `${PAGE}?_rsc=abc`,
+        requestMeta: expect.objectContaining({ minimalMode: true, postponed: '' }),
+      }),
+    );
+    expect(
+      vi.mocked(invokeNodeHandler).mock.calls[0]?.[0].request.headers.get('next-router-state-tree'),
+    ).toBe(METADATA_ONLY_TREE);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('is the stored payload for a prefetch, said to leave parts out', async () => {
@@ -256,4 +278,34 @@ describe("a client router's request for the payload of a page with dynamic parts
       expect(vi.mocked(invokeNodeHandler)).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('a metadata-only navigation request', () => {
+  it.each([
+    [
+      'the head-only router state',
+      { rsc: '1', 'next-router-state-tree': METADATA_ONLY_TREE },
+      true,
+    ],
+    [
+      'a static prefetch',
+      { rsc: '1', 'next-router-prefetch': '1', 'next-router-state-tree': METADATA_ONLY_TREE },
+      false,
+    ],
+    ['a document request', { 'next-router-state-tree': METADATA_ONLY_TREE }, false],
+    [
+      'an ordinary navigation',
+      { rsc: '1', 'next-router-state-tree': encodeURIComponent('["",{},null,"refetch"]') },
+      false,
+    ],
+    [
+      'a segment named metadata-only',
+      { rsc: '1', 'next-router-state-tree': encodeURIComponent('["metadata-only",{}]') },
+      false,
+    ],
+    ['malformed JSON', { rsc: '1', 'next-router-state-tree': 'metadata-only' }, false],
+    ['malformed encoding', { rsc: '1', 'next-router-state-tree': '%metadata-only' }, false],
+  ] as const)('recognizes %s', (_label, headers, expected) => {
+    expect(isMetadataOnlyRscRequest(new Request('https://app.test', { headers }))).toBe(expected);
+  });
 });

@@ -10,6 +10,8 @@ import {
   BYPASS_QUERY_PREFIXES,
   isBotUserAgent,
   isHtmlLimitedBotUserAgent,
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
 } from '@stayingupwind/core/request';
 
 import type { ServedObservation } from './cache/host.ts';
@@ -171,6 +173,25 @@ export function resumeUrl(request: Request): string {
 
 export function isRscRequest(request: Request): boolean {
   return request.headers.get(RSC_HEADER) === '1';
+}
+
+/** A navigation whose segments are cached and whose router asks for only the page's head. */
+export function isMetadataOnlyRscRequest(request: Request): boolean {
+  if (!isRscRequest(request) || request.headers.has(NEXT_ROUTER_PREFETCH_HEADER)) {
+    return false;
+  }
+  const tree = request.headers.get(NEXT_ROUTER_STATE_TREE_HEADER);
+  // Ordinary navigations keep their existing path without decoding or parsing the router state.
+  if (tree === null || !tree.includes('metadata-only')) {
+    return false;
+  }
+  try {
+    const state: unknown = JSON.parse(decodeURIComponent(tree));
+    return Array.isArray(state) && state[3] === 'metadata-only';
+  } catch {
+    // Next.js still validates malformed router state when the usual path invokes its handler.
+    return false;
+  }
 }
 
 /** The pathname a shell's RSC twins hang off: the build names the root's `/index`. */

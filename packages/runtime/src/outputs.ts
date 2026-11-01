@@ -10,6 +10,7 @@ import { isWebSocketUpgrade, MIDDLEWARE_PREFETCH_HEADER } from '@stayingupwind/c
 import { notFound, rscFromBuild } from './documents.ts';
 import { deferredEntryFor, entryFor } from './entries.ts';
 import { type GenerationSource, serveFromGeneration, speculative } from './generations.ts';
+import { isMetadataOnlyRscRequest } from './incoming.ts';
 import { notFoundData } from './pages-not-found.ts';
 import { rscRepresentation } from './representations.ts';
 import {
@@ -17,6 +18,7 @@ import {
   HTTP_OK,
   invokeEntry,
   notFoundResponse,
+  resume,
   type RoutedInput,
   staticResponse,
   withCacheState,
@@ -315,6 +317,12 @@ export async function serveRsc(
   }
   const { entry, resolved } = rendered;
   if (entry.kind === 'node') {
+    // A shared static payload contains page segments this navigation already has. In minimal
+    // mode Next.js needs postponed metadata to keep the request tree and render only its head;
+    // an empty state selects that dynamic render without first generating a complete page.
+    if (isMetadataOnlyRscRequest(input.request)) {
+      return resume({ input, handler: entry.handler, postponed: '', url: resolved.url });
+    }
     const shell = findShell(store, resolved.route, resolved.pathname);
     const source = rscSource(input, store, shell, resolved);
     const current = await serveFromGeneration(input, store, source, entry.handler);
@@ -331,6 +339,17 @@ export async function serveRsc(
       source.pathname !== shell.pathname &&
       isClassShell(source.pathname, shell.route);
     if (!completedClass && source.onMiss === 'render') {
+      // A cold member can reject its static render (for example, synchronous time after a
+      // parameter resolves). Minimal mode otherwise tries that static render again. An empty
+      // postponed state asks Next.js for the live Flight response without claiming a shell to
+      // resume; it must not turn a static prefetch or ensureStatic navigation dynamic.
+      if (
+        store.manifest.config.cacheComponents === true &&
+        shell?.ensureStatic !== 'navigation' &&
+        !speculative(source)
+      ) {
+        return resume({ input, handler: entry.handler, postponed: '', url: resolved.url });
+      }
       return invokeEntry(input, entry, resolved.url);
     }
   }

@@ -68,6 +68,8 @@ export interface RoutedInput extends HandleInput {
   readonly initURL: string;
   /** The context every render of the request runs in: its clock and its platform hooks. */
   readonly run: Run;
+  /** Parameters whose catch-all segment boundaries cannot be represented by a prefixed query. */
+  readonly routeParams?: Readonly<Record<string, string | string[]>> | undefined;
   /**
    * The entry the request has had its regeneration of already: one in the foreground whose render
    * answered nothing, which leaves the request to the usual path. Nothing on that path begins
@@ -118,6 +120,7 @@ export function baseRequestMeta(input: RoutedInput): Record<string, unknown> {
     minimalMode: true,
     relativeProjectDir: '.',
     initURL: input.initURL,
+    ...(input.routeParams !== undefined && { params: input.routeParams }),
     // What the Pages Router asks the platform for when a render ends in `notFound: true`, or
     // when a `fallback: false` route is asked for a member the build did not make.
     render404,

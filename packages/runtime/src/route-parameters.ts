@@ -270,33 +270,21 @@ function isFixed(segment: string | undefined, placeholder: string, built: boolea
 }
 
 /**
- * The parameters routing hands a render of `pathname` in its query (`nxtP…`), for a render the
- * platform makes of a page by its path alone — a regeneration rendering a member by its name, a
- * resume of a shell for the path the visitor asked by; `undefined` where Next.js, matching the path
- * itself, reads them the same — every path but one whose catch-all holds an escaped `/` in one of
- * its segments.
+ * The parameters of a pathname whose catch-all contains a slash inside one of its values. Keep
+ * those values separate until the caller chooses their representation: App Router metadata keeps
+ * the array, whereas the Pages Router's existing query protocol joins it.
  *
- * Routing writes a catch-all's value into the query decoded, its segments joined by `/`, and
- * Next.js splits it there (`normalizeDynamicRouteParams`): `/docs/a%2Fb` of `/docs/[...slug]` is
- * `['a', 'b']`, which is how Next.js says the deployments of its own adapter read such a value
- * (`prerender-encoding`). Matching the path, it splits it first and decodes each segment after,
- * which keeps the `/` in the value: `['a/b']`. So a page rendered by its path said one thing where a
- * render of the visitor's request said the other: a regeneration published the one, and every
- * answer from it said so (`incremental-cache-path-traversal`); and the document a shell was resumed
- * for said the one while the router's payloads for the same page said the other, so the client took
- * them for two pages (`use-router-bfcache-id`).
- *
- * The path is read as routing reads the request for it: its values as `valuesOf` reads them, its
+ * Its values are read as `valuesOf` reads them, its
  * fixed segments matched as `isFixed` matches them, a trailing slash left off, and, for a Pages
  * Router route of an application with `i18n`, its locale left out in any case (`withoutLocale`);
  * an App Router route has none in front of it. Every parameter of the route is named once one is,
  * as routing names them all: Next.js takes the query's only where it holds every one.
  */
-export function routingParameters(
+function segmentedParameters(
   store: Store,
   route: string,
   pathname: string,
-): Record<string, string> | undefined {
+): Record<string, string | string[]> | undefined {
   const template = store.prerendersByPathname.get(route)?.route ?? route;
   const bare = withoutEndSlash(pathname);
   const built = store.prerendersByPathname.has(bare);
@@ -304,7 +292,7 @@ export function routingParameters(
   const member = (
     kind === 'app-page' || kind === 'app-route' ? bare : withoutLocale(store, bare)
   ).split('/');
-  const named: Record<string, string> = {};
+  const named: Record<string, string | string[]> = {};
   let separated = false;
   for (const [index, placeholder] of template.split('/').entries()) {
     const parameter = parameterOf(placeholder);
@@ -320,10 +308,69 @@ export function routingParameters(
     }
     if (values.length > 0) {
       separated ||= parameter.rest && values.some((value) => value.includes('/'));
-      named[`nxtP${parameter.name}`] = values.join('/');
+      named[`nxtP${parameter.name}`] = parameter.rest ? values : (values[0] ?? '');
     }
   }
   return separated ? named : undefined;
+}
+
+/**
+ * App Router parameters whose catch-all contains a slash inside a single segment. Hand them to
+ * Next.js as requestMeta.params, which RouteModule.prepare reads before matching the path. The
+ * prefixed query cannot represent a one-element array: Next.js reads it as a string and splits
+ * at every slash. Passing the array preserves the same values as next start, including through a
+ * middleware rewrite whose source does not match the page's template.
+ */
+export function appRouteParameters(
+  store: Store,
+  route: string,
+  pathname: string,
+): Record<string, string | string[]> | undefined {
+  if (!pathname.includes('%') || !/%2f/iu.test(pathname)) {
+    return undefined;
+  }
+  const template = store.prerendersByPathname.get(route)?.route ?? route;
+  const entrypoint = store.manifest.entrypoints.find((entry) => entry.pathname === template);
+  if (
+    (entrypoint?.kind !== 'app-page' && entrypoint?.kind !== 'app-route') ||
+    // EdgeRouteModuleWrapper reads route-handler parameters only from the query, even though
+    // the web adapter attaches requestMeta. Preserve its existing prefixed query protocol.
+    (entrypoint.kind === 'app-route' && entrypoint.runtime === 'edge')
+  ) {
+    return undefined;
+  }
+  const named = segmentedParameters(store, route, pathname);
+  return named === undefined
+    ? undefined
+    : Object.fromEntries(
+        Object.entries(named).map(([key, value]) => [key.slice('nxtP'.length), value]),
+      );
+}
+
+/**
+ * Pages Router regenerations keep the query representation used by its deployment routing.
+ * App Router renders instead match their pathname, preserving each catch-all segment, and
+ * requests rewritten from another pathname receive appRouteParameters in their metadata.
+ */
+export function routingParameters(
+  store: Store,
+  route: string,
+  pathname: string,
+): Record<string, string> | undefined {
+  const template = store.prerendersByPathname.get(route)?.route ?? route;
+  const kind = entrypointKindOf(store, template);
+  if (kind === 'app-page' || kind === 'app-route') {
+    return undefined;
+  }
+  const named = segmentedParameters(store, route, pathname);
+  return named === undefined
+    ? undefined
+    : Object.fromEntries(
+        Object.entries(named).map(([key, value]) => [
+          key,
+          Array.isArray(value) ? value.join('/') : value,
+        ]),
+      );
 }
 
 /** `url`, a path and its query, with `parameters` added to the query where there are any. */

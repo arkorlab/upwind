@@ -128,6 +128,16 @@ export function middlewareInvoker(
     }
     const result = responseToMiddlewareResult(response, ctx.headers, ctx.url);
     keptOnLoopback(result, ctx.url);
+    // The routing helper passes a non-redirect Location through but leaves bodySent unset.
+    // Next.js finishes with that response's body and status (resolve-routes.ts), before a
+    // same-origin rewrite or next can continue. An external rewrite still takes precedence.
+    if (
+      response.headers.has('location') &&
+      result.redirect === undefined &&
+      (result.rewrite === undefined || result.rewrite.origin === ctx.url.origin)
+    ) {
+      result.bodySent = true;
+    }
     if (result.bodySent === true) {
       trace.response = response;
     }

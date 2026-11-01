@@ -32,7 +32,7 @@ import {
   FALLBACK,
   markedRewrites,
 } from './rewritten-path.ts';
-import { routeQuery } from './route-parameters.ts';
+import { appRouteParameters, routeQuery } from './route-parameters.ts';
 import { HTTP_OK } from './serve.ts';
 import { entrypointKindOf, type Store } from './store.ts';
 
@@ -635,7 +635,15 @@ function handlerUrl(
   target: NonNullable<ResolveRoutesResult['invocationTarget']>,
   asked: Asked,
 ): string {
-  const routed = `${target.pathname}${queryString(target.query)}`;
+  // A catch-all with an escaped slash is handed over as metadata, preserving its segment
+  // boundaries. A prefixed query would override those arrays after decoding and splitting them
+  // (RouteModule.prepare), so no route parameter is duplicated there for this render.
+  const parameters = appRouteParameters(store, route, withoutTrailingSlash(target.pathname));
+  const targetQuery =
+    parameters === undefined
+      ? target.query
+      : Object.fromEntries(Object.entries(target.query).filter(([key]) => !key.startsWith('nxtP')));
+  const routed = `${target.pathname}${queryString(targetQuery)}`;
   const { url } = asked;
   const kind = answeringKind(store, route);
   if (
@@ -645,7 +653,10 @@ function handlerUrl(
   ) {
     return routed;
   }
-  const query = routeQuery(store, route, target, withoutTrailingSlash(target.pathname));
+  const query =
+    parameters === undefined
+      ? routeQuery(store, route, target, withoutTrailingSlash(target.pathname))
+      : targetQuery;
   if (asked.rewrite !== undefined) {
     return `${inLocaleOf(store, url.pathname, target.pathname)}${queryString(query)}`;
   }

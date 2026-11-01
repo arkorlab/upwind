@@ -73,7 +73,7 @@ import {
 import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
 import { routingOf, untraced, withRoutingOf } from './resolve-request.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
-import { resumeUrlOf } from './route-parameters.ts';
+import { appRouteParameters, resumeUrlOf } from './route-parameters.ts';
 import {
   askedOf,
   landedRoute,
@@ -452,6 +452,7 @@ async function answerResolved(
   // The status this routing named, and the headers it collected: never an outer request's.
   const asked: RoutedInput = {
     ...forwarded,
+    routeParams: appRouteParameters(store, resolved.route, resolved.pathname),
     rewriteStatus: routed.status,
     routingHeaders: routed.headers,
   };
