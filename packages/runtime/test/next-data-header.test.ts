@@ -43,11 +43,16 @@ const MIDDLEWARE = '/_middleware';
 const DATA_HEADER = 'x-nextjs-data';
 const BUILD_ID = 'build';
 
-function deployment(basePath = '', skipProxyUrlNormalize?: boolean, trailingSlash = false): Store {
+function deployment(
+  basePath = '',
+  skipProxyUrlNormalize?: boolean,
+  trailingSlash = false,
+  i18n: { readonly defaultLocale: string; readonly locales: string[] } | null = null,
+): Store {
   return {
     manifest: {
       buildId: BUILD_ID,
-      config: { basePath, skipProxyUrlNormalize, trailingSlash },
+      config: { basePath, skipProxyUrlNormalize, trailingSlash, i18n },
       routing: {
         beforeMiddleware: [],
         middlewareMatchers: [{ sourceRegex: '^/.*$' }],
@@ -170,6 +175,27 @@ describe('a data request, as the middleware is told of it', () => {
 
     await expect(toldTheMiddleware(path, {}, module)).resolves.toBe(handed);
   });
+
+  /**
+   * A data request that names no locale, in an application with `i18n` and a middleware, is routed
+   * under the default locale (`localizedDataUrl`), and handed to the middleware as it came: the
+   * locale is put in front of it for matching alone, as Next.js puts it (`middleware_next_data`).
+   */
+  it.each([
+    { skipProxyUrlNormalize: undefined, handed: '/old-home' },
+    { skipProxyUrlNormalize: true, handed: `/_next/data/${BUILD_ID}/old-home.json` },
+  ])(
+    'is handed without the default locale it is routed under: skipProxyUrlNormalize $skipProxyUrlNormalize',
+    async ({ skipProxyUrlNormalize, handed }) => {
+      const locales = { defaultLocale: 'en', locales: ['en', 'es'] };
+      vi.mocked(getStore).mockReturnValue(deployment('', skipProxyUrlNormalize, false, locales));
+      const module = { entries: { [MIDDLEWARE]: () => ({ handler: echoing }) } };
+
+      await expect(
+        toldTheMiddleware(`/_next/data/${BUILD_ID}/old-home.json`, {}, module),
+      ).resolves.toBe(handed);
+    },
+  );
 
   it('is handed as it came where the application asks for that', async () => {
     vi.mocked(getStore).mockReturnValue(deployment('', true));
