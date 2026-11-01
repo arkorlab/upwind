@@ -7,6 +7,7 @@ import { outcomeOn } from './generations.ts';
 import { edgeJudgesHeaderRules } from './incoming.ts';
 import { middlewareInvoker, type MiddlewareTrace } from './middleware-invoke.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
+import { withRoutingHeaders } from './routing-headers.ts';
 import {
   noteLaterHeaderRules,
   parametersDecode,
@@ -18,7 +19,6 @@ import {
   routingTables,
   undecodedResponse,
   withHeaderRulesLeft,
-  withRoutingHeaders,
 } from './routing.ts';
 import { externalRewrite, type RoutedInput } from './serve.ts';
 import type { Store } from './store.ts';

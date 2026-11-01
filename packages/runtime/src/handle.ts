@@ -74,6 +74,7 @@ import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
 import { routingOf, untraced, withRoutingOf } from './resolve-request.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
 import { resumeUrlOf } from './route-parameters.ts';
+import { withRoutingHeaders } from './routing-headers.ts';
 import {
   askedOf,
   landedRoute,
@@ -86,7 +87,6 @@ import {
   undecodedResponse,
   withHeaderRulesLeft,
   withRewriteStatus,
-  withRoutingHeaders,
 } from './routing.ts';
 import { carriesResumeState, handleRuntimeResume } from './runtime-resume.ts';
 import {
