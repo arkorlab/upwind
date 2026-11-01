@@ -3,6 +3,7 @@ import type { RouteEntryKind } from '@stayingupwind/core/cache';
 import type { NodeHandler } from '../app-module.ts';
 import { render404 } from '../error-pages.ts';
 import { invokeNodeHandler, type Run } from '../node-bridge.ts';
+import type { StaticRouteParameters } from '../route-parameters.ts';
 import { type CapturedRender, renderCaptured } from './capture.ts';
 
 /**
@@ -30,19 +31,13 @@ const INVOCATION_HEADER = 'x-invocation-id';
 const ON_DEMAND_HEADER = 'x-prerender-revalidate';
 
 /** What a static render renders, of which request, and in what context. */
-export interface StaticRenderInput {
+export interface StaticRenderInput extends StaticRouteParameters {
   /** The request that asked, for its host and the headers the render may see. */
   readonly request: Request;
   readonly handler: NodeHandler;
   readonly kind: RouteEntryKind;
   /** The entry's pathname: what the render is asked for. */
   readonly pathname: string;
-  /**
-   * The parameters the render is handed in its query, as routing hands them to a render of a
-   * visitor's request, where Next.js would read them otherwise off the pathname
-   * (`routingParameters`); none by default.
-   */
-  readonly parameters?: Readonly<Record<string, string>> | undefined;
   /** The request headers Next.js lets the render see (`allowHeader`); none by default. */
   readonly allowHeader?: readonly string[] | undefined;
   /** The build's token, for a render somebody asked for (`ON_DEMAND_HEADER`); none by default. */
@@ -69,7 +64,8 @@ export interface StaticRendering {
  * in its query where there are any (`StaticRenderInput.parameters`).
  */
 function staticUrl(input: StaticRenderInput): string {
-  const { pathname, parameters } = input;
+  const pathname = input.renderPathname ?? input.pathname;
+  const { parameters } = input;
   return parameters === undefined
     ? pathname
     : `${pathname}?${new URLSearchParams(parameters).toString()}`;
@@ -77,7 +73,7 @@ function staticUrl(input: StaticRenderInput): string {
 
 /** The request a static render is given: the pathname, and nothing of the visitor's. */
 function staticRequest(input: StaticRenderInput): Request {
-  const url = new URL(input.pathname, input.request.url);
+  const url = new URL(input.renderPathname ?? input.pathname, input.request.url);
   const headers = new Headers(STATIC_REQUEST_HEADERS);
   const host = input.request.headers.get('host');
   if (host !== null) {
@@ -105,9 +101,15 @@ function staticRequest(input: StaticRenderInput): Request {
  * served, in place of the application's not-found page.
  */
 export async function renderStatically(input: StaticRenderInput): Promise<StaticRendering> {
+  if (input.renderPathname === null) {
+    throw new Error('A static render needs an addressable request path');
+  }
   const request = staticRequest(input);
   let answered: number | undefined;
   const captured = await renderCaptured(input.kind, async (meta) => {
+    // Only percent-sensitive App renders with configured rewrites supply this callback. It resolves
+    // the synthetic static request in memory, preserving destination extras without visitor data.
+    const query = input.prepareQuery === undefined ? undefined : await input.prepareQuery(request);
     const response = await invokeNodeHandler({
       handler: input.handler,
       request,
@@ -117,6 +119,8 @@ export async function renderStatically(input: StaticRenderInput): Promise<Static
         relativeProjectDir: '.',
         initURL: request.url,
         render404,
+        ...(input.routeParams !== undefined && { params: input.routeParams }),
+        ...(query !== undefined && { query }),
         ...meta.requestMeta,
       },
       waitUntil: input.waitUntil,

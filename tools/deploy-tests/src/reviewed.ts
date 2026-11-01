@@ -166,6 +166,7 @@ const DEPLOY_FAILED = 'Custom deploy script failed';
 const EVERY_CASE = ['*'];
 const OTEL = 'test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts';
 const TRACE_RECORD = 'instrumentation-registered-per-function';
+const ENCODING_RECORD = 'prerender-encoding';
 
 /** Where Vercel registers instrumentation for these cases: in the route handler's own Function. */
 const REGISTERED_IN_THE_ROUTE_HANDLER = [
@@ -176,10 +177,31 @@ const REGISTERED_IN_THE_ROUTE_HANDLER = [
 const AT_16_4_3: readonly Group[] = [
   {
     reading: GATE,
-    record: 'prerender-encoding',
+    record: ENCODING_RECORD,
     cases: {
       'test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts': [
         'prerender-encoding should preserve an encoded slash in an exact closed catch-all path',
+      ],
+    },
+  },
+  {
+    reading: GATE,
+    record: ENCODING_RECORD,
+    targets: ['cloudflare'],
+    cases: {
+      'test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts': [
+        'prerender-encoding should preserve an encoded slash in an open catch-all fallback',
+      ],
+    },
+  },
+  {
+    reading: GATE,
+    record: ENCODING_RECORD,
+    targets: ['node'],
+    nodes: ['24'],
+    cases: {
+      'test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts': [
+        'prerender-encoding should preserve an encoded slash in an open catch-all fallback',
       ],
     },
   },
@@ -192,6 +214,27 @@ const AT_16_4_3: readonly Group[] = [
           'app-dir - metadata-streaming (parallelRouteMetadata: false) should only bundle the selected metadata resolution implementation',
           'app-dir - metadata-streaming (parallelRouteMetadata: true) should only bundle the selected metadata resolution implementation',
         ],
+    },
+  },
+  {
+    reading: GATE,
+    record: 'segment-cache-metadata',
+    targets: ['cloudflare'],
+    cases: {
+      'test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts': [
+        'segment cache (metadata) requests only the head when the page segments are cached',
+      ],
+    },
+  },
+  {
+    reading: GATE,
+    record: 'segment-cache-metadata',
+    targets: ['node'],
+    nodes: ['24'],
+    cases: {
+      'test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts': [
+        'segment cache (metadata) requests only the head when the page segments are cached',
+      ],
     },
   },
   {
