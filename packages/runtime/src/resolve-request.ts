@@ -81,7 +81,12 @@ export function routingOf(
     pathnames: pathnamesFor(store, url),
     ...(routingI18nOf !== undefined && { i18n: routingI18nOf }),
     routes: routingTables(store, asked.skipMiddleware, url, asked.skipHeaderRules),
-    invokeMiddleware: middlewareInvoker(input, store, asked.trace),
+    invokeMiddleware: middlewareInvoker(
+      input,
+      store,
+      asked.trace,
+      url === asked.url ? undefined : { routed: url, asked: asked.url },
+    ),
   });
 }
 

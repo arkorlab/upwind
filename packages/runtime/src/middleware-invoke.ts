@@ -138,6 +138,32 @@ function middlewareUrl(url: URL, store: Store): URL {
 }
 
 /**
+ * A data request routed under the default locale it did not name (`localizedDataUrl`): the URL it
+ * was routed at, and the URL it came at.
+ */
+export interface LocalizedData {
+  readonly routed: URL;
+  readonly asked: URL;
+}
+
+/**
+ * The URL a middleware is handed for `url`, the one routing invokes it at: a data request routed
+ * under the default locale it did not name is handed as it came, which is what Next.js hands it
+ * (`initURL`, where `skipProxyUrlNormalize` hands the URL as it came) — the locale is the route's,
+ * put in front of it for matching alone (`middleware_next_data`). Handed the routed URL, a
+ * middleware that rewrites by the path it is handed sent the request to a path with the locale in
+ * it (`skip-trailing-slash-redirect`).
+ */
+function asked(url: URL, localized: LocalizedData | undefined): URL {
+  if (url.pathname !== localized?.routed.pathname) {
+    return url;
+  }
+  const original = new URL(url);
+  original.pathname = localized.asked.pathname;
+  return original;
+}
+
+/**
  * A rewrite to the same loopback server spelled another way, kept on the request's own origin, as
  * Next.js's router keeps it (`onLoopbackOrigin`): `@next/routing` compares the `localhost` a
  * middleware's `NextURL` spells with the `127.0.0.1` a request came in on, and proxied the rewrite
@@ -170,12 +196,14 @@ export function middlewareInvoker(
   input: RoutedInput,
   store: Store,
   trace: MiddlewareTrace,
+  localized?: LocalizedData,
 ): MiddlewareInvoker {
   return async (ctx) => {
     trace.invoked = true;
+    const handed = middlewareUrl(asked(ctx.url, localized), store);
     const response = await runMiddleware(
       input,
-      new Request(middlewareUrl(ctx.url, store), {
+      new Request(handed, {
         method: input.request.method,
         headers: ctx.headers,
         ...(hasBody(input.request.method) && { body: ctx.requestBody, duplex: 'half' }),
