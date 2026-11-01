@@ -1028,13 +1028,26 @@ describe('staticFileContentType', () => {
     return filePath;
   }
 
-  it('is the type the route answered with, which its .meta records, as next start serves it', async () => {
-    const filePath = await body(
-      JSON.stringify({ status: 200, headers: { 'Content-Type': 'text/plain' } }),
-    );
+  it.each(['content-type', 'Content-Type'])(
+    'is the type the route answered with, which its .meta records as %s, as next start serves it',
+    async (name) => {
+      const filePath = await body(
+        JSON.stringify({ status: 200, headers: { [name]: 'text/plain' } }),
+      );
 
-    await expect(staticFileContentType({ filePath, pathname: '/robots.txt' })).resolves.toBe(
-      'text/plain',
+      await expect(staticFileContentType({ filePath, pathname: '/robots.txt' })).resolves.toBe(
+        'text/plain',
+      );
+    },
+  );
+
+  it('stops where a .meta is there and cannot be read', async () => {
+    const filePath = await body();
+    // A directory where the record is: there, and not readable as one.
+    await mkdir(path.join(dir, 'robots.txt.meta'));
+
+    await expect(staticFileContentType({ filePath, pathname: '/robots.txt' })).rejects.toThrow(
+      /EISDIR/u,
     );
   });
 
@@ -1042,6 +1055,7 @@ describe('staticFileContentType', () => {
     ['no .meta', undefined],
     ['a .meta that is not JSON', '{'],
     ['a .meta naming no type', JSON.stringify({ status: 200, headers: {} })],
+    ['a .meta naming an empty type', JSON.stringify({ headers: { 'content-type': '' } })],
   ])('is read off the name it is served under where the build left %s', async (_, meta) => {
     const filePath = await body(meta);
 
