@@ -176,12 +176,19 @@ function git(nextDir: string, ...args: string[]): string {
   return execFileSync('git', ['-C', nextDir, ...args], { encoding: 'utf8' }).trim();
 }
 
-/** The Git tree of `dir` at the checkout's commit, or `none` where the commit has no such directory. */
+/**
+ * The Git tree of `dir` at the checkout's commit, or `none` where the commit has no such directory:
+ * what `rev-parse --verify --quiet` says with its status 1 and nothing else. Any other failure of
+ * Git is not an answer about the directory, and stops the step.
+ */
 function treeOf(nextDir: string, dir: string): string {
   try {
     return git(nextDir, 'rev-parse', '--verify', '--quiet', `HEAD:${dir}`);
-  } catch {
-    return 'none';
+  } catch (error) {
+    if ((error as { readonly status?: unknown }).status === 1) {
+      return 'none';
+    }
+    throw error;
   }
 }
 
