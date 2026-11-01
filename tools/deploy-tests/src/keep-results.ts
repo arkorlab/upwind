@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
+import { populationOf } from './population.ts';
 import { keptSuite, listedSuites } from './results.ts';
 
 /**
@@ -15,7 +16,8 @@ import { keptSuite, listedSuites } from './results.ts';
  * The identity is the workflow's, through the environment: the run and its attempt, when the plan
  * was made and when this shard ended, the selection and how many pieces it was cut into, this
  * shard, where each application was served and with which cache, and the commits of Next.js and of
- * this adapter.
+ * this adapter. A run of what Next.js skips in deploy mode (`POPULATION`, `population.ts`) says so;
+ * a run of the suite as upstream selects it says nothing, and its metadata is as it always was.
  */
 const { values } = parseArgs({
   options: {
@@ -46,6 +48,7 @@ function whole(name: string): number {
 }
 
 const tests = required('TESTS');
+const population = populationOf(process.env['POPULATION']);
 const next = JSON.parse(readFileSync(path.join(nextDir, 'packages/next/package.json'), 'utf8')) as {
   readonly version?: unknown;
 };
@@ -67,6 +70,7 @@ const metadata = {
     shards: whole('TOTAL'),
   },
   shard: whole('SHARD'),
+  ...(population !== 'upstream' && { population }),
 };
 mkdirSync(output, { recursive: true });
 writeFileSync(path.join(output, 'metadata.json'), `${JSON.stringify(metadata, undefined, 2)}\n`);

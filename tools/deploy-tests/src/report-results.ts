@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
+import { populationOf } from './population.ts';
 import { describe, laneOf, type ShardVerdict } from './verdicts.ts';
 
 /**
@@ -9,7 +10,7 @@ import { describe, laneOf, type ShardVerdict } from './verdicts.ts';
  * `judge-results.ts` wrote and the shard's artifact kept), downloaded into `--dir`, summed for each
  * lane — a target, under the Node.js the run names — into the job's summary. The shards the run was cut into, from
  * the plan's matrix (`MATRIX`), name those that left no verdict. It reports and judges nothing: each
- * shard failed for itself.
+ * shard failed for itself. Which suites the run took (`POPULATION`, `population.ts`) heads each lane.
  */
 const { values } = parseArgs({ options: { dir: { type: 'string' } } });
 const dir = values.dir;
@@ -17,6 +18,7 @@ if (dir === undefined) {
   throw new Error('report-results: --dir is required');
 }
 
+const population = populationOf(process.env['POPULATION']);
 const matrix = JSON.parse(process.env['MATRIX'] ?? '{"include":[]}') as {
   readonly include?: readonly {
     readonly target?: unknown;
@@ -54,7 +56,7 @@ const text = [...lanes]
     const own = verdicts
       .filter(({ target, node }) => laneOf(target, node) === lane)
       .toSorted((a, b) => a.shard - b.shard);
-    return describe(lane, own, expected.get(lane) ?? []);
+    return describe(lane, own, expected.get(lane) ?? [], population);
   })
   .join('\n');
 console.log(text);

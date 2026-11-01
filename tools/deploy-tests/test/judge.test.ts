@@ -555,7 +555,7 @@ describe('a shard judged by the workflow', () => {
     results: Record<string, unknown>,
     listed = Object.keys(results),
     runnerFinished = true,
-    ended: readonly string[] = [],
+    { ended = [], population = '' }: { ended?: readonly string[]; population?: string } = {},
   ) {
     const base = mkdtempSync(path.join(os.tmpdir(), 'upwind-judge-results-'));
     dirs.push(base);
@@ -584,6 +584,7 @@ describe('a shard judged by the workflow', () => {
         SHARD: '3',
         NEXT_COMMIT: RELEASE.commit,
         GITHUB_STEP_SUMMARY: summary,
+        POPULATION: population,
       },
     });
     return { run, output, summary };
@@ -605,6 +606,31 @@ describe('a shard judged by the workflow', () => {
     });
     expect(JSON.stringify(verdict)).not.toContain('Failing test passed');
     expect(readFileSync(summary, 'utf8')).toContain('### `node`, Next.js 16.4.3 (29bbeab09981)');
+  });
+
+  it('heads a shard of what Next.js skips in deploy mode so, and reads its cases the same', () => {
+    const { run, output, summary } = shard({ [GATED]: gatedResult([GATED_CASE]) }, [GATED], true, {
+      population: 'skipped',
+    });
+    const verdict = JSON.parse(
+      readFileSync(path.join(output, 'verdict.json'), 'utf8'),
+    ) as ShardVerdict;
+
+    expect(run.status).toBe(0);
+    expect(verdict).toMatchObject({ population: 'skipped', cases: { gates: 1, failed: 0 } });
+    expect(readFileSync(summary, 'utf8')).toContain(
+      '### `node`, Next.js 16.4.3 (29bbeab09981): what Next.js skips in deploy mode',
+    );
+  });
+
+  it('says nothing of a population in the verdict of a shard of the manifest’s suites', () => {
+    const { output } = shard({ [GATED]: gatedResult([GATED_CASE]) });
+    const verdict = JSON.parse(readFileSync(path.join(output, 'verdict.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+
+    expect(verdict).not.toHaveProperty('population');
   });
 
   it('fails a shard whose read failure comes with an error of the file’s own', () => {
@@ -630,9 +656,9 @@ describe('a shard judged by the workflow', () => {
   });
 
   it('names a suite whose Jest process the watchdog ended, without failing the shard for it', () => {
-    const { run, output, summary } = shard({ [GATED]: gatedResult([GATED_CASE]) }, [GATED], true, [
-      GATED,
-    ]);
+    const { run, output, summary } = shard({ [GATED]: gatedResult([GATED_CASE]) }, [GATED], true, {
+      ended: [GATED],
+    });
     const verdict = JSON.parse(
       readFileSync(path.join(output, 'verdict.json'), 'utf8'),
     ) as ShardVerdict;

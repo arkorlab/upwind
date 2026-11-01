@@ -5,7 +5,9 @@ The runs on this machine (`cloudflare` and `node`) judge their results against t
 does, and so does a suite that left no result. Each reading holds for one release of Next.js, its
 version and its commit, and for the failure it was read from: the judge checks a reviewed case's
 failure messages against what was recorded, so a case that fails in another way fails its shard. A
-run of another release reads nothing here until its failures are read again.
+run of another release reads nothing here until its failures are read again. A run of what Next.js
+skips in deploy mode (`population: skipped`, [README](README.md#what-nextjs-skips-in-deploy-mode)) is
+judged against the same readings: a copied case is a suite of its own path, and is read under it.
 
 A reading is one of four:
 
