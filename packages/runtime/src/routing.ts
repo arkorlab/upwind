@@ -34,6 +34,7 @@ import {
   markedRewrites,
 } from './rewritten-path.ts';
 import { appRouteParameters, routeQuery } from './route-parameters.ts';
+import { withRoutingHeaders } from './routing-headers.ts';
 import { HTTP_OK } from './serve.ts';
 import { entrypointKindOf, type Store } from './store.ts';
 
@@ -230,23 +231,6 @@ export function noteLaterHeaderRules(routed: ResolveRoutesResult, judged: boolea
   headers.delete(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER);
   headers.set(HEADER_RULES_AFTER_HEADER, [...headers.keys()].join(','));
   headers.set(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER, String(headers.getSetCookie().length));
-}
-
-/**
- * The headers routing decided a response carries — `next.config` header rules, what the
- * middleware set — added to the response that was produced. Cookies accumulate; anything else
- * routing said wins over what the handler said, as it does on Next.js's own server.
- */
-export function withRoutingHeaders(response: Response, added: Headers | undefined): Response {
-  if (added === undefined) {
-    return response;
-  }
-  return withHeadersChanged(response, (headers) => {
-    for (const [name, value] of added) {
-      // A cookie is one more; any other header is routing's over the handler's.
-      headers[name === 'set-cookie' ? 'append' : 'set'](name, value);
-    }
-  });
 }
 
 /**
