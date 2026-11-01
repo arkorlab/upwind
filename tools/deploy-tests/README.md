@@ -159,7 +159,7 @@ there until its failures have been read again.
 
 ### What Next.js skips in deploy mode
 
-`population: skipped` (a dispatch on the runner's targets, and the night's third run) takes what Next.js
+`population: skipped` (a dispatch, and the night's third run) takes what Next.js
 leaves out when its suite is deployed, rather than what it selects (`src/population.ts`):
 
 - the suites `test/deploy-tests-manifest.json` excludes whole;
@@ -180,8 +180,9 @@ The run is given a manifest of its own (`skipped-manifest.json`), written beside
 with what the population is made of (`population.json`). Its `metadata.json` says `"population":
 "skipped"`, a field a run of the manifest's suites never has. Its counts are not the suite's, and the
 summaries head them so. It is judged as any other run, against the same readings, and a failure nobody
-has read fails its shard. A host takes the manifest's suites alone, since its results are a record of
-them.
+has read fails its shard. On a host the run is cut a piece a project as any other, into no more than
+the 8 pieces the runner's is; its results are not judged there, and their metadata keeps them apart
+from a record of the manifest's suites.
 
 ### Choosing the installer
 
