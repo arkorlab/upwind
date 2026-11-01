@@ -104,7 +104,7 @@ on:
           - '26'
           - '24 26'
       population:
-        description: "Which suites: the deploy manifest's (`upstream`), or what Next.js skips in deploy mode (`skipped`, on the runner)"
+        description: "Which suites: the deploy manifest's (`upstream`), or what Next.js skips in deploy mode (`skipped`)"
         default: 'upstream'
         type: choice
         options:
@@ -249,16 +249,12 @@ jobs:
             echo 'a host builds and serves on its own runtime: node must be 24 there' >&2
             exit 1
           fi
-          # Which suites: the deploy manifest's, or what Next.js skips in deploy mode. A host's results
-          # are a compatibility record, which is the manifest's suites alone.
+          # Which suites: the deploy manifest's, or what Next.js skips in deploy mode. On a host too: its
+          # results then say so in their metadata, which a record of the manifest's suites tells apart.
           case "$population" in
             upstream | skipped) ;;
             *) echo "population must be upstream or skipped, not '$population'" >&2; exit 1 ;;
           esac
-          if [ "$targets" = 'host' ] && [ "$population" != 'upstream' ]; then
-            echo "a host's results are a record of the manifest's suites: population must be upstream there" >&2
-            exit 1
-          fi
           selection="$(printf '%s' "$TESTS" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
           if [ -z "$selection" ]; then
             echo 'no tests were selected: name upstream paths, or `all` for the whole manifest' >&2
@@ -298,6 +294,10 @@ jobs:
                 SHARDS="$HOST_SHARDS"
               else
                 SHARDS="$projects"
+              fi
+              # What Next.js skips is some forty suites: no more pieces than the runner cuts it into.
+              if [ "$population" = 'skipped' ] && [ "$SHARDS" -gt "$SKIPPED_SHARDS" ]; then
+                SHARDS="$SKIPPED_SHARDS"
               fi
             elif [ "$population" = 'skipped' ]; then
               SHARDS="$SKIPPED_SHARDS"

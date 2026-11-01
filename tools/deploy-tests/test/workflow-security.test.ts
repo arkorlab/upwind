@@ -404,16 +404,29 @@ describe('workflow security', () => {
     },
   );
 
-  it('refuses what Next.js skips for a host, whose results are a record of the manifest’s suites', () => {
-    const result = plan('v16.4.3', {
-      TARGET: 'host',
-      POPULATION: 'skipped',
-      PROJECT_IDS: 'project-1',
-    });
+  it.each([
+    { listed: 'sixteen projects', ids: projects(16), total: 8, parallel: 8 },
+    { listed: 'three projects', ids: projects(3), total: 6, parallel: 1 },
+  ])(
+    'cuts what Next.js skips on a host a piece a project, into no more than the runner’s: $listed',
+    ({ ids, total, parallel }) => {
+      const result = plan('v16.4.3', {
+        TARGET: 'host',
+        POPULATION: 'skipped',
+        SHARDS: '',
+        PROJECT_IDS: ids.join(' '),
+        PROJECT_ID: '',
+        HOST_SHARDS: String(hostShards()),
+      });
+      const output = readFileSync(result.output, 'utf8');
 
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('population must be upstream there');
-  });
+      expect(result.status).toBe(0);
+      expect(output).toContain(
+        `total=${String(total)}\nparallel=${String(parallel)}\nconcurrency=1\n`,
+      );
+      expect(output).toContain('population=skipped\n');
+    },
+  );
 
   it('runs node alone under Node.js 24 over the whole manifest on a pull request', () => {
     const result = plan('ignored', {
