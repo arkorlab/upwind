@@ -32,13 +32,12 @@ export function withRoutingHeaders(response: Response, added: Headers | undefine
  * Routing's cookies beside the handler's: ahead of them, each once, as Next.js puts a middleware's
  * ahead of those the handler sets (`patchSetHeaderWithCookieSupport`, `server/lib/patch-set-header.ts`).
  * Appended after them, a middleware's cookie came second where Next.js sends it first
- * (`skip-trailing-slash-redirect`). A cookie the handler sets with a value of its own under a name
- * routing set follows it there too, and so is the one a browser keeps. Two still follow the
- * handler's:
- * - one the handler copies, its name and value written otherwise: Next.js writes a middleware's
- *   cookie back as the render's own (`mergeMiddlewareCookies`), with less of it
- *   (`host/src/splice/cookies.ts`: a `Max-Age=0` it drops). A browser keeps the last, and the
- *   middleware's is the one it meant, as the edge lays a middleware it ran (`layAfterMiddleware`).
+ * (`skip-trailing-slash-redirect`). Two still follow the handler's, as they always did:
+ * - one under a name the handler sets otherwise. The handler's may be Next.js writing the
+ *   middleware's back as the render's own (`mergeMiddlewareCookies`), with less of it
+ *   (`host/src/splice/cookies.ts`: a `Max-Age=0` it drops), or a value of the handler's own; which
+ *   it is takes the rules the edge splices a resume by, and is not judged here. A browser keeps the
+ *   last, routing's, as the edge lays a middleware it ran (`layAfterMiddleware`).
  * - the `later` block, which the edge takes off the end as the routing phases' after the rules it
  *   judged (`noteLaterHeaderRules`, `takeLaterRuleCookies`): it stays last and whole.
  */
@@ -47,11 +46,11 @@ function layRoutingCookies(headers: Headers, routed: readonly string[], later: n
   const ahead = routed.slice(0, routed.length - later);
   const last = routed.slice(routed.length - later);
   const same = new Set(ahead);
-  const copied = new Set<string>();
+  const otherwise = new Set<string>();
   for (const cookie of own) {
-    if (!same.has(cookie)) copied.add(pairOf(cookie));
+    if (!same.has(cookie)) otherwise.add(nameOf(cookie));
   }
-  const cookies = new Set(ahead.filter((cookie) => !copied.has(pairOf(cookie))));
+  const cookies = new Set(ahead.filter((cookie) => !otherwise.has(nameOf(cookie))));
   for (const cookie of own) cookies.add(cookie);
   for (const cookie of ahead) cookies.add(cookie);
   headers.delete(SET_COOKIE);
@@ -66,18 +65,6 @@ function laterCookieCount(added: Headers, routed: number): number {
   return value !== null && COUNT.test(value) ? Math.min(Number(value), routed) : 0;
 }
 
-/**
- * A cookie's name and value, the value decoded as Next.js reads it before it writes the cookie back
- * encoded (`a:b` is `a%3Ab` there), or as written where it does not decode.
- */
-function pairOf(setCookie: string): string {
-  const pair = setCookie.split(';', 1)[0] ?? '';
-  const at = pair.indexOf('=');
-  const name = at === -1 ? '' : pair.slice(0, at).trim();
-  const value = (at === -1 ? pair : pair.slice(at + 1)).trim();
-  try {
-    return `${name}=${decodeURIComponent(value)}`;
-  } catch {
-    return `${name}=${value}`;
-  }
+function nameOf(setCookie: string): string {
+  return (setCookie.split(';', 1)[0] ?? '').split('=', 1)[0]?.trim() ?? '';
 }

@@ -28,48 +28,37 @@ describe('the headers routing collected, laid on an answer', () => {
     ]);
   });
 
-  it('keep the middleware’s after the handler’s copy of it, written otherwise', () => {
-    // Next.js writes a middleware's cookie back as the render's own, without a `Max-Age=0`.
-    const answer = new Response('{}', {
-      headers: [
-        ['set-cookie', 'gone=1; Path=/'],
-        ['set-cookie', 'hello=From API'],
-      ],
-    });
-    const routed = new Headers([
-      ['set-cookie', 'gone=1; Path=/; Max-Age=0'],
-      ['set-cookie', 'from-middleware=1; Path=/'],
-    ]);
+  /**
+   * Under a name the handler sets otherwise, routing's follows as it always did: the handler's may be
+   * Next.js's copy of the middleware's, without its `Max-Age=0`, or a value of its own, and which it
+   * is is not judged here.
+   */
+  it.each([
+    ['a copy without the deletion', 'gone=1; Path=/', 'gone=1; Path=/; Max-Age=0'],
+    ['a copy whose value Next.js encoded', 'query=a%3Ab; Path=/', 'query=a:b; Path=/; Max-Age=0'],
+    ['a value of its own', 'session=new; Path=/', 'session=old; Path=/'],
+  ])(
+    'keep routing’s after a cookie the handler sets otherwise under its name: %s',
+    (_, own, set) => {
+      const answer = new Response('{}', {
+        headers: [
+          ['set-cookie', own],
+          ['set-cookie', 'hello=From API'],
+        ],
+      });
+      const routed = new Headers([
+        ['set-cookie', set],
+        ['set-cookie', 'from-middleware=1; Path=/'],
+      ]);
 
-    expect(withRoutingHeaders(answer, routed).headers.getSetCookie()).toStrictEqual([
-      'from-middleware=1; Path=/',
-      'gone=1; Path=/',
-      'hello=From API',
-      'gone=1; Path=/; Max-Age=0',
-    ]);
-  });
-
-  /** A copy whose value Next.js encoded as it wrote it back is a copy still. */
-  it('keep the middleware’s after a copy of it whose value the handler encoded', () => {
-    const answer = new Response('{}', { headers: [['set-cookie', 'query=a%3Ab; Path=/']] });
-    const routed = new Headers([['set-cookie', 'query=a:b; Path=/; Max-Age=0']]);
-
-    expect(withRoutingHeaders(answer, routed).headers.getSetCookie()).toStrictEqual([
-      'query=a%3Ab; Path=/',
-      'query=a:b; Path=/; Max-Age=0',
-    ]);
-  });
-
-  /** The handler's own value follows the middleware's, as on Next.js, and is the one kept. */
-  it('put the handler’s own value of a cookie the middleware set after it', () => {
-    const answer = new Response('{}', { headers: [['set-cookie', 'session=new; Path=/']] });
-    const routed = new Headers([['set-cookie', 'session=old; Path=/']]);
-
-    expect(withRoutingHeaders(answer, routed).headers.getSetCookie()).toStrictEqual([
-      'session=old; Path=/',
-      'session=new; Path=/',
-    ]);
-  });
+      expect(withRoutingHeaders(answer, routed).headers.getSetCookie()).toStrictEqual([
+        'from-middleware=1; Path=/',
+        own,
+        'hello=From API',
+        set,
+      ]);
+    },
+  );
 
   it('keep the block the edge takes off the end last and whole', () => {
     const answer = new Response('{}', {
