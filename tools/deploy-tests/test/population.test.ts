@@ -212,11 +212,59 @@ describe('the manifest a skipped run is given', () => {
   });
 });
 
+/** What a copy says as code, without its comments: what it runs. */
+function code(source: string): string {
+  return source
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//'))
+    .join('\n');
+}
+
+/** The gates a copy's comments set (`@gate`, `@force-gate`), a line each. */
+function gates(source: string): string[] {
+  return source.split('\n').filter((line) => /@(?:force-)?gate\b/u.test(line));
+}
+
 describe('the copies of cases deploy mode skips', () => {
   afterEach(cleanUp);
 
-  it('are none until a case is copied', () => {
-    expect(SUPPLEMENTS).toStrictEqual([]);
+  const kept = path.resolve(import.meta.dirname, '../supplements');
+  const workflow = readFileSync(
+    path.resolve(import.meta.dirname, '../../../.github/workflows/deploy-tests.yaml'),
+    'utf8',
+  );
+
+  it.each(SUPPLEMENTS.map((supplement) => [supplement.upstream, supplement]))(
+    'hold a copy of %s, beside it, as of the release the nights run',
+    (_, { next, upstream, source, file, cases }) => {
+      const copy = readFileSync(path.join(kept, source), 'utf8');
+      const titles = [...copy.matchAll(/\bit\('((?:[^'\\]|\\.)*)'/gu)].map(([, title]) => title);
+
+      expect(workflow).toContain(`  NIGHTLY_NEXTJS_REF: 'v${next.version}'`);
+      expect(path.posix.dirname(file)).toBe(path.posix.dirname(upstream));
+      expect(file.endsWith('.skipped-in-deploy.test.ts')).toBe(true);
+      // Said where it came from, under which license.
+      expect(copy).toContain(`// From ${upstream}\n// at ${next.commit} (v${next.version}).`);
+      expect(copy).toContain('// Copyright (c) 2025 Vercel, Inc.');
+      // Nothing of it asks whether it is deployed, in code or by a gate.
+      expect(code(copy)).not.toMatch(/isNextDeploy/u);
+
+      for (const gate of gates(copy)) {
+        expect(gate).not.toMatch(/deploy|adapter/u);
+      }
+
+      // Every case it is recorded to register, it registers.
+      for (const fullName of cases) {
+        expect(titles.some((title) => fullName.endsWith(` ${title}`))).toBe(true);
+      }
+    },
+  );
+
+  it('are each written to a file of their own', () => {
+    const files = SUPPLEMENTS.map(({ file }) => file);
+
+    expect(new Set(files).size).toBe(files.length);
+    expect(SUPPLEMENTS.length).toBeGreaterThan(0);
   });
 
   it('are written beside their suite where its directory is the one they were copied from', () => {
@@ -331,6 +379,7 @@ describe('the skipped population of a checkout', () => {
     ) as DeployManifest;
     const population = JSON.parse(readFileSync(path.join(output, 'population.json'), 'utf8')) as {
       readonly excluded: readonly string[];
+      readonly stale: readonly unknown[];
     };
 
     expect(run.status).toBe(0);
@@ -340,6 +389,8 @@ describe('the skipped population of a checkout', () => {
       'test/e2e/listed/listed.test.ts',
     ]);
     expect(population.excluded).toHaveLength(2);
+    // A checkout of another commit, without the copies' directories: every copy is left out, and said.
+    expect(population.stale).toHaveLength(SUPPLEMENTS.length);
     expect(readFileSync(summary, 'utf8')).toContain('2 suite(s) the deploy manifest excludes');
   });
 });

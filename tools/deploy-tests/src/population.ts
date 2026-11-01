@@ -99,8 +99,96 @@ export interface Supplement {
   readonly cases: readonly string[];
 }
 
-/** The copies, by upstream suite. */
-export const SUPPLEMENTS: readonly Supplement[] = [];
+/** The release every copy below was taken from: the supported one (`NIGHTLY_NEXTJS_REF`). */
+const NEXT_16_4_3 = { version: '16.4.3', commit: '29bbeab09981148ade186e8599ecdede15abc281' };
+
+/**
+ * The copies, by upstream suite: of the cases Next.js's suites register otherwise or not at all when
+ * deployed, those whose source says a deployment answers otherwise than `next start` does, and that
+ * a deployment can be asked — not those reading the server's own output or files. Not among them is
+ * `not-found-non-document-dynamic`: it asks less of a deployment only with Cache Components on, which
+ * these runs leave off, so the suite already asks it in full.
+ */
+export const SUPPLEMENTS: readonly Supplement[] = [
+  {
+    next: NEXT_16_4_3,
+    upstream: 'test/e2e/app-dir/app-middleware/app-middleware.test.ts',
+    tree: '10b3eddb8636de56dadd428c59a3b8dd1147ebdf',
+    source: 'app-dir/app-middleware/app-middleware.supplement.ts',
+    file: 'test/e2e/app-dir/app-middleware/app-middleware.skipped-in-deploy.test.ts',
+    cases: ['app-dir with middleware should not incorrectly treat a Location header as a rewrite'],
+  },
+  {
+    next: NEXT_16_4_3,
+    upstream: 'test/e2e/app-dir/app-middleware-proxy/app-middleware-proxy.test.ts',
+    tree: 'c19f21219de2239b1526e7e60567225e10d74e92',
+    source: 'app-dir/app-middleware-proxy/app-middleware-proxy.supplement.ts',
+    file: 'test/e2e/app-dir/app-middleware-proxy/app-middleware-proxy.skipped-in-deploy.test.ts',
+    cases: ['app-dir with proxy should not incorrectly treat a Location header as a rewrite'],
+  },
+  {
+    next: NEXT_16_4_3,
+    upstream: 'test/e2e/app-dir/segment-cache/cached-navigations/cached-navigations.test.ts',
+    tree: '4bdb98dbdbff15d86d6ce67a40aea256e4436e42',
+    source: 'app-dir/segment-cache/cached-navigations/cached-navigations.supplement.ts',
+    file: 'test/e2e/app-dir/segment-cache/cached-navigations/cached-navigations.skipped-in-deploy.test.ts',
+    cases: [
+      'cached navigations does not cache synchronous IO after a novel param resolves',
+      'cached navigations finishes a full prefetch after synchronous IO interrupts its shell',
+    ],
+  },
+  {
+    next: NEXT_16_4_3,
+    upstream: 'test/e2e/app-dir/not-found-non-document/not-found-non-document.test.ts',
+    tree: 'd856230a3ffe36d621dd888731d0ed0ca67018cd',
+    source: 'app-dir/not-found-non-document/not-found-non-document.supplement.ts',
+    file: 'test/e2e/app-dir/not-found-non-document/not-found-non-document.skipped-in-deploy.test.ts',
+    cases: [
+      'not-found-non-document returns a plain text 404 for subresource requests to unknown paths',
+      'not-found-non-document returns a plain text 404 for font and manifest requests to unknown paths',
+    ],
+  },
+  {
+    next: NEXT_16_4_3,
+    upstream: 'test/e2e/app-dir/use-cache-route-handler-only/use-cache-route-handler-only.test.ts',
+    tree: 'e740f6698efd3716d22e8e353b44fe02a1e1bd0b',
+    source: 'app-dir/use-cache-route-handler-only/use-cache-route-handler-only.supplement.ts',
+    file: 'test/e2e/app-dir/use-cache-route-handler-only/use-cache-route-handler-only.skipped-in-deploy.test.ts',
+    cases: ['use-cache-route-handler-only refreshes cached data after tag revalidation'],
+  },
+  {
+    next: NEXT_16_4_3,
+    upstream: 'test/e2e/app-dir/app-root-params-getters/use-cache.test.ts',
+    tree: 'f95c4fee51d8fd545c08d29a9bd77f908d7c1355',
+    source: 'app-dir/app-root-params-getters/use-cache.supplement.ts',
+    file: 'test/e2e/app-dir/app-root-params-getters/use-cache.skipped-in-deploy.test.ts',
+    cases: [
+      'app-root-param-getters - cache - at runtime should revalidate only the tagged root params',
+    ],
+  },
+  {
+    next: NEXT_16_4_3,
+    upstream: 'test/e2e/app-dir/segment-cache/prefetch-runtime/prefetch-runtime.test.ts',
+    tree: 'bc19b01fb3d8bfa2a6d2e0ddce693e940beb2ce2',
+    source: 'app-dir/segment-cache/prefetch-runtime/prefetch-runtime.supplement.ts',
+    file: 'test/e2e/app-dir/segment-cache/prefetch-runtime/prefetch-runtime.skipped-in-deploy.test.ts',
+    cases: [
+      'runtime prefetching in a page includes root params, but not dynamic content',
+      'runtime prefetching in a private cache includes root params, but not dynamic content',
+      'runtime prefetching passed to a public cache includes root params, but not dynamic content',
+    ],
+  },
+  {
+    next: NEXT_16_4_3,
+    upstream: 'test/e2e/app-dir/segment-cache/prefetch-static-shell/prefetch-static-shell.test.ts',
+    tree: '86d8a1a085c3b19f99c9eb8672204a4bd9c722ed',
+    source: 'app-dir/segment-cache/prefetch-static-shell/prefetch-static-shell.supplement.ts',
+    file: 'test/e2e/app-dir/segment-cache/prefetch-static-shell/prefetch-static-shell.skipped-in-deploy.test.ts',
+    cases: [
+      'static App Shell prefetch attempt ensureStatic ensureStatic = "navigation" uses a static request for a `prefetch={true}` link to a page that uses static params and was not prerendered',
+    ],
+  },
+];
 
 /** A supplement left out of a run, because its upstream directory is not the one it was copied from. */
 export interface StaleSupplement {
@@ -174,6 +262,15 @@ function git(nextDir: string, ...args: string[]): string {
   return execFileSync('git', ['-C', nextDir, ...args], { encoding: 'utf8' }).trim();
 }
 
+/** The Git tree of `dir` at the checkout's commit, or `none` where the commit has no such directory. */
+function treeOf(nextDir: string, dir: string): string {
+  try {
+    return git(nextDir, 'rev-parse', '--verify', '--quiet', `HEAD:${dir}`);
+  } catch {
+    return 'none';
+  }
+}
+
 /** The directory of the tool's copies. */
 const SUPPLEMENTS_DIR = path.resolve(import.meta.dirname, '../supplements');
 
@@ -195,7 +292,7 @@ export function writeSupplements(
     if (path.posix.dirname(file) !== path.posix.dirname(upstream) || !file.endsWith('.test.ts')) {
       throw new Error(`the copy of ${upstream} must be a .test.ts beside it, not ${file}`);
     }
-    const actual = git(nextDir, 'rev-parse', `HEAD:${path.posix.dirname(upstream)}`);
+    const actual = treeOf(nextDir, path.posix.dirname(upstream));
     if (actual !== tree) {
       if (commit === supplement.next.commit) {
         throw new Error(
