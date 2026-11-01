@@ -1,7 +1,7 @@
 import { type MiddlewareResult, responseToMiddlewareResult } from '@next/routing';
 import { headerRulesFor } from '@stayingupwind/core/manifest';
 import { onLoopbackOrigin } from '@stayingupwind/core/paas';
-import { REDIRECT_STATUSES } from '@stayingupwind/core/request';
+import { REDIRECT_STATUSES, redirectAnswer } from '@stayingupwind/core/request';
 
 import { middlewareHandler } from './entries.ts';
 import { edgeJudgesHeaderRules, hasBody } from './incoming.ts';
@@ -20,6 +20,8 @@ const HTTP_OK = 200;
 /** What a Pages Router data URL ends in. */
 const DATA_SUFFIX = '.json';
 const REWRITE_HEADER = 'x-middleware-rewrite';
+/** What a middleware that lets the request continue answers with (`NextResponse.next`). */
+const NEXT_HEADER = 'x-middleware-next';
 type HeaderManifest = Parameters<typeof headerRulesFor>[0];
 const terminalHeaderRules = new WeakMap<Store, HeaderManifest>();
 
@@ -226,5 +228,28 @@ export async function answerMiddlewareOnly(input: RoutedInput): Promise<Response
   const { request } = input;
   const headers = routedHeaders(request, new URL(request.url), deploymentConfig().basePath);
   const response = await runMiddleware(input, new Request(request, { headers }));
-  return response ?? new Response(null, { status: HTTP_OK, headers: { 'x-middleware-next': '1' } });
+  return response === undefined
+    ? new Response(null, { status: HTTP_OK, headers: { [NEXT_HEADER]: '1' } })
+    : answeredRedirect(response);
+}
+
+/**
+ * A redirect the middleware answered with and brought no body of its own (`NextResponse.redirect`),
+ * answered as Next.js's server answers it (`redirectAnswer`): its destination for a body, and on a
+ * permanent redirect a `Refresh`. It is done here, where the middleware answered: past the Fetcher
+ * the edge reaches this Function through, a body never given arrives as an empty stream, no longer
+ * told apart from one given empty. Anything else the middleware answered is handed on as it is.
+ */
+function answeredRedirect(response: Response): Response {
+  const location = response.headers.get('location');
+  if (
+    location === null ||
+    response.body !== null ||
+    !REDIRECT_STATUSES.has(response.status) ||
+    response.headers.has(REWRITE_HEADER) ||
+    response.headers.has(NEXT_HEADER)
+  ) {
+    return response;
+  }
+  return redirectAnswer(location, response.status, new Headers(response.headers));
 }
