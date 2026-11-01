@@ -59,7 +59,7 @@ import {
 } from './partial-fallback.ts';
 import { answerFromJob, holdFirstPublish, laterOf, publishOf } from './regeneration-answers.ts';
 import { SEGMENT_PREFIX } from './representations.ts';
-import { routingParameters } from './route-parameters.ts';
+import { staticRenderParameters } from './route-parameters.ts';
 import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
 import { entrypointKindOf, findShell, isClassShell, type Store, variesOnQuery } from './store.ts';
 
@@ -174,7 +174,7 @@ function runJob(
               descriptor.pathname,
             )
           : undefined,
-      parameters: routingParameters(store, descriptor.route, descriptor.pathname),
+      ...staticRenderParameters(store, descriptor.route, descriptor.pathname),
     },
     staticPagesManifest: store.manifest,
     previewToken: store.manifest.bypassToken,

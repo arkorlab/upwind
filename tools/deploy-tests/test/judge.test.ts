@@ -390,6 +390,28 @@ function judgedAlone(
   );
 }
 
+const VERIFIED_GATES = [
+  {
+    suite: 'test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts',
+    fullName: 'prerender-encoding should preserve an encoded slash in an open catch-all fallback',
+  },
+  {
+    suite: 'test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts',
+    fullName: 'segment cache (metadata) requests only the head when the page segments are cached',
+  },
+] as const;
+
+/** One of the gates, as the unmodified deploy suite reported it. */
+function gateVerdict(
+  entry: Pick<ReviewedCase, 'suite' | 'fullName'>,
+  measured: Measured,
+  status = 'failed',
+  messages = [GATE_PASSED],
+): Verdict {
+  const result = suiteOf([jestCase(entry.fullName, status, messages)], {}, entry.suite);
+  return judge(measured, [entry.suite], new Map([[entry.suite, result]]), REVIEWED);
+}
+
 describe('the reviewed cases', () => {
   const record = readFileSync(path.resolve(import.meta.dirname, '../REVIEWED.md'), 'utf8');
   const headings = record.split('\n').filter((line) => line.startsWith('#'));
@@ -418,6 +440,66 @@ describe('the reviewed cases', () => {
     });
 
     expect(keys).toHaveLength(new Set(keys).size);
+  });
+
+  it.each(VERIFIED_GATES)(
+    'reads $fullName only on verified targets at the recorded release and exact name',
+    (entry) => {
+      expect(gateVerdict(entry, ON_CLOUDFLARE).cases).toMatchObject({ gates: 1, failed: 0 });
+      expect(gateVerdict(entry, { ...ON_NODE, node: '24' }).cases).toMatchObject({
+        gates: 1,
+        failed: 0,
+      });
+      expect(gateVerdict(entry, ON_NODE).cases).toMatchObject({ gates: 0, failed: 1 });
+      expect(gateVerdict(entry, { ...ON_NODE, node: '26' }).cases).toMatchObject({
+        gates: 0,
+        failed: 1,
+      });
+      expect(
+        gateVerdict(entry, { ...ON_CLOUDFLARE, next: ANOTHER_COMMIT.next }).cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+      expect(
+        gateVerdict(entry, { ...ON_CLOUDFLARE, next: ANOTHER_VERSION.next }).cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+      expect(
+        gateVerdict({ ...entry, fullName: `${entry.fullName} another case` }, ON_CLOUDFLARE).cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+    },
+  );
+
+  it.each(VERIFIED_GATES)(
+    'fails $fullName when its body fails or it has multiple case errors',
+    (entry) => {
+      expect(gateVerdict(entry, ON_CLOUDFLARE, 'passed').cases).toMatchObject({
+        gates: 0,
+        failed: 1,
+      });
+      expect(
+        gateVerdict(entry, ON_CLOUDFLARE, 'failed', ['Error: the body failed']).cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+      expect(
+        gateVerdict(entry, ON_CLOUDFLARE, 'failed', [GATE_PASSED, 'Error: another case error'])
+          .cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+    },
+  );
+
+  it.each(VERIFIED_GATES)('fails the suite when $fullName has a separate hook error', (entry) => {
+    const result = suiteOf(
+      [jestCase(entry.fullName, 'failed', [GATE_PASSED])],
+      { runtimeError: true },
+      entry.suite,
+    );
+    const verdict = judge(ON_CLOUDFLARE, [entry.suite], new Map([[entry.suite, result]]), REVIEWED);
+
+    expect(verdict.cases).toMatchObject({ gates: 1, failed: 0 });
+    expect(verdict.unexplained).toStrictEqual([
+      {
+        suite: entry.suite,
+        why: 'Jest reported an error of the file outside its cases (a hook, or the file itself)',
+      },
+    ]);
+    expect(fails(verdict)).toBe(true);
   });
 
   it('read no other failure of the build-directory cases than the directory', () => {
@@ -475,7 +557,7 @@ describe('the reviewed cases', () => {
     expect(judgedAlone(entry!, 'cloudflare', NATIVE_CONTAINER, '24').unexplained).toStrictEqual([]);
   });
 
-  it('read nothing for Node.js 26 under 24, nor where the run names no Node.js', () => {
+  it('read no lane-specific entry under another Node.js, nor where the run names none', () => {
     const lanes = REVIEWED.filter(({ nodes }) => nodes !== undefined);
 
     expect(lanes).not.toHaveLength(0);
@@ -483,8 +565,9 @@ describe('the reviewed cases', () => {
     for (const entry of lanes) {
       const target = entry.targets?.[0] ?? 'node';
       const [message = ''] = recordedFor(entry);
+      const other = entry.nodes?.includes('24') === true ? '26' : '24';
 
-      expect(judgedAlone(entry, target, message, '24').unexplained).toHaveLength(1);
+      expect(judgedAlone(entry, target, message, other).unexplained).toHaveLength(1);
     }
     const [preview] = lanes;
     const result = suiteOf(
