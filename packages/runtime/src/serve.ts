@@ -58,6 +58,12 @@ export interface HandleInput extends EntryTables {
   readonly invalidated?: InvalidatedTags | undefined;
 }
 
+/** A render's separate route parameters and final search query, as Next.js can consume them. */
+export interface RenderParameters {
+  readonly params: Readonly<Record<string, string | string[]>>;
+  readonly query: Readonly<Record<string, string | string[]>>;
+}
+
 /**
  * A request as it travels through the runtime: the URL the client asked for is read once, off the
  * request as the edge sent it, and stays with it through rewrites and the stripping of the
@@ -69,7 +75,7 @@ export interface RoutedInput extends HandleInput {
   /** The context every render of the request runs in: its clock and its platform hooks. */
   readonly run: Run;
   /** Parameters whose catch-all segment boundaries cannot be represented by a prefixed query. */
-  readonly routeParams?: Readonly<Record<string, string | string[]>> | undefined;
+  readonly parameters?: RenderParameters | undefined;
   /**
    * The entry the request has had its regeneration of already: one in the foreground whose render
    * answered nothing, which leaves the request to the usual path. Nothing on that path begins
@@ -115,12 +121,25 @@ export interface RoutedInput extends HandleInput {
 
 export { initUrlOf, resumeUrl, stripPlatformHeaders } from './incoming.ts';
 
+/** Next.js normalizes these objects in place; each invocation owns its records and arrays. */
+function copyValues(
+  values: Readonly<Record<string, string | string[]>>,
+): Record<string, string | string[]> {
+  return Object.fromEntries(
+    Object.entries(values).map(([key, value]) => [key, Array.isArray(value) ? [...value] : value]),
+  );
+}
+
 export function baseRequestMeta(input: RoutedInput): Record<string, unknown> {
+  const { parameters } = input;
   return {
     minimalMode: true,
     relativeProjectDir: '.',
     initURL: input.initURL,
-    ...(input.routeParams !== undefined && { params: input.routeParams }),
+    ...(parameters !== undefined && {
+      params: copyValues(parameters.params),
+      query: copyValues(parameters.query),
+    }),
     // What the Pages Router asks the platform for when a render ends in `notFound: true`, or
     // when a `fallback: false` route is asked for a member the build did not make.
     render404,

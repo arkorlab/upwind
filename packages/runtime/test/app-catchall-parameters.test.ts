@@ -1,8 +1,10 @@
 import type { EntrypointKind } from '@stayingupwind/core/bundle';
+import { ROUTED_HEADER } from '@stayingupwind/core/paas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppModule, NodeHandler, WebHandler } from '../src/app-module.ts';
 import { handleRequest } from '../src/handle.ts';
+import { encodeHandOff } from '../src/handoff.ts';
 import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { appRouteParameters } from '../src/route-parameters.ts';
 import { getStore, type Store } from '../src/store.ts';
@@ -174,6 +176,64 @@ describe('an App Router catch-all whose segment contains an escaped slash', () =
         };
       }),
     ).toStrictEqual([{ url: '/alias?ref=1', params: { lang: 'en', slug: ['with/slash'] } }]);
+  });
+
+  it('reads request values before a literal percent is normalized to a build name', async () => {
+    const built = '/en/open/100%20/with%2Fslash';
+    vi.mocked(getStore).mockReturnValue({
+      ...deployment(),
+      prerendersByPathname: new Map([
+        [
+          built,
+          {
+            id: built,
+            pathname: built,
+            route: ROUTE,
+            parentOutputId: ROUTE,
+            groupId: 1,
+          },
+        ],
+      ]),
+    });
+
+    await handle('/en/open/100%2520/with%2Fslash');
+
+    expect(vi.mocked(invokeNodeHandler).mock.calls[0]?.[0].requestMeta['params']).toStrictEqual({
+      lang: 'en',
+      slug: ['100%20', 'with/slash'],
+    });
+  });
+
+  it('retains separated params and the final query when another Function routed the request', async () => {
+    const parameters = {
+      params: { lang: 'en', slug: ['with/slash'] },
+      query: { ref: ['one', 'two'], slug: '' },
+    };
+    await handleRequest({
+      app: { entries: { [ROUTE]: () => ({ handler: page }) } },
+      edge: { entries: {} },
+      request: new Request('https://app.test/alias?ref=one&ref=two&slug=', {
+        headers: {
+          [ROUTED_HEADER]: encodeHandOff({
+            route: ROUTE,
+            pathname: '/en/open/with%2Fslash',
+            url: '/alias?ref=one&ref=two&slug=',
+            parameters,
+            headers: [],
+          }),
+        },
+      }),
+      waitUntil: () => {
+        /* No work is scheduled. */
+      },
+    });
+
+    const call = vi.mocked(invokeNodeHandler).mock.calls[0]?.[0];
+
+    expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+    expect(call?.url).toBe('/alias?ref=one&ref=two&slug=');
+    expect(call?.requestMeta['params']).toStrictEqual(parameters.params);
+    expect(call?.requestMeta['query']).toStrictEqual(parameters.query);
   });
 
   it.each(['app-page', 'app-route'] as const)(

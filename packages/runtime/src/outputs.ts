@@ -81,6 +81,7 @@ export interface Resolved {
   readonly route: string;
   readonly pathname: string;
   readonly url: string;
+  readonly parameters?: RoutedInput['parameters'];
 }
 
 /** The type a prerender's body was recorded with; a route handler's is whatever it answered. */

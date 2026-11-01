@@ -4,6 +4,7 @@ import {
   applyRequestChanges,
   decodeHandOff,
   encodeHandOff,
+  handOffOf,
   type HandOff,
   requestChanges,
 } from '../src/handoff.ts';
@@ -30,6 +31,34 @@ describe('a routing hand-off', () => {
 
     expect(value).toMatch(/^[\w-]+$/u);
     expect(decodeHandOff(value)).toStrictEqual(HAND_OFF);
+  });
+
+  it('carries separated params and query to the Function that owns the route', () => {
+    const parameters = {
+      params: { slug: ['literal%2Fslash', 'with/slash'] },
+      query: { ref: ['one', 'two'], slug: '' },
+    };
+    const value = handOffOf(
+      {
+        resolved: { ...HAND_OFF, parameters },
+        image: false,
+        headers: undefined,
+        status: undefined,
+      },
+      () => ({}),
+    );
+
+    expect(decodeHandOff(value)?.parameters).toStrictEqual(parameters);
+  });
+
+  it.each([
+    { params: { slug: [1] }, query: {} },
+    { params: {}, query: { ref: [null] } },
+    { params: [], query: {} },
+  ])('refuses invalid render metadata %j', (parameters) => {
+    const value = Buffer.from(JSON.stringify({ ...HAND_OFF, parameters })).toString('base64url');
+
+    expect(decodeHandOff(value)).toBeUndefined();
   });
 
   it.each([

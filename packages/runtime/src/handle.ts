@@ -73,7 +73,7 @@ import {
 import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
 import { routingOf, untraced, withRoutingOf } from './resolve-request.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
-import { appRouteParameters, resumeUrlOf } from './route-parameters.ts';
+import { resumeUrlOf } from './route-parameters.ts';
 import {
   askedOf,
   landedRoute,
@@ -452,7 +452,7 @@ async function answerResolved(
   // The status this routing named, and the headers it collected: never an outer request's.
   const asked: RoutedInput = {
     ...forwarded,
-    routeParams: appRouteParameters(store, resolved.route, resolved.pathname),
+    parameters: resolved.parameters,
     rewriteStatus: routed.status,
     routingHeaders: routed.headers,
   };
@@ -479,7 +479,7 @@ async function serveHandedOff(
   if (handOff === undefined) {
     return new Response('the routing handed over does not read', { status: HTTP_BAD_REQUEST });
   }
-  const resolved: Resolved = { route: handOff.route, pathname: handOff.pathname, url: handOff.url };
+  const resolved: Resolved = handOff;
   const owner = ownerOfResolved(store, resolved);
   if (owner !== undefined) {
     return misdirected(owner, input.request.body, value);

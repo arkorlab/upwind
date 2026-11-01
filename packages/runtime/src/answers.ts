@@ -21,7 +21,7 @@ import {
   type Representation,
   SEGMENT_PREFIX,
 } from './representations.ts';
-import { appRouteParameters, resumeUrlOf } from './route-parameters.ts';
+import { resumeUrlOf, staticRenderParameters } from './route-parameters.ts';
 import {
   baseRequestMeta,
   concatShell,
@@ -348,7 +348,7 @@ export function renderCompletedRscForVisitor(
     generationPathname(shell, pathname) !== descriptor.pathname ||
     // Keep escaped catch-all classes on the usual path: this capture inherits the visitor's
     // metadata, whose concrete parameters must not replace the class's unresolved placeholders.
-    appRouteParameters(store, descriptor.route, descriptor.pathname) !== undefined
+    staticRenderParameters(store, descriptor.route, descriptor.pathname).routeParams !== undefined
   ) {
     return Promise.resolve(undefined);
   }
