@@ -33,14 +33,14 @@ interface Application {
 }
 
 /**
- * A Pages Router application with one page, `/another`, under each locale where it has any; and
- * under a base path, the root as well.
+ * A Pages Router application with one page, `/another`, under each locale where it has any, all
+ * under the base path; and under a base path, its root as well.
  */
 function storeOf({ skipTrailingSlashRedirect, i18n, basePath = '' }: Application): Store {
   const pages =
     i18n === undefined
       ? [...(basePath === '' ? [] : [basePath]), `${basePath}/another`]
-      : i18n.locales.map((locale) => `/${locale}/another`);
+      : i18n.locales.map((locale) => `${basePath}/${locale}/another`);
   const manifest = {
     buildId: BUILD_ID,
     config: {
