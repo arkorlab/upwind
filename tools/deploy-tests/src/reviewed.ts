@@ -185,6 +185,16 @@ const AT_16_4_3: readonly Group[] = [
   },
   {
     reading: GATE,
+    record: 'prerender-encoding',
+    targets: ['cloudflare'],
+    cases: {
+      'test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts': [
+        'prerender-encoding should preserve an encoded slash in an open catch-all fallback',
+      ],
+    },
+  },
+  {
+    reading: GATE,
     record: 'metadata-streaming-parallel-routes',
     cases: {
       'test/e2e/app-dir/metadata-streaming-parallel-routes/metadata-streaming-parallel-routes.test.ts':
@@ -192,6 +202,16 @@ const AT_16_4_3: readonly Group[] = [
           'app-dir - metadata-streaming (parallelRouteMetadata: false) should only bundle the selected metadata resolution implementation',
           'app-dir - metadata-streaming (parallelRouteMetadata: true) should only bundle the selected metadata resolution implementation',
         ],
+    },
+  },
+  {
+    reading: GATE,
+    record: 'segment-cache-metadata',
+    targets: ['cloudflare'],
+    cases: {
+      'test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts': [
+        'segment cache (metadata) requests only the head when the page segments are cached',
+      ],
     },
   },
   {

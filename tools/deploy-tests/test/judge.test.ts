@@ -390,6 +390,28 @@ function judgedAlone(
   );
 }
 
+const CLOUDFLARE_GATES = [
+  {
+    suite: 'test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts',
+    fullName: 'prerender-encoding should preserve an encoded slash in an open catch-all fallback',
+  },
+  {
+    suite: 'test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts',
+    fullName: 'segment cache (metadata) requests only the head when the page segments are cached',
+  },
+] as const;
+
+/** One of the Cloudflare-only gates, as the unmodified deploy suite reported it. */
+function gateVerdict(
+  entry: Pick<ReviewedCase, 'suite' | 'fullName'>,
+  measured: Measured,
+  status = 'failed',
+  messages = [GATE_PASSED],
+): Verdict {
+  const result = suiteOf([jestCase(entry.fullName, status, messages)], {}, entry.suite);
+  return judge(measured, [entry.suite], new Map([[entry.suite, result]]), REVIEWED);
+}
+
 describe('the reviewed cases', () => {
   const record = readFileSync(path.resolve(import.meta.dirname, '../REVIEWED.md'), 'utf8');
   const headings = record.split('\n').filter((line) => line.startsWith('#'));
@@ -418,6 +440,37 @@ describe('the reviewed cases', () => {
     });
 
     expect(keys).toHaveLength(new Set(keys).size);
+  });
+
+  it.each(CLOUDFLARE_GATES)(
+    'reads $fullName only on Cloudflare at the recorded release and exact name',
+    (entry) => {
+      expect(gateVerdict(entry, ON_CLOUDFLARE).cases).toMatchObject({ gates: 1, failed: 0 });
+      expect(gateVerdict(entry, ON_NODE).cases).toMatchObject({ gates: 0, failed: 1 });
+      expect(
+        gateVerdict(entry, { ...ON_CLOUDFLARE, next: ANOTHER_COMMIT.next }).cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+      expect(
+        gateVerdict(entry, { ...ON_CLOUDFLARE, next: ANOTHER_VERSION.next }).cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+      expect(
+        gateVerdict({ ...entry, fullName: `${entry.fullName} another case` }, ON_CLOUDFLARE).cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+    },
+  );
+
+  it.each(CLOUDFLARE_GATES)('fails $fullName when its body or a hook fails', (entry) => {
+    expect(gateVerdict(entry, ON_CLOUDFLARE, 'passed').cases).toMatchObject({
+      gates: 0,
+      failed: 1,
+    });
+    expect(
+      gateVerdict(entry, ON_CLOUDFLARE, 'failed', ['Error: the body failed']).cases,
+    ).toMatchObject({ gates: 0, failed: 1 });
+    expect(
+      gateVerdict(entry, ON_CLOUDFLARE, 'failed', [GATE_PASSED, 'Error: an afterAll hook failed'])
+        .cases,
+    ).toMatchObject({ gates: 0, failed: 1 });
   });
 
   it('read no other failure of the build-directory cases than the directory', () => {

@@ -1,5 +1,5 @@
 import type { ResolveRoutesResult } from '@next/routing';
-import { standsForClass } from '@stayingupwind/core/bundle';
+import { type EntrypointKind, standsForClass } from '@stayingupwind/core/bundle';
 import { builtNameOf } from '@stayingupwind/core/manifest';
 
 import { resumeUrl } from './incoming.ts';
@@ -282,13 +282,12 @@ function isFixed(segment: string | undefined, placeholder: string, built: boolea
  */
 function segmentedParameters(
   store: Store,
-  route: string,
+  template: string,
   pathname: string,
+  kind: EntrypointKind | undefined,
 ): Record<string, string | string[]> | undefined {
-  const template = store.prerendersByPathname.get(route)?.route ?? route;
   const bare = withoutEndSlash(pathname);
   const built = store.prerendersByPathname.has(bare);
-  const kind = entrypointKindOf(store, template);
   const member = (
     kind === 'app-page' || kind === 'app-route' ? bare : withoutLocale(store, bare)
   ).split('/');
@@ -339,7 +338,7 @@ export function appRouteParameters(
   ) {
     return undefined;
   }
-  const named = segmentedParameters(store, route, pathname);
+  const named = segmentedParameters(store, template, pathname, entrypoint.kind);
   return named === undefined
     ? undefined
     : Object.fromEntries(
@@ -362,7 +361,7 @@ export function routingParameters(
   if (kind === 'app-page' || kind === 'app-route') {
     return undefined;
   }
-  const named = segmentedParameters(store, route, pathname);
+  const named = segmentedParameters(store, template, pathname, kind);
   return named === undefined
     ? undefined
     : Object.fromEntries(
