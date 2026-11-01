@@ -654,10 +654,9 @@ export async function handleRequest(given: HandleInput): Promise<Response> {
     // Not answered before the host has recorded what the request invalidated — its headers neither,
     // nor a failure's (`onceRecorded`).
     const routed = withoutPlacementHeaders(await onceRecorded(context, routeRequest(input)));
-    const response = delivered(handled.request, routed);
     const answered = withoutBody(
       handled.request,
-      withInvalidatedTags(response, context.invalidated),
+      withInvalidatedTags(delivered(handled.request, routed), context.invalidated),
     );
     // Without a cache there is nothing to write, and nothing to wait for.
     return handled.cache === undefined ? answered : withWritesLanded(answered, context.writes);

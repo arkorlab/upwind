@@ -12,11 +12,14 @@ vi.mock(import('../src/store.ts'), async (importOriginal) => {
   return { ...original, getStore: vi.fn() };
 });
 
-vi.mock(import('../src/node-bridge.ts'), () => ({
-  invokeNodeHandler: vi.fn(() => Promise.resolve(new Response('rendered'))),
-}));
+vi.mock(import('../src/node-bridge.ts'), () => {
+  return {
+    invokeNodeHandler: vi.fn(() => Promise.resolve(new Response('rendered'))),
+  };
+});
 
 const ROUTE = '/[lang]/open/[...slug]';
+const MIDDLEWARE = '/_middleware';
 const DESTINATION = `${ROUTE}?nxtPlang=$nxtPlang&nxtPslug=$nxtPslug`;
 const DYNAMIC_ROUTE = {
   sourceRegex: '^/(?<nxtPlang>[^/]+?)/open/(?<nxtPslug>.+?)(?:/)?$',
@@ -65,16 +68,17 @@ function handle(
   rewritten?: string,
   edgeRoute?: WebHandler,
 ): Promise<Response> {
-  const middleware: WebHandler = () =>
-    Promise.resolve(
+  const middleware: WebHandler = () => {
+    return Promise.resolve(
       new Response(null, {
         headers: { 'x-middleware-rewrite': `https://app.test${rewritten}` },
       }),
     );
+  };
   const app: AppModule = {
     entries: {
       ...(edgeRoute === undefined && { [ROUTE]: () => ({ handler: page }) }),
-      ...(rewritten !== undefined && { '/_middleware': () => ({ handler: middleware }) }),
+      ...(rewritten !== undefined && { [MIDDLEWARE]: () => ({ handler: middleware }) }),
     },
   };
   return handleRequest({
@@ -102,6 +106,7 @@ describe('an App Router catch-all whose segment contains an escaped slash', () =
   // arrays, including one-element arrays, whereas a prefixed query string is split at every '/'.
   it.each([
     ['/en/open/with%2Fslash', ['with/slash']],
+    ['/en/open/with%2Fslash?nxtP=visible&ref=1', ['with/slash']],
     [
       '/en/open/docs/space%20here/with%2Fslash/fallback%25',
       ['docs', 'space here', 'with/slash', 'fallback%'],
@@ -113,10 +118,12 @@ describe('an App Router catch-all whose segment contains an escaped slash', () =
       await handle(path);
 
       expect(
-        vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => ({
-          url: call.url,
-          params: call.requestMeta['params'],
-        })),
+        vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => {
+          return {
+            url: call.url,
+            params: call.requestMeta['params'],
+          };
+        }),
       ).toStrictEqual([{ url: path, params: { lang: 'en', slug } }]);
     },
   );
@@ -129,10 +136,12 @@ describe('an App Router catch-all whose segment contains an escaped slash', () =
       await handle('/en/open/with%2Fslash', 'POST');
 
       expect(
-        vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => ({
-          url: call.url,
-          params: call.requestMeta['params'],
-        })),
+        vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => {
+          return {
+            url: call.url,
+            params: call.requestMeta['params'],
+          };
+        }),
       ).toStrictEqual([
         { url: '/en/open/with%2Fslash', params: { lang: 'en', slug: ['with/slash'] } },
       ]);
@@ -143,10 +152,12 @@ describe('an App Router catch-all whose segment contains an escaped slash', () =
     await handle('/alias', 'GET', '/en/open/with%2Fslash');
 
     expect(
-      vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => ({
-        url: call.url,
-        params: call.requestMeta['params'],
-      })),
+      vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => {
+        return {
+          url: call.url,
+          params: call.requestMeta['params'],
+        };
+      }),
     ).toStrictEqual([{ url: '/alias', params: { lang: 'en', slug: ['with/slash'] } }]);
   });
 
@@ -156,10 +167,12 @@ describe('an App Router catch-all whose segment contains an escaped slash', () =
     await handle('/alias?ref=1');
 
     expect(
-      vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => ({
-        url: call.url,
-        params: call.requestMeta['params'],
-      })),
+      vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => {
+        return {
+          url: call.url,
+          params: call.requestMeta['params'],
+        };
+      }),
     ).toStrictEqual([{ url: '/alias?ref=1', params: { lang: 'en', slug: ['with/slash'] } }]);
   });
 
@@ -172,10 +185,12 @@ describe('an App Router catch-all whose segment contains an escaped slash', () =
       await handle('/alias', 'GET', '/en/open/with%2Fslash', handler);
 
       expect(
-        handler.mock.calls.map(([request, context]) => ({
-          url: request.url,
-          params: context.requestMeta?.['params'],
-        })),
+        handler.mock.calls.map(([request, context]) => {
+          return {
+            url: request.url,
+            params: context.requestMeta?.['params'],
+          };
+        }),
       ).toStrictEqual([
         kind === 'app-page'
           ? { url: 'https://app.test/alias', params: { lang: 'en', slug: ['with/slash'] } }

@@ -317,13 +317,21 @@ export async function serveRsc(
   }
   const { entry, resolved } = rendered;
   if (entry.kind === 'node') {
+    const shell = findShell(store, resolved.route, resolved.pathname);
     // A shared static payload contains page segments this navigation already has. In minimal
     // mode Next.js needs postponed metadata to keep the request tree and render only its head;
-    // an empty state selects that dynamic render without first generating a complete page.
-    if (isMetadataOnlyRscRequest(input.request)) {
+    // an empty state selects that dynamic render for an unbuilt PPR member. Concrete prerenders
+    // and ensureStatic navigations must keep their static path: Next.js strips their Flight
+    // headers even when postponed metadata is supplied (`isDynamicRSCRequest`).
+    if (
+      store.manifest.config.cacheComponents === true &&
+      shell?.renderingMode === 'PARTIALLY_STATIC' &&
+      shell.pathname !== resolved.pathname &&
+      shell.ensureStatic !== 'navigation' &&
+      isMetadataOnlyRscRequest(input.request, store.manifest.routing.rsc.prefetchHeader)
+    ) {
       return resume({ input, handler: entry.handler, postponed: '', url: resolved.url });
     }
-    const shell = findShell(store, resolved.route, resolved.pathname);
     const source = rscSource(input, store, shell, resolved);
     const current = await serveFromGeneration(input, store, source, entry.handler);
     if (current !== undefined) {

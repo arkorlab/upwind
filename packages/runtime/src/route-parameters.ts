@@ -229,6 +229,17 @@ function valuesOf(segments: readonly string[], built: boolean): string[] | undef
   return values;
 }
 
+/** A parameter's decoded values, with an absent required parameter left unresolved. */
+function parameterValues(
+  parameter: RouteParameter,
+  segments: readonly string[],
+  index: number,
+  built: boolean,
+): string[] | undefined {
+  const values = valuesOf(segmentsAt(parameter, segments, index), built);
+  return values?.length === 0 && !parameter.optional ? undefined : values;
+}
+
 /** `pathname` without the slash a `trailingSlash` application keeps at its end. */
 function withoutEndSlash(pathname: string): string {
   return pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
@@ -301,14 +312,15 @@ function segmentedParameters(
       }
       continue;
     }
-    const values = valuesOf(segmentsAt(parameter, member, index), built);
-    if (values === undefined || (values.length === 0 && !parameter.optional)) {
+    const values = parameterValues(parameter, member, index, built);
+    if (values === undefined) {
       return undefined;
     }
-    if (values.length > 0) {
-      separated ||= parameter.rest && values.some((value) => value.includes('/'));
-      named[`nxtP${parameter.name}`] = parameter.rest ? values : (values[0] ?? '');
+    if (values.length === 0) {
+      continue;
     }
+    separated ||= parameter.rest && values.some((value) => value.includes('/'));
+    named[`nxtP${parameter.name}`] = parameter.rest ? values : (values[0] ?? '');
   }
   return separated ? named : undefined;
 }
@@ -365,10 +377,10 @@ export function routingParameters(
   return named === undefined
     ? undefined
     : Object.fromEntries(
-        Object.entries(named).map(([key, value]) => [
-          key,
-          Array.isArray(value) ? value.join('/') : value,
-        ]),
+        Object.entries(named).map(([key, value]) => {
+          const joined = Array.isArray(value) ? value.join('/') : value;
+          return [key, joined];
+        }),
       );
 }
 

@@ -241,11 +241,11 @@ describe('a navigation to a member the build did not render', () => {
 
   it('renders a cold member dynamically when its static capture fails', async () => {
     vi.mocked(getStore).mockReturnValue(deployment(false, false));
-    vi.mocked(invokeNodeHandler).mockImplementation((call) =>
-      call.requestMeta['onCacheEntry'] === undefined
+    vi.mocked(invokeNodeHandler).mockImplementation((call) => {
+      return call.requestMeta['onCacheEntry'] === undefined
         ? rendering(call)
-        : Promise.resolve(new Response('Internal Server Error', { status: 500 })),
-    );
+        : Promise.resolve(new Response('Internal Server Error', { status: 500 }));
+    });
     const shared = cache();
 
     const answer = await navigate(shared);
@@ -265,11 +265,12 @@ describe('a navigation to a member the build did not render', () => {
 
     expect(answer).toBe('resumed from ');
     expect(kept()).toStrictEqual([]);
-    expect(invokeNodeHandler).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        requestMeta: expect.objectContaining({ minimalMode: true, postponed: '' }),
-      }),
-    );
+    expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+
+    const call = vi.mocked(invokeNodeHandler).mock.calls[0]?.[0];
+
+    expect(call?.requestMeta['minimalMode']).toBe(true);
+    expect(call?.requestMeta['postponed']).toBe('');
   });
 
   it('keeps an automatic prefetch on the static path after a cache miss', async () => {

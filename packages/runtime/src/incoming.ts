@@ -176,13 +176,16 @@ export function isRscRequest(request: Request): boolean {
 }
 
 /** A navigation whose segments are cached and whose router asks for only the page's head. */
-export function isMetadataOnlyRscRequest(request: Request): boolean {
-  if (!isRscRequest(request) || request.headers.has(NEXT_ROUTER_PREFETCH_HEADER)) {
+export function isMetadataOnlyRscRequest(
+  request: Request,
+  prefetchHeader = NEXT_ROUTER_PREFETCH_HEADER,
+): boolean {
+  if (!isRscRequest(request) || request.headers.has(prefetchHeader)) {
     return false;
   }
   const tree = request.headers.get(NEXT_ROUTER_STATE_TREE_HEADER);
   // Ordinary navigations keep their existing path without decoding or parsing the router state.
-  if (tree === null || !tree.includes('metadata-only')) {
+  if (tree?.includes('metadata-only') !== true) {
     return false;
   }
   try {

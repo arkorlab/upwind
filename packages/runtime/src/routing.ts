@@ -642,7 +642,9 @@ function handlerUrl(
   const targetQuery =
     parameters === undefined
       ? target.query
-      : Object.fromEntries(Object.entries(target.query).filter(([key]) => !key.startsWith('nxtP')));
+      : Object.fromEntries(
+          Object.entries(target.query).filter(([key]) => key === 'nxtP' || !key.startsWith('nxtP')),
+        );
   const routed = `${target.pathname}${queryString(targetQuery)}`;
   const { url } = asked;
   const kind = answeringKind(store, route);
