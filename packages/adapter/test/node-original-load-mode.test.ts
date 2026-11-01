@@ -161,6 +161,30 @@ describe('original CommonJS mode source facts; no application executes', () => {
     expect(nodeOriginalModeMetadata(own.scope)).toStrictEqual([]);
   });
 
+  it('accepts a UTF-8 BOM on valid CommonJS metadata', async () => {
+    const own = await fixture();
+    await writeFile(
+      own.pkg,
+      Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"type":"commonjs"}')]),
+    );
+
+    await expect(useOriginalCommonJsMode(own.scope, 'page', own.source)).resolves.toBeDefined();
+  });
+
+  it('does not prove CommonJS from malformed UTF-8 metadata', async () => {
+    const own = await fixture();
+    await writeFile(
+      own.pkg,
+      Buffer.concat([
+        Buffer.from('{"type":"commonjs","padding":"'),
+        Buffer.from([0xff]),
+        Buffer.from('"}'),
+      ]),
+    );
+
+    await expect(useOriginalCommonJsMode(own.scope, 'page', own.source)).resolves.toBeUndefined();
+  });
+
   it('does not cross a nearer scope without type to use an ancestor type', async () => {
     const own = await fixture();
     await writeFile(path.join(own.dist, 'server/package.json'), '{}');

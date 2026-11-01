@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { TextDecoder } from 'node:util';
 
 import { parseAst } from 'rolldown/parseAst';
 
