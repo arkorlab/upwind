@@ -180,9 +180,9 @@ The run is given a manifest of its own (`skipped-manifest.json`), written beside
 with what the population is made of (`population.json`). Its `metadata.json` says `"population":
 "skipped"`, a field a run of the manifest's suites never has. Its counts are not the suite's, and the
 summaries head them so. It is judged as any other run, against the same readings, and a failure nobody
-has read fails its shard. On a host the run is cut a piece a project as any other, into no more than
-the 8 pieces the runner's is; its results are not judged there, and their metadata keeps them apart
-from a record of the manifest's suites.
+has read fails its shard. Unless `shards` says otherwise, it is cut into 8 pieces; on a host, a piece
+a project as any other run there, into no more than those 8. Its results are not judged on a host, and
+their metadata keeps them apart from a record of the manifest's suites.
 
 ### Choosing the installer
 
