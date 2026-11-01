@@ -36,15 +36,27 @@ export function localizedDataUrl(manifest: DataManifest, i18n: RoutingI18n, url:
   if (!pathname.startsWith(prefix) || !pathname.endsWith(DATA_SUFFIX)) {
     return url;
   }
-  const page = pathname.slice(prefix.length, -DATA_SUFFIX.length);
-  const named = normalizeLocalePath(`/${page}`, i18n.locales).detectedLocale;
-  if (named !== undefined || page.startsWith('_next/')) {
+  const page = pagePathOf(pathname.slice(prefix.length, -DATA_SUFFIX.length));
+  const named = normalizeLocalePath(page, i18n.locales).detectedLocale;
+  if (named !== undefined || page.startsWith('/_next/')) {
     return url;
   }
   const defaultLocale =
     detectDomainLocale(i18n.domains, url.hostname)?.defaultLocale ?? i18n.defaultLocale;
   const localized = new URL(url);
-  const rest = page === 'index' ? defaultLocale : `${defaultLocale}/${page}`;
+  const rest = page === '/' ? defaultLocale : `${defaultLocale}${page}`;
   localized.pathname = `${prefix}${rest}${DATA_SUFFIX}`;
   return localized;
+}
+
+/**
+ * The page a data request names, read as Next.js reads it (`NextDataPathnameNormalizer`, which
+ * ends in `denormalizePagePath`): `index` is the root, and a page under `index/` is the page
+ * without it, as the build names a page that itself begins with `/index` under a second one.
+ */
+function pagePathOf(named: string): string {
+  if (named === 'index') {
+    return '/';
+  }
+  return named.startsWith('index/') ? `/${named.slice('index/'.length)}` : `/${named}`;
 }

@@ -35,6 +35,12 @@ describe('a Pages Router data request that names no locale', () => {
     );
   });
 
+  it('is read as Next.js reads a page under `index/`, the page without it', () => {
+    expect(localized('https://example.com/_next/data/build/index/about.json')).toBe(
+      '/_next/data/build/en/about.json',
+    );
+  });
+
   it('is routed under the default locale of the domain it was asked on', () => {
     expect(localized('https://example.fr/_next/data/build/about.json')).toBe(
       '/_next/data/build/fr/about.json',
@@ -62,6 +68,8 @@ describe('any other request', () => {
     'https://example.com/_next/data/build/es/about.json',
     'https://example.com/_next/data/build/ES/about.json',
     'https://example.com/_next/data/build/en.json',
+    // A locale named under `index/`, which Next.js reads the page without.
+    'https://example.com/_next/data/build/index/es/about.json',
     // Another build's data, a path that is not data, and Next.js's own.
     'https://example.com/_next/data/other/about.json',
     'https://example.com/about',
