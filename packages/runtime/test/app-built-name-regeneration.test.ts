@@ -257,7 +257,7 @@ describe('an App Router generation rendered by the build’s member name', () =>
     ['/docs/100%20/a%2Fb', '/docs/100%2520/a%2Fb', ['100%20', 'a/b']],
     ['/docs/100%20', '/docs/100%2520', ['100%20']],
   ] as const)(
-    'keeps configured extras for %s without route parameters or visitor query',
+    'keeps explicit destination query for %s without visitor query',
     async (pathname, url, slug) => {
       const store = deployment(pathname, true);
       const authority = fakeAuthority(SCOPE, { keepOutputs: true, handsBackRecords: true });
@@ -274,7 +274,11 @@ describe('an App Router generation rendered by the build’s member name', () =>
 
       const response = await ask(runtimeFor(authority), store, source, pending);
 
-      const expected = { params: { slug }, query: { from: 'config', blank: '' }, key: pathname };
+      const expected = {
+        params: { slug },
+        query: { slug: slug.join('/'), from: 'config', blank: '' },
+        key: pathname,
+      };
 
       await expect(response?.json()).resolves.toStrictEqual(expected);
 

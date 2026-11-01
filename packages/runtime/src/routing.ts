@@ -737,7 +737,7 @@ export function resolvedOf(
     pathname: prerenderedName(store, requestPathname),
     url,
     ...(params !== undefined && {
-      parameters: { params, query: renderQuery(target.query, url, params) },
+      parameters: { params, query: renderQuery(target.query) },
     }),
   };
 }

@@ -444,7 +444,7 @@ export function staticRenderParameters(
   return {
     routeParams,
     ...(renderPathname !== undefined && { renderPathname }),
-    prepareQuery: prepareStaticQuery(store, template, routeParams),
+    prepareQuery: prepareStaticQuery(store, template),
   };
 }
 

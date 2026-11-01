@@ -80,11 +80,7 @@ async function queryOf(
 }
 
 /** Only percent-sensitive App renders with configured rewrites need this extra routing work. */
-export function prepareStaticQuery(
-  store: Store,
-  route: string,
-  params: Record<string, string | string[]>,
-): StaticQuery | undefined {
+export function prepareStaticQuery(store: Store, route: string): StaticQuery | undefined {
   const routing = store.manifest.routing;
   const configured = [
     routing.beforeMiddleware,
@@ -93,5 +89,5 @@ export function prepareStaticQuery(
     routing.fallback,
   ];
   if (configured.every((routes) => routes.every((rule) => !isRewrite(rule)))) return undefined;
-  return async (request) => renderQuery(await queryOf(store, request, route), request.url, params);
+  return async (request) => renderQuery(await queryOf(store, request, route));
 }

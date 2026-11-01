@@ -30,13 +30,11 @@ export function withRouteParameters(
 /**
  * The final search query for an escaped catch-all render. Next.js applies configured rewrites
  * again, but its prefixed query protocol cannot preserve a one-element catch-all array. Give it
- * the already-resolved query beside params instead: drop generated route fields, retain rewrite
- * extras, and preserve ordinary route-name collisions exactly as the handler URL carried them.
+ * the already-resolved query beside params instead. Only prefixed keys are internal route fields;
+ * ordinary keys, including explicit rewrite query values named after params, retain their values.
  */
 export function renderQuery(
   target: Readonly<Record<string, unknown>>,
-  url: string,
-  params: Record<string, string | string[]>,
 ): Record<string, string | string[]> {
   const query = new Map<string, string | string[]>();
   for (const [key, field] of Object.entries(target)) {
@@ -48,25 +46,9 @@ export function renderQuery(
       const strings = field.filter((part: unknown): part is string => typeof part === 'string');
       value = strings.length === field.length || strings.length > 1 ? strings : strings[0];
     }
-    if (value !== undefined && !isRouteParameterKey(key) && !Object.hasOwn(params, key)) {
+    if (value !== undefined && !isRouteParameterKey(key)) {
       query.set(key, value);
     }
   }
-  restoreCollisions(query, url, params);
   return Object.fromEntries(query);
-}
-
-/** An ordinary search value with the same name as a route parameter belongs to the caller. */
-function restoreCollisions(
-  query: Map<string, string | string[]>,
-  url: string,
-  params: Record<string, string | string[]>,
-): void {
-  const original = new URL(url, 'https://route.invalid').searchParams;
-  for (const key of Object.keys(params)) {
-    const values = original.getAll(key);
-    if (values.length > 0) {
-      query.set(key, values.length === 1 ? (values[0] ?? '') : values);
-    }
-  }
 }

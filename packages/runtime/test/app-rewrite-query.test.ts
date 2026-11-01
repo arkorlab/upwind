@@ -176,6 +176,33 @@ const QUERY_CASES: readonly { search: string; query: Record<string, string | str
   },
 ];
 
+const DESTINATION_QUERY_CASES: readonly {
+  extra: string;
+  search: string;
+  query: Record<string, string | string[]>;
+}[] = [
+  {
+    extra: 'added=extra&domain=business&section=explicit',
+    search: '',
+    query: { domain: 'business', section: 'explicit' },
+  },
+  {
+    extra: 'added=extra&section=',
+    search: '&section=client',
+    query: { section: '' },
+  },
+  {
+    extra: 'added=extra&section=first&section=second',
+    search: '&section=client',
+    query: { section: 'second' },
+  },
+  {
+    extra: 'added=extra&section=explicit',
+    search: '&section=client&section=second',
+    query: { section: 'explicit' },
+  },
+];
+
 describe('configured rewrites with an escaped catch-all segment', () => {
   it.each(QUERY_CASES)(
     'keeps the ordinary query $search separate from params in Next.js',
@@ -193,6 +220,24 @@ describe('configured rewrites with an escaped catch-all segment', () => {
       });
       expect(result.url).toBe(`/alias?ref=one&ref=two${search}&_rsc=flight&nxtP=visible`);
       expect(test.input.parameters?.query).toHaveProperty('nextInternalLocale', 'internal');
+    },
+  );
+
+  it.each(DESTINATION_QUERY_CASES)(
+    'keeps destination query $extra separate from route parameters',
+    async ({ extra, search, query }) => {
+      const test = await routed('with%2Fslash', search, extra);
+
+      const result = await prepare(test);
+
+      expect(result.params).toStrictEqual({ domain: 'domain', section: ['with/slash'] });
+      expect(result.query).toStrictEqual({
+        ref: ['one', 'two'],
+        added: 'extra',
+        nxtP: 'visible',
+        ...query,
+      });
+      expect(result.url).toBe(`/alias?ref=one&ref=two${search}&_rsc=flight&nxtP=visible`);
     },
   );
 
@@ -247,19 +292,15 @@ describe('configured rewrites with an escaped catch-all segment', () => {
   });
 
   it('preserves valid array cardinality while discarding non-URL values from the router', () => {
-    const query = renderQuery(
-      {
-        empty: [],
-        one: ['only'],
-        many: ['first', 'second'],
-        inherited: [Object, 'own'],
-        inheritedMany: [Object, 'first', 'second'],
-        invalid: [Object],
-        direct: Object,
-      },
-      '/alias',
-      {},
-    );
+    const query = renderQuery({
+      empty: [],
+      one: ['only'],
+      many: ['first', 'second'],
+      inherited: [Object, 'own'],
+      inheritedMany: [Object, 'first', 'second'],
+      invalid: [Object],
+      direct: Object,
+    });
 
     expect(query).toStrictEqual({
       empty: [],
