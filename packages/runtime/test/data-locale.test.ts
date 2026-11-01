@@ -1,7 +1,7 @@
 import { resolveRoutes } from '@next/routing';
 import { describe, expect, it } from 'vitest';
 
-import { localizedDataUrl } from '../src/data-locale.ts';
+import { dataPagePathOf, localizedDataUrl } from '../src/data-locale.ts';
 
 const BUILD = 'build';
 const I18N = {
@@ -38,6 +38,20 @@ describe('a Pages Router data request that names no locale', () => {
   it('is read as Next.js reads a page under `index/`, the page without it', () => {
     expect(localized('https://example.com/_next/data/build/index/about.json')).toBe(
       '/_next/data/build/en/about.json',
+    );
+  });
+
+  /** Next.js keeps `index/` in front of a name with a dynamic segment (`isDynamicRoute`). */
+  it('keeps `index/` in front of a name with a dynamic segment, as Next.js keeps it', () => {
+    expect(localized('https://example.com/_next/data/build/index/[slug].json')).toBe(
+      '/_next/data/build/en/index/[slug].json',
+    );
+  });
+
+  /** Next.js answers `/_next/data/<id>/.json` with the home page, as it answers `index.json`. */
+  it('reads an empty name as the home page’s, as Next.js reads it', () => {
+    expect(localized('https://example.com/_next/data/build/.json')).toBe(
+      '/_next/data/build/en.json',
     );
   });
 
@@ -168,5 +182,26 @@ describe('a data request that names no locale, routed by the tables Next.js writ
     const asked = new URL(`https://example.com/_next/data/${BUILD}/es/middleware/works.json`);
 
     await expect(routed(asked)).resolves.toStrictEqual({ page: '/es/[...route]', locale: 'es' });
+  });
+});
+
+/** `denormalizePagePath`, which Next.js reads a data request's page with (`NextDataPathnameNormalizer`). */
+describe('the page a data request names', () => {
+  it.each([
+    ['index', '/'],
+    ['', '/'],
+    ['about', '/about'],
+    ['index/about', '/about'],
+    ['index/index', '/index'],
+    ['index/index/about', '/index/about'],
+    ['indexed', '/indexed'],
+    // A dynamic segment keeps the name whole; a bracket inside a segment is not one.
+    ['index/[slug]', '/index/[slug]'],
+    ['index/[slug]/edit', '/index/[slug]/edit'],
+    ['index/a[b]', '/a[b]'],
+    ['index/%5Bslug%5D', '/%5Bslug%5D'],
+    ['about/', '/about/'],
+  ])('%j is %j', (named, page) => {
+    expect(dataPagePathOf(named)).toBe(page);
   });
 });

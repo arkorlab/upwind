@@ -6,6 +6,10 @@ type RoutingI18n = NonNullable<Parameters<typeof resolveRoutes>[0]['i18n']>;
 
 /** What a Pages Router data request's path ends with. */
 const DATA_SUFFIX = '.json';
+/** The name the build gives the root, and puts in front of a page that begins with it. */
+const INDEX = '/index';
+/** A segment Next.js reads as dynamic (`isDynamicRoute`, strict, `shared/lib/router/utils`). */
+const DYNAMIC_SEGMENT = /\/\[[^/]+\](?=\/|$)/u;
 
 /** What of the manifest says whether and how a data request is localized. */
 type DataManifest = Pick<Store['manifest'], 'buildId'> & {
@@ -36,7 +40,7 @@ export function localizedDataUrl(manifest: DataManifest, i18n: RoutingI18n, url:
   if (!pathname.startsWith(prefix) || !pathname.endsWith(DATA_SUFFIX)) {
     return url;
   }
-  const page = pagePathOf(pathname.slice(prefix.length, -DATA_SUFFIX.length));
+  const page = dataPagePathOf(pathname.slice(prefix.length, -DATA_SUFFIX.length));
   const named = normalizeLocalePath(page, i18n.locales).detectedLocale;
   if (named !== undefined || page.startsWith('/_next/')) {
     return url;
@@ -52,11 +56,15 @@ export function localizedDataUrl(manifest: DataManifest, i18n: RoutingI18n, url:
 /**
  * The page a data request names, read as Next.js reads it (`NextDataPathnameNormalizer`, which
  * ends in `denormalizePagePath`): `index` is the root, and a page under `index/` is the page
- * without it, as the build names a page that itself begins with `/index` under a second one.
+ * without it, as the build names a page that itself begins with `/index` under a second one. A name
+ * with a dynamic segment keeps its `index/` (`isDynamicRoute`), as it does there.
  */
-function pagePathOf(named: string): string {
-  if (named === 'index') {
+export function dataPagePathOf(named: string): string {
+  const page = `/${named}`;
+  if (page === INDEX) {
     return '/';
   }
-  return named.startsWith('index/') ? `/${named.slice('index/'.length)}` : `/${named}`;
+  return page.startsWith(`${INDEX}/`) && !DYNAMIC_SEGMENT.test(page)
+    ? page.slice(INDEX.length)
+    : page;
 }

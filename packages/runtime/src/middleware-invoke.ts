@@ -3,6 +3,7 @@ import { headerRulesFor } from '@stayingupwind/core/manifest';
 import { onLoopbackOrigin } from '@stayingupwind/core/paas';
 import { REDIRECT_STATUSES } from '@stayingupwind/core/request';
 
+import { dataPagePathOf } from './data-locale.ts';
 import { middlewareHandler } from './entries.ts';
 import { edgeJudgesHeaderRules, hasBody } from './incoming.ts';
 import { withHeadersChanged } from './reframe.ts';
@@ -110,7 +111,8 @@ export interface MiddlewareTrace {
 }
 
 /**
- * The URL a middleware is handed: for a data request, the page it is for.
+ * The URL a middleware is handed: for a data request, the page it is for, read as routing reads it
+ * (`dataPagePathOf`): `index/about.json` is `/about`'s.
  *
  * Next.js hands a middleware the page a `_next/data` request asks for, with the query, and the
  * request's `x-nextjs-data` says what it is (`runMiddleware`, `server/next-server.ts`); only
@@ -129,9 +131,9 @@ function middlewareUrl(url: URL, store: Store): URL {
   ) {
     return url;
   }
-  const page = url.pathname.slice(prefix.length, -DATA_SUFFIX.length);
+  const page = dataPagePathOf(url.pathname.slice(prefix.length, -DATA_SUFFIX.length));
   const normalized = new URL(url);
-  const pathname = page === 'index' ? basePath || '/' : `${basePath}/${page}`;
+  const pathname = page === '/' ? basePath || '/' : `${basePath}${page}`;
   // With the trailing slash the application keeps its pages under (`maybeAddTrailingSlash`).
   normalized.pathname = trailingSlash && !pathname.endsWith('/') ? `${pathname}/` : pathname;
   return normalized;

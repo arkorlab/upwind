@@ -148,8 +148,13 @@ describe('a data request, as the middleware is told of it', () => {
       handed: '/es/old-home?override=internal',
     },
     { path: `/_next/data/${BUILD_ID}/index.json`, basePath: '', handed: '/' },
+    // Read as Next.js reads the page (`denormalizePagePath`), as routing reads it.
+    { path: `/_next/data/${BUILD_ID}/index/page.json`, basePath: '', handed: '/page' },
+    { path: `/_next/data/${BUILD_ID}/index/[slug].json`, basePath: '', handed: '/index/[slug]' },
+    { path: `/_next/data/${BUILD_ID}/.json`, basePath: '', handed: '/' },
     { path: `/docs/_next/data/${BUILD_ID}/page.json`, basePath: '/docs', handed: '/docs/page' },
     { path: `/docs/_next/data/${BUILD_ID}/index.json`, basePath: '/docs', handed: '/docs' },
+    { path: `/docs/_next/data/${BUILD_ID}/.json`, basePath: '/docs', handed: '/docs' },
     {
       path: '/_next/data/another/page.json',
       basePath: '',
