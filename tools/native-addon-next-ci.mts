@@ -35,8 +35,14 @@ import { NativeNextProcesses, pause } from './native-addon-next-process.mts';
 import { prepareNode26Addon } from './native-addon-node26.mts';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const NEXT_VERSION = '16.4.3';
-const NEXT_COMMIT = '29bbeab09981148ade186e8599ecdede15abc281';
+/** The reviewed releases a run may build the official fixtures with, by their commit. */
+const NEXT_RELEASES: Readonly<Record<string, string>> = {
+  '16.4.3': '29bbeab09981148ade186e8599ecdede15abc281',
+  '16.4.4': 'b175f52b05a5f6c6c39ca72565ea178542be323b',
+};
+const NEXT_VERSION = process.env['UPWIND_NATIVE_NEXT'] ?? '16.4.3';
+const NEXT_COMMIT =
+  NEXT_RELEASES[NEXT_VERSION] ?? assert.fail(`Unreviewed Next.js ${NEXT_VERSION}`);
 const NODE_VERSION = process.versions.node;
 const PNPM_VERSION = '12.16.1';
 const REACT_VERSION = '19.3.0';
