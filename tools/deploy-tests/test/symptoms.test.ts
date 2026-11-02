@@ -29,6 +29,27 @@ describe('a snapshot whose lines differ in their indentation alone', () => {
     expect(indentationOnly(snapshotFailure(diff))).toBe(false);
   });
 
+  /** cubic: a line that merely ends like a location is not a frame either. */
+  it.each([
+    '    at the build step:12:34',
+    '      at Object.<anonymous> (/home/runner/app/build.js:3:9)',
+  ])('is not read so where a change follows the unchanged line %j', (unchanged) => {
+    const diff = ['-   a', '+ a', unchanged, '-   b', '+ c'];
+
+    expect(indentationOnly(snapshotFailure(diff))).toBe(false);
+  });
+
+  it.each([
+    '    at Object.toMatchInlineSnapshot (/home/runner/x.test.ts:10:5)',
+    '    at /home/runner/x.test.ts:10:5',
+    '    at processTicksAndRejections (node:internal/process/task_queues:104:5)',
+    '    at file:///home/runner/x.test.mjs:10:5',
+  ])('ends the diff at the frame %j', (frame) => {
+    const message = `${snapshotFailure(['-   a', '+ a'])}\n${frame}\n-   b\n+ c`;
+
+    expect(indentationOnly(message)).toBe(true);
+  });
+
   it('stops at the stack, whatever follows it', () => {
     const message = `${snapshotFailure(['-   a', '+ a'])}\n-   not a change\n+ of the snapshot`;
 
