@@ -40,7 +40,9 @@ scripts, named to the suite through `NEXT_TEST_DEPLOY_SCRIPT_PATH`,
 actual `/search` prefetch response, wait for its body, and use the idle-network barrier already used
 by Next.js's dedicated Form prefetch test. Loading, result, and soft-navigation assertions remain
 unchanged. Preparation rejects an unfamiliar source layout instead of silently changing it. It
-changes only the test checkout, with no delay in a deployed application's request path.
+changes only the test checkout, with no delay in a deployed application's request path. One run
+takes what the manifest leaves out instead; for it, the checkout gains a manifest of its own and copies
+of cases beside their suites ([What Next.js skips in deploy mode](#what-nextjs-skips-in-deploy-mode)).
 
 ## What a host needs
 
@@ -160,6 +162,35 @@ A failure that is not this adapter's is recorded in `REVIEWED.md` and in `src/re
 together, and a test holds the two to each other. A run of another release of Next.js reads nothing
 there until its failures have been read again.
 
+### What Next.js skips in deploy mode
+
+`population: skipped` (a dispatch, and the night's third run) takes what Next.js
+leaves out when its suite is deployed, rather than what it selects (`src/population.ts`):
+
+- the suites `test/deploy-tests-manifest.json` excludes whole;
+- the suites it lists cases of, as failing or flaky on Vercel. Nothing selects a case by name, so these
+  run whole, and their other cases are the manifest's own as well;
+- the cases its suites register otherwise when deployed, or not at all: copied into `supplements/`, each
+  beside a record in `SUPPLEMENTS` (none are recorded yet). A copy keeps the suite's and the case's names, and resolves each
+  branch on `isNextDeploy` to the side the suite takes when it is not deployed. It is written into the
+  checkout beside its suite, as a `.test.ts` of its own, so that `files: __dirname` builds the same
+  fixture, and upstream's own file is left as it was. It holds for the upstream directory it was copied
+  from, by its Git tree: on another commit, a directory that changed or is gone leaves the copy out, and
+  the step's summary says so; on the commit it was copied from, it is refused as a broken record.
+
+Not in it: a case under `@force-gate !deploy`, which upstream marks as one whose body cannot run against
+a deployment at all.
+
+The run is given a manifest of its own (`skipped-manifest.json`), written beside the shard's results
+with what the population is made of (`population.json`). Its `metadata.json` says `"population":
+"skipped"`, a field a run of the manifest's suites never has. Its counts are not the suite's, and the
+summaries head them so. It is judged as any other run, against the same readings, and a failure nobody
+has read fails its shard. Only `tests: all` runs the whole population: named paths run as one piece, as
+they do for the manifest's suites. With `all` and no `shards`, it is cut into 8 pieces on the runner,
+and on a host as any other run there (one piece per project, six under six projects) but into no more
+than 8. A `shards` that is given is used as it is, as for any other run. Its results are not judged on
+a host, and their metadata keeps them apart from a record of the manifest's suites.
+
 ### Choosing the installer
 
 `ADAPTER_TEST_INSTALL_MANAGER=npm` selects npm for the isolated application's **install step**.
@@ -217,7 +248,9 @@ report name each lane: `node, Node.js 26`. The canary run reads npm's
 dist-tag once and resolves that version's Git tag to a commit SHA, which every shard checks out. Its
 plan summary names the version and SHA; a failed lookup stops the plan. Results and summaries stay
 separate for each run, and canary failures are judged on their own version and commit, without the
-supported release's reviewed exceptions. Both targets run locally on the runner, with no hosted
+supported release's reviewed exceptions. A third run each night, at 19:23 UTC (04:23 JST), takes what
+the supported release skips in deploy mode, on both targets under both Node.js versions, in 8 pieces
+([below](#what-nextjs-skips-in-deploy-mode)). Both targets run locally on the runner, with no hosted
 deployment or credentials. What follows is a host's.
 
 **Queueing behind one project, a full run is bounded by two of GitHub's limits at once**, and they pull in

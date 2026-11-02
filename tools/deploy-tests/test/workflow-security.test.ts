@@ -17,6 +17,7 @@ const CANARY_TAG = `v${CANARY_VERSION}`;
 const CANARY_COMMIT = 'a'.repeat(40);
 const STABLE_SCHEDULE = '23 17 * * *';
 const CANARY_SCHEDULE = '23 18 * * *';
+const SKIPPED_SCHEDULE = '23 19 * * *';
 
 interface NetworkReply {
   readonly registry?: string;
@@ -277,12 +278,14 @@ describe('workflow security', () => {
         NEXTJS_REF: ref,
         NIGHTLY_NEXTJS_REF: workflowSetting('NIGHTLY_NEXTJS_REF'),
         RUNNER_SHARDS: workflowSetting('RUNNER_SHARDS'),
+        SKIPPED_SHARDS: workflowSetting('SKIPPED_SHARDS'),
         TESTS: 'all',
         SHARDS: '1',
         ONLY: '',
         CONCURRENCY: '',
         CACHE: '',
         NODE: '',
+        POPULATION: '',
         PROJECT_IDS: '',
         PROJECT_ID: '',
         GITHUB_OUTPUT: output,
@@ -347,8 +350,100 @@ describe('workflow security', () => {
       expect(output).toContain(`matrix=${JSON.stringify(matrix)}\n`);
       expect(output).toContain('total=64\nparallel=256\nconcurrency=2\n');
       expect(output).toContain('tests=all\ncache=none\n');
+      expect(output).toContain('population=upstream\n');
     },
   );
+
+  it('runs what the supported release skips in deploy mode on both local targets, on its own schedule', () => {
+    const result = plan('ignored', {
+      EVENT: 'schedule',
+      SCHEDULE: SKIPPED_SCHEDULE,
+      TARGET: 'host',
+      TESTS: 'ignored',
+      ONLY: '9',
+      POPULATION: 'upstream',
+    });
+    const total = Number(workflowSetting('SKIPPED_SHARDS'));
+    const matrix = { include: lanes(['cloudflare', 'node'], ['24', '26'], total) };
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(total).toBe(8);
+    expect(deployTestsWorkflow()).toContain(`    - cron: '${SKIPPED_SCHEDULE}'`);
+    expect(output).toContain(`matrix=${JSON.stringify(matrix)}\n`);
+    expect(output).toContain(`nextjs=${workflowSetting('NIGHTLY_NEXTJS_REF')}\n`);
+    expect(output).toContain('population=skipped\n');
+    expect(result.summary).toContain('what Next.js skips in deploy mode');
+    expect(result.commands).toStrictEqual([]);
+  });
+
+  it('cuts a dispatch of what Next.js skips into the skipped run’s shards where it names none', () => {
+    const result = plan('v16.4.3', { POPULATION: 'skipped', SHARDS: '' });
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(output).toContain(`total=${workflowSetting('SKIPPED_SHARDS')}\n`);
+    expect(output).toContain('population=skipped\n');
+  });
+
+  it('takes the deploy manifest’s suites on a pull request, whatever was asked', () => {
+    const result = plan('ignored', { EVENT: 'pull_request', POPULATION: 'skipped' });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(result.output, 'utf8')).toContain('population=upstream\n');
+  });
+
+  it.each(['everything', 'skipped\nmatrix={}'])(
+    'refuses a population there is none of: %j',
+    (asked) => {
+      const result = plan('v16.4.3', { POPULATION: asked });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('population must be upstream or skipped');
+      expect(existsSync(result.output)).toBe(false);
+    },
+  );
+
+  it.each([
+    { listed: 'sixteen projects', ids: projects(16), total: 8, parallel: 8 },
+    { listed: 'three projects', ids: projects(3), total: 6, parallel: 1 },
+  ])(
+    'cuts what Next.js skips on a host a piece a project, into no more than the runner’s: $listed',
+    ({ ids, total, parallel }) => {
+      const result = plan('v16.4.3', {
+        TARGET: 'host',
+        POPULATION: 'skipped',
+        SHARDS: '',
+        PROJECT_IDS: ids.join(' '),
+        PROJECT_ID: '',
+        HOST_SHARDS: String(hostShards()),
+      });
+      const output = readFileSync(result.output, 'utf8');
+
+      expect(result.status).toBe(0);
+      expect(output).toContain(
+        `total=${String(total)}\nparallel=${String(parallel)}\nconcurrency=1\n`,
+      );
+      expect(output).toContain('population=skipped\n');
+    },
+  );
+
+  /** The cap is the default's: a `shards` that is given is used as it is, as for any other run. */
+  it('uses a `shards` given for what Next.js skips on a host as it is', () => {
+    const result = plan('v16.4.3', {
+      TARGET: 'host',
+      POPULATION: 'skipped',
+      SHARDS: '12',
+      PROJECT_IDS: projects(16).join(' '),
+      PROJECT_ID: '',
+      HOST_SHARDS: String(hostShards()),
+    });
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(output).toContain('total=12\n');
+    expect(output).toContain('population=skipped\n');
+  });
 
   it('runs node alone under Node.js 24 over the whole manifest on a pull request', () => {
     const result = plan('ignored', {
@@ -440,7 +535,7 @@ describe('workflow security', () => {
   });
 
   it('rejects an unrecognized scheduled event instead of silently running the stable release', () => {
-    const result = plan('', { EVENT: 'schedule', SCHEDULE: '23 19 * * *' });
+    const result = plan('', { EVENT: 'schedule', SCHEDULE: '23 20 * * *' });
 
     expect(result.status).not.toBe(0);
     expect(existsSync(result.output)).toBe(false);

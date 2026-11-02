@@ -1,4 +1,5 @@
 import type { Read, Verdict } from './judge.ts';
+import type { Population } from './population.ts';
 
 /** A shard's verdict, as `judge-results.ts` writes it beside its results (`verdict.json`). */
 export interface ShardVerdict extends Verdict {
@@ -13,6 +14,8 @@ export interface ShardVerdict extends Verdict {
    * (`runner-watchdog.ts`). Their results stand; the job's log holds what the processes were doing.
    */
   readonly ended?: readonly string[];
+  /** What Next.js skips in deploy mode, where the run took that (`population.ts`); absent otherwise. */
+  readonly population?: 'skipped';
 }
 
 /** What a summary names a lane by: the target, and the Node.js where the run names one. */
@@ -67,12 +70,14 @@ function recordLine({ suite, fullName, record }: Read): string {
 /**
  * What one target's verdicts come to, as Markdown for a job's summary: the counts, then every
  * shard named in `expected` that left no verdict, every failure the reviewed cases do not account
- * for, every suite that left no result, and every case reviewed as failing that passed.
+ * for, every suite that left no result, and every case reviewed as failing that passed. A run of
+ * what Next.js skips in deploy mode is headed so, since its counts are not the suite's.
  */
 export function describe(
   target: string,
   verdicts: readonly ShardVerdict[],
   expected: readonly number[] = [],
+  population: Population = 'upstream',
 ): string {
   const releases = [
     ...new Set(
@@ -80,8 +85,9 @@ export function describe(
     ),
   ];
   const release = releases.length > 0 ? `, Next.js ${releases.join(', ')}` : '';
+  const skipped = population === 'skipped' ? ': what Next.js skips in deploy mode' : '';
   const lines = [
-    `### \`${target}\`${release}`,
+    `### \`${target}\`${release}${skipped}`,
     '',
     row(COLUMNS.map(([label]) => label)),
     row(COLUMNS.map(() => '---:')),
