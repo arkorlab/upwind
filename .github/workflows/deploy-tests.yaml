@@ -468,10 +468,10 @@ jobs:
         with:
           path: adapter
           persist-credentials: false
-      # The suite is upstream's, run unmodified: its own manifest decides which suites deploy mode
-      # selects, and this repository rewrites no expectation of theirs. What Next.js skips in deploy
-      # mode is the one exception, and changes none of upstream's files either: a manifest of its own,
-      # and copies of cases written beside their suites (`Write what Next.js skips in deploy mode`).
+      # Upstream's own manifest selects the suites, and this repository rewrites no expectation of
+      # theirs. Two steps below add to the checkout: one synchronizes the shared Form test with its
+      # prefetch, and what Next.js skips in deploy mode is written as a manifest of its own and copies
+      # of cases beside their suites (`Write what Next.js skips in deploy mode`).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: vercel/next.js
@@ -570,6 +570,8 @@ jobs:
         # slow slice of suites, not for a build that stalled.
         timeout-minutes: 30
         run: pnpm install && pnpm build && pnpm install
+      - name: Prepare upstream Form prefetch synchronization
+        run: node adapter/tools/deploy-tests/src/prepare-upstream.ts nextjs
       # What Next.js skips in deploy mode, where the run takes that (`population.ts`): the manifest the
       # runner is given for it, and what it is made of, beside the shard's results; the copies of cases
       # deploy mode registers otherwise or not at all, beside their suites in the checkout. Before the

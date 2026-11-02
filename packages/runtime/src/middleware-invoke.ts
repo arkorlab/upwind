@@ -1,8 +1,12 @@
 import { type MiddlewareResult, responseToMiddlewareResult } from '@next/routing';
+import { headerRulesFor } from '@stayingupwind/core/manifest';
 import { onLoopbackOrigin } from '@stayingupwind/core/paas';
+import { REDIRECT_STATUSES } from '@stayingupwind/core/request';
 
+import { dataPagePathOf } from './data-locale.ts';
 import { middlewareHandler } from './entries.ts';
-import { hasBody } from './incoming.ts';
+import { edgeJudgesHeaderRules, hasBody } from './incoming.ts';
+import { withHeadersChanged } from './reframe.ts';
 import { type MiddlewareInvoker, routedHeaders } from './routing.ts';
 import type { HandleInput, RoutedInput } from './serve.ts';
 import { deploymentConfig, type Store } from './store.ts';
@@ -17,6 +21,61 @@ const HTTP_OK = 200;
 /** What a Pages Router data URL ends in. */
 const DATA_SUFFIX = '.json';
 const REWRITE_HEADER = 'x-middleware-rewrite';
+type HeaderManifest = Parameters<typeof headerRulesFor>[0];
+const terminalHeaderRules = new WeakMap<Store, HeaderManifest>();
+
+/** Only the header rules that ran before middleware; keep their compiled patterns reusable. */
+function headersBeforeMiddleware(store: Store): HeaderManifest {
+  let manifest = terminalHeaderRules.get(store);
+  if (manifest === undefined) {
+    manifest = {
+      routerReferences: store.manifest.routerReferences,
+      headerRules: store.manifest.routing.beforeMiddleware.flatMap((rule) => {
+        return rule.headers === undefined ||
+          rule.destination !== undefined ||
+          rule.status !== undefined
+          ? []
+          : [
+              {
+                sourceRegex: rule.sourceRegex,
+                headers: rule.headers,
+                has: rule.has,
+                missing: rule.missing,
+              },
+            ];
+      }),
+    };
+    terminalHeaderRules.set(store, manifest);
+  }
+  return manifest;
+}
+
+/** The router's terminal Location path loses its earlier headers and still carries transport fields. */
+function terminalLocationResponse(
+  input: RoutedInput,
+  store: Store,
+  response: Response,
+  requestHeaders: Headers,
+): Response {
+  const configured = edgeJudgesHeaderRules(input.request.headers)
+    ? {}
+    : headerRulesFor(headersBeforeMiddleware(store), new URL(input.request.url), requestHeaders)
+        .headers;
+  return withHeadersChanged(response, (headers) => {
+    for (const [name, value] of Object.entries(configured)) {
+      if (name === 'set-cookie') {
+        const cookies = headers.getSetCookie();
+        headers.delete(name);
+        headers.append(name, value);
+        for (const cookie of cookies) headers.append(name, cookie);
+      } else if (!headers.has(name)) {
+        headers.set(name, value);
+      }
+    }
+    const transport = [...headers.keys()].filter((name) => name.startsWith('x-middleware-'));
+    for (const name of transport) headers.delete(name);
+  });
+}
 
 export async function runMiddleware(
   input: HandleInput,
@@ -52,7 +111,8 @@ export interface MiddlewareTrace {
 }
 
 /**
- * The URL a middleware is handed: for a data request, the page it is for.
+ * The URL a middleware is handed: for a data request, the page it is for, read as routing reads it
+ * (`dataPagePathOf`): `index/about.json` is `/about`'s.
  *
  * Next.js hands a middleware the page a `_next/data` request asks for, with the query, and the
  * request's `x-nextjs-data` says what it is (`runMiddleware`, `server/next-server.ts`); only
@@ -71,12 +131,38 @@ function middlewareUrl(url: URL, store: Store): URL {
   ) {
     return url;
   }
-  const page = url.pathname.slice(prefix.length, -DATA_SUFFIX.length);
+  const page = dataPagePathOf(url.pathname.slice(prefix.length, -DATA_SUFFIX.length));
   const normalized = new URL(url);
-  const pathname = page === 'index' ? basePath || '/' : `${basePath}/${page}`;
+  const pathname = page === '/' ? basePath || '/' : `${basePath}${page}`;
   // With the trailing slash the application keeps its pages under (`maybeAddTrailingSlash`).
   normalized.pathname = trailingSlash && !pathname.endsWith('/') ? `${pathname}/` : pathname;
   return normalized;
+}
+
+/**
+ * A data request routed under the default locale it did not name (`localizedDataUrl`): the URL it
+ * was routed at, and the URL it came at.
+ */
+export interface LocalizedData {
+  readonly routed: URL;
+  readonly asked: URL;
+}
+
+/**
+ * The URL a middleware is handed for `url`, the one routing invokes it at: a data request routed
+ * under the default locale it did not name is handed as it came, which is what Next.js hands it
+ * (`initURL`, where `skipProxyUrlNormalize` hands the URL as it came) — the locale is the route's,
+ * put in front of it for matching alone (`middleware_next_data`). Handed the routed URL, a
+ * middleware that rewrites by the path it is handed sent the request to a path with the locale in
+ * it (`skip-trailing-slash-redirect`).
+ */
+function asked(url: URL, localized: LocalizedData | undefined): URL {
+  if (url.pathname !== localized?.routed.pathname) {
+    return url;
+  }
+  const original = new URL(url);
+  original.pathname = localized.asked.pathname;
+  return original;
 }
 
 /**
@@ -112,12 +198,14 @@ export function middlewareInvoker(
   input: RoutedInput,
   store: Store,
   trace: MiddlewareTrace,
+  localized?: LocalizedData,
 ): MiddlewareInvoker {
   return async (ctx) => {
     trace.invoked = true;
+    const handed = middlewareUrl(asked(ctx.url, localized), store);
     const response = await runMiddleware(
       input,
-      new Request(middlewareUrl(ctx.url, store), {
+      new Request(handed, {
         method: input.request.method,
         headers: ctx.headers,
         ...(hasBody(input.request.method) && { body: ctx.requestBody, duplex: 'half' }),
@@ -126,9 +214,25 @@ export function middlewareInvoker(
     if (response === undefined) {
       return {};
     }
+    const location = response.headers.get('location');
+    const beforeOverride =
+      location === null || location === '' || REDIRECT_STATUSES.has(response.status)
+        ? undefined
+        : new Headers(ctx.headers);
     const result = responseToMiddlewareResult(response, ctx.headers, ctx.url);
     keptOnLoopback(result, ctx.url);
-    if (result.bodySent === true) {
+    // The routing helper passes a non-redirect Location through but leaves bodySent unset.
+    // Next.js finishes with that response's body and status (resolve-routes.ts), before a
+    // same-origin rewrite or next can continue. An external rewrite still takes precedence.
+    if (
+      beforeOverride !== undefined &&
+      result.redirect === undefined &&
+      (result.rewrite === undefined || result.rewrite.origin === ctx.url.origin)
+    ) {
+      result.bodySent = true;
+      trace.response = terminalLocationResponse(input, store, response, beforeOverride);
+    }
+    if (result.bodySent === true && trace.response === undefined) {
       trace.response = response;
     }
     trace.requestHeaders = result.requestHeaders;

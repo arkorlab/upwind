@@ -34,10 +34,15 @@ before the tests, so it cannot. Each application is served on a port of its own,
 The lifecycle is the
 [documented contract](https://nextjs.org/docs/app/api-reference/adapters/testing-adapters): three
 scripts, named to the suite through `NEXT_TEST_DEPLOY_SCRIPT_PATH`,
-`NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH` and `NEXT_TEST_CLEANUP_SCRIPT_PATH`. Nothing in the suite is
-modified and no expectation of theirs is rewritten: their `test/deploy-tests-manifest.json` decides
-which suites deploy mode selects. One run takes what that leaves out instead, and changes none of
-their files either ([What Next.js skips in deploy mode](#what-nextjs-skips-in-deploy-mode)).
+`NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH` and `NEXT_TEST_CLEANUP_SCRIPT_PATH`. Their
+`test/deploy-tests-manifest.json` decides which suites deploy mode selects. Before the CI run,
+`src/prepare-upstream.ts` adds a prefetch barrier to the shared Form loading-state test: observe the
+actual `/search` prefetch response, wait for its body, and use the idle-network barrier already used
+by Next.js's dedicated Form prefetch test. Loading, result, and soft-navigation assertions remain
+unchanged. Preparation rejects an unfamiliar source layout instead of silently changing it. It
+changes only the test checkout, with no delay in a deployed application's request path. One run
+takes what the manifest leaves out instead; for it, the checkout gains a manifest of its own and copies
+of cases beside their suites ([What Next.js skips in deploy mode](#what-nextjs-skips-in-deploy-mode)).
 
 ## What a host needs
 
@@ -180,9 +185,11 @@ The run is given a manifest of its own (`skipped-manifest.json`), written beside
 with what the population is made of (`population.json`). Its `metadata.json` says `"population":
 "skipped"`, a field a run of the manifest's suites never has. Its counts are not the suite's, and the
 summaries head them so. It is judged as any other run, against the same readings, and a failure nobody
-has read fails its shard. Unless `shards` says otherwise, it is cut into 8 pieces; on a host, a piece
-a project as any other run there, into no more than those 8. Its results are not judged on a host, and
-their metadata keeps them apart from a record of the manifest's suites.
+has read fails its shard. Only `tests: all` runs the whole population: named paths run as one piece, as
+they do for the manifest's suites. With `all`, unless `shards` says otherwise, it is cut into 8 pieces on
+the runner. On a host it is cut as any other run there, one piece per project and six under six
+projects, but never into more than 8. Its results are not judged on a host, and their metadata keeps
+them apart from a record of the manifest's suites.
 
 ### Choosing the installer
 

@@ -33,11 +33,24 @@ manifest run under it on both targets on 2026-10-30 (runs 41023438620 and 410234
 
 ### Deploy gates
 
+The open catch-all and metadata-only readings below were confirmed on the local workerd stack on
+2026-11-01 at adapter commit `db9e232`. In the standard deploy-mode run, both test bodies completed
+and each case failed only with Jest's refusal. The same outcomes were confirmed on the `node` target
+under Node.js 24 in CI: [open catch-all](https://github.com/arkorlab/upwind/actions/runs/41261718209/job/124716183522)
+and [metadata-only](https://github.com/arkorlab/upwind/actions/runs/41261718209/job/124716183487).
+These two readings apply to `cloudflare` and to `node` under Node.js 24; Node.js 26 on `node`
+remains unverified.
+
 #### `prerender-encoding`
 
 "should preserve an encoded slash in an exact closed catch-all path" (1 case, gated at line 35). The
 exact closed catch-all path keeps its encoded slash and answers `200`, as under `next start`; upstream
 expects Vercel's filesystem lookup to miss it.
+
+"should preserve an encoded slash in an open catch-all fallback" (1 case, `cloudflare` and `node`
+under Node.js 24, gated at line 50). Its `!deploy || !adapter` gate expects Vercel's adapter path to decode the captured
+slash before splitting catch-all values. Here the encoded slash stays within one parameter on both
+the cold request and the repeated request, as the body requires.
 
 #### `metadata-streaming-parallel-routes`
 
@@ -45,6 +58,13 @@ expects Vercel's filesystem lookup to miss it.
 off and on (2 cases, gated at line 42). The server bundle the build emits is readable and holds only
 the selected metadata implementation, as under `next start`; upstream assumes a deployment does not
 expose it.
+
+#### `segment-cache-metadata`
+
+"requests only the head when the page segments are cached" (1 case, `cloudflare` and `node` under
+Node.js 24, gated at line 150). The source expects a deployed cold ISR path to send its complete static payload, ignoring
+the client's metadata-only request tree. Here that request receives the new tenant's title without
+the already-cached page body; the navigation keeps the cached locale content under the new title.
 
 #### `expire-time`
 

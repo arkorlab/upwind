@@ -1,0 +1,54 @@
+import { isRouteParameterKey } from './incoming.ts';
+
+/**
+ * The query asked for, with the route's parameters as routing ended on (`nxtP…`, `nxtI…`) after
+ * it, the query itself left as it was spelled. Next.js consumes these keys for params and leaves
+ * their unprefixed names out of searchParams (`RouteModule.prepare`). An escaped catch-all uses
+ * separate params/query metadata instead (`renderQuery`), because URL query cannot carry its
+ * single-element array. A client's prefixed keys have already been removed before routing.
+ */
+export function withRouteParameters(
+  search: string,
+  query: Record<string, string | string[]>,
+): string {
+  const parameters = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    const items = Array.isArray(value) ? value : [value];
+    if (isRouteParameterKey(key)) {
+      for (const item of items) {
+        parameters.append(key, item);
+      }
+    }
+  }
+  const added = parameters.toString();
+  if (added === '') {
+    return search;
+  }
+  return search === '' ? `?${added}` : `${search}&${added}`;
+}
+
+/**
+ * The final search query for an escaped catch-all render. Next.js applies configured rewrites
+ * again, but its prefixed query protocol cannot preserve a one-element catch-all array. Give it
+ * the already-resolved query beside params instead. Only prefixed keys are internal route fields;
+ * ordinary keys, including explicit rewrite query values named after params, retain their values.
+ */
+export function renderQuery(
+  target: Readonly<Record<string, unknown>>,
+): Record<string, string | string[]> {
+  const query = new Map<string, string | string[]>();
+  for (const [key, field] of Object.entries(target)) {
+    let value: string | string[] | undefined;
+    if (typeof field === 'string') {
+      value = field;
+    } else if (Array.isArray(field)) {
+      // A router parser can seed repeated prototype-like keys with an inherited function.
+      const strings = field.filter((part: unknown): part is string => typeof part === 'string');
+      value = strings.length === field.length || strings.length > 1 ? strings : strings[0];
+    }
+    if (value !== undefined && !isRouteParameterKey(key)) {
+      query.set(key, value);
+    }
+  }
+  return Object.fromEntries(query);
+}
