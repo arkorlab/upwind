@@ -1,5 +1,6 @@
 import { failureOf, type JestSuite } from './results.ts';
-import type { NodeLine, Reading, ReviewedCase, RunnerTarget, Symptom } from './reviewed.ts';
+import type { NodeLine, Reading, ReviewedCase, RunnerTarget } from './reviewed.ts';
+import type { Symptom } from './symptoms.ts';
 
 /**
  * A shard's results on this machine's targets, judged against the reviewed cases (`reviewed.ts`):
@@ -127,14 +128,24 @@ function passedCase(entry: ReviewedCase | undefined, read: Read | undefined): Ou
   return read !== undefined && failsHere ? { kind: 'passed', anyway: read } : { kind: 'passed' };
 }
 
-/** A case that failed, read against the reviewed case that holds for it. */
+/**
+ * A case that failed, read against the reviewed case that holds for it. `unmet` is a case the
+ * reading needs to have passed beside it (`ReviewedCase.beside`) that did not.
+ */
 function failedCase(
   entry: ReviewedCase | undefined,
   read: Read | undefined,
   messages: readonly string[],
+  unmet: string | undefined,
 ): Outcome {
   if (entry === undefined || read === undefined) {
     return { kind: 'failed', why: 'not reviewed' };
+  }
+  if (unmet !== undefined) {
+    return {
+      kind: 'failed',
+      why: `reviewed (${entry.record}), but "${unmet}" did not pass beside it`,
+    };
   }
   if (entry.reading === 'deploy-gate') {
     return failureOf(messages) === 'failing-test-passed'
@@ -153,6 +164,7 @@ function outcomeOf(
   entry: ReviewedCase | undefined,
   read: Read | undefined,
   { status, failureMessages }: JestSuite['cases'][number],
+  passed: ReadonlySet<string>,
 ): Outcome {
   if (NOT_RUN.has(status)) {
     return { kind: 'skipped' };
@@ -160,8 +172,9 @@ function outcomeOf(
   if (status === 'passed') {
     return passedCase(entry, read);
   }
+  const unmet = entry?.beside?.find((name) => !passed.has(name));
   return status === 'failed'
-    ? failedCase(entry, read, failureMessages)
+    ? failedCase(entry, read, failureMessages, unmet)
     : { kind: 'failed', why: `Jest gave it the status ${status}` };
 }
 
@@ -247,6 +260,9 @@ export function judge(
     } else if (suite === 'unreadable') {
       tally.unexplained.push({ suite: path, why: "its result could not be read as Jest's" });
     } else {
+      const passed = new Set(
+        suite.cases.filter(({ status }) => status === 'passed').map(({ fullName }) => fullName),
+      );
       for (const entry of suite.cases) {
         const holding = reviewedFor(measured, path, entry.fullName, reviewed);
         const read = holding && {
@@ -255,7 +271,7 @@ export function judge(
           reading: holding.reading,
           record: holding.record,
         };
-        count(tally, path, entry.fullName, outcomeOf(holding, read, entry));
+        count(tally, path, entry.fullName, outcomeOf(holding, read, entry, passed));
       }
       const why = suiteFailure(suite);
       if (why !== undefined) {

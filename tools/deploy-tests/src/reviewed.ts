@@ -8,6 +8,16 @@
  * rather than taken for the same thing.
  */
 
+import {
+  anyOf,
+  headerMissing,
+  inAnotherDirectory,
+  indentationOnly,
+  inOrder,
+  snapshotDiffers,
+  type Symptom,
+} from './symptoms.ts';
+
 /** The targets on this machine (`target.ts`), which this record is for. */
 export type RunnerTarget = 'cloudflare' | 'node';
 
@@ -25,12 +35,10 @@ export function isNodeLine(value: string): value is NodeLine {
  *   do, and the body completing here is the case passing.
  * - `vercel`: the case asserts what Vercel's own infrastructure does, which is not the adapter's.
  * - `upstream`: a defect of Next.js or of the test, reproduced without this adapter.
- * - `environment`: the target's runtime cannot run the application.
+ * - `environment`: the target's runtime cannot run the application, or no deployment can run it as it
+ *   is written.
  */
 export type Reading = 'deploy-gate' | 'vercel' | 'upstream' | 'environment';
-
-/** What a reviewed failure looks like: each of the case's failure messages must answer to it. */
-export type Symptom = (message: string) => boolean;
 
 export interface ReviewedCase {
   readonly next: { readonly version: string; readonly commit: string };
@@ -46,104 +54,19 @@ export interface ReviewedCase {
   readonly symptom?: Symptom;
   /** The heading of `REVIEWED.md` that records it, as GitHub anchors it. */
   readonly record: string;
-}
-
-/** A message that holds each of `parts`, in that order. */
-function inOrder(...parts: readonly string[]): Symptom {
-  return (message) => {
-    let from = 0;
-    for (const part of parts) {
-      const at = message.indexOf(part, from);
-      if (at === -1) {
-        return false;
-      }
-      from = at + part.length;
-    }
-    return true;
-  };
-}
-
-const HEADER_NULL = /Expected: "(?:HIT|MISS|PRERENDER)"\nReceived: null\n/u;
-
-/**
- * A response header the test reads, which is not there: `toBe(…)` given `null`, thrown at one of
- * `lines` of `file`.
- */
-function headerMissing(file: string, lines: readonly string[]): Symptom {
-  return (message) => {
-    const thrownAt = message.split('\n').find((line) => line.trimStart().startsWith('at '));
-    return (
-      HEADER_NULL.test(message) &&
-      thrownAt !== undefined &&
-      lines.some((line) => thrownAt.includes(`${file}:${line}:`))
-    );
-  };
-}
-
-/** The lines an inline snapshot's failure marks removed and added, in order. */
-function snapshotChanges(
-  message: string,
-): { readonly removed: readonly string[]; readonly added: readonly string[] } | undefined {
-  const lines = message.split('\n');
-  const start = lines.findIndex((line) => line.startsWith('+ Received'));
-  if (
-    start === -1 ||
-    !message.includes('toMatchInlineSnapshot') ||
-    lines[start - 1]?.startsWith('- Snapshot') !== true
-  ) {
-    return undefined;
-  }
-  const diff = lines.slice(start + 1);
-  const end = diff.findIndex((line) => /^\s+at /u.test(line));
-  const changed = end === -1 ? diff : diff.slice(0, end);
-  const removed: string[] = [];
-  const added: string[] = [];
-  // An empty line is marked by its sign alone, with no space after it.
-  for (const line of changed) {
-    if (line === '-' || line.startsWith('- ')) {
-      removed.push(line.slice(2));
-    } else if (line === '+' || line.startsWith('+ ')) {
-      added.push(line.slice(2));
-    }
-  }
-  return { removed, added };
-}
-
-/**
- * An inline snapshot that differs from what was received in each line's leading whitespace and in
- * nothing else: the lines Jest marks removed and added, in order, are the same once that is taken
- * off.
- */
-export function indentationOnly(message: string): boolean {
-  const changes = snapshotChanges(message);
-  const removed = changes?.removed.map((line) => line.trimStart()) ?? [];
-  const added = changes?.added.map((line) => line.trimStart()) ?? [];
-  return removed.length > 0 && removed.join('\n') === added.join('\n');
-}
-
-/** An inline snapshot that differs from what was received in exactly these lines. */
-function snapshotDiffers(removed: readonly string[], added: readonly string[]): Symptom {
-  return (message) => {
-    const changes = snapshotChanges(message);
-    return (
-      changes?.removed.join('\n') === removed.join('\n') &&
-      changes.added.join('\n') === added.join('\n')
-    );
-  };
-}
-
-/**
- * A URL Vercel's build directory was expected in, received for the same file in another: what
- * follows `file:///vercel/path0/` is the end of what was received, encoding and all.
- */
-function inAnotherDirectory(message: string): boolean {
-  const expected = /Expected: "file:\/\/\/vercel\/path0\/([^"]+)"/u.exec(message)?.[1];
-  const received = /Received: "(file:\/\/\/[^"]+)"/u.exec(message)?.[1];
-  return expected !== undefined && received?.endsWith(`/${expected}`) === true;
+  /**
+   * Cases of the same suite that must have passed in the same run for the reading to hold: they make
+   * the requests the read case makes, so a failure of those requests fails them too, and the read
+   * failure is the one recorded rather than one that only looks like it.
+   */
+  readonly beside?: readonly string[];
 }
 
 /** A record's cases: each suite, with the full names of the cases read, or `*` for all of them. */
-interface Group extends Pick<ReviewedCase, 'nodes' | 'reading' | 'record' | 'symptom' | 'targets'> {
+interface Group extends Pick<
+  ReviewedCase,
+  'beside' | 'nodes' | 'reading' | 'record' | 'symptom' | 'targets'
+> {
   readonly cases: Readonly<Record<string, readonly string[]>>;
 }
 
@@ -167,6 +90,40 @@ const EVERY_CASE = ['*'];
 const OTEL = 'test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts';
 const TRACE_RECORD = 'instrumentation-registered-per-function';
 const ENCODING_RECORD = 'prerender-encoding';
+
+/** `app-static`'s cases that fetch the same URL with new tags, shared by its custom-handler suite. */
+const NEW_TAGS = 'app-dir static/dynamic handling new tags have been specified on subsequent fetch';
+/** A run of the two pages said to differ, which answered the same (`app-static.test.ts`). */
+const SAME_VALUE = 'expect(received).not.toBe(expected)';
+/** How `skip-trailing-slash-redirect`'s App Router half fails: its pages 404, or are never linked. */
+const APP_PAGE_NOT_FOUND = inOrder(
+  'Expected: 200',
+  'Received: 404',
+  'skip-trailing-slash-redirect/',
+);
+const APP_PAGE_NEVER_LINKED = inOrder(
+  "waiting for locator('#to-another') to be visible",
+  'skip-trailing-slash-redirect/',
+);
+/** How the `_rsc` request asked again fails the test, and the page it then waits for. */
+const DUPLICATE_REQUEST = inOrder(
+  'Error: Duplicate request',
+  'searchparams-reuse-loading.test.ts:239:',
+);
+const PARAMS_NEVER_SHOWN = inOrder(
+  "waiting for locator('#params') to be visible",
+  'searchparams-reuse-loading.test.ts:287:',
+);
+
+/** `stream-cancel`'s cases, and the routes each is run on. */
+const STREAM_CANCEL = 'streaming responses cancel inner stream after disconnect';
+const STREAM_ROUTES = [
+  'middleware',
+  'edge app route handler',
+  'node app route handler',
+  'edge pages api',
+  'node pages api',
+] as const;
 
 /** Where Vercel registers instrumentation for these cases: in the route handler's own Function. */
 const REGISTERED_IN_THE_ROUTE_HANDLER = [
@@ -445,6 +402,99 @@ const AT_16_4_3: readonly Group[] = [
     cases: {
       'test/e2e/prerender-native-module.test.ts': EVERY_CASE,
       'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': EVERY_CASE,
+    },
+  },
+  // What Next.js skips in deploy mode (`population: skipped`).
+  {
+    reading: 'vercel',
+    record: 'a-manifests-crossorigin',
+    symptom: inOrder(
+      '- Expected  - 1',
+      '+ Received  + 1',
+      '-   "crossOrigin": "use-credentials",',
+      '+   "crossOrigin": null,',
+    ),
+    cases: {
+      'test/e2e/app-dir/metadata/metadata.test.ts': [
+        'app dir - metadata basic should support other basic tags',
+        'app dir - metadata basic should support other basic tags (edge)',
+      ],
+    },
+  },
+  {
+    reading: 'vercel',
+    record: 'a-fetch-keyed-by-its-tags',
+    symptom: inOrder(SAME_VALUE, 'app-static.test.ts:167:'),
+    cases: {
+      'test/e2e/app-dir/app-static/app-static.test.ts': [
+        `${NEW_TAGS} should not fetch from memory cache`,
+      ],
+      'test/e2e/app-dir/app-static/app-static-custom-handler.test.ts': [
+        `${NEW_TAGS} should not fetch from memory cache`,
+      ],
+    },
+  },
+  {
+    reading: 'vercel',
+    record: 'the-_rsc-redirect-outside-minimal-mode',
+    symptom: anyOf(DUPLICATE_REQUEST, PARAMS_NEVER_SHOWN),
+    cases: {
+      'test/e2e/app-dir/searchparams-reuse-loading/searchparams-reuse-loading.test.ts': [
+        'searchparams-reuse-loading With Middleware should correctly return different RSC data for full prefetches with different searchParam values',
+      ],
+    },
+  },
+  {
+    reading: 'upstream',
+    record: 'app-router-pages-under-i18n',
+    symptom: inOrder('Expected: 404', 'Received: 200', 'i18n-hybrid.test.ts:71:'),
+    cases: {
+      'test/e2e/app-dir/i18n-hybrid/i18n-hybrid.test.ts': [
+        'i18n-hybrid does not resolve /en-CA/blog/first-post',
+        'i18n-hybrid does not resolve /en-US/blog/first-post',
+        'i18n-hybrid does not resolve /fr-CA/blog/first-post',
+        'i18n-hybrid does not resolve /fr-FR/blog/first-post',
+      ],
+    },
+  },
+  {
+    reading: 'upstream',
+    record: 'app-router-pages-under-i18n',
+    symptom: anyOf(APP_PAGE_NOT_FOUND, APP_PAGE_NEVER_LINKED),
+    cases: {
+      'test/e2e/skip-trailing-slash-redirect/index.test.ts': [
+        'skip-trailing-slash-redirect app dir - skip trailing slash redirect should not apply trailing slash redirect (with slash)',
+        'skip-trailing-slash-redirect app dir - skip trailing slash redirect should not apply trailing slash redirect (without slash)',
+        'skip-trailing-slash-redirect app dir - skip trailing slash redirect should preserve original trailing slashes to links on client',
+        'skip-trailing-slash-redirect app dir - skip trailing slash redirect should respond to index correctly',
+        'skip-trailing-slash-redirect app dir - skip trailing slash redirect should navigate client side correctly',
+      ],
+    },
+  },
+  // A stalled stream on each route, read only where the same route's progressing stream passed.
+  ...STREAM_ROUTES.map((route): Group => {
+    return {
+      reading: 'environment',
+      record: 'a-disconnect-on-cloudflare',
+      targets: ['cloudflare'],
+      symptom: inOrder('Exceeded timeout of 2500 ms for a test.', 'stream-cancel.test.ts:'),
+      beside: [`${STREAM_CANCEL} ${route} cancels stream making progress`],
+      cases: {
+        'test/e2e/cancel-request/stream-cancel.test.ts': [
+          `${STREAM_CANCEL} ${route} cancels stalled stream`,
+          `${STREAM_CANCEL} ${route} cancels stream that never sent data`,
+        ],
+      },
+    };
+  }),
+  {
+    reading: 'environment',
+    record: 'a-cache-handler-of-the-applications-own',
+    symptom: inOrder(SAME_VALUE, 'app-static.test.ts:189:'),
+    cases: {
+      'test/e2e/app-dir/app-static/app-static-custom-handler.test.ts': [
+        `${NEW_TAGS} should not fetch from memory cache after revalidateTag is used`,
+      ],
     },
   },
 ];
