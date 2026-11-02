@@ -30,11 +30,12 @@ export function withRoutingHeaders(response: Response, added: Headers | undefine
 
 /**
  * Routing's cookies beside the handler's: ahead of them, as Next.js puts a middleware's ahead of
- * those the handler sets (`patchSetHeaderWithCookieSupport`, `server/lib/patch-set-header.ts`), and
- * the handler's copies of them left out, so each is sent once. Appended after them, a middleware's
- * cookie came second where Next.js sends it first (`skip-trailing-slash-redirect`). The handler's
- * own keep their order and their repeats: a cookie it writes again after deleting it is still its
- * last write. Two of routing's still follow the handler's, as they always did:
+ * those the handler sets (`patchSetHeaderWithCookieSupport`, `server/lib/patch-set-header.ts`).
+ * Appended after them, a middleware's cookie came second where Next.js sends it first
+ * (`skip-trailing-slash-redirect`). Each of routing's is sent once, where routing writes it last
+ * (`lastWrites`), and the handler's copies of them are left out. The handler's own keep their order
+ * and their repeats: a cookie it writes again after deleting it is still its last write. Two of
+ * routing's still follow the handler's, as they always did:
  * - one under a name the handler sets otherwise. The handler's may be Next.js writing the
  *   middleware's back as the render's own (`mergeMiddlewareCookies`), with less of it
  *   (`host/src/splice/cookies.ts`: a `Max-Age=0` it drops), or a value of the handler's own; which
@@ -52,17 +53,26 @@ function layRoutingCookies(headers: Headers, routed: readonly string[], later: n
   for (const cookie of own) {
     if (!routing.has(cookie)) otherwise.add(nameOf(cookie));
   }
-  const lead = ahead.filter((cookie) => !otherwise.has(nameOf(cookie)));
-  const trail = ahead.filter((cookie) => otherwise.has(nameOf(cookie)));
-  const moved = new Set(lead);
+  const lead = lastWrites(ahead.filter((cookie) => !otherwise.has(nameOf(cookie))));
+  const trail = lastWrites(ahead.filter((cookie) => otherwise.has(nameOf(cookie))));
   headers.delete(SET_COOKIE);
   for (const cookie of lead) headers.append(SET_COOKIE, cookie);
+  // The handler's own, in order: its copies of routing's are routing's to send.
   for (const cookie of own) {
-    if (!moved.has(cookie)) headers.append(SET_COOKIE, cookie);
+    if (!routing.has(cookie)) headers.append(SET_COOKIE, cookie);
   }
   for (const cookie of trail) headers.append(SET_COOKIE, cookie);
   // Not one less for a cookie the handler set as well: the edge counts this block from the end.
   for (const cookie of last) headers.append(SET_COOKIE, cookie);
+}
+
+/**
+ * Each of `cookies` once, where it is written last. An earlier copy of a cookie written again later
+ * changes nothing a browser keeps; keeping the first of them instead would let a write between the
+ * two outlast the second.
+ */
+function lastWrites(cookies: readonly string[]): string[] {
+  return cookies.filter((cookie, index) => !cookies.includes(cookie, index + 1));
 }
 
 /** How many of routing's cookies end the answer for the edge: none unless the runtime said so. */

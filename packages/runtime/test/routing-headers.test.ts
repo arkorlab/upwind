@@ -83,7 +83,7 @@ describe('the headers routing collected, laid on an answer', () => {
 
   /**
    * The handler's copy of routing's cookie does not keep routing's ahead of a value the handler sets
-   * otherwise under that name: routing's still follows it (Codex).
+   * otherwise under that name: routing's still follows it (Codex), and the copy is left out (cubic).
    */
   it('keep routing’s after the handler’s other value, though the handler copied routing’s first', () => {
     const answer = new Response('{}', {
@@ -95,9 +95,27 @@ describe('the headers routing collected, laid on an answer', () => {
     const routed = new Headers([['set-cookie', 'theme=dark; Path=/']]);
 
     expect(withRoutingHeaders(answer, routed).headers.getSetCookie()).toStrictEqual([
-      'theme=dark; Path=/',
       'theme=light; Path=/',
       'theme=dark; Path=/',
+    ]);
+  });
+
+  /** Routing's own repeats are sent once, at the last of them, which a browser keeps (cubic). */
+  it('send a cookie routing repeats once, where routing writes it last', () => {
+    const answer = new Response('{}', { headers: [['set-cookie', 'hello=From API']] });
+    const routed = new Headers([
+      ['set-cookie', 'session=active; Path=/'],
+      ['set-cookie', 'session=; Path=/; Max-Age=0'],
+      ['set-cookie', 'session=active; Path=/'],
+      ['set-cookie', 'from-middleware=1; Path=/'],
+      ['set-cookie', 'from-middleware=1; Path=/'],
+    ]);
+
+    expect(withRoutingHeaders(answer, routed).headers.getSetCookie()).toStrictEqual([
+      'session=; Path=/; Max-Age=0',
+      'session=active; Path=/',
+      'from-middleware=1; Path=/',
+      'hello=From API',
     ]);
   });
 
