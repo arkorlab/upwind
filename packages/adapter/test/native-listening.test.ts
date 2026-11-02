@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 
 import { describe, expect, it } from 'vitest';
 
-import { listeningOn } from '../src/native/listening.ts';
+import { keepAliveTimeoutOf, listeningOn } from '../src/native/listening.ts';
 
 /** A server listening as the native server listens: on the port asked for, on the given address. */
 async function listened(
@@ -52,5 +52,25 @@ describe('the native server once it listens', () => {
       'http://[::1]:3000',
     );
     expect(env['PORT']).toBe('3000');
+  });
+});
+
+/** `UPWIND_NODE_KEEP_ALIVE_TIMEOUT`, which `upwind start --keepAliveTimeout` sets. */
+describe('the native server’s keep-alive timeout', () => {
+  it('leaves Node.js’s default where none is set', () => {
+    expect(keepAliveTimeoutOf(undefined)).toBeUndefined();
+    expect(keepAliveTimeoutOf('')).toBeUndefined();
+  });
+
+  it.each([
+    ['1', 1],
+    ['65000', 65_000],
+    ['2147483647', 2_147_483_647],
+  ])('takes %s ms', (value, timeout) => {
+    expect(keepAliveTimeoutOf(value)).toBe(timeout);
+  });
+
+  it.each(['0', '-1', '1.5', '1e3', ' 65000', '2147483648', 'NaN'])('refuses %j', (value) => {
+    expect(() => keepAliveTimeoutOf(value)).toThrow('UPWIND_NODE_KEEP_ALIVE_TIMEOUT');
   });
 });

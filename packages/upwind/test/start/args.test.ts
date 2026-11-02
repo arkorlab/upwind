@@ -60,6 +60,23 @@ describe('native commands', () => {
     expect(parsed.options.envFiles).toStrictEqual([path.resolve('secrets.env')]);
   });
 
+  /** Spelled, and taken, as `next start --keepAliveTimeout` is. */
+  it('takes a keep-alive timeout in milliseconds', () => {
+    const parsed = parseStartRequest(['--keepAliveTimeout', '65000']);
+
+    // eslint-disable-next-line vitest/no-conditional-in-test -- narrow the parsed command union
+    if (parsed.answer !== undefined) throw new Error('expected start');
+
+    expect(parsed.options.keepAliveTimeout).toBe(65_000);
+  });
+
+  it.each(['0', '-1', '1.5', '1e3', '2147483648'])('rejects keep-alive timeout %s', (timeout) => {
+    // `-1` is refused as the option it looks like, by name.
+    expect(() => parseStartRequest(['--keepAliveTimeout', timeout])).toThrow(
+      /keep-alive timeout|keepAliveTimeout/u,
+    );
+  });
+
   it.each(['-1', '65536', '1e3', ' 3000', 'NaN'])('rejects invalid port %s', (port) => {
     expect(() => parseStartRequest(['--port', port])).toThrow(/port|origin|URL/u);
   });

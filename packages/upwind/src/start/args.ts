@@ -1,7 +1,12 @@
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
-import { checkStartOrigin, startHostname, startPort } from './environment.ts';
+import {
+  checkStartOrigin,
+  startHostname,
+  startKeepAliveTimeout,
+  startPort,
+} from './environment.ts';
 
 export interface StartOptions {
   readonly projectDir: string;
@@ -9,6 +14,8 @@ export interface StartOptions {
   readonly hostname?: string | undefined;
   readonly origin?: string | undefined;
   readonly cacheDir?: string | undefined;
+  /** How long an idle connection stays open after its last answer, in milliseconds. */
+  readonly keepAliveTimeout?: number | undefined;
   readonly envFiles: readonly string[];
 }
 
@@ -28,6 +35,8 @@ export function parseStartRequest(args: readonly string[]): StartRequest {
       hostname: { type: 'string', short: 'H' },
       origin: { type: 'string' },
       'cache-dir': { type: 'string' },
+      // Spelled as `next start` spells it.
+      keepAliveTimeout: { type: 'string' },
       'env-file': { type: 'string', multiple: true },
     },
   });
@@ -44,6 +53,9 @@ export function parseStartRequest(args: readonly string[]): StartRequest {
       ...(values.hostname !== undefined && { hostname: startHostname(values.hostname) }),
       ...(values.origin !== undefined && { origin: values.origin }),
       ...(values['cache-dir'] !== undefined && { cacheDir: path.resolve(values['cache-dir']) }),
+      ...(values.keepAliveTimeout !== undefined && {
+        keepAliveTimeout: startKeepAliveTimeout(values.keepAliveTimeout),
+      }),
       envFiles: (values['env-file'] ?? []).map((file) => path.resolve(file)),
     },
   };

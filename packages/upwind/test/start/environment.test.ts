@@ -40,6 +40,22 @@ describe('native start environment', () => {
     });
   });
 
+  it('hands the server a keep-alive timeout, the flag’s over the environment’s', () => {
+    const fromFile = { UPWIND_NODE_KEEP_ALIVE_TIMEOUT: '65000' };
+
+    expect(startEnvironment(OPTIONS, fromFile, PROCESS_ENV)['UPWIND_NODE_KEEP_ALIVE_TIMEOUT']).toBe(
+      '65000',
+    );
+    expect(
+      startEnvironment({ ...OPTIONS, keepAliveTimeout: 120_000 }, fromFile, PROCESS_ENV)[
+        'UPWIND_NODE_KEEP_ALIVE_TIMEOUT'
+      ],
+    ).toBe('120000');
+    expect(() =>
+      startEnvironment(OPTIONS, { UPWIND_NODE_KEEP_ALIVE_TIMEOUT: 'never' }, PROCESS_ENV),
+    ).toThrow('keep-alive timeout');
+  });
+
   it('gives the inherited environment precedence over files', () => {
     expect(
       startEnvironment(
