@@ -8,10 +8,13 @@ name: Publish
 # which is the workflow a run entered by, not the one the publishing job lives in: the name npm is
 # configured with is `release.yaml`. Renaming *that* file stops every release until npm is told.
 #
-# The shape follows SLSA: the tag is verified where nothing can publish, publishing authenticates
-# with an identity that outlives no run, and the provenance the registry recorded is read back
-# afterwards, so a release that produced no attestation fails loudly instead of quietly. There is no
-# token here and no secret to leak.
+# The shape follows SLSA: the tag is verified where nothing can publish, and so is the tree — it is
+# installed, built, checked and packed by a job that holds no `id-token` (`build`) — while the one
+# job that can publish (`publish`) installs nothing and runs nothing of this repository or its
+# dependencies: it checks the tarballs it was handed against the digests listed beside them, and
+# uploads them. Publishing authenticates with an identity that outlives no run, and the provenance
+# the registry recorded is read back afterwards, so a release that produced no attestation fails
+# loudly instead of quietly. There is no token here and no secret to leak.
 #
 # Adding a package takes one release that cannot come through here, because npm will not hold a
 # trusted publisher for a name that does not exist yet. Four times now the answer has been a
@@ -29,11 +32,13 @@ name: Publish
 #     rather than as though you may not touch it. That cost one release a failed attempt.
 #   * npm answers `409 Failed to save packument` when a run publishes one brand-new package straight
 #     after another. Wait for the first to settle and dispatch again.
-#   * A release that stopped partway is resumed rather than restarted. A recursive publish skips what
-#     is already up, and a version that failed to publish is not recorded — so nothing is burned by
-#     dispatching it again, which is worth checking before you do.
-#   * A token beside a trusted publisher does not override it. pnpm asks per package and falls back
+#   * A release that stopped partway is resumed rather than restarted. The publish skips a version
+#     npm already holds, and a version that failed to publish is not recorded — so nothing is burned
+#     by dispatching it again, which is worth checking before you do.
+#   * A token beside a trusted publisher does not override it. pnpm asked per package and fell back
 #     per package: in the release that carried both, only the package without a publisher fell back.
+#     npm, which publishes now, asks per package too, and keeps a configured token for a package
+#     whose exchange fails.
 #   * The grant for the new name is the step with nothing watching it, and it is also perishable:
 #     npm gives a new trusted publisher two days to be validated by a successful publish, and this
 #     one is made *after* the release that would have done it, so it is a release inside those two
@@ -44,7 +49,9 @@ name: Publish
 # Either way it has to be pnpm and not npm that packs. Three packages describe what they ship through
 # `publishConfig` — the `bin` of `upwind` and of `create-upwind`, and the adapter's `exports`, each
 # naming `dist/` there and the TypeScript sources outside it — and pnpm is what folds those in as it
-# packs. `npm publish` would upload manifests pointing at `.ts` files no installed copy can load.
+# packs, along with the version each `workspace:` and `catalog:` range stands for. `npm publish` of a
+# directory would upload manifests pointing at `.ts` files no installed copy can load; of a tarball
+# pnpm packed, which is what `publish` hands it, it uploads the tarball as it is.
 
 on:
   workflow_call:
@@ -220,22 +227,22 @@ jobs:
             exit 1
           fi
 
-  publish:
+  build:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # A second gate a person holds, and the `environment` claim npm can be configured to require.
-    environment: release
+    # Everything that runs this repository's code and its dependencies' — the install, the build,
+    # every check, the packing — runs here, and this job holds no `id-token`: whatever a dependency or
+    # a restored cache was made to do, it cannot publish anything, and the tarballs it leaves are
+    # checked by the job that can before they go anywhere.
     permissions:
       contents: read
-      # The OIDC token, for two things at once: pnpm exchanges it with npm for a short-lived grant to
-      # publish these packages, and signs the provenance statement with it through Sigstore. The
-      # caller has to grant this as well — a reusable workflow gets no more than it was given.
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.verify.outputs.commit }}
+          # Nothing below needs git to authenticate, and everything below runs the dependencies.
+          persist-credentials: false
       - name: The checkout is the verified release commit
         env:
           VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
@@ -250,8 +257,6 @@ jobs:
         with:
           node-version-file: package.json
           cache: pnpm
-          # Deliberately no `registry-url`: it writes an `.npmrc` naming `NODE_AUTH_TOKEN`, and this
-          # job has no token to name — what it publishes with, it is handed at the moment it asks.
 
       - run: pnpm install --frozen-lockfile
 
@@ -271,8 +276,8 @@ jobs:
       # `build` first, and this is not a tidying: `@stayingupwind/sdk` and `@stayingupwind/auth` are
       # read through the `dist` they are built into, which no checkout contains, and `auth` imports
       # `@stayingupwind/sdk/db`. A runner that type-checks before building resolves that to
-      # declarations that do not exist and fails the release here — past the environment's approval,
-      # with nothing published. The 0.4.0 release found that the hard way.
+      # declarations that do not exist and fails the release here — with nothing published. The 0.4.0
+      # release found that the hard way.
       #
       # CI grows checks, and this list has twice been the last to hear about it. When a step that
       # judges the tree is added to `ci.yaml`, it belongs here too: a release that runs less than a
@@ -351,6 +356,145 @@ jobs:
           # release, and the release is where they end up.
           retention-days: 1
 
+      # What the publish job uploads, packed here and not there. pnpm packs it as `pnpm publish`
+      # would — each `publishConfig` folded in, every `workspace:` and `catalog:` range written as the
+      # version it stands for — and `npm publish` sends a tarball as it was packed, manifest and all.
+      # One package at a time and in dependency order, which is the order the list keeps and the
+      # order they are published in: a dependency is on npm before what depends on it. `prepack` is
+      # `pnpm build` again in every package that has one, which ran above, so it is not run twice.
+      - name: Pack what the release publishes
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/tarballs"
+          rm -rf "${out}" && mkdir -p "${out}"
+          order="${RUNNER_TEMP}/order"
+          : > "${order}"
+          # `--workspace-concurrency=1`, so that the packages are visited one after another in the
+          # order pnpm sorts them in, a dependency first.
+          ORDER="${order}" pnpm --recursive --workspace-concurrency=1 --filter './packages/*' \
+            exec sh -c 'pwd >> "${ORDER}"'
+          while IFS= read -r dir <&3; do
+            if [ "$(node -p "require('${dir}/package.json').private === true")" = true ]; then
+              continue
+            fi
+            packed="$(cd "${dir}" && pnpm pack --pack-destination "${out}" --config.ignore-scripts=true --json)"
+            file="$(node -p 'require("node:path").basename(JSON.parse(process.argv[1]).filename)' "${packed}")"
+            # A scoped and an unscoped package can share a tarball's name, and the second would
+            # quietly replace the first.
+            if grep -q -F "  ${file}" "${out}/SHA256SUMS" 2> /dev/null; then
+              echo "::error::two packages packed to ${file}"
+              exit 1
+            fi
+            (cd "${out}" && sha256sum -- "${file}") >> "${out}/SHA256SUMS"
+          done 3< "${order}"
+          if [ ! -s "${out}/SHA256SUMS" ]; then
+            echo "::error::nothing was packed"
+            exit 1
+          fi
+          cat "${out}/SHA256SUMS"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tarballs
+          path: ${{ runner.temp }}/tarballs
+          if-no-files-found: error
+          # For the publish job, which may wait on its approval for hours; past a day, a release
+          # still waiting is one to start again.
+          retention-days: 1
+
+  publish:
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A second gate a person holds, and the `environment` claim npm can be configured to require.
+    environment: release
+    permissions:
+      contents: read
+      # The OIDC token, for two things at once: npm exchanges it for a short-lived grant to publish
+      # each package, and signs the provenance statement with it through Sigstore. The caller has to
+      # grant this as well — a reusable workflow gets no more than it was given.
+      #
+      # Which is why nothing of this repository runs here, nor anything it depends on: no cache is
+      # restored, nothing is installed, and no script of a package runs. What runs is Node.js and the
+      # npm it ships, the tarballs `build` packed, checked against the digests it listed beside them,
+      # and the actions below, pinned like every other.
+      id-token: write
+    steps:
+      # For the manifests, read as data, and the version of Node.js; nothing in it is run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - name: The checkout is the verified release commit
+        env:
+          VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
+          VERIFIED_TAG_OBJECT: ${{ needs.verify.outputs.tag-object }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$VERIFIED_COMMIT"
+          test "$(git ls-remote --refs origin "refs/tags/${TAG}" | cut -f1)" = "$VERIFIED_TAG_OBJECT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: package.json
+          # Deliberately no `cache`: nothing is installed here, and a cache is what a poisoned one
+          # would come back through. And no `registry-url`, which writes an `.npmrc` naming
+          # `NODE_AUTH_TOKEN`, and this job has no token to name — what it publishes with, it is handed
+          # at the moment it asks.
+
+      # npm 11.5.1 is the first to exchange the OIDC token for a grant to publish (npm's "Trusted
+      # publishing for npm packages"); an older npm would find nothing to publish with.
+      - name: npm can publish through a trusted publisher
+        run: |
+          set -euo pipefail
+          have="$(npm --version)"
+          if ! printf '%s\n%s\n' 11.5.1 "${have}" | sort --version-sort --check=quiet; then
+            echo "::error::npm ${have} cannot publish through a trusted publisher; 11.5.1 or later can"
+            exit 1
+          fi
+          echo "npm ${have}"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tarballs
+          path: ${{ runner.temp }}/tarballs
+
+      # What `build` packed, and nothing else: every tarball the digest it listed, none beside them,
+      # and each one a package this tag publishes, at its version — the manifests read out of the
+      # tarballs and out of the tree as data, never loaded.
+      - name: The tarballs are the ones packed for this tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          dir="${RUNNER_TEMP}/tarballs"
+          (cd "${dir}" && sha256sum --check --strict SHA256SUMS)
+          listed="$(awk '{ print $2 }' "${dir}/SHA256SUMS" | sort)"
+          present="$(find "${dir}" -mindepth 1 -maxdepth 1 ! -name SHA256SUMS -exec basename {} \; | sort)"
+          if [ "${listed}" != "${present}" ]; then
+            echo "::error::the artifact holds files its digests do not list, or lists files it does not hold"
+            exit 1
+          fi
+          read_manifest='
+            const manifest = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            if (manifest.private !== true) console.log(`${manifest.name}@${manifest.version}`);
+          '
+          # The tree's versions are the tag's: `verify` refused a tag that said another.
+          expected="$(for manifest in packages/*/package.json; do
+            node -e "${read_manifest}" "${manifest}"
+          done | sort)"
+          packed="$(while read -r _ file; do
+            tar -xOzf "${dir}/${file}" package/package.json > "${RUNNER_TEMP}/packed.json"
+            node -e "${read_manifest}" "${RUNNER_TEMP}/packed.json"
+          done < "${dir}/SHA256SUMS" | sort)"
+          if [ "${packed}" != "${expected}" ]; then
+            echo "::error::the tarballs are not this tag's packages at ${version}"
+            printf 'packed:\n%s\nexpected:\n%s\n' "${packed}" "${expected}"
+            exit 1
+          fi
+          printf '%s\n' "${packed}"
+
       # Asked in `verify` too, and asked again here on purpose. `verify` runs before the environment
       # gate above, and an approval can wait hours; what it was asked about can change while it waits,
       # if somebody tired of waiting makes the release by hand. This is the last step before the one
@@ -394,6 +538,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
+          dir="${RUNNER_TEMP}/tarballs"
           # A prerelease must not become what `npm install` picks by default.
           case "${version}" in
             *-*) dist_tag=next ;;
@@ -403,17 +548,49 @@ jobs:
           # first publish of each is the one that decides.
           # `--provenance`: not left to the registry's own generation, so that a release that cannot
           # attest to itself fails here rather than landing unattested.
-          # `--no-git-checks`: the tree is a tag, checked out detached, which those checks refuse.
-          # `--ignore-scripts`: `pnpm build` above already ran what `prepack` would run — they are the
-          # same command in every package that has one — so the only thing publishing them again would
-          # add is package code running in a job that holds an `id-token`. The hook stays for whoever
-          # packs by hand, where it is the safety net it was added to be.
-          # No `--batch`: provenance is bound to one package, and a batch sends them together.
-          set -- --access public --provenance --tag "${dist_tag}" --no-git-checks --ignore-scripts
+          # `--ignore-scripts`: npm runs no script of a package it publishes from a tarball, only of
+          # one it publishes from a directory, and this says so as well. `build` already ran what
+          # `prepack` would, and nothing of a package is to run in a job that holds an `id-token`.
+          # One package at a time: provenance is bound to one package.
+          set -- --access public --provenance --tag "${dist_tag}" --ignore-scripts
           if [ "${DRY_RUN}" = true ]; then
             set -- "$@" --dry-run
           fi
-          pnpm --recursive publish "$@"
+          # In the order `build` packed them, a dependency first. Read through its own descriptor, so
+          # that nothing npm does with its standard input can take the list's lines.
+          while read -r _ file <&3; do
+            tar -xOzf "${dir}/${file}" package/package.json > "${RUNNER_TEMP}/packed.json"
+            name="$(node -e '
+              process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).name)
+            ' "${RUNNER_TEMP}/packed.json")"
+            # A release that stopped partway is resumed rather than restarted: a version npm already
+            # holds is left as it is, as `pnpm publish` left it, and the provenance job below still
+            # reads its attestation back. Two answers are answers; anything else is the registry not
+            # saying, which is not taken for either.
+            code=000
+            for attempt in 1 2 3; do
+              code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 \
+                "https://registry.npmjs.org/${name/\//%2f}/${version}" || true)"
+              case "${code}" in
+                200 | 404) break ;;
+              esac
+              if [ "${attempt}" != 3 ]; then
+                sleep 5
+              fi
+            done
+            case "${code}" in
+              200)
+                echo "::notice::${name}@${version} is on npm already; left as it is"
+                continue
+                ;;
+              404) ;;
+              *)
+                echo "::error::could not tell whether ${name}@${version} is on npm (HTTP ${code})"
+                exit 1
+                ;;
+            esac
+            npm publish "${dir}/${file}" "$@" < /dev/null
+          done 3< "${dir}/SHA256SUMS"
 
   provenance:
     needs: [verify, publish]

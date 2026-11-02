@@ -66,7 +66,7 @@ on:
           - cloudflare
           - node
       nextjsRef:
-        description: "Next.js ref to test against — inside the adapter's supported range"
+        description: "Next.js release tag to test against (`v16.4.3`, `v16.5.0-canary.25`) — inside the adapter's supported range"
         default: 'v16.4.3'
         type: string
       tests:
@@ -235,6 +235,15 @@ jobs:
           case "$nextjs" in
             '' | *$'\r'* | *$'\n'*) echo 'nextjsRef must be a nonempty single line' >&2; exit 1 ;;
           esac
+          # A dispatch tests a release of Next.js, named by its tag in vercel/next.js — not a branch
+          # or a commit, whose code nobody has looked at and which every shard installs, builds and
+          # runs on a machine that may hold a host's credential. A night's canary is a tag too,
+          # resolved above to the commit it names.
+          release_tag='^v[0-9]+[.][0-9]+[.][0-9]+(-(canary|rc|beta)[.][0-9]+)?$'
+          if [ "$EVENT" = 'workflow_dispatch' ] && [[ ! "$nextjs" =~ $release_tag ]]; then
+            echo "nextjsRef must be a release tag of Next.js — vMAJOR.MINOR.PATCH, with -canary.N, -rc.N or -beta.N or without — not '$nextjs'" >&2
+            exit 1
+          fi
           case "$targets" in
             host | cloudflare | node | 'cloudflare node') ;;
             *) echo "target must be host, cloudflare or node, not '$targets'" >&2; exit 1 ;;
@@ -512,22 +521,6 @@ jobs:
         working-directory: adapter
         run: pnpm install --frozen-lockfile
 
-      # The token goes into a file, and the step that runs the suite is given its path. Everything
-      # below the deploy hook — the application's install, its build, the suite itself — inherits that
-      # step's environment, and all of it is code this repository checked out from somewhere else. A
-      # path is the one thing worth inheriting.
-      #
-      # A reduction, not a boundary: the file and the suite belong to the same user on the same
-      # machine. What it removes is the ordinary way a secret escapes, which is something printing the
-      # environment it was handed — and `nextjsRef` should name a tag for the same reason.
-      - name: Put the token in a file
-        if: matrix.target == 'host'
-        env:
-          TOKEN: ${{ secrets.ARKOR_API_TOKEN }}
-        run: |
-          umask 077
-          printf '%s' "$TOKEN" >"$RUNNER_TEMP/deploy-token"
-
       # This shard's own project, by position in the list. Masked first: it is one word of a secret
       # rather than the secret, so nothing else would keep it out of a log.
       - name: Take a project for this shard
@@ -552,15 +545,24 @@ jobs:
       # Before anything long, which is the point of having it: a token that cannot write, or a project
       # id that names somebody else's application, is worth a minute's wait to learn about rather than
       # twenty minutes of building Next.js and then a suite that failed for a reason of its own.
+      #
+      # The token is in a file for this step alone, and the tool is handed its path, not the token
+      # (`Put the token in a file`, below, says why): the file is gone again before Next.js is
+      # installed and built, which runs the code of whichever release was asked for.
       - name: Preflight
         if: matrix.target == 'host'
         working-directory: adapter
         env:
+          TOKEN: ${{ secrets.ARKOR_API_TOKEN }}
           ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
           ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
           # Read here too, so that a value the tool would refuse is refused before the long part.
           ADAPTER_TEST_SETTLE_SECONDS: ${{ secrets.ADAPTER_TEST_SETTLE_SECONDS }}
-        run: pnpm test:deploy preflight
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$ARKOR_API_TOKEN_FILE"' EXIT
+          (umask 077 && printf '%s' "$TOKEN" >"$ARKOR_API_TOKEN_FILE")
+          env -u TOKEN pnpm test:deploy preflight
 
       # Next.js is built from source, and installed again afterwards, because its test harness runs out
       # of the checkout and loads what it just built.
@@ -657,6 +659,25 @@ jobs:
       - name: Build the adapter
         working-directory: adapter
         run: pnpm --filter @stayingupwind/adapter build
+
+      # The token goes into a file, and the step that runs the suite is given its path. Everything
+      # below the deploy hook — the application's install, its build, the suite itself — inherits that
+      # step's environment, and all of it is code this repository checked out from somewhere else. A
+      # path is the one thing worth inheriting. Written here, once Next.js is installed and built and
+      # Chromium installed with it, and not before: those ran the code of Next.js and of everything it
+      # depends on, and found no file to read.
+      #
+      # A reduction, not a boundary: the file and the suite belong to the same user on the same
+      # machine. What it removes is the ordinary way a secret escapes, which is something printing the
+      # environment it was handed — and a dispatch's `nextjsRef` names a release tag for the same
+      # reason (`plan`).
+      - name: Put the token in a file
+        if: matrix.target == 'host'
+        env:
+          TOKEN: ${{ secrets.ARKOR_API_TOKEN }}
+        run: |
+          umask 077
+          printf '%s' "$TOKEN" >"$RUNNER_TEMP/deploy-token"
 
       # On a host serially (`-c 1`), on the runner two at a time, and with no retries: a retry would
       # deploy the same fixture again and say nothing about why the first one failed. A suite that fails does not stop the rest — the runner carries on

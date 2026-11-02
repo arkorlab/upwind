@@ -328,6 +328,34 @@ describe('workflow security', () => {
     expect(result.commands).toStrictEqual([]);
   });
 
+  it.each([CANARY_TAG, 'v16.4.0-rc.1', 'v15.0.0-beta.3', 'v16.10.12'])(
+    'takes a dispatch of a release tag of Next.js: %s',
+    (ref) => {
+      const result = plan(ref);
+
+      expect(result.status).toBe(0);
+      expect(readFileSync(result.output, 'utf8')).toContain(`nextjs=${ref}\n`);
+    },
+  );
+
+  it.each([
+    'canary',
+    'refs/heads/canary',
+    CANARY_COMMIT,
+    '16.4.3',
+    'v16.4',
+    'v16.4.3-canary',
+    'v16.4.3-alpha.1',
+    'v16.4.3 --upload-pack=touch',
+    'v16.4.3-canary.1.x',
+  ])('refuses a dispatch of anything but a release tag of Next.js: %j', (ref) => {
+    const result = plan(ref);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('nextjsRef must be a release tag of Next.js');
+    expect(existsSync(result.output)).toBe(false);
+  });
+
   it.each([STABLE_SCHEDULE, CANARY_SCHEDULE])(
     'runs both local targets under Node.js 24 and 26 over the whole manifest on schedule %s',
     (schedule) => {
@@ -638,8 +666,48 @@ describe('workflow security', () => {
     const workflow = readFileSync(path.join(repository, '.github/workflows/publish.yaml'), 'utf8');
 
     expect(workflow).not.toMatch(/ref: \$\{\{ inputs\.tag \}\}/u);
-    expect(workflow.match(/ref: \$\{\{ needs\.verify\.outputs\.commit \}\}/gu)).toHaveLength(3);
+    expect(workflow.match(/ref: \$\{\{ needs\.verify\.outputs\.commit \}\}/gu)).toHaveLength(4);
+    expect(workflow).toContain('needs: [verify, build]');
     expect(workflow).toContain('needs: [verify, publish]');
     expect(workflow).toContain('needs: [verify, provenance]');
+  });
+
+  /** One job of `publish.yaml`, as written: from its name to the next job's. */
+  function releaseJob(name: string): string {
+    const workflow = readFileSync(path.join(repository, '.github/workflows/publish.yaml'), 'utf8');
+    const start = workflow.indexOf(`\n  ${name}:\n`);
+    if (start === -1) throw new Error(`publish.yaml has no ${name} job`);
+    const rest = workflow.slice(start + 1);
+    const next = /\n {2}[a-z-]+:\n/u.exec(rest.slice(1));
+    return next === null ? rest : rest.slice(0, next.index + 1);
+  }
+
+  /** Lines of a job that would install, restore or run anything of the repository's. */
+  const RUNS_THE_REPOSITORY = ['- uses: pnpm/', '- run: pnpm', 'pnpm ', 'cache:', 'registry-url:'];
+
+  it('publishes from a job that installs and runs nothing of the repository', () => {
+    const publish = releaseJob('publish');
+    const workflow = readFileSync(path.join(repository, '.github/workflows/publish.yaml'), 'utf8');
+    const running = publish
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => RUNS_THE_REPOSITORY.some((start) => line.startsWith(start)));
+
+    expect(workflow.match(/id-token: write/gu)).toHaveLength(1);
+    expect(publish).toContain('id-token: write');
+    expect(publish).toContain('environment: release');
+    expect(running).toStrictEqual([]);
+    expect(publish).toContain('sha256sum --check --strict SHA256SUMS');
+    expect(publish).toMatch(/npm publish "\$\{dir\}\/\$\{file\}" "\$@"/u);
+  });
+
+  it('installs, checks and packs what is published where nothing can publish it', () => {
+    const build = releaseJob('build');
+    const lines = build.split('\n').map((line) => line.trim());
+
+    expect(lines.filter((line) => line.startsWith('id-token:'))).toStrictEqual([]);
+    expect(lines).toContain('- run: pnpm install --frozen-lockfile');
+    expect(lines).toContain('- run: pnpm test');
+    expect(lines).toContain('name: tarballs');
   });
 });
