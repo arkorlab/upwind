@@ -43,8 +43,9 @@ import {
  * the rule wrote itself (`https://pré-:region.example`): a URL spells such a label in Punycode whole,
  * and what was written can no longer be found in it. And a path that climbs back over a value
  * (`/base/:folder/../file`): read as a URL, what was written loses the value along with the segment
- * it climbs over, and a value of two segments leaves one behind that the reading has no room for. In
- * both there is nothing to hold the URL to, and refusing is the side to be wrong on.
+ * it climbs over, so a value of more than one segment leaves some behind that the reading has no
+ * room for, while a value of one still passes. In both there is nothing to hold the URL to, and
+ * refusing is the side to be wrong on.
  */
 
 /**
@@ -64,9 +65,11 @@ const EXTERNAL = /^https?:\/\//u;
  * slashes, either of which a browser reads a backslash as.
  */
 const AUTHORITY = /^(?:[a-z][\d+.a-z-]*:)?[/\\]{2}(?<authority>[^/?#\\]*)/iu;
-/** A reference a destination makes to what its rule captured: `$1`, `$region`. */
-const REFERENCE = /\$\w+/gu;
-const TAKES_A_VALUE = /\$\w/u;
+/** What may be a reference a destination makes to what its rule captured: `$1`, `$region`. */
+const MAY_REFER = /\$\w/u;
+const PLACE = /^\d+$/u;
+const STARTS_WITH_A_DIGIT = /^\d/u;
+const NOT_A_LETTER = /[^A-Za-z]/gu;
 /**
  * What stands for each reference while what was written is read as a URL: lower-case letters, which
  * every part of a URL keeps as they are, the host included. A destination may spell one of them as
@@ -93,6 +96,11 @@ interface Written {
   readonly byLocation: boolean;
 }
 
+/** The same, with the names it is filled in by (`captureNamesOf`). */
+interface Referring extends Written {
+  readonly names: readonly string[];
+}
+
 /**
  * Where a rule sends a request to another origin, as written: its destination, as `@next/routing`
  * reads a redirect's too; or a redirect's `Location`, where it has no destination.
@@ -111,15 +119,86 @@ function writtenOf(route: RoutingRoute): Written | undefined {
   return location === undefined ? undefined : { destination: location, byLocation: true };
 }
 
+/** The groups a pattern captures, by place and by name; none of a pattern that does not compile. */
+function groupsOf(pattern: string): { readonly places: number; readonly names: string[] } {
+  try {
+    // With an empty alternative after it the pattern matches the empty string, and its match lists
+    // every group, each unset. Compiled as `@next/routing` compiles it, without `u`.
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp -- a rule's own pattern, run against nothing
+    const match = new RegExp(`(?:${pattern})|`).exec('');
+    return { places: (match?.length ?? 1) - 1, names: Object.keys(match?.groups ?? {}) };
+  } catch {
+    return { places: 0, names: [] };
+  }
+}
+
+/**
+ * The names `@next/routing` fills a rule's destination in by (`replaceDestination`), longest first
+ * as it tries them: each group of the rule's pattern by its place and by its name, and of each of
+ * its conditions but a host's, the key with all but its letters taken out, and the named groups of
+ * its value (`checkHasConditions`). A `$` before anything else is text, which it leaves as it is.
+ */
+function captureNamesOf(route: RoutingRoute): string[] {
+  const own = groupsOf(route.sourceRegex);
+  const names = Array.from({ length: own.places }, (_, place) => String(place + 1));
+  names.push(...own.names);
+  const conditions = route.has ?? [];
+  for (const condition of conditions) {
+    if (condition.type !== 'host') {
+      names.push(condition.key.replaceAll(NOT_A_LETTER, ''));
+    }
+    if (condition.value !== undefined) {
+      names.push(...groupsOf(condition.value).names);
+    }
+  }
+  return [...new Set(names)]
+    .filter((name) => name !== '')
+    .toSorted((one, other) => other.length - one.length);
+}
+
+/**
+ * `text` with `standIn` for each reference it makes, found where `@next/routing` finds them: at each
+ * `$`, the longest of `names` the text goes on with, and a place only where no digit follows it.
+ */
+function withStandIns(text: string, names: readonly string[], standIn: string): string {
+  let out = '';
+  let from = 0;
+  let dollar = text.indexOf('$');
+  while (dollar !== -1) {
+    const rest = text.slice(dollar + 1);
+    const name = names.find((each) => {
+      return (
+        rest.startsWith(each) &&
+        !(PLACE.test(each) && STARTS_WITH_A_DIGIT.test(rest.slice(each.length)))
+      );
+    });
+    if (name === undefined) {
+      dollar = text.indexOf('$', dollar + 1);
+    } else {
+      out += `${text.slice(from, dollar)}${standIn}`;
+      from = dollar + 1 + name.length;
+      dollar = text.indexOf('$', from);
+    }
+  }
+  return `${out}${text.slice(from)}`;
+}
+
 /**
  * Where a rule sends a request to another origin, as written, where it puts a value it captured in
- * the host, or anywhere else ahead of the path.
+ * the host, or anywhere else ahead of the path: a reference there to one of the names it is filled
+ * in by, and not only text that spells one after a `$`.
  */
-function intoItsHost(route: RoutingRoute): Written | undefined {
+function intoItsHost(route: RoutingRoute): Referring | undefined {
   const written = writtenOf(route);
-  const authority =
-    written === undefined ? undefined : AUTHORITY.exec(written.destination)?.groups?.['authority'];
-  return authority !== undefined && TAKES_A_VALUE.test(authority) ? written : undefined;
+  if (written === undefined) {
+    return undefined;
+  }
+  const authority = AUTHORITY.exec(written.destination)?.groups?.['authority'];
+  if (authority === undefined || !MAY_REFER.test(authority)) {
+    return undefined;
+  }
+  const names = captureNamesOf(route);
+  return withStandIns(authority, names, '') === authority ? undefined : { ...written, names };
 }
 
 /**
@@ -213,13 +292,10 @@ function standInsFor(destination: string): readonly string[] {
   return standIns;
 }
 
-/** Each part of `destination` read as a URL, cut where `standIn` stands for a reference. */
-function piecesOf(destination: string, standIn: string, base: URL): string[][] | undefined {
-  const written = parsed(
-    destination.replaceAll(REFERENCE, () => standIn),
-    base,
-  );
-  return written === undefined ? undefined : PARTS.map((part) => written[part].split(standIn));
+/** Each part of what was written, read as a URL, cut where `standIn` stands for a reference. */
+function piecesOf(written: Referring, standIn: string, base: URL): string[][] | undefined {
+  const read = parsed(withStandIns(written.destination, written.names, standIn), base);
+  return read === undefined ? undefined : PARTS.map((part) => read[part].split(standIn));
 }
 
 /**
@@ -229,9 +305,9 @@ function piecesOf(destination: string, standIn: string, base: URL): string[][] |
  * URL so — a reference in its port, which Next.js does not fill in either — names none, nor does one
  * that reads otherwise with the other stand-in (`STAND_INS`).
  */
-function namedBy(destination: string, sent: URL, base: URL): boolean {
-  const [one, other] = standInsFor(destination).map((standIn) =>
-    piecesOf(destination, standIn, base),
+function namedBy(written: Referring, sent: URL, base: URL): boolean {
+  const [one, other] = standInsFor(written.destination).map((standIn) =>
+    piecesOf(written, standIn, base),
   );
   if (one === undefined || other === undefined || JSON.stringify(one) !== JSON.stringify(other)) {
     return false;
@@ -252,16 +328,16 @@ function heldTo(
   const mark = MARKED_RULE.exec(name.slice(DESTINATION_MARK.length))?.groups;
   const route =
     mark === undefined ? undefined : tableOf(tables, Number(mark['table']))[Number(mark['rule'])];
-  const written = route === undefined ? undefined : writtenOf(route);
+  const written = route === undefined ? undefined : intoItsHost(route);
   if (written === undefined) {
     return false;
   }
   if (!written.byLocation) {
     // A rule with a destination ends routing where it holds, so what routing hands back is its own.
-    return handedBack === undefined || namedBy(written.destination, handedBack, base);
+    return handedBack === undefined || namedBy(written, handedBack, base);
   }
   const sent = parsed(location, base);
-  return sent !== undefined && namedBy(written.destination, sent, base);
+  return sent !== undefined && namedBy(written, sent, base);
 }
 
 /**

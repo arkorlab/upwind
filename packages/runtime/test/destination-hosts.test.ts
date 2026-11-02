@@ -52,6 +52,12 @@ const GO: Route = {
   },
   status: 307,
 };
+/** A rule whose written host goes on, in letters, straight after the name it is filled in by. */
+const JOINED: Route = {
+  sourceRegex: '^/joined(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))?(?:/)?$',
+  has: [REGION],
+  destination: 'https://$regionexample.com/$1',
+};
 /** A rule whose written host spells what stands for a value while a destination is read. */
 const SPELLED: Route = {
   sourceRegex: '^/spelled(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))?(?:/)?$',
@@ -67,7 +73,7 @@ function deployment(): Store {
       routing: {
         beforeMiddleware: [GO],
         middlewareMatchers: [],
-        beforeFiles: [REGIONAL, TEAM, STATIC, SPELLED],
+        beforeFiles: [REGIONAL, TEAM, STATIC, SPELLED, JOINED],
         afterFiles: [],
         dynamicRoutes: [],
         onMatch: [],
@@ -189,6 +195,18 @@ describe('a rule that puts the request in the host it sends a request to', () =>
     expect(refused.headers.get('location')).toBeNull();
     expect(refused.headers.get('refresh')).toBeNull();
     expect(marked(refused)).toBe(false);
+  });
+
+  it('holds a written host to the text after the name it is filled in by', async () => {
+    const kept = await handle('/joined/users?region=eu');
+
+    expect(kept.status).toBe(200);
+    expect(fetched()).toStrictEqual(['https://euexample.com/users']);
+
+    const refused = await handle('/joined/users?region=attacker.com%2F');
+
+    expect(refused.status).toBe(400);
+    expect(fetched()).toStrictEqual(['https://euexample.com/users']);
   });
 
   it('reads a written host that spells a stand-in as written, not as a value', async () => {
