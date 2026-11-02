@@ -44,7 +44,8 @@ The open catch-all and metadata-only readings below were confirmed on the local 
 and each case failed only with Jest's refusal. The same outcomes were confirmed on the `node` target
 under Node.js 24 in CI: [open catch-all](https://github.com/arkorlab/upwind/actions/runs/41261718209/job/124716183522)
 and [metadata-only](https://github.com/arkorlab/upwind/actions/runs/41261718209/job/124716183487).
-On `node` under Node.js 26, the night's run of 2026-11-01 (run 41331517273) showed the same: both
+On `node` under Node.js 26, the night's run of 2026-11-01 (run 41331517273, Next.js 16.4.3 at
+`29bbeab09981148ade186e8599ecdede15abc281`, this adapter at `9eded178`) showed the same: both
 bodies completed, and each case failed only with Jest's refusal ([open catch-all](https://github.com/arkorlab/upwind/actions/runs/41331517273/job/124922492633)
 and [metadata-only](https://github.com/arkorlab/upwind/actions/runs/41331517273/job/124922492419)). These two
 readings apply to `cloudflare`, and to `node` under both Node.js 24 and 26.
@@ -56,7 +57,7 @@ exact closed catch-all path keeps its encoded slash and answers `200`, as under 
 expects Vercel's filesystem lookup to miss it.
 
 "should preserve an encoded slash in an open catch-all fallback" (1 case, `cloudflare` and `node`
-under Node.js 24, gated at line 50). Its `!deploy || !adapter` gate expects Vercel's adapter path to decode the captured
+under Node.js 24 and 26, gated at line 50). Its `!deploy || !adapter` gate expects Vercel's adapter path to decode the captured
 slash before splitting catch-all values. Here the encoded slash stays within one parameter on both
 the cold request and the repeated request, as the body requires.
 
@@ -70,7 +71,7 @@ expose it.
 #### `segment-cache-metadata`
 
 "requests only the head when the page segments are cached" (1 case, `cloudflare` and `node` under
-Node.js 24, gated at line 150). The source expects a deployed cold ISR path to send its complete static payload, ignoring
+Node.js 24 and 26, gated at line 150). The source expects a deployed cold ISR path to send its complete static payload, ignoring
 the client's metadata-only request tree. Here that request receives the new tenant's title without
 the already-cached page body; the navigation keeps the cached locale content under the new title.
 
