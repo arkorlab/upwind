@@ -7,6 +7,10 @@ import { startEnvironment } from '../../src/start/environment.ts';
 const PROCESS_ENV: NodeJS.ProcessEnv = { NODE_ENV: 'production' };
 const OPTIONS = { projectDir: path.resolve('site'), envFiles: [] };
 
+function timeoutOf(env: NodeJS.ProcessEnv): string | undefined {
+  return env['UPWIND_NODE_KEEP_ALIVE_TIMEOUT'];
+}
+
 describe('native start environment', () => {
   it('applies listen defaults after the environment is merged', () => {
     expect(startEnvironment(OPTIONS, {}, PROCESS_ENV)).toStrictEqual({
@@ -38,6 +42,21 @@ describe('native start environment', () => {
       UPWIND_NODE_CACHE_DIR: path.resolve('file-cache'),
       APPLICATION_SETTING: 'from-file',
     });
+  });
+
+  it('hands the server a keep-alive timeout: the flag’s, else the process’s, else a file’s', () => {
+    const fromFile = { UPWIND_NODE_KEEP_ALIVE_TIMEOUT: '65000' };
+    const inherited = { ...PROCESS_ENV, UPWIND_NODE_KEEP_ALIVE_TIMEOUT: '90000' };
+
+    expect(timeoutOf(startEnvironment(OPTIONS, fromFile, PROCESS_ENV))).toBe('65000');
+    expect(timeoutOf(startEnvironment(OPTIONS, fromFile, inherited))).toBe('90000');
+    expect(
+      timeoutOf(startEnvironment({ ...OPTIONS, keepAliveTimeout: 120_000 }, fromFile, inherited)),
+    ).toBe('120000');
+    expect(timeoutOf(startEnvironment(OPTIONS, {}, PROCESS_ENV))).toBeUndefined();
+    expect(() =>
+      startEnvironment(OPTIONS, { UPWIND_NODE_KEEP_ALIVE_TIMEOUT: 'never' }, PROCESS_ENV),
+    ).toThrow('keep-alive timeout');
   });
 
   it('gives the inherited environment precedence over files', () => {
