@@ -65,8 +65,6 @@ const EXTERNAL = /^https?:\/\//u;
  * slashes, either of which a browser reads a backslash as.
  */
 const AUTHORITY = /^(?:[a-z][\d+.a-z-]*:)?[/\\]{2}(?<authority>[^/?#\\]*)/iu;
-/** What may be a reference a destination makes to what its rule captured: `$1`, `$region`. */
-const MAY_REFER = /\$\w/u;
 const PLACE = /^\d+$/u;
 const STARTS_WITH_A_DIGIT = /^\d/u;
 const NOT_A_LETTER = /[^A-Za-z]/gu;
@@ -194,7 +192,9 @@ function intoItsHost(route: RoutingRoute): Referring | undefined {
     return undefined;
   }
   const authority = AUTHORITY.exec(written.destination)?.groups?.['authority'];
-  if (authority === undefined || !MAY_REFER.test(authority)) {
+  // A reference starts with `$`, and nothing else is a reason to read the rule's names: a group's
+  // name may begin with any letter, not only one `\w` holds.
+  if (authority?.includes('$') !== true) {
     return undefined;
   }
   const names = captureNamesOf(route);

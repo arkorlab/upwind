@@ -52,6 +52,12 @@ const GO: Route = {
   },
   status: 307,
 };
+/** A rule filled in by a group whose name begins with a letter past ASCII. */
+const NAMED: Route = {
+  sourceRegex: '^/named(?:/)?$',
+  has: [{ type: 'query', key: 'zone', value: '(?<é>.*)' }],
+  destination: 'https://$é.api.example.com/',
+};
 /** A rule whose written host goes on, in letters, straight after the name it is filled in by. */
 const JOINED: Route = {
   sourceRegex: '^/joined(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))?(?:/)?$',
@@ -73,7 +79,7 @@ function deployment(): Store {
       routing: {
         beforeMiddleware: [GO],
         middlewareMatchers: [],
-        beforeFiles: [REGIONAL, TEAM, STATIC, SPELLED, JOINED],
+        beforeFiles: [REGIONAL, TEAM, STATIC, SPELLED, JOINED, NAMED],
         afterFiles: [],
         dynamicRoutes: [],
         onMatch: [],
@@ -195,6 +201,18 @@ describe('a rule that puts the request in the host it sends a request to', () =>
     expect(refused.headers.get('location')).toBeNull();
     expect(refused.headers.get('refresh')).toBeNull();
     expect(marked(refused)).toBe(false);
+  });
+
+  it('holds a host to the rule when the name it is filled in by is past ASCII', async () => {
+    const kept = await handle('/named?zone=eu');
+
+    expect(kept.status).toBe(200);
+    expect(fetched()).toStrictEqual(['https://eu.api.example.com/']);
+
+    const refused = await handle('/named?zone=attacker.example%2F%23');
+
+    expect(refused.status).toBe(400);
+    expect(fetched()).toStrictEqual(['https://eu.api.example.com/']);
   });
 
   it('holds a written host to the text after the name it is filled in by', async () => {
