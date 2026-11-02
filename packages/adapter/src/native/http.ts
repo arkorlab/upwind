@@ -6,6 +6,8 @@ import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { PLATFORM_REQUEST_HEADERS } from '@stayingupwind/core/paas';
 import { handedOnAsSent, PLATFORM_HEADER_PREFIX } from '@stayingupwind/core/request';
 
+import { nativeBody } from './request-body.ts';
+
 const HOP_HEADERS = new Set([
   'connection',
   'keep-alive',
@@ -87,9 +89,7 @@ export function nativeRequest(
     headers,
     signal: controller.signal,
     duplex: 'half',
-    ...(!(method === 'GET' || method === 'HEAD') && {
-      body: Readable.toWeb(req) as ReadableStream<Uint8Array>,
-    }),
+    ...(!(method === 'GET' || method === 'HEAD') && { body: nativeBody(req, res) }),
   };
   // Concatenation deliberately keeps a // pathname from becoming a new authority.
   return new Request(`${origin.origin}${target}`, init);
