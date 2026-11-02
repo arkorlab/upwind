@@ -120,11 +120,11 @@ describe('native Node bridge', () => {
    */
   it('reuses an idle connection past the time Node.js would close it', async () => {
     const bridge = fixture();
-    const ports: (number | undefined)[] = [];
+    const sockets: unknown[] = [];
     const call = async (): Promise<void> => {
       const response = await bridge.invokeNodeHandler(
         input(async (req, res) => {
-          ports.push(req.socket.remotePort);
+          sockets.push(req.socket);
           res.end('ok');
         }),
       );
@@ -135,9 +135,35 @@ describe('native Node bridge', () => {
     await delay(6500);
     await call();
 
-    assert.equal(ports.length, 2);
-    assert.equal(ports[1], ports[0]);
+    assert.equal(sockets.length, 2);
+    assert.notEqual(sockets[0], undefined);
+    assert.equal(sockets[1], sockets[0]);
   }, 20_000);
+
+  /**
+   * Its server keeps idle connections open, so a connection whose answer finished after the bridge
+   * began to close would have kept `close()` waiting until its deadline, and reported it undrained.
+   */
+  it('closes a connection as its answer finishes while the bridge closes', async () => {
+    const bridge = fixture();
+    const started = gate();
+    const release = gate();
+    const answered = bridge.invokeNodeHandler(
+      input(async (_req, res) => {
+        started.resolve();
+        await release.promise;
+        res.end('ok');
+      }),
+    );
+    await started.promise;
+    const closingAt = performance.now();
+    const closing = bridge.close(5000);
+    release.resolve();
+
+    assert.equal(await (await answered).text(), 'ok');
+    assert.equal(await closing, true);
+    assert.ok(performance.now() - closingAt < 2000);
+  });
 
   it('preserves an explicit Host instead of replacing it with the loopback host', async () => {
     const bridge = fixture();

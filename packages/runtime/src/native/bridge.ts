@@ -312,6 +312,14 @@ class NativeBridge implements NodeBridge {
     res.on('error', () => {
       // The client-side response stream owns response failures.
     });
+    // The server keeps idle connections open (`#start`), so one whose answer finishes while the
+    // bridge closes is ended then: `server.close()` closes only those already idle, and would
+    // otherwise wait for this one until the drain's deadline. Ended, not destroyed, so the answer
+    // still in the socket's buffer reaches the caller before the connection closes.
+    const { socket } = req;
+    res.once('finish', () => {
+      if (this.#stopping) socket.end();
+    });
     restoreRequest(req, invocation.input.request, invocation.url);
     singleRedirectLocation(res);
     const handled = this.#handle(id, invocation, req, res);
