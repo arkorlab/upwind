@@ -13,7 +13,7 @@ import { COALESCED_NAMESPACE, coalescedPagesSource } from './node-manifest-coale
 import {
   EVALUATOR,
   manifestConstructorImport,
-  reviewedFrameworkSource,
+  isReviewedFrameworkPath,
 } from './node-manifest-framework.ts';
 import {
   nodeManifestPagesConjunctionIdentity,
@@ -139,7 +139,7 @@ function privilegedImports(input: NodeManifestCoalescedPagesInput): ReadonlySet<
     const relative = start === -1 ? undefined : normalized.slice(start + 1);
     if (
       relative === EVALUATOR ||
-      (relative !== undefined && reviewedFrameworkSource(relative) !== undefined)
+      (relative !== undefined && isReviewedFrameworkPath(relative))
     )
       result.add(imported.specifier);
   }

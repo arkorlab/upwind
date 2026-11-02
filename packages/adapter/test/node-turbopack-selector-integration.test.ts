@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { reviewedFrameworkSource } from '../src/node-manifest-framework.ts';
+import { isReviewedFrameworkSource } from '../src/node-manifest-framework.ts';
 import {
   nativeTurbopackSelectorPatch,
   nativeTurbopackSelectorSource,
@@ -23,7 +23,9 @@ describe.skipIf(!ENABLED)('fixed native Turbopack selectors (dedicated CI)', () 
     const file = path.join(root, relative);
     const code = await readFile(file, 'utf8');
 
-    expect(createHash('sha256').update(code).digest('hex')).toBe(reviewedFrameworkSource(relative));
+    expect(isReviewedFrameworkSource(relative, createHash('sha256').update(code).digest('hex'))).toBe(
+      true,
+    );
     expect([...code.matchAll(/process\.env\.TURBOPACK/gu)]).toHaveLength(
       route.startsWith('app-') ? 4 : 2,
     );

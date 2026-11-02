@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { AuditError } from './dependencies.ts';
 import { nodeCachePolicyPatch } from './node-cache-policy.ts';
-import { reviewedFrameworkSource } from './node-manifest-framework.ts';
+import { nativeNextReleaseAt } from './node-next-release.ts';
 import { LOADER, LOADER_SHA, type NodeNextRewriteInput } from './node-next-rewrite-proof.ts';
 import { fetchCacheWaitUntilPatch } from './patches/fetch-cache-wait-until.ts';
 import { instrumentationPatch } from './patches/instrumentation.ts';
@@ -51,7 +51,10 @@ export function rewritePinnedNodeNextFile(
     contents = result.contents;
   } else if (nodeCachePolicyPatch.target.test(file)) {
     const relative = nextRelative(file);
-    if (relative === undefined || reviewedFrameworkSource(relative) !== digest(code))
+    // The bytes of the release the package is, never another release's copy of the same file.
+    const release =
+      relative === undefined ? undefined : nativeNextReleaseAt(file.slice(0, -relative.length - 1));
+    if (relative === undefined || release?.sources.get(relative) !== digest(code))
       refuse('pinned cache policy runtime');
     const result = nodeCachePolicyPatch.apply(code, file, input.patch);
     applied.push({ patch: nodeCachePolicyPatch.name, file, result });

@@ -27,11 +27,11 @@ import {
   type Visit,
 } from './node-manifest-consumer-ast.ts';
 import { assertNodeManifestRuntimeInputs } from './node-manifest-runtime-inputs.ts';
+import { isReleaseSource } from './node-next-release.ts';
 
 const PRODUCER_SUFFIX = '/dist/build/templates/app-page-runtime.js';
-// Published next@16.4.3, registry-integrity-verified source. Producer TS:
-// 29bbeab09981148ade186e8599ecdede15abc281 / app-page-runtime.ts.
-const PRODUCER_SHA = '0a6a5c726f95e2df2600b2fd6d71e37fd72f936f8f4dc5b94fa38d40fcd62a6b';
+// Published next@16.4.3 and next@16.4.4, registry-integrity-verified sources (`node-next-release.ts`).
+const PRODUCER = 'dist/build/templates/app-page-runtime.js';
 const PRODUCER_EXPORT = 'createAppPageEntrypoint';
 type Field = (typeof FIELDS)[number];
 
@@ -98,7 +98,7 @@ class Consumer {
     if (
       entry.kind !== 'app-page-factory' ||
       entry.exportName !== PRODUCER_EXPORT ||
-      entry.sha256 !== PRODUCER_SHA ||
+      !isReleaseSource(PRODUCER, entry.sha256) ||
       !entry.file.replaceAll('\\', '/').endsWith(PRODUCER_SUFFIX)
     )
       refuse('unknown producer or direct class/evaluator use');

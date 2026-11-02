@@ -18,6 +18,11 @@ import {
   type NodeManifestNormalization,
 } from './node-manifest-graph.ts';
 import {
+  isForeignReleaseSource,
+  nativeNextReleaseNamed,
+  type NativeNextRelease,
+} from './node-next-release.ts';
+import {
   combineNodeRouteRewriteApprovals,
   type NodeRouteRewriteApproval,
   type NodeRouteRewriteApprovalBinding,
@@ -208,16 +213,35 @@ async function packageSource(root: string): Promise<ManifestProofFile> {
   } catch {
     refuse('package metadata');
   }
-  if (
-    typeof metadata !== 'object' ||
-    metadata === null ||
-    !('name' in metadata) ||
-    metadata.name !== 'next' ||
-    !('version' in metadata) ||
-    metadata.version !== '16.4.3'
-  )
-    refuse('version or package identity');
+  const release =
+    typeof metadata === 'object' &&
+    metadata !== null &&
+    'name' in metadata &&
+    metadata.name === 'next' &&
+    'version' in metadata
+      ? nativeNextReleaseNamed(metadata.version)
+      : undefined;
+  if (release === undefined) refuse('version or package identity');
+  await releaseSources(root, release);
   return { file, sha256: sha256(bytes) };
+}
+
+/**
+ * No release-dependent source the package holds is another release's copy: the graph accepts the
+ * reviewed bytes of either, and refuses any other bytes itself.
+ */
+async function releaseSources(root: string, release: NativeNextRelease): Promise<void> {
+  for (const [relative, expected] of release.sources) {
+    const file = path.join(root, relative);
+    let held = true;
+    try {
+      await stat(file);
+    } catch {
+      held = false;
+    }
+    const actual = held ? sha256(await boundedSource(file, MAX_MANIFEST_BYTES)) : expected;
+    if (isForeignReleaseSource(release, relative, actual)) refuse('release source identity');
+  }
 }
 
 async function ownedScripts(input: ManifestProofInput): Promise<Map<string, string>> {
