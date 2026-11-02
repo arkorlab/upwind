@@ -23,7 +23,10 @@ import {
 
 async function helperSource(role: 'RouteKind' | 'hoist'): Promise<string> {
   const relative = role === 'RouteKind' ? 'server/route-kind.js' : 'build/templates/helpers.js';
-  const source = await readFile(new URL(import.meta.resolve(`next/dist/${relative}`)), 'utf8');
+  const source = await readFile(
+    new URL(import.meta.resolve(`next-16-4-3/dist/${relative}`)),
+    'utf8',
+  );
   const parsed: unknown = parseAst(source);
   assert(isNode(parsed));
   const node = listOf(parsed, 'body').find((value) => {

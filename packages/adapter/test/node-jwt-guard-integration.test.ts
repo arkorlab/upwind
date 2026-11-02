@@ -35,14 +35,14 @@ async function scenario(
     await mkdir(path.join(vendor, 'dist/compiled/jsonwebtoken'), { recursive: true });
     await mkdir(path.join(vendor, 'dist/lib'), { recursive: true });
     await mkdir(upwind);
-    const original = require.resolve('next/dist/compiled/jsonwebtoken');
+    const original = require.resolve('next-16-4-3/dist/compiled/jsonwebtoken');
     const jwt = path.join(vendor, 'dist/compiled/jsonwebtoken/index.js');
     await copyFile(original, jwt);
     await copyFile(
-      require.resolve('next/dist/lib/semver-noop'),
+      require.resolve('next-16-4-3/dist/lib/semver-noop'),
       path.join(vendor, 'dist/lib/semver-noop.js'),
     );
-    await copyFile(require.resolve('next/package.json'), path.join(vendor, 'package.json'));
+    await copyFile(require.resolve('next-16-4-3/package.json'), path.join(vendor, 'package.json'));
     if (changed) await writeFile(jwt, `${await readFile(jwt, 'utf8')}\nglobalThis.changed=true;`);
     if (semverChanged) {
       const semver = path.join(vendor, 'dist/lib/semver-noop.js');

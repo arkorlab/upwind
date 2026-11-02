@@ -131,7 +131,7 @@ function editedStatements(
 }
 export async function projectedTemplateFixture(kind: NodeManifestTurbopackTemplateInput['route']['kind']): Promise<Omit<NodeManifestTurbopackTemplateInput, 'imports'> & { readonly imports: readonly NodeManifestTemplateImport[] }> {
   const file = await realpath(
-    fileURLToPath(import.meta.resolve(`next/dist/build/templates/${kind}.js`)),
+    fileURLToPath(import.meta.resolve(`next-16-4-3/dist/build/templates/${kind}.js`)),
   );
   const definitions = {
     pages: { page: '/blog/[slug]', pathname: '/blog/[slug]' },

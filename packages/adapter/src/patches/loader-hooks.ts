@@ -45,13 +45,14 @@ import { RAW_BODY_MODULE, RAW_BODY_SOURCE } from './raw-body.ts';
  *   runtime has none (`server/node-environment-baseline.js`), and is required only from that
  *   getter. workerd has a `WebSocket` of its own, so the getter is never installed. 42 KB of every
  *   Function.
- * - `next/dist/compiled/jsonwebtoken` verifies the preview data the Pages Router's
- *   `res.setPreviewData` signs into a cookie, and is required only from inside the `try` that reads
- *   that cookie back (`tryGetPreviewData`, in each compiled server runtime): a failure to load it is
- *   that `try`'s failure, which reads as preview data that does not verify. A build with no Pages
- *   Router route has nothing that sets the cookie, and a cookie that names this build's preview
- *   mode but carries a token it did not sign verifies as nothing either way — so for such a build
- *   alone (`stubPlugin`'s `previewData`) it is not carried. 113 KB of every such Function.
+ * - `next/dist/compiled/jsonwebtoken` (`next/dist/compiled/fast-jwt` from Next.js 16.4.4) verifies
+ *   the preview data the Pages Router's `res.setPreviewData` signs into a cookie, and is required
+ *   only from inside the `try` that reads that cookie back (`tryGetPreviewData`, in each compiled
+ *   server runtime): a failure to load it is that `try`'s failure, which reads as preview data that
+ *   does not verify. A build with no Pages Router route has nothing that sets the cookie, and a
+ *   cookie that names this build's preview mode but carries a token it did not sign verifies as
+ *   nothing either way — so for such a build alone (`stubPlugin`'s `previewData`) it is not
+ *   carried. 113 KB of every such Function, 131 KB with fast-jwt.
  */
 
 const LOADER_HOOKS = /^(?:require-in-the-middle|import-in-the-middle)(?:-[0-9a-f]+)?$/u;
@@ -87,9 +88,11 @@ const WEBSOCKET_MODULE = /^next(?:-[0-9a-f]+)?\/dist\/compiled\/ws$/u;
 const WEBSOCKET_SOURCE =
   'throw new Error("next/dist/compiled/ws is not in this Function: workerd has a WebSocket of its own, and Next.js loads this one only where there is none");';
 /** As `WEBSOCKET_MODULE`, of the library that verifies a Pages Router preview-data cookie. */
-export const PREVIEW_DATA_MODULE = /^next(?:-[0-9a-f]+)?\/dist\/compiled\/jsonwebtoken$/u;
-const PREVIEW_DATA_SOURCE =
-  'throw new Error("next/dist/compiled/jsonwebtoken is not in this Function: the build has no Pages Router route to set preview data, so none verifies");';
+export const PREVIEW_DATA_MODULE =
+  /^next(?:-[0-9a-f]+)?\/dist\/compiled\/(?<library>jsonwebtoken|fast-jwt)$/u;
+function previewDataSource(library: string | undefined): string {
+  return `throw new Error("next/dist/compiled/${library} is not in this Function: the build has no Pages Router route to set preview data, so none verifies");`;
+}
 
 /**
  * What both packages export: the `Hook` constructor itself, named as well, with the rest of
@@ -172,8 +175,9 @@ export function stubSourceFor(specifier: string): string {
   }
   // Resolved here for a build without the Pages Router alone (`stubPlugin`), which is why
   // `isStubbedModule` says no to it.
-  if (PREVIEW_DATA_MODULE.test(specifier)) {
-    return PREVIEW_DATA_SOURCE;
+  const previewData = PREVIEW_DATA_MODULE.exec(specifier);
+  if (previewData !== null) {
+    return previewDataSource(previewData.groups?.['library']);
   }
   // Resolved here for the workflow Function alone (`stubPlugin`), which is why `isStubbedModule`
   // says no to it.
