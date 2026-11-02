@@ -45,9 +45,8 @@ describe('a snapshot whose lines differ in their indentation alone', () => {
     '    at processTicksAndRejections (node:internal/process/task_queues:104:5)',
     '    at file:///home/runner/x.test.mjs:10:5',
   ])('ends the diff at the frame %j', (frame) => {
-    const message = `${snapshotFailure(['-   a', '+ a'])}\n${frame}\n-   b\n+ c`;
-
-    expect(indentationOnly(message)).toBe(true);
+    // The frame comes before a change, which only it can leave out.
+    expect(indentationOnly(snapshotFailure(['-   a', '+ a', frame, '-   b', '+ c']))).toBe(true);
   });
 
   it('stops at the stack, whatever follows it', () => {
