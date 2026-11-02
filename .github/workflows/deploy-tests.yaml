@@ -424,8 +424,8 @@ jobs:
         with:
           path: adapter
           persist-credentials: false
-      # The suite is upstream's, run unmodified: its own manifest decides which suites deploy mode
-      # selects, and this repository rewrites no expectation of theirs.
+      # Upstream's own manifest selects the suites. The preparation below synchronizes the shared
+      # Form test with its prefetch without rewriting any expectation.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: vercel/next.js
@@ -524,6 +524,8 @@ jobs:
         # slow slice of suites, not for a build that stalled.
         timeout-minutes: 30
         run: pnpm install && pnpm build && pnpm install
+      - name: Prepare upstream Form prefetch synchronization
+        run: node adapter/tools/deploy-tests/src/prepare-upstream.ts nextjs
       # The suites this shard is to run, listed as the run below selects them, before Chromium and the
       # adapter are built: a shard that fails after this leaves its suites named, and missing from its
       # results, rather than unknown (`keep-results.ts`, `judge-results.ts`).

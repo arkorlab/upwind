@@ -707,8 +707,9 @@ async function setUseCache(
       handler: kind,
       tags: [...entry.tags],
       stale: entry.stale,
-      // Past the request's own invalidations put in force before its first read (`own-marks.ts`).
-      timestamp: ownMarks.useCacheStamp(context, kind, cacheKey, entry.timestamp),
+      // Floor Next's fractional milliseconds before applying the request's own marks: the wire
+      // keeps integer milliseconds, and a value must never appear newer than a later invalidation.
+      timestamp: ownMarks.useCacheStamp(context, kind, cacheKey, Math.floor(entry.timestamp)),
       expire: entry.expire,
       revalidate: entry.revalidate,
     };
