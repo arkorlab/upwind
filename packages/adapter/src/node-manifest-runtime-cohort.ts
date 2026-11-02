@@ -22,6 +22,7 @@ import {
   type NodeManifestTurbopackSealedEntry,
 } from './node-manifest-turbopack-graph.ts';
 import { assertNodeManifestTurbopackRuntime } from './node-manifest-turbopack-runtime.ts';
+import { nodeManifestTurbopackNestedTable } from './node-manifest-turbopack.ts';
 
 export interface NodeManifestRuntimeProfile {
   readonly file: string;
@@ -167,6 +168,12 @@ function lookupEdges(
   return Object.freeze(edges);
 }
 
+/** Beside a runtime that installs no strict factory table (16.4.4's), no chunk leads with one. */
+function flatTables(strict: boolean, sources: readonly NodeManifestTurbopackGraphFile[]): void {
+  if (!strict && sources.some((source) => nodeManifestTurbopackNestedTable(source.source)))
+    refuse('strict factory table beside a runtime that installs none');
+}
+
 /** Sealed owned runtime identities must be known before any factory-table interpretation. */
 export function certifyNodeManifestRuntimeCohort(input: {
   readonly inventory: NodeManifestRuntimeCallers;
@@ -195,6 +202,7 @@ export function certifyNodeManifestRuntimeCohort(input: {
       distDir: input.distDir,
       ...(profile.assetPrefix !== undefined && { assetPrefix: profile.assetPrefix }),
     });
+    flatTables(proof.strictFactoryTables, input.sources);
     const identity = {
       id: runtime.id,
       file: runtime.file,
@@ -332,14 +340,16 @@ export function prepareNodeManifestRuntimeGraphs(input: {
         });
       }) ?? [];
   if (cohort === undefined) {
-    for (const graph of graphs)
-      assertNodeManifestTurbopackRuntime({
+    for (const graph of graphs) {
+      const proof = assertNodeManifestTurbopackRuntime({
         source: graph.runtime.source,
         file: graph.runtime.file,
         distDir: input.distDir,
         rootDir: input.rootDir,
         ...(input.assetPrefix !== undefined && { assetPrefix: input.assetPrefix }),
       });
+      flatTables(proof.strictFactoryTables, input.sources);
+    }
   }
   return { cohort, graphs, allGraphs: [...graphs, ...other] };
 }

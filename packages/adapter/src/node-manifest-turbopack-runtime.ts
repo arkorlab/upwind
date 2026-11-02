@@ -12,13 +12,39 @@ const MAX_RUNTIME_BYTES = 131_072;
 const CONFIGURATION_STATEMENTS = 3;
 const MAX_CONFIG_STRING_CHARACTERS = 4096;
 const REVIEWED_RUNTIME = Symbol('reviewed Next.js Node production runtime');
-// Normalized whole-body AST fingerprints from fixed Next.js 16.4.3 / 29bbeab09981148ade186e8599ecdede15abc281.
-// The primary Node snapshot supplies the body. The exact shared async-module block may be
-// inserted at the one position specified by nodejs_runtime.rs. Parsed using pinned Rolldown 1.2.15.
-const REVIEWED_BODIES: ReadonlyMap<string, boolean> = new Map([
-  ['0ec227e1c5e05e7469cde4e6703b36e121c5f0cf7747b9e24b3320a772d70494', true],
-  ['940f4e1becca78a27a4773bf7517dd432909ed5db926aedc82857cc0379c82b6', false],
-  ['bc70d80ec247f42eba92cc0376770310bf96aade6ceeefdcb44bcac0ce51edff', true],
+// Normalized whole-body AST fingerprints from fixed Next.js 16.4.3 / 29bbeab09981148ade186e8599ecdede15abc281
+// and 16.4.4 / b175f52b05a5f6c6c39ca72565ea178542be323b. The primary Node snapshot supplies the
+// body. The exact shared async-module block, the same in both, may be inserted at the one position
+// specified by nodejs_runtime.rs. Parsed using pinned Rolldown 1.2.15. 16.4.4's runtime installs no
+// strict factory table: Next.js reverted the strict module factory chunks that 16.4.3 emits.
+const REVIEWED_BODIES: ReadonlyMap<
+  string,
+  { readonly asyncModules: boolean; readonly strictFactoryTables: boolean }
+> = new Map([
+  [
+    '0ec227e1c5e05e7469cde4e6703b36e121c5f0cf7747b9e24b3320a772d70494',
+    { asyncModules: true, strictFactoryTables: true },
+  ],
+  [
+    '3fc93fc7034f45c50cf6a6e4f938300945a6331a1a9cb75e1f3bc6d18ba34e0d',
+    { asyncModules: true, strictFactoryTables: false },
+  ],
+  [
+    '5ecdb993b3e5f2dded315e847cd905d4f1893444dab990314b7bf2d3fa32880b',
+    { asyncModules: true, strictFactoryTables: false },
+  ],
+  [
+    '76ff1b00a4a57f91805a433f0e1c1f72de3425c65477afcd1df55d7babd45675',
+    { asyncModules: false, strictFactoryTables: false },
+  ],
+  [
+    '940f4e1becca78a27a4773bf7517dd432909ed5db926aedc82857cc0379c82b6',
+    { asyncModules: false, strictFactoryTables: true },
+  ],
+  [
+    'bc70d80ec247f42eba92cc0376770310bf96aade6ceeefdcb44bcac0ce51edff',
+    { asyncModules: true, strictFactoryTables: true },
+  ],
 ]);
 // The sole optional preamble written by node/entry/runtime.rs when forwarded globals are configured.
 // This is inert syntax, never evaluated by the verifier.
@@ -48,6 +74,8 @@ export interface NodeManifestTurbopackRuntimeProof {
   readonly rootDir: string;
   readonly assetPrefix: string;
   readonly asyncModules: boolean;
+  /** Whether the runtime installs a chunk's leading strict factory table (16.4.3's). */
+  readonly strictFactoryTables: boolean;
 }
 function refuse(reason: string): never {
   throw new AuditError(`Unproved Next.js Turbopack runtime ${reason}; refusing native publication`);
@@ -150,13 +178,13 @@ export function assertNodeManifestTurbopackRuntime(
   const coordinates = configPaths(input, body);
   const normalizedBody = runtimeBody(body.slice(CONFIGURATION_STATEMENTS));
   const fingerprint = digest(astShape(normalizedBody));
-  const asyncModules = REVIEWED_BODIES.get(fingerprint);
-  if (asyncModules === undefined) return refuse('changed production context semantics');
+  const reviewed = REVIEWED_BODIES.get(fingerprint);
+  if (reviewed === undefined) return refuse('changed production context semantics');
   return Object.freeze<NodeManifestTurbopackRuntimeProof>({
     [REVIEWED_RUNTIME]: true,
     file: path.resolve(input.file),
     sha256: input.source.sha256,
     ...coordinates,
-    asyncModules,
+    ...reviewed,
   });
 }
