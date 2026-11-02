@@ -165,6 +165,11 @@ class NativeBridge implements NodeBridge {
       const server = createServer({ requestTimeout: 0 }, (req, res) => {
         this.#dispatch(req, res);
       });
+      // The Agent keeps a free socket until it closes. Node.js's server closes an idle one a second
+      // after its keepAliveTimeout, 6 s after its last answer by default, and a call the Agent sends
+      // on it as it closes fails with `read ECONNRESET`, which the runtime answers with a 500. Both
+      // ends are this process's, and the Agent bounds its free sockets, so the server keeps them.
+      server.keepAliveTimeout = 0;
       this.#server = server;
       server.on('error', reject);
       // Upgrades and tunnels have no representation in the Request/Response invocation contract.
@@ -306,6 +311,25 @@ class NativeBridge implements NodeBridge {
     });
     res.on('error', () => {
       // The client-side response stream owns response failures.
+    });
+    // The server keeps idle connections open (`#start`), so a connection that becomes idle while the
+    // bridge closes is ended then: once its answer has finished and its request has been read to
+    // the end, in either order. `server.close()` closes only the connections already idle, and
+    // would otherwise wait for this one until the drain's deadline. Ended, not destroyed, so an
+    // answer still in the socket's buffer reaches the caller before the connection closes.
+    const { socket } = req;
+    let answered = false;
+    let received = false;
+    const endIfIdle = (): void => {
+      if (answered && received && this.#stopping) socket.end();
+    };
+    res.once('finish', () => {
+      answered = true;
+      endIfIdle();
+    });
+    req.once('end', () => {
+      received = true;
+      endIfIdle();
     });
     restoreRequest(req, invocation.input.request, invocation.url);
     singleRedirectLocation(res);
