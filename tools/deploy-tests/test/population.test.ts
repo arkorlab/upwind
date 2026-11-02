@@ -221,11 +221,107 @@ describe('the manifest a skipped run is given', () => {
   });
 });
 
+/** What a copy says as code, without its comments: what it runs. */
+function code(source: string): string {
+  return source
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//'))
+    .join('\n');
+}
+
+/** Every name `pattern` captures in a copy. */
+function namesIn(copy: string, pattern: RegExp): string[] {
+  return [...copy.matchAll(pattern)].map(([, name = '']) => name);
+}
+
+/**
+ * Whether a copy registers the case `fullName`, as Jest names it: the names of its suites — a
+ * `describe`, or a row of a `describe.each` — then its own title, each written in the copy.
+ */
+function registers(copy: string, fullName: string): boolean {
+  const suites = [
+    ...namesIn(copy, /\bdescribe\('((?:[^'\\]|\\.)*)'/gu),
+    ...namesIn(copy, /\bdescription: '((?:[^'\\]|\\.)*)'/gu),
+  ];
+  const titles = namesIn(copy, /\bit\('((?:[^'\\]|\\.)*)'/gu);
+  const from = (rest: string): boolean => {
+    return (
+      titles.includes(rest) ||
+      suites.some((suite) => rest.startsWith(`${suite} `) && from(rest.slice(suite.length + 1)))
+    );
+  };
+  return from(fullName);
+}
+
+/** The gates a copy's comments set (`@gate`, `@force-gate`), a line each. */
+function gates(source: string): string[] {
+  return source.split('\n').filter((line) => /@(?:force-)?gate\b/u.test(line));
+}
+
 describe('the copies of cases deploy mode skips', () => {
   afterEach(cleanUp);
 
-  it('are none until a case is copied', () => {
-    expect(SUPPLEMENTS).toStrictEqual([]);
+  const kept = path.resolve(import.meta.dirname, '../supplements');
+  const workflow = readFileSync(
+    path.resolve(import.meta.dirname, '../../../.github/workflows/deploy-tests.yaml'),
+    'utf8',
+  );
+
+  it.each(SUPPLEMENTS.map((supplement) => [supplement.upstream, supplement]))(
+    'hold a copy of %s, beside it, as of the release the nights run',
+    (_, { next, upstream, source, file, cases }) => {
+      const copy = readFileSync(path.join(kept, source), 'utf8');
+
+      expect(workflow).toContain(`  NIGHTLY_NEXTJS_REF: 'v${next.version}'`);
+      expect(path.posix.dirname(file)).toBe(path.posix.dirname(upstream));
+      expect(file.endsWith('.skipped-in-deploy.test.ts')).toBe(true);
+      // Said where it came from, under which license.
+      expect(copy).toContain(
+        `// Copyright (c) 2025 Vercel, Inc.\n//\n// From ${upstream}\n// at ${next.commit} (v${next.version}).`,
+      );
+      // Nothing of it asks whether it is deployed, in code or by a gate, nor reads the server's own
+      // output, which a deployment does not hand back.
+      expect(code(copy)).not.toMatch(/isNextDeploy|cliOutput/u);
+
+      for (const gate of gates(copy)) {
+        expect(gate).not.toMatch(/deploy|adapter/u);
+      }
+
+      // Every case it is recorded to register, it registers, each under its own name.
+      expect(new Set(cases).size).toBe(cases.length);
+
+      for (const fullName of cases) {
+        expect(registers(copy, fullName)).toBe(true);
+      }
+    },
+  );
+
+  it('are held to the names their copy registers, every row of a `describe.each` among them', () => {
+    const copy = [
+      "describe('runtime prefetching', () => {",
+      '  describe.each([',
+      "    { description: 'in a page' },",
+      "    { description: 'in a private cache' },",
+      "  ])('$description', () => {",
+      "    it('includes root params', async () => {})",
+    ].join('\n');
+
+    expect(registers(copy, 'runtime prefetching in a page includes root params')).toBe(true);
+    expect(registers(copy, 'runtime prefetching in a private cache includes root params')).toBe(
+      true,
+    );
+    // A row gone from the copy is a case it no longer registers.
+    expect(
+      registers(copy, 'runtime prefetching passed to a public cache includes root params'),
+    ).toBe(false);
+    expect(registers(copy, 'runtime prefetching in a page includes search params')).toBe(false);
+  });
+
+  it('are each written to a file of their own', () => {
+    const files = SUPPLEMENTS.map(({ file }) => file);
+
+    expect(new Set(files).size).toBe(files.length);
+    expect(SUPPLEMENTS.length).toBeGreaterThan(0);
   });
 
   it('are written beside their suite where its directory is the one they were copied from', () => {
@@ -364,6 +460,7 @@ describe('the skipped population of a checkout', () => {
     ) as DeployManifest;
     const population = JSON.parse(readFileSync(path.join(output, 'population.json'), 'utf8')) as {
       readonly excluded: readonly string[];
+      readonly stale: readonly unknown[];
     };
 
     expect(Object.keys(manifest.suites)).toStrictEqual([
@@ -372,6 +469,8 @@ describe('the skipped population of a checkout', () => {
       'test/e2e/listed/listed.test.ts',
     ]);
     expect(population.excluded).toHaveLength(2);
+    // A checkout of another commit, without the copies' directories: every copy is left out, and said.
+    expect(population.stale).toHaveLength(SUPPLEMENTS.length);
     expect(readFileSync(summary, 'utf8')).toContain('2 suite(s) the deploy manifest excludes');
   });
 });
