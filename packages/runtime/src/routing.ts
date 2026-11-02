@@ -17,7 +17,7 @@ import {
   HEADER_RULES_LEFT_HEADER,
   ORIGINAL_URL_HEADER,
 } from '@stayingupwind/core/paas';
-import { NEXT_DATA_HEADER, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
+import { NEXT_DATA_HEADER, NULL_BODY_STATUSES, redirectAnswer } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { edgeJudgesHeaderRules, isRouteParameterKey, stripPlatformHeaders } from './incoming.ts';
@@ -305,7 +305,11 @@ export function withRewriteStatus(
   return withStatus(response, status, null);
 }
 
-/** A redirect routing decided, whether from a rule or the middleware, with everything else it set. */
+/**
+ * A redirect routing decided, whether from a rule or the middleware, with everything else it set,
+ * answered as Next.js's server answers it (`redirectAnswer`): its destination for a body, and on a
+ * permanent redirect a `Refresh` as well.
+ */
 export function redirectResponse(
   url: string,
   status: number,
@@ -313,7 +317,7 @@ export function redirectResponse(
 ): Response {
   const out = new Headers(headers);
   out.set('location', url);
-  return new Response(null, { status, headers: out });
+  return redirectAnswer(url, status, out);
 }
 
 type Config = Store['manifest']['config'];
