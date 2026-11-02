@@ -73,6 +73,8 @@ interface Group extends Pick<
 const GATE: Reading = 'deploy-gate';
 /** The lane that builds and serves the applications under Node.js 26. */
 const ON_NODE_26: readonly NodeLine[] = ['26'];
+/** Both lanes, where each was read: a run that names no lane reads nothing by these. */
+const BOTH_LINES: readonly NodeLine[] = ['24', '26'];
 /**
  * How a preview request fails where the server could not sign its cookie: the API route answers
  * 500 and sets no cookie, and the pages read without one render as no preview.
@@ -155,7 +157,7 @@ const AT_16_4_3: readonly Group[] = [
     reading: GATE,
     record: ENCODING_RECORD,
     targets: ['node'],
-    nodes: ['24'],
+    nodes: BOTH_LINES,
     cases: {
       'test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts': [
         'prerender-encoding should preserve an encoded slash in an open catch-all fallback',
@@ -187,7 +189,7 @@ const AT_16_4_3: readonly Group[] = [
     reading: GATE,
     record: 'segment-cache-metadata',
     targets: ['node'],
-    nodes: ['24'],
+    nodes: BOTH_LINES,
     cases: {
       'test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts': [
         'segment cache (metadata) requests only the head when the page segments are cached',

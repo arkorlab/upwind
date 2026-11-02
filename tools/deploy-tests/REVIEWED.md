@@ -44,8 +44,10 @@ The open catch-all and metadata-only readings below were confirmed on the local 
 and each case failed only with Jest's refusal. The same outcomes were confirmed on the `node` target
 under Node.js 24 in CI: [open catch-all](https://github.com/arkorlab/upwind/actions/runs/41261718209/job/124716183522)
 and [metadata-only](https://github.com/arkorlab/upwind/actions/runs/41261718209/job/124716183487).
-These two readings apply to `cloudflare` and to `node` under Node.js 24; Node.js 26 on `node`
-remains unverified.
+On `node` under Node.js 26, the night's run of 2026-11-01 (run 41331517273) showed the same: both
+bodies completed, and each case failed only with Jest's refusal ([open catch-all](https://github.com/arkorlab/upwind/actions/runs/41331517273/job/124922492633)
+and [metadata-only](https://github.com/arkorlab/upwind/actions/runs/41331517273/job/124922492419)). These two
+readings apply to `cloudflare`, and to `node` under both Node.js 24 and 26.
 
 #### `prerender-encoding`
 
