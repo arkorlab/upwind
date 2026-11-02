@@ -42,6 +42,7 @@ Options
       --target <target> Build for \`cloudflare\` (default) or native \`node\`
       --origin <url>    Trusted public origin, \`start\` only
       --cache-dir <dir> Persistent native cache directory, \`start\` only
+      --keepAliveTimeout <ms>  Idle connection lifetime after an answer, \`start\` only (default: Node.js's)
       --remote-ai        Enable declared Workers AI bindings using your Cloudflare account, \`dev\` only
       --check            Ask the build once and stop, rather than serve it, \`preview\` only
       --crons            Fire the build's cron jobs on their schedules, \`preview\` only
