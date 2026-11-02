@@ -38,10 +38,13 @@ import {
  * request in its host is not looked at, and what a value does to a path is the path's, as it is in
  * Next.js.
  *
- * One thing that worked before is refused now, on purpose rather than for want of a reading: a value
- * in a label that also holds letters past ASCII the rule wrote itself (`https://pré-:region.example`).
- * A URL spells such a label in Punycode whole, and what was written can no longer be found in it, so
- * there is nothing to hold the URL to; refusing is the side to be wrong on.
+ * Two things that worked before are refused now, where the rule takes a value into its host, on
+ * purpose rather than for want of a reading. A value in a label that also holds letters past ASCII
+ * the rule wrote itself (`https://pré-:region.example`): a URL spells such a label in Punycode whole,
+ * and what was written can no longer be found in it. And a path that climbs back over a value
+ * (`/base/:folder/../file`): read as a URL, what was written loses the value along with the segment
+ * it climbs over, and a value of two segments leaves one behind that the reading has no room for. In
+ * both there is nothing to hold the URL to, and refusing is the side to be wrong on.
  */
 
 /**
