@@ -683,7 +683,19 @@ describe('workflow security', () => {
   }
 
   /** Lines of a job that would install, restore or run anything of the repository's. */
-  const RUNS_THE_REPOSITORY = ['- uses: pnpm/', '- run: pnpm', 'pnpm ', 'cache:', 'registry-url:'];
+  const RUNS_THE_REPOSITORY = [
+    '- uses: pnpm/',
+    '- uses: actions/cache',
+    '- run: pnpm',
+    'pnpm ',
+    '- run: npm ci',
+    '- run: npm install',
+    'npm ci',
+    'npm install',
+    'npx ',
+    'cache:',
+    'registry-url:',
+  ];
 
   it('publishes from a job that installs and runs nothing of the repository', () => {
     const publish = releaseJob('publish');
@@ -707,7 +719,9 @@ describe('workflow security', () => {
 
     expect(lines.filter((line) => line.startsWith('id-token:'))).toStrictEqual([]);
     // What it packs is what is published, so no store a cache brought back goes into it.
-    expect(lines.filter((line) => line.startsWith('cache:'))).toStrictEqual([]);
+    expect(
+      lines.filter((line) => line.startsWith('cache:') || line.startsWith('- uses: actions/cache')),
+    ).toStrictEqual([]);
     expect(lines).toContain('- run: pnpm install --frozen-lockfile');
     expect(lines).toContain('- run: pnpm test');
     expect(lines).toContain('name: tarballs');

@@ -773,6 +773,10 @@ jobs:
             exit 0
           fi
           exit "$result"
+      # Nothing after the suite reads the token: its file goes as soon as the suite is done.
+      - name: Take the token's file away
+        if: always() && matrix.target == 'host'
+        run: rm -f "$RUNNER_TEMP/deploy-token"
       # The shard's results, kept in the form `keep-results.ts` writes: the run's identity, the suites
       # listed, the runner's exit code, and each case's names and status — never a message, an
       # application's URL or a project. Public, as this repository's artifacts are, for a month: a
