@@ -137,10 +137,7 @@ function privilegedImports(input: NodeManifestCoalescedPagesInput): ReadonlySet<
     const normalized = imported.file.replaceAll('\\', '/');
     const start = normalized.lastIndexOf('/dist/');
     const relative = start === -1 ? undefined : normalized.slice(start + 1);
-    if (
-      relative === EVALUATOR ||
-      (relative !== undefined && isReviewedFrameworkPath(relative))
-    )
+    if (relative === EVALUATOR || (relative !== undefined && isReviewedFrameworkPath(relative)))
       result.add(imported.specifier);
   }
   return result;

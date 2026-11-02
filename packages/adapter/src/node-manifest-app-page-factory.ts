@@ -19,7 +19,6 @@ import {
   visitTree,
 } from './node-manifest-consumer-ast.ts';
 import { isReviewedFrameworkSource } from './node-manifest-framework.ts';
-import { nativeNextReleaseAt } from './node-next-release.ts';
 import {
   projectedTemplateExports,
   type ManifestTemplateExports,
@@ -30,6 +29,7 @@ import {
   type NodeManifestTurbopackModuleId,
   type NodeManifestTurbopackProjection,
 } from './node-manifest-turbopack.ts';
+import { nativeNextReleaseAt } from './node-next-release.ts';
 
 const TEMPLATE = 'dist/build/templates/app-page-runtime.js';
 const CLASS_MODULE = 'dist/server/route-modules/app-page/module.compiled.js';
