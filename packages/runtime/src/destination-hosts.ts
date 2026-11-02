@@ -39,15 +39,14 @@ import {
  * Next.js.
  *
  * Two things that worked before are refused now, where the rule takes a value into its host, on
- * purpose rather than for want of a reading. A label that holds text the rule wrote beside a value,
- * where any of the label is past ASCII, the rule's text or the value
- * (`https://pré-:region.example`, or `https://api-:region.example` with a region of `é`): a URL spells
- * such a label in Punycode whole, and what was written can no longer be found in it. And a path that
- * climbs back over a value
- * (`/base/:folder/../file`): read as a URL, what was written loses the value along with the segment
- * it climbs over, so a value of more than one segment leaves some behind that the reading has no
- * room for, while a value of one still passes. In both there is nothing to hold the URL to, and
- * refusing is the side to be wrong on.
+ * purpose rather than for want of a reading. The first is a label that holds text the rule wrote
+ * beside a value, where either the written text or the captured value in that label contains
+ * characters past ASCII (`https://pré-:region.example`, or `https://api-:region.example` with a
+ * region of `é`): a URL spells such a label in Punycode whole, and what was written can no longer be
+ * found in it. The second is a path that climbs back over a value (`/base/:folder/../file`): read as
+ * a URL, what was written loses the value along with the segment it climbs over, so a value of more
+ * than one segment leaves some behind that the reading has no room for, while a value of one still
+ * passes. In both there is nothing to hold the URL to, and refusing is the side to be wrong on.
  */
 
 /**
