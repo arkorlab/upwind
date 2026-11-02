@@ -19,8 +19,14 @@ export function listeningOn(address: AddressInfo, env: Record<string, string | u
   return `http://${host}:${String(address.port)}`;
 }
 
-/** Node.js's largest timer delay: a longer keep-alive timeout would be clamped to 1 ms. */
-const MAX_KEEP_ALIVE_TIMEOUT_MS = 2_147_483_647;
+/**
+ * The longest keep-alive timeout Node.js can keep: it arms an idle socket's timer at the timeout
+ * plus its 1 s buffer (`keepAliveTimeoutBuffer`), and a timer past 2147483647 ms is clamped, with a
+ * `TimeoutOverflowWarning` on every answer.
+ */
+const MAX_TIMER_MS = 2_147_483_647;
+const KEEP_ALIVE_BUFFER_MS = 1000;
+const MAX_KEEP_ALIVE_TIMEOUT_MS = MAX_TIMER_MS - KEEP_ALIVE_BUFFER_MS;
 
 /**
  * How long the server keeps an idle connection open after its last answer, in milliseconds
@@ -34,7 +40,7 @@ export function keepAliveTimeoutOf(value: string | undefined): number | undefine
   const timeout = /^\d+$/u.test(value) ? Number(value) : NaN;
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > MAX_KEEP_ALIVE_TIMEOUT_MS)
     throw new Error(
-      'UPWIND_NODE_KEEP_ALIVE_TIMEOUT must be a whole number of milliseconds from 1 to 2147483647',
+      'UPWIND_NODE_KEEP_ALIVE_TIMEOUT must be a whole number of milliseconds from 1 to 2147482647',
     );
   return timeout;
 }

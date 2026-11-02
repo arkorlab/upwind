@@ -65,12 +65,16 @@ describe('the native server’s keep-alive timeout', () => {
   it.each([
     ['1', 1],
     ['65000', 65_000],
-    ['2147483647', 2_147_483_647],
+    ['2147482647', 2_147_482_647],
   ])('takes %s ms', (value, timeout) => {
     expect(keepAliveTimeoutOf(value)).toBe(timeout);
   });
 
-  it.each(['0', '-1', '1.5', '1e3', ' 65000', '2147483648', 'NaN'])('refuses %j', (value) => {
-    expect(() => keepAliveTimeoutOf(value)).toThrow('UPWIND_NODE_KEEP_ALIVE_TIMEOUT');
-  });
+  /** Node.js adds a second to it, and a timer past 2147483647 ms is clamped. */
+  it.each(['0', '-1', '1.5', '1e3', ' 65000', '2147482648', '2147483647', 'NaN'])(
+    'refuses %j',
+    (value) => {
+      expect(() => keepAliveTimeoutOf(value)).toThrow('UPWIND_NODE_KEEP_ALIVE_TIMEOUT');
+    },
+  );
 });

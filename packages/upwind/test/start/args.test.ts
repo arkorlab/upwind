@@ -70,7 +70,7 @@ describe('native commands', () => {
     expect(parsed.options.keepAliveTimeout).toBe(65_000);
   });
 
-  it.each(['0', '-1', '1.5', '1e3', '2147483648'])('rejects keep-alive timeout %s', (timeout) => {
+  it.each(['0', '-1', '1.5', '1e3', '2147482648'])('rejects keep-alive timeout %s', (timeout) => {
     // `-1` is refused as the option it looks like, by name.
     expect(() => parseStartRequest(['--keepAliveTimeout', timeout])).toThrow(
       /keep-alive timeout|keepAliveTimeout/u,
