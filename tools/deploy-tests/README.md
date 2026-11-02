@@ -34,10 +34,15 @@ before the tests, so it cannot. Each application is served on a port of its own,
 The lifecycle is the
 [documented contract](https://nextjs.org/docs/app/api-reference/adapters/testing-adapters): three
 scripts, named to the suite through `NEXT_TEST_DEPLOY_SCRIPT_PATH`,
-`NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH` and `NEXT_TEST_CLEANUP_SCRIPT_PATH`. Nothing in the suite is
-modified and no expectation of theirs is rewritten: their `test/deploy-tests-manifest.json` decides
-which suites deploy mode selects. One run takes what that leaves out instead, and changes none of
-their files either ([What Next.js skips in deploy mode](#what-nextjs-skips-in-deploy-mode)).
+`NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH` and `NEXT_TEST_CLEANUP_SCRIPT_PATH`. Their
+`test/deploy-tests-manifest.json` decides which suites deploy mode selects. Before the CI run,
+`src/prepare-upstream.ts` adds a prefetch barrier to the shared Form loading-state test: observe the
+actual `/search` prefetch response, wait for its body, and use the idle-network barrier already used
+by Next.js's dedicated Form prefetch test. Loading, result, and soft-navigation assertions remain
+unchanged. Preparation rejects an unfamiliar source layout instead of silently changing it. It
+changes only the test checkout, with no delay in a deployed application's request path. One run
+takes what the manifest leaves out instead; for it, the checkout gains a manifest of its own and copies
+of cases beside their suites ([What Next.js skips in deploy mode](#what-nextjs-skips-in-deploy-mode)).
 
 ## What a host needs
 

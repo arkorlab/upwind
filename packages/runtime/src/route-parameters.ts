@@ -1,8 +1,9 @@
 import type { ResolveRoutesResult } from '@next/routing';
-import { standsForClass } from '@stayingupwind/core/bundle';
-import { builtNameOf } from '@stayingupwind/core/manifest';
+import { type EntrypointKind, standsForClass } from '@stayingupwind/core/bundle';
+import { builtNameOf, requestPathOf } from '@stayingupwind/core/manifest';
 
 import { resumeUrl } from './incoming.ts';
+import { prepareStaticQuery, type StaticQuery } from './static-query.ts';
 import { entrypointKindOf, type Store, unlocalizedRouteOf } from './store.ts';
 
 /** A parameter of a route, by the segment that declares it: `[id]`, `[...rest]` or `[[...rest]]`. */
@@ -229,6 +230,17 @@ function valuesOf(segments: readonly string[], built: boolean): string[] | undef
   return values;
 }
 
+/** A parameter's decoded values, with an absent required parameter left unresolved. */
+function parameterValues(
+  parameter: RouteParameter,
+  segments: readonly string[],
+  index: number,
+  built: boolean,
+): string[] | undefined {
+  const values = valuesOf(segmentsAt(parameter, segments, index), built);
+  return values?.length === 0 && !parameter.optional ? undefined : values;
+}
+
 /** `pathname` without the slash a `trailingSlash` application keeps at its end. */
 function withoutEndSlash(pathname: string): string {
   return pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
@@ -270,41 +282,34 @@ function isFixed(segment: string | undefined, placeholder: string, built: boolea
 }
 
 /**
- * The parameters routing hands a render of `pathname` in its query (`nxtP…`), for a render the
- * platform makes of a page by its path alone — a regeneration rendering a member by its name, a
- * resume of a shell for the path the visitor asked by; `undefined` where Next.js, matching the path
- * itself, reads them the same — every path but one whose catch-all holds an escaped `/` in one of
- * its segments.
+ * The parameters of a pathname whose catch-all contains a slash inside one of its values. Keep
+ * those values separate until the caller chooses their representation: App Router metadata keeps
+ * the array, whereas the Pages Router's existing query protocol joins it.
  *
- * Routing writes a catch-all's value into the query decoded, its segments joined by `/`, and
- * Next.js splits it there (`normalizeDynamicRouteParams`): `/docs/a%2Fb` of `/docs/[...slug]` is
- * `['a', 'b']`, which is how Next.js says the deployments of its own adapter read such a value
- * (`prerender-encoding`). Matching the path, it splits it first and decodes each segment after,
- * which keeps the `/` in the value: `['a/b']`. So a page rendered by its path said one thing where a
- * render of the visitor's request said the other: a regeneration published the one, and every
- * answer from it said so (`incremental-cache-path-traversal`); and the document a shell was resumed
- * for said the one while the router's payloads for the same page said the other, so the client took
- * them for two pages (`use-router-bfcache-id`).
- *
- * The path is read as routing reads the request for it: its values as `valuesOf` reads them, its
+ * Its values are read as `valuesOf` reads them, its
  * fixed segments matched as `isFixed` matches them, a trailing slash left off, and, for a Pages
  * Router route of an application with `i18n`, its locale left out in any case (`withoutLocale`);
  * an App Router route has none in front of it. Every parameter of the route is named once one is,
  * as routing names them all: Next.js takes the query's only where it holds every one.
  */
-export function routingParameters(
+interface ParameterReading {
+  readonly kind: EntrypointKind | undefined;
+  readonly built: boolean;
+  readonly all?: boolean | undefined;
+}
+
+function segmentedParameters(
   store: Store,
-  route: string,
+  template: string,
   pathname: string,
-): Record<string, string> | undefined {
-  const template = store.prerendersByPathname.get(route)?.route ?? route;
+  reading: ParameterReading,
+): Record<string, string | string[]> | undefined {
   const bare = withoutEndSlash(pathname);
-  const built = store.prerendersByPathname.has(bare);
-  const kind = entrypointKindOf(store, template);
+  const { kind, built } = reading;
   const member = (
     kind === 'app-page' || kind === 'app-route' ? bare : withoutLocale(store, bare)
   ).split('/');
-  const named: Record<string, string> = {};
+  const named: Record<string, string | string[]> = {};
   let separated = false;
   for (const [index, placeholder] of template.split('/').entries()) {
     const parameter = parameterOf(placeholder);
@@ -314,16 +319,130 @@ export function routingParameters(
       }
       continue;
     }
-    const values = valuesOf(segmentsAt(parameter, member, index), built);
-    if (values === undefined || (values.length === 0 && !parameter.optional)) {
+    const values = parameterValues(parameter, member, index, built);
+    if (values === undefined) {
       return undefined;
     }
-    if (values.length > 0) {
-      separated ||= parameter.rest && values.some((value) => value.includes('/'));
-      named[`nxtP${parameter.name}`] = values.join('/');
+    if (values.length === 0) {
+      continue;
     }
+    separated ||= parameter.rest && values.some((value) => value.includes('/'));
+    named[`nxtP${parameter.name}`] = parameter.rest ? values : (values[0] ?? '');
   }
-  return separated ? named : undefined;
+  return separated || reading.all === true ? named : undefined;
+}
+
+/** The same parameter values named by the prefixed URL query or by request metadata. */
+function metadataParameters(
+  named: Record<string, string | string[]>,
+): Record<string, string | string[]> {
+  return Object.fromEntries(
+    Object.entries(named).map(([key, value]) => [key.slice('nxtP'.length), value]),
+  );
+}
+
+function queryParameters(named: Record<string, string | string[]>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(named).map(([key, value]) => {
+      const joined = Array.isArray(value) ? value.join('/') : value;
+      return [key, joined];
+    }),
+  );
+}
+
+/**
+ * App Router parameters whose catch-all contains a slash inside a single segment. Hand them to
+ * Next.js as requestMeta.params, which RouteModule.prepare reads before matching the path. The
+ * prefixed query cannot represent a one-element array: Next.js reads it as a string and splits
+ * at every slash. Passing the array preserves the same values as next start, including through a
+ * middleware rewrite whose source does not match the page's template.
+ */
+export function appRouteParameters(
+  store: Store,
+  route: string,
+  pathname: string,
+): Record<string, string | string[]> | undefined {
+  if (!pathname.includes('%') || !/%2f/iu.test(pathname)) {
+    return undefined;
+  }
+  const template = store.prerendersByPathname.get(route)?.route ?? route;
+  const entrypoint = store.manifest.entrypoints.find((entry) => entry.pathname === template);
+  if (
+    (entrypoint?.kind !== 'app-page' && entrypoint?.kind !== 'app-route') ||
+    // EdgeRouteModuleWrapper reads route-handler parameters only from the query, even though
+    // the web adapter attaches requestMeta. Preserve its existing prefixed query protocol.
+    (entrypoint.kind === 'app-route' && entrypoint.runtime === 'edge')
+  ) {
+    return undefined;
+  }
+  const named = segmentedParameters(store, template, pathname, {
+    kind: entrypoint.kind,
+    built: false,
+  });
+  return named === undefined ? undefined : metadataParameters(named);
+}
+
+/**
+ * Pages Router regenerations keep the query representation used by its deployment routing.
+ * App Router renders instead match their pathname, preserving each catch-all segment, and
+ * requests rewritten from another pathname receive appRouteParameters in their metadata.
+ */
+export function routingParameters(
+  store: Store,
+  route: string,
+  pathname: string,
+): Record<string, string> | undefined {
+  const template = store.prerendersByPathname.get(route)?.route ?? route;
+  const kind = entrypointKindOf(store, template);
+  if (kind === 'app-page' || kind === 'app-route') {
+    return undefined;
+  }
+  const named = segmentedParameters(store, template, pathname, {
+    kind,
+    built: store.prerendersByPathname.has(withoutEndSlash(pathname)),
+  });
+  return named === undefined ? undefined : queryParameters(named);
+}
+
+export interface StaticRouteParameters {
+  /** The Pages Router's existing prefixed query representation. */
+  readonly parameters?: Readonly<Record<string, string>> | undefined;
+  /** App Router values, preserving the segment boundaries of a catch-all. */
+  readonly routeParams?: Readonly<Record<string, string | string[]>> | undefined;
+  /** A request spelling of a build's name, or null when no request can address that name. */
+  readonly renderPathname?: string | null | undefined;
+  /** Resolve configured rewrite query values only for the special static-render path. */
+  readonly prepareQuery?: StaticQuery | undefined;
+}
+
+/**
+ * Parameters for a render made by its entry name, or for a capture explicitly made by a request
+ * pathname. A known build name keeps literal percent escapes; matching it as a URL would decode
+ * those values again. App renders receive both its request spelling and its original values.
+ */
+export function staticRenderParameters(
+  store: Store,
+  route: string,
+  pathname: string,
+  source: 'entry' | 'request' = 'entry',
+): StaticRouteParameters {
+  if (!pathname.includes('%')) return {};
+  const template = store.prerendersByPathname.get(route)?.route ?? route;
+  const entrypoint = store.manifest.entrypoints.find((entry) => entry.pathname === template);
+  const kind = entrypoint?.kind;
+  const app = kind === 'app-page' || kind === 'app-route';
+  const built = source === 'entry' && store.prerendersByPathname.has(withoutEndSlash(pathname));
+  const named = segmentedParameters(store, template, pathname, { kind, built, all: app && built });
+  if (named === undefined) return {};
+  if (!app) return { parameters: queryParameters(named) };
+  if (entrypoint?.runtime === 'edge') return {};
+  const renderPathname = built ? (requestPathOf(pathname) ?? null) : undefined;
+  const routeParams = metadataParameters(named);
+  return {
+    routeParams,
+    ...(renderPathname !== undefined && { renderPathname }),
+    prepareQuery: prepareStaticQuery(store, template),
+  };
 }
 
 /** `url`, a path and its query, with `parameters` added to the query where there are any. */

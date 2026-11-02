@@ -19,7 +19,7 @@ import { TAG_SYNC_DEADLINE_MS } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { renderStatically } from './cache/static-render.ts';
 import { nodeHandlerOf } from './entries.ts';
-import { routingParameters } from './route-parameters.ts';
+import { staticRenderParameters } from './route-parameters.ts';
 import { bypassesPrerender, type RoutedInput } from './serve.ts';
 import { entrypointKindOf, findShell, type Store, variesOnQuery } from './store.ts';
 
@@ -211,7 +211,7 @@ async function answerCapture(input: RoutedInput, store: Store): Promise<Response
     handler: page.handler,
     kind: 'app-page',
     pathname,
-    parameters: routingParameters(store, page.route, pathname),
+    ...staticRenderParameters(store, page.route, pathname, 'request'),
     // One of its own, as a regeneration's attempt has: Next.js scopes its response cache by it.
     invocationId: `${INVOCATION_PREFIX}${crypto.randomUUID()}`,
     waitUntil: input.waitUntil,

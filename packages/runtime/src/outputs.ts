@@ -10,6 +10,7 @@ import { isWebSocketUpgrade, MIDDLEWARE_PREFETCH_HEADER } from '@stayingupwind/c
 import { notFound, rscFromBuild } from './documents.ts';
 import { deferredEntryFor, entryFor } from './entries.ts';
 import { type GenerationSource, serveFromGeneration, speculative } from './generations.ts';
+import { isMetadataOnlyRscRequest } from './incoming.ts';
 import { notFoundData } from './pages-not-found.ts';
 import { rscRepresentation } from './representations.ts';
 import {
@@ -17,6 +18,7 @@ import {
   HTTP_OK,
   invokeEntry,
   notFoundResponse,
+  resume,
   type RoutedInput,
   staticResponse,
   withCacheState,
@@ -79,6 +81,7 @@ export interface Resolved {
   readonly route: string;
   readonly pathname: string;
   readonly url: string;
+  readonly parameters?: RoutedInput['parameters'];
 }
 
 /** The type a prerender's body was recorded with; a route handler's is whatever it answered. */
@@ -316,6 +319,20 @@ export async function serveRsc(
   const { entry, resolved } = rendered;
   if (entry.kind === 'node') {
     const shell = findShell(store, resolved.route, resolved.pathname);
+    // A shared static payload contains page segments this navigation already has. In minimal
+    // mode Next.js needs postponed metadata to keep the request tree and render only its head;
+    // an empty state selects that dynamic render for an unbuilt PPR member. Concrete prerenders
+    // and ensureStatic navigations must keep their static path: Next.js strips their Flight
+    // headers even when postponed metadata is supplied (`isDynamicRSCRequest`).
+    if (
+      store.manifest.config.cacheComponents === true &&
+      shell?.renderingMode === 'PARTIALLY_STATIC' &&
+      shell.pathname !== resolved.pathname &&
+      shell.ensureStatic !== 'navigation' &&
+      isMetadataOnlyRscRequest(input.request, store.manifest.routing.rsc.prefetchHeader)
+    ) {
+      return resume({ input, handler: entry.handler, postponed: '', url: resolved.url });
+    }
     const source = rscSource(input, store, shell, resolved);
     const current = await serveFromGeneration(input, store, source, entry.handler);
     if (current !== undefined) {
@@ -331,6 +348,17 @@ export async function serveRsc(
       source.pathname !== shell.pathname &&
       isClassShell(source.pathname, shell.route);
     if (!completedClass && source.onMiss === 'render') {
+      // A cold member can reject its static render (for example, synchronous time after a
+      // parameter resolves). Minimal mode otherwise tries that static render again. An empty
+      // postponed state asks Next.js for the live Flight response without claiming a shell to
+      // resume; it must not turn a static prefetch or ensureStatic navigation dynamic.
+      if (
+        store.manifest.config.cacheComponents === true &&
+        shell?.ensureStatic !== 'navigation' &&
+        !speculative(source)
+      ) {
+        return resume({ input, handler: entry.handler, postponed: '', url: resolved.url });
+      }
       return invokeEntry(input, entry, resolved.url);
     }
   }

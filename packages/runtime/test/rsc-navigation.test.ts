@@ -3,8 +3,9 @@ import { policyFromCacheControl } from '@stayingupwind/core/cache';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppModule, NodeHandler, WebHandler } from '../src/app-module.ts';
-import { createCacheRuntime } from '../src/cache/runtime.ts';
+import { type CacheRuntime, createCacheRuntime } from '../src/cache/runtime.ts';
 import { handleRequest } from '../src/handle.ts';
+import { isMetadataOnlyRscRequest } from '../src/incoming.ts';
 import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { getStore, type Store } from '../src/store.ts';
 import { fakeAuthority } from './authority.ts';
@@ -42,6 +43,7 @@ const ENV = {
   NEXT_DEPLOYMENT_ID: SCOPE,
 };
 const PAGE = '/team';
+const CLASS = '/[team]';
 const encoder = new TextEncoder();
 const BUILD_STATE = 'the postponed state the build wrote';
 const GENERATION_STATE = 'the postponed state the last regeneration wrote';
@@ -50,6 +52,7 @@ const STORED_TREE = '0:{"tree":{}}';
 const PRELOAD = '</_next/static/media/geist.woff2>; rel=preload; as=font; crossorigin';
 const CONFIG_LINK = '</configured.css>; rel=preload; as=style';
 const MIDDLEWARE_LINK = '</middleware.css>; rel=preload; as=style';
+const METADATA_ONLY_TREE = encodeURIComponent(JSON.stringify(['', {}, null, 'metadata-only']));
 const blobs = new Map([
   ['postponed', encoder.encode(BUILD_STATE)],
   ['shell', encoder.encode('<html>shell</html>')],
@@ -80,12 +83,13 @@ function prerender(pathname: string, fields: Partial<Prerender>): Prerender {
 function deployment(): Store {
   const shell = prerender(PAGE, {
     body: { sha256: 'shell', byteLength: 18, contentType: 'text/html' },
+    renderingMode: 'PARTIALLY_STATIC',
   });
   const payload = prerender(`${PAGE}.rsc`, {});
   return {
     manifest: {
       buildId: 'build',
-      config: { basePath: '' },
+      config: { basePath: '', cacheComponents: true },
       routing: {
         beforeMiddleware: [],
         middlewareMatchers: [],
@@ -116,6 +120,52 @@ function deployment(): Store {
   } as unknown as Store;
 }
 
+/** An unbuilt member with a reusable PPR shell, including a shell whose static HTML exists. */
+function coldDeployment(
+  fields: Partial<Prerender> = {},
+  cacheComponents = true,
+  prefetchHeader = RSC.prefetchHeader,
+): Store {
+  const store = deployment();
+  const shell = prerender(CLASS, {
+    route: CLASS,
+    parentOutputId: CLASS,
+    renderingMode: 'PARTIALLY_STATIC',
+    body: { sha256: 'shell', byteLength: 18, contentType: 'text/html' },
+    ...fields,
+  });
+  const payload = prerender(`${CLASS}.rsc`, {
+    route: CLASS,
+    parentOutputId: CLASS,
+    postponed: shell.postponed,
+  });
+  const route = {
+    sourceRegex: '^/(?<nxtPteam>[^/]+?)(?:/)?$',
+    destination: `${CLASS}?nxtPteam=$nxtPteam`,
+  };
+  const prerenders = [shell, payload];
+  return {
+    ...store,
+    manifest: {
+      ...store.manifest,
+      config: { ...store.manifest.config, cacheComponents },
+      routing: {
+        ...store.manifest.routing,
+        dynamicRoutes: [route],
+        rsc: { ...RSC, prefetchHeader },
+      },
+      entrypoints: [{ id: CLASS, kind: 'app-page', pathname: CLASS }],
+    },
+    pathnames: [CLASS],
+    dynamicRoutes: [route],
+    shellsByRoute: new Map([
+      [CLASS, { pages: new Map(), patterns: [{ pattern: /^\/[^/]+$/u, prerender: shell }] }],
+    ]),
+    prerendersById: new Map(prerenders.map((item) => [item.id, item])),
+    prerendersByPathname: new Map(prerenders.map((item) => [item.pathname, item])),
+  } as unknown as Store;
+}
+
 const page: NodeHandler = () => Promise.resolve();
 const middleware: WebHandler = () => {
   return Promise.resolve(
@@ -130,12 +180,13 @@ function middlewareEntry() {
 const app: AppModule = {
   entries: {
     [PAGE]: () => ({ handler: page }),
+    [CLASS]: () => ({ handler: page }),
     '/_middleware': middlewareEntry,
   },
 };
 
 /** A deployment whose cache holds a generation of the page a regeneration made. */
-async function regenerated() {
+async function regenerated(partial = true) {
   const authority = fakeAuthority(SCOPE);
   await authority.record(
     { kind: 'app-page', route: PAGE, pathname: PAGE },
@@ -145,7 +196,7 @@ async function regenerated() {
       status: 200,
       headers: { LiNk: PRELOAD, 'x-recorded': 'kept' },
       tags: [],
-      postponed: encoder.encode(GENERATION_STATE),
+      ...(partial && { postponed: encoder.encode(GENERATION_STATE) }),
       stored: new Map([
         ['rsc', encoder.encode(STORED_PAYLOAD)],
         ['segment:/_tree', encoder.encode(STORED_TREE)],
@@ -157,7 +208,10 @@ async function regenerated() {
   return createCacheRuntime({ env: ENV, now: () => T0, fetchImpl: authority.fetchImpl });
 }
 
-async function ask(headers: Record<string, string>): Promise<Response> {
+async function ask(
+  headers: Record<string, string>,
+  cache?: CacheRuntime | null,
+): Promise<Response> {
   return handleRequest({
     app,
     edge: { entries: {} },
@@ -165,7 +219,7 @@ async function ask(headers: Record<string, string>): Promise<Response> {
     waitUntil: () => {
       // Nothing is scheduled for these answers.
     },
-    cache: await regenerated(),
+    cache: cache === null ? undefined : (cache ?? (await regenerated())),
     clock: T0 + 1000,
   });
 }
@@ -195,6 +249,68 @@ describe("a client router's request for the payload of a page with dynamic parts
       resumedFrom(GENERATION_STATE),
     );
   });
+
+  it('renders only the head without reading the shared generation or capturing a full page', async () => {
+    vi.mocked(getStore).mockReturnValue(coldDeployment());
+    const fetchImpl = vi.fn(() => Promise.reject(new Error('no cache read is needed')));
+    const cache = createCacheRuntime({ env: ENV, now: () => T0, fetchImpl });
+
+    const response = await ask({ 'next-router-state-tree': METADATA_ONLY_TREE }, cache);
+
+    await expect(response.text()).resolves.toBe('rendered');
+    expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+
+    const call = vi.mocked(invokeNodeHandler).mock.calls[0]?.[0];
+
+    expect(call?.requestMeta['minimalMode']).toBe(true);
+    expect(call?.requestMeta['postponed']).toBe('');
+    expect(call?.request.headers.get('next-router-state-tree')).toBe(METADATA_ONLY_TREE);
+    expect(call?.url).toContain('_rsc=abc');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps a concrete prerender on its stored RSC path for a metadata-only request', async () => {
+    const response = await ask(
+      { 'next-router-state-tree': METADATA_ONLY_TREE },
+      await regenerated(false),
+    );
+
+    await expect(response.text()).resolves.toBe(STORED_PAYLOAD);
+    expect(invokeNodeHandler).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a route without PPR', { renderingMode: 'STATIC', postponed: undefined }, false],
+    ['an ensureStatic navigation', { ensureStatic: 'navigation' }, true],
+  ] as const)('keeps %s on its original render path', async (_label, fields, cacheComponents) => {
+    vi.mocked(getStore).mockReturnValue(coldDeployment(fields, cacheComponents));
+
+    const response = await ask({ 'next-router-state-tree': METADATA_ONLY_TREE }, null);
+
+    await expect(response.text()).resolves.toBe('rendered');
+    expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(invokeNodeHandler).mock.calls[0]?.[0].requestMeta).not.toHaveProperty(
+      'postponed',
+    );
+  });
+
+  it.each(['next-router-prefetch', 'x-router-prefetch'])(
+    'keeps a static prefetch on the build state with the configured %s header',
+    async (prefetchHeader) => {
+      vi.mocked(getStore).mockReturnValue(coldDeployment({}, true, prefetchHeader));
+
+      const response = await ask(
+        { 'next-router-state-tree': METADATA_ONLY_TREE, [prefetchHeader]: '1' },
+        null,
+      );
+
+      await expect(response.text()).resolves.toBe('rendered');
+      expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(invokeNodeHandler).mock.calls[0]?.[0].requestMeta['postponed']).toBe(
+        BUILD_STATE,
+      );
+    },
+  );
 
   it('is the stored payload for a prefetch, said to leave parts out', async () => {
     const response = await ask({ 'next-router-prefetch': '1' });
@@ -256,4 +372,34 @@ describe("a client router's request for the payload of a page with dynamic parts
       expect(vi.mocked(invokeNodeHandler)).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('a metadata-only navigation request', () => {
+  it.each([
+    [
+      'the head-only router state',
+      { rsc: '1', 'next-router-state-tree': METADATA_ONLY_TREE },
+      true,
+    ],
+    [
+      'a static prefetch',
+      { rsc: '1', 'next-router-prefetch': '1', 'next-router-state-tree': METADATA_ONLY_TREE },
+      false,
+    ],
+    ['a document request', { 'next-router-state-tree': METADATA_ONLY_TREE }, false],
+    [
+      'an ordinary navigation',
+      { rsc: '1', 'next-router-state-tree': encodeURIComponent('["",{},null,"refetch"]') },
+      false,
+    ],
+    [
+      'a segment named metadata-only',
+      { rsc: '1', 'next-router-state-tree': encodeURIComponent('["metadata-only",{}]') },
+      false,
+    ],
+    ['malformed JSON', { rsc: '1', 'next-router-state-tree': 'metadata-only' }, false],
+    ['malformed encoding', { rsc: '1', 'next-router-state-tree': '%metadata-only' }, false],
+  ] as const)('recognizes %s', (_label, headers, expected) => {
+    expect(isMetadataOnlyRscRequest(new Request('https://app.test', { headers }))).toBe(expected);
+  });
 });

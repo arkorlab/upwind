@@ -3,6 +3,7 @@ import { CACHE_OUTCOME_HEADER } from '@stayingupwind/core/paas';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { afterBody } from './after-body.ts';
+import { localizedDataUrl } from './data-locale.ts';
 import { outcomeOn } from './generations.ts';
 import { edgeJudgesHeaderRules } from './incoming.ts';
 import { middlewareInvoker, type MiddlewareTrace } from './middleware-invoke.ts';
@@ -63,18 +64,29 @@ export function routingOf(
   store: Store,
   asked: RoutingAsk,
 ): Promise<ResolveRoutesResult> {
-  const { url } = asked;
-  const { basePath, i18n } = store.manifest.config;
+  const { config, buildId } = store.manifest;
+  const { basePath, i18n } = config;
+  const routingI18nOf = i18n === null || i18n === undefined ? undefined : routingI18n(i18n);
+  // A data request with no locale is routed as Next.js routes it, under the default one.
+  const url =
+    routingI18nOf === undefined
+      ? asked.url
+      : localizedDataUrl(store.manifest, routingI18nOf, asked.url);
   return resolveRoutes({
     url,
-    buildId: store.manifest.buildId,
+    buildId,
     basePath,
     requestBody: asked.body ?? new ReadableStream(),
     headers: asked.headers,
     pathnames: pathnamesFor(store, url),
-    ...(i18n !== null && i18n !== undefined && { i18n: routingI18n(i18n) }),
+    ...(routingI18nOf !== undefined && { i18n: routingI18nOf }),
     routes: routingTables(store, asked.skipMiddleware, url, asked.skipHeaderRules),
-    invokeMiddleware: middlewareInvoker(input, store, asked.trace),
+    invokeMiddleware: middlewareInvoker(
+      input,
+      store,
+      asked.trace,
+      url === asked.url ? undefined : { routed: url, asked: asked.url },
+    ),
   });
 }
 

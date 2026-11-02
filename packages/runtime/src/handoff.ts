@@ -22,6 +22,8 @@ export interface HandOff {
   readonly route: Resolved['route'];
   readonly pathname: Resolved['pathname'];
   readonly url: Resolved['url'];
+  /** Same-deployment render metadata, captured before build-name normalization or an alias lost it. */
+  readonly parameters?: Resolved['parameters'];
   /** The response headers routing collected (`resolvedHeaders`), in order, a cookie per entry. */
   readonly headers: readonly (readonly [string, string])[];
   /** The status a middleware gave its rewrite, where it gave one other than 200. */
@@ -52,6 +54,28 @@ function isPairs(value: unknown): value is (readonly [string, string])[] {
   return Array.isArray(value) && value.every((pair) => isPair(pair));
 }
 
+function isValues(value: unknown): value is Record<string, string | string[]> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((field) => {
+      return (
+        typeof field === 'string' ||
+        (Array.isArray(field) && field.every((item: unknown) => typeof item === 'string'))
+      );
+    })
+  );
+}
+
+function isParameters(value: unknown): value is NonNullable<Resolved['parameters']> {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const fields = value as Record<string, unknown>;
+  return isValues(fields['params']) && isValues(fields['query']);
+}
+
 function isHandOff(value: unknown): value is HandOff {
   if (typeof value !== 'object' || value === null) {
     return false;
@@ -61,6 +85,7 @@ function isHandOff(value: unknown): value is HandOff {
     typeof handOff['route'] === 'string' &&
     typeof handOff['pathname'] === 'string' &&
     typeof handOff['url'] === 'string' &&
+    (handOff['parameters'] === undefined || isParameters(handOff['parameters'])) &&
     isPairs(handOff['headers']) &&
     (handOff['status'] === undefined || typeof handOff['status'] === 'number') &&
     (handOff['image'] === undefined || handOff['image'] === true) &&
@@ -124,6 +149,7 @@ export function handOffOf(
     route: resolved.route,
     pathname: resolved.pathname,
     url: resolved.url,
+    ...(resolved.parameters !== undefined && { parameters: resolved.parameters }),
     headers: [...(headers ?? [])],
     ...(status !== undefined && { status }),
     ...(image && { image }),
