@@ -14,6 +14,7 @@ import {
   type V4FetchHandler,
 } from 'miniflare';
 
+import { assertFailureLogged, logLines } from './failure-log.ts';
 import { failureOf, type Failure } from './twoslash-probes.ts';
 import { workerApp } from './worker-function.ts';
 
@@ -229,11 +230,6 @@ function assertResponse(
   if (FAILURE_MODES.has(mode)) {
     assert.equal(response.status, HTTP_ERROR, 'Unavailable immutable body must fail');
     assert.equal(proof.response.cache, null, 'Failed read must not claim HIT');
-    if (!head)
-      assert.ok(
-        new TextDecoder().decode(body).includes('required built page body'),
-        'Failure must identify the required built body',
-      );
   } else {
     assert.equal(response.status, HTTP_OK, 'Built response status');
     assert.equal(proof.response.cache, 'HIT', 'Built response cache state');
@@ -283,8 +279,10 @@ export async function exercise(input: Exercise): Promise<CaseProof> {
     egressAttempts: 0,
     serviceFailures: [],
   };
-  const runtime = new Miniflare(
-    convertV4MiniflareOptions({
+  // What the Function logs: a failure it answers itself says why there, and only there.
+  const log = logLines();
+  const runtime = new Miniflare({
+    ...convertV4MiniflareOptions({
       name: 'large-prerender-fixture',
       modulesRoot: '/bundle',
       modules: input.modules,
@@ -306,7 +304,8 @@ export async function exercise(input: Exercise): Promise<CaseProof> {
         [BLOB_BINDING]: blobService(input, proof),
       },
     }),
-  );
+    handleStructuredLogs: log.handleStructuredLogs,
+  });
   try {
     await bounded(runtime.ready, signal);
     const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(REQUEST_MS)]);
@@ -330,6 +329,14 @@ export async function exercise(input: Exercise): Promise<CaseProof> {
       vary: response.headers.get('vary'),
     };
     assertResponse(input, proof, response, body);
+    if (FAILURE_MODES.has(mode) && !HEAD_MODES.has(mode)) {
+      await assertFailureLogged(
+        new TextDecoder().decode(body),
+        log.lines,
+        'required built page body',
+        'Failure must identify the required built body',
+      );
+    }
     proof.status = 'passed';
   } catch (error) {
     proof.failure = failureOf(error);
