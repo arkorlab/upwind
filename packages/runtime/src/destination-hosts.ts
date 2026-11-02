@@ -33,15 +33,17 @@ import {
  * with anything at all where the destination takes a value, and a request whose URL does not is
  * answered `400` (`refused`) rather than sent on. A value that stays in its host passes as before —
  * `eu` makes `eu.api.example.com`, and a dot or a capital makes what it makes in Next.js, as does a
- * letter past ASCII in a label of its own — and one that moves something out of the host does not,
+ * value past ASCII in a label of its own — and one that moves something out of the host does not,
  * since the host's own text, or the path's, is then in the wrong part. A rule with nothing of the
  * request in its host is not looked at, and what a value does to a path is the path's, as it is in
  * Next.js.
  *
  * Two things that worked before are refused now, where the rule takes a value into its host, on
- * purpose rather than for want of a reading. A value in a label that also holds letters past ASCII
- * the rule wrote itself (`https://pré-:region.example`): a URL spells such a label in Punycode whole,
- * and what was written can no longer be found in it. And a path that climbs back over a value
+ * purpose rather than for want of a reading. A label that holds text the rule wrote beside a value,
+ * where any of the label is past ASCII, the rule's text or the value
+ * (`https://pré-:region.example`, or `https://api-:region.example` with a region of `é`): a URL spells
+ * such a label in Punycode whole, and what was written can no longer be found in it. And a path that
+ * climbs back over a value
  * (`/base/:folder/../file`): read as a URL, what was written loses the value along with the segment
  * it climbs over, so a value of more than one segment leaves some behind that the reading has no
  * room for, while a value of one still passes. In both there is nothing to hold the URL to, and

@@ -52,6 +52,12 @@ const GO: Route = {
   },
   status: 307,
 };
+/** `{ source: '/prefixed', has: [REGION], destination: 'https://api-:region.example.com/' }` */
+const PREFIXED: Route = {
+  sourceRegex: '^/prefixed(?:/)?$',
+  has: [REGION],
+  destination: 'https://api-$region.example.com/',
+};
 /** A rule filled in by a group whose name begins with a letter past ASCII. */
 const NAMED: Route = {
   sourceRegex: '^/named(?:/)?$',
@@ -79,7 +85,7 @@ function deployment(): Store {
       routing: {
         beforeMiddleware: [GO],
         middlewareMatchers: [],
-        beforeFiles: [REGIONAL, TEAM, STATIC, SPELLED, JOINED, NAMED],
+        beforeFiles: [REGIONAL, TEAM, STATIC, SPELLED, JOINED, NAMED, PREFIXED],
         afterFiles: [],
         dynamicRoutes: [],
         onMatch: [],
@@ -201,6 +207,30 @@ describe('a rule that puts the request in the host it sends a request to', () =>
     expect(refused.headers.get('location')).toBeNull();
     expect(refused.headers.get('refresh')).toBeNull();
     expect(marked(refused)).toBe(false);
+  });
+
+  it('rewrites to a value past ASCII where it is a label of its own', async () => {
+    const response = await handle('/api/users?region=%C3%A9');
+
+    expect(response.status).toBe(200);
+    expect(fetched()).toStrictEqual(['https://xn--9ca.api.example.com/users']);
+  });
+
+  /**
+   * A label of written text and a value, one of them past ASCII, is spelled in Punycode whole, and
+   * the written text can no longer be found in it: refused, as the module says, though Next.js
+   * would send it on.
+   */
+  it('refuses a value past ASCII in a label beside text the rule wrote', async () => {
+    const kept = await handle('/prefixed?region=eu');
+
+    expect(kept.status).toBe(200);
+    expect(fetched()).toStrictEqual(['https://api-eu.example.com/']);
+
+    const refused = await handle('/prefixed?region=%C3%A9');
+
+    expect(refused.status).toBe(400);
+    expect(fetched()).toStrictEqual(['https://api-eu.example.com/']);
   });
 
   it('holds a host to the rule when the name it is filled in by is past ASCII', async () => {
