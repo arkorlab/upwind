@@ -62,11 +62,11 @@ function dropUnread(req: IncomingMessage, socket: Socket): void {
  *
  * The connection is the answer's. Cancelling the body stops it being read, and nothing more:
  * destroying the request, as `Readable.toWeb` does, has Node.js detach the connection from it and
- * stop reading the connection for good. Once the answer has gone out, what the application left
- * unread of the body is read and dropped, within workerd's grace, so that the connection carries
- * its next request; past the grace, the connection is closed. Left as it was, it answered nothing
- * more and stayed open until a timeout, and a client that sent its next request on it waited for
- * the server's keep-alive timeout.
+ * stop reading the connection for good. Once the answer has gone out, the body can no longer be
+ * read, as in workerd, and what the application left of it is read and dropped within workerd's
+ * grace, so that the connection carries its next request; past the grace, the connection is
+ * closed. Left as it was, it answered nothing more and stayed open until a timeout, and a client
+ * that sent its next request on it waited for the server's keep-alive timeout.
  */
 export function nativeBody(req: IncomingMessage, res: ServerResponse): ReadableStream<Uint8Array> {
   const { socket } = req;
@@ -79,10 +79,15 @@ export function nativeBody(req: IncomingMessage, res: ServerResponse): ReadableS
   };
   const shut = (): void => {
     open = false;
+    // Paused, not only unheard: a flowing request with no listener still reads its connection.
+    req.pause();
     req.off('data', onData);
   };
   req.pause();
   req.on('data', onData);
+  // Begun, so that the answer's end leaves what is unread to the grace below: Node.js reads a body
+  // no read began to its end, however long, before the connection takes its next request.
+  req.read(0);
   const cleanup = finished(req, (error) => {
     cleanup();
     // As `Readable.toWeb` does: a request that has failed once cannot fail its reader again.
@@ -95,10 +100,15 @@ export function nativeBody(req: IncomingMessage, res: ServerResponse): ReadableS
     else controller?.error(error);
   });
   res.once('finish', () => {
-    if (req.complete || req.destroyed) return;
     if (open) {
       shut();
       controller?.error(new TypeError(LATE_READ));
+    }
+    if (req.readableEnded || req.destroyed) return;
+    // Received whole, the connection already reads its next request: what is left is only dropped.
+    if (req.complete) {
+      req.resume();
+      return;
     }
     dropUnread(req, socket);
   });
@@ -112,6 +122,8 @@ export function nativeBody(req: IncomingMessage, res: ServerResponse): ReadableS
       },
       cancel: shut,
     },
-    { highWaterMark: req.readableHighWaterMark, size: (chunk) => chunk.byteLength },
+    // Nothing is queued ahead of the application's reads, so none of what it has not asked for by
+    // its answer's end can still be read after it.
+    { highWaterMark: 0 },
   );
 }

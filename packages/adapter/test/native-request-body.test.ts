@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { nativeRequest, writeNativeResponse } from '../src/native/http.ts';
 
 const KIB = 1024;
+const LATE_READ = "Can't read from request stream after response has been sent.";
 
 interface Exchange {
   readonly status: number;
@@ -122,6 +123,23 @@ async function exchange(
   });
 }
 
+/** A boundary whose application answers first, and reads its body 50 ms later. */
+async function readingLate(): Promise<{ url: string; late: Promise<unknown> }> {
+  const late = Promise.withResolvers<unknown>();
+  const url = await boundary((request) => {
+    if (request.body === null) return 'answered GET';
+    const readLate = async (): Promise<void> => {
+      await delay(50);
+      late.resolve(await request.text());
+    };
+    void readLate().catch((error: unknown) => {
+      late.resolve(error);
+    });
+    return 'answered first';
+  });
+  return { url, late: late.promise };
+}
+
 /**
  * Resolves once the connection is closed, at once if it already is. Not `once(socket, 'close')`,
  * which rejects on the `EPIPE` of a body still being sent as the server closes the connection.
@@ -210,7 +228,7 @@ describe('a request body its answer leaves unread', () => {
 
     await closedOf(stalled.socket);
 
-    expect(performance.now() - started).toBeLessThan(5000);
+    expect(performance.now() - started).toBeLessThan(3000);
   });
 
   it('answers on the connection when the application cancels the body', async () => {
@@ -233,23 +251,24 @@ describe('a request body its answer leaves unread', () => {
   });
 
   it('fails a read of the body begun after its answer has gone out', async () => {
-    const late = Promise.withResolvers<unknown>();
-    const url = await boundary((request) => {
-      const readLate = async (): Promise<void> => {
-        await delay(50);
-        late.resolve(await request.text());
-      };
-      void readLate().catch((error: unknown) => {
-        late.resolve(error);
-      });
-      return 'answered first';
-    });
+    const { url, late } = await readingLate();
 
     await expect(
       exchange(url, keptAgent(), { declared: 64 * KIB, sent: 8 * KIB, after: 56 * KIB }),
     ).resolves.toMatchObject({ status: 200, text: 'answered first' });
-    await expect(late.promise).resolves.toStrictEqual(
-      new TypeError("Can't read from request stream after response has been sent."),
-    );
+    await expect(late).resolves.toStrictEqual(new TypeError(LATE_READ));
+  });
+
+  it('fails a late read of a body received whole, and keeps its connection', async () => {
+    const { url, late } = await readingLate();
+    const agent = keptAgent();
+
+    const first = await exchange(url, agent, { declared: 2 * KIB, sent: 2 * KIB });
+    const next = await exchange(url, agent);
+
+    expect(first).toMatchObject({ status: 200, text: 'answered first' });
+    await expect(late).resolves.toStrictEqual(new TypeError(LATE_READ));
+    expect(next).toMatchObject({ status: 200, text: 'answered GET' });
+    expect(next.socket).toBe(first.socket);
   });
 });
