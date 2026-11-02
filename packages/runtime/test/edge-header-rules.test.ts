@@ -228,6 +228,24 @@ describe('the header rules ahead of the middleware, where the edge ran it', () =
     },
   );
 
+  /** The edge takes the counted cookies off the end, to lay the middleware's and the rules' first. */
+  it('keeps the later rules’ cookies after the handler’s, as the block it counts', async () => {
+    const store = deployment();
+    store.manifest.routing.onMatch = [
+      { sourceRegex: `^${TARGET}$`, headers: { 'set-cookie': 'later=1; Path=/' } },
+    ];
+    vi.mocked(getStore).mockReturnValue(store);
+    vi.mocked(invokeNodeHandler).mockResolvedValueOnce(
+      new Response('page', { headers: [['set-cookie', 'own=1; Path=/']] }),
+    );
+    const { app } = passing();
+
+    const response = await handle(app, fromTheEdge(RAN_AND_JUDGED));
+
+    expect(response.headers.getSetCookie()).toStrictEqual(['own=1; Path=/', 'later=1; Path=/']);
+    expect(response.headers.get(HEADER_RULES_AFTER_COOKIE_COUNT_HEADER)).toBe('1');
+  });
+
   it('replaces an application marker even when no later rule set a header', async () => {
     vi.mocked(invokeNodeHandler).mockResolvedValueOnce(
       new Response('page', {
