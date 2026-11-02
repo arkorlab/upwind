@@ -186,10 +186,10 @@ with what the population is made of (`population.json`). Its `metadata.json` say
 "skipped"`, a field a run of the manifest's suites never has. Its counts are not the suite's, and the
 summaries head them so. It is judged as any other run, against the same readings, and a failure nobody
 has read fails its shard. Only `tests: all` runs the whole population: named paths run as one piece, as
-they do for the manifest's suites. With `all`, unless `shards` says otherwise, it is cut into 8 pieces on
-the runner. On a host it is cut as any other run there, one piece per project and six under six
-projects, but never into more than 8. Its results are not judged on a host, and their metadata keeps
-them apart from a record of the manifest's suites.
+they do for the manifest's suites. With `all` and no `shards`, it is cut into 8 pieces on the runner,
+and on a host as any other run there (one piece per project, six under six projects) but into no more
+than 8. A `shards` that is given is used as it is, as for any other run. Its results are not judged on
+a host, and their metadata keeps them apart from a record of the manifest's suites.
 
 ### Choosing the installer
 

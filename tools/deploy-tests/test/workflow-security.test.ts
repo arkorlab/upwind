@@ -428,6 +428,23 @@ describe('workflow security', () => {
     },
   );
 
+  /** The cap is the default's: a `shards` that is given is used as it is, as for any other run. */
+  it('uses a `shards` given for what Next.js skips on a host as it is', () => {
+    const result = plan('v16.4.3', {
+      TARGET: 'host',
+      POPULATION: 'skipped',
+      SHARDS: '12',
+      PROJECT_IDS: projects(16).join(' '),
+      PROJECT_ID: '',
+      HOST_SHARDS: String(hostShards()),
+    });
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(output).toContain('total=12\n');
+    expect(output).toContain('population=skipped\n');
+  });
+
   it('runs node alone under Node.js 24 over the whole manifest on a pull request', () => {
     const result = plan('ignored', {
       EVENT: 'pull_request',
