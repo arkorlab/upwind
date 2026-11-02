@@ -46,8 +46,17 @@ const STATIC: Route = {
 const GO: Route = {
   sourceRegex: '^/go(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))?(?:/)?$',
   has: [REGION],
-  headers: { Location: 'https://$region.api.example.com/$1' },
+  headers: {
+    Location: 'https://$region.api.example.com/$1',
+    Refresh: '0;url=https://$region.api.example.com/$1',
+  },
   status: 307,
+};
+/** A rule whose written host spells what stands for a value while a destination is read. */
+const SPELLED: Route = {
+  sourceRegex: '^/spelled(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))?(?:/)?$',
+  has: [REGION],
+  destination: 'https://$region.upwindvalue.example/$1',
 };
 
 function deployment(): Store {
@@ -58,7 +67,7 @@ function deployment(): Store {
       routing: {
         beforeMiddleware: [GO],
         middlewareMatchers: [],
-        beforeFiles: [REGIONAL, TEAM, STATIC],
+        beforeFiles: [REGIONAL, TEAM, STATIC, SPELLED],
         afterFiles: [],
         dynamicRoutes: [],
         onMatch: [],
@@ -178,6 +187,19 @@ describe('a rule that puts the request in the host it sends a request to', () =>
 
     expect(refused.status).toBe(400);
     expect(refused.headers.get('location')).toBeNull();
+    expect(refused.headers.get('refresh')).toBeNull();
     expect(marked(refused)).toBe(false);
+  });
+
+  it('reads a written host that spells a stand-in as written, not as a value', async () => {
+    const kept = await handle('/spelled/users?region=eu');
+
+    expect(kept.status).toBe(200);
+    expect(fetched()).toStrictEqual(['https://eu.upwindvalue.example/users']);
+
+    const refused = await handle('/spelled/users?region=attacker.test.example%2F');
+
+    expect(refused.status).toBe(400);
+    expect(fetched()).toStrictEqual(['https://eu.upwindvalue.example/users']);
   });
 });

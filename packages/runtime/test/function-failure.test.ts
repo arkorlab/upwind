@@ -77,8 +77,12 @@ describe('a request the Function fails before Next.js answers it', () => {
 
     const first = await entry.fetch(new Request('https://app.test/'), undefined, context);
     const second = await entry.fetch(new Request('https://app.test/'), undefined, context);
-    const firstBody = await first.text();
+    const [one, other] = [await first.text(), await second.text()].map(
+      (body) => REFERENCE.exec(body)?.groups?.['reference'],
+    );
 
-    await expect(second.text()).resolves.not.toBe(firstBody);
+    expect(one).toBeDefined();
+    expect(other).toBeDefined();
+    expect(one).not.toBe(other);
   });
 });

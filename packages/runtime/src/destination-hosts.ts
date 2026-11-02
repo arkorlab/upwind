@@ -37,6 +37,11 @@ import {
  * since the host's own text, or the path's, is then in the wrong part. A rule with nothing of the
  * request in its host is not looked at, and what a value does to a path is the path's, as it is in
  * Next.js.
+ *
+ * One thing that worked before is refused now, on purpose rather than for want of a reading: a value
+ * in a label that also holds letters past ASCII the rule wrote itself (`https://pré-:region.example`).
+ * A URL spells such a label in Punycode whole, and what was written can no longer be found in it, so
+ * there is nothing to hold the URL to; refusing is the side to be wrong on.
  */
 
 /**
@@ -61,9 +66,10 @@ const REFERENCE = /\$\w+/gu;
 const TAKES_A_VALUE = /\$\w/u;
 /**
  * What stands for each reference while what was written is read as a URL: lower-case letters, which
- * every part of a URL keeps as they are, the host included.
+ * every part of a URL keeps as they are, the host included. A destination may spell one of them as
+ * text of its own, which would then be read as taking a value there (`standInsFor`).
  */
-const STAND_IN = 'upwindvalue';
+const STAND_INS = ['upwindvalue', 'upwindreference'] as const;
 const PARTS = [
   'protocol',
   'username',
@@ -191,19 +197,43 @@ function spans(pieces: readonly string[], text: string): boolean {
 }
 
 /**
+ * The stand-ins for `destination`: `STAND_INS`, lengthened until the destination spells neither in
+ * any case, so that one that does is still read. Read twice all the same: a host may come to spell
+ * one once it is read as a URL, decoded or mapped, which the two readings then disagree over.
+ */
+function standInsFor(destination: string): readonly string[] {
+  const spelled = destination.toLowerCase();
+  let standIns: readonly string[] = STAND_INS;
+  while (standIns.some((standIn) => spelled.includes(standIn))) {
+    standIns = standIns.map((standIn) => `${standIn}q`);
+  }
+  return standIns;
+}
+
+/** Each part of `destination` read as a URL, cut where `standIn` stands for a reference. */
+function piecesOf(destination: string, standIn: string, base: URL): string[][] | undefined {
+  const written = parsed(
+    destination.replaceAll(REFERENCE, () => standIn),
+    base,
+  );
+  return written === undefined ? undefined : PARTS.map((part) => written[part].split(standIn));
+}
+
+/**
  * Whether `sent` is a URL `destination` names, some value or other put in for each reference it
  * makes: each part of it what that part of the destination says, read as a URL with a stand-in for
  * each reference, with anything at all where the stand-in is. A destination that does not read as a
- * URL so — a reference in its port, which Next.js does not fill in either — names none.
+ * URL so — a reference in its port, which Next.js does not fill in either — names none, nor does one
+ * that reads otherwise with the other stand-in (`STAND_INS`).
  */
 function namedBy(destination: string, sent: URL, base: URL): boolean {
-  const written = parsed(
-    destination.replaceAll(REFERENCE, () => STAND_IN),
-    base,
+  const [one, other] = standInsFor(destination).map((standIn) =>
+    piecesOf(destination, standIn, base),
   );
-  return (
-    written !== undefined && PARTS.every((part) => spans(written[part].split(STAND_IN), sent[part]))
-  );
+  if (one === undefined || other === undefined || JSON.stringify(one) !== JSON.stringify(other)) {
+    return false;
+  }
+  return PARTS.every((part, index) => spans(one[index] ?? [], sent[part]));
 }
 
 /**
@@ -235,11 +265,13 @@ function heldTo(
  * What routing came to for a request a rule would have sent to a host it does not name: the
  * request answered by routing itself, with a `400` — the request brought a value the rule cannot be
  * filled in with, as it does a parameter that does not decode (`undecodedResponse`) — and with what
- * else routing collected, but not the `Location`.
+ * else routing collected, but not the `Location`, nor a `Refresh` a rule set beside it, which a
+ * browser follows too.
  */
 function refused(routed: ResolveRoutesResult): ResolveRoutesResult {
   const headers = new Headers(routed.resolvedHeaders);
   headers.delete('location');
+  headers.delete('refresh');
   return { resolvedHeaders: headers, status: HTTP_BAD_REQUEST };
 }
 
