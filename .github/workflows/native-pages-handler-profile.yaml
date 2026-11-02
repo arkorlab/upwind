@@ -34,6 +34,14 @@ jobs:
             option: '--server-minification=off'
             output: independent-pages-handler-profile-server-minification-off
             artifact: UNQUALIFIED-public-pages-handler-server-minification-off
+          - server-minification: default
+            option: '--next=16.4.4'
+            output: independent-pages-handler-profile-next-16.4.4
+            artifact: UNQUALIFIED-public-pages-handler-next-16.4.4
+          - server-minification: off
+            option: '--next=16.4.4 --server-minification=off'
+            output: independent-pages-handler-profile-next-16.4.4-server-minification-off
+            artifact: UNQUALIFIED-public-pages-handler-next-16.4.4-server-minification-off
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

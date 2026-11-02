@@ -16,3 +16,17 @@ export const FIXTURE_FILES = {
 } as const;
 export const SERVER_MINIFICATION_OFF_CONFIG =
   'd3c5b5fab607b9300eb21e847197612fd64b5137490e328f26c33ea44267fcb0';
+/**
+ * The releases a run may compile with. 16.4.3 is the original input; a later one replaces only the
+ * manifest and lock (`fixture-<version>/`), and publishes the same `NEXT_SOURCE`.
+ */
+export const NEXT_RELEASES = {
+  '16.4.3': { swc: SWC_INTEGRITY, files: {} },
+  '16.4.4': {
+    swc: 'sha512-fg3Wr030Y3BDkCXi6HGsPz0BUPTGZJS8TZSrCO0tS3O/KBsCyx4eP6aeaizCpGmcUKhtb4l7JoMc88QO2qBl2g==',
+    files: {
+      'package.json': '3d78dd3baf4b7bf415268c2a2176c562121c5661083a9e0e6bcec23b9f5f9730',
+      'pnpm-lock.yaml': '7691c72d7d1718f8b657ef32d2cdea20f870ef69e80477df2ad9164ef558098e',
+    },
+  },
+} as const;
