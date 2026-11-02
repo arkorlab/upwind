@@ -624,9 +624,10 @@ function conditionsOf(route: Route): Pick<DynamicRoute, 'has' | 'missing'> {
  * bundle whose routes are split across app Functions, which Function each route it picks is in;
  * for one that declares gates, which gated route each lands on (`withGates`); and, where the
  * application keeps its pages behind a trailing slash, that it does, since a member of a class is
- * asked for with the slash too. Where it has `trailingSlash` at all, that a shipped file is found
- * by the slash as well: the router finds one so with the redirect or without it
- * (`routerSpellings`), and `skipTrailingSlashRedirect` leaves only the pages at the build's spelling.
+ * asked for with the slash too. Where it has `trailingSlash` at all, or no redirect takes the slash
+ * off (`skipTrailingSlashRedirect`), that a shipped file is found by the slash as well: the router
+ * finds one so (`routerSpellings`), and `skipTrailingSlashRedirect` leaves only the pages at the
+ * build's spelling.
  */
 export function dynamicRouting(
   bundle: DeploymentBundle,
@@ -639,7 +640,9 @@ export function dynamicRouting(
   const { routing } = bundle;
   const spelled = {
     ...(keepsTrailingSlash(bundle) && { trailingSlash: true }),
-    ...(bundle.config.trailingSlash && { staticFileTrailingSlash: true }),
+    ...((bundle.config.trailingSlash || bundle.config.skipTrailingSlashRedirect) && {
+      staticFileTrailingSlash: true,
+    }),
   };
   if (!reproducesDynamicRouting(bundle)) {
     return { ...spelled };
