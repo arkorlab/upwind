@@ -113,6 +113,32 @@ describe('native Node bridge', () => {
     assert.equal(await response.text(), 'ok');
   });
 
+  /**
+   * Node.js's server closes an idle keep-alive socket a second after its keepAliveTimeout, 6 s after
+   * its last answer by default. A call the Agent sent on that socket as it closed failed with
+   * `read ECONNRESET`. The bridge keeps its idle sockets, so a call after that long reuses one.
+   */
+  it('reuses an idle connection past the time Node.js would close it', async () => {
+    const bridge = fixture();
+    const ports: (number | undefined)[] = [];
+    const call = async (): Promise<void> => {
+      const response = await bridge.invokeNodeHandler(
+        input(async (req, res) => {
+          ports.push(req.socket.remotePort);
+          res.end('ok');
+        }),
+      );
+      assert.equal(await response.text(), 'ok');
+    };
+
+    await call();
+    await delay(6500);
+    await call();
+
+    assert.equal(ports.length, 2);
+    assert.equal(ports[1], ports[0]);
+  }, 20_000);
+
   it('preserves an explicit Host instead of replacing it with the loopback host', async () => {
     const bridge = fixture();
     const response = await bridge.invokeNodeHandler(

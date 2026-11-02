@@ -165,6 +165,11 @@ class NativeBridge implements NodeBridge {
       const server = createServer({ requestTimeout: 0 }, (req, res) => {
         this.#dispatch(req, res);
       });
+      // The Agent keeps a free socket until it closes. Node.js's server closes an idle one a second
+      // after its keepAliveTimeout, 6 s after its last answer by default, and a call the Agent sends
+      // on it as it closes fails with `read ECONNRESET`, which the runtime answers with a 500. Both
+      // ends are this process's, and the Agent bounds its free sockets, so the server keeps them.
+      server.keepAliveTimeout = 0;
       this.#server = server;
       server.on('error', reject);
       // Upgrades and tunnels have no representation in the Request/Response invocation contract.
