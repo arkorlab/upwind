@@ -481,10 +481,13 @@ jobs:
       # theirs. Two steps below add to the checkout: one synchronizes the shared Form test with its
       # prefetch, and what Next.js skips in deploy mode is written as a manifest of its own and copies
       # of cases beside their suites (`Write what Next.js skips in deploy mode`).
+      # A release tag as a tag (`refs/tags/…`): given its name alone, the checkout looks for a branch
+      # of that name first, and a branch can be pushed under any name a tag has. A night's canary is
+      # a commit already, and is checked out as one.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: vercel/next.js
-          ref: ${{ needs.plan.outputs.nextjs }}
+          ref: ${{ startsWith(needs.plan.outputs.nextjs, 'v') && format('refs/tags/{0}', needs.plan.outputs.nextjs) || needs.plan.outputs.nextjs }}
           path: nextjs
           fetch-depth: 25
           persist-credentials: false

@@ -338,6 +338,18 @@ describe('workflow security', () => {
     },
   );
 
+  it('checks a release tag out as a tag, never as a branch of the same name', () => {
+    const checkout = deployTestsWorkflow()
+      .split('\n')
+      .find(
+        (line) => line.trimStart().startsWith('ref:') && line.includes('needs.plan.outputs.nextjs'),
+      );
+
+    expect(checkout).toContain(
+      "startsWith(needs.plan.outputs.nextjs, 'v') && format('refs/tags/{0}', needs.plan.outputs.nextjs)",
+    );
+  });
+
   it.each([
     'canary',
     'refs/heads/canary',
