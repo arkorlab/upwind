@@ -409,7 +409,9 @@ function judgedAlone(
   node: Measured['node'] = entry.nodes?.[0],
 ): Verdict {
   const name = entry.fullName === '*' ? 'any case' : entry.fullName;
-  const result = suiteOf([jestCase(name, 'failed', [message])], {}, entry.suite);
+  // Beside the cases the reading needs to have passed with it, as they did in the run read.
+  const beside = (entry.beside ?? []).map((other) => jestCase(other, 'passed'));
+  const result = suiteOf([jestCase(name, 'failed', [message]), ...beside], {}, entry.suite);
   return judge(
     { target, ...(node !== undefined && { node }), next: entry.next },
     [entry.suite],
@@ -631,6 +633,50 @@ describe('the reviewed cases', () => {
         }
       }
     }
+  });
+});
+
+const STREAM_CANCEL = 'test/e2e/cancel-request/stream-cancel.test.ts';
+const STALLED =
+  'streaming responses cancel inner stream after disconnect middleware cancels stalled stream';
+const PROGRESSING =
+  'streaming responses cancel inner stream after disconnect middleware cancels stream making progress';
+const STREAM_TIMEOUT = `Error: thrown: "Exceeded timeout of 2500 ms for a test."\n    at it (/home/runner/work/upwind/upwind/nextjs/test/e2e/cancel-request/stream-cancel.test.ts:61:5)`;
+
+/** `stream-cancel` on `cloudflare`, its middleware's stalled stream timed out beside `progressing`. */
+function streamCancelVerdict(progressing: string, messages: string[] = []): Verdict {
+  const result = suiteOf(
+    [jestCase(STALLED, 'failed', [STREAM_TIMEOUT]), jestCase(PROGRESSING, progressing, messages)],
+    {},
+    STREAM_CANCEL,
+  );
+  return judge(ON_CLOUDFLARE, [STREAM_CANCEL], new Map([[STREAM_CANCEL, result]]), REVIEWED);
+}
+
+describe('a reading that needs another case to have passed beside it', () => {
+  it('reads a stalled stream where the same route’s progressing stream passed', () => {
+    const verdict = streamCancelVerdict('passed');
+
+    expect(verdict.unexplained).toStrictEqual([]);
+    expect(verdict.cases.reviewed.environment).toBe(1);
+  });
+
+  /** The same timeout where the route's requests themselves stall: no cancellation is to blame. */
+  it('reads nothing where the progressing stream timed out too', () => {
+    const verdict = streamCancelVerdict('failed', [STREAM_TIMEOUT]);
+
+    expect(verdict.unexplained).toStrictEqual([
+      {
+        suite: STREAM_CANCEL,
+        fullName: STALLED,
+        why: `reviewed (a-disconnect-on-cloudflare), but "${PROGRESSING}" did not pass beside it`,
+      },
+      { suite: STREAM_CANCEL, fullName: PROGRESSING, why: 'not reviewed' },
+    ]);
+  });
+
+  it('reads nothing where the progressing stream did not run', () => {
+    expect(streamCancelVerdict('skipped').unexplained).toHaveLength(1);
   });
 });
 

@@ -54,10 +54,19 @@ export interface ReviewedCase {
   readonly symptom?: Symptom;
   /** The heading of `REVIEWED.md` that records it, as GitHub anchors it. */
   readonly record: string;
+  /**
+   * Cases of the same suite that must have passed in the same run for the reading to hold: they make
+   * the requests the read case makes, so a failure of those requests fails them too, and the read
+   * failure is the one recorded rather than one that only looks like it.
+   */
+  readonly beside?: readonly string[];
 }
 
 /** A record's cases: each suite, with the full names of the cases read, or `*` for all of them. */
-interface Group extends Pick<ReviewedCase, 'nodes' | 'reading' | 'record' | 'symptom' | 'targets'> {
+interface Group extends Pick<
+  ReviewedCase,
+  'beside' | 'nodes' | 'reading' | 'record' | 'symptom' | 'targets'
+> {
   readonly cases: Readonly<Record<string, readonly string[]>>;
 }
 
@@ -105,6 +114,16 @@ const PARAMS_NEVER_SHOWN = inOrder(
   "waiting for locator('#params') to be visible",
   'searchparams-reuse-loading.test.ts:287:',
 );
+
+/** `stream-cancel`'s cases, and the routes each is run on. */
+const STREAM_CANCEL = 'streaming responses cancel inner stream after disconnect';
+const STREAM_ROUTES = [
+  'middleware',
+  'edge app route handler',
+  'node app route handler',
+  'edge pages api',
+  'node pages api',
+] as const;
 
 /** Where Vercel registers instrumentation for these cases: in the route handler's own Function. */
 const REGISTERED_IN_THE_ROUTE_HANDLER = [
@@ -452,25 +471,22 @@ const AT_16_4_3: readonly Group[] = [
       ],
     },
   },
-  {
-    reading: 'environment',
-    record: 'a-disconnect-on-cloudflare',
-    targets: ['cloudflare'],
-    symptom: inOrder('Exceeded timeout of 2500 ms for a test.', 'stream-cancel.test.ts:'),
-    cases: {
-      'test/e2e/cancel-request/stream-cancel.test.ts': [
-        'middleware',
-        'edge app route handler',
-        'node app route handler',
-        'edge pages api',
-        'node pages api',
-      ].flatMap((route) => {
-        return ['cancels stalled stream', 'cancels stream that never sent data'].map(
-          (name) => `streaming responses cancel inner stream after disconnect ${route} ${name}`,
-        );
-      }),
-    },
-  },
+  // A stalled stream on each route, read only where the same route's progressing stream passed.
+  ...STREAM_ROUTES.map((route): Group => {
+    return {
+      reading: 'environment',
+      record: 'a-disconnect-on-cloudflare',
+      targets: ['cloudflare'],
+      symptom: inOrder('Exceeded timeout of 2500 ms for a test.', 'stream-cancel.test.ts:'),
+      beside: [`${STREAM_CANCEL} ${route} cancels stream making progress`],
+      cases: {
+        'test/e2e/cancel-request/stream-cancel.test.ts': [
+          `${STREAM_CANCEL} ${route} cancels stalled stream`,
+          `${STREAM_CANCEL} ${route} cancels stream that never sent data`,
+        ],
+      },
+    };
+  }),
   {
     reading: 'environment',
     record: 'a-cache-handler-of-the-applications-own',

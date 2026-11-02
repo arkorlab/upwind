@@ -244,12 +244,19 @@ at build ("the app Function would not run").
 #### A disconnect on `cloudflare`
 
 `stream-cancel` (10 of 15, on `cloudflare`): "cancels stalled stream" and "cancels stream that never
-sent data", for each of its five routes. The test aborts its connection after the first byte and
-expects the route's stream to be cancelled, though the route writes nothing more. workerd notices a
-client's disconnect only when it writes to the response, so a stalled stream is not cancelled, and the
-case times out (2,500 ms). A Worker with no adapter behaves the same. The cases whose stream keeps
-writing ("cancels stream making progress") pass, and on `node` all 15 pass. The deploy manifest
-excludes the suite.
+sent data", on each of its five routes. Each case first makes a request it abandons, then asks the
+route whether the stream it started was cancelled. In "cancels stalled stream", the test aborts the
+connection after the first byte of the body, and the route writes nothing more. In "cancels stream
+that never sent data", it aborts 100 ms after the request, before any response headers, and the route
+has written nothing. workerd notices a client's disconnect only when it writes to the response, so
+neither stream is cancelled, and the case times out (2,500 ms). A Worker with no adapter behaves the
+same, and Next.js excludes the suite from deploy mode because a hosting proxy changes how a
+cancellation reaches it. On `node`, all 15 pass.
+
+A timeout says nothing of which request stalled. So the judge reads these two cases only where the
+same route's "cancels stream making progress" passed in the same run: that case makes the same
+requests and aborts the same way, but its stream keeps writing, so workerd notices the disconnect.
+Where that case fails as well, the route's requests themselves stalled, and nothing is read.
 
 #### A cache handler of the application's own
 
