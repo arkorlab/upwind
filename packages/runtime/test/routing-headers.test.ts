@@ -60,6 +60,47 @@ describe('the headers routing collected, laid on an answer', () => {
     },
   );
 
+  /** Its last write stands: a cookie set, deleted and set again is set (Codex). */
+  it('keep the handler’s own cookies in their order, repeats and all', () => {
+    const set = 'session=active; Path=/';
+    const deleted = 'session=; Path=/; Max-Age=0';
+    const answer = new Response('{}', {
+      headers: [
+        ['set-cookie', set],
+        ['set-cookie', deleted],
+        ['set-cookie', set],
+      ],
+    });
+    const routed = new Headers([['set-cookie', 'from-middleware=1; Path=/']]);
+
+    expect(withRoutingHeaders(answer, routed).headers.getSetCookie()).toStrictEqual([
+      'from-middleware=1; Path=/',
+      set,
+      deleted,
+      set,
+    ]);
+  });
+
+  /**
+   * The handler's copy of routing's cookie does not keep routing's ahead of a value the handler sets
+   * otherwise under that name: routing's still follows it (Codex).
+   */
+  it('keep routing’s after the handler’s other value, though the handler copied routing’s first', () => {
+    const answer = new Response('{}', {
+      headers: [
+        ['set-cookie', 'theme=dark; Path=/'],
+        ['set-cookie', 'theme=light; Path=/'],
+      ],
+    });
+    const routed = new Headers([['set-cookie', 'theme=dark; Path=/']]);
+
+    expect(withRoutingHeaders(answer, routed).headers.getSetCookie()).toStrictEqual([
+      'theme=dark; Path=/',
+      'theme=light; Path=/',
+      'theme=dark; Path=/',
+    ]);
+  });
+
   it('keep the block the edge takes off the end last and whole', () => {
     const answer = new Response('{}', {
       headers: [
