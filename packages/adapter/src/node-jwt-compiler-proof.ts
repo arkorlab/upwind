@@ -294,7 +294,7 @@ async function dependencyEdge(
   edge: { readonly specifier: string; readonly target: string },
   root: string,
 ): Promise<boolean> {
-  if (state.profile.builtins.has(edge.specifier))
+  if (state.profile.builtins.includes(edge.specifier))
     return edge.target.replace(/^node:/u, '') === edge.specifier.replace(/^node:/u, '');
   return edge.specifier === SEMVER && (await semverDependency(state, edge.target, root));
 }

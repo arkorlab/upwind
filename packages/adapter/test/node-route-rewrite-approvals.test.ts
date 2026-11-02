@@ -15,6 +15,7 @@ import {
   completedNodeRouteRewriteApproval,
   type NodeRouteRewriteApprovalBinding,
 } from '../src/node-route-rewrite-approval.ts';
+import { PINNED_NEXT_PACKAGE_JSON } from './fixtures/pinned-next.ts';
 
 function fixture() {
   const entries = [{ id: '/page', filePath: '/authored/.next/page.js' }];
@@ -381,7 +382,7 @@ describe('multiple evaluator source aggregation', () => {
       const file = path.join(root, 'dist/server/load-manifest.external.js');
       await mkdir(path.dirname(file), { recursive: true });
       await writeFile(file, bytes);
-      await writeFile(path.join(root, 'package.json'), '{"name":"next","version":"16.4.3"}');
+      await writeFile(path.join(root, 'package.json'), PINNED_NEXT_PACKAGE_JSON);
       sources.set(name, { file, sha256 });
     }
     const graph: ManifestModuleGraph = {

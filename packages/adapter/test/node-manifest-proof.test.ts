@@ -12,6 +12,7 @@ import { appEntrySource } from '../src/app-entry.ts';
 import { dynamicNodeClosureRefusal } from '../src/node-closure-proof.ts';
 import { assertClientReferenceManifest, proveNodeManifests } from '../src/node-manifest-proof.ts';
 import { assertNodeProofFiles, proveNodeFunction } from '../src/node-proof.ts';
+import { PINNED_NEXT_PACKAGE_JSON } from './fixtures/pinned-next.ts';
 
 const PAGE = '/native/page';
 const SUFFIX = '_client-reference-manifest.js';
@@ -95,7 +96,7 @@ async function fixture(directory: string, directRuntime?: (typeof APP_PAGE_RUNTI
     appEntrySource(entries, { external: true, runtimeDistDir: distDir, nodeRequestMeta: true }),
   ].join('\n');
   await mkdir(path.dirname(manifest), { recursive: true });
-  await writeFile(path.join(root, 'package.json'), '{"name":"next","version":"16.4.3"}');
+  await writeFile(path.join(root, 'package.json'), PINNED_NEXT_PACKAGE_JSON);
   await writeFile(manifest, withDeploymentId());
   await writeFile(route, routeSource(producer));
   await writeFile(analysisEntry, rootCode);

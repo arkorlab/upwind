@@ -71,8 +71,10 @@ The original Next.js manifest consumers and Turbopack runtime target Next.js 16.
 two publish the same reviewed sources but for the page template factory and the server runtimes,
 which are pinned for each release (`node-next-release.ts`), and a package holding another release's
 copy of one is refused. 16.4.4's Turbopack runtime installs no leading strict factory table, which
-16.4.3's chunks may carry, so a chunk with one beside that runtime is refused. Changed compiler or
-template shapes are refused until their source contracts are reviewed. A minified
+16.4.3's chunks may carry, so a chunk with one beside that runtime is refused. A Pages-only
+native build on 16.4.4 is still refused until the reviewed getHandler references of that release
+(`node-manifest-handler-catalog.ts`) are in. Changed compiler or template shapes are refused until
+their source contracts are reviewed. A minified
 CommonJS Pages factory can retain its original sloppy arrow function when its physical module
 mode and closed userland partition are proved alongside the protected template. This inspection
 does not insert a strict directive or change the shipped JavaScript. The adapter leaves the
@@ -165,7 +167,7 @@ refuse artifacts they cannot execute. These errors preserve the application's ru
 
 The dedicated Linux CI control compiles and executes a real N-API binary, creates the actual adapter
 artifact, starts its Node HTTP entry, and checks that independent Worker and Edge routes remain on
-Workers. A separate CI step verifies a pinned, unchanged Next.js native fixture, builds it
+Workers. A separate CI step verifies a pinned, unchanged Next.js 16.4.3 native fixture, builds it
 with the actual adapter and invokes its emitted Node entry on loopback, including `/blog/second`
 with `fallback: true`. The unchanged App Router fixture `test/e2e/app-dir/turbopack-reports` is built
 and invoked the same way. Its pages are prerendered, so the control adds one page rendered for each

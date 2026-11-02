@@ -93,11 +93,6 @@ export function nativeNextReleaseOf(
   );
 }
 
-/** The supported release a `package.json` names, by its version alone. */
-export function nativeNextReleaseNamed(version: unknown): NativeNextRelease | undefined {
-  return NATIVE_NEXT_RELEASES.find((candidate) => candidate.version === version);
-}
-
 /** Whether `sha256` is the published bytes of a release-dependent `relative` in some release. */
 export function isReleaseSource(relative: string, sha256: string): boolean {
   return NATIVE_NEXT_RELEASES.some((candidate) => candidate.sources.get(relative) === sha256);

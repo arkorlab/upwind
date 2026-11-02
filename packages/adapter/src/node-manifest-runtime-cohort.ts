@@ -187,6 +187,7 @@ export function certifyNodeManifestRuntimeCohort(input: {
   const sources = sourcesById(input.sources);
   const boots: BootIdentity[] = [];
   const runtimes = new Map<string, RuntimeIdentity>();
+  let strict = true;
   for (const caller of callers) {
     const source = sources.get(caller.id);
     if (source === undefined) refuse('missing caller source');
@@ -202,7 +203,7 @@ export function certifyNodeManifestRuntimeCohort(input: {
       distDir: input.distDir,
       ...(profile.assetPrefix !== undefined && { assetPrefix: profile.assetPrefix }),
     });
-    flatTables(proof.strictFactoryTables, input.sources);
+    strict &&= proof.strictFactoryTables;
     const identity = {
       id: runtime.id,
       file: runtime.file,
@@ -225,6 +226,7 @@ export function certifyNodeManifestRuntimeCohort(input: {
       }),
     );
   }
+  flatTables(strict, input.sources);
   if (input.requiredBoots.some((file) => boots.every((boot) => boot.file !== file)))
     refuse('unowned required route boot');
   const cohort = Object.freeze({
@@ -340,6 +342,7 @@ export function prepareNodeManifestRuntimeGraphs(input: {
         });
       }) ?? [];
   if (cohort === undefined) {
+    let strict = true;
     for (const graph of graphs) {
       const proof = assertNodeManifestTurbopackRuntime({
         source: graph.runtime.source,
@@ -348,8 +351,9 @@ export function prepareNodeManifestRuntimeGraphs(input: {
         rootDir: input.rootDir,
         ...(input.assetPrefix !== undefined && { assetPrefix: input.assetPrefix }),
       });
-      flatTables(proof.strictFactoryTables, input.sources);
+      strict &&= proof.strictFactoryTables;
     }
+    flatTables(strict, input.sources);
   }
   return { cohort, graphs, allGraphs: [...graphs, ...other] };
 }

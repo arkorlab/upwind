@@ -19,7 +19,7 @@ import {
 } from './node-manifest-graph.ts';
 import {
   isForeignReleaseSource,
-  nativeNextReleaseNamed,
+  nativeNextReleaseOf,
   type NativeNextRelease,
 } from './node-next-release.ts';
 import {
@@ -219,7 +219,7 @@ async function packageSource(root: string): Promise<ManifestProofFile> {
     'name' in metadata &&
     metadata.name === 'next' &&
     'version' in metadata
-      ? nativeNextReleaseNamed(metadata.version)
+      ? nativeNextReleaseOf(sha256(bytes), metadata.version)
       : undefined;
   if (release === undefined) refuse('version or package identity');
   await releaseSources(root, release);

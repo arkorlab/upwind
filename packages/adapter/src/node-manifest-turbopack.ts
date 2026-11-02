@@ -230,16 +230,15 @@ function checkedTurbopackProgram(source: NodeManifestTurbopackSource): Node {
 
 /** Whether a chunk's registration leads with a strict factory table; false for any other program. */
 export function nodeManifestTurbopackNestedTable(source: NodeManifestTurbopackSource): boolean {
-  let table: Node;
   try {
-    table = registration(checkedTurbopackProgram(source));
+    const first = listOf(registration(checkedTurbopackProgram(source)), 'elements')[0];
+    return (
+      isNode(first) &&
+      (first.type === 'ArrayExpression' || strictWrapper(first, true) !== undefined)
+    );
   } catch {
     return false;
   }
-  const first = listOf(table, 'elements')[0];
-  return (
-    isNode(first) && (first.type === 'ArrayExpression' || strictWrapper(first, true) !== undefined)
-  );
 }
 
 /** This validates registration only; no factory body receives a manifest exemption here. */

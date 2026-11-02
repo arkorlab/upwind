@@ -17,6 +17,17 @@ import {
 const INPUTS = new URL('../../../tools/native-pages-handler-profile/', import.meta.url);
 const DEFAULT_FIXTURE = '2527f3cdc79784d6a1fd003332682d651f2b1b3bce5859eb2731e4f71b7a12d4';
 const INTEGRITY = /(integrity: )sha512-[\w+/]+=*/u;
+/** A lock entry of `next` or an `@next/*` package at 16.4.4. */
+const NEXT_ENTRY = /^ {2}"?(?:next|@next\/[\w-]+)@16\.4\.4[:"(]/u;
+
+/** The lock entry, at two spaces, that a line belongs to. */
+function ownerOf(lines: readonly string[], index: number): string {
+  for (let at = index; at >= 0; at -= 1) {
+    const line = lines[at] ?? '';
+    if (/^ {2}\S/u.test(line)) return line;
+  }
+  return '';
+}
 
 function digest(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
@@ -164,18 +175,24 @@ describe('fixed public Pages producer input selection without running the produc
       );
       const changed = later.flatMap((line, index) => {
         const before = original[index] ?? '';
-        return line === before ? [] : [[before, line]];
+        return line === before ? [] : [{ before, line, owner: ownerOf(later, index) }];
       });
 
       expect(later).toHaveLength(original.length);
       expect(changed.length).toBeGreaterThan(0);
 
-      for (const [before = '', line = ''] of changed) {
+      for (const { before, line, owner } of changed) {
         const released = before.replaceAll('16.4.3', '16.4.4');
+        // An integrity changes only in the entry of a package the release itself publishes.
+        const integrity =
+          NEXT_ENTRY.test(owner) &&
+          line.replace(INTEGRITY, '$1') === released.replace(INTEGRITY, '$1');
 
-        expect(
-          line === released || line.replace(INTEGRITY, '$1') === released.replace(INTEGRITY, '$1'),
-        ).toBe(true);
+        expect({ line, owner, kept: line === released || integrity }).toStrictEqual({
+          line,
+          owner,
+          kept: true,
+        });
       }
     },
   );

@@ -18,7 +18,7 @@ export interface NodeJwtCompilerProfile {
   readonly sha256: string;
   readonly bytes: number;
   /** The builtins it loads, each by the exact specifier it writes. */
-  readonly builtins: ReadonlySet<string>;
+  readonly builtins: readonly string[];
   /** The no-op module Next.js substitutes for its `semver`, where it has one. */
   readonly semverSha256?: string;
   site(program: unknown): NodeJwtCompilerSite | undefined;
@@ -44,7 +44,7 @@ export const NODE_JWT_COMPILER_PROFILES: readonly NodeJwtCompilerProfile[] = Obj
     suffix: '/dist/compiled/jsonwebtoken/index.js',
     sha256: '056c2dddba96faa35f4dc0740228a241990561290ff3bd5456c7c7dbc5a7a6b9',
     bytes: 121_051,
-    builtins: new Set(['buffer', 'crypto', 'stream', 'util']),
+    builtins: Object.freeze(['buffer', 'crypto', 'stream', 'util']),
     semverSha256: '34c5853dd094229baa28a8b15b86e2143eeb0de0360530798ef3e9a7890942b6',
     site: (program: unknown) => siteOf('compiler', nodeJwtGlobalRecoverySite(program)),
   }),
@@ -54,7 +54,7 @@ export const NODE_JWT_COMPILER_PROFILES: readonly NodeJwtCompilerProfile[] = Obj
     suffix: '/dist/compiled/fast-jwt/index.js',
     sha256: '8cc4cea3ed6b85a6771a2546bbb88dcd1ca21e6061d89057728d3da4ecccfabf',
     bytes: 131_737,
-    builtins: new Set(['buffer', 'node:crypto', 'node:util', 'util']),
+    builtins: Object.freeze(['buffer', 'node:crypto', 'node:util', 'util']),
     site: (program: unknown) => siteOf('loader', nodeFastJwtBindingSite(program)),
   }),
 ]);
