@@ -43,6 +43,16 @@ export function headerMissing(file: string, lines: readonly string[]): Symptom {
   };
 }
 
+/**
+ * A frame of the stack Jest prints after a snapshot's diff: indented four spaces, `at` a location —
+ * an absolute path, a `file:` URL or a `node:` module, ending in its line and column — or at a
+ * function with its location in parentheses. A line of the snapshot that begins with `at` is shown
+ * behind the diff's own two spaces: taken for the stack's start, it hid every change after it. Only
+ * one indented exactly two spaces, and naming such a location, still reads as a frame.
+ */
+const STACK_FRAME =
+  /^ {4}at (?:[^ ()][^()]* \()?(?:\/|file:\/\/|node:|[A-Za-z]:\\)[^()]*:\d+:\d+\)?$/u;
+
 /** The lines an inline snapshot's failure marks removed and added, in order. */
 function snapshotChanges(
   message: string,
@@ -57,7 +67,7 @@ function snapshotChanges(
     return undefined;
   }
   const diff = lines.slice(start + 1);
-  const end = diff.findIndex((line) => /^\s+at /u.test(line));
+  const end = diff.findIndex((line) => STACK_FRAME.test(line));
   const changed = end === -1 ? diff : diff.slice(0, end);
   const removed: string[] = [];
   const added: string[] = [];
