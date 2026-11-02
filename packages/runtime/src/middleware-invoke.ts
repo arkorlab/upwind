@@ -3,6 +3,7 @@ import { headerRulesFor } from '@stayingupwind/core/manifest';
 import { onLoopbackOrigin } from '@stayingupwind/core/paas';
 import { REDIRECT_STATUSES } from '@stayingupwind/core/request';
 
+import { dataPagePathOf } from './data-locale.ts';
 import { middlewareHandler } from './entries.ts';
 import { edgeJudgesHeaderRules, hasBody } from './incoming.ts';
 import { withHeadersChanged } from './reframe.ts';
@@ -110,7 +111,8 @@ export interface MiddlewareTrace {
 }
 
 /**
- * The URL a middleware is handed: for a data request, the page it is for.
+ * The URL a middleware is handed: for a data request, the page it is for, read as routing reads it
+ * (`dataPagePathOf`): `index/about.json` is `/about`'s.
  *
  * Next.js hands a middleware the page a `_next/data` request asks for, with the query, and the
  * request's `x-nextjs-data` says what it is (`runMiddleware`, `server/next-server.ts`); only
@@ -129,12 +131,38 @@ function middlewareUrl(url: URL, store: Store): URL {
   ) {
     return url;
   }
-  const page = url.pathname.slice(prefix.length, -DATA_SUFFIX.length);
+  const page = dataPagePathOf(url.pathname.slice(prefix.length, -DATA_SUFFIX.length));
   const normalized = new URL(url);
-  const pathname = page === 'index' ? basePath || '/' : `${basePath}/${page}`;
+  const pathname = page === '/' ? basePath || '/' : `${basePath}${page}`;
   // With the trailing slash the application keeps its pages under (`maybeAddTrailingSlash`).
   normalized.pathname = trailingSlash && !pathname.endsWith('/') ? `${pathname}/` : pathname;
   return normalized;
+}
+
+/**
+ * A data request routed under the default locale it did not name (`localizedDataUrl`): the URL it
+ * was routed at, and the URL it came at.
+ */
+export interface LocalizedData {
+  readonly routed: URL;
+  readonly asked: URL;
+}
+
+/**
+ * The URL a middleware is handed for `url`, the one routing invokes it at: a data request routed
+ * under the default locale it did not name is handed as it came, which is what Next.js hands it
+ * (`initURL`, where `skipProxyUrlNormalize` hands the URL as it came) — the locale is the route's,
+ * put in front of it for matching alone (`middleware_next_data`). Handed the routed URL, a
+ * middleware that rewrites by the path it is handed sent the request to a path with the locale in
+ * it (`skip-trailing-slash-redirect`).
+ */
+function asked(url: URL, localized: LocalizedData | undefined): URL {
+  if (url.pathname !== localized?.routed.pathname) {
+    return url;
+  }
+  const original = new URL(url);
+  original.pathname = localized.asked.pathname;
+  return original;
 }
 
 /**
@@ -170,12 +198,14 @@ export function middlewareInvoker(
   input: RoutedInput,
   store: Store,
   trace: MiddlewareTrace,
+  localized?: LocalizedData,
 ): MiddlewareInvoker {
   return async (ctx) => {
     trace.invoked = true;
+    const handed = middlewareUrl(asked(ctx.url, localized), store);
     const response = await runMiddleware(
       input,
-      new Request(middlewareUrl(ctx.url, store), {
+      new Request(handed, {
         method: input.request.method,
         headers: ctx.headers,
         ...(hasBody(input.request.method) && { body: ctx.requestBody, duplex: 'half' }),
