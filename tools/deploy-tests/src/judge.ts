@@ -1,5 +1,6 @@
 import { failureOf, type JestSuite } from './results.ts';
-import type { NodeLine, Reading, ReviewedCase, RunnerTarget, Symptom } from './reviewed.ts';
+import type { NodeLine, Reading, ReviewedCase, RunnerTarget } from './reviewed.ts';
+import type { Symptom } from './symptoms.ts';
 
 /**
  * A shard's results on this machine's targets, judged against the reviewed cases (`reviewed.ts`):
