@@ -706,6 +706,8 @@ describe('workflow security', () => {
     const lines = build.split('\n').map((line) => line.trim());
 
     expect(lines.filter((line) => line.startsWith('id-token:'))).toStrictEqual([]);
+    // What it packs is what is published, so no store a cache brought back goes into it.
+    expect(lines.filter((line) => line.startsWith('cache:'))).toStrictEqual([]);
     expect(lines).toContain('- run: pnpm install --frozen-lockfile');
     expect(lines).toContain('- run: pnpm test');
     expect(lines).toContain('name: tarballs');

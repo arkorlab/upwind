@@ -232,9 +232,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Everything that runs this repository's code and its dependencies' — the install, the build,
-    # every check, the packing — runs here, and this job holds no `id-token`: whatever a dependency or
-    # a restored cache was made to do, it cannot publish anything, and the tarballs it leaves are
-    # checked by the job that can before they go anywhere.
+    # every check, the packing — runs here, and this job holds no `id-token`: whatever a dependency
+    # was made to do, it cannot publish anything, and the tarballs it leaves are checked by the job
+    # that can before they go anywhere.
     permissions:
       contents: read
     steps:
@@ -253,10 +253,14 @@ jobs:
           test "$(git rev-parse HEAD)" = "$VERIFIED_COMMIT"
           test "$(git ls-remote --refs origin "refs/tags/${TAG}" | cut -f1)" = "$VERIFIED_TAG_OBJECT"
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # No `cache`, though nothing here can publish: what is packed below is what gets published,
+      # and a store restored from a cache would be one more thing it was built from, written by
+      # whichever run last saved it. A cache written here would be read by the default branch's
+      # other runs, too. A release installs from the registry, against the lockfile, and pays the
+      # minute that costs.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: package.json
-          cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
@@ -437,8 +441,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: package.json
-          # Deliberately no `cache`: nothing is installed here, and a cache is what a poisoned one
-          # would come back through. And no `registry-url`, which writes an `.npmrc` naming
+          # Deliberately no `cache`: nothing is installed here, and a cache is what a poisoned
+          # store would come back through. And no `registry-url`, which writes an `.npmrc` naming
           # `NODE_AUTH_TOKEN`, and this job has no token to name — what it publishes with, it is handed
           # at the moment it asks.
 
