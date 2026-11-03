@@ -103,7 +103,7 @@ export function stubPlugin(
     name: 'arkor-stubs',
     resolveId: {
       filter: {
-        id: /^(?:require|import)-in-the-middle|^critters$|compiled\/(?:raw-body|ws|jsonwebtoken)$|^(?:node:)?(?:module|process|vm)$/u,
+        id: /^(?:require|import)-in-the-middle|^critters$|compiled\/(?:raw-body|ws|jsonwebtoken|fast-jwt)$|^(?:node:)?(?:module|process|vm)$/u,
       },
       handler(source, importer) {
         // What a stub requires is the module it stands in front of: the `node:module` stub's own

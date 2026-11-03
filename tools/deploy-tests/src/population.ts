@@ -99,8 +99,11 @@ export interface Supplement {
   readonly cases: readonly string[];
 }
 
-/** The release every copy below was taken from: the supported one (`NIGHTLY_NEXTJS_REF`). */
-const NEXT_16_4_3 = { version: '16.4.3', commit: '29bbeab09981148ade186e8599ecdede15abc281' };
+/**
+ * The release every copy below is held to: the supported one (`NIGHTLY_NEXTJS_REF`). Each copy was
+ * taken at 16.4.3, and each suite's directory is the same tree at 16.4.4.
+ */
+const NEXT_16_4_4 = { version: '16.4.4', commit: 'b175f52b05a5f6c6c39ca72565ea178542be323b' };
 
 /**
  * The copies, by upstream suite: of the cases Next.js's suites register otherwise or not at all when
@@ -111,7 +114,7 @@ const NEXT_16_4_3 = { version: '16.4.3', commit: '29bbeab09981148ade186e8599ecde
  */
 export const SUPPLEMENTS: readonly Supplement[] = [
   {
-    next: NEXT_16_4_3,
+    next: NEXT_16_4_4,
     upstream: 'test/e2e/app-dir/app-middleware/app-middleware.test.ts',
     tree: '10b3eddb8636de56dadd428c59a3b8dd1147ebdf',
     source: 'app-dir/app-middleware/app-middleware.supplement.ts',
@@ -119,7 +122,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     cases: ['app-dir with middleware should not incorrectly treat a Location header as a rewrite'],
   },
   {
-    next: NEXT_16_4_3,
+    next: NEXT_16_4_4,
     upstream: 'test/e2e/app-dir/app-middleware-proxy/app-middleware-proxy.test.ts',
     tree: 'c19f21219de2239b1526e7e60567225e10d74e92',
     source: 'app-dir/app-middleware-proxy/app-middleware-proxy.supplement.ts',
@@ -127,7 +130,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     cases: ['app-dir with proxy should not incorrectly treat a Location header as a rewrite'],
   },
   {
-    next: NEXT_16_4_3,
+    next: NEXT_16_4_4,
     upstream: 'test/e2e/app-dir/segment-cache/cached-navigations/cached-navigations.test.ts',
     tree: '4bdb98dbdbff15d86d6ce67a40aea256e4436e42',
     source: 'app-dir/segment-cache/cached-navigations/cached-navigations.supplement.ts',
@@ -138,7 +141,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_3,
+    next: NEXT_16_4_4,
     upstream: 'test/e2e/app-dir/not-found-non-document/not-found-non-document.test.ts',
     tree: 'd856230a3ffe36d621dd888731d0ed0ca67018cd',
     source: 'app-dir/not-found-non-document/not-found-non-document.supplement.ts',
@@ -149,7 +152,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_3,
+    next: NEXT_16_4_4,
     upstream: 'test/e2e/app-dir/use-cache-route-handler-only/use-cache-route-handler-only.test.ts',
     tree: 'e740f6698efd3716d22e8e353b44fe02a1e1bd0b',
     source: 'app-dir/use-cache-route-handler-only/use-cache-route-handler-only.supplement.ts',
@@ -157,7 +160,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     cases: ['use-cache-route-handler-only refreshes cached data after tag revalidation'],
   },
   {
-    next: NEXT_16_4_3,
+    next: NEXT_16_4_4,
     upstream: 'test/e2e/app-dir/app-root-params-getters/use-cache.test.ts',
     tree: 'f95c4fee51d8fd545c08d29a9bd77f908d7c1355',
     source: 'app-dir/app-root-params-getters/use-cache.supplement.ts',
@@ -167,7 +170,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_3,
+    next: NEXT_16_4_4,
     upstream: 'test/e2e/app-dir/segment-cache/prefetch-runtime/prefetch-runtime.test.ts',
     tree: 'bc19b01fb3d8bfa2a6d2e0ddce693e940beb2ce2',
     source: 'app-dir/segment-cache/prefetch-runtime/prefetch-runtime.supplement.ts',
@@ -179,7 +182,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_3,
+    next: NEXT_16_4_4,
     upstream: 'test/e2e/app-dir/segment-cache/prefetch-static-shell/prefetch-static-shell.test.ts',
     tree: '86d8a1a085c3b19f99c9eb8672204a4bd9c722ed',
     source: 'app-dir/segment-cache/prefetch-static-shell/prefetch-static-shell.supplement.ts',

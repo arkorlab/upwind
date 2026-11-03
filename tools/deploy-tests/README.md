@@ -203,18 +203,19 @@ appended `pnpm post-build`, and `postbuild`, so the pnpm setup above is still re
 
 The npm option currently requires **npm 11.19.1**. It uses a two-day minimum release age and allows
 git, remote, directory and file dependencies only when declared by the root application. Its package
-name exemptions match the unversioned entries in Next.js 16.4.3's test-install security profile.
+name exemptions match the unversioned entries in the test-install security profile of Next.js 16.4.3
+and 16.4.4, which is the same in both.
 That profile also has five version-qualified exemptions; npm's name-only matcher cannot express
 them, so this hook omits them rather than exempting every version of those packages. The npm policy
 is consequently more restrictive for those entries.
 
 This is a narrow opt-in: an absent `pnpm-workspace.yaml`, or the exact three-key security profile
-written by Next.js 16.4.3 (standard js-yaml YAML or canonical JSON), is supported. Other workspace
-settings, comments, reordered or custom security profiles are rejected instead of being silently
-ignored. The hook also checks npm's effective security settings privately: a custom `before`, age,
-exemption list or stricter exotic-dependency restriction fails before installation. Registry and
-authentication configuration is not printed. Other npm settings remain in force. A failed policy
-probe or install fails the hook before build or deployment.
+written by Next.js 16.4.3 and 16.4.4 (standard js-yaml YAML or canonical JSON), is supported. Other
+workspace settings, comments, reordered or custom security profiles are rejected instead of being
+silently ignored. The hook also checks npm's effective security settings privately: a custom
+`before`, age, exemption list or stricter exotic-dependency restriction fails before installation.
+Registry and authentication configuration is not printed. Other npm settings remain in force. A
+failed policy probe or install fails the hook before build or deployment.
 
 Choosing npm changes dependency layout and can change installation outcomes. A successful build with
 one manager does not establish that every official test passes, or that the managers have identical

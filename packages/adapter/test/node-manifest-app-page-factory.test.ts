@@ -35,7 +35,7 @@ function source(code: string) {
 }
 async function fixture(directory: string) {
   const template = fileURLToPath(
-    import.meta.resolve('next/dist/build/templates/app-page-runtime.js'),
+    import.meta.resolve('next-16-4-3/dist/build/templates/app-page-runtime.js'),
   );
   const primary = await readFile(template, 'utf8');
   const require = createRequire(template);

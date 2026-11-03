@@ -76,7 +76,7 @@ export interface BoundBatchFixture {
 
 export async function boundBatchFixture(directory: string): Promise<BoundBatchFixture> {
   const published = await realpath(
-    fileURLToPath(import.meta.resolve('next/dist/server/load-manifest.external.js')),
+    fileURLToPath(import.meta.resolve('next-16-4-3/dist/server/load-manifest.external.js')),
   );
   const publishedRoot = path.resolve(path.dirname(published), '../..');
   const root = path.join(directory, 'node_modules/next');

@@ -62,7 +62,7 @@ function routeSource(producer: string): string {
 async function fixture(directory: string, directRuntime?: (typeof APP_PAGE_RUNTIMES)[number]) {
   // Read published source without importing or evaluating a Next.js module.
   const evaluatorFile = fileURLToPath(
-    import.meta.resolve('next/dist/server/load-manifest.external.js'),
+    import.meta.resolve('next-16-4-3/dist/server/load-manifest.external.js'),
   );
   const originalRoot = path.resolve(path.dirname(evaluatorFile), '../..');
   const root = path.join(directory, 'node_modules/next');
@@ -561,7 +561,7 @@ describe('original Node manifest operation proof', () => {
   it('follows the reviewed load-components wrapper to its arbitrary-path consumer', async () => {
     const current = await fixture(directory);
     const bytes = await readFile(
-      fileURLToPath(import.meta.resolve('next/dist/server/load-components.js')),
+      fileURLToPath(import.meta.resolve('next-16-4-3/dist/server/load-components.js')),
     );
     const wrapper = path.join(current.root, 'dist/server/load-components.js');
     await writeFile(wrapper, bytes);

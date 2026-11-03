@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { fails, judge, type Measured, type Verdict } from '../src/judge.ts';
 import type { JestCase, JestSuite } from '../src/results.ts';
-import { indentationOnly, REVIEWED, type ReviewedCase } from '../src/reviewed.ts';
+import { REVIEWED, type ReviewedCase } from '../src/reviewed.ts';
+import { indentationOnly } from '../src/symptoms.ts';
 import type { ShardVerdict } from '../src/verdicts.ts';
 
 const RELEASE = { version: '16.4.3', commit: '29bbeab09981148ade186e8599ecdede15abc281' };
@@ -203,6 +204,16 @@ describe('a shard judged against the reviewed cases', () => {
 });
 
 const AT = '/home/runner/work/upwind/upwind/nextjs/test/e2e/app-dir';
+/** The same, for a suite outside `app-dir`. */
+const AT_E2E = '/home/runner/work/upwind/upwind/nextjs/test/e2e';
+/** How `app-static`'s two pages answered the same value, thrown at `line` of its test. */
+function sameValueAt(line: number): string {
+  return `Error: expect(received).not.toBe(expected) // Object.is equality\n\nExpected: not "data: 0.30350974937330055"\n    at Object.toBe (${AT}/app-static/app-static.test.ts:${String(line)}:27)`;
+}
+/** A manifest's `<link>` without the `crossOrigin` Vercel's preview deployments give it. */
+function noCrossOriginAt(line: number): string {
+  return `Error: expect(received).toEqual(expected) // deep equality\n\n- Expected  - 1\n+ Received  + 1\n\n  Object {\n-   "crossOrigin": "use-credentials",\n+   "crossOrigin": null,\n    "href": "/api/manifest",\n  }\n    at Object.<anonymous> (${AT}/metadata/metadata.test.ts:${String(line)}:7)`;
+}
 
 /** A snapshot of Vercel's build log against Next.js's own (`use-cache-segment-configs`, 16.4.3). */
 const INDENTED = [
@@ -279,6 +290,21 @@ const RECORDED: Readonly<Record<string, readonly string[]>> = {
   ],
   'test/e2e/prerender-native-module.test.ts': [NATIVE_CONTAINER],
   'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': [NATIVE_SPLIT_CONTAINER],
+  'test/e2e/app-dir/metadata/metadata.test.ts': [noCrossOriginAt(95), noCrossOriginAt(132)],
+  'test/e2e/app-dir/searchparams-reuse-loading/searchparams-reuse-loading.test.ts': [
+    `Error: Duplicate request\n    at ${AT}/searchparams-reuse-loading/searchparams-reuse-loading.test.ts:239:27`,
+    `page.waitForSelector: Timeout 10000ms exceeded.\nCall log:\n  - waiting for locator('#params') to be visible\n\n    at Object.waitForElementByCss (${AT}/searchparams-reuse-loading/searchparams-reuse-loading.test.ts:287:38)`,
+  ],
+  'test/e2e/app-dir/i18n-hybrid/i18n-hybrid.test.ts': [
+    `Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 404\nReceived: 200\n    at toBe (${AT}/i18n-hybrid/i18n-hybrid.test.ts:71:26)`,
+  ],
+  'test/e2e/skip-trailing-slash-redirect/index.test.ts': [
+    `Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 200\nReceived: 404\n    at Object.toBe (${AT_E2E}/skip-trailing-slash-redirect/index.test.ts:35:26)`,
+    `page.waitForSelector: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator('#to-another') to be visible\n\n    at Object.elementByCss (${AT_E2E}/skip-trailing-slash-redirect/index.test.ts:127:21)`,
+  ],
+  'test/e2e/cancel-request/stream-cancel.test.ts': [
+    `Error: thrown: "Exceeded timeout of 2500 ms for a test.\nAdd a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."\n    at it (${AT_E2E}/cancel-request/stream-cancel.test.ts:61:5)`,
+  ],
 };
 
 /** What the native suites failed with under Node.js 26: their addon, built at install, did not build. */
@@ -288,6 +314,8 @@ const NATIVE_ON_26 =
 
 /** What a record's cases failed with, where it reads a suite that another record reads otherwise. */
 const RECORDED_RECORDS: Readonly<Record<string, readonly string[]>> = {
+  'a-fetch-keyed-by-its-tags': [sameValueAt(167)],
+  'a-cache-handler-of-the-applications-own': [sameValueAt(189)],
   'native-addons-on-nodejs-26': [NATIVE_ON_26],
   'preview-mode-on-nodejs-26': [
     'Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 200\nReceived: 500',
@@ -381,7 +409,9 @@ function judgedAlone(
   node: Measured['node'] = entry.nodes?.[0],
 ): Verdict {
   const name = entry.fullName === '*' ? 'any case' : entry.fullName;
-  const result = suiteOf([jestCase(name, 'failed', [message])], {}, entry.suite);
+  // Beside the cases the reading needs to have passed with it, as they did in the run read.
+  const beside = (entry.beside ?? []).map((other) => jestCase(other, 'passed'));
+  const result = suiteOf([jestCase(name, 'failed', [message]), ...beside], {}, entry.suite);
   return judge(
     { target, ...(node !== undefined && { node }), next: entry.next },
     [entry.suite],
@@ -450,11 +480,12 @@ describe('the reviewed cases', () => {
         gates: 1,
         failed: 0,
       });
-      expect(gateVerdict(entry, ON_NODE).cases).toMatchObject({ gates: 0, failed: 1 });
+      // Read on both lanes since the night's run of 2026-11-01; a run that names no lane, on neither.
       expect(gateVerdict(entry, { ...ON_NODE, node: '26' }).cases).toMatchObject({
-        gates: 0,
-        failed: 1,
+        gates: 1,
+        failed: 0,
       });
+      expect(gateVerdict(entry, ON_NODE).cases).toMatchObject({ gates: 0, failed: 1 });
       expect(
         gateVerdict(entry, { ...ON_CLOUDFLARE, next: ANOTHER_COMMIT.next }).cases,
       ).toMatchObject({ gates: 0, failed: 1 });
@@ -559,10 +590,12 @@ describe('the reviewed cases', () => {
 
   it('read no lane-specific entry under another Node.js, nor where the run names none', () => {
     const lanes = REVIEWED.filter(({ nodes }) => nodes !== undefined);
+    // An entry read on both lanes has no other lane to be refused under.
+    const oneLane = lanes.filter(({ nodes }) => nodes?.length === 1);
 
-    expect(lanes).not.toHaveLength(0);
+    expect(oneLane).not.toHaveLength(0);
 
-    for (const entry of lanes) {
+    for (const entry of oneLane) {
       const target = entry.targets?.[0] ?? 'node';
       const [message = ''] = recordedFor(entry);
       const other = entry.nodes?.includes('24') === true ? '26' : '24';
@@ -603,6 +636,50 @@ describe('the reviewed cases', () => {
         }
       }
     }
+  });
+});
+
+const STREAM_CANCEL = 'test/e2e/cancel-request/stream-cancel.test.ts';
+const STALLED =
+  'streaming responses cancel inner stream after disconnect middleware cancels stalled stream';
+const PROGRESSING =
+  'streaming responses cancel inner stream after disconnect middleware cancels stream making progress';
+const STREAM_TIMEOUT = `Error: thrown: "Exceeded timeout of 2500 ms for a test."\n    at it (/home/runner/work/upwind/upwind/nextjs/test/e2e/cancel-request/stream-cancel.test.ts:61:5)`;
+
+/** `stream-cancel` on `cloudflare`, its middleware's stalled stream timed out beside `progressing`. */
+function streamCancelVerdict(progressing: string, messages: string[] = []): Verdict {
+  const result = suiteOf(
+    [jestCase(STALLED, 'failed', [STREAM_TIMEOUT]), jestCase(PROGRESSING, progressing, messages)],
+    {},
+    STREAM_CANCEL,
+  );
+  return judge(ON_CLOUDFLARE, [STREAM_CANCEL], new Map([[STREAM_CANCEL, result]]), REVIEWED);
+}
+
+describe('a reading that needs another case to have passed beside it', () => {
+  it('reads a stalled stream where the same route’s progressing stream passed', () => {
+    const verdict = streamCancelVerdict('passed');
+
+    expect(verdict.unexplained).toStrictEqual([]);
+    expect(verdict.cases.reviewed.environment).toBe(1);
+  });
+
+  /** The same timeout where the route's requests themselves stall: no cancellation is to blame. */
+  it('reads nothing where the progressing stream timed out too', () => {
+    const verdict = streamCancelVerdict('failed', [STREAM_TIMEOUT]);
+
+    expect(verdict.unexplained).toStrictEqual([
+      {
+        suite: STREAM_CANCEL,
+        fullName: STALLED,
+        why: `reviewed (a-disconnect-on-cloudflare), but "${PROGRESSING}" did not pass beside it`,
+      },
+      { suite: STREAM_CANCEL, fullName: PROGRESSING, why: 'not reviewed' },
+    ]);
+  });
+
+  it('reads nothing where the progressing stream did not run', () => {
+    expect(streamCancelVerdict('skipped').unexplained).toHaveLength(1);
   });
 });
 

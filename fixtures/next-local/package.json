@@ -8,7 +8,7 @@
     "build:local": "NEXT_ADAPTER_PATH=\"$PWD/../../packages/cache/src/function/adapter.ts\" NEXT_DEPLOYMENT_ID=dpl_4Fixture2Minima1AppXy NEXT_TELEMETRY_DISABLED=1 next build"
   },
   "dependencies": {
-    "next": "16.4.3",
+    "next": "16.4.4",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },

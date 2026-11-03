@@ -19,7 +19,20 @@ A reading is one of four:
   adds, the form of its build log, the directory it builds in. No adapter is asked to do the same.
 - **Upstream.** A defect of Next.js or of the test, reproduced without this adapter. Whether the case
   passes or fails, it says nothing about the adapter.
-- **The environment.** The target's runtime cannot run the application.
+- **The environment.** The target's runtime cannot run the application, or no deployment can run it
+  as it is written.
+
+## Next.js 16.4.4
+
+Read again at commit `b175f52b05a5f6c6c39ca72565ea178542be323b`: every reading of 16.4.3 below holds
+at 16.4.4 as it is written, but [Preview mode on Node.js 26](#preview-mode-on-nodejs-26). Of the
+suites read, 16.4.4 changed only that reading's three, and the judge holds every other case to the
+failure recorded at 16.4.3. On `node` under Node.js 24, every failure of the whole manifest at 16.4.4
+(run 41466624903, before these readings) was a case read below, for that lane.
+
+Preview mode on Node.js 26 is not read at 16.4.4: it signs preview data with `fast-jwt`
+([#100885](https://github.com/vercel/next.js/pull/100885)), which needs no `SlowBuffer`, and its
+three suites changed with it.
 
 ## Next.js 16.4.3
 
@@ -31,6 +44,11 @@ own Node.js is tried before one for every Node.js: under Node.js 26 a suite can 
 far as the failure its other reading records. The readings for Node.js 26 were read from the whole
 manifest run under it on both targets on 2026-10-30 (runs 41023438620 and 41023442374).
 
+The readings of what Next.js skips in deploy mode (`population: skipped`) were read from both targets
+under Node.js 24 at `d5f58869` (runs 41421581410 and 41421588189), after #424, #426, #427, #428 and
+#429 had fixed this adapter's own failures there. They name no Node.js: none of their causes depends
+on it.
+
 ### Deploy gates
 
 The open catch-all and metadata-only readings below were confirmed on the local workerd stack on
@@ -38,8 +56,11 @@ The open catch-all and metadata-only readings below were confirmed on the local 
 and each case failed only with Jest's refusal. The same outcomes were confirmed on the `node` target
 under Node.js 24 in CI: [open catch-all](https://github.com/arkorlab/upwind/actions/runs/41261718209/job/124716183522)
 and [metadata-only](https://github.com/arkorlab/upwind/actions/runs/41261718209/job/124716183487).
-These two readings apply to `cloudflare` and to `node` under Node.js 24; Node.js 26 on `node`
-remains unverified.
+On `node` under Node.js 26, the night's run of 2026-11-01 (run 41331517273, Next.js 16.4.3 at
+`29bbeab09981148ade186e8599ecdede15abc281`, this adapter at `9eded178`) showed the same: both
+bodies completed, and each case failed only with Jest's refusal ([open catch-all](https://github.com/arkorlab/upwind/actions/runs/41331517273/job/124922492633)
+and [metadata-only](https://github.com/arkorlab/upwind/actions/runs/41331517273/job/124922492419)). These two
+readings apply to `cloudflare`, and to `node` under both Node.js 24 and 26.
 
 #### `prerender-encoding`
 
@@ -48,7 +69,7 @@ exact closed catch-all path keeps its encoded slash and answers `200`, as under 
 expects Vercel's filesystem lookup to miss it.
 
 "should preserve an encoded slash in an open catch-all fallback" (1 case, `cloudflare` and `node`
-under Node.js 24, gated at line 50). Its `!deploy || !adapter` gate expects Vercel's adapter path to decode the captured
+under Node.js 24 and 26, gated at line 50). Its `!deploy || !adapter` gate expects Vercel's adapter path to decode the captured
 slash before splitting catch-all values. Here the encoded slash stays within one parameter on both
 the cold request and the repeated request, as the body requires.
 
@@ -62,7 +83,7 @@ expose it.
 #### `segment-cache-metadata`
 
 "requests only the head when the page segments are cached" (1 case, `cloudflare` and `node` under
-Node.js 24, gated at line 150). The source expects a deployed cold ISR path to send its complete static payload, ignoring
+Node.js 24 and 26, gated at line 150). The source expects a deployed cold ISR path to send its complete static payload, ignoring
 the client's metadata-only request tree. Here that request receives the new tenant's title without
 the already-cached page body; the navigation keeps the cached locale content under the new title.
 
@@ -119,6 +140,37 @@ only where its changed lines are the ones recorded: the registration spans missi
 request, or the registration found under the page's request rather than the route handler's. The
 other 21 cases pass.
 
+#### A manifest's `crossOrigin`
+
+`metadata` (2: "should support other basic tags" and its edge variant). When deployed, the test
+expects the manifest's `<link>` to carry `crossOrigin="use-credentials"`. Next.js 16.4.3 sets it only
+where `VERCEL_ENV` is `preview` (`lib/metadata/metadata-elements.js`), which is how Vercel marks a
+preview deployment; anywhere else it leaves the attribute out, and both targets render it so. The
+deploy manifest excludes the suite.
+
+#### A fetch keyed by its tags
+
+`app-static` and `app-static-custom-handler` (1 each: "new tags have been specified on subsequent
+fetch should not fetch from memory cache"). The case runs only when deployed. Two pages fetch the same
+URL with different tags, and the case expects two values, as the remote fetch cache Next.js used on
+Vercel fetched again where the tags differed (`fetch-cache.js`, which 16.4.3 no longer ships).
+Next.js's own fetch cache leaves the tags out of the key: `FileSystemCache` returns the stored entry
+and adds the new tags to it, and the two pages show the same value under `next start` 16.4.3 with no
+adapter. This adapter's fetch cache reads the same key. The deploy manifest lists the case as failing
+on Vercel too. The judge reads only the assertion at line 167.
+
+#### The `_rsc` redirect outside minimal mode
+
+`searchparams-reuse-loading` (1: "With Middleware should correctly return different RSC data for full
+prefetches with different searchParam values"). The fixture's middleware redirects a prefetch and
+drops its `_rsc` query. Outside minimal mode, Next.js answers the redirected request with one more
+redirect that puts `_rsc` back (`server/base-server.js`), which the browser follows without the test's
+`page.route` seeing it. This adapter runs Next.js in minimal mode, as Vercel does, so that request is
+answered 200, and the client router asks again with `_rsc`. The test counts that as the same request
+("Duplicate request", line 239), and the page it then waits for never shows (`#params`, line 287). The
+deploy manifest lists the case as failing on Vercel, and the test says it is skipped in deploy tests
+when middleware is present.
+
 ### Upstream
 
 #### `next-dist-client-esm-import`
@@ -155,8 +207,24 @@ Under Node.js 26, on `node` (12 cases of `prerender-preview`, `preview-fallback`
 `require('buffer').SlowBuffer.prototype` as it loads, and Node.js 26 has no `SlowBuffer`.
 `require('next/dist/compiled/jsonwebtoken')` throws on Node.js 26.13.0 with no adapter ("Cannot read
 properties of undefined (reading 'prototype')"). So the route answers 500 and sets no preview cookie,
-and the pages read without one render as no preview. v16.5.0-canary.30 signs with `fast-jwt`
-instead. On `cloudflare`, workerd's `buffer` still has `SlowBuffer`, and the cases pass.
+and the pages read without one render as no preview. v16.5.0-canary.30 and 16.4.4 sign with
+`fast-jwt` instead. On `cloudflare`, workerd's `buffer` still has `SlowBuffer`, and the cases pass.
+
+#### App Router pages under `i18n`
+
+`i18n-hybrid` (4 of 10: "does not resolve /<locale>/blog/first-post") and the App Router half of
+`skip-trailing-slash-redirect` (5 of its 6 "app dir" cases). Both fixtures configure `i18n` and also
+have App Router pages, which Next.js does not localize: `next start` serves the App Router page at
+`/with-app-dir/another` and answers 404 for `/en-CA/blog/first-post`. The routing Next.js writes for
+an adapter does otherwise. `onBuildComplete` marks every dynamic route for localization once `i18n`
+is set (`shouldLocalize = Boolean(config.i18n)`), and `@next/routing`'s `resolveRoutes` puts the
+default locale in front of the path. Given that fixture's build, `resolveRoutes` alone, with no code of
+this adapter's, resolves no route for `/with-app-dir/another` or `/with-app-dir`, and resolves the
+Pages Router's `/another` as `/en/another`. So `/en-CA/blog/first-post` is answered 200 where 404 is
+expected, and `/with-app-dir/another` 404 where 200 is expected; the client navigations to it never
+find `#to-another`. Next.js excludes both suites from deploy mode, and `i18n-hybrid` keeps its
+locale-less case out of a deployed run "until behavior is corrected". v16.5.0-canary.36 routes them
+the same way.
 
 ### The environment
 
@@ -187,6 +255,36 @@ the adapter refused `turbopack-reports` at build ("Unproved Next.js Turbopack co
 duplicate module registration"): #332's proof covers only the Pages Router, and #388 packages an App
 Router Function with the whole server output instead. Before #332, the audit refused both Functions
 at build ("the app Function would not run").
+
+#### A disconnect on `cloudflare`
+
+`stream-cancel` (10 of 15, on `cloudflare`): "cancels stalled stream" and "cancels stream that never
+sent data", on each of its five routes. Each case first makes a request it abandons, then asks the
+route whether the stream it started was cancelled. In "cancels stalled stream", the test aborts the
+connection after the first byte of the body, and the route writes nothing more. In "cancels stream
+that never sent data", it aborts 100 ms after the request, before any response headers, and the route
+has written nothing. workerd notices a client's disconnect only when it writes to the response, so
+neither stream is cancelled, and the case times out (2,500 ms). A Worker with no adapter behaves the
+same, and Next.js excludes the suite from deploy mode because a hosting proxy changes how a
+cancellation reaches it. On `node`, all 15 pass.
+
+A timeout says nothing of which request stalled. So the judge reads these two cases only where the
+same route's "cancels stream making progress" passed in the same run: that case makes the same
+requests and aborts the same way, but its stream keeps writing, so workerd notices the disconnect.
+Where that case fails as well, the route's requests themselves stalled, and nothing is read.
+
+#### A cache handler of the application's own
+
+`app-static-custom-handler` (1: "new tags have been specified on subsequent fetch should not fetch from
+memory cache after revalidateTag is used", line 189). The fixture's `cacheHandler` keeps its entries
+in a `Map` in its own process, and has no `revalidateTag`. `next start` passes the case only because
+its default `use cache` handler records the expired tags in the same process, where `IncrementalCache`
+checks them before it serves the `Map`'s entry. This adapter keeps tags in its cache host instead,
+which the application's handler never asks, so the entry is served after its tag expired. Next.js
+excludes the suite from deploy mode: a handler that holds its entries in one process does not work
+across instances. Checking each hit of such a handler against the adapter's tags would add a lookup to
+every fetch-cache read of an application with a `cacheHandler`, on the request path, and was decided
+against on 2026-11-01. In `app-static`, with no handler of the application's own, the case passes.
 
 ### Not read here
 

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { rewritePinnedNodeNextFile } from '../src/node-next-pinned-rewrite.ts';
 
-const NEXT = path.dirname(createRequire(import.meta.url).resolve('next/package.json'));
+const NEXT = path.dirname(createRequire(import.meta.url).resolve('next-16-4-3/package.json'));
 const LOADER = 'dist/server/lib/router-utils/instrumentation-globals.external.js';
 const RUNTIME = 'dist/compiled/next-server/app-page-turbo.runtime.prod.js';
 const SELECTOR = 'dist/server/route-modules/app-page/module.compiled.js';

@@ -8,6 +8,7 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http';
+import type { Socket } from 'node:net';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
@@ -80,6 +81,8 @@ interface Invocation {
   accepted: boolean;
   handlerFinished: boolean;
   transportFinished: boolean;
+  /** The request as the server read it, and the server's end of its connection. */
+  served?: { readonly request: IncomingMessage; readonly socket: Socket } | undefined;
 }
 
 function boundedInteger(value: number, name: string): number {
@@ -165,6 +168,11 @@ class NativeBridge implements NodeBridge {
       const server = createServer({ requestTimeout: 0 }, (req, res) => {
         this.#dispatch(req, res);
       });
+      // The Agent keeps a free socket until it closes. Node.js's server closes an idle one a second
+      // after its keepAliveTimeout, 6 s after its last answer by default, and a call the Agent sends
+      // on it as it closes fails with `read ECONNRESET`, which the runtime answers with a 500. Both
+      // ends are this process's, and the Agent bounds its free sockets, so the server keeps them.
+      server.keepAliveTimeout = 0;
       this.#server = server;
       server.on('error', reject);
       // Upgrades and tunnels have no representation in the Request/Response invocation contract.
@@ -204,6 +212,7 @@ class NativeBridge implements NodeBridge {
       });
       this.#clients.add(client);
       let upload: Readable | undefined;
+      let connection: Socket | undefined;
       let answered = false;
       const timer = setTimeout(() => {
         client.destroy(
@@ -220,6 +229,22 @@ class NativeBridge implements NodeBridge {
       client.on('error', (error) => {
         if (!answered) reject(error);
       });
+      client.once('socket', (socket) => {
+        connection = socket;
+      });
+      /**
+       * A server may also stop reading a request before its end, as Next.js does with a Server
+       * Action over its size limit, even where all of it was sent. The rest stays on the connection,
+       * which reads nothing more: a call the Agent sent on it from its pool waited for its headers
+       * deadline, and the server's end, its idle connections being kept, was never closed. So both
+       * ends are dropped, once the answer has been read whole or the call has ended without it.
+       */
+      const dropUnread = (): void => {
+        const { served } = invocation;
+        if (served === undefined || served.request.complete) return;
+        connection?.destroy();
+        served.socket.destroy();
+      };
       client.once('close', () => {
         if (!answered) reject(new Error('native transport closed before response headers'));
         clearTimeout(timer);
@@ -228,6 +253,7 @@ class NativeBridge implements NodeBridge {
         // A server may finish its answer before consuming an upload. A pooled socket must never
         // retain that producer, nor be handed to the next call with unfinished request framing.
         if (upload !== undefined && !upload.readableEnded) upload.destroy();
+        dropUnread();
         invocation.transportFinished = true;
         this.#release(id, invocation);
       });
@@ -246,6 +272,8 @@ class NativeBridge implements NodeBridge {
             upload.destroy();
             client.destroy();
           }
+          // Before the Agent pools the connection, which it does on the next tick.
+          dropUnread();
         });
         clearTimeout(timer);
         try {
@@ -306,6 +334,26 @@ class NativeBridge implements NodeBridge {
     });
     res.on('error', () => {
       // The client-side response stream owns response failures.
+    });
+    // The server keeps idle connections open (`#start`), so a connection that becomes idle while the
+    // bridge closes is ended then: once its answer has finished and its request has been read to
+    // the end, in either order. `server.close()` closes only the connections already idle, and
+    // would otherwise wait for this one until the drain's deadline. Ended, not destroyed, so an
+    // answer still in the socket's buffer reaches the caller before the connection closes.
+    const { socket } = req;
+    invocation.served = { request: req, socket };
+    let answered = false;
+    let received = false;
+    const endIfIdle = (): void => {
+      if (answered && received && this.#stopping) socket.end();
+    };
+    res.once('finish', () => {
+      answered = true;
+      endIfIdle();
+    });
+    req.once('end', () => {
+      received = true;
+      endIfIdle();
     });
     restoreRequest(req, invocation.input.request, invocation.url);
     singleRedirectLocation(res);

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { once } from 'node:events';
 import { type IncomingMessage, request as httpRequest, type ServerResponse } from 'node:http';
+import { Transform, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gzipSync } from 'node:zlib';
 
@@ -84,6 +86,37 @@ async function answerUpload(req: IncomingMessage, res: ServerResponse): Promise<
   res.end(await textOf(req));
 }
 
+/**
+ * A handler that reads its body as Next.js reads a Server Action's: through a size limit. Past the
+ * limit, the pipeline's failure destroys the request, and Node.js reads its connection no further.
+ */
+async function overLimit(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let size = 0;
+  const limit = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      size += chunk.byteLength;
+      callback(size > 64 * 1024 ? new Error('Body exceeded the limit') : null, chunk);
+    },
+  });
+  const sink = new Writable({
+    write(_chunk, _encoding, callback) {
+      callback();
+    },
+  });
+  try {
+    await pipeline(req, limit, sink);
+    res.end('read');
+  } catch {
+    res.statusCode = 413;
+    res.end('too large');
+  }
+}
+
+/** A body the loopback's buffers hold whole, so the bridge sends all of it. */
+function megabyteUpload(): Request {
+  return upload(new Blob([new Uint8Array(1024 * 1024)]).stream());
+}
+
 describe('native Node bridge', () => {
   it('restores rewritten URL and public headers on real Node request/response objects', async () => {
     const bridge = fixture();
@@ -111,6 +144,146 @@ describe('native Node bridge', () => {
       ),
     );
     assert.equal(await response.text(), 'ok');
+  });
+
+  /**
+   * Node.js's server closes an idle keep-alive socket a second after its keepAliveTimeout, 6 s after
+   * its last answer by default. A call the Agent sent on that socket as it closed failed with
+   * `read ECONNRESET`. The bridge keeps its idle sockets, so a call after that long reuses one.
+   */
+  it('reuses an idle connection past the time Node.js would close it', async () => {
+    const bridge = fixture();
+    const sockets: unknown[] = [];
+    const call = async (): Promise<void> => {
+      const response = await bridge.invokeNodeHandler(
+        input(async (req, res) => {
+          sockets.push(req.socket);
+          res.end('ok');
+        }),
+      );
+      assert.equal(await response.text(), 'ok');
+    };
+
+    await call();
+    await delay(6500);
+    await call();
+
+    assert.equal(sockets.length, 2);
+    assert.notEqual(sockets[0], undefined);
+    assert.equal(sockets[1], sockets[0]);
+  }, 20_000);
+
+  /**
+   * Its server keeps idle connections open, so a connection whose answer finished after the bridge
+   * began to close would have kept `close()` waiting until its deadline, and reported it undrained.
+   */
+  it('closes a connection as its answer finishes while the bridge closes', async () => {
+    const bridge = fixture();
+    const started = gate();
+    const release = gate();
+    const answered = bridge.invokeNodeHandler(
+      input(async (_req, res) => {
+        started.resolve();
+        await release.promise;
+        res.end('ok');
+      }),
+    );
+    await started.promise;
+    const closingAt = performance.now();
+    const closing = bridge.close(5000);
+    release.resolve();
+
+    assert.equal(await (await answered).text(), 'ok');
+    assert.equal(await closing, true);
+    assert.ok(performance.now() - closingAt < 2000);
+  });
+
+  /**
+   * An answer can finish before its request has been read to the end. Where the bridge began to
+   * close in between, the connection was not idle when `server.close()` looked, and nothing closed it
+   * once it was (CodeRabbit).
+   */
+  it('ends a connection whose request completes after its answer, while the bridge closes', async () => {
+    const bridge = fixture();
+    const finished = gate();
+    const body = upload(new Blob([new Uint8Array(256 * 1024)]).stream());
+    let resume = (): void => {
+      assert.fail('the handler holds the upload');
+    };
+    const answered = bridge.invokeNodeHandler(
+      input(
+        async (req, res) => {
+          // Held unread past the answer: Node.js reads a request to its end once nothing does.
+          req.on('data', () => {
+            /* The upload's bytes are not this test's. */
+          });
+          req.pause();
+          resume = () => {
+            req.resume();
+          };
+          res.once('finish', () => {
+            finished.resolve();
+          });
+          res.end('early');
+        },
+        { request: body },
+      ),
+    );
+    const response = await answered;
+    assert.equal(await response.text(), 'early');
+    await finished.promise;
+    const closingAt = performance.now();
+    const closing = bridge.close(5000);
+    resume();
+
+    assert.equal(await closing, true);
+    assert.ok(performance.now() - closingAt < 2000);
+  });
+
+  it('does not pool a connection whose server left its request unread', async () => {
+    const bridge = fixture({ headersTimeoutMs: 3000 });
+    const sockets: unknown[] = [];
+    const first = await bridge.invokeNodeHandler(
+      input(
+        async (req, res) => {
+          sockets.push(req.socket);
+          await overLimit(req, res);
+        },
+        { request: megabyteUpload() },
+      ),
+    );
+    assert.equal(first.status, 413);
+    assert.equal(await first.text(), 'too large');
+
+    const second = await bridge.invokeNodeHandler(
+      input(async (req, res) => {
+        sockets.push(req.socket);
+        res.end('second');
+      }),
+    );
+
+    assert.equal(await second.text(), 'second');
+    assert.equal(sockets.length, 2);
+    assert.notEqual(sockets[1], sockets[0]);
+  });
+
+  it('closes the server end of a connection whose request was left unread', async () => {
+    const bridge = fixture();
+    const served = Promise.withResolvers<NodeJS.EventEmitter>();
+    const response = await bridge.invokeNodeHandler(
+      input(
+        async (req, res) => {
+          served.resolve(req.socket);
+          await overLimit(req, res);
+        },
+        { request: megabyteUpload() },
+      ),
+    );
+    const socket = await served.promise;
+    const closed = once(socket, 'close');
+
+    assert.equal(await response.text(), 'too large');
+    await closed;
   });
 
   it('preserves an explicit Host instead of replacing it with the loopback host', async () => {

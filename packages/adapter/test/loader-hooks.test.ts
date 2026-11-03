@@ -343,15 +343,19 @@ describe("workerd's require, under the Function's compatibility date and flags",
   }, 20_000);
 });
 
+/** The preview-data library Next.js compiles in: jsonwebtoken, fast-jwt from 16.4.4. */
+type PreviewDataLibrary = 'jsonwebtoken' | 'fast-jwt';
+const PREVIEW_DATA_LIBRARIES: readonly PreviewDataLibrary[] = ['jsonwebtoken', 'fast-jwt'];
+
 /** A project with Next.js's two modules, and an entry that requires both, as its server does. */
-async function projectRequiringBoth(): Promise<string> {
+async function projectRequiringBoth(library: PreviewDataLibrary): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), 'adapter-stubs-'));
   roots.push(dir);
   await writeFile(
     path.join(dir, 'entry.js'),
-    "module.exports = [require('next/dist/compiled/ws'), require('next/dist/compiled/jsonwebtoken')];\n",
+    `module.exports = [require('next/dist/compiled/ws'), require('next/dist/compiled/${library}')];\n`,
   );
-  for (const name of ['ws', 'jsonwebtoken']) {
+  for (const name of ['ws', library]) {
     const compiled = path.join(dir, 'node_modules', 'next', 'dist', 'compiled', name);
     await mkdir(compiled, { recursive: true });
     await writeFile(path.join(compiled, 'index.js'), `module.exports = { carried: '${name}' };\n`);
@@ -361,8 +365,9 @@ async function projectRequiringBoth(): Promise<string> {
 
 async function bundledWith(
   previewData: boolean,
+  library: PreviewDataLibrary,
 ): Promise<{ readonly source: string; readonly stubbed: string[] }> {
-  const dir = await projectRequiringBoth();
+  const dir = await projectRequiringBoth(library);
   const stubbed: string[] = [];
   await using build = await rolldown({
     cwd: dir,
@@ -400,25 +405,33 @@ describe('the modules Next.js ships for code a Function cannot run', () => {
   });
 
   it('leaves the preview-data library to the build, and refuses to load either, saying why', () => {
-    expect(isStubbedModule('next/dist/compiled/jsonwebtoken')).toBe(false);
     expect(() => load('next/dist/compiled/ws')).toThrow(/workerd has a WebSocket of its own/u);
-    expect(() => load('next/dist/compiled/jsonwebtoken')).toThrow(/no Pages Router route/u);
+
+    for (const library of PREVIEW_DATA_LIBRARIES) {
+      expect(isStubbedModule(`next/dist/compiled/${library}`)).toBe(false);
+      expect(() => load(`next/dist/compiled/${library}`)).toThrow(
+        `next/dist/compiled/${library} is not in this Function: the build has no Pages Router route`,
+      );
+    }
   });
 
-  it('carries the preview-data library where the build has a Pages Router route', async () => {
-    const { source, stubbed } = await bundledWith(true);
+  it.each(PREVIEW_DATA_LIBRARIES)(
+    'carries %s where the build has a Pages Router route',
+    async (library) => {
+      const { source, stubbed } = await bundledWith(true, library);
 
-    expect(stubbed).toStrictEqual(['next/dist/compiled/ws']);
-    // Rolldown writes the fake modules' strings in quotes of its own choosing.
-    expect(source).toMatch(/carried: ["']jsonwebtoken["']/u);
-    expect(source).not.toMatch(/carried: ["']ws["']/u);
-  });
+      expect(stubbed).toStrictEqual(['next/dist/compiled/ws']);
+      // Rolldown writes the fake modules' strings in quotes of its own choosing.
+      expect(source.replaceAll('"', "'")).toContain(`carried: '${library}'`);
+      expect(source).not.toMatch(/carried: ["']ws["']/u);
+    },
+  );
 
-  it('carries neither where it has none', async () => {
-    const { source, stubbed } = await bundledWith(false);
+  it.each(PREVIEW_DATA_LIBRARIES)('carries neither with %s where it has none', async (library) => {
+    const { source, stubbed } = await bundledWith(false, library);
 
     expect(stubbed.toSorted((a, b) => a.localeCompare(b))).toStrictEqual([
-      'next/dist/compiled/jsonwebtoken',
+      `next/dist/compiled/${library}`,
       'next/dist/compiled/ws',
     ]);
     expect(source).not.toContain('carried:');

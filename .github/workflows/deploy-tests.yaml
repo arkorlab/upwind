@@ -66,8 +66,8 @@ on:
           - cloudflare
           - node
       nextjsRef:
-        description: "Next.js release tag to test against (`v16.4.3`, `v16.5.0-canary.25`) — inside the adapter's supported range"
-        default: 'v16.4.3'
+        description: "Next.js release tag to test against (`v16.4.4`, `v16.5.0-canary.25`) — inside the adapter's supported range"
+        default: 'v16.4.4'
         type: string
       tests:
         description: 'Upstream test paths, space separated — or `all` for the whole manifest'
@@ -116,7 +116,7 @@ permissions: {}
 env:
   # The supported release a night's first run and a pull request's run test against: the one a dispatch
   # defaults to (`nextjsRef`), which moves with it. The other night's run resolves npm's canary below.
-  NIGHTLY_NEXTJS_REF: 'v16.4.3'
+  NIGHTLY_NEXTJS_REF: 'v16.4.4'
   # The pieces the runner's targets are cut into, a night's run and a dispatch that names none: as fine
   # as the plan cuts. Both targets in 64 pieces each is 128 jobs, inside the 256 a matrix holds, and
   # each piece about seventeen suites — a job a few minutes long beside its own setup.
