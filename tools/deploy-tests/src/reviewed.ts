@@ -327,6 +327,28 @@ const AT_16_4_3: readonly Group[] = [
   },
   {
     reading: 'upstream',
+    record: 'app-client-cache',
+    // The second wait for the loading state, after the clock moves on: the first follows a wait the
+    // document's own load answers, which leaves no prefetch out.
+    symptom: inOrder(
+      "waiting for locator('#loading') to be visible",
+      'client-cache.original.test.ts:386:',
+    ),
+    // A failed prefetch of this link skips the loading state too. So a failure is read only where the
+    // suite's cases that prefetch again after five minutes, and that prefetch a dynamic page in part,
+    // passed in the same run.
+    beside: [
+      'app dir client cache semantics (30s/5min) prefetch={true} should prefetch again after 5 mins if the link is visible again',
+      'app dir client cache semantics (30s/5min) prefetch={undefined} - default should prefetch partially a dynamic page',
+    ],
+    cases: {
+      'test/e2e/app-dir/app-client-cache/client-cache.original.test.ts': [
+        'app dir client cache semantics (30s/5min) prefetch={undefined} - default should refetch the full page after 5 mins',
+      ],
+    },
+  },
+  {
+    reading: 'upstream',
     record: 'router-autoscroll',
     symptom: inOrder("waiting for locator('#loading-component') to be visible"),
     cases: {

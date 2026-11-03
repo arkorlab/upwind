@@ -173,6 +173,25 @@ when middleware is present.
 
 ### Upstream
 
+#### `app-client-cache`
+
+"should refetch the full page after 5 mins" of `client-cache.original`, read at 16.4.3
+(`29bbeab09981`) from the night's run of 2026-11-02 (run 41491299214), where it failed once on
+`cloudflare` under Node.js 26. The test moves the page's clock five minutes on, goes back to `/`,
+and waits for the links' new prefetches with `waitForIdleNetwork()` before it clicks one. That is the
+document's own network idle, which it reached when it first loaded, so the wait returns at once. A
+click while the link's prefetch is still out finds its route pending, and the router navigates with
+one dynamic request and no loading state, so `#loading` never shows. vercel/next.js#87412 names the
+race and added the waits. The test's own steps on `next start` 16.4.3 with no adapter failed 3 of 20
+runs. The race is the test's and the client router's, so the reading holds on both targets and under
+both Node.js versions.
+
+The judge reads only the second wait for `#loading` (line 386), after the clock moves on: the first
+follows a wait the document's load answers, and fails where the link's prefetch does. A failed
+prefetch of the link would skip the loading state as well, so the judge reads a failure only where
+the suite's cases that prefetch again after five minutes, and that prefetch a dynamic page in part,
+passed in the same run.
+
 #### `next-dist-client-esm-import`
 
 (1 of 1.) When deployed, the test rewrites the fixture's `link:` dependency to `file:`, for npm.

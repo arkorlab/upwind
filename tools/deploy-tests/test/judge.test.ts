@@ -282,6 +282,9 @@ const RECORDED: Readonly<Record<string, readonly string[]>> = {
   'test/e2e/app-dir/next-dist-client-esm-import/next-dist-client-esm-import.test.ts': [
     "Error: Custom deploy script failed: Progress: resolved 1\n  Creating an optimized production build ...\nFATAL: An unexpected Turbopack error occurred:\n  x Expected ';', got 'ident'\n\nCaused by:\n- failed to parse source code",
   ],
+  'test/e2e/app-dir/app-client-cache/client-cache.original.test.ts': [
+    `page.waitForSelector: Timeout 10000ms exceeded.\nCall log:\n\u{1B}[2m  - waiting for locator('#loading') to be visible\u{1B}[22m\n\n    at waitForSelector (/home/runner/work/upwind/upwind/nextjs/test/lib/browsers/playwright.ts:585:29)\n    at Object.<anonymous> (${AT}/app-client-cache/client-cache.original.test.ts:386:34)`,
+  ],
   'test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts': [
     "page.waitForSelector: Timeout 10000ms exceeded.\nCall log:\n  - waiting for locator('#loading-component') to be visible",
   ],
