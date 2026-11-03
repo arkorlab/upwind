@@ -229,10 +229,34 @@ export interface CacheRuntimeOptions {
   readonly holdMs?: number | undefined;
 }
 
+/**
+ * What a data memo's answer says beside the strings counted on their own, in characters as JSON
+ * writes it: its keys, its punctuation, its numbers, its kinds and an invalidation's moments — some
+ * 360 with every field a host answers set, each number at its longest.
+ */
+const DATA_ANSWER_CHARACTERS = 512;
+/** What JSON writes beside each tag of an answer: its two quotes and the comma after it. */
+const TAG_PUNCTUATION_CHARACTERS = 3;
+
+/**
+ * What a data memo holds: its bytes, and its answer, counted in the characters JSON would write it
+ * in, from the lengths of its strings — ids, handler, tags, and the value's base64 or artifact id —
+ * beside an allowance for the rest (`DATA_ANSWER_CHARACTERS`). Written as JSON to be measured, an
+ * answer that carries its value inline was its whole base64 copied into a string of its own on the
+ * path of the read that keeps it: 0.6 ms for a value of 512 KiB, 9.7 ms for one of 8 MiB.
+ */
 function dataBytes(memo: DataMemo): number {
-  return memo.kind === 'missing'
-    ? 0
-    : memo.bytes.buffer.byteLength + JSON.stringify(memo.response).length * UTF16_BYTES;
+  if (memo.kind === 'missing') {
+    return 0;
+  }
+  const { entryId, generationId, entry, value } = memo.response;
+  let characters =
+    DATA_ANSWER_CHARACTERS + entryId.length + generationId.length + (entry.handler?.length ?? 0);
+  for (const tag of entry.tags) {
+    characters += tag.length + TAG_PUNCTUATION_CHARACTERS;
+  }
+  characters += value.kind === 'inline' ? value.base64.length : value.artifactId.length;
+  return memo.bytes.buffer.byteLength + characters * UTF16_BYTES;
 }
 
 function recordBytes(pack: DecodedGenerationPack | null): number {
