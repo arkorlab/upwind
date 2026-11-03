@@ -1,3 +1,4 @@
+import { isImmutableCacheControl, parseCacheControl } from '@stayingupwind/core/assets';
 import {
   type ConfiguredHeaders,
   staticFileStatus,
@@ -18,6 +19,7 @@ import {
   keptByNobody,
   removeSharedCacheOverrides,
   GATED_CACHE_CONTROL,
+  PRIVATE_IMMUTABLE_CACHE_CONTROL,
   REVALIDATE_CACHE_CONTROL,
 } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
@@ -77,6 +79,13 @@ export interface StaticFileInput {
   readonly middlewareMs?: number | undefined;
   /** What `next.config`'s header rules set on this request, as the application would have. */
   readonly configured?: ConfiguredHeaders | undefined;
+  /**
+   * Whether the request named this file itself: asked for it, or for it still where a middleware
+   * rewrite kept it (`staticFileKey`) — not another path a rewrite landed it on the file from. A
+   * build-hashed name is what says the bytes under it never change; the answer for another path is
+   * the middleware's choice for this one request, and the next may be landed elsewhere.
+   */
+  readonly ownName?: boolean | undefined;
 }
 
 /**
@@ -88,6 +97,7 @@ const SERVED_FROM_CACHE: ReadonlySet<string> = new Set(['hit', 'revalidated', 's
 const HTTP_OK = 200;
 const NOT_MODIFIED_STATUS = 304;
 const CONTENT_LENGTH = 'content-length';
+const CACHE_CONTROL = 'cache-control';
 const PARTIAL_CONTENT_STATUS = 206;
 const PRECONDITION_FAILED_STATUS = 412;
 const RANGE_NOT_SATISFIABLE_STATUS = 416;
@@ -104,7 +114,12 @@ const ENTITY_HEADERS: ReadonlySet<string> = new Set([
 ]);
 /**
  * A file the middleware had a say on is what one visitor was allowed; a shared cache must not hand
- * it to the next, however immutable the bytes. The visitor's own cache may keep it, revalidated.
+ * it to the next, however immutable the bytes. The visitor's own cache may keep it, revalidated —
+ * or, where it is a build-hashed file as itself that nothing else made one visitor's
+ * (`heldAsTheFile`), for the year Next.js has every browser keep such a file. The bytes under that
+ * name never change, and the visitor holds them already: all a revalidation could still do is have
+ * the middleware refuse that visitor what it has, and every later view of a page paid a round trip
+ * and a run of the middleware for each script and style sheet it cannot render without.
  *
  * Unless the middleware wrote a `Cache-Control` itself: that is the author saying what this file's
  * answer may be held as, for this request, and it stands as it would in the application
@@ -122,7 +137,7 @@ const ENTITY_HEADERS: ReadonlySet<string> = new Set([
 function middlewareCacheControl(
   middleware: Extract<MiddlewareResult, { kind: 'continue' }>,
 ): string | undefined {
-  return middleware.responseHeaders.get('cache-control') ?? undefined;
+  return middleware.responseHeaders.get(CACHE_CONTROL) ?? undefined;
 }
 
 function etagOf(file: StaticFileEntry): string {
@@ -150,6 +165,26 @@ interface CacheControlOverride {
 
 const UNSHARED_NO_STORE: CacheControlOverride = { value: NO_STORE_CACHE_CONTROL, unshared: true };
 const UNSHARED_GATED: CacheControlOverride = { value: GATED_CACHE_CONTROL, unshared: true };
+const UNSHARED_IMMUTABLE: CacheControlOverride = {
+  value: PRIVATE_IMMUTABLE_CACHE_CONTROL,
+  unshared: true,
+};
+
+/**
+ * Whether the answer is a build-hashed file as itself, which the visitor's browser may keep for as
+ * long as anyone may keep the file: marked immutable, at the name the request asked for
+ * (`ownName`), and under its own status — not one the middleware gave a rewrite (`rewriteStatus`),
+ * which is its say on this one request, and which a browser keeping it for a year would go on
+ * answering with after the middleware had changed its mind.
+ */
+function heldAsTheFile(input: StaticFileInput): boolean {
+  return (
+    input.file.immutable &&
+    input.ownName === true &&
+    input.middleware?.rewriteStatus === undefined &&
+    answersAsItself(input)
+  );
+}
 
 /**
  * Validation must never leave a response in a shared cache; live traffic gets the file's own. A
@@ -173,7 +208,26 @@ function cacheControlFor(
     // middleware alone, which is the only way to see what the two of them came to together.
     const shareable = input.configured?.conditioned !== true && !answered.has('set-cookie');
     const chosen = shareable ? middlewareCacheControl(input.middleware) : undefined;
-    return chosen === undefined ? UNSHARED_GATED : { value: chosen, unshared: false };
+    if (chosen !== undefined) {
+      return { value: chosen, unshared: false };
+    }
+    // Nothing it wrote that stands, beside a cookie or a conditioned rule: kept from shared caches
+    // all the same. A `no-store` stands, the middleware's or a rule's, keeping the answer from every
+    // cache (CodeRabbit, cubic). What the answer carries otherwise is the file's own `cache-control`
+    // or a rule's, which Next.js answers a file with whatever a middleware did (`router-server`,
+    // which gives `_next/static` its year only where nothing set one): a year still to be had is
+    // the visitor's alone where the bytes are all the answer is (`heldAsTheFile`); anything else is
+    // revalidated.
+    const ruled = answered.get(CACHE_CONTROL);
+    if (
+      parseCacheControl(ruled).noStore ||
+      parseCacheControl(middlewareCacheControl(input.middleware) ?? null).noStore
+    ) {
+      return UNSHARED_NO_STORE;
+    }
+    return shareable && heldAsTheFile(input) && isImmutableCacheControl(ruled)
+      ? UNSHARED_IMMUTABLE
+      : UNSHARED_GATED;
   }
   // A rule the request itself selected makes this answer one visitor's, whatever the file's own
   // lifetime says. An immutable hashed file is still the same bytes to everyone — but the headers
@@ -210,7 +264,7 @@ function fileHeaders(input: StaticFileInput, source: string): Headers {
     [CONTENT_LENGTH]: String(file.byteLength),
     [ACCEPT_RANGES]: answersAsItself(input) ? 'bytes' : 'none',
     etag: etagOf(file),
-    'cache-control': defaultCacheControl(file),
+    [CACHE_CONTROL]: defaultCacheControl(file),
   });
   applicationHeaders(input, headers);
   // A client router asked for React Server Components and is answered with the file — a Pages
@@ -242,7 +296,7 @@ function fileHeaders(input: StaticFileInput, source: string): Headers {
   // middleware gated must not be shared.
   const overriding = cacheControlFor(input, headers);
   if (overriding !== undefined) {
-    headers.set('cache-control', overriding.value);
+    headers.set(CACHE_CONTROL, overriding.value);
   }
   // Wherever the edge kept the answer from shared caches — where delivery is private, for a
   // validation, or because it is one visitor's — the lifetimes a rule or a middleware gave them go

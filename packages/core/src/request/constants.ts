@@ -300,6 +300,12 @@ export const REVALIDATE_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
  * have made one visitor's.
  */
 export const GATED_CACHE_CONTROL = 'private, max-age=0, must-revalidate';
+/**
+ * A build-hashed file a middleware let a visitor have, at its own name, that nothing else made one
+ * visitor's: kept from shared caches as `GATED_CACHE_CONTROL` keeps an answer, and held by the
+ * visitor's own browser for the year `IMMUTABLE_CACHE_CONTROL` holds the file for everyone.
+ */
+export const PRIVATE_IMMUTABLE_CACHE_CONTROL = 'private, max-age=31536000, immutable';
 export const CONTINUATION_ACCEPT =
   'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
 
