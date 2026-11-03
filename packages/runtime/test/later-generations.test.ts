@@ -1633,6 +1633,56 @@ describe('a value the host keeps later than the one read', () => {
     await answered.settled;
   });
 
+  /**
+   * Past the deadline, what the isolate has in hand is still taken: the write that overtook the
+   * later value, which a miss would have the render compute again, as a rule more slowly.
+   */
+  it('answers the write that overtook the later value, though the wait has gone by', async () => {
+    const isolate: { runtime?: CacheRuntime } = {};
+    const stale: DataRead = { ...LATER_VALUE, dependencyRevision: 4 };
+    const runtime = hostedBy(runtimeFor(answering), {
+      getNewerData: (_request, than) => {
+        if (than < 4) {
+          return after(150, stale);
+        }
+        // The probe: the write is still out when it is asked, and fences the reads under way.
+        if (isolate.runtime !== undefined) {
+          const written = { key: KEY, entry: READ.entry, bytes: encoder.encode('written') };
+          void writeData(isolate.runtime, written).catch(ignore);
+        }
+        return after(150, undefined);
+      },
+      setData: () => {
+        return new Promise(() => {
+          // The write never lands while the test looks.
+        });
+      },
+    });
+    isolate.runtime = runtime;
+    const held = heldFrom(await withClock(T0, () => readData(runtime, REQUEST)));
+    const written: HeldValue = { ...held, bytes: encoder.encode('written') };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    // The later value judged in 40 ms, so the probe past it is asked 10 ms before the deadline, and
+    // waited for until it; the write the isolate holds is judged at once.
+    const weighing: Weighing = {
+      judge: (value) =>
+        value.revision === 4 ? after(40, 'stale' as const) : Promise.resolve('fresh' as const),
+      reread: () => Promise.resolve(written),
+    };
+
+    const answered = settling(
+      withClock(T0, () => laterIfAny(runtime, REQUEST, { held, validity: 'stale' }, weighing)),
+    );
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(answered.state).toStrictEqual({
+      done: true,
+      value: { held: written, validity: 'fresh' },
+    });
+
+    await answered.settled;
+  });
+
   it('orders the key from its revision though its bytes cannot be read', async () => {
     const clock = { now: T0 };
     const runtime = hostedBy(runtimeFor(answering, clock), {
