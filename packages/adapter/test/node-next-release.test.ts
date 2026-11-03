@@ -66,14 +66,29 @@ describe('the Next.js releases the native Node path qualifies', () => {
   it('holds a release to its own bytes and refuses another release’s', () => {
     const [older, newer] = NATIVE_NEXT_RELEASES;
     const runtime = 'dist/compiled/next-server/pages-turbo.runtime.prod.js';
-    const olderRuntime = older?.sources.get(runtime) ?? '';
+    const olderRuntime = older?.source(runtime) ?? '';
 
-    expect(Object.isFrozen(NATIVE_NEXT_RELEASES)).toBe(true);
-    expect(newer?.sources.get(runtime)).not.toBe(olderRuntime);
+    expect(newer?.source(runtime)).not.toBe(olderRuntime);
     expect(isReleaseSource(runtime, olderRuntime)).toBe(true);
     expect(isForeignReleaseSource(older!, runtime, olderRuntime)).toBe(false);
     expect(isForeignReleaseSource(newer!, runtime, olderRuntime)).toBe(true);
     expect(isForeignReleaseSource(newer!, runtime, 'f'.repeat(64))).toBe(false);
+  });
+
+  it('keeps every release pin immutable to the code that imports it', () => {
+    const [older] = NATIVE_NEXT_RELEASES;
+    const runtime = 'dist/compiled/next-server/pages-turbo.runtime.prod.js';
+    const pinned = older?.source(runtime);
+    const pairs = older?.sources ?? [];
+
+    expect(Object.isFrozen(NATIVE_NEXT_RELEASES)).toBe(true);
+    expect(NATIVE_NEXT_RELEASES.every((release) => Object.isFrozen(release))).toBe(true);
+    expect(Object.isFrozen(pairs)).toBe(true);
+    expect(pairs.every((pair) => Object.isFrozen(pair))).toBe(true);
+    expect(() => {
+      (pairs.find(([relative]) => relative === runtime) as [string, string])[1] = 'f'.repeat(64);
+    }).toThrow(TypeError);
+    expect(older?.source(runtime)).toBe(pinned);
   });
 
   it('names a release by its exact package bytes and version together', () => {

@@ -8,10 +8,12 @@ export interface NativeNextRelease {
   /** The published `package.json`, by its exact bytes. */
   readonly packageJsonSha256: string;
   /**
-   * The reviewed sources that differ between the releases, by path. Every other reviewed source is
-   * the same published bytes in each (`node-manifest-framework.ts`).
+   * The reviewed sources that differ between the releases, as frozen `[path, sha256]` pairs. Every
+   * other reviewed source is the same published bytes in each (`node-manifest-framework.ts`).
    */
-  readonly sources: ReadonlyMap<string, string>;
+  readonly sources: readonly (readonly [string, string])[];
+  /** The reviewed sha256 of a release-dependent source, from a lookup no caller can change. */
+  readonly source: (relative: string) => string | undefined;
 }
 
 const MAX_PACKAGE_BYTES = 65_536;
@@ -41,10 +43,15 @@ function defineRelease(
   sources: readonly string[],
 ): NativeNextRelease {
   if (sources.length !== PATHS.length) throw new TypeError(`Incomplete Next.js ${version} sources`);
+  const pairs = Object.freeze(
+    PATHS.map((relative, index) => Object.freeze([relative, sources[index] ?? ''] as const)),
+  );
+  const byPath: ReadonlyMap<string, string> = new Map(pairs);
   return Object.freeze({
     version,
     packageJsonSha256,
-    sources: new Map(PATHS.map((relative, index) => [relative, sources[index] ?? ''])),
+    sources: pairs,
+    source: (relative: string) => byPath.get(relative),
   });
 }
 
@@ -95,7 +102,7 @@ export function nativeNextReleaseOf(
 
 /** Whether `sha256` is the published bytes of a release-dependent `relative` in some release. */
 export function isReleaseSource(relative: string, sha256: string): boolean {
-  return NATIVE_NEXT_RELEASES.some((candidate) => candidate.sources.get(relative) === sha256);
+  return NATIVE_NEXT_RELEASES.some((candidate) => candidate.source(relative) === sha256);
 }
 
 /** Whether `sha256` is another release's bytes of `relative`, not those of `release`. */
@@ -104,7 +111,7 @@ export function isForeignReleaseSource(
   relative: string,
   sha256: string,
 ): boolean {
-  return release.sources.get(relative) !== sha256 && isReleaseSource(relative, sha256);
+  return release.source(relative) !== sha256 && isReleaseSource(relative, sha256);
 }
 
 /** Whether `relative` names a source whose reviewed bytes depend on the release. */

@@ -120,10 +120,11 @@ The default shared cache and rendering paths remain available. This policy does 
 missing dependency with a stub or allow unresolved application imports.
 
 The fixed Next.js JWT dependency has a separate, source-reviewed initialization profile for each
-release: Next.js 16.4.3 compiles in jsonwebtoken, and 16.4.4 fast-jwt. jsonwebtoken's permits only
-its exact global-recovery compiler site; fast-jwt's names no compiler and permits only the one
-`process.binding("buffer")` read its copy of safer-buffer guards with `!o.kStringMaxLength`, which
-Node.js 24 and 26 never reach. Either is permitted only after proving the original package, closed
+release: Next.js 16.4.3 compiles in jsonwebtoken, and 16.4.4 compiles in fast-jwt. The jsonwebtoken
+profile permits only its exact global-recovery compiler site. The fast-jwt profile permits no
+compiler site and only one `process.binding("buffer")` read, in its copy of safer-buffer, behind a
+`!o.kStringMaxLength` check. Node.js 24 and 26 define `buffer.kStringMaxLength`, so that read
+never runs on them. Either is permitted only after proving the original package, closed
 dependencies, CommonJS callers and completed route closure. The Node bootstrap checks the
 original bytes and required builtin state immediately before CommonJS evaluation, including
 after cache eviction. Changed sources, loader customization and unsupported compiler operations

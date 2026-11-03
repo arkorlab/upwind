@@ -83,7 +83,7 @@ async function candidate(state: State, id: string, own: ManifestGraphFile): Prom
   // The runtime of the release the package is, never another release's copy.
   const release = nativeNextReleaseAt(root) ?? refuse('fixed package identity');
   await source(state, path.join(root, 'package.json'), release.packageJsonSha256);
-  const raw = await source(state, own.file, release.sources.get(RUNTIME) ?? '');
+  const raw = await source(state, own.file, release.source(RUNTIME) ?? '');
   if (
     input.rewriteInput === undefined ||
     previewCertifiedNodeCachePolicy(input.rewrites, input.rewriteInput, {

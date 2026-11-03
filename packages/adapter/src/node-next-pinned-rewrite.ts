@@ -54,7 +54,7 @@ export function rewritePinnedNodeNextFile(
     // The bytes of the release the package is, never another release's copy of the same file.
     const release =
       relative === undefined ? undefined : nativeNextReleaseAt(file.slice(0, -relative.length - 1));
-    if (relative === undefined || release?.sources.get(relative) !== digest(code))
+    if (relative === undefined || release?.source(relative) !== digest(code))
       refuse('pinned cache policy runtime');
     const result = nodeCachePolicyPatch.apply(code, file, input.patch);
     applied.push({ patch: nodeCachePolicyPatch.name, file, result });

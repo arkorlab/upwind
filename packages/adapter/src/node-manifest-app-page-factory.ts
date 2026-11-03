@@ -249,7 +249,7 @@ async function primaryFor(
   const template = await realpath(path.join(root, TEMPLATE));
   if (beneath(root, template) === undefined) return refuse('template path');
   const bytes = await bytesOf(template);
-  if (nativeNextReleaseAt(root)?.sources.get(TEMPLATE) !== digest(bytes))
+  if (nativeNextReleaseAt(root)?.source(TEMPLATE) !== digest(bytes))
     return refuse('template bytes');
   return { root, template, bytes };
 }
