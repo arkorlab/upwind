@@ -124,8 +124,8 @@ export interface HostedGate {
  * What the application's Worker cannot answer in the edge's place, it is not handed to answer:
  * a middleware that failed is asked of it again, alone (`decideMiddleware`), and its decision is
  * acted on here. What it would answer in the edge's place whatever the middleware decides — a page a
- * middleware's decision makes private, a body only one visitor may have — it is handed before the
- * middleware runs (`HostedGate.handOn`), and runs the middleware itself.
+ * middleware's decision makes private — it is handed before the middleware runs
+ * (`HostedGate.handOn`), and runs the middleware itself.
  */
 export async function serveAfterMiddleware(
   input: HostedGateInput | DeferredHostedGateInput,

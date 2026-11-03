@@ -145,18 +145,14 @@ function needsFunction(
 }
 
 /**
- * Why a body is the Function's whatever the middleware decides, known before it runs: one visitor's
- * (`visitorSpecificAhead`), or under rules no shared body may carry (`configuredRefuses`), or under
- * a policy that serves none from records. `undefined` where only the middleware's decision can say
- * — what it adds or takes away, the route it moves the request to (`serveBody`).
+ * Whether the body is the Function's however the middleware lets the request on, known before it
+ * runs: one visitor's (`visitorSpecificAhead`), or under rules no shared body may carry
+ * (`configuredRefuses`). The middleware still runs for such a request (`routeHostedBody`): a rewrite
+ * of its onto a shipped file is the edge's to answer from storage, a file the Function may not carry.
+ * But the body's record is not read beside it: no answer takes the read.
  */
-function refusedAhead(input: RouteBodyInput, configured: ConfiguredHeaders): string | undefined {
-  if (visitorSpecificAhead(input) || configuredRefuses(configured)) {
-    return BODY_UNSHAREABLE;
-  }
-  const disabled =
-    input.manifest.cache === undefined || runtimeCacheOf(input.edge.policy).generations !== 'on';
-  return disabled ? CACHE_DISABLED : undefined;
+function refusedWhateverItDecides(input: RouteBodyInput, configured: ConfiguredHeaders): boolean {
+  return visitorSpecificAhead(input) || configuredRefuses(configured);
 }
 
 /** A read of the record of the body the request was classified as, begun beside the middleware. */
@@ -465,10 +461,11 @@ function serveCurrentBody(
  * Non-document bytes use the existing gate and generation validity, with no HTML composition.
  *
  * The edge can serve a body after the middleware lets the request through, so a matcher covering it
- * is no reason to hand it on. What makes a body the Function's whatever the middleware decides is:
- * that is judged before the middleware runs, and such a request goes to the Function then, which
- * runs the middleware itself (`refusedAhead`). For the rest, the body's record is read beside the
- * middleware rather than behind it (`startRecordRead`).
+ * is no reason to hand it on — nor is what makes the body the Function's whatever the middleware
+ * decides, since the middleware may rewrite the request onto a shipped file, which the edge serves
+ * from storage and the Function may not carry (Codex). The body's record is read beside the
+ * middleware rather than behind it (`startRecordRead`), but for a body no answer would take it for
+ * (`refusedWhateverItDecides`).
  */
 export function routeHostedBody(input: RouteBodyInput): Promise<Response> {
   // The build proves a GET body, not that an explicit HEAD handler has identical semantics.
@@ -493,12 +490,8 @@ export function routeHostedBody(input: RouteBodyInput): Promise<Response> {
   ): Promise<Response> =>
     serveBody(input, { decided: middleware, dispatches, configured, early: taken() });
   return serveAfterMiddleware(input, {
-    handOn: (configured) => {
-      const reason = refusedAhead(input, configured);
-      return reason === undefined ? undefined : input.passthrough(reason);
-    },
-    start: () => {
-      early = startRecordRead(input);
+    start: (configured) => {
+      early = refusedWhateverItDecides(input, configured) ? undefined : startRecordRead(input);
     },
     // What the middleware answered itself, or failed, or what a pattern's cost hands on, takes none.
     abandon: (): undefined => {

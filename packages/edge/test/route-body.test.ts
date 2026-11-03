@@ -15,7 +15,6 @@ import {
   FUNCTION_HEADER,
   HEADER_RULES_JUDGED_HEADER,
   HEADER_RULES_LEFT_HEADER,
-  MIDDLEWARE_DONE_HEADER,
   MISDIRECTED_STATUS,
 } from '@stayingupwind/core/paas';
 import { seedRouteFor } from '@stayingupwind/host/bundle';
@@ -665,7 +664,7 @@ describe('the host serves complete route-body generations', () => {
     }
   });
 
-  it('hands a body under conditioned header rules to the Function before its middleware, which judges both itself', async () => {
+  it('preserves original conditioned header rules after middleware changes request headers', async () => {
     const test = await fixture({
       deferHeaderRules: true,
       headerRules: [
@@ -681,16 +680,10 @@ describe('the host serves complete route-body generations', () => {
       },
     });
     const response = await routed(test, test.manifest, { 'x-before': 'matched' });
-    const calls = test.dispatch.mock.calls as [string, Request][];
-    const handed = calls[0]?.[1];
 
-    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(REPLACEMENT);
+    expect(response.headers.get('x-original-rule')).toBe('retained');
     expect(response.headers.get('cache-control')).toBe(PUBLIC_ANSWER);
-    // One dispatch, the Function's, told of no middleware run and no rules judged for it: it runs
-    // the one and judges the other on the request as it came, as Next.js's router does.
-    expect(calls.map(([script]) => script)).toStrictEqual(['icon-app']);
-    expect(handed?.headers.get(MIDDLEWARE_DONE_HEADER)).toBeNull();
-    expect(handed?.headers.get(HEADER_RULES_JUDGED_HEADER)).toBeNull();
+    expect(test.dispatch).toHaveBeenCalledTimes(2);
 
     await test.drain();
   });
@@ -723,7 +716,7 @@ describe('the host serves complete route-body generations', () => {
       },
     },
   ])(
-    'hands a body that $name makes the Function’s to it before the middleware runs',
+    'runs the middleware for a body that $name makes the Function’s, reading no record beside it',
     async ({
       headers,
       options,
@@ -737,10 +730,14 @@ describe('the host serves complete route-body generations', () => {
       const response = await test.serve(headers === undefined ? {} : { headers });
 
       await expect(response.text()).resolves.toBe('Function');
-      // Neither the middleware nor the record asked: the Function runs the one and needs no other.
-      expect(test.dispatch).not.toHaveBeenCalled();
+      // The middleware asked — it may rewrite onto a shipped file, the edge's to serve — and no
+      // record read beside it, which no answer would take.
+      expect(test.dispatch).toHaveBeenCalledTimes(1);
       expect(test.fallback).toHaveBeenCalledTimes(1);
-      expect(test.fallback).toHaveBeenCalledWith('route-body-unshareable');
+      expect(test.fallback).toHaveBeenCalledWith(
+        'route-body-unshareable',
+        expect.objectContaining({ kind: 'continue' }),
+      );
       expect(get).not.toHaveBeenCalled();
       expect(memory).not.toHaveBeenCalled();
     },
@@ -867,6 +864,36 @@ describe('the host serves complete route-body generations', () => {
       await test.drain();
     },
   );
+
+  it('serves a shipped file a body with credentials is rewritten to from storage (Codex)', async () => {
+    const path = '/_next/static/media/large.png';
+    const bytes = new Uint8Array(128 * 1024).fill(98);
+    const digest = await sha256Hex(bytes);
+    await env.ARTIFACTS.put(blobObjectKey(digest), bytes);
+    const test = await fixture({
+      middlewareHeaders: { 'x-middleware-rewrite': `https://site.example${path}` },
+    });
+    const manifest: ProjectManifest = {
+      ...test.manifest,
+      staticFiles: {
+        [path]: {
+          sha256: digest,
+          byteLength: bytes.byteLength,
+          contentType: 'image/png',
+          immutable: true,
+        },
+      },
+    };
+    const response = await routed(test, manifest, { authorization: 'Bearer visitor' });
+    const actual = new Uint8Array(await response.arrayBuffer());
+
+    // The Function need not carry the file: the middleware ran here, and the edge served it.
+    await expect(sha256Hex(actual)).resolves.toBe(digest);
+    expect(test.dispatch).toHaveBeenCalledTimes(1);
+    expect(test.fallback).not.toHaveBeenCalled();
+
+    await test.drain();
+  });
 
   it.each(
     ['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control'].flatMap((header) =>

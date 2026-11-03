@@ -261,7 +261,7 @@ See the [native server options and supported features](packages/upwind/README.md
 <tr>
 <td valign="top">
 
-**🚦 Middleware that need not wake your app.** `proxy.ts` is also built as a small Function of its own, so an edge can run it first: a request it redirects, answers, or rewrites to a file in storage need never start the application. A request the edge would hand to the application whatever the middleware decides — a static Pages page a matcher covers, a route body only one visitor may have, a page's Flight only the application renders — goes to the application at once instead, which runs the middleware itself: one round trip rather than two.
+**🚦 Middleware that need not wake your app.** `proxy.ts` is also built as a small Function of its own, so an edge can run it first: a request it redirects, answers, or rewrites to a file in storage need never start the application. A request the edge would hand to the application whatever the middleware decides — a static Pages page a matcher covers, a page's Flight only the application renders — goes to the application at once instead, which runs the middleware itself: one round trip rather than two.
 
 </td>
 <td valign="top">

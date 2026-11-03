@@ -51,9 +51,8 @@ in the manifest's deployment and cache scope, with its freshness and privacy vet
 classified route or a public response header alone grants no permission to share its bytes.
 What makes a body the Function's before the middleware runs — a private project, a validation
 request, application credentials on the classified request, header rules that are conditioned,
-refuse sharing or set a cookie — lets a host hand the request to the Function without running the
-middleware, which the Function then runs itself; the middleware's own vetoes are judged after it,
-on what it left.
+refuse sharing or set a cookie — still leaves the middleware to run: it may rewrite the request onto
+a shipped file, which a host serves from storage. A host need not read the body's record beside it.
 
 A complete static Node.js route body may list only the fixed Next.js build protocol headers:
 `host`, `x-matched-path`, `x-prerender-revalidate`, `x-prerender-revalidate-if-generated`,
