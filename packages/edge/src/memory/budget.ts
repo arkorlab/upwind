@@ -142,6 +142,16 @@ export class SharedByteLru<V> {
   }
 
   /**
+   * What `key` holds, without using it: the entry keeps its place in the budget's order. For a value
+   * only looked at to decide something — a record a request is handed on for rather than answered
+   * from (`payload-ahead.ts`) — which `get` would keep ahead of what is served from, as though it
+   * were.
+   */
+  peek(key: string): V | undefined {
+    return this.#entries.get(key)?.value;
+  }
+
+  /**
    * Hold `value`, measured at `bytes`, and say whether it is held. Whatever was held under `key`
    * goes either way: a value too large to hold replaces the one before it with nothing, rather than
    * leaving that one to be served in its place.
