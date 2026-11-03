@@ -327,6 +327,21 @@ const AT_16_4_3: readonly Group[] = [
   },
   {
     reading: 'upstream',
+    record: 'app-client-cache',
+    // The second wait for the loading state, after the clock moves on: the first follows a wait the
+    // document's own load answers, which leaves no prefetch out.
+    symptom: inOrder(
+      "waiting for locator('#loading') to be visible",
+      'client-cache.original.test.ts:386:',
+    ),
+    cases: {
+      'test/e2e/app-dir/app-client-cache/client-cache.original.test.ts': [
+        'app dir client cache semantics (30s/5min) prefetch={undefined} - default should refetch the full page after 5 mins',
+      ],
+    },
+  },
+  {
+    reading: 'upstream',
     record: 'router-autoscroll',
     symptom: inOrder("waiting for locator('#loading-component') to be visible"),
     cases: {
