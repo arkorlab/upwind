@@ -81,6 +81,8 @@ interface Authority {
   readonly fetchImpl: FetchLike;
   /** How many times the delta was asked for. */
   readonly pulls: () => number;
+  /** How many times the window of recent invalidations was asked for. */
+  readonly windows: () => number;
   /** Let the delta answer, where it was held. */
   readonly release: () => void;
 }
@@ -105,20 +107,42 @@ function deltaAtSeven(): Awaited<ReturnType<Gateway['tagsDelta']>> {
   };
 }
 
-/** An authority whose delta stands at revision 7, its answers held until released where asked. */
-function authorityAhead(options: { readonly held?: boolean } = {}): Authority {
+/** The window of recent invalidations an authority at revision 7 answers: the delta's one mark. */
+function windowAtSeven(truncated = false): {
+  revision: number;
+  truncated: boolean;
+  tags: unknown[];
+} {
+  return { revision: 7, truncated, tags: deltaAtSeven().tags };
+}
+
+/**
+ * An authority whose delta stands at revision 7, its answers held until released where asked; and
+ * whose window of recent invalidations answers as `window` says, where it says — a gateway that
+ * fails it otherwise, as one that answers nothing it is not asked of in these tests.
+ */
+function authorityAhead(
+  options: { readonly held?: boolean; readonly window?: () => Response } = {},
+): Authority {
   const gate = Promise.withResolvers<true>();
   if (options.held !== true) {
     gate.resolve(true);
   }
   let pulls = 0;
+  let windows = 0;
   return {
     pulls: () => pulls,
+    windows: () => windows,
     release: () => {
       gate.resolve(true);
     },
     fetchImpl: async (request) => {
-      if (new URL(request.url).pathname.endsWith('/tags/delta')) {
+      const { pathname } = new URL(request.url);
+      if (pathname.endsWith('/tags/recent')) {
+        windows += 1;
+        return options.window?.() ?? new Response('not a tag route', { status: 500 });
+      }
+      if (pathname.endsWith('/tags/delta')) {
         pulls += 1;
         await gate.promise;
         return Response.json({
@@ -334,6 +358,134 @@ describe('an isolate whose view of the tags is behind its scope', () => {
       await Promise.all(sent);
       await Promise.all(behind);
     }
+  });
+
+  /**
+   * A fresh isolate's pull pages through the scope's whole delta, the invalidation the request is
+   * behind on last: the window of recent invalidations brings it in one round trip, and the request
+   * goes on with it, the pull going on behind — for what a regeneration claims, which is the pull's.
+   */
+  it('goes on once a window of recent invalidations brings the view up, the pull still out', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const authority = authorityAhead({
+      held: true,
+      window: () => Response.json({ ok: true, result: windowAtSeven() }),
+    });
+    const runtime = runtimeFor(authority.fetchImpl);
+    const behind: Promise<unknown>[] = [];
+    const state = { done: false };
+    const going = (async () => {
+      await caughtUp(runtime, requestAt(7, SECOND), behind);
+      state.done = true;
+    })();
+    try {
+      await vi.advanceTimersByTimeAsync(1);
+      const caughtUpThen = {
+        done: state.done,
+        seen: runtime.tags.seen,
+        revision: runtime.tags.revision,
+        validity: runtime.tags.validityOf(['products'], T0 - 2 * SECOND, T0),
+      };
+      // The next request behind the same invalidation asks nothing, the pull still out.
+      const next = caughtUp(runtime, requestAt(7, SECOND));
+      await vi.advanceTimersByTimeAsync(1);
+      const askedThen = authority.windows();
+      authority.release();
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.all([next, ...behind]);
+
+      expect(caughtUpThen).toStrictEqual({ done: true, seen: 7, revision: 0, validity: 'expired' });
+      expect(askedThen).toBe(1);
+      expect(behind).toHaveLength(1);
+      expect(runtime.tags.revision).toBe(7);
+      expect({ pulls: authority.pulls(), windows: authority.windows() }).toStrictEqual({
+        pulls: 1,
+        windows: 1,
+      });
+    } finally {
+      authority.release();
+      await going;
+      await Promise.all(behind);
+    }
+  });
+
+  /**
+   * A window that left some out holds the newest invalidations and not the older ones the view may
+   * be behind on: its marks are taken in, and the request waits for the pull as it did before there
+   * was a window.
+   */
+  it('waits for the pull where the window left some out, its marks taken in meanwhile', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const authority = authorityAhead({
+      held: true,
+      window: () => Response.json({ ok: true, result: windowAtSeven(true) }),
+    });
+    const runtime = runtimeFor(authority.fetchImpl);
+    const behind: Promise<unknown>[] = [];
+    const state = { done: false };
+    const going = (async () => {
+      await caughtUp(runtime, requestAt(7, SECOND), behind);
+      state.done = true;
+    })();
+    try {
+      await vi.advanceTimersByTimeAsync(SECOND / 2);
+      const meanwhile = {
+        done: state.done,
+        seen: runtime.tags.seen,
+        validity: runtime.tags.validityOf(['products'], T0 - 2 * SECOND, T0),
+      };
+      authority.release();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(meanwhile).toStrictEqual({ done: false, seen: 0, validity: 'expired' });
+      expect(state.done).toBe(true);
+      expect(runtime.tags.revision).toBe(7);
+    } finally {
+      authority.release();
+      await going;
+      await Promise.all(behind);
+    }
+  });
+
+  /**
+   * Where the view has seen the scope's latest invalidation through a window, a request behind it
+   * asks nothing more, though no pull has brought the view's revision there: a regeneration brings
+   * that up for itself.
+   */
+  it('asks nothing more of a scope a window brought the view up to, though the pull failed', async () => {
+    let pulls = 0;
+    const runtime = runtimeFor((request) => {
+      if (new URL(request.url).pathname.endsWith('/tags/recent')) {
+        return Promise.resolve(Response.json({ ok: true, result: windowAtSeven() }));
+      }
+      pulls += 1;
+      return Promise.resolve(new Response('the authority is away', { status: 503 }));
+    });
+
+    const behind: Promise<unknown>[] = [];
+    await caughtUp(runtime, requestAt(7, SECOND), behind);
+    await Promise.all(behind);
+    const first = { seen: runtime.tags.seen, revision: runtime.tags.revision, pulls };
+    await caughtUp(runtime, requestAt(7, SECOND), behind);
+    await Promise.all(behind);
+
+    expect(first).toStrictEqual({ seen: 7, revision: 0, pulls: 2 });
+    expect(pulls).toBe(2);
+  });
+
+  /** A gateway from before the window answers it 404: the delta brings the view up, as before. */
+  it('catches up through the delta with a gateway that has no window, and asks it no more', async () => {
+    const authority = authorityAhead({
+      window: () => new Response('no such route', { status: 404 }),
+    });
+    const runtime = runtimeFor(authority.fetchImpl);
+
+    await caughtUp(runtime, requestAt(7, SECOND));
+    const first = { revision: runtime.tags.revision, windows: authority.windows() };
+    await caughtUp(runtime, requestAt(9, SECOND));
+
+    expect(first).toStrictEqual({ revision: 7, windows: 1 });
+    expect(authority.windows()).toBe(1);
   });
 
   it('asks its host where the scope stands where the request says nothing', async () => {
