@@ -49,6 +49,10 @@ run any matching middleware, and honour its response, redirect, rewrite or failu
 URL and headers after middleware before selecting a body. Serve only the current trusted record
 in the manifest's deployment and cache scope, with its freshness and privacy vetoes checked. A
 classified route or a public response header alone grants no permission to share its bytes.
+What makes a body the Function's before the middleware runs — a private project, a validation
+request, application credentials on the classified request, header rules that are conditioned,
+refuse sharing or set a cookie — still leaves the middleware to run: it may rewrite the request onto
+a shipped file, which a host serves from storage. A host need not read the body's record beside it.
 
 A complete static Node.js route body may list only the fixed Next.js build protocol headers:
 `host`, `x-matched-path`, `x-prerender-revalidate`, `x-prerender-revalidate-if-generated`,
@@ -126,6 +130,8 @@ middleware privacy, nonce policy and current-generation validity before serving 
 Application response headers never grant this authority. Query, cookie, authorization, conditional,
 router and internal requests retain their existing private paths. A host may forward HEAD without
 reading a full record. `no-transform` remains a prohibition, not a public TTL or sharing grant.
+A matching middleware makes the page private whatever it decides, so a host may hand such a request
+to the Function before running the middleware, and the Function runs it itself.
 
 ## The seam with a host
 

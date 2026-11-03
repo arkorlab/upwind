@@ -21,7 +21,7 @@ import { runtimeCacheOf, type RuntimeCacheSettings } from '@stayingupwind/host/d
 
 import { condemnedIn } from '../cache/condemned.ts';
 import { decideGeneration, type GenerationDecision } from '../cache/decision.ts';
-import { loadGeneration, readServedAgain } from '../cache/generation-hold.ts';
+import { type GenerationLoad, loadGeneration, readServedAgain } from '../cache/generation-hold.ts';
 import { foregroundDocument, shouldAsk, triggerDetached } from '../cache/regenerate.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import { layStoredConfiguredOver, withJudgedRules } from './configured-headers.ts';
@@ -50,6 +50,7 @@ const CONTENT_ENCODING = 'content-encoding';
 const CONTENT_RANGE = 'content-range';
 const SET_COOKIE = 'set-cookie';
 const BODY_UNSHAREABLE = 'route-body-unshareable';
+const CACHE_DISABLED = 'route-body-cache-disabled';
 const ENTITY_HEADERS: ReadonlySet<string> = new Set([
   'accept-ranges',
   'content-length',
@@ -78,13 +79,36 @@ function applicationCredentials(input: RouteBodyInput, headers: Headers): boolea
   return carriesApplicationCredentials(headers, input.edge.host.credentials);
 }
 
-function visitorSpecific(input: RouteBodyInput, headers: Headers): boolean {
+/**
+ * What makes a body one visitor's whatever the middleware decides: the project's, a validation's,
+ * or the credentials the request was classified with — which the middleware taking them away does
+ * not make the request anyone's (`visitorSpecific`).
+ */
+function visitorSpecificAhead(input: RouteBodyInput): boolean {
   return (
     input.edge.privateDelivery ||
     input.edge.validated ||
-    applicationCredentials(input, input.classifiedHeaders) ||
+    applicationCredentials(input, input.classifiedHeaders)
+  );
+}
+
+function visitorSpecific(input: RouteBodyInput, headers: Headers): boolean {
+  return (
+    visitorSpecificAhead(input) ||
     (headers !== input.classifiedHeaders && applicationCredentials(input, headers)) ||
     CONDITIONAL_HEADERS.some((name) => headers.has(name))
+  );
+}
+
+/**
+ * What the rules of `next.config` set that no shared body may carry: conditions, a refusal, or a
+ * cookie. Judged on the request as it came, before the middleware, as Next.js's router judges them.
+ */
+function configuredRefuses(configured: ConfiguredHeaders): boolean {
+  return (
+    configured.conditioned ||
+    configuredRefusesSharing(configured) ||
+    Object.keys(configured.headers).some((name) => name.toLowerCase() === SET_COOKIE)
   );
 }
 
@@ -115,11 +139,58 @@ function needsFunction(
 ): boolean {
   return (
     visitorSpecific(input, headers) ||
-    configured.conditioned ||
-    configuredRefusesSharing(configured) ||
-    Object.keys(configured.headers).some((name) => name.toLowerCase() === SET_COOKIE) ||
+    configuredRefuses(configured) ||
     middlewareRefusesSharing(middleware)
   );
+}
+
+/**
+ * Whether the body is the Function's however the middleware lets the request on, known before it
+ * runs: one visitor's (`visitorSpecificAhead`), or under rules no shared body may carry
+ * (`configuredRefuses`). The middleware still runs for such a request (`routeHostedBody`): a rewrite
+ * of its onto a shipped file is the edge's to answer from storage, a file the Function may not carry.
+ * But the body's record is not read beside it: no answer takes the read.
+ */
+function refusedWhateverItDecides(input: RouteBodyInput, configured: ConfiguredHeaders): boolean {
+  return visitorSpecificAhead(input) || configuredRefuses(configured);
+}
+
+/** A read of the record of the body the request was classified as, begun beside the middleware. */
+interface EarlyRecordRead {
+  readonly entryId: string;
+  readonly load: Promise<GenerationLoad>;
+}
+
+/**
+ * Begin reading the record of the body the request was classified as, so that the answer the
+ * middleware lets through need not wait for its round trip and then for the read in series — as a
+ * shipped file's read is begun (`routeHostedStaticFile`). Nothing for a body off the edge, nor for a
+ * request that carries a condition, which the Function answers unless the middleware takes it away:
+ * a read for those is wasted far more often than not.
+ */
+function startRecordRead(input: RouteBodyInput): EarlyRecordRead | undefined {
+  const { edge, manifest, entry } = input;
+  const settings = runtimeCacheOf(edge.policy);
+  if (
+    manifest.cache === undefined ||
+    settings.generations !== 'on' ||
+    offTheEdge(edge, entry) !== undefined ||
+    CONDITIONAL_HEADERS.some((name) => input.classifiedHeaders.has(name))
+  ) {
+    return undefined;
+  }
+  const key = { scopeId: manifest.cache.scopeId, entryId: entry.entryId };
+  return { entryId: entry.entryId, load: loadGeneration(edge, key, settings) };
+}
+
+/**
+ * Let a read no answer takes finish, into the isolate's memory, for the next request that wants it.
+ * Not counted among the answer's requests: a record's read is not, wherever the edge makes one.
+ */
+function letGo(input: RouteBodyInput, early: EarlyRecordRead | undefined): void {
+  if (early !== undefined) {
+    input.edge.ctx.waitUntil(early.load);
+  }
 }
 
 function metric(
@@ -166,15 +237,30 @@ function metric(
   };
 }
 
-async function serveBody(
+/** What the middleware decided for a body, if it ran, and what was begun for it meanwhile. */
+interface BodyDecided {
+  readonly decided: TimedContinue | undefined;
+  readonly dispatches: number;
+  readonly configured: ConfiguredHeaders;
+  /** The record read begun beside the middleware (`startRecordRead`): taken, or let go. */
+  readonly early: EarlyRecordRead | undefined;
+}
+
+/** The body a request is served once routed past its middleware, or what answers in its place. */
+type Routed =
+  | { readonly entry: RouteBodyEntry; readonly scopeId: string }
+  | { readonly answer: Promise<Response> };
+
+/**
+ * Route a request past what its middleware decided: the controls it set, a rewrite onto a rule or
+ * a shipped file, the body the request then classifies as, and what makes that one the Function's.
+ */
+function routedBody(
   input: RouteBodyInput,
-  decided: TimedContinue | undefined,
-  dispatches: number,
-  configured: ConfiguredHeaders,
-): Promise<Response> {
+  middleware: TimedContinue | undefined,
+  { dispatches, configured }: Pick<BodyDecided, 'dispatches' | 'configured'>,
+): Routed {
   const { edge, manifest } = input;
-  const middleware =
-    decided === undefined ? undefined : withJudgedRules(decided, configured, manifest);
   const url = middleware?.url ?? input.url;
   const headers =
     middleware === undefined
@@ -182,14 +268,14 @@ async function serveBody(
       : handedHeaders(edge, middleware.requestHeaders);
   // Judge middleware controls before forwarding can hide them, and before a rewrite reads a file.
   if (controlledMiddleware(middleware, headers)) {
-    return input.passthrough(BODY_UNSHAREABLE, middleware);
+    return { answer: input.passthrough(BODY_UNSHAREABLE, middleware) };
   }
   if (middleware?.rewritten === true) {
     if (isReserved(manifest, url, headers, true)) {
-      return input.passthrough('reserved', middleware);
+      return { answer: input.passthrough('reserved', middleware) };
     }
     const file = serveHostedFile({ ...input, configured }, url, middleware, dispatches);
-    if (file !== undefined) return file;
+    if (file !== undefined) return { answer: file };
   }
   const classification = classifyRequest({
     method: input.request.method,
@@ -203,23 +289,48 @@ async function serveBody(
     classification.kind !== 'route-body' ||
     needsFunction(input, headers, configured, middleware)
   ) {
-    return input.passthrough(BODY_UNSHAREABLE, middleware);
+    return { answer: input.passthrough(BODY_UNSHAREABLE, middleware) };
   }
   const { entry } = classification;
   const withheld = offTheEdge(edge, entry);
   if (withheld !== undefined) {
-    return input.passthrough(withheld, middleware);
+    return { answer: input.passthrough(withheld, middleware) };
   }
+  if (manifest.cache === undefined || runtimeCacheOf(edge.policy).generations !== 'on') {
+    return { answer: input.passthrough(CACHE_DISABLED, middleware) };
+  }
+  return { entry, scopeId: manifest.cache.scopeId };
+}
+
+/** The body's record: read beside the middleware where that read is this body's, else read now. */
+function recordOf(
+  input: RouteBodyInput,
+  routed: Extract<Routed, { readonly entry: RouteBodyEntry }>,
+  early: EarlyRecordRead | undefined,
+): Promise<GenerationLoad> {
+  if (early?.entryId === routed.entry.entryId) {
+    return early.load;
+  }
+  // The middleware moved the request onto another body: the read begun for the first fills memory.
+  letGo(input, early);
+  const key = { scopeId: routed.scopeId, entryId: routed.entry.entryId };
+  return loadGeneration(input.edge, key, runtimeCacheOf(input.edge.policy));
+}
+
+async function serveBody(input: RouteBodyInput, body: BodyDecided): Promise<Response> {
+  const { edge, manifest } = input;
+  const { decided, dispatches, configured, early } = body;
+  const middleware =
+    decided === undefined ? undefined : withJudgedRules(decided, configured, manifest);
+  const routed = routedBody(input, middleware, body);
+  if ('answer' in routed) {
+    letGo(input, early);
+    return routed.answer;
+  }
+  const { entry } = routed;
   const settings = runtimeCacheOf(edge.policy);
-  if (manifest.cache === undefined || settings.generations !== 'on') {
-    return input.passthrough('route-body-cache-disabled', middleware);
-  }
   const startedAt = edge.runtime.now();
-  const load = await loadGeneration(
-    edge,
-    { scopeId: manifest.cache.scopeId, entryId: entry.entryId },
-    settings,
-  );
+  const load = await recordOf(input, routed, early);
   const decision = decideGeneration(
     load,
     edge.runtime.now(),
@@ -346,7 +457,16 @@ function serveCurrentBody(
   return response;
 }
 
-/** Non-document bytes use the existing gate and generation validity, with no HTML composition. */
+/**
+ * Non-document bytes use the existing gate and generation validity, with no HTML composition.
+ *
+ * The edge can serve a body after the middleware lets the request through, so a matcher covering it
+ * is no reason to hand it on — nor is what makes the body the Function's whatever the middleware
+ * decides, since the middleware may rewrite the request onto a shipped file, which the edge serves
+ * from storage and the Function may not carry (Codex). The body's record is read beside the
+ * middleware rather than behind it (`startRecordRead`), but for a body no answer would take it for
+ * (`refusedWhateverItDecides`).
+ */
 export function routeHostedBody(input: RouteBodyInput): Promise<Response> {
   // The build proves a GET body, not that an explicit HEAD handler has identical semantics.
   if (input.request.method === 'HEAD') return input.passthrough('route-body-head');
@@ -357,7 +477,26 @@ export function routeHostedBody(input: RouteBodyInput): Promise<Response> {
   ) {
     return input.passthrough(BODY_UNSHAREABLE);
   }
+  let early: EarlyRecordRead | undefined;
+  const taken = (): EarlyRecordRead | undefined => {
+    const read = early;
+    early = undefined;
+    return read;
+  };
+  const serve = (
+    middleware: TimedContinue | undefined,
+    dispatches: number,
+    configured: ConfiguredHeaders,
+  ): Promise<Response> =>
+    serveBody(input, { decided: middleware, dispatches, configured, early: taken() });
   return serveAfterMiddleware(input, {
+    start: (configured) => {
+      early = refusedWhateverItDecides(input, configured) ? undefined : startRecordRead(input);
+    },
+    // What the middleware answered itself, or failed, or what a pattern's cost hands on, takes none.
+    abandon: (): undefined => {
+      letGo(input, taken());
+    },
     overBudget: (middleware, _dispatches, configured) => {
       return input.passthrough(
         PATTERN_BUDGET,
@@ -366,9 +505,7 @@ export function routeHostedBody(input: RouteBodyInput): Promise<Response> {
           : withJudgedRules(middleware, configured, input.manifest),
       );
     },
-    serve: (middleware, dispatches, configured) =>
-      serveBody(input, middleware, dispatches, configured),
-    rewritten: (middleware, dispatches, configured) =>
-      serveBody(input, middleware, dispatches, configured),
+    serve,
+    rewritten: serve,
   });
 }

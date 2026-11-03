@@ -1012,20 +1012,16 @@ function keepWhetherRan(request: IncomingMessage, response: ServerResponse): voi
   response.writeHead = ((status: number, headers?: OutgoingHttpHeaders) => {
     // As the account says, where it says: of an answer from what the deployment holds — a shell, a
     // file — or of one handed on for want of a route or a part, or for its route's bypassFor, which
-    // the middleware runs ahead of; and never of one handed on otherwise, whatever ran ahead of it.
+    // the middleware runs ahead of; of a page's whole payload handed on before the middleware ran
+    // (`rsc-payload-ahead`), which says it did not; and never of one handed on otherwise, whatever
+    // ran ahead of it.
     const account = String(headers?.['x-arkor-edge'] ?? '');
-    const fromStorage = [
-      'shell',
-      'static;',
-      'segment;',
-      'payload;',
-      'data;',
-      'passthrough;reason=route-not-proved',
-      'passthrough;reason=bypass-for',
-      'passthrough;reason=segment-prefetch',
-      'passthrough;reason=rsc-payload',
-    ];
-    if (fromStorage.some((prefix) => account.startsWith(prefix))) {
+    const fromStorage = ['shell', 'static;', 'segment;', 'payload;', 'data;'];
+    const handedOn =
+      /^passthrough;reason=(?:route-not-proved|bypass-for|segment-prefetch|rsc-payload|rsc-payload-ahead)(?:;|$)/u.test(
+        account,
+      );
+    if (handedOn || fromStorage.some((prefix) => account.startsWith(prefix))) {
       saidRan.set(trace, account.split(';').includes('mw=hit'));
     }
     return writeHead(status, headers);
@@ -1216,7 +1212,9 @@ function partAskedFor(
   }
   // A page's whole payload the test gives no answer for: handed on to the Function, as the edge
   // hands on one it holds neither the build's nor a runtime generation's of (`composePayload`) —
-  // once the middleware ran, where it covers the page.
+  // once the middleware ran, where it covers the page. One it knows that of before the middleware
+  // runs — a navigation's, say, to a page a resume completes — it hands on then, saying so
+  // (`rsc-payload-ahead`), which a test that needs it answers with.
   return {
     headers: { 'content-type': RSC, 'x-arkor-edge': 'passthrough;reason=rsc-payload;mw=hit' },
     body: 'rendered payload',
@@ -11777,6 +11775,61 @@ describe('what the check makes of the middleware', () => {
           path: '/about',
           reason:
             "its page's props (/_next/data/test/about.json), handed on, taken for no page's props, though its route holds them, nothing turns the request away, and no rule claims it (x-arkor-edge: passthrough;reason=next-internal)",
+        },
+      ]);
+    });
+
+    it("is the application's where the edge hands it on before the middleware, as only the Function renders it — but a static prefetch", async () => {
+      // A page a resume completes, of which the build wrote no payload, under a middleware.
+      const routes = [await routeOf('/', FRONT)];
+      answers.set('/', documentAnswer(FRONT, 'mw=hit;route=/'));
+      const ahead = handedOnAs('passthrough;reason=rsc-payload-ahead', RSC);
+      // As a navigation and a refresh ask for it, and as the router prefetches it with its runtime
+      // parts or as its runtime shell: the Function's render, whatever the middleware decides.
+      for (const asked of ['/|rsc', '/|rsc-prefetch-2', '/|rsc-prefetch-3']) {
+        partAnswers.set(asked, ahead);
+      }
+      const covered = withMiddleware(stackOf(routes, {}), [{ sourceRegex: '^/$' }]);
+      const handedOn = await checkStack(covered);
+      // And prefetched as far as its static part, which saved partial Flight answers.
+      partAnswers.set('/|rsc-prefetch', ahead);
+      const prefetched = await checkStack(covered);
+
+      expect(handedOn.failures).toStrictEqual([]);
+      expect(partsAsked.has('/|rsc')).toBe(true);
+      expect(prefetched.failures).toStrictEqual([
+        {
+          path: '/',
+          reason:
+            'its whole React Server Components payload, prefetched (next-router-prefetch: 1), handed on, before the middleware ran, though it is a static prefetch, which saved partial Flight answers (x-arkor-edge: passthrough;reason=rsc-payload-ahead)',
+        },
+      ]);
+    });
+
+    it('fails where it is handed on before a middleware no matcher of the build runs, or for a payload the build wrote', async () => {
+      const ahead = handedOnAs('passthrough;reason=rsc-payload-ahead', RSC);
+      const resumed = [await routeOf('/', FRONT)];
+      answers.set('/', documentAnswer(FRONT, 'mw=miss;route=/'));
+      partAnswers.set('/|rsc', ahead);
+      const uncovered = await checkStack(stackOf(resumed, {}));
+      const whole = [await routeOf('/', finished, { complete: true, payload: 'payload bytes' })];
+      answers.set('/', finishedAnswer(finished, '/'));
+      const written = await checkStack(
+        withMiddleware(stackOf(whole, {}), [{ sourceRegex: '^/$' }]),
+      );
+
+      expect(uncovered.failures).toStrictEqual([
+        {
+          path: '/',
+          reason:
+            'its whole React Server Components payload, handed on, before the middleware ran, though no matcher of the build covers the request (x-arkor-edge: passthrough;reason=rsc-payload-ahead)',
+        },
+      ]);
+      expect(written.failures).toStrictEqual([
+        {
+          path: '/',
+          reason:
+            "its whole React Server Components payload, handed on, before the middleware ran, though the build wrote the page's payload, which the edge answers it with (x-arkor-edge: passthrough;reason=rsc-payload-ahead)",
         },
       ]);
     });
