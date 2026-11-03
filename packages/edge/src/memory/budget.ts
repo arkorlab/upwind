@@ -152,6 +152,15 @@ export class SharedByteLru<V> {
   }
 
   /**
+   * Whether `key` holds an entry, without using it: nothing is touched, so asking moves the entry
+   * nowhere in the budget's order. A question about what is held is no use of it, and answered as
+   * one, it would keep an entry nobody reads from being the first let go.
+   */
+  has(key: string): boolean {
+    return this.#entries.has(key);
+  }
+
+  /**
    * Hold `value`, measured at `bytes`, and say whether it is held. Whatever was held under `key`
    * goes either way: a value too large to hold replaces the one before it with nothing, rather than
    * leaving that one to be served in its place.
