@@ -66,6 +66,8 @@ export interface NodeManifestTurbopackBootGraph {
   readonly runtime: NodeManifestTurbopackGraphFile;
   /** Full lookup inventory for physical caller checks, including uninstalled table targets. */
   readonly lookupTables?: readonly string[];
+  /** Tables this runtime installs into its ModuleId Map; the full inventory when unproved. */
+  readonly installedTables?: readonly string[];
   /** Topology alone is never a manifest exemption or an SDK normalization terminal. */
   readonly registrationIndex?: NodeManifestRegistrationIndex | undefined;
   readonly requiresReviewedRuntime: true;
@@ -348,6 +350,7 @@ export function nodeManifestTurbopackBootGraph(input: {
     registrationIndex,
     runtime,
     lookupTables: Object.freeze(lookup.map((table) => table.id)),
+    installedTables: Object.freeze(tables.map((table) => table.id)),
     requiresReviewedRuntime: true,
   };
 }

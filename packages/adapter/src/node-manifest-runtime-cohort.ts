@@ -170,9 +170,15 @@ function lookupEdges(
   return Object.freeze(edges);
 }
 
+/** A graph without its installed inventory keeps the full lookup inventory. */
+function installedTables(graph: NodeManifestTurbopackBootGraph): readonly string[] {
+  return [...graph.initialChunks, ...(graph.installedTables ?? graph.lookupTables ?? [])];
+}
+
 /**
  * Beside a runtime that installs no strict factory table (16.4.4's), no table it installs leads
- * with one: only the chunks its graphs load, never another CommonJS source that looks like one.
+ * with one: only the chunks its graphs install, never a lookup-only chunk or another CommonJS
+ * source that looks like one.
  */
 function flatTables(
   strict: boolean,
@@ -180,12 +186,10 @@ function flatTables(
   sources: readonly NodeManifestTurbopackGraphFile[],
 ): void {
   if (strict) return;
-  const loaded = new Set(
-    graphs.flatMap((graph) => [...graph.initialChunks, ...(graph.lookupTables ?? [])]),
-  );
+  const installed = new Set(graphs.flatMap((graph) => installedTables(graph)));
   if (
     sources.some(
-      (source) => loaded.has(source.id) && nodeManifestTurbopackNestedTable(source.source),
+      (source) => installed.has(source.id) && nodeManifestTurbopackNestedTable(source.source),
     )
   )
     refuse('strict factory table beside a runtime that installs none');

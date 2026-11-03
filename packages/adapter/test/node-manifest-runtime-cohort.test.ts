@@ -399,6 +399,29 @@ describe('owned mixed runtime cohort', () => {
     },
   );
 
+  it.each(['16.4.3', '16.4.4'] as const)(
+    'leaves a nested chunk alone that a %s runtime can look up but never installs',
+    async (release) => {
+      const input = await fixture(release);
+      const lookup = `${DIST}/server/chunks/lookup-only.js`;
+      for (const [index, item] of input.sources.entries())
+        if (item.id === RUNTIME || item.id === API_RUNTIME)
+          input.sources[index] = {
+            ...item,
+            imports: [...item.imports, { specifier: lookup, target: lookup }],
+          };
+      input.sources.push({ id: lookup, file: lookup, source: source(NESTED), imports: [] });
+      const owned = { ...input, inventory: await inventory(input.sources) };
+
+      const prepared = prepare(owned);
+
+      expect(prepared.allGraphs.flatMap((graph) => graph.lookupTables ?? [])).toContain(lookup);
+      expect(prepared.allGraphs.flatMap((graph) => graph.installedTables ?? [])).not.toContain(
+        lookup,
+      );
+    },
+  );
+
   it('reads a leading strict factory table where the 16.4.3 runtime installs it', async () => {
     const input = edit(await fixture(), CHUNK, () => NESTED);
 
