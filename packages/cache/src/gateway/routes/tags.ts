@@ -12,13 +12,21 @@ import { readRequest, TAGS_BODY_BYTES } from '../body.ts';
 import { readTagRecords } from '../read-tags.ts';
 import { ok } from '../respond.ts';
 
-/** Invalidations, and the delta a Worker syncs its view of the tags with. */
+/**
+ * Invalidations, the delta a Worker syncs its view of the tags with, and the window of recent ones
+ * it catches up with first.
+ */
 
 const DEFAULT_DELTA_LIMIT = 500;
 
 function nonNegativeInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/** The `limit` a read of the tags asked for, no more than a page may hold (`MAX_DELTA_PAGE_TAGS`). */
+function limitOf(value: string | undefined): number {
+  return Math.max(Math.min(nonNegativeInt(value, DEFAULT_DELTA_LIMIT), MAX_DELTA_PAGE_TAGS), 1);
 }
 
 export const tagRoutes = new Hono<GatewayEnv>()
@@ -41,15 +49,29 @@ export const tagRoutes = new Hono<GatewayEnv>()
   .get('/tags/delta', async (c) => {
     const since = nonNegativeInt(c.req.query('since'), 0);
     // No more than a page may hold (`MAX_DELTA_PAGE_TAGS`), which its reader holds it to.
-    const limit = Math.min(
-      nonNegativeInt(c.req.query('limit'), DEFAULT_DELTA_LIMIT),
-      MAX_DELTA_PAGE_TAGS,
-    );
+    const limit = limitOf(c.req.query('limit'));
     const [delta, retired] = await Promise.all([
-      c.get('scope').tagsDelta(since, Math.max(limit, 1)),
+      c.get('scope').tagsDelta(since, limit),
       retiredScope(c),
     ]);
     return retired ? refuseRetired(c) : ok(c, delta);
+  })
+  // The newest invalidations past `since` that took effect from `from` on (`recentDelta`,
+  // `tagsRecentResponseSchema`): what an isolate behind its scope may find its reads behind on, in
+  // one round trip however long the scope's history is. Its own route, never the delta's: cut at its
+  // oldest end where it holds more than its limit, it is no page a reader of the delta may stand at.
+  // A `from` left out asks from the beginning, which leaves out nothing.
+  .get('/tags/recent', async (c) => {
+    const since = nonNegativeInt(c.req.query('since'), 0);
+    const from = nonNegativeInt(c.req.query('from'), 0);
+    const limit = limitOf(c.req.query('limit'));
+    const [recent, retired] = await Promise.all([
+      c.get('scope').tagsDelta(since, limit, from),
+      retiredScope(c),
+    ]);
+    return retired
+      ? refuseRetired(c)
+      : ok(c, { revision: recent.revision, truncated: recent.truncated, tags: recent.tags });
   })
   .post('/invalidations', async (c) => {
     const request = await readRequest(c, invalidateRequestSchema, TAGS_BODY_BYTES);

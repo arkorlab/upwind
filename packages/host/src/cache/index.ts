@@ -160,6 +160,8 @@ export {
   tagsGetRequestSchema,
   tagsGetResponseSchema,
   type TagsGetResponse,
+  type TagsRecentResponse,
+  tagsRecentResponseSchema,
 } from './gateway-contract.ts';
 export {
   type CacheNaming,

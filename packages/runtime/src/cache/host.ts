@@ -120,6 +120,19 @@ export interface CacheHost {
    */
   tagsDelta(since: number): Promise<TagDelta>;
 
+  /**
+   * The newest invalidations recorded past `since` that took effect at `from` or later (unix ms, by
+   * the clock the host stamps them with), as many as the host answers at once, each as it was
+   * recorded: what an isolate whose view is behind its scope may still find its reads behind on, in
+   * one call, where `tagsDelta` brings every invalidation the scope ever recorded, oldest first, a
+   * call a page — the newest last. Not a page of the delta: the view holds one that left nothing out
+   * for what it judges a request's reads by, never for what a regeneration claims it judged against
+   * (`TagState.seen`). Optional; a host without it, or one that throws a `CacheHostError` with the
+   * code `unsupported` — a host whose store has no such call after all — is caught up with through
+   * `tagsDelta` alone.
+   */
+  tagsRecent?(since: number, from: number): Promise<TagWindow>;
+
   /** Record an invalidation against these tags, and say what it made of each. */
   invalidate(request: InvalidateRequest): Promise<InvalidateOutcome>;
 
@@ -138,7 +151,7 @@ export interface CacheHost {
  * A call the host refused, as the runtime reports it.
  *
  * `code` is the host's own word for the refusal, and is logged. One word is agreed, and acted on:
- * `unsupported`, from a call the host turns out not to have (`uploadArtifacts`), whose work the
+ * `unsupported`, from a call the host turns out not to have (`uploadArtifacts`, `tagsRecent`), whose work the
  * runtime then does as it did before there was such a call. Nothing else it does next depends on
  * which refusal it was.
  */
@@ -437,6 +450,14 @@ export interface TagDelta extends TagInvalidations {
   /** The revision the delta was read at: the next `since`. */
   readonly revision: number;
   /** Set when more remains past what this answer holds. */
+  readonly truncated: boolean;
+}
+
+/** The newest invalidations past a revision that took effect lately (`CacheHost.tagsRecent`). */
+export interface TagWindow extends TagInvalidations {
+  /** The revision of the scope the window was read at: no invalidation it holds is past it. */
+  readonly revision: number;
+  /** Set where there were more than the answer holds: the oldest are the ones left out. */
   readonly truncated: boolean;
 }
 
