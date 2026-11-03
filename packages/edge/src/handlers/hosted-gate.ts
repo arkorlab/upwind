@@ -55,6 +55,16 @@ export interface DeferredHostedGateInput extends HostedGateInput<StaticFileConte
 export type TimedContinue = MiddlewareContinued & Partial<MiddlewareTiming>;
 
 export interface HostedGate {
+  /**
+   * Hand the request on to the Function before the middleware runs, where what the edge would make
+   * of it is the Function's whatever the middleware decides — the Function then runs the middleware
+   * itself: one dispatch where running it here first would make two, in series. Asked only once a
+   * matcher covers the request, before anything else is begun for it, with what the rules of
+   * `next.config` set on the request as it came (`configured`), judged once already: judged again,
+   * they would spend the request's routing allowance twice (`judgeHeaderRulesAhead`). `undefined`
+   * runs the middleware; absent, it always runs.
+   */
+  readonly handOn?: (configured: ConfiguredHeaders) => Promise<Response> | undefined;
   /** The complete context once a matching middleware required the selected policy. */
   readonly ready?: (edge: EdgeContext) => void;
   /**
@@ -113,7 +123,9 @@ export interface HostedGate {
  *
  * What the application's Worker cannot answer in the edge's place, it is not handed to answer:
  * a middleware that failed is asked of it again, alone (`decideMiddleware`), and its decision is
- * acted on here.
+ * acted on here. What it would answer in the edge's place whatever the middleware decides — a page a
+ * middleware's decision makes private, a body only one visitor may have — it is handed before the
+ * middleware runs (`HostedGate.handOn`), and runs the middleware itself.
  */
 export async function serveAfterMiddleware(
   input: HostedGateInput | DeferredHostedGateInput,
@@ -141,6 +153,10 @@ export async function serveAfterMiddleware(
   }
   if (!matches) {
     return gate.serve(undefined, 0, configured);
+  }
+  const handedOn = gate.handOn?.(configured);
+  if (handedOn !== undefined) {
+    return handedOn;
   }
   const ready = 'policyReady' in input ? await input.policyReady() : input.edge;
   const resolved = { ...input, edge: ready };

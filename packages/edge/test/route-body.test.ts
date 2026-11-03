@@ -15,6 +15,7 @@ import {
   FUNCTION_HEADER,
   HEADER_RULES_JUDGED_HEADER,
   HEADER_RULES_LEFT_HEADER,
+  MIDDLEWARE_DONE_HEADER,
   MISDIRECTED_STATUS,
 } from '@stayingupwind/core/paas';
 import { seedRouteFor } from '@stayingupwind/host/bundle';
@@ -563,13 +564,14 @@ describe('the host serves complete route-body generations', () => {
 
       await expect(response.text()).resolves.toBe('Function');
       expect(get).not.toHaveBeenCalled();
-      expect(memory).not.toHaveBeenCalled();
+      // Read beside the middleware, from memory, and answered from nowhere once its veto stood.
+      expect(memory).toHaveBeenCalledTimes(1);
       expect(test.fallback).toHaveBeenCalledTimes(1);
       expect(test.dispatch).toHaveBeenCalledTimes(1);
     },
   );
 
-  it('rejects a middleware RSC segment request before reading the image record', async () => {
+  it('rejects a middleware RSC segment request, serving nothing of the record read beside it', async () => {
     const test = await fixture({
       middlewareHeaders: {
         'x-middleware-override-headers': 'rsc,next-router-segment-prefetch',
@@ -581,7 +583,11 @@ describe('the host serves complete route-body generations', () => {
     const response = await test.serve();
 
     await expect(response.text()).resolves.toBe('Function');
-    expect(memory).not.toHaveBeenCalled();
+    expect(memory).toHaveBeenCalledTimes(1);
+    expect(test.fallback).toHaveBeenCalledWith(
+      'route-body-unshareable',
+      expect.objectContaining({ kind: 'continue' }),
+    );
     expect(test.dispatch).toHaveBeenCalledTimes(1);
   });
 
@@ -659,7 +665,7 @@ describe('the host serves complete route-body generations', () => {
     }
   });
 
-  it('preserves original conditioned header rules after middleware changes request headers', async () => {
+  it('hands a body under conditioned header rules to the Function before its middleware, which judges both itself', async () => {
     const test = await fixture({
       deferHeaderRules: true,
       headerRules: [
@@ -675,12 +681,109 @@ describe('the host serves complete route-body generations', () => {
       },
     });
     const response = await routed(test, test.manifest, { 'x-before': 'matched' });
+    const calls = test.dispatch.mock.calls as [string, Request][];
+    const handed = calls[0]?.[1];
 
-    expect(response.headers.get('x-original-rule')).toBe('retained');
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(REPLACEMENT);
     expect(response.headers.get('cache-control')).toBe(PUBLIC_ANSWER);
-    expect(test.dispatch).toHaveBeenCalledTimes(2);
+    // One dispatch, the Function's, told of no middleware run and no rules judged for it: it runs
+    // the one and judges the other on the request as it came, as Next.js's router does.
+    expect(calls.map(([script]) => script)).toStrictEqual(['icon-app']);
+    expect(handed?.headers.get(MIDDLEWARE_DONE_HEADER)).toBeNull();
+    expect(handed?.headers.get(HEADER_RULES_JUDGED_HEADER)).toBeNull();
 
     await test.drain();
+  });
+
+  it.each([
+    { name: 'a cookie', headers: { cookie: 'visitor=1' } },
+    { name: 'credentials', headers: { authorization: 'Bearer visitor' } },
+    { name: 'a private project', options: { privateDelivery: true } },
+    {
+      name: 'a conditioned rule',
+      headers: { 'x-visitor': 'yes' },
+      options: {
+        headerRules: [
+          {
+            sourceRegex: '^/icon$',
+            has: [{ type: 'header' as const, key: 'x-visitor', value: 'yes' }],
+            headers: { 'x-display': 'kept' },
+          },
+        ],
+      },
+    },
+    {
+      name: 'a rule setting a cookie',
+      options: { headerRules: [{ sourceRegex: '^/icon$', headers: { 'set-cookie': 'seen=1' } }] },
+    },
+    {
+      name: 'a rule refusing a shared cache',
+      options: {
+        headerRules: [{ sourceRegex: '^/icon$', headers: { 'cache-control': 'private' } }],
+      },
+    },
+  ])(
+    'hands a body that $name makes the Function’s to it before the middleware runs',
+    async ({
+      headers,
+      options,
+    }: {
+      headers?: Record<string, string>;
+      options?: Parameters<typeof fixture>[0];
+    }) => {
+      const test = await fixture({ middlewareHeaders: {}, ...options });
+      const get = vi.spyOn(env.CACHE_STATE, 'get');
+      const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+      const response = await test.serve(headers === undefined ? {} : { headers });
+
+      await expect(response.text()).resolves.toBe('Function');
+      // Neither the middleware nor the record asked: the Function runs the one and needs no other.
+      expect(test.dispatch).not.toHaveBeenCalled();
+      expect(test.fallback).toHaveBeenCalledTimes(1);
+      expect(test.fallback).toHaveBeenCalledWith('route-body-unshareable');
+      expect(get).not.toHaveBeenCalled();
+      expect(memory).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reads the body’s record beside its middleware, and serves the read it started', async () => {
+    const test = await fixture({ middlewareHeaders: {} });
+    const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+    const decided = Promise.withResolvers<Response>();
+    const asked = Promise.withResolvers<true>();
+
+    test.dispatch.mockImplementationOnce(() => {
+      asked.resolve(true);
+      return decided.promise;
+    });
+
+    const pending = test.serve();
+    await asked.promise;
+
+    // The middleware has not answered, and the record is already read.
+    expect(memory).toHaveBeenCalledWith(test.key);
+
+    decided.resolve(new Response(null, { headers: { 'x-middleware-next': '1' } }));
+    const response = await pending;
+
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(BODY);
+    expect(memory).toHaveBeenCalledTimes(1);
+    expect(test.fallback).not.toHaveBeenCalled();
+  });
+
+  it('lets the read begun beside the middleware finish behind an answer the middleware gave itself', async () => {
+    const test = await fixture({ authorizeByHeader: true });
+    const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+    const response = await test.serve();
+
+    expect(response.status).toBe(403);
+    await expect(response.text()).resolves.toBe('Not allowed');
+    expect(memory).toHaveBeenCalledTimes(1);
+    // Left to the request's context to finish, into memory, rather than torn down with it.
+    await expect(Promise.all(test.tasks)).resolves.toContainEqual(
+      expect.objectContaining({ kind: 'generation' }),
+    );
+    expect(test.fallback).not.toHaveBeenCalled();
   });
 
   it('preserves original header rules during foreground body regeneration after middleware', async () => {

@@ -170,13 +170,16 @@ describe('trusted complete static Pages HTML', () => {
     expect(get).not.toHaveBeenCalled();
   });
 
-  it('keeps an admitted middleware response private instead of publishing its visitor decision', async () => {
+  it('hands a request its middleware covers to the Function before the middleware runs, never publishing a visitor decision', async () => {
     const test = await fixture({ middleware: true });
     const get = vi.spyOn(env.CACHE_STATE, 'get');
     const response = await test.serve();
 
     expect(response.headers.get('cache-control')).toBe('private, no-store');
-    expect(test.dispatch).toHaveBeenCalledTimes(1);
+    // No dispatch of the middleware's: the Function runs it itself, and nothing is said it ran.
+    expect(test.dispatch).not.toHaveBeenCalled();
+    expect(test.fallback).toHaveBeenCalledTimes(1);
+    expect(test.fallback).toHaveBeenCalledWith('static-page-private');
     expect(get).not.toHaveBeenCalled();
   });
 
