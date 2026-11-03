@@ -162,7 +162,7 @@ describe('a window of recent invalidations in the tag view', () => {
    * further than the delta brought it (`seen`) — a request behind its scope is caught up again —
    * until the delta passes them.
    */
-  it('stands where the delta brought it once a window’s mark is let go of, until the delta passes it', async () => {
+  it('stands where the delta brought it once a window’s mark is let go of, until a whole pull passes it', async () => {
     const many: TagWindow = {
       revision: LATER,
       truncated: false,
@@ -188,6 +188,49 @@ describe('a window of recent invalidations in the tag view', () => {
     expect(letGo).toBe(0);
     expect(state.seen).toBe(LATER);
     expect(state.validityOf([TAG], LATER_AT - SECOND, NOW)).toBe('expired');
+  });
+
+  /**
+   * A pull that has only passed a let-go mark's revision has not brought its tag, which may have
+   * been invalidated again since and come later: the view stands where the delta brought it until a
+   * pull runs to its end (Codex).
+   */
+  it('stands where the delta brought it while a pull past a let-go mark is still out', async () => {
+    let windows = 0;
+    const asked: number[] = [];
+    const host: TagHost = {
+      tagsDelta: (since) => {
+        asked.push(since);
+        return since === 0
+          ? Promise.resolve({ revision: 10, truncated: true, tags: [markOf('other', 10, 1)] })
+          : new Promise<TagDelta>(() => {
+              // The page with the tag, at 60 now, is never answered while the test looks.
+            });
+      },
+      getTags: () => Promise.resolve({ tags: [] }),
+      tagsRecent: () => {
+        windows += 1;
+        return Promise.resolve({
+          revision: 50,
+          truncated: false,
+          tags:
+            windows === 1
+              ? [markOf(TAG, INVALIDATED, INVALIDATED_AT)]
+              : othersOf(TAGS_HELD).map((v) => markOf(v, 11, 1)),
+        });
+      },
+    };
+    const state = new TagState({ holdMs: HOLD_MS });
+    await state.recent(host, 0);
+    await state.recent(host, 0);
+
+    void state.sync(host, NOW, { force: true }).catch(ignore);
+    await vi.waitFor(() => {
+      expect(asked).toStrictEqual([0, 10]);
+    });
+
+    expect(state.revision).toBe(10);
+    expect(state.seen).toBe(10);
   });
 
   /**

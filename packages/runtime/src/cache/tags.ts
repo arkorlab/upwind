@@ -224,9 +224,11 @@ export class TagState {
    */
   readonly #recent = new Map<string, RecentKnowledge>();
   /**
-   * The latest revision of a window's mark let go of before the delta brought it
-   * (`MAX_RECENT_MARKS`): the view stands no further than the delta brought it (`seen`) until the
-   * delta passes it.
+   * The latest revision of a window's mark let go of before the delta brought its tag
+   * (`MAX_RECENT_MARKS`), 0 for none: the view stands no further than the delta brought it (`seen`)
+   * until a pull of the delta has run to its end past it — the delta answers each tag's latest row,
+   * so only a whole pull has brought every tag, one invalidated again since among them (Codex) — or
+   * a window asked from where the delta stands brings the marks back (`recent`).
    */
   #recentLostPast = 0;
   #syncedAt: number | undefined;
@@ -260,6 +262,7 @@ export class TagState {
         this.#revision = Math.max(this.#revision, delta.revision);
         truncated = delta.truncated;
       }
+      if (this.#revision >= this.#recentLostPast) this.#recentLostPast = 0;
       // Pulls overlap, and one that began earlier can answer last: what a later one brought is in
       // the view already, and its hold stands. So does a page another pull took of a delta it has
       // not finished: this pull's last answer held every invalidation the host had made when this
@@ -517,7 +520,7 @@ export class TagState {
    * move, as it holds the newest invalidations and not every one.
    */
   get seen(): number {
-    return this.#recentLostPast > this.#revision
+    return this.#recentLostPast > 0
       ? this.#revision
       : Math.max(this.#revision, this.#recentRevision);
   }
