@@ -46,6 +46,11 @@ interface HostedFileInput {
 interface ServedFile {
   readonly pathname: string;
   readonly file: StaticFileEntry;
+  /**
+   * The request named this file itself (`StaticFileInput.ownName`): the file it was classified as
+   * asking for, rather than one a middleware rewrite landed it on (`shippedFileAt`).
+   */
+  readonly ownName?: true | undefined;
   readonly configured?: ConfiguredHeaders | undefined;
   /** Its read, started beside the middleware, when this is the file it was started for. */
   readonly early?: EarlyFileRead | undefined;
@@ -116,6 +121,7 @@ function serveFile(
       middleware,
       middlewareDispatches: dispatches,
       middlewareMs: middleware?.middlewareMs,
+      ownName: served.ownName,
       // Judged on the request as it reached the edge, less the host's credentials, as the document
       // path judges them: the router runs these rules before the middleware, so neither a path it
       // rewrote nor a header it took away — or added — is what Next.js selected them with.
@@ -178,7 +184,7 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
   let servedInput: HostedFileInput = input;
   let early: EarlyFileRead | undefined;
   function classified(configured: ConfiguredHeaders): ServedFile {
-    return { pathname: url.pathname, file: input.file, early, configured };
+    return { pathname: url.pathname, file: input.file, ownName: true, early, configured };
   }
   const letGo: NonNullable<HostedGate['abandon']> = (
     counted = false,

@@ -122,10 +122,6 @@ const MAX_AGE_HEADER = 'x-arkor-image-max-age';
  * keeps for as long as a build-hashed file's own.
  */
 const SERVICE_FAILED_HEADER = 'x-arkor-image-service-failed';
-/**
- * A result the middleware had a say on is what one visitor was allowed; a shared cache must not
- * hand it to the next. The visitor's own cache may keep it, revalidated.
- */
 const UPSTREAM_INVALID = '"url" parameter is valid but upstream response is invalid';
 const INTERNAL_INVALID = '"url" parameter is valid but internal response is invalid';
 const CACHE_CONTROL_HEADER = 'cache-control';
@@ -621,13 +617,19 @@ export async function handleImage(input: ImageInput): Promise<Response> {
   const etag = image.etag ?? `"${await sha256Hex(bytes)}"`;
   const headers = headersFor(etag);
   headers.set(CONTENT_LENGTH_HEADER, String(bytes.byteLength));
-  // Validation must not populate a cache live traffic reads, what the middleware admitted for one
-  // visitor is not for the next, and an entry is at most what the cache is for.
-  if (
-    !edge.validated &&
-    input.middleware === undefined &&
-    bytes.byteLength <= CACHEABLE_RESULT_BYTES
-  ) {
+  // Validation must not populate a cache live traffic reads, and an entry is at most what the cache
+  // is for. A request the middleware let on is kept as any other, since the bytes are everyone's:
+  // its source was asked for as an anonymous visitor asks for it, with none of the visitor's
+  // headers or cookies nor what the middleware set on the request (`fetchImageSource`), and what
+  // the middleware could change of the result — the parameters it rewrote the request to, the
+  // `accept` it left, which the format is chosen by — is in the key (`cacheKey`). What it said to
+  // this one visitor goes on each answer and never on the entry: its headers, its status, and the
+  // private caching its say calls for (`clientHeaders`, `respond`), on a hit as on a miss. And it
+  // runs ahead of every lookup, so an entry answers only a request it let on to those parameters.
+  // Unkept, every request it covers — every image at all, under a middleware with no matcher — and
+  // every revalidation of one a browser holds read the source and transformed it again, and ran a
+  // gated source's own middleware again.
+  if (!edge.validated && bytes.byteLength <= CACHEABLE_RESULT_BYTES) {
     const entry = new Headers({
       'content-type': image.contentType,
       [CONTENT_LENGTH_HEADER]: String(bytes.byteLength),
