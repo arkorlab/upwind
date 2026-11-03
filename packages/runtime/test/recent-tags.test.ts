@@ -116,20 +116,73 @@ describe('a window of recent invalidations in the tag view', () => {
   });
 
   /**
-   * A mark a window brought is one the view lets go of as it lets go of one the delta brought: past
-   * so many tags, and remembered as let go of at its revision (`#lost`), so that the tag is held
-   * whole no more by what is read of it after.
+   * A mark a window brought is held apart from the tags the delta brings and a read asks the host of
+   * (`#recent`): however many of those the view lets go of after it, the request the view stands at
+   * the window's revision for is judged by the mark, not by a regional copy of the tag that may be
+   * behind it (Codex).
    */
-  it('remembers letting go of a mark a window brought, as of one the delta brought', async () => {
+  it('keeps a mark a window brought, however many tags the view lets go of after it', async () => {
     const host = hostOf(0, LATER_WINDOW);
     const state = new TagState({ holdMs: HOLD_MS });
     await state.recent(host, 0);
 
     await state.syncLocal(host, othersOf(TAGS_HELD), NOW);
 
-    expect(state.validityOf([TAG], LATER_AT - SECOND, NOW)).toBe('fresh');
-    expect(state.holdsWhole(TAG)).toBe(false);
+    expect(state.validityOf([TAG], LATER_AT - SECOND, NOW)).toBe('expired');
+    expect(state.seen).toBe(LATER);
     expect(state.heldRevisionOf(TAG)).toBe(0);
+  });
+
+  /**
+   * A fresh isolate's delta brings the scope's whole history after the window, oldest first: more
+   * tags than the view keeps, which let the first of its own go. The window's marks are not among
+   * them (Codex).
+   */
+  it('keeps a window’s marks while the delta brings the scope’s history after them', async () => {
+    const host = hostOf(TAGS_HELD, LATER_WINDOW);
+    const state = new TagState({ holdMs: HOLD_MS });
+    await state.recent(host, 0);
+
+    await state.sync(host, NOW, { force: true });
+
+    expect(state.validityOf([TAG], LATER_AT - SECOND, NOW)).toBe('expired');
+    expect({ seen: state.seen, revision: state.revision }).toStrictEqual({
+      seen: LATER,
+      revision: REVISION,
+    });
+  });
+
+  /**
+   * Past as many marks of windows as are held apart, the first are let go of: the view stands no
+   * further than the delta brought it (`seen`) — a request behind its scope is caught up again —
+   * until the delta passes them.
+   */
+  it('stands where the delta brought it once a window’s mark is let go of, until the delta passes it', async () => {
+    const many: TagWindow = {
+      revision: LATER,
+      truncated: false,
+      tags: [markOf(TAG, LATER, LATER_AT), ...othersOf(TAGS_HELD).map((v) => markOf(v, 11, 1))],
+    };
+    const host: TagHost = {
+      tagsDelta: (since) => {
+        return Promise.resolve({
+          revision: LATER,
+          truncated: false,
+          tags: since < LATER ? [markOf(TAG, LATER, LATER_AT)] : [],
+        });
+      },
+      getTags: () => Promise.resolve({ tags: [] }),
+      tagsRecent: () => Promise.resolve(many),
+    };
+    const state = new TagState({ holdMs: HOLD_MS });
+
+    await state.recent(host, 0);
+    const letGo = state.seen;
+    await state.sync(host, NOW, { force: true });
+
+    expect(letGo).toBe(0);
+    expect(state.seen).toBe(LATER);
+    expect(state.validityOf([TAG], LATER_AT - SECOND, NOW)).toBe('expired');
   });
 
   /**

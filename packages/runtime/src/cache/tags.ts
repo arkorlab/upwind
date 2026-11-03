@@ -113,9 +113,23 @@ interface TagKnowledge {
   readonly history?: readonly TagHistoryMark[] | undefined;
   readonly checkedAt?: number | undefined;
   readonly knownRevision?: number | undefined;
-  /** The latest revision a window of recent invalidations brought a mark of the tag at (`#markRecent`). */
-  readonly recentRevision?: number | undefined;
   readonly unknown?: Marks | undefined;
+}
+
+/**
+ * How many tags the marks windows of recent invalidations brought are held for, apart from the
+ * tags the delta brings (`#recent`): a window holds at most a page of them, and they are let go of
+ * as the delta brings the same marks.
+ */
+const MAX_RECENT_MARKS = 4096;
+
+/**
+ * What windows of recent invalidations said of one tag (`#markRecent`): each mark's deadline, and
+ * the latest revision one was at (`recentRevision`).
+ */
+interface RecentKnowledge {
+  readonly history: readonly TagHistoryMark[];
+  readonly recentRevision: number;
 }
 
 /**
@@ -200,6 +214,21 @@ export class TagState {
   #revision = 0;
   /** The revision the latest window of recent invalidations that left none out was read at (`seen`). */
   #recentRevision = 0;
+  /**
+   * The marks windows of recent invalidations brought, held apart from the tags the delta brings
+   * (`#markRecent`) until the delta brings them too (`#pull`): the delta of a fresh isolate brings
+   * the scope's whole history after them, oldest first, and in the bound of its own tags
+   * (`MAX_TAGS_HELD`) would let go of the newest marks first — the ones the view stands at the
+   * window's revision by (`seen`), which a read of the tag from a regional copy may be behind on
+   * still (Codex).
+   */
+  readonly #recent = new Map<string, RecentKnowledge>();
+  /**
+   * The latest revision of a window's mark let go of before the delta brought it
+   * (`MAX_RECENT_MARKS`): the view stands no further than the delta brought it (`seen`) until the
+   * delta passes it.
+   */
+  #recentLostPast = 0;
   #syncedAt: number | undefined;
   /**
    * The marks of tags the view has let go of, of whichever kind, counted (`TagLosses`): a mark of a
@@ -227,6 +256,7 @@ export class TagState {
           this.#remember(tag, tag.revision ?? delta.revision);
         }
         this.#revision = Math.max(this.#revision, delta.revision);
+        this.#passRecent();
         truncated = delta.truncated;
       }
       // Pulls overlap, and one that began earlier can answer last: what a later one brought is in
@@ -284,10 +314,9 @@ export class TagState {
   }
 
   /**
-   * What a window of recent invalidations said of a tag (`recent`), beside what else is known of it:
-   * each mark's deadline in the tag's history, as the delta's are, and its revision as the tag's
-   * `recentRevision` — never as `knownRevision`, nor as a moment the host was asked of the tag
-   * (`checkedAt`).
+   * What a window of recent invalidations said of a tag (`recent`), held apart from what else is
+   * known of it (`#recent`): each mark's deadline, and its revision as the tag's `recentRevision` —
+   * never as `knownRevision`, nor as a moment the host was asked of the tag (`checkedAt`).
    *
    * A window holds the newest invalidations and none before them, so it says nothing of the marks of
    * the tag the view let go of: taken as `knownRevision`, a mark of it past one the view let go of
@@ -297,26 +326,41 @@ export class TagState {
    * brings its whole history.
    */
   #markRecent(tag: TagInvalidation, revision: number): void {
-    const known = this.#tags.get(tag.value);
-    let { history } = known ?? {};
+    const known = this.#recent.get(tag.value);
+    let history = known?.history;
     let latest = known?.recentRevision ?? 0;
     const row = { revision, staleAt: tag.staleAt, hardExpireAt: tag.hardExpireAt };
     for (const mark of [...(tag.history ?? []), row]) {
       history = withTagHistory(history, mark);
       latest = Math.max(latest, mark.revision);
     }
-    this.#tags.set(tag.value, { ...known, history, recentRevision: latest });
+    this.#recent.delete(tag.value);
+    this.#recent.set(tag.value, { history: history ?? [], recentRevision: latest });
+    for (const [value, held] of this.#recent) {
+      if (this.#recent.size <= MAX_RECENT_MARKS) {
+        break;
+      }
+      this.#recent.delete(value);
+      this.#recentLostPast = Math.max(this.#recentLostPast, held.recentRevision);
+    }
+  }
+
+  /** Let go of the marks of windows the delta has brought the view past (`#recent`). */
+  #passRecent(): void {
+    for (const [value, held] of this.#recent) {
+      if (held.recentRevision <= this.#revision) {
+        this.#recent.delete(value);
+      }
+    }
   }
 
   /**
    * Remember that the view let go of what it knew of `value` (`#lost`), where that was a mark known
-   * at a revision — one a window brought too (`#markRecent`); and count it (`losses`), where it held
-   * a mark of any kind.
+   * at a revision; and count it (`losses`), where it held a mark of any kind.
    */
   #lose(value: string, known: TagKnowledge): void {
-    const revision = Math.max(known.knownRevision ?? 0, known.recentRevision ?? 0);
-    if (revision > 0) {
-      this.#lost.set(value, Math.max(this.#lost.get(value) ?? 0, revision));
+    if (known.knownRevision !== undefined) {
+      this.#lost.set(value, Math.max(this.#lost.get(value) ?? 0, known.knownRevision));
     }
     if (known.history !== undefined || known.unknown !== undefined) {
       this.losses.forget(value);
@@ -353,6 +397,7 @@ export class TagState {
     const told = this.#tags.get(value);
     const marks = [
       told?.history?.at(-1),
+      this.#recent.get(value)?.history.at(-1),
       told?.unknown?.at(-1),
       applied?.history?.at(-1),
       applied?.unanswered?.marks.at(-1),
@@ -384,7 +429,7 @@ export class TagState {
       !reachesAny(applied?.unrevised, timestamp) &&
       within(applied?.answeredRevision) &&
       within(told?.knownRevision) &&
-      within(told?.recentRevision) &&
+      within(this.#recent.get(value)?.recentRevision) &&
       !reachesAny(told?.unknown, timestamp)
     );
   }
@@ -402,7 +447,10 @@ export class TagState {
   #validityOfTag(tag: string, timestamp: number, now: number, held: number | undefined): Validity {
     const applied = this.#applied.get(tag);
     const known = this.#tags.get(tag);
-    const byTold = historyValidity(known?.history, timestamp, now, held);
+    const byTold = worst(
+      historyValidity(known?.history, timestamp, now, held),
+      historyValidity(this.#recent.get(tag)?.history, timestamp, now, held),
+    );
     const byAnswered = historyValidity(applied?.history, timestamp, now, held);
     const byUnrevised = worst(
       worst(
@@ -459,7 +507,9 @@ export class TagState {
    * move, as it holds the newest invalidations and not every one.
    */
   get seen(): number {
-    return Math.max(this.#revision, this.#recentRevision);
+    return this.#recentLostPast > this.#revision
+      ? this.#revision
+      : Math.max(this.#revision, this.#recentRevision);
   }
 
   /**
@@ -553,7 +603,13 @@ export class TagState {
       return false;
     }
     try {
-      const window = await host.tagsRecent(this.seen, from);
+      const since = this.seen;
+      const window = await host.tagsRecent(since, from);
+      // Asked from no further than the delta stands, a window that left none out brings back every
+      // mark of a window let go of past it (`#recentLostPast`).
+      if (!window.truncated && since <= this.#revision) {
+        this.#recentLostPast = 0;
+      }
       for (const tag of window.tags) {
         this.#markRecent(tag, tag.revision ?? window.revision);
       }

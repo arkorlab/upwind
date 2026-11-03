@@ -682,8 +682,9 @@ export function deltaMovesOn(
 
 /**
  * Whether no tag a window of recent invalidations holds stands past the revision it was read at, nor
- * any earlier deadline one carries: a reader stands there once it holds the window, and a row past
- * it would be an invalidation it took in at a revision it does not stand at.
+ * any earlier deadline one carries past the tag's own, as the delta's rows are held (`standsAtItsTags`,
+ * cubic): a reader stands there once it holds the window, and a row past it would be an
+ * invalidation it took in at a revision it does not stand at.
  */
 function standsPastItsTags(window: {
   readonly revision: number;
@@ -692,7 +693,7 @@ function standsPastItsTags(window: {
   return window.tags.every((tag) => {
     return (
       tag.revision <= window.revision &&
-      tag.history?.every((mark) => mark.revision <= window.revision) !== false
+      tag.history?.every((mark) => mark.revision <= tag.revision) !== false
     );
   });
 }

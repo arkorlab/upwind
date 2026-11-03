@@ -11,10 +11,11 @@ needs no authority is answered from storage by a read gateway placed nowhere in 
 
 A Function's isolate brings its view of the scope's invalidations up through the tag delta, oldest
 first and a page at a time (`/tags/delta`), which a fresh isolate reads from the scope's beginning.
-One that a request finds behind a recent invalidation asks first for the newest invalidations past
-where its view stands that took effect lately (`/tags/recent`), in one round trip whatever the
-scope's history, and judges the request's reads by them while the delta goes on behind; what a
-regeneration claims its render was judged against is still the revision the delta brought it to.
+One that a request finds behind a recent invalidation asks, beside the delta, for the newest
+invalidations past where its view stands that took effect lately (`/tags/recent`), in one round
+trip whatever the scope's history, and judges the request's reads by them while the delta goes on
+behind; what a regeneration claims its render was judged against is still the revision the delta
+brought it to.
 
 What a host adds is handed in. `AuthorityHost` carries the label its tokens are signed under, where
 its scopes are placed, a meter of what is read and written, and whom to tell when a scope moves. A

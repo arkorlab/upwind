@@ -420,6 +420,22 @@ describe('a window of recent invalidations', () => {
     expect(tagsRecentResponseSchema.safeParse(pastHistory).success).toBe(false);
   });
 
+  it('holds no earlier deadline of a tag past the tag’s own revision (cubic)', () => {
+    const pastItsTag = {
+      revision: 12,
+      truncated: false,
+      tags: [
+        {
+          ...tagRecord('a'),
+          revision: 9,
+          history: [{ revision: 10, staleAt: 1, hardExpireAt: null }],
+        },
+      ],
+    };
+
+    expect(tagsRecentResponseSchema.safeParse(pastItsTag).success).toBe(false);
+  });
+
   it('holds no more invalidations than a page of the delta may', () => {
     expect(tagsRecentResponseSchema.safeParse(recentWindow(MAX_DELTA_PAGE_TAGS)).success).toBe(
       true,

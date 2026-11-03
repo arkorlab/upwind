@@ -80,7 +80,8 @@ describe('the window of a scope’s recent invalidations', () => {
 
     expect(window.truncated).toBe(true);
     expect(window.tags.map((tag) => tag.value)).toStrictEqual(['b', 'c']);
-    expect(window.revision).toBeGreaterThanOrEqual(last);
+    // Nothing else invalidates the scope meanwhile: the revision it was read at is the last (cubic).
+    expect(window.revision).toBe(last);
 
     // Whole past where it was asked from, and never past the revision it was read at.
     const whole = await recent(at, `since=${String(first)}&from=0`);
