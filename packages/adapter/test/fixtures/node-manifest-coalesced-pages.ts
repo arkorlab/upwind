@@ -1,6 +1,4 @@
 import { readFile, realpath } from 'node:fs/promises';
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
 
 import { parseAst } from 'rolldown/parseAst';
 
@@ -18,6 +16,7 @@ import {
   manifestTemplateSource as source,
   projectedTemplateFixture,
 } from './node-manifest-turbopack-template.ts';
+import { resolvePinnedNext } from './pinned-next.ts';
 
 const COALESCED_ID = 42;
 const COALESCED_DIST = '/project/.next';
@@ -116,7 +115,7 @@ export async function coalescedPagesFixture(
   const constructor = own.imports.find((entry) => entry.file.endsWith('/pages/module.compiled.js'));
   if (userland === undefined || constructor === undefined)
     throw new TypeError('Expected primary fixture imports');
-  const file = await realpath(fileURLToPath(import.meta.resolve(CONSTRUCTOR)));
+  const file = await realpath(resolvePinnedNext(CONSTRUCTOR));
   const producer = source(await readFile(file, 'utf8'));
   const old = `runtimeContext.x(${jsLiteral(constructor.specifier)},()=>require(${jsLiteral(constructor.specifier)}))`;
   const replacement = `runtimeContext.x(${jsLiteral(CONSTRUCTOR)},()=>require(${jsLiteral(CONSTRUCTOR)}))`;
@@ -131,7 +130,7 @@ export async function coalescedPagesFixture(
     );
   if (options.externals !== undefined) {
     for (const specifier of options.externals) {
-      const imported = await realpath(createRequire(import.meta.url).resolve(specifier));
+      const imported = await realpath(resolvePinnedNext(specifier));
       actual.push({
         specifier,
         file: imported,

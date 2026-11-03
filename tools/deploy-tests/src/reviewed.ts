@@ -92,6 +92,7 @@ const EVERY_CASE = ['*'];
 const OTEL = 'test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts';
 const TRACE_RECORD = 'instrumentation-registered-per-function';
 const ENCODING_RECORD = 'prerender-encoding';
+const PREVIEW_RECORD = 'preview-mode-on-nodejs-26';
 
 /** `app-static`'s cases that fetch the same URL with new tags, shared by its custom-handler suite. */
 const NEW_TAGS = 'app-dir static/dynamic handling new tags have been specified on subsequent fetch';
@@ -345,7 +346,7 @@ const AT_16_4_3: readonly Group[] = [
   },
   {
     reading: 'upstream',
-    record: 'preview-mode-on-nodejs-26',
+    record: PREVIEW_RECORD,
     targets: ['node'],
     nodes: ON_NODE_26,
     symptom: (message) => NO_PREVIEW_COOKIE.some((part) => message.includes(part)),
@@ -513,7 +514,20 @@ function entriesOf(next: ReviewedCase['next'], groups: readonly Group[]): readon
   return entries;
 }
 
-export const REVIEWED: readonly ReviewedCase[] = entriesOf(
-  { version: '16.4.3', commit: '29bbeab09981148ade186e8599ecdede15abc281' },
-  AT_16_4_3,
-);
+/**
+ * The readings above, read again at 16.4.4 (`REVIEWED.md`): their suites are the same at both
+ * releases, and the judge holds each to the failure recorded. All but Node.js 26's preview mode,
+ * which 16.4.4 signs with fast-jwt, needing no `SlowBuffer`, in suites that changed with it.
+ */
+const AT_16_4_4: readonly Group[] = AT_16_4_3.filter(({ record }) => record !== PREVIEW_RECORD);
+
+export const REVIEWED: readonly ReviewedCase[] = [
+  ...entriesOf(
+    { version: '16.4.3', commit: '29bbeab09981148ade186e8599ecdede15abc281' },
+    AT_16_4_3,
+  ),
+  ...entriesOf(
+    { version: '16.4.4', commit: 'b175f52b05a5f6c6c39ca72565ea178542be323b' },
+    AT_16_4_4,
+  ),
+];

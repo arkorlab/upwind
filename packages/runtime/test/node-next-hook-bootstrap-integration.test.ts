@@ -45,8 +45,8 @@ async function copyJwt(directory: string, changed: boolean): Promise<void> {
   const semver = path.join(directory, 'node_modules/next/dist/lib/semver-noop.js');
   await mkdir(path.dirname(jwt), { recursive: true });
   await mkdir(path.dirname(semver), { recursive: true });
-  await copyFile(require.resolve('next/dist/compiled/jsonwebtoken'), jwt);
-  await copyFile(require.resolve('next/dist/lib/semver-noop'), semver);
+  await copyFile(require.resolve('next-16-4-3/dist/compiled/jsonwebtoken'), jwt);
+  await copyFile(require.resolve('next-16-4-3/dist/lib/semver-noop'), semver);
   if (changed) await writeFile(jwt, `${await readFile(jwt, 'utf8')}\nglobalThis.changed=true;`);
 }
 
@@ -59,8 +59,11 @@ async function scenario(after: string, options: Options = {}): Promise<string> {
     await mkdir(path.join(vendor, 'dist/server'), { recursive: true });
     await mkdir(path.dirname(server));
     await mkdir(path.join(directory, 'app'));
-    await copyFile(require.resolve('next/dist/server/require-hook'), path.join(directory, HOOK));
-    await copyFile(require.resolve('next/package.json'), path.join(vendor, 'package.json'));
+    await copyFile(
+      require.resolve('next-16-4-3/dist/server/require-hook'),
+      path.join(directory, HOOK),
+    );
+    await copyFile(require.resolve('next-16-4-3/package.json'), path.join(vendor, 'package.json'));
     if (options.changed === true) {
       const filename = path.join(directory, HOOK);
       await writeFile(filename, `${await readFile(filename, 'utf8')}\nglobalThis.changed=true;`);

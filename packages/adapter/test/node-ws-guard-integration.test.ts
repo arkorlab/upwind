@@ -37,14 +37,17 @@ async function scenario(after: string, changed = false): Promise<string> {
     for (const name of ['ws', 'jsonwebtoken']) {
       const target = path.join(vendor, 'dist/compiled', name);
       await mkdir(target, { recursive: true });
-      await copyFile(require.resolve(`next/dist/compiled/${name}`), path.join(target, 'index.js'));
+      await copyFile(
+        require.resolve(`next-16-4-3/dist/compiled/${name}`),
+        path.join(target, 'index.js'),
+      );
     }
     await mkdir(path.join(vendor, 'dist/lib'), { recursive: true });
     await copyFile(
-      require.resolve('next/dist/lib/semver-noop'),
+      require.resolve('next-16-4-3/dist/lib/semver-noop'),
       path.join(vendor, 'dist/lib/semver-noop.js'),
     );
-    await copyFile(require.resolve('next/package.json'), path.join(vendor, 'package.json'));
+    await copyFile(require.resolve('next-16-4-3/package.json'), path.join(vendor, 'package.json'));
     await mkdir(upwind);
     const ws = path.join(vendor, 'dist/compiled/ws/index.js');
     if (changed) await writeFile(ws, `${await readFile(ws, 'utf8')}\nglobalThis.changed=true;`);

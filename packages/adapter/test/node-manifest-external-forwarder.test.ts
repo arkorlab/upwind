@@ -1,5 +1,4 @@
 import { readFile, realpath } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -14,6 +13,7 @@ import {
   manifestTemplateSource as source,
   projectedTemplateFixture,
 } from './fixtures/node-manifest-turbopack-template.ts';
+import { resolvePinnedNext } from './fixtures/pinned-next.ts';
 
 const SPECIFIER = 'next/dist/compiled/next-server/pages-turbo.runtime.prod.js';
 const CALL = `ctx.x(${jsLiteral(SPECIFIER)},()=>require(${jsLiteral(SPECIFIER)}))`;
@@ -40,7 +40,7 @@ async function fixture(
   const external = template.imports.filter(
     (item) => !item.specifier.startsWith('turbopack:') && item !== original,
   );
-  const file = await realpath(fileURLToPath(import.meta.resolve(SPECIFIER)));
+  const file = await realpath(resolvePinnedNext(SPECIFIER));
   const producer = source(await readFile(file, 'utf8'));
   const originalCall = `runtimeContext.x(${jsLiteral(original.specifier)},()=>require(${jsLiteral(original.specifier)}))`;
   const code = template.projection.original.code.replace(originalCall, 'runtimeContext.i(2)');

@@ -14,7 +14,7 @@ function digest(code: string | Uint8Array): string {
 }
 async function templateGraphFixture(directory: string, kind: 'pages' | 'app-route') {
   const evaluatorName = 'dist/server/load-manifest.external.js';
-  const published = await realpath(fileURLToPath(import.meta.resolve(`next/${evaluatorName}`)));
+  const published = await realpath(fileURLToPath(import.meta.resolve(`next-16-4-3/${evaluatorName}`)));
   const publishedRoot = path.resolve(path.dirname(published), '../..');
   const root = path.join(directory, 'node_modules/next');
   const module = `dist/server/route-modules/${kind}/module.compiled.js`;

@@ -112,10 +112,10 @@ describe('fixed constructor namespace identities', () => {
   it.each(PROFILES)(
     'binds $relative to its exact published namespace and canonical role',
     async ({ kind, module, relative, sha256 }) => {
-      const file = await realpath(fileURLToPath(import.meta.resolve(`next/${relative}`)));
+      const file = await realpath(fileURLToPath(import.meta.resolve(`next-16-4-3/${relative}`)));
       const code = await readFile(file);
       const evaluator = await realpath(
-        fileURLToPath(import.meta.resolve('next/dist/server/load-manifest.external.js')),
+        fileURLToPath(import.meta.resolve('next-16-4-3/dist/server/load-manifest.external.js')),
       );
       const root = path.resolve(path.dirname(evaluator), '../..');
       const identity = reviewedRouteConstructorSource(relative, sha256);

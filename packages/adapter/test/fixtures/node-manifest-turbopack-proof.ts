@@ -22,7 +22,7 @@ function digest(code: string | Uint8Array): string {
 
 async function proofFixture(directory: string) {
   const published = fileURLToPath(
-    import.meta.resolve('next/dist/server/load-manifest.external.js'),
+    import.meta.resolve('next-16-4-3/dist/server/load-manifest.external.js'),
   );
   const publishedRoot = path.resolve(path.dirname(published), '../..');
   const root = path.join(directory, 'node_modules/next');
@@ -190,7 +190,7 @@ async function templateFixture(
   const own = await proofFixture(directory);
   const projected = await projectedTemplateFixture(kind);
   const published = await realpath(
-    fileURLToPath(import.meta.resolve('next/dist/server/load-manifest.external.js')),
+    fileURLToPath(import.meta.resolve('next-16-4-3/dist/server/load-manifest.external.js')),
   );
   const publishedRoot = path.resolve(path.dirname(published), '../..');
   const root = path.join(directory, 'node_modules/next');

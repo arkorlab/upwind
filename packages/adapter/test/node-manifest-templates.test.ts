@@ -70,7 +70,7 @@ async function input(
   kind: NodeManifestTemplateInput['route']['kind'],
 ): Promise<NodeManifestTemplateInput> {
   const file = await realpath(
-    fileURLToPath(import.meta.resolve(`next/dist/build/templates/${kind}.js`)),
+    fileURLToPath(import.meta.resolve(`next-16-4-3/dist/build/templates/${kind}.js`)),
   );
   const imports = [];
   const specifiers = IMPORTS[kind];
@@ -99,7 +99,7 @@ async function runtimeConstructor(
   const original = own.imports.find((entry) => entry.file.endsWith('/module.compiled.js'));
   if (original === undefined) throw new Error('Expected published constructor dependency');
   const file = await realpath(
-    fileURLToPath(import.meta.resolve(`next/dist/compiled/next-server/${runtime}`)),
+    fileURLToPath(import.meta.resolve(`next-16-4-3/dist/compiled/next-server/${runtime}`)),
   );
   const awaitedRuntimeBytes = await readFile(file);
   const specifier = 'sealed:runtime-constructor';

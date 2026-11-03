@@ -22,6 +22,18 @@ A reading is one of four:
 - **The environment.** The target's runtime cannot run the application, or no deployment can run it
   as it is written.
 
+## Next.js 16.4.4
+
+Read again at commit `b175f52b05a5f6c6c39ca72565ea178542be323b`: every reading of 16.4.3 below holds
+at 16.4.4 as it is written, but [Preview mode on Node.js 26](#preview-mode-on-nodejs-26). Of the
+suites read, 16.4.4 changed only that reading's three, and the judge holds every other case to the
+failure recorded at 16.4.3. On `node` under Node.js 24, every failure of the whole manifest at 16.4.4
+(run 41466624903, before these readings) was a case read below, for that lane.
+
+Preview mode on Node.js 26 is not read at 16.4.4: it signs preview data with `fast-jwt`
+([#100885](https://github.com/vercel/next.js/pull/100885)), which needs no `SlowBuffer`, and its
+three suites changed with it.
+
 ## Next.js 16.4.3
 
 Read at commit `29bbeab09981148ade186e8599ecdede15abc281`, from the night's run of 2026-10-26 (run
@@ -195,8 +207,8 @@ Under Node.js 26, on `node` (12 cases of `prerender-preview`, `preview-fallback`
 `require('buffer').SlowBuffer.prototype` as it loads, and Node.js 26 has no `SlowBuffer`.
 `require('next/dist/compiled/jsonwebtoken')` throws on Node.js 26.13.0 with no adapter ("Cannot read
 properties of undefined (reading 'prototype')"). So the route answers 500 and sets no preview cookie,
-and the pages read without one render as no preview. v16.5.0-canary.30 signs with `fast-jwt`
-instead. On `cloudflare`, workerd's `buffer` still has `SlowBuffer`, and the cases pass.
+and the pages read without one render as no preview. v16.5.0-canary.30 and 16.4.4 sign with
+`fast-jwt` instead. On `cloudflare`, workerd's `buffer` still has `SlowBuffer`, and the cases pass.
 
 #### App Router pages under `i18n`
 
