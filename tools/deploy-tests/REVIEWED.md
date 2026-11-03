@@ -187,9 +187,9 @@ runs. The race is the test's and the client router's, so the reading holds on bo
 both Node.js versions.
 
 The judge reads only the second wait for `#loading` (line 386), after the clock moves on: the first
-follows a wait the document's load answers, and fails where the link's prefetch does. A prefetch of
-the adapter's that failed would skip the loading state as well, so the judge reads the case only
-where the suite's cases that prefetch again after five minutes and prefetch a dynamic page in part
+follows a wait the document's load answers, and fails where the link's prefetch does. A failed
+prefetch of the link would skip the loading state as well, so the judge reads a failure only where
+the suite's cases that prefetch again after five minutes, and that prefetch a dynamic page in part,
 passed in the same run.
 
 #### `next-dist-client-esm-import`
