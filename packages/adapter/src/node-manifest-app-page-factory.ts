@@ -18,7 +18,7 @@ import {
   swcHeader,
   visitTree,
 } from './node-manifest-consumer-ast.ts';
-import { reviewedFrameworkSource } from './node-manifest-framework.ts';
+import { isReviewedFrameworkSource } from './node-manifest-framework.ts';
 import {
   projectedTemplateExports,
   type ManifestTemplateExports,
@@ -29,9 +29,9 @@ import {
   type NodeManifestTurbopackModuleId,
   type NodeManifestTurbopackProjection,
 } from './node-manifest-turbopack.ts';
+import { nativeNextReleaseAt } from './node-next-release.ts';
 
 const TEMPLATE = 'dist/build/templates/app-page-runtime.js';
-const TEMPLATE_SHA = '0a6a5c726f95e2df2600b2fd6d71e37fd72f936f8f4dc5b94fa38d40fcd62a6b';
 const CLASS_MODULE = 'dist/server/route-modules/app-page/module.compiled.js';
 const CLASS_SOURCES = [
   CLASS_MODULE,
@@ -85,7 +85,7 @@ async function bytesOf(file: string): Promise<Buffer> {
 function constructorIdentity(file: string, sha256: string): { readonly root: string } | undefined {
   const normal = file.replaceAll('\\', '/');
   for (const relative of CLASS_SOURCES) {
-    if (normal.endsWith(`/${relative}`) && reviewedFrameworkSource(relative) === sha256)
+    if (normal.endsWith(`/${relative}`) && isReviewedFrameworkSource(relative, sha256))
       return { root: file.slice(0, -relative.length - 1) };
   }
   return undefined;
@@ -249,7 +249,8 @@ async function primaryFor(
   const template = await realpath(path.join(root, TEMPLATE));
   if (beneath(root, template) === undefined) return refuse('template path');
   const bytes = await bytesOf(template);
-  if (digest(bytes) !== TEMPLATE_SHA) return refuse('template bytes');
+  if (nativeNextReleaseAt(root)?.source(TEMPLATE) !== digest(bytes))
+    return refuse('template bytes');
   return { root, template, bytes };
 }
 function view(

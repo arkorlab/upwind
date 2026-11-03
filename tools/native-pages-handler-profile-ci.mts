@@ -6,12 +6,10 @@ import { fileURLToPath } from 'node:url';
 
 import { publicPagesCorpus, sha256 } from './native-pages-handler-profile/format.mts';
 import {
-  FIXTURE_FILES,
   IMAGE,
   IMAGE_ID,
   NEXT_SOURCE,
   PACKAGE_MANAGER,
-  SWC_INTEGRITY,
 } from './native-pages-handler-profile/inputs.mts';
 import {
   pagesHandlerProfileInputs,
@@ -87,7 +85,7 @@ async function prepare(
     typeof packageJson === 'object' &&
       packageJson !== null &&
       'version' in packageJson &&
-      packageJson.version === '16.4.3',
+      packageJson.version === profile.next.version,
     'Installed public Next version changed',
   );
   const originalHandler = await readFile(path.join(project, NEXT_HANDLER));
@@ -208,10 +206,10 @@ async function produce(temporary: string, profile: PagesHandlerProfileInputs): P
         inputs: {
           fixture,
           image: IMAGE_ID.slice('sha256:'.length),
-          lock: FIXTURE_FILES['pnpm-lock.yaml'],
+          lock: profile.files.find((file) => file.target === 'pnpm-lock.yaml')?.sha256,
           next: NEXT_SOURCE,
           packageManager: sha256(PACKAGE_MANAGER),
-          swc: sha256(SWC_INTEGRITY),
+          swc: sha256(profile.next.swc),
         },
         schema: 1,
         semanticClosure: 'unmapped:getHandler',

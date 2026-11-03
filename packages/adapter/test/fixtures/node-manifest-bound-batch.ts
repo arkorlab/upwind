@@ -14,6 +14,7 @@ import {
   manifestTemplateSource,
   projectedTemplateFixture,
 } from './node-manifest-turbopack-template.ts';
+import { PINNED_NEXT_PACKAGE_JSON } from './pinned-next.ts';
 
 const SPECIFIER = 'next/dist/build/templates/app-page-runtime.js';
 const PRODUCER_KINDS = {
@@ -106,7 +107,7 @@ export async function boundBatchFixture(directory: string): Promise<BoundBatchFi
     producer === undefined
   )
     throw new Error('Missing authored source chain');
-  await writeFile(path.join(root, 'package.json'), '{"name":"next","version":"16.4.3"}');
+  await writeFile(path.join(root, 'package.json'), PINNED_NEXT_PACKAGE_JSON);
   const distDir = path.join(directory, '.next');
   const entry = path.join(distDir, 'server/app/native/page.js');
   const chunk = path.join(distDir, 'server/chunks/app.js');

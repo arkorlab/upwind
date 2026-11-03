@@ -228,6 +228,19 @@ function checkedTurbopackProgram(source: NodeManifestTurbopackSource): Node {
   return program;
 }
 
+/** Whether a chunk's registration leads with a strict factory table; false for any other program. */
+export function nodeManifestTurbopackNestedTable(source: NodeManifestTurbopackSource): boolean {
+  try {
+    const first = listOf(registration(checkedTurbopackProgram(source)), 'elements')[0];
+    return (
+      isNode(first) &&
+      (first.type === 'ArrayExpression' || strictWrapper(first, true) !== undefined)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** This validates registration only; no factory body receives a manifest exemption here. */
 export function nodeManifestTurbopackFactories(
   source: NodeManifestTurbopackSource,

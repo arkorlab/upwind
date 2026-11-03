@@ -43,8 +43,8 @@ a proved closure of them. A project with an `app/` directory gives every Functio
 is in a Pages Router route. Only the native loads are proved, by the same loader classification,
 binary selection, ABI and digests as for any Node Function, and a Cloudflare platform import in the
 Function's own graph is refused. The shared-cache rewrites still apply; the instrumentation loader
-and the custom-cache guard are rewritten only over their reviewed Next.js 16.4.3 bytes, and any
-other bytes at those paths are refused. The Turbopack selectors are left to the bootstrap's
+and the custom-cache guard are rewritten only over the reviewed bytes of the Next.js release the
+package is, 16.4.3 or 16.4.4, and any other bytes at those paths are refused. The Turbopack selectors are left to the bootstrap's
 `TURBOPACK`. Such an artifact does not have the manifest-consumer and closure proofs, the JWT,
 WebSocket and environment initialization guards, or an alias proof for packages that only server
 chunks load: a missing package link shows when the route runs, not at build. A distDir that would be
@@ -67,8 +67,14 @@ Node ABI and Linux x64 glibc target before publishing it. Worker loader hooks, p
 and native shims are not applied to Node files. The existing shared cache and request runtime is
 retained through a Node transport, rather than replaced with an independent `next start` cache.
 
-The original Next.js manifest consumers and Turbopack runtime target Next.js 16.4.3. Changed
-compiler or template shapes are refused until their source contracts are reviewed. A minified
+The original Next.js manifest consumers and Turbopack runtime target Next.js 16.4.3 and 16.4.4. The
+two publish the same reviewed sources but for the page template factory and the server runtimes,
+which are pinned for each release (`node-next-release.ts`), and a package holding another release's
+copy of one is refused. 16.4.4's Turbopack runtime installs no leading strict factory table, which
+16.4.3's chunks may carry, so a chunk with one beside that runtime is refused. Each release has its
+own reviewed getHandler references (`node-manifest-handler-catalog.ts`), with and without server
+minification. Changed compiler or template shapes are refused until their source contracts are
+reviewed. A minified
 CommonJS Pages factory can retain its original sloppy arrow function when its physical module
 mode and closed userland partition are proved alongside the protected template. This inspection
 does not insert a strict directive or change the shipped JavaScript. The adapter leaves the
@@ -113,8 +119,12 @@ in the Node archive, so a runtime override cannot invoke a dependency omitted by
 The default shared cache and rendering paths remain available. This policy does not replace a
 missing dependency with a stub or allow unresolved application imports.
 
-The fixed Next.js JWT dependency has a separate, source-reviewed initialization profile. It
-permits only its exact global-recovery compiler site after proving the original package, closed
+The fixed Next.js JWT dependency has a separate, source-reviewed initialization profile for each
+release: Next.js 16.4.3 compiles in jsonwebtoken, and 16.4.4 compiles in fast-jwt. The jsonwebtoken
+profile permits only its exact global-recovery compiler site. The fast-jwt profile permits no
+compiler site and only one `process.binding("buffer")` read, in its copy of safer-buffer, behind a
+`!o.kStringMaxLength` check. Node.js 24 and 26 define `buffer.kStringMaxLength`, so that read
+never runs on them. Either is permitted only after proving the original package, closed
 dependencies, CommonJS callers and completed route closure. The Node bootstrap checks the
 original bytes and required builtin state immediately before CommonJS evaluation, including
 after cache eviction. Changed sources, loader customization and unsupported compiler operations
@@ -122,8 +132,8 @@ remain publication errors. This profile requires the default Node.js 24.22.1 loa
 make arbitrary dynamic compilation portable. These restrictions apply to native Node artifacts;
 ordinary Worker output keeps its existing version support.
 
-The same guard observes the original `semver-noop` dependency evaluation and checks its genuine
-cached namespace before JWT initialization. Scoped load and require boundaries preserve Node's
+For jsonwebtoken, the same guard observes the original `semver-noop` dependency evaluation and
+checks its genuine cached namespace before JWT initialization; fast-jwt has no such dependency. Scoped load and require boundaries preserve Node's
 monitoring hooks while checking that fixed dependencies return the qualified module values.
 
 The fixed Next.js WebSocket dependency has a separate absent-only profile for its two literal
@@ -158,10 +168,11 @@ refuse artifacts they cannot execute. These errors preserve the application's ru
 
 The dedicated Linux CI control compiles and executes a real N-API binary, creates the actual adapter
 artifact, starts its Node HTTP entry, and checks that independent Worker and Edge routes remain on
-Workers. A separate CI step verifies a pinned, unchanged Next.js 16.4.3 native fixture, builds it
-with the actual adapter and invokes its emitted Node entry on loopback, including `/blog/second`
-with `fallback: true`. The unchanged App Router fixture `test/e2e/app-dir/turbopack-reports` is built
-and invoked the same way. Its pages are prerendered, so the control adds one page rendered for each
-request, and checks that a route left on Workers is refused by the Node entry. This checks the
-artifact and Node transport; hosted cache and deployment
-integration still require operator rollout verification. No CI result is implied by this document.
+Workers. A separate CI step verifies the pinned, unchanged native fixture of each supported Next.js
+release, 16.4.3 and 16.4.4. It builds the fixture with the actual adapter and invokes its emitted
+Node entry on loopback, including `/blog/second` with `fallback: true`. The unchanged App Router
+fixture `test/e2e/app-dir/turbopack-reports` is built and invoked the same way. Its pages are
+prerendered, so the control adds one page rendered for each request, and checks that a route left
+on Workers is refused by the Node entry. This checks the artifact and Node transport; hosted cache
+and deployment integration still require operator rollout verification. No CI result is implied by
+this document.

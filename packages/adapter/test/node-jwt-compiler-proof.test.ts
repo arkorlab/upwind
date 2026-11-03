@@ -17,6 +17,7 @@ import {
 import { nodeJwtGlobalRecoverySite, nodeJwtRequireOnly } from '../src/node-jwt-compiler-sites.ts';
 import type { ManifestModuleGraph } from '../src/node-manifest-graph.ts';
 import { prepareOriginalNodeModes, originalNodeModeHash } from '../src/node-original-load-mode.ts';
+import { PINNED_NEXT_PACKAGE_JSON } from './fixtures/pinned-next.ts';
 
 describe('fixed JWT compiler site DATA', () => {
   it.each([undefined, null, 0, 'source text', {}])(
@@ -173,39 +174,52 @@ describe('fixed JWT proof is private and conditional', () => {
     ).toContain('loader');
   });
 
-  it('does not accept a canonical filename, package declaration or source hash as route approval', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'jwt-site-proof-'));
-    try {
-      const packageRoot = path.join(root, 'node_modules/next');
-      const file = path.join(packageRoot, 'dist/compiled/jsonwebtoken/index.js');
-      await mkdir(path.dirname(file), { recursive: true });
-      await writeFile(path.join(packageRoot, 'package.json'), '{"name":"next","version":"16.4.3"}');
-      const code = "module.exports={sign:()=>Function('return this')()};";
-      await writeFile(file, code);
-      const graph: ManifestModuleGraph = {
-        sources: new Map([[file, { file, sha256: originalNodeModeHash(code) }]]),
-        importers: new Map([[file, []]]),
-        retained: new Set([file]),
-        rendered: new Map([[file, code]]),
-      };
-      const originalModes = await prepareOriginalNodeModes(
-        { rootDir: root, projectDir: root, distDir: root },
-        graph,
-        [file],
-      );
-
-      await expect(
-        qualifyNodeJwtCompiler({
+  it.each([
+    {
+      library: 'jsonwebtoken',
+      code: "module.exports={sign:()=>Function('return this')()};",
+      refusal: 'compiler',
+    },
+    {
+      library: 'fast-jwt',
+      code: 'module.exports={sign:()=>process.binding("buffer")};',
+      refusal: 'loader',
+    },
+  ])(
+    'does not accept a canonical filename, package declaration or source hash as route approval for $library',
+    async ({ library, code, refusal }) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'jwt-site-proof-'));
+      try {
+        const packageRoot = path.join(root, 'node_modules/next');
+        const file = path.join(packageRoot, `dist/compiled/${library}/index.js`);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(path.join(packageRoot, 'package.json'), PINNED_NEXT_PACKAGE_JSON);
+        await writeFile(file, code);
+        const graph: ManifestModuleGraph = {
+          sources: new Map([[file, { file, sha256: originalNodeModeHash(code) }]]),
+          importers: new Map([[file, []]]),
+          retained: new Set([file]),
+          rendered: new Map([[file, code]]),
+        };
+        const originalModes = await prepareOriginalNodeModes(
+          { rootDir: root, projectDir: root, distDir: root },
           graph,
-          originalModes,
-          patches: [],
-          context: { distDir: root },
-          manifests: {},
-        }),
-      ).rejects.toThrow('completed original SDK route closure');
-      expect(dynamicNodeClosureRefusal(file, code)).toContain('compiler');
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
+          [file],
+        );
+
+        await expect(
+          qualifyNodeJwtCompiler({
+            graph,
+            originalModes,
+            patches: [],
+            context: { distDir: root },
+            manifests: {},
+          }),
+        ).rejects.toThrow('completed original SDK route closure');
+        expect(dynamicNodeClosureRefusal(file, code)).toContain(refusal);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 });

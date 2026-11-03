@@ -28,15 +28,21 @@ const FORWARDED_GLOBALS = `if (typeof require !== 'undefined') {
 function source(code: string): { code: string; sha256: string } {
   return { code, sha256: createHash('sha256').update(code).digest('hex') };
 }
+/** The production runtime each release's snapshot holds; the async-module section is shared. */
+const PRODUCTION = {
+  '16.4.3': 'fixtures/node-runtime/production.txt',
+  '16.4.4': 'fixtures/node-runtime-16.4.4/production.txt',
+} as const;
 async function input(
   options: {
     readonly asyncModules?: boolean;
     readonly renamedModule?: boolean;
     readonly forwardedGlobals?: boolean;
+    readonly release?: keyof typeof PRODUCTION;
   } = {},
 ): Promise<NodeManifestTurbopackRuntimeInput> {
   const primary = await readFile(
-    new URL('fixtures/node-runtime/production.txt', import.meta.url),
+    new URL(PRODUCTION[options.release ?? '16.4.3'], import.meta.url),
     'utf8',
   );
   let body = primary.split('\n').slice(3).join('\n');
@@ -66,12 +72,16 @@ function changed(
 }
 
 describe('fixed producer-derived Turbopack Node runtime', () => {
-  it.each([
-    { asyncModules: false },
-    { asyncModules: true },
-    { asyncModules: true, renamedModule: true },
-    { asyncModules: true, forwardedGlobals: true },
-  ])('seals the complete fixed runtime semantics for %j', async (options) => {
+  it.each(
+    (['16.4.3', '16.4.4'] as const).flatMap((release) => {
+      return [
+        { asyncModules: false },
+        { asyncModules: true },
+        { asyncModules: true, renamedModule: true },
+        { asyncModules: true, forwardedGlobals: true },
+      ].map((options) => ({ ...options, release }));
+    }),
+  )('seals the complete fixed runtime semantics for %j', async (options) => {
     const own = await input(options);
     const proof = assertNodeManifestTurbopackRuntime(own);
 
@@ -86,6 +96,8 @@ describe('fixed producer-derived Turbopack Node runtime', () => {
       options.asyncModules,
       true,
     ]);
+    // 16.4.4 reverted the strict module factory chunks, and its runtime installs no such table.
+    expect(proof.strictFactoryTables).toBe(options.release === '16.4.3');
   });
 
   it('accepts source formatting without allowing a changed runtime operation', async () => {

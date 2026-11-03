@@ -18,7 +18,7 @@ import {
   nodeCachePolicyPatch,
   nodeCachePolicyRemovedRanges,
 } from './node-cache-policy.ts';
-import { reviewedFrameworkSource } from './node-manifest-framework.ts';
+import { isReviewedFrameworkSource } from './node-manifest-framework.ts';
 import type { ManifestModuleGraph, ManifestRouteSource } from './node-manifest-graph.ts';
 import type { NodeManifestNormalization } from './node-manifest-normalization.ts';
 import type { NodeManifestProof } from './node-manifest-proof.ts';
@@ -115,7 +115,7 @@ function checkedRoutes(
       original?.sha256 !== route.sha256 ||
       !graph.retained.has(original.id) ||
       path.resolve(route.root, route.relative) !== route.file ||
-      reviewedFrameworkSource(route.relative) !== route.sha256
+      !isReviewedFrameworkSource(route.relative, route.sha256)
     )
       refuse('completed route source identity');
     checked.set(route.file, Object.freeze({ ...route }));
