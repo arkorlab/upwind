@@ -7,7 +7,12 @@ import {
 } from '@stayingupwind/core/cache';
 import { Lru } from '@stayingupwind/core/util';
 
-import type { CacheHost, InvalidateOutcome, TagInvalidation } from './host.ts';
+import {
+  type CacheHost,
+  CacheHostError,
+  type InvalidateOutcome,
+  type TagInvalidation,
+} from './host.ts';
 import { TagLosses } from './tag-losses.ts';
 import {
   addMark,
@@ -34,10 +39,17 @@ export type { TagMark } from './tag-marks.ts';
  */
 
 /**
- * What this view asks of the host, and no more: the scope's delta, and the state of named tags.
- * Named so the two calls it makes are the two a reader has to account for.
+ * What this view asks of the host, and no more: the scope's delta, the window of its recent
+ * invalidations where the host has one, and the state of named tags. Named so the calls it makes
+ * are the ones a reader has to account for.
  */
-export type TagHost = Pick<CacheHost, 'getTags' | 'tagsDelta'>;
+export type TagHost = Pick<CacheHost, 'getTags' | 'tagsDelta' | 'tagsRecent'>;
+
+/**
+ * Hosts whose window of recent invalidations answered that there is no such call — one from before
+ * it (`unsupported`, `CacheHost`) — which are caught up with through the delta alone from then on.
+ */
+const windowless = new WeakSet<TagHost>();
 
 export interface TagStateOptions {
   /** How long a synced view is trusted before the delta is asked for again. */
@@ -101,6 +113,8 @@ interface TagKnowledge {
   readonly history?: readonly TagHistoryMark[] | undefined;
   readonly checkedAt?: number | undefined;
   readonly knownRevision?: number | undefined;
+  /** The latest revision a window of recent invalidations brought a mark of the tag at (`#markRecent`). */
+  readonly recentRevision?: number | undefined;
   readonly unknown?: Marks | undefined;
 }
 
@@ -184,6 +198,8 @@ export class TagState {
   readonly #holdMs: number;
   readonly #log: TagStateOptions['log'];
   #revision = 0;
+  /** The revision the latest window of recent invalidations that left none out was read at (`seen`). */
+  #recentRevision = 0;
   #syncedAt: number | undefined;
   /**
    * The marks of tags the view has let go of, of whichever kind, counted (`TagLosses`): a mark of a
@@ -268,12 +284,39 @@ export class TagState {
   }
 
   /**
+   * What a window of recent invalidations said of a tag (`recent`), beside what else is known of it:
+   * each mark's deadline in the tag's history, as the delta's are, and its revision as the tag's
+   * `recentRevision` — never as `knownRevision`, nor as a moment the host was asked of the tag
+   * (`checkedAt`).
+   *
+   * A window holds the newest invalidations and none before them, so it says nothing of the marks of
+   * the tag the view let go of: taken as `knownRevision`, a mark of it past one the view let go of
+   * would have the view hold the tag whole through its revision (`holdsWhole`), and a commit claim
+   * the deadline it let go of was held (`heldRevisionOf`), while what a read of the tag says may be
+   * behind that deadline still. And a read of the tag still asks the host of it (`syncLocal`), which
+   * brings its whole history.
+   */
+  #markRecent(tag: TagInvalidation, revision: number): void {
+    const known = this.#tags.get(tag.value);
+    let { history } = known ?? {};
+    let latest = known?.recentRevision ?? 0;
+    const row = { revision, staleAt: tag.staleAt, hardExpireAt: tag.hardExpireAt };
+    for (const mark of [...(tag.history ?? []), row]) {
+      history = withTagHistory(history, mark);
+      latest = Math.max(latest, mark.revision);
+    }
+    this.#tags.set(tag.value, { ...known, history, recentRevision: latest });
+  }
+
+  /**
    * Remember that the view let go of what it knew of `value` (`#lost`), where that was a mark known
-   * at a revision; and count it (`losses`), where it held a mark of any kind.
+   * at a revision — one a window brought too (`#markRecent`); and count it (`losses`), where it held
+   * a mark of any kind.
    */
   #lose(value: string, known: TagKnowledge): void {
-    if (known.knownRevision !== undefined) {
-      this.#lost.set(value, Math.max(this.#lost.get(value) ?? 0, known.knownRevision));
+    const revision = Math.max(known.knownRevision ?? 0, known.recentRevision ?? 0);
+    if (revision > 0) {
+      this.#lost.set(value, Math.max(this.#lost.get(value) ?? 0, revision));
     }
     if (known.history !== undefined || known.unknown !== undefined) {
       this.losses.forget(value);
@@ -333,13 +376,15 @@ export class TagState {
     const applied = this.#applied.get(value);
     const within = (revision: number | undefined): boolean =>
       revision === undefined || revision <= held;
-    // One known at a revision past `held` is one the view missed, whatever its time says.
+    // One known at a revision past `held` is one the view missed, whatever its time says — one a
+    // window brought as well (`#markRecent`), which is no part of `knownRevision`.
     return (
       !reachesAny(applied?.unanswered?.marks, timestamp) &&
       !reachesAny(applied?.overflow?.marks, timestamp) &&
       !reachesAny(applied?.unrevised, timestamp) &&
       within(applied?.answeredRevision) &&
       within(told?.knownRevision) &&
+      within(told?.recentRevision) &&
       !reachesAny(told?.unknown, timestamp)
     );
   }
@@ -400,6 +445,21 @@ export class TagState {
 
   get revision(): number {
     return this.#revision;
+  }
+
+  /**
+   * The revision of the scope through which this view holds every invalidation a request's reads may
+   * still be behind on: the one the delta brought it to (`revision`), or the one a window of recent
+   * invalidations that left none out was read at (`recent`), the later. Every invalidation at or
+   * before it is a mark in the view, or took effect before the window reached back to — and is in
+   * what the isolate reads anyway.
+   *
+   * What a request is brought up to before it is judged (`catchUpWithScope`), never what a
+   * regeneration claims its render was judged against: that is `revision`, which a window does not
+   * move, as it holds the newest invalidations and not every one.
+   */
+  get seen(): number {
+    return Math.max(this.#revision, this.#recentRevision);
   }
 
   /**
@@ -477,6 +537,39 @@ export class TagState {
       return true;
     }
     return this.#pull(host, now);
+  }
+
+  /**
+   * Take in the newest invalidations past where the view stands (`seen`) that took effect at `from`
+   * or later, as `host` answers them (`CacheHost.tagsRecent`): `true` where the window left none
+   * out, and the view then stands at the revision it was read at (`seen`); `false` where it left some
+   * out — its marks are taken in all the same, a mark only ever holding more back — or where it could
+   * not be read, or the host has no such read, which one that answers `unsupported` is asked of no
+   * more (`windowless`). Moves neither `revision` nor anything a commit claims (`#markRecent`), and
+   * never rejects.
+   */
+  async recent(host: TagHost, from: number): Promise<boolean> {
+    if (host.tagsRecent === undefined || windowless.has(host)) {
+      return false;
+    }
+    try {
+      const window = await host.tagsRecent(this.seen, from);
+      for (const tag of window.tags) {
+        this.#markRecent(tag, tag.revision ?? window.revision);
+      }
+      if (window.truncated) {
+        return false;
+      }
+      this.#recentRevision = Math.max(this.#recentRevision, window.revision);
+      return true;
+    } catch (error) {
+      if (error instanceof CacheHostError && error.code === 'unsupported') {
+        windowless.add(host);
+      } else {
+        this.#log?.('recent tags not read', error instanceof Error ? error.message : String(error));
+      }
+      return false;
+    }
   }
 
   /**

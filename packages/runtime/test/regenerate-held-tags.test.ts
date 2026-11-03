@@ -10,6 +10,7 @@ import type {
   DataRead,
   TagDelta,
   TagInvalidation,
+  TagWindow,
 } from '../src/cache/host.ts';
 import { answeringAtOnce, publishingKeyOf } from '../src/cache/publishing.ts';
 import { regenerate } from '../src/cache/regenerate.ts';
@@ -70,6 +71,8 @@ interface Scenario {
   readonly tags: readonly string[];
   /** What it reads behind its answer, in work handed to `waitUntil`, once the render is over. */
   readonly behind?: readonly Read[] | undefined;
+  /** A window of recent invalidations the isolate took in before the regeneration, where one did. */
+  readonly window?: TagWindow | undefined;
 }
 
 /** The moment every clock of these tests reads: the isolate's, and what a request acts at. */
@@ -161,6 +164,7 @@ function hostOf(scenario: Scenario, commits: CommitRequest[], hooks: Hooks): Cac
     getTags: (values) =>
       Promise.resolve({ tags: scenario.copies.filter((tag) => values.includes(tag.value)) }),
     tagsDelta: (since) => Promise.resolve(since < REVISION ? delta : past),
+    tagsRecent: () => Promise.resolve(scenario.window ?? past),
     invalidate: unasked,
   };
 }
@@ -236,6 +240,9 @@ async function regenerated(scenario: Scenario): Promise<Regenerated> {
     logged,
   );
   asking.runtime = runtime;
+  if (scenario.window !== undefined) {
+    await runtime.tags.recent(runtime.host, 0);
+  }
   configureCacheHandlers(runtime);
   let answers: unknown[] = [];
   vi.mocked(invokeNodeHandler).mockImplementation(async (input) => {
@@ -325,6 +332,36 @@ describe('what a regeneration commits of what its render held of each tag', () =
 
     expect(answers[0]).not.toBeNull();
     expect(commit?.heldTagRevisions).toMatchObject({ [TAG]: 3, [UNREAD]: REVISION });
+  });
+
+  /**
+   * A window of recent invalidations read past where the delta stands moves what the isolate's
+   * requests are judged by (`TagState.seen`), never what a regeneration claims: it holds the newest
+   * invalidations and none before them, and the commit says the revision the delta brought its view
+   * to, as a regeneration's always did.
+   */
+  it('claims the revision the delta brought the view to, though a window was read past it', async () => {
+    const window: TagWindow = {
+      revision: PAST_THE_VIEW,
+      truncated: false,
+      tags: [
+        { value: UNREAD, staleAt: INVALIDATED_AT, hardExpireAt: null, revision: PAST_THE_VIEW },
+      ],
+    };
+
+    const { commit, logged } = await regenerated({
+      later: 0,
+      copies: [],
+      entries: {},
+      reads: [],
+      tags: [UNREAD],
+      window,
+    });
+
+    expect(logged).toStrictEqual([]);
+    expect(commit?.observedTagRevision).toBe(REVISION);
+    expect(commit?.heldTagRevisions).toMatchObject({ [UNREAD]: REVISION });
+    expect(Math.max(...Object.values(commit?.heldTagRevisions ?? {}))).toBe(REVISION);
   });
 
   /** A view that let go of nothing of a tag knows the whole of it up to its revision. */
