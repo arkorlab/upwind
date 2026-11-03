@@ -1,7 +1,12 @@
 import type { Validity } from '@stayingupwind/core/cache';
 import { withDeadline } from '@stayingupwind/core/util';
 
-import { type LaterData, readNewerData } from './data.ts';
+import {
+  EXPIRED_NEWER_DATA_DEADLINE_MS,
+  type LaterData,
+  NEWER_DATA_DEADLINE_MS,
+  readNewerData,
+} from './data.ts';
 import type { HeldValue } from './held-writes.ts';
 import type { DataReadRequest } from './host.ts';
 import type { CacheRuntime, DataMemo } from './runtime.ts';
@@ -24,14 +29,56 @@ export function heldIn(memo: DataMemo): HeldValue | undefined {
 }
 
 /**
- * How long the judgement of a later value — its tags brought up to date — is waited for, past the
- * read of it (`readNewerData`): past it the value first read is answered, as it would have been.
+ * `work` — a judgement, or a read of what the isolate holds of the key — given up at `until`, on the
+ * isolate's own clock (`performance.now()`), and never begun once that has gone by: `withDeadline`
+ * refuses a spent wait at once, but only when it is handed the work, which by then has asked what
+ * no read is waiting to hear.
+ *
+ * Except what is in hand (`inHand`): begun past `until` all the same, and taken where it settles
+ * within the turn, before a timer of none fires — a write of the key this isolate still holds, tags
+ * it has brought up already. Refused, that would be a miss the render computes again, as a rule
+ * slower than anything the isolate holds; what the host has to answer is not waited for.
  */
-const LATER_JUDGED_WITHIN_MS = 200;
+async function inTime<T>(
+  until: number,
+  what: string,
+  work: () => Promise<T>,
+  inHand = false,
+): Promise<T> {
+  const remaining = until - performance.now();
+  if (remaining > 0) {
+    return withDeadline(work(), remaining, what);
+  }
+  if (!inHand) {
+    throw new Error(`${what} past the read's deadline`);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${what} past the read's deadline`));
+    }, 0);
+  });
+  try {
+    return await Promise.race([work(), late]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
 
-/** `judge` of `value`, given up past `LATER_JUDGED_WITHIN_MS`. */
-function judgedInTime(weighing: Weighing, value: HeldValue): Promise<Validity> {
-  return withDeadline(weighing.judge(value), LATER_JUDGED_WITHIN_MS, 'a later data value judged');
+/**
+ * `judge` of `value` — its tags brought up to date — by `until` (`inTime`): past it the value first
+ * read is answered, as it would have been — or, `inHand`, what the isolate holds is judged where its
+ * tags are in hand.
+ */
+function judgedInTime(
+  weighing: Weighing,
+  value: HeldValue,
+  until: number,
+  inHand = false,
+): Promise<Validity> {
+  return inTime(until, 'a later data value judged', () => weighing.judge(value), inHand);
 }
 
 /** How far each state keeps a value from being answered; `unknown` is answered as `fresh` is. */
@@ -51,15 +98,18 @@ export interface Weighing {
 }
 
 /**
- * What the isolate holds of the key now, judged afresh; `undefined` — a miss — for none, or for
- * none that could be read or judged: never the value something overtook.
+ * What the isolate holds of the key now, judged afresh, by `until`; `undefined` — a miss — for none,
+ * or for none that could be read or judged by then: never the value something overtook. Reading it
+ * again can go to the host, and so can its judgement's read of the tags: neither is waited for past
+ * the read's deadline, past which the render computes the value itself — but for what the isolate
+ * has in hand, the write that overtook the value above all, which is taken even then (`inHand`).
  */
-async function heldNow(weighing: Weighing): Promise<Judged | undefined> {
+async function heldNow(weighing: Weighing, until: number): Promise<Judged | undefined> {
   try {
-    const now = await weighing.reread();
+    const now = await inTime(until, 'the key read again', () => weighing.reread(), true);
     return now === undefined
       ? undefined
-      : { held: now, validity: await judgedInTime(weighing, now) };
+      : { held: now, validity: await judgedInTime(weighing, now, until, true) };
   } catch {
     return undefined;
   }
@@ -85,6 +135,12 @@ interface Candidate {
  * overtook the value kept — a write of the key this isolate began since the first was asked for, or
  * a read that found one later still — none is answered with: what the isolate holds of the key now
  * is, judged afresh, and a miss where it holds none (`undefined`).
+ *
+ * All of it by one deadline, set as the read asks past the value it judged: `NEWER_DATA_DEADLINE_MS`
+ * past a stale value, `EXPIRED_NEWER_DATA_DEADLINE_MS` past an expired one. Each read and judgement
+ * within it is given what is left, and nothing is begun once it has gone — the probe neither, which
+ * would be a read no one waits for. A read whose wait runs out is answered as it would have been
+ * had nothing later been found: with the value it judged, or, once that was overtaken, a miss.
  */
 export async function laterIfAny(
   runtime: CacheRuntime,
@@ -92,20 +148,22 @@ export async function laterIfAny(
   read: Judged,
   weighing: Weighing,
 ): Promise<Judged | undefined> {
+  const until =
+    performance.now() +
+    (read.validity === 'expired' ? EXPIRED_NEWER_DATA_DEADLINE_MS : NEWER_DATA_DEADLINE_MS);
   const laterThan = async (from: Judged, probing: boolean): Promise<Candidate | undefined> => {
     const { held, validity } = from;
     if (SEVERITY[validity] === SEVERITY.fresh || held.revision === undefined) {
       return undefined;
     }
-    const expired = validity === 'expired';
-    const later = await readNewerData(runtime, request, held.revision, { probing, expired });
+    const later = await readNewerData(runtime, request, held.revision, { probing, until });
     const value = later === undefined ? undefined : heldIn(later.memo);
     if (later === undefined || value === undefined) {
       return undefined;
     }
     let again: Validity;
     try {
-      again = await judgedInTime(weighing, value);
+      again = await judgedInTime(weighing, value, until);
     } catch {
       // The later value could not be judged, or not in time: the one held is answered as it would
       // have been.
@@ -119,9 +177,10 @@ export async function laterIfAny(
   if (first === undefined) {
     return read;
   }
-  const kept = (await laterThan(first.judged, true)) ?? first;
+  const probe = performance.now() < until ? await laterThan(first.judged, true) : undefined;
+  const kept = probe ?? first;
   if (!first.later.standing()) {
-    return heldNow(weighing);
+    return heldNow(weighing, until);
   }
-  return kept.later.keep() ? kept.judged : heldNow(weighing);
+  return kept.later.keep() ? kept.judged : heldNow(weighing, until);
 }
