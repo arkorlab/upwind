@@ -681,6 +681,7 @@ describe('the host serves complete route-body generations', () => {
     });
     const response = await routed(test, test.manifest, { 'x-before': 'matched' });
 
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(REPLACEMENT);
     expect(response.headers.get('x-original-rule')).toBe('retained');
     expect(response.headers.get('cache-control')).toBe(PUBLIC_ANSWER);
     expect(test.dispatch).toHaveBeenCalledTimes(2);
