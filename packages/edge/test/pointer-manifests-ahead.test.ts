@@ -127,10 +127,12 @@ describe('a refreshed pointer whose kind names more manifests than its own', () 
     );
   });
 
-  it('is told which it holds already, and reads none of those again', async () => {
+  it('is told which it holds already, and reads none of those again, named or not', async () => {
     const seen: boolean[] = [];
     let extra = '';
     const release = await releasing({
+      // Named although held: what the isolate holds is not read again, whatever the hook names —
+      // the reader's to keep, not each hook's (cubic).
       manifestsAhead: (_served, _next, held) => {
         seen.push(held(extra), held('f'.repeat(64)));
         return [extra];
@@ -182,5 +184,28 @@ describe('a refreshed pointer whose kind names more manifests than its own', () 
         detail: 'the kind broke',
       }),
     );
+  });
+
+  it('reads none of what a kind named before it threw', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {
+      // Logged, as above.
+    });
+    let extra = '';
+    const release = await releasing({
+      // An iterable the type does not admit, which a kind written in JavaScript could return.
+      manifestsAhead: () => {
+        return (function* names() {
+          yield extra;
+          throw new Error('the kind broke partway');
+        })() as unknown as readonly string[];
+      },
+    });
+    ({ extra } = release);
+
+    await release.refresh();
+
+    expect(release.adopted()).toBe(RELEASED_AT);
+    expect(release.asked).not.toContain(kvManifestKey(extra));
+    expect(release.runtime.memory.manifests.has(extra)).toBe(false);
   });
 });

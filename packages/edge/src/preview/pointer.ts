@@ -395,11 +395,10 @@ function manifestsNamed<P extends EdgePointer>(
   }
   try {
     const held = (manifestId: string): boolean => holdsManifest(runtime, manifestId);
-    const ahead = kind.manifestsAhead?.(served, next, held);
-    if (ahead !== undefined) {
-      for (const manifestId of ahead) {
-        named.add(manifestId);
-      }
+    // Taken whole before any is named: a hook that throws partway names none (cubic).
+    const ahead = [...(kind.manifestsAhead?.(served, next, held) ?? [])];
+    for (const manifestId of ahead) {
+      named.add(manifestId);
     }
   } catch (error) {
     logWarn('the host pointer kind threw', {
