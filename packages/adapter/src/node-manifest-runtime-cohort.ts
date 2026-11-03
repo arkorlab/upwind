@@ -55,6 +55,8 @@ export interface NodeManifestRuntimeCohort {
   /** Owned callers only; these are not protected route or normalization terminals. */
   readonly boots: readonly BootIdentity[];
   readonly lookupEdges: readonly LookupEdge[];
+  /** Whether every runtime installs a chunk's leading strict factory table (16.4.3's). */
+  readonly strictFactoryTables: boolean;
 }
 const CERTIFIED = new WeakSet<NodeManifestRuntimeCohort>();
 const PROFILE_KINDS = new Set(['app-page', 'app-route', 'pages', 'pages-api']);
@@ -168,9 +170,24 @@ function lookupEdges(
   return Object.freeze(edges);
 }
 
-/** Beside a runtime that installs no strict factory table (16.4.4's), no chunk leads with one. */
-function flatTables(strict: boolean, sources: readonly NodeManifestTurbopackGraphFile[]): void {
-  if (!strict && sources.some((source) => nodeManifestTurbopackNestedTable(source.source)))
+/**
+ * Beside a runtime that installs no strict factory table (16.4.4's), no table it installs leads
+ * with one: only the chunks its graphs load, never another CommonJS source that looks like one.
+ */
+function flatTables(
+  strict: boolean,
+  graphs: readonly NodeManifestTurbopackBootGraph[],
+  sources: readonly NodeManifestTurbopackGraphFile[],
+): void {
+  if (strict) return;
+  const loaded = new Set(
+    graphs.flatMap((graph) => [...graph.initialChunks, ...(graph.lookupTables ?? [])]),
+  );
+  if (
+    sources.some(
+      (source) => loaded.has(source.id) && nodeManifestTurbopackNestedTable(source.source),
+    )
+  )
     refuse('strict factory table beside a runtime that installs none');
 }
 
@@ -226,13 +243,13 @@ export function certifyNodeManifestRuntimeCohort(input: {
       }),
     );
   }
-  flatTables(strict, input.sources);
   if (input.requiredBoots.some((file) => boots.every((boot) => boot.file !== file)))
     refuse('unowned required route boot');
   const cohort = Object.freeze({
     runtimes: Object.freeze([...runtimes.values()]),
     boots: Object.freeze(boots),
     lookupEdges: lookupEdges(runtimes, sources),
+    strictFactoryTables: strict,
   });
   CERTIFIED.add(cohort);
   return cohort;
@@ -341,8 +358,8 @@ export function prepareNodeManifestRuntimeGraphs(input: {
           registrationScope,
         });
       }) ?? [];
+  let strict = cohort?.strictFactoryTables ?? true;
   if (cohort === undefined) {
-    let strict = true;
     for (const graph of graphs) {
       const proof = assertNodeManifestTurbopackRuntime({
         source: graph.runtime.source,
@@ -353,7 +370,8 @@ export function prepareNodeManifestRuntimeGraphs(input: {
       });
       strict &&= proof.strictFactoryTables;
     }
-    flatTables(strict, input.sources);
   }
-  return { cohort, graphs, allGraphs: [...graphs, ...other] };
+  const allGraphs = [...graphs, ...other];
+  flatTables(strict, allGraphs, input.sources);
+  return { cohort, graphs, allGraphs };
 }
