@@ -36,6 +36,11 @@ const LATER = 12;
 const INVALIDATED_AT = NOW - 60 * SECOND;
 const LATER_AT = NOW - 10 * SECOND;
 
+/** What a test leaves out, which it does not wait for. */
+function ignore(): void {
+  // Nothing to report: it is never answered while the test looks.
+}
+
 /** `count` tags no read of these tests is under. */
 function othersOf(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `other-${String(index)}`);
@@ -157,7 +162,7 @@ describe('a window of recent invalidations in the tag view', () => {
    * further than the delta brought it (`seen`) — a request behind its scope is caught up again —
    * until the delta passes them.
    */
-  it('stands where the delta brought it once a window’s mark is let go of, until the delta passes it', async () => {
+  it('stands where the delta brought it once a window’s mark is let go of, until a whole pull passes it', async () => {
     const many: TagWindow = {
       revision: LATER,
       truncated: false,
@@ -183,6 +188,121 @@ describe('a window of recent invalidations in the tag view', () => {
     expect(letGo).toBe(0);
     expect(state.seen).toBe(LATER);
     expect(state.validityOf([TAG], LATER_AT - SECOND, NOW)).toBe('expired');
+  });
+
+  /**
+   * A pull that has only passed a let-go mark's revision has not brought its tag, which may have
+   * been invalidated again since and come later: the view stands where the delta brought it until a
+   * pull runs to its end (Codex).
+   */
+  it('stands where the delta brought it while a pull past a let-go mark is still out', async () => {
+    let windows = 0;
+    const asked: number[] = [];
+    const host: TagHost = {
+      tagsDelta: (since) => {
+        asked.push(since);
+        return since === 0
+          ? Promise.resolve({ revision: 10, truncated: true, tags: [markOf('other', 10, 1)] })
+          : new Promise<TagDelta>(() => {
+              // The page with the tag, at 60 now, is never answered while the test looks.
+            });
+      },
+      getTags: () => Promise.resolve({ tags: [] }),
+      tagsRecent: () => {
+        windows += 1;
+        return Promise.resolve({
+          revision: 50,
+          truncated: false,
+          tags:
+            windows === 1
+              ? [markOf(TAG, INVALIDATED, INVALIDATED_AT)]
+              : othersOf(TAGS_HELD).map((v) => markOf(v, 11, 1)),
+        });
+      },
+    };
+    const state = new TagState({ holdMs: HOLD_MS });
+    await state.recent(host, 0);
+    await state.recent(host, 0);
+
+    void state.sync(host, NOW, { force: true }).catch(ignore);
+    await vi.waitFor(() => {
+      expect(asked).toStrictEqual([0, 10]);
+    });
+
+    expect(state.revision).toBe(10);
+    expect(state.seen).toBe(10);
+  });
+
+  /**
+   * The delta answers each tag's latest row: a tag invalidated again since the window comes at its
+   * later revision, past pages that reach beyond the window's mark without it. The window's mark is
+   * kept until the delta brings the tag itself (Codex).
+   */
+  it('keeps a window’s mark until the delta brings its tag, not until it passes its revision', async () => {
+    const window: TagWindow = {
+      revision: 20,
+      truncated: false,
+      tags: [markOf(TAG, INVALIDATED, INVALIDATED_AT)],
+    };
+    // The page before the tag's: past the window's mark, without the tag, whose row is at 30 now.
+    const first: TagDelta = { revision: 10, truncated: true, tags: [markOf('other', 10, 1)] };
+    const asked: number[] = [];
+    const host: TagHost = {
+      tagsDelta: (since) => {
+        asked.push(since);
+        // The page that brings the tag is still out once the first is in: judged between them.
+        return since === 0
+          ? Promise.resolve(first)
+          : new Promise<TagDelta>(() => {
+              // Never answered while the test looks.
+            });
+      },
+      getTags: () => Promise.resolve({ tags: [] }),
+      tagsRecent: () => Promise.resolve(window),
+    };
+    const state = new TagState({ holdMs: HOLD_MS });
+    await state.recent(host, 0);
+
+    void state.sync(host, NOW, { force: true }).catch(ignore);
+    await vi.waitFor(() => {
+      expect(asked).toStrictEqual([0, 10]);
+    });
+
+    expect(state.revision).toBe(10);
+    expect(state.seen).toBe(20);
+    expect(state.validityOf([TAG], INVALIDATED_AT - SECOND, NOW)).toBe('expired');
+  });
+
+  /**
+   * A window's mark let go of past the bound is knowledge lost, as a mark the delta brought is: the
+   * tag is held whole no more, and a render that began before it answers no more (Codex, Greptile).
+   */
+  it('counts a window’s mark let go of past the bound as lost', async () => {
+    let windows = 0;
+    const host: TagHost = {
+      tagsDelta: () => Promise.resolve({ revision: 0, truncated: false, tags: [] }),
+      getTags: () => Promise.resolve({ tags: [] }),
+      tagsRecent: () => {
+        windows += 1;
+        return Promise.resolve({
+          revision: LATER,
+          truncated: false,
+          tags:
+            windows === 1
+              ? [markOf(TAG, LATER, LATER_AT)]
+              : othersOf(TAGS_HELD).map((v) => markOf(v, 11, 1)),
+        });
+      },
+    };
+    const state = new TagState({ holdMs: HOLD_MS });
+    await state.recent(host, 0);
+    const before = state.losses.count;
+
+    await state.recent(host, 0);
+
+    expect(state.holdsWhole(TAG)).toBe(false);
+    expect(state.losses.lostSince(TAG, before)).toBe(true);
+    expect(state.seen).toBe(0);
   });
 
   /**

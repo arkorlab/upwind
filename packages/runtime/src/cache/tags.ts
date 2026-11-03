@@ -216,17 +216,19 @@ export class TagState {
   #recentRevision = 0;
   /**
    * The marks windows of recent invalidations brought, held apart from the tags the delta brings
-   * (`#markRecent`) until the delta brings them too (`#pull`): the delta of a fresh isolate brings
-   * the scope's whole history after them, oldest first, and in the bound of its own tags
-   * (`MAX_TAGS_HELD`) would let go of the newest marks first — the ones the view stands at the
+   * (`#markRecent`) until the delta brings their tags too (`#broughtByDelta`): the delta of a fresh
+   * isolate brings the scope's whole history after them, oldest first, and in the bound of its own
+   * tags (`MAX_TAGS_HELD`) would let go of the newest marks first — the ones the view stands at the
    * window's revision by (`seen`), which a read of the tag from a regional copy may be behind on
    * still (Codex).
    */
   readonly #recent = new Map<string, RecentKnowledge>();
   /**
-   * The latest revision of a window's mark let go of before the delta brought it
-   * (`MAX_RECENT_MARKS`): the view stands no further than the delta brought it (`seen`) until the
-   * delta passes it.
+   * The latest revision of a window's mark let go of before the delta brought its tag
+   * (`MAX_RECENT_MARKS`), 0 for none: the view stands no further than the delta brought it (`seen`)
+   * until a pull of the delta has run to its end past it — the delta answers each tag's latest row,
+   * so only a whole pull has brought every tag, one invalidated again since among them (Codex) — or
+   * a window asked from where the delta stands brings the marks back (`recent`).
    */
   #recentLostPast = 0;
   #syncedAt: number | undefined;
@@ -253,12 +255,14 @@ export class TagState {
       while (truncated) {
         const delta = await host.tagsDelta(this.#revision);
         for (const tag of delta.tags) {
-          this.#remember(tag, tag.revision ?? delta.revision);
+          const revision = tag.revision ?? delta.revision;
+          this.#remember(tag, revision);
+          this.#broughtByDelta(tag.value, revision);
         }
         this.#revision = Math.max(this.#revision, delta.revision);
-        this.#passRecent();
         truncated = delta.truncated;
       }
+      if (this.#revision >= this.#recentLostPast) this.#recentLostPast = 0;
       // Pulls overlap, and one that began earlier can answer last: what a later one brought is in
       // the view already, and its hold stands. So does a page another pull took of a delta it has
       // not finished: this pull's last answer held every invalidation the host had made when this
@@ -341,17 +345,26 @@ export class TagState {
         break;
       }
       this.#recent.delete(value);
+      // Knowledge lost, as a mark the delta brought is when the view lets go of it (`#lose`): the
+      // tag is held whole no more until the delta brings it past this revision (`holdsWhole`), a
+      // render that began before it answers no more (`losses`), and the view stands no further than
+      // the delta brought it (`seen`) — Codex, Greptile.
+      this.#lose(value, { knownRevision: held.recentRevision, history: held.history });
       this.#recentLostPast = Math.max(this.#recentLostPast, held.recentRevision);
     }
   }
 
-  /** Let go of the marks of windows the delta has brought the view past (`#recent`). */
-  #passRecent(): void {
-    for (const [value, held] of this.#recent) {
-      if (held.recentRevision <= this.#revision) {
-        this.#recent.delete(value);
-      }
-    }
+  /**
+   * The delta brought `value` at `revision`: what a window brought of it at no later revision is in
+   * the view's own knowledge of the tag now, and is let go of (`#recent`). Not where the delta's
+   * revision only passed the window's mark: the delta answers each tag's latest row, so a tag
+   * invalidated again since the window comes at its later revision, past pages that reach beyond
+   * the window's mark without it (Codex). Nor on a regional read of the tag (`syncLocal`), which may
+   * be behind the window.
+   */
+  #broughtByDelta(value: string, revision: number): void {
+    if (revision >= (this.#recent.get(value)?.recentRevision ?? Infinity))
+      this.#recent.delete(value);
   }
 
   /**
@@ -507,7 +520,7 @@ export class TagState {
    * move, as it holds the newest invalidations and not every one.
    */
   get seen(): number {
-    return this.#recentLostPast > this.#revision
+    return this.#recentLostPast > 0
       ? this.#revision
       : Math.max(this.#revision, this.#recentRevision);
   }
