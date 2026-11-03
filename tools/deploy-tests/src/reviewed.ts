@@ -334,6 +334,12 @@ const AT_16_4_3: readonly Group[] = [
       "waiting for locator('#loading') to be visible",
       'client-cache.original.test.ts:386:',
     ),
+    // A prefetch of the adapter's that fails skips the loading state too: read only a run where the
+    // suite's own prefetches, again after five minutes and of a dynamic page in part, passed.
+    beside: [
+      'app dir client cache semantics (30s/5min) prefetch={true} should prefetch again after 5 mins if the link is visible again',
+      'app dir client cache semantics (30s/5min) prefetch={undefined} - default should prefetch partially a dynamic page',
+    ],
     cases: {
       'test/e2e/app-dir/app-client-cache/client-cache.original.test.ts': [
         'app dir client cache semantics (30s/5min) prefetch={undefined} - default should refetch the full page after 5 mins',
