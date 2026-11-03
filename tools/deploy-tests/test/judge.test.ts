@@ -480,11 +480,12 @@ describe('the reviewed cases', () => {
         gates: 1,
         failed: 0,
       });
-      expect(gateVerdict(entry, ON_NODE).cases).toMatchObject({ gates: 0, failed: 1 });
+      // Read on both lanes since the night's run of 2026-11-01; a run that names no lane, on neither.
       expect(gateVerdict(entry, { ...ON_NODE, node: '26' }).cases).toMatchObject({
-        gates: 0,
-        failed: 1,
+        gates: 1,
+        failed: 0,
       });
+      expect(gateVerdict(entry, ON_NODE).cases).toMatchObject({ gates: 0, failed: 1 });
       expect(
         gateVerdict(entry, { ...ON_CLOUDFLARE, next: ANOTHER_COMMIT.next }).cases,
       ).toMatchObject({ gates: 0, failed: 1 });
@@ -589,10 +590,12 @@ describe('the reviewed cases', () => {
 
   it('read no lane-specific entry under another Node.js, nor where the run names none', () => {
     const lanes = REVIEWED.filter(({ nodes }) => nodes !== undefined);
+    // An entry read on both lanes has no other lane to be refused under.
+    const oneLane = lanes.filter(({ nodes }) => nodes?.length === 1);
 
-    expect(lanes).not.toHaveLength(0);
+    expect(oneLane).not.toHaveLength(0);
 
-    for (const entry of lanes) {
+    for (const entry of oneLane) {
       const target = entry.targets?.[0] ?? 'node';
       const [message = ''] = recordedFor(entry);
       const other = entry.nodes?.includes('24') === true ? '26' : '24';
