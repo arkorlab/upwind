@@ -6,7 +6,7 @@ import { nowMs } from './cache/clock.ts';
 import { currentGeneration } from './cache/current.ts';
 import { postponedOf } from './documents.ts';
 import { isDraftRequest } from './draft.ts';
-import { type Entry, entryFor } from './entries.ts';
+import { type Entry, entryFor, hasEntry } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
 import { descriptorFor } from './generations.ts';
 import { possibleServerAction } from './methods.ts';
@@ -72,8 +72,7 @@ function prerenderedRoute(store: Store, resolved: Resolved): string | undefined 
  */
 function routeRenderedBy(input: RoutedInput, store: Store, resolved: Resolved): string | undefined {
   const { route } = resolved;
-  const entered = input.edge.entries[route] !== undefined || input.app.entries[route] !== undefined;
-  return entered ? route : prerenderedRoute(store, resolved);
+  return hasEntry(input, route) ? route : prerenderedRoute(store, resolved);
 }
 
 /** A generation a page was answered from, and its postponed state: none where it rendered whole. */

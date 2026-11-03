@@ -235,15 +235,21 @@ export interface CacheRuntimeOptions {
  * 360 with every field a host answers set, each number at its longest.
  */
 const DATA_ANSWER_CHARACTERS = 512;
-/** What JSON writes beside each tag of an answer: its two quotes and the comma after it. */
-const TAG_PUNCTUATION_CHARACTERS = 3;
+/** What JSON writes between the tags of an answer: a comma. */
+const TAG_SEPARATOR_CHARACTERS = 1;
+
+/** The characters JSON writes `value` in — its quotes, and what it escapes — for a short string. */
+function writtenLength(value: string): number {
+  return JSON.stringify(value).length;
+}
 
 /**
  * What a data memo holds: its bytes, and its answer, counted in the characters JSON would write it
- * in, from the lengths of its strings — ids, handler, tags, and the value's base64 or artifact id —
- * beside an allowance for the rest (`DATA_ANSWER_CHARACTERS`). Written as JSON to be measured, an
- * answer that carries its value inline was its whole base64 copied into a string of its own on the
- * path of the read that keeps it: 0.6 ms for a value of 512 KiB, 9.7 ms for one of 8 MiB.
+ * in, from its strings — ids, handler, tags and an artifact id as JSON writes each, escapes and all
+ * (cubic), and the value's base64, which needs none, by its length — beside an allowance for the
+ * rest (`DATA_ANSWER_CHARACTERS`). Written as JSON whole to be measured, an answer that carries its
+ * value inline was its whole base64 copied into a string of its own on the path of the read that
+ * keeps it: 0.6 ms for a value of 512 KiB, 9.7 ms for one of 8 MiB.
  */
 function dataBytes(memo: DataMemo): number {
   if (memo.kind === 'missing') {
@@ -251,11 +257,14 @@ function dataBytes(memo: DataMemo): number {
   }
   const { entryId, generationId, entry, value } = memo.response;
   let characters =
-    DATA_ANSWER_CHARACTERS + entryId.length + generationId.length + (entry.handler?.length ?? 0);
+    DATA_ANSWER_CHARACTERS +
+    writtenLength(entryId) +
+    writtenLength(generationId) +
+    (entry.handler === undefined ? 0 : writtenLength(entry.handler));
   for (const tag of entry.tags) {
-    characters += tag.length + TAG_PUNCTUATION_CHARACTERS;
+    characters += writtenLength(tag) + TAG_SEPARATOR_CHARACTERS;
   }
-  characters += value.kind === 'inline' ? value.base64.length : value.artifactId.length;
+  characters += value.kind === 'inline' ? value.base64.length : writtenLength(value.artifactId);
   return memo.bytes.buffer.byteLength + characters * UTF16_BYTES;
 }
 

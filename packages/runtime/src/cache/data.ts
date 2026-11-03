@@ -120,7 +120,7 @@ export const NEWER_DATA_DEADLINE_MS = 200;
 /**
  * How long a read waits for a value later than the one it judged expired, past that read, all it
  * asks there together, as `NEWER_DATA_DEADLINE_MS` is past a stale one: some 1.4 s given to each
- * step on its own. It computes the value again otherwise, in front of the render, which as a rule
+ * step on its own — 500 ms for each of the two reads, 200 ms for each of their judgements. It computes the value again otherwise, in front of the render, which as a rule
  * takes longer; and what it computes is written over the later value another isolate wrote, so that
  * the renders after it can answer with values that differ. A host can keep that value in another
  * region than the one it reads from, and a read that crosses to it took 160–360 ms in deploy-tests
