@@ -45,17 +45,35 @@ export async function renderedBy(
   if (own !== undefined) {
     return { entry: own, resolved };
   }
-  // The member's own prerender, where the build made one; else the class the router resolved the
-  // member to by its name (`resolvedByName`), whose route is the member's.
-  const route = (
-    store.prerendersByPathname.get(resolved.pathname) ??
-    store.prerendersByPathname.get(resolved.route)
-  )?.route;
+  const route = prerenderedRoute(store, resolved);
   if (route === undefined) {
     return undefined;
   }
   const entry = await lookup(input, route);
   return entry === undefined ? undefined : { entry, resolved: { ...resolved, route } };
+}
+
+/**
+ * The route a resolved member renders under where its own route has no entrypoint (`renderedBy`):
+ * the member's own prerender's, where the build made one; else that of the class the router
+ * resolved the member to by its name (`resolvedByName`), whose route is the member's.
+ */
+function prerenderedRoute(store: Store, resolved: Resolved): string | undefined {
+  return (
+    store.prerendersByPathname.get(resolved.pathname) ??
+    store.prerendersByPathname.get(resolved.route)
+  )?.route;
+}
+
+/**
+ * The route `renderedBy` comes to, read off the tables without evaluating a module: the resolved
+ * route where an entrypoint of either runtime has it — `entryFor` finds one there, or fails — and
+ * the one its prerender names otherwise; `undefined` where there is neither.
+ */
+function routeRenderedBy(input: RoutedInput, store: Store, resolved: Resolved): string | undefined {
+  const { route } = resolved;
+  const entered = input.edge.entries[route] !== undefined || input.app.entries[route] !== undefined;
+  return entered ? route : prerenderedRoute(store, resolved);
 }
 
 /** A generation a page was answered from, and its postponed state: none where it rendered whole. */
@@ -152,12 +170,74 @@ async function actionPostponedFor(
     : new TextDecoder().decode(generation.postponed);
 }
 
+/** The postponed state of a server action, asked for under `route` (`actionPostponedEarly`). */
+interface EarlyPostponed {
+  readonly route: string;
+  readonly postponed: Promise<string | undefined>;
+}
+
+/**
+ * The postponed state a server action's re-render is handed (`actionPostponedFor`), asked for as
+ * the route's module is evaluated rather than once it has been. The module is evaluated before
+ * anything is answered, on purpose (`entryFor`), and the generation the page was answered from is a
+ * read of its record — 200 ms at the most, and as long again for a newer one (`currentGeneration`)
+ * — that needs nothing of the module: asked one after the other, they came to their sum in front of
+ * the action's answer, and now to the longer of the two.
+ *
+ * Only where it will be asked for once the module is in: an action handed state, under the route
+ * `renderedBy` comes to (`routeRenderedBy`), of a Node.js entrypoint — an edge page's action is handed
+ * none — and with a cache to read the generation from. A read asked for and not taken costs a read
+ * of the record, kept for the requests after it; one that fails is caught here, as the module's
+ * evaluation can fail before it is awaited, and fails the action where it is taken, as it would
+ * have.
+ */
+function actionPostponedEarly(
+  input: RoutedInput,
+  store: Store,
+  resolved: Resolved,
+): EarlyPostponed | undefined {
+  if (input.cache === undefined || !isActionHandedState(input.request, store)) {
+    return undefined;
+  }
+  const route = routeRenderedBy(input, store, resolved);
+  if (route === undefined || input.edge.entries[route] !== undefined) {
+    return undefined;
+  }
+  const postponed = actionPostponedFor(
+    input,
+    store,
+    route === resolved.route ? resolved : { ...resolved, route },
+  );
+  // eslint-disable-next-line unicorn/prefer-await -- Awaited where it is taken, after the module.
+  postponed.catch(() => {
+    // Its failure is the action's once it is taken, and nothing's where it is not.
+  });
+  return { route, postponed };
+}
+
+/**
+ * The postponed state an action's re-render under `resolved` is handed: the one asked for early,
+ * where it was asked for under the route the module renders (`actionPostponedEarly`), as it always
+ * is but where `renderedBy` and the tables part; asked for now otherwise.
+ */
+function postponedUnder(
+  input: RoutedInput,
+  store: Store,
+  resolved: Resolved,
+  early: EarlyPostponed | undefined,
+): Promise<string | undefined> {
+  return early?.route === resolved.route
+    ? early.postponed
+    : actionPostponedFor(input, store, resolved);
+}
+
 /** A request with a body, answered by its route's handler; `undefined` where no handler has it. */
 export async function serveWithBody(
   input: RoutedInput,
   store: Store,
   resolved: Resolved,
 ): Promise<Response | undefined> {
+  const early = actionPostponedEarly(input, store, resolved);
   const rendered = await renderedBy(input, store, resolved);
   if (rendered === undefined) {
     return undefined;
@@ -165,7 +245,9 @@ export async function serveWithBody(
   const { entry } = rendered;
   const onFailure = failureAnswer(store, entry, rendered.resolved.route);
   const postponed =
-    entry.kind === 'node' ? await actionPostponedFor(input, store, rendered.resolved) : undefined;
+    entry.kind === 'node'
+      ? await postponedUnder(input, store, rendered.resolved, early)
+      : undefined;
   if (postponed === undefined || entry.kind === 'edge') {
     return invokeEntry(input, entry, rendered.resolved.url, { onFailure });
   }

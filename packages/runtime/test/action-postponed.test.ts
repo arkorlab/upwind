@@ -3,11 +3,15 @@ import { policyFromCacheControl } from '@stayingupwind/core/cache';
 import { NEXT_ACTION_HEADER } from '@stayingupwind/core/request';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AppModule, NodeHandler } from '../src/app-module.ts';
+import type { AppModule, EdgeModule, NodeHandler } from '../src/app-module.ts';
+import { withClock } from '../src/cache/clock.ts';
+import type { FetchLike } from '../src/cache/host.ts';
 import { createCacheRuntime } from '../src/cache/runtime.ts';
 import { handleRequest } from '../src/handle.ts';
 import { invokeNodeHandler } from '../src/node-bridge.ts';
+import type { RoutedInput } from '../src/serve.ts';
 import { getStore, type Store } from '../src/store.ts';
+import { serveWithBody } from '../src/with-body.ts';
 import { fakeAuthority } from './authority.ts';
 
 /**
@@ -357,5 +361,165 @@ describe('the postponed state a post to an App Router page is rendered with', ()
     });
 
     expect(vi.mocked(invokeNodeHandler)).toHaveBeenCalledExactlyOnceWith(handedNone());
+  });
+});
+
+/** How long a read of the fake authority, which answers from memory, takes at the most. */
+const SETTLED_MS = 50;
+
+/** `inner`, telling `order` of each read of a delivery record as it is asked for. */
+function tellingRecords(inner: FetchLike, order: string[]): FetchLike {
+  return (request) => {
+    if (new URL(request.url).pathname.endsWith('/record')) {
+      order.push('record');
+    }
+    return inner(request);
+  };
+}
+
+/** A route's module whose evaluation waits until released, telling `order` once it is. */
+function slowModule(order: string[]) {
+  const evaluated = Promise.withResolvers<{ handler: NodeHandler }>();
+  return {
+    load: () => evaluated.promise,
+    release: () => {
+      order.push('module');
+      evaluated.resolve({ handler: page });
+    },
+  };
+}
+
+/** A server action posted to `pathname` and resolved to `route`, served as a request with a body. */
+function served(
+  tables: { readonly app: AppModule; readonly edge: EdgeModule },
+  cache: ReturnType<typeof createCacheRuntime>,
+  resolved: { readonly route: string; readonly pathname: string },
+): Promise<Response | undefined> {
+  const url = `https://app.test${resolved.pathname}`;
+  const input = {
+    ...tables,
+    request: new Request(url, {
+      method: 'POST',
+      headers: { [NEXT_ACTION_HEADER]: 'action-id' },
+      body: '[]',
+    }),
+    waitUntil: () => {
+      // Nothing is scheduled for an action this page answers.
+    },
+    cache,
+    initURL: url,
+    run: (work) => work(),
+  } satisfies RoutedInput;
+  return withClock(T0 + 1000, () => serveWithBody(input, getStore(), { ...resolved, url }));
+}
+
+describe('when the generation an action was answered from is read', () => {
+  beforeEach(() => {
+    vi.stubGlobal('__ARKOR_FUNCTION_KIND__', 'app');
+    vi.mocked(getStore).mockReturnValue(deploymentWithMembers());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  /**
+   * The route's module is evaluated before an action is answered, on purpose, and the record of the
+   * generation the page was answered from needs nothing of it: the two are waited for together, not
+   * one after the other.
+   */
+  it('reads the record while the page’s module is evaluated', async () => {
+    const authority = fakeAuthority(SCOPE);
+    await recorded(authority, PAGE, PAGE, CLASS_STATE);
+    const order: string[] = [];
+    const cache = createCacheRuntime({
+      env: ENV,
+      now: () => T0,
+      fetchImpl: tellingRecords(authority.fetchImpl, order),
+    });
+    const slow = slowModule(order);
+
+    const answering = served(
+      { app: { entries: { [PAGE]: slow.load } }, edge: { entries: {} } },
+      cache,
+      { route: PAGE, pathname: PAGE },
+    );
+    await vi.waitFor(() => {
+      expect(order).toStrictEqual(['record']);
+    });
+    slow.release();
+    await answering;
+
+    expect(order).toStrictEqual(['record', 'module']);
+    expect(vi.mocked(invokeNodeHandler)).toHaveBeenCalledExactlyOnceWith(handed(CLASS_STATE));
+  });
+
+  /**
+   * A member resolved by its own name has no module of its own, and renders under the route its
+   * prerender names: the record is read under that route as the module is evaluated, and the
+   * member's own generation, over its class shell's, is what its re-render is handed.
+   */
+  it('reads it under the route a member without a module of its own renders under', async () => {
+    const store = deploymentWithMembers();
+    const member: Prerender = { ...postsShell, id: MEMBER, pathname: MEMBER };
+    vi.mocked(getStore).mockReturnValue({
+      ...store,
+      prerendersByPathname: new Map([...store.prerendersByPathname, [MEMBER, member]]),
+    });
+    const authority = fakeAuthority(SCOPE);
+    await recorded(authority, CLASS_ROUTE, CLASS_ROUTE, CLASS_STATE);
+    await recorded(authority, CLASS_ROUTE, MEMBER, MEMBER_STATE);
+    const order: string[] = [];
+    const cache = createCacheRuntime({
+      env: ENV,
+      now: () => T0,
+      fetchImpl: tellingRecords(authority.fetchImpl, order),
+    });
+    const slow = slowModule(order);
+
+    const answering = served(
+      { app: { entries: { [CLASS_ROUTE]: slow.load } }, edge: { entries: {} } },
+      cache,
+      { route: MEMBER, pathname: MEMBER },
+    );
+    await vi.waitFor(() => {
+      expect(order).toContain('record');
+    });
+    const beforeTheModule = [...order];
+    slow.release();
+    await answering;
+
+    expect(beforeTheModule).not.toContain('module');
+    expect(vi.mocked(invokeNodeHandler)).toHaveBeenCalledExactlyOnceWith(handed(MEMBER_STATE));
+  });
+
+  /** An edge page's action is handed no postponed state, and nothing is read for one. */
+  it('reads nothing for an action posted to an edge page', async () => {
+    const authority = fakeAuthority(SCOPE);
+    await recorded(authority, PAGE, PAGE, CLASS_STATE);
+    const order: string[] = [];
+    const cache = createCacheRuntime({
+      env: ENV,
+      now: () => T0,
+      fetchImpl: tellingRecords(authority.fetchImpl, order),
+    });
+    const edgePage = vi.fn(() => Promise.resolve(new Response('answered at the edge')));
+
+    const response = await served(
+      { app: { entries: {} }, edge: { entries: { [PAGE]: () => ({ handler: edgePage }) } } },
+      cache,
+      { route: PAGE, pathname: PAGE },
+    );
+
+    await expect(response?.text()).resolves.toBe('answered at the edge');
+
+    // Long enough for a read asked for beside the module to have been sent: it answers from memory.
+    await new Promise((resolve) => {
+      setTimeout(resolve, SETTLED_MS);
+    });
+
+    expect(order).toStrictEqual([]);
+    expect(vi.mocked(invokeNodeHandler)).not.toHaveBeenCalled();
   });
 });
