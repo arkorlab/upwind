@@ -1,3 +1,4 @@
+import { isImmutableCacheControl, parseCacheControl } from '@stayingupwind/core/assets';
 import {
   type ConfiguredHeaders,
   staticFileStatus,
@@ -96,6 +97,7 @@ const SERVED_FROM_CACHE: ReadonlySet<string> = new Set(['hit', 'revalidated', 's
 const HTTP_OK = 200;
 const NOT_MODIFIED_STATUS = 304;
 const CONTENT_LENGTH = 'content-length';
+const CACHE_CONTROL = 'cache-control';
 const PARTIAL_CONTENT_STATUS = 206;
 const PRECONDITION_FAILED_STATUS = 412;
 const RANGE_NOT_SATISFIABLE_STATUS = 416;
@@ -135,7 +137,7 @@ const ENTITY_HEADERS: ReadonlySet<string> = new Set([
 function middlewareCacheControl(
   middleware: Extract<MiddlewareResult, { kind: 'continue' }>,
 ): string | undefined {
-  return middleware.responseHeaders.get('cache-control') ?? undefined;
+  return middleware.responseHeaders.get(CACHE_CONTROL) ?? undefined;
 }
 
 function etagOf(file: StaticFileEntry): string {
@@ -209,9 +211,19 @@ function cacheControlFor(
     if (chosen !== undefined) {
       return { value: chosen, unshared: false };
     }
-    // Nothing it wrote: kept from shared caches all the same, and by the visitor alone for the
-    // file's year where the bytes are all the answer is (`heldAsTheFile`), revalidated otherwise.
-    return shareable && heldAsTheFile(input) ? UNSHARED_IMMUTABLE : UNSHARED_GATED;
+    // Nothing it wrote: kept from shared caches all the same. What the answer carries by then is the
+    // file's own `cache-control` or a rule's, which Next.js answers a file with whatever a
+    // middleware did (`router-server`, which gives `_next/static` its year only where nothing set
+    // one): a rule's `no-store` stands, keeping the answer from every cache (CodeRabbit); a year
+    // still to be had is the visitor's alone where the bytes are all the answer is
+    // (`heldAsTheFile`); anything else is revalidated.
+    const ruled = answered.get(CACHE_CONTROL);
+    if (parseCacheControl(ruled).noStore) {
+      return UNSHARED_NO_STORE;
+    }
+    return shareable && heldAsTheFile(input) && isImmutableCacheControl(ruled)
+      ? UNSHARED_IMMUTABLE
+      : UNSHARED_GATED;
   }
   // A rule the request itself selected makes this answer one visitor's, whatever the file's own
   // lifetime says. An immutable hashed file is still the same bytes to everyone — but the headers
@@ -248,7 +260,7 @@ function fileHeaders(input: StaticFileInput, source: string): Headers {
     [CONTENT_LENGTH]: String(file.byteLength),
     [ACCEPT_RANGES]: answersAsItself(input) ? 'bytes' : 'none',
     etag: etagOf(file),
-    'cache-control': defaultCacheControl(file),
+    [CACHE_CONTROL]: defaultCacheControl(file),
   });
   applicationHeaders(input, headers);
   // A client router asked for React Server Components and is answered with the file — a Pages
@@ -280,7 +292,7 @@ function fileHeaders(input: StaticFileInput, source: string): Headers {
   // middleware gated must not be shared.
   const overriding = cacheControlFor(input, headers);
   if (overriding !== undefined) {
-    headers.set('cache-control', overriding.value);
+    headers.set(CACHE_CONTROL, overriding.value);
   }
   // Wherever the edge kept the answer from shared caches — where delivery is private, for a
   // validation, or because it is one visitor's — the lifetimes a rule or a middleware gave them go

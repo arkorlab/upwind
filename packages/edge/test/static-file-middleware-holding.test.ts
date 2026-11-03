@@ -173,6 +173,20 @@ describe('a build-hashed file the middleware let on', () => {
       status: 200,
     },
     {
+      label: 'a rule that gives it a lifetime of its own',
+      path: CHUNK,
+      holding: {
+        headerRules: [
+          {
+            sourceRegex: '^/_next/static/(.*)$',
+            headers: { 'cache-control': 'public, max-age=60' },
+            phase: 'beforeMiddleware' as const,
+          },
+        ],
+      },
+      status: 200,
+    },
+    {
       label: 'a rewrite that lands another path on the file',
       path: ROBOTS,
       holding: {
@@ -200,6 +214,38 @@ describe('a build-hashed file the middleware let on', () => {
 
     expect(response.status).toBe(example.status);
     expect(response.headers.get('cache-control')).toBe(REVALIDATED);
+  });
+
+  it('is held for its year under the year-long rule a build gives its own assets', async () => {
+    const response = await held(CHUNK, {
+      headerRules: [
+        {
+          sourceRegex: '^/_next/static/(.*)$',
+          headers: { 'cache-control': 'public, max-age=31536000, immutable' },
+          phase: 'onMatch' as const,
+        },
+      ],
+    });
+
+    await response.arrayBuffer();
+
+    expect(response.headers.get('cache-control')).toBe(HELD_FOR_THE_YEAR);
+  });
+
+  it("is kept by nobody where a rule's own Cache-Control says no-store", async () => {
+    const response = await held(CHUNK, {
+      headerRules: [
+        {
+          sourceRegex: '^/_next/static/(.*)$',
+          headers: { 'cache-control': 'no-store' },
+          phase: 'beforeMiddleware' as const,
+        },
+      ],
+    });
+
+    await response.arrayBuffer();
+
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
   });
 
   it('is held as the middleware said, where it wrote a Cache-Control itself', async () => {
