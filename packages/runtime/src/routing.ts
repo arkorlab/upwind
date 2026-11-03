@@ -20,6 +20,7 @@ import {
 import { NEXT_DATA_HEADER, NULL_BODY_STATUSES, redirectAnswer } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
+import { markedDestinations } from './destination-hosts.ts';
 import { edgeJudgesHeaderRules, isRouteParameterKey, stripPlatformHeaders } from './incoming.ts';
 import { escapedNameOf, namesWithSpellings, prerenderedName } from './name-spellings.ts';
 import type { Resolved } from './outputs.ts';
@@ -168,6 +169,15 @@ function isHeaderRule(route: Route): boolean {
 }
 
 /**
+ * A table's rules in the shape `@next/routing` takes, each carrying the platform's marks: where a
+ * rewrite went (`markedRewrites`), and which rule put something of the request in the host it sends
+ * a request to (`markedDestinations`).
+ */
+function marked(routes: readonly Route[], table: number): RoutingRoute[] {
+  return markedDestinations(markedRewrites(routingRoutes(routes), table), table);
+}
+
+/**
  * The routing tables as `@next/routing` takes them, with the middleware left out when told to,
  * and without the rules `next build` writes itself, in an application with `i18n` — those are
  * answered ahead of it (`internalRedirect`) — and for a Pages Router data request.
@@ -205,13 +215,13 @@ export function routingTables(
         })
       : routing.beforeMiddleware;
   return {
-    beforeMiddleware: markedRewrites(routingRoutes(ahead), BEFORE_MIDDLEWARE),
+    beforeMiddleware: marked(ahead, BEFORE_MIDDLEWARE),
     middlewareMatchers: skipMiddleware ? [] : routingRoutes(routing.middlewareMatchers),
-    beforeFiles: markedRewrites(routingRoutes(routing.beforeFiles), BEFORE_FILES),
-    afterFiles: markedRewrites(routingRoutes(routing.afterFiles), AFTER_FILES),
+    beforeFiles: marked(routing.beforeFiles, BEFORE_FILES),
+    afterFiles: marked(routing.afterFiles, AFTER_FILES),
     dynamicRoutes: routingRoutes(store.dynamicRoutes),
     onMatch: routingRoutes(routing.onMatch),
-    fallback: markedRewrites(routingRoutes(routing.fallback), FALLBACK),
+    fallback: marked(routing.fallback, FALLBACK),
     shouldNormalizeNextData: routing.shouldNormalizeNextData,
   };
 }

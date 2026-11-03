@@ -4,6 +4,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 import { afterBody } from './after-body.ts';
 import { localizedDataUrl } from './data-locale.ts';
+import { keptToTheirHosts } from './destination-hosts.ts';
 import { outcomeOn } from './generations.ts';
 import { edgeJudgesHeaderRules } from './incoming.ts';
 import { middlewareInvoker, type MiddlewareTrace } from './middleware-invoke.ts';
@@ -58,8 +59,11 @@ export function untraced(): MiddlewareTrace {
   };
 }
 
-/** A request routed as Next.js's router routes it, by this deployment's tables. */
-export function routingOf(
+/**
+ * A request routed as Next.js's router routes it, by this deployment's tables, and never to a host a
+ * rule does not name (`keptToTheirHosts`).
+ */
+export async function routingOf(
   input: RoutedInput,
   store: Store,
   asked: RoutingAsk,
@@ -72,7 +76,8 @@ export function routingOf(
     routingI18nOf === undefined
       ? asked.url
       : localizedDataUrl(store.manifest, routingI18nOf, asked.url);
-  return resolveRoutes({
+  const routes = routingTables(store, asked.skipMiddleware, url, asked.skipHeaderRules);
+  const routed = await resolveRoutes({
     url,
     buildId,
     basePath,
@@ -80,7 +85,7 @@ export function routingOf(
     headers: asked.headers,
     pathnames: pathnamesFor(store, url),
     ...(routingI18nOf !== undefined && { i18n: routingI18nOf }),
-    routes: routingTables(store, asked.skipMiddleware, url, asked.skipHeaderRules),
+    routes,
     invokeMiddleware: middlewareInvoker(
       input,
       store,
@@ -88,6 +93,7 @@ export function routingOf(
       url === asked.url ? undefined : { routed: url, asked: asked.url },
     ),
   });
+  return keptToTheirHosts(routed, routes, url);
 }
 
 /**
