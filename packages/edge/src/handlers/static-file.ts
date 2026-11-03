@@ -211,14 +211,18 @@ function cacheControlFor(
     if (chosen !== undefined) {
       return { value: chosen, unshared: false };
     }
-    // Nothing it wrote: kept from shared caches all the same. What the answer carries by then is the
-    // file's own `cache-control` or a rule's, which Next.js answers a file with whatever a
-    // middleware did (`router-server`, which gives `_next/static` its year only where nothing set
-    // one): a rule's `no-store` stands, keeping the answer from every cache (CodeRabbit); a year
-    // still to be had is the visitor's alone where the bytes are all the answer is
-    // (`heldAsTheFile`); anything else is revalidated.
+    // Nothing it wrote that stands, beside a cookie or a conditioned rule: kept from shared caches
+    // all the same. A `no-store` stands, the middleware's or a rule's, keeping the answer from every
+    // cache (CodeRabbit, cubic). What the answer carries otherwise is the file's own `cache-control`
+    // or a rule's, which Next.js answers a file with whatever a middleware did (`router-server`,
+    // which gives `_next/static` its year only where nothing set one): a year still to be had is
+    // the visitor's alone where the bytes are all the answer is (`heldAsTheFile`); anything else is
+    // revalidated.
     const ruled = answered.get(CACHE_CONTROL);
-    if (parseCacheControl(ruled).noStore) {
+    if (
+      parseCacheControl(ruled).noStore ||
+      parseCacheControl(middlewareCacheControl(input.middleware) ?? null).noStore
+    ) {
       return UNSHARED_NO_STORE;
     }
     return shareable && heldAsTheFile(input) && isImmutableCacheControl(ruled)

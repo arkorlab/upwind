@@ -258,6 +258,16 @@ describe('a build-hashed file the middleware let on', () => {
     expect(response.headers.get('cache-control')).toBe('public, max-age=60');
   });
 
+  it('is kept by nobody where the middleware said no-store beside a cookie (cubic)', async () => {
+    const response = await held(CHUNK, {
+      middleware: continuing({ 'cache-control': 'no-store', 'set-cookie': 'seen=1; Path=/' }),
+    });
+
+    await response.arrayBuffer();
+
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+  });
+
   it('is kept by nobody where delivery is private', async () => {
     const response = await held(CHUNK, { privateDelivery: true });
 
