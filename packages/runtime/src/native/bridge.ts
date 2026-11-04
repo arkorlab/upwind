@@ -14,6 +14,7 @@ import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 
 import { changesSomething, type InvokeInput, type Run } from '../invocation.ts';
+import { ownFraming } from '../loopback-framing.ts';
 import { responseHeaders, restoreRequest, singleRedirectLocation } from './headers.ts';
 import { TaskGroup } from './lifetime.ts';
 
@@ -357,6 +358,7 @@ class NativeBridge implements NodeBridge {
     });
     restoreRequest(req, invocation.input.request, invocation.url);
     singleRedirectLocation(res);
+    ownFraming(req.method, res);
     const handled = this.#handle(id, invocation, req, res);
     this.#tasks.waitUntil(handled);
     this.#retain(invocation.input, res, handled);
