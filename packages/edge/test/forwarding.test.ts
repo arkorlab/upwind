@@ -165,6 +165,27 @@ describe('forwarded native transport', () => {
     }).toStrictEqual({ internal: null, also: null, connection: null, allowed: 'kept' });
   });
 
+  it("drops the copy of a middleware's cookies a router reads, and keeps the rest of its protocol", () => {
+    const upstream = new Response('answer', {
+      headers: {
+        'x-middleware-set-cookie': 'session=secret; HttpOnly',
+        'x-middleware-rewrite': '/elsewhere',
+      },
+    });
+    upstream.headers.append('set-cookie', 'session=secret; Path=/; HttpOnly');
+    const answer = forwardedResponse(upstream, CONTEXT, 'GET');
+
+    expect({
+      copy: answer.headers.get('x-middleware-set-cookie'),
+      rewrite: answer.headers.get('x-middleware-rewrite'),
+      cookies: answer.headers.getSetCookie(),
+    }).toStrictEqual({
+      copy: null,
+      rewrite: '/elsewhere',
+      cookies: ['session=secret; Path=/; HttpOnly'],
+    });
+  });
+
   /**
    * An answer to `HEAD` keeps its `Content-Length`, the length of what a `GET` is answered with: it
    * has no body to stream on, which is what the length is taken off for — an answer to `GET` loses

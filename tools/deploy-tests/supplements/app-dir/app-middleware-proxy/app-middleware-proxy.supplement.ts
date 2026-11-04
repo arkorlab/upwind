@@ -3,7 +3,7 @@
 // Copyright (c) 2025 Vercel, Inc.
 //
 // From test/e2e/app-dir/app-middleware-proxy/app-middleware-proxy.test.ts
-// at b175f52b05a5f6c6c39ca72565ea178542be323b (v16.4.4).
+// at 4e5335a00314be7fbb2aace5e9be56a88e64e5a8 (v16.4.5).
 //
 // Run by upwind's deploy tests among what Next.js skips in deploy mode
 // (tools/deploy-tests/README.md).

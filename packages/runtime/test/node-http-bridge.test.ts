@@ -80,10 +80,11 @@ describe('real Node HTTP bridge', () => {
       },
     });
 
+    // The bridge frames the body by what is written, not by the length the handler named.
     expect({
       encoding: response.headers.get('content-encoding'),
       length: response.headers.get('content-length'),
-    }).toStrictEqual({ encoding: 'gzip', length: String(encoded.byteLength) });
+    }).toStrictEqual({ encoding: 'gzip', length: null });
     expect(Buffer.from(await response.arrayBuffer())).toStrictEqual(encoded);
 
     await Promise.all(held);
