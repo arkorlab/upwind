@@ -440,6 +440,19 @@ describe('native Node bridge', () => {
     assert.equal(paired.headers.get('content-length'), null);
     assert.equal(paired.headers.get('x-kept'), 'yes');
     assert.equal(await paired.text(), 'hello');
+
+    const aliased = await bridge.invokeNodeHandler(
+      input(async (_req, res) => {
+        // The old name of `writeHead`, which Node's types no longer name.
+        (res as unknown as { writeHeader: ServerResponse['writeHead'] }).writeHeader(200, {
+          'content-length': 2,
+        });
+        res.end('hello');
+      }),
+    );
+
+    assert.equal(aliased.headers.get('content-length'), null);
+    assert.equal(await aliased.text(), 'hello');
   });
 
   it('keeps the length of an answer to HEAD, which frames no body', async () => {

@@ -43,7 +43,7 @@ function lengthlessFields(headers: OutgoingHttpHeaders): OutgoingHttpHeaders {
 export function ownFraming(method: string | undefined, res: ServerResponse): void {
   if (method === 'HEAD') return;
   const writeHead = res.writeHead.bind(res) as (status: number, ...rest: unknown[]) => unknown;
-  res.writeHead = ((status: number, ...rest: unknown[]) => {
+  const framed = ((status: number, ...rest: unknown[]) => {
     // Only where it is there: a removed length is one Node does not count again either.
     if (res.hasHeader(CONTENT_LENGTH)) res.removeHeader(CONTENT_LENGTH);
     const last = rest.at(-1);
@@ -52,4 +52,8 @@ export function ownFraming(method: string | undefined, res: ServerResponse): voi
       rest[rest.length - 1] = lengthlessFields(last as OutgoingHttpHeaders);
     return writeHead(status, ...rest);
   }) as typeof res.writeHead;
+  res.writeHead = framed;
+  // Node's `writeHeader` is the same method under its old name, and goes past an own `writeHead`
+  // (CodeRabbit, upwind#450). Node's types no longer name it.
+  Reflect.set(res, 'writeHeader', framed);
 }
