@@ -153,7 +153,7 @@ export async function answerPartialMiss(
   const entry = { kind: 'node' as const, handler: target.handler };
   const response = await (source.representation === 'html'
     ? documentFromBuild(input, store, resolved, { entry, status: 200 })
-    : rscFromBuild(input, store, entry, resolved));
+    : rscFromBuild(input, store, { entry, resolved }));
   return input.request.method === 'HEAD'
     ? response
     : withPartialFallbackUpgrade(job, response, schedule);

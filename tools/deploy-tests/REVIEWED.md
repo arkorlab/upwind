@@ -30,6 +30,29 @@ Read again at commit `4e5335a00314be7fbb2aace5e9be56a88e64e5a8`: every reading o
 ([x-vercel-cache](#x-vercel-cache)), and the judge holds every case to the failure recorded. These
 readings are read from the sources alone: a night's run at 16.4.5 is the first to judge against them.
 
+### SVG rejection by the image optimizer
+
+`avif-svg-signature-confusion` (2 cases, `node` under Node.js 24 only), read from
+[run 41812368398](https://github.com/arkorlab/upwind/actions/runs/41812368398/job/126514552592)
+at adapter commit `2c0c94d8`, Next.js 16.4.5 at `4e5335a00314be7fbb2aace5e9be56a88e64e5a8`.
+Its [deployed branches](https://github.com/vercel/next.js/blob/4e5335a00314be7fbb2aace5e9be56a88e64e5a8/test/e2e/app-dir/avif-svg-signature-confusion/avif-svg-signature-confusion.test.ts)
+assert Vercel's image CDN behavior: its error token for an ordinary SVG, and a 200 response for an
+SVG prefixed with `<!--ftypavif-->`, labeled AVIF while its SVG bytes pass through unchanged.
+The non-deployed branches require both inputs to be rejected with 400 when SVG support is disabled.
+
+This adapter rejects both inputs with 400. The ordinary case failed only because its response body
+said `"url" parameter is valid but image type is not allowed` rather than
+`INVALID_IMAGE_OPTIMIZE_REQUEST` (line 17, column 32). The prefixed case failed its status assertion,
+expected 200 and received 400 (line 34, column 26); its later header and body assertions did not run.
+The judge reads only those complete assertions at their first stack frames, for the exact case
+names, release, commit and observed lane. Other failures remain unexplained.
+
+These readings account for CDN expectations; they do not assert that accepting the SVG is safe.
+The [SVG rejection bypass advisory](https://github.com/vercel/next.js/security/advisories/GHSA-7qx7-33qx-rqx2)
+explains why parser access with SVG disabled must remain blocked. Existing image-classifier
+regressions identify these bytes as SVG; separate native image-response tests require 400 when SVG
+support is disabled. The runtime's 400 guard is unchanged by these readings.
+
 ## Next.js 16.4.4
 
 Read again at commit `b175f52b05a5f6c6c39ca72565ea178542be323b`: every reading of 16.4.3 below holds

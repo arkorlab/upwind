@@ -214,3 +214,43 @@ describe('a middleware or proxy response with a non-redirect Location', () => {
     await response.body?.cancel();
   });
 });
+
+describe("a middleware's own answer", () => {
+  beforeEach(() => {
+    vi.stubGlobal('__ARKOR_FUNCTION_KIND__', 'app');
+    vi.mocked(getStore).mockReturnValue(deployment());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  /**
+   * `NextResponse` copies every cookie it sets, `HttpOnly` ones too, into `x-middleware-set-cookie`
+   * for the router to hand the render; a page's script could read it off the answer
+   * (GHSA-f3mh-rxg3-f5g2), which `next start` never sends it with.
+   */
+  it('keeps its cookies and stream, and loses the copy of them only a router reads', async () => {
+    const body = new ReadableStream<Uint8Array>();
+    const original = new Response(body, {
+      headers: { 'x-middleware-set-cookie': 'session=secret; HttpOnly' },
+    });
+    original.headers.append('set-cookie', 'session=secret; Path=/; HttpOnly');
+
+    const response = await handle(original);
+
+    expect(response.body).toBe(body);
+    expect(response.headers.get('x-middleware-set-cookie')).toBeNull();
+    expect(response.headers.getSetCookie()).toStrictEqual(['session=secret; Path=/; HttpOnly']);
+    expect(invokeNodeHandler).not.toHaveBeenCalled();
+
+    await response.body?.cancel();
+  });
+
+  it('is handed on as it is where it carries no such copy', async () => {
+    const original = Response.json({ ok: true }, { status: 401 });
+
+    await expect(handle(original)).resolves.toBe(original);
+  });
+});

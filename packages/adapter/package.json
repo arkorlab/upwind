@@ -35,6 +35,7 @@
     "@stayingupwind/core": "workspace:*",
     "@stayingupwind/runtime": "workspace:*",
     "jsonc-parser": "catalog:",
+    "oxc-parser": "catalog:",
     "rolldown": "catalog:"
   },
   "devDependencies": {

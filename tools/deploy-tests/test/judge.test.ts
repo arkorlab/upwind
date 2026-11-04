@@ -349,8 +349,40 @@ const IN_THE_ROUTE_HANDLER = [
   '- └─ GET /route-handler (BaseServer.handleRequest) {http.target=/route-handler, http.route=/route-handler, next.route=/route-handler, http.status_code=200}',
 ];
 
-/** What a case failed with at 16.4.3 where its suite's cases each failed their own way. */
+const SVG_SUITE =
+  'test/e2e/app-dir/avif-svg-signature-confusion/avif-svg-signature-confusion.test.ts';
+const SVG_RELEASE = { version: '16.4.5', commit: '4e5335a00314be7fbb2aace5e9be56a88e64e5a8' };
+const SVG_NODE_24: Measured = { target: 'node', node: '24', next: SVG_RELEASE };
+/** Exact per-case messages from run 41812368398, job 126514552592. */
+const SVG_FAILURES = [
+  {
+    label: 'ordinary SVG',
+    fullName:
+      'avif-svg-signature-confusion rejects an ordinary SVG when dangerouslyAllowSVG is false',
+    position: '17:32',
+    message: String.raw`Error: expect(received).toContain(expected) // indexOf
+
+Expected substring: "INVALID_IMAGE_OPTIMIZE_REQUEST"
+Received string:    "\"url\" parameter is valid but image type is not allowed"
+    at Object.toContain (${AT}/avif-svg-signature-confusion/avif-svg-signature-confusion.test.ts:17:32)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)`,
+  },
+  {
+    label: 'prefixed SVG',
+    fullName: 'avif-svg-signature-confusion rejects an SVG prefixed with <!--ftypavif-->',
+    position: '34:26',
+    message: `Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 400
+    at Object.toBe (${AT}/avif-svg-signature-confusion/avif-svg-signature-confusion.test.ts:34:26)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)`,
+  },
+] as const;
+
+/** What a case failed with where its suite's cases each failed their own way. */
 const RECORDED_CASES: Readonly<Record<string, readonly string[]>> = {
+  ...Object.fromEntries(SVG_FAILURES.map(({ fullName, message }) => [fullName, [message]])),
   'otel-middleware-trace - proxy (nodejs runtime) traces a page rendered after NextResponse.next()':
     [
       traceDiff(
@@ -392,6 +424,97 @@ function recordedFor(entry: ReviewedCase): readonly string[] {
     RECORDED_RECORDS[entry.record] ?? RECORDED_CASES[entry.fullName] ?? RECORDED[entry.suite] ?? []
   );
 }
+
+function svgVerdict(
+  entry: (typeof SVG_FAILURES)[number],
+  messages: string[] = [entry.message],
+  measured: Measured = SVG_NODE_24,
+  fullName: string = entry.fullName,
+): Verdict {
+  const result = suiteOf([jestCase(fullName, 'failed', messages)], {}, SVG_SUITE);
+  return judge(measured, [SVG_SUITE], new Map([[SVG_SUITE, result]]), REVIEWED);
+}
+
+describe('the recorded Vercel image CDN expectations', () => {
+  it.each(SVG_FAILURES)('reads the exact $label failure on its observed lane', (entry) => {
+    const verdict = svgVerdict(entry);
+
+    expect(verdict.cases).toMatchObject({ reviewed: { vercel: 1 }, failed: 0 });
+    expect(fails(verdict)).toBe(false);
+  });
+
+  it.each(SVG_FAILURES)('does not extend $label to another release, target or lane', (entry) => {
+    const unmeasured: Measured[] = [
+      { ...SVG_NODE_24, next: RELEASE },
+      {
+        ...SVG_NODE_24,
+        next: { version: '16.4.4', commit: 'b175f52b05a5f6c6c39ca72565ea178542be323b' },
+      },
+      { ...SVG_NODE_24, next: { ...SVG_RELEASE, version: '16.4.6' } },
+      { ...SVG_NODE_24, next: { ...SVG_RELEASE, commit: 'c'.repeat(40) } },
+      { ...SVG_NODE_24, target: 'cloudflare' },
+      { ...SVG_NODE_24, node: '26' },
+      { target: 'node', next: SVG_RELEASE },
+    ];
+
+    for (const measured of unmeasured) {
+      expect(svgVerdict(entry, [entry.message], measured).unexplained).toHaveLength(1);
+    }
+
+    expect(
+      svgVerdict(entry, [entry.message], SVG_NODE_24, `${entry.fullName} another case`).unexplained,
+    ).toHaveLength(1);
+  });
+
+  it.each(SVG_FAILURES)(
+    'requires the exact assertion and first stack frame for $label',
+    (entry) => {
+      const frame = entry.message.split('\n').find((line) => line.startsWith('    at Object.'))!;
+      const differentFrame = frame.replace(entry.position, '99:99');
+      const elsewhere = entry.message.replace(frame, () => differentFrame);
+      const unrecorded = [
+        entry.message.replace(frame, () =>
+          frame.replace('avif-svg-signature-confusion.test.ts', 'other.test.ts'),
+        ),
+        elsewhere,
+        `${elsewhere}\n${frame}`,
+        entry.message.replace(frame, () => `    at helper (/tmp/another.test.ts:1:1)\n${frame}`),
+        entry.message.replace(frame, () => `> 17 | ${frame}\n${frame}`),
+        entry.message.replace('Error: expect', 'TypeError: expect'),
+      ];
+
+      for (const message of unrecorded) {
+        expect(svgVerdict(entry, [message]).unexplained).toHaveLength(1);
+      }
+
+      expect(
+        svgVerdict(entry, [entry.message, 'Error: another case error']).unexplained,
+      ).toHaveLength(1);
+    },
+  );
+
+  it('does not read another error body as the ordinary SVG rejection', () => {
+    const entry = SVG_FAILURES[0];
+    const unrecorded = [
+      entry.message.replace('image type is not allowed', 'upstream image could not be fetched'),
+      entry.message.replace('INVALID_IMAGE_OPTIMIZE_REQUEST', 'OTHER_IMAGE_ERROR'),
+      entry.message.replace('Received string:    ', 'Received string: '),
+    ];
+
+    for (const message of unrecorded) {
+      expect(svgVerdict(entry, [message]).unexplained).toHaveLength(1);
+    }
+  });
+
+  it('does not read a 500 or another status as the prefixed SVG rejection', () => {
+    const entry = SVG_FAILURES[1];
+    for (const status of ['500', '403', '200']) {
+      const message = entry.message.replace('Received: 400', () => `Received: ${status}`);
+
+      expect(svgVerdict(entry, [message]).unexplained).toHaveLength(1);
+    }
+  });
+});
 
 /** A heading's anchor, as GitHub makes it. */
 function anchorOf(heading: string): string {
