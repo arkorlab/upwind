@@ -65,10 +65,11 @@ const SHARP_WEBP_QUALITY = 80;
 /** Of the machine's threads, the share `sharp` is left to use, as Next.js leaves it in production. */
 const CONCURRENCY_DIVISOR = 2;
 /**
- * The loaders `sharp` may use: the formats the optimizer reads, and none of `libvips`'s others. Not
- * SVG's, which Next.js unblocks: an SVG is passed on as it is or refused, never encoded, so the one
- * an encoder would be handed is one passing for another type, which `libvips` would still read as
- * the SVG it is (GHSA-7qx7-33qx-rqx2).
+ * The loaders `sharp` may use: the formats the optimizer reads, and none of `libvips`'s others.
+ * SVG's among them, as Next.js has it, although the optimizer never encodes an SVG: a block is the
+ * whole process's, and `next/og` renders its image through the same `sharp`, from an SVG, after the
+ * optimizer has loaded it (`og-api`). What keeps an SVG from the encoder is its type, judged by
+ * `detectImageType`.
  */
 const BLOCKED_LOADERS = ['VipsForeignLoad'];
 const LOADERS = [
@@ -76,6 +77,7 @@ const LOADERS = [
   'VipsForeignLoadJpeg',
   'VipsForeignLoadNsgif',
   'VipsForeignLoadPng',
+  'VipsForeignLoadSvg',
   'VipsForeignLoadTiff',
   'VipsForeignLoadWebp',
 ];
