@@ -1,6 +1,6 @@
 import { literalAt, quantifierAt } from '../request/pattern-syntax.ts';
 
-/** The exact optional data prefix and locale guard emitted by Next.js 16.4.2 through 16.4.4. */
+/** The exact optional data prefix and locale guard emitted by Next.js 16.4.2 through 16.4.5. */
 const DATA = String.raw`(?:\/(_next\/data\/[^/]{1,}))?`;
 const LOCALE = String.raw`(?:\/((?!_next\/)[^/.]{1,}))`;
 const LOCALE_WITHOUT_LOOKAHEAD = String.raw`(?:\/([^/.]{1,}))`;

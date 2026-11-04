@@ -10,9 +10,9 @@ import { order, releaseOf } from './releases.ts';
  */
 
 /**
- * The newest Next.js release carrying security fixes that this release of upwind knows of: 16.4.1,
- * Next.js's security update of 2026-10-14, which is the only release of those fixes — none was made
- * for 16.3 or 16.2.
+ * The newest Next.js release carrying security fixes that this release of upwind knows of: 16.4.5,
+ * Next.js's security release of 2026-11-03, which is the only 16 release of those fixes — none was
+ * made for 16.3 or 16.2, and the other, 15.5.29, is outside the adapter's range.
  *
  * Not a bound of the range the adapter supports (`SUPPORTED_NEXT_RANGE`, `@stayingupwind/adapter`'s
  * `patches/versions.ts`), and not a version anything here refuses. That range's floor is where the
@@ -22,40 +22,38 @@ import { order, releaseOf } from './releases.ts';
  * what a build and a development run do about it is say so.
  *
  * What a deployment is told to go and get is in Next.js's own code, which travels into a Function
- * whole: the React Server Components transport Next.js vendors, which reads back what a `use cache`
- * function returned and what is sent to a Server Action. A development run has one of its own that
- * only it is exposed to: the image optimizer, which `upwind dev` hands a request that a deployment
- * answers itself.
+ * whole: how `use cache` keys what it stores, and what the Edge adapter and the Node response writer
+ * leave on an answer. A development run has one of its own that only it is exposed to: the image
+ * optimizer, which `upwind dev` hands a request that a deployment answers itself. What the same
+ * advisories found in code of upwind's own, upwind fixes, whatever Next.js a project has.
  *
  * **This moves with every Next.js release that carries security fixes**, and that is the one thing
  * here nobody is told. `packages/adapter/scripts/check-patches.ts` holds it to being inside the
  * adapter's range, which catches a floor no build could be judged against; no check anywhere knows
  * that a newer release exists.
  */
-export const SECURITY_FLOOR = '16.4.1';
+export const SECURITY_FLOOR = '16.4.5';
 
 /**
  * Where the release above is written up, for a warning to send a reader to. It names the release
  * `SECURITY_FLOOR` is, so it moves when that moves: a floor raised past the advisory it points at
  * would send a reader to the fixes they already have.
  */
-export const SECURITY_RELEASE_URL =
-  'https://nextjs.org/blog/nextjs-security-update-october-14-2026';
+export const SECURITY_RELEASE_URL = 'https://nextjs.org/blog/november-2026-security-release';
 
 /**
- * The first canary carrying the fixes `SECURITY_FLOOR` carries: 16.5.0-canary.14, the first built
- * with the React that has them (react/react#37846, taken in by vercel/next.js#100215).
+ * The first canary carrying the fixes `SECURITY_FLOOR` carries: 16.5.0-canary.39, the first with
+ * all seven (vercel/next.js#101103 to #101109).
  *
- * A canary is numbered as the minor it leads to, so 16.5.0-canary.0 to .13 are numbered past
- * `SECURITY_FLOOR` and are still not past its fixes: published from 2026-10-06 to 2026-10-15, the
- * last three of them after 16.4.1 itself, they carry the React from before them. A canary of this
- * one's minor is held to this rather than to the floor; a canary of an earlier minor is judged by
- * the release it is numbered as, which is under the floor; and one of a later minor is cut after
- * this one, so after the fixes as well.
+ * A canary is numbered as the minor it leads to, so 16.5.0-canary.0 to .38 are numbered past
+ * `SECURITY_FLOOR` and are still not past its fixes: the last of them was published on 2026-11-03,
+ * hours before 16.4.5 itself. A canary of this one's minor is held to this rather than to the
+ * floor; a canary of an earlier minor is judged by the release it is numbered as, which is under the
+ * floor; and one of a later minor is cut after this one, so after the fixes as well.
  *
  * Moves with `SECURITY_FLOOR`, to the first canary that carries the next release's fixes.
  */
-export const SECURITY_CANARY_FLOOR = '16.5.0-canary.14';
+export const SECURITY_CANARY_FLOOR = '16.5.0-canary.39';
 
 /** The release or canary a version is held to and falls short of: what a warning names. */
 export interface SecurityFloor {

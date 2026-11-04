@@ -543,6 +543,12 @@ function entriesOf(next: ReviewedCase['next'], groups: readonly Group[]): readon
  */
 const AT_16_4_4: readonly Group[] = AT_16_4_3.filter(({ record }) => record !== PREVIEW_RECORD);
 
+/**
+ * The readings of 16.4.4, read again at 16.4.5 (`REVIEWED.md`): of their suites, 16.4.5 changes only
+ * partial-fallback-shell-upgrade's, by a case added after the lines its reading records.
+ */
+const AT_16_4_5: readonly Group[] = AT_16_4_4;
+
 export const REVIEWED: readonly ReviewedCase[] = [
   ...entriesOf(
     { version: '16.4.3', commit: '29bbeab09981148ade186e8599ecdede15abc281' },
@@ -551,5 +557,9 @@ export const REVIEWED: readonly ReviewedCase[] = [
   ...entriesOf(
     { version: '16.4.4', commit: 'b175f52b05a5f6c6c39ca72565ea178542be323b' },
     AT_16_4_4,
+  ),
+  ...entriesOf(
+    { version: '16.4.5', commit: '4e5335a00314be7fbb2aace5e9be56a88e64e5a8' },
+    AT_16_4_5,
   ),
 ];

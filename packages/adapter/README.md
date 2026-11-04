@@ -735,10 +735,10 @@ against a Next.js older than `SECURITY_FLOOR` (`@stayingupwind/core/next`, the n
 carrying security fixes that this release of upwind knows of, and for a canary numbered past it
 `SECURITY_CANARY_FLOOR`, the first canary carrying the same fixes) ends with a warning naming it,
 and `upwind dev` says the same thing under its own version line. What answers a request is the
-Next.js the project installed, and the fixes that matter to a deployment are inside Next.js's own
-code — the React Server Components transport it vendors, which reads back what a `use cache`
-function returned and what is sent to a Server Action — so none of them is something a rewrite here
-could supply. A development run is exposed to one more, which is why `upwind dev` says it too: it
+Next.js the project installed, and the fixes of Next.js's own code that matter to a deployment — how
+`use cache` keys what it stores, and what the Edge adapter and the Node response writer leave on an
+answer — are none of them something a rewrite here could supply. A development run is exposed to one
+more, which is why `upwind dev` says it too: it
 optimizes `/_next/image` itself, where a deployment answers that path without Next.js in it. A
 project that has to stay on 16.2 keeps a deployment that works and is told what it is;
 `check-patches.ts` holds the floor to being inside the range, and nothing can tell either of them
