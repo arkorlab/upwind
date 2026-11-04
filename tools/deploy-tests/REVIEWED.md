@@ -22,6 +22,14 @@ A reading is one of four:
 - **The environment.** The target's runtime cannot run the application, or no deployment can run it
   as it is written.
 
+## Next.js 16.4.5
+
+Read again at commit `4e5335a00314be7fbb2aace5e9be56a88e64e5a8`: every reading of 16.4.4 holds at
+16.4.5 as it is written. Of the suites read, 16.4.5 changes only
+`partial-fallback-shell-upgrade`'s, by one case added after the lines its reading records
+([x-vercel-cache](#x-vercel-cache)), and the judge holds every case to the failure recorded. These
+readings are read from the sources alone: a night's run at 16.4.5 is the first to judge against them.
+
 ## Next.js 16.4.4
 
 Read again at commit `b175f52b05a5f6c6c39ca72565ea178542be323b`: every reading of 16.4.3 below holds

@@ -29,8 +29,8 @@ async function scenario(before: string, after: string, changed = false): Promise
     await mkdir(path.join(vendor, 'dist/compiled/fast-jwt'), { recursive: true });
     await mkdir(upwind);
     const jwt = path.join(vendor, 'dist/compiled/fast-jwt/index.js');
-    await copyFile(require.resolve('next/dist/compiled/fast-jwt'), jwt);
-    await copyFile(require.resolve('next/package.json'), path.join(vendor, 'package.json'));
+    await copyFile(require.resolve('next-16-4-4/dist/compiled/fast-jwt'), jwt);
+    await copyFile(require.resolve('next-16-4-4/package.json'), path.join(vendor, 'package.json'));
     if (changed) await writeFile(jwt, `${await readFile(jwt, 'utf8')}\nglobalThis.changed=true;`);
     const server = path.join(upwind, 'server.mjs');
     await writeFile(

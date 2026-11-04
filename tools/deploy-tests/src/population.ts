@@ -100,10 +100,11 @@ export interface Supplement {
 }
 
 /**
- * The release every copy below is held to: the supported one (`NIGHTLY_NEXTJS_REF`). Each copy was
- * taken at 16.4.3, and each suite's directory is the same tree at 16.4.4.
+ * The release every copy below is held to: the supported one (`NIGHTLY_NEXTJS_REF`). Each suite's
+ * directory is the same tree at 16.4.5 as at 16.4.4, but app-root-params-getters': 16.4.5 adds cases
+ * and a fixture there, and leaves the copied case and its fixture (`use-cache-runtime`) as they were.
  */
-const NEXT_16_4_4 = { version: '16.4.4', commit: 'b175f52b05a5f6c6c39ca72565ea178542be323b' };
+const NEXT_16_4_5 = { version: '16.4.5', commit: '4e5335a00314be7fbb2aace5e9be56a88e64e5a8' };
 
 /**
  * The copies, by upstream suite: of the cases Next.js's suites register otherwise or not at all when
@@ -114,7 +115,7 @@ const NEXT_16_4_4 = { version: '16.4.4', commit: 'b175f52b05a5f6c6c39ca72565ea17
  */
 export const SUPPLEMENTS: readonly Supplement[] = [
   {
-    next: NEXT_16_4_4,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/app-middleware/app-middleware.test.ts',
     tree: '10b3eddb8636de56dadd428c59a3b8dd1147ebdf',
     source: 'app-dir/app-middleware/app-middleware.supplement.ts',
@@ -122,7 +123,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     cases: ['app-dir with middleware should not incorrectly treat a Location header as a rewrite'],
   },
   {
-    next: NEXT_16_4_4,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/app-middleware-proxy/app-middleware-proxy.test.ts',
     tree: 'c19f21219de2239b1526e7e60567225e10d74e92',
     source: 'app-dir/app-middleware-proxy/app-middleware-proxy.supplement.ts',
@@ -130,7 +131,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     cases: ['app-dir with proxy should not incorrectly treat a Location header as a rewrite'],
   },
   {
-    next: NEXT_16_4_4,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/segment-cache/cached-navigations/cached-navigations.test.ts',
     tree: '4bdb98dbdbff15d86d6ce67a40aea256e4436e42',
     source: 'app-dir/segment-cache/cached-navigations/cached-navigations.supplement.ts',
@@ -141,7 +142,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_4,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/not-found-non-document/not-found-non-document.test.ts',
     tree: 'd856230a3ffe36d621dd888731d0ed0ca67018cd',
     source: 'app-dir/not-found-non-document/not-found-non-document.supplement.ts',
@@ -152,7 +153,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_4,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/use-cache-route-handler-only/use-cache-route-handler-only.test.ts',
     tree: 'e740f6698efd3716d22e8e353b44fe02a1e1bd0b',
     source: 'app-dir/use-cache-route-handler-only/use-cache-route-handler-only.supplement.ts',
@@ -160,9 +161,9 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     cases: ['use-cache-route-handler-only refreshes cached data after tag revalidation'],
   },
   {
-    next: NEXT_16_4_4,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/app-root-params-getters/use-cache.test.ts',
-    tree: 'f95c4fee51d8fd545c08d29a9bd77f908d7c1355',
+    tree: '211e8b949abad1d3e6bcea16aa0235bed9ded02b',
     source: 'app-dir/app-root-params-getters/use-cache.supplement.ts',
     file: 'test/e2e/app-dir/app-root-params-getters/use-cache.skipped-in-deploy.test.ts',
     cases: [
@@ -170,7 +171,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_4,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/segment-cache/prefetch-runtime/prefetch-runtime.test.ts',
     tree: 'bc19b01fb3d8bfa2a6d2e0ddce693e940beb2ce2',
     source: 'app-dir/segment-cache/prefetch-runtime/prefetch-runtime.supplement.ts',
@@ -182,7 +183,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_4,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/segment-cache/prefetch-static-shell/prefetch-static-shell.test.ts',
     tree: '86d8a1a085c3b19f99c9eb8672204a4bd9c722ed',
     source: 'app-dir/segment-cache/prefetch-static-shell/prefetch-static-shell.supplement.ts',
