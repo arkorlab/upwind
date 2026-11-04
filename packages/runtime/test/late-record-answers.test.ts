@@ -7,6 +7,8 @@ import type { GenerationSource } from '../src/generation-source.ts';
 import { serveFromGeneration } from '../src/generations.ts';
 import { handleRequest } from '../src/handle.ts';
 import { invokeNodeHandler } from '../src/node-bridge.ts';
+import { servePagesData } from '../src/outputs.ts';
+import type { RoutedInput } from '../src/serve.ts';
 import { getStore, type Store } from '../src/store.ts';
 import { fakeAuthority } from './authority.ts';
 
@@ -192,6 +194,99 @@ describe('a document whose record did not come in time', () => {
     const response = await ask(BUILT);
 
     await expect(response.text()).resolves.toBe('<html><body>built</body></html>');
+    expect(response.headers.get('x-nextjs-cache')).toBe('HIT');
+    expect(vi.mocked(invokeNodeHandler)).not.toHaveBeenCalled();
+  });
+});
+
+const ITEMS = '/items/[id]';
+const DATA = '/_next/data/build/items';
+const BUILT_DATA = encoder.encode('{"pageProps":{"built":true}}');
+
+/** A Pages Router route whose data the build wrote for one member, and none for the rest. */
+function pagesDeployment(): Store {
+  const template = prerender(`${DATA}/[id].json`, { route: ITEMS, parentOutputId: ITEMS });
+  const built = prerender(`${DATA}/built.json`, {
+    route: ITEMS,
+    parentOutputId: ITEMS,
+    body: {
+      sha256: 'built-data',
+      byteLength: BUILT_DATA.byteLength,
+      contentType: 'application/json',
+    },
+  });
+  const shell = prerender(ITEMS, { route: ITEMS, parentOutputId: ITEMS });
+  return {
+    manifest: {
+      buildId: 'build',
+      config: { basePath: '' },
+      entrypoints: [{ id: ITEMS, kind: 'pages', pathname: ITEMS }],
+      routing: { rsc: RSC },
+    },
+    prerendersByPathname: new Map([template, built].map((each) => [each.pathname, each])),
+    shellsByRoute: new Map([
+      [ITEMS, { pages: new Map(), patterns: [{ pattern: /^\/items\/[^/]+$/u, prerender: shell }] }],
+    ]),
+    pathnames: [ITEMS],
+    slashSpellings: new Map(),
+    readBlob: () => BUILT_DATA,
+  } as unknown as Store;
+}
+
+/** A data request for `pathname`, under the route's data template. */
+function askData(pathname: string): Promise<Response> {
+  const request = new Request(`${HOST}${pathname}`);
+  const input: RoutedInput = {
+    app: { entries: { [ITEMS]: () => ({ handler: page }) } },
+    edge: { entries: {} },
+    request,
+    initURL: request.url,
+    cache: runtimeOf(),
+    run: (work) => work(),
+    waitUntil: () => {
+      /* Nothing here is left behind. */
+    },
+  };
+  return servePagesData(input, pagesDeployment(), {
+    route: `${DATA}/[id].json`,
+    pathname,
+    url: pathname,
+  });
+}
+
+describe('a Pages data request whose record did not come in time', () => {
+  beforeEach(() => {
+    vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('{"pageProps":{"rendered":true}}'));
+  });
+
+  afterEach(() => {
+    vi.mocked(serveFromGeneration).mockReset();
+    vi.mocked(invokeNodeHandler).mockReset();
+  });
+
+  it('is a render at a miss where the build wrote no data of the member', async () => {
+    lateRecord(true);
+
+    const response = await askData(`${DATA}/late.json`);
+
+    await expect(response.text()).resolves.toBe('{"pageProps":{"rendered":true}}');
+    expect(response.headers.get('x-nextjs-cache')).toBe('MISS');
+  });
+
+  it('says nothing of a render the cache was not asked about in time for', async () => {
+    lateRecord(false);
+
+    const response = await askData(`${DATA}/late.json`);
+
+    expect(response.headers.get('x-nextjs-cache')).toBeNull();
+  });
+
+  it("keeps the build's own data what it is, a hit", async () => {
+    lateRecord(true);
+
+    const response = await askData(`${DATA}/built.json`);
+
+    await expect(response.text()).resolves.toBe('{"pageProps":{"built":true}}');
     expect(response.headers.get('x-nextjs-cache')).toBe('HIT');
     expect(vi.mocked(invokeNodeHandler)).not.toHaveBeenCalled();
   });
