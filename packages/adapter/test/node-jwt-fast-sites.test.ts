@@ -26,6 +26,7 @@ const require = createRequire(import.meta.url);
 const ROOTS = {
   '16.4.3': path.dirname(require.resolve('next-16-4-3/package.json')),
   '16.4.4': path.dirname(require.resolve('next-16-4-4/package.json')),
+  '16.4.5': path.dirname(require.resolve('next/package.json')),
 } as const;
 const FILE = path.join(ROOTS['16.4.4'], 'dist/compiled/fast-jwt/index.js');
 const CODE = readFileSync(FILE, 'utf8');
@@ -46,10 +47,16 @@ function siteIn(code: string): string | undefined {
 describe("fast-jwt's one Node loader read, in Next.js 16.4.4", () => {
   it('holds each JWT profile to its release’s installed bytes', () => {
     for (const profile of NODE_JWT_COMPILER_PROFILES) {
-      const bytes = readFileSync(path.join(ROOTS[profile.release], profile.suffix));
+      for (const release of profile.releases) {
+        const bytes = readFileSync(path.join(ROOTS[release], profile.suffix));
 
-      expect([profile.name, bytes.byteLength]).toStrictEqual([profile.name, profile.bytes]);
-      expect(createHash('sha256').update(bytes).digest('hex')).toBe(profile.sha256);
+        expect([profile.name, release, bytes.byteLength]).toStrictEqual([
+          profile.name,
+          release,
+          profile.bytes,
+        ]);
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(profile.sha256);
+      }
     }
   });
 

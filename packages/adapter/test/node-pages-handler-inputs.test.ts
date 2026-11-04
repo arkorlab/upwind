@@ -17,8 +17,13 @@ import {
 const INPUTS = new URL('../../../tools/native-pages-handler-profile/', import.meta.url);
 const DEFAULT_FIXTURE = '2527f3cdc79784d6a1fd003332682d651f2b1b3bce5859eb2731e4f71b7a12d4';
 const INTEGRITY = /(integrity: )sha512-[\w+/]+=*/u;
-/** A lock entry of `next` or an `@next/*` package at 16.4.4. */
-const NEXT_ENTRY = /^ {2}"?(?:next|@next\/[\w-]+)@16\.4\.4[:"(]/u;
+/** The releases a run asks for by name. */
+const LATER = ['16.4.4', '16.4.5'] as const;
+/** A lock entry of `next` or an `@next/*` package at `version`. */
+function nextEntry(version: string): RegExp {
+  const escaped = version.replaceAll('.', String.raw`\.`);
+  return new RegExp(String.raw`^ {2}"?(?:next|@next\/[\w-]+)@${escaped}[:"(]`, 'u');
+}
 
 /** The lock entry, at two spaces, that a line belongs to. */
 function ownerOf(lines: readonly string[], index: number): string {
@@ -132,45 +137,55 @@ describe('fixed public Pages producer input selection without running the produc
     expect(digest(adapter)).toBe(FIXTURE_FILES['adapter.mjs']);
   });
 
-  it('compiles with 16.4.3 unless asked, and replaces only the manifest and lock for 16.4.4', async () => {
-    const original = pagesHandlerProfileInputs([]);
-    const later = pagesHandlerProfileInputs(['--next=16.4.4']);
-    const off = pagesHandlerProfileInputs(['--next=16.4.4', '--server-minification=off']);
+  it.each(LATER)(
+    'compiles with 16.4.3 unless asked, and replaces only the manifest and lock for %s',
+    async (version) => {
+      const original = pagesHandlerProfileInputs([]);
+      const later = pagesHandlerProfileInputs([`--next=${version}`]);
+      const off = pagesHandlerProfileInputs([`--next=${version}`, '--server-minification=off']);
 
-    expect(original.next).toStrictEqual({ version: '16.4.3', swc: NEXT_RELEASES['16.4.3'].swc });
-    expect(later.next).toStrictEqual({ version: '16.4.4', swc: NEXT_RELEASES['16.4.4'].swc });
-    expect(withoutRelease(later)).toStrictEqual(withoutRelease(original));
-    expect(
-      later.files
-        .filter((file) => file.source.startsWith('fixture-16.4.4/'))
-        .map((file) => [file.target, file.sha256]),
-    ).toStrictEqual(Object.entries(NEXT_RELEASES['16.4.4'].files));
-    await expect(bytePins(later)).resolves.toStrictEqual(
-      later.files.map((file) => [file.target, file.sha256]),
-    );
-    expect(identity(later)).not.toBe(DEFAULT_FIXTURE);
-    expect(withoutConfig(off)).toStrictEqual(withoutConfig(later));
-  });
+      expect(original.next).toStrictEqual({ version: '16.4.3', swc: NEXT_RELEASES['16.4.3'].swc });
+      expect(later.next).toStrictEqual({ version, swc: NEXT_RELEASES[version].swc });
+      expect(withoutRelease(later)).toStrictEqual(withoutRelease(original));
+      expect(
+        later.files
+          .filter((file) => file.source.startsWith(`fixture-${version}/`))
+          .map((file) => [file.target, file.sha256]),
+      ).toStrictEqual(Object.entries(NEXT_RELEASES[version].files));
+      await expect(bytePins(later)).resolves.toStrictEqual(
+        later.files.map((file) => [file.target, file.sha256]),
+      );
+      expect(identity(later)).not.toBe(DEFAULT_FIXTURE);
+      expect(withoutConfig(off)).toStrictEqual(withoutConfig(later));
+    },
+  );
 
-  it('names 16.4.4 output and artifacts apart from the unchanged 16.4.3 names', () => {
-    const later = pagesHandlerProfileInputs(['--next=16.4.4']);
-    const off = pagesHandlerProfileInputs(['--next=16.4.4', '--server-minification=off']);
+  it.each(LATER)(
+    'names %s output and artifacts apart from the unchanged 16.4.3 names',
+    (version) => {
+      const later = pagesHandlerProfileInputs([`--next=${version}`]);
+      const off = pagesHandlerProfileInputs([`--next=${version}`, '--server-minification=off']);
 
-    expect(later.outputName).toBe('independent-pages-handler-profile-next-16.4.4');
-    expect(later.artifactName).toBe('UNQUALIFIED-public-pages-handler-next-16.4.4');
-    expect(off.outputName).toBe(
-      'independent-pages-handler-profile-next-16.4.4-server-minification-off',
-    );
-    expect(off.artifactName).toBe(
-      'UNQUALIFIED-public-pages-handler-next-16.4.4-server-minification-off',
-    );
-  });
+      expect(later.outputName).toBe(`independent-pages-handler-profile-next-${version}`);
+      expect(later.artifactName).toBe(`UNQUALIFIED-public-pages-handler-next-${version}`);
+      expect(off.outputName).toBe(
+        `independent-pages-handler-profile-next-${version}-server-minification-off`,
+      );
+      expect(off.artifactName).toBe(
+        `UNQUALIFIED-public-pages-handler-next-${version}-server-minification-off`,
+      );
+    },
+  );
 
-  it.each(['package.json', 'pnpm-lock.yaml'])(
-    'holds the 16.4.4 %s to 16.4.3 but for the release and its integrities',
-    async (target) => {
+  it.each(
+    LATER.flatMap((version) =>
+      ['package.json', 'pnpm-lock.yaml'].map((target) => [version, target]),
+    ),
+  )(
+    'holds the %s %s to 16.4.3 but for the release and its integrities',
+    async (version, target) => {
       const original = (await readFile(new URL(`fixture/${target}`, INPUTS), 'utf8')).split('\n');
-      const later = (await readFile(new URL(`fixture-16.4.4/${target}`, INPUTS), 'utf8')).split(
+      const later = (await readFile(new URL(`fixture-${version}/${target}`, INPUTS), 'utf8')).split(
         '\n',
       );
       const changed = later.flatMap((line, index) => {
@@ -182,10 +197,10 @@ describe('fixed public Pages producer input selection without running the produc
       expect(changed.length).toBeGreaterThan(0);
 
       for (const { before, line, owner } of changed) {
-        const released = before.replaceAll('16.4.3', '16.4.4');
+        const released = before.replaceAll('16.4.3', () => version);
         // An integrity changes only in the entry of a package the release itself publishes.
         const integrity =
-          NEXT_ENTRY.test(owner) &&
+          nextEntry(version).test(owner) &&
           line.replace(INTEGRITY, '$1') === released.replace(INTEGRITY, '$1');
 
         expect({ line, owner, kept: line === released || integrity }).toStrictEqual({
@@ -206,13 +221,14 @@ describe('fixed public Pages producer input selection without running the produc
     ['--server-minification=off', '--output=elsewhere'],
     ['--server-minification=off', '--next=16.4.4'],
     ['--next=16.4.3'],
-    ['--next=16.4.5'],
+    ['--next=16.4.6'],
     ['--next=16.4.4', '--next=16.4.4'],
+    ['--next=16.4.5', '--next=16.4.4'],
     ['/candidate/next.config.mjs'],
     ['--help'],
   ])('rejects an unknown or additional argument sequence %j', (...args) => {
     expect(() => pagesHandlerProfileInputs(args)).toThrow(
-      'Pass no arguments, or --next=16.4.4 and/or --server-minification=off in that order',
+      'Pass no arguments, or --next=16.4.4 or --next=16.4.5 and/or --server-minification=off in that order',
     );
   });
 
@@ -221,6 +237,8 @@ describe('fixed public Pages producer input selection without running the produc
     ['--server-minification=off'],
     ['--next=16.4.4'],
     ['--next=16.4.4', '--server-minification=off'],
+    ['--next=16.4.5'],
+    ['--next=16.4.5', '--server-minification=off'],
   ])('freezes the selected input plan %j', (...args) => {
     const profile = pagesHandlerProfileInputs(args);
 

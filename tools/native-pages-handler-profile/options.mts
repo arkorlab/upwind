@@ -15,18 +15,23 @@ export interface PagesHandlerProfileInputs {
 }
 
 const OFF = '--server-minification=off';
-const LATER_RELEASE = '--next=16.4.4';
+type Release = keyof typeof NEXT_RELEASES;
+/** The releases a run asks for by name; 16.4.3 is the one it compiles with unasked. */
+const LATER_RELEASES = (Object.keys(NEXT_RELEASES) as Release[]).filter(
+  (version) => version !== '16.4.3',
+);
+const LATER_OPTIONS = LATER_RELEASES.map((version) => `--next=${version}`).join(' or ');
 
 /** Fixed public source selection only; this does not compile, collect or qualify any output. */
 export function pagesHandlerProfileInputs(args: readonly string[]): PagesHandlerProfileInputs {
-  const later = args[0] === LATER_RELEASE;
-  const rest = later ? args.slice(1) : args;
+  const later = LATER_RELEASES.find((version) => args[0] === `--next=${version}`);
+  const rest = later === undefined ? args : args.slice(1);
   assert.ok(
     rest.length === 0 || (rest.length === 1 && rest[0] === OFF),
-    `Pass no arguments, or ${LATER_RELEASE} and/or ${OFF} in that order`,
+    `Pass no arguments, or ${LATER_OPTIONS} and/or ${OFF} in that order`,
   );
   const off = rest.length === 1;
-  const version = later ? '16.4.4' : '16.4.3';
+  const version: Release = later ?? '16.4.3';
   const release: { readonly files: Readonly<Record<string, string>> } = NEXT_RELEASES[version];
   const files = Object.entries(FIXTURE_FILES).map(([target, digest]) => {
     const replacement = off && target === 'next.config.mjs';
@@ -40,7 +45,7 @@ export function pagesHandlerProfileInputs(args: readonly string[]): PagesHandler
       sha256: replacement ? SERVER_MINIFICATION_OFF_CONFIG : digest,
     });
   });
-  const named = later ? `-next-${version}` : '';
+  const named = later === undefined ? '' : `-next-${version}`;
   const suffix = `${named}${off ? '-server-minification-off' : ''}`;
   return Object.freeze({
     next: Object.freeze({ version, swc: NEXT_RELEASES[version].swc }),

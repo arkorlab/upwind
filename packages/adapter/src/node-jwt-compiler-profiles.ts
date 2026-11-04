@@ -1,6 +1,7 @@
 import type { Node } from './lexical-scope.ts';
 import { nodeJwtGlobalRecoverySite } from './node-jwt-compiler-sites.ts';
 import { nodeFastJwtBindingSite } from './node-jwt-fast-sites.ts';
+import type { NativeNextRelease } from './node-next-release.ts';
 import type { NodeNextRequireHookSites } from './node-next-require-hook-sites.ts';
 
 /** The one site of a qualified source the ordinary closure walker refuses, and how it reads it. */
@@ -13,7 +14,8 @@ export interface NodeJwtCompilerSite {
 /** The JWT library a release of Next.js compiles in, by its exact published bytes. */
 export interface NodeJwtCompilerProfile {
   readonly name: 'next-16.4.3-jsonwebtoken-ncc-v1' | 'next-16.4.4-fast-jwt-ncc-v1';
-  readonly release: '16.4.3' | '16.4.4';
+  /** The releases that publish it, byte for byte. */
+  readonly releases: readonly NativeNextRelease['version'][];
   readonly suffix: string;
   readonly sha256: string;
   readonly bytes: number;
@@ -40,7 +42,7 @@ function siteOf(kind: NodeJwtCompilerSite['kind'], node: Node | undefined) {
 export const NODE_JWT_COMPILER_PROFILES: readonly NodeJwtCompilerProfile[] = Object.freeze([
   Object.freeze({
     name: 'next-16.4.3-jsonwebtoken-ncc-v1',
-    release: '16.4.3',
+    releases: Object.freeze(['16.4.3'] as const),
     suffix: '/dist/compiled/jsonwebtoken/index.js',
     sha256: '056c2dddba96faa35f4dc0740228a241990561290ff3bd5456c7c7dbc5a7a6b9',
     bytes: 121_051,
@@ -50,7 +52,7 @@ export const NODE_JWT_COMPILER_PROFILES: readonly NodeJwtCompilerProfile[] = Obj
   }),
   Object.freeze({
     name: 'next-16.4.4-fast-jwt-ncc-v1',
-    release: '16.4.4',
+    releases: Object.freeze(['16.4.4', '16.4.5'] as const),
     suffix: '/dist/compiled/fast-jwt/index.js',
     sha256: '8cc4cea3ed6b85a6771a2546bbb88dcd1ca21e6061d89057728d3da4ecccfabf',
     bytes: 131_737,
