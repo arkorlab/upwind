@@ -81,28 +81,56 @@ function hasSvgRoot(text: string): boolean {
   return false;
 }
 
-/** A byte the signature names, or `null` where it names none: the length of a RIFF or ISO box. */
+/** A byte the signature names, or `null` where it names none: the length of a RIFF chunk. */
 type Signature = readonly (number | null)[];
 const ANY = null;
 
-const SIGNATURES: readonly (readonly [Signature, string])[] = [
+const FTYP = [0x66, 0x74, 0x79, 0x70];
+/** The smallest `ftyp` box: its size, its type, a major brand and a minor version. */
+const MIN_FTYP_BOX_BYTES = 16;
+const FTYP_SIGNATURE_BYTES = 12;
+
+/**
+ * An ISO media file (AVIF, HEIC) opens with an `ftyp` box: its big-endian size, `ftyp`, then the
+ * major brand. A size that a box of its own could have, inside the bytes there are, keeps a text
+ * that carries the brand at the same place from passing: an SVG that opens `<!--ftypavif-->` was
+ * an AVIF here, and not refused as an SVG (Next.js's own detector, GHSA-7qx7-33qx-rqx2).
+ */
+function isoBox(brand: readonly number[]): (bytes: Uint8Array) => boolean {
+  const named = [...FTYP, ...brand];
+  return (bytes) => {
+    if (bytes.byteLength < FTYP_SIGNATURE_BYTES) return false;
+    const size = new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0);
+    return (
+      size >= MIN_FTYP_BOX_BYTES &&
+      size <= bytes.byteLength &&
+      named.every((expected, index) => bytes[index + 4] === expected)
+    );
+  };
+}
+
+const SIGNATURES: readonly (readonly [Signature | ((bytes: Uint8Array) => boolean), string])[] = [
   [[0xff, 0xd8, 0xff], JPEG],
   [[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], PNG],
   [[0x47, 0x49, 0x46, 0x38], GIF],
   [[0x52, 0x49, 0x46, 0x46, ANY, ANY, ANY, ANY, 0x57, 0x45, 0x42, 0x50], WEBP],
   [[0x3c, 0x3f, 0x78, 0x6d, 0x6c], SVG],
   [[0x3c, 0x73, 0x76, 0x67], SVG],
-  [[ANY, ANY, ANY, ANY, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66], AVIF],
+  [isoBox([0x61, 0x76, 0x69, 0x66]), AVIF],
   [[0x00, 0x00, 0x01, 0x00], ICO],
   [[0x69, 0x63, 0x6e, 0x73], ICNS],
   [[0x49, 0x49, 0x2a, 0x00], TIFF],
   [[0x42, 0x4d], BMP],
   [[0xff, 0x0a], JXL],
   [[0x00, 0x00, 0x00, 0x0c, 0x4a, 0x58, 0x4c, 0x20, 0x0d, 0x0a, 0x87, 0x0a], JXL],
-  [[ANY, ANY, ANY, ANY, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63], HEIC],
+  [isoBox([0x68, 0x65, 0x69, 0x63]), HEIC],
 ];
 
-function matches(signature: Signature, bytes: Uint8Array): boolean {
+function matches(
+  signature: Signature | ((bytes: Uint8Array) => boolean),
+  bytes: Uint8Array,
+): boolean {
+  if (typeof signature === 'function') return signature(bytes);
   return signature.every((expected, index) => expected === ANY || bytes[index] === expected);
 }
 
