@@ -19,10 +19,11 @@ const DEFAULT_FIXTURE = '2527f3cdc79784d6a1fd003332682d651f2b1b3bce5859eb2731e4f
 const INTEGRITY = /(integrity: )sha512-[\w+/]+=*/u;
 /** The releases a run asks for by name. */
 const LATER = ['16.4.4', '16.4.5'] as const;
-/** A lock entry of `next` or an `@next/*` package at `version`. */
-function nextEntry(version: string): RegExp {
-  const escaped = version.replaceAll('.', String.raw`\.`);
-  return new RegExp(String.raw`^ {2}"?(?:next|@next\/[\w-]+)@${escaped}[:"(]`, 'u');
+/** A lock entry of `next` or an `@next/*` package, and its release. */
+const RELEASE_ENTRY = /^ {2}"?(?:next|@next\/[\w-]+)@(\d+\.\d+\.\d+)[:"(]/u;
+/** Whether `owner` is the lock entry of `next` or an `@next/*` package at `version`. */
+function isReleaseEntry(owner: string, version: string): boolean {
+  return RELEASE_ENTRY.exec(owner)?.[1] === version;
 }
 
 /** The lock entry, at two spaces, that a line belongs to. */
@@ -200,7 +201,7 @@ describe('fixed public Pages producer input selection without running the produc
         const released = before.replaceAll('16.4.3', () => version);
         // An integrity changes only in the entry of a package the release itself publishes.
         const integrity =
-          nextEntry(version).test(owner) &&
+          isReleaseEntry(owner, version) &&
           line.replace(INTEGRITY, '$1') === released.replace(INTEGRITY, '$1');
 
         expect({ line, owner, kept: line === released || integrity }).toStrictEqual({

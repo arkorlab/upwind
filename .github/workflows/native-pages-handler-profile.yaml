@@ -20,7 +20,10 @@ concurrency:
 
 jobs:
   produce:
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04's Docker keeps the classic image store, where an image's ID is its config digest,
+    # which the producer pins, runs and records (`IMAGE_ID`). `ubuntu-latest` became 26.04, whose
+    # containerd store reports the index digest there instead, so no run got past its image check.
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     strategy:
       fail-fast: false
