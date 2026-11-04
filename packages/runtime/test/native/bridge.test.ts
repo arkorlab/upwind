@@ -373,8 +373,72 @@ describe('native Node bridge', () => {
       }),
     );
     assert.equal(response.headers.get('content-encoding'), 'gzip');
-    assert.equal(response.headers.get('content-length'), String(compressed.length));
+    // The bridge frames the body by what is written, not by the length the handler named.
+    assert.equal(response.headers.get('content-length'), null);
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), compressed);
+  });
+
+  /**
+   * A handler that names a length its body overruns — Next.js before 16.4.5 forwards a fetched
+   * answer decoded under its encoded length (GHSA-pc58-hwjq-p385) — must not end its answer early
+   * on a connection the next request is sent over: that request would read the rest as its answer.
+   */
+  it("frames a handler's body by what it writes, not by the length it names", async () => {
+    const bridge = fixture();
+    const smuggled = 'HTTP/1.1 200 OK\r\ncontent-length: 8\r\n\r\ninjected';
+    const first = await bridge.invokeNodeHandler(
+      input(async (_req, res) => {
+        res.writeHead(200, { 'content-length': 3 });
+        res.write('abc');
+        await delay(100);
+        res.end(smuggled);
+      }),
+    );
+    const second = bridge.invokeNodeHandler(
+      input(async (_req, res) => {
+        await delay(300);
+        res.end('second');
+      }),
+    );
+
+    assert.equal(await first.text(), `abc${smuggled}`);
+    assert.equal(await (await second).text(), 'second');
+  });
+
+  it('keeps the length Node counts for a body given whole, and frames a named one itself', async () => {
+    const bridge = fixture();
+    const counted = await bridge.invokeNodeHandler(
+      input(async (_req, res) => {
+        res.end('hello');
+      }),
+    );
+    const named = await bridge.invokeNodeHandler(
+      input(async (_req, res) => {
+        res.writeHead(200, ['Content-Length', '2', 'x-kept', 'yes']);
+        res.end('hello');
+      }),
+    );
+
+    assert.equal(counted.headers.get('content-length'), '5');
+    assert.equal(await counted.text(), 'hello');
+    assert.equal(named.headers.get('content-length'), null);
+    assert.equal(named.headers.get('x-kept'), 'yes');
+    assert.equal(await named.text(), 'hello');
+  });
+
+  it('keeps the length of an answer to HEAD, which frames no body', async () => {
+    const bridge = fixture();
+    const response = await bridge.invokeNodeHandler(
+      input(
+        async (_req, res) => {
+          res.writeHead(200, { 'content-length': 12 });
+          res.end();
+        },
+        { request: new Request('https://app.test/original', { method: 'HEAD' }) },
+      ),
+    );
+
+    assert.equal(response.headers.get('content-length'), '12');
   });
 
   it('removes hop-by-hop fields including Connection-nominated fields', async () => {

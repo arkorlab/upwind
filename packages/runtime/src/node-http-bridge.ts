@@ -12,6 +12,7 @@ import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 
 import { NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 
+import { ownFraming } from './loopback-framing.ts';
 import type { InvokeInput, Run } from './node-bridge.ts';
 import { messageHeaders } from './node-http.ts';
 
@@ -154,6 +155,7 @@ class NodeBridge {
     removeDispatchHeader(request);
     request.url = dispatch.url;
     singleRedirectLocation(response);
+    ownFraming(request.method, response);
     const handled = invoke(dispatch.input, request, response);
     retainHandler(dispatch.input, response, handled);
     // eslint-disable-next-line unicorn/prefer-await -- The handler owns the streaming response independently.
