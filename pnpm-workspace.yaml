@@ -35,7 +35,7 @@ catalog:
   engine.io: 6.6.11
   # What `@stayingupwind/auth` wraps. A peer dependency there, so a project brings its own copy and
   # this pin is what the repository builds and typechecks against — the same arrangement as `next`.
-  better-auth: 1.7.15
+  better-auth: 1.7.16
   eslint: 10.14.0
   eslint-config-prettier: 10.1.8
   eslint-import-resolver-typescript: 4.4.5
@@ -136,6 +136,17 @@ minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
   - next
   - '@next/*'
+  # Exact security release and its pinned package family, including its required router.
+  # https://better-auth.com/blog/security-release-2026-11-03
+  - better-auth@1.7.16
+  - '@better-auth/core@1.7.16'
+  - '@better-auth/telemetry@1.7.16'
+  - '@better-auth/mongo-adapter@1.7.16'
+  - '@better-auth/kysely-adapter@1.7.16'
+  - '@better-auth/memory-adapter@1.7.16'
+  - '@better-auth/prisma-adapter@1.7.16'
+  - '@better-auth/drizzle-adapter@1.7.16'
+  - better-call@1.4.5
 
 patchedDependencies:
   eslint-plugin-import-x@4.17.1: patches/eslint-plugin-import-x@4.17.1.patch
