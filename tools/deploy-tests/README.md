@@ -62,7 +62,7 @@ repository at a ref the run chose, and its applications' `package.json` scripts 
 hook. So: the hook runs a fixture's install and build with these variables removed, the workflow keeps
 the token in a file — there for the preflight alone, and then not again until Next.js is built — and
 gives the suite only its path, and a dispatch's `nextjsRef` has to name a release tag of Next.js
-(`v16.4.3`, `v16.5.0-canary.25`). None of that
+(`v16.4.5`, `v16.5.0-canary.39`). None of that
 is a boundary — a fixture's build and the deploy hook are the same user on the same machine, and a
 process can read what another process of its own user can. What it removes is the ordinary way a secret
 escapes, which is something printing the environment it was handed. So use a credential whose loss is

@@ -24,8 +24,8 @@ import { order, releaseOf } from './releases.ts';
  * What a deployment is told to go and get is in Next.js's own code, which travels into a Function
  * whole: how `use cache` keys what it stores, and what the Edge adapter and the Node response writer
  * leave on an answer. A development run has one of its own that only it is exposed to: the image
- * optimizer, which `upwind dev` hands a request that a deployment answers itself. What the same
- * advisories found in code of upwind's own, upwind fixes, whatever Next.js a project has.
+ * optimizer, which `upwind dev` hands a request that a deployment answers itself. Where the same
+ * advisories reach code of upwind's own, upwind fixes that code, whatever Next.js a project has.
  *
  * **This moves with every Next.js release that carries security fixes**, and that is the one thing
  * here nobody is told. `packages/adapter/scripts/check-patches.ts` holds it to being inside the
