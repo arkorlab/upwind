@@ -220,6 +220,17 @@ export function withCacheState(response: Response, state: NextCacheState): Respo
   return response;
 }
 
+/**
+ * The caller's answer for a request whose entry's record did not come in time, where the entry is
+ * rendered at a miss (`GenerationSource.onRenderLeft`): a render for the request is `MISS`, as
+ * Next.js's own server says of a page it rendered for one, which minimal mode leaves to the
+ * platform. An answer that says where it came from already — the build's own page, `HIT` — is left
+ * as it is.
+ */
+export function answeredAtMiss(response: Response): Response {
+  return response.headers.has(NEXT_CACHE_HEADER) ? response : withCacheState(response, 'MISS');
+}
+
 export async function externalRewrite(request: Request, target: URL): Promise<Response> {
   const headers = stripPlatformHeaders(request.headers);
   headers.delete('host');

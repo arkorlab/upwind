@@ -16,4 +16,10 @@ export interface GenerationSource extends Want {
    * while it renders the member's, and which is not kept waiting on a render it may never use.
    */
   readonly onMiss: 'build' | 'render' | 'behind';
+  /**
+   * Told when the entry's record did not come in time and the entry would have been rendered at a
+   * miss (`onMiss: 'render'`): the answer is left to the caller, whose render for the request it
+   * then is, and a render at a miss says so (`answeredAtMiss`).
+   */
+  readonly onRenderLeft?: (() => void) | undefined;
 }
