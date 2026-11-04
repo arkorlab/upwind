@@ -570,7 +570,10 @@ async function answerUnavailable(
   const answered =
     (await answerFromPublishing(job.input, job.target.handler, publishing, want)) ??
     (await renderCompletedRscForVisitor(job, source, once));
-  // Where the entry is rendered at a miss, the caller's answer is that render, for this request.
+  // Where the entry is rendered at a miss, the caller's answer is that render, for this request. Not
+  // on a second look, after this request's foreground regeneration answered nothing (`once`): that
+  // found the entry dynamic here, and a dynamic render says nothing of the cache, as `answerMiss`
+  // leaves such a look to the build's path without one.
   if (answered === undefined && once && missedBy(job, source) === 'render') {
     source.onRenderLeft?.();
   }

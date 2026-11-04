@@ -745,7 +745,10 @@ describe('an entry whose record does not come in time', () => {
   });
 
   /** What the Function answers itself, its record held past the deadline, then let go. */
-  async function serveLate(source: GenerationSource): Promise<Response | undefined> {
+  async function serveLate(
+    source: GenerationSource,
+    regenerated?: RoutedInput['regenerated'],
+  ): Promise<Response | undefined> {
     const held = heldRecords(fakeAuthority(SCOPE).fetchImpl);
     const runtime = createCacheRuntime({ env: ENV, now: nowMs, fetchImpl: held.fetchImpl });
     if (runtime === undefined) {
@@ -755,9 +758,8 @@ describe('an entry whose record does not come in time', () => {
       /* The read the deadline gives up on is expected here. */
     });
     const pending: Promise<unknown>[] = [];
-    const answer = await withClock(T0, () =>
-      serveFromGeneration(routed(runtime, source.url, pending), store, source, handler),
-    );
+    const input = { ...routed(runtime, source.url, pending), regenerated };
+    const answer = await withClock(T0, () => serveFromGeneration(input, store, source, handler));
     held.release();
     await settle(pending);
     return answer;
@@ -780,6 +782,15 @@ describe('an entry whose record does not come in time', () => {
     await expect(serveLate(asked('render', told))).resolves.toBeUndefined();
     expect(told).toHaveBeenCalledExactlyOnceWith();
     expect(vi.mocked(invokeNodeHandler)).not.toHaveBeenCalled();
+  });
+
+  it("tells nothing on a second look, after the request's own regeneration found it dynamic", async () => {
+    const told = vi.fn();
+
+    await expect(
+      serveLate(asked('render', told), { kind: 'app-page', route: PAGE, pathname: MEMBER }),
+    ).resolves.toBeUndefined();
+    expect(told).not.toHaveBeenCalled();
   });
 
   it.each(['build', 'behind'] as const)(
