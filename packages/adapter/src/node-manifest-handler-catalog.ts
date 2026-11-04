@@ -3,8 +3,10 @@ import type {
   NodeManifestHandlerReferenceGraphData,
 } from './node-manifest-handler-graph.ts';
 import { NEXT_16_4_4_HANDLER_REFERENCE } from './node-manifest-handler-reference-16-4-4.ts';
+import { NEXT_16_4_5_HANDLER_REFERENCE } from './node-manifest-handler-reference-16-4-5.ts';
 import { NEXT_16_4_3_HANDLER_REFERENCE } from './node-manifest-handler-reference.ts';
 import { NEXT_16_4_4_UNMINIFIED_HANDLER_REFERENCE } from './node-manifest-handler-unminified-16-4-4-reference.ts';
+import { NEXT_16_4_5_UNMINIFIED_HANDLER_REFERENCE } from './node-manifest-handler-unminified-16-4-5-reference.ts';
 import { NEXT_16_4_3_UNMINIFIED_HANDLER_REFERENCE } from './node-manifest-handler-unminified-reference.ts';
 
 export const NODE_MANIFEST_HANDLER_MODULE = 'dist/server/route-modules/pages/pages-handler.js';
@@ -47,4 +49,6 @@ export const NODE_MANIFEST_HANDLER_PROFILES: readonly NodeManifestHandlerProfile
   NEXT_16_4_3_UNMINIFIED_HANDLER_REFERENCE,
   NEXT_16_4_4_HANDLER_REFERENCE,
   NEXT_16_4_4_UNMINIFIED_HANDLER_REFERENCE,
+  NEXT_16_4_5_HANDLER_REFERENCE,
+  NEXT_16_4_5_UNMINIFIED_HANDLER_REFERENCE,
 ]);

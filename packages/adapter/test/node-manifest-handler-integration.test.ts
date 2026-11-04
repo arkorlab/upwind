@@ -71,6 +71,8 @@ describe('private Pages handler source integration', () => {
       'next-16.4.3-public-pages-server-minification-off',
       'next-16.4.4-public-pages-handler',
       'next-16.4.4-public-pages-server-minification-off',
+      'next-16.4.5-public-pages-handler',
+      'next-16.4.5-public-pages-server-minification-off',
     ]);
     expect(
       NODE_MANIFEST_HANDLER_PROFILES.every((profile) => {
