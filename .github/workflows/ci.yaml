@@ -23,6 +23,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Binary extensions require a release tag; v0.4.1's release and assets are immutable.
       - run: gh extension install github/gh-actions-lock --pin v0.4.1
       - run: gh actions-lock --verify
 

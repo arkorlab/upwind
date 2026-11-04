@@ -139,7 +139,8 @@ Every workflow is covered by `.github/workflows/actions.lock`, which records the
 transitive action dependencies at their locked commits. Keep the existing full commit SHA references
 and their version comments when changing an action. After adding or removing a workflow or changing
 an action reference, regenerate the lockfile from the repository root with the official GitHub CLI
-extension:
+extension. Install the [GitHub CLI](https://cli.github.com/) and authenticate with `gh auth login`
+before running these commands:
 
 ```bash
 gh extension install github/gh-actions-lock --pin v0.4.1
