@@ -71,7 +71,7 @@ describe('a whole chunk’s syntax tree', () => {
 
     expect(() => parseChunk(code)).toThrow(error);
     expect(parseAst).toHaveBeenCalledExactlyOnceWith(code);
-    expect(rawTransferSupported).toHaveBeenCalledOnce();
+    expect(rawTransferSupported).toHaveBeenCalledExactlyOnceWith();
     expect(parseSync).not.toHaveBeenCalled();
   });
 
