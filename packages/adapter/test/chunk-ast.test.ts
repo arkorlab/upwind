@@ -1,14 +1,17 @@
-import { rawTransferSupported } from 'oxc-parser';
+import { parseSync, rawTransferSupported } from 'oxc-parser';
 import { parseAst } from 'rolldown/parseAst';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { parseChunk } from '../src/chunk-ast.ts';
 
-// `parseAst` as it is, counted: a tree that matched only because `parseChunk` answered with
-// `parseAst` would prove nothing of the buffer it reads through.
+// Both parsers as they are, counted: which one answered is what these cases are about.
 vi.mock(import('rolldown/parseAst'), async (importOriginal) => {
   const original = await importOriginal();
   return { ...original, parseAst: vi.fn(original.parseAst) };
+});
+vi.mock(import('oxc-parser'), async (importOriginal) => {
+  const original = await importOriginal();
+  return { ...original, parseSync: vi.fn(original.parseSync) };
 });
 
 /**
@@ -22,6 +25,14 @@ function textOf(tree: unknown): string {
     return value;
   });
 }
+
+/** What `parseAst` throws for a chunk whose tree is past the longest string V8 makes. */
+function pastTheLongestString(): Error {
+  return new Error('Failed to convert rust `String` into napi `string`');
+}
+
+/** The options a raw-transfer parse is asked with: `parseAst`'s own, and the buffer. */
+const RAW_TRANSFER = { experimentalRawTransfer: true, lang: 'js', preserveParens: false } as const;
 
 /** Statements in one body past what raw transfer's deserializer takes (`body.push(...)`). */
 const STATEMENTS_PAST_RAW_TRANSFER = 200_000;
@@ -40,27 +51,46 @@ const CHUNKS = {
 describe('a whole chunk’s syntax tree', () => {
   beforeEach(() => {
     vi.mocked(parseAst).mockClear();
+    vi.mocked(parseSync).mockClear();
   });
 
-  it('reads with raw transfer here, which hands the tree over in a buffer', () => {
+  it('can be read with raw transfer here, which hands the tree over in a buffer', () => {
     expect(rawTransferSupported()).toBe(true);
   });
 
-  it.each(Object.entries(CHUNKS))('is the tree parseAst answers, for %s', (_form, code) => {
+  it('is parseAst’s, with no raw transfer, for a chunk parseAst reads', () => {
+    const code = CHUNKS.parenthesized;
+
     const tree = parseChunk(code);
 
-    expect(parseAst).not.toHaveBeenCalled();
+    expect(parseSync).not.toHaveBeenCalled();
+    expect(parseAst).toHaveBeenCalledExactlyOnceWith(code);
     expect(textOf(tree)).toBe(textOf(parseAst(code)));
   });
 
-  it('reads a body too long for raw transfer as parseAst does', () => {
+  it.each(Object.entries(CHUNKS))(
+    'is the tree parseAst answers, through raw transfer where parseAst throws, for %s',
+    (_form, code) => {
+      vi.mocked(parseAst).mockImplementationOnce(() => {
+        throw pastTheLongestString();
+      });
+
+      const tree = parseChunk(code);
+
+      expect(parseSync).toHaveBeenCalledExactlyOnceWith('file.js', code, RAW_TRANSFER);
+      expect(textOf(tree)).toBe(textOf(parseAst(code)));
+    },
+  );
+
+  it('refuses with parseAst’s error a chunk raw transfer cannot read either', () => {
     // Raw transfer spreads a body's statements into one call, which 200,000 are past.
     const code = `function f() {\n${'a;\n'.repeat(STATEMENTS_PAST_RAW_TRANSFER)}}`;
+    vi.mocked(parseAst).mockImplementationOnce(() => {
+      throw pastTheLongestString();
+    });
 
-    const tree = parseChunk(code);
-
-    expect(parseAst).toHaveBeenCalledExactlyOnceWith(code);
-    expect(textOf(tree)).toBe(textOf(parseAst(code)));
+    expect(() => parseChunk(code)).toThrow(/napi/u);
+    expect(parseSync).toHaveBeenCalledExactlyOnceWith('file.js', code, RAW_TRANSFER);
   });
 
   it('refuses a chunk that does not parse as parseAst does', () => {
