@@ -23,6 +23,9 @@ function textOf(tree: unknown): string {
   });
 }
 
+/** Statements in one body past what raw transfer's deserializer takes (`body.push(...)`). */
+const STATEMENTS_PAST_RAW_TRANSFER = 200_000;
+
 /** What a bundled chunk holds: the forms whose nodes the two parsers could have told apart. */
 const CHUNKS = {
   parenthesized: 'var a = (b, (c = d)), e = ((f)) ? (g) : h;\nexports.x = (0, a.b)(c);',
@@ -47,6 +50,16 @@ describe('a whole chunk’s syntax tree', () => {
     const tree = parseChunk(code);
 
     expect(parseAst).not.toHaveBeenCalled();
+    expect(textOf(tree)).toBe(textOf(parseAst(code)));
+  });
+
+  it('reads a body too long for raw transfer as parseAst does', () => {
+    // Raw transfer spreads a body's statements into one call, which 200,000 are past.
+    const code = `function f() {\n${'a;\n'.repeat(STATEMENTS_PAST_RAW_TRANSFER)}}`;
+
+    const tree = parseChunk(code);
+
+    expect(parseAst).toHaveBeenCalledExactlyOnceWith(code);
     expect(textOf(tree)).toBe(textOf(parseAst(code)));
   });
 

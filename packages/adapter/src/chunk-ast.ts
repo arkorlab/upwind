@@ -25,9 +25,18 @@ const OPTIONS: ParserOptions & { readonly experimentalRawTransfer: true } = {
  * `ParenthesizedExpression`), it answers that tree node for node, and the analyses that walk it see
  * no difference. Where raw transfer is not supported, and for a chunk that does not parse, `parseAst`
  * answers as before: its error is the one a build reports.
+ *
+ * So it does where raw transfer throws. Its deserializer spreads each list of a body into one call
+ * (`body.push(...)`), so a body of some 200,000 statements or more is past what a call takes, and it
+ * throws `RangeError: Maximum call stack size exceeded` where `parseAst` reads the chunk.
  */
 export function parseChunk(code: string): Program {
   if (!rawTransferSupported()) return parseAst(code);
-  const { program, errors } = parseSync(FILE, code, OPTIONS);
-  return errors.length > 0 ? parseAst(code) : program;
+  let parsed: ReturnType<typeof parseSync>;
+  try {
+    parsed = parseSync(FILE, code, OPTIONS);
+  } catch {
+    return parseAst(code);
+  }
+  return parsed.errors.length > 0 ? parseAst(code) : parsed.program;
 }
