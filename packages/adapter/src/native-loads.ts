@@ -3,8 +3,8 @@ import { realpath } from 'node:fs/promises';
 
 import type { Node } from '@oxc-project/types';
 import type { OutputChunk, Plugin } from 'rolldown';
-import { parseAst } from 'rolldown/parseAst';
 
+import { parseChunk } from './chunk-ast.ts';
 import { AuditError } from './dependencies.ts';
 import { nativeOperationGuards } from './dynamic-loads.ts';
 import type { NativeAddonEntryTrace } from './native-addons.ts';
@@ -232,7 +232,7 @@ export function nativeLoadsPlugin(
       },
     },
     async retained(chunk) {
-      const program = parseAst(chunk.code);
+      const program = parseChunk(chunk.code);
       const tree = walk(program);
       const ids = new Set(
         tree.flatMap((node) => {
