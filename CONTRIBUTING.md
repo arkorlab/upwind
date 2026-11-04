@@ -133,6 +133,26 @@ None of them is in your way on a normal change: the first two are the fast ones,
 only matters if you touched `packages/adapter/src/patches/`. The patch checks are described in
 [the adapter's readme](packages/adapter/README.md), under "Which Next.js".
 
+## GitHub Actions dependencies
+
+Every workflow is covered by `.github/workflows/actions.lock`, which records the direct and
+transitive action dependencies at their locked commits. Keep the existing full commit SHA references
+and their version comments when changing an action. After adding or removing a workflow or changing
+an action reference, regenerate the lockfile from the repository root with the official GitHub CLI
+extension:
+
+```bash
+gh extension install github/gh-actions-lock --pin v0.4.1
+gh actions-lock --no-interactive --no-narrow
+gh actions-lock --verify
+```
+
+Commit the generated lockfile with the workflow changes; do not edit it by hand. Review changed
+commits as dependency updates, and investigate changes to `owner_id` or `repo_id` before accepting
+them. `gh actions-lock --verify-local` checks coverage without a network connection; CI runs the full
+`--verify` check, which also verifies the locked dependencies upstream. The existing Dependabot
+GitHub Actions updates keep lockfile entries in sync for workflows already covered by the lockfile.
+
 ## Style
 
 - **oxfmt formats everything.** 100 columns for code. Comments and markdown run past it where the

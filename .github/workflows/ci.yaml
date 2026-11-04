@@ -13,6 +13,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  actions-lockfile:
+    name: Actions lockfile
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: gh extension install github/gh-actions-lock --pin v0.4.1
+      - run: gh actions-lock --verify
+
   containers:
     name: Native Container startup
     runs-on: ubuntu-latest
@@ -167,7 +180,7 @@ jobs:
   # Preserve the existing check name and require success from every independent gate.
   check:
     if: ${{ always() }}
-    needs: [check-static, lint, check-contracts, deploy-hook-contracts]
+    needs: [actions-lockfile, check-static, lint, check-contracts, deploy-hook-contracts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
