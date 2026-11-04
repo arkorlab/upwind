@@ -1,8 +1,15 @@
 import { rawTransferSupported } from 'oxc-parser';
 import { parseAst } from 'rolldown/parseAst';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { parseChunk } from '../src/chunk-ast.ts';
+
+// `parseAst` as it is, counted: a tree that matched only because `parseChunk` answered with
+// `parseAst` would prove nothing of the buffer it reads through.
+vi.mock(import('rolldown/parseAst'), async (importOriginal) => {
+  const original = await importOriginal();
+  return { ...original, parseAst: vi.fn(original.parseAst) };
+});
 
 /**
  * A tree as text, its literal values included: `parseAst` answers a BigInt or a RegExp as the value
@@ -28,18 +35,25 @@ const CHUNKS = {
 };
 
 describe('a whole chunk’s syntax tree', () => {
+  beforeEach(() => {
+    vi.mocked(parseAst).mockClear();
+  });
+
+  it('reads with raw transfer here, which hands the tree over in a buffer', () => {
+    expect(rawTransferSupported()).toBe(true);
+  });
+
   it.each(Object.entries(CHUNKS))('is the tree parseAst answers, for %s', (_form, code) => {
-    expect(textOf(parseChunk(code))).toBe(textOf(parseAst(code)));
+    const tree = parseChunk(code);
+
+    expect(parseAst).not.toHaveBeenCalled();
+    expect(textOf(tree)).toBe(textOf(parseAst(code)));
   });
 
   it('refuses a chunk that does not parse as parseAst does', () => {
     const code = 'const a = ;';
 
     expect(() => parseChunk(code)).toThrow(/Parse failed/u);
-    expect(() => parseAst(code)).toThrow(/Parse failed/u);
-  });
-
-  it('reads with raw transfer here, which hands the tree over in a buffer', () => {
-    expect(rawTransferSupported()).toBe(true);
+    expect(parseAst).toHaveBeenCalledExactlyOnceWith(code);
   });
 });
