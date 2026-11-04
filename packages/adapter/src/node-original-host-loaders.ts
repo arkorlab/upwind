@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 
 import type { OutputChunk, Plugin } from 'rolldown';
-import { parseAst } from 'rolldown/parseAst';
 
+import { parseChunk } from './chunk-ast.ts';
 import { AuditError } from './dependencies.ts';
 import { identifier, stringOf, walk } from './native-ast.ts';
 import {
@@ -136,7 +136,7 @@ export function originalHostLoadersPlugin(sources: ReadonlyMap<string, OriginalS
     },
     retained(chunk) {
       const retained = new Map<string, RetainedOriginalHostLoader>();
-      const tree = walk(parseAst(chunk.code));
+      const tree = walk(parseChunk(chunk.code));
       const callees = new Set<unknown>();
       for (const node of tree) {
         if (node.type !== 'CallExpression' || !identifier(node.callee, MARKER)) continue;
