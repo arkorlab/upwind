@@ -426,6 +426,20 @@ describe('native Node bridge', () => {
     assert.equal(named.headers.get('content-length'), null);
     assert.equal(named.headers.get('x-kept'), 'yes');
     assert.equal(await named.text(), 'hello');
+
+    const paired = await bridge.invokeNodeHandler(
+      input(async (_req, res) => {
+        res.writeHead(200, [
+          ['Content-Length', '2'],
+          ['x-kept', 'yes'],
+        ]);
+        res.end('hello');
+      }),
+    );
+
+    assert.equal(paired.headers.get('content-length'), null);
+    assert.equal(paired.headers.get('x-kept'), 'yes');
+    assert.equal(await paired.text(), 'hello');
   });
 
   it('keeps the length of an answer to HEAD, which frames no body', async () => {

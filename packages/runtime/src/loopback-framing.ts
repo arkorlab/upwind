@@ -2,13 +2,22 @@ import type { OutgoingHttpHeaders, ServerResponse } from 'node:http';
 
 const CONTENT_LENGTH = 'content-length';
 
-/** Flat `[name, value, …]` headers, as `writeHead` takes them, without a length. */
+function isLength(name: unknown): boolean {
+  return typeof name === 'string' && name.toLowerCase() === CONTENT_LENGTH;
+}
+
+/**
+ * Headers as an array, without a length: `[[name, value], …]` or flat `[name, value, …]`, the two
+ * forms `writeHead` takes (Sentry, upwind#450).
+ */
 function lengthlessPairs(headers: readonly unknown[]): unknown[] {
+  if (Array.isArray(headers[0])) {
+    return headers.filter((pair) => !(Array.isArray(pair) && isLength(pair[0])));
+  }
   const kept: unknown[] = [];
   for (let index = 0; index + 1 < headers.length; index += 2) {
-    const name: unknown = headers[index];
-    if (typeof name === 'string' && name.toLowerCase() === CONTENT_LENGTH) continue;
-    kept.push(name, headers[index + 1]);
+    if (isLength(headers[index])) continue;
+    kept.push(headers[index], headers[index + 1]);
   }
   return kept;
 }
