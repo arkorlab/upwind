@@ -330,14 +330,14 @@ describe("workerd's require, under the Function's compatibility date and flags",
     await removeRoots();
   });
 
-  it('loads the module once node:module is stubbed, which it cannot as it stands', async () => {
+  it('preserves the process global through native and stubbed require', async () => {
     const plain = await bundledCjs(LOADING_ENTRY, []);
     const stubbed = await bundledCjs(LOADING_ENTRY, [stubPlugin()]);
 
     await expect(
       loadedInWorkerd({ 'plain.cjs': plain, 'stubbed.cjs': stubbed }),
     ).resolves.toStrictEqual({
-      'plain.cjs': { error: 'No such module "node:process".' },
+      'plain.cjs': { isGlobal: true },
       'stubbed.cjs': { isGlobal: true },
     });
   }, 20_000);

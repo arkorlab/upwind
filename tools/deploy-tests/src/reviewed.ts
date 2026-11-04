@@ -8,6 +8,7 @@
  * rather than taken for the same thing.
  */
 
+import { IMAGE_CDN_16_4_5 } from './reviewed-images.ts';
 import {
   anyOf,
   headerMissing,
@@ -546,8 +547,9 @@ const AT_16_4_4: readonly Group[] = AT_16_4_3.filter(({ record }) => record !== 
 /**
  * The readings of 16.4.4, read again at 16.4.5 (`REVIEWED.md`): of their suites, 16.4.5 changes only
  * partial-fallback-shell-upgrade's, by a case added after the lines its reading records.
+ * The image CDN readings are new to 16.4.5 and hold only on the observed Node.js 24 lane.
  */
-const AT_16_4_5: readonly Group[] = AT_16_4_4;
+const AT_16_4_5: readonly Group[] = [...AT_16_4_4, ...IMAGE_CDN_16_4_5];
 
 export const REVIEWED: readonly ReviewedCase[] = [
   ...entriesOf(
