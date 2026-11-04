@@ -11,8 +11,14 @@ vi.mock(import('rolldown/parseAst'), async (importOriginal) => {
 });
 vi.mock(import('oxc-parser'), async (importOriginal) => {
   const original = await importOriginal();
-  return { ...original, parseSync: vi.fn(original.parseSync) };
+  return {
+    ...original,
+    parseSync: vi.fn(original.parseSync),
+    rawTransferSupported: vi.fn(original.rawTransferSupported),
+  };
 });
+
+const RAW_TRANSFER_SUPPORTED = rawTransferSupported();
 
 /**
  * A tree as text, its literal values included: `parseAst` answers a BigInt or a RegExp as the value
@@ -52,10 +58,21 @@ describe('a whole chunk’s syntax tree', () => {
   beforeEach(() => {
     vi.mocked(parseAst).mockClear();
     vi.mocked(parseSync).mockClear();
+    vi.mocked(rawTransferSupported).mockClear();
   });
 
-  it('can be read with raw transfer here, which hands the tree over in a buffer', () => {
-    expect(rawTransferSupported()).toBe(true);
+  it('preserves parseAst’s error where raw transfer is unsupported', () => {
+    const code = CHUNKS.parenthesized;
+    const error = pastTheLongestString();
+    vi.mocked(rawTransferSupported).mockReturnValueOnce(false);
+    vi.mocked(parseAst).mockImplementationOnce(() => {
+      throw error;
+    });
+
+    expect(() => parseChunk(code)).toThrow(error);
+    expect(parseAst).toHaveBeenCalledExactlyOnceWith(code);
+    expect(rawTransferSupported).toHaveBeenCalledOnce();
+    expect(parseSync).not.toHaveBeenCalled();
   });
 
   it('is parseAst’s, with no raw transfer, for a chunk parseAst reads', () => {
@@ -68,7 +85,7 @@ describe('a whole chunk’s syntax tree', () => {
     expect(textOf(tree)).toBe(textOf(parseAst(code)));
   });
 
-  it.each(Object.entries(CHUNKS))(
+  it.skipIf(!RAW_TRANSFER_SUPPORTED).each(Object.entries(CHUNKS))(
     'is the tree parseAst answers, through raw transfer where parseAst throws, for %s',
     (_form, code) => {
       vi.mocked(parseAst).mockImplementationOnce(() => {
@@ -82,16 +99,19 @@ describe('a whole chunk’s syntax tree', () => {
     },
   );
 
-  it('refuses with parseAst’s error a chunk raw transfer cannot read either', () => {
-    // Raw transfer spreads a body's statements into one call, which 200,000 are past.
-    const code = `function f() {\n${'a;\n'.repeat(STATEMENTS_PAST_RAW_TRANSFER)}}`;
-    vi.mocked(parseAst).mockImplementationOnce(() => {
-      throw pastTheLongestString();
-    });
+  it.skipIf(!RAW_TRANSFER_SUPPORTED)(
+    'refuses with parseAst’s error a chunk raw transfer cannot read either',
+    () => {
+      // Raw transfer spreads a body's statements into one call, which 200,000 are past.
+      const code = `function f() {\n${'a;\n'.repeat(STATEMENTS_PAST_RAW_TRANSFER)}}`;
+      vi.mocked(parseAst).mockImplementationOnce(() => {
+        throw pastTheLongestString();
+      });
 
-    expect(() => parseChunk(code)).toThrow(/napi/u);
-    expect(parseSync).toHaveBeenCalledExactlyOnceWith('file.js', code, RAW_TRANSFER);
-  });
+      expect(() => parseChunk(code)).toThrow(/napi/u);
+      expect(parseSync).toHaveBeenCalledExactlyOnceWith('file.js', code, RAW_TRANSFER);
+    },
+  );
 
   it('refuses a chunk that does not parse as parseAst does', () => {
     const code = 'const a = ;';
