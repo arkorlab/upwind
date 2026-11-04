@@ -394,15 +394,17 @@ describe('native Node bridge', () => {
         res.end(smuggled);
       }),
     );
-    const second = bridge.invokeNodeHandler(
+    // Read to its end before the next request, so that request is sent over the connection it freed.
+    const firstBody = await first.text();
+    const second = await bridge.invokeNodeHandler(
       input(async (_req, res) => {
         await delay(300);
         res.end('second');
       }),
     );
 
-    assert.equal(await first.text(), `abc${smuggled}`);
-    assert.equal(await (await second).text(), 'second');
+    assert.equal(await second.text(), 'second');
+    assert.equal(firstBody, `abc${smuggled}`);
   });
 
   it('keeps the length Node counts for a body given whole, and frames a named one itself', async () => {
