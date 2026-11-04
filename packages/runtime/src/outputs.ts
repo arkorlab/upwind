@@ -8,12 +8,14 @@ import {
 import { isWebSocketUpgrade, MIDDLEWARE_PREFETCH_HEADER } from '@stayingupwind/core/request';
 
 import { notFound, rscFromBuild } from './documents.ts';
-import { deferredEntryFor, entryFor } from './entries.ts';
+import { deferredEntryFor, type Entry, entryFor } from './entries.ts';
+import { servedOrOtherwise } from './generation-fallback.ts';
 import { type GenerationSource, serveFromGeneration, speculative } from './generations.ts';
 import { isMetadataOnlyRscRequest } from './incoming.ts';
 import { notFoundData } from './pages-not-found.ts';
 import { rscRepresentation } from './representations.ts';
 import {
+  answeredAtMiss,
   bypassesPrerender,
   HTTP_OK,
   invokeEntry,
@@ -173,29 +175,24 @@ export async function servePagesData(
     return invokeEntry(input, entry, target.url);
   }
   const built = store.prerendersByPathname.get(target.data);
-  const current = await serveFromGeneration(
-    input,
-    store,
-    {
-      route: template.route,
-      pathname: target.page,
-      url: target.url,
-      representation: 'pages-data',
-      dataPathname: target.data,
-      onMiss: built?.body === undefined ? 'render' : 'build',
-    },
-    entry.handler,
-  );
-  if (current !== undefined) {
-    return current;
-  }
-  if (built?.body !== undefined) {
-    return withCacheState(
-      staticResponse(store, built, JSON_UTF8_TYPE, built.initialStatus ?? HTTP_OK),
-      'HIT',
-    );
-  }
-  return invokeEntry(input, entry, target.url);
+  const source: GenerationSource = {
+    route: template.route,
+    pathname: target.page,
+    url: target.url,
+    representation: 'pages-data',
+    dataPathname: target.data,
+    onMiss: built?.body === undefined ? 'render' : 'build',
+  };
+  return servedOrOtherwise(input, store, { source, handler: entry.handler }, async (renderLeft) => {
+    if (built?.body !== undefined) {
+      return withCacheState(
+        staticResponse(store, built, JSON_UTF8_TYPE, built.initialStatus ?? HTTP_OK),
+        'HIT',
+      );
+    }
+    const answer = await invokeEntry(input, entry, target.url);
+    return renderLeft ? answeredAtMiss(answer) : answer;
+  });
 }
 
 /**
@@ -334,33 +331,51 @@ export async function serveRsc(
       return resume({ input, handler: entry.handler, postponed: '', url: resolved.url });
     }
     const source = rscSource(input, store, shell, resolved);
-    const current = await serveFromGeneration(input, store, source, entry.handler);
-    if (current !== undefined) {
-      return current;
-    }
-    // A newly completed class falls back to its original RSC resume state if no captured answer
-    // is available. Blocking members still need the live entry: their class's state answers none
-    // of the member's Flight. Keep that existing fallback, including literal placeholder URLs.
-    const completedClass =
-      shell !== undefined &&
-      shell.body === undefined &&
-      shell.ensureStatic !== 'navigation' &&
-      source.pathname !== shell.pathname &&
-      isClassShell(source.pathname, shell.route);
-    if (!completedClass && source.onMiss === 'render') {
-      // A cold member can reject its static render (for example, synchronous time after a
-      // parameter resolves). Minimal mode otherwise tries that static render again. An empty
-      // postponed state asks Next.js for the live Flight response without claiming a shell to
-      // resume; it must not turn a static prefetch or ensureStatic navigation dynamic.
-      if (
-        store.manifest.config.cacheComponents === true &&
-        shell?.ensureStatic !== 'navigation' &&
-        !speculative(source)
-      ) {
-        return resume({ input, handler: entry.handler, postponed: '', url: resolved.url });
-      }
-      return invokeEntry(input, entry, resolved.url);
-    }
+    return servedOrOtherwise(input, store, { source, handler: entry.handler }, (renderLeft) =>
+      rscWithoutGeneration(input, store, { entry, resolved, shell, source }, renderLeft),
+    );
   }
-  return rscFromBuild(input, store, entry, resolved);
+  return rscFromBuild(input, store, { entry, resolved });
+}
+
+/**
+ * A navigation's payload where the entry's generation answered nothing: rendered live for a member
+ * the build left to its first request, and otherwise from the build's state. Where its record did
+ * not come in time (`renderLeft`), what either renders is a render at a miss, and says so.
+ */
+async function rscWithoutGeneration(
+  input: RoutedInput,
+  store: Store,
+  asked: {
+    readonly entry: Extract<Entry, { readonly kind: 'node' }>;
+    readonly resolved: Resolved;
+    readonly shell: Prerender | undefined;
+    readonly source: GenerationSource;
+  },
+  renderLeft: boolean,
+): Promise<Response> {
+  const { entry, resolved, shell, source } = asked;
+  // A newly completed class falls back to its original RSC resume state if no captured answer
+  // is available. Blocking members still need the live entry: their class's state answers none
+  // of the member's Flight. Keep that existing fallback, including literal placeholder URLs.
+  const completedClass =
+    shell !== undefined &&
+    shell.body === undefined &&
+    shell.ensureStatic !== 'navigation' &&
+    source.pathname !== shell.pathname &&
+    isClassShell(source.pathname, shell.route);
+  if (completedClass || source.onMiss !== 'render') {
+    return rscFromBuild(input, store, { entry, resolved }, renderLeft);
+  }
+  // A cold member can reject its static render (for example, synchronous time after a
+  // parameter resolves). Minimal mode otherwise tries that static render again. An empty
+  // postponed state asks Next.js for the live Flight response without claiming a shell to
+  // resume; it must not turn a static prefetch or ensureStatic navigation dynamic.
+  const answer =
+    store.manifest.config.cacheComponents === true &&
+    shell?.ensureStatic !== 'navigation' &&
+    !speculative(source)
+      ? await resume({ input, handler: entry.handler, postponed: '', url: resolved.url })
+      : await invokeEntry(input, entry, resolved.url);
+  return renderLeft ? answeredAtMiss(answer) : answer;
 }

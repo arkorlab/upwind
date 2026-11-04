@@ -27,12 +27,12 @@ import {
 } from './documents.ts';
 import { deferredEntryFor, entryFor, hasEntry } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
+import { servedOrOtherwise } from './generation-fallback.ts';
 import {
   handleDetached,
   handleForeground,
   outcomeOn,
   regenerateMode,
-  serveFromGeneration,
   withBackgroundRegeneration,
 } from './generations.ts';
 import {
@@ -90,6 +90,7 @@ import {
 } from './routing.ts';
 import { carriesResumeState, handleRuntimeResume } from './runtime-resume.ts';
 import {
+  answeredAtMiss,
   externalRewrite,
   type HandleInput,
   HTTP_NOT_FOUND,
@@ -188,21 +189,18 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
       onFailure: failureAnswer(store, entry, resolved.route),
     });
   }
-  const crawled =
-    shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request);
-  if (shell !== undefined && entry.kind === 'node') {
-    const current = await serveFromGeneration(
-      input,
-      store,
-      documentGenerationSource(store, shell, resolved, crawled),
-      entry.handler,
-    );
-    if (current !== undefined) {
-      return current;
-    }
-  }
   // Nothing kept the render; `documentFromBuild` answers a crawler with one all the same.
-  return documentFromBuild(input, store, resolved, { entry, status: HTTP_OK });
+  const fromBuild = (): Promise<Response> =>
+    documentFromBuild(input, store, resolved, { entry, status: HTTP_OK });
+  if (shell === undefined || entry.kind !== 'node') {
+    return fromBuild();
+  }
+  const crawled = crawlerWantsWholePage(store, shell, resolved, input.request);
+  const source = documentGenerationSource(store, shell, resolved, crawled);
+  return servedOrOtherwise(input, store, { source, handler: entry.handler }, async (renderLeft) => {
+    const built = await fromBuild();
+    return renderLeft ? answeredAtMiss(built) : built;
+  });
 }
 
 /**
