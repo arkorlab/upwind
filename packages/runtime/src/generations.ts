@@ -444,7 +444,7 @@ async function answerMiss(
   if (once && partialUpgrade(job)) {
     return answerPartialMiss(job, source, want, (reason, base) => scheduleJob(job, reason, base));
   }
-  const onMiss = foundDynamic(job.runtime, job.target.descriptor) ? 'build' : source.onMiss;
+  const onMiss = missedBy(job, source);
   if (once && onMiss === 'behind' && source.pagesFallback === true) {
     return loadingFallbackResponse(job, source, () => {
       scheduleJob(job, 'miss', null);
@@ -541,6 +541,11 @@ interface Asked {
   readonly once: boolean;
 }
 
+/** What a miss of the entry comes to: `source.onMiss`, but the build's for an entry found dynamic. */
+function missedBy(job: Job, source: GenerationSource): GenerationSource['onMiss'] {
+  return foundDynamic(job.runtime, job.target.descriptor) ? 'build' : source.onMiss;
+}
+
 /**
  * A visitor whose record did not come in time: a partial fallback's member, as one whose entry has
  * no record is (`answerMiss`); otherwise from the render this isolate is publishing of the entry,
@@ -549,7 +554,8 @@ interface Asked {
  * for an RSC navigation (`renderCompletedRscForVisitor`). A regeneration lets go of the record it
  * replaces as its render is made, and the isolate's next request reads the host for it: answered
  * with the build's page where that read was late, a visitor was sent a page older than the one the
- * request before them was.
+ * request before them was. An entry rendered at a miss is left to the caller's render as it was,
+ * and the caller is told (`onRenderLeft`): that render is the request's own, as at a miss.
  */
 async function answerUnavailable(
   job: Job,
@@ -561,10 +567,14 @@ async function answerUnavailable(
   }
   // Asked as a request that found no record would ask: none came in time.
   const publishing = answeringAtOnce(job.runtime, 'miss', lookup.entryId)?.render;
-  return (
+  const answered =
     (await answerFromPublishing(job.input, job.target.handler, publishing, want)) ??
-    renderCompletedRscForVisitor(job, source, once)
-  );
+    (await renderCompletedRscForVisitor(job, source, once));
+  // Where the entry is rendered at a miss, the caller's answer is that render, for this request.
+  if (answered === undefined && once && missedBy(job, source) === 'render') {
+    source.onRenderLeft?.();
+  }
+  return answered;
 }
 
 /**

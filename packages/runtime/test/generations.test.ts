@@ -11,6 +11,7 @@ import { seedRouteFor } from '../../host/src/bundle/index.ts';
 import type { NodeHandler } from '../src/app-module.ts';
 import { MAX_CAPTURED_BYTES } from '../src/cache/capture.ts';
 import { nowMs, withClock } from '../src/cache/clock.ts';
+import type { FetchLike } from '../src/cache/host.ts';
 import { regenerate } from '../src/cache/regenerate.ts';
 import { type CacheRuntime, createCacheRuntime } from '../src/cache/runtime.ts';
 import { type GenerationSource, serveFromGeneration } from '../src/generations.ts';
@@ -711,4 +712,83 @@ describe('a generation invalidated again', () => {
 
     expect(authority.commits).toHaveLength(2);
   });
+});
+
+/**
+ * Reads of a record held until released, as a host that does not answer in time holds them: past
+ * the 200 ms a document waits for its record (`RECORD_DEADLINE_MS`).
+ */
+function heldRecords(inner: FetchLike): { fetchImpl: FetchLike; release: () => void } {
+  const gate = Promise.withResolvers<true>();
+  return {
+    fetchImpl: async (request) => {
+      const answer = await inner(request);
+      if (new URL(request.url).pathname.endsWith('/record')) {
+        await gate.promise;
+      }
+      return answer;
+    },
+    release: () => {
+      gate.resolve(true);
+    },
+  };
+}
+
+describe('an entry whose record does not come in time', () => {
+  const PAGE = '/posts/[slug]';
+  const MEMBER = '/posts/late';
+  const store = storeOf([{ pathname: PAGE, kind: 'app-page' }]);
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(invokeNodeHandler).mockReset();
+  });
+
+  /** What the Function answers itself, its record held past the deadline, then let go. */
+  async function serveLate(source: GenerationSource): Promise<Response | undefined> {
+    const held = heldRecords(fakeAuthority(SCOPE).fetchImpl);
+    const runtime = createCacheRuntime({ env: ENV, now: nowMs, fetchImpl: held.fetchImpl });
+    if (runtime === undefined) {
+      throw new Error('the runtime was not configured');
+    }
+    vi.spyOn(runtime, 'log').mockImplementation(() => {
+      /* The read the deadline gives up on is expected here. */
+    });
+    const pending: Promise<unknown>[] = [];
+    const answer = await withClock(T0, () =>
+      serveFromGeneration(routed(runtime, source.url, pending), store, source, handler),
+    );
+    held.release();
+    await settle(pending);
+    return answer;
+  }
+
+  function asked(onMiss: GenerationSource['onMiss'], onRenderLeft: () => void): GenerationSource {
+    return {
+      route: PAGE,
+      pathname: MEMBER,
+      url: MEMBER,
+      representation: 'html',
+      onMiss,
+      onRenderLeft,
+    };
+  }
+
+  it('leaves a member rendered at a miss to the caller, and tells it so', async () => {
+    const told = vi.fn();
+
+    await expect(serveLate(asked('render', told))).resolves.toBeUndefined();
+    expect(told).toHaveBeenCalledExactlyOnceWith();
+    expect(vi.mocked(invokeNodeHandler)).not.toHaveBeenCalled();
+  });
+
+  it.each(['build', 'behind'] as const)(
+    'tells nothing where a miss is answered by the build (%s)',
+    async (onMiss) => {
+      const told = vi.fn();
+
+      await expect(serveLate(asked(onMiss, told))).resolves.toBeUndefined();
+      expect(told).not.toHaveBeenCalled();
+    },
+  );
 });
