@@ -335,13 +335,13 @@ export async function serveRsc(
       rscWithoutGeneration(input, store, { entry, resolved, shell, source }, renderLeft),
     );
   }
-  return rscFromBuild(input, store, entry, resolved);
+  return rscFromBuild(input, store, { entry, resolved });
 }
 
 /**
  * A navigation's payload where the entry's generation answered nothing: rendered live for a member
- * the build left to its first request — a render at a miss where its record did not come in time
- * (`renderLeft`) — and otherwise from the build's state.
+ * the build left to its first request, and otherwise from the build's state. Where its record did
+ * not come in time (`renderLeft`), what either renders is a render at a miss, and says so.
  */
 async function rscWithoutGeneration(
   input: RoutedInput,
@@ -365,7 +365,7 @@ async function rscWithoutGeneration(
     source.pathname !== shell.pathname &&
     isClassShell(source.pathname, shell.route);
   if (completedClass || source.onMiss !== 'render') {
-    return rscFromBuild(input, store, entry, resolved);
+    return rscFromBuild(input, store, { entry, resolved }, renderLeft);
   }
   // A cold member can reject its static render (for example, synchronous time after a
   // parameter resolves). Minimal mode otherwise tries that static render again. An empty

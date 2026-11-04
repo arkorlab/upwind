@@ -47,6 +47,7 @@ const ENV = {
 };
 const POSTS = '/posts/[slug]';
 const BUILT = '/posts/built';
+const SHELVES = '/shelves/[shelf]/[item]';
 const RSC = {
   header: 'rsc',
   varyHeader: 'rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch',
@@ -59,7 +60,9 @@ const encoder = new TextEncoder();
 const BUILT_PAGE = encoder.encode('<html><body>built</body></html>');
 const blobs = new Map([['built', BUILT_PAGE]]);
 const page: NodeHandler = () => Promise.resolve();
-const app: AppModule = { entries: { [POSTS]: () => ({ handler: page }) } };
+const app: AppModule = {
+  entries: { [POSTS]: () => ({ handler: page }), [SHELVES]: () => ({ handler: page }) },
+};
 
 function prerender(pathname: string, fields: Partial<Prerender> = {}): Prerender {
   return { id: pathname, pathname, route: POSTS, parentOutputId: POSTS, groupId: 1, ...fields };
@@ -135,11 +138,15 @@ function lateRecord(tell: boolean): void {
   });
 }
 
-async function ask(path: string, headers: Record<string, string> = {}): Promise<Response> {
+async function ask(
+  path: string,
+  headers: Record<string, string> = {},
+  method = 'GET',
+): Promise<Response> {
   return handleRequest({
     app,
     edge: { entries: {} },
-    request: new Request(`${HOST}${path}`, { headers }),
+    request: new Request(`${HOST}${path}`, { headers, method }),
     waitUntil: () => {
       /* Nothing here is left behind. */
     },
@@ -196,6 +203,94 @@ describe('a document whose record did not come in time', () => {
     await expect(response.text()).resolves.toBe('<html><body>built</body></html>');
     expect(response.headers.get('x-nextjs-cache')).toBe('HIT');
     expect(vi.mocked(invokeNodeHandler)).not.toHaveBeenCalled();
+  });
+});
+
+const SHELF_STATE = encoder.encode('opaque state of the shelf class');
+
+/**
+ * A route of Cache Components whose class shell the build wrote without a body, its entries keyed
+ * on the shelf alone: a member's navigation is resumed from the state of its shelf's class.
+ */
+function shelfDeployment(): Store {
+  const base = deployment();
+  const shell = prerender(SHELVES, {
+    route: SHELVES,
+    parentOutputId: SHELVES,
+    renderingMode: 'PARTIALLY_STATIC',
+    allowQuery: ['nxtPshelf'],
+  });
+  const state = prerender(`${SHELVES}.rsc`, {
+    route: SHELVES,
+    parentOutputId: SHELVES,
+    postponed: {
+      sha256: 'class-state',
+      byteLength: SHELF_STATE.byteLength,
+      contentType: 'application/json',
+    },
+  });
+  const route = {
+    sourceRegex: '^/shelves/(?<nxtPshelf>[^/]+?)/(?<nxtPitem>[^/]+?)(?:/)?$',
+    destination: `${SHELVES}?nxtPshelf=$nxtPshelf&nxtPitem=$nxtPitem`,
+  };
+  return {
+    ...base,
+    manifest: {
+      ...base.manifest,
+      config: { ...base.manifest.config, cacheComponents: true },
+      routing: { ...base.manifest.routing, dynamicRoutes: [route] },
+      entrypoints: [{ id: SHELVES, kind: 'app-page', pathname: SHELVES }],
+    },
+    pathnames: [SHELVES],
+    dynamicRoutes: [route],
+    shellsByRoute: new Map([
+      [
+        SHELVES,
+        {
+          pages: new Map(),
+          patterns: [{ pattern: /^\/shelves\/[^/]+\/[^/]+$/u, prerender: shell }],
+        },
+      ],
+    ]),
+    prerendersById: new Map([shell, state].map((each) => [each.id, each])),
+    prerendersByPathname: new Map([shell, state].map((each) => [each.pathname, each])),
+    readBlob: () => SHELF_STATE,
+  } as unknown as Store;
+}
+
+describe("a completed class's navigation whose record did not come in time", () => {
+  beforeEach(() => {
+    vi.stubGlobal('__ARKOR_FUNCTION_KIND__', 'app');
+    vi.mocked(getStore).mockReturnValue(shelfDeployment());
+    vi.mocked(invokeNodeHandler).mockResolvedValue(new Response('resumed for the request'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(serveFromGeneration).mockReset();
+    vi.mocked(invokeNodeHandler).mockReset();
+  });
+
+  it("is a render at a miss where the class's state is resumed for the member", async () => {
+    lateRecord(true);
+
+    const response = await ask('/shelves/top/late', { rsc: '1' }, 'HEAD');
+
+    expect(response.headers.get('x-nextjs-cache')).toBe('MISS');
+    expect(
+      vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => call.requestMeta['postponed']),
+    ).toStrictEqual(['opaque state of the shelf class']);
+  });
+
+  it('says nothing of a resume the cache was not asked about in time for', async () => {
+    lateRecord(false);
+
+    const response = await ask('/shelves/top/late', { rsc: '1' }, 'HEAD');
+
+    expect(response.headers.get('x-nextjs-cache')).toBeNull();
+    expect(
+      vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => call.requestMeta['postponed']),
+    ).toStrictEqual(['opaque state of the shelf class']);
   });
 });
 
