@@ -1,6 +1,6 @@
 import { type MiddlewareResult, responseToMiddlewareResult } from '@next/routing';
 import { headerRulesFor } from '@stayingupwind/core/manifest';
-import { onLoopbackOrigin } from '@stayingupwind/core/paas';
+import { MIDDLEWARE_SET_COOKIE_HEADER, onLoopbackOrigin } from '@stayingupwind/core/paas';
 import { REDIRECT_STATUSES, redirectAnswer } from '@stayingupwind/core/request';
 
 import { dataPagePathOf } from './data-locale.ts';
@@ -76,6 +76,19 @@ function terminalLocationResponse(
     }
     const transport = [...headers.keys()].filter((name) => name.startsWith('x-middleware-'));
     for (const name of transport) headers.delete(name);
+  });
+}
+
+/**
+ * A middleware's own answer without the copy of its cookies Next.js's router reads
+ * (`x-middleware-set-cookie`), which a page's script could read where `Set-Cookie` hides an
+ * `HttpOnly` one: `next start` takes it off every answer it sends (`sendResponse`). Copied only where
+ * it is there.
+ */
+function withoutCookieCopy(response: Response): Response {
+  if (!response.headers.has(MIDDLEWARE_SET_COOKIE_HEADER)) return response;
+  return withHeadersChanged(response, (headers) => {
+    headers.delete(MIDDLEWARE_SET_COOKIE_HEADER);
   });
 }
 
@@ -235,7 +248,7 @@ export function middlewareInvoker(
       trace.response = terminalLocationResponse(input, store, response, beforeOverride);
     }
     if (result.bodySent === true && trace.response === undefined) {
-      trace.response = response;
+      trace.response = withoutCookieCopy(response);
     }
     trace.requestHeaders = result.requestHeaders;
     trace.responseHeaders = result.responseHeaders;

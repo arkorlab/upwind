@@ -279,12 +279,18 @@ export const SHARED_CACHE_CONTROL_HEADERS: readonly string[] = [
  * tells the platform a response was rendered with, which a stored response never keeps either
  * (`STORED_RESPONSE_HEADER_DENYLIST`) and `next start` never sends — a visitor of a Function's own
  * answer was handed the page's tags.
+ *
+ * And `x-middleware-set-cookie`: a copy of every cookie a `NextResponse` set, `HttpOnly` ones too,
+ * for the router to hand the render. On a client it is readable by the page's script. Next.js takes
+ * it off before an answer leaves its own server, and from 16.4.5 off an Edge route's
+ * (GHSA-f3mh-rxg3-f5g2); an earlier Edge route, and a middleware's own answer, still carry it here.
  */
 export const PASSTHROUGH_RESPONSE_HEADER_DENYLIST: readonly string[] = [
   ...HOP_BY_HOP_HEADERS,
   'content-length',
   ...SHARED_CACHE_CONTROL_HEADERS,
   'x-next-cache-tags',
+  'x-middleware-set-cookie',
 ];
 
 /** Header value the edge sends for documents and everything that must not be cached. */
