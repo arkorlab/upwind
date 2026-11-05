@@ -26,12 +26,14 @@ separately require all original dependency grants. A response-specific proof for
 shipped bytes retains that representation's existing cache policy.
 
 The edge keeps its optimizer fast path for actual shipped image files whose source routing has
-no middleware or rewrite gate. A native image cache does not retain an independent build response's
-proof, so publication-enabled local sources are read before deriving their images. Publication-enabled
-hosts accept remote image cache entries only from writers that enforced publication tags; older
-records become misses for those hosts. Ordinary hosts retain their legacy cache hits, and current
-tag-free external images remain cacheable. Sources carrying grants are never kept as unbounded
-image derivatives.
+no middleware or rewrite gate. On publication-enabled hosts it delegates other sources, including
+remote URLs, to the native optimizer before consulting the edge image cache. That cache cannot
+attest a remote source's publication proof. A native image cache does not retain an independent
+build response's proof, so publication-enabled local sources are read before deriving their images.
+The native optimizer accepts remote cache entries only from writers that enforced publication tags;
+older records become misses for those hosts. Ordinary hosts retain their existing edge optimization
+and legacy cache hits, and current tag-free external images remain cacheable. Sources carrying
+grants are never kept as unbounded image derivatives.
 
 `beginPublicationRead()` is a trusted, synchronous producer hint for a live read, not a cache proof.
 `observePublicationGrant()` records a public result in the current request and actual Next cache

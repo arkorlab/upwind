@@ -30,7 +30,13 @@ const CONFIG: ImagesConfig = {
   contentDispositionType: 'attachment',
 };
 
-function fixture(options: { href?: string; shipped?: boolean; gate?: 'middleware' | 'rewrite' }) {
+function fixture(options: {
+  href?: string;
+  shipped?: boolean;
+  shippedPathname?: string;
+  gate?: 'middleware' | 'rewrite';
+  protected?: boolean;
+}) {
   const href = options.href ?? SOURCE;
   const manifest = buildProjectManifest({
     projectId: 'site',
@@ -40,10 +46,12 @@ function fixture(options: { href?: string; shipped?: boolean; gate?: 'middleware
     deployment: { assetSetHash: 'a'.repeat(64), observedAt: '2026-11-05T00:00:00Z' },
     app: { deploymentId: 'deployment', scriptName: 'application' },
     routes: [],
-    publication: { version: 1, identities: ['a'.repeat(64)], routes: ['/items'] },
+    ...(options.protected !== false && {
+      publication: { version: 1, identities: ['a'.repeat(64)], routes: ['/items'] },
+    }),
     ...(options.shipped === true && {
       staticFiles: {
-        [href]: {
+        [options.shippedPathname ?? href]: {
           sha256: 'b'.repeat(64),
           byteLength: 8,
           contentType: 'image/png',
@@ -75,7 +83,7 @@ function fixture(options: { href?: string; shipped?: boolean; gate?: 'middleware
         url: new URL(request.url),
         edge,
         manifest,
-        config: CONFIG,
+        config: { ...CONFIG, domains: ['images.test'] },
         passthrough,
       });
     },
@@ -87,7 +95,12 @@ describe('protected image source selection at the edge', () => {
 
   it.each([
     { name: 'missing build file', shipped: false },
-    { name: 'prefix lookalike', href: '/_next/static/media-private/avatar.png' },
+    {
+      name: 'prefix lookalike',
+      href: '/_next/static/media-private/avatar.png',
+      shipped: true,
+      shippedPathname: SOURCE,
+    },
     { name: 'source middleware', shipped: true, gate: 'middleware' as const },
     { name: 'source rewrite', shipped: true, gate: 'rewrite' as const },
   ])('delegates $name before using the optimizer cache', async (options) => {
@@ -106,6 +119,26 @@ describe('protected image source selection at the edge', () => {
     const response = await test.render();
 
     await expect(response.text()).resolves.toBe('optimized file');
+    expect(handleImage).toHaveBeenCalledTimes(1);
+
+    const selected = vi.mocked(handleImage).mock.calls[0]![0];
+
+    expect(selected.source).toMatchObject({ kind: 'blob', href: SOURCE, gate: 'none' });
+    expect(test.passthrough).not.toHaveBeenCalled();
+  });
+
+  it('delegates protected remote sources before the edge optimizer can reuse an unaware cache', async () => {
+    const test = fixture({ href: 'https://images.test/avatar.png' });
+
+    await expect((await test.render()).text()).resolves.toBe('current admitted source');
+    expect(test.passthrough).toHaveBeenCalledTimes(1);
+    expect(handleImage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the edge optimizer available for ordinary remote images', async () => {
+    const test = fixture({ href: 'https://images.test/avatar.png', protected: false });
+
+    await expect((await test.render()).text()).resolves.toBe('optimized file');
     expect(handleImage).toHaveBeenCalledTimes(1);
     expect(test.passthrough).not.toHaveBeenCalled();
   });

@@ -18,7 +18,12 @@ import {
 } from './hosted-gate.ts';
 import { serveHostedFile } from './hosted-static-file.ts';
 import { imagePatternRequests } from './image-pattern-requests.ts';
-import { gatedSourceRefusal, isContentAddressed, resolveImageSource } from './image-source.ts';
+import {
+  gatedSourceRefusal,
+  type ImageSource,
+  isContentAddressed,
+  resolveImageSource,
+} from './image-source.ts';
 import { handleImage, type ImageAnswerInput, refuseImage } from './image.ts';
 import {
   headerRulesAsRouted,
@@ -162,8 +167,9 @@ function optimized(
   if (gated !== undefined) {
     return Promise.resolve(refuseImage(answer, gated, 'image-source-gated'));
   }
-  if (manifest.publication !== undefined && !parsed.params.isAbsolute) {
-    const source = resolveImageSource(answer.edge, manifest, parsed.params, dpl);
+  let source: ImageSource | undefined;
+  if (manifest.publication !== undefined) {
+    source = resolveImageSource(answer.edge, manifest, parsed.params, dpl);
     if (
       !isContentAddressed(source) ||
       publicationForBuild(
@@ -178,6 +184,7 @@ function optimized(
     manifest,
     params: parsed.params,
     dpl,
+    source,
   });
 }
 
