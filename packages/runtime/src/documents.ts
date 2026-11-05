@@ -18,6 +18,7 @@ import {
   buildPublicationExpired,
   requirePublication,
 } from './publication.ts';
+import { observeResumePublication } from './resume-publication.ts';
 import {
   answeredAtMiss,
   bypassesPrerender,
@@ -337,6 +338,10 @@ export async function rscFromBuild(
       : store.prerendersByPathname.get(`${rscBase(shell.pathname)}${RSC_SUFFIX}`);
   const source = twin?.postponed === undefined ? shell : twin;
   if (source?.postponed !== undefined && entry.kind === 'node') {
+    if (buildPublicationExpired(input, source, source.route))
+      return atMiss(await invokeEntry(input, entry, resolved.url));
+    // Saved values keep the selected source's bounds before the suffix can reuse them.
+    observeResumePublication(input, source.route, source.initialHeaders);
     return atMiss(
       await resume({
         input,
