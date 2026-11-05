@@ -86,7 +86,7 @@ function scenario(
               {
                 ...twin,
                 segmentPath: part,
-                body: { sha256: 'segment', byteLength: 5 },
+                body: { sha256: 'segment', byteLength: 5, contentType: 'text/x-component' },
                 initialHeaders: { 'x-next-cache-tags': tags },
               },
             ] as const;
