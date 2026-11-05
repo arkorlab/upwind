@@ -18,8 +18,13 @@ const ID = 'a'.repeat(64);
 const WITNESS = `upwind:resource-snapshot:v1:${ID}:4`;
 const grant = (expires: number) => `upwind:publication:v1:${ID}:${String(expires)}`;
 
-function scenario(source: 'shell' | 'twin', expires = NOW + 1000, movingClock = false) {
-  const tags = [grant(expires), 'resource:items', WITNESS];
+function scenario(
+  source: 'shell' | 'twin',
+  expires = NOW + 1000,
+  movingClock = false,
+  additional: readonly string[] = [],
+) {
+  const tags = [grant(expires), 'resource:items', WITNESS, ...additional];
   const shell: Prerender = {
     id: 'items',
     route: ROUTE,
@@ -95,6 +100,26 @@ function scenario(source: 'shell' | 'twin', expires = NOW + 1000, movingClock = 
 }
 
 describe('publication of saved build state on ordinary RSC navigation', () => {
+  it('keeps valid local proof larger than the transport header limit', async () => {
+    const additional = Array.from(
+      { length: 100 },
+      (_, index) => `resource:${String(index)}:${'x'.repeat(100)}`,
+    );
+    const test = scenario('twin', NOW + 1000, false, additional);
+    vi.mocked(invokeNodeHandler).mockImplementationOnce(() => {
+      expect(test.context.publication).toContain(test.tags[0]);
+      expect(test.context.resourceTags).toContain(additional.at(-1));
+      expect(test.context.resourceTags).toContain(WITNESS);
+
+      return Promise.resolve(new Response('saved values from a large local tag set'));
+    });
+
+    const response = await test.render();
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe('saved values from a large local tag set');
+  });
+
   it.each(['shell', 'twin'] as const)(
     'observes the selected %s grant and resource witness before a resume reads saved values',
     async (source) => {

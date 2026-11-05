@@ -1,10 +1,6 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
 import { parseCacheTagsHeader } from '@stayingupwind/core/cache';
-import {
-  parseResumePublicationHeader,
-  PUBLICATION_RESUME_HEADER,
-  resumePublicationHeader,
-} from '@stayingupwind/core/paas';
+import { parseResumePublicationHeader, PUBLICATION_RESUME_HEADER } from '@stayingupwind/core/paas';
 
 import { nowMs } from './cache/clock.ts';
 import { observeFreshPublication } from './cache/publication.ts';
@@ -32,6 +28,5 @@ export function observeResumePublication(
     input.request.headers.get(PUBLICATION_RESUME_HEADER),
   );
   const built = buildTags(headers);
-  const encoded = resumePublicationHeader(built);
-  observeFreshPublication([...selected, ...parseResumePublicationHeader(encoded ?? null)], nowMs());
+  observeFreshPublication([...selected, ...built], nowMs());
 }
