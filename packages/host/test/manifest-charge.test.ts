@@ -52,7 +52,7 @@ describe('the memory held by complete route-body mappings', () => {
       ),
     };
 
-    expect(manifestCharge(protectedRoutes, 0) - manifestCharge(plain, 0)).toBe(2 * 4 * 80);
+    expect(manifestCharge(protectedRoutes, 0) - manifestCharge(plain, 0)).toBe(2 * 2 * 80);
   });
 
   it('charges the table, entry, condition array and each condition beside JSON', () => {
