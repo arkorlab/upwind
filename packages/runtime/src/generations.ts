@@ -58,7 +58,7 @@ import {
   upgradePathname,
   withPartialFallbackUpgrade,
 } from './partial-fallback.ts';
-import { admitBuildPublication, requirePublication } from './publication.ts';
+import { admitBuildPublication, admitBuildSource, requirePublication } from './publication.ts';
 import { answerFromJob, holdFirstPublish, laterOf, publishOf } from './regeneration-answers.ts';
 import { SEGMENT_PREFIX } from './representations.ts';
 import { staticRenderParameters } from './route-parameters.ts';
@@ -667,9 +667,14 @@ async function answerFromGeneration(
   const response = offeredFromGeneration(input, current, source.representation, answer);
   const tags = pack.header.tags.map((tag) => tag.value);
   observeFreshPublication(tags, nowMs());
-  return pack.header.source === 'build'
-    ? admitBuildPublication(input, source.route, response, tags)
-    : response;
+  if (pack.header.source !== 'build') return response;
+  // A seeded shell's live suffix keeps request admission; only complete shipped responses carry
+  // an independent-build exemption. HEAD and bodyless answers never started that suffix.
+  const admit =
+    source.representation === 'html' && pack.postponed !== undefined && response.body !== null
+      ? admitBuildSource
+      : admitBuildPublication;
+  return admit(input, source.route, response, tags);
 }
 
 /**
