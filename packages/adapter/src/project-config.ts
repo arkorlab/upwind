@@ -212,8 +212,8 @@ const upwindConfigSchema = projectConfigSchema.extend({
  * `MAX_CRONS_PER_PROJECT` jobs and no path twice on one schedule, and that a budget is positive.
  *
  * It resolves only where this package resolves to its TypeScript sources, as in a workspace. The
- * published package ships its `dist` as JavaScript alone, with no declarations, so a project that
- * installed it from the registry cannot import the type until it ships some.
+ * published adapter entry has no declarations for this type. The generic `project-config`
+ * subpath declares its file reader API separately, without the adapter's configuration schema.
  */
 export type UpwindConfig = z.input<typeof upwindConfigSchema>;
 
@@ -293,16 +293,36 @@ async function importConfigModule(file: string, absolute: string): Promise<unkno
 }
 
 /** Where the platform's configuration for this build is, if the project wrote one. */
-async function findConfigFile(
+export async function findProjectConfigFile(
   projectDir: string,
-  names: readonly string[],
+  hostConfigFiles: readonly string[] = [],
 ): Promise<string | undefined> {
-  for (const name of names) {
+  for (const name of configFileOrder(hostConfigFiles)) {
     if (await exists(path.join(projectDir, name))) {
       return name;
     }
   }
   return undefined;
+}
+
+/** The selected file's unvalidated value, for tools that read additional project settings. */
+export interface ProjectConfigFile {
+  readonly file: string | undefined;
+  readonly value: unknown;
+}
+
+/** Read the same single file as the adapter, including Node-evaluated TypeScript exports. */
+export async function readProjectConfigFile(
+  projectDir: string,
+  hostConfigFiles: readonly string[] = [],
+): Promise<ProjectConfigFile> {
+  const file = await findProjectConfigFile(projectDir, hostConfigFiles);
+  if (file === undefined) return { file: undefined, value: {} };
+  const absolute = path.join(projectDir, file);
+  const value = file.endsWith('.ts')
+    ? await importConfigModule(file, absolute)
+    : parseJsonFile(file, await readFile(absolute, 'utf8'), file.endsWith('.jsonc'));
+  return { file, value };
 }
 
 /**
@@ -316,14 +336,10 @@ export async function readProjectConfig(
   projectDir: string,
   hostConfigFiles: readonly string[] = [],
 ): Promise<ProjectConfig> {
-  const file = await findConfigFile(projectDir, configFileOrder(hostConfigFiles));
+  const { file, value } = await readProjectConfigFile(projectDir, hostConfigFiles);
   if (file === undefined) {
     return EMPTY_PROJECT_CONFIG;
   }
-  const absolute = path.join(projectDir, file);
-  const value = file.endsWith('.ts')
-    ? await importConfigModule(file, absolute)
-    : parseJsonFile(file, await readFile(absolute, 'utf8'), file.endsWith('.jsonc'));
   if (file === VERCEL_CONFIG) {
     const parsed = projectConfigSchema.safeParse(value);
     if (!parsed.success) {
