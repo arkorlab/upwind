@@ -5,6 +5,7 @@ import {
   beginPublicationRead,
   observePublicationGrant,
   observePrivatePublication,
+  publicationPolicy,
   installNextCacheRegistry,
   type NextCacheStore,
   type NextStorage,
@@ -62,6 +63,31 @@ describe('publication observations during a streamed response', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  it.each(['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control'])(
+    'seals no-transform from %s before removing its shared-cache override',
+    async (header) => {
+      const test = await scenario();
+
+      test.response.headers.set('cache-control', 'public,max-age=3600');
+
+      test.response.headers.set(header, 'public,max-age=3600,no-transform');
+
+      await test.context.run(() => observePrivatePublication(grant));
+
+      const admitted = admitRequestPublication(test.response, test.context);
+
+      expect(admitted.headers.get('cache-control')).toBe('private, no-store, no-transform');
+      expect(admitted.headers.has(header)).toBe(false);
+      expect(publicationPolicy(admitted.headers)?.noTransform).toBe(true);
+
+      test.source().enqueue(bytes('private result'));
+
+      test.source().close();
+
+      await expect(admitted.text()).resolves.toBe('private result');
+    },
+  );
 
   it.each([204, 304])(
     'cannot extend a grant through a cacheable bodyless response (%s)',

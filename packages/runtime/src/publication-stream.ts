@@ -1,6 +1,5 @@
 import { admitPublication, type PublicationRequirement } from '@stayingupwind/core/cache';
-import { markPublicationPolicy } from '@stayingupwind/core/paas';
-import { cacheDirectives } from '@stayingupwind/core/request';
+import { enforcePublicationPolicy, markPublicationPolicy } from '@stayingupwind/core/paas';
 
 import { nowMs } from './cache/clock.ts';
 import type { RequestContext } from './cache/context.ts';
@@ -10,15 +9,7 @@ const UNAVAILABLE = 'Publication unavailable';
 
 function privateResponse(response: Response, body: ReadableStream<Uint8Array> | null): Response {
   const admitted = new Response(body, response);
-  for (const header of ['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control'])
-    admitted.headers.delete(header);
-  const previous = response.headers.get('cache-control') ?? '';
-  const transform = cacheDirectives(previous).some(
-    (directive) => directive.trim().toLowerCase() === 'no-transform',
-  )
-    ? ', no-transform'
-    : '';
-  admitted.headers.set('cache-control', `private, no-store${transform}`);
+  enforcePublicationPolicy(admitted.headers, { mode: 'no-store', noTransform: false });
   return markPublicationPolicy(admitted);
 }
 
