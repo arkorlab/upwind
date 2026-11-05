@@ -300,8 +300,7 @@ async function loadingPage(
     }),
     tags,
     now(),
-    required,
-    owner,
+    { required, clockOwner: owner },
   );
   if (response.status !== HTTP_OK) return response;
   startFirstMember(

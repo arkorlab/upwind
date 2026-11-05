@@ -389,7 +389,7 @@ export async function sourceResponse(input: SourceResponseInput): Promise<Respon
   const owner = imageClockOf(input);
   const now = publicationTimeFor(owner, nowMs());
   if (publicationExpired(publication, now))
-    return admitPublication(source, publication, now, undefined, owner);
+    return admitPublication(source, publication, now, { clockOwner: owner });
   const invalid = internal ? INTERNAL_INVALID : UPSTREAM_INVALID;
   if (!source.ok || source.body === null) {
     releaseStream(source.body, 'image source refused');
@@ -478,8 +478,7 @@ function answered(
       new Response(null, { status: HTTP_NOT_MODIFIED, headers }),
       publication,
       nowMs(),
-      undefined,
-      imageClockOf(input),
+      { clockOwner: imageClockOf(input) },
     );
   }
   headers.set('content-length', String(bytes.byteLength));
@@ -489,7 +488,6 @@ function answered(
     new Response(request.method === 'HEAD' ? null : body, { headers }),
     publication,
     nowMs(),
-    undefined,
-    imageClockOf(input),
+    { clockOwner: imageClockOf(input) },
   );
 }
