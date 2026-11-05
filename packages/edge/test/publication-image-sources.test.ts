@@ -127,12 +127,12 @@ describe('protected image source selection at the edge', () => {
     expect(test.passthrough).not.toHaveBeenCalled();
   });
 
-  it('delegates protected remote sources before the edge optimizer can reuse an unaware cache', async () => {
+  it('keeps protected remote sources on the proof-aware edge optimizer', async () => {
     const test = fixture({ href: 'https://images.test/avatar.png' });
 
-    await expect((await test.render()).text()).resolves.toBe('current admitted source');
-    expect(test.passthrough).toHaveBeenCalledTimes(1);
-    expect(handleImage).not.toHaveBeenCalled();
+    await expect((await test.render()).text()).resolves.toBe('optimized file');
+    expect(handleImage).toHaveBeenCalledTimes(1);
+    expect(test.passthrough).not.toHaveBeenCalled();
   });
 
   it('keeps the edge optimizer available for ordinary remote images', async () => {

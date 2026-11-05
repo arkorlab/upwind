@@ -19,7 +19,7 @@ import {
   ORIGINAL_URL_HEADER,
 } from '@stayingupwind/core/paas';
 import { REDIRECT_STATUSES, sanitizePassthroughHeaders } from '@stayingupwind/core/request';
-import { isDeadlineError, limitBody, releaseStream } from '@stayingupwind/core/util';
+import { isDeadlineError, releaseStream } from '@stayingupwind/core/util';
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { dnsSpelling, isUnderAnyDomain } from '@stayingupwind/host/domains';
 
@@ -28,6 +28,7 @@ import type { EdgeContext } from '../strategies/context.ts';
 import { headersAfterMiddleware } from './hosted-route.ts';
 import { withImagePatternRequests } from './image-pattern-requests.ts';
 import { sourceUnder } from './image-source-identity.ts';
+import { acceptedImageSource } from './image-source-response.ts';
 import { imageWithin, releaseLateSource } from './image-stream.ts';
 import { decideMiddleware, type MiddlewareContinued, middlewareMatches } from './middleware.ts';
 import { readStaticFileStream, type StoredStream } from './static-file.ts';
@@ -70,6 +71,7 @@ export interface SourceBody {
   readonly etag: string | null;
   /** Requests it took to get here: the middleware's run, a fetch, one per redirect followed. */
   readonly requests: number;
+  readonly publication?: readonly string[] | undefined;
 }
 
 /** A refusal, in the words and with the status Next.js's optimizer uses. */
@@ -230,31 +232,6 @@ export function sourceLimit(config: ImagesConfig): number {
   return sourceSizeLimit(config);
 }
 
-function accepted(
-  response: Response,
-  limit: number,
-  message: string,
-  requests: number,
-): SourceResult {
-  const declared = response.headers.get('content-length');
-  if (declared !== null && Number.parseInt(declared, 10) > limit) {
-    releaseStream(response.body, 'image source too large');
-    return refused(HTTP_PAYLOAD_TOO_LARGE, message, requests);
-  }
-  if (response.body === null) {
-    return refused(HTTP_BAD_REQUEST, message, requests);
-  }
-  return {
-    kind: 'ok',
-    source: {
-      body: limitBody(response.body as ReadableStream<Uint8Array>, limit),
-      cacheControl: response.headers.get('cache-control'),
-      etag: response.headers.get('etag'),
-      requests,
-    },
-  };
-}
-
 /**
  * The request the application sees for a source of its own: a bare GET at its own host, as
  * Next.js's optimizer makes one — at that host however the source spells its path. Resolved as a
@@ -388,7 +365,7 @@ async function fetchLocal(
     releaseStream(response.body, SOURCE_REFUSED);
     return refused(HTTP_BAD_REQUEST, INTERNAL_INVALID, requests);
   }
-  return accepted(response, sourceLimit(config), INTERNAL_INVALID, requests);
+  return acceptedImageSource(response, sourceLimit(config), INTERNAL_INVALID, requests);
 }
 
 /** A shipped file from storage; its size is known, so one past the limit is refused unread. */
@@ -531,7 +508,12 @@ async function fetchBlob(
         releaseStream(outcome.response.body, SOURCE_REFUSED);
         return refused(HTTP_BAD_REQUEST, INTERNAL_INVALID, dispatches);
       }
-      return accepted(outcome.response, sourceLimit(config), INTERNAL_INVALID, dispatches);
+      return acceptedImageSource(
+        outcome.response,
+        sourceLimit(config),
+        INTERNAL_INVALID,
+        dispatches,
+      );
     }
     case 'external-rewrite':
     case 'failed': {
@@ -641,7 +623,7 @@ async function fetchRemote(local: LocalContext, href: string): Promise<SourceRes
         releaseStream(hop.body, SOURCE_REFUSED);
         return refused(hop.status, UPSTREAM_INVALID, requests);
       }
-      return accepted(hop, sourceLimit(config), UPSTREAM_INVALID, requests);
+      return acceptedImageSource(hop, sourceLimit(config), UPSTREAM_INVALID, requests);
     }
     releaseStream(hop.body, 'image source redirected');
     if (hops === 0) {

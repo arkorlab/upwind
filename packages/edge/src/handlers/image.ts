@@ -1,4 +1,4 @@
-import { canonicalJson, sha256Hex, sha256HexOfText } from '@stayingupwind/core/artifact';
+import { sha256Hex } from '@stayingupwind/core/artifact';
 import {
   BYPASS_IMAGE_TYPES,
   detectImageType,
@@ -28,17 +28,23 @@ import {
   releaseStream,
 } from '@stayingupwind/core/util';
 
-import { type TransformImage, transformMode } from '../edge-runtime.ts';
+import type { TransformImage } from '../edge-runtime.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { IMAGE_OPTIMIZER_HEADERS, layImageConfiguredUnder } from './configured-headers.ts';
+import { imageCacheKey } from './image-cache-key.ts';
 import { lookupCache, storeCache } from './image-cache.ts';
 import { addImagePatternRequests } from './image-pattern-requests.ts';
 import {
+  admitImagePublication,
+  imagePublicationNow,
+  imageMayCache,
+  imageSourceExpired,
+} from './image-publication.ts';
+import {
   fetchImageSource,
   type ImageSource,
-  imageSourceId,
   isContentAddressed,
   resolveImageSource,
   type SourceBody,
@@ -157,51 +163,11 @@ interface Optimized {
    * whose answer the source always is.
    */
   readonly serviceFailed?: boolean | undefined;
+  readonly publication?: readonly string[] | undefined;
 }
 
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** Hex characters of the configuration's hash that tell one configuration from another. */
-const CONFIG_FINGERPRINT_LENGTH = 16;
-const fingerprints = new WeakMap<ImagesConfig, Promise<string>>();
-
-/**
- * What of the configuration decides an entry: whether an SVG is served, how long a result may be
- * kept, which formats are offered. The cache is one for every hosted application, and one
- * application's answer must not be another's, nor a deployment's its own successor's once the
- * configuration changed — so the whole configuration goes into the key, by its hash.
- */
-async function fingerprintOf(config: ImagesConfig): Promise<string> {
-  const hex = await sha256HexOfText(canonicalJson(config));
-  return hex.slice(0, CONFIG_FINGERPRINT_LENGTH);
-}
-
-function configFingerprint(config: ImagesConfig): Promise<string> {
-  let fingerprint = fingerprints.get(config);
-  if (fingerprint === undefined) {
-    fingerprint = fingerprintOf(config);
-    fingerprints.set(config, fingerprint);
-  }
-  return fingerprint;
-}
-
-/**
- * The key an image is kept under: the host's origin for them (`EdgeNames.imageKeyOrigin`), a name
- * nothing resolves, since the Cache API wants a URL and the key is the whole identity.
- */
-async function cacheKey(
-  origin: string,
-  config: ImagesConfig,
-  sourceId: string,
-  params: ImageRequestParams,
-): Promise<Request> {
-  const format = params.mimeType === '' ? 'source' : params.mimeType;
-  const fingerprint = await configFingerprint(config);
-  return new Request(
-    `${origin}/${fingerprint}/${sourceId}/${params.width}/${params.quality}/${format}`,
-  );
 }
 
 function invalidImage(message: string, requests: number): SourceError {
@@ -280,6 +246,13 @@ async function fetchJudged(input: ImageInput, imageSource: ImageSource): Promise
     return fetched;
   }
   const { source } = fetched;
+  if (imageSourceExpired(input, source.publication ?? [])) {
+    releaseStream(source.body, 'image source publication expired');
+    return {
+      kind: 'error',
+      error: { status: 503, message: 'Publication unavailable', requests: source.requests },
+    };
+  }
   let peeked;
   try {
     peeked = await peekBody(
@@ -315,6 +288,7 @@ function asItIs(judged: Extract<Judged, { kind: 'ok' }>, maxAge: number): Optimi
     etag: judged.source.etag ?? undefined,
     requests: judged.source.requests,
     fallback: verdict.kind !== 'bypass',
+    publication: judged.source.publication,
   };
 }
 
@@ -323,6 +297,13 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
   const judged = await fetchJudged(input, imageSource);
   if (judged.kind === 'error') {
     return judged;
+  }
+  if (imageSourceExpired(input, judged.source.publication ?? [])) {
+    releaseStream(judged.body, 'image source publication expired');
+    return {
+      kind: 'error',
+      error: { status: 503, message: 'Publication unavailable', requests: judged.source.requests },
+    };
   }
   const maxAge = maxAgeFor(config, judged.source);
   const transform = edge.runtime.transformImage;
@@ -381,6 +362,7 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
       etag: undefined,
       requests: judged.source.requests + 1,
       fallback: false,
+      publication: judged.source.publication,
     },
   };
 }
@@ -546,14 +528,9 @@ export function refuseImage(input: ImageAnswerInput, error: SourceError, reason:
 export async function handleImage(input: ImageInput): Promise<Response> {
   const { edge, params } = input;
   const startedAt = edge.runtime.now();
+  imagePublicationNow(input);
   const source = input.source ?? resolveImageSource(edge, input.manifest, params, input.dpl);
-  const availability = transformMode(edge.runtime.transformImage);
-  const key = await cacheKey(
-    edge.host.names.imageKeyOrigin,
-    input.config,
-    `${availability}:${await imageSourceId(source, edge)}`,
-    params,
-  );
+  const key = await imageCacheKey(input, source);
   // Validation reads nothing live traffic cached, as it writes nothing (below): the key names no
   // policy, so an entry would answer for the candidate without its source or its transformer being
   // asked, and a candidate whose image path is broken would pass.
@@ -617,7 +594,7 @@ export async function handleImage(input: ImageInput): Promise<Response> {
         observeMetric(edge.host, { ...point, suffixBytes: sent });
       },
     });
-    return respond(input, headers, streamed);
+    return admitImagePublication(input, respond(input, headers, streamed), image.publication ?? []);
   }
   const { bytes } = bounded;
   const etag = image.etag ?? `"${await sha256Hex(bytes)}"`;
@@ -625,11 +602,7 @@ export async function handleImage(input: ImageInput): Promise<Response> {
   headers.set(CONTENT_LENGTH_HEADER, String(bytes.byteLength));
   // Validation must not populate a cache live traffic reads, what the middleware admitted for one
   // visitor is not for the next, and an entry is at most what the cache is for.
-  if (
-    !edge.validated &&
-    input.middleware === undefined &&
-    bytes.byteLength <= CACHEABLE_RESULT_BYTES
-  ) {
+  if (imageMayCache(input, image.publication ?? []) && bytes.byteLength <= CACHEABLE_RESULT_BYTES) {
     const entry = new Headers({
       'content-type': image.contentType,
       [CONTENT_LENGTH_HEADER]: String(bytes.byteLength),
@@ -644,7 +617,11 @@ export async function handleImage(input: ImageInput): Promise<Response> {
       storeCache(edge.host.names.imageCache, key, new Response(bytes, { headers: entry })),
     );
   }
-  const response = respond(input, clientHeaders(input, headers, image.via), bytes);
+  const response = admitImagePublication(
+    input,
+    respond(input, clientHeaders(input, headers, image.via), bytes),
+    image.publication ?? [],
+  );
   const sent = response.body === null ? 0 : bytes.byteLength;
   record(input, { src: image.via, startedAt, bytes: sent, subrequests });
   return response;

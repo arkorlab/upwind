@@ -168,7 +168,7 @@ function optimized(
     return Promise.resolve(refuseImage(answer, gated, 'image-source-gated'));
   }
   let source: ImageSource | undefined;
-  if (manifest.publication !== undefined) {
+  if (manifest.publication !== undefined && !parsed.params.isAbsolute) {
     source = resolveImageSource(answer.edge, manifest, parsed.params, dpl);
     if (
       !isContentAddressed(source) ||

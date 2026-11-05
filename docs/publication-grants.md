@@ -26,14 +26,16 @@ separately require all original dependency grants. A response-specific proof for
 shipped bytes retains that representation's existing cache policy.
 
 The edge keeps its optimizer fast path for actual shipped image files whose source routing has
-no middleware or rewrite gate. On publication-enabled hosts it delegates other sources, including
-remote URLs, to the native optimizer before consulting the edge image cache. That cache cannot
-attest a remote source's publication proof. A native image cache does not retain an independent
-build response's proof, so publication-enabled local sources are read before deriving their images.
-The native optimizer accepts remote cache entries only from writers that enforced publication tags;
-older records become misses for those hosts. Ordinary hosts retain their existing edge optimization
-and legacy cache hits, and current tag-free external images remain cacheable. Sources carrying
-grants are never kept as unbounded image derivatives.
+no middleware or rewrite gate. Remote images retain edge resizing and their original source proof.
+Publication-enabled hosts use a separate remote image cache namespace populated only by proof-aware
+writers; tagged sources are never stored there. Other local sources use the publication-aware
+Function/native fallback. On Workers that fallback validates and serves the original source, while
+native targets can resize it with their encoder. A native image cache cannot retain an independent
+build response's proof, so protected local sources bypass native hits. Protected native remote hits
+also require a proof-aware writer. Ordinary hosts retain their existing edge optimization and legacy
+cache hits; current tag-free external images remain cacheable. Grants and resource-only witnesses
+are preserved on derivatives, checked again after transformation and 304 selection, and never
+acquire the optimizer's minimum TTL.
 
 `beginPublicationRead()` is a trusted, synchronous producer hint for a live read, not a cache proof.
 `observePublicationGrant()` records a public result in the current request and actual Next cache
