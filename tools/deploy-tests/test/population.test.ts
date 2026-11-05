@@ -229,9 +229,29 @@ function code(source: string): string {
     .join('\n');
 }
 
-/** Every name `pattern` captures in a copy. */
-function namesIn(copy: string, pattern: RegExp): string[] {
-  return [...copy.matchAll(pattern)].map(([, name = '']) => name);
+/** Every name `pattern` captures in a copy, a quoted name or a template, as its fixed text. */
+function namesIn(copy: string, pattern: RegExp): string[][] {
+  return [...copy.matchAll(pattern)].map(([, quoted, template = '']) => {
+    return quoted === undefined ? template.split(/\$\{[^}]*\}/u) : [quoted];
+  });
+}
+
+/** Whether `name` is one a name of a copy gives: its fixed text in order, anything between. */
+function fits(name: string, fixed: readonly string[]): boolean {
+  const [first = '', ...others] = fixed;
+  if (others.length === 0) {
+    return name === first;
+  }
+  let at = first.length;
+  for (const part of others.slice(0, -1)) {
+    const found = name.indexOf(part, at);
+    if (found === -1) {
+      return false;
+    }
+    at = found + part.length;
+  }
+  const last = others.at(-1) ?? '';
+  return name.startsWith(first) && name.length >= at + last.length && name.endsWith(last);
 }
 
 /**
@@ -240,15 +260,19 @@ function namesIn(copy: string, pattern: RegExp): string[] {
  */
 function registers(copy: string, fullName: string): boolean {
   const suites = [
-    ...namesIn(copy, /\bdescribe\('((?:[^'\\]|\\.)*)'/gu),
+    ...namesIn(copy, /\bdescribe\((?:'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/gu),
     ...namesIn(copy, /\bdescription: '((?:[^'\\]|\\.)*)'/gu),
   ];
-  const titles = namesIn(copy, /\bit\('((?:[^'\\]|\\.)*)'/gu);
+  const titles = namesIn(copy, /\bit\((?:'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/gu);
   const from = (rest: string): boolean => {
-    return (
-      titles.includes(rest) ||
-      suites.some((suite) => rest.startsWith(`${suite} `) && from(rest.slice(suite.length + 1)))
-    );
+    if (titles.some((title) => fits(rest, title))) {
+      return true;
+    }
+    const spaces = [...rest.matchAll(/ /gu)].map(({ index }) => index);
+    return spaces.some((space) => {
+      const name = rest.slice(0, space);
+      return suites.some((suite) => fits(name, suite)) && from(rest.slice(space + 1));
+    });
   };
   return from(fullName);
 }
@@ -315,6 +339,24 @@ describe('the copies of cases deploy mode skips', () => {
       registers(copy, 'runtime prefetching passed to a public cache includes root params'),
     ).toBe(false);
     expect(registers(copy, 'runtime prefetching in a page includes search params')).toBe(false);
+  });
+
+  it('are held to names a copy writes as templates, by the text they fix', () => {
+    const copy = [
+      "describe('prerender matrix', () => {",
+      '  for (const route of ROUTES) {',
+      '    describe(`${route.params}/${route.shell}`, () => {',
+      '      it(`serves ${region} from the cache at ${label}`, async () => {})',
+    ].join('\n');
+
+    expect(
+      registers(copy, 'prerender matrix dynamic/empty serves nothing from the cache at a=1'),
+    ).toBe(true);
+    expect(registers(copy, 'prerender matrix dynamic/empty shares the entry at a=1')).toBe(false);
+    // The `/` a route's name fixes is not in this one.
+    expect(registers(copy, 'prerender matrix dynamic serves nothing from the cache at a=1')).toBe(
+      false,
+    );
   });
 
   it('are each written to a file of their own', () => {

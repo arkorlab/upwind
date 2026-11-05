@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, globSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { PRERENDER_MATRIX_CASES } from './population-matrix-cases.ts';
+
 /**
  * Which suites a run takes (`population` in the workflow):
  * - `upstream`: what Next.js's deploy manifest (`test/deploy-tests-manifest.json`) selects, the suite
@@ -100,9 +102,10 @@ export interface Supplement {
 }
 
 /**
- * The release every copy below is held to: the supported one (`NIGHTLY_NEXTJS_REF`). Each suite's
- * directory is the same tree at 16.4.5 as at 16.4.4, but app-root-params-getters': 16.4.5 adds cases
- * and a fixture there, and leaves the copied case and its fixture (`use-cache-runtime`) as they were.
+ * The release every copy below is held to: the supported one (`NIGHTLY_NEXTJS_REF`). The copied
+ * cases are as they were at 16.4.4, but for what 16.4.5 adds: avif-svg-signature-confusion, a suite of
+ * its own, and cases beside those copied in app-root-params-getters and
+ * partial-fallback-shell-upgrade.
  */
 const NEXT_16_4_5 = { version: '16.4.5', commit: '4e5335a00314be7fbb2aace5e9be56a88e64e5a8' };
 
@@ -190,6 +193,53 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     file: 'test/e2e/app-dir/segment-cache/prefetch-static-shell/prefetch-static-shell.skipped-in-deploy.test.ts',
     cases: [
       'static App Shell prefetch attempt ensureStatic ensureStatic = "navigation" uses a static request for a `prefetch={true}` link to a page that uses static params and was not prerendered',
+    ],
+  },
+  {
+    next: NEXT_16_4_5,
+    upstream:
+      'test/e2e/app-dir/cache-components-prerender-matrix/cache-components-prerender-matrix.test.ts',
+    tree: 'c615f87fcbdbc5d61ab108aa64b38651d1ecfeab',
+    source:
+      'app-dir/cache-components-prerender-matrix/cache-components-prerender-matrix.supplement.ts',
+    file: 'test/e2e/app-dir/cache-components-prerender-matrix/cache-components-prerender-matrix.skipped-in-deploy.test.ts',
+    cases: PRERENDER_MATRIX_CASES,
+  },
+  {
+    next: NEXT_16_4_5,
+    upstream:
+      'test/e2e/app-dir/partial-fallback-shell-upgrade/partial-fallback-shell-upgrade.test.ts',
+    tree: 'bfd678e721b4221eb628a4283205870a6ffa0504',
+    source: 'app-dir/partial-fallback-shell-upgrade/partial-fallback-shell-upgrade.supplement.ts',
+    file: 'test/e2e/app-dir/partial-fallback-shell-upgrade/partial-fallback-shell-upgrade.skipped-in-deploy.test.ts',
+    cases: [
+      'partial-fallback-shell-upgrade - partialPrefetching disabled shares an on-demand shell across params without generateStaticParams',
+      'partial-fallback-shell-upgrade - partialPrefetching disabled keeps params without generateStaticParams dynamic after explicit revalidation of an on-demand shell',
+      'partial-fallback-shell-upgrade - partialPrefetching disabled reuses generated optional catch-all pages before and after explicit revalidation',
+    ],
+  },
+  {
+    next: NEXT_16_4_5,
+    upstream: 'test/e2e/app-dir/non-root-project-monorepo/non-root-project-monorepo.test.ts',
+    tree: '46914e999bfa4ad3adda300884775b7deeab707f',
+    source: 'app-dir/non-root-project-monorepo/non-root-project-monorepo.supplement.ts',
+    file: 'test/e2e/app-dir/non-root-project-monorepo/non-root-project-monorepo.skipped-in-deploy.test.ts',
+    cases: [
+      'non-root-project-monorepo import.meta.url should work during RSC',
+      'non-root-project-monorepo import.meta.url should work during SSR',
+      'non-root-project-monorepo import.meta.url non-url-safe characters should encode special chars during RSC',
+      'non-root-project-monorepo import.meta.url non-url-safe characters should encode special chars during SSR',
+    ],
+  },
+  {
+    next: NEXT_16_4_5,
+    upstream: 'test/e2e/app-dir/avif-svg-signature-confusion/avif-svg-signature-confusion.test.ts',
+    tree: 'f0fcc5b59fdfb76506585aa1738023b79f10f67c',
+    source: 'app-dir/avif-svg-signature-confusion/avif-svg-signature-confusion.supplement.ts',
+    file: 'test/e2e/app-dir/avif-svg-signature-confusion/avif-svg-signature-confusion.skipped-in-deploy.test.ts',
+    cases: [
+      'avif-svg-signature-confusion rejects an ordinary SVG when dangerouslyAllowSVG is false',
+      'avif-svg-signature-confusion rejects an SVG prefixed with <!--ftypavif-->',
     ],
   },
 ];
