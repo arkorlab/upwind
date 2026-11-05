@@ -321,7 +321,9 @@ describe('the copies of cases deploy mode skips', () => {
       // Every case it is recorded to register, it registers, each under its own name.
       expect(new Set(cases).size).toBe(cases.length);
 
-      for (const fullName of cases === PRERENDER_MATRIX_CASES ? [] : cases) {
+      const written = cases === PRERENDER_MATRIX_CASES ? [] : cases;
+
+      for (const fullName of written) {
         expect(registers(copy, fullName)).toBe(true);
       }
     },
@@ -331,7 +333,9 @@ describe('the copies of cases deploy mode skips', () => {
     const source = SUPPLEMENTS.find(({ cases }) => cases === PRERENDER_MATRIX_CASES)?.source ?? '';
     const names = await namesRegistered(readFileSync(path.join(kept, source), 'utf8'));
 
-    expect(names.toSorted()).toStrictEqual(PRERENDER_MATRIX_CASES.toSorted());
+    const byName = (a: string, b: string): number => a.localeCompare(b);
+
+    expect(names.toSorted(byName)).toStrictEqual(PRERENDER_MATRIX_CASES.toSorted(byName));
   });
 
   it('are held to the names their copy registers, every row of a `describe.each` among them', () => {
