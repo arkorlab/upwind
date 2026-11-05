@@ -337,6 +337,25 @@ async function readSource(
   return { bytes: read.bytes };
 }
 
+/** Invalid reserved proof refuses the source without leaving its unread body behind. */
+function sourcePublication(
+  source: Response,
+  internal: boolean,
+): { readonly tags: string[] } | { readonly refusal: Response } {
+  try {
+    return { tags: imagePublicationTags(source) };
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    releaseStream(source.body, 'image source publication refused');
+    return {
+      refusal: refusal(
+        refusalStatus(source, internal),
+        internal ? INTERNAL_INVALID : UPSTREAM_INVALID,
+      ),
+    };
+  }
+}
+
 /**
  * The source's answer as the optimizer would pass it on: looked at, and under the optimizer's
  * headers. What the source answered with anything but its bytes — a redirect its middleware sent,
@@ -345,7 +364,9 @@ async function readSource(
  */
 export async function sourceResponse(input: SourceResponseInput): Promise<Response> {
   const { source, params, images, internal } = input;
-  const publication = imagePublicationTags(source);
+  const proof = sourcePublication(source, internal);
+  if ('refusal' in proof) return proof.refusal;
+  const publication = proof.tags;
   if (publicationExpired(publication, nowMs()))
     return admitPublication(source, publication, nowMs());
   const invalid = internal ? INTERNAL_INVALID : UPSTREAM_INVALID;

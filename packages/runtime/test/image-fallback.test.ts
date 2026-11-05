@@ -97,6 +97,53 @@ function remote(net: FakeNetwork, images = IMAGES) {
 }
 
 describe('publication-tagged optimized image sources', () => {
+  it.each([false, true])(
+    'refuses malformed source snapshot proof and releases its unread body (internal=%s)',
+    async (internal) => {
+      const cancel = vi.fn();
+      const source = new Response(new ReadableStream({ cancel }), {
+        headers: { 'x-next-cache-tags': 'upwind:resource-snapshot:v1:invalid:0' },
+      });
+      const keep = vi.fn();
+
+      const response = await sourceResponse({
+        source,
+        params: PARAMS,
+        images: IMAGES,
+        internal,
+        request: asked('GET'),
+        keep,
+      });
+
+      expect(response.status).toBe(HTTP_BAD_REQUEST);
+      expect(cancel).toHaveBeenCalledExactlyOnceWith('image source publication refused');
+      expect(keep).not.toHaveBeenCalled();
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+    },
+  );
+
+  it('retains a remote source grant without admitting its derivative to the image cache', async () => {
+    const tag = `upwind:publication:v1:${'a'.repeat(64)}:${String(Date.now() + 60_000)}`;
+    const source = new Response(body(png()), {
+      headers: { 'x-next-cache-tags': tag, 'cache-control': 'public,max-age=3600' },
+    });
+    const keep = vi.fn();
+
+    const response = await sourceResponse({
+      source,
+      params: PARAMS,
+      images: IMAGES,
+      internal: false,
+      request: asked('GET'),
+      keep,
+    });
+
+    expect(response.status).toBe(HTTP_OK);
+    expect(response.headers.get('x-next-cache-tags')).toBe(tag);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(keep).not.toHaveBeenCalled();
+  });
+
   it('retains a shipped image source snapshot through optimization and final v3 admission', async () => {
     const id = 'a'.repeat(64);
     const witness = `upwind:resource-snapshot:v1:${id}:4`;
