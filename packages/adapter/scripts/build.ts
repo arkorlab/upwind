@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { copyFile, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -43,20 +43,32 @@ const EXTERNAL = [
 async function main(): Promise<void> {
   await rm(OUT_DIR, { recursive: true, force: true });
   const build = await rolldown({
-    input: path.join(ROOT, 'src/index.ts'),
+    input: {
+      index: path.join(ROOT, 'src/index.ts'),
+      'project-config': path.join(ROOT, 'src/project-config.ts'),
+    },
     platform: 'node',
     external: [...EXTERNAL, /^node:/u],
   });
   const { output } = await build.write({
     dir: OUT_DIR,
     format: 'esm',
-    entryFileNames: 'index.js',
+    entryFileNames: '[name].js',
     chunkFileNames: '[name]-[hash].js',
   });
   await build.close();
-  const [entry] = output;
-  const bytes = Buffer.byteLength(entry.code);
-  console.log(`dist/index.js: ${String(bytes)} bytes, ${String(output.length)} chunk(s)`);
+  // Only the generic loader is a published, typed build-tools API; its declarations are standalone.
+  await copyFile(
+    path.join(ROOT, 'types/project-config.d.ts'),
+    path.join(OUT_DIR, 'project-config.d.ts'),
+  );
+  for (const entry of output) {
+    if (entry.type !== 'chunk' || !entry.isEntry) continue;
+    const bytes = Buffer.byteLength(entry.code);
+    console.log(
+      `dist/${entry.fileName}: ${String(bytes)} bytes, ${String(output.length)} chunk(s)`,
+    );
+  }
   // These templates contain the private host/cache packages. An installed adapter copies the
   // finished JavaScript; a customer never has to install the host's workspace-only packages.
   const nativeDir = path.join(OUT_DIR, 'native');
