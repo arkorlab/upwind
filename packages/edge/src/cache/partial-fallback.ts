@@ -166,6 +166,7 @@ function standingOf(edge: EdgeContext, pack: DecodedGenerationPack | undefined):
   const fresh =
     !isInvalidated(edge.runtime.memory, pack, edge.app?.deploymentId) &&
     evaluateFreshness({
+      tags: pack.header.tags.map((tag) => tag.value),
       policy: pack.header.policy,
       cacheTimestamp: pack.header.cacheTimestamp,
       invalidation: pack.header.invalidation,

@@ -13,6 +13,7 @@ import { regenerate } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { type EntryTables, nodeHandlerOf } from './entries.ts';
 import { descriptorFor } from './generations.ts';
+import { requirePublication } from './publication.ts';
 import { staticRenderParameters } from './route-parameters.ts';
 import { bypassesPrerender } from './serve.ts';
 import { findShell, getStore, isClassShell, variesOnQuery } from './store.ts';
@@ -91,6 +92,7 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
   });
   const parameters = staticRenderParameters(store, entry.route, entry.pathname);
   return context.run(() => {
+    requirePublication(runtime, entry.route);
     return withPrimaryResourceReads(async (): Promise<ResourceWarmResult> => {
       const outcome = await regenerate({
         runtime,

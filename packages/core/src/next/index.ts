@@ -10,6 +10,7 @@ export {
   isResourceCacheBridgeSource,
   resourceCacheBridge,
   resourceCacheBridgeRevalidations,
+  resourceCacheBridgeUnstableRegistrations,
   type ResourceCacheBridgeResult,
 } from './resource-cache-bridge.ts';
 export { rendersFormActionsWithResumeData } from './form-actions.ts';

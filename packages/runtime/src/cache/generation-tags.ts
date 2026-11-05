@@ -11,6 +11,7 @@ import {
 
 import { isClassShell } from '../store.ts';
 import type { CapturedRender } from './capture.ts';
+import { publicationContext } from './context.ts';
 import { RegenerationError } from './lease.ts';
 import { refusedTags } from './tag-bounds.ts';
 
@@ -38,6 +39,10 @@ export function generationTagValues(
       ? []
       : implicitTagsFor(appPathFor(descriptor.kind, descriptor.route), concrete);
   const values = new Set(recorded);
+  const publication = publicationContext()?.publication;
+  if (publication !== undefined) for (const value of publication) values.add(value);
+  const resources = publicationContext()?.resourceTags;
+  if (resources !== undefined) for (const value of resources) values.add(value);
   for (const value of implicit) {
     values.add(value);
   }
@@ -47,6 +52,18 @@ export function generationTagValues(
     values.add(sharedShellTagOf(entryId));
   }
   return values;
+}
+
+/** Fresh foreground answers carry the same local dependencies as their eventual record. */
+export function withGenerationPublication(render: CapturedRender): CapturedRender {
+  const context = publicationContext();
+  const publication = context?.publication;
+  const resources = context?.resourceTags;
+  if ((publication?.size ?? 0) + (resources?.size ?? 0) === 0) return render;
+  const tags = new Set(parseCacheTagsHeader(render.headers['x-next-cache-tags']));
+  if (publication !== undefined) for (const tag of publication) tags.add(tag);
+  if (resources !== undefined) for (const tag of resources) tags.add(tag);
+  return { ...render, headers: { ...render.headers, 'x-next-cache-tags': [...tags].join(',') } };
 }
 
 /** Refuse the render's tags before uploading, keeping the pathname and refusal code on its attempt. */

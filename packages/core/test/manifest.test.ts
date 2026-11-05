@@ -176,7 +176,19 @@ describe('buildProjectManifest', () => {
   it.each(READ_MANIFEST_SCHEMA_VERSIONS)(
     'reads a manifest of schema version %s',
     (schemaVersion) => {
-      const written = { ...build(), schemaVersion };
+      const written = {
+        ...build(),
+        schemaVersion,
+        ...(schemaVersion === 9 && {
+          publication: {
+            version: 3,
+            valueObservers: true,
+            resourceSnapshots: true,
+            identities: ['a'.repeat(64)],
+            routes: ['/blog/hello'],
+          },
+        }),
+      };
 
       expect(parseProjectManifest(JSON.stringify(written)).schemaVersion).toBe(schemaVersion);
     },

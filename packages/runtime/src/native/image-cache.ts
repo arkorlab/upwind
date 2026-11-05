@@ -83,6 +83,8 @@ export interface ImageCacheOptions {
 
 /** What an entry says of the image after it, ahead of its bytes. */
 interface EntryHeader {
+  /** This producer refused publication-tagged sources before their derivative could be kept. */
+  readonly publicationAware?: true;
   readonly v: number;
   readonly key: string;
   readonly contentType: string;
@@ -186,6 +188,7 @@ function headerOfText(text: string): EntryHeader | undefined {
     typeof header['contentType'] === 'string' &&
     typeof header['etag'] === 'string' &&
     typeof header['maxAge'] === 'number' &&
+    (header['publicationAware'] === undefined || header['publicationAware'] === true) &&
     typeof header['fallback'] === 'boolean' &&
     typeof header['expiresAt'] === 'number';
   return valid ? (value as EntryHeader) : undefined;
@@ -283,6 +286,7 @@ class DiskImages {
     await this.#index();
     const name = fileNameOf(key);
     const header: EntryHeader = {
+      publicationAware: true,
       v: ENTRY_VERSION,
       key,
       contentType: image.contentType,
@@ -512,7 +516,7 @@ class DiskImages {
   }
 
   /** The image kept under `key`, where one is and its lifetime has not run out. */
-  async read(key: string): Promise<KeptImage | undefined> {
+  async read(key: string, requirePublicationAwareness = false): Promise<KeptImage | undefined> {
     this.#startIndexing();
     const name = fileNameOf(key);
     let bytes: Uint8Array;
@@ -524,7 +528,11 @@ class DiskImages {
       return undefined;
     }
     const entry = entryOf(bytes, key);
-    if (entry === undefined) return undefined;
+    if (
+      entry === undefined ||
+      (requirePublicationAwareness && entry.header.publicationAware !== true)
+    )
+      return undefined;
     if (entry.header.expiresAt <= Date.now()) {
       // A miss whether or not it can be let go: a directory the server may read but not write
       // to — mounted read-only, or another user's — answers from the source all the same (Codex).
@@ -591,10 +599,10 @@ function answerFrom({ request, params, images }: ImageCacheInput, image: KeptIma
 
 export const openImageCache: ImageCacheOpener = (input) => {
   const { images } = configured;
-  if (images === undefined) return;
+  if (images === undefined || input.publicationProtected === true) return;
   return (async (): Promise<ImageCacheSlot> => {
     const key = imageKeyOf(input);
-    const image = await images.read(key);
+    const image = await images.read(key, input.publicationRequired);
     if (image !== undefined) {
       return { hit: answerFrom(input, image), keep: undefined };
     }

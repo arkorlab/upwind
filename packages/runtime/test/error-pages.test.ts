@@ -66,6 +66,7 @@ function render(answer: Response, response: CapturedResponse, method = 'GET'): P
       tables: { app: { entries: {} }, edge: { entries: {} } },
       runtime: undefined,
       startedAt: 0,
+      publication: new Set<string>(),
       fetchStarts: new Map(),
       waitUntil: () => {
         // The render has no work behind its answer.

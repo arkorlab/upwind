@@ -5,6 +5,11 @@ import {
   noTransform,
 } from '@stayingupwind/core/bundle';
 import {
+  admitPublication,
+  publicationForRoute,
+  publicationForBuild,
+} from '@stayingupwind/core/cache';
+import {
   type ConfiguredHeaders,
   isReserved,
   type RouteBodyEntry,
@@ -224,6 +229,7 @@ async function serveBody(
     load,
     edge.runtime.now(),
     condemnedIn(edge.runtime.memory, edge.app?.deploymentId),
+    input.manifest.publication,
   );
   if (decision.kind === 'build' || decision.kind === 'passthrough') {
     return input.passthrough(`route-body-${decision.reason}`, middleware, {
@@ -343,7 +349,14 @@ function serveCurrentBody(
     observeMetric(edge.host, point);
   }
   if (stale) readServedAgain(edge, decision.pack, settings, { servedStale: true });
-  return response;
+  return admitPublication(
+    response,
+    decision.pack.header.tags.map((tag) => tag.value),
+    edge.runtime.now(),
+    decision.pack.header.source === 'build'
+      ? publicationForBuild(input.manifest.publication, entry.route)
+      : publicationForRoute(input.manifest.publication, entry.route),
+  );
 }
 
 /** Non-document bytes use the existing gate and generation validity, with no HTML composition. */

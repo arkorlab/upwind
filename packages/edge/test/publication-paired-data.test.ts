@@ -1,0 +1,138 @@
+import { admitPublication, type GenerationPackHeader } from '@stayingupwind/core/cache';
+import type { ProjectManifest } from '@stayingupwind/core/manifest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { DATA, PAGE, pagesPublicationFixture } from './pages-publication-fixture.ts';
+
+vi.mock(import('../src/handlers/passthrough.ts'), async (original) => {
+  return {
+    ...(await original()),
+    handlePassthrough: vi.fn(),
+  };
+});
+
+function pairedArtifact(header: GenerationPackHeader) {
+  const data = header.artifacts.find((artifact) => artifact.role === 'pages-data');
+  if (data === undefined) throw new Error('The fixture must include paired data.');
+  return data;
+}
+
+function publicationFor(
+  version: 1 | 3,
+  identity: string,
+): NonNullable<ProjectManifest['publication']> {
+  const source = { identities: [identity], routes: ['/fallback-true/[slug]'] };
+  return version === 3
+    ? { ...source, version: 3, valueObservers: true, resourceSnapshots: true }
+    : { ...source, version: 1 };
+}
+
+describe('paired Pages data publication admission', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    { version: 1, expires: false },
+    { version: 1, expires: true },
+    { version: 3, expires: false },
+    { version: 3, expires: true },
+  ] as const)(
+    'checks schema-9 paired proof after the artifact read (version=$version, expires=$expires)',
+    async ({ version, expires }) => {
+      const test = await pagesPublicationFixture();
+      const identity = 'a'.repeat(64);
+      let now = test.edge.runtime.now();
+      const until = now + 1000;
+      Object.assign(test.edge.runtime, { now: () => now });
+
+      test.manifest.schemaVersion = 9;
+
+      test.manifest.publication = publicationFor(version, identity);
+
+      const record = await test.member(PAGE, {
+        tags: [
+          { kind: 'next-explicit', value: `upwind:publication:v1:${identity}:${String(until)}` },
+          ...(version === 3
+            ? [
+                { kind: 'next-explicit' as const, value: 'resource:paired' },
+                {
+                  kind: 'next-explicit' as const,
+                  value: `upwind:resource-snapshot:v1:${identity}:4`,
+                },
+              ]
+            : []),
+        ],
+      });
+      const data = pairedArtifact(record.pack.header);
+
+      test.kv.mockImplementation((key) =>
+        Promise.resolve(key === record.key ? record.bytes : null),
+      );
+
+      const cache = test.edge.runtime.memory.shells;
+      const original = cache.get.bind(cache);
+      const lookup = vi.spyOn(cache, 'get').mockImplementation((key) => {
+        if (expires && key === data.sha256) now = until;
+        return original(key);
+      });
+
+      const response = await test.serve(DATA);
+
+      expect(lookup).toHaveBeenCalledWith(data.sha256);
+      expect(response.status).toBe(expires ? 503 : 200);
+      expect(test.dispatch).not.toHaveBeenCalled();
+
+      await test.drain();
+    },
+  );
+
+  it('keeps a fresh live response when an unavailable paired artifact outlives its old grant', async () => {
+    const test = await pagesPublicationFixture();
+    const identity = 'a'.repeat(64);
+    let now = test.edge.runtime.now();
+    const until = now + 1000;
+    Object.assign(test.edge.runtime, { now: () => now });
+
+    test.manifest.publication = {
+      version: 1,
+      identities: [identity],
+      routes: ['/fallback-true/[slug]'],
+    };
+
+    const record = await test.member(PAGE, {
+      tags: [
+        { kind: 'next-explicit', value: `upwind:publication:v1:${identity}:${String(until)}` },
+      ],
+    });
+    const data = pairedArtifact(record.pack.header);
+
+    test.edge.runtime.memory.shells.delete(data.sha256);
+
+    test.kv.mockImplementation((key) => Promise.resolve(key === record.key ? record.bytes : null));
+
+    test.get.mockResolvedValue(null);
+
+    test.fallback.mockImplementation(() => {
+      now = until;
+      return Promise.resolve(
+        admitPublication(
+          new Response('fresh authorized data'),
+          [`upwind:publication:v1:${identity}:${String(until + 60_000)}`],
+          now,
+        ),
+      );
+    });
+
+    const response = await test.serve(DATA);
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe('fresh authorized data');
+    expect(test.get).toHaveBeenCalledWith(data.storageRef);
+    expect(test.fallback).toHaveBeenCalledTimes(1);
+    expect(test.dispatch).not.toHaveBeenCalled();
+
+    await test.drain();
+  });
+});

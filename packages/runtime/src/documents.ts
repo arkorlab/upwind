@@ -1,4 +1,5 @@
 import type { BlobRef, Prerender } from '@stayingupwind/core/bundle';
+import { parseCacheTagsHeader } from '@stayingupwind/core/cache';
 import { NO_STORE_CACHE_CONTROL, SEGMENT_TREE_PATH } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
@@ -10,6 +11,14 @@ import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
 import { isCrawler, isRscRequest, rscBase } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
+import { copyBuildPublication } from './publication-proof.ts';
+import {
+  admitBuildPublication,
+  admitBuildSource,
+  buildPublicationExpired,
+  requirePublication,
+} from './publication.ts';
+import { observeResumePublication } from './resume-publication.ts';
 import {
   answeredAtMiss,
   bypassesPrerender,
@@ -32,6 +41,8 @@ import { entrypointKindOf, findShell, isClassShell, type Store } from './store.t
 
 export { afterRouting, staticFileResponse } from './static-file.ts';
 
+const EXPIRED_BUILD = 'publication-expired';
+
 /**
  * What the build made of a route, answered from the bundle: a document from its shell and the
  * resume that completes it, a route's React Server Components from the build's state, a file
@@ -45,6 +56,7 @@ const ERROR_ENTRY_ID = '/_error';
 const NOT_FOUND_PAGE = '/404';
 const RSC_SUFFIX = '.rsc';
 const CACHE_CONTROL = 'cache-control';
+const CACHE_TAGS = 'x-next-cache-tags';
 
 /** The state that resumes a prerender of the build, as the bundle carries it. */
 export function postponedOf(store: Store, prerender: Prerender): string | undefined {
@@ -95,6 +107,23 @@ export interface BuiltDocument {
  * document whole and its shell is left where it is. A shell with nothing postponed is the whole
  * document already, and answers for either runtime.
  */
+function documentWithoutBuild(
+  input: RoutedInput,
+  store: Store,
+  resolved: Resolved,
+  entry: Entry,
+): Promise<Response> {
+  if (
+    store.manifest.config.cacheComponents === true &&
+    entry.kind === 'node' &&
+    entrypointKindOf(store, resolved.route) === 'app-page'
+  )
+    return renderDocumentForVisitor(input, entry.handler, resolved.url);
+  return invokeEntry(input, entry, resolved.url, {
+    onFailure: failureAnswer(store, entry, resolved.route),
+  });
+}
+
 export async function documentFromBuild(
   input: RoutedInput,
   store: Store,
@@ -104,6 +133,8 @@ export async function documentFromBuild(
   // A draft, or a request a condition of the build's bypasses, asks for the page as it is now; the
   // shell was written before either existed. A crawler asks for the page rather than the fallback.
   const shell = findShell(store, resolved.route, resolved.pathname);
+  if (buildPublicationExpired(input, shell, resolved.route))
+    return documentWithoutBuild(input, store, resolved, entry);
   if (
     bypassesPrerender(store, input.request, shell, resolved.url) ||
     (shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request))
@@ -112,20 +143,7 @@ export async function documentFromBuild(
       onFailure: failureAnswer(store, entry, resolved.route),
     });
   }
-  if (shell?.body === undefined) {
-    // An unbuilt App Router member can still prerender a shell. Capture its postponed state and
-    // resume it for this request; the exported handler alone sends only that initial shell.
-    if (
-      store.manifest.config.cacheComponents === true &&
-      entry.kind === 'node' &&
-      entrypointKindOf(store, resolved.route) === 'app-page'
-    ) {
-      return renderDocumentForVisitor(input, entry.handler, resolved.url);
-    }
-    return invokeEntry(input, entry, resolved.url, {
-      onFailure: failureAnswer(store, entry, resolved.route),
-    });
-  }
+  if (shell?.body === undefined) return documentWithoutBuild(input, store, resolved, entry);
   const status = shell.initialStatus ?? fallbackStatus;
   if (shell.postponed === undefined) {
     releaseStream(input.request.body, 'static document: handler body unused');
@@ -150,15 +168,27 @@ export async function documentFromBuild(
   // The headers are the shell's; nothing a resume renders would change them, so `HEAD` is
   // answered without one.
   if (input.request.method === 'HEAD') {
-    return new Response(null, { status, headers });
+    return admitBuildPublication(
+      input,
+      shell.route,
+      new Response(null, { status, headers }),
+      parseCacheTagsHeader(headers.get(CACHE_TAGS) ?? undefined),
+    );
   }
+  observeResumePublication(input, shell.route, shell.initialHeaders);
   const rest = resume({
     input,
     handler: entry.handler,
     postponed: postponedOf(store, shell),
     url: resolved.url,
   });
-  return new Response(concatShell(store.readBlob(shell.body.sha256), rest), { status, headers });
+  const body = concatShell(store.readBlob(shell.body.sha256), rest);
+  return admitBuildSource(
+    input,
+    shell.route,
+    new Response(body, { status, headers }),
+    parseCacheTagsHeader(headers.get(CACHE_TAGS) ?? undefined),
+  );
 }
 
 /**
@@ -194,7 +224,7 @@ async function builtSegment(
   input: RoutedInput,
   store: Store,
   document: Prerender | undefined,
-): Promise<Response | undefined> {
+): Promise<Response | typeof EXPIRED_BUILD | undefined> {
   const { rsc } = store.manifest.routing;
   const segment = input.request.headers.get(rsc.prefetchSegmentHeader);
   // An empty header names no part, as the classification reads it (`segmentPrefetchOf`): the
@@ -202,6 +232,7 @@ async function builtSegment(
   if (segment === null || segment === '' || document === undefined) {
     return undefined;
   }
+  if (buildPublicationExpired(input, document, document.route)) return EXPIRED_BUILD;
   const segmentOf = (segmentPath: string): Prerender | undefined => {
     const name = `${rscBase(document.pathname)}${rsc.prefetchSegmentDirSuffix}${segmentPath}`;
     const prerender = store.prerendersByPathname.get(`${name}${rsc.prefetchSegmentSuffix}`);
@@ -216,6 +247,8 @@ async function builtSegment(
     return undefined;
   }
   const prerender = segmentOf(segment);
+  if (prerender !== undefined && buildPublicationExpired(input, prerender, document.route))
+    return EXPIRED_BUILD;
   const bytes =
     prerender?.body === undefined
       ? undefined
@@ -234,7 +267,17 @@ async function builtSegment(
   // The bytes as the store holds them: a view onto the bundle's own buffer, which is what every
   // other blob is answered with here. Copying would be a copy per prefetch of a file the store is
   // holding on purpose; only the host's bytes are copied, and only where they come from.
-  return new Response(bytes, { status: HTTP_OK, headers });
+  return admitBuildPublication(
+    input,
+    document.route,
+    new Response(bytes, { status: HTTP_OK, headers }),
+    [
+      ...parseCacheTagsHeader(
+        new Headers(document.initialHeaders as HeadersInit).get(CACHE_TAGS) ?? undefined,
+      ),
+      ...parseCacheTagsHeader(headers.get(CACHE_TAGS) ?? undefined),
+    ],
+  );
 }
 
 /**
@@ -290,6 +333,7 @@ export async function rscFromBuild(
     return invokeEntry(input, entry, resolved.url);
   }
   const built = await builtSegment(input, store, shell);
+  if (built === EXPIRED_BUILD) return invokeEntry(input, entry, resolved.url);
   if (built !== undefined) {
     return built;
   }
@@ -300,6 +344,10 @@ export async function rscFromBuild(
       : store.prerendersByPathname.get(`${rscBase(shell.pathname)}${RSC_SUFFIX}`);
   const source = twin?.postponed === undefined ? shell : twin;
   if (source?.postponed !== undefined && entry.kind === 'node') {
+    if (buildPublicationExpired(input, source, source.route))
+      return atMiss(await invokeEntry(input, entry, resolved.url));
+    // Saved values keep the selected source's bounds before the suffix can reuse them.
+    observeResumePublication(input, source.route, source.initialHeaders);
     return atMiss(
       await resume({
         input,
@@ -315,6 +363,8 @@ export async function rscFromBuild(
     twin?.body !== undefined &&
     twin.postponed === undefined
   ) {
+    if ([shell, twin].some((selected) => buildPublicationExpired(input, selected, selected.route)))
+      return atMiss(await invokeEntry(input, entry, resolved.url));
     return builtPageResponse(input, store, twin, {
       document: shell,
       contentType: RSC_CONTENT_TYPE,
@@ -380,6 +430,7 @@ async function lastNotFound(
 ): Promise<Response> {
   const fallback = rsc ? undefined : await errorPageEntry(input, store);
   if (fallback !== undefined) {
+    requirePublication(input.cache, fallback.route);
     return invokeEntry(input, fallback.entry, `${at.pathname}${at.search}`, {
       onFailure: failureAnswer(store, fallback.entry, fallback.route),
       status: HTTP_NOT_FOUND,
@@ -424,14 +475,22 @@ export async function notFound(input: RoutedInput, store: Store, at: URL): Promi
         ? undefined
         : staticResponse(store, stored, HTML_CONTENT_TYPE, stored.initialStatus ?? HTTP_NOT_FOUND));
     if (page !== undefined) {
+      const route = stored?.route ?? pathname;
+      requirePublication(input.cache, route);
       releaseStream(input.request.body, 'static not found: handler body unused');
-      return page;
+      return admitBuildPublication(
+        input,
+        route,
+        page,
+        parseCacheTagsHeader(page.headers.get(CACHE_TAGS) ?? undefined),
+      );
     }
   }
   if (rendered === undefined) {
     return lastNotFound(input, store, at, rsc);
   }
   const { entry, route } = rendered;
+  requirePublication(input.cache, route);
   const resolved: Resolved = { route, pathname: route, url: `${at.pathname}${at.search}` };
   if (!rsc) {
     const document = await documentFromBuild(input, store, resolved, {
@@ -444,7 +503,10 @@ export async function notFound(input: RoutedInput, store: Store, at: URL): Promi
     if (document.status !== HTTP_OK) {
       return document;
     }
-    return new Response(document.body, { status: HTTP_NOT_FOUND, headers: document.headers });
+    return copyBuildPublication(
+      document,
+      new Response(document.body, { status: HTTP_NOT_FOUND, headers: document.headers }),
+    );
   }
   const payload = await rscFromBuild(input, store, { entry, resolved });
   // A payload rendered goes out under the status the not-found stands for; a render that failed,
@@ -452,5 +514,8 @@ export async function notFound(input: RoutedInput, store: Store, at: URL): Promi
   if (!payload.ok) {
     return payload;
   }
-  return new Response(payload.body, { status: HTTP_NOT_FOUND, headers: payload.headers });
+  return copyBuildPublication(
+    payload,
+    new Response(payload.body, { status: HTTP_NOT_FOUND, headers: payload.headers }),
+  );
 }

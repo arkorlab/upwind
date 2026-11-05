@@ -3,6 +3,8 @@ import {
   decodeGenerationPack,
   deriveEntry,
   evaluateFreshness,
+  publicationForRoute,
+  publicationForBuild,
   type RouteEntryDescriptor,
   type Validity,
   verifyGenerationPack,
@@ -420,6 +422,11 @@ function worse(a: Validity, b: Validity): Validity {
 function judged(runtime: CacheRuntime, pack: DecodedGenerationPack, now: number): Validity {
   const { header } = pack;
   const { validity: recorded } = evaluateFreshness({
+    tags: header.tags.map((tag) => tag.value),
+    publication:
+      header.source === 'build'
+        ? publicationForBuild(runtime.host.publication, header.route)
+        : publicationForRoute(runtime.host.publication, header.route),
     policy: header.policy,
     cacheTimestamp: header.cacheTimestamp,
     invalidation: header.invalidation,

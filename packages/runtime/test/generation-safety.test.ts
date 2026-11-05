@@ -14,7 +14,12 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 
 import type { NodeHandler } from '../src/app-module.ts';
 import { withClock } from '../src/cache/clock.ts';
-import { InvalidatedTags, RequestWrites, withRequestContext } from '../src/cache/context.ts';
+import {
+  InvalidatedTags,
+  RequestWrites,
+  withRequestContext,
+  requestContextFor,
+} from '../src/cache/context.ts';
 import * as regeneration from '../src/cache/regenerate.ts';
 import { platformRevalidate } from '../src/cache/revalidate.ts';
 import { createCacheRuntime } from '../src/cache/runtime.ts';
@@ -22,6 +27,7 @@ import { documentFromBuild, rscFromBuild } from '../src/documents.ts';
 import { handleForeground, serveFromGeneration } from '../src/generations.ts';
 import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { servePagesData, serveRouteHandler } from '../src/outputs.ts';
+import { admitRequestPublication, requirePublication } from '../src/publication.ts';
 import { handleRuntimeResume } from '../src/runtime-resume.ts';
 import { type RoutedInput, staticResponse } from '../src/serve.ts';
 import * as stores from '../src/store.ts';
@@ -107,6 +113,8 @@ async function remember(
     artifact?: 'rsc' | 'pages-data';
     revalidate?: number | false;
     cacheTimestamp?: number;
+    publication?: string;
+    source?: 'build' | 'runtime';
   } = {},
 ) {
   const runtime = input.cache!;
@@ -121,14 +129,17 @@ async function remember(
       entryId,
       generationId: 'generation',
       seq: 1,
-      source: 'runtime',
+      source: options.source ?? 'runtime',
       ...descriptor,
       cacheTimestamp,
       producedAt: cacheTimestamp,
       policy: policyFromBuild({ initialRevalidate: options.revalidate ?? false }),
       status: options.status ?? 200,
       headers: options.headers ?? {},
-      tags: [],
+      tags:
+        options.publication === undefined
+          ? []
+          : [{ kind: 'next-explicit', value: options.publication }],
       artifacts:
         options.artifact === undefined
           ? []
@@ -163,6 +174,50 @@ describe('runtime generation safeguards', () => {
   afterEach(() => vi.restoreAllMocks());
 
   describe('runtime generation response safety', () => {
+    it.each(['build', 'runtime'] as const)(
+      'preserves publication admission for a selected %s generation without a lookup',
+      async (generationSource) => {
+        const input = inputFor();
+        const identity = 'a'.repeat(64);
+        const now = 1_800_000_000_000;
+        Object.assign(input.cache!.host, {
+          publication: {
+            version: 1,
+            identities: [identity],
+            routes: [ROUTE],
+            independentBuild: [ROUTE],
+          },
+        });
+        await remember(input, {
+          source: generationSource,
+          cacheTimestamp: now,
+          ...(generationSource === 'runtime' && {
+            publication: `upwind:publication:v1:${identity}:${String(now + 60_000)}`,
+          }),
+        });
+        const readRecord = vi.spyOn(input.cache!.host, 'readRecord');
+        const context = requestContextFor({
+          tables: input,
+          runtime: input.cache,
+          request: input.request,
+          startedAt: now,
+          waitUntil: input.waitUntil,
+          clock: now,
+        });
+        const response = await context.run(async () => {
+          requirePublication(input.cache, ROUTE);
+          const selected = await serveFromGeneration(input, storeFor(), source, handler);
+          if (selected === undefined) throw new Error('the generation was not selected');
+          return admitRequestPublication(selected, context);
+        });
+
+        expect(response.status).toBe(200);
+        await expect(response.text()).resolves.toBe('CURRENT');
+        expect(readRecord).not.toHaveBeenCalled();
+        expect(invokeNodeHandler).not.toHaveBeenCalled();
+      },
+    );
+
     it('reads the current Pages data when routing normalized an unbuilt data URL to its page', async () => {
       const store = storeFor({ ...shell, body: undefined, allowQuery: ['nxtPid'] }, 'pages');
       const input = inputFor(
@@ -549,6 +604,7 @@ describe('runtime generation safeguards', () => {
         runtime: input.cache,
         request: input.request,
         startedAt: Date.now(),
+        publication: new Set<string>(),
         fetchStarts: new Map<string, number>(),
         waitUntil: input.waitUntil,
         run: input.run,
@@ -615,6 +671,7 @@ describe('runtime generation safeguards', () => {
         runtime: input.cache,
         request: input.request,
         startedAt: Date.now(),
+        publication: new Set<string>(),
         fetchStarts: new Map<string, number>(),
         waitUntil: input.waitUntil,
         run: input.run,
@@ -632,6 +689,43 @@ describe('runtime generation safeguards', () => {
   });
 
   describe('runtime resume-state transport', () => {
+    it('requires publication for a direct live resume rather than bypassing route admission', async () => {
+      const body = 'saved';
+      const input = inputFor(
+        new Request(`https://fixture.test${PATH}`, {
+          method: 'POST',
+          headers: {
+            [CACHE_ROUTE_HEADER]: ROUTE,
+            [RESUME_STATE_LENGTH_HEADER]: String(body.length),
+          },
+          body,
+        }),
+      );
+      Object.assign(input.cache!.host, {
+        publication: {
+          version: 1,
+          identities: ['a'.repeat(64)],
+          routes: [ROUTE],
+          independentBuild: [ROUTE],
+        },
+      });
+      const now = 1_800_000_000_000;
+      const context = requestContextFor({
+        tables: input,
+        runtime: input.cache,
+        request: input.request,
+        startedAt: now,
+        waitUntil: input.waitUntil,
+        clock: now,
+      });
+      const response = await context.run(async () =>
+        admitRequestPublication(await handleRuntimeResume(input, storeFor()), context),
+      );
+
+      expect(response.status).toBe(503);
+      expect(invokeNodeHandler).toHaveBeenCalledTimes(1);
+    });
+
     it.each([null, '0', '-1', String(MAX_PACK_BYTES + 1)])(
       'rejects an absent, empty or oversized declared length: %s',
       async (length) => {

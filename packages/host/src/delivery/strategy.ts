@@ -108,6 +108,8 @@ export interface ContinuationStart<C> {
   readonly ctx: C;
   /** Absent, the build's state. */
   readonly resume?: ContinuationResume | undefined;
+  /** Original public grants of the exact selected shell; never supplied by a visitor. */
+  readonly publicationTags?: readonly string[] | undefined;
   /** What the edge tells the runtime beside the request, such as a regeneration it asks for. */
   readonly headers?: Readonly<Record<string, string>> | undefined;
 }

@@ -41,6 +41,7 @@ import type { EventInput } from './history.ts';
 import type { BlobStore } from './io.ts';
 import { type IsrWrite, isrWriteOf, sameOutputs } from './metering.ts';
 import type { RepairJob, RepairPending, RepairStart, RepairStep } from './repair-jobs.ts';
+import { resourceSnapshotFailure } from './resource-snapshots.ts';
 import {
   type EntryRow,
   generationOutputs,
@@ -429,6 +430,8 @@ function applySetData(
   if (isRefusal(scope)) {
     return scope;
   }
+  const snapshot = resourceSnapshotFailure(sql, plan.input.entry.tags);
+  if (snapshot !== undefined) return refuse('lease_expired', snapshot.message);
   const floor = controlFenceFloorInvalidations(sql, {
     tagIds: plan.tagRefs.map((ref) => ref.tagId),
     timestamp: plan.input.entry.timestamp,

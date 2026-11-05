@@ -1,6 +1,7 @@
 import { canonicalJson, sha256HexOfText } from '../artifact/hash.ts';
 import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
 import type { RouteGates, RouterReferences } from '../bundle/carried.ts';
+import type { PublicationRequirement } from '../cache/publication.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
@@ -21,8 +22,6 @@ import {
   type HeaderRule,
   type ContinuationConfig,
   type DynamicRoute,
-  MANIFEST_SCHEMA_VERSION,
-  PAGES_FALLBACK_SCHEMA_VERSION,
   type ManifestCache,
   type MiddlewareMatcher,
   type ReservedRoute,
@@ -41,8 +40,8 @@ import {
 import { spellsPrefixOf } from './spelled-prefix.ts';
 import { staticPageFields } from './static-pages.ts';
 import { fromStoredManifest, readManifestJson, toStoredManifest } from './stored.ts';
+import { schemaVersionFor } from './version.ts';
 
-const PAGES_FALLBACK_PRIVACY = 3;
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 15_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 300_000;
 
@@ -57,6 +56,7 @@ export const DEFAULT_ASSET_POLICY: AssetPolicy = {
 };
 
 export interface BuildProjectManifestInput {
+  readonly publication?: PublicationRequirement;
   readonly projectId: string;
   readonly runId: string;
   readonly generatedAt: string;
@@ -250,18 +250,6 @@ function gateFields(
   return { gates, ...(gatedPathnames !== undefined && { gatedPathnames }) };
 }
 
-/** Version-three Pages authority requires its reader; unrelated builds keep their format. */
-function schemaVersionFor(input: BuildProjectManifestInput): ProjectManifest['schemaVersion'] {
-  if (
-    (input.pagesFallbacks?.length ?? 0) > 0 ||
-    input.staticPages?.some((page) => page.staticPagePrivacy === PAGES_FALLBACK_PRIVACY) === true
-  )
-    return PAGES_FALLBACK_SCHEMA_VERSION;
-  return input.staticFileRequestKeys === true
-    ? REQUEST_FILE_KEYS_SCHEMA_VERSION
-    : MANIFEST_SCHEMA_VERSION;
-}
-
 /** Assemble a manifest from a build's routes; validates the result against the schema. */
 export function buildProjectManifest(input: BuildProjectManifestInput): ProjectManifest {
   const unreachable = unreachableFunctions(input);
@@ -307,6 +295,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...pagesDataFields(input),
     ...gateFields(input),
     ...(input.cache !== undefined && { cache: input.cache }),
+    ...(input.publication !== undefined && { publication: input.publication }),
   });
 }
 

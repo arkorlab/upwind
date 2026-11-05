@@ -1,4 +1,12 @@
-import { deriveEntry, type DecodedGenerationPack } from '@stayingupwind/core/cache';
+import {
+  deriveEntry,
+  type DecodedGenerationPack,
+  admitPublication,
+  publicationExpired,
+  publicationTimeFor,
+  publicationForBuild,
+  publicationForRoute,
+} from '@stayingupwind/core/cache';
 import {
   type ConfiguredHeaders,
   foldedHeadersFor,
@@ -34,6 +42,7 @@ import { lookAtScopeBehind } from '../cache/scope-signal.ts';
 import { memberEntryKey } from '../memory/caches.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { finishShellBody } from '../strategies/shell-loader.ts';
+import { builtPublicationRoute, documentPublicationTags } from './document-publication.ts';
 import { generationKeyOf, requestAsLeft } from './hosted-route.ts';
 import { dispatchedFor, type MiddlewareOutcome, routedHeaders } from './middleware.ts';
 import type { PassthroughWait } from './passthrough.ts';
@@ -129,6 +138,7 @@ function partialPartGeneration(
       partial.load,
       input.edge.runtime.now(),
       condemnedIn(input.edge.runtime.memory, input.edge.app?.deploymentId),
+      input.manifest.publication,
     );
     // Generic build parts do not describe a completed member's HTML. Missing or incompatible
     // representations remain with the Function, which can resume that member's own record.
@@ -181,6 +191,7 @@ async function partGeneration(input: PartInput, part: PartAnswer): Promise<PartG
     load,
     input.edge.runtime.now(),
     condemnedIn(input.edge.runtime.memory, input.edge.app?.deploymentId),
+    input.manifest.publication,
   );
   if (decision.kind === 'build') {
     return { kind: upgradesMember(settings, entry, pathname) ? 'function' : 'build' };
@@ -353,13 +364,24 @@ function refreshPart(
 }
 
 /** The immutable router part is eligible only while its build generation remains eligible. */
-function answerBuildPart(
+async function answerBuildPart(
   input: PartInput,
   part: PartAnswer,
   fallback: () => Promise<Response>,
   generation: Extract<PartGeneration, { readonly kind: 'build' }>,
 ): Promise<Response> {
   if (part.buildPart === undefined) return fallback();
+  if (
+    publicationExpired(
+      documentPublicationTags({ entry: part.entry }),
+      publicationTimeFor(
+        input.manifest.publication ?? input.edge.runtime,
+        input.edge.runtime.now(),
+      ),
+      publicationForBuild(input.manifest.publication, builtPublicationRoute(part.entry)),
+    )
+  )
+    return fallback();
   // A fresh accepted build record already proved its revision against every observed receipt.
   const key =
     generation.acceptedRecord === undefined ? generationKeyOf(input, part.entry) : undefined;
@@ -372,13 +394,22 @@ function answerBuildPart(
   ) {
     return fallback();
   }
-  return answer(input, {
+  const response = await answer(input, {
     entry: part.entry,
     middleware: part.middleware,
     kind: part.kind,
     segment: part.buildPart,
     startedAt: part.startedAt,
   });
+  return admitPublication(
+    response,
+    documentPublicationTags({ entry: part.entry }),
+    input.edge.runtime.now(),
+    {
+      required: publicationForBuild(input.manifest.publication, builtPublicationRoute(part.entry)),
+      clockOwner: input.manifest.publication ?? input.edge.runtime,
+    },
+  );
 }
 
 async function answerPart(input: PartInput, part: PartAnswer): Promise<Response> {
@@ -437,14 +468,18 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
       };
     },
   };
-  return answer(input, {
+  const delivery = { delegated: false };
+  const response = await answer(input, {
     entry,
     middleware,
     kind,
     startedAt,
     generation,
     strategy,
-    onUnavailable: (storageReads) => fallback({ regeneration: detached, storageReads }),
+    onUnavailable: (storageReads) => {
+      delivery.delegated = true;
+      return fallback({ regeneration: detached, storageReads });
+    },
     detached,
     segment: {
       artifact: {
@@ -455,6 +490,16 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
       },
     },
   });
+  if (delivery.delegated) return response;
+  return admitPublication(
+    response,
+    generation.pack.header.tags.map((tag) => tag.value),
+    input.edge.runtime.now(),
+    {
+      required: publicationForRoute(input.manifest.publication, generation.pack.header.route),
+      clockOwner: input.manifest.publication ?? input.edge.runtime,
+    },
+  );
 }
 
 /** Serve a segment belonging to the exact HTML generation this isolate holds. */

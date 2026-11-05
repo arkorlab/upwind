@@ -40,6 +40,7 @@ import {
 
 import type { CurrentGeneration } from '../cache/current.ts';
 import type { FirstPublish } from '../delivery.ts';
+import { copyBuildPublication } from '../publication-proof.ts';
 import type { Representation } from '../representations.ts';
 import type { RoutedInput } from '../serve.ts';
 import { getStore, type Store } from '../store.ts';
@@ -191,7 +192,7 @@ function admittedOf(store: Store): Admitted {
 
 /** The answer, offered: the `Cache-Control` the record allows in place of the visitor's. */
 function offer(answer: Response, made: Offer, cacheControl: string | null): Response {
-  const offered = new Response(answer.body, answer);
+  const offered = copyBuildPublication(answer, new Response(answer.body, answer));
   if (cacheControl === null) offered.headers.delete(CACHE_CONTROL);
   else offered.headers.set(CACHE_CONTROL, cacheControl);
   offered.headers.set(
@@ -440,7 +441,7 @@ export async function offeredOncePublished(
  */
 function visitorsOwn(answer: Response): Response {
   if (answer.headers.has(CACHE_CONTROL)) return answer;
-  const own = new Response(answer.body, answer);
+  const own = copyBuildPublication(answer, new Response(answer.body, answer));
   own.headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
   return own;
 }
@@ -581,7 +582,7 @@ export function delivered(request: Request, answer: Response): Response {
   const value = answer.headers.get(OFFER);
   if (value === null) return passedOn(request, answer);
   const left = answer.headers.get(OFFERED_CACHE_CONTROL) ?? '';
-  const out = new Response(answer.body, answer);
+  const out = copyBuildPublication(answer, new Response(answer.body, answer));
   const { headers } = out;
   headers.delete(OFFER);
   headers.delete(OFFERED_CACHE_CONTROL);
@@ -593,11 +594,14 @@ export function delivered(request: Request, answer: Response): Response {
   if (made !== undefined && configured !== undefined) {
     const answered = new Headers(headers);
     if (shared(answered, made, configured)) {
-      return new Response(out.body, {
-        status: out.status,
-        statusText: out.statusText,
-        headers: answered,
-      });
+      return copyBuildPublication(
+        out,
+        new Response(out.body, {
+          status: out.status,
+          statusText: out.statusText,
+          headers: answered,
+        }),
+      );
     }
   }
   // The visitor's, as the Function answers it on the edge — but for a `Cache-Control` routing laid

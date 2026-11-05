@@ -5,6 +5,7 @@ import {
   sha256HexOfText,
 } from '@stayingupwind/core/artifact';
 import type { DeploymentBundle } from '@stayingupwind/core/bundle';
+import type { PublicationRequirement } from '@stayingupwind/core/cache';
 import {
   type AppRuntime,
   parseProjectManifest,
@@ -142,6 +143,8 @@ export class DeployRefusalError extends Error {
 
 export interface StageInput {
   readonly bundle: DeploymentBundle;
+  /** Host-sealed publication policy for the application generation being deployed. */
+  readonly publication?: PublicationRequirement | undefined;
   /** The bundle as it was stored, which the deployment's fingerprint is the digest of. */
   readonly json: string;
   /** The deployment served before this one, whose `_next/static` files stay; none for a first. */
@@ -410,6 +413,7 @@ export async function stageDeployment(
   const preloads = await preloadsOf(target, input);
   const assembled = await assembleManifest({
     bundle,
+    ...(input.publication !== undefined && { publication: input.publication }),
     previous: input.previous,
     projectId: input.projectId,
     runId: input.runId,

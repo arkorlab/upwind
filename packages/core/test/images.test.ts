@@ -230,6 +230,17 @@ describe('parseImageRequest', () => {
     expect(staticOf(parse(MEDIA, null, withBase))).toBe(false);
   });
 
+  it.each([
+    '/_next/static/media-private/avatar.png',
+    '/_next/static/immutable/media-private/avatar.png',
+    '/_next/static/media',
+    '/_next/static/immutable/media',
+  ])('does not classify the prefix lookalike %s as a static file', (href) => {
+    const query = `url=${encodeURIComponent(href)}&w=64&q=75`;
+
+    expect(staticOf(parse(query))).toBe(false);
+  });
+
   /** One case per message the optimizer has. */
   it.each([
     ['w=64&q=75', '"url" parameter is required'],

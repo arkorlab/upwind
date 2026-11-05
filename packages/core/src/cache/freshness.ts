@@ -1,3 +1,4 @@
+import { publicationDeadline, type PublicationRequirement } from './publication.ts';
 import type { CachePolicy, Deadline, InvalidationState, Validity } from './schema.ts';
 import { deadlineAfter, UNKNOWN_DEADLINE } from './timing.ts';
 
@@ -19,6 +20,8 @@ export type { InvalidationState, Validity } from './schema.ts';
  */
 
 export interface FreshnessInput {
+  readonly tags?: readonly string[];
+  readonly publication?: PublicationRequirement | undefined;
   readonly policy: CachePolicy;
   readonly cacheTimestamp: number | null;
   readonly invalidation?: InvalidationState | undefined;
@@ -73,7 +76,21 @@ export function evaluateFreshness(input: FreshnessInput): Freshness {
   const staleAt = deadlineAt(invalidation?.staleAt);
   const hardExpireAt = deadlineAt(invalidation?.hardExpireAt);
   const revalidateAt = staleAt === undefined ? timeRevalidate : earliest(timeRevalidate, staleAt);
-  const expireAt = hardExpireAt === undefined ? timeExpire : earliest(timeExpire, hardExpireAt);
+  const limitedExpire =
+    hardExpireAt === undefined ? timeExpire : earliest(timeExpire, hardExpireAt);
+  const publication = publicationDeadline(input.tags ?? [], input.publication);
+  const expireAt =
+    publication === undefined
+      ? limitedExpire
+      : earliest(limitedExpire, { kind: 'at', unixMs: publication });
+  if (publication !== undefined && (!Number.isFinite(now) || now >= publication)) {
+    return {
+      validity: 'expired',
+      revalidateAt,
+      expireAt,
+      cause: 'invalidation',
+    };
+  }
   if (hardExpireAt !== undefined && now >= hardExpireAt.unixMs) {
     return { validity: 'expired', revalidateAt, expireAt, cause: 'invalidation' };
   }

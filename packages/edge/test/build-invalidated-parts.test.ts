@@ -290,6 +290,27 @@ describe('router parts after a known immediate build invalidation', () => {
   );
 
   it.each(PARTS)(
+    'keeps independent build %s records available under publication admission',
+    async (kind) => {
+      const sample = fixture(kind);
+      sample.input.manifest.publication = {
+        version: 1,
+        identities: ['a'.repeat(64)],
+        routes: ['/update-tag-test'],
+        independentBuild: ['/update-tag-test'],
+      };
+      mocks.load.mockResolvedValue(await freshLoad(kind, 'build'));
+
+      const response = await answer(kind, sample);
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('old build part');
+      expect(sample.passthrough).not.toHaveBeenCalled();
+      expect(mocks.load).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(PARTS)(
     'serves a current runtime %s with no foreground dispatch or extra record lookup',
     async (kind) => {
       const sample = fixture(kind);

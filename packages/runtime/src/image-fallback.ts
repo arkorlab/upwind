@@ -1,5 +1,11 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import {
+  admitPublication,
+  publicationExpired,
+  publicationTimeFor,
+  type PublicationRequirement,
+} from '@stayingupwind/core/cache';
+import {
   allowedImageDestination,
   BYPASS_IMAGE_TYPES,
   detectImageType,
@@ -20,10 +26,17 @@ import {
   releaseStream,
 } from '@stayingupwind/core/util';
 
+import { nowMs } from './cache/clock.ts';
 import type { ImageCacheInput, KeptImage } from './image-cache.ts';
 import { encodeImage, type EncodedImage, holdsImage } from './image-encoder.ts';
+import {
+  imagePublicationHeaders,
+  imagePublicationTags,
+  protectedImageSource,
+} from './image-publication.ts';
 import { ImageDestinationError } from './image-source-error.ts';
 import { fetchImageSource } from './image-source-fetch.ts';
+import { copyBuildPublication } from './publication-proof.ts';
 
 /**
  * `/_next/image` reaching the Function itself.
@@ -103,6 +116,9 @@ export function imageFallback(
 export function imageCacheInputOf(
   input: {
     readonly request: Request;
+    readonly cache?:
+      | { readonly host: { readonly publication?: PublicationRequirement | undefined } }
+      | undefined;
     readonly middlewareRan?: true | undefined;
     readonly waitUntil: (promise: Promise<unknown>) => void;
   },
@@ -116,6 +132,8 @@ export function imageCacheInputOf(
     images,
     deploymentId: deployment.deploymentId,
     middlewareRan: input.middlewareRan === true,
+    publicationProtected: protectedImageSource(params, input.cache?.host.publication),
+    publicationRequired: input.cache?.host.publication !== undefined,
     waitUntil: input.waitUntil,
   };
 }
@@ -176,7 +194,8 @@ function redirectRefused(
   if (!allowedImageDestination(images, target)) {
     return true;
   }
-  return ownHosts.has(target.hostname);
+  const hostname = target.hostname.toLowerCase().replace(/\.$/u, '');
+  return [...ownHosts].some((own) => own.toLowerCase().replace(/\.$/u, '') === hostname);
 }
 
 async function fetchHop(
@@ -221,6 +240,17 @@ export interface RemoteSourceInput {
   readonly fetchImpl?: typeof fetch;
 }
 
+/** Own-host destinations are refused before either an image cache hit or an initial fetch. */
+export function remoteSourceRefusal(
+  url: URL,
+  images: ImagesConfig,
+  ownHosts: ReadonlySet<string>,
+): Response | undefined {
+  return redirectRefused(url, ownHosts, images)
+    ? refusal(HTTP_BAD_REQUEST, UPSTREAM_INVALID)
+    : undefined;
+}
+
 /**
  * A URL of the internet, as Next.js's optimizer fetches one: nothing of the client's forwarded,
  * redirects followed up to the configured count and without checking each hop against the
@@ -233,9 +263,8 @@ export async function fetchRemoteSource(input: RemoteSourceInput): Promise<Remot
   let url = new URL(input.href);
   // The patterns name the hosts an application meant to allow, not where they point. Checked on
   // the first destination as well as on every hop; see `allowedImageDestination`.
-  if (!allowedImageDestination(images, url)) {
-    return { kind: 'refused', response: refusal(HTTP_BAD_REQUEST, UPSTREAM_INVALID) };
-  }
+  const initial = remoteSourceRefusal(url, images, ownHosts);
+  if (initial !== undefined) return { kind: 'refused', response: initial };
   for (let hops = images.maximumRedirects; ; hops -= 1) {
     const hop = await fetchHop(fetchImpl, url, deadline, images.dangerouslyAllowLocalIP);
     if (hop.kind === 'refused') {
@@ -268,6 +297,9 @@ function refusalStatus(source: Response, internal: boolean): number {
 }
 
 interface SourceResponseInput {
+  /** The host/deployment clock fence; a direct source owns its own fence when none is supplied. */
+  readonly clockOwner?: WeakKey;
+  readonly publicationProtected?: boolean | undefined;
   readonly source: Response;
   readonly params: ImageRequestParams;
   readonly images: ImagesConfig;
@@ -284,6 +316,10 @@ interface SourceResponseInput {
    * does: the source's own, or one of its bytes where it has none.
    */
   readonly keep?: ((image: KeptImage) => void) | undefined;
+}
+
+function imageClockOf(input: SourceResponseInput): WeakKey {
+  return input.clockOwner ?? input.source;
 }
 
 /** The source's bytes, whole, or the refusal they amount to. */
@@ -320,6 +356,25 @@ async function readSource(
   return { bytes: read.bytes };
 }
 
+/** Invalid reserved proof refuses the source without leaving its unread body behind. */
+function sourcePublication(
+  source: Response,
+  internal: boolean,
+): { readonly tags: string[] } | { readonly refusal: Response } {
+  try {
+    return { tags: imagePublicationTags(source) };
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    releaseStream(source.body, 'image source publication refused');
+    return {
+      refusal: refusal(
+        refusalStatus(source, internal),
+        internal ? INTERNAL_INVALID : UPSTREAM_INVALID,
+      ),
+    };
+  }
+}
+
 /**
  * The source's answer as the optimizer would pass it on: looked at, and under the optimizer's
  * headers. What the source answered with anything but its bytes — a redirect its middleware sent,
@@ -328,6 +383,13 @@ async function readSource(
  */
 export async function sourceResponse(input: SourceResponseInput): Promise<Response> {
   const { source, params, images, internal } = input;
+  const proof = sourcePublication(source, internal);
+  if ('refusal' in proof) return proof.refusal;
+  const publication = proof.tags;
+  const owner = imageClockOf(input);
+  const now = publicationTimeFor(owner, nowMs());
+  if (publicationExpired(publication, now))
+    return admitPublication(source, publication, now, { clockOwner: owner });
   const invalid = internal ? INTERNAL_INVALID : UPSTREAM_INVALID;
   if (!source.ok || source.body === null) {
     releaseStream(source.body, 'image source refused');
@@ -367,7 +429,10 @@ export async function sourceResponse(input: SourceResponseInput): Promise<Respon
   const sourceTag =
     input.source.headers.get('etag') ??
     (made !== undefined || input.keep === undefined ? undefined : `"${await sha256Hex(bytes)}"`);
-  return answered(input, { bytes, contentType, etag: sourceTag }, made ?? encoded);
+  return copyBuildPublication(
+    source,
+    answered(input, { bytes, contentType, etag: sourceTag }, made ?? encoded, publication),
+  );
 }
 
 /** A transformation the encoder made, with its entity tag. */
@@ -382,6 +447,7 @@ function answered(
     readonly etag: string | undefined;
   },
   encoded: Made | EncodedImage | undefined,
+  publication: readonly string[],
 ): Response {
   const { params, images, request } = input;
   const failed = encoded?.kind === 'failed';
@@ -403,14 +469,25 @@ function answered(
     config: images,
     cache: 'MISS',
   });
-  if (etag !== undefined && input.keep !== undefined) {
+  const protectedSource = imagePublicationHeaders(headers, publication, input.publicationProtected);
+  if (!protectedSource && etag !== undefined && input.keep !== undefined) {
     input.keep({ bytes, contentType, etag, maxAge, fallback: failed });
   }
   if (holdsImage(request, headers.get('etag') ?? undefined)) {
-    return new Response(null, { status: HTTP_NOT_MODIFIED, headers });
+    return admitPublication(
+      new Response(null, { status: HTTP_NOT_MODIFIED, headers }),
+      publication,
+      nowMs(),
+      { clockOwner: imageClockOf(input) },
+    );
   }
   headers.set('content-length', String(bytes.byteLength));
   // Read into a buffer of its own, which is what the runtime's `Response` asks a body to be over.
   const body = bytes as Uint8Array<ArrayBuffer>;
-  return new Response(request.method === 'HEAD' ? null : body, { headers });
+  return admitPublication(
+    new Response(request.method === 'HEAD' ? null : body, { headers }),
+    publication,
+    nowMs(),
+    { clockOwner: imageClockOf(input) },
+  );
 }

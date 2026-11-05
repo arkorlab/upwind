@@ -15,7 +15,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ImageCacheInput, ImageCacheSlot, KeptImage } from '../../src/image-cache.ts';
-import { sourceResponse } from '../../src/image-fallback.ts';
+import { imageCacheInputOf, sourceResponse } from '../../src/image-fallback.ts';
 import { configureImageCache, imageKeyOf, openImageCache } from '../../src/native/image-cache.ts';
 import { loadSharp } from '../../src/native/image-encoder.ts';
 
@@ -34,6 +34,7 @@ vi.mock(import('node:fs/promises'), async (original) => {
   return {
     ...fs,
     readdir: vi.fn(fs.readdir) as unknown as typeof fs.readdir,
+    readFile: vi.fn(fs.readFile) as unknown as typeof fs.readFile,
     rename: vi.fn(fs.rename),
     rm: vi.fn(fs.rm),
     stat: vi.fn(fs.stat) as unknown as typeof fs.stat,
@@ -151,6 +152,91 @@ describe('images the native target keeps', () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     await rm(directory, { recursive: true, force: true });
+  });
+
+  it.each([
+    { href: '/dynamic.png', isStatic: false },
+    { href: '/_next/static/media/build.hash.png', isStatic: true },
+  ])(
+    'never reads previously kept $href before its protected source is admitted',
+    async (source) => {
+      const input = inputOf({ params: { ...PARAMS, ...source } });
+      await kept(input);
+
+      await expect(hitOf(input)).resolves.toBeDefined();
+
+      const protectedInput = imageCacheInputOf(
+        {
+          request: input.request,
+          waitUntil: input.waitUntil,
+          cache: {
+            host: {
+              publication: {
+                version: 1,
+                identities: ['a'.repeat(64)],
+                routes: [source.href],
+                ...(source.isStatic && { independentBuild: [source.href] }),
+              },
+            },
+          },
+        },
+        { deploymentId: input.deploymentId },
+        input.params,
+        input.images,
+      );
+
+      vi.mocked(readFile).mockClear();
+
+      expect(openImageCache(protectedInput)).toBeUndefined();
+      expect(readFile).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps legacy external image hits only for hosts without a publication requirement', async () => {
+    const input = inputOf({
+      params: { ...PARAMS, href: 'https://images.test/a.png', isAbsolute: true },
+    });
+    const text = Buffer.from(
+      JSON.stringify({
+        v: 1,
+        key: imageKeyOf(input),
+        contentType: IMAGE.contentType,
+        etag: IMAGE.etag,
+        maxAge: IMAGE.maxAge,
+        fallback: IMAGE.fallback,
+        expiresAt: Date.now() + 60_000,
+      }),
+    );
+    const length = Buffer.alloc(HEADER_LENGTH_BYTES);
+    length.writeUInt32BE(text.byteLength);
+
+    await writeFile(fileOf(input), Buffer.concat([length, text, IMAGE.bytes]));
+
+    await expect(hitOf(input)).resolves.toBeDefined();
+
+    const protectedInput = imageCacheInputOf(
+      {
+        request: input.request,
+        waitUntil: input.waitUntil,
+        cache: {
+          host: { publication: { version: 1, identities: ['a'.repeat(64)], routes: ['/items'] } },
+        },
+      },
+      { deploymentId: input.deploymentId },
+      input.params,
+      input.images,
+    );
+
+    const absent = await slotOf(protectedInput);
+
+    expect(absent.hit).toBeUndefined();
+
+    absent.keep?.(IMAGE);
+    await settled();
+
+    const aware = await slotOf(protectedInput);
+
+    expect(aware.hit).toBeDefined();
   });
 
   it('keeps nothing until the server says where, nor where the application allows none', () => {

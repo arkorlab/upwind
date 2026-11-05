@@ -20,6 +20,7 @@ export function requestKeeping(
     runtime,
     request: new Request('https://fixture.test/'),
     startedAt: Date.now(),
+    publication: new Set<string>(),
     fetchStarts: new Map(),
     waitUntil: (promise) => {
       kept.push(promise);

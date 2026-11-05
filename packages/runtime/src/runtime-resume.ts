@@ -5,8 +5,10 @@ import {
   RESUME_STATE_BODY,
   RESUME_STATE_HEADER,
 } from '@stayingupwind/core/paas';
+import { releaseStream } from '@stayingupwind/core/util';
 
 import { nodeHandlerOf } from './entries.ts';
+import { observeResumePublication } from './resume-publication.ts';
 import { readResumeState } from './resume-state.ts';
 import { resumeUrlOf } from './route-parameters.ts';
 import { HTTP_NOT_FOUND, resume, type RoutedInput, stripPlatformHeaders } from './serve.ts';
@@ -19,6 +21,7 @@ import type { Store } from './store.ts';
  */
 
 const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAVAILABLE = 503;
 
 /** Whether the edge sent a generation's resume state as the body. */
 export function carriesResumeState(request: Request): boolean {
@@ -29,6 +32,15 @@ export function carriesResumeState(request: Request): boolean {
 export async function handleRuntimeResume(input: RoutedInput, store: Store): Promise<Response> {
   const route =
     pathFromHeaders(input.request.headers, CACHE_ROUTE_HEADER, CACHE_ROUTE_ESCAPED_HEADER) ?? '';
+  try {
+    observeResumePublication(input, route);
+  } catch {
+    releaseStream(input.request.body, 'selected publication proof was refused');
+    return new Response('Publication unavailable', {
+      status: HTTP_UNAVAILABLE,
+      headers: { 'cache-control': 'private, no-store' },
+    });
+  }
   const handler = await nodeHandlerOf(input, route);
   if (handler === undefined) {
     return new Response(`no Node.js entrypoint for ${route}`, { status: HTTP_NOT_FOUND });

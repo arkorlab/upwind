@@ -1,8 +1,14 @@
 import type { ImageRequestParams, ImagesConfig } from '@stayingupwind/core/images';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { withClock } from '../src/cache/clock.ts';
+import { requestContextFor } from '../src/cache/context.ts';
+import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { fetchRemoteSource, sourceResponse } from '../src/image-fallback.ts';
+import { markBuildPublication } from '../src/publication-proof.ts';
+import { admitBuildSource, admitRequestPublication } from '../src/publication.ts';
+import type { RoutedInput } from '../src/serve.ts';
 
 /**
  * What the Worker's own answer for `/_next/image` holds a source to — the fallback for when the
@@ -91,7 +97,241 @@ function remote(net: FakeNetwork, images = IMAGES) {
   });
 }
 
+describe('publication-tagged optimized image sources', () => {
+  it('refuses an image when its source clock rolls back during the body read', async () => {
+    const now = 1_800_001_000_000;
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(now - performance.timeOrigin);
+    const source = new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          clock.mockReturnValue(now - 1 - performance.timeOrigin);
+          controller.enqueue(png());
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          'x-next-cache-tags': `upwind:publication:v1:${'a'.repeat(64)}:${String(now + 1000)}`,
+        },
+      },
+    );
+    try {
+      const response = await sourceResponse({
+        source,
+        params: PARAMS,
+        images: IMAGES,
+        internal: true,
+        request: asked('GET'),
+        clockOwner: {},
+      });
+
+      expect(response.status).toBe(503);
+      await expect(response.text()).resolves.toBe('Publication unavailable');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each([false, true])(
+    'refuses malformed source snapshot proof and releases its unread body (internal=%s)',
+    async (internal) => {
+      const cancel = vi.fn();
+      const source = new Response(new ReadableStream({ cancel }), {
+        headers: { 'x-next-cache-tags': 'upwind:resource-snapshot:v1:invalid:0' },
+      });
+      const keep = vi.fn();
+
+      const response = await sourceResponse({
+        source,
+        params: PARAMS,
+        images: IMAGES,
+        internal,
+        request: asked('GET'),
+        keep,
+      });
+
+      expect(response.status).toBe(HTTP_BAD_REQUEST);
+      expect(cancel).toHaveBeenCalledExactlyOnceWith('image source publication refused');
+      expect(keep).not.toHaveBeenCalled();
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+    },
+  );
+
+  it('retains a remote source grant without admitting its derivative to the image cache', async () => {
+    const tag = `upwind:publication:v1:${'a'.repeat(64)}:${String(Date.now() + 60_000)}`;
+    const source = new Response(body(png()), {
+      headers: { 'x-next-cache-tags': tag, 'cache-control': 'public,max-age=3600' },
+    });
+    const keep = vi.fn();
+
+    const response = await sourceResponse({
+      source,
+      params: PARAMS,
+      images: IMAGES,
+      internal: false,
+      request: asked('GET'),
+      keep,
+    });
+
+    expect(response.status).toBe(HTTP_OK);
+    expect(response.headers.get('x-next-cache-tags')).toBe(tag);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(keep).not.toHaveBeenCalled();
+  });
+
+  it('retains a shipped image source snapshot through optimization and final v3 admission', async () => {
+    const id = 'a'.repeat(64);
+    const witness = `upwind:resource-snapshot:v1:${id}:4`;
+    const tags = [
+      `upwind:publication:v1:${id}:${String(Date.now() + 60_000)}`,
+      'resource:image',
+      witness,
+    ];
+    const required = {
+      version: 3 as const,
+      valueObservers: true as const,
+      resourceSnapshots: true as const,
+      identities: [id],
+      routes: ['/image'],
+    };
+    const request = asked('GET');
+    const runtime = { host: { publication: required } } as unknown as CacheRuntime;
+    const context = requestContextFor({
+      tables: { app: { entries: {} }, edge: { entries: {} } },
+      runtime,
+      request,
+      startedAt: Date.now(),
+      waitUntil: vi.fn(),
+      clock: undefined,
+    });
+    context.publicationRequirement = required;
+    context.publicationReadStarted = true;
+    const input: RoutedInput = {
+      request,
+      initURL: request.url,
+      app: { entries: {} },
+      edge: { entries: {} },
+      cache: runtime,
+      run: context.run,
+      waitUntil: vi.fn(),
+    };
+    const rawSource = new Response(body(png()), {
+      headers: { 'content-type': 'image/png', 'x-next-cache-tags': tags.join(',') },
+    });
+    const response = await context.run(async () => {
+      const source = admitBuildSource(input, '/image', rawSource, tags);
+
+      expect(context.resourceTags).toContain(witness);
+
+      const derived = await sourceResponse({
+        source,
+        params: PARAMS,
+        images: IMAGES,
+        internal: true,
+        request,
+        publicationProtected: true,
+      });
+      return admitRequestPublication(derived, context);
+    });
+
+    expect(response.headers.get('x-next-cache-tags')).toContain(witness);
+    expect(response.headers.get('x-next-cache-tags')).toContain('resource:image');
+    await expect(response.arrayBuffer()).resolves.toHaveProperty(
+      'byteLength',
+      PNG_SIGNATURE.byteLength,
+    );
+  });
+
+  it('keeps an independent source proof on its derived image through final admission', async () => {
+    const required = {
+      version: 2 as const,
+      valueObservers: true as const,
+      identities: ['a'.repeat(64)],
+      routes: ['/image'],
+      independentBuild: ['/image'],
+    };
+    const request = asked('GET');
+    const runtime = { host: { publication: required } } as unknown as CacheRuntime;
+    const context = requestContextFor({
+      tables: { app: { entries: {} }, edge: { entries: {} } },
+      runtime,
+      request,
+      startedAt: Date.now(),
+      waitUntil: vi.fn(),
+      clock: undefined,
+    });
+    context.publicationRequirement = required;
+    context.publicationReadStarted = true;
+    const source = new Response(body(png()), { headers: { 'content-type': 'image/png' } });
+    markBuildPublication(source, required);
+    const response = await context.run(async () => {
+      const derived = await sourceResponse({
+        source,
+        params: PARAMS,
+        images: IMAGES,
+        internal: true,
+        request,
+        publicationProtected: true,
+      });
+      return admitRequestPublication(derived, context);
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.arrayBuffer()).resolves.toHaveProperty(
+      'byteLength',
+      PNG_SIGNATURE.byteLength,
+    );
+  });
+
+  it.each([0, 60_000])(
+    'never keeps a protected image beyond its source grant (%s)',
+    async (left) => {
+      const now = 1_800_000_000_000;
+      const source = new Response(body(png()), {
+        headers: {
+          'x-next-cache-tags': `upwind:publication:v1:${'a'.repeat(64)}:${String(now + left)}`,
+          'cache-control': 'public,max-age=3600',
+          etag: '"source"',
+        },
+      });
+      const keep = vi.fn();
+      const answer = await withClock(now, () => {
+        return sourceResponse({
+          source,
+          params: PARAMS,
+          images: IMAGES,
+          internal: true,
+          request: asked('GET'),
+          keep,
+        });
+      });
+
+      expect(keep).not.toHaveBeenCalled();
+      expect(answer.headers.get('cache-control')).toContain('no-store');
+      expect(answer.status).toBe(left === 0 ? 503 : HTTP_OK);
+
+      const expected = left === 0 ? encodeUtf8('Publication unavailable') : png();
+
+      expect(new Uint8Array(await answer.arrayBuffer())).toStrictEqual(expected);
+    },
+  );
+});
+
 describe('the Worker’s own answer for an image source', () => {
+  it('rejects an initial own-host remote source without making a request', async () => {
+    const source = new Response(body(png()));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(source);
+    const result = await fetchRemoteSource({
+      href: 'https://app.example/a.png',
+      images: { ...IMAGES, domains: ['app.example'] },
+      ownHosts: OWN_HOSTS,
+      fetchImpl,
+    });
+
+    expect(result.kind).toBe('refused');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('follows a remote source’s redirects up to the configured count, nothing forwarded', async () => {
     const net = network([
       ['/a.png', () => redirect('/b.png')],

@@ -1,0 +1,193 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import { admitPublication as admitWithClock } from '../src/cache/publication-response.ts';
+import { publicationTimeFor, type PublicationRequirement } from '../src/cache/publication.ts';
+import {
+  buildProjectManifest,
+  parseProjectManifest,
+  serializeManifest,
+  staticFileKey,
+} from '../src/manifest/manifest.ts';
+import { projectManifestSchema } from '../src/manifest/schema.ts';
+
+const identity = 'a'.repeat(64);
+const required = { version: 1 as const, identities: [identity], routes: ['/'] };
+const tag = `upwind:publication:v1:${identity}:60000`;
+
+describe('publication admission', () => {
+  let clock: WeakKey;
+
+  beforeEach(() => {
+    clock = {};
+  });
+
+  function admitPublication(
+    response: Response,
+    tags: readonly string[],
+    now: number,
+    requirement?: PublicationRequirement,
+  ): Response {
+    return admitWithClock(response, tags, now, { required: requirement, clockOwner: clock });
+  }
+
+  it('matches cache directives without treating extension names as no-store', () => {
+    const response = admitPublication(
+      new Response('valid', {
+        headers: { 'cache-control': 'public, x-no-store-hint=1, no-transform' },
+      }),
+      [tag],
+      1,
+    );
+
+    expect(response.headers.get('cache-control')).toBe(
+      'private, no-cache, must-revalidate, no-transform',
+    );
+  });
+
+  it.each(['public, max-age=3600, no-transform', 'private, no-store, no-transform'])(
+    'preserves transform prohibition while narrowing %s',
+    (control) => {
+      const response = admitPublication(
+        new Response('encoded', { headers: { 'cache-control': control } }),
+        [tag],
+        1,
+      );
+
+      expect(response.headers.get('cache-control')).toContain('no-transform');
+      expect(response.headers.get('cache-control')).toContain('private');
+    },
+  );
+
+  it.each([6, 7, 9] as const)('retains request-key file lookup for schema %s', (schemaVersion) => {
+    const file = {
+      sha256: identity,
+      byteLength: 1,
+      contentType: 'text/javascript',
+      immutable: true,
+    };
+    const manifest = {
+      schemaVersion,
+      staticFiles: { '/_next/static/app.js': file, '/cdn/_next/static/shipped.js': file },
+      staticFileRequestKeys: true as const,
+      staticFileAssetPrefix: { basePath: '', assetPrefix: '/cdn' },
+    };
+
+    expect(staticFileKey(manifest, '/_next/static/app.js')).toBe('/_next/static/app.js');
+    expect(staticFileKey(manifest, '/cdn/_next/static/shipped.js')).toBe(
+      '/cdn/_next/static/shipped.js',
+    );
+    expect(staticFileKey(manifest, '/cdn/_next/static/app.js')).toBe(
+      schemaVersion === 6 ? '/_next/static/app.js' : undefined,
+    );
+    expect(staticFileKey(manifest, '/cdn/_next/static/missing.js')).toBeUndefined();
+  });
+
+  it.each(['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control'])(
+    'retains no-transform from %s while removing its cache override',
+    (name) => {
+      const response = admitPublication(
+        new Response('encoded', {
+          headers: {
+            'cache-control': 'public,max-age=60',
+            [name]: 'public,max-age=3600,no-transform',
+          },
+        }),
+        [tag],
+        1,
+      );
+
+      expect(response.headers.get('cache-control')).toBe(
+        'private, no-cache, must-revalidate, no-transform',
+      );
+      expect(response.headers.has(name)).toBe(false);
+    },
+  );
+
+  it('refuses expiry and 304 reuse and removes outer stale caches without changing Next cache profiles', () => {
+    const original = new Response('public', {
+      headers: { 'cdn-cache-control': 'public,max-age=3600,stale-if-error=9999' },
+    });
+    const admitted = admitPublication(original, [tag], 59_999);
+
+    expect(admitted.headers.has('cdn-cache-control')).toBe(false);
+    expect(admitted.headers.get('cache-control')).toBe('private, no-cache, must-revalidate');
+    expect(admitPublication(new Response(null, { status: 304 }), [tag], 60_000).status).toBe(503);
+    expect(admitPublication(new Response('old'), [], 1, required).status).toBe(503);
+  });
+
+  it('fails closed for a detected clock rollback and never reopens that clock', () => {
+    const owner = {};
+
+    expect(publicationTimeFor(owner, 100)).toBe(100);
+    expect(publicationTimeFor(owner, 99)).toBeNaN();
+    expect(publicationTimeFor(owner, 101)).toBeNaN();
+  });
+
+  it('fences tagged build responses even without a required route identity', () => {
+    expect(admitPublication(new Response('live'), [tag], 100).status).toBe(200);
+    expect(admitPublication(new Response('rolled back'), [tag], 99).status).toBe(503);
+    expect(admitPublication(new Response('still closed'), [tag], 101).status).toBe(503);
+    expect(admitWithClock(new Response('other host'), [tag], 99, { clockOwner: {} }).status).toBe(
+      200,
+    );
+  });
+
+  it('refuses invalid proof even when the clock predates the epoch', () => {
+    expect(
+      admitWithClock(new Response('missing'), [], -1, { required, clockOwner: {} }).status,
+    ).toBe(503);
+    expect(
+      admitWithClock(new Response('malformed'), ['upwind:publication:broken'], -1, {
+        clockOwner: {},
+      }).status,
+    ).toBe(503);
+  });
+
+  it('requires the versioned capability and preserves it through manifest storage', () => {
+    const base = {
+      projectId: 'project',
+      runId: 'run',
+      generatedAt: '2026-10-30T00:00:00Z',
+      originHost: 'example.test',
+      deployment: {
+        dplId: 'deployment',
+        assetSetHash: 'assets',
+        observedAt: '2026-10-30T00:00:00Z',
+      },
+      routes: [],
+      app: { deploymentId: 'deployment', scriptName: 'app' },
+    };
+    const legacy = buildProjectManifest(base);
+    const manifest = buildProjectManifest({ ...base, publication: required });
+
+    expect(legacy.schemaVersion).toBe(6);
+    expect(manifest.schemaVersion).toBe(9);
+    expect(parseProjectManifest(serializeManifest(manifest)).publication).toStrictEqual(required);
+
+    const streamed = { ...required, version: 2 as const, valueObservers: true as const };
+    const streamedManifest = buildProjectManifest({ ...base, publication: streamed });
+
+    expect(parseProjectManifest(serializeManifest(streamedManifest)).publication).toStrictEqual(
+      streamed,
+    );
+
+    const snapshot = { ...streamed, version: 3 as const, resourceSnapshots: true as const };
+    const snapshotManifest = buildProjectManifest({ ...base, publication: snapshot });
+
+    expect(parseProjectManifest(serializeManifest(snapshotManifest)).publication).toStrictEqual(
+      snapshot,
+    );
+    expect(
+      projectManifestSchema.safeParse({
+        ...streamedManifest,
+        publication: { ...required, version: 2 },
+      }).success,
+    ).toBe(false);
+    expect(projectManifestSchema.safeParse({ ...manifest, schemaVersion: 8 }).success).toBe(false);
+
+    const absent = { ...manifest };
+    delete absent.publication;
+
+    expect(projectManifestSchema.safeParse(absent).success).toBe(false);
+  });
+});

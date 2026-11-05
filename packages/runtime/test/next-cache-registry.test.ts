@@ -14,6 +14,43 @@ import {
 } from '../../core/src/paas/next-cache-registry.ts';
 
 describe('next resource cache registry', () => {
+  it('upgrades a previously installed registry and storage hook before tracking legacy ancestors', () => {
+    const hooks = globalThis as Record<symbol, unknown>;
+    const stateKey = Symbol.for('upwind.next-cache-registry@1');
+    const hookKey = Symbol.for('upwind.next-cache-storage@1');
+    const previousState = hooks[stateKey];
+    const previousHook = hooks[hookKey];
+    const older = { units: new Set<NextStorage<NextCacheStore>>(), revalidation: new Map() };
+    hooks[stateKey] = older;
+    hooks[hookKey] = (storage: NextStorage<NextCacheStore>) => {
+      older.units.add(storage);
+      return storage;
+    };
+    try {
+      installNextCacheRegistry();
+      const unit = new AsyncLocalStorage<NextCacheStore>();
+      const store: NextCacheStore = { type: 'cache' };
+      const register = hooks[hookKey] as (
+        storage: NextStorage<NextCacheStore>,
+        store: NextCacheStore,
+        parent: NextCacheStore,
+      ) => void;
+      register(unit, store, { type: 'unstable-cache' });
+
+      expect(() => {
+        unit.run(store, () => {
+          tagNextCacheRead('upwind:publication:v1:protected');
+        });
+      }).toThrow('unstable_cache cannot preserve publication dependencies.');
+      expect(older.units.has(unit)).toBe(true);
+    } finally {
+      if (previousState === undefined) Reflect.deleteProperty(hooks, stateKey);
+      else hooks[stateKey] = previousState;
+      if (previousHook === undefined) Reflect.deleteProperty(hooks, hookKey);
+      else hooks[hookKey] = previousHook;
+    }
+  });
+
   it('ignores older and malformed providers without poisoning current revalidation', () => {
     installNextCacheRegistry();
     const register = (globalThis as Record<symbol, unknown>)[

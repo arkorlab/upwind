@@ -51,3 +51,5 @@ Vitest project.
 | `./adapter`                                                | The deployment adapter with that client bundled into every Function it builds but the middleware's, for `NEXT_ADAPTER_PATH`          |
 | `./logger`                                                 | Structured JSON logging, which never receives a token, a body or a cache key                                                         |
 | `./internal/*`                                             | Every module by its file path, `.ts` included (`./internal/scope/data.ts`), for suites and for a host that composes the parts itself |
+
+For trusted publishers that need bounded public withdrawal, see [Bounded public publication](docs/publication.md). Grants preserve absolute deadlines across nested Next caches, records and edge copies without adding a serving lookup.

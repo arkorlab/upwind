@@ -194,6 +194,7 @@ async function currentPairedPage(
     { kind: 'generation', pack, source: 'memory', lookupMs: edge.runtime.now() - startedAt },
     edge.runtime.now(),
     condemnedIn(edge.runtime.memory, edge.app?.deploymentId),
+    input.manifest.publication,
   );
   return decision.kind === 'serve' &&
     decision.validity === 'fresh' &&

@@ -29,6 +29,7 @@ function requestWith(kept: Promise<unknown>[]): RequestContext {
     runtime: undefined,
     request: new Request('https://app.test/'),
     startedAt: Date.now(),
+    publication: new Set<string>(),
     fetchStarts: new Map<string, number>(),
     waitUntil: (promise) => {
       kept.push(promise);

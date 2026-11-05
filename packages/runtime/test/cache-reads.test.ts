@@ -310,6 +310,7 @@ describe('runtime cache reads', () => {
       runtime,
       request: new Request('https://fixture.test/'),
       startedAt: 1000,
+      publication: new Set<string>(),
       fetchStarts: new Map<string, number>(),
       waitUntil: (promise: Promise<unknown>) => {
         kept.push(promise);
@@ -351,6 +352,7 @@ describe('runtime cache reads', () => {
         runtime,
         request: new Request('https://fixture.test/'),
         startedAt: 1000,
+        publication: new Set<string>(),
         fetchStarts: new Map(),
         waitUntil: (promise) => {
           kept.push(promise);

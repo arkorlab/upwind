@@ -1,12 +1,13 @@
-import type {
-  ArtifactRole,
-  CachePolicy,
-  EntryDescriptor,
-  GenerationTag,
-  InvalidationState,
-  OutputCompute,
-  OutputResponse,
-  TagHistoryMark,
+import {
+  type PublicationRequirement,
+  type ArtifactRole,
+  type CachePolicy,
+  type EntryDescriptor,
+  type GenerationTag,
+  type InvalidationState,
+  type OutputCompute,
+  type OutputResponse,
+  type TagHistoryMark,
 } from '@stayingupwind/core/cache';
 import type { ScopeRevision } from '@stayingupwind/core/paas';
 
@@ -35,6 +36,7 @@ import type { PAGES_FALLBACK_PRIVACY } from './static-pages.ts';
  * lasts and what happens to an expired one; the runtime only reports what it did with its own.
  */
 export interface CacheHost {
+  readonly publication?: PublicationRequirement | undefined;
   /**
    * Take the lease on an entry and start an attempt at a new generation, or say that another
    * holder has it. `busy` is not a failure: the other holder is publishing the same thing.

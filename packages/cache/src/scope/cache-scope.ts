@@ -324,9 +324,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
    */
   async #afterSettle(outcome: SettleOutcome): Promise<void> {
     const failures = countSettleFailures(this.#sql, this.#log, outcome);
-    if (outcome.failed || outcome.pending) {
+    if (outcome.failed || outcome.pending)
       await this.#armAlarm(Date.now() + settleRetryMs(outcome, failures));
-    }
   }
 
   /** The alarm is one per object: it fires at the earliest of what anything asked for. */
@@ -598,9 +597,13 @@ export class CacheScope extends DurableObject<CacheBindings> {
     generationId: string,
     artifactId: string,
   ): Contract.ReadArtifactLocationResult {
-    return this.#scope.tables
-      ? readArtifactLocation(this.#sql, this.#scope.scopeId, generationId, artifactId)
-      : NOT_RECORDED;
+    if (!this.#scope.tables) return NOT_RECORDED;
+    return readArtifactLocation(this.#sql, this.#scope.scopeId, generationId, artifactId);
+  }
+
+  /** Deployment/background admission can require snapshot-aware writes without serving preflights. */
+  resourceSnapshotCapability(): 1 {
+    return 1;
   }
 
   readHead(): Contract.ReadHeadResult {
@@ -614,9 +617,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
 
   /** A newer route record from the authority's current state, without leasing or writing it. */
   async currentRecord(entry: string, after: number): Promise<ArrayBuffer | undefined> {
-    return this.#scope.tables
-      ? recordAnswers.readCurrentRecord(this.#deps(), entry, after)
-      : undefined;
+    if (!this.#scope.tables) return undefined;
+    return recordAnswers.readCurrentRecord(this.#deps(), entry, after);
   }
 
   readEntry(entryId: string, now: number): Contract.ReadEntryResult {

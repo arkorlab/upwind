@@ -13,7 +13,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 const clocks = new AsyncLocalStorage<number>();
 
-function wallClockMs(): number {
+export function wallClockMs(): number {
   return Math.round(performance.timeOrigin + performance.now());
 }
 

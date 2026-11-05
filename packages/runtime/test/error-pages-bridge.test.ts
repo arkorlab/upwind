@@ -98,6 +98,7 @@ async function bridge(
           tables: { app: { entries: {} }, edge: { entries: {} } },
           runtime: undefined,
           startedAt: 0,
+          publication: new Set<string>(),
           fetchStarts: new Map(),
           waitUntil: () => {
             // The not-found has no background work.

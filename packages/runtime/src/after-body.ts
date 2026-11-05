@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+import { copyBuildPublication } from './publication-proof.ts';
+
 /**
  * Once the response is done with, do this, once: the visitor's bytes come first. Done with is sent
  * in full, or given up by the client. A client cancels prefetches as a matter of course — every
@@ -76,5 +78,5 @@ function onceRead(response: Response, moment: Moment, then: () => void): Respons
     // nobody has taken, and its bytes are on their way nowhere yet.
     { highWaterMark: early ? 0 : 1 },
   );
-  return new Response(through, response);
+  return copyBuildPublication(response, new Response(through, response));
 }

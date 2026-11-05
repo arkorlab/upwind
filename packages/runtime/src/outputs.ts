@@ -5,6 +5,7 @@ import {
   queryDependent,
   underBasePath,
 } from '@stayingupwind/core/bundle';
+import { parseCacheTagsHeader } from '@stayingupwind/core/cache';
 import { isWebSocketUpgrade, MIDDLEWARE_PREFETCH_HEADER } from '@stayingupwind/core/request';
 
 import { notFound, rscFromBuild } from './documents.ts';
@@ -13,6 +14,11 @@ import { servedOrOtherwise } from './generation-fallback.ts';
 import { type GenerationSource, serveFromGeneration, speculative } from './generations.ts';
 import { isMetadataOnlyRscRequest } from './incoming.ts';
 import { notFoundData } from './pages-not-found.ts';
+import {
+  admitBuildPublication,
+  buildPublicationExpired,
+  requirePublication,
+} from './publication.ts';
 import { rscRepresentation } from './representations.ts';
 import {
   answeredAtMiss,
@@ -124,6 +130,25 @@ function dataTargetOf(store: Store, resolved: Resolved): DataTarget {
   return { page: resolved.pathname, data, url: `${data}${search}` };
 }
 
+/** The selected shipped representation alone carries the build's publication proof. */
+function shippedOutput(
+  input: RoutedInput,
+  store: Store,
+  built: Prerender,
+  contentType: string,
+): Response {
+  const response = withCacheState(
+    staticResponse(store, built, contentType, built.initialStatus ?? HTTP_OK),
+    'HIT',
+  );
+  return admitBuildPublication(
+    input,
+    built.route,
+    response,
+    parseCacheTagsHeader(response.headers.get('x-next-cache-tags') ?? undefined),
+  );
+}
+
 /**
  * A Pages Router data route: the props of the page's current generation, as the page's own
  * `getStaticProps` returned them. The route resolves to the data template of a page; the page's
@@ -139,6 +164,12 @@ export async function servePagesData(
 ): Promise<Response> {
   const target = dataTargetOf(store, resolved);
   const template = store.prerendersByPathname.get(resolved.route);
+  requirePublication(
+    input.cache,
+    template?.route ??
+      pageOfDataPathname(store.manifest.buildId, store.manifest.config.basePath, resolved.route) ??
+      target.page,
+  );
   // No prerender: props from `getServerSideProps`, through the route's own entrypoint — and for a
   // middleware's prefetch of them, nothing at all (`prefetchSkipped`).
   if (template === undefined) {
@@ -175,20 +206,19 @@ export async function servePagesData(
     return invokeEntry(input, entry, target.url);
   }
   const built = store.prerendersByPathname.get(target.data);
+  const usableBuild =
+    built?.body !== undefined && !buildPublicationExpired(input, built, template.route);
   const source: GenerationSource = {
     route: template.route,
     pathname: target.page,
     url: target.url,
     representation: 'pages-data',
     dataPathname: target.data,
-    onMiss: built?.body === undefined ? 'render' : 'build',
+    onMiss: usableBuild ? 'build' : 'render',
   };
   return servedOrOtherwise(input, store, { source, handler: entry.handler }, async (renderLeft) => {
-    if (built?.body !== undefined) {
-      return withCacheState(
-        staticResponse(store, built, JSON_UTF8_TYPE, built.initialStatus ?? HTTP_OK),
-        'HIT',
-      );
+    if (usableBuild && !buildPublicationExpired(input, built, template.route)) {
+      return shippedOutput(input, store, built, JSON_UTF8_TYPE);
     }
     const answer = await invokeEntry(input, entry, target.url);
     return renderLeft ? answeredAtMiss(answer) : answer;
@@ -232,17 +262,14 @@ export async function serveRouteHandler(
       pathname: resolved.pathname,
       url: resolved.url,
       representation: 'route-body',
-      onMiss: 'build',
+      onMiss: buildPublicationExpired(input, built, resolved.route) ? 'render' : 'build',
     },
     entry.handler,
   );
-  return (
-    current ??
-    withCacheState(
-      staticResponse(store, built, recordedContentType(built), built.initialStatus ?? HTTP_OK),
-      'HIT',
-    )
-  );
+  if (current !== undefined) return current;
+  return buildPublicationExpired(input, built, resolved.route)
+    ? invokeEntry(input, entry, resolved.url)
+    : shippedOutput(input, store, built, recordedContentType(built));
 }
 
 /**

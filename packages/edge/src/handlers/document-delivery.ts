@@ -70,10 +70,11 @@ export type Layering = 'off' | 'declined' | 'on';
  * shell is given to be served as one (`gateGeneration`).
  */
 export interface ServedPack {
-  readonly header: Pick<
-    GenerationPackHeader,
-    'headers' | 'htmlLength' | 'htmlSha256' | 'pathname' | 'route' | 'seq' | 'source'
-  >;
+  readonly header: Partial<Pick<GenerationPackHeader, 'tags'>> &
+    Pick<
+      GenerationPackHeader,
+      'headers' | 'htmlLength' | 'htmlSha256' | 'pathname' | 'route' | 'seq' | 'source'
+    >;
   readonly html: Uint8Array;
   /** `undefined` for a generation complete in itself, which nothing resumes. */
   readonly postponed: Uint8Array | undefined;
