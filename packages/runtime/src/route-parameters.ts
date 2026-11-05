@@ -296,6 +296,20 @@ interface ParameterReading {
   readonly kind: EntrypointKind | undefined;
   readonly built: boolean;
   readonly all?: boolean | undefined;
+  /** Name them too where a member is spelled as its own placeholder (`spelledParameters`). */
+  readonly spelled?: boolean | undefined;
+}
+
+/** Whether a parameter's values call for metadata: what its query could not hand over as they are. */
+function separates(
+  { parameter, placeholder }: Pick<Declared, 'parameter' | 'placeholder'>,
+  values: readonly string[],
+  reading: ParameterReading,
+): boolean {
+  return (
+    (parameter.rest && values.some((value) => value.includes('/'))) ||
+    (reading.spelled === true && values.length === 1 && values[0] === placeholder)
+  );
 }
 
 function segmentedParameters(
@@ -326,7 +340,7 @@ function segmentedParameters(
     if (values.length === 0) {
       continue;
     }
-    separated ||= parameter.rest && values.some((value) => value.includes('/'));
+    separated ||= separates({ parameter, placeholder }, values, reading);
     named[`nxtP${parameter.name}`] = parameter.rest ? values : (values[0] ?? '');
   }
   return separated || reading.all === true ? named : undefined;
@@ -365,6 +379,30 @@ export function appRouteParameters(
   if (!pathname.includes('%') || !/%2f/iu.test(pathname)) {
     return undefined;
   }
+  return metadataParametersOf(store, route, pathname, false);
+}
+
+/**
+ * The parameters of a pathname with a member spelled as its own placeholder (`/shop/[id]`), for a
+ * resume alone (`RenderParameters.resumeOnly`): it cannot leave that value as it is (`resume`), and
+ * only metadata can hand it over in place of what Next.js matches from the path, a catch-all's as
+ * an array. Any other render keeps reading the spelling as Next.js does, and a capture among them
+ * must not take a visitor's values for a class's unresolved ones.
+ */
+export function spelledParameters(
+  store: Store,
+  route: string,
+  pathname: string,
+): Record<string, string | string[]> | undefined {
+  return /%5b|\[/iu.test(pathname) ? metadataParametersOf(store, route, pathname, true) : undefined;
+}
+
+function metadataParametersOf(
+  store: Store,
+  route: string,
+  pathname: string,
+  spelled: boolean,
+): Record<string, string | string[]> | undefined {
   const template = store.prerendersByPathname.get(route)?.route ?? route;
   const entrypoint = store.manifest.entrypoints.find((entry) => entry.pathname === template);
   if (
@@ -378,6 +416,7 @@ export function appRouteParameters(
   const named = segmentedParameters(store, template, pathname, {
     kind: entrypoint.kind,
     built: false,
+    spelled,
   });
   return named === undefined ? undefined : metadataParameters(named);
 }
@@ -467,4 +506,13 @@ export function resumeUrlOf(store: Store, route: string, request: Request): stri
     resumeUrl(request),
     routingParameters(store, route, new URL(request.url).pathname),
   );
+}
+
+/** The parameters a resume the edge asked for needs as metadata, which no routing named for it. */
+export function resumeParametersOf(
+  store: Store,
+  route: string,
+  request: Request,
+): Record<string, string | string[]> | undefined {
+  return spelledParameters(store, route, new URL(request.url).pathname);
 }

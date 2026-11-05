@@ -34,7 +34,7 @@ import {
   FALLBACK,
   markedRewrites,
 } from './rewritten-path.ts';
-import { appRouteParameters, routeQuery } from './route-parameters.ts';
+import { appRouteParameters, routeQuery, spelledParameters } from './route-parameters.ts';
 import { withRoutingHeaders } from './routing-headers.ts';
 import { HTTP_OK } from './serve.ts';
 import { entrypointKindOf, type Store } from './store.ts';
@@ -724,6 +724,8 @@ export function resolvedOf(
   const page = store.slashSpellings.get(unescaped) ?? unescaped;
   const requestPathname = withoutTrailingSlash(target.pathname);
   const params = appRouteParameters(store, page, requestPathname);
+  const spelled =
+    params === undefined ? spelledParameters(store, page, requestPathname) : undefined;
   const url = handlerUrl(
     store,
     page,
@@ -736,6 +738,9 @@ export function resolvedOf(
     url,
     ...(params !== undefined && {
       parameters: { params, query: renderQuery(target.query) },
+    }),
+    ...(spelled !== undefined && {
+      parameters: { params: spelled, query: renderQuery(target.query), resumeOnly: true },
     }),
   };
 }

@@ -8,7 +8,7 @@ import {
 
 import { nodeHandlerOf } from './entries.ts';
 import { readResumeState } from './resume-state.ts';
-import { resumeUrlOf } from './route-parameters.ts';
+import { resumeParametersOf, resumeUrlOf } from './route-parameters.ts';
 import { HTTP_NOT_FOUND, resume, type RoutedInput, stripPlatformHeaders } from './serve.ts';
 import type { Store } from './store.ts';
 
@@ -46,6 +46,7 @@ export async function handleRuntimeResume(input: RoutedInput, store: Store): Pro
     handler,
     postponed,
     url: resumeUrlOf(store, route, input.request),
+    params: resumeParametersOf(store, route, input.request),
     request: new Request(input.request.url, { headers }),
   });
 }
