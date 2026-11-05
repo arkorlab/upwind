@@ -165,5 +165,5 @@ export function publicationExpired(
   required?: PublicationRequirement,
 ): boolean {
   const until = publicationDeadline(tags, required);
-  return until !== undefined && (!Number.isFinite(now) || now >= until);
+  return until !== undefined && (until === 0 || !Number.isFinite(now) || now >= until);
 }

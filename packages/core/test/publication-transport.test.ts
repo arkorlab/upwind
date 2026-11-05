@@ -109,6 +109,41 @@ describe('selected publication grant transport', () => {
 });
 
 describe('publication restrictions after final header decisions', () => {
+  it.each(['', 'public', 'no-store;', 'no-store;other', 'revalidate;no-transform;extra'])(
+    'treats a malformed internal policy marker as restrictive (%j)',
+    (marker) => {
+      const response = withPublicationPolicy(
+        new Response('bounded', {
+          headers: {
+            [PUBLICATION_POLICY_HEADER]: marker,
+            'cache-control': 'public, max-age=3600',
+            'cdn-cache-control': 'public, max-age=3600',
+          },
+        }),
+      );
+
+      expect(response.headers.get('cache-control')).toBe('private, no-store, no-transform');
+      expect(response.headers.has('cdn-cache-control')).toBe(false);
+    },
+  );
+
+  it('keeps targeted no-transform during transport policy enforcement', () => {
+    const response = withPublicationPolicy(
+      new Response('bounded', {
+        headers: {
+          [PUBLICATION_POLICY_HEADER]: 'revalidate',
+          'cache-control': 'public, max-age=3600',
+          'cdn-cache-control': 'public, no-transform',
+        },
+      }),
+    );
+
+    expect(response.headers.get('cache-control')).toBe(
+      'private, no-cache, must-revalidate, no-transform',
+    );
+    expect(response.headers.has('cdn-cache-control')).toBe(false);
+  });
+
   it('restores the producer restriction after a later rule makes the response public', () => {
     const source = markPublicationPolicy(
       new Response('bounded', { headers: { 'cache-control': 'private, no-store, no-transform' } }),

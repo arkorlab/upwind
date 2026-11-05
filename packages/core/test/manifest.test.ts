@@ -173,10 +173,22 @@ describe('buildProjectManifest', () => {
    * took before it, each of which an edge served the day before — the one before its own, and the
    * one before that, whose manifests are still served where nothing has published since.
    */
-  it.each(READ_MANIFEST_SCHEMA_VERSIONS.filter((version) => version !== 9))(
+  it.each(READ_MANIFEST_SCHEMA_VERSIONS)(
     'reads a manifest of schema version %s',
     (schemaVersion) => {
-      const written = { ...build(), schemaVersion };
+      const written = {
+        ...build(),
+        schemaVersion,
+        ...(schemaVersion === 9 && {
+          publication: {
+            version: 3,
+            valueObservers: true,
+            resourceSnapshots: true,
+            identities: ['a'.repeat(64)],
+            routes: ['/blog/hello'],
+          },
+        }),
+      };
 
       expect(parseProjectManifest(JSON.stringify(written)).schemaVersion).toBe(schemaVersion);
     },

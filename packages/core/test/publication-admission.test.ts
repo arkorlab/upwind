@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { admitPublication } from '../src/cache/publication-response.ts';
-import { publicationTimeFor } from '../src/cache/publication.ts';
+import { admitPublication as admitWithClock } from '../src/cache/publication-response.ts';
+import { publicationTimeFor, type PublicationRequirement } from '../src/cache/publication.ts';
 import {
   buildProjectManifest,
   parseProjectManifest,
@@ -15,6 +15,21 @@ const required = { version: 1 as const, identities: [identity], routes: ['/'] };
 const tag = `upwind:publication:v1:${identity}:60000`;
 
 describe('publication admission', () => {
+  let clock: WeakKey;
+
+  beforeEach(() => {
+    clock = {};
+  });
+
+  function admitPublication(
+    response: Response,
+    tags: readonly string[],
+    now: number,
+    requirement?: PublicationRequirement,
+  ): Response {
+    return admitWithClock(response, tags, now, { required: requirement, clockOwner: clock });
+  }
+
   it('matches cache directives without treating extension names as no-store', () => {
     const response = admitPublication(
       new Response('valid', {
@@ -101,11 +116,31 @@ describe('publication admission', () => {
   });
 
   it('fails closed for a detected clock rollback and never reopens that clock', () => {
-    const clock = {};
+    const owner = {};
 
-    expect(publicationTimeFor(clock, 100)).toBe(100);
-    expect(publicationTimeFor(clock, 99)).toBeNaN();
-    expect(publicationTimeFor(clock, 101)).toBeNaN();
+    expect(publicationTimeFor(owner, 100)).toBe(100);
+    expect(publicationTimeFor(owner, 99)).toBeNaN();
+    expect(publicationTimeFor(owner, 101)).toBeNaN();
+  });
+
+  it('fences tagged build responses even without a required route identity', () => {
+    expect(admitPublication(new Response('live'), [tag], 100).status).toBe(200);
+    expect(admitPublication(new Response('rolled back'), [tag], 99).status).toBe(503);
+    expect(admitPublication(new Response('still closed'), [tag], 101).status).toBe(503);
+    expect(admitWithClock(new Response('other host'), [tag], 99, { clockOwner: {} }).status).toBe(
+      200,
+    );
+  });
+
+  it('refuses invalid proof even when the clock predates the epoch', () => {
+    expect(
+      admitWithClock(new Response('missing'), [], -1, { required, clockOwner: {} }).status,
+    ).toBe(503);
+    expect(
+      admitWithClock(new Response('malformed'), ['upwind:publication:broken'], -1, {
+        clockOwner: {},
+      }).status,
+    ).toBe(503);
   });
 
   it('requires the versioned capability and preserves it through manifest storage', () => {
@@ -134,6 +169,13 @@ describe('publication admission', () => {
 
     expect(parseProjectManifest(serializeManifest(streamedManifest)).publication).toStrictEqual(
       streamed,
+    );
+
+    const snapshot = { ...streamed, version: 3 as const, resourceSnapshots: true as const };
+    const snapshotManifest = buildProjectManifest({ ...base, publication: snapshot });
+
+    expect(parseProjectManifest(serializeManifest(snapshotManifest)).publication).toStrictEqual(
+      snapshot,
     );
     expect(
       projectManifestSchema.safeParse({

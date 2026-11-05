@@ -6,6 +6,7 @@ import {
   admitPublication,
   parseCacheTagsHeader,
   publicationForRoute,
+  publicationTimeFor,
 } from '@stayingupwind/core/cache';
 import { markPublicationPolicy } from '@stayingupwind/core/paas';
 
@@ -44,8 +45,9 @@ export function admitRequestPublication(response: Response, context: RequestCont
   const independent =
     context.publicationRequirement !== undefined &&
     buildPublicationOf(response) === context.publicationRequirement;
+  const owner = context.publicationRequirement ?? context.runtime?.host ?? context;
   if (independent) {
-    const admitted = admitPublication(response, tags, nowMs());
+    const admitted = admitPublication(response, tags, nowMs(), { clockOwner: owner });
     return publicationDeadline(tags) === undefined ? admitted : markPublicationPolicy(admitted);
   }
   const required = context.publicationRequirement;
@@ -56,7 +58,7 @@ export function admitRequestPublication(response: Response, context: RequestCont
       parseCacheTagsHeader(response.headers.get(CACHE_TAGS) ?? undefined),
       required,
     );
-  const admitted = admitPublication(response, tags, nowMs(), required);
+  const admitted = admitPublication(response, tags, nowMs(), { required, clockOwner: owner });
   return required === undefined && publicationDeadline(tags) === undefined
     ? admitted
     : markPublicationPolicy(admitted);
@@ -81,11 +83,9 @@ export function buildPublicationExpired(
   const tags = parseCacheTagsHeader(
     new Headers(shell?.initialHeaders as HeadersInit).get(CACHE_TAGS) ?? undefined,
   );
-  return publicationExpired(
-    tags,
-    nowMs(),
-    publicationForBuild(input.cache?.host.publication, route),
-  );
+  const owner = input.cache?.host.publication ?? input.cache?.host;
+  const now = owner === undefined ? nowMs() : publicationTimeFor(owner, nowMs());
+  return publicationExpired(tags, now, publicationForBuild(input.cache?.host.publication, route));
 }
 
 /** Build bytes retain their original bounds without exempting a live continuation. */
@@ -96,8 +96,14 @@ export function admitBuildSource(
   tags: readonly string[],
 ): Response {
   const required = publicationForBuild(input.cache?.host.publication, route);
-  const now = nowMs();
-  const admitted = admitPublication(response, tags, now, required);
+  const owner = input.cache?.host.publication ?? input.cache?.host;
+  const now = owner === undefined ? nowMs() : publicationTimeFor(owner, nowMs());
+  const admitted = admitPublication(
+    response,
+    tags,
+    now,
+    owner === undefined ? required : { required, clockOwner: owner },
+  );
   // A source's own 503 can have valid proof; a refusal contributes no observations.
   if (admitted.status !== HTTP_UNAVAILABLE || !publicationExpired(tags, now, required))
     observeFreshPublication(tags, now);

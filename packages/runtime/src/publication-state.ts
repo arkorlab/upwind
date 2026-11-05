@@ -1,5 +1,5 @@
 import {
-  publicationDeadline,
+  publicationExpired,
   publicationTimeFor,
   type PublicationRequirement,
   SNAPSHOT_PUBLICATION_VERSION,
@@ -40,9 +40,7 @@ export function livePublicationState(
     if (identity === undefined) publicTags.push(tag);
     else identities.add(identity);
   }
-  const deadline = publicationDeadline(publicTags);
-  if (deadline !== undefined && (!Number.isFinite(checked) || checked >= deadline))
-    return { valid: false, ready: false };
+  if (publicationExpired(publicTags, checked)) return { valid: false, ready: false };
   for (const tag of publicTags) {
     const match = /^upwind:publication:v1:([a-f\d]{64}):/u.exec(tag);
     if (match?.[1] !== undefined) identities.add(match[1]);
