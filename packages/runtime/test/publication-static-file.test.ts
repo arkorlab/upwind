@@ -129,5 +129,6 @@ describe('publication admission of directly selected shipped files', () => {
 
     expect(response.status).toBe(503);
     await expect(response.text()).resolves.toBe('Publication unavailable');
+    expect(test.read).not.toHaveBeenCalled();
   });
 });

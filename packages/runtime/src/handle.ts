@@ -66,6 +66,7 @@ import {
 import {
   admitBuildPublication,
   admitRequestPublication,
+  buildPublicationExpired,
   requirePublication,
   onceRecorded,
 } from './publication.ts';
@@ -467,6 +468,9 @@ async function serveResolved(
     if (!isRead(request.method)) {
       return methodNotAllowed();
     }
+    // StaticFile has no source grant: required proof cannot appear after fetching its bytes.
+    if (buildPublicationExpired(input, undefined, resolved.route))
+      return admitBuildPublication(input, resolved.route, new Response(null), []);
     const status = staticFileStatus(resolved.route, store.manifest.config.basePath);
     const answer = await staticFileResponse(input, store, file, status);
     if (answer !== undefined) {
