@@ -413,7 +413,7 @@ export async function stageDeployment(
   const preloads = await preloadsOf(target, input);
   const assembled = await assembleManifest({
     bundle,
-    publication: input.publication,
+    ...(input.publication !== undefined && { publication: input.publication }),
     previous: input.previous,
     projectId: input.projectId,
     runId: input.runId,
