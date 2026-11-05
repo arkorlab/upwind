@@ -113,6 +113,9 @@ async function createPagesPublicationFixture() {
     timings: { pointerMs: 0, manifestMs: 0 },
   } as unknown as EdgeContext;
   const fallback = vi.fn(() => Promise.resolve(new Response('private fallback')));
+  const getShell = vi.fn(() =>
+    Promise.resolve({ bytes: native.loading, source: 'memory' as const, latencyMs: 0 }),
+  );
   async function serve(pathname = PAGE, init?: RequestInit): Promise<Response> {
     const request = new Request(`https://site.example${pathname}`, init);
     const url = new URL(request.url);
@@ -136,8 +139,7 @@ async function createPagesPublicationFixture() {
         policy,
         shell: {
           id: 'r2',
-          getShell: () =>
-            Promise.resolve({ bytes: native.loading, source: 'memory', latencyMs: 0 }),
+          getShell,
         },
         assets: {
           id: 'passthrough',
@@ -225,6 +227,7 @@ async function createPagesPublicationFixture() {
     tasks,
     kv,
     get,
+    getShell,
     waitForReads,
     drain: async () => {
       while (tasks.length > 0) await Promise.all(tasks.splice(0));

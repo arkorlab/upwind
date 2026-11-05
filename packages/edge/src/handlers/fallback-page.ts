@@ -1,6 +1,10 @@
 import { pageHeaders } from '@stayingupwind/core/bundle';
 import {
+  admitPublication,
   deriveEntry,
+  parseCacheTagsHeader,
+  publicationExpired,
+  publicationForBuild,
   staticPageDataHeadersAllowSharing,
   staticPageHasNoTransform,
   staticPageHeadersAllowSharing,
@@ -237,6 +241,10 @@ async function loadingPage(
   const { lazy } = chosen;
   if (lazy === undefined) return input.passthrough('static-page-not-fresh');
   const headers = new Headers(lazy.entry.headers);
+  const tags = parseCacheTagsHeader(headers.get('x-next-cache-tags') ?? undefined);
+  const required = publicationForBuild(input.manifest.publication, lazy.entry.route);
+  const expired = () => publicationExpired(tags, input.edge.runtime.now(), required);
+  if (expired()) return input.passthrough('pages-fallback-publication-expired');
   layStoredConfiguredOver(
     headers,
     configured,
@@ -253,6 +261,7 @@ async function loadingPage(
       : await loadShell(lazy.entry.shell.artifact, input.resolved.shell, input.edge);
   const loaded = fallback ?? first;
   if (loaded.kind !== 'ok') return input.passthrough('pages-fallback-shell-unavailable');
+  if (expired()) return input.passthrough('pages-fallback-publication-expired');
   const rendering =
     fallback === undefined
       ? selected
@@ -268,15 +277,22 @@ async function loadingPage(
   varyOn(headers, ACCEPT_ENCODING_HEADER);
   if (rendering.encoding !== IDENTITY_ENCODING) headers.set(CONTENT_ENCODING, rendering.encoding);
   applyCspReporting(headers, input.edge.cspReportingPath);
+  if (tags.length > 0) headers.set('x-next-cache-tags', tags.join(','));
   headers.set(
     EDGE_DEBUG_HEADER,
     `pages-fallback;src=${loaded.read.source};m=${manifestIdPrefix(input.edge.manifestId)}`,
   );
-  const response = new Response(closedStream(loaded.read.bytes, rendering.close), {
-    status: HTTP_OK,
-    headers,
-    ...(rendering.encoding !== IDENTITY_ENCODING && { encodeBody: 'manual' as const }),
-  });
+  const response = admitPublication(
+    new Response(closedStream(loaded.read.bytes, rendering.close), {
+      status: HTTP_OK,
+      headers,
+      ...(rendering.encoding !== IDENTITY_ENCODING && { encodeBody: 'manual' as const }),
+    }),
+    tags,
+    input.edge.runtime.now(),
+    required,
+  );
+  if (response.status !== HTTP_OK) return response;
   startFirstMember(
     chosen.input,
     settings,
