@@ -177,7 +177,8 @@ leaves out when its suite is deployed, rather than what it selects (`src/populat
   branch on `isNextDeploy` to the side the suite takes when it is not deployed. A check of
   `x-vercel-cache`, which only Vercel answers, goes with its branch, so that a case goes on to what it
   asks of the page; where a case waited on it, the copy waits on the page's own render time instead,
-  since a deployment may publish a shell behind its answer. It is written into the
+  since a deployment may publish a shell behind its answer, and where it was the only proof a case
+  had, the copy leaves the case out. It is written into the
   checkout beside its suite, as a `.test.ts` of its own, so that `files: __dirname` builds the same
   fixture, and upstream's own file is left as it was. It holds for the upstream directory it was copied
   from, by its Git tree: on another commit, a directory that changed or is gone leaves the copy out, and

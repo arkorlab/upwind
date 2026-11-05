@@ -2,9 +2,11 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { PRERENDER_MATRIX_CASES } from '../src/population-matrix-cases.ts';
 import {
   type DeployManifest,
   manifestPopulation,
@@ -229,29 +231,9 @@ function code(source: string): string {
     .join('\n');
 }
 
-/** Every name `pattern` captures in a copy, a quoted name or a template, as its fixed text. */
-function namesIn(copy: string, pattern: RegExp): string[][] {
-  return [...copy.matchAll(pattern)].map(([, quoted, template = '']) => {
-    return quoted === undefined ? template.split(/\$\{[^}]*\}/u) : [quoted];
-  });
-}
-
-/** Whether `name` is one a name of a copy gives: its fixed text in order, anything between. */
-function fits(name: string, fixed: readonly string[]): boolean {
-  const [first = '', ...others] = fixed;
-  if (others.length === 0) {
-    return name === first;
-  }
-  let at = first.length;
-  for (const part of others.slice(0, -1)) {
-    const found = name.indexOf(part, at);
-    if (found === -1) {
-      return false;
-    }
-    at = found + part.length;
-  }
-  const last = others.at(-1) ?? '';
-  return name.startsWith(first) && name.length >= at + last.length && name.endsWith(last);
+/** Every name `pattern` captures in a copy. */
+function namesIn(copy: string, pattern: RegExp): string[] {
+  return [...copy.matchAll(pattern)].map(([, name = '']) => name);
 }
 
 /**
@@ -260,19 +242,15 @@ function fits(name: string, fixed: readonly string[]): boolean {
  */
 function registers(copy: string, fullName: string): boolean {
   const suites = [
-    ...namesIn(copy, /\bdescribe\((?:'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/gu),
+    ...namesIn(copy, /\bdescribe\('((?:[^'\\]|\\.)*)'/gu),
     ...namesIn(copy, /\bdescription: '((?:[^'\\]|\\.)*)'/gu),
   ];
-  const titles = namesIn(copy, /\bit\((?:'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/gu);
+  const titles = namesIn(copy, /\bit\('((?:[^'\\]|\\.)*)'/gu);
   const from = (rest: string): boolean => {
-    if (titles.some((title) => fits(rest, title))) {
-      return true;
-    }
-    const spaces = [...rest.matchAll(/ /gu)].map(({ index }) => index);
-    return spaces.some((space) => {
-      const name = rest.slice(0, space);
-      return suites.some((suite) => fits(name, suite)) && from(rest.slice(space + 1));
-    });
+    return (
+      titles.includes(rest) ||
+      suites.some((suite) => rest.startsWith(`${suite} `) && from(rest.slice(suite.length + 1)))
+    );
   };
   return from(fullName);
 }
@@ -280,6 +258,35 @@ function registers(copy: string, fullName: string): boolean {
 /** The gates a copy's comments set (`@gate`, `@force-gate`), a line each. */
 function gates(source: string): string[] {
   return source.split('\n').filter((line) => /@(?:force-)?gate\b/u.test(line));
+}
+
+/**
+ * The names a copy registers, by running its `describe`s with nothing behind them, for a copy that
+ * computes its names, which `registers` has no text to read in.
+ */
+async function namesRegistered(copy: string): Promise<string[]> {
+  const names: string[] = [];
+  const suites: string[] = [];
+  vi.stubGlobal('describe', (name: string, body: () => void) => {
+    suites.push(name);
+    body();
+    suites.pop();
+  });
+  vi.stubGlobal('it', (name: string) => {
+    names.push([...suites, name].join(' '));
+  });
+  const file = path.join(temporary(), 'copy.mts');
+  const body = copy.split('\n').filter((line) => !line.startsWith('import '));
+  writeFileSync(
+    file,
+    ['const nextTestSetup = () => ({ next: {}, isNextDev: false });', ...body].join('\n'),
+  );
+  try {
+    await import(/* @vite-ignore */ pathToFileURL(file).href);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+  return names;
 }
 
 describe('the copies of cases deploy mode skips', () => {
@@ -314,11 +321,18 @@ describe('the copies of cases deploy mode skips', () => {
       // Every case it is recorded to register, it registers, each under its own name.
       expect(new Set(cases).size).toBe(cases.length);
 
-      for (const fullName of cases) {
+      for (const fullName of cases === PRERENDER_MATRIX_CASES ? [] : cases) {
         expect(registers(copy, fullName)).toBe(true);
       }
     },
   );
+
+  it('hold the matrix to the names it computes as it registers them', async () => {
+    const source = SUPPLEMENTS.find(({ cases }) => cases === PRERENDER_MATRIX_CASES)?.source ?? '';
+    const names = await namesRegistered(readFileSync(path.join(kept, source), 'utf8'));
+
+    expect(names.toSorted()).toStrictEqual(PRERENDER_MATRIX_CASES.toSorted());
+  });
 
   it('are held to the names their copy registers, every row of a `describe.each` among them', () => {
     const copy = [
@@ -339,24 +353,6 @@ describe('the copies of cases deploy mode skips', () => {
       registers(copy, 'runtime prefetching passed to a public cache includes root params'),
     ).toBe(false);
     expect(registers(copy, 'runtime prefetching in a page includes search params')).toBe(false);
-  });
-
-  it('are held to names a copy writes as templates, by the text they fix', () => {
-    const copy = [
-      "describe('prerender matrix', () => {",
-      '  for (const route of ROUTES) {',
-      '    describe(`${route.params}/${route.shell}`, () => {',
-      '      it(`serves ${region} from the cache at ${label}`, async () => {})',
-    ].join('\n');
-
-    expect(
-      registers(copy, 'prerender matrix dynamic/empty serves nothing from the cache at a=1'),
-    ).toBe(true);
-    expect(registers(copy, 'prerender matrix dynamic/empty shares the entry at a=1')).toBe(false);
-    // The `/` a route's name fixes is not in this one.
-    expect(registers(copy, 'prerender matrix dynamic serves nothing from the cache at a=1')).toBe(
-      false,
-    );
   });
 
   it('are each written to a file of their own', () => {

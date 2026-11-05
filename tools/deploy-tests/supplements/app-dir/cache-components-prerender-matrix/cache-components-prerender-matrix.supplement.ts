@@ -8,10 +8,10 @@
 // (tools/deploy-tests/README.md).
 // Upstream also reads `x-vercel-cache` where the suite is deployed (`if (isNextDeploy)`), which
 // only Vercel answers, and runs the suite on adapters alone. Here those checks are gone, so a
-// case goes on to what it asks of the page, as under `next start`:
-// the regions it serves from the cache, and the values it must not share. An `empty-shell` route
-// has no bytes to compare, and asks less here than where the header is read.
-// Nothing else is changed.
+// case goes on to what it asks of the page, as under `next start`: the regions it serves from the
+// cache, and the values it must not share. A route that caches nothing has no bytes to tell
+// sharing from separation by, so its cache-key cases are left out, but for the `lang` a root param
+// puts on the html tag. Nothing else is changed.
 import crypto from 'crypto'
 import cheerio from 'cheerio'
 import { nextTestSetup } from 'e2e-utils'
@@ -627,6 +627,16 @@ describe('cache-components-prerender-matrix', () => {
 
       // PARTITION: one test per cache-key probe.
       for (const probe of cacheKeyProbes(route.staticParams)) {
+        // Nothing cached is no bytes to tell sharing from separation by, but
+        // for the lang a root param puts on the html tag.
+        const langShows =
+          probe.expectation !== 'same-entry' &&
+          probe.mutate === 'lang' &&
+          route.rootParams === 'with-root-param'
+        if (region === 'nothing' && !langShows) {
+          continue
+        }
+
         const label = paramsLabel(route.staticParams, probe.prerenderedThrough)
 
         if (probe.expectation === 'same-entry') {
