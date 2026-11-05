@@ -41,6 +41,7 @@ import { lookAtScopeBehind } from '../cache/scope-signal.ts';
 import { memberEntryKey } from '../memory/caches.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { finishShellBody } from '../strategies/shell-loader.ts';
+import { builtPublicationRoute, documentPublicationTags } from './document-publication.ts';
 import { generationKeyOf, requestAsLeft } from './hosted-route.ts';
 import { dispatchedFor, type MiddlewareOutcome, routedHeaders } from './middleware.ts';
 import type { PassthroughWait } from './passthrough.ts';
@@ -371,12 +372,9 @@ async function answerBuildPart(
   if (part.buildPart === undefined) return fallback();
   if (
     publicationExpired(
-      part.entry.cache?.buildTags?.map((tag) => tag.value) ?? [],
+      documentPublicationTags({ entry: part.entry }),
       input.edge.runtime.now(),
-      publicationForBuild(
-        input.manifest.publication,
-        part.entry.cache?.route ?? part.entry.pathname,
-      ),
+      publicationForBuild(input.manifest.publication, builtPublicationRoute(part.entry)),
     )
   )
     return fallback();
@@ -401,9 +399,9 @@ async function answerBuildPart(
   });
   return admitPublication(
     response,
-    part.entry.cache?.buildTags?.map((tag) => tag.value) ?? [],
+    documentPublicationTags({ entry: part.entry }),
     input.edge.runtime.now(),
-    publicationForBuild(input.manifest.publication, part.entry.cache?.route ?? part.entry.pathname),
+    publicationForBuild(input.manifest.publication, builtPublicationRoute(part.entry)),
   );
 }
 
@@ -490,7 +488,7 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
     response,
     generation.pack.header.tags.map((tag) => tag.value),
     input.edge.runtime.now(),
-    publicationForRoute(input.manifest.publication, part.entry.cache?.route ?? part.entry.pathname),
+    publicationForRoute(input.manifest.publication, generation.pack.header.route),
   );
 }
 

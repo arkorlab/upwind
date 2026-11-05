@@ -1,3 +1,4 @@
+import { sha256Hex } from '@stayingupwind/core/artifact';
 import {
   admitPublication,
   decodeGenerationPack,
@@ -12,6 +13,7 @@ import { serveCachedDocument, type CachedDocumentInput } from '../src/cache/docu
 import { documentPublicationTags } from '../src/handlers/document-publication.ts';
 import { handleDocument, type DocumentInput } from '../src/handlers/document.ts';
 import { gateGeneration } from '../src/handlers/gate-shell.ts';
+import { composePayload, type PartInput } from '../src/handlers/hosted-parts.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
 
@@ -228,17 +230,23 @@ describe('publication admission without generation-record caching', () => {
 
   it('rechecks the original gate deadline before accepting response headers', async () => {
     const test = fixture();
+    const onBuildServed = vi.fn();
     const clock = vi.spyOn(test.input.edge.runtime, 'now');
     resume.mockImplementationOnce(() => {
       clock.mockReturnValue(NOW + 1000);
       return { response: Promise.resolve(new Response('</body></html>')), abort: vi.fn() };
     });
     try {
-      const response = await handleDocument({ ...test.input, generation: gate(NOW + 1000) });
+      const response = await handleDocument({
+        ...test.input,
+        onBuildServed,
+        generation: gate(NOW + 1000),
+      });
 
       expect(response.status).toBe(503);
       await expect(response.text()).resolves.not.toContain('gate values');
       expect(resume).toHaveBeenCalledTimes(1);
+      expect(onBuildServed).not.toHaveBeenCalled();
     } finally {
       clock.mockRestore();
     }
@@ -311,6 +319,98 @@ describe('publication admission without generation-record caching', () => {
 
     expect(response.status).toBe(200);
     expect(test.passthrough).not.toHaveBeenCalled();
+  });
+
+  it('enforces a sealed source route without a cache descriptor', async () => {
+    const test = fixture();
+    const entry = {
+      ...test.input.entry,
+      cache: undefined,
+      publication: { route: '/items/[id]', tags: [] },
+    };
+    const manifest = {
+      ...test.input.manifest,
+      publication: { ...test.input.manifest.publication!, routes: ['/items/[id]'] },
+    };
+
+    const response = await handleDocument({ ...test.input, entry, manifest });
+
+    await expect(response.text()).resolves.toBe('fresh from runtime');
+    expect(test.passthrough).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps sealed build proof when optional cache tag membership is absent', async () => {
+    const test = fixture();
+    const entry = {
+      ...test.input.entry,
+      cache: { ...test.input.entry.cache!, buildTags: undefined },
+      publication: { route: '/items', tags: [`upwind:publication:v1:${ID}:${String(NOW + 1000)}`] },
+    };
+
+    const response = await handleDocument({ ...test.input, entry });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe('old');
+    expect(test.passthrough).not.toHaveBeenCalled();
+  });
+
+  it('retains record lookup timing when publication expires before composition', async () => {
+    const test = fixture(NOW);
+    const response = await handleDocument({
+      ...test.input,
+      recordRead: { lookupMs: 12, description: 'record' },
+    });
+    await response.text();
+
+    expect(test.passthrough).toHaveBeenCalledWith(
+      'publication-expired',
+      undefined,
+      '/items',
+      expect.objectContaining({ recordLookupMs: 12 }),
+    );
+  });
+
+  it('does not use a granted build to authorize an ungranted runtime gate', async () => {
+    const test = fixture();
+    const entry = {
+      ...test.input.entry,
+      publication: { route: '/items', tags: [`upwind:publication:v1:${ID}:${String(NOW + 1000)}`] },
+    };
+
+    const response = await handleDocument({ ...test.input, entry, generation: gate() });
+
+    await expect(response.text()).resolves.toBe('fresh from runtime');
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('enforces the sealed cacheless source before serving a shipped router payload', async () => {
+    const test = fixture();
+    const bytes = new TextEncoder().encode('old');
+    const sha256 = await sha256Hex(bytes);
+    const getShell = vi.fn(() =>
+      Promise.resolve({ bytes, source: 'memory' as const, latencyMs: 0 }),
+    );
+    const input: PartInput = {
+      ...test.input,
+      url: new URL('https://site.test/items'),
+      request: new Request('https://site.test/items', { headers: { RSC: '1' } }),
+      manifest: {
+        ...test.input.manifest,
+        publication: { ...test.input.manifest.publication!, routes: ['/items/[id]'] },
+      },
+      resolved: { ...test.input.resolved, shell: { id: 'kv', getShell } },
+    };
+    const entry = {
+      ...test.input.entry,
+      cache: undefined,
+      publication: { route: '/items/[id]', tags: [] },
+      payload: { artifact: { ...test.input.entry.shell, sha256, contentType: 'text/x-component' } },
+    };
+
+    const response = await composePayload(input, entry, { kind: 'skipped', reason: 'unmatched' });
+
+    await expect(response.text()).resolves.toBe('fresh from runtime');
+    expect(getShell).not.toHaveBeenCalled();
   });
 
   it.each([

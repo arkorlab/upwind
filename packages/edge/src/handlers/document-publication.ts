@@ -17,7 +17,7 @@ interface BuiltDocument {
 
 function tags(input: { readonly entry: RouteEntry }): string[] {
   const values = input.entry.cache?.buildTags?.map((tag) => tag.value) ?? [];
-  return [...values, ...headerTags(input.entry.headers)];
+  return [...(input.entry.publication?.tags ?? []), ...values, ...headerTags(input.entry.headers)];
 }
 
 function headerTags(headers: Readonly<Record<string, string>>): string[] {
@@ -28,11 +28,12 @@ function headerTags(headers: Readonly<Record<string, string>>): string[] {
   return values;
 }
 
+export function builtPublicationRoute(entry: RouteEntry): string {
+  return entry.publication?.route ?? entry.cache?.route ?? entry.pathname;
+}
+
 function requirement(input: BuiltDocument) {
-  return publicationForBuild(
-    input.manifest.publication,
-    input.entry.cache?.route ?? input.entry.pathname,
-  );
+  return publicationForBuild(input.manifest.publication, builtPublicationRoute(input.entry));
 }
 
 /** The shipped source is checked even when generation-record caching is disabled. */
@@ -51,7 +52,10 @@ interface GateDocument extends BuiltDocument {
 function gateRequirement(input: GateDocument) {
   return publicationForRoute(
     input.manifest.publication,
-    input.generation?.pack.header.route ?? input.entry.cache?.route ?? input.entry.pathname,
+    input.generation?.pack.header.route ??
+      input.entry.publication?.route ??
+      input.entry.cache?.route ??
+      input.entry.pathname,
   );
 }
 

@@ -21,6 +21,40 @@ const MANY_RULES = 1000;
 const MANY_CONDITIONS = 600;
 
 describe('the memory held by complete route-body mappings', () => {
+  it('charges sealed source proof for each route even when input objects are shared', () => {
+    const base = manifestOf([]);
+    const route: RouteEntry = {
+      pathname: '/items/one',
+      status: 200,
+      headers: {},
+      shell: {
+        sha256: 'a'.repeat(64),
+        byteLength: 1,
+        contentType: 'text/html',
+        encoding: 'identity',
+      },
+    };
+    const plain = {
+      ...base,
+      routes: { '/items/one': route, '/items/two': { ...route, pathname: '/items/two' } },
+    };
+    const publication = {
+      route: '/items/[id]',
+      tags: [
+        `upwind:publication:v1:${'a'.repeat(64)}:1800000060000`,
+        `upwind:resource-snapshot:v1:${'a'.repeat(64)}:4`,
+      ],
+    };
+    const protectedRoutes = {
+      ...plain,
+      routes: Object.fromEntries(
+        Object.entries(plain.routes).map(([key, value]) => [key, { ...value, publication }]),
+      ),
+    };
+
+    expect(manifestCharge(protectedRoutes, 0) - manifestCharge(plain, 0)).toBe(2 * 4 * 80);
+  });
+
   it('charges the table, entry, condition array and each condition beside JSON', () => {
     const plain = manifestOf([]);
     const body = {

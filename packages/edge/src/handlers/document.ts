@@ -455,10 +455,12 @@ function composeDocument(input: DocumentInput, composition: Composition): Respon
     entries.push({ name: 'edge', durationMs: now - requestStartedAt });
   }
   response.headers.append('server-timing', serverTiming(entries));
-  input.onBuildServed?.();
-  return input.generation === undefined
-    ? publication.admitBuiltDocument(input, response)
-    : publication.admitGenerationDocument(input, response);
+  const admitted =
+    input.generation === undefined
+      ? publication.admitBuiltDocument(input, response)
+      : publication.admitGenerationDocument(input, response);
+  if (admitted.ok) input.onBuildServed?.();
+  return admitted;
 }
 
 /**

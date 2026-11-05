@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { loadGeneration } from '../src/cache/generation-hold.ts';
 import type { HostedGate } from '../src/handlers/hosted-gate.ts';
+import { observeMetric } from '../src/handlers/observer.ts';
 import { routeHostedBody, type RouteBodyInput } from '../src/handlers/route-body.ts';
 
 const mocks = vi.hoisted(() => {
@@ -102,12 +103,17 @@ function pack(source: 'build' | 'runtime'): DecodedGenerationPack {
   };
 }
 
-function scenario(source: 'build' | 'runtime') {
+function scenario(
+  source: 'build' | 'runtime',
+  independent = true,
+  tags: readonly string[] = [],
+  now = () => NOW,
+) {
   const publication = {
     version: 1 as const,
     identities: ['a'.repeat(64)],
     routes: ['/icon'],
-    independentBuild: ['/icon'],
+    ...(independent && { independentBuild: ['/icon'] }),
   };
   const passthrough = vi.fn(() => Promise.resolve(new Response('regenerate', { status: 503 })));
   const input = {
@@ -119,16 +125,20 @@ function scenario(source: 'build' | 'runtime') {
     manifest: { cache: { scopeId: 'scope' }, publication },
     edge: {
       policy: DEFAULT_DELIVERY_POLICY,
-      runtime: { now: () => NOW, memory: {} },
+      runtime: { now, memory: {} },
       host: {},
       manifestId: 'manifest',
       projectId: 'project',
       timings: {},
     },
   } as unknown as RouteBodyInput;
+  const selected = pack(source);
   vi.mocked(loadGeneration).mockResolvedValue({
     kind: 'generation',
-    pack: pack(source),
+    pack: {
+      ...selected,
+      header: { ...selected.header, tags: tags.map((value) => ({ kind: 'next-explicit', value })) },
+    },
     source: 'kv',
     readBytes: 1,
     lookupMs: 0,
@@ -137,6 +147,24 @@ function scenario(source: 'build' | 'runtime') {
 }
 
 describe('publication admission for seeded route bodies', () => {
+  it('checks a required grant again after a valid record reaches composition', async () => {
+    let current = NOW;
+    const test = scenario(
+      'build',
+      false,
+      [`upwind:publication:v1:${'a'.repeat(64)}:${String(NOW + 1000)}`],
+      () => current,
+    );
+    vi.mocked(observeMetric).mockImplementationOnce(() => {
+      current = NOW + 1000;
+    });
+
+    const response = await routeHostedBody(test.input);
+
+    expect(response.status).toBe(503);
+    await expect(response.text()).resolves.not.toContain('image bytes');
+  });
+
   it('keeps the independent proof on a fresh build-source pack through final admission', async () => {
     const test = scenario('build');
     const response = await routeHostedBody(test.input);

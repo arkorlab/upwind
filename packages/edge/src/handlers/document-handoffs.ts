@@ -43,7 +43,12 @@ export function delegateExpiredDocument(input: DocumentInput): Promise<Response>
   const accounted = withShellAccounting(input);
   (input.generation?.onAbandoned ?? input.onBuildAbandoned)?.();
   abandonShellRead(accounted.edge, input.shellRead);
-  return accounted.passthrough('publication-expired', input.middleware, input.entry.pathname);
+  return accounted.passthrough(
+    'publication-expired',
+    input.middleware,
+    input.entry.pathname,
+    input.recordRead === undefined ? undefined : { recordLookupMs: input.recordRead.lookupMs },
+  );
 }
 
 function delegateDocument(

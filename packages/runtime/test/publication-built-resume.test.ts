@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { requestContextFor } from '../src/cache/context.ts';
 import { observeFreshPublication } from '../src/cache/publication.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
-import { rscFromBuild } from '../src/documents.ts';
+import { documentFromBuild, rscFromBuild } from '../src/documents.ts';
 import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { admitRequestPublication, requirePublication } from '../src/publication.ts';
 import type { RoutedInput } from '../src/serve.ts';
@@ -22,8 +22,9 @@ function scenario(
   source: 'shell' | 'twin',
   expires = NOW + 1000,
   movingClock = false,
-  additional: readonly string[] = [],
+  options: { readonly additional?: readonly string[]; readonly html?: boolean } = {},
 ) {
+  const { additional = [], html = false } = options;
   const tags = [grant(expires), 'resource:items', WITNESS, ...additional];
   const shell: Prerender = {
     id: 'items',
@@ -31,6 +32,7 @@ function scenario(
     pathname: ROUTE,
     parentOutputId: 'items',
     groupId: 0,
+    body: { sha256: 'html', byteLength: 5, contentType: 'text/html' },
     ...(source === 'shell' && {
       postponed: { sha256: 'state', byteLength: 5, contentType: 'application/json' },
       initialHeaders: { 'x-next-cache-tags': tags },
@@ -89,10 +91,13 @@ function scenario(
   const render = () => {
     return context.run(async () => {
       requirePublication(cache, ROUTE);
-      const response = await rscFromBuild(input, store, {
+      const asked = {
         entry: { kind: 'node', handler: vi.fn() },
         resolved: { route: ROUTE, pathname: ROUTE, url: ROUTE },
-      });
+      } as const;
+      const response = html
+        ? await documentFromBuild(input, store, asked.resolved, { entry: asked.entry, status: 200 })
+        : await rscFromBuild(input, store, asked);
       return admitRequestPublication(response, context);
     });
   };
@@ -100,12 +105,27 @@ function scenario(
 }
 
 describe('publication of saved build state on ordinary RSC navigation', () => {
+  it('observes saved HTML shell proof before its continuation reads a cached value', async () => {
+    const test = scenario('shell', NOW + 1000, false, { html: true });
+    vi.mocked(invokeNodeHandler).mockImplementationOnce(() => {
+      expect(test.context.publication).toContain(test.tags[0]);
+      expect(test.context.resourceTags).toContain(WITNESS);
+
+      return Promise.resolve(new Response('suffix'));
+    });
+
+    const response = await test.render();
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe('statesuffix');
+  });
+
   it('keeps valid local proof larger than the transport header limit', async () => {
     const additional = Array.from(
       { length: 100 },
       (_, index) => `resource:${String(index)}:${'x'.repeat(100)}`,
     );
-    const test = scenario('twin', NOW + 1000, false, additional);
+    const test = scenario('twin', NOW + 1000, false, { additional });
     vi.mocked(invokeNodeHandler).mockImplementationOnce(() => {
       expect(test.context.publication).toContain(test.tags[0]);
       expect(test.context.resourceTags).toContain(additional.at(-1));

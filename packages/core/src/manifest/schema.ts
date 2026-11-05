@@ -5,7 +5,7 @@ import {
   routerReferencesSchema,
   splitFunctionNameSchema,
 } from '../bundle/carried.ts';
-import { KEY_SCHEMA_VERSION, MAX_TAGS_PER_ENTRY } from '../cache/keys.ts';
+import { KEY_SCHEMA_VERSION, MAX_TAG_LENGTH, MAX_TAGS_PER_ENTRY } from '../cache/keys.ts';
 import { publicationRequirementSchema } from '../cache/publication-schema.ts';
 import { generationTagSchema } from '../cache/tag-schema.ts';
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
@@ -217,6 +217,13 @@ export const partialFallbackUpgradeSchema = z.object({
 });
 export type PartialFallbackUpgrade = z.infer<typeof partialFallbackUpgradeSchema>;
 
+const originalPublicationTag = z.string().min(1).max(MAX_TAG_LENGTH);
+/** The immutable source proof is independent of optional cache membership. */
+const buildPublicationSchema = z.object({
+  route: z.string().startsWith('/'),
+  tags: z.array(originalPublicationTag).max(MAX_TAGS_PER_ENTRY),
+});
+
 /** One route the build prerendered: its pathname, its shell artifact and its response headers. */
 export const routeEntrySchema = z.object({
   pathname: z.string().startsWith('/'),
@@ -270,6 +277,8 @@ export const routeEntrySchema = z.object({
   prerenderId: z.string().min(1).optional(),
   /** The runtime cache entry the route is served from, when the deployment has a cache. */
   cache: routeCacheSchema.optional(),
+  /** Original source identity and essential public proof, independent of optional cache membership. */
+  publication: buildPublicationSchema.optional(),
   /**
    * A built partial fallback whose completed shell is published behind its first response, under
    * the route and parameter key named here. Absent on ordinary shells and older manifests; a

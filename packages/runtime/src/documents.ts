@@ -173,6 +173,7 @@ export async function documentFromBuild(
       parseCacheTagsHeader(headers.get(CACHE_TAGS) ?? undefined),
     );
   }
+  observeResumePublication(input, shell.route, shell.initialHeaders);
   const rest = resume({
     input,
     handler: entry.handler,

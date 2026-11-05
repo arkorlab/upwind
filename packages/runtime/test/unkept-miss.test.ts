@@ -138,7 +138,21 @@ describe('a blocking member asked for where no cache keeps a render', () => {
   });
 
   it('captures and resumes a protected Cache Components fallback after rejecting its ungranted build', async () => {
-    const store = deployment();
+    const built = {
+      ...fallback,
+      body: { sha256: 'retired', byteLength: 7, contentType: 'text/html' },
+    };
+    const readBlob = vi.fn(() => new TextEncoder().encode('retired'));
+    const store = {
+      ...deployment(),
+      readBlob,
+      shellsByRoute: new Map([
+        [
+          ITEMS,
+          { pages: new Map(), patterns: [{ pattern: /^\/items\/[^/]+$/u, prerender: built }] },
+        ],
+      ]),
+    };
     const identity = 'a'.repeat(64);
     const until = Date.now() + 60_000;
     const cache = {
@@ -171,6 +185,8 @@ describe('a blocking member asked for where no cache keeps a render', () => {
 
     await expect(response.text()).resolves.toBe(`${STATIC_PART}${RESUMED}`);
     expect(invokeNodeHandler).toHaveBeenCalledTimes(2);
+    expect(built.body).toBeDefined();
+    expect(readBlob).not.toHaveBeenCalled();
   });
 
   it('is rendered once and resumed once', async () => {

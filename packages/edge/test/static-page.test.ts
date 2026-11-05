@@ -8,6 +8,24 @@ import { BODY, DATE, NOW, PATH, staticPageFixture as fixture } from './static-pa
 describe('trusted complete static Pages HTML', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it('retains independent publication proof from a host-seeded build through final admission', async () => {
+    const test = await fixture();
+    Object.assign(test.manifest, {
+      publication: {
+        version: 1,
+        identities: ['a'.repeat(64)],
+        routes: [PATH],
+        independentBuild: [PATH],
+      },
+    });
+
+    const response = await test.serve();
+
+    expect(response.status).toBe(200);
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(BODY);
+    expect(test.fallback).not.toHaveBeenCalled();
+  });
+
   it('shares unchanged build bytes through the existing warm record without another lookup', async () => {
     const test = await fixture();
     const get = vi.spyOn(env.CACHE_STATE, 'get');

@@ -134,6 +134,7 @@ function routeObjects(manifest: ProjectManifest): number {
     // Build tags are not stored in an interned table. Even equal or shared input arrays become
     // a separate array and separate tag objects for each route after JSON is read.
     objects += 1 + listObjects(route.cache?.buildTags);
+    if (route.publication !== undefined) objects += 1 + listObjects(route.publication.tags);
   }
   return objects;
 }
