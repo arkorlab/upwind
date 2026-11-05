@@ -23,7 +23,10 @@
   "publishConfig": {
     "exports": {
       ".": "./dist/index.js",
-      "./project-config": "./dist/project-config.js"
+      "./project-config": {
+        "types": "./dist/project-config.d.ts",
+        "default": "./dist/project-config.js"
+      }
     }
   },
   "scripts": {

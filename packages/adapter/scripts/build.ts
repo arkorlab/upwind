@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { copyFile, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -57,6 +57,11 @@ async function main(): Promise<void> {
     chunkFileNames: '[name]-[hash].js',
   });
   await build.close();
+  // Only the generic loader is a published, typed build-tools API; its declarations are standalone.
+  await copyFile(
+    path.join(ROOT, 'types/project-config.d.ts'),
+    path.join(OUT_DIR, 'project-config.d.ts'),
+  );
   for (const entry of output) {
     if (entry.type !== 'chunk' || !entry.isEntry) continue;
     const bytes = Buffer.byteLength(entry.code);

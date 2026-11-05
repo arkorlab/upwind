@@ -202,6 +202,8 @@ host filenames before `vercel.json`. The finder returns the selected filename wi
 it. The reader returns `{ file, value }`, preserving settings for the caller to validate; an absent
 file returns `{ file: undefined, value: {} }`. TypeScript evaluation runs project code, so callers
 must provide the same isolation and time limits they use for a build.
+The published subpath includes standalone type declarations; `value` remains `unknown` until
+the caller validates it.
 
 ## A large application, split across Functions
 

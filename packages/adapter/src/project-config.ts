@@ -212,8 +212,8 @@ const upwindConfigSchema = projectConfigSchema.extend({
  * `MAX_CRONS_PER_PROJECT` jobs and no path twice on one schedule, and that a budget is positive.
  *
  * It resolves only where this package resolves to its TypeScript sources, as in a workspace. The
- * published package ships its `dist` as JavaScript alone, with no declarations, so a project that
- * installed it from the registry cannot import the type until it ships some.
+ * published adapter entry has no declarations for this type. The generic `project-config`
+ * subpath declares its file reader API separately, without the adapter's configuration schema.
  */
 export type UpwindConfig = z.input<typeof upwindConfigSchema>;
 
