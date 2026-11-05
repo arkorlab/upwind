@@ -17,9 +17,20 @@ describe("a suite's variables", () => {
   it("leave out what Next.js's harness and Jest set for themselves", () => {
     expect(
       suiteVariables(
-        { NEXT_TEST_MODE: 'deploy', NEXT_TEST_DIR: '/tmp/next', JEST_WORKER_ID: '1', PWD: '/tmp' },
+        {
+          NEXT_TEST_MODE: 'deploy',
+          NEXT_TEST_DIR: '/work/next',
+          JEST_WORKER_ID: '1',
+          PWD: '/work',
+        },
         new Map(),
       ),
+    ).toStrictEqual({});
+  });
+
+  it("leave out this tool's own, its credentials among them", () => {
+    expect(
+      suiteVariables({ ARKOR_API_TOKEN: 'token', ADAPTER_TEST_PROJECT_IDS: 'a,b' }, new Map()),
     ).toStrictEqual({});
   });
 
