@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PAGE, pagesPublicationFixture } from './pages-publication-fixture.ts';
 
-vi.mock(import('../src/handlers/passthrough.ts'), async (original) => ({
-  ...(await original()),
-  handlePassthrough: vi.fn(),
-}));
+vi.mock(import('../src/handlers/passthrough.ts'), async (original) => {
+  const module = await original();
+  return { ...module, handlePassthrough: vi.fn() };
+});
 
 const NOW = 1_800_000_000_000;
 const ID = 'a'.repeat(64);
