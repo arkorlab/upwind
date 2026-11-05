@@ -177,7 +177,12 @@ function optimized(
         new URL(parsed.params.href, answer.request.url).pathname,
       ) !== undefined
     )
-      return input.passthrough('publication-image', answer.middleware);
+      return input.passthrough(
+        'publication-image',
+        answer.middleware === undefined
+          ? undefined
+          : withJudgedRules(answer.middleware, answer.configured, manifest),
+      );
   }
   return handleImage({
     ...answer,

@@ -1,9 +1,11 @@
 import type { ImagesConfig } from '@stayingupwind/core/images';
 import { buildProjectManifest } from '@stayingupwind/core/manifest';
+import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { routeHostedImage } from '../src/handlers/hosted-image.ts';
+import { routeHostedImage, type HostedImageInput } from '../src/handlers/hosted-image.ts';
 import { handleImage } from '../src/handlers/image.ts';
+import type { MiddlewareContinued } from '../src/handlers/middleware.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
 
 vi.mock(import('../src/handlers/image.ts'), async (original) => {
@@ -69,13 +71,19 @@ function fixture(options: {
     forwarding: { previewHost: 'site.test', previewDomain: 'invalid', clientIp: undefined },
     validated: false,
     app: { ...manifest.app, middlewareScriptName: 'middleware' },
+    policy: DEFAULT_DELIVERY_POLICY,
     runtime: { now: () => 1_800_000_000_000 },
   } as unknown as EdgeContext;
   const request = new Request(
     `https://site.test/_next/image?url=${encodeURIComponent(href)}&w=64&q=75`,
   );
-  const passthrough = vi.fn(() => Promise.resolve(new Response('current admitted source')));
+  const passthrough = vi.fn<HostedImageInput['passthrough']>(() =>
+    Promise.resolve(new Response('current admitted source')),
+  );
   return {
+    manifest,
+    request,
+    edge,
     passthrough,
     render: () => {
       return routeHostedImage({
@@ -88,6 +96,11 @@ function fixture(options: {
       });
     },
   };
+}
+
+function continued(value: Parameters<HostedImageInput['passthrough']>[1]): MiddlewareContinued {
+  if (value?.kind !== 'continue') throw new Error('Expected a continued middleware handoff.');
+  return value;
 }
 
 describe('protected image source selection at the edge', () => {
@@ -149,5 +162,49 @@ describe('protected image source selection at the edge', () => {
     await expect((await test.render()).text()).resolves.toBe('optimized file');
     expect(handleImage).toHaveBeenCalledTimes(1);
     expect(test.passthrough).not.toHaveBeenCalled();
+  });
+
+  it('preserves header rules selected before middleware when a protected source delegates', async () => {
+    const test = fixture({ shipped: false });
+
+    test.request.headers.set('x-visitor', 'original');
+
+    test.manifest.dynamicRoutes = [];
+
+    test.manifest.middleware = { matchers: [{ sourceRegex: '^/_next/image$' }] };
+
+    test.manifest.headerRules = [
+      {
+        phase: 'beforeMiddleware',
+        sourceRegex: '^/_next/image$',
+        has: [{ type: 'header', key: 'x-visitor', value: 'original' }],
+        headers: { 'x-chosen-for': 'original' },
+      },
+    ];
+
+    const dispatch = vi.fn(() => {
+      return Promise.resolve(
+        new Response(null, {
+          headers: {
+            'x-middleware-next': '1',
+            'x-middleware-override-headers': 'x-visitor',
+            'x-middleware-request-x-visitor': 'changed',
+          },
+        }),
+      );
+    });
+    Object.assign(test.edge.runtime, { dispatchApp: dispatch });
+
+    await expect((await test.render()).text()).resolves.toBe('current admitted source');
+    expect(dispatch).toHaveBeenCalledTimes(1);
+
+    const handed = continued(test.passthrough.mock.calls[0]![1]);
+
+    expect(handed.requestHeaders.get('x-visitor')).toBe('changed');
+    expect(handed.judgedRules).toStrictEqual({
+      headers: { 'x-chosen-for': 'original' },
+      conditioned: true,
+    });
+    expect(handleImage).not.toHaveBeenCalled();
   });
 });
