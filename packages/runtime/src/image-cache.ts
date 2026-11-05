@@ -21,6 +21,8 @@ export interface ImageCacheInput {
   readonly middlewareRan: boolean;
   /** A dynamic source in a protected deployment is always read before producing its image. */
   readonly publicationProtected?: boolean;
+  /** Require evidence that the producer enforced publication tags before keeping a remote image. */
+  readonly publicationRequired?: boolean;
   /** Where writing an image down is waited on, so a server that stops lets it land. */
   readonly waitUntil: (promise: Promise<unknown>) => void;
 }

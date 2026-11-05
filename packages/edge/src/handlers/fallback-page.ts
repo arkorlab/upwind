@@ -233,6 +233,10 @@ function startFirstMember(
   );
 }
 
+function publicationOwner(input: FallbackPageInput): WeakKey {
+  return input.manifest.publication ?? input.edge.runtime;
+}
+
 async function loadingPage(
   input: FallbackPageInput,
   chosen: Chosen,
@@ -244,9 +248,10 @@ async function loadingPage(
   const headers = new Headers(lazy.entry.headers);
   const tags = parseCacheTagsHeader(headers.get('x-next-cache-tags') ?? undefined);
   const required = publicationForBuild(input.manifest.publication, lazy.entry.route);
+  const owner = publicationOwner(input);
   const now = () => {
     const time = input.edge.runtime.now();
-    return required === undefined ? time : publicationTimeFor(required, time);
+    return publicationTimeFor(owner, time);
   };
   const expired = () => publicationExpired(tags, now(), required);
   if (expired()) return input.passthrough('pages-fallback-publication-expired');
@@ -296,6 +301,7 @@ async function loadingPage(
     tags,
     now(),
     required,
+    owner,
   );
   if (response.status !== HTTP_OK) return response;
   startFirstMember(

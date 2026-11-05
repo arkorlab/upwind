@@ -98,6 +98,40 @@ function remote(net: FakeNetwork, images = IMAGES) {
 }
 
 describe('publication-tagged optimized image sources', () => {
+  it('refuses an image when its source clock rolls back during the body read', async () => {
+    const now = 1_800_001_000_000;
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(now - performance.timeOrigin);
+    const source = new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          clock.mockReturnValue(now - 1 - performance.timeOrigin);
+          controller.enqueue(png());
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          'x-next-cache-tags': `upwind:publication:v1:${'a'.repeat(64)}:${String(now + 1000)}`,
+        },
+      },
+    );
+    try {
+      const response = await sourceResponse({
+        source,
+        params: PARAMS,
+        images: IMAGES,
+        internal: true,
+        request: asked('GET'),
+        clockOwner: {},
+      });
+
+      expect(response.status).toBe(503);
+      await expect(response.text()).resolves.toBe('Publication unavailable');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it.each([false, true])(
     'refuses malformed source snapshot proof and releases its unread body (internal=%s)',
     async (internal) => {

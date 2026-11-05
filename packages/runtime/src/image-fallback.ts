@@ -2,6 +2,7 @@ import { sha256Hex } from '@stayingupwind/core/artifact';
 import {
   admitPublication,
   publicationExpired,
+  publicationTimeFor,
   type PublicationRequirement,
 } from '@stayingupwind/core/cache';
 import {
@@ -132,6 +133,7 @@ export function imageCacheInputOf(
     deploymentId: deployment.deploymentId,
     middlewareRan: input.middlewareRan === true,
     publicationProtected: protectedImageSource(params, input.cache?.host.publication),
+    publicationRequired: input.cache?.host.publication !== undefined,
     waitUntil: input.waitUntil,
   };
 }
@@ -295,6 +297,8 @@ function refusalStatus(source: Response, internal: boolean): number {
 }
 
 interface SourceResponseInput {
+  /** The host/deployment clock fence; a direct source owns its own fence when none is supplied. */
+  readonly clockOwner?: WeakKey;
   readonly publicationProtected?: boolean | undefined;
   readonly source: Response;
   readonly params: ImageRequestParams;
@@ -312,6 +316,10 @@ interface SourceResponseInput {
    * does: the source's own, or one of its bytes where it has none.
    */
   readonly keep?: ((image: KeptImage) => void) | undefined;
+}
+
+function imageClockOf(input: SourceResponseInput): WeakKey {
+  return input.clockOwner ?? input.source;
 }
 
 /** The source's bytes, whole, or the refusal they amount to. */
@@ -378,8 +386,10 @@ export async function sourceResponse(input: SourceResponseInput): Promise<Respon
   const proof = sourcePublication(source, internal);
   if ('refusal' in proof) return proof.refusal;
   const publication = proof.tags;
-  if (publicationExpired(publication, nowMs()))
-    return admitPublication(source, publication, nowMs());
+  const owner = imageClockOf(input);
+  const now = publicationTimeFor(owner, nowMs());
+  if (publicationExpired(publication, now))
+    return admitPublication(source, publication, now, undefined, owner);
   const invalid = internal ? INTERNAL_INVALID : UPSTREAM_INVALID;
   if (!source.ok || source.body === null) {
     releaseStream(source.body, 'image source refused');
@@ -468,6 +478,8 @@ function answered(
       new Response(null, { status: HTTP_NOT_MODIFIED, headers }),
       publication,
       nowMs(),
+      undefined,
+      imageClockOf(input),
     );
   }
   headers.set('content-length', String(bytes.byteLength));
@@ -477,5 +489,7 @@ function answered(
     new Response(request.method === 'HEAD' ? null : body, { headers }),
     publication,
     nowMs(),
+    undefined,
+    imageClockOf(input),
   );
 }

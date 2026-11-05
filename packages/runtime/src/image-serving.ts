@@ -65,6 +65,7 @@ export async function serveImageSource(options: {
           internal: false,
           request,
           keep,
+          clockOwner: store.manifest,
         });
   }
   const source = sourceRequest(request, params.href);
@@ -86,5 +87,6 @@ export async function serveImageSource(options: {
     request,
     keep,
     publicationProtected: cacheInput.publicationProtected,
+    clockOwner: store.manifest,
   });
 }
