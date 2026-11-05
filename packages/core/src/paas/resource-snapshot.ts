@@ -13,7 +13,8 @@ export function observeResourceSnapshot(
   if (
     typeof input.tag !== 'string' ||
     input.tag.length === 0 ||
-    input.tag.startsWith('upwind:resource-snapshot:')
+    input.tag.startsWith('upwind:resource-snapshot:') ||
+    input.tag.startsWith('upwind:publication:')
   )
     throw new TypeError('Invalid resource snapshot tag.');
   const tags = [input.tag, resourceSnapshotTag(input)];

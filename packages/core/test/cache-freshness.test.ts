@@ -155,3 +155,30 @@ describe('freshness by invalidation', () => {
     ).toMatchObject({ validity: 'expired', cause: 'invalidation' });
   });
 });
+
+describe('publication and existing expiry metadata', () => {
+  const deadline = T0 + EXPIRE_MS;
+  const tags = [`upwind:publication:v1:${'a'.repeat(64)}:${String(deadline)}`];
+
+  it('retains an earlier cache and invalidation deadline after the grant expires', () => {
+    const result = evaluateFreshness({
+      policy,
+      cacheTimestamp: T0,
+      tags,
+      invalidation: { staleAt: T0 + TEN, hardExpireAt: T0 + SECOND_MS },
+      now: deadline + 1,
+    });
+
+    expect(result).toMatchObject({
+      validity: 'expired',
+      revalidateAt: { kind: 'at', unixMs: T0 + TEN },
+      expireAt: { kind: 'at', unixMs: T0 + SECOND_MS },
+    });
+  });
+
+  it('never reports an expiry beyond a still-live publication bound', () => {
+    const result = evaluateFreshness({ policy: forever, cacheTimestamp: T0, tags, now: T0 });
+
+    expect(result.expireAt).toStrictEqual({ kind: 'at', unixMs: deadline });
+  });
+});

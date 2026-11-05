@@ -1,4 +1,5 @@
-import { cacheDirectives } from '../request/cache-control.ts';
+import { cacheDirectives, removeSharedCacheOverrides } from '../request/cache-control.ts';
+import { SHARED_CACHE_CONTROL_HEADERS } from '../request/constants.ts';
 import { releaseStream } from '../util/stream.ts';
 import {
   publicationDeadline,
@@ -6,6 +7,18 @@ import {
   publicationTimeFor,
   type PublicationRequirement,
 } from './publication.ts';
+
+/** Whether a targeted cache field also forbids transforming the producer's bytes. */
+function targetedNoTransform(headers: Headers): boolean {
+  for (const name of SHARED_CACHE_CONTROL_HEADERS) {
+    const value = headers.get(name);
+    if (value === null) continue;
+    for (const directive of cacheDirectives(value)) {
+      if (directive.split('=', 1)[0]?.trim().toLowerCase() === 'no-transform') return true;
+    }
+  }
+  return false;
+}
 
 /** The final response-admission check, after asynchronous reads and before returning headers. */
 export function admitPublication(
@@ -26,8 +39,7 @@ export function admitPublication(
     // Cache API/internal records retain their own grants. No outer cache may bypass admission.
     const admitted = new Response(response.body, response);
     const { headers } = admitted;
-    for (const header of ['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control'])
-      headers.delete(header);
+    removeSharedCacheOverrides(headers);
     const control = response.headers.get('cache-control') ?? '';
     const directives = new Set(
       cacheDirectives(control).map(
@@ -37,7 +49,10 @@ export function admitPublication(
     const policy = directives.has('no-store')
       ? 'private, no-store'
       : 'private, no-cache, must-revalidate';
-    const transform = directives.has('no-transform') ? ', no-transform' : '';
+    const transform =
+      directives.has('no-transform') || targetedNoTransform(response.headers)
+        ? ', no-transform'
+        : '';
     headers.set('cache-control', policy + transform);
     return admitted;
   }

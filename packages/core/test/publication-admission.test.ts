@@ -43,16 +43,50 @@ describe('publication admission', () => {
     },
   );
 
-  it.each([7, 9] as const)('retains request-key file lookup for schema %s', (schemaVersion) => {
+  it.each([6, 7, 9] as const)('retains request-key file lookup for schema %s', (schemaVersion) => {
+    const file = {
+      sha256: identity,
+      byteLength: 1,
+      contentType: 'text/javascript',
+      immutable: true,
+    };
     const manifest = {
       schemaVersion,
-      staticFiles: {},
+      staticFiles: { '/_next/static/app.js': file, '/cdn/_next/static/shipped.js': file },
       staticFileRequestKeys: true as const,
       staticFileAssetPrefix: { basePath: '', assetPrefix: '/cdn' },
     };
 
+    expect(staticFileKey(manifest, '/_next/static/app.js')).toBe('/_next/static/app.js');
+    expect(staticFileKey(manifest, '/cdn/_next/static/shipped.js')).toBe(
+      '/cdn/_next/static/shipped.js',
+    );
+    expect(staticFileKey(manifest, '/cdn/_next/static/app.js')).toBe(
+      schemaVersion === 6 ? '/_next/static/app.js' : undefined,
+    );
     expect(staticFileKey(manifest, '/cdn/_next/static/missing.js')).toBeUndefined();
   });
+
+  it.each(['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control'])(
+    'retains no-transform from %s while removing its cache override',
+    (name) => {
+      const response = admitPublication(
+        new Response('encoded', {
+          headers: {
+            'cache-control': 'public,max-age=60',
+            [name]: 'public,max-age=3600,no-transform',
+          },
+        }),
+        [tag],
+        1,
+      );
+
+      expect(response.headers.get('cache-control')).toBe(
+        'private, no-cache, must-revalidate, no-transform',
+      );
+      expect(response.headers.has(name)).toBe(false);
+    },
+  );
 
   it('refuses expiry and 304 reuse and removes outer stale caches without changing Next cache profiles', () => {
     const original = new Response('public', {

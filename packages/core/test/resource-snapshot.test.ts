@@ -117,6 +117,21 @@ describe('original resource snapshot witnesses', () => {
     expect(observer).not.toHaveBeenCalled();
   });
 
+  it.each([`upwind:publication:v1:${RESOURCE}:60000`, 'upwind:publication:invalid'])(
+    'refuses a publication grant disguised as a resource tag %s',
+    (tag) => {
+      const unit = cacheUnit();
+      const observer = vi.fn();
+      Reflect.set(globalThis, RESOURCE_SNAPSHOT_OBSERVER, observer);
+
+      expect(() => {
+        observeResourceSnapshot({ resourceId: RESOURCE, version: 1, tag });
+      }).toThrow('Invalid resource snapshot tag.');
+      expect(unit.tags).toStrictEqual([]);
+      expect(observer).not.toHaveBeenCalled();
+    },
+  );
+
   it('requires every v3 capability while retaining v1 and v2 admission', () => {
     const sources = { identities: [RESOURCE], routes: ['/'] };
     const requirement = { version: 3, valueObservers: true, resourceSnapshots: true, ...sources };

@@ -50,4 +50,28 @@ describe('publication bounds', () => {
       publicationIdentity({ ...grant, release: { ...grant.release, id: 'release-2' } }),
     ).resolves.not.toBe(await publicationIdentity(grant));
   });
+
+  it.each([
+    { field: 'scope', value: 1 },
+    { field: 'scope', value: ['project'] },
+    { field: 'dataGeneration', value: true },
+    { field: 'id', value: 1 },
+    { field: 'digest', value: ['a'.repeat(64)] },
+  ])('refuses non-text grant binding $field', async ({ field, value }) => {
+    const malformed = structuredClone(grant);
+    const target = field === 'id' || field === 'digest' ? malformed.release : malformed;
+    Reflect.set(target, field, value);
+
+    await expect(publicationIdentity(malformed)).rejects.toThrow(TypeError);
+  });
+
+  it.each([
+    { ...grant, scope: 'other-project' },
+    { ...grant, dataGeneration: 'generation-2' },
+    { ...grant, publicationEpoch: 3 },
+    { ...grant, release: { ...grant.release, id: 'release-2' } },
+    { ...grant, release: { ...grant.release, digest: 'b'.repeat(64) } },
+  ])('binds every publication source identity field %#', async (changed) => {
+    await expect(publicationIdentity(changed)).resolves.not.toBe(await publicationIdentity(grant));
+  });
 });

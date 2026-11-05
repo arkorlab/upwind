@@ -73,9 +73,13 @@ export function publicationTimeFor(owner: WeakKey, now: number): number {
 /** The deadline is deliberately excluded: a later grant is the same publication identity. */
 export async function publicationIdentity(grant: PublicationGrant): Promise<string> {
   if (
+    typeof grant.scope !== 'string' ||
     !grant.scope ||
+    typeof grant.dataGeneration !== 'string' ||
     !grant.dataGeneration ||
+    typeof grant.release.id !== 'string' ||
     !grant.release.id ||
+    typeof grant.release.digest !== 'string' ||
     !IDENTITY.test(grant.release.digest) ||
     !Number.isSafeInteger(grant.publicationEpoch) ||
     grant.publicationEpoch < 0 ||

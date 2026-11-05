@@ -75,18 +75,22 @@ export function evaluateFreshness(input: FreshnessInput): Freshness {
   const timeExpire = deadlineAfter(cacheTimestamp, policy.expireAfter);
   const staleAt = deadlineAt(invalidation?.staleAt);
   const hardExpireAt = deadlineAt(invalidation?.hardExpireAt);
+  const revalidateAt = staleAt === undefined ? timeRevalidate : earliest(timeRevalidate, staleAt);
+  const limitedExpire =
+    hardExpireAt === undefined ? timeExpire : earliest(timeExpire, hardExpireAt);
   const publication = publicationDeadline(input.tags ?? [], input.publication);
+  const expireAt =
+    publication === undefined
+      ? limitedExpire
+      : earliest(limitedExpire, { kind: 'at', unixMs: publication });
   if (publication !== undefined && (!Number.isFinite(now) || now >= publication)) {
-    const deadline = { kind: 'at' as const, unixMs: publication };
     return {
       validity: 'expired',
-      revalidateAt: deadline,
-      expireAt: deadline,
+      revalidateAt,
+      expireAt,
       cause: 'invalidation',
     };
   }
-  const revalidateAt = staleAt === undefined ? timeRevalidate : earliest(timeRevalidate, staleAt);
-  const expireAt = hardExpireAt === undefined ? timeExpire : earliest(timeExpire, hardExpireAt);
   if (hardExpireAt !== undefined && now >= hardExpireAt.unixMs) {
     return { validity: 'expired', revalidateAt, expireAt, cause: 'invalidation' };
   }
