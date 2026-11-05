@@ -4,7 +4,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
-import ts from 'typescript';
+import { ScriptTarget } from 'typescript-api/ast';
+import { API, ModuleKind } from 'typescript-api/sync';
 
 const REQUEST_MS = 10_000;
 const CLEANUP_MS = 5000;
@@ -80,9 +81,11 @@ async function bounded<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> 
   }
 }
 
+using api = new API({ cwd: ROOT });
+
 function compiled(source: string): string {
-  return ts.transpileModule(source, {
-    compilerOptions: { target: ts.ScriptTarget.ES2023, module: ts.ModuleKind.ESNext },
+  return api.transpileModule(source, {
+    compilerOptions: { target: ScriptTarget.ES2023, module: ModuleKind.ESNext },
   }).outputText;
 }
 

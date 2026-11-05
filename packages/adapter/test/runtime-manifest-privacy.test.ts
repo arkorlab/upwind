@@ -8,8 +8,6 @@ import {
 } from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
 import {
-  createSourceFile,
-  forEachChild,
   isAsExpression,
   isIdentifier,
   isObjectLiteralExpression,
@@ -18,8 +16,8 @@ import {
   isVariableDeclaration,
   type Node,
   type ObjectLiteralExpression,
-  ScriptTarget,
-} from 'typescript';
+} from 'typescript-api/ast';
+import { API } from 'typescript-api/sync';
 import { describe, expect, it } from 'vitest';
 
 const GENERATED_AT = '2026-10-20T00:00:00.000Z';
@@ -110,7 +108,7 @@ function runtimeReferences(node: Node): 'one-pass' | undefined {
     isObjectLiteralExpression(node.initializer)
   )
     return referenceProperty(node.initializer);
-  return forEachChild(node, runtimeReferences);
+  return node.forEachChild(runtimeReferences);
 }
 
 describe('runtime manifest privacy authority', () => {
@@ -130,11 +128,11 @@ describe('runtime manifest privacy authority', () => {
     ];
     // The repository-owned source URL is fixed; no request or environment input selects a file.
     const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
+    using api = new API({ cwd: process.cwd() });
+    using parsed = api.createSourceFile('index.ts', source);
     const runtime = {
       ...bundle,
-      routerReferences: runtimeReferences(
-        createSourceFile('index.ts', source, ScriptTarget.Latest),
-      ),
+      routerReferences: runtimeReferences(parsed.sourceFile),
     };
     const legacy = { ...bundle, routerReferences: undefined };
 
