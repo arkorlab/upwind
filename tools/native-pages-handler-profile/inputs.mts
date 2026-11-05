@@ -29,4 +29,11 @@ export const NEXT_RELEASES = {
       'pnpm-lock.yaml': '7691c72d7d1718f8b657ef32d2cdea20f870ef69e80477df2ad9164ef558098e',
     },
   },
+  '16.4.5': {
+    swc: 'sha512-hPc+Fl+N22DAvqZHq559NmamXboOX5Lu8I5Wl0DezfrhTk1Zz21NQeYoZDmNI/NjTcrdsVxM72Fzn2lI+Q+vAw==',
+    files: {
+      'package.json': '3485e0e85ad30f937713063acf2496810f118db1a9e1da735d0ec69e9d4f2539',
+      'pnpm-lock.yaml': '6d86e8181c2edef7437aa1309a23df7428b013c19fc5a5d5677a6167fe7b9e5f',
+    },
+  },
 } as const;

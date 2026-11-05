@@ -357,13 +357,15 @@ function profileOf(file: string): NodeJwtCompilerProfile | undefined {
   const posix = file.split(path.sep).join('/');
   return NODE_JWT_COMPILER_PROFILES.find((profile) => posix.endsWith(profile.suffix));
 }
-/** The library of the release the package is: jsonwebtoken for 16.4.3, fast-jwt for 16.4.4. */
+/** The library of the release the package is: jsonwebtoken for 16.4.3, fast-jwt from 16.4.4. */
 function releaseProfile(file: string) {
   const profile = profileOf(file);
   if (profile === undefined) return;
   const root = file.slice(0, -profile.suffix.length);
   const release = nativeNextReleaseAt(root);
-  return release?.version === profile.release ? { profile, release, root } : undefined;
+  return release !== undefined && profile.releases.includes(release.version)
+    ? { profile, release, root }
+    : undefined;
 }
 /**
  * Manually qualified PRIMARY Next16.4.3 NCC source (Git blob 33a1c8901b96d04376c1649e2f144f0c335d1762).

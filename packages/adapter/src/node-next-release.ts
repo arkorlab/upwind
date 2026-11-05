@@ -4,7 +4,7 @@ import path from 'node:path';
 
 /** A published Next.js release whose native sources the SDK qualifies, by their exact bytes. */
 export interface NativeNextRelease {
-  readonly version: '16.4.3' | '16.4.4';
+  readonly version: '16.4.3' | '16.4.4' | '16.4.5';
   /** The published `package.json`, by its exact bytes. */
   readonly packageJsonSha256: string;
   /**
@@ -55,7 +55,8 @@ function defineRelease(
   });
 }
 
-// Exact published next@16.4.3 and next@16.4.4 sources, from their integrity-verified registry packages.
+// Exact published next@16.4.3, next@16.4.4 and next@16.4.5 sources, from their integrity-verified
+// registry packages. 16.4.5 publishes the Pages runtimes as 16.4.4 does.
 export const NATIVE_NEXT_RELEASES: readonly NativeNextRelease[] = Object.freeze([
   defineRelease('16.4.3', 'b67bad7944d603b27dd2d2719b57203fd3b3e5c147b2efa6dea5ceb135274caf', [
     '0a6a5c726f95e2df2600b2fd6d71e37fd72f936f8f4dc5b94fa38d40fcd62a6b',
@@ -86,6 +87,21 @@ export const NATIVE_NEXT_RELEASES: readonly NativeNextRelease[] = Object.freeze(
     '071075f8dec3ceeee13700b11accd19f93503c5ede4e052a4a25324a220000ad',
     'f85e8b56387771d0e9833ef879a2f5f38fd19ba4a1bfc5e8e3d8c68f8d9f769d',
     '5487d86709ea8de206e57dad2dca618008b436b3c0027f821382d51daee72704',
+  ]),
+  defineRelease('16.4.5', '76f5b7ef447577c2855eee017ae8a47aeefc1e4c95e71387b66c2671283682c8', [
+    '5311e1a3e0dc044295cc4632c0be3458f1f1297a53f248d0f2663d6b5bc941f6',
+    '76179aed630a854d00ed4d05f175bda066ce9c642c5c491319408de27cf718de',
+    '6fa78bc291d30ac4a3802e7903ebe0cb268c24254991d12573db25dd67cf4dd3',
+    '542b04050b28cd50b9565df01a1691585eaf1c45ad0abc2c6b37ba679345e29a',
+    '73d1cbb842583340ffde959a86d7932115b81b68e8d0a0e2759990fc108c0194',
+    'c942ce0e1225d5173eb2c42dd9958727ae30c6a0e522b0ca939a2f9576c30f39',
+    '0adbf685547722a714dd900f2981897f841d424024202d91e6931a54e98110d7',
+    '4fbed6b321caa34a790fd6ee671a3ba8135d97dc8f49181f34c3c648f6124b6b',
+    '8d0dd3380764b15950850af06f229d666471e0c92cb31960d45c9be4e0d750c9',
+    'f4d120d0fab6cc90eb3c44c41d6da148ad68f8fd2070349bd92af23a16e5ab82',
+    'd8abc03d750a5e3b0195c865053650208701be436dcad80a1d1399207c48fe26',
+    '43baf645026672a56cb8478dbd82be7e45d8ccfc58c4352b272f2d9ce7ab0d42',
+    '5fe11bc762f2857a42d1d271e9107e3ecf7b9218eba4f72e4140ece190e97569',
   ]),
 ]);
 

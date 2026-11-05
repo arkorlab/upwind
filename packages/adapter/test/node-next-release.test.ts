@@ -15,10 +15,11 @@ import {
 } from '../src/node-next-release.ts';
 
 const require = createRequire(import.meta.url);
-/** Each supported release, installed under its alias. */
+/** Each supported release, installed: 16.4.3 and 16.4.4 under their aliases, 16.4.5 as the catalog's. */
 const INSTALLED = [
   { version: '16.4.3', root: path.dirname(require.resolve('next-16-4-3/package.json')) },
   { version: '16.4.4', root: path.dirname(require.resolve('next-16-4-4/package.json')) },
+  { version: '16.4.5', root: path.dirname(require.resolve('next/package.json')) },
 ] as const;
 /** Reviewed sources the two releases publish with the same bytes. */
 const SHARED = [
@@ -73,6 +74,20 @@ describe('the Next.js releases the native Node path qualifies', () => {
     expect(isForeignReleaseSource(older!, runtime, olderRuntime)).toBe(false);
     expect(isForeignReleaseSource(newer!, runtime, olderRuntime)).toBe(true);
     expect(isForeignReleaseSource(newer!, runtime, 'f'.repeat(64))).toBe(false);
+  });
+
+  it('takes a source two releases publish alike as either one’s own', () => {
+    const [, previous, latest] = NATIVE_NEXT_RELEASES;
+    const pages = 'dist/compiled/next-server/pages-turbo.runtime.prod.js';
+    const appPage = 'dist/compiled/next-server/app-page-turbo.runtime.prod.js';
+
+    // 16.4.5 publishes the Pages runtimes as 16.4.4 does, and the App Router ones anew.
+    expect(latest?.source(pages)).toBe(previous?.source(pages));
+    expect(isForeignReleaseSource(latest!, pages, previous?.source(pages) ?? '')).toBe(false);
+    expect(latest?.source(appPage)).not.toBe(previous?.source(appPage));
+    expect(isForeignReleaseSource(latest!, appPage, previous?.source(appPage) ?? '')).toBe(true);
+    expect(nativeNextReleaseOf(latest!.packageJsonSha256, '16.4.5')).toBe(latest);
+    expect(nativeNextReleaseOf(previous!.packageJsonSha256, '16.4.5')).toBeUndefined();
   });
 
   it('keeps every release pin immutable to the code that imports it', () => {
