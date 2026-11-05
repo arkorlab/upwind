@@ -5,7 +5,7 @@ import { observePublicationTags } from '@stayingupwind/core/paas';
 import { TtlCache } from '@stayingupwind/core/util';
 import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
 
-import { withClock } from '../src/cache/clock.ts';
+import { nowMs, withClock } from '../src/cache/clock.ts';
 import { requestContextFor, requestContext } from '../src/cache/context.ts';
 import { configureCacheHandlers, PlatformFetchCache } from '../src/cache/handlers.ts';
 import type {
@@ -218,6 +218,7 @@ interface Regenerated {
   readonly publication: readonly string[] | undefined;
   readonly renderTags: string | undefined;
   readonly sameContext: boolean;
+  readonly observedClock: number;
 }
 
 /** A regeneration of the route, its render reading as `scenario` says. */
@@ -261,10 +262,12 @@ async function regenerated(scenario: Scenario): Promise<Regenerated> {
         });
   if (scenario.publication !== undefined) context?.publication.add(scenario.publication.served);
   let sameContext = true;
+  let observedClock = 0;
   vi.mocked(invokeNodeHandler).mockImplementation(async (input) => {
     const run = input.run ?? ((work) => work());
     return outside.runInAsyncScope(() => {
       return run(async () => {
+        observedClock = nowMs();
         if (scenario.publication !== undefined) {
           sameContext = requestContext() === context;
           observePublicationTags([scenario.publication.fresh]);
@@ -295,7 +298,7 @@ async function regenerated(scenario: Scenario): Promise<Regenerated> {
         waitUntil: (promise) => {
           pending.push(promise);
         },
-        run: context?.run ?? ((work) => work()),
+        run: context?.run ?? ((work) => withClock(NOW, work)),
       });
     };
     return context === undefined ? render() : context.run(render);
@@ -317,6 +320,7 @@ async function regenerated(scenario: Scenario): Promise<Regenerated> {
     renderTags:
       outcome.kind === 'accepted' ? outcome.render.headers['x-next-cache-tags'] : undefined,
     sameContext,
+    observedClock,
   };
 }
 
@@ -324,6 +328,12 @@ describe('what a regeneration commits of what its render held of each tag', () =
   afterEach(() => {
     configureCacheHandlers(undefined);
     vi.mocked(invokeNodeHandler).mockReset();
+  });
+
+  it('restores the frozen render clock after an external callback without publication', async () => {
+    const made = await regenerated({ later: 0, copies: [], entries: {}, reads: [], tags: [] });
+
+    expect(made.observedClock).toBe(NOW);
   });
 
   it.each([NOW, NOW + SECOND])(

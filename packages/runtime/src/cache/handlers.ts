@@ -607,7 +607,8 @@ async function getUseCache(
   if (validity === 'stale' && ageMs <= entry.expire * MS_PER_SECOND) {
     holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
   }
-  if (!reusePublication(entry.tags, nowMs(), runtime.host.publication)) return undefined;
+  if (!reusePublication(mergeTags(entry.tags, softTags), nowMs(), runtime.host.publication))
+    return undefined;
   return {
     value: new Blob([judged.held.bytes as BlobPart]).stream(),
     tags: [...entry.tags],

@@ -6,7 +6,13 @@ const RUNS =
   /(?<![\w$.])(?<storage>(?:[\w$]+\.)?workUnitAsyncStorage)\.run\(\s*(?<store>[\w$]+)\s*,/gu;
 
 export function isUnstableCacheSource(source: string): boolean {
-  return source.includes('incrementalCache missing in unstable_cache');
+  return (
+    source.includes('incrementalCache missing in unstable_cache') &&
+    (/(?<![\w$])(?:[\w$]+\.)?workUnitAsyncStorage\.(?:run|getStore)\(/u.test(source) ||
+      /(?<![\w$])function\s+unstable_cache\s*\(/u.test(source) ||
+      /(?<![\w$])["']?unstable_cache["']?\s*:/u.test(source) ||
+      [...source.matchAll(STORES)].length > 0)
+  );
 }
 
 /** Register each graph's exact storage before any cold or background callback can return data. */

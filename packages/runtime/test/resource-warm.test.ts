@@ -4,6 +4,7 @@ import { installResourcePrimaryReadStorage } from '@stayingupwind/core/paas';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { NodeHandler } from '../src/app-module.ts';
+import { publicationContext } from '../src/cache/context.ts';
 import { regenerate } from '../src/cache/regenerate.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { nodeHandlerOf } from '../src/entries.ts';
@@ -54,7 +55,7 @@ const SCOPE = 'dpl_resource_warm';
 const entry = { kind: 'app-page', route: '/', pathname: '/' } as const;
 const props = { v: 1, scopeId: SCOPE, entry } as const;
 const handler: NodeHandler = () => Promise.reject(new Error('unused'));
-const runtime = { scopeId: SCOPE, clockOf: vi.fn() } as unknown as CacheRuntime;
+const runtime = { scopeId: SCOPE, host: {}, clockOf: vi.fn() } as unknown as CacheRuntime;
 const input = {
   props,
   runtime,
@@ -130,6 +131,29 @@ describe('trusted resource regeneration', () => {
       kind: 'published',
       generationId: 'gen_new',
     });
+  });
+
+  it('installs the protected route requirement before its regeneration starts', async () => {
+    const required = {
+      version: 2,
+      valueObservers: true,
+      identities: ['a'.repeat(64)],
+      routes: ['/'],
+    } as const;
+    const protectedRuntime = { ...runtime, host: { ...runtime.host, publication: required } };
+    vi.mocked(regenerate).mockImplementation(() => {
+      expect(publicationContext()?.publicationRequirement).toBe(required);
+
+      return Promise.resolve({ kind: 'refused' as const, reason: 'missing-publication' });
+    });
+
+    await expect(warmResourceRoute({ ...input, runtime: protectedRuntime })).resolves.toStrictEqual(
+      {
+        v: 1,
+        kind: 'failed',
+        error: 'missing-publication',
+      },
+    );
   });
 
   it('keeps a failed or busy publication retryable', async () => {

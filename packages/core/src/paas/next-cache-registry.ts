@@ -25,7 +25,7 @@ export interface NextRevalidationProvider {
 
 interface Registry {
   readonly units: Set<NextStorage<NextCacheStore>>;
-  readonly legacyAncestors: WeakSet<NextCacheStore>;
+  legacyAncestors: WeakSet<NextCacheStore>;
   readonly revalidation: Map<
     NextStorage<NextWorkStore>,
     Map<NextStorage<NextCacheStore>, NextRevalidationProvider>
@@ -35,7 +35,9 @@ interface Registry {
 const LEGACY_CACHE = 'unstable-cache';
 const STATE_KEY = Symbol.for('upwind.next-cache-registry@1');
 interface RegistryHolder {
-  [STATE_KEY]?: Registry;
+  [STATE_KEY]?: Omit<Registry, 'legacyAncestors'> & {
+    legacyAncestors?: Registry['legacyAncestors'];
+  };
 }
 
 function holder(): RegistryHolder {
@@ -44,7 +46,10 @@ function holder(): RegistryHolder {
 
 function registry(): Registry {
   const held = holder()[STATE_KEY];
-  if (held !== undefined) return held;
+  if (held !== undefined) {
+    held.legacyAncestors ??= new WeakSet();
+    return held as Registry;
+  }
   const created: Registry = {
     units: new Set(),
     legacyAncestors: new WeakSet(),
@@ -57,7 +62,8 @@ function registry(): Registry {
 /** Installed before the application's module graph, in Node and in the hosted Function. */
 export function installNextCacheRegistry(): void {
   const hooks = globalThis as Record<symbol, unknown>;
-  hooks[Symbol.for(NEXT_CACHE_STORAGE_SYMBOL_KEY)] ??= <T extends NextStorage<NextCacheStore>>(
+  // Refresh the compatible hook when an older copy registered before ancestry tracking existed.
+  hooks[Symbol.for(NEXT_CACHE_STORAGE_SYMBOL_KEY)] = <T extends NextStorage<NextCacheStore>>(
     storage: T,
     store?: NextCacheStore,
     parent?: NextCacheStore,

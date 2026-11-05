@@ -19,6 +19,15 @@ const context: PatchContext = {
 const root = path.dirname(require.resolve('next/package.json'));
 
 describe('native unstable_cache storage registration', () => {
+  it('leaves application chunks quoting native error text untouched', () => {
+    const source = 'export const message = "incrementalCache missing in unstable_cache";';
+
+    expect(resourceCacheBridgePatch.marker?.(source)).toBe(false);
+    expect(
+      resourceCacheBridgePatch.apply(source, '/app/.next/server/chunks/help.js', context),
+    ).toMatchObject({ contents: source, edits: 0 });
+  });
+
   it.each(['dist/server', 'dist/esm/server'])(
     'covers cold and background callback runs in %s',
     async (directory) => {
@@ -95,7 +104,7 @@ describe('native unstable_cache storage registration', () => {
   it('fails closed if a native provider no longer exposes its callback storage', () => {
     expect(() => {
       return resourceCacheBridgePatch.apply(
-        'throw Error("incrementalCache missing in unstable_cache")',
+        'function unstable_cache(){throw Error("incrementalCache missing in unstable_cache")}',
         '/workspace/app/.next/server/chunks/cache.js',
         context,
       );

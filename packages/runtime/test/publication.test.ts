@@ -251,6 +251,47 @@ describe('publication-aware Next cache handlers', () => {
     expect(newer).not.toHaveBeenCalled();
   });
 
+  it('rechecks soft publication bounds after the freshness judgement before returning a value', async () => {
+    const until = NOW + 1;
+    const soft = await publicationTagOf({ ...grant, validUntil: until });
+    const host = hostOf(vi.fn<CacheHost['setData']>());
+    vi.spyOn(host, 'getData').mockResolvedValue({
+      entryId: 'entry',
+      generationId: 'generation',
+      dependencyRevision: 1,
+      entry: {
+        kind: 'data:use-cache',
+        handler: 'default',
+        tags: [],
+        stale: 30,
+        timestamp: NOW,
+        expire: 86_400,
+        revalidate: 3600,
+      },
+      value: { kind: 'inline', base64: btoa('static') },
+    });
+    const runtime = runtimeOf(host);
+    configureCacheHandlers(runtime);
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(NOW - performance.timeOrigin);
+    const validity = runtime.tags.validityOf.bind(runtime.tags);
+    vi.spyOn(runtime.tags, 'validityOf').mockImplementation((tags, timestamp, now) => {
+      const judged = validity(tags, timestamp, now);
+      if (tags.includes(soft)) clock.mockReturnValue(until - performance.timeOrigin);
+      return judged;
+    });
+    const request = requestContextFor({
+      tables: { app: { entries: {} }, edge: { entries: {} } },
+      runtime,
+      request: new Request('https://example.test/'),
+      startedAt: NOW,
+      waitUntil: vi.fn(),
+    });
+
+    await expect(
+      request.run(() => useCacheHandler('default').get('soft-bound', [soft])),
+    ).resolves.toBeUndefined();
+  });
+
   it('keeps unrelated static component cache entries independent of a request grant', async () => {
     const setData = vi
       .fn<CacheHost['setData']>()

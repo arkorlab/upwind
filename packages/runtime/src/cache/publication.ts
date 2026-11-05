@@ -16,11 +16,16 @@ function missingResourceWitness(
   tags: readonly string[],
   required?: PublicationRequirement,
 ): boolean {
-  return (
-    required?.version === SNAPSHOT_PUBLICATION_VERSION &&
-    tags.some((tag) => isPublicationTag(tag)) &&
-    tags.every((tag) => resourceSnapshotOf(tag) === undefined)
-  );
+  try {
+    const snapshots = tags.map((tag) => resourceSnapshotOf(tag));
+    return (
+      required?.version === SNAPSHOT_PUBLICATION_VERSION &&
+      tags.some((tag) => isPublicationTag(tag)) &&
+      snapshots.every((snapshot) => snapshot === undefined)
+    );
+  } catch {
+    return true;
+  }
 }
 
 /** An expired grant is a local miss, never an authority lookup to renew a cached result. */
