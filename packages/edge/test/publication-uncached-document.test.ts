@@ -212,6 +212,12 @@ function cachedFixture(source: 'record' | 'build', mode: 'head' | 'sandbox' | 'r
   return { ...test, input, until };
 }
 
+function rollbackFixture(mode: 'required' | 'independent' | 'unscoped') {
+  const test = fixture(NOW + 2000, mode === 'independent');
+  if (mode === 'unscoped') delete test.input.manifest.publication;
+  return test;
+}
+
 describe('publication admission without generation-record caching', () => {
   beforeEach(() => {
     resume.mockClear();
@@ -220,8 +226,7 @@ describe('publication admission without generation-record caching', () => {
   it.each(['required', 'independent', 'unscoped'] as const)(
     'rejects the first selected build when its clock rolls back during the shell read (%s)',
     async (mode) => {
-      const test = fixture(NOW + 2000, mode === 'independent');
-      if (mode === 'unscoped') delete test.input.manifest.publication;
+      const test = rollbackFixture(mode);
       let now = NOW + 1000;
       Object.assign(test.input.edge.runtime, { now: () => now });
       const shell = Promise.withResolvers<Awaited<NonNullable<DocumentInput['shellRead']>>>();

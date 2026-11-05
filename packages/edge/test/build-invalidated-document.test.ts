@@ -104,6 +104,11 @@ function scenario(load: GenerationLoad) {
   return { input, invalidations, passthrough, shell, waitUntil };
 }
 
+function setBuildProof(input: CachedDocumentInput, source: 'header' | 'sealed', tag: string) {
+  if (source === 'header') input.entry.headers['X-Next-Cache-Tags'] = tag;
+  else input.entry.publication = { route: '/update-tag-test', tags: [tag] };
+}
+
 async function freshRecord(): Promise<Extract<GenerationLoad, { kind: 'generation' }>> {
   const html = new TextEncoder().encode('fresh generation');
   const bytes = encodeGenerationPack(
@@ -273,8 +278,7 @@ describe('bounded publication admission', () => {
 
       test.input.manifest.publication = requirement;
 
-      if (source === 'header') test.input.entry.headers['X-Next-Cache-Tags'] = tag;
-      else test.input.entry.publication = { route: '/update-tag-test', tags: [tag] };
+      setBuildProof(test.input, source, tag);
 
       const response = await serveCachedDocument(test.input);
 
@@ -329,8 +333,7 @@ describe('bounded publication admission', () => {
       expect.objectContaining({ entry: test.input.entry }),
     );
 
-    const selected = mocks.document.mock.calls[0]?.[0];
-    if (selected === undefined) throw new Error('The selected document must reach composition.');
+    const selected = mocks.document.mock.calls[0]![0];
 
     expect(admitGenerationDocument(selected, response).status).toBe(200);
     expect(test.passthrough).not.toHaveBeenCalled();

@@ -58,6 +58,11 @@ function context(route: string, independent = false, rsc = false) {
   return { state, input, cache };
 }
 
+function mockFallbackFor(independent: boolean) {
+  if (!independent)
+    vi.mocked(invokeNodeHandler).mockResolvedValueOnce(new Response('fresh output without grant'));
+}
+
 describe('publication of the selected output', () => {
   it('cancels a streamed visitor render when its selected publication proof is refused', async () => {
     const { state, input } = context('/api/items');
@@ -176,10 +181,7 @@ describe('publication of the selected output', () => {
     async (independent) => {
       const route = '/_not-found';
       const { state, input } = context(route, independent, true);
-      if (!independent)
-        vi.mocked(invokeNodeHandler).mockResolvedValueOnce(
-          new Response('fresh output without grant'),
-        );
+      mockFallbackFor(independent);
       vi.mocked(entryFor).mockResolvedValueOnce({ kind: 'node', handler: vi.fn() });
       const built: Prerender = {
         id: 'not-found',
