@@ -260,6 +260,10 @@ function gates(source: string): string[] {
   return source.split('\n').filter((line) => /@(?:force-)?gate\b/u.test(line));
 }
 
+function byName(a: string, b: string): number {
+  return a.localeCompare(b);
+}
+
 /**
  * The names a copy registers, by running its `describe`s with nothing behind them, for a copy that
  * computes its names, which `registers` has no text to read in.
@@ -332,8 +336,6 @@ describe('the copies of cases deploy mode skips', () => {
   it('hold the matrix to the names it computes as it registers them', async () => {
     const source = SUPPLEMENTS.find(({ cases }) => cases === PRERENDER_MATRIX_CASES)?.source ?? '';
     const names = await namesRegistered(readFileSync(path.join(kept, source), 'utf8'));
-
-    const byName = (a: string, b: string): number => a.localeCompare(b);
 
     expect(names.toSorted(byName)).toStrictEqual(PRERENDER_MATRIX_CASES.toSorted(byName));
   });
