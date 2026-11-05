@@ -347,7 +347,8 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   too. Two limits of reading a difference: a suite's variable with the very value the harness started
   with is not told apart, and is not given; and a variable the harness's process sets as it runs is
   taken for the suite's unless it is named. Named and never given: the shell's own (`PWD`, `OLDPWD`,
-  `SHLVL`, `_`), Next.js's harness's (`TEST_FILE_PATH`, `NEXT_TEST_*`), Jest's (`JEST_*`), the stack
+  `SHLVL`, `_`), Next.js's harness's (`TEST_FILE_PATH`, `NEXT_TEST_*` but for the
+  `NEXT_TEST_CACHE_TAG_PREFIX` a suite sets), Jest's (`JEST_*`), the stack
   size Next.js sets in any process that loads its native bindings, the harness included
   (`RUST_MIN_STACK`, at Next.js's own value: a suite's other value is given), `NEXT_DEPLOYMENT_ID` (the
   host gives a deployment its own), this tool's (`ARKOR_*`, `ADAPTER_TEST_*`), and what a `.env` file
