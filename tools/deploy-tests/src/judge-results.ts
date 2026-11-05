@@ -3,9 +3,10 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { fails, judge } from './judge.ts';
+import { populationOf } from './population.ts';
 import { type JestSuite, jestSuite, listedSuites } from './results.ts';
-import { REVIEWED } from './reviewed.ts';
-import { describe, type ShardVerdict, shardFails } from './verdicts.ts';
+import { isNodeLine, REVIEWED } from './reviewed.ts';
+import { describe, laneOf, type ShardVerdict, shardFails } from './verdicts.ts';
 
 /**
  * Judges a shard of a run on this machine's targets (`judge.ts`) where it ran: the suites it was to
@@ -16,8 +17,9 @@ import { describe, type ShardVerdict, shardFails } from './verdicts.ts';
  * left no result, or a runner that did not finish: one that wrote no exit code beside the results
  * (`runner-exit-code.txt`), stopped at its step's time limit or never started.
  *
- * Where it ran, from the environment: the target (`TARGET`), the shard (`SHARD`) and the commit of
- * Next.js (`NEXT_COMMIT`).
+ * Where it ran, from the environment: the target (`TARGET`), the Node.js of its lane where it has one
+ * (`NODE`), the shard (`SHARD`), the commit of Next.js (`NEXT_COMMIT`), and which suites the run
+ * took (`POPULATION`, `population.ts`). The reviewed cases are read the same in either population.
  */
 const { values } = parseArgs({
   options: {
@@ -45,6 +47,13 @@ if (target !== 'cloudflare' && target !== 'node') {
     `judge-results: TARGET is one of this machine's, cloudflare or node, not ${target}`,
   );
 }
+// The lane's Node.js, where the run names one: a major version, as the plan's matrix has it.
+const nodeAsked = process.env['NODE'];
+const node = nodeAsked === undefined || nodeAsked === '' ? undefined : nodeAsked;
+if (node !== undefined && !isNodeLine(node)) {
+  throw new Error(`judge-results: NODE is 24 or 26, the lanes' Node.js, not ${node}`);
+}
+const population = populationOf(process.env['POPULATION']);
 const shard = Number(required('SHARD'));
 if (!Number.isSafeInteger(shard) || shard < 1) {
   throw new Error('judge-results: SHARD must be a positive whole number');
@@ -83,7 +92,11 @@ function endedByWatchdog(): string[] {
 
 const verdict: ShardVerdict = {
   ...judge(
-    { target, next: { version: next.version, commit: required('NEXT_COMMIT') } },
+    {
+      target,
+      ...(node !== undefined && { node }),
+      next: { version: next.version, commit: required('NEXT_COMMIT') },
+    },
     listed,
     results,
     REVIEWED,
@@ -91,9 +104,10 @@ const verdict: ShardVerdict = {
   shard,
   runnerFinished: existsSync(path.join(resultsDir, 'runner-exit-code.txt')),
   ended: endedByWatchdog(),
+  ...(population === 'skipped' && { population }),
 };
 writeFileSync(path.join(resultsDir, 'verdict.json'), `${JSON.stringify(verdict, undefined, 2)}\n`);
-const text = describe(target, [verdict]);
+const text = describe(laneOf(target, node), [verdict], [], population);
 console.log(text);
 const summary = process.env['GITHUB_STEP_SUMMARY'];
 if (summary !== undefined && summary !== '') {

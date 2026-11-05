@@ -5,7 +5,12 @@ import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
 import type { NodeHandler } from '../src/app-module.ts';
 import { createCacheRuntime } from '../src/cache/runtime.ts';
 import { invokeNodeHandler } from '../src/node-bridge.ts';
-import { resumeUrlOf, routingParameters, withParameters } from '../src/route-parameters.ts';
+import {
+  appRouteParameters,
+  resumeUrlOf,
+  routingParameters,
+  withParameters,
+} from '../src/route-parameters.ts';
 import { handleRuntimeResume } from '../src/runtime-resume.ts';
 import type { RoutedInput } from '../src/serve.ts';
 import type { Store } from '../src/store.ts';
@@ -14,12 +19,9 @@ import type { Store } from '../src/store.ts';
  * An escaped `/` in a catch-all value of an App Router page, read where the host renders the
  * page by its path as routing reads it for the router's own requests.
  *
- * Routing hands a catch-all's value over decoded, its segments joined by `/`, and Next.js splits it
- * there: `/catchall/@alice/nested%2Fvalue` holds `['@alice', 'nested', 'value']` in every payload
- * the router asks for. A shell the edge served was resumed by the visitor's path alone, which
- * Next.js matches as `next start` does, so the document held `['@alice', 'nested/value']`: the
- * client took the router's payloads for another page than the one it had loaded, and a query-only
- * navigation lost the page's state (`use-router-bfcache-id`).
+ * Every render preserves the slash within its segment: routing supplies metadata arrays, and a
+ * resume matches the same values from its pathname. Sending a decoded, joined query instead
+ * would split `nested/value` into two params and make the document and router payloads disagree.
  */
 
 function nodeBridge(): { invokeNodeHandler: Mock } {
@@ -56,19 +58,22 @@ function storeOf(route: string, config: Config = PLAIN): Store {
 }
 
 describe('routingParameters, for an App Router page', () => {
-  it('reads an escaped slash in a catch-all as routing does', () => {
+  it('lets a render match its pathname without a query that splits the segment', () => {
     expect(
       routingParameters(storeOf(ROUTE), ROUTE, '/catchall/@alice/nested%2Fvalue'),
-    ).toStrictEqual({ nxtPslug: '@alice/nested/value' });
+    ).toBeUndefined();
+    expect(
+      appRouteParameters(storeOf(ROUTE), ROUTE, '/catchall/@alice/nested%2Fvalue'),
+    ).toStrictEqual({ slug: ['@alice', 'nested/value'] });
   });
 
   it('leaves the first segment in place in an application with locales, which put none there', () => {
     const route = '/[lang]/catchall/[...slug]';
     const locales: Config = { basePath: '', i18n: { locales: ['en', 'fr'], defaultLocale: 'en' } };
 
-    expect(routingParameters(storeOf(route, locales), route, '/en/catchall/a%2Fb')).toStrictEqual({
-      nxtPlang: 'en',
-      nxtPslug: 'a/b',
+    expect(appRouteParameters(storeOf(route, locales), route, '/en/catchall/a%2Fb')).toStrictEqual({
+      lang: 'en',
+      slug: ['a/b'],
     });
   });
 
@@ -78,12 +83,10 @@ describe('routingParameters, for an App Router page', () => {
 });
 
 describe('resumeUrlOf', () => {
-  it('adds the parameters as routing reads the path, where a client cannot name them', () => {
+  it('keeps the pathname and strips parameters a client tried to name', () => {
     const request = new Request(`${HOST}/catchall/@alice/nested%2Fvalue?q=1&nxtPslug=elsewhere`);
 
-    expect(resumeUrlOf(storeOf(ROUTE), ROUTE, request)).toBe(
-      '/catchall/@alice/nested%2Fvalue?q=1&nxtPslug=%40alice%2Fnested%2Fvalue',
-    );
+    expect(resumeUrlOf(storeOf(ROUTE), ROUTE, request)).toBe('/catchall/@alice/nested%2Fvalue?q=1');
   });
 
   it('leaves any other path as the visitor asked for it', () => {
@@ -139,7 +142,7 @@ describe('a generation’s shell, resumed for the visitor', () => {
 
     expect(response.status).toBe(200);
     expect(vi.mocked(invokeNodeHandler).mock.calls.map(([call]) => call.url)).toStrictEqual([
-      '/catchall/@alice/nested%2Fvalue?nxtPslug=%40alice%2Fnested%2Fvalue',
+      '/catchall/@alice/nested%2Fvalue',
     ]);
   });
 });

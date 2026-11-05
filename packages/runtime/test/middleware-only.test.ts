@@ -78,8 +78,11 @@ const WHOLE = {
 };
 
 /** A middleware that answers with what it was told of the request: a data request, or not. */
-const middleware: WebHandler = (request) =>
+const told: WebHandler = (request) =>
   Promise.resolve(new Response(request.headers.get('x-nextjs-data') ?? 'absent'));
+/** What the middleware answers in the test that runs: `told`, unless the test says otherwise. */
+const answering: { handler: WebHandler } = { handler: told };
+const middleware: WebHandler = (request, context) => answering.handler(request, context);
 const app: AppModule = { entries: { [MIDDLEWARE]: () => ({ handler: middleware }) } };
 
 /**
@@ -105,10 +108,55 @@ async function isolate(kind: 'app' | 'middleware', manifest: Record<string, unkn
 }
 
 const ALONE = { [MIDDLEWARE_ONLY_HEADER]: '1' };
+/** Where a middleware sends a visitor it redirects. */
+const LOGIN = 'https://app.test/docs/login';
 
 describe('a request for the middleware alone', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    answering.handler = told;
+  });
+
+  /**
+   * A redirect the middleware answers with and brings no body of its own (`NextResponse.redirect`)
+   * leaves the Function as Next.js's server answers one: its destination for a body, and on a
+   * permanent redirect a `Refresh`. Past the Fetcher the edge reaches the Function through, a body
+   * never given would arrive as an empty stream, no longer told apart from one given empty.
+   */
+  it.each([
+    { status: 307, refresh: null },
+    { status: 308, refresh: `0;url=${LOGIN}` },
+  ])('answers a body-less redirect $status with its destination', async ({ status, refresh }) => {
+    answering.handler = () =>
+      Promise.resolve(new Response(null, { status, headers: { location: LOGIN } }));
+    const ask = await isolate('middleware', HEAD);
+
+    const response = await ask('/docs/page', ALONE);
+
+    expect(response.status).toBe(status);
+    expect(response.headers.get('location')).toBe(LOGIN);
+    expect(response.headers.get('refresh')).toBe(refresh);
+    expect(response.headers.get('content-type')).toBeNull();
+    await expect(response.text()).resolves.toBe(LOGIN);
+  });
+
+  it('hands on a redirect with a body of its own, and a continuation, as they came', async () => {
+    answering.handler = () =>
+      Promise.resolve(new Response('moved', { status: 307, headers: { location: LOGIN } }));
+    const ask = await isolate('middleware', HEAD);
+
+    const moved = await ask('/docs/page', ALONE);
+    answering.handler = () => {
+      return Promise.resolve(
+        new Response(null, { headers: { 'x-middleware-next': '1', location: LOGIN } }),
+      );
+    };
+    const continued = await ask('/docs/page', ALONE);
+
+    await expect(moved.text()).resolves.toBe('moved');
+    expect(moved.headers.get('refresh')).toBeNull();
+    expect(continued.headers.get('x-middleware-next')).toBe('1');
+    await expect(continued.text()).resolves.toBe('');
   });
 
   it("is answered in the middleware Function from its manifest's head", async () => {

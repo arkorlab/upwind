@@ -7,7 +7,7 @@ import { parseAst } from 'rolldown/parseAst';
 import { AuditError } from './dependencies.ts';
 import { isNode, type Node } from './lexical-scope.ts';
 import { declaration, visitTree } from './node-manifest-consumer-ast.ts';
-import { reviewedFrameworkSource } from './node-manifest-framework.ts';
+import { isReviewedFrameworkSource } from './node-manifest-framework.ts';
 import type { ManifestModuleGraph, ManifestRouteSource } from './node-manifest-graph.ts';
 import { originalNodeSpecifierInventory } from './node-source-specifiers.ts';
 import type { Patch } from './patches/types.ts';
@@ -160,7 +160,7 @@ export function nativeTurbopackSelectorSource(file: string, code: string): strin
   const selected = coordinate(file);
   if (selected === undefined) return code;
   const [relative, expected] = selected;
-  if (createHash('sha256').update(code).digest('hex') !== reviewedFrameworkSource(relative))
+  if (!isReviewedFrameworkSource(relative, createHash('sha256').update(code).digest('hex')))
     return code;
   if (!canonical(file)) return code;
   const reads = selectorReads(code);

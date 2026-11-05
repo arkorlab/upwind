@@ -40,7 +40,7 @@ async function fixture(): Promise<NodeManifestTurbopackConsumerInput> {
     )
     .replace('var RELATIVE_ROOT_PATH = "../../../../../../..";', 'var RELATIVE_ROOT_PATH = "..";');
   const producerFile = fileURLToPath(
-    import.meta.resolve('next/dist/build/templates/app-page-runtime.js'),
+    import.meta.resolve('next-16-4-3/dist/build/templates/app-page-runtime.js'),
   );
   const producer = source(await readFile(producerFile, 'utf8'));
   return {

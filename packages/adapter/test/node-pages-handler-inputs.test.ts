@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FIXTURE_FILES,
+  NEXT_RELEASES,
   SERVER_MINIFICATION_OFF_CONFIG,
 } from '../../../tools/native-pages-handler-profile/inputs.mts';
 import {
@@ -15,6 +16,24 @@ import {
 
 const INPUTS = new URL('../../../tools/native-pages-handler-profile/', import.meta.url);
 const DEFAULT_FIXTURE = '2527f3cdc79784d6a1fd003332682d651f2b1b3bce5859eb2731e4f71b7a12d4';
+const INTEGRITY = /(integrity: )sha512-[\w+/]+=*/u;
+/** The releases a run asks for by name. */
+const LATER = ['16.4.4', '16.4.5'] as const;
+/** A lock entry of `next` or an `@next/*` package, and its release. */
+const RELEASE_ENTRY = /^ {2}"?(?:next|@next\/[\w-]+)@(\d+\.\d+\.\d+)[:"(]/u;
+/** Whether `owner` is the lock entry of `next` or an `@next/*` package at `version`. */
+function isReleaseEntry(owner: string, version: string): boolean {
+  return RELEASE_ENTRY.exec(owner)?.[1] === version;
+}
+
+/** The lock entry, at two spaces, that a line belongs to. */
+function ownerOf(lines: readonly string[], index: number): string {
+  for (let at = index; at >= 0; at -= 1) {
+    const line = lines[at] ?? '';
+    if (/^ {2}\S/u.test(line)) return line;
+  }
+  return '';
+}
 
 function digest(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
@@ -35,6 +54,12 @@ async function bytePins(profile: PagesHandlerProfileInputs) {
 
 function withoutConfig(profile: PagesHandlerProfileInputs) {
   return profile.files.filter((file) => file.target !== 'next.config.mjs');
+}
+
+function withoutRelease(profile: PagesHandlerProfileInputs) {
+  return profile.files.filter(
+    (file) => file.target !== 'package.json' && file.target !== 'pnpm-lock.yaml',
+  );
 }
 
 describe('fixed public Pages producer input selection without running the producer', () => {
@@ -113,6 +138,81 @@ describe('fixed public Pages producer input selection without running the produc
     expect(digest(adapter)).toBe(FIXTURE_FILES['adapter.mjs']);
   });
 
+  it.each(LATER)(
+    'compiles with 16.4.3 unless asked, and replaces only the manifest and lock for %s',
+    async (version) => {
+      const original = pagesHandlerProfileInputs([]);
+      const later = pagesHandlerProfileInputs([`--next=${version}`]);
+      const off = pagesHandlerProfileInputs([`--next=${version}`, '--server-minification=off']);
+
+      expect(original.next).toStrictEqual({ version: '16.4.3', swc: NEXT_RELEASES['16.4.3'].swc });
+      expect(later.next).toStrictEqual({ version, swc: NEXT_RELEASES[version].swc });
+      expect(withoutRelease(later)).toStrictEqual(withoutRelease(original));
+      expect(
+        later.files
+          .filter((file) => file.source.startsWith(`fixture-${version}/`))
+          .map((file) => [file.target, file.sha256]),
+      ).toStrictEqual(Object.entries(NEXT_RELEASES[version].files));
+      await expect(bytePins(later)).resolves.toStrictEqual(
+        later.files.map((file) => [file.target, file.sha256]),
+      );
+      expect(identity(later)).not.toBe(DEFAULT_FIXTURE);
+      expect(withoutConfig(off)).toStrictEqual(withoutConfig(later));
+    },
+  );
+
+  it.each(LATER)(
+    'names %s output and artifacts apart from the unchanged 16.4.3 names',
+    (version) => {
+      const later = pagesHandlerProfileInputs([`--next=${version}`]);
+      const off = pagesHandlerProfileInputs([`--next=${version}`, '--server-minification=off']);
+
+      expect(later.outputName).toBe(`independent-pages-handler-profile-next-${version}`);
+      expect(later.artifactName).toBe(`UNQUALIFIED-public-pages-handler-next-${version}`);
+      expect(off.outputName).toBe(
+        `independent-pages-handler-profile-next-${version}-server-minification-off`,
+      );
+      expect(off.artifactName).toBe(
+        `UNQUALIFIED-public-pages-handler-next-${version}-server-minification-off`,
+      );
+    },
+  );
+
+  it.each(
+    LATER.flatMap((version) =>
+      ['package.json', 'pnpm-lock.yaml'].map((target) => [version, target]),
+    ),
+  )(
+    'holds the %s %s to 16.4.3 but for the release and its integrities',
+    async (version, target) => {
+      const original = (await readFile(new URL(`fixture/${target}`, INPUTS), 'utf8')).split('\n');
+      const later = (await readFile(new URL(`fixture-${version}/${target}`, INPUTS), 'utf8')).split(
+        '\n',
+      );
+      const changed = later.flatMap((line, index) => {
+        const before = original[index] ?? '';
+        return line === before ? [] : [{ before, line, owner: ownerOf(later, index) }];
+      });
+
+      expect(later).toHaveLength(original.length);
+      expect(changed.length).toBeGreaterThan(0);
+
+      for (const { before, line, owner } of changed) {
+        const released = before.replaceAll('16.4.3', () => version);
+        // An integrity changes only in the entry of a package the release itself publishes.
+        const integrity =
+          isReleaseEntry(owner, version) &&
+          line.replace(INTEGRITY, '$1') === released.replace(INTEGRITY, '$1');
+
+        expect({ line, owner, kept: line === released || integrity }).toStrictEqual({
+          line,
+          owner,
+          kept: true,
+        });
+      }
+    },
+  );
+
   it.each([
     [''],
     ['--server-minification=default'],
@@ -120,15 +220,27 @@ describe('fixed public Pages producer input selection without running the produc
     ['--server-minification', 'off'],
     ['--server-minification=off', '--server-minification=off'],
     ['--server-minification=off', '--output=elsewhere'],
+    ['--server-minification=off', '--next=16.4.4'],
+    ['--next=16.4.3'],
+    ['--next=16.4.6'],
+    ['--next=16.4.4', '--next=16.4.4'],
+    ['--next=16.4.5', '--next=16.4.4'],
     ['/candidate/next.config.mjs'],
     ['--help'],
   ])('rejects an unknown or additional argument sequence %j', (...args) => {
     expect(() => pagesHandlerProfileInputs(args)).toThrow(
-      'Pass no arguments or exactly --server-minification=off',
+      'Pass no arguments, or --next=16.4.4 or --next=16.4.5 and/or --server-minification=off in that order',
     );
   });
 
-  it.each([[], ['--server-minification=off']])('freezes the selected input plan %j', (...args) => {
+  it.each([
+    [],
+    ['--server-minification=off'],
+    ['--next=16.4.4'],
+    ['--next=16.4.4', '--server-minification=off'],
+    ['--next=16.4.5'],
+    ['--next=16.4.5', '--server-minification=off'],
+  ])('freezes the selected input plan %j', (...args) => {
     const profile = pagesHandlerProfileInputs(args);
 
     expect(Object.isFrozen(profile)).toBe(true);

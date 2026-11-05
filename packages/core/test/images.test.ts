@@ -417,13 +417,47 @@ describe('negotiateImageFormat', () => {
   });
 });
 
+/** An ISO media file's opening `ftyp` box: its size, `ftyp`, the major brand, a minor version, brands. */
+function ftypBox(major: string, compatible: readonly string[]): number[] {
+  const body = [
+    ...bytesOf('ftyp'),
+    ...bytesOf(major),
+    0,
+    0,
+    0,
+    0,
+    ...compatible.flatMap((brand) => bytesOf(brand)),
+  ];
+  const size = new Uint8Array(4);
+  new DataView(size.buffer).setUint32(0, body.length + size.length);
+  return [...size, ...body];
+}
+
 describe('detectImageType', () => {
   it.each([
     ['jpeg', [0xff, 0xd8, 0xff, 0xe0], 'image/jpeg'],
     ['png', [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 'image/png'],
     ['gif', [0x47, 0x49, 0x46, 0x38, 0x39, 0x61], 'image/gif'],
     ['webp', [0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x45, 0x42, 0x50], 'image/webp'],
-    ['avif', [0, 0, 0, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66], 'image/avif'],
+    ['avif', ftypBox('avif', ['avif', 'mif1', 'miaf']), 'image/avif'],
+    ['heic', ftypBox('heic', ['mif1', 'heic']), 'image/heic'],
+    // A text with the brand where an `ftyp` box has it, and a size no box has (GHSA-7qx7-33qx-rqx2).
+    [
+      'svg behind a comment that spells an avif box',
+      bytesOf('<!--ftypavif-->\n<svg xmlns="x">'),
+      'image/svg+xml',
+    ],
+    [
+      'svg behind a comment that spells a heic box',
+      bytesOf('<!--ftypheic-->\n<svg xmlns="x">'),
+      'image/svg+xml',
+    ],
+    ['an ftyp box larger than the bytes', ftypBox('avif', ['avif']).slice(0, 16), undefined],
+    [
+      'an ftyp box smaller than one can be',
+      [0, 0, 0, 8, ...ftypBox('avif', []).slice(4)],
+      undefined,
+    ],
     ['svg', bytesOf('<svg xmlns'), 'image/svg+xml'],
     ['svg with an xml declaration', bytesOf('<?xml ver'), 'image/svg+xml'],
     [

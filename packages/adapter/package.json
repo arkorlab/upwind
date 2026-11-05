@@ -37,6 +37,7 @@
     "@stayingupwind/core": "workspace:*",
     "@stayingupwind/runtime": "workspace:*",
     "jsonc-parser": "catalog:",
+    "oxc-parser": "catalog:",
     "rolldown": "catalog:"
   },
   "devDependencies": {
@@ -44,6 +45,8 @@
     "@types/node": "catalog:",
     "miniflare": "catalog:",
     "next": "catalog:",
+    "next-16-4-3": "npm:next@16.4.3",
+    "next-16-4-4": "npm:next@16.4.4",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

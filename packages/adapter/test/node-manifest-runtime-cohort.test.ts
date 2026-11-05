@@ -37,11 +37,14 @@ const ENTRIES = [
 function boot(file: string, runtimeFile: string, id: number): string {
   return `var R=require(${jsLiteral(path.posix.relative(path.posix.dirname(file), runtimeFile))})(${jsLiteral(path.posix.relative(DIST, file))});R.c("server/chunks/app.js");R.m(${id});module.exports=R.m(${id}).exports;`;
 }
-async function runtime(file: string, prefix: string): Promise<string> {
-  const original = await readFile(
-    new URL('fixtures/node-runtime/production.txt', import.meta.url),
-    'utf8',
-  );
+/** Each release's production runtime snapshot: 16.4.4's installs no strict factory table. */
+const RUNTIMES = {
+  '16.4.3': 'fixtures/node-runtime/production.txt',
+  '16.4.4': 'fixtures/node-runtime-16.4.4/production.txt',
+} as const;
+type Release = keyof typeof RUNTIMES;
+async function runtime(file: string, prefix: string, release: Release = '16.4.3'): Promise<string> {
+  const original = await readFile(new URL(RUNTIMES[release], import.meta.url), 'utf8');
   return original
     .replace(
       'var RUNTIME_PUBLIC_PATH = "output/[turbopack]_runtime.js";',
@@ -64,7 +67,7 @@ async function inventory(sources: readonly NodeManifestTurbopackGraphFile[]) {
     retained: new Set(sources.map((item) => item.id)),
   });
 }
-async function fixture() {
+async function fixture(release: Release = '16.4.3') {
   const sources: NodeManifestTurbopackGraphFile[] = [
     {
       id: ENTRY,
@@ -81,7 +84,7 @@ async function fixture() {
     {
       id: RUNTIME,
       file: RUNTIME,
-      source: source(await runtime(RUNTIME, PREFIX)),
+      source: source(await runtime(RUNTIME, PREFIX, release)),
       imports: [
         { specifier: CHUNK, target: CHUNK },
         { specifier: RUNTIME, target: RUNTIME },
@@ -91,7 +94,7 @@ async function fixture() {
     {
       id: API_RUNTIME,
       file: API_RUNTIME,
-      source: source(await runtime(API_RUNTIME, '/')),
+      source: source(await runtime(API_RUNTIME, '/', release)),
       imports: [
         { specifier: CHUNK, target: CHUNK },
         { specifier: RUNTIME, target: RUNTIME },
@@ -376,5 +379,60 @@ describe('owned mixed runtime cohort', () => {
     );
 
     expect(() => prepare(input)).toThrow('Unproved Next.js Turbopack');
+  });
+
+  const NESTED = 'module.exports=[[1,(ctx)=>{ctx.v(42);}],9,(ctx)=>{ctx.v(43);}];';
+
+  it.each(['16.4.3', '16.4.4'] as const)(
+    'leaves a nested array alone in a CommonJS source no %s runtime loads',
+    async (release) => {
+      const input = await fixture(release);
+      const unrelated = `${ROOT}/node_modules/matrix/index.js`;
+      input.sources.push({
+        id: unrelated,
+        file: unrelated,
+        source: source('module.exports=[[1,2],[3,4]];'),
+        imports: [],
+      });
+
+      expect(prepare(input).graphs).toHaveLength(1);
+    },
+  );
+
+  it.each(['16.4.3', '16.4.4'] as const)(
+    'leaves a nested chunk alone that a %s runtime can look up but never installs',
+    async (release) => {
+      const input = await fixture(release);
+      const lookup = `${DIST}/server/chunks/lookup-only.js`;
+      for (const [index, item] of input.sources.entries())
+        if (item.id === RUNTIME || item.id === API_RUNTIME)
+          input.sources[index] = {
+            ...item,
+            imports: [...item.imports, { specifier: lookup, target: lookup }],
+          };
+      input.sources.push({ id: lookup, file: lookup, source: source(NESTED), imports: [] });
+      const owned = { ...input, inventory: await inventory(input.sources) };
+
+      const prepared = prepare(owned);
+
+      expect(prepared.allGraphs.flatMap((graph) => graph.lookupTables ?? [])).toContain(lookup);
+      expect(prepared.allGraphs.flatMap((graph) => graph.installedTables ?? [])).not.toContain(
+        lookup,
+      );
+    },
+  );
+
+  it('reads a leading strict factory table where the 16.4.3 runtime installs it', async () => {
+    const input = edit(await fixture(), CHUNK, () => NESTED);
+
+    expect(prepare(input).graphs).toHaveLength(1);
+  });
+
+  it('refuses a leading strict factory table the 16.4.4 runtime would not install', async () => {
+    const input = edit(await fixture('16.4.4'), CHUNK, () => NESTED);
+
+    expect(() => prepare(input)).toThrow(
+      'strict factory table beside a runtime that installs none',
+    );
   });
 });

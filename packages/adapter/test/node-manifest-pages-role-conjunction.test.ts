@@ -61,7 +61,9 @@ async function fixture(options: Options = {}) {
   const kind = options.kind ?? 'pages';
   // Only published dependency source bytes are read. Next and the fixture are never evaluated.
   const primary = await readFile(
-    new URL(import.meta.resolve(`next/dist/server/route-modules/${kind}/module.compiled.js`)),
+    new URL(
+      import.meta.resolve(`next-16-4-3/dist/server/route-modules/${kind}/module.compiled.js`),
+    ),
     'utf8',
   );
   const producer: NodeManifestTurbopackGraphFile = {

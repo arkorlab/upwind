@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { reviewedFrameworkSource } from '../src/node-manifest-framework.ts';
+import { isReviewedFrameworkSource } from '../src/node-manifest-framework.ts';
 import {
   nativeTurbopackSelectorPatch,
   nativeTurbopackSelectorSource,
@@ -18,12 +18,14 @@ const ROUTES = ['pages', 'pages-api', 'app-page', 'app-route'] as const;
 describe.skipIf(!ENABLED)('fixed native Turbopack selectors (dedicated CI)', () => {
   it.each(ROUTES)('specializes only the exact published %s selector', async (route) => {
     const require = createRequire(import.meta.url);
-    const root = path.dirname(require.resolve('next/package.json'));
+    const root = path.dirname(require.resolve('next-16-4-3/package.json'));
     const relative = `dist/server/route-modules/${route}/module.compiled.js`;
     const file = path.join(root, relative);
     const code = await readFile(file, 'utf8');
 
-    expect(createHash('sha256').update(code).digest('hex')).toBe(reviewedFrameworkSource(relative));
+    expect(
+      isReviewedFrameworkSource(relative, createHash('sha256').update(code).digest('hex')),
+    ).toBe(true);
     expect([...code.matchAll(/process\.env\.TURBOPACK/gu)]).toHaveLength(
       route.startsWith('app-') ? 4 : 2,
     );

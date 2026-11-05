@@ -7,6 +7,7 @@ import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
 import { isNode, type Node } from './lexical-scope.ts';
+import { nodeGuardVersion, type GuardedNodeVersion } from './node-guard-version.ts';
 import type { NodeJwtCompilerInput } from './node-jwt-compiler-proof.ts';
 import { nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
 import {
@@ -24,6 +25,7 @@ import {
   captureNodeManifestIdentity,
   type NodeManifestIdentitySnapshot,
 } from './node-manifest-identity-snapshot.ts';
+import { nativeNextReleaseAt } from './node-next-release.ts';
 import type { NodeNextRewriteInput, NodeNextRewriteProof } from './node-next-rewrite-proof.ts';
 import {
   assertOriginalCommonJsMode,
@@ -39,7 +41,6 @@ const PROOF: unique symbol = Symbol('fixed Node WS optional loaders');
 const WS_SUFFIX = '/dist/compiled/ws/index.js';
 const WS_SHA256 = 'af354cb13a11abe910cdbcb70943cb450b01b24f322026ae3f88d428d148395d';
 const WS_BYTES = 45_840;
-const NEXT_PACKAGE_SHA256 = 'b67bad7944d603b27dd2d2719b57203fd3b3e5c147b2efa6dea5ceb135274caf';
 const BUILTINS = new Set([
   'crypto',
   'events',
@@ -63,7 +64,7 @@ export type NodeWsLoaderInput = NodeJwtCompilerInput;
 export interface NodeWsGuardRecord {
   readonly schema: 1;
   readonly profile: 'next-16.4.3-ws-ncc-v1';
-  readonly nodeVersion: '24.22.1';
+  readonly nodeVersion: GuardedNodeVersion;
   readonly archivePath: string;
   readonly sha256: string;
   readonly bytes: typeof WS_BYTES;
@@ -387,8 +388,10 @@ export async function qualifyNodeWsLoaders(
   if (path.basename(root) !== 'next' || path.basename(path.dirname(root)) !== 'node_modules')
     return refuse(UNSUPPORTED);
   if (routes.every((route) => route.root !== root)) return refuse(UNSUPPORTED);
-  const metadata = json(await source(state, path.join(root, 'package.json'), NEXT_PACKAGE_SHA256));
-  if (metadata['name'] !== 'next' || metadata['version'] !== '16.4.3') return refuse(UNSUPPORTED);
+  // The same bundle in every supported release; the profile is named for the first reviewed. The
+  // release's exact package bytes, whose name and version `nativeNextReleaseAt` read.
+  const release = nativeNextReleaseAt(root) ?? refuse(UNSUPPORTED);
+  await source(state, path.join(root, 'package.json'), release.packageJsonSha256);
   const raw = await source(state, first.file, WS_SHA256);
   if (Buffer.byteLength(raw) !== WS_BYTES) return refuse(UNSUPPORTED);
   const rawProgram = parseAst(raw, { sourceType: 'commonjs' });
@@ -464,7 +467,7 @@ export async function nodeWsGuardRecord(
   return Object.freeze<NodeWsGuardRecord>({
     schema: 1,
     profile: 'next-16.4.3-ws-ncc-v1',
-    nodeVersion: '24.22.1',
+    nodeVersion: nodeGuardVersion(),
     archivePath,
     sha256: WS_SHA256,
     bytes: WS_BYTES,

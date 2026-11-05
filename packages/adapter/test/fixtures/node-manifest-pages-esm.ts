@@ -52,7 +52,7 @@ export async function pagesEsmFixture(
   }
 > {
   const anchor = await realpath(
-    fileURLToPath(import.meta.resolve('next/dist/build/templates/pages.js')),
+    fileURLToPath(import.meta.resolve('next-16-4-3/dist/build/templates/pages.js')),
   );
   const root = path.resolve(path.dirname(anchor), '../../..');
   const primary = await readFile(path.join(root, 'dist/esm/build/templates/pages.js'), 'utf8');

@@ -135,6 +135,9 @@ export default defineConfig([
     // its own lockfile. This configuration is type-aware and written for Node, and nothing in it
     // knows what a React component or a Server Action is; `next build` is what checks that project.
     'web-site/**',
+    // Cases copied out of Next.js's own suite, run inside its checkout by the deploy tests: its code,
+    // kept as upstream wrote it (`tools/deploy-tests/src/population.ts`).
+    'tools/deploy-tests/supplements/**',
   ]),
 
   // 1. Base JavaScript rules: everything on, then a short, justified opt-out list.

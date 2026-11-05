@@ -34,9 +34,15 @@ before the tests, so it cannot. Each application is served on a port of its own,
 The lifecycle is the
 [documented contract](https://nextjs.org/docs/app/api-reference/adapters/testing-adapters): three
 scripts, named to the suite through `NEXT_TEST_DEPLOY_SCRIPT_PATH`,
-`NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH` and `NEXT_TEST_CLEANUP_SCRIPT_PATH`. Nothing in the suite is
-modified and no expectation of theirs is rewritten: their `test/deploy-tests-manifest.json` decides
-which suites deploy mode selects.
+`NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH` and `NEXT_TEST_CLEANUP_SCRIPT_PATH`. Their
+`test/deploy-tests-manifest.json` decides which suites deploy mode selects. Before the CI run,
+`src/prepare-upstream.ts` adds a prefetch barrier to the shared Form loading-state test: observe the
+actual `/search` prefetch response, wait for its body, and use the idle-network barrier already used
+by Next.js's dedicated Form prefetch test. Loading, result, and soft-navigation assertions remain
+unchanged. Preparation rejects an unfamiliar source layout instead of silently changing it. It
+changes only the test checkout, with no delay in a deployed application's request path. One run
+takes what the manifest leaves out instead; for it, the checkout gains a manifest of its own and copies
+of cases beside their suites ([What Next.js skips in deploy mode](#what-nextjs-skips-in-deploy-mode)).
 
 ## What a host needs
 
@@ -54,7 +60,9 @@ too. Nothing is passed on a command line, which is in every process list on the 
 **The suite is somebody else's code, on the machine that holds the credential.** It is Next.js's
 repository at a ref the run chose, and its applications' `package.json` scripts are run by the deploy
 hook. So: the hook runs a fixture's install and build with these variables removed, the workflow keeps
-the token in a file and gives the suite only its path, and `nextjsRef` should name a tag. None of that
+the token in a file — there for the preflight alone, and then not again until Next.js is built — and
+gives the suite only its path, and a dispatch's `nextjsRef` has to name a release tag of Next.js
+(`v16.4.5`, `v16.5.0-canary.39`). None of that
 is a boundary — a fixture's build and the deploy hook are the same user on the same machine, and a
 process can read what another process of its own user can. What it removes is the ordinary way a secret
 escapes, which is something printing the environment it was handed. So use a credential whose loss is
@@ -156,6 +164,39 @@ A failure that is not this adapter's is recorded in `REVIEWED.md` and in `src/re
 together, and a test holds the two to each other. A run of another release of Next.js reads nothing
 there until its failures have been read again.
 
+### What Next.js skips in deploy mode
+
+`population: skipped` (a dispatch, and the night's third run) takes what Next.js
+leaves out when its suite is deployed, rather than what it selects (`src/population.ts`):
+
+- the suites `test/deploy-tests-manifest.json` excludes whole;
+- the suites it lists cases of, as failing or flaky on Vercel. Nothing selects a case by name, so these
+  run whole, and their other cases are the manifest's own as well;
+- the cases its suites register otherwise when deployed, or not at all: copied into `supplements/`, each
+  beside a record in `SUPPLEMENTS`. A copy keeps the suite's and the case's names, and resolves each
+  branch on `isNextDeploy` to the side the suite takes when it is not deployed. A check of
+  `x-vercel-cache`, which only Vercel answers, goes with its branch, so that a case goes on to what it
+  asks of the page; where a case waited on it, the copy waits on the page's own render time instead,
+  since a deployment may publish a shell behind its answer, and where it was the only proof a case
+  had, the copy leaves the case out. It is written into the
+  checkout beside its suite, as a `.test.ts` of its own, so that `files: __dirname` builds the same
+  fixture, and upstream's own file is left as it was. It holds for the upstream directory it was copied
+  from, by its Git tree: on another commit, a directory that changed or is gone leaves the copy out, and
+  the step's summary says so; on the commit it was copied from, it is refused as a broken record.
+
+Not in it: a case under `@force-gate !deploy`, which upstream marks as one whose body cannot run against
+a deployment at all.
+
+The run is given a manifest of its own (`skipped-manifest.json`), written beside the shard's results
+with what the population is made of (`population.json`). Its `metadata.json` says `"population":
+"skipped"`, a field a run of the manifest's suites never has. Its counts are not the suite's, and the
+summaries head them so. It is judged as any other run, against the same readings, and a failure nobody
+has read fails its shard. Only `tests: all` runs the whole population: named paths run as one piece, as
+they do for the manifest's suites. With `all` and no `shards`, it is cut into 8 pieces on the runner,
+and on a host as any other run there (one piece per project, six under six projects) but into no more
+than 8. A `shards` that is given is used as it is, as for any other run. Its results are not judged on
+a host, and their metadata keeps them apart from a record of the manifest's suites.
+
 ### Choosing the installer
 
 `ADAPTER_TEST_INSTALL_MANAGER=npm` selects npm for the isolated application's **install step**.
@@ -166,18 +207,19 @@ appended `pnpm post-build`, and `postbuild`, so the pnpm setup above is still re
 
 The npm option currently requires **npm 11.19.1**. It uses a two-day minimum release age and allows
 git, remote, directory and file dependencies only when declared by the root application. Its package
-name exemptions match the unversioned entries in Next.js 16.4.3's test-install security profile.
+name exemptions match the unversioned entries in the test-install security profile of Next.js 16.4.3,
+16.4.4 and 16.4.5, which is the same in all three.
 That profile also has five version-qualified exemptions; npm's name-only matcher cannot express
 them, so this hook omits them rather than exempting every version of those packages. The npm policy
 is consequently more restrictive for those entries.
 
 This is a narrow opt-in: an absent `pnpm-workspace.yaml`, or the exact three-key security profile
-written by Next.js 16.4.3 (standard js-yaml YAML or canonical JSON), is supported. Other workspace
-settings, comments, reordered or custom security profiles are rejected instead of being silently
-ignored. The hook also checks npm's effective security settings privately: a custom `before`, age,
-exemption list or stricter exotic-dependency restriction fails before installation. Registry and
-authentication configuration is not printed. Other npm settings remain in force. A failed policy
-probe or install fails the hook before build or deployment.
+written by Next.js 16.4.3, 16.4.4 and 16.4.5 (standard js-yaml YAML or canonical JSON), is supported.
+Other workspace settings, comments, reordered or custom security profiles are rejected instead of
+being silently ignored. The hook also checks npm's effective security settings privately: a custom
+`before`, age, exemption list or stricter exotic-dependency restriction fails before installation.
+Registry and authentication configuration is not printed. Other npm settings remain in force. A
+failed policy probe or install fails the hook before build or deployment.
 
 Choosing npm changes dependency layout and can change installation outcomes. A successful build with
 one manager does not establish that every official test passes, or that the managers have identical
@@ -194,12 +236,29 @@ application or one of its packages (`node src/main.ts bundle` prints which) — 
 an adapter made to answer otherwise than one Vercel's own builder made, and read it to know which they
 are testing: with it set, they expect the adapter's answers; without it, the builder's.
 
-`.github/workflows/deploy-tests.yaml` is the same thing on a runner, dispatched by hand. Its `tests`
+`.github/workflows/deploy-tests.yaml` is the same thing on a runner, dispatched by hand, and run by
+every push to a pull request: `node` over the whole manifest against the supported release, 64 jobs,
+with no credentials, so a pull request from a fork runs it too. A newer push to the same pull request
+cancels the run before it; other pull requests' runs, the nightly runs and dispatches are left alone. Its `tests`
 input takes upstream paths, or `all` for everything the manifest allows; `shards` cuts `all` into that
 many pieces (upstream's own `-g n/total`), and `only` runs one piece on its own, for taking a slice again
 after it was cut short. On the runner's targets nothing is shared, so a run is cut as finely as the
-workflow cuts — 64 pieces unless `shards` says otherwise, all at once — and every night both targets run
-the whole manifest that way. What follows is a host's.
+workflow cuts — 64 pieces unless `shards` says otherwise, all at once. Every night both targets run
+the whole manifest in two separate runs: the supported release at 17:23 UTC (02:23 JST), and the latest
+published `next@canary` at 18:23 UTC (03:23 JST). Each run builds and serves the applications under
+Node.js 24 and under Node.js 26, so it has 256 jobs, the most a matrix holds. A dispatch picks either
+or both with `node` (24 unless it says otherwise), and a pull request's run takes 24. The harness itself
+runs on Node.js 24.22.1 either way, since Next.js's `run-tests.js` does not load on 26. Under 26, the
+deploy and cleanup hooks put Node.js 26.13.0 first on their own `PATH` (`ADAPTER_TEST_NODE_DIR`), so the
+application's install, its build and the server that serves it all run on it. The job summary and the
+report name each lane: `node, Node.js 26`. The canary run reads npm's
+dist-tag once and resolves that version's Git tag to a commit SHA, which every shard checks out. Its
+plan summary names the version and SHA; a failed lookup stops the plan. Results and summaries stay
+separate for each run, and canary failures are judged on their own version and commit, without the
+supported release's reviewed exceptions. A third run each night, at 19:23 UTC (04:23 JST), takes what
+the supported release skips in deploy mode, on both targets under both Node.js versions, in 8 pieces
+([below](#what-nextjs-skips-in-deploy-mode)). Both targets run locally on the runner, with no hosted
+deployment or credentials. What follows is a host's.
 
 **Queueing behind one project, a full run is bounded by two of GitHub's limits at once**, and they pull in
 opposite directions. The manifest selects around 1,100 suites, about six hundred of which deploy — the
@@ -315,8 +374,9 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   suites under `next-config-ts-native-ts` and `-mts` await at the top level of their configs on
   purpose, and Next.js's CI builds them alone with Node.js's loader turned on
   (`__NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true`, `NODE_OPTIONS=--experimental-transform-types`). The
-  deploy hook does the same for those suites, by the test file `run-tests.js` names in
-  `JEST_SUITE_NAME`, and for no other; run outside `run-tests.js`, they fail as they would anywhere.
+  deploy hook selects that loader for those suites, by the test file `run-tests.js` names in
+  `JEST_SUITE_NAME`, and adds the transformation flag only on runtimes that support it. Node 26
+  uses its built-in type stripping. Run outside `run-tests.js`, these suites fail as they would anywhere.
 - **`non-ascii-cache-item-name` is built with `VERCEL=1`.** Its fixture leaves its cache to the
   deployment only where `VERCEL` is set at build, and otherwise configures a handler that keeps
   nothing, while the case it runs when deployed expects its values to stay cached. The deploy hook sets

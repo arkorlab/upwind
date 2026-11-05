@@ -43,6 +43,7 @@
     "@types/node": "catalog:",
     "miniflare": "catalog:",
     "next": "catalog:",
+    "next-16-4-3": "npm:next@16.4.3",
     "rolldown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

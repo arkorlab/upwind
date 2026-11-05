@@ -7,6 +7,7 @@ import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
 import { isNode } from './lexical-scope.ts';
+import { nodeGuardVersion, type GuardedNodeVersion } from './node-guard-version.ts';
 import type { NodeJwtCompilerInput } from './node-jwt-compiler-proof.ts';
 import { nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
 import {
@@ -26,6 +27,7 @@ import {
 } from './node-manifest-identity-snapshot.ts';
 import { nodeNextHookAliasRoleData } from './node-next-hook-alias-role.ts';
 import { nodeNextHookRawClosureData } from './node-next-hook-raw-role.ts';
+import { nativeNextReleaseAt } from './node-next-release.ts';
 import {
   nodeNextStaticRequireHookSites,
   type NodeNextRequireHookSites,
@@ -42,7 +44,6 @@ const PROOF = Symbol('fixed original Next require hook');
 const SUFFIX = '/dist/server/require-hook.js';
 const SHA256 = 'e82f0ceba88d025c725ea3062974ad9d7a54a892df8c34a525cb129202387db8';
 const BYTES = 3066;
-const NEXT_PACKAGE_SHA256 = 'b67bad7944d603b27dd2d2719b57203fd3b3e5c147b2efa6dea5ceb135274caf';
 const SHARED_RUNTIME = '.shared-runtime';
 const STYLE = 'styled-jsx/style';
 const CONTEXTS = 'next/dist/server/route-modules/pages/vendored/contexts/';
@@ -55,7 +56,7 @@ export interface NodeNextRequireHookProof {
 export interface NodeNextRequireHookGuardRecord {
   readonly schema: 1;
   readonly profile: 'next-16.4.3-require-hook-v1';
-  readonly nodeVersion: '24.22.1';
+  readonly nodeVersion: GuardedNodeVersion;
   readonly archivePath: string;
   readonly sha256: typeof SHA256;
   readonly bytes: typeof BYTES;
@@ -101,9 +102,6 @@ function refuse(reason: string): never {
 function stored(proof: NodeNextRequireHookProof): State {
   return proofs.get(proof) ?? refuse('copied or missing proof');
 }
-function digest(bytes: Uint8Array | string): string {
-  return createHash('sha256').update(bytes).digest('hex');
-}
 function approved(input: NodeJwtCompilerInput) {
   assertOriginalNodeModesGraph(input.originalModes, input.graph);
   const routes = checkedNodeRouteRewriteSources({
@@ -124,7 +122,7 @@ async function source(state: State, file: string, expected?: string): Promise<st
   if (!info.isFile() || info.size > MAX_SOURCE_BYTES || (await realpath(file)) !== file)
     refuse('noncanonical regular source');
   const bytes = await readFile(file);
-  const sha256 = digest(bytes);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
   if (bytes.length !== info.size || (expected !== undefined && sha256 !== expected))
     refuse('source changed or digest mismatch');
   const previous = state.files.get(file);
@@ -386,8 +384,9 @@ export async function qualifyNodeNextRequireHook(
     sharedRuntimeEdges: [],
     aliasMetadata: undefined,
   };
-  const metadata = json(await source(state, path.join(root, 'package.json'), NEXT_PACKAGE_SHA256));
-  if (metadata['name'] !== 'next' || metadata['version'] !== '16.4.3') refuse('fixed Next package');
+  // The release's exact package bytes, whose name and version `nativeNextReleaseAt` read.
+  const release = nativeNextReleaseAt(root) ?? refuse('fixed Next package');
+  await source(state, path.join(root, 'package.json'), release.packageJsonSha256);
   const raw = await source(state, first.file, SHA256);
   if (
     Buffer.byteLength(raw) !== BYTES ||
@@ -502,7 +501,7 @@ export async function nodeNextRequireHookGuardRecord(
   return Object.freeze({
     schema: 1,
     profile: 'next-16.4.3-require-hook-v1',
-    nodeVersion: '24.22.1',
+    nodeVersion: nodeGuardVersion(),
     archivePath,
     sha256: SHA256,
     bytes: BYTES,

@@ -19,14 +19,14 @@ import {
   type NodeManifestIdentitySnapshot,
 } from './node-manifest-identity-snapshot.ts';
 import { nodeNextCacheWriteData } from './node-next-cache-write-data.ts';
+import { isReleaseSource, nativeNextReleaseAt } from './node-next-release.ts';
 import { previewCertifiedNodeCachePolicy } from './node-next-rewrite-proof.ts';
 import { assertOriginalNodeModesGraph } from './node-original-load-mode.ts';
 import { checkedNodeRouteRewriteSources } from './node-route-rewrite-approval.ts';
 
 const PROOF = Symbol('fixed Next cache state write');
-const SUFFIX = '/dist/compiled/next-server/pages-turbo.runtime.prod.js';
-const SOURCE_SHA = '6a6fb036d30a72fcd4cb10b4ffc13318f5b0df6a205fd3fa1ce97cda1717d9c1';
-const PACKAGE_SHA = 'b67bad7944d603b27dd2d2719b57203fd3b3e5c147b2efa6dea5ceb135274caf';
+const RUNTIME = 'dist/compiled/next-server/pages-turbo.runtime.prod.js';
+const SUFFIX = `/${RUNTIME}`;
 const MAX_BYTES = 4_194_304;
 export interface NodeNextCacheWriteProof {
   readonly [PROOF]: true;
@@ -80,8 +80,10 @@ async function candidate(state: State, id: string, own: ManifestGraphFile): Prom
   )
     refuse('canonical completed SDK route root');
   state.roots.add(root);
-  await source(state, path.join(root, 'package.json'), PACKAGE_SHA);
-  const raw = await source(state, own.file, SOURCE_SHA);
+  // The runtime of the release the package is, never another release's copy.
+  const release = nativeNextReleaseAt(root) ?? refuse('fixed package identity');
+  await source(state, path.join(root, 'package.json'), release.packageJsonSha256);
+  const raw = await source(state, own.file, release.source(RUNTIME) ?? '');
   if (
     input.rewriteInput === undefined ||
     previewCertifiedNodeCachePolicy(input.rewrites, input.rewriteInput, {
@@ -109,7 +111,8 @@ export async function qualifyNodeNextCacheWrites(
       input.graph.retained.has(id) && own.file.split(path.sep).join('/').endsWith(SUFFIX),
   );
   if (rows.length === 0) return undefined;
-  if (rows.some(([, own]) => own.sha256 !== SOURCE_SHA)) refuse('fixed source identity');
+  if (rows.some(([, own]) => !isReleaseSource(RUNTIME, own.sha256)))
+    refuse('fixed source identity');
   const state: State = {
     input,
     snapshot: captureNodeManifestIdentity([input]),

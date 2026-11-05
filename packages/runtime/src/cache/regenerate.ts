@@ -7,6 +7,7 @@ import {
 
 import type { NodeHandler } from '../app-module.ts';
 import type { Run } from '../node-bridge.ts';
+import type { StaticRouteParameters } from '../route-parameters.ts';
 import type { CapturedRender } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { asRegeneration } from './context.ts';
@@ -97,7 +98,7 @@ const ON_DEMAND_REASONS: ReadonlySet<AttemptReason> = new Set<AttemptReason>([
 const HTTP_OK = 200;
 const HTTP_SERVER_ERROR = 500;
 
-interface RegenerationTarget {
+interface RegenerationTarget extends StaticRouteParameters {
   readonly descriptor: RouteEntryDescriptor;
   /** The already selected build's class/member classification; never part of the entry's key. */
   readonly isClass?: boolean | undefined;
@@ -107,12 +108,6 @@ interface RegenerationTarget {
   readonly observation?: ServedObservation | undefined;
   /** A Pages Router page's data route, which its data output is recorded under. */
   readonly dataPathname?: string | undefined;
-  /**
-   * The parameters the render is handed in its query, as routing hands them to a render of a
-   * visitor's request, where Next.js would read them otherwise off the pathname
-   * (`routingParameters`); none by default.
-   */
-  readonly parameters?: Readonly<Record<string, string>> | undefined;
   /**
    * The generation the request judged and would replace — `null` for an entry it found none of —
    * where it judged one (`supersededBy`); absent where it did not say.
@@ -212,6 +207,9 @@ async function renderStatic(
     kind: target.descriptor.kind,
     pathname: target.descriptor.pathname,
     parameters: target.parameters,
+    routeParams: target.routeParams,
+    renderPathname: target.renderPathname,
+    prepareQuery: target.prepareQuery,
     allowHeader: target.allowHeader,
     onDemandToken: ON_DEMAND_REASONS.has(target.reason) ? input.previewToken : undefined,
     invocationId: attemptId,

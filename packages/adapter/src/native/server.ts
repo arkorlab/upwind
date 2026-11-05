@@ -21,7 +21,7 @@ import {
 } from '../../../deploy/src/cache-seed.ts';
 import { drainNativeWork } from './drain.ts';
 import { nativeOrigin, nativeRequest, writeNativeResponse } from './http.ts';
-import { listeningOn } from './listening.ts';
+import { keepAliveTimeoutOf, listeningOn } from './listening.ts';
 
 const SHUTDOWN_MS = 30_000;
 const DEFAULT_PORT = 3000;
@@ -119,6 +119,7 @@ async function main(): Promise<void> {
   const origin = originValue === undefined ? undefined : nativeOrigin(originValue);
   const hostname = process.env['UPWIND_NODE_HOSTNAME'] ?? '0.0.0.0';
   const port = portOf(process.env['PORT']);
+  const keepAliveTimeout = keepAliveTimeoutOf(process.env['UPWIND_NODE_KEEP_ALIVE_TIMEOUT']);
   const seeds = await seedEntriesOf(bundle, cacheEntryIdsOf(bundle), {
     scopeId,
     generatedAt: seededGenerationAt(bundle, Date.now()),
@@ -174,6 +175,7 @@ async function main(): Promise<void> {
     };
     requests.waitUntil(answered());
   });
+  if (keepAliveTimeout !== undefined) server.keepAliveTimeout = keepAliveTimeout;
   let stopping = false;
   const stop = (): void => {
     if (stopping) return;

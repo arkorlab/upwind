@@ -12,6 +12,7 @@ import { appEntrySource } from '../src/app-entry.ts';
 import { dynamicNodeClosureRefusal } from '../src/node-closure-proof.ts';
 import { assertClientReferenceManifest, proveNodeManifests } from '../src/node-manifest-proof.ts';
 import { assertNodeProofFiles, proveNodeFunction } from '../src/node-proof.ts';
+import { PINNED_NEXT_PACKAGE_JSON } from './fixtures/pinned-next.ts';
 
 const PAGE = '/native/page';
 const SUFFIX = '_client-reference-manifest.js';
@@ -62,7 +63,7 @@ function routeSource(producer: string): string {
 async function fixture(directory: string, directRuntime?: (typeof APP_PAGE_RUNTIMES)[number]) {
   // Read published source without importing or evaluating a Next.js module.
   const evaluatorFile = fileURLToPath(
-    import.meta.resolve('next/dist/server/load-manifest.external.js'),
+    import.meta.resolve('next-16-4-3/dist/server/load-manifest.external.js'),
   );
   const originalRoot = path.resolve(path.dirname(evaluatorFile), '../..');
   const root = path.join(directory, 'node_modules/next');
@@ -95,7 +96,7 @@ async function fixture(directory: string, directRuntime?: (typeof APP_PAGE_RUNTI
     appEntrySource(entries, { external: true, runtimeDistDir: distDir, nodeRequestMeta: true }),
   ].join('\n');
   await mkdir(path.dirname(manifest), { recursive: true });
-  await writeFile(path.join(root, 'package.json'), '{"name":"next","version":"16.4.3"}');
+  await writeFile(path.join(root, 'package.json'), PINNED_NEXT_PACKAGE_JSON);
   await writeFile(manifest, withDeploymentId());
   await writeFile(route, routeSource(producer));
   await writeFile(analysisEntry, rootCode);
@@ -561,7 +562,7 @@ describe('original Node manifest operation proof', () => {
   it('follows the reviewed load-components wrapper to its arbitrary-path consumer', async () => {
     const current = await fixture(directory);
     const bytes = await readFile(
-      fileURLToPath(import.meta.resolve('next/dist/server/load-components.js')),
+      fileURLToPath(import.meta.resolve('next-16-4-3/dist/server/load-components.js')),
     );
     const wrapper = path.join(current.root, 'dist/server/load-components.js');
     await writeFile(wrapper, bytes);

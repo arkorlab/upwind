@@ -11,6 +11,7 @@ import { failureAnswer } from './error-pages.ts';
 import { isCrawler, isRscRequest, rscBase } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
 import {
+  answeredAtMiss,
   bypassesPrerender,
   concatShell,
   HTML_CONTENT_TYPE,
@@ -272,14 +273,18 @@ async function fromHost(
 
 /**
  * A route's React Server Components: a prefetched segment as built, else its payload resumed —
- * and, for a route on the edge runtime, which resumes nothing, rendered whole.
+ * and, for a route on the edge runtime, which resumes nothing, rendered whole. Where the entry's
+ * record did not come in time and the entry is one rendered at a miss (`renderLeft`), what this
+ * renders is that render, for the request, and says so (`answeredAtMiss`); what the build wrote is
+ * answered as it was, and a draft or a bypass, which no generation is asked about, as it renders.
  */
 export async function rscFromBuild(
   input: RoutedInput,
   store: Store,
-  entry: Entry,
-  resolved: Resolved,
+  asked: { readonly entry: Entry; readonly resolved: Resolved },
+  renderLeft = false,
 ): Promise<Response> {
+  const { entry, resolved } = asked;
   const shell = findShell(store, resolved.route, resolved.pathname);
   if (bypassesPrerender(store, input.request, shell, resolved.url)) {
     return invokeEntry(input, entry, resolved.url);
@@ -288,18 +293,21 @@ export async function rscFromBuild(
   if (built !== undefined) {
     return built;
   }
+  const atMiss = (render: Response): Response => (renderLeft ? answeredAtMiss(render) : render);
   const twin =
     shell === undefined
       ? undefined
       : store.prerendersByPathname.get(`${rscBase(shell.pathname)}${RSC_SUFFIX}`);
   const source = twin?.postponed === undefined ? shell : twin;
   if (source?.postponed !== undefined && entry.kind === 'node') {
-    return resume({
-      input,
-      handler: entry.handler,
-      postponed: postponedOf(store, source),
-      url: resolved.url,
-    });
+    return atMiss(
+      await resume({
+        input,
+        handler: entry.handler,
+        postponed: postponedOf(store, source),
+        url: resolved.url,
+      }),
+    );
   }
   if (
     shell?.pathname === resolved.pathname &&
@@ -314,7 +322,7 @@ export async function rscFromBuild(
       allowHost: entry.kind === 'node',
     });
   }
-  return invokeEntry(input, entry, resolved.url);
+  return atMiss(await invokeEntry(input, entry, resolved.url));
 }
 
 /**
@@ -438,7 +446,7 @@ export async function notFound(input: RoutedInput, store: Store, at: URL): Promi
     }
     return new Response(document.body, { status: HTTP_NOT_FOUND, headers: document.headers });
   }
-  const payload = await rscFromBuild(input, store, entry, resolved);
+  const payload = await rscFromBuild(input, store, { entry, resolved });
   // A payload rendered goes out under the status the not-found stands for; a render that failed,
   // or answered with something other than a payload, keeps the status that says so.
   if (!payload.ok) {

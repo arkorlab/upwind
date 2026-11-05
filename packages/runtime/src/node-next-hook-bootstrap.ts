@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isProxy } from 'node:util/types';
 
+import { isGuardedNodeVersion } from '@stayingupwind/core/util';
+
 import { nodeInitializationBuiltins } from './node-initialization-builtins.ts';
 import {
   assertNodeJwtRealm,
@@ -215,12 +217,13 @@ export function initializeNodeNextRequireHook(
 ): NodeNextHookBootstrap {
   if (
     installed.active ||
-    process.versions.node !== '24.22.1' ||
+    !isGuardedNodeVersion(process.versions.node) ||
     process.execArgv.length > 0 ||
     (process.env['NEXT_MINIMAL'] !== undefined && process.env['NEXT_MINIMAL'] !== '')
   )
     fail('requires fixed default Node startup');
   const config = nodeNextHookRecord(supplied, proxyCheck);
+  if (config.record.nodeVersion !== process.versions.node) fail('record and runtime Node differ');
   const server = fileURLToPath(serverUrl);
   const root = path.dirname(path.dirname(server));
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- SDK-owned archive root derived from its own server URL.
