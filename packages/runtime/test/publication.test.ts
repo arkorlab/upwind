@@ -1,11 +1,17 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import { publicationTagOf, publicationDeadline } from '@stayingupwind/core/cache';
+import {
+  MAX_TAGS_PER_ENTRY,
+  publicationTagOf,
+  publicationIdentity,
+  publicationDeadline,
+} from '@stayingupwind/core/cache';
 import {
   installNextCacheRegistry,
   type NextCacheStore,
   type NextStorage,
   observePublicationGrant,
+  observePublicationTags,
 } from '@stayingupwind/core/paas';
 import { TtlCache } from '@stayingupwind/core/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -130,6 +136,80 @@ describe('publication-aware Next cache handlers', () => {
     expect(request.publication).toContain(tag);
   });
 
+  it('bounds distinct observed publication tags before mutating the request', async () => {
+    const first = await publicationTagOf(grant);
+    const prefix = first.slice(0, first.lastIndexOf(':') + 1);
+    const tags = Array.from(
+      { length: MAX_TAGS_PER_ENTRY },
+      (_value, i) => `${prefix}${String(grant.validUntil + i)}`,
+    );
+    const next = `${prefix}${String(grant.validUntil + MAX_TAGS_PER_ENTRY)}`;
+    const request = requestOf(runtimeOf(hostOf(unasked)), []);
+
+    await request.run(() => {
+      observePublicationTags(tags);
+
+      expect(() => {
+        observePublicationTags([first]);
+      }).not.toThrow();
+      expect(() => {
+        observePublicationTags([next]);
+      }).toThrow('The render has too many publication tags.');
+      expect(request.publication).toStrictEqual(new Set(tags));
+
+      return Promise.resolve();
+    });
+  });
+
+  it.each([
+    ['upwind:resource-snapshot:v1:broken'],
+    [`upwind:publication:v1:${'c'.repeat(64)}:${String(grant.validUntil)}`],
+  ])(
+    'misses invalid stored fetch proof without poisoning the current request (%j)',
+    async (storedTag) => {
+      const identity = await publicationIdentity(grant);
+      const host = hostOf(unasked);
+      vi.spyOn(host, 'getData').mockResolvedValue({
+        entryId: 'entry',
+        generationId: 'generation',
+        dependencyRevision: 1,
+        entry: {
+          kind: 'data:fetch',
+          tags: [storedTag],
+          timestamp: NOW,
+          stale: 30,
+          expire: 86_400,
+          revalidate: 3600,
+        },
+        value: {
+          kind: 'inline',
+          base64: btoa(
+            JSON.stringify({
+              kind: 'FETCH',
+              data: { headers: {}, body: '', status: 200, url: 'https://source.test' },
+              revalidate: 60,
+              tags: [storedTag],
+            }),
+          ),
+        },
+      });
+      const runtime = runtimeOf(host);
+      configureCacheHandlers(runtime);
+      const request = requestOf(runtime, []);
+      request.publicationRequirement = {
+        version: 2,
+        valueObservers: true,
+        identities: [identity],
+        routes: ['/'],
+      };
+
+      await expect(
+        request.run(() => new PlatformFetchCache().get('old-proof', { kind: 'FETCH', tags: [] })),
+      ).resolves.toBeNull();
+      expect(request.publication.size).toBe(0);
+    },
+  );
+
   it('records a fresh tagged fetch before final admission even when its cache write is still pending', async () => {
     const tag = await publicationTagOf(grant);
     const blocked = Promise.withResolvers<{
@@ -137,7 +217,8 @@ describe('publication-aware Next cache handlers', () => {
       generationId: string;
       revision: number;
     }>();
-    const host = hostOf(vi.fn<CacheHost['setData']>(() => blocked.promise));
+    const setData = vi.fn<CacheHost['setData']>(() => blocked.promise);
+    const host = hostOf(setData);
     const runtime = runtimeOf(host);
     configureCacheHandlers(runtime);
     const behind: Promise<unknown>[] = [];
@@ -160,6 +241,9 @@ describe('publication-aware Next cache handlers', () => {
 
     blocked.resolve({ entryId: 'entry', generationId: 'generation', revision: 1 });
     await Promise.all(behind);
+
+    expect(setData).toHaveBeenCalledTimes(1);
+    expect(setData.mock.calls[0]?.[0].entry.tags).toContain(tag);
   });
 
   it('retains a read child deadline when a parent is written under a renewed grant', async () => {
@@ -285,6 +369,7 @@ describe('publication-aware Next cache handlers', () => {
       request: new Request('https://example.test/'),
       startedAt: NOW,
       waitUntil: vi.fn(),
+      clock: undefined,
     });
 
     await expect(

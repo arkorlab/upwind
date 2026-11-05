@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-import { loadBindings, minify } from 'next/dist/build/swc/index.js';
+import type * as Swc from 'next/dist/build/swc/index.js';
 import { describe, expect, it } from 'vitest';
 
 import { resourceCacheBridgePatch } from '../src/patches/resource-cache-bridge.ts';
@@ -16,7 +16,19 @@ const context: PatchContext = {
   instrumentation: undefined,
   wasm: [],
 };
-const root = path.dirname(require.resolve('next/package.json'));
+const RELEASES = [
+  { version: '16.4.3', root: path.dirname(require.resolve('next-16-4-3/package.json')) },
+  { version: '16.4.4', root: path.dirname(require.resolve('next-16-4-4/package.json')) },
+  { version: '16.4.5', root: path.dirname(require.resolve('next/package.json')) },
+] as const;
+const MODULES = RELEASES.flatMap((release) =>
+  ['dist/server', 'dist/esm/server'].map((directory) => ({ ...release, directory })),
+);
+
+function compilerOf(root: string): typeof Swc {
+  // eslint-disable-next-line security/detect-non-literal-require -- Only the three installed release roots above reach this test helper.
+  return require(path.join(root, 'dist/build/swc/index.js')) as typeof Swc;
+}
 
 describe('native unstable_cache storage registration', () => {
   it('leaves application chunks quoting native error text untouched', () => {
@@ -28,12 +40,14 @@ describe('native unstable_cache storage registration', () => {
     ).toMatchObject({ contents: source, edits: 0 });
   });
 
-  it.each(['dist/server', 'dist/esm/server'])(
-    'covers cold and background callback runs in %s',
-    async (directory) => {
+  it.each(MODULES)(
+    'covers cold and background callback runs in $version $directory',
+    async ({ root, version, directory }) => {
+      const manifest: unknown = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
       const file = path.join(root, directory, 'web/spec-extension/unstable-cache.js');
       const source = await readFile(file, 'utf8');
 
+      expect(manifest).toMatchObject({ version });
       expect(resourceCacheBridgePatch.target.test(file)).toBe(true);
       expect(resourceCacheBridgePatch.marker?.(source)).toBe(true);
 
@@ -48,19 +62,25 @@ describe('native unstable_cache storage registration', () => {
     },
   );
 
-  it('covers the actual native provider after Next minifies its declarations', async () => {
-    const file = path.join(root, 'dist/server/web/spec-extension/unstable-cache.js');
-    const source = await readFile(file, 'utf8');
-    await loadBindings();
-    const compressed = await minify(source, { compress: true, mangle: true, module: false });
+  it.each(RELEASES)(
+    'covers the native $version provider after its own minifier',
+    async ({ root }) => {
+      const { loadBindings, minify } = compilerOf(root);
+      const file = path.join(root, 'dist/server/web/spec-extension/unstable-cache.js');
+      const source = await readFile(file, 'utf8');
+      await loadBindings();
+      const compressed = await minify(source, { compress: true, mangle: true, module: false });
 
-    expect(compressed.code).toMatch(/,\s*[\w$]+=\{type:["'`]unstable-cache/u);
+      expect(compressed.code).toMatch(/,\s*[\w$]+=\{type:["'`]unstable-cache/u);
 
-    const result = resourceCacheBridgePatch.apply(compressed.code, file, context);
+      const result = resourceCacheBridgePatch.apply(compressed.code, file, context);
 
-    expect(result.edits).toBe(6);
-    expect(result.contents.match(/Symbol\.for\("upwind.next-cache-storage@1"\)/gu)).toHaveLength(3);
-  });
+      expect(result.edits).toBe(6);
+      expect(result.contents.match(/Symbol\.for\("upwind.next-cache-storage@1"\)/gu)).toHaveLength(
+        3,
+      );
+    },
+  );
 
   it.each(['"unstable-cache"', "'unstable-cache'", '`unstable-cache`'])(
     'links a combined initializer with the exact static literal %s to its native storage',

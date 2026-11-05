@@ -364,6 +364,8 @@ function installPublicationObserver(): void {
     [PUBLICATION_OBSERVER]: (tag: string): void => {
       const context = publicationContext();
       if (context === undefined) return;
+      if (!context.publication.has(tag) && context.publication.size >= MAX_TAGS_PER_ENTRY)
+        throw new Error('The render has too many publication tags.');
       context.publication.add(tag);
       if (
         !livePublicationState(

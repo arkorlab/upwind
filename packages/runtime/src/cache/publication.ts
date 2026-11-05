@@ -1,5 +1,6 @@
 import {
   isPublicationTag,
+  MAX_TAGS_PER_ENTRY,
   publicationExpired,
   resourceSnapshotOf,
   SNAPSHOT_PUBLICATION_VERSION,
@@ -7,6 +8,7 @@ import {
 } from '@stayingupwind/core/cache';
 import { observePublicationTags } from '@stayingupwind/core/paas';
 
+import { livePublicationState } from '../publication-state.ts';
 import { observeResourceTags, publicationContext } from './context.ts';
 import type { HeldValue } from './held-writes.ts';
 import type { DataEntryMetadata } from './host.ts';
@@ -51,6 +53,21 @@ export function reusePublication(
     missingResourceWitness(tags, required ?? publicationContext()?.publicationRequirement)
   )
     return false;
+  const context = publicationContext();
+  if (context !== undefined && tags.some((tag) => isPublicationTag(tag))) {
+    const publications = new Set(context.publication);
+    for (const tag of tags) if (isPublicationTag(tag)) publications.add(tag);
+    if (
+      publications.size > MAX_TAGS_PER_ENTRY ||
+      !livePublicationState(
+        publications,
+        mergeTags([...(context.resourceTags ?? [])], tags),
+        context.publicationRequirement,
+        now,
+      ).valid
+    )
+      return false;
+  }
   observeResourceTags(tags);
   observePublicationTags(tags);
   return true;
