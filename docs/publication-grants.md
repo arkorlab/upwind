@@ -12,7 +12,12 @@ Version 1 requires proof before response headers. Version 2 additionally require
 every reusable cache reader enforces its stored proof. Readers that support only version 1 reject
 version 2. This capability must come from a verified build and deployment, never a request header.
 
-Version 2 permits an outer Suspense shell to stream before a descendant starts its data read.
+Version 3 additionally requires `resourceSnapshots: true`. Each cached value retains its original
+resource revision witness, and publication checks that witness against the resource-change version
+domain. A later read cannot replace an earlier cached value's witness or grant. Readers that lack
+this capability reject version 3 rather than serving output without stale-resource protection.
+
+Versions 2 and 3 permit an outer Suspense shell to stream before a descendant starts its data read.
 Such a live response is private and `no-store`; it is not evidence for a stored generation.
 The runtime checks observations before values are consumed, before and after each streamed read,
 and at completion. A later expired dependency closes the stream and cancels its producer. The

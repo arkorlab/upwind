@@ -8,6 +8,7 @@ import {
   fetchRemoteSource,
   imageCacheInputOf,
   imageFallback,
+  remoteSourceRefusal,
   sourceRequest,
   sourceResponse,
 } from './image-fallback.ts';
@@ -39,21 +40,32 @@ export async function serveImageSource(options: {
     return fallback.response;
   }
   const { params } = fallback;
+  const remote =
+    fallback.kind === 'remote'
+      ? { href: params.href, images, ownHosts: applicationHosts(request) }
+      : undefined;
+  if (remote !== undefined) {
+    const refused = remoteSourceRefusal(new URL(remote.href), images, remote.ownHosts);
+    if (refused !== undefined) return refused;
+  }
   // Looked up before its source is asked for, where the target keeps images (`image-cache.ts`).
   const cacheInput = imageCacheInputOf(input, store.manifest, params, images);
   const opening = openImageCache(cacheInput);
   const slot = opening === undefined ? undefined : await opening;
   if (slot?.hit !== undefined) return slot.hit;
   const keep = slot?.keep;
-  if (fallback.kind === 'remote') {
-    const remote = await fetchRemoteSource({
-      href: params.href,
-      images,
-      ownHosts: applicationHosts(request),
-    });
-    return remote.kind === 'refused'
-      ? remote.response
-      : sourceResponse({ source: remote.response, params, images, internal: false, request, keep });
+  if (remote !== undefined) {
+    const fetched = await fetchRemoteSource(remote);
+    return fetched.kind === 'refused'
+      ? fetched.response
+      : sourceResponse({
+          source: fetched.response,
+          params,
+          images,
+          internal: false,
+          request,
+          keep,
+        });
   }
   const source = sourceRequest(request, params.href);
   // Routed already, by the Function that handed the image here: answered from there.

@@ -2,6 +2,7 @@ import type { ImageRequestParams, ImagesConfig } from '@stayingupwind/core/image
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { describe, expect, it, vi } from 'vitest';
 
+import { withClock } from '../src/cache/clock.ts';
 import { requestContextFor } from '../src/cache/context.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { fetchRemoteSource, sourceResponse } from '../src/image-fallback.ts';
@@ -248,33 +249,55 @@ describe('publication-tagged optimized image sources', () => {
     );
   });
 
-  it.each([1, 60_000])(
+  it.each([0, 60_000])(
     'never keeps a protected image beyond its source grant (%s)',
     async (left) => {
+      const now = 1_800_000_000_000;
       const source = new Response(body(png()), {
         headers: {
-          'x-next-cache-tags': `upwind:publication:v1:${'a'.repeat(64)}:${String(Date.now() + left)}`,
+          'x-next-cache-tags': `upwind:publication:v1:${'a'.repeat(64)}:${String(now + left)}`,
           'cache-control': 'public,max-age=3600',
           etag: '"source"',
         },
       });
       const keep = vi.fn();
-      const answer = await sourceResponse({
-        source,
-        params: PARAMS,
-        images: IMAGES,
-        internal: true,
-        request: asked('GET'),
-        keep,
+      const answer = await withClock(now, () => {
+        return sourceResponse({
+          source,
+          params: PARAMS,
+          images: IMAGES,
+          internal: true,
+          request: asked('GET'),
+          keep,
+        });
       });
 
       expect(keep).not.toHaveBeenCalled();
       expect(answer.headers.get('cache-control')).toContain('no-store');
+      expect(answer.status).toBe(left === 0 ? 503 : HTTP_OK);
+
+      const expected = left === 0 ? encodeUtf8('Publication unavailable') : png();
+
+      expect(new Uint8Array(await answer.arrayBuffer())).toStrictEqual(expected);
     },
   );
 });
 
 describe('the Worker’s own answer for an image source', () => {
+  it('rejects an initial own-host remote source without making a request', async () => {
+    const source = new Response(body(png()));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(source);
+    const result = await fetchRemoteSource({
+      href: 'https://app.example/a.png',
+      images: { ...IMAGES, domains: ['app.example'] },
+      ownHosts: OWN_HOSTS,
+      fetchImpl,
+    });
+
+    expect(result.kind).toBe('refused');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('follows a remote source’s redirects up to the configured count, nothing forwarded', async () => {
     const net = network([
       ['/a.png', () => redirect('/b.png')],

@@ -192,7 +192,8 @@ function redirectRefused(
   if (!allowedImageDestination(images, target)) {
     return true;
   }
-  return ownHosts.has(target.hostname);
+  const hostname = target.hostname.toLowerCase().replace(/\.$/u, '');
+  return [...ownHosts].some((own) => own.toLowerCase().replace(/\.$/u, '') === hostname);
 }
 
 async function fetchHop(
@@ -237,6 +238,17 @@ export interface RemoteSourceInput {
   readonly fetchImpl?: typeof fetch;
 }
 
+/** Own-host destinations are refused before either an image cache hit or an initial fetch. */
+export function remoteSourceRefusal(
+  url: URL,
+  images: ImagesConfig,
+  ownHosts: ReadonlySet<string>,
+): Response | undefined {
+  return redirectRefused(url, ownHosts, images)
+    ? refusal(HTTP_BAD_REQUEST, UPSTREAM_INVALID)
+    : undefined;
+}
+
 /**
  * A URL of the internet, as Next.js's optimizer fetches one: nothing of the client's forwarded,
  * redirects followed up to the configured count and without checking each hop against the
@@ -249,9 +261,8 @@ export async function fetchRemoteSource(input: RemoteSourceInput): Promise<Remot
   let url = new URL(input.href);
   // The patterns name the hosts an application meant to allow, not where they point. Checked on
   // the first destination as well as on every hop; see `allowedImageDestination`.
-  if (!allowedImageDestination(images, url)) {
-    return { kind: 'refused', response: refusal(HTTP_BAD_REQUEST, UPSTREAM_INVALID) };
-  }
+  const initial = remoteSourceRefusal(url, images, ownHosts);
+  if (initial !== undefined) return { kind: 'refused', response: initial };
   for (let hops = images.maximumRedirects; ; hops -= 1) {
     const hop = await fetchHop(fetchImpl, url, deadline, images.dangerouslyAllowLocalIP);
     if (hop.kind === 'refused') {

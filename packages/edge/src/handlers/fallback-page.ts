@@ -5,6 +5,7 @@ import {
   parseCacheTagsHeader,
   publicationExpired,
   publicationForBuild,
+  publicationTimeFor,
   staticPageDataHeadersAllowSharing,
   staticPageHasNoTransform,
   staticPageHeadersAllowSharing,
@@ -243,7 +244,11 @@ async function loadingPage(
   const headers = new Headers(lazy.entry.headers);
   const tags = parseCacheTagsHeader(headers.get('x-next-cache-tags') ?? undefined);
   const required = publicationForBuild(input.manifest.publication, lazy.entry.route);
-  const expired = () => publicationExpired(tags, input.edge.runtime.now(), required);
+  const now = () => {
+    const time = input.edge.runtime.now();
+    return required === undefined ? time : publicationTimeFor(required, time);
+  };
+  const expired = () => publicationExpired(tags, now(), required);
   if (expired()) return input.passthrough('pages-fallback-publication-expired');
   layStoredConfiguredOver(
     headers,
@@ -289,7 +294,7 @@ async function loadingPage(
       ...(rendering.encoding !== IDENTITY_ENCODING && { encodeBody: 'manual' as const }),
     }),
     tags,
-    input.edge.runtime.now(),
+    now(),
     required,
   );
   if (response.status !== HTTP_OK) return response;

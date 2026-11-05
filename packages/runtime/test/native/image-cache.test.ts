@@ -153,29 +153,40 @@ describe('images the native target keeps', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  it('never reads a previously kept local image before its protected source is admitted', async () => {
-    const input = inputOf({ params: { ...PARAMS, href: '/dynamic.png', isStatic: false } });
-    await kept(input);
+  it.each([
+    { href: '/dynamic.png', isStatic: false },
+    { href: '/_next/static/media/build.hash.png', isStatic: true },
+  ])(
+    'never reads previously kept $href before its protected source is admitted',
+    async (source) => {
+      const input = inputOf({ params: { ...PARAMS, ...source } });
+      await kept(input);
 
-    await expect(hitOf(input)).resolves.toBeDefined();
+      await expect(hitOf(input)).resolves.toBeDefined();
 
-    const protectedInput = imageCacheInputOf(
-      {
-        request: input.request,
-        waitUntil: input.waitUntil,
-        cache: {
-          host: {
-            publication: { version: 1, identities: ['a'.repeat(64)], routes: ['/dynamic.png'] },
+      const protectedInput = imageCacheInputOf(
+        {
+          request: input.request,
+          waitUntil: input.waitUntil,
+          cache: {
+            host: {
+              publication: {
+                version: 1,
+                identities: ['a'.repeat(64)],
+                routes: [source.href],
+                ...(source.isStatic && { independentBuild: [source.href] }),
+              },
+            },
           },
         },
-      },
-      { deploymentId: input.deploymentId },
-      input.params,
-      input.images,
-    );
+        { deploymentId: input.deploymentId },
+        input.params,
+        input.images,
+      );
 
-    expect(openImageCache(protectedInput)).toBeUndefined();
-  });
+      expect(openImageCache(protectedInput)).toBeUndefined();
+    },
+  );
 
   it('keeps nothing until the server says where, nor where the application allows none', () => {
     configureImageCache(undefined);

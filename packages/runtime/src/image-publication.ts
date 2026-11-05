@@ -6,12 +6,12 @@ import {
 } from '@stayingupwind/core/cache';
 import type { ImageRequestParams } from '@stayingupwind/core/images';
 
-/** A local dynamic source may resolve through rewrites; no image hit may skip its publication read. */
+/** A local cache hit has no retained source proof, even for a pathname that resembles a build file. */
 export function protectedImageSource(
   params: ImageRequestParams,
   required: PublicationRequirement | undefined,
 ): boolean {
-  return required !== undefined && !params.isAbsolute && !params.isStatic;
+  return required !== undefined && !params.isAbsolute;
 }
 
 export function imagePublicationTags(source: Response): string[] {

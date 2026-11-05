@@ -15,8 +15,10 @@ whether the edge serves from its shells at all.
 
 A selected shell carries its original publication grants and resource witnesses into its resume.
 If that proof is unsafe for the header transport or exceeds its 8 KiB bound, the Function renders
-a fresh whole document before any selected headers or bytes are sent. The edge never truncates or
-drops witnesses to resume the old shell; other continuation failures keep their existing handling.
+a fresh whole document before any selected headers or bytes are sent. The transport retains the
+earliest original witness for every resource and may omit redundant later witnesses. It never
+truncates the required proof to resume an old shell; other continuation failures keep their existing
+handling.
 
 A request begins its cache scope check when it reads a generation or dispatches to the deployment's
 Function, as a whole request or a shell's continuation. Neither waits for the check. Documents keep

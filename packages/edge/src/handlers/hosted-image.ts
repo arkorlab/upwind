@@ -1,3 +1,4 @@
+import { publicationForBuild } from '@stayingupwind/core/cache';
 import {
   classifyImageRequest,
   type ImagesConfig,
@@ -17,7 +18,7 @@ import {
 } from './hosted-gate.ts';
 import { serveHostedFile } from './hosted-static-file.ts';
 import { imagePatternRequests } from './image-pattern-requests.ts';
-import { gatedSourceRefusal } from './image-source.ts';
+import { gatedSourceRefusal, isContentAddressed, resolveImageSource } from './image-source.ts';
 import { handleImage, type ImageAnswerInput, refuseImage } from './image.ts';
 import {
   headerRulesAsRouted,
@@ -161,8 +162,17 @@ function optimized(
   if (gated !== undefined) {
     return Promise.resolve(refuseImage(answer, gated, 'image-source-gated'));
   }
-  if (manifest.publication !== undefined && !parsed.params.isAbsolute && !parsed.params.isStatic)
-    return input.passthrough('publication-image', answer.middleware);
+  if (manifest.publication !== undefined && !parsed.params.isAbsolute) {
+    const source = resolveImageSource(answer.edge, manifest, parsed.params, dpl);
+    if (
+      !isContentAddressed(source) ||
+      publicationForBuild(
+        manifest.publication,
+        new URL(parsed.params.href, answer.request.url).pathname,
+      ) !== undefined
+    )
+      return input.passthrough('publication-image', answer.middleware);
+  }
   return handleImage({
     ...answer,
     manifest,

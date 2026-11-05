@@ -95,6 +95,26 @@ describe('publication admission for shipped Pages loading shells', () => {
     await test.drain();
   });
 
+  it('delegates when the publication clock moves backward during the shell read', async () => {
+    const test = await fixture([GRANT, SNAPSHOT]);
+    const shell = await test.getShell();
+
+    test.getShell.mockClear();
+
+    test.getShell.mockImplementationOnce(() => {
+      vi.mocked(test.edge.runtime.now).mockReturnValue(NOW - 1);
+      return Promise.resolve(shell);
+    });
+
+    const response = await test.serve(PAGE);
+
+    await expect(response.text()).resolves.toBe('private fallback');
+    expect(test.fallback).toHaveBeenCalledTimes(1);
+    expect(test.dispatch).not.toHaveBeenCalled();
+
+    await test.drain();
+  });
+
   it('keeps a proven independent loading shell available without a grant', async () => {
     const test = await fixture([], true);
 

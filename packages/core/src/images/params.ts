@@ -197,8 +197,8 @@ function sourceOf(config: ImagesConfig, url: string): Source {
 
 function isStaticSource(config: ImagesConfig, url: string): boolean {
   return (
-    url.startsWith(`${config.basePath}/_next/static/media`) ||
-    url.startsWith(`${config.basePath}/_next/static/immutable/media`)
+    url.startsWith(`${config.basePath}/_next/static/media/`) ||
+    url.startsWith(`${config.basePath}/_next/static/immutable/media/`)
   );
 }
 
