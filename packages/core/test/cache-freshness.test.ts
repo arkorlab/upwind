@@ -165,7 +165,7 @@ describe('publication and existing expiry metadata', () => {
       policy,
       cacheTimestamp: T0,
       tags,
-      invalidation: { staleAt: T0 + TEN, hardExpireAt: T0 + SECOND_MS },
+      invalidation: { revision: 4, staleAt: T0 + TEN, hardExpireAt: T0 + SECOND_MS },
       now: deadline + 1,
     });
 
