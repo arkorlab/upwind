@@ -1,4 +1,5 @@
 import { admitPublication, type GenerationPackHeader } from '@stayingupwind/core/cache';
+import type { ProjectManifest } from '@stayingupwind/core/manifest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DATA, PAGE, pagesPublicationFixture } from './pages-publication-fixture.ts';
@@ -14,6 +15,16 @@ function pairedArtifact(header: GenerationPackHeader) {
   const data = header.artifacts.find((artifact) => artifact.role === 'pages-data');
   if (data === undefined) throw new Error('The fixture must include paired data.');
   return data;
+}
+
+function publicationFor(
+  version: 1 | 3,
+  identity: string,
+): NonNullable<ProjectManifest['publication']> {
+  const source = { identities: [identity], routes: ['/fallback-true/[slug]'] };
+  return version === 3
+    ? { ...source, version: 3, valueObservers: true, resourceSnapshots: true }
+    : { ...source, version: 1 };
 }
 
 describe('paired Pages data publication admission', () => {
@@ -38,12 +49,7 @@ describe('paired Pages data publication admission', () => {
 
       test.manifest.schemaVersion = 9;
 
-      test.manifest.publication = {
-        version,
-        ...(version === 3 && { valueObservers: true, resourceSnapshots: true }),
-        identities: [identity],
-        routes: ['/fallback-true/[slug]'],
-      };
+      test.manifest.publication = publicationFor(version, identity);
 
       const record = await test.member(PAGE, {
         tags: [
