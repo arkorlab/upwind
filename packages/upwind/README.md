@@ -92,7 +92,7 @@ arrangement below as well, where the prefix is reserved inside Next.js's own rou
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.4.3 ready in 1127ms
+  ✓ Next.js 16.4.5 ready in 1127ms
 ```
 
 A deployment has an edge in front of it, and the platform's own paths are the edge's to serve. Under
@@ -178,7 +178,7 @@ is not working.
 $ curl -s localhost:3000/__upwind
 {
   "upwind": "0.4.0",
-  "next": "16.4.3",
+  "next": "16.4.5",
   "ready": true,
   "address": "http://localhost:3000",
   "prefix": "/__upwind",
@@ -252,13 +252,20 @@ The native target emits `.arkor/node/` and runs on Node.js 24.10 or later. An ex
 Node builds neither start local Cloudflare storage nor include Workers-only compatibility patches.
 
 `start` accepts `-p, --port` (`PORT`, otherwise 3000), `-H, --hostname` (otherwise `0.0.0.0`),
-`--origin`, `--cache-dir`, and repeated `--env-file` arguments. Existing environment variables
+`--origin`, `--cache-dir`, `--keepAliveTimeout`, and repeated `--env-file` arguments.
+`--keepAliveTimeout <ms>` sets how long an idle connection stays open after its last answer, as
+`next start --keepAliveTimeout` does: a whole number of milliseconds from 1 to 2147482647, the
+longest Node.js can keep once it adds its 1 s buffer. Without it, Node.js's default stands, and the
+server closes an idle connection about 6 s after its last answer. A client that sends on a pooled
+connection just as the server closes it gets `ECONNRESET`, so behind a proxy that keeps connections
+open longer, set it above the proxy's idle timeout. Existing environment variables
 win over environment files; a later file wins over an earlier one. With `--origin`, the application
 sees that public origin even behind a TLS-terminating proxy. Client forwarding and internal control
 headers are removed at the public boundary. Without it, the direct HTTP request's Host is used.
 
 The artifact can be relocated and started with `node server.mjs`. For direct execution set `PORT`,
-`UPWIND_NODE_HOSTNAME`, `UPWIND_NODE_ORIGIN`, or `UPWIND_NODE_CACHE_DIR` as needed. The writable cache
+`UPWIND_NODE_HOSTNAME`, `UPWIND_NODE_ORIGIN`, `UPWIND_NODE_CACHE_DIR`, or `UPWIND_NODE_KEEP_ALIVE_TIMEOUT`
+as needed. The writable cache
 defaults to `.upwind/node-cache/<deploymentId>/`, relative to the original working directory (the
 project directory for `upwind start`), outside the immutable artifact. When direct execution starts
 inside the artifact, the default instead uses its parent's `.upwind/node-cache/`. Persist that directory across

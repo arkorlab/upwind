@@ -229,7 +229,13 @@ describe('scoped immutable registration passes', () => {
     );
   });
 
-  it.each(['exportedId', 'evaluations', 'initialChunks', 'lookupTables'] as const)(
+  it.each([
+    'exportedId',
+    'evaluations',
+    'initialChunks',
+    'lookupTables',
+    'installedTables',
+  ] as const)(
     'rejects changed secondary boot %s before the result leaves its scope',
     async (key) => {
       const own = await fixture();

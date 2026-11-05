@@ -128,7 +128,7 @@ describe('an RSC navigation chooses the state of its own representation and gene
       handler,
     );
     const response =
-      current ?? (await rscFromBuild(input, store, { kind: 'node', handler }, resolved));
+      current ?? (await rscFromBuild(input, store, { entry: { kind: 'node', handler }, resolved }));
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('text/x-component');

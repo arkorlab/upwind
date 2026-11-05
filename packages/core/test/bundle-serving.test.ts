@@ -508,6 +508,18 @@ describe('a build that keeps its pages behind a trailing slash', () => {
   });
 
   /**
+   * Without `trailingSlash`, but with no redirect to take the slash off either, the router finds a
+   * shipped file that names no file by the slash too (`/manual/` is `/manual`), and so does the edge.
+   */
+  it('finds a file by the slash where no redirect takes it off, without trailingSlash', () => {
+    const unredirected = fixtureBundle({ skipTrailingSlashRedirect: true });
+
+    expect(dynamicRouting(unredirected, new Set()).trailingSlash).toBeUndefined();
+    expect(dynamicRouting(unredirected, new Set()).staticFileTrailingSlash).toBe(true);
+    expect(dynamicRouting(fixtureBundle(), new Set()).staticFileTrailingSlash).toBeUndefined();
+  });
+
+  /**
    * Without the redirect the router still finds a page, and a shipped file that names no file, by
    * the spelling with the slash (`/stream/` is `/stream`, `/manual/` is `/manual`): that spelling is
    * exact, and the edge keeps the page at the name the build gave it.

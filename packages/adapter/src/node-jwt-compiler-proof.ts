@@ -5,8 +5,14 @@ import path from 'node:path';
 import { parseAst } from 'rolldown/parseAst';
 
 import { AuditError } from './dependencies.ts';
-import { isNode, type Node } from './lexical-scope.ts';
-import { nodeJwtGlobalRecoverySite, nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
+import { isNode } from './lexical-scope.ts';
+import { nodeGuardVersion, type GuardedNodeVersion } from './node-guard-version.ts';
+import {
+  NODE_JWT_COMPILER_PROFILES,
+  type NodeJwtCompilerProfile,
+  type NodeJwtCompilerSite,
+} from './node-jwt-compiler-profiles.ts';
+import { nodeJwtRequireOnly } from './node-jwt-compiler-sites.ts';
 import {
   nodeJwtCallerInspection,
   type NodeJwtCallerPolicyProof,
@@ -23,6 +29,7 @@ import {
   type NodeManifestIdentitySnapshot,
 } from './node-manifest-identity-snapshot.ts';
 import type { NodeManifestProof } from './node-manifest-proof.ts';
+import { nativeNextReleaseAt } from './node-next-release.ts';
 import type { NodeNextRewriteInput, NodeNextRewriteProof } from './node-next-rewrite-proof.ts';
 import {
   assertOriginalCommonJsMode,
@@ -35,12 +42,7 @@ import { checkedNodeRouteRewriteSources } from './node-route-rewrite-approval.ts
 import type { AppliedPatch } from './patches/rolldown.ts';
 
 const PROOF: unique symbol = Symbol('fixed Node JWT compiler sites');
-const JWT_SUFFIX = '/dist/compiled/jsonwebtoken/index.js';
-const JWT_SHA256 = '056c2dddba96faa35f4dc0740228a241990561290ff3bd5456c7c7dbc5a7a6b9';
-const JWT_BYTES = 121_051;
-const SEMVER_SHA256 = '34c5853dd094229baa28a8b15b86e2143eeb0de0360530798ef3e9a7890942b6';
-const NEXT_PACKAGE_SHA256 = 'b67bad7944d603b27dd2d2719b57203fd3b3e5c147b2efa6dea5ceb135274caf';
-const BUILTINS = new Set(['buffer', 'crypto', 'stream', 'util']);
+const SEMVER = 'next/dist/lib/semver-noop';
 const MAX_METADATA_BYTES = 65_536;
 const MAX_SOURCE_BYTES = 4_194_304;
 const MAX_SCOPE_DEPTH = 64;
@@ -60,11 +62,11 @@ export interface NodeJwtCompilerInput {
 }
 export interface NodeJwtGuardRecord {
   readonly schema: 1;
-  readonly profile: 'next-16.4.3-jsonwebtoken-ncc-v1';
-  readonly nodeVersion: '24.22.1';
+  readonly profile: NodeJwtCompilerProfile['name'];
+  readonly nodeVersion: GuardedNodeVersion;
   readonly archivePath: string;
   readonly sha256: string;
-  readonly bytes: typeof JWT_BYTES;
+  readonly bytes: number;
 }
 interface Mode {
   readonly id: string;
@@ -80,6 +82,7 @@ interface Caller extends ManifestGraphFile {
   readonly policy?: NodeJwtCallerPolicyProof | undefined;
 }
 interface State {
+  readonly profile: NodeJwtCompilerProfile;
   readonly input: NodeJwtCompilerInput;
   readonly snapshot: NodeManifestIdentitySnapshot;
   readonly data: ManifestModuleGraph;
@@ -273,15 +276,27 @@ async function incoming(state: State, ids: ReadonlySet<string>): Promise<boolean
 async function semverDependency(state: State, id: string, root: string): Promise<boolean> {
   const graph = state.data;
   const own = graph.sources.get(id);
+  const expected = state.profile.semverSha256;
   if (
+    expected === undefined ||
     own?.file !== path.join(root, 'dist/lib/semver-noop.js') ||
-    own.sha256 !== SEMVER_SHA256 ||
+    own.sha256 !== expected ||
     !graph.retained.has(id)
   )
     return false;
   if (state.patched.has(id) || state.patched.has(own.file)) return false;
-  await source(state, own.file, SEMVER_SHA256);
+  await source(state, own.file, expected);
   return await commonjs(state, id, own);
+}
+/** A builtin the profile names by this exact specifier, or Next.js's semver no-op where it has one. */
+async function dependencyEdge(
+  state: State,
+  edge: { readonly specifier: string; readonly target: string },
+  root: string,
+): Promise<boolean> {
+  if (state.profile.builtins.includes(edge.specifier))
+    return edge.target.replace(/^node:/u, '') === edge.specifier.replace(/^node:/u, '');
+  return edge.specifier === SEMVER && (await semverDependency(state, edge.target, root));
 }
 async function dependencies(
   state: State,
@@ -290,17 +305,13 @@ async function dependencies(
 ): Promise<boolean> {
   for (const id of ids) {
     const edges = state.data.imports?.get(id);
-    if (edges?.some((edge) => edge.specifier === 'next/dist/lib/semver-noop') !== true)
+    if (edges === undefined) return false;
+    if (
+      state.profile.semverSha256 !== undefined &&
+      edges.every((edge) => edge.specifier !== SEMVER)
+    )
       return false;
-    for (const edge of edges) {
-      if (BUILTINS.has(edge.specifier)) {
-        if (edge.target.replace(/^node:/u, '') !== edge.specifier) return false;
-      } else if (
-        edge.specifier !== 'next/dist/lib/semver-noop' ||
-        !(await semverDependency(state, edge.target, root))
-      )
-        return false;
-    }
+    for (const edge of edges) if (!(await dependencyEdge(state, edge, root))) return false;
   }
   return true;
 }
@@ -313,10 +324,10 @@ async function renderedCodes(
     const code = state.data.rendered?.get(id);
     if (
       code === undefined ||
-      own.sha256 !== JWT_SHA256 ||
+      own.sha256 !== state.profile.sha256 ||
       !state.data.retained.has(id) ||
       !(await commonjs(state, id, own)) ||
-      nodeJwtGlobalRecoverySite(parseAst(code)) === undefined
+      state.profile.site(parseAst(code)) === undefined
     )
       return undefined;
     codes.set(id, code);
@@ -342,6 +353,20 @@ function graphData(graph: ManifestModuleGraph): ManifestModuleGraph {
   };
 }
 
+function profileOf(file: string): NodeJwtCompilerProfile | undefined {
+  const posix = file.split(path.sep).join('/');
+  return NODE_JWT_COMPILER_PROFILES.find((profile) => posix.endsWith(profile.suffix));
+}
+/** The library of the release the package is: jsonwebtoken for 16.4.3, fast-jwt from 16.4.4. */
+function releaseProfile(file: string) {
+  const profile = profileOf(file);
+  if (profile === undefined) return;
+  const root = file.slice(0, -profile.suffix.length);
+  const release = nativeNextReleaseAt(root);
+  return release !== undefined && profile.releases.includes(release.version)
+    ? { profile, release, root }
+    : undefined;
+}
 /**
  * Manually qualified PRIMARY Next16.4.3 NCC source (Git blob 33a1c8901b96d04376c1649e2f144f0c335d1762).
  * Entry532 exposes verify/sign/three errors/decode, never dispatcher or Lodash464. Its sole
@@ -354,6 +379,12 @@ function graphData(graph: ManifestModuleGraph): ManifestModuleGraph {
  * REQUIRED bootstrap guard closes earlier AMD/global publication, global recovery, prototype
  * overrides and util.types accessors immediately before ORIGINAL CJS evaluation. Without that
  * guard this proof cannot authorize publication. No source is rewritten or skipped by the audit.
+ *
+ * Manually qualified Next16.4.4 NCC fast-jwt source (b175f52b05a5f6c6c39ca72565ea178542be323b), which
+ * replaces jsonwebtoken there. It names no eval or Function and loads buffer, node:crypto, node:util
+ * and util alone. Its sole Node loader read is safer-buffer's process.binding('buffer'), guarded by
+ * `!o.kStringMaxLength`, where o copies buffer's own fields: Node24 and Node26 export that field, so
+ * the read never runs, and the bootstrap guard seals process.binding regardless.
  */
 export async function qualifyNodeJwtCompiler(
   input: NodeJwtCompilerInput,
@@ -361,14 +392,19 @@ export async function qualifyNodeJwtCompiler(
   const snapshot = captureNodeManifestIdentity([input]);
   const data = graphData(input.graph);
   const candidates = [...data.sources].filter(
-    ([id, own]) => data.retained.has(id) && own.file.split(path.sep).join('/').endsWith(JWT_SUFFIX),
+    ([id, own]) => data.retained.has(id) && profileOf(own.file) !== undefined,
   );
   if (candidates.length === 0) return undefined;
   const first = candidates[0]?.[1];
   if (first === undefined || candidates.some(([, own]) => own.file !== first.file))
     return refuse(UNSUPPORTED);
   const routes = approved(input);
+  const { profile, release, root } = releaseProfile(first.file) ?? refuse(UNSUPPORTED);
+  if (path.basename(root) !== 'next' || path.basename(path.dirname(root)) !== 'node_modules')
+    return refuse(UNSUPPORTED);
+  if (routes.every((route) => route.root !== root)) return refuse(UNSUPPORTED);
   const state: State = {
+    profile,
     input,
     snapshot,
     data,
@@ -385,16 +421,12 @@ export async function qualifyNodeJwtCompiler(
     codes: new Map(),
     file: first.file,
   };
-  const root = first.file.slice(0, -JWT_SUFFIX.length);
-  if (path.basename(root) !== 'next' || path.basename(path.dirname(root)) !== 'node_modules')
-    return refuse(UNSUPPORTED);
-  if (routes.every((route) => route.root !== root)) return refuse(UNSUPPORTED);
-  const metadata = json(await source(state, path.join(root, 'package.json'), NEXT_PACKAGE_SHA256));
-  if (metadata['name'] !== 'next' || metadata['version'] !== '16.4.3') return refuse(UNSUPPORTED);
-  const raw = await source(state, first.file, JWT_SHA256);
-  if (Buffer.byteLength(raw) !== JWT_BYTES) return refuse(UNSUPPORTED);
+  // The release's exact package bytes, whose name and version `nativeNextReleaseAt` read.
+  await source(state, path.join(root, 'package.json'), release.packageJsonSha256);
+  const raw = await source(state, first.file, profile.sha256);
+  if (Buffer.byteLength(raw) !== profile.bytes) return refuse(UNSUPPORTED);
   const rawProgram = parseAst(raw, { sourceType: 'commonjs' });
-  if (nodeJwtGlobalRecoverySite(rawProgram) === undefined) return refuse(UNSUPPORTED);
+  if (profile.site(rawProgram) === undefined) return refuse(UNSUPPORTED);
   const ids = new Set(candidates.map(([id]) => id));
   for (const file of state.patched)
     if (ids.has(file) || file === first.file) return refuse(UNSUPPORTED);
@@ -410,13 +442,16 @@ export async function qualifyNodeJwtCompiler(
   return proof;
 }
 
-/** The ordinary closure walker receives one exact original-program node, not a module waiver. */
+/**
+ * The ordinary closure walker receives one exact original-program node, not a module waiver: the
+ * code compiler jsonwebtoken calls, or the Node loader fast-jwt reads.
+ */
 export function nodeJwtCompilerSite(
   proof: NodeJwtCompilerProof | undefined,
   file: string,
   code: string,
   program: unknown,
-): Node | undefined {
+): NodeJwtCompilerSite | undefined {
   if (proof === undefined) return undefined;
   const state = PROOFS.get(proof) ?? refuse(COPIED_PROOF);
   if (!state.codes.has(file)) return undefined;
@@ -425,7 +460,7 @@ export function nodeJwtCompilerSite(
   // Bind the supplied original parse, not a caller-constructed equivalent tree.
   if (!isNode(program) || JSON.stringify(program) !== JSON.stringify(parseAst(code)))
     refuse('changed audit program');
-  return nodeJwtGlobalRecoverySite(program) ?? refuse('changed rendered compiler site');
+  return state.profile.site(program) ?? refuse('changed rendered compiler site');
 }
 
 export async function nodeJwtCompilerMetadata(proof: NodeJwtCompilerProof): Promise<{
@@ -462,10 +497,10 @@ export async function nodeJwtGuardRecord(
   await fresh(state);
   return Object.freeze<NodeJwtGuardRecord>({
     schema: 1,
-    profile: 'next-16.4.3-jsonwebtoken-ncc-v1',
-    nodeVersion: '24.22.1',
+    profile: state.profile.name,
+    nodeVersion: nodeGuardVersion(),
     archivePath,
-    sha256: JWT_SHA256,
-    bytes: JWT_BYTES,
+    sha256: state.profile.sha256,
+    bytes: state.profile.bytes,
   });
 }

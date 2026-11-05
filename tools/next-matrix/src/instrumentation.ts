@@ -7,6 +7,7 @@ import type { DeploymentBundle, FunctionSpec } from '@stayingupwind/core/bundle'
 import { MIDDLEWARE_DONE_HEADER, MIDDLEWARE_ONLY_HEADER } from '@stayingupwind/core/paas';
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
 
+import { assertFailureLogged, logLines } from './failure-log.ts';
 import { workerApp, workerSpec } from './worker-function.ts';
 
 const TOTAL_MS = 120_000;
@@ -141,7 +142,12 @@ function basePath(kind: string): string {
   return '/api/probe';
 }
 
-function fixtureClient(runtime: Miniflare, proof: CaseProof, signal: AbortSignal) {
+function fixtureClient(
+  runtime: Miniflare,
+  proof: CaseProof,
+  logged: readonly string[],
+  signal: AbortSignal,
+) {
   const base = basePath(proof.function);
   const headers = {
     [proof.function === 'middleware' ? MIDDLEWARE_ONLY_HEADER : MIDDLEWARE_DONE_HEADER]: '1',
@@ -164,7 +170,7 @@ function fixtureClient(runtime: Miniflare, proof: CaseProof, signal: AbortSignal
     proof.snapshots.push(value);
     return value;
   };
-  return { base, request, snapshot };
+  return { base, request, snapshot, logged };
 }
 
 type FixtureClient = ReturnType<typeof fixtureClient>;
@@ -174,7 +180,12 @@ async function assertOwnFailure(client: FixtureClient, proof: CaseProof): Promis
     const response = await client.request(client.base);
     assert.equal(response.status, HTTP_ERROR, 'project register failure was swallowed');
     if (proof.function === 'middleware')
-      assert.ok(response.body.includes('fixture own register failure'));
+      await assertFailureLogged(
+        response.body,
+        client.logged,
+        'fixture own register failure',
+        'project register failure',
+      );
   }
 }
 
@@ -189,7 +200,12 @@ async function assertErrorHooks(
   proof.errorStatus = response.status;
   assert.equal(response.status, HTTP_ERROR, 'original handler failure was swallowed');
   if (middleware)
-    assert.ok(response.body.includes('fixture middleware failure'), 'hook replaced original error');
+    await assertFailureLogged(
+      response.body,
+      client.logged,
+      'fixture middleware failure',
+      'hook replaced original error',
+    );
   const value = await client.snapshot();
   if (proof.function === 'app-edge') {
     // Next 16.4.2's EdgeRouteModuleWrapper awaits handle() without dispatching onRequestError.
@@ -237,8 +253,10 @@ async function exercise(
   proof: CaseProof,
 ): Promise<void> {
   const spec = workerSpec(candidate);
-  const runtime = new Miniflare(
-    convertV4MiniflareOptions({
+  // What the Function logs: a failure it answers itself says why there, and only there.
+  const log = logLines();
+  const runtime = new Miniflare({
+    ...convertV4MiniflareOptions({
       name: 'instrumentation-fixture',
       modulesRoot: '/bundle',
       modules: await modulesOf(spec, input.out),
@@ -257,12 +275,13 @@ async function exercise(
         throw new Error('Instrumentation fixture attempted outbound network');
       },
     }),
-  );
+    handleStructuredLogs: log.handleStructuredLogs,
+  });
   let primary: unknown;
   let failed = false;
   try {
     await bounded(runtime.ready, input.signal);
-    await assertCase(fixtureClient(runtime, proof, input.signal), proof, input.own);
+    await assertCase(fixtureClient(runtime, proof, log.lines, input.signal), proof, input.own);
     assert.equal(proof.egressAttempts, 0);
   } catch (error) {
     failed = true;

@@ -23,6 +23,7 @@ import {
 } from '../src/collect.ts';
 import { ensureStaticRoutes } from '../src/ensure-static.ts';
 import { nftAssets, nftChunks, nftWasm } from '../src/nft.ts';
+import { staticFileContentType } from '../src/static-content-type.ts';
 import { collectStaticFiles, rewriteTargetFiles } from '../src/static-files.ts';
 import { tracedFiles } from '../src/traced-files.ts';
 
@@ -1005,6 +1006,70 @@ describe('collectStaticFiles', () => {
 function exportedFile(filePath: string, pathname: string): Parameters<typeof exportedPathname>[0] {
   return { filePath, pathname };
 }
+
+describe('staticFileContentType', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'adapter-content-type-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** A prerendered metadata route as the build writes it: `<route>.body`, and its `.meta` if any. */
+  async function body(meta?: string): Promise<string> {
+    const filePath = path.join(dir, 'robots.txt.body');
+    await writeFile(filePath, 'User-agent: *');
+    if (meta !== undefined) {
+      await writeFile(path.join(dir, 'robots.txt.meta'), meta);
+    }
+    return filePath;
+  }
+
+  it.each(['content-type', 'Content-Type'])(
+    'is the type the route answered with, which its .meta records as %s, as next start serves it',
+    async (name) => {
+      const filePath = await body(
+        JSON.stringify({ status: 200, headers: { [name]: 'text/plain' } }),
+      );
+
+      await expect(staticFileContentType({ filePath, pathname: '/robots.txt' })).resolves.toBe(
+        'text/plain',
+      );
+    },
+  );
+
+  it('stops where a .meta is there and cannot be read', async () => {
+    const filePath = await body();
+    // A directory where the record is: there, and not readable as one.
+    await mkdir(path.join(dir, 'robots.txt.meta'));
+
+    await expect(staticFileContentType({ filePath, pathname: '/robots.txt' })).rejects.toThrow(
+      /EISDIR/u,
+    );
+  });
+
+  it.each([
+    ['no .meta', undefined],
+    ['a .meta that is not JSON', '{'],
+    ['a .meta naming no type', JSON.stringify({ status: 200, headers: {} })],
+    ['a .meta naming an empty type', JSON.stringify({ headers: { 'content-type': '' } })],
+  ])('is read off the name it is served under where the build left %s', async (_, meta) => {
+    const filePath = await body(meta);
+
+    await expect(staticFileContentType({ filePath, pathname: '/robots.txt' })).resolves.toBe(
+      'text/plain; charset=utf-8',
+    );
+  });
+
+  it('is read off the file’s own name for any other file', async () => {
+    await expect(
+      staticFileContentType({ filePath: path.join(dir, 'c.js'), pathname: '/_next/static/c.js' }),
+    ).resolves.toBe('text/javascript; charset=utf-8');
+  });
+});
 
 describe('exportedPathname', () => {
   /** Without `trailingSlash` a page sits beside its siblings, and only the root is an index. */

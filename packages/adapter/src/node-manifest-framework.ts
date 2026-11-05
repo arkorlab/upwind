@@ -1,3 +1,5 @@
+import { isReleasePath, isReleaseSource } from './node-next-release.ts';
+
 export const ROUTE_CLASS = 'route-class';
 export const APP_PAGE_CLASS = 'app-page-class';
 export const APP_PAGE_FACTORY = 'app-page-factory';
@@ -12,72 +14,40 @@ export const PAGES_API_MODULE = 'dist/server/route-modules/pages-api/module.comp
 const PAGES_API_SOURCE = 'dist/server/route-modules/pages-api/module.js';
 export const APP_ROUTE_MODULE = 'dist/server/route-modules/app-route/module.compiled.js';
 const APP_ROUTE_SOURCE = 'dist/server/route-modules/app-route/module.js';
-const PAGES_RUNTIMES: ReadonlyMap<string, string> = new Map([
-  [
-    'dist/compiled/next-server/pages-turbo.runtime.prod.js',
-    '6a6fb036d30a72fcd4cb10b4ffc13318f5b0df6a205fd3fa1ce97cda1717d9c1',
-  ],
-  [
-    'dist/compiled/next-server/pages.runtime.prod.js',
-    '28f90af862ee5ae750fddea94d36a55cda89e4636993569d0e60c36f2813dc98',
-  ],
-]);
-const PAGES_API_RUNTIMES: ReadonlyMap<string, string> = new Map([
-  [
-    'dist/compiled/next-server/pages-api-turbo.runtime.prod.js',
-    '9bda335900891fa996b194d830883cb833a869a86e59f33ec7c80cf018309424',
-  ],
-  [
-    'dist/compiled/next-server/pages-api.runtime.prod.js',
-    '322a597b07fdc559b86562fd68f1c828b554deac36e1e84a10e6687daa01a00f',
-  ],
-]);
-const ROUTE_RUNTIMES: ReadonlyMap<string, string> = new Map([
-  [
-    'dist/compiled/next-server/app-route-experimental.runtime.prod.js',
-    '356d9c9be870fac47a341221841c76341c37a17eb038d6151e22a0788f87a906',
-  ],
-  [
-    'dist/compiled/next-server/app-route-turbo-experimental.runtime.prod.js',
-    '4755bc19f3115dc66c2e818cf7cee5c0979a6821a5fec9513beb808cebe8a0bc',
-  ],
-  [
-    'dist/compiled/next-server/app-route-turbo.runtime.prod.js',
-    '4010a14b45b58154eaf01034845c5003de0f7c3945657e9d84290fe66ea3d41c',
-  ],
-  [
-    'dist/compiled/next-server/app-route.runtime.prod.js',
-    'ff6aea920fbe3a9a4cf4179b0bc80bf20127136754cd9225586edb77f96dc254',
-  ],
-]);
+const RUNTIME = 'dist/compiled/next-server/';
+const PAGES_RUNTIME_PATHS = [
+  `${RUNTIME}pages-turbo.runtime.prod.js`,
+  `${RUNTIME}pages.runtime.prod.js`,
+];
+const PAGES_API_RUNTIME_PATHS = [
+  `${RUNTIME}pages-api-turbo.runtime.prod.js`,
+  `${RUNTIME}pages-api.runtime.prod.js`,
+];
+const ROUTE_RUNTIME_PATHS = [
+  `${RUNTIME}app-route-experimental.runtime.prod.js`,
+  `${RUNTIME}app-route-turbo-experimental.runtime.prod.js`,
+  `${RUNTIME}app-route-turbo.runtime.prod.js`,
+  `${RUNTIME}app-route.runtime.prod.js`,
+];
+const APP_RUNTIME_PATHS = [
+  `${RUNTIME}app-page-experimental.runtime.prod.js`,
+  `${RUNTIME}app-page-turbo-experimental.runtime.prod.js`,
+  `${RUNTIME}app-page-turbo.runtime.prod.js`,
+  `${RUNTIME}app-page.runtime.prod.js`,
+];
+const PAGES_RUNTIMES: ReadonlySet<string> = new Set(PAGES_RUNTIME_PATHS);
+const PAGES_API_RUNTIMES: ReadonlySet<string> = new Set(PAGES_API_RUNTIME_PATHS);
+const ROUTE_RUNTIMES: ReadonlySet<string> = new Set(ROUTE_RUNTIME_PATHS);
+const APP_RUNTIMES: ReadonlySet<string> = new Set(APP_RUNTIME_PATHS);
 export const EVALUATOR = 'dist/server/load-manifest.external.js';
 const LOAD_COMPONENTS = 'dist/server/load-components.js';
-const APP_RUNTIMES: ReadonlyMap<string, string> = new Map([
-  [
-    'dist/compiled/next-server/app-page-experimental.runtime.prod.js',
-    '2974a9e688b53a8b9bf61ea8535f1b70f4fb4154fc60c64a231d337f556d99c7',
-  ],
-  [
-    'dist/compiled/next-server/app-page-turbo-experimental.runtime.prod.js',
-    'd0d80c2b545d96bfdebb2a3d5100c368a18a0757db211eba55abf977e37ee23f',
-  ],
-  [
-    'dist/compiled/next-server/app-page-turbo.runtime.prod.js',
-    '914353e0cf478e617e8a3b408fa74d9f526e9c338c8bda817cc05f05bfcce7a5',
-  ],
-  [
-    'dist/compiled/next-server/app-page.runtime.prod.js',
-    '9f24cd66e38f57c3144cbc456fe0f52853836d6218f449f54abba8e8c17c3921',
-  ],
-]);
-// Exact published next@16.4.3 sources, from its integrity-verified registry package.
+/**
+ * Exact published sources, the same bytes in next@16.4.3 and next@16.4.4, from their
+ * integrity-verified registry packages. The factory template and the runtimes differ between them
+ * (`node-next-release.ts`).
+ */
 const REVIEWED: ReadonlyMap<string, string> = new Map([
-  ...APP_RUNTIMES,
-  ...PAGES_RUNTIMES,
-  ...PAGES_API_RUNTIMES,
-  ...ROUTE_RUNTIMES,
   [APP_PAGE_MODULE, '3b55f56f8c70bbadffdacea23a1c19689c3889bab7e78da6c8121ada787bfe99'],
-  [APP_PAGE_RUNTIME, '0a6a5c726f95e2df2600b2fd6d71e37fd72f936f8f4dc5b94fa38d40fcd62a6b'],
   [APP_PAGE_SOURCE, '0d658c55994938d4ffe32bbddb4e6009513248e1659e90e248d33bf3a98e0eed'],
   [APP_ROUTE_MODULE, 'aeab4882c08e62a742aa67daa0d4a434b3330f389c38ffdf4262b6143c80b5ed'],
   [APP_ROUTE_SOURCE, '9f9ae9defd45e773888c948e844d7a401ca79ff5c09f14211c4abd9b725e3b1b'],
@@ -95,7 +65,7 @@ export type ManifestProtectedKind =
   | typeof APP_PAGE_FACTORY
   | typeof ROUTE_EXPORTS;
 
-const RUNTIME_WRAPPERS: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map([
+const RUNTIME_WRAPPERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   [APP_PAGE_MODULE, APP_RUNTIMES],
   [APP_ROUTE_MODULE, ROUTE_RUNTIMES],
   [PAGES_API_MODULE, PAGES_API_RUNTIMES],
@@ -103,11 +73,11 @@ const RUNTIME_WRAPPERS: ReadonlyMap<string, ReadonlyMap<string, string>> = new M
 ]);
 
 // eslint-disable-next-line unicorn/prefer-iterator-concat -- The supported Node.js 24 runtime does not provide Iterator.concat.
-const RUNTIMES = new Set([
-  ...APP_RUNTIMES.keys(),
-  ...PAGES_RUNTIMES.keys(),
-  ...PAGES_API_RUNTIMES.keys(),
-  ...ROUTE_RUNTIMES.keys(),
+const RUNTIMES: ReadonlySet<string> = new Set([
+  ...APP_RUNTIME_PATHS,
+  ...PAGES_RUNTIME_PATHS,
+  ...PAGES_API_RUNTIME_PATHS,
+  ...ROUTE_RUNTIME_PATHS,
 ]);
 const FRAMEWORK_TRANSITIONS: ReadonlyMap<
   string,
@@ -147,8 +117,14 @@ export function frameworkParent(parent: string, child: string): ManifestProtecte
   return FRAMEWORK_TRANSITIONS.get(child)?.get(parent);
 }
 
-export function reviewedFrameworkSource(relative: string): string | undefined {
-  return REVIEWED.get(relative);
+/** Whether `sha256` is the published bytes of the reviewed `relative` in a supported release. */
+export function isReviewedFrameworkSource(relative: string, sha256: string): boolean {
+  return REVIEWED.get(relative) === sha256 || isReleaseSource(relative, sha256);
+}
+
+/** Whether `relative` names a reviewed source of a supported release. */
+export function isReviewedFrameworkPath(relative: string): boolean {
+  return REVIEWED.has(relative) || isReleasePath(relative);
 }
 
 export interface ManifestConstructorIdentity {
@@ -171,10 +147,11 @@ export function reviewedRouteConstructorSource(
   sha256: string,
 ): ManifestConstructorIdentity | undefined {
   for (const profile of ROUTE_CONSTRUCTORS) {
-    const expected =
-      relative === profile.module ? REVIEWED.get(profile.module) : profile.runtimes.get(relative);
-    if (expected !== undefined && expected === sha256)
-      return Object.freeze({ kind: profile.kind, module: profile.module, relative });
+    const reviewed =
+      relative === profile.module
+        ? REVIEWED.get(profile.module) === sha256
+        : profile.runtimes.has(relative) && isReleaseSource(relative, sha256);
+    if (reviewed) return Object.freeze({ kind: profile.kind, module: profile.module, relative });
   }
   return undefined;
 }
@@ -185,7 +162,7 @@ export function manifestConstructorImport(
 ): (ManifestConstructorIdentity & { readonly root: string }) | undefined {
   const normalized = file.replaceAll('\\', '/');
   for (const profile of ROUTE_CONSTRUCTORS) {
-    const candidates = [profile.module, ...profile.runtimes.keys()];
+    const candidates = [profile.module, ...profile.runtimes];
     for (const relative of candidates) {
       if (!normalized.endsWith(`/${relative}`)) continue;
       const identity = reviewedRouteConstructorSource(relative, sha256);

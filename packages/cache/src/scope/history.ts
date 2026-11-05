@@ -36,7 +36,7 @@ export interface HistoryDeps {
   readonly blobs: BlobStore;
   readonly now: () => number;
   readonly transaction: <T>(body: () => T) => T;
-  /** Whether another run is waiting for this one, which the history may leave its share to. */
+  /** Whether another history publication is waiting, which this one may leave its share to. */
   readonly othersWaiting: () => boolean;
 }
 

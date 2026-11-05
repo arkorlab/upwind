@@ -32,6 +32,8 @@
     // Applications built by `tools/next-matrix`, written for Next.js's own compiler: a `?module`
     // import and a `"use cache"` directive are shapes this formatter has no reason to know.
     "fixtures/**",
+    // Cases copied out of Next.js's own suite by the deploy tests, kept as upstream wrote them.
+    "tools/deploy-tests/supplements/**",
     // Written by `measure.ts`; kept as it was written.
     "packages/next-runtime/reports/**",
     // The bundled collector, one minified string; written by `generate`.

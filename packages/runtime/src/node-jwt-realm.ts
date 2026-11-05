@@ -1,3 +1,5 @@
+import { isGuardedNodeVersion, type GuardedNodeVersion } from '@stayingupwind/core/util';
+
 import {
   assertNodeErrorHooks,
   captureNodeErrorHooks,
@@ -7,7 +9,13 @@ import {
   withPristineNodeErrorHooks,
   type NodeErrorHooks,
 } from './node-error-hooks.ts';
-import { LOADER_ENV, PROCESS_KEYS, ROOTS, TYPE_PREDICATES } from './node-jwt-realm-fields.ts';
+import {
+  CRYPTO_FUNCTIONS,
+  LOADER_ENV,
+  PROCESS_KEYS,
+  ROOTS,
+  TYPE_PREDICATES,
+} from './node-jwt-realm-fields.ts';
 import {
   assertNodeWsRealm,
   assertNodeWsRealmStructure,
@@ -51,6 +59,8 @@ interface PropertyGroup {
   readonly properties: readonly Property[];
 }
 interface RealmState {
+  readonly nodeVersion: GuardedNodeVersion;
+  readonly version: string;
   readonly globals: ObjectValue;
   readonly process: ObjectValue;
   readonly environment: ObjectValue;
@@ -215,7 +225,9 @@ function checkRoots(state: RealmState): void {
     }
   }
 }
-function ambient(state: Pick<RealmState, 'globals' | 'process' | 'environment'>): void {
+function ambient(
+  state: Pick<RealmState, 'globals' | 'process' | 'environment' | 'nodeVersion' | 'version'>,
+): void {
   if (data(state.globals, 'global') !== state.globals) fail('nonstandard global alias');
   if (inheritedData(state.globals, 'define') !== undefined) fail('ambient AMD define');
   const self = inheritedData(state.globals, 'self');
@@ -233,10 +245,10 @@ function ambient(state: Pick<RealmState, 'globals' | 'process' | 'environment'>)
   const versions = data(state.process, 'versions');
   if (
     !object(versions) ||
-    data(versions, 'node') !== '24.22.1' ||
-    data(state.process, 'version') !== 'v24.22.1'
+    data(versions, 'node') !== state.nodeVersion ||
+    data(state.process, 'version') !== state.version
   )
-    fail('requires Node 24.22.1');
+    fail(`requires Node ${state.nodeVersion}`);
 }
 
 class BuiltinCapture {
@@ -350,13 +362,7 @@ function sealBuiltinBasis(
   capture.seal(requiredObject(data(stream, 'prototype')));
   const crypto = requiredObject(data(basis, 'crypto'));
   for (const key of ['randomBytes', 'randomFillSync']) capture.optional(crypto, key);
-  capture.functions(crypto, [
-    'KeyObject',
-    'createSecretKey',
-    'createPrivateKey',
-    'createPublicKey',
-    'createHash',
-  ]);
+  capture.functions(crypto, CRYPTO_FUNCTIONS);
   const constructor = capture.functions(crypto, ['Hash'])[0];
   if (constructor === undefined) fail('missing Hash constructor');
   capture.seal(constructor);
@@ -394,6 +400,10 @@ function captureRealm(
 ): NodeJwtRealm {
   const globalObject = requiredObject(globals);
   const processObject = requiredObject(process);
+  const versions = requiredObject(data(processObject, 'versions'));
+  const nodeVersion = data(versions, 'node');
+  if (!isGuardedNodeVersion(nodeVersion)) fail('requires Node 24.22.1 or 26.13.0');
+  const version = `v${nodeVersion}`;
   const environment = data(processObject, 'env');
   if (!object(environment)) fail('missing Node environment');
   const capture = new BuiltinCapture();
@@ -432,6 +442,8 @@ function captureRealm(
   if (builtins !== undefined)
     sealBuiltinBasis(capture, requiredObject(builtins), globalBuffer, globalObject);
   const state: RealmState = {
+    nodeVersion,
+    version,
     globals: globalObject,
     process: processObject,
     environment,

@@ -22,6 +22,7 @@ import {
   type NodeManifestTurbopackSealedEntry,
 } from './node-manifest-turbopack-graph.ts';
 import { assertNodeManifestTurbopackRuntime } from './node-manifest-turbopack-runtime.ts';
+import { nodeManifestTurbopackNestedTable } from './node-manifest-turbopack.ts';
 
 export interface NodeManifestRuntimeProfile {
   readonly file: string;
@@ -54,6 +55,8 @@ export interface NodeManifestRuntimeCohort {
   /** Owned callers only; these are not protected route or normalization terminals. */
   readonly boots: readonly BootIdentity[];
   readonly lookupEdges: readonly LookupEdge[];
+  /** Whether every runtime installs a chunk's leading strict factory table (16.4.3's). */
+  readonly strictFactoryTables: boolean;
 }
 const CERTIFIED = new WeakSet<NodeManifestRuntimeCohort>();
 const PROFILE_KINDS = new Set(['app-page', 'app-route', 'pages', 'pages-api']);
@@ -167,6 +170,31 @@ function lookupEdges(
   return Object.freeze(edges);
 }
 
+/** A graph without its installed inventory keeps the full lookup inventory. */
+function installedTables(graph: NodeManifestTurbopackBootGraph): readonly string[] {
+  return [...graph.initialChunks, ...(graph.installedTables ?? graph.lookupTables ?? [])];
+}
+
+/**
+ * Beside a runtime that installs no strict factory table (16.4.4's), no table it installs leads
+ * with one: only the chunks its graphs install, never a lookup-only chunk or another CommonJS
+ * source that looks like one.
+ */
+function flatTables(
+  strict: boolean,
+  graphs: readonly NodeManifestTurbopackBootGraph[],
+  sources: readonly NodeManifestTurbopackGraphFile[],
+): void {
+  if (strict) return;
+  const installed = new Set(graphs.flatMap((graph) => installedTables(graph)));
+  if (
+    sources.some(
+      (source) => installed.has(source.id) && nodeManifestTurbopackNestedTable(source.source),
+    )
+  )
+    refuse('strict factory table beside a runtime that installs none');
+}
+
 /** Sealed owned runtime identities must be known before any factory-table interpretation. */
 export function certifyNodeManifestRuntimeCohort(input: {
   readonly inventory: NodeManifestRuntimeCallers;
@@ -180,6 +208,7 @@ export function certifyNodeManifestRuntimeCohort(input: {
   const sources = sourcesById(input.sources);
   const boots: BootIdentity[] = [];
   const runtimes = new Map<string, RuntimeIdentity>();
+  let strict = true;
   for (const caller of callers) {
     const source = sources.get(caller.id);
     if (source === undefined) refuse('missing caller source');
@@ -195,6 +224,7 @@ export function certifyNodeManifestRuntimeCohort(input: {
       distDir: input.distDir,
       ...(profile.assetPrefix !== undefined && { assetPrefix: profile.assetPrefix }),
     });
+    strict &&= proof.strictFactoryTables;
     const identity = {
       id: runtime.id,
       file: runtime.file,
@@ -223,6 +253,7 @@ export function certifyNodeManifestRuntimeCohort(input: {
     runtimes: Object.freeze([...runtimes.values()]),
     boots: Object.freeze(boots),
     lookupEdges: lookupEdges(runtimes, sources),
+    strictFactoryTables: strict,
   });
   CERTIFIED.add(cohort);
   return cohort;
@@ -331,15 +362,20 @@ export function prepareNodeManifestRuntimeGraphs(input: {
           registrationScope,
         });
       }) ?? [];
+  let strict = cohort?.strictFactoryTables ?? true;
   if (cohort === undefined) {
-    for (const graph of graphs)
-      assertNodeManifestTurbopackRuntime({
+    for (const graph of graphs) {
+      const proof = assertNodeManifestTurbopackRuntime({
         source: graph.runtime.source,
         file: graph.runtime.file,
         distDir: input.distDir,
         rootDir: input.rootDir,
         ...(input.assetPrefix !== undefined && { assetPrefix: input.assetPrefix }),
       });
+      strict &&= proof.strictFactoryTables;
+    }
   }
-  return { cohort, graphs, allGraphs: [...graphs, ...other] };
+  const allGraphs = [...graphs, ...other];
+  flatTables(strict, allGraphs, input.sources);
+  return { cohort, graphs, allGraphs };
 }

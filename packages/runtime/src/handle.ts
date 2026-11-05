@@ -27,12 +27,12 @@ import {
 } from './documents.ts';
 import { deferredEntryFor, entryFor, hasEntry } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
+import { servedOrOtherwise } from './generation-fallback.ts';
 import {
   handleDetached,
   handleForeground,
   outcomeOn,
   regenerateMode,
-  serveFromGeneration,
   withBackgroundRegeneration,
 } from './generations.ts';
 import {
@@ -74,6 +74,7 @@ import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
 import { routingOf, untraced, withRoutingOf } from './resolve-request.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
 import { resumeUrlOf } from './route-parameters.ts';
+import { withRoutingHeaders } from './routing-headers.ts';
 import {
   askedOf,
   landedRoute,
@@ -86,10 +87,10 @@ import {
   undecodedResponse,
   withHeaderRulesLeft,
   withRewriteStatus,
-  withRoutingHeaders,
 } from './routing.ts';
 import { carriesResumeState, handleRuntimeResume } from './runtime-resume.ts';
 import {
+  answeredAtMiss,
   externalRewrite,
   type HandleInput,
   HTTP_NOT_FOUND,
@@ -188,21 +189,18 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
       onFailure: failureAnswer(store, entry, resolved.route),
     });
   }
-  const crawled =
-    shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request);
-  if (shell !== undefined && entry.kind === 'node') {
-    const current = await serveFromGeneration(
-      input,
-      store,
-      documentGenerationSource(store, shell, resolved, crawled),
-      entry.handler,
-    );
-    if (current !== undefined) {
-      return current;
-    }
-  }
   // Nothing kept the render; `documentFromBuild` answers a crawler with one all the same.
-  return documentFromBuild(input, store, resolved, { entry, status: HTTP_OK });
+  const fromBuild = (): Promise<Response> =>
+    documentFromBuild(input, store, resolved, { entry, status: HTTP_OK });
+  if (shell === undefined || entry.kind !== 'node') {
+    return fromBuild();
+  }
+  const crawled = crawlerWantsWholePage(store, shell, resolved, input.request);
+  const source = documentGenerationSource(store, shell, resolved, crawled);
+  return servedOrOtherwise(input, store, { source, handler: entry.handler }, async (renderLeft) => {
+    const built = await fromBuild();
+    return renderLeft ? answeredAtMiss(built) : built;
+  });
 }
 
 /**
@@ -452,6 +450,7 @@ async function answerResolved(
   // The status this routing named, and the headers it collected: never an outer request's.
   const asked: RoutedInput = {
     ...forwarded,
+    parameters: resolved.parameters,
     rewriteStatus: routed.status,
     routingHeaders: routed.headers,
   };
@@ -478,7 +477,7 @@ async function serveHandedOff(
   if (handOff === undefined) {
     return new Response('the routing handed over does not read', { status: HTTP_BAD_REQUEST });
   }
-  const resolved: Resolved = { route: handOff.route, pathname: handOff.pathname, url: handOff.url };
+  const resolved: Resolved = handOff;
   const owner = ownerOfResolved(store, resolved);
   if (owner !== undefined) {
     return misdirected(owner, input.request.body, value);
@@ -653,10 +652,9 @@ export async function handleRequest(given: HandleInput): Promise<Response> {
     // Not answered before the host has recorded what the request invalidated — its headers neither,
     // nor a failure's (`onceRecorded`).
     const routed = withoutPlacementHeaders(await onceRecorded(context, routeRequest(input)));
-    const response = delivered(handled.request, routed);
     const answered = withoutBody(
       handled.request,
-      withInvalidatedTags(response, context.invalidated),
+      withInvalidatedTags(delivered(handled.request, routed), context.invalidated),
     );
     // Without a cache there is nothing to write, and nothing to wait for.
     return handled.cache === undefined ? answered : withWritesLanded(answered, context.writes);

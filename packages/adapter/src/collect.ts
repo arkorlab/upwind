@@ -711,17 +711,6 @@ export function aliasPathname(pathname: string, basePath: string): string | unde
   return pathname === `${basePath}/index` ? basePath || '/' : undefined;
 }
 
-/**
- * The content type a static file is served with. A metadata file the build prerendered
- * (`/robots.txt`, `/favicon.ico`, `/manifest.webmanifest`) is written as `<route>.body`, a name
- * that says nothing about what it holds, so its type comes from the name it is served under.
- */
-export function staticFileContentType(
-  output: Pick<AdapterOutput['STATIC_FILE'], 'filePath' | 'pathname'>,
-): string {
-  return contentTypeFor(output.filePath.endsWith('.body') ? output.pathname : output.filePath);
-}
-
 export function middlewareMatchers(middleware: AdapterOutput['MIDDLEWARE'] | undefined): Route[] {
   return (middleware?.config.matchers ?? []).map((matcher) => {
     return {

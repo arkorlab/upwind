@@ -4,7 +4,8 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 import { afterRouting, notFound } from './documents.ts';
 import { notFoundData } from './pages-not-found.ts';
-import { missesInPlainText, redirectResponse, withRoutingHeaders } from './routing.ts';
+import { withRoutingHeaders } from './routing-headers.ts';
+import { missesInPlainText, redirectResponse } from './routing.ts';
 import { plainNotFoundResponse, type RoutedInput } from './serve.ts';
 import type { Store } from './store.ts';
 

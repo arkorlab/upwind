@@ -60,6 +60,20 @@ export ADAPTER_TEST_SUITE_ENV
 # off (`src/hook.ts`): the build below spends the same time.
 export ADAPTER_TEST_HOOK_STARTED_MS="${ADAPTER_TEST_HOOK_STARTED_MS:-$(node -p 'Date.now()')}"
 
+# The Node.js the application is built and served under, where the run names one other than the
+# harness's (`ADAPTER_TEST_NODE_DIR`, a directory holding `node`): first on the `PATH` of everything
+# below, the server this starts included. A build and the server that loads it then agree on it, as
+# the adapter requires of a native Function. Only after the suite's variables are read above, which
+# would otherwise take this `PATH` for one of the suite's and hand it to the application.
+if [ -n "${ADAPTER_TEST_NODE_DIR:-}" ]; then
+  if [ ! -x "${ADAPTER_TEST_NODE_DIR}/node" ]; then
+    echo "ADAPTER_TEST_NODE_DIR holds no node: ${ADAPTER_TEST_NODE_DIR}" >&2
+    exit 1
+  fi
+  export PATH="${ADAPTER_TEST_NODE_DIR}:${PATH}"
+fi
+echo "Node.js $(node --version) builds and serves the application" >&2
+
 repo_root="$(cd "${tool_dir}/../.." && pwd)"
 # The contract's own variable, and it names the adapter's repository: keep it working, since the
 # workflow in Next.js's documentation sets it and people copy that workflow.
@@ -195,7 +209,9 @@ echo "build command: ${build_command}" >&2
 case "${JEST_SUITE_NAME:-}" in
   *test/e2e/app-dir/next-config-ts-native-ts/* | *test/e2e/app-dir/next-config-ts-native-mts/*)
     export __NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true
-    export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--experimental-transform-types"
+    if node -e "process.exit(process.allowedNodeEnvironmentFlags.has('--experimental-transform-types') ? 0 : 1)"; then
+      export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--experimental-transform-types"
+    fi
     echo 'a suite of a next.config Node.js loads itself: built with that loader, as Next.js builds it' >&2
     ;;
   # This fixture configures a cache handler of its own unless `VERCEL` is set at build

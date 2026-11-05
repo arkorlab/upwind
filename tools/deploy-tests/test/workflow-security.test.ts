@@ -12,6 +12,44 @@ function projects(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `project-${String(index + 1)}`);
 }
 
+const CANARY_VERSION = '16.5.0-canary.25';
+const CANARY_TAG = `v${CANARY_VERSION}`;
+const CANARY_COMMIT = 'a'.repeat(40);
+const STABLE_SCHEDULE = '23 17 * * *';
+const CANARY_SCHEDULE = '23 18 * * *';
+const SKIPPED_SCHEDULE = '23 19 * * *';
+
+interface NetworkReply {
+  readonly registry?: string;
+  readonly curlStatus?: number;
+  readonly refs?: string;
+  readonly gitStatus?: number;
+}
+
+interface NetworkCommand {
+  readonly command: string;
+  readonly args: readonly string[];
+}
+
+/** Every external lookup is answered locally, and recorded independently of its response. */
+const NETWORK_STUB = `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const command = path.basename(process.argv[1]);
+fs.appendFileSync(process.env.PLAN_COMMAND_LOG, JSON.stringify({ command, args: process.argv.slice(2) }) + '\\n');
+process.stdout.write(process.env[command === 'curl' ? 'PLAN_REGISTRY' : 'PLAN_REFS']);
+process.exit(Number(process.env[command === 'curl' ? 'PLAN_CURL_STATUS' : 'PLAN_GIT_STATUS']));
+`;
+
+/** Every shard of `targets` under each of `nodes`, in the order the plan lists them. */
+function lanes(targets: readonly string[], nodes: readonly string[], total: number) {
+  return targets.flatMap((target) => {
+    return nodes.flatMap((node) =>
+      Array.from({ length: total }, (_, index) => ({ target, node, shard: index + 1 })),
+    );
+  });
+}
+
 describe('workflow security', () => {
   const repository = path.resolve(import.meta.dirname, '../../..');
   const script = path.join(repository, '.github/scripts/verify-release.sh');
@@ -191,8 +229,21 @@ describe('workflow security', () => {
     return readFileSync(path.join(repository, '.github/workflows/deploy-tests.yaml'), 'utf8');
   }
 
+  function workflowSetting(name: string): string {
+    const line = deployTestsWorkflow()
+      .split('\n')
+      .find((entry) => entry.startsWith(`  ${name}: '`));
+    const value = /^ {2}[A-Z_]+: '([^']+)'$/u.exec(line ?? '')?.[1];
+    if (value === undefined) throw new Error(`the workflow sets no ${name}`);
+    return value;
+  }
+
   /** The plan step run as a dispatch of `ref` asks, with `asked` in place of what a test changes. */
-  function plan(ref: string, asked: Readonly<Record<string, string>> = {}) {
+  function plan(
+    ref: string,
+    asked: Readonly<Record<string, string>> = {},
+    reply: NetworkReply = {},
+  ) {
     const workflow = deployTestsWorkflow();
     const marker = '        run: |\n';
     const step = workflow
@@ -204,30 +255,57 @@ describe('workflow security', () => {
       .join('\n');
     const base = temporary();
     const output = path.join(base, 'output');
+    const summaryFile = path.join(base, 'summary');
+    const commandLog = path.join(base, 'commands');
+    const bin = path.join(base, 'bin');
+    mkdirSync(bin);
+    for (const command of ['curl', 'git']) {
+      writeFileSync(path.join(bin, command), NETWORK_STUB, { mode: 0o755 });
+    }
     const result = spawnSync('bash', ['-c', body], {
       encoding: 'utf8',
       env: {
         ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env['PATH'] ?? ''}`,
+        PLAN_COMMAND_LOG: commandLog,
+        PLAN_REGISTRY: reply.registry ?? JSON.stringify({ canary: CANARY_VERSION }),
+        PLAN_CURL_STATUS: String(reply.curlStatus ?? 0),
+        PLAN_REFS: reply.refs ?? `${CANARY_COMMIT}\trefs/tags/${CANARY_TAG}\n`,
+        PLAN_GIT_STATUS: String(reply.gitStatus ?? 0),
         EVENT: 'workflow_dispatch',
+        SCHEDULE: '',
         TARGET: 'node',
         NEXTJS_REF: ref,
+        NIGHTLY_NEXTJS_REF: workflowSetting('NIGHTLY_NEXTJS_REF'),
+        RUNNER_SHARDS: workflowSetting('RUNNER_SHARDS'),
+        SKIPPED_SHARDS: workflowSetting('SKIPPED_SHARDS'),
         TESTS: 'all',
         SHARDS: '1',
         ONLY: '',
         CONCURRENCY: '',
+        CACHE: '',
+        NODE: '',
+        POPULATION: '',
+        PROJECT_IDS: '',
+        PROJECT_ID: '',
         GITHUB_OUTPUT: output,
-        GITHUB_STEP_SUMMARY: path.join(base, 'summary'),
+        GITHUB_STEP_SUMMARY: summaryFile,
         ...asked,
       },
     });
-    return { ...result, output };
+    const commands = existsSync(commandLog)
+      ? readFileSync(commandLog, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line) as NetworkCommand)
+      : [];
+    const summary = existsSync(summaryFile) ? readFileSync(summaryFile, 'utf8') : '';
+    return { ...result, output, commands, summary };
   }
 
   /** The most shards a host's whole manifest is cut into unasked, as the workflow sets it. */
   function hostShards(): number {
-    const set = /^ {2}HOST_SHARDS: '(\d+)'$/mu.exec(deployTestsWorkflow())?.[1];
-    if (set === undefined) throw new Error('the workflow sets no HOST_SHARDS');
-    return Number(set);
+    return Number(workflowSetting('HOST_SHARDS'));
   }
 
   it.each(['v16.4.3\nmatrix={}', 'v16.4.3\rtotal=1', 'v16.4.3\r\nparallel=256', ''])(
@@ -247,6 +325,310 @@ describe('workflow security', () => {
     expect(result.status).toBe(0);
     expect(readFileSync(result.output, 'utf8')).toContain('nextjs=v16.4.3\n');
     expect(readFileSync(result.output, 'utf8')).toContain('total=1\nparallel=1\nconcurrency=2\n');
+    expect(result.commands).toStrictEqual([]);
+  });
+
+  it.each([CANARY_TAG, 'v16.4.0-rc.1', 'v15.0.0-beta.3', 'v16.10.12'])(
+    'takes a dispatch of a release tag of Next.js: %s',
+    (ref) => {
+      const result = plan(ref);
+
+      expect(result.status).toBe(0);
+      expect(readFileSync(result.output, 'utf8')).toContain(`nextjs=${ref}\n`);
+    },
+  );
+
+  it('checks a release tag out as a tag, never as a branch of the same name', () => {
+    const checkout = deployTestsWorkflow()
+      .split('\n')
+      .find(
+        (line) => line.trimStart().startsWith('ref:') && line.includes('needs.plan.outputs.nextjs'),
+      );
+
+    expect(checkout).toContain(
+      "startsWith(needs.plan.outputs.nextjs, 'v') && format('refs/tags/{0}', needs.plan.outputs.nextjs)",
+    );
+  });
+
+  it.each([
+    'canary',
+    'refs/heads/canary',
+    CANARY_COMMIT,
+    '16.4.3',
+    'v16.4',
+    'v16.4.3-canary',
+    'v16.4.3-alpha.1',
+    'v16.4.3 --upload-pack=touch',
+    'v16.4.3-canary.1.x',
+  ])('refuses a dispatch of anything but a release tag of Next.js: %j', (ref) => {
+    const result = plan(ref);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('nextjsRef must be a release tag of Next.js');
+    expect(existsSync(result.output)).toBe(false);
+  });
+
+  it.each([STABLE_SCHEDULE, CANARY_SCHEDULE])(
+    'runs both local targets under Node.js 24 and 26 over the whole manifest on schedule %s',
+    (schedule) => {
+      const result = plan('ignored', {
+        EVENT: 'schedule',
+        SCHEDULE: schedule,
+        TARGET: 'host',
+        TESTS: 'ignored',
+        ONLY: '9',
+        CONCURRENCY: '8',
+      });
+      const total = Number(workflowSetting('RUNNER_SHARDS'));
+      const matrix = { include: lanes(['cloudflare', 'node'], ['24', '26'], total) };
+      const output = readFileSync(result.output, 'utf8');
+
+      expect(result.status).toBe(0);
+      expect(total).toBe(64);
+      expect(matrix.include).toHaveLength(256);
+      expect(deployTestsWorkflow()).toContain(`    - cron: '${schedule}'`);
+      expect(output).toContain(`matrix=${JSON.stringify(matrix)}\n`);
+      expect(output).toContain('total=64\nparallel=256\nconcurrency=2\n');
+      expect(output).toContain('tests=all\ncache=none\n');
+      expect(output).toContain('population=upstream\n');
+    },
+  );
+
+  it('runs what the supported release skips in deploy mode on both local targets, on its own schedule', () => {
+    const result = plan('ignored', {
+      EVENT: 'schedule',
+      SCHEDULE: SKIPPED_SCHEDULE,
+      TARGET: 'host',
+      TESTS: 'ignored',
+      ONLY: '9',
+      POPULATION: 'upstream',
+    });
+    const total = Number(workflowSetting('SKIPPED_SHARDS'));
+    const matrix = { include: lanes(['cloudflare', 'node'], ['24', '26'], total) };
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(total).toBe(8);
+    expect(deployTestsWorkflow()).toContain(`    - cron: '${SKIPPED_SCHEDULE}'`);
+    expect(output).toContain(`matrix=${JSON.stringify(matrix)}\n`);
+    expect(output).toContain(`nextjs=${workflowSetting('NIGHTLY_NEXTJS_REF')}\n`);
+    expect(output).toContain('population=skipped\n');
+    expect(result.summary).toContain('what Next.js skips in deploy mode');
+    expect(result.commands).toStrictEqual([]);
+  });
+
+  it('cuts a dispatch of what Next.js skips into the skipped run’s shards where it names none', () => {
+    const result = plan('v16.4.3', { POPULATION: 'skipped', SHARDS: '' });
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(output).toContain(`total=${workflowSetting('SKIPPED_SHARDS')}\n`);
+    expect(output).toContain('population=skipped\n');
+  });
+
+  it('takes the deploy manifest’s suites on a pull request, whatever was asked', () => {
+    const result = plan('ignored', { EVENT: 'pull_request', POPULATION: 'skipped' });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(result.output, 'utf8')).toContain('population=upstream\n');
+  });
+
+  it.each(['everything', 'skipped\nmatrix={}'])(
+    'refuses a population there is none of: %j',
+    (asked) => {
+      const result = plan('v16.4.3', { POPULATION: asked });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('population must be upstream or skipped');
+      expect(existsSync(result.output)).toBe(false);
+    },
+  );
+
+  it.each([
+    { listed: 'sixteen projects', ids: projects(16), total: 8, parallel: 8 },
+    { listed: 'three projects', ids: projects(3), total: 6, parallel: 1 },
+  ])(
+    'cuts what Next.js skips on a host a piece a project, into no more than the runner’s: $listed',
+    ({ ids, total, parallel }) => {
+      const result = plan('v16.4.3', {
+        TARGET: 'host',
+        POPULATION: 'skipped',
+        SHARDS: '',
+        PROJECT_IDS: ids.join(' '),
+        PROJECT_ID: '',
+        HOST_SHARDS: String(hostShards()),
+      });
+      const output = readFileSync(result.output, 'utf8');
+
+      expect(result.status).toBe(0);
+      expect(output).toContain(
+        `total=${String(total)}\nparallel=${String(parallel)}\nconcurrency=1\n`,
+      );
+      expect(output).toContain('population=skipped\n');
+    },
+  );
+
+  /** The cap is the default's: a `shards` that is given is used as it is, as for any other run. */
+  it('uses a `shards` given for what Next.js skips on a host as it is', () => {
+    const result = plan('v16.4.3', {
+      TARGET: 'host',
+      POPULATION: 'skipped',
+      SHARDS: '12',
+      PROJECT_IDS: projects(16).join(' '),
+      PROJECT_ID: '',
+      HOST_SHARDS: String(hostShards()),
+    });
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(output).toContain('total=12\n');
+    expect(output).toContain('population=skipped\n');
+  });
+
+  it('runs node alone under Node.js 24 over the whole manifest on a pull request', () => {
+    const result = plan('ignored', {
+      EVENT: 'pull_request',
+      TARGET: 'host',
+      TESTS: 'ignored',
+      NODE: '26',
+      ONLY: '9',
+    });
+    const matrix = { include: lanes(['node'], ['24'], 64) };
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(output).toContain(`matrix=${JSON.stringify(matrix)}\n`);
+    expect(output).toContain(`nextjs=${workflowSetting('NIGHTLY_NEXTJS_REF')}\n`);
+  });
+
+  it('runs a dispatch under the Node.js versions it names', () => {
+    const result = plan('v16.4.3', { TARGET: 'cloudflare', NODE: '24 26', SHARDS: '2' });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(result.output, 'utf8')).toContain(
+      `matrix=${JSON.stringify({ include: lanes(['cloudflare'], ['24', '26'], 2) })}\n`,
+    );
+    expect(result.summary).toContain('cloudflare under Node.js 24 26');
+  });
+
+  it.each(['22', '26 24', '24\nmatrix={}', 'latest'])(
+    'refuses a Node.js the lanes do not have: %j',
+    (node) => {
+      const result = plan('v16.4.3', { NODE: node });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('node must be 24, 26 or both');
+      expect(existsSync(result.output)).toBe(false);
+    },
+  );
+
+  it('refuses Node.js 26 for a host, which builds and serves on its own runtime', () => {
+    const result = plan('v16.4.3', { TARGET: 'host', NODE: '26', PROJECT_IDS: 'project-1' });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('node must be 24 there');
+  });
+
+  function canaryPlan(reply: NetworkReply = {}) {
+    return plan('', { EVENT: 'schedule', SCHEDULE: CANARY_SCHEDULE }, reply);
+  }
+
+  it('keeps the stable nightly release without querying npm or GitHub', () => {
+    const result = plan('', { EVENT: 'schedule', SCHEDULE: STABLE_SCHEDULE });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(result.output, 'utf8')).toContain(
+      `nextjs=${workflowSetting('NIGHTLY_NEXTJS_REF')}\n`,
+    );
+    expect(result.commands).toStrictEqual([]);
+  });
+
+  it('resolves the published Canary once and pins every shard to its exact release tag', () => {
+    const result = canaryPlan();
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(result.output, 'utf8')).toContain(`nextjs=${CANARY_COMMIT}\n`);
+    expect(result.summary).toContain(`Next.js canary: ${CANARY_TAG} (${CANARY_COMMIT})`);
+    expect(result.commands.map(({ command }) => command)).toStrictEqual(['curl', 'git']);
+    expect(result.commands[0]?.args).toContain(
+      'https://registry.npmjs.org/-/package/next/dist-tags',
+    );
+    expect(result.commands[1]?.args).toStrictEqual([
+      'ls-remote',
+      '--exit-code',
+      'https://github.com/vercel/next.js.git',
+      `refs/tags/${CANARY_TAG}`,
+      `refs/tags/${CANARY_TAG}^{}`,
+    ]);
+  });
+
+  it('pins an annotated Canary tag to its peeled commit instead of its tag object', () => {
+    const tagObject = 'b'.repeat(40);
+    const result = canaryPlan({
+      refs: `${CANARY_COMMIT}\trefs/tags/${CANARY_TAG}^{}\n${tagObject}\trefs/tags/${CANARY_TAG}\n`,
+    });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(result.output, 'utf8')).toContain(`nextjs=${CANARY_COMMIT}\n`);
+    expect(result.summary).toContain(`Next.js canary: ${CANARY_TAG} (${CANARY_COMMIT})`);
+    expect(result.summary).not.toContain(tagObject);
+  });
+
+  it('rejects an unrecognized scheduled event instead of silently running the stable release', () => {
+    const result = plan('', { EVENT: 'schedule', SCHEDULE: '23 20 * * *' });
+
+    expect(result.status).not.toBe(0);
+    expect(existsSync(result.output)).toBe(false);
+    expect(result.commands).toStrictEqual([]);
+  });
+
+  it.each([
+    undefined,
+    null,
+    25,
+    [CANARY_VERSION],
+    '',
+    'canary',
+    '16.5.0',
+    '16.5.0-rc.25',
+    '16.5.0-canary.*',
+    `${CANARY_VERSION}\n`,
+    `${CANARY_VERSION}\nmatrix={}`,
+    `${CANARY_VERSION}\rtotal=1`,
+  ])('rejects an invalid registry Canary before looking up its tag: %j', (canary) => {
+    const result = canaryPlan({ registry: JSON.stringify({ canary }) });
+
+    expect(result.status).not.toBe(0);
+    expect(existsSync(result.output)).toBe(false);
+    expect(result.commands.map(({ command }) => command)).toStrictEqual(['curl']);
+  });
+
+  it.each([
+    { failure: 'HTTP failure', reply: { curlStatus: 22 } },
+    { failure: 'invalid JSON', reply: { registry: '{' } },
+  ])('fails planning without outputs on $failure', ({ reply }) => {
+    const result = canaryPlan(reply);
+
+    expect(result.status).not.toBe(0);
+    expect(existsSync(result.output)).toBe(false);
+    expect(result.commands.map(({ command }) => command)).toStrictEqual(['curl']);
+  });
+
+  it.each([
+    { failure: 'tag lookup failure', reply: { gitStatus: 2 } },
+    { failure: 'missing tag', reply: { refs: '' } },
+    { failure: 'unrelated tag', reply: { refs: `${CANARY_COMMIT}\trefs/tags/v16.5.0\n` } },
+    { failure: 'malformed commit', reply: { refs: `invalid\trefs/tags/${CANARY_TAG}\n` } },
+    {
+      failure: 'uppercase commit',
+      reply: { refs: `${'A'.repeat(40)}\trefs/tags/${CANARY_TAG}\n` },
+    },
+  ])('fails planning without outputs on $failure', ({ reply }) => {
+    const result = canaryPlan(reply);
+
+    expect(result.status).not.toBe(0);
+    expect(existsSync(result.output)).toBe(false);
+    expect(result.commands.map(({ command }) => command)).toStrictEqual(['curl', 'git']);
   });
 
   it.each([
@@ -296,8 +678,64 @@ describe('workflow security', () => {
     const workflow = readFileSync(path.join(repository, '.github/workflows/publish.yaml'), 'utf8');
 
     expect(workflow).not.toMatch(/ref: \$\{\{ inputs\.tag \}\}/u);
-    expect(workflow.match(/ref: \$\{\{ needs\.verify\.outputs\.commit \}\}/gu)).toHaveLength(3);
+    expect(workflow.match(/ref: \$\{\{ needs\.verify\.outputs\.commit \}\}/gu)).toHaveLength(4);
+    expect(workflow).toContain('needs: [verify, build]');
     expect(workflow).toContain('needs: [verify, publish]');
     expect(workflow).toContain('needs: [verify, provenance]');
+  });
+
+  /** One job of `publish.yaml`, as written: from its name to the next job's. */
+  function releaseJob(name: string): string {
+    const workflow = readFileSync(path.join(repository, '.github/workflows/publish.yaml'), 'utf8');
+    const start = workflow.indexOf(`\n  ${name}:\n`);
+    if (start === -1) throw new Error(`publish.yaml has no ${name} job`);
+    const rest = workflow.slice(start + 1);
+    const next = /\n {2}[a-z-]+:\n/u.exec(rest.slice(1));
+    return next === null ? rest : rest.slice(0, next.index + 1);
+  }
+
+  /** Lines of a job that would install, restore or run anything of the repository's. */
+  const RUNS_THE_REPOSITORY = [
+    '- uses: pnpm/',
+    '- uses: actions/cache',
+    '- run: pnpm',
+    'pnpm ',
+    '- run: npm ci',
+    '- run: npm install',
+    'npm ci',
+    'npm install',
+    'npx ',
+    'cache:',
+    'registry-url:',
+  ];
+
+  it('publishes from a job that installs and runs nothing of the repository', () => {
+    const publish = releaseJob('publish');
+    const workflow = readFileSync(path.join(repository, '.github/workflows/publish.yaml'), 'utf8');
+    const running = publish
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => RUNS_THE_REPOSITORY.some((start) => line.startsWith(start)));
+
+    expect(workflow.match(/id-token: write/gu)).toHaveLength(1);
+    expect(publish).toContain('id-token: write');
+    expect(publish).toContain('environment: release');
+    expect(running).toStrictEqual([]);
+    expect(publish).toContain('sha256sum --check --strict SHA256SUMS');
+    expect(publish).toMatch(/npm publish "\$\{dir\}\/\$\{file\}" "\$@"/u);
+  });
+
+  it('installs, checks and packs what is published where nothing can publish it', () => {
+    const build = releaseJob('build');
+    const lines = build.split('\n').map((line) => line.trim());
+
+    expect(lines.filter((line) => line.startsWith('id-token:'))).toStrictEqual([]);
+    // What it packs is what is published, so no store a cache brought back goes into it.
+    expect(
+      lines.filter((line) => line.startsWith('cache:') || line.startsWith('- uses: actions/cache')),
+    ).toStrictEqual([]);
+    expect(lines).toContain('- run: pnpm install --frozen-lockfile');
+    expect(lines).toContain('- run: pnpm test');
+    expect(lines).toContain('name: tarballs');
   });
 });

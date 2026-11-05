@@ -122,7 +122,7 @@ pnpm dev
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.4.3 ready in 1127ms
+  ✓ Next.js 16.4.5 ready in 1127ms
 ```
 
 <http://localhost:3000> を開いて、`app/page.tsx` を編集してみてください。いつもの Next.js の開発サーバーです。デプロイ用バンドルをビルドするには:
@@ -522,10 +522,11 @@ Issue も質問もプルリクエストも歓迎します。荒削りなもの�
 | **午後いっぱい** | 小さなプルリクエストを送る。わかりやすいエラーメッセージ、そのコードが防いでいる失敗を名指すコメント、ドキュメントの修正                                                                                    |
 | **継続的に**     | アプリで使っているのに、upwind がまだ配信できないものを教える                                                                                                                                               |
 
-Node 24（リポジトリの指定は 24.22.1）が必要です。pnpm は、リポジトリが固定したバージョンを Corepack が取ってきます。
+Node 26（リポジトリの指定は 26.13.0）が必要です。pnpm は、リポジトリが固定したバージョンを Corepack が取ってきます。
 
 ```bash
-corepack enable        # マシンごとに 1 度だけ。Corepack は Node 24 に同梱されている
+npm install -g corepack@latest
+corepack enable        # マシンごとに 1 度だけ。Node 26 では Corepack を別途インストールする
 git clone https://github.com/arkorlab/upwind.git
 cd upwind
 pnpm install

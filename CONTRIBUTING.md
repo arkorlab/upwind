@@ -77,11 +77,12 @@ uncommitted beside it. It has its own lockfile and its own install, `pnpm lint`,
 
 ## Development setup
 
-Node 24 — the repository names `24.22.1` — and pnpm 12. You do not install pnpm yourself:
-`packageManager` names the exact version, and Corepack fetches it. Corepack ships with Node but is
-not on until you say so, which is the one step a fresh machine needs.
+Node 26 — the repository names `26.13.0` — and pnpm 12. You do not install pnpm yourself:
+`packageManager` names the exact version, and Corepack fetches it. Node 26 requires installing Corepack
+separately and enabling it once per machine.
 
 ```bash
+npm install -g corepack@latest
 corepack enable          # once per machine; `pnpm` does not exist until this runs
 git clone https://github.com/arkorlab/upwind.git
 cd upwind
@@ -131,6 +132,27 @@ because text goes stale silently:
 None of them is in your way on a normal change: the first two are the fast ones, and `check:matrix`
 only matters if you touched `packages/adapter/src/patches/`. The patch checks are described in
 [the adapter's readme](packages/adapter/README.md), under "Which Next.js".
+
+## GitHub Actions dependencies
+
+Every workflow is covered by `.github/workflows/actions.lock`, which records the direct and
+transitive action dependencies at their locked commits. Keep the existing full commit SHA references
+and their version comments when changing an action. After adding or removing a workflow or changing
+an action reference, regenerate the lockfile from the repository root with the official GitHub CLI
+extension. Install the [GitHub CLI](https://cli.github.com/) and authenticate with `gh auth login`
+before running these commands:
+
+```bash
+gh extension install github/gh-actions-lock --pin v0.4.1
+gh actions-lock --no-interactive --no-narrow
+gh actions-lock --verify
+```
+
+Commit the generated lockfile with the workflow changes; do not edit it by hand. Review changed
+commits as dependency updates, and investigate changes to `owner_id` or `repo_id` before accepting
+them. `gh actions-lock --verify-local` checks coverage without a network connection; CI runs the full
+`--verify` check, which also verifies the locked dependencies upstream. The existing Dependabot
+GitHub Actions updates keep lockfile entries in sync for workflows already covered by the lockfile.
 
 ## Style
 

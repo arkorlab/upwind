@@ -29,6 +29,8 @@ const EXTERNAL = [
   // in the loader that finds rolldown's native binding — which then looks for it beside *this*
   // file and fails.
   /^rolldown(\/|$)/u,
+  // For the same reason: its loader looks for its native binding beside its own files.
+  'oxc-parser',
   '@oxc-project/types',
   'jsonc-parser',
   // The source map readers, which are dependencies of their own rather than code of this package's.

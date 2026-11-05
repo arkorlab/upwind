@@ -10,7 +10,8 @@ import type { NodeHandler } from '../../src/app-module.ts';
 import { InvalidatedTags } from '../../src/cache/context.ts';
 import { invokeNodeHandler } from '../../src/node-bridge.ts';
 import { withoutPlacementHeaders } from '../../src/placement.ts';
-import { withHeaderRulesLeft, withRoutingHeaders } from '../../src/routing.ts';
+import { withRoutingHeaders } from '../../src/routing-headers.ts';
+import { withHeaderRulesLeft } from '../../src/routing.ts';
 import { withInvalidatedTags } from '../../src/serve.ts';
 
 /** Only the native socket members these tests use; the runtime package has DOM response types. */

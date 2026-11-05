@@ -23,7 +23,7 @@ async function runtimeConstructor(
   );
   if (original === undefined) throw new Error('Expected published constructor dependency');
   const file = await realpath(
-    fileURLToPath(import.meta.resolve(`next/dist/compiled/next-server/${runtime}`)),
+    fileURLToPath(import.meta.resolve(`next-16-4-3/dist/compiled/next-server/${runtime}`)),
   );
   const sha256 = manifestTemplateSource(await readFile(file, 'utf8')).sha256;
   const specifier = 'sealed:runtime-constructor';

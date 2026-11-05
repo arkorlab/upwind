@@ -14,7 +14,7 @@ const GUARD = new URL('../../runtime/src/node-jwt-guard.ts', import.meta.url).hr
 const RECORD = {
   schema: 1,
   profile: 'next-16.4.3-ws-ncc-v1',
-  nodeVersion: '24.22.1',
+  nodeVersion: process.versions.node,
   archivePath: 'node_modules/next/dist/compiled/ws/index.js',
   sha256: 'af354cb13a11abe910cdbcb70943cb450b01b24f322026ae3f88d428d148395d',
   bytes: 45_840,
@@ -22,7 +22,7 @@ const RECORD = {
 const JWT_RECORD = {
   schema: 1,
   profile: 'next-16.4.3-jsonwebtoken-ncc-v1',
-  nodeVersion: '24.22.1',
+  nodeVersion: process.versions.node,
   archivePath: 'node_modules/next/dist/compiled/jsonwebtoken/index.js',
   sha256: '056c2dddba96faa35f4dc0740228a241990561290ff3bd5456c7c7dbc5a7a6b9',
   bytes: 121_051,
@@ -37,14 +37,17 @@ async function scenario(after: string, changed = false): Promise<string> {
     for (const name of ['ws', 'jsonwebtoken']) {
       const target = path.join(vendor, 'dist/compiled', name);
       await mkdir(target, { recursive: true });
-      await copyFile(require.resolve(`next/dist/compiled/${name}`), path.join(target, 'index.js'));
+      await copyFile(
+        require.resolve(`next-16-4-3/dist/compiled/${name}`),
+        path.join(target, 'index.js'),
+      );
     }
     await mkdir(path.join(vendor, 'dist/lib'), { recursive: true });
     await copyFile(
-      require.resolve('next/dist/lib/semver-noop'),
+      require.resolve('next-16-4-3/dist/lib/semver-noop'),
       path.join(vendor, 'dist/lib/semver-noop.js'),
     );
-    await copyFile(require.resolve('next/package.json'), path.join(vendor, 'package.json'));
+    await copyFile(require.resolve('next-16-4-3/package.json'), path.join(vendor, 'package.json'));
     await mkdir(upwind);
     const ws = path.join(vendor, 'dist/compiled/ws/index.js');
     if (changed) await writeFile(ws, `${await readFile(ws, 'utf8')}\nglobalThis.changed=true;`);
@@ -74,7 +77,7 @@ ${after}
 
 const LOAD = 'const ws=require(filename.pathname);';
 
-describe.skipIf(!ENABLED)('fixed Node 24.22.1 WS evaluation guard (dedicated Linux CI)', () => {
+describe.skipIf(!ENABLED)('fixed Node WS evaluation guard (dedicated Linux CI)', () => {
   it('loads unchanged WS and JWT through the same original CommonJS guard', async () => {
     const result = await scenario(`${LOAD}
 if(typeof ws!=='function'||typeof ws.Receiver!=='function'||typeof ws.Sender!=='function')throw new Error('WS exports changed');

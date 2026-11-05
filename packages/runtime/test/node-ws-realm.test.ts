@@ -106,6 +106,12 @@ function fixture(websocket = true) {
     createSecretKey: callback(),
     createPrivateKey: callback(),
     createPublicKey: callback(),
+    createHmac: callback(),
+    createSign: callback(),
+    createVerify: callback(),
+    timingSafeEqual: callback(),
+    sign: callback(),
+    verify: callback(),
     randomBytes: callback(),
     randomFillSync: callback(),
   };

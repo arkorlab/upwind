@@ -6,12 +6,13 @@ import type { AuthorityHost } from './authority-host.ts';
  * them told, where the host told them in time.
  *
  * Short, since every `revalidatePath`, `revalidateTag` and `updateTag` waits for it, and so do a
- * Server Action's answer and the at-once headers the edge in front of it acts on. Measured on a
- * host on 2026-10-28, the telling took hundreds of milliseconds, up to the whole second this was
- * until then, and held each answer by as much: an `updateTag` action whose work was done in a tenth
- * of a second was answered in 0.8–1.6 s. Past this the telling goes on behind the answer, as it
- * always did past the second, and an edge isolate that looks before it lands learns of the move at
- * a later look.
+ * Server Action's answer and the at-once headers the edge in front of it acts on. It was a second
+ * until 2026-10-28. Timed by the client on a host, an invalidation adds most of a second to its
+ * answer either way: on 2026-10-31 a route handler's `revalidateTag` was answered in 0.62–0.90 s,
+ * and the same handler with nothing to invalidate in 16–102 ms. The shorter wait took off the tail;
+ * the rest is the gateway and the authority recording the invalidation. Past this the telling goes
+ * on behind the answer, as it always did past the second, and an edge isolate that looks before it
+ * lands learns of the move at a later look.
  */
 const ANNOUNCE_WAIT_MS = 300;
 

@@ -158,7 +158,7 @@ const BASE64_CHUNK_BYTES = 8192;
 
 /**
  * The platform's own base64 — `Uint8Array.prototype.toBase64` and `Uint8Array.fromBase64` — where
- * it has it: workerd does, Node.js 24 does not. Declared here because TypeScript's library does not
+ * it has it: workerd and Node.js 26 do, Node.js 24 does not. Declared because our library target does not
  * declare it yet.
  */
 interface NativeBase64Encoding {

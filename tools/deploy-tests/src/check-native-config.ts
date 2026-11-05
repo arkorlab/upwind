@@ -33,8 +33,10 @@ export async function nativeConfigScenario(input: {
       build.includes('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED: YES'),
     );
     input.holds(
-      'and with types transformed',
-      build.includes('the build saw types transformed: YES'),
+      'type transformation follows the current Node capabilities',
+      build.includes(
+        `the build saw types transformed: ${process.allowedNodeEnvironmentFlags.has('--experimental-transform-types') ? 'YES' : 'no'}`,
+      ),
     );
   } finally {
     host.close();

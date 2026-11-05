@@ -51,3 +51,17 @@ export const TYPE_PREDICATES = [
   'isSet',
   'isTypedArray',
 ] as const;
+/** What jsonwebtoken (16.4.3) uses of `crypto`, and fast-jwt (16.4.4) takes as it loads. */
+export const CRYPTO_FUNCTIONS = [
+  'KeyObject',
+  'createSecretKey',
+  'createPrivateKey',
+  'createPublicKey',
+  'createHash',
+  'createHmac',
+  'createSign',
+  'createVerify',
+  'timingSafeEqual',
+  'sign',
+  'verify',
+] as const;

@@ -101,6 +101,8 @@ const config: KnipConfig = {
     'web-site/**',
     // Pinned public compiler inputs are copied into an isolated CI project with its own install.
     'tools/native-pages-handler-profile/fixture/**',
+    // Cases copied out of Next.js's own suite, which the deploy tests write into its checkout.
+    'tools/deploy-tests/supplements/**',
   ],
 };
 

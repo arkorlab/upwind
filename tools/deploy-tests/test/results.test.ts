@@ -158,7 +158,7 @@ describe('a shard’s results kept by the workflow', () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function shard(results: Record<string, string>) {
+  function shard(results: Record<string, string>, population?: string) {
     const base = mkdtempSync(path.join(os.tmpdir(), 'upwind-keep-results-'));
     dirs.push(base);
     const nextDir = path.join(base, 'nextjs');
@@ -189,6 +189,7 @@ describe('a shard’s results kept by the workflow', () => {
         TESTS: 'all',
         TOTAL: '16',
         SHARD: '3',
+        ...(population !== undefined && { POPULATION: population }),
       },
     });
     return { run, output };
@@ -229,6 +230,27 @@ describe('a shard’s results kept by the workflow', () => {
     expect(existsSync(neverStarted)).toBe(false);
     expect(run.stderr).toContain('the result of test/e2e/app-dir/broken/broken.test.ts could not');
     expect(run.stdout).toContain('1 of 3 suite(s) left a result');
+  });
+
+  it('say nothing of a population where the run took the deploy manifest’s suites', () => {
+    const answered = JSON.stringify(jestResult([jestCase('answers', 'passed')]));
+
+    for (const population of [undefined, 'upstream']) {
+      const { run, output } = shard({ [SUITE]: answered }, population);
+
+      expect(run.status).toBe(0);
+      expect(
+        Object.keys(readJson(output, 'metadata.json') as Record<string, unknown>),
+      ).toStrictEqual(['version', 'target', 'cache', 'next', 'adapterCommit', 'run', 'shard']);
+    }
+  });
+
+  it('say so where the run took what Next.js skips in deploy mode', () => {
+    const answered = JSON.stringify(jestResult([jestCase('answers', 'passed')]));
+    const { run, output } = shard({ [SUITE]: answered }, 'skipped');
+
+    expect(run.status).toBe(0);
+    expect(readJson(output, 'metadata.json')).toMatchObject({ version: 1, population: 'skipped' });
   });
 
   it('refuse to run without the identity of the run they belong to', () => {

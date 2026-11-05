@@ -122,7 +122,7 @@ pnpm dev
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.4.3 ready in 1127ms
+  ✓ Next.js 16.4.5 ready in 1127ms
 ```
 
 Open <http://localhost:3000> and edit `app/page.tsx` — it is the Next.js dev server you already know. To build the deployment bundle:
@@ -535,10 +535,11 @@ Issues, questions and pull requests are all welcome — rough ones included. [CO
 | **An afternoon** | Send a small pull request: a clearer error message, a comment that names the failure it exists for, a doc fix                                                                                            |
 | **Ongoing**      | Tell us what your Next.js app does that upwind does not serve yet                                                                                                                                        |
 
-You need Node 24 — the repository names 24.22.1 — and pnpm, which Corepack fetches at the version the repository pins.
+You need Node 26 — the repository names 26.13.0 — and pnpm, which Corepack fetches at the version the repository pins.
 
 ```bash
-corepack enable        # once per machine; Corepack ships with Node 24
+npm install -g corepack@latest
+corepack enable        # once per machine; install Corepack separately on Node 26
 git clone https://github.com/arkorlab/upwind.git
 cd upwind
 pnpm install
