@@ -217,6 +217,26 @@ describe('publication admission without generation-record caching', () => {
     resume.mockClear();
   });
 
+  it.each(['required', 'independent', 'unscoped'] as const)(
+    'rejects the first selected build when its clock rolls back during the shell read (%s)',
+    async (mode) => {
+      const test = fixture(NOW + 2000, mode === 'independent');
+      if (mode === 'unscoped') delete test.input.manifest.publication;
+      let now = NOW + 1000;
+      Object.assign(test.input.edge.runtime, { now: () => now });
+      const shell = Promise.withResolvers<Awaited<NonNullable<DocumentInput['shellRead']>>>();
+      const response = handleDocument({ ...test.input, shellRead: shell.promise });
+      now = NOW;
+      shell.resolve({
+        kind: 'ok',
+        read: { bytes: new TextEncoder().encode('old'), source: 'memory', latencyMs: 0 },
+      });
+
+      expect((await response).status).toBe(503);
+      expect(test.passthrough).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([undefined, NOW])(
     'rejects an ungranted or expired gate shell before starting its resume (%s)',
     async (until) => {

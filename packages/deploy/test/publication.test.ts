@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { fixtureBundle, rootPrerender } from '../../core/test/fixtures/bundle.ts';
+import { stageDeployment } from '../src/deploy.ts';
 import { fitBuildTags } from '../src/manifest.ts';
 import { publicationFields, unsupportedPublication } from '../src/publication.ts';
 
@@ -77,6 +78,51 @@ function protectedManifest(cached: boolean, count = 1) {
 
 describe('publication runtime capability', () => {
   const publication = { version: 1 as const, identities: ['a'.repeat(64)], routes: ['/'] };
+
+  it.each([false, true])(
+    'carries publication through high-level staging (supported=%s)',
+    async (supported) => {
+      const bundle: DeploymentBundle = {
+        ...fixtureBundle(),
+        prerenders: [],
+        staticFiles: [],
+        entrypoints: [],
+        ...(supported && { publicationGrants: 1 }),
+      };
+      const target = {
+        blobs: { uploaded: true, read: () => Promise.resolve(undefined) },
+        bucket: { get: () => Promise.resolve(undefined), put: () => Promise.resolve() },
+        edgeState: { get: () => Promise.resolve(undefined), put: () => Promise.resolve() },
+      };
+      const input = {
+        bundle,
+        json: JSON.stringify(bundle),
+        publication,
+        projectId: 'project',
+        runId: 'run',
+        originHost: 'site.test',
+        environment: 'production' as const,
+        owner: 'owner',
+        app: { deploymentId: bundle.deploymentId, scriptName: 'app' },
+        recoverySource: "'sha256-recovery'",
+        now: () => 1_800_000_000_000,
+      };
+
+      let result: unknown;
+      try {
+        const staged = await stageDeployment(target, input);
+        result = parseProjectManifest(staged.serialized).publication;
+      } catch (error) {
+        result = String(error);
+      }
+
+      expect(result).toStrictEqual(
+        supported
+          ? publication
+          : 'DeployRefusalError: Publication grants require a bundle with an enforcing Function runtime.',
+      );
+    },
+  );
 
   it('refuses protected deployment through an unaware runtime', () => {
     expect(unsupportedPublication({ publication, bundle: {} })).toContain('enforcing Function');

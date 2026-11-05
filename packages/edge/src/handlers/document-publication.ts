@@ -4,6 +4,7 @@ import {
   publicationExpired,
   publicationForBuild,
   publicationForRoute,
+  publicationTimeFor,
 } from '@stayingupwind/core/cache';
 import type { ProjectManifest, RouteEntry } from '@stayingupwind/core/manifest';
 
@@ -38,11 +39,18 @@ function requirement(input: BuiltDocument) {
 
 /** The shipped source is checked even when generation-record caching is disabled. */
 export function builtDocumentExpired(input: BuiltDocument): boolean {
-  return publicationExpired(tags(input), input.edge.runtime.now(), requirement(input));
+  return publicationExpired(
+    tags(input),
+    publicationTimeFor(input.manifest.publication ?? input.edge.runtime, input.edge.runtime.now()),
+    requirement(input),
+  );
 }
 
 export function admitBuiltDocument(input: BuiltDocument, response: Response): Response {
-  return admitPublication(response, tags(input), input.edge.runtime.now(), requirement(input));
+  return admitPublication(response, tags(input), input.edge.runtime.now(), {
+    required: requirement(input),
+    clockOwner: input.manifest.publication ?? input.edge.runtime,
+  });
 }
 
 interface GateDocument extends BuiltDocument {
@@ -65,7 +73,10 @@ export function gateDocumentExpired(input: GateDocument): boolean {
     input.generation?.gate !== undefined &&
     publicationExpired(
       documentPublicationTags(input),
-      input.edge.runtime.now(),
+      publicationTimeFor(
+        input.manifest.publication ?? input.edge.runtime,
+        input.edge.runtime.now(),
+      ),
       gateRequirement(input),
     )
   );
@@ -79,12 +90,10 @@ export function admitGenerationDocument(input: GateDocument, response: Response)
     generation.gate === undefined && generation.pack.header.source === 'build'
       ? publicationForBuild
       : publicationForRoute;
-  return admitPublication(
-    response,
-    documentPublicationTags(input),
-    input.edge.runtime.now(),
-    requirementFor(input.manifest.publication, generation.pack.header.route),
-  );
+  return admitPublication(response, documentPublicationTags(input), input.edge.runtime.now(), {
+    required: requirementFor(input.manifest.publication, generation.pack.header.route),
+    clockOwner: input.manifest.publication ?? input.edge.runtime,
+  });
 }
 
 /** Carry exactly the selected record's grants; a build fallback uses only its own original tags. */

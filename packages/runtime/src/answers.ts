@@ -255,10 +255,15 @@ async function streamForVisitor(
     releaseStream(response.body, 'dynamic here: the usual path answers');
     return undefined;
   }
-  observeFreshPublication(
-    parseCacheTagsHeader(response.headers.get('x-next-cache-tags') ?? undefined),
-    nowMs(),
-  );
+  try {
+    observeFreshPublication(
+      parseCacheTagsHeader(response.headers.get('x-next-cache-tags') ?? undefined),
+      nowMs(),
+    );
+  } catch (error) {
+    releaseStream(response.body, 'selected publication proof was refused');
+    throw error;
+  }
   const init = {
     status: response.status,
     headers: answerHeaders(want.representation, Object.fromEntries(response.headers), false),

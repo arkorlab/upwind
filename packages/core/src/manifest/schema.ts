@@ -713,6 +713,8 @@ const projectFields = {
    * none.
    */
   pagesDataBasePath: z.string().startsWith('/').optional(),
+  /** Host-sealed publication policy, enforced only by publication-capable manifest readers. */
+  publication: publicationRequirementSchema.optional(),
   /**
    * The routes the build declared a gate for, each with the name of its gate (`routeGatesSchema`):
    * a `GET` or a `HEAD` the edge finds to be of one (`gateFor`) is asked of the gate the host binds
@@ -726,7 +728,6 @@ const projectFields = {
    * all the same. What keeps an edge that does not know the field from serving a deployment that
    * declares a gate is the order a host rolls out in: the edge before what publishes such a manifest.
    */
-  publication: publicationRequirementSchema.optional(),
   gates: routeGatesSchema.optional(),
   /**
    * The pathnames Next.js resolves exactly that are of a gated route — the route's own, and every

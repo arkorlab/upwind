@@ -22,17 +22,25 @@ describe('paired Pages data publication admission', () => {
     vi.clearAllMocks();
   });
 
-  it.each([false, true])(
-    'checks the grant after the paired artifact read (expires=%s)',
-    async (expires) => {
+  it.each([
+    { version: 1, expires: false },
+    { version: 1, expires: true },
+    { version: 3, expires: false },
+    { version: 3, expires: true },
+  ] as const)(
+    'checks schema-9 paired proof after the artifact read (version=$version, expires=$expires)',
+    async ({ version, expires }) => {
       const test = await pagesPublicationFixture();
       const identity = 'a'.repeat(64);
       let now = test.edge.runtime.now();
       const until = now + 1000;
       Object.assign(test.edge.runtime, { now: () => now });
 
+      test.manifest.schemaVersion = 9;
+
       test.manifest.publication = {
-        version: 1,
+        version,
+        ...(version === 3 && { valueObservers: true, resourceSnapshots: true }),
         identities: [identity],
         routes: ['/fallback-true/[slug]'],
       };
@@ -40,6 +48,15 @@ describe('paired Pages data publication admission', () => {
       const record = await test.member(PAGE, {
         tags: [
           { kind: 'next-explicit', value: `upwind:publication:v1:${identity}:${String(until)}` },
+          ...(version === 3
+            ? [
+                { kind: 'next-explicit' as const, value: 'resource:paired' },
+                {
+                  kind: 'next-explicit' as const,
+                  value: `upwind:resource-snapshot:v1:${identity}:4`,
+                },
+              ]
+            : []),
         ],
       });
       const data = pairedArtifact(record.pack.header);

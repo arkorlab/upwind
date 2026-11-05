@@ -1,11 +1,8 @@
-import {
-  type DecodedGenerationPack,
-  publicationExpired,
-  publicationForBuild,
-} from '@stayingupwind/core/cache';
+import { type DecodedGenerationPack } from '@stayingupwind/core/cache';
 import type { RouteEntry } from '@stayingupwind/core/manifest';
 import type { ResolvedPolicy, RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
+import { builtDocumentExpired } from '../handlers/document-publication.ts';
 import { type DocumentInput, handleDocument } from '../handlers/document.ts';
 import type { MiddlewareOutcome } from '../handlers/middleware.ts';
 import { abandonShellRead, withShellAccounting } from '../handlers/observer.ts';
@@ -435,17 +432,7 @@ function buildRecordRefresh(input: CachedDocumentInput, reason: string): (() => 
 /** A missing record cannot make an immutable build eligible again after its exact invalidation. */
 async function serveBuild(decided: Decided, read: RecordRead, reason: string): Promise<Response> {
   const { input } = decided;
-  const required = publicationForBuild(
-    input.manifest.publication,
-    input.entry.cache?.route ?? input.entry.pathname,
-  );
-  if (
-    publicationExpired(
-      input.entry.cache?.buildTags?.map((tag) => tag.value) ?? [],
-      input.edge.runtime.now(),
-      required,
-    )
-  ) {
+  if (builtDocumentExpired(input)) {
     abandonShell(input.edge, read);
     return input.passthrough('publication-expired', input.middleware, input.entry.pathname, {
       recordLookupMs: decided.recordMs,

@@ -1,5 +1,5 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { requestContextFor } from '../src/cache/context.ts';
 import { observeFreshPublication } from '../src/cache/publication.ts';
@@ -22,9 +22,14 @@ function scenario(
   source: 'shell' | 'twin',
   expires = NOW + 1000,
   movingClock = false,
-  options: { readonly additional?: readonly string[]; readonly html?: boolean } = {},
+  options: {
+    readonly additional?: readonly string[];
+    readonly html?: boolean;
+    readonly complete?: boolean;
+    readonly segment?: boolean;
+  } = {},
 ) {
-  const { additional = [], html = false } = options;
+  const { additional = [], html = false, complete = false, segment = false } = options;
   const tags = [grant(expires), 'resource:items', WITNESS, ...additional];
   const shell: Prerender = {
     id: 'items',
@@ -37,6 +42,9 @@ function scenario(
       postponed: { sha256: 'state', byteLength: 5, contentType: 'application/json' },
       initialHeaders: { 'x-next-cache-tags': tags },
     }),
+    ...(segment && {
+      initialHeaders: { 'x-next-cache-tags': [grant(NOW + 1000), 'resource:items', WITNESS] },
+    }),
   };
   const twin: Prerender = {
     id: 'items-rsc',
@@ -44,8 +52,14 @@ function scenario(
     pathname: `${ROUTE}.rsc`,
     parentOutputId: 'items',
     groupId: 0,
-    ...(source === 'twin' && {
-      postponed: { sha256: 'state', byteLength: 5, contentType: 'application/json' },
+    ...(source === 'twin' &&
+      !complete &&
+      !segment && {
+        postponed: { sha256: 'state', byteLength: 5, contentType: 'application/json' },
+        initialHeaders: { 'x-next-cache-tags': tags },
+      }),
+    ...(complete && {
+      body: { sha256: 'rsc', byteLength: 5, contentType: 'text/x-component' },
       initialHeaders: { 'x-next-cache-tags': tags },
     }),
   };
@@ -53,13 +67,38 @@ function scenario(
   const store = {
     manifest: {
       config: { basePath: '' },
-      routing: { rsc: { prefetchSegmentHeader: 'next-router-segment-prefetch' } },
+      routing: {
+        rsc: {
+          prefetchSegmentHeader: 'next-router-segment-prefetch',
+          prefetchSegmentDirSuffix: '.segments',
+          prefetchSegmentSuffix: '.segment.rsc',
+          varyHeader: 'RSC',
+        },
+      },
     },
     shellsByRoute: new Map([[ROUTE, { pages: new Map([[ROUTE, shell]]), patterns: [] }]]),
-    prerendersByPathname: new Map([[`${ROUTE}.rsc`, twin]]),
+    prerendersByPathname: new Map([
+      [`${ROUTE}.rsc`, twin],
+      ...(segment
+        ? ['/_tree', '/part'].map((part) => {
+            return [
+              `${ROUTE}.segments${part}.segment.rsc`,
+              {
+                ...twin,
+                segmentPath: part,
+                body: { sha256: 'segment', byteLength: 5 },
+                initialHeaders: { 'x-next-cache-tags': tags },
+              },
+            ] as const;
+          })
+        : []),
+    ]),
     readBlob,
+    tryReadBlob: readBlob,
   } as unknown as Store;
-  const request = new Request(`https://fixture.test${ROUTE}`, { headers: { RSC: '1' } });
+  const request = new Request(`https://fixture.test${ROUTE}`, {
+    headers: { RSC: '1', ...(segment && { 'next-router-segment-prefetch': '/part' }) },
+  });
   const cache = {
     host: {
       publication: {
@@ -105,6 +144,30 @@ function scenario(
 }
 
 describe('publication of saved build state on ordinary RSC navigation', () => {
+  beforeEach(() => {
+    vi.mocked(invokeNodeHandler).mockReset();
+  });
+
+  it.each(['complete', 'segment'] as const)(
+    'renders whole when the selected %s has expired proof',
+    async (selected) => {
+      const test = scenario('twin', NOW, false, { [selected]: true });
+      vi.mocked(invokeNodeHandler).mockImplementationOnce(({ requestMeta }) => {
+        expect(requestMeta['postponed']).toBeUndefined();
+        expect(test.context.publication.size).toBe(0);
+
+        observeFreshPublication([grant(NOW + 2000), 'resource:items', WITNESS], NOW);
+        return Promise.resolve(new Response('fresh whole render'));
+      });
+
+      const response = await test.render();
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('fresh whole render');
+      expect(test.readBlob).not.toHaveBeenCalled();
+    },
+  );
+
   it('observes saved HTML shell proof before its continuation reads a cached value', async () => {
     const test = scenario('shell', NOW + 1000, false, { html: true });
     vi.mocked(invokeNodeHandler).mockImplementationOnce(() => {

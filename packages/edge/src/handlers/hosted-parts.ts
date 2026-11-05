@@ -3,6 +3,7 @@ import {
   type DecodedGenerationPack,
   admitPublication,
   publicationExpired,
+  publicationTimeFor,
   publicationForBuild,
   publicationForRoute,
 } from '@stayingupwind/core/cache';
@@ -373,7 +374,10 @@ async function answerBuildPart(
   if (
     publicationExpired(
       documentPublicationTags({ entry: part.entry }),
-      input.edge.runtime.now(),
+      publicationTimeFor(
+        input.manifest.publication ?? input.edge.runtime,
+        input.edge.runtime.now(),
+      ),
       publicationForBuild(input.manifest.publication, builtPublicationRoute(part.entry)),
     )
   )
@@ -401,7 +405,10 @@ async function answerBuildPart(
     response,
     documentPublicationTags({ entry: part.entry }),
     input.edge.runtime.now(),
-    publicationForBuild(input.manifest.publication, builtPublicationRoute(part.entry)),
+    {
+      required: publicationForBuild(input.manifest.publication, builtPublicationRoute(part.entry)),
+      clockOwner: input.manifest.publication ?? input.edge.runtime,
+    },
   );
 }
 
@@ -488,7 +495,10 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
     response,
     generation.pack.header.tags.map((tag) => tag.value),
     input.edge.runtime.now(),
-    publicationForRoute(input.manifest.publication, generation.pack.header.route),
+    {
+      required: publicationForRoute(input.manifest.publication, generation.pack.header.route),
+      clockOwner: input.manifest.publication ?? input.edge.runtime,
+    },
   );
 }
 

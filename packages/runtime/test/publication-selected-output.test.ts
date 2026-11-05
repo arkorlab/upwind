@@ -2,7 +2,7 @@ import type { Prerender } from '@stayingupwind/core/bundle';
 import { observePublicationTags } from '@stayingupwind/core/paas';
 import { describe, expect, it, vi } from 'vitest';
 
-import { answerFromRender, answerWith } from '../src/answers.ts';
+import { answerFromRender, answerWith, renderForVisitor } from '../src/answers.ts';
 import type { CapturedRender } from '../src/cache/capture.ts';
 import { publicationRun, requestContextFor } from '../src/cache/context.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
@@ -59,6 +59,34 @@ function context(route: string, independent = false, rsc = false) {
 }
 
 describe('publication of the selected output', () => {
+  it('cancels a streamed visitor render when its selected publication proof is refused', async () => {
+    const { state, input } = context('/api/items');
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    vi.mocked(invokeNodeHandler).mockResolvedValueOnce(
+      new Response(body, {
+        headers: {
+          'cache-control': 's-maxage=60',
+          'x-next-cache-tags': `upwind:publication:private:${ID}`,
+        },
+      }),
+    );
+
+    await expect(
+      state.run(() => {
+        return renderForVisitor(
+          input,
+          {
+            descriptor: { kind: 'app-route', route: '/api/items', pathname: '/api/items' },
+            handler: vi.fn(),
+          },
+          { representation: 'route-body', url: '/api/items' },
+        );
+      }),
+    ).rejects.toThrow(/publication|Publication/u);
+    expect(cancel).toHaveBeenCalledExactlyOnceWith('selected publication proof was refused');
+  });
+
   it.each([1, 2, 3] as const)(
     'observes a selected fresh RSC resume before cached values run (version=%s)',
     async (version) => {
@@ -148,6 +176,10 @@ describe('publication of the selected output', () => {
     async (independent) => {
       const route = '/_not-found';
       const { state, input } = context(route, independent, true);
+      if (!independent)
+        vi.mocked(invokeNodeHandler).mockResolvedValueOnce(
+          new Response('fresh output without grant'),
+        );
       vi.mocked(entryFor).mockResolvedValueOnce({ kind: 'node', handler: vi.fn() });
       const built: Prerender = {
         id: 'not-found',

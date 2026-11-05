@@ -9,6 +9,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type CachedDocumentInput, serveCachedDocument } from '../src/cache/document.ts';
 import type { GenerationLoad } from '../src/cache/generation-loader.ts';
+import { admitGenerationDocument } from '../src/handlers/document-publication.ts';
+import type { DocumentInput } from '../src/handlers/document.ts';
 import { InvalidationMemory } from '../src/memory/invalidations.ts';
 
 // This orchestration test runs under Node with every storage, document and dispatch boundary
@@ -17,7 +19,7 @@ const mocks = vi.hoisted(() => {
   const events: string[] = [];
   return {
     events,
-    document: vi.fn((input: { generation?: unknown; onBuildServed?: (() => void) | undefined }) => {
+    document: vi.fn((input: DocumentInput) => {
       const body = input.generation === undefined ? 'old build' : 'fresh generation';
       const response = new Response(body);
       events.push('composed');
@@ -262,6 +264,28 @@ describe('bounded publication admission', () => {
   const identity = 'a'.repeat(64);
   const requirement = { version: 1 as const, identities: [identity], routes: ['/update-tag-test'] };
 
+  it.each(['header', 'sealed'] as const)(
+    'recognizes complete original %s proof before handing a build to composition',
+    async (source) => {
+      vi.clearAllMocks();
+      const test = scenario({ kind: 'none', lookupMs: 4 });
+      const tag = `upwind:publication:v1:${identity}:${String(NOW + 1000)}`;
+
+      test.input.manifest.publication = requirement;
+
+      if (source === 'header') test.input.entry.headers['X-Next-Cache-Tags'] = tag;
+      else test.input.entry.publication = { route: '/update-tag-test', tags: [tag] };
+
+      const response = await serveCachedDocument(test.input);
+
+      expect(response.status).toBe(200);
+      expect(mocks.document).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ entry: test.input.entry }),
+      );
+      expect(test.passthrough).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(['none', 'unusable'] as const)(
     'never revives a protected build when a %s record has no grant',
     async (kind) => {
@@ -290,7 +314,7 @@ describe('bounded publication admission', () => {
     expect(test.passthrough).not.toHaveBeenCalled();
   });
 
-  it('keeps a host-proven independent build record available at final document admission', async () => {
+  it('hands a host-proven independent build record to the actual final admission helper', async () => {
     vi.clearAllMocks();
     const load = await freshRecord();
     load.pack.header.source = 'build';
@@ -299,7 +323,16 @@ describe('bounded publication admission', () => {
 
     test.input.manifest.publication = { ...requirement, independentBuild: ['/update-tag-test'] };
 
-    expect((await serveCachedDocument(test.input)).status).toBe(200);
+    const response = await serveCachedDocument(test.input);
+
+    expect(mocks.document).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ entry: test.input.entry }),
+    );
+
+    const selected = mocks.document.mock.calls[0]?.[0];
+    if (selected === undefined) throw new Error('The selected document must reach composition.');
+
+    expect(admitGenerationDocument(selected, response).status).toBe(200);
     expect(test.passthrough).not.toHaveBeenCalled();
   });
 });

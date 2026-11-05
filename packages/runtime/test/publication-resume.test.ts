@@ -79,15 +79,19 @@ async function answer(
     dynamicRoutes: [],
   } as unknown as Store;
   return context.run(async () => {
-    observeResumePublication(input, '/items', initialHeaders);
-    return admitRequestPublication(await handleRuntimeResume(input, store), context);
+    if (initialHeaders !== undefined) observeResumePublication(input, '/items', initialHeaders);
+    const response = admitRequestPublication(await handleRuntimeResume(input, store), context);
+    return { response, context, request };
   });
 }
 
 describe('selected publication grants on continuation resumes', () => {
   it('admits a suffix with no new data reads using only its selected generation grant', async () => {
-    const response = await answer([`upwind:publication:v1:${ID}:${String(NOW + 1000)}`]);
+    const { response, context } = await answer([
+      `upwind:publication:v1:${ID}:${String(NOW + 1000)}`,
+    ]);
 
+    expect(context.publication).toContain(`upwind:publication:v1:${ID}:${String(NOW + 1000)}`);
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe('suffix without another data read');
   });
@@ -97,8 +101,11 @@ describe('selected publication grants on continuation resumes', () => {
       `upwind:publication:v1:${ID}:${String(NOW + 1000)}`,
       `upwind:publication:v1:${ID}:${String(NOW + 2000)}`,
     ];
-    const response = await answer(undefined, { 'X-Next-Cache-Tags': ['resource', ...tags] });
+    const { response, context } = await answer(undefined, {
+      'X-Next-Cache-Tags': ['resource', ...tags],
+    });
 
+    expect([...context.publication]).toStrictEqual(tags);
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe('suffix without another data read');
   });
@@ -118,7 +125,7 @@ describe('selected publication grants on continuation resumes', () => {
   });
 
   it('keeps the reused shell resource watermark when its suffix performs no new read', async () => {
-    const response = await answer(
+    const { response, context } = await answer(
       undefined,
       {
         'x-next-cache-tags': [
@@ -130,12 +137,13 @@ describe('selected publication grants on continuation resumes', () => {
       true,
     );
 
+    expect(context.resourceTags).toContain(`upwind:resource-snapshot:v1:${ID}:4`);
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe('suffix without another data read');
   });
 
   it('keeps a missing selected-generation grant closed', async () => {
-    expect((await answer()).status).toBe(503);
+    expect((await answer()).response.status).toBe(503);
   });
 
   it.each([`upwind:publication:private:${ID}`, `upwind:publication:v1:${ID}:${String(NOW)}`])(
@@ -143,7 +151,10 @@ describe('selected publication grants on continuation resumes', () => {
     async (tag) => {
       vi.mocked(invokeNodeHandler).mockClear();
 
-      await expect(answer([tag])).rejects.toThrow(/publication|Publication/u);
+      const { response, request } = await answer([tag]);
+
+      expect(response.status).toBe(503);
+      expect(request.bodyUsed).toBe(true);
       expect(invokeNodeHandler).not.toHaveBeenCalled();
     },
   );

@@ -21,7 +21,7 @@ import {
   repairPreflightInput,
   stageRepairPublication,
 } from './repair-probes.ts';
-import { type Refusal, isRefusal, refuse } from './state.ts';
+import { type Refusal, refuse } from './state.ts';
 import { record, type TxInput } from './tx.ts';
 
 type DataRepairApply = (
@@ -126,7 +126,6 @@ function publishPreparedData(
   );
   if (isRepairStart(value) || isRepairPending(value))
     throw new Error('a prepared data repair recurred');
-  if (isRefusal(value)) throw new Error('an admitted data repair was refused during publication');
   return { kind: 'completed', value };
 }
 

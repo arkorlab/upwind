@@ -41,6 +41,8 @@ import { entrypointKindOf, findShell, isClassShell, type Store } from './store.t
 
 export { afterRouting, staticFileResponse } from './static-file.ts';
 
+const EXPIRED_BUILD = 'publication-expired';
+
 /**
  * What the build made of a route, answered from the bundle: a document from its shell and the
  * resume that completes it, a route's React Server Components from the build's state, a file
@@ -222,7 +224,7 @@ async function builtSegment(
   input: RoutedInput,
   store: Store,
   document: Prerender | undefined,
-): Promise<Response | undefined> {
+): Promise<Response | typeof EXPIRED_BUILD | undefined> {
   const { rsc } = store.manifest.routing;
   const segment = input.request.headers.get(rsc.prefetchSegmentHeader);
   // An empty header names no part, as the classification reads it (`segmentPrefetchOf`): the
@@ -230,7 +232,7 @@ async function builtSegment(
   if (segment === null || segment === '' || document === undefined) {
     return undefined;
   }
-  if (buildPublicationExpired(input, document, document.route)) return undefined;
+  if (buildPublicationExpired(input, document, document.route)) return EXPIRED_BUILD;
   const segmentOf = (segmentPath: string): Prerender | undefined => {
     const name = `${rscBase(document.pathname)}${rsc.prefetchSegmentDirSuffix}${segmentPath}`;
     const prerender = store.prerendersByPathname.get(`${name}${rsc.prefetchSegmentSuffix}`);
@@ -245,6 +247,8 @@ async function builtSegment(
     return undefined;
   }
   const prerender = segmentOf(segment);
+  if (prerender !== undefined && buildPublicationExpired(input, prerender, document.route))
+    return EXPIRED_BUILD;
   const bytes =
     prerender?.body === undefined
       ? undefined
@@ -329,6 +333,7 @@ export async function rscFromBuild(
     return invokeEntry(input, entry, resolved.url);
   }
   const built = await builtSegment(input, store, shell);
+  if (built === EXPIRED_BUILD) return invokeEntry(input, entry, resolved.url);
   if (built !== undefined) {
     return built;
   }
@@ -358,6 +363,8 @@ export async function rscFromBuild(
     twin?.body !== undefined &&
     twin.postponed === undefined
   ) {
+    if ([shell, twin].some((selected) => buildPublicationExpired(input, selected, selected.route)))
+      return atMiss(await invokeEntry(input, entry, resolved.url));
     return builtPageResponse(input, store, twin, {
       document: shell,
       contentType: RSC_CONTENT_TYPE,

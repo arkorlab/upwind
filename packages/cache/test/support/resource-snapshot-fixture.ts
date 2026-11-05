@@ -1,4 +1,4 @@
-import { attemptGenerationIdFor, policyFromBuild } from '@stayingupwind/core/cache';
+import { artifactIdFor, attemptGenerationIdFor, policyFromBuild } from '@stayingupwind/core/cache';
 import { createId } from '@stayingupwind/core/util';
 import { commitRequestSchema, type StartAttemptResponse } from '@stayingupwind/host/cache';
 import { runInDurableObject } from 'cloudflare:test';
@@ -9,8 +9,9 @@ import { findAttempt } from '../../src/scope/attempts.ts';
 import type { CacheScope } from '../../src/scope/cache-scope.ts';
 import { prepareCommitRepair } from '../../src/scope/commit-repair.ts';
 import { planCommit, type CommitPlan, type Publication } from '../../src/scope/commit.ts';
-import { planSetData } from '../../src/scope/data.ts';
-import { requireEntry } from '../../src/scope/entries.ts';
+import { prepareDataRepair } from '../../src/scope/data-repair.ts';
+import { type DataSetInput, planSetData } from '../../src/scope/data.ts';
+import { identifyEntry, requireEntry } from '../../src/scope/entries.ts';
 import { NO_HISTORY } from '../../src/scope/history.ts';
 import { blobStore } from '../../src/scope/io.ts';
 import { advanceRepairJob, readRepairJob, type RepairJob } from '../../src/scope/repair-jobs.ts';
@@ -83,7 +84,7 @@ function requestFor(
   return commitRequestSchema.parse({
     fencingToken: started.fencingToken,
     observedTagRevision: revision,
-    heldTagRevisions: { [TAG]: revision },
+    heldTagRevisions: Object.fromEntries(tags.map((tag) => [tag, revision])),
     generation: {
       cacheTimestamp: scope.now + 1,
       producedAt: scope.now + 1,
@@ -185,6 +186,65 @@ export function head(scope: SnapshotScope, version: number, tag = TAG): void {
     readRevision(scope.sql),
     scope.now,
   );
+}
+
+/** A durable data publication whose physical group is already ready for final adoption. */
+export async function retainData(
+  scope: SnapshotScope,
+  tags: readonly string[],
+): Promise<RepairJob> {
+  const data: DataSetInput = {
+    key: 'retained-data',
+    entry: {
+      kind: 'data:fetch',
+      tags: [...tags],
+      stale: 60,
+      timestamp: scope.now + 100,
+      expire: 600,
+      revalidate: 60,
+      dependencyCoverage: 'complete',
+    },
+    value: {
+      sha256: 'b'.repeat(64),
+      byteLength: 1,
+      contentType: 'text/plain',
+      storageRef: 'body/new',
+    },
+  };
+  const plan = {
+    input: data,
+    identity: await identifyEntry(scope.scopeId, { kind: 'data:fetch', key: data.key }),
+    tagRefs: await tagRefsFor(
+      scope.scopeId,
+      tags.map((value) => ({ kind: 'next-explicit' as const, value })),
+    ),
+    artifactId: await artifactIdFor(scope.scopeId, data.value.sha256),
+    generationId: 'retained-data-generation',
+  };
+  scope.storage.transactionSync(() => {
+    return prepareDataRepair(input(scope), plan, {
+      repair: {
+        sha256: data.value.sha256,
+        byteLength: 1,
+        previousStorageRef: 'body/old',
+        storageRef: 'body/new',
+        previouslyOwned: true,
+      },
+      unchanged: false,
+      alarmPrepared: true,
+      needsRepair: () => true,
+      restart: () => {
+        throw new Error('The prepared data fixture never restarts.');
+      },
+    });
+  });
+  const saved = readRepairJob(scope.sql);
+  if (saved === undefined) throw new Error('Missing durable data publication.');
+  const final: RepairJob = { ...saved, phase: 'publish' };
+  scope.storage.transactionSync(() => {
+    advanceRepairJob(scope.sql, final);
+  });
+  return final;
 }
 
 export async function setData(

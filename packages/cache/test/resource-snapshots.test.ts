@@ -2,6 +2,9 @@ import { resourceSnapshotTag } from '@stayingupwind/core/cache';
 import { describe, expect, it, vi } from 'vitest';
 
 import { advancePreparedCommit } from '../src/scope/commit.ts';
+import { ScopeQueue } from '../src/scope/mutations.ts';
+import { readRepairJob, repairJobResult } from '../src/scope/repair-jobs.ts';
+import { RepairRunner } from '../src/scope/repair-runner.ts';
 import { resourceSnapshotFailure } from '../src/scope/resource-snapshots.ts';
 import {
   head,
@@ -12,12 +15,44 @@ import {
   TAG,
   withSnapshotScope,
   retainPublication,
+  retainData,
   input,
 } from './support/resource-snapshot-fixture.ts';
 
 const witness = (version: number): string => resourceSnapshotTag({ resourceId: RESOURCE, version });
 
 describe('snapshot-aware cache publication', () => {
+  it('settles a data repair refused by a later resource head and releases its pins', async () => {
+    await withSnapshotScope(async (scope) => {
+      head(scope, 1);
+      const retained = await retainData(scope, [TAG, witness(1)]);
+      head(scope, 2);
+      const runner = new RepairRunner({
+        storage: scope.storage,
+        queue: new ScopeQueue(),
+        input: () => input(scope),
+        arm: () => Promise.resolve(),
+      });
+
+      await runner.advance(scope.now + 2);
+
+      expect(readRepairJob(scope.sql)).toBeUndefined();
+      expect(repairJobResult(scope.sql, retained.id)).toMatchObject({
+        value: { kind: 'refused', code: 'lease_expired' },
+      });
+      expect(
+        scope.sql.exec("SELECT key FROM meta WHERE key LIKE 'artifact_repair_pin:%'").toArray(),
+      ).toHaveLength(0);
+      expect(
+        scope.sql
+          .exec(
+            "SELECT entry_id FROM entries WHERE current_generation_id='retained-data-generation'",
+          )
+          .toArray(),
+      ).toHaveLength(0);
+    });
+  });
+
   it('revalidates retained publication witnesses at the final repair transaction', async () => {
     await withSnapshotScope(async (scope) => {
       head(scope, 1);
@@ -168,7 +203,6 @@ describe('snapshot-aware cache publication', () => {
       const binding: unknown = call[1];
       if (typeof query !== 'string' || typeof binding !== 'string')
         throw new TypeError('The witness query must bind its JSON lookup.');
-      observed.mockRestore();
       const plan = scope.sql
         .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, binding)
         .toArray();
@@ -176,8 +210,14 @@ describe('snapshot-aware cache publication', () => {
       expect(plan.map((row) => row.detail).join('\n')).toMatch(
         /SEARCH h USING INDEX sqlite_autoindex_resource_heads/u,
       );
+
+      observed.mockClear();
+
       expect((await publish(scope, await lease(scope), [TAG])).kind).toBe('published');
       await expect(setData(scope, [TAG])).resolves.not.toHaveProperty('kind', 'refused');
+      expect(observed.mock.calls.some(([sql]) => sql.includes('resource_heads'))).toBe(false);
+
+      observed.mockRestore();
     });
   });
 });

@@ -109,7 +109,9 @@ export class RepairRunner {
             step = advanceRepairFinalization(raw, job);
           }
           if (step.kind !== 'completed') return;
-          if (job.finalizing === undefined && !isRefusal(step.value)) {
+          // A final publication may refuse a newly stale resource witness after shared physical
+          // repair already succeeded. Its staged records and pins must still finish before reply.
+          if (job.finalizing === undefined && (job.phase === 'publish' || !isRefusal(step.value))) {
             beginRepairFinalization(raw, job, step.value);
             return;
           }

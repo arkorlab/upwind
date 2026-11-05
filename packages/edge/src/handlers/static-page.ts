@@ -258,9 +258,13 @@ export function serveCurrentPage(
     response,
     decision.pack.header.tags.map((tag) => tag.value),
     edge.runtime.now(),
-    decision.pack.header.source === 'build'
-      ? publicationForBuild(input.manifest.publication, entry.route)
-      : publicationForRoute(input.manifest.publication, entry.route),
+    {
+      required:
+        decision.pack.header.source === 'build'
+          ? publicationForBuild(input.manifest.publication, entry.route)
+          : publicationForRoute(input.manifest.publication, entry.route),
+      clockOwner: input.manifest.publication ?? edge.runtime,
+    },
   );
 }
 
