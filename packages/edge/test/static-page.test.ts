@@ -1,3 +1,4 @@
+import { parseProjectManifest, serializeManifest } from '@stayingupwind/core/manifest';
 import { RSC_VARY } from '@stayingupwind/core/request';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +12,7 @@ describe('trusted complete static Pages HTML', () => {
   it('retains independent publication proof from a host-seeded build through final admission', async () => {
     const test = await fixture();
     Object.assign(test.manifest, {
+      schemaVersion: 9,
       publication: {
         version: 1,
         identities: ['a'.repeat(64)],
@@ -18,6 +20,8 @@ describe('trusted complete static Pages HTML', () => {
         independentBuild: [PATH],
       },
     });
+
+    expect(parseProjectManifest(serializeManifest(test.manifest)).schemaVersion).toBe(9);
 
     const response = await test.serve();
 
