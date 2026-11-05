@@ -1,4 +1,5 @@
 import { isPagesDataPathname } from '@stayingupwind/core/bundle';
+import { parseCacheTagsHeader } from '@stayingupwind/core/cache';
 import { staticFileStatus } from '@stayingupwind/core/manifest';
 import {
   withPublicationPolicy,
@@ -62,7 +63,12 @@ import {
   ownerOfResolved,
   withoutPlacementHeaders,
 } from './placement.ts';
-import { admitRequestPublication, requirePublication, onceRecorded } from './publication.ts';
+import {
+  admitBuildPublication,
+  admitRequestPublication,
+  requirePublication,
+  onceRecorded,
+} from './publication.ts';
 import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
 import { routingOf, untraced, withRoutingOf } from './resolve-request.ts';
 import { observeResumePublication } from './resume-publication.ts';
@@ -464,7 +470,12 @@ async function serveResolved(
     const status = staticFileStatus(resolved.route, store.manifest.config.basePath);
     const answer = await staticFileResponse(input, store, file, status);
     if (answer !== undefined) {
-      return decidedApart(answer);
+      return admitBuildPublication(
+        input,
+        resolved.route,
+        decidedApart(answer),
+        parseCacheTagsHeader(answer.headers.get('x-next-cache-tags') ?? undefined),
+      );
     }
   }
   if (hasBody(request.method)) {
