@@ -11,13 +11,13 @@ import {
   immutableByBuild,
   isStaticExport,
   orDefault,
-  staticFileContentType,
   walk,
 } from './collect.ts';
 import { exists } from './fs.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import { withBasePath } from './segments.ts';
 import { linkClientMaps, SOURCE_MAP_SUFFIX } from './source-maps.ts';
+import { staticFileContentType } from './static-content-type.ts';
 
 /**
  * What a deployment serves as files, and the maps of the ones that have them.
@@ -135,7 +135,7 @@ export async function collectStaticFiles(
     if (carryMaps && sorted(output, maps, scripts)) {
       continue;
     }
-    const blob = await blobs.putFile(output.filePath, staticFileContentType(output));
+    const blob = await blobs.putFile(output.filePath, await staticFileContentType(output));
     // The name the file is served under, which is the name a rule is judged against: a document
     // moves from `/index` to `/` and from `/about/index` to `/about/`, and the edge matches the
     // header rules on the request's own pathname, not on the one the build handed over.

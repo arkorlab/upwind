@@ -83,6 +83,7 @@ function graphIdentity(graph: Snapshot['graph']): string {
     graph.evaluations,
     graph.initialChunks,
     graph.lookupTables,
+    graph.installedTables,
   ]);
 }
 

@@ -8,6 +8,7 @@ import { appEntrySource } from '../../src/app-entry.ts';
 import { jsLiteral } from '../../src/codegen.ts';
 import type { NativeAddonEntryTrace } from '../../src/native-addons.ts';
 import { projectedTemplateFixture } from './node-manifest-turbopack-template.ts';
+import { PINNED_NEXT_PACKAGE_JSON } from './pinned-next.ts';
 const SPECIFIER = 'next/dist/build/templates/app-page-runtime.js';
 const CHAIN = [
   'dist/server/load-manifest.external.js',
@@ -22,7 +23,7 @@ function digest(code: string | Uint8Array): string {
 
 async function proofFixture(directory: string) {
   const published = fileURLToPath(
-    import.meta.resolve('next/dist/server/load-manifest.external.js'),
+    import.meta.resolve('next-16-4-3/dist/server/load-manifest.external.js'),
   );
   const publishedRoot = path.resolve(path.dirname(published), '../..');
   const root = path.join(directory, 'node_modules/next');
@@ -49,7 +50,7 @@ async function proofFixture(directory: string) {
     producer === undefined
   )
     throw new Error('Missing authored source chain');
-  await writeFile(path.join(root, 'package.json'), '{"name":"next","version":"16.4.3"}');
+  await writeFile(path.join(root, 'package.json'), PINNED_NEXT_PACKAGE_JSON);
   const distDir = path.join(directory, '.next');
   const entry = path.join(distDir, 'server/app/native/page.js');
   const chunk = path.join(distDir, 'server/chunks/app.js');
@@ -190,7 +191,7 @@ async function templateFixture(
   const own = await proofFixture(directory);
   const projected = await projectedTemplateFixture(kind);
   const published = await realpath(
-    fileURLToPath(import.meta.resolve('next/dist/server/load-manifest.external.js')),
+    fileURLToPath(import.meta.resolve('next-16-4-3/dist/server/load-manifest.external.js')),
   );
   const publishedRoot = path.resolve(path.dirname(published), '../..');
   const root = path.join(directory, 'node_modules/next');

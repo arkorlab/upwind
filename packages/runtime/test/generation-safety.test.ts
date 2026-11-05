@@ -452,7 +452,7 @@ describe('runtime generation safeguards', () => {
           ).text(),
         ).resolves.toBe('RENDERED');
         await expect(
-          (await rscFromBuild(input, store, { kind: 'node', handler }, resolved)).text(),
+          (await rscFromBuild(input, store, { entry: { kind: 'node', handler }, resolved })).text(),
         ).resolves.toBe('RENDERED');
       },
     );

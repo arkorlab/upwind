@@ -8,7 +8,10 @@ name: Deploy tests
 # never be given. And every target deploys — each suite is an application installed, built and served, a
 # minute of it at the least. So it is dispatched by hand, and the two targets on the runner, which need
 # no credential, also run every night over the whole manifest, once for each Node.js the applications
-# are built and served under (24 and 26). Every push to a pull request runs `node`
+# are built and served under (24 and 26). A third run each night takes what that manifest leaves out,
+# with the cases the suites register otherwise or not at all when deployed (`population: skipped`,
+# `tools/deploy-tests/src/population.ts`): recorded on its own, since it is not the suite Next.js runs.
+# Every push to a pull request runs `node`
 # over the whole manifest against the supported release; a newer push to the same pull request cancels
 # the run before it. CI checks the hooks themselves on every pull request (`check:deploy-tests`,
 # `check:deploy-tests-local`).
@@ -46,10 +49,12 @@ on:
   # needs no credential, so a pull request from a fork runs it too.
   pull_request:
   # Every night, both targets on the runner over the whole manifest (`plan`), under Node.js 24 and 26:
-  # the supported release first, then the latest published canary in a separate run.
+  # the supported release first, then the latest published canary in a separate run, then what the
+  # supported release skips in deploy mode in a third.
   schedule:
     - cron: '23 17 * * *'
     - cron: '23 18 * * *'
+    - cron: '23 19 * * *'
   workflow_dispatch:
     inputs:
       target:
@@ -61,8 +66,8 @@ on:
           - cloudflare
           - node
       nextjsRef:
-        description: "Next.js ref to test against — inside the adapter's supported range"
-        default: 'v16.4.3'
+        description: "Next.js release tag to test against (`v16.4.5`, `v16.5.0-canary.39`) — inside the adapter's supported range"
+        default: 'v16.4.5'
         type: string
       tests:
         description: 'Upstream test paths, space separated — or `all` for the whole manifest'
@@ -72,7 +77,7 @@ on:
           test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
         type: string
       shards:
-        description: 'How many pieces to cut `all` into, 1 to 64 — when empty, a piece a project on a host (at most 32; 6 under six projects) and 64 on the runner'
+        description: 'How many pieces to cut `all` into, 1 to 64 — when empty, a piece a project on a host (at most 32; 6 under six projects), 64 on the runner, and 8 for `population: skipped`'
         default: ''
         type: string
       only:
@@ -98,13 +103,20 @@ on:
           - '24'
           - '26'
           - '24 26'
+      population:
+        description: "Which suites: the deploy manifest's (`upstream`), or what Next.js skips in deploy mode (`skipped`)"
+        default: 'upstream'
+        type: choice
+        options:
+          - upstream
+          - skipped
 
 permissions: {}
 
 env:
   # The supported release a night's first run and a pull request's run test against: the one a dispatch
   # defaults to (`nextjsRef`), which moves with it. The other night's run resolves npm's canary below.
-  NIGHTLY_NEXTJS_REF: 'v16.4.3'
+  NIGHTLY_NEXTJS_REF: 'v16.4.5'
   # The pieces the runner's targets are cut into, a night's run and a dispatch that names none: as fine
   # as the plan cuts. Both targets in 64 pieces each is 128 jobs, inside the 256 a matrix holds, and
   # each piece about seventeen suites — a job a few minutes long beside its own setup.
@@ -112,6 +124,9 @@ env:
   # The most pieces a host's run of the whole manifest is cut into when a dispatch names none: one a
   # project, every one at once (`plan`). At thirty-two, some twenty of the suites that deploy a piece.
   HOST_SHARDS: '32'
+  # The pieces what Next.js skips in deploy mode is cut into, a night's run and a dispatch that names
+  # none: some forty suites, five or so a piece.
+  SKIPPED_SHARDS: '8'
 
 # Never two runs on a host at once: they would be deploying into the same projects. The runner's
 # targets share nothing, so each of their runs is a group of its own — one group for them all would
@@ -137,6 +152,7 @@ jobs:
       tests: ${{ steps.plan.outputs.tests }}
       cache: ${{ steps.plan.outputs.cache }}
       started-at: ${{ steps.plan.outputs.started-at }}
+      population: ${{ steps.plan.outputs.population }}
     steps:
       - name: Work out the shards
         id: plan
@@ -151,13 +167,15 @@ jobs:
           CONCURRENCY: ${{ inputs.concurrency }}
           CACHE: ${{ inputs.cache }}
           NODE: ${{ inputs.node }}
+          POPULATION: ${{ inputs.population }}
           # Counted, never printed: the count is not a project anybody can name, the ids are.
           PROJECT_IDS: ${{ secrets.ADAPTER_TEST_PROJECT_IDS }}
           PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
         run: |
           set -euo pipefail
           # A night's run is both of the runner's targets over the whole manifest, cut as finely as
-          # `RUNNER_SHARDS` says; a pull request's, `node` alone, against the supported release; a
+          # `RUNNER_SHARDS` says, or over what the supported release skips in deploy mode, cut as
+          # `SKIPPED_SHARDS` says; a pull request's, `node` alone, against the supported release; a
           # dispatch is what it was asked for.
           if [ "$EVENT" = 'pull_request' ]; then
             targets='node'
@@ -167,6 +185,7 @@ jobs:
             ONLY=''
             CONCURRENCY=''
             nextjs="$NIGHTLY_NEXTJS_REF"
+            population='upstream'
           elif [ "$EVENT" = 'schedule' ]; then
             targets='cloudflare node'
             nodes='24 26'
@@ -174,8 +193,14 @@ jobs:
             SHARDS="$RUNNER_SHARDS"
             ONLY=''
             CONCURRENCY=''
+            population='upstream'
             case "$SCHEDULE" in
               '23 17 * * *') nextjs="$NIGHTLY_NEXTJS_REF" ;;
+              '23 19 * * *')
+                nextjs="$NIGHTLY_NEXTJS_REF"
+                population='skipped'
+                SHARDS="$SKIPPED_SHARDS"
+                ;;
               '23 18 * * *')
                 # Resolve the published version once, then its exact tag's commit: every shard must
                 # test the same source even if npm publishes another canary while the run queues.
@@ -204,11 +229,21 @@ jobs:
             targets="$TARGET"
             nodes="${NODE:-24}"
             nextjs="$NEXTJS_REF"
+            population="${POPULATION:-upstream}"
           fi
           # Outputs are line-oriented records. Refuse input that could introduce another record.
           case "$nextjs" in
             '' | *$'\r'* | *$'\n'*) echo 'nextjsRef must be a nonempty single line' >&2; exit 1 ;;
           esac
+          # A dispatch tests a release of Next.js, named by its tag in vercel/next.js — not a branch
+          # or a commit, whose code nobody has looked at and which every shard installs, builds and
+          # runs on a machine that may hold a host's credential. A night's canary is a tag too,
+          # resolved above to the commit it names.
+          release_tag='^v[0-9]+[.][0-9]+[.][0-9]+(-(canary|rc|beta)[.][0-9]+)?$'
+          if [ "$EVENT" = 'workflow_dispatch' ] && [[ ! "$nextjs" =~ $release_tag ]]; then
+            echo "nextjsRef must be a release tag of Next.js — vMAJOR.MINOR.PATCH, with -canary.N, -rc.N or -beta.N or without — not '$nextjs'" >&2
+            exit 1
+          fi
           case "$targets" in
             host | cloudflare | node | 'cloudflare node') ;;
             *) echo "target must be host, cloudflare or node, not '$targets'" >&2; exit 1 ;;
@@ -223,6 +258,12 @@ jobs:
             echo 'a host builds and serves on its own runtime: node must be 24 there' >&2
             exit 1
           fi
+          # Which suites: the deploy manifest's, or what Next.js skips in deploy mode. On a host too: its
+          # results then say so in their metadata, which a record of the manifest's suites tells apart.
+          case "$population" in
+            upstream | skipped) ;;
+            *) echo "population must be upstream or skipped, not '$population'" >&2; exit 1 ;;
+          esac
           selection="$(printf '%s' "$TESTS" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
           if [ -z "$selection" ]; then
             echo 'no tests were selected: name upstream paths, or `all` for the whole manifest' >&2
@@ -263,6 +304,12 @@ jobs:
               else
                 SHARDS="$projects"
               fi
+              # What Next.js skips is some forty suites: no more pieces than the runner cuts it into.
+              if [ "$population" = 'skipped' ] && [ "$SHARDS" -gt "$SKIPPED_SHARDS" ]; then
+                SHARDS="$SKIPPED_SHARDS"
+              fi
+            elif [ "$population" = 'skipped' ]; then
+              SHARDS="$SKIPPED_SHARDS"
             else
               SHARDS="$RUNNER_SHARDS"
             fi
@@ -382,6 +429,7 @@ jobs:
             echo "tests=$selection"
             echo "cache=$cache"
             echo "started-at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "population=$population"
           } >>"$GITHUB_OUTPUT"
           # One shard asked for by name is one job: nothing of the rest of the split runs, so nothing
           # about how many could have run at once is true of it.
@@ -397,6 +445,11 @@ jobs:
                 >>"$GITHUB_STEP_SUMMARY"
             fi
           fi
+          # Said as well, since its counts are not the suite's.
+          if [ "$population" = skipped ]; then
+            echo "what Next.js skips in deploy mode: the deploy manifest's exclusions, and the cases its suites register otherwise or not at all when deployed" \
+              >>"$GITHUB_STEP_SUMMARY"
+          fi
           # Said as well, since a cached build answers caching suites a release's adapter fails.
           if [ "$cache" = hosted ]; then
             echo 'every Function built with the runtime cache a host serves behind its own edge' \
@@ -405,7 +458,7 @@ jobs:
 
   deploy-tests:
     needs: plan
-    name: ${{ matrix.target }} ${{ matrix.shard }}/${{ needs.plan.outputs.total }} (Node.js ${{ matrix.node }})
+    name: ${{ needs.plan.outputs.population == 'skipped' && 'skipped, ' || '' }}${{ matrix.target }} ${{ matrix.shard }}/${{ needs.plan.outputs.total }} (Node.js ${{ matrix.node }})
     runs-on: ubuntu-latest
     # Under the six hours a job is allowed, with room for a slice that runs long to be reported rather
     # than cut off mid-suite.
@@ -424,12 +477,17 @@ jobs:
         with:
           path: adapter
           persist-credentials: false
-      # The suite is upstream's, run unmodified: its own manifest decides which suites deploy mode
-      # selects, and this repository rewrites no expectation of theirs.
+      # Upstream's own manifest selects the suites, and this repository rewrites no expectation of
+      # theirs. Two steps below add to the checkout: one synchronizes the shared Form test with its
+      # prefetch, and what Next.js skips in deploy mode is written as a manifest of its own and copies
+      # of cases beside their suites (`Write what Next.js skips in deploy mode`).
+      # A release tag as a tag (`refs/tags/…`): given its name alone, the checkout looks for a branch
+      # of that name first, and a branch can be pushed under any name a tag has. A night's canary is
+      # a commit already, and is checked out as one.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: vercel/next.js
-          ref: ${{ needs.plan.outputs.nextjs }}
+          ref: ${{ startsWith(needs.plan.outputs.nextjs, 'v') && format('refs/tags/{0}', needs.plan.outputs.nextjs) || needs.plan.outputs.nextjs }}
           path: nextjs
           fetch-depth: 25
           persist-credentials: false
@@ -466,22 +524,6 @@ jobs:
         working-directory: adapter
         run: pnpm install --frozen-lockfile
 
-      # The token goes into a file, and the step that runs the suite is given its path. Everything
-      # below the deploy hook — the application's install, its build, the suite itself — inherits that
-      # step's environment, and all of it is code this repository checked out from somewhere else. A
-      # path is the one thing worth inheriting.
-      #
-      # A reduction, not a boundary: the file and the suite belong to the same user on the same
-      # machine. What it removes is the ordinary way a secret escapes, which is something printing the
-      # environment it was handed — and `nextjsRef` should name a tag for the same reason.
-      - name: Put the token in a file
-        if: matrix.target == 'host'
-        env:
-          TOKEN: ${{ secrets.ARKOR_API_TOKEN }}
-        run: |
-          umask 077
-          printf '%s' "$TOKEN" >"$RUNNER_TEMP/deploy-token"
-
       # This shard's own project, by position in the list. Masked first: it is one word of a secret
       # rather than the secret, so nothing else would keep it out of a log.
       - name: Take a project for this shard
@@ -506,15 +548,24 @@ jobs:
       # Before anything long, which is the point of having it: a token that cannot write, or a project
       # id that names somebody else's application, is worth a minute's wait to learn about rather than
       # twenty minutes of building Next.js and then a suite that failed for a reason of its own.
+      #
+      # The token is in a file for this step alone, and the tool is handed its path, not the token
+      # (`Put the token in a file`, below, says why): the file is gone again before Next.js is
+      # installed and built, which runs the code of whichever release was asked for.
       - name: Preflight
         if: matrix.target == 'host'
         working-directory: adapter
         env:
+          TOKEN: ${{ secrets.ARKOR_API_TOKEN }}
           ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
           ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
           # Read here too, so that a value the tool would refuse is refused before the long part.
           ADAPTER_TEST_SETTLE_SECONDS: ${{ secrets.ADAPTER_TEST_SETTLE_SECONDS }}
-        run: pnpm test:deploy preflight
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$ARKOR_API_TOKEN_FILE"' EXIT
+          (umask 077 && printf '%s' "$TOKEN" >"$ARKOR_API_TOKEN_FILE")
+          env -u TOKEN pnpm test:deploy preflight
 
       # Next.js is built from source, and installed again afterwards, because its test harness runs out
       # of the checkout and loads what it just built.
@@ -524,6 +575,15 @@ jobs:
         # slow slice of suites, not for a build that stalled.
         timeout-minutes: 30
         run: pnpm install && pnpm build && pnpm install
+      - name: Prepare upstream Form prefetch synchronization
+        run: node adapter/tools/deploy-tests/src/prepare-upstream.ts nextjs
+      # What Next.js skips in deploy mode, where the run takes that (`population.ts`): the manifest the
+      # runner is given for it, and what it is made of, beside the shard's results; the copies of cases
+      # deploy mode registers otherwise or not at all, beside their suites in the checkout. Before the
+      # listing, which reads the manifest and lists the copies, so that it and the run agree.
+      - name: Write what Next.js skips in deploy mode
+        if: needs.plan.outputs.population == 'skipped'
+        run: node adapter/tools/deploy-tests/src/write-population.ts --next-dir nextjs --output "$RUNNER_TEMP/deploy-results"
       # The suites this shard is to run, listed as the run below selects them, before Chromium and the
       # adapter are built: a shard that fails after this leaves its suites named, and missing from its
       # results, rather than unknown (`keep-results.ts`, `judge-results.ts`).
@@ -533,7 +593,7 @@ jobs:
         env:
           NEXT_TEST_MODE: deploy
           NEXT_ENABLE_ADAPTER: 1
-          NEXT_EXTERNAL_TESTS_FILTERS: test/deploy-tests-manifest.json
+          NEXT_EXTERNAL_TESTS_FILTERS: ${{ needs.plan.outputs.population == 'skipped' && format('{0}/deploy-results/skipped-manifest.json', runner.temp) || 'test/deploy-tests-manifest.json' }}
           IS_TURBOPACK_TEST: 1
           NEXT_TEST_JOB: 1
           NEXT_TEST_SKIP_RESULT_CACHE: 1
@@ -603,6 +663,25 @@ jobs:
         working-directory: adapter
         run: pnpm --filter @stayingupwind/adapter build
 
+      # The token goes into a file, and the step that runs the suite is given its path. Everything
+      # below the deploy hook — the application's install, its build, the suite itself — inherits that
+      # step's environment, and all of it is code this repository checked out from somewhere else. A
+      # path is the one thing worth inheriting. Written here, once Next.js is installed and built and
+      # Chromium installed with it, and not before: those ran the code of Next.js and of everything it
+      # depends on, and found no file to read.
+      #
+      # A reduction, not a boundary: the file and the suite belong to the same user on the same
+      # machine. What it removes is the ordinary way a secret escapes, which is something printing the
+      # environment it was handed — and a dispatch's `nextjsRef` names a release tag for the same
+      # reason (`plan`).
+      - name: Put the token in a file
+        if: matrix.target == 'host'
+        env:
+          TOKEN: ${{ secrets.ARKOR_API_TOKEN }}
+        run: |
+          umask 077
+          printf '%s' "$TOKEN" >"$RUNNER_TEMP/deploy-token"
+
       # On a host serially (`-c 1`), on the runner two at a time, and with no retries: a retry would
       # deploy the same fixture again and say nothing about why the first one failed. A suite that fails does not stop the rest — the runner carries on
       # and reports every one at the end, which is what makes a long run an inventory. Its own job
@@ -627,7 +706,7 @@ jobs:
           # builder made, and read it to know which they are testing: with it set, they expect the
           # adapter's answers; without it, the builder's.
           NEXT_ENABLE_ADAPTER: 1
-          NEXT_EXTERNAL_TESTS_FILTERS: test/deploy-tests-manifest.json
+          NEXT_EXTERNAL_TESTS_FILTERS: ${{ needs.plan.outputs.population == 'skipped' && format('{0}/deploy-results/skipped-manifest.json', runner.temp) || 'test/deploy-tests-manifest.json' }}
           NEXT_TELEMETRY_DISABLED: 1
           IS_TURBOPACK_TEST: 1
           NEXT_TEST_JOB: 1
@@ -697,6 +776,10 @@ jobs:
             exit 0
           fi
           exit "$result"
+      # Nothing after the suite reads the token: its file goes as soon as the suite is done.
+      - name: Take the token's file away
+        if: always() && matrix.target == 'host'
+        run: rm -f "$RUNNER_TEMP/deploy-token"
       # The shard's results, kept in the form `keep-results.ts` writes: the run's identity, the suites
       # listed, the runner's exit code, and each case's names and status — never a message, an
       # application's URL or a project. Public, as this repository's artifacts are, for a month: a
@@ -713,6 +796,7 @@ jobs:
           TESTS: ${{ needs.plan.outputs.tests }}
           SHARD: ${{ matrix.shard }}
           TOTAL: ${{ needs.plan.outputs.total }}
+          POPULATION: ${{ needs.plan.outputs.population }}
         run: |
           set -euo pipefail
           NEXT_COMMIT="$(git -C nextjs rev-parse HEAD)" FINISHED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
@@ -727,6 +811,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           NODE: ${{ matrix.node }}
           SHARD: ${{ matrix.shard }}
+          POPULATION: ${{ needs.plan.outputs.population }}
         run: |
           set -euo pipefail
           NEXT_COMMIT="$(git -C nextjs rev-parse HEAD)" \
@@ -773,4 +858,5 @@ jobs:
       - name: Sum the shards' verdicts
         env:
           MATRIX: ${{ needs.plan.outputs.matrix }}
+          POPULATION: ${{ needs.plan.outputs.population }}
         run: node tools/deploy-tests/src/report-results.ts --dir "$RUNNER_TEMP/deploy-results"

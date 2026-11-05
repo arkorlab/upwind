@@ -20,6 +20,7 @@ vi.mock(import('../../src/image-encoder.ts'), () => import('../../src/native/ima
 const PACKAGE_DIR = fileURLToPath(new URL('../..', import.meta.url));
 const HTTP_OK = 200;
 const HTTP_NOT_MODIFIED = 304;
+const HTTP_BAD_REQUEST = 400;
 const IMAGES: ImagesConfig = {
   path: '/_next/image',
   basePath: '',
@@ -159,5 +160,30 @@ describe('an image on the native target', () => {
     expect(response.headers.get('content-type')).toBe('image/svg+xml');
     expect(response.headers.get('etag')).toBe('"source"');
     expect(bytes).toStrictEqual(svg);
+  });
+
+  it.each([
+    ['ordinary SVG', '<svg xmlns="http://www.w3.org/2000/svg"></svg>', 'image/svg+xml'],
+    [
+      'SVG behind an AVIF-looking comment',
+      '<!--ftypavif-->\n<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+      'image/avif',
+    ],
+  ])('rejects %s when SVG is disabled, regardless of the source header', async (_, body, type) => {
+    const source = sourceOf(new TextEncoder().encode(body));
+    source.headers.set('content-type', type);
+    const response = await sourceResponse({
+      source,
+      params: { ...PARAMS, href: '/payload', isStatic: false },
+      images: { ...IMAGES, dangerouslyAllowSVG: false },
+      internal: true,
+      request: asked(),
+    });
+
+    expect(response.status).toBe(HTTP_BAD_REQUEST);
+    expect(response.headers.get('content-type')).not.toMatch(/^image\//u);
+    await expect(response.text()).resolves.toBe(
+      '"url" parameter is valid but image type is not allowed',
+    );
   });
 });

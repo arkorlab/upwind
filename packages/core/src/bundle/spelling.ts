@@ -164,22 +164,26 @@ export function requestedPathname(
 
 /**
  * Every spelling the router finds a pathname of the build by: as the build named it, as a request
- * asks for it (`requestedPathname`), and — where the application has `trailingSlash` — with the
- * slash, wherever its last segment names no file. That takes in a shipped file (`/manual/` is the
- * file `/manual`) and a path under `/.well-known`, which Next.js's redirect gives no slash but which
- * its router finds by one all the same, as a page or a file of that name. The router finds them so
- * whether or not the build writes the redirect: `skipTrailingSlashRedirect` leaves the page named
- * without the slash, and the router still finds it by both spellings.
+ * asks for it (`requestedPathname`), and — where the application has `trailingSlash`, or no redirect
+ * takes the slash off (`skipTrailingSlashRedirect`) — with the slash, wherever its last segment
+ * names no file. That takes in a shipped file (`/manual/` is the file `/manual`) and a path under
+ * `/.well-known`, which Next.js's redirect gives no slash but which its router finds by one all the
+ * same, as a page or a file of that name: it looks a path up without its trailing slash (`getItem`,
+ * `server/lib/router-utils/filesystem.ts`). The runtime hands its router the same spellings
+ * (`routerPathnames`), and what the edge holds of a route — the gate it asks, the Function it sends
+ * a request to, what it serves by name — is found by these: a spelling the router resolves and
+ * these leave out would reach a gated page with no gate asked. The base path's own root takes the
+ * slash whatever its last segment reads like, as `requestedPathname` gives it.
  */
 export function routerSpellings(
   bundle: Pick<DeploymentBundle, 'config'>,
   pathname: string,
 ): string[] {
+  const { basePath, skipTrailingSlashRedirect, trailingSlash } = bundle.config;
   const takesSlash =
-    bundle.config.trailingSlash &&
-    namesNoFile(pathname) &&
-    !isTemplate(pathname) &&
-    !pathname.endsWith('/');
+    (trailingSlash || skipTrailingSlashRedirect) &&
+    ((basePath !== '' && pathname === basePath) ||
+      (namesNoFile(pathname) && !isTemplate(pathname) && !pathname.endsWith('/')));
   return [
     ...new Set([
       pathname,

@@ -482,7 +482,7 @@ function reportWhatTravels(
   const floor = exported ? undefined : securityFloorOf(nextVersion);
   if (floor !== undefined) {
     console.warn(
-      `@stayingupwind/adapter: Next.js ${nextVersion} is older than ${floor.version}, the first ${floor.canary ? 'canary' : 'release'} with the newest Next.js security fixes that this adapter knows of. What answers a request is the Next.js this project installed: the React Server Components transport it vendors, which reads back what a \`use cache\` function returned and what is sent to a Server Action, travels into the Function, and nothing here stands in for it. Upgrade and build again — ${SECURITY_RELEASE_URL}`,
+      `@stayingupwind/adapter: Next.js ${nextVersion} is older than ${floor.version}, the first ${floor.canary ? 'canary' : 'release'} with the newest Next.js security fixes that this adapter knows of. What answers a request is the Next.js this project installed: how it keys what \`use cache\` stores, and what its Edge adapter and Node response writer leave on an answer, travel into the Function, and nothing here stands in for them. Upgrade and build again — ${SECURITY_RELEASE_URL}`,
     );
   }
 }

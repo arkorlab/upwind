@@ -9,12 +9,13 @@ import { parseAst } from 'rolldown/parseAst';
 import { appEntrySource } from '../../src/app-entry.ts';
 import { isNode, listOf } from '../../src/lexical-scope.ts';
 import { stringOf, visitTree } from '../../src/node-manifest-consumer-ast.ts';
+import { PINNED_NEXT_PACKAGE_JSON } from './pinned-next.ts';
 function digest(code: string | Uint8Array): string {
   return createHash('sha256').update(code).digest('hex');
 }
 async function templateGraphFixture(directory: string, kind: 'pages' | 'app-route') {
   const evaluatorName = 'dist/server/load-manifest.external.js';
-  const published = await realpath(fileURLToPath(import.meta.resolve(`next/${evaluatorName}`)));
+  const published = await realpath(fileURLToPath(import.meta.resolve(`next-16-4-3/${evaluatorName}`)));
   const publishedRoot = path.resolve(path.dirname(published), '../..');
   const root = path.join(directory, 'node_modules/next');
   const module = `dist/server/route-modules/${kind}/module.compiled.js`;
@@ -33,7 +34,7 @@ async function templateGraphFixture(directory: string, kind: 'pages' | 'app-rout
   const compiled = await copy(runtime);
   const constructor = await copy(module);
   const templateFile = await copy(template);
-  await writeFile(path.join(root, 'package.json'), '{"name":"next","version":"16.4.3"}');
+  await writeFile(path.join(root, 'package.json'), PINNED_NEXT_PACKAGE_JSON);
   const distDir = path.join(directory, '.next');
   const route =
     kind === 'pages'

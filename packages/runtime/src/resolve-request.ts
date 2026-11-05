@@ -3,10 +3,13 @@ import { CACHE_OUTCOME_HEADER } from '@stayingupwind/core/paas';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { afterBody } from './after-body.ts';
+import { localizedDataUrl } from './data-locale.ts';
+import { keptToTheirHosts } from './destination-hosts.ts';
 import { outcomeOn } from './generations.ts';
 import { edgeJudgesHeaderRules } from './incoming.ts';
 import { middlewareInvoker, type MiddlewareTrace } from './middleware-invoke.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
+import { withRoutingHeaders } from './routing-headers.ts';
 import {
   noteLaterHeaderRules,
   parametersDecode,
@@ -18,7 +21,6 @@ import {
   routingTables,
   undecodedResponse,
   withHeaderRulesLeft,
-  withRoutingHeaders,
 } from './routing.ts';
 import { externalRewrite, type RoutedInput } from './serve.ts';
 import type { Store } from './store.ts';
@@ -57,25 +59,41 @@ export function untraced(): MiddlewareTrace {
   };
 }
 
-/** A request routed as Next.js's router routes it, by this deployment's tables. */
-export function routingOf(
+/**
+ * A request routed as Next.js's router routes it, by this deployment's tables, and never to a host a
+ * rule does not name (`keptToTheirHosts`).
+ */
+export async function routingOf(
   input: RoutedInput,
   store: Store,
   asked: RoutingAsk,
 ): Promise<ResolveRoutesResult> {
-  const { url } = asked;
-  const { basePath, i18n } = store.manifest.config;
-  return resolveRoutes({
+  const { config, buildId } = store.manifest;
+  const { basePath, i18n } = config;
+  const routingI18nOf = i18n === null || i18n === undefined ? undefined : routingI18n(i18n);
+  // A data request with no locale is routed as Next.js routes it, under the default one.
+  const url =
+    routingI18nOf === undefined
+      ? asked.url
+      : localizedDataUrl(store.manifest, routingI18nOf, asked.url);
+  const routes = routingTables(store, asked.skipMiddleware, url, asked.skipHeaderRules);
+  const routed = await resolveRoutes({
     url,
-    buildId: store.manifest.buildId,
+    buildId,
     basePath,
     requestBody: asked.body ?? new ReadableStream(),
     headers: asked.headers,
     pathnames: pathnamesFor(store, url),
-    ...(i18n !== null && i18n !== undefined && { i18n: routingI18n(i18n) }),
-    routes: routingTables(store, asked.skipMiddleware, url, asked.skipHeaderRules),
-    invokeMiddleware: middlewareInvoker(input, store, asked.trace),
+    ...(routingI18nOf !== undefined && { i18n: routingI18nOf }),
+    routes,
+    invokeMiddleware: middlewareInvoker(
+      input,
+      store,
+      asked.trace,
+      url === asked.url ? undefined : { routed: url, asked: asked.url },
+    ),
   });
+  return keptToTheirHosts(routed, routes, url);
 }
 
 /**

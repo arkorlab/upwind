@@ -26,6 +26,7 @@ import {
   nodeClosureReference as isReference,
   nodeCompilerMetadataSites,
 } from './node-compiler-metadata.ts';
+import { withNodeJwtLoader } from './node-jwt-compiler-profiles.ts';
 import { nodeJwtCompilerSite, type NodeJwtCompilerProof } from './node-jwt-compiler-proof.ts';
 import { isGlobalCompiler } from './node-jwt-compiler-sites.ts';
 import { nodeNextCacheWriteSites } from './node-next-cache-write-proof.ts';
@@ -521,10 +522,11 @@ export function dynamicNodeClosureRefusal(
     return 'an unproved Turbopack factory context';
   const jwtSite = nodeJwtCompilerSite(jwt, file, code, program);
   const compilerSites = new Set(nodeCompilerMetadataSites(all));
-  if (jwtSite !== undefined) compilerSites.add(jwtSite);
+  if (jwtSite?.kind === 'compiler') compilerSites.add(jwtSite.node);
   const wsSites = nodeWsLoaderSites(loaders?.ws, file, code, program);
   for (const site of wsSites) compilerSites.add(site);
-  const hookSites = nodeNextRequireHookSites(loaders?.nextRequireHook, file, code, program);
+  const hooks = nodeNextRequireHookSites(loaders?.nextRequireHook, file, code, program);
+  const hookSites = withNodeJwtLoader(hooks, jwtSite);
   for (const visit of all) {
     if (serverChunk && (isContextLoader(visit, contexts) || isContextEscape(visit, contexts)))
       return 'an unproved Turbopack external import';

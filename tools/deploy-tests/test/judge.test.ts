@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { fails, judge, type Measured, type Verdict } from '../src/judge.ts';
 import type { JestCase, JestSuite } from '../src/results.ts';
-import { indentationOnly, REVIEWED, type ReviewedCase } from '../src/reviewed.ts';
+import { REVIEWED, type ReviewedCase } from '../src/reviewed.ts';
+import { indentationOnly } from '../src/symptoms.ts';
 import type { ShardVerdict } from '../src/verdicts.ts';
 
 const RELEASE = { version: '16.4.3', commit: '29bbeab09981148ade186e8599ecdede15abc281' };
@@ -203,6 +204,16 @@ describe('a shard judged against the reviewed cases', () => {
 });
 
 const AT = '/home/runner/work/upwind/upwind/nextjs/test/e2e/app-dir';
+/** The same, for a suite outside `app-dir`. */
+const AT_E2E = '/home/runner/work/upwind/upwind/nextjs/test/e2e';
+/** How `app-static`'s two pages answered the same value, thrown at `line` of its test. */
+function sameValueAt(line: number): string {
+  return `Error: expect(received).not.toBe(expected) // Object.is equality\n\nExpected: not "data: 0.30350974937330055"\n    at Object.toBe (${AT}/app-static/app-static.test.ts:${String(line)}:27)`;
+}
+/** A manifest's `<link>` without the `crossOrigin` Vercel's preview deployments give it. */
+function noCrossOriginAt(line: number): string {
+  return `Error: expect(received).toEqual(expected) // deep equality\n\n- Expected  - 1\n+ Received  + 1\n\n  Object {\n-   "crossOrigin": "use-credentials",\n+   "crossOrigin": null,\n    "href": "/api/manifest",\n  }\n    at Object.<anonymous> (${AT}/metadata/metadata.test.ts:${String(line)}:7)`;
+}
 
 /** A snapshot of Vercel's build log against Next.js's own (`use-cache-segment-configs`, 16.4.3). */
 const INDENTED = [
@@ -271,6 +282,9 @@ const RECORDED: Readonly<Record<string, readonly string[]>> = {
   'test/e2e/app-dir/next-dist-client-esm-import/next-dist-client-esm-import.test.ts': [
     "Error: Custom deploy script failed: Progress: resolved 1\n  Creating an optimized production build ...\nFATAL: An unexpected Turbopack error occurred:\n  x Expected ';', got 'ident'\n\nCaused by:\n- failed to parse source code",
   ],
+  'test/e2e/app-dir/app-client-cache/client-cache.original.test.ts': [
+    `page.waitForSelector: Timeout 10000ms exceeded.\nCall log:\n\u{1B}[2m  - waiting for locator('#loading') to be visible\u{1B}[22m\n\n    at waitForSelector (/home/runner/work/upwind/upwind/nextjs/test/lib/browsers/playwright.ts:585:29)\n    at Object.<anonymous> (${AT}/app-client-cache/client-cache.original.test.ts:386:34)`,
+  ],
   'test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts': [
     "page.waitForSelector: Timeout 10000ms exceeded.\nCall log:\n  - waiting for locator('#loading-component') to be visible",
   ],
@@ -279,6 +293,21 @@ const RECORDED: Readonly<Record<string, readonly string[]>> = {
   ],
   'test/e2e/prerender-native-module.test.ts': [NATIVE_CONTAINER],
   'test/e2e/app-dir/turbopack-reports/turbopack-reports.test.ts': [NATIVE_SPLIT_CONTAINER],
+  'test/e2e/app-dir/metadata/metadata.test.ts': [noCrossOriginAt(95), noCrossOriginAt(132)],
+  'test/e2e/app-dir/searchparams-reuse-loading/searchparams-reuse-loading.test.ts': [
+    `Error: Duplicate request\n    at ${AT}/searchparams-reuse-loading/searchparams-reuse-loading.test.ts:239:27`,
+    `page.waitForSelector: Timeout 10000ms exceeded.\nCall log:\n  - waiting for locator('#params') to be visible\n\n    at Object.waitForElementByCss (${AT}/searchparams-reuse-loading/searchparams-reuse-loading.test.ts:287:38)`,
+  ],
+  'test/e2e/app-dir/i18n-hybrid/i18n-hybrid.test.ts': [
+    `Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 404\nReceived: 200\n    at toBe (${AT}/i18n-hybrid/i18n-hybrid.test.ts:71:26)`,
+  ],
+  'test/e2e/skip-trailing-slash-redirect/index.test.ts': [
+    `Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 200\nReceived: 404\n    at Object.toBe (${AT_E2E}/skip-trailing-slash-redirect/index.test.ts:35:26)`,
+    `page.waitForSelector: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator('#to-another') to be visible\n\n    at Object.elementByCss (${AT_E2E}/skip-trailing-slash-redirect/index.test.ts:127:21)`,
+  ],
+  'test/e2e/cancel-request/stream-cancel.test.ts': [
+    `Error: thrown: "Exceeded timeout of 2500 ms for a test.\nAdd a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout."\n    at it (${AT_E2E}/cancel-request/stream-cancel.test.ts:61:5)`,
+  ],
 };
 
 /** What the native suites failed with under Node.js 26: their addon, built at install, did not build. */
@@ -288,6 +317,8 @@ const NATIVE_ON_26 =
 
 /** What a record's cases failed with, where it reads a suite that another record reads otherwise. */
 const RECORDED_RECORDS: Readonly<Record<string, readonly string[]>> = {
+  'a-fetch-keyed-by-its-tags': [sameValueAt(167)],
+  'a-cache-handler-of-the-applications-own': [sameValueAt(189)],
   'native-addons-on-nodejs-26': [NATIVE_ON_26],
   'preview-mode-on-nodejs-26': [
     'Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 200\nReceived: 500',
@@ -318,8 +349,40 @@ const IN_THE_ROUTE_HANDLER = [
   '- └─ GET /route-handler (BaseServer.handleRequest) {http.target=/route-handler, http.route=/route-handler, next.route=/route-handler, http.status_code=200}',
 ];
 
-/** What a case failed with at 16.4.3 where its suite's cases each failed their own way. */
+const SVG_SUITE =
+  'test/e2e/app-dir/avif-svg-signature-confusion/avif-svg-signature-confusion.test.ts';
+const SVG_RELEASE = { version: '16.4.5', commit: '4e5335a00314be7fbb2aace5e9be56a88e64e5a8' };
+const SVG_NODE_24: Measured = { target: 'node', node: '24', next: SVG_RELEASE };
+/** Exact per-case messages from run 41812368398, job 126514552592. */
+const SVG_FAILURES = [
+  {
+    label: 'ordinary SVG',
+    fullName:
+      'avif-svg-signature-confusion rejects an ordinary SVG when dangerouslyAllowSVG is false',
+    position: '17:32',
+    message: String.raw`Error: expect(received).toContain(expected) // indexOf
+
+Expected substring: "INVALID_IMAGE_OPTIMIZE_REQUEST"
+Received string:    "\"url\" parameter is valid but image type is not allowed"
+    at Object.toContain (${AT}/avif-svg-signature-confusion/avif-svg-signature-confusion.test.ts:17:32)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)`,
+  },
+  {
+    label: 'prefixed SVG',
+    fullName: 'avif-svg-signature-confusion rejects an SVG prefixed with <!--ftypavif-->',
+    position: '34:26',
+    message: `Error: expect(received).toBe(expected) // Object.is equality
+
+Expected: 200
+Received: 400
+    at Object.toBe (${AT}/avif-svg-signature-confusion/avif-svg-signature-confusion.test.ts:34:26)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)`,
+  },
+] as const;
+
+/** What a case failed with where its suite's cases each failed their own way. */
 const RECORDED_CASES: Readonly<Record<string, readonly string[]>> = {
+  ...Object.fromEntries(SVG_FAILURES.map(({ fullName, message }) => [fullName, [message]])),
   'otel-middleware-trace - proxy (nodejs runtime) traces a page rendered after NextResponse.next()':
     [
       traceDiff(
@@ -362,6 +425,97 @@ function recordedFor(entry: ReviewedCase): readonly string[] {
   );
 }
 
+function svgVerdict(
+  entry: (typeof SVG_FAILURES)[number],
+  messages: string[] = [entry.message],
+  measured: Measured = SVG_NODE_24,
+  fullName: string = entry.fullName,
+): Verdict {
+  const result = suiteOf([jestCase(fullName, 'failed', messages)], {}, SVG_SUITE);
+  return judge(measured, [SVG_SUITE], new Map([[SVG_SUITE, result]]), REVIEWED);
+}
+
+describe('the recorded Vercel image CDN expectations', () => {
+  it.each(SVG_FAILURES)('reads the exact $label failure on its observed lane', (entry) => {
+    const verdict = svgVerdict(entry);
+
+    expect(verdict.cases).toMatchObject({ reviewed: { vercel: 1 }, failed: 0 });
+    expect(fails(verdict)).toBe(false);
+  });
+
+  it.each(SVG_FAILURES)('does not extend $label to another release, target or lane', (entry) => {
+    const unmeasured: Measured[] = [
+      { ...SVG_NODE_24, next: RELEASE },
+      {
+        ...SVG_NODE_24,
+        next: { version: '16.4.4', commit: 'b175f52b05a5f6c6c39ca72565ea178542be323b' },
+      },
+      { ...SVG_NODE_24, next: { ...SVG_RELEASE, version: '16.4.6' } },
+      { ...SVG_NODE_24, next: { ...SVG_RELEASE, commit: 'c'.repeat(40) } },
+      { ...SVG_NODE_24, target: 'cloudflare' },
+      { ...SVG_NODE_24, node: '26' },
+      { target: 'node', next: SVG_RELEASE },
+    ];
+
+    for (const measured of unmeasured) {
+      expect(svgVerdict(entry, [entry.message], measured).unexplained).toHaveLength(1);
+    }
+
+    expect(
+      svgVerdict(entry, [entry.message], SVG_NODE_24, `${entry.fullName} another case`).unexplained,
+    ).toHaveLength(1);
+  });
+
+  it.each(SVG_FAILURES)(
+    'requires the exact assertion and first stack frame for $label',
+    (entry) => {
+      const frame = entry.message.split('\n').find((line) => line.startsWith('    at Object.'))!;
+      const differentFrame = frame.replace(entry.position, '99:99');
+      const elsewhere = entry.message.replace(frame, () => differentFrame);
+      const unrecorded = [
+        entry.message.replace(frame, () =>
+          frame.replace('avif-svg-signature-confusion.test.ts', 'other.test.ts'),
+        ),
+        elsewhere,
+        `${elsewhere}\n${frame}`,
+        entry.message.replace(frame, () => `    at helper (/tmp/another.test.ts:1:1)\n${frame}`),
+        entry.message.replace(frame, () => `> 17 | ${frame}\n${frame}`),
+        entry.message.replace('Error: expect', 'TypeError: expect'),
+      ];
+
+      for (const message of unrecorded) {
+        expect(svgVerdict(entry, [message]).unexplained).toHaveLength(1);
+      }
+
+      expect(
+        svgVerdict(entry, [entry.message, 'Error: another case error']).unexplained,
+      ).toHaveLength(1);
+    },
+  );
+
+  it('does not read another error body as the ordinary SVG rejection', () => {
+    const entry = SVG_FAILURES[0];
+    const unrecorded = [
+      entry.message.replace('image type is not allowed', 'upstream image could not be fetched'),
+      entry.message.replace('INVALID_IMAGE_OPTIMIZE_REQUEST', 'OTHER_IMAGE_ERROR'),
+      entry.message.replace('Received string:    ', 'Received string: '),
+    ];
+
+    for (const message of unrecorded) {
+      expect(svgVerdict(entry, [message]).unexplained).toHaveLength(1);
+    }
+  });
+
+  it('does not read a 500 or another status as the prefixed SVG rejection', () => {
+    const entry = SVG_FAILURES[1];
+    for (const status of ['500', '403', '200']) {
+      const message = entry.message.replace('Received: 400', () => `Received: ${status}`);
+
+      expect(svgVerdict(entry, [message]).unexplained).toHaveLength(1);
+    }
+  });
+});
+
 /** A heading's anchor, as GitHub makes it. */
 function anchorOf(heading: string): string {
   return heading
@@ -381,13 +535,37 @@ function judgedAlone(
   node: Measured['node'] = entry.nodes?.[0],
 ): Verdict {
   const name = entry.fullName === '*' ? 'any case' : entry.fullName;
-  const result = suiteOf([jestCase(name, 'failed', [message])], {}, entry.suite);
+  // Beside the cases the reading needs to have passed with it, as they did in the run read.
+  const beside = (entry.beside ?? []).map((other) => jestCase(other, 'passed'));
+  const result = suiteOf([jestCase(name, 'failed', [message]), ...beside], {}, entry.suite);
   return judge(
     { target, ...(node !== undefined && { node }), next: entry.next },
     [entry.suite],
     new Map([[entry.suite, result]]),
     REVIEWED,
   );
+}
+
+const VERIFIED_GATES = [
+  {
+    suite: 'test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts',
+    fullName: 'prerender-encoding should preserve an encoded slash in an open catch-all fallback',
+  },
+  {
+    suite: 'test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts',
+    fullName: 'segment cache (metadata) requests only the head when the page segments are cached',
+  },
+] as const;
+
+/** One of the gates, as the unmodified deploy suite reported it. */
+function gateVerdict(
+  entry: Pick<ReviewedCase, 'suite' | 'fullName'>,
+  measured: Measured,
+  status = 'failed',
+  messages = [GATE_PASSED],
+): Verdict {
+  const result = suiteOf([jestCase(entry.fullName, status, messages)], {}, entry.suite);
+  return judge(measured, [entry.suite], new Map([[entry.suite, result]]), REVIEWED);
 }
 
 describe('the reviewed cases', () => {
@@ -418,6 +596,67 @@ describe('the reviewed cases', () => {
     });
 
     expect(keys).toHaveLength(new Set(keys).size);
+  });
+
+  it.each(VERIFIED_GATES)(
+    'reads $fullName only on verified targets at the recorded release and exact name',
+    (entry) => {
+      expect(gateVerdict(entry, ON_CLOUDFLARE).cases).toMatchObject({ gates: 1, failed: 0 });
+      expect(gateVerdict(entry, { ...ON_NODE, node: '24' }).cases).toMatchObject({
+        gates: 1,
+        failed: 0,
+      });
+      // Read on both lanes since the night's run of 2026-11-01; a run that names no lane, on neither.
+      expect(gateVerdict(entry, { ...ON_NODE, node: '26' }).cases).toMatchObject({
+        gates: 1,
+        failed: 0,
+      });
+      expect(gateVerdict(entry, ON_NODE).cases).toMatchObject({ gates: 0, failed: 1 });
+      expect(
+        gateVerdict(entry, { ...ON_CLOUDFLARE, next: ANOTHER_COMMIT.next }).cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+      expect(
+        gateVerdict(entry, { ...ON_CLOUDFLARE, next: ANOTHER_VERSION.next }).cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+      expect(
+        gateVerdict({ ...entry, fullName: `${entry.fullName} another case` }, ON_CLOUDFLARE).cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+    },
+  );
+
+  it.each(VERIFIED_GATES)(
+    'fails $fullName when its body fails or it has multiple case errors',
+    (entry) => {
+      expect(gateVerdict(entry, ON_CLOUDFLARE, 'passed').cases).toMatchObject({
+        gates: 0,
+        failed: 1,
+      });
+      expect(
+        gateVerdict(entry, ON_CLOUDFLARE, 'failed', ['Error: the body failed']).cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+      expect(
+        gateVerdict(entry, ON_CLOUDFLARE, 'failed', [GATE_PASSED, 'Error: another case error'])
+          .cases,
+      ).toMatchObject({ gates: 0, failed: 1 });
+    },
+  );
+
+  it.each(VERIFIED_GATES)('fails the suite when $fullName has a separate hook error', (entry) => {
+    const result = suiteOf(
+      [jestCase(entry.fullName, 'failed', [GATE_PASSED])],
+      { runtimeError: true },
+      entry.suite,
+    );
+    const verdict = judge(ON_CLOUDFLARE, [entry.suite], new Map([[entry.suite, result]]), REVIEWED);
+
+    expect(verdict.cases).toMatchObject({ gates: 1, failed: 0 });
+    expect(verdict.unexplained).toStrictEqual([
+      {
+        suite: entry.suite,
+        why: 'Jest reported an error of the file outside its cases (a hook, or the file itself)',
+      },
+    ]);
+    expect(fails(verdict)).toBe(true);
   });
 
   it('read no other failure of the build-directory cases than the directory', () => {
@@ -475,16 +714,19 @@ describe('the reviewed cases', () => {
     expect(judgedAlone(entry!, 'cloudflare', NATIVE_CONTAINER, '24').unexplained).toStrictEqual([]);
   });
 
-  it('read nothing for Node.js 26 under 24, nor where the run names no Node.js', () => {
+  it('read no lane-specific entry under another Node.js, nor where the run names none', () => {
     const lanes = REVIEWED.filter(({ nodes }) => nodes !== undefined);
+    // An entry read on both lanes has no other lane to be refused under.
+    const oneLane = lanes.filter(({ nodes }) => nodes?.length === 1);
 
-    expect(lanes).not.toHaveLength(0);
+    expect(oneLane).not.toHaveLength(0);
 
-    for (const entry of lanes) {
+    for (const entry of oneLane) {
       const target = entry.targets?.[0] ?? 'node';
       const [message = ''] = recordedFor(entry);
+      const other = entry.nodes?.includes('24') === true ? '26' : '24';
 
-      expect(judgedAlone(entry, target, message, '24').unexplained).toHaveLength(1);
+      expect(judgedAlone(entry, target, message, other).unexplained).toHaveLength(1);
     }
     const [preview] = lanes;
     const result = suiteOf(
@@ -523,6 +765,50 @@ describe('the reviewed cases', () => {
   });
 });
 
+const STREAM_CANCEL = 'test/e2e/cancel-request/stream-cancel.test.ts';
+const STALLED =
+  'streaming responses cancel inner stream after disconnect middleware cancels stalled stream';
+const PROGRESSING =
+  'streaming responses cancel inner stream after disconnect middleware cancels stream making progress';
+const STREAM_TIMEOUT = `Error: thrown: "Exceeded timeout of 2500 ms for a test."\n    at it (/home/runner/work/upwind/upwind/nextjs/test/e2e/cancel-request/stream-cancel.test.ts:61:5)`;
+
+/** `stream-cancel` on `cloudflare`, its middleware's stalled stream timed out beside `progressing`. */
+function streamCancelVerdict(progressing: string, messages: string[] = []): Verdict {
+  const result = suiteOf(
+    [jestCase(STALLED, 'failed', [STREAM_TIMEOUT]), jestCase(PROGRESSING, progressing, messages)],
+    {},
+    STREAM_CANCEL,
+  );
+  return judge(ON_CLOUDFLARE, [STREAM_CANCEL], new Map([[STREAM_CANCEL, result]]), REVIEWED);
+}
+
+describe('a reading that needs another case to have passed beside it', () => {
+  it('reads a stalled stream where the same route’s progressing stream passed', () => {
+    const verdict = streamCancelVerdict('passed');
+
+    expect(verdict.unexplained).toStrictEqual([]);
+    expect(verdict.cases.reviewed.environment).toBe(1);
+  });
+
+  /** The same timeout where the route's requests themselves stall: no cancellation is to blame. */
+  it('reads nothing where the progressing stream timed out too', () => {
+    const verdict = streamCancelVerdict('failed', [STREAM_TIMEOUT]);
+
+    expect(verdict.unexplained).toStrictEqual([
+      {
+        suite: STREAM_CANCEL,
+        fullName: STALLED,
+        why: `reviewed (a-disconnect-on-cloudflare), but "${PROGRESSING}" did not pass beside it`,
+      },
+      { suite: STREAM_CANCEL, fullName: PROGRESSING, why: 'not reviewed' },
+    ]);
+  });
+
+  it('reads nothing where the progressing stream did not run', () => {
+    expect(streamCancelVerdict('skipped').unexplained).toHaveLength(1);
+  });
+});
+
 const GATED = 'test/e2e/app-dir/expire-time/expire-time.test.ts';
 const GATED_CASE = {
   ancestorTitles: ['expire-time'],
@@ -555,7 +841,7 @@ describe('a shard judged by the workflow', () => {
     results: Record<string, unknown>,
     listed = Object.keys(results),
     runnerFinished = true,
-    ended: readonly string[] = [],
+    { ended = [], population = '' }: { ended?: readonly string[]; population?: string } = {},
   ) {
     const base = mkdtempSync(path.join(os.tmpdir(), 'upwind-judge-results-'));
     dirs.push(base);
@@ -584,6 +870,7 @@ describe('a shard judged by the workflow', () => {
         SHARD: '3',
         NEXT_COMMIT: RELEASE.commit,
         GITHUB_STEP_SUMMARY: summary,
+        POPULATION: population,
       },
     });
     return { run, output, summary };
@@ -605,6 +892,31 @@ describe('a shard judged by the workflow', () => {
     });
     expect(JSON.stringify(verdict)).not.toContain('Failing test passed');
     expect(readFileSync(summary, 'utf8')).toContain('### `node`, Next.js 16.4.3 (29bbeab09981)');
+  });
+
+  it('heads a shard of what Next.js skips in deploy mode so, and reads its cases the same', () => {
+    const { run, output, summary } = shard({ [GATED]: gatedResult([GATED_CASE]) }, [GATED], true, {
+      population: 'skipped',
+    });
+    const verdict = JSON.parse(
+      readFileSync(path.join(output, 'verdict.json'), 'utf8'),
+    ) as ShardVerdict;
+
+    expect(run.status).toBe(0);
+    expect(verdict).toMatchObject({ population: 'skipped', cases: { gates: 1, failed: 0 } });
+    expect(readFileSync(summary, 'utf8')).toContain(
+      '### `node`, Next.js 16.4.3 (29bbeab09981): what Next.js skips in deploy mode',
+    );
+  });
+
+  it('says nothing of a population in the verdict of a shard of the manifest’s suites', () => {
+    const { output } = shard({ [GATED]: gatedResult([GATED_CASE]) });
+    const verdict = JSON.parse(readFileSync(path.join(output, 'verdict.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+
+    expect(verdict).not.toHaveProperty('population');
   });
 
   it('fails a shard whose read failure comes with an error of the file’s own', () => {
@@ -630,9 +942,9 @@ describe('a shard judged by the workflow', () => {
   });
 
   it('names a suite whose Jest process the watchdog ended, without failing the shard for it', () => {
-    const { run, output, summary } = shard({ [GATED]: gatedResult([GATED_CASE]) }, [GATED], true, [
-      GATED,
-    ]);
+    const { run, output, summary } = shard({ [GATED]: gatedResult([GATED_CASE]) }, [GATED], true, {
+      ended: [GATED],
+    });
     const verdict = JSON.parse(
       readFileSync(path.join(output, 'verdict.json'), 'utf8'),
     ) as ShardVerdict;

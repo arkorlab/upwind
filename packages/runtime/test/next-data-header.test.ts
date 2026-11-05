@@ -42,12 +42,19 @@ vi.mock(import('../src/node-bridge.ts'), () => {
 const MIDDLEWARE = '/_middleware';
 const DATA_HEADER = 'x-nextjs-data';
 const BUILD_ID = 'build';
+/** What Next.js 16.4.3 compiles for `matcher: '/old-home'` in an application with `i18n`. */
+const LOCALIZED_OLD_HOME_MATCHER = String.raw`^(?:\/(_next\/data\/[^/]{1,}))?(?:\/((?!_next\/)[^/.]{1,}))\/old-home(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
 
-function deployment(basePath = '', skipProxyUrlNormalize?: boolean, trailingSlash = false): Store {
+function deployment(
+  basePath = '',
+  skipProxyUrlNormalize?: boolean,
+  trailingSlash = false,
+  i18n: { readonly defaultLocale: string; readonly locales: string[] } | null = null,
+): Store {
   return {
     manifest: {
       buildId: BUILD_ID,
-      config: { basePath, skipProxyUrlNormalize, trailingSlash },
+      config: { basePath, skipProxyUrlNormalize, trailingSlash, i18n },
       routing: {
         beforeMiddleware: [],
         middlewareMatchers: [{ sourceRegex: '^/.*$' }],
@@ -141,8 +148,13 @@ describe('a data request, as the middleware is told of it', () => {
       handed: '/es/old-home?override=internal',
     },
     { path: `/_next/data/${BUILD_ID}/index.json`, basePath: '', handed: '/' },
+    // Read as Next.js reads the page (`denormalizePagePath`), as routing reads it.
+    { path: `/_next/data/${BUILD_ID}/index/page.json`, basePath: '', handed: '/page' },
+    { path: `/_next/data/${BUILD_ID}/index/[slug].json`, basePath: '', handed: '/index/[slug]' },
+    { path: `/_next/data/${BUILD_ID}/.json`, basePath: '', handed: '/' },
     { path: `/docs/_next/data/${BUILD_ID}/page.json`, basePath: '/docs', handed: '/docs/page' },
     { path: `/docs/_next/data/${BUILD_ID}/index.json`, basePath: '/docs', handed: '/docs' },
+    { path: `/docs/_next/data/${BUILD_ID}/.json`, basePath: '/docs', handed: '/docs' },
     {
       path: '/_next/data/another/page.json',
       basePath: '',
@@ -169,6 +181,55 @@ describe('a data request, as the middleware is told of it', () => {
     const module = { entries: { [MIDDLEWARE]: () => ({ handler: echoing }) } };
 
     await expect(toldTheMiddleware(path, {}, module)).resolves.toBe(handed);
+  });
+
+  /**
+   * A data request that names no locale, in an application with `i18n` and a middleware, is routed
+   * under the default locale (`localizedDataUrl`), and handed to the middleware as it came: the
+   * locale is put in front of it for matching alone, as Next.js puts it (`middleware_next_data`).
+   */
+  it.each([
+    { skipProxyUrlNormalize: undefined, handed: '/old-home' },
+    { skipProxyUrlNormalize: true, handed: `/_next/data/${BUILD_ID}/old-home.json` },
+  ])(
+    'is handed without the default locale it is routed under: skipProxyUrlNormalize $skipProxyUrlNormalize',
+    async ({ skipProxyUrlNormalize, handed }) => {
+      const locales = { defaultLocale: 'en', locales: ['en', 'es'] };
+      vi.mocked(getStore).mockReturnValue(deployment('', skipProxyUrlNormalize, false, locales));
+      const module = { entries: { [MIDDLEWARE]: () => ({ handler: echoing }) } };
+
+      await expect(
+        toldTheMiddleware(`/_next/data/${BUILD_ID}/old-home.json`, {}, module),
+      ).resolves.toBe(handed);
+    },
+  );
+
+  /**
+   * A matcher Next.js compiles for an application with `i18n` requires a locale segment
+   * (`getMiddlewareMatchers`, `build/analysis/get-page-static-info.ts`): matched against the path
+   * without one, the middleware is skipped. Next.js matches it after putting the default locale in
+   * front, as the router here does, so a data request that names no locale still runs the middleware
+   * it would be routed past: matched without the locale, it would reach the page with no middleware
+   * in front of it.
+   */
+  it('runs the middleware whose matcher requires a locale, for a data request that names none', async () => {
+    const store = deployment('', undefined, false, { defaultLocale: 'en', locales: ['en', 'es'] });
+    vi.mocked(getStore).mockReturnValue({
+      ...store,
+      manifest: {
+        ...store.manifest,
+        routing: {
+          ...store.manifest.routing,
+          // What Next.js 16.4.3 compiles for `matcher: '/old-home'` in an application with `i18n`.
+          middlewareMatchers: [{ sourceRegex: LOCALIZED_OLD_HOME_MATCHER }],
+        },
+      },
+    });
+    const module = { entries: { [MIDDLEWARE]: () => ({ handler: echoing }) } };
+
+    await expect(
+      toldTheMiddleware(`/_next/data/${BUILD_ID}/old-home.json`, {}, module),
+    ).resolves.toBe('/old-home');
   });
 
   it('is handed as it came where the application asks for that', async () => {

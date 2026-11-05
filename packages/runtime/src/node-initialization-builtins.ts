@@ -33,8 +33,10 @@ export function nodeInitializationBuiltins(require: NodeJS.Require): NodeInitial
     values: [
       ['buffer', buffer],
       ['crypto', crypto],
+      ['node:crypto', crypto],
       ['stream', stream],
       ['util', util],
+      ['node:util', util],
       ['events', websocket.events],
       ['http', websocket.http],
       ['https', websocket.https],

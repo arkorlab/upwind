@@ -11,6 +11,7 @@ import {
   proveNodeFunction,
 } from '../src/node-proof.ts';
 import { vercelOgImageResponsePatch } from '../src/patches/vercel-og.ts';
+import { PINNED_NEXT_PACKAGE_JSON } from './fixtures/pinned-next.ts';
 
 describe('original physical Node Function proof', () => {
   let directory: string;
@@ -132,7 +133,7 @@ describe('original physical Node Function proof', () => {
     const second = path.join(path.dirname(original), 'second.node');
     await mkdir(path.dirname(response), { recursive: true });
     await mkdir(path.dirname(original), { recursive: true });
-    await writeFile(path.join(next, 'package.json'), '{"name":"next","version":"16.4.3"}');
+    await writeFile(path.join(next, 'package.json'), PINNED_NEXT_PACKAGE_JSON);
     const source =
       "exports.load=()=>import(process.env.NEXT_RUNTIME === 'edge' ? 'next/dist/compiled/@vercel/og/index.edge.js' : 'next/dist/compiled/@vercel/og/index.node.js');\n";
     await writeFile(response, source);

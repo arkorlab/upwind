@@ -22,7 +22,7 @@ import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { TagState } from '../src/cache/tags.ts';
 import { handleRequest } from '../src/handle.ts';
 import { invokeNodeHandler, type InvokeInput } from '../src/node-bridge.ts';
-import { routingParameters } from '../src/route-parameters.ts';
+import { appRouteParameters, routingParameters } from '../src/route-parameters.ts';
 import type { RoutedInput } from '../src/serve.ts';
 import { generationPathname, getStore, isClassShell, type Store } from '../src/store.ts';
 
@@ -671,7 +671,7 @@ describe('ordinary RSC navigation of an unbuilt fallback', () => {
     expect(test.commits).toHaveLength(0);
   });
 
-  it('refuses a literal-placeholder catch-all target that needs a separated query', async () => {
+  it('refuses a literal-placeholder catch-all target with an escaped slash', async () => {
     const base = deployment(true);
     const route = '/required-fallback-params/[top]/[...bottom]';
     const shell: Prerender = {
@@ -720,9 +720,10 @@ describe('ordinary RSC navigation of an unbuilt fallback', () => {
 
     expect(generationPathname(shell, pathname)).toBe(completed);
     expect(isClassShell(completed, route)).toBe(true);
-    expect(routingParameters(store, route, completed)).toStrictEqual({
-      nxtPtop: '[top]',
-      nxtPbottom: 'a/b',
+    expect(routingParameters(store, route, completed)).toBeUndefined();
+    expect(appRouteParameters(store, route, completed)).toStrictEqual({
+      top: '[top]',
+      bottom: ['a/b'],
     });
     await expect(
       renderCompletedRscForVisitor(

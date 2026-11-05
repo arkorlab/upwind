@@ -30,7 +30,7 @@ async function rewriteFixture(directory: string, mode: 'none' | 'own' | 'compose
   const loaderName = 'dist/server/lib/router-utils/instrumentation-globals.external.js';
   const loader = path.join(root, loaderName);
   const loaderCode = await readFile(
-    fileURLToPath(import.meta.resolve(`next/${loaderName}`)),
+    fileURLToPath(import.meta.resolve(`next-16-4-3/${loaderName}`)),
     'utf8',
   );
   await mkdir(path.dirname(loader), { recursive: true });

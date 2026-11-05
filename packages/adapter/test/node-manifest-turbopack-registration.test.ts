@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { certifyNodeManifestAppPageFactory } from '../src/node-manifest-app-page-factory.ts';
 import {
   nodeManifestTurbopackFactories,
+  nodeManifestTurbopackNestedTable,
   projectNodeManifestTurbopackFactory,
 } from '../src/node-manifest-turbopack.ts';
 
@@ -145,5 +146,28 @@ describe('first grouping array in fixed Node factory registration', () => {
     ],
   ])('refuses %s without inventing runtime table metadata', (_name, code) => {
     expect(() => nodeManifestTurbopackFactories(source(code))).toThrow('Unproved Next.js');
+  });
+});
+
+describe('a leading strict factory table, which only 16.4.3 installs', () => {
+  it.each([
+    ['plain table', 'module.exports=[[1,((ctx)=>{})],2,((ctx)=>{})];'],
+    [
+      'strict wrapper',
+      'module.exports=[(()=>{"use strict";return[1,((ctx)=>{})];})(),2,((ctx)=>{})];',
+    ],
+  ])('is found in a %s', (_name, code) => {
+    expect(nodeManifestTurbopackNestedTable(source(code))).toBe(true);
+  });
+
+  it.each([
+    ['flat table', 'module.exports=[1,((ctx)=>{"use strict";}),2,((ctx)=>{})];'],
+    ['wrapped flat table', '(()=>{"use strict";module.exports=[1,((ctx)=>{}),2,((ctx)=>{})];})();'],
+    [
+      'runtime or boot program',
+      'const RUNTIME_PUBLIC_PATH = "server/chunks/[turbopack]_runtime.js";',
+    ],
+  ])('is not found in a %s', (_name, code) => {
+    expect(nodeManifestTurbopackNestedTable(source(code))).toBe(false);
   });
 });

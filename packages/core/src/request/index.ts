@@ -83,6 +83,7 @@ export {
   metaReferrerPolicy,
   quietensASameOriginFetch,
 } from './referrer.ts';
+export { redirectAnswer } from './redirect-answer.ts';
 export { connectionRefusesSharing, policyRefusesSharing } from './route-body-policy.ts';
 export { computeRscCacheBustingParam, type RscCacheBustingInput } from './rsc.ts';
 export { STATIC_PAGE_PRIVATE_HEADERS } from './static-pages.ts';

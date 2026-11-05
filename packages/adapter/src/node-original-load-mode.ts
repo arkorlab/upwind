@@ -142,7 +142,7 @@ function rowCurrent(own: Stored, id: string, source?: OriginalNodeModeSource): R
 }
 function explicitCommonJs(value: Uint8Array): boolean {
   try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(value);
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(value);
     const metadata: unknown = JSON.parse(text);
     if (
       typeof metadata !== 'object' ||

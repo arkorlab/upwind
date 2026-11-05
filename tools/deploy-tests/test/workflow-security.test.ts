@@ -17,6 +17,7 @@ const CANARY_TAG = `v${CANARY_VERSION}`;
 const CANARY_COMMIT = 'a'.repeat(40);
 const STABLE_SCHEDULE = '23 17 * * *';
 const CANARY_SCHEDULE = '23 18 * * *';
+const SKIPPED_SCHEDULE = '23 19 * * *';
 
 interface NetworkReply {
   readonly registry?: string;
@@ -277,12 +278,14 @@ describe('workflow security', () => {
         NEXTJS_REF: ref,
         NIGHTLY_NEXTJS_REF: workflowSetting('NIGHTLY_NEXTJS_REF'),
         RUNNER_SHARDS: workflowSetting('RUNNER_SHARDS'),
+        SKIPPED_SHARDS: workflowSetting('SKIPPED_SHARDS'),
         TESTS: 'all',
         SHARDS: '1',
         ONLY: '',
         CONCURRENCY: '',
         CACHE: '',
         NODE: '',
+        POPULATION: '',
         PROJECT_IDS: '',
         PROJECT_ID: '',
         GITHUB_OUTPUT: output,
@@ -325,6 +328,46 @@ describe('workflow security', () => {
     expect(result.commands).toStrictEqual([]);
   });
 
+  it.each([CANARY_TAG, 'v16.4.0-rc.1', 'v15.0.0-beta.3', 'v16.10.12'])(
+    'takes a dispatch of a release tag of Next.js: %s',
+    (ref) => {
+      const result = plan(ref);
+
+      expect(result.status).toBe(0);
+      expect(readFileSync(result.output, 'utf8')).toContain(`nextjs=${ref}\n`);
+    },
+  );
+
+  it('checks a release tag out as a tag, never as a branch of the same name', () => {
+    const checkout = deployTestsWorkflow()
+      .split('\n')
+      .find(
+        (line) => line.trimStart().startsWith('ref:') && line.includes('needs.plan.outputs.nextjs'),
+      );
+
+    expect(checkout).toContain(
+      "startsWith(needs.plan.outputs.nextjs, 'v') && format('refs/tags/{0}', needs.plan.outputs.nextjs)",
+    );
+  });
+
+  it.each([
+    'canary',
+    'refs/heads/canary',
+    CANARY_COMMIT,
+    '16.4.3',
+    'v16.4',
+    'v16.4.3-canary',
+    'v16.4.3-alpha.1',
+    'v16.4.3 --upload-pack=touch',
+    'v16.4.3-canary.1.x',
+  ])('refuses a dispatch of anything but a release tag of Next.js: %j', (ref) => {
+    const result = plan(ref);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('nextjsRef must be a release tag of Next.js');
+    expect(existsSync(result.output)).toBe(false);
+  });
+
   it.each([STABLE_SCHEDULE, CANARY_SCHEDULE])(
     'runs both local targets under Node.js 24 and 26 over the whole manifest on schedule %s',
     (schedule) => {
@@ -347,8 +390,100 @@ describe('workflow security', () => {
       expect(output).toContain(`matrix=${JSON.stringify(matrix)}\n`);
       expect(output).toContain('total=64\nparallel=256\nconcurrency=2\n');
       expect(output).toContain('tests=all\ncache=none\n');
+      expect(output).toContain('population=upstream\n');
     },
   );
+
+  it('runs what the supported release skips in deploy mode on both local targets, on its own schedule', () => {
+    const result = plan('ignored', {
+      EVENT: 'schedule',
+      SCHEDULE: SKIPPED_SCHEDULE,
+      TARGET: 'host',
+      TESTS: 'ignored',
+      ONLY: '9',
+      POPULATION: 'upstream',
+    });
+    const total = Number(workflowSetting('SKIPPED_SHARDS'));
+    const matrix = { include: lanes(['cloudflare', 'node'], ['24', '26'], total) };
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(total).toBe(8);
+    expect(deployTestsWorkflow()).toContain(`    - cron: '${SKIPPED_SCHEDULE}'`);
+    expect(output).toContain(`matrix=${JSON.stringify(matrix)}\n`);
+    expect(output).toContain(`nextjs=${workflowSetting('NIGHTLY_NEXTJS_REF')}\n`);
+    expect(output).toContain('population=skipped\n');
+    expect(result.summary).toContain('what Next.js skips in deploy mode');
+    expect(result.commands).toStrictEqual([]);
+  });
+
+  it('cuts a dispatch of what Next.js skips into the skipped run’s shards where it names none', () => {
+    const result = plan('v16.4.3', { POPULATION: 'skipped', SHARDS: '' });
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(output).toContain(`total=${workflowSetting('SKIPPED_SHARDS')}\n`);
+    expect(output).toContain('population=skipped\n');
+  });
+
+  it('takes the deploy manifest’s suites on a pull request, whatever was asked', () => {
+    const result = plan('ignored', { EVENT: 'pull_request', POPULATION: 'skipped' });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(result.output, 'utf8')).toContain('population=upstream\n');
+  });
+
+  it.each(['everything', 'skipped\nmatrix={}'])(
+    'refuses a population there is none of: %j',
+    (asked) => {
+      const result = plan('v16.4.3', { POPULATION: asked });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('population must be upstream or skipped');
+      expect(existsSync(result.output)).toBe(false);
+    },
+  );
+
+  it.each([
+    { listed: 'sixteen projects', ids: projects(16), total: 8, parallel: 8 },
+    { listed: 'three projects', ids: projects(3), total: 6, parallel: 1 },
+  ])(
+    'cuts what Next.js skips on a host a piece a project, into no more than the runner’s: $listed',
+    ({ ids, total, parallel }) => {
+      const result = plan('v16.4.3', {
+        TARGET: 'host',
+        POPULATION: 'skipped',
+        SHARDS: '',
+        PROJECT_IDS: ids.join(' '),
+        PROJECT_ID: '',
+        HOST_SHARDS: String(hostShards()),
+      });
+      const output = readFileSync(result.output, 'utf8');
+
+      expect(result.status).toBe(0);
+      expect(output).toContain(
+        `total=${String(total)}\nparallel=${String(parallel)}\nconcurrency=1\n`,
+      );
+      expect(output).toContain('population=skipped\n');
+    },
+  );
+
+  /** The cap is the default's: a `shards` that is given is used as it is, as for any other run. */
+  it('uses a `shards` given for what Next.js skips on a host as it is', () => {
+    const result = plan('v16.4.3', {
+      TARGET: 'host',
+      POPULATION: 'skipped',
+      SHARDS: '12',
+      PROJECT_IDS: projects(16).join(' '),
+      PROJECT_ID: '',
+      HOST_SHARDS: String(hostShards()),
+    });
+    const output = readFileSync(result.output, 'utf8');
+
+    expect(result.status).toBe(0);
+    expect(output).toContain('total=12\n');
+    expect(output).toContain('population=skipped\n');
+  });
 
   it('runs node alone under Node.js 24 over the whole manifest on a pull request', () => {
     const result = plan('ignored', {
@@ -440,7 +575,7 @@ describe('workflow security', () => {
   });
 
   it('rejects an unrecognized scheduled event instead of silently running the stable release', () => {
-    const result = plan('', { EVENT: 'schedule', SCHEDULE: '23 19 * * *' });
+    const result = plan('', { EVENT: 'schedule', SCHEDULE: '23 20 * * *' });
 
     expect(result.status).not.toBe(0);
     expect(existsSync(result.output)).toBe(false);
@@ -543,8 +678,64 @@ describe('workflow security', () => {
     const workflow = readFileSync(path.join(repository, '.github/workflows/publish.yaml'), 'utf8');
 
     expect(workflow).not.toMatch(/ref: \$\{\{ inputs\.tag \}\}/u);
-    expect(workflow.match(/ref: \$\{\{ needs\.verify\.outputs\.commit \}\}/gu)).toHaveLength(3);
+    expect(workflow.match(/ref: \$\{\{ needs\.verify\.outputs\.commit \}\}/gu)).toHaveLength(4);
+    expect(workflow).toContain('needs: [verify, build]');
     expect(workflow).toContain('needs: [verify, publish]');
     expect(workflow).toContain('needs: [verify, provenance]');
+  });
+
+  /** One job of `publish.yaml`, as written: from its name to the next job's. */
+  function releaseJob(name: string): string {
+    const workflow = readFileSync(path.join(repository, '.github/workflows/publish.yaml'), 'utf8');
+    const start = workflow.indexOf(`\n  ${name}:\n`);
+    if (start === -1) throw new Error(`publish.yaml has no ${name} job`);
+    const rest = workflow.slice(start + 1);
+    const next = /\n {2}[a-z-]+:\n/u.exec(rest.slice(1));
+    return next === null ? rest : rest.slice(0, next.index + 1);
+  }
+
+  /** Lines of a job that would install, restore or run anything of the repository's. */
+  const RUNS_THE_REPOSITORY = [
+    '- uses: pnpm/',
+    '- uses: actions/cache',
+    '- run: pnpm',
+    'pnpm ',
+    '- run: npm ci',
+    '- run: npm install',
+    'npm ci',
+    'npm install',
+    'npx ',
+    'cache:',
+    'registry-url:',
+  ];
+
+  it('publishes from a job that installs and runs nothing of the repository', () => {
+    const publish = releaseJob('publish');
+    const workflow = readFileSync(path.join(repository, '.github/workflows/publish.yaml'), 'utf8');
+    const running = publish
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => RUNS_THE_REPOSITORY.some((start) => line.startsWith(start)));
+
+    expect(workflow.match(/id-token: write/gu)).toHaveLength(1);
+    expect(publish).toContain('id-token: write');
+    expect(publish).toContain('environment: release');
+    expect(running).toStrictEqual([]);
+    expect(publish).toContain('sha256sum --check --strict SHA256SUMS');
+    expect(publish).toMatch(/npm publish "\$\{dir\}\/\$\{file\}" "\$@"/u);
+  });
+
+  it('installs, checks and packs what is published where nothing can publish it', () => {
+    const build = releaseJob('build');
+    const lines = build.split('\n').map((line) => line.trim());
+
+    expect(lines.filter((line) => line.startsWith('id-token:'))).toStrictEqual([]);
+    // What it packs is what is published, so no store a cache brought back goes into it.
+    expect(
+      lines.filter((line) => line.startsWith('cache:') || line.startsWith('- uses: actions/cache')),
+    ).toStrictEqual([]);
+    expect(lines).toContain('- run: pnpm install --frozen-lockfile');
+    expect(lines).toContain('- run: pnpm test');
+    expect(lines).toContain('name: tarballs');
   });
 });

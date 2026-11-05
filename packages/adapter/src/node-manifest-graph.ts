@@ -21,7 +21,7 @@ import {
   APP_PAGE_CLASS,
   EVALUATOR,
   frameworkParent,
-  reviewedFrameworkSource,
+  isReviewedFrameworkSource,
   reviewedRouteConstructorSource,
   ROUTE_CLASS,
   ROUTE_EXPORTS,
@@ -104,10 +104,10 @@ interface ProtectedModule {
 function turbopackKind(child: ProtectedModule, sha256: string): SealedRoute['kind'] | undefined {
   // Class authority remains a distinct role until a whole fixed producer body is certified.
   if (child.kind === APP_PAGE_CLASS)
-    return reviewedFrameworkSource(child.relative) === sha256 ? 'app-page' : undefined;
+    return isReviewedFrameworkSource(child.relative, sha256) ? 'app-page' : undefined;
   if (child.kind === APP_PAGE_FACTORY) {
     return child.relative === 'dist/build/templates/app-page-runtime.js' &&
-      reviewedFrameworkSource(child.relative) === sha256
+      isReviewedFrameworkSource(child.relative, sha256)
       ? 'app-page'
       : undefined;
   }
@@ -202,7 +202,7 @@ class ConsumerGraph {
     const relative = path.relative(this.root, source.file).split(path.sep).join('/');
     const kind = frameworkParent(relative, child.relative);
     if (kind !== undefined) {
-      if (reviewedFrameworkSource(relative) !== source.sha256) refuse('unknown or changed caller');
+      if (!isReviewedFrameworkSource(relative, source.sha256)) refuse('unknown or changed caller');
       this.files.set(source.file, source);
       return { id: parent, relative, kind };
     }
@@ -398,7 +398,7 @@ class ConsumerGraph {
     this.complete.add(child.id);
     if (child.kind === ROUTE_CLASS || child.kind === APP_PAGE_CLASS) {
       const source = sourceOf(this.graph, child.id);
-      if (reviewedFrameworkSource(child.relative) !== source.sha256)
+      if (!isReviewedFrameworkSource(child.relative, source.sha256))
         refuse('changed completed route source');
       this.routeSources.set(
         source.file,

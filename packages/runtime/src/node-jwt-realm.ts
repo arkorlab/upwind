@@ -9,7 +9,13 @@ import {
   withPristineNodeErrorHooks,
   type NodeErrorHooks,
 } from './node-error-hooks.ts';
-import { LOADER_ENV, PROCESS_KEYS, ROOTS, TYPE_PREDICATES } from './node-jwt-realm-fields.ts';
+import {
+  CRYPTO_FUNCTIONS,
+  LOADER_ENV,
+  PROCESS_KEYS,
+  ROOTS,
+  TYPE_PREDICATES,
+} from './node-jwt-realm-fields.ts';
 import {
   assertNodeWsRealm,
   assertNodeWsRealmStructure,
@@ -356,13 +362,7 @@ function sealBuiltinBasis(
   capture.seal(requiredObject(data(stream, 'prototype')));
   const crypto = requiredObject(data(basis, 'crypto'));
   for (const key of ['randomBytes', 'randomFillSync']) capture.optional(crypto, key);
-  capture.functions(crypto, [
-    'KeyObject',
-    'createSecretKey',
-    'createPrivateKey',
-    'createPublicKey',
-    'createHash',
-  ]);
+  capture.functions(crypto, CRYPTO_FUNCTIONS);
   const constructor = capture.functions(crypto, ['Hash'])[0];
   if (constructor === undefined) fail('missing Hash constructor');
   capture.seal(constructor);

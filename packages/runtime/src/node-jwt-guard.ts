@@ -52,6 +52,9 @@ const proxyCheck = isProxy;
 const PROFILE = 'next-16.4.3-jsonwebtoken-ncc-v1';
 const SHA256 = '056c2dddba96faa35f4dc0740228a241990561290ff3bd5456c7c7dbc5a7a6b9';
 const SOURCE_BYTES = 121_051;
+const FAST_PROFILE = 'next-16.4.4-fast-jwt-ncc-v1';
+const FAST_SHA256 = '8cc4cea3ed6b85a6771a2546bbb88dcd1ca21e6061d89057728d3da4ecccfabf';
+const FAST_BYTES = 131_737;
 const WS_PROFILE = 'next-16.4.3-ws-ncc-v1';
 const WS_SHA256 = 'af354cb13a11abe910cdbcb70943cb450b01b24f322026ae3f88d428d148395d';
 const WS_BYTES = 45_840;
@@ -61,6 +64,7 @@ const SEMVER_PROFILE = 'next-16.4.3-semver-noop-v1';
 const SEMVER_SHA256 = '34c5853dd094229baa28a8b15b86e2143eeb0de0360530798ef3e9a7890942b6';
 const SEMVER_BYTES = 471;
 const JWT_BUILTINS = ['buffer', 'crypto', 'stream', 'util'] as const;
+const FAST_BUILTINS = ['buffer', 'node:crypto', 'node:util', 'util'] as const;
 const WS_BUILTINS = [
   'crypto',
   'events',
@@ -87,6 +91,11 @@ export type NodeJwtGuardRecord = GuardRecord &
         readonly profile: typeof PROFILE;
         readonly sha256: typeof SHA256;
         readonly bytes: typeof SOURCE_BYTES;
+      }
+    | {
+        readonly profile: typeof FAST_PROFILE;
+        readonly sha256: typeof FAST_SHA256;
+        readonly bytes: typeof FAST_BYTES;
       }
     | {
         readonly profile: typeof WS_PROFILE;
@@ -157,6 +166,12 @@ function sourceRecord(value: unknown): NodeJwtGuardRecord {
     record['bytes'] === SOURCE_BYTES
   )
     return freeze({ ...common, profile: PROFILE, sha256: SHA256, bytes: SOURCE_BYTES });
+  if (
+    record['profile'] === FAST_PROFILE &&
+    record['sha256'] === FAST_SHA256 &&
+    record['bytes'] === FAST_BYTES
+  )
+    return freeze({ ...common, profile: FAST_PROFILE, sha256: FAST_SHA256, bytes: FAST_BYTES });
   if (
     record['profile'] === WS_PROFILE &&
     record['sha256'] === WS_SHA256 &&
@@ -300,6 +315,7 @@ function assertSource(
 
 function loadRequests(source: GuardedSource): readonly string[] {
   if (source.record.profile === PROFILE) return [...JWT_BUILTINS, SEMVER_SPECIFIER];
+  if (source.record.profile === FAST_PROFILE) return FAST_BUILTINS;
   if (source.record.profile === WS_PROFILE) return [...WS_BUILTINS, ...WS_OPTIONAL_TARGETS];
   return [];
 }

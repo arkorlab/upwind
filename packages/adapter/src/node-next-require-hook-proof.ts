@@ -27,6 +27,7 @@ import {
 } from './node-manifest-identity-snapshot.ts';
 import { nodeNextHookAliasRoleData } from './node-next-hook-alias-role.ts';
 import { nodeNextHookRawClosureData } from './node-next-hook-raw-role.ts';
+import { nativeNextReleaseAt } from './node-next-release.ts';
 import {
   nodeNextStaticRequireHookSites,
   type NodeNextRequireHookSites,
@@ -43,7 +44,6 @@ const PROOF = Symbol('fixed original Next require hook');
 const SUFFIX = '/dist/server/require-hook.js';
 const SHA256 = 'e82f0ceba88d025c725ea3062974ad9d7a54a892df8c34a525cb129202387db8';
 const BYTES = 3066;
-const NEXT_PACKAGE_SHA256 = 'b67bad7944d603b27dd2d2719b57203fd3b3e5c147b2efa6dea5ceb135274caf';
 const SHARED_RUNTIME = '.shared-runtime';
 const STYLE = 'styled-jsx/style';
 const CONTEXTS = 'next/dist/server/route-modules/pages/vendored/contexts/';
@@ -384,8 +384,9 @@ export async function qualifyNodeNextRequireHook(
     sharedRuntimeEdges: [],
     aliasMetadata: undefined,
   };
-  const metadata = json(await source(state, path.join(root, 'package.json'), NEXT_PACKAGE_SHA256));
-  if (metadata['name'] !== 'next' || metadata['version'] !== '16.4.3') refuse('fixed Next package');
+  // The release's exact package bytes, whose name and version `nativeNextReleaseAt` read.
+  const release = nativeNextReleaseAt(root) ?? refuse('fixed Next package');
+  await source(state, path.join(root, 'package.json'), release.packageJsonSha256);
   const raw = await source(state, first.file, SHA256);
   if (
     Buffer.byteLength(raw) !== BYTES ||

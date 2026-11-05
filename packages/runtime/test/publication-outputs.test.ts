@@ -135,6 +135,24 @@ describe('publication admission for direct shipped output', () => {
     await expect(response.text()).resolves.toBe('fresh after lookup');
   });
 
+  it('marks the fresh Pages render at a miss after its shipped publication expires', async () => {
+    vi.mocked(serveFromGeneration).mockImplementationOnce((_input, _store, source) => {
+      source.onRenderLeft?.();
+      return Promise.resolve(undefined);
+    });
+    vi.mocked(invokeNodeHandler).mockResolvedValueOnce(
+      new Response('fresh granted output', {
+        headers: { 'x-next-cache-tags': `upwind:publication:v1:${IDENTITY}:${String(NOW + 1000)}` },
+      }),
+    );
+
+    const response = await scenario(true, false, false, { tagged: true, until: 1 }).answer();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-nextjs-cache')).toBe('MISS');
+    await expect(response.text()).resolves.toBe('fresh granted output');
+  });
+
   it.each([false, true])(
     'renders a current live response after protected shipped expiry (data=%s)',
     async (data) => {

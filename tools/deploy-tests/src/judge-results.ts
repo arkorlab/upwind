@@ -3,6 +3,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { fails, judge } from './judge.ts';
+import { populationOf } from './population.ts';
 import { type JestSuite, jestSuite, listedSuites } from './results.ts';
 import { isNodeLine, REVIEWED } from './reviewed.ts';
 import { describe, laneOf, type ShardVerdict, shardFails } from './verdicts.ts';
@@ -17,7 +18,8 @@ import { describe, laneOf, type ShardVerdict, shardFails } from './verdicts.ts';
  * (`runner-exit-code.txt`), stopped at its step's time limit or never started.
  *
  * Where it ran, from the environment: the target (`TARGET`), the Node.js of its lane where it has one
- * (`NODE`), the shard (`SHARD`) and the commit of Next.js (`NEXT_COMMIT`).
+ * (`NODE`), the shard (`SHARD`), the commit of Next.js (`NEXT_COMMIT`), and which suites the run
+ * took (`POPULATION`, `population.ts`). The reviewed cases are read the same in either population.
  */
 const { values } = parseArgs({
   options: {
@@ -51,6 +53,7 @@ const node = nodeAsked === undefined || nodeAsked === '' ? undefined : nodeAsked
 if (node !== undefined && !isNodeLine(node)) {
   throw new Error(`judge-results: NODE is 24 or 26, the lanes' Node.js, not ${node}`);
 }
+const population = populationOf(process.env['POPULATION']);
 const shard = Number(required('SHARD'));
 if (!Number.isSafeInteger(shard) || shard < 1) {
   throw new Error('judge-results: SHARD must be a positive whole number');
@@ -101,9 +104,10 @@ const verdict: ShardVerdict = {
   shard,
   runnerFinished: existsSync(path.join(resultsDir, 'runner-exit-code.txt')),
   ended: endedByWatchdog(),
+  ...(population === 'skipped' && { population }),
 };
 writeFileSync(path.join(resultsDir, 'verdict.json'), `${JSON.stringify(verdict, undefined, 2)}\n`);
-const text = describe(laneOf(target, node), [verdict]);
+const text = describe(laneOf(target, node), [verdict], [], population);
 console.log(text);
 const summary = process.env['GITHUB_STEP_SUMMARY'];
 if (summary !== undefined && summary !== '') {

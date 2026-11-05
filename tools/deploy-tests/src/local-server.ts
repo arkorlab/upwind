@@ -55,6 +55,9 @@ export interface LocalServeInput {
   readonly deadline: number | undefined;
 }
 
+/** How long the native server keeps an idle connection open, for the suites' clients. */
+const SUITE_KEEP_ALIVE_MS = 600_000;
+
 /** What starts the server, and what it says before its address. */
 function commandOf(
   target: 'cloudflare' | 'node',
@@ -68,7 +71,20 @@ function commandOf(
     };
   }
   return {
-    args: [UPWIND_CLI, 'start', projectDir, '--port', '0', '--hostname', '127.0.0.1'],
+    args: [
+      UPWIND_CLI,
+      'start',
+      projectDir,
+      '--port',
+      '0',
+      '--hostname',
+      '127.0.0.1',
+      // The suites' clients reuse pooled connections and do not send again when one is reset: one
+      // sent as the server closed an idle connection, 6 s after its last answer by Node.js's
+      // default, failed with ECONNRESET. No suite leaves a connection idle this long.
+      '--keepAliveTimeout',
+      String(SUITE_KEEP_ALIVE_MS),
+    ],
     ready: NODE_LISTENING,
   };
 }

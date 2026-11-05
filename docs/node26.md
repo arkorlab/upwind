@@ -12,7 +12,8 @@ Runtime initialization rejects a different version; unknown versions cannot sele
 The existing source hashes, loader ownership, optional dependency absence and realm checks remain
 mandatory. The version is selected before application evaluation, with no request-time I/O.
 
-Node 26 removed `buffer.SlowBuffer`, which the original fixed JWT dependency still reads.
+Node 26 removed `buffer.SlowBuffer`, which the fixed JWT dependency of Next.js 16.4.3, jsonwebtoken,
+still reads; the fast-jwt of 16.4.4 and 16.4.5 does not.
 Trusted initialization installs a compatibility constructor before capturing the builtin realm.
 It delegates to `Buffer.allocUnsafeSlow`, with the constructor/prototype chains from Node 24's
 [official buffer implementation](https://github.com/nodejs/node/blob/v24.22.1/lib/buffer.js).
