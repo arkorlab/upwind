@@ -22,6 +22,7 @@ import { admitPublicationStream } from './publication-stream.ts';
 import type { RoutedInput } from './serve.ts';
 
 const CACHE_TAGS = 'x-next-cache-tags';
+const HTTP_UNAVAILABLE = 503;
 
 export function requirePublication(runtime: CacheRuntime | undefined, route: string): void {
   const context = publicationContext();
@@ -95,8 +96,11 @@ export function admitBuildSource(
   tags: readonly string[],
 ): Response {
   const required = publicationForBuild(input.cache?.host.publication, route);
-  const admitted = admitPublication(response, tags, nowMs(), required);
-  observeFreshPublication(tags, nowMs());
+  const now = nowMs();
+  const admitted = admitPublication(response, tags, now, required);
+  // A source's own 503 can have valid proof; a refusal contributes no observations.
+  if (admitted.status !== HTTP_UNAVAILABLE || !publicationExpired(tags, now, required))
+    observeFreshPublication(tags, now);
   return admitted;
 }
 
