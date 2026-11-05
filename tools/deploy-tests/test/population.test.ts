@@ -2,9 +2,11 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { PRERENDER_MATRIX_CASES } from '../src/population-matrix-cases.ts';
 import {
   type DeployManifest,
   manifestPopulation,
@@ -258,6 +260,39 @@ function gates(source: string): string[] {
   return source.split('\n').filter((line) => /@(?:force-)?gate\b/u.test(line));
 }
 
+function byName(a: string, b: string): number {
+  return a.localeCompare(b);
+}
+
+/**
+ * The names a copy registers, by running its `describe`s with nothing behind them, for a copy that
+ * computes its names, which `registers` has no text to read in.
+ */
+async function namesRegistered(copy: string): Promise<string[]> {
+  const names: string[] = [];
+  const suites: string[] = [];
+  vi.stubGlobal('describe', (name: string, body: () => void) => {
+    suites.push(name);
+    body();
+    suites.pop();
+  });
+  vi.stubGlobal('it', (name: string) => {
+    names.push([...suites, name].join(' '));
+  });
+  const file = path.join(temporary(), 'copy.mts');
+  const body = copy.split('\n').filter((line) => !line.startsWith('import '));
+  writeFileSync(
+    file,
+    ['const nextTestSetup = () => ({ next: {}, isNextDev: false });', ...body].join('\n'),
+  );
+  try {
+    await import(/* @vite-ignore */ pathToFileURL(file).href);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+  return names;
+}
+
 describe('the copies of cases deploy mode skips', () => {
   afterEach(cleanUp);
 
@@ -290,11 +325,20 @@ describe('the copies of cases deploy mode skips', () => {
       // Every case it is recorded to register, it registers, each under its own name.
       expect(new Set(cases).size).toBe(cases.length);
 
-      for (const fullName of cases) {
+      const written = cases === PRERENDER_MATRIX_CASES ? [] : cases;
+
+      for (const fullName of written) {
         expect(registers(copy, fullName)).toBe(true);
       }
     },
   );
+
+  it('hold the matrix to the names it computes as it registers them', async () => {
+    const source = SUPPLEMENTS.find(({ cases }) => cases === PRERENDER_MATRIX_CASES)?.source ?? '';
+    const names = await namesRegistered(readFileSync(path.join(kept, source), 'utf8'));
+
+    expect(names.toSorted(byName)).toStrictEqual(PRERENDER_MATRIX_CASES.toSorted(byName));
+  });
 
   it('are held to the names their copy registers, every row of a `describe.each` among them', () => {
     const copy = [
