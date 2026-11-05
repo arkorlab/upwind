@@ -52,6 +52,13 @@ const NOT_THE_SUITES: ReadonlySet<string> = new Set([
 const NEXT_JS_SETS: ReadonlyMap<string, string> = new Map([['RUST_MIN_STACK', '8388608']]);
 /** Jest's own, set in a worker as it runs; Next.js's test settings; and this tool's own. */
 const NOT_THE_SUITES_PREFIXES: readonly string[] = ['JEST_', 'NEXT_TEST_', ...TOOL_ENV_PREFIXES];
+/**
+ * The suite's all the same: a name under those prefixes that the harness does not set for itself.
+ * `resume-data-cache` hands this one to `createNext({ env })` and builds its tags and fetch keys from
+ * it, at build and at request time alike: a Function without it reads another tag and another key
+ * than the build wrote.
+ */
+const THE_SUITES: ReadonlySet<string> = new Set(['NEXT_TEST_CACHE_TAG_PREFIX']);
 
 /** An environment as `/proc/<pid>/environ` holds one: `NAME=value` entries, each ended by a NUL. */
 function environOf(bytes: Buffer): Map<string, string> {
@@ -65,7 +72,7 @@ function environOf(bytes: Buffer): Map<string, string> {
 }
 
 /** What `given` holds beyond `harness`: the suite's variables. */
-function suiteVariables(
+export function suiteVariables(
   given: NodeJS.ProcessEnv,
   harness: ReadonlyMap<string, string>,
 ): Record<string, string> {
@@ -76,7 +83,7 @@ function suiteVariables(
         harness.get(name) === value ||
         NOT_THE_SUITES.has(name) ||
         (NEXT_JS_SETS.get(name) === value && !harness.has(name)) ||
-        NOT_THE_SUITES_PREFIXES.some((prefix) => name.startsWith(prefix))
+        (!THE_SUITES.has(name) && NOT_THE_SUITES_PREFIXES.some((prefix) => name.startsWith(prefix)))
       ) {
         return [];
       }
