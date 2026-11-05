@@ -70,7 +70,7 @@ function scenario(source: 'shell' | 'twin', expires = NOW + 1000, movingClock = 
     runtime: cache,
     request,
     startedAt: NOW,
-    ...(!movingClock && { clock: NOW }),
+    clock: movingClock ? undefined : NOW,
     waitUntil: vi.fn(),
   });
   const input: RoutedInput = {
@@ -100,7 +100,7 @@ describe('publication of saved build state on ordinary RSC navigation', () => {
     async (source) => {
       const test = scenario(source);
       vi.mocked(invokeNodeHandler).mockImplementationOnce(({ requestMeta }) => {
-        expect(requestMeta.postponed).toBe('state');
+        expect(requestMeta['postponed']).toBe('state');
         expect(test.context.publication).toContain(test.tags[0]);
         expect(test.context.resourceTags).toContain(WITNESS);
 
@@ -119,7 +119,7 @@ describe('publication of saved build state on ordinary RSC navigation', () => {
     async (source) => {
       const test = scenario(source, NOW);
       vi.mocked(invokeNodeHandler).mockImplementationOnce(({ requestMeta }) => {
-        expect(requestMeta.postponed).toBeUndefined();
+        expect(requestMeta['postponed']).toBeUndefined();
         expect(test.context.publication.size).toBe(0);
 
         observeFreshPublication([grant(NOW + 2000), 'resource:items', WITNESS], NOW);
