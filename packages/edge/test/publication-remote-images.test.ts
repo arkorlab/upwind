@@ -269,4 +269,52 @@ describe('proof-aware edge remote images', () => {
     expect((await test.get()).status).toBe(503);
     expect(test.put).not.toHaveBeenCalled();
   });
+
+  it('rejects a late transformed chunk after its original source grant expires', async () => {
+    const test = fixture();
+
+    test.protect();
+
+    test.source.mockResolvedValueOnce(
+      new Response(PNG, { headers: { 'x-next-cache-tags': GRANT } }),
+    );
+
+    const cancel = vi.fn();
+    let output: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const first = new Uint8Array(8 * 1024 * 1024 + 1);
+
+    test.transformed.mockResolvedValueOnce({
+      contentType: 'image/webp',
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          output = controller;
+          controller.enqueue(first);
+        },
+        cancel,
+      }),
+    });
+
+    const response = await test.get();
+    const reader = response.body!.getReader();
+
+    const firstRead = await reader.read();
+
+    expect(firstRead.done).toBe(false);
+    expect(firstRead.value).toHaveLength(first.byteLength);
+
+    const next = reader.read();
+    await Promise.resolve();
+
+    test.setNow(NOW + 1000);
+
+    output!.enqueue(new Uint8Array([2]));
+
+    await expect(next).rejects.toThrow('Publication unavailable');
+
+    await vi.waitFor(() => {
+      expect(cancel).toHaveBeenCalledTimes(1);
+    });
+
+    expect(test.put).not.toHaveBeenCalled();
+  });
 });

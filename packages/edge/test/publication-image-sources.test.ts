@@ -127,11 +127,19 @@ describe('protected image source selection at the edge', () => {
     expect(test.passthrough).not.toHaveBeenCalled();
   });
 
-  it('keeps protected remote sources on the proof-aware edge optimizer', async () => {
+  it('routes protected remote parameters and policy to the edge optimizer', async () => {
     const test = fixture({ href: 'https://images.test/avatar.png' });
 
     await expect((await test.render()).text()).resolves.toBe('optimized file');
     expect(handleImage).toHaveBeenCalledTimes(1);
+
+    const selected = vi.mocked(handleImage).mock.calls[0]![0];
+
+    expect(selected.params).toMatchObject({
+      href: 'https://images.test/avatar.png',
+      isAbsolute: true,
+    });
+    expect(selected.manifest.publication?.routes).toStrictEqual(['/items']);
     expect(test.passthrough).not.toHaveBeenCalled();
   });
 
