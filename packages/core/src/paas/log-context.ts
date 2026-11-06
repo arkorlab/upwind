@@ -28,6 +28,7 @@ export function isLogCorrelationId(value: unknown): value is string {
   );
 }
 
+/** Accept ordinary identifier maps and null-prototype snapshots, without class instances. */
 function plainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const prototype: unknown = Object.getPrototypeOf(value);
@@ -42,6 +43,7 @@ function ownValue(record: Readonly<Record<string, unknown>>, name: string): unkn
     : undefined;
 }
 
+/** Copy bounded, enumerable string data without retaining caller-owned objects or getters. */
 function copiedContext(value: unknown): Record<string, string> | undefined {
   if (!plainRecord(value)) return undefined;
   const keys = Object.keys(value);

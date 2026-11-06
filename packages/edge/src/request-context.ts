@@ -10,6 +10,7 @@ export type IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 /** The original request owns this value, including when routing rebuilds its forwarding context. */
 const LOG_CORRELATION = Symbol.for('@stayingupwind/edge/log-correlation');
 
+/** Materialize one ingress-owned UUID, reused when routing rebuilds its forwarding context. */
 function logCorrelationFor(request: IncomingRequest): string {
   const original: IncomingRequest & { [LOG_CORRELATION]?: string } = request;
   return (original[LOG_CORRELATION] ??= crypto.randomUUID());
@@ -40,6 +41,7 @@ export function verifiedBotOf(request: Pick<IncomingRequest, 'cf'>): boolean {
   return cf?.botManagement?.verifiedBot === true;
 }
 
+/** Capture trusted forwarding facts and defer identity generation until a hosted dispatch. */
 export function forwardingFor(
   request: IncomingRequest,
   previewDomain: string,
