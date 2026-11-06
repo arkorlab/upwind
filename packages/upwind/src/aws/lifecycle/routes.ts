@@ -11,7 +11,7 @@ import {
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 
 import type { AwsContext } from './sdk.ts';
-import { mutation, UncertainAwsMutation } from './sdk.ts';
+import { errorCode, mutation, UncertainAwsMutation } from './sdk.ts';
 import type { ProjectLock } from './state.ts';
 
 const PRODUCTION_PRIORITY = 50_000;
@@ -123,7 +123,11 @@ export async function removeProduction(
   lock: ProjectLock,
 ): Promise<void> {
   await lock.assertHeld();
-  const rule = await productionRule(context, listener, project);
+  const rule = await productionRule(context, listener, project).catch((error: unknown) => {
+    if (errorCode(error) === 'ListenerNotFoundException' || errorCode(error) === 'ListenerNotFound')
+      return undefined;
+    throw error;
+  });
   if (rule?.RuleArn !== undefined)
     await mutation('delete production ALB rule', () =>
       context.services.loadBalancer.send(new DeleteRuleCommand({ RuleArn: rule.RuleArn })),

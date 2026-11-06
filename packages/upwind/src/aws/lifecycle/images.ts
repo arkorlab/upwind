@@ -10,7 +10,7 @@ import {
   DescribeImagesCommand,
   GetAuthorizationTokenCommand,
 } from '@aws-sdk/client-ecr';
-import { HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { GetObjectCommand, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 
 import { verifyFargateArchive } from '../build-verify.ts';
 import { runCommand } from '../process.ts';
@@ -171,17 +171,34 @@ export async function uploadStatic(
       immutable: true,
     });
   }
-  await mutation('publish immutable static-file manifest', () =>
-    context.services.objects.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: `static-manifests/${receipt.deploymentId}.json`,
-        Body: JSON.stringify({ v: 1, files }),
-        ContentType: 'application/json',
-        IfNoneMatch: '*',
-      }),
-    ),
-  );
+  const key = `static-manifests/${receipt.deploymentId}.json`;
+  const body = JSON.stringify({ v: 1, files });
+  try {
+    await mutation('publish immutable static-file manifest', () =>
+      context.services.objects.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: body,
+          ContentType: 'application/json',
+          IfNoneMatch: '*',
+        }),
+      ),
+    );
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== 'PreconditionFailed') throw error;
+    const existing = await context.services.objects.send(
+      new GetObjectCommand({ Bucket: bucket, Key: key }),
+    );
+    if (existing.Body === undefined || existing.ContentLength !== Buffer.byteLength(body))
+      throw new Error('this deployment already has a different immutable static manifest');
+    const held = await existing.Body.transformToString();
+    if (
+      createHash('sha256').update(held).digest('hex') !==
+      createHash('sha256').update(body).digest('hex')
+    )
+      throw new Error('this deployment already has a different immutable static manifest');
+  }
 }
 
 export async function deleteImage(

@@ -3,8 +3,10 @@ import {
   DeleteStackCommand,
   DescribeStackEventsCommand,
   DescribeStacksCommand,
+  ListStackResourcesCommand,
   UpdateStackCommand,
   type Stack,
+  type StackResourceSummary,
 } from '@aws-sdk/client-cloudformation';
 
 import { errorCode, mutation, type AwsContext, UncertainAwsMutation } from './sdk.ts';
@@ -39,6 +41,26 @@ export function outputs(value: Stack): Record<string, string> {
         : [],
     ),
   );
+}
+
+/** Physical resource discovery also works when a failed stack has never produced outputs. */
+export async function stackResources(
+  context: AwsContext,
+  name: string,
+): Promise<StackResourceSummary[]> {
+  const resources: StackResourceSummary[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await context.services.stacks.send(
+      new ListStackResourcesCommand({
+        StackName: name,
+        ...(cursor === undefined ? {} : { NextToken: cursor }),
+      }),
+    );
+    resources.push(...(page.StackResourceSummaries ?? []));
+    cursor = page.NextToken;
+  } while (cursor !== undefined);
+  return resources;
 }
 
 export function owned(value: Stack, project: string): void {

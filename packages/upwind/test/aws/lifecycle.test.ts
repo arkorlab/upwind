@@ -128,7 +128,7 @@ describe('AWS deployment exclusion and failed activation', () => {
     await expect(
       activateRecord(
         context,
-        { ArtifactsBucket: 'bucket' } as AwsBootstrapOutputs,
+        { ArtifactsBucket: 'bucket', CacheTableName: 'table' } as AwsBootstrapOutputs,
         settings,
         {
           v: 1,

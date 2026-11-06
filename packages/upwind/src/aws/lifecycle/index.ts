@@ -3,6 +3,7 @@ import type { DeploySettings } from '../../deploy/config.ts';
 import { buildFargate, readFargateBuild } from '../build.ts';
 import type { AwsCredentials } from '../credentials.ts';
 import { readAwsSecrets } from '../secrets.ts';
+import { pruneOrphanStaticManifests } from './asset-retention.ts';
 import { ensureBootstrap, existingBootstrap } from './bootstrap.ts';
 import { configureStaticBypass } from './cdn.ts';
 import { validateImage } from './images.ts';
@@ -62,6 +63,7 @@ export async function runAwsDeploy(
   const bootstrap = await ensureBootstrap(context, settings.project, aws);
   return withProjectLock(context, bootstrap.ArtifactsBucket, async (lock) => {
     const state = await reconcile(context, bootstrap, settings.project, lock);
+    await pruneOrphanStaticManifests(context, bootstrap.ArtifactsBucket, lock);
     if (state.current === receipt.deploymentId) {
       const live = await recordOf(context, bootstrap.ArtifactsBucket, receipt.deploymentId);
       if (live.targetGroupArn === undefined)
@@ -141,9 +143,13 @@ export async function runAwsDeployments(
     const live = record.targetGroupArn !== undefined && record.targetGroupArn === targetOf(route);
     const status = live
       ? 'live'
-      : record.status === 'live' || record.status === 'kept'
-        ? 'kept (stopped)'
-        : record.status;
+      : record.cacheRetired === true
+        ? 'retiring'
+        : record.status === 'kept'
+          ? 'kept (stopped)'
+          : record.status === 'live'
+            ? 'retained'
+            : record.status;
     console.log(
       `  ${record.deploymentId}  ${status}  ${record.createdAt}${record.message === undefined ? '' : `  ${record.message}`}`,
     );
@@ -168,11 +174,13 @@ export async function runAwsRollback(
   if (bootstrap === undefined) throw new Error('this project has no AWS deployment to roll back');
   return withProjectLock(context, bootstrap.ArtifactsBucket, async (lock) => {
     const state = await reconcile(context, bootstrap, settings.project, lock);
+    await pruneOrphanStaticManifests(context, bootstrap.ArtifactsBucket, lock);
     const candidates = (await records(context, bootstrap.ArtifactsBucket))
       .filter(
         (record) =>
           record.status !== 'deleted' &&
           record.status !== 'staging' &&
+          record.cacheRetired !== true &&
           record.deploymentId !== state.current,
       )
       .sort((a, b) => (b.lastServed ?? b.createdAt).localeCompare(a.lastServed ?? a.createdAt));

@@ -34,6 +34,7 @@ import { carriesMaps } from '../source-maps.ts';
 import { collectStaticFiles } from '../static-files.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from '../throwing-globals.ts';
 import { adapterRoot } from './adapter-root.ts';
+import { strictAwsCacheSource } from './aws-cache-safety.ts';
 import { EDGE_ANSWER_SOURCE, EDGE_ANSWER_WRAPPER } from './edge-answer.ts';
 import {
   NATIVE_EDGE_WEB_GLOBALS,
@@ -234,6 +235,14 @@ function nativeModules(runtimeRoot: string, cacheHost: string): Plugin {
       return null;
     },
     load: (id) => (id === '\0native-wasm' ? 'export {};' : null),
+    transform(source, id) {
+      if (process.env['UPWIND_AWS_BUILD'] !== '1') return null;
+      if (id === path.join(runtimeRoot, 'cache/pulls.ts'))
+        return strictAwsCacheSource(source, 'pulls');
+      if (id === path.join(runtimeRoot, 'function.ts'))
+        return strictAwsCacheSource(source, 'function');
+      return null;
+    },
   };
 }
 

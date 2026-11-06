@@ -17,7 +17,15 @@ export function substitute(value: string): Record<string, string> {
 
 export function resourceName(project: string): string {
   const digest = createHash('sha256').update(project).digest('hex').slice(0, 8);
-  return `${project.slice(0, 23)}-${digest}`;
+  const prefix =
+    project
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/gu, '-')
+      .replace(/-+/gu, '-')
+      .replace(/^-+|-+$/gu, '')
+      .slice(0, 16)
+      .replace(/-+$/gu, '') || 'project';
+  return `upwind-${prefix}-${digest}`;
 }
 
 export function tags(project: string): readonly Record<string, string>[] {

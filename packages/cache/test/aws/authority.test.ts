@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'vitest';
 
+import { AwsAuthority } from '../../src/aws/authority.ts';
 import type { ScopeState } from '../../src/aws/model.ts';
+import { TRANSIENT_RETENTION_MS } from '../../src/aws/types.ts';
+import { DEFAULT_CACHE_VARS } from '../../src/env.ts';
 import { cacheContract } from './contract.ts';
-import { MemoryAuthorityStore, pair } from './support.ts';
+import { MemoryAuthorityStore, MemoryObjects, options, pair } from './support.ts';
 
 for (const kind of ['valkey', 'dynamodb'] as const)
   cacheContract(`AWS ${kind} authority`, () => Promise.resolve(new MemoryAuthorityStore(kind)));
@@ -63,3 +66,122 @@ describe('DynamoDB projection recovery', () => {
     }
   });
 });
+
+for (const kind of ['valkey', 'dynamodb'] as const) {
+  test(`${kind} retires an unopened scope idempotently without seeding it`, async () => {
+    const store = new MemoryAuthorityStore(kind);
+    const objects = new MemoryObjects();
+    const host = new AwsAuthority(options(kind), store, objects);
+    await objects.put(new Uint8Array([1]), 'blobs');
+    try {
+      expect(await store.read('scope')).toBeUndefined();
+      await host.retire();
+      const tombstone = await store.read<ScopeState>('scope');
+      expect(tombstone?.value.status).toBe('retired');
+      expect(objects.values.size).toBe(0);
+      await host.retire();
+      expect((await store.read('scope'))?.raw).toBe(tombstone?.raw);
+      await expect(host.initialize()).rejects.toThrow('scope is unavailable');
+      expect([...store.values.keys()]).toEqual(['scope']);
+    } finally {
+      await host.close();
+    }
+  });
+
+  test(`${kind} accounts for referenced data bodies and rejects new entries at the scope quota`, async () => {
+    const store = new MemoryAuthorityStore(kind);
+    const host = await pair(store);
+    try {
+      const write = (valueBase64: string) =>
+        host.first.setData({
+          key: 'quota-value',
+          entry: {
+            kind: 'data:fetch',
+            tags: [],
+            timestamp: Date.now(),
+            stale: 0,
+            revalidate: 60,
+            expire: 3600,
+          },
+          valueBase64,
+        });
+      await write(Buffer.alloc(70_000).toString('base64'));
+      const large = await store.read<ScopeState>('scope');
+      expect(large?.value.bodyBytes).toBeGreaterThanOrEqual(70_000);
+      await write('eA==');
+      const small = await store.read<ScopeState>('scope');
+      expect(small?.value.bodyBytes).toBeLessThan(70_000);
+      if (small === undefined) throw new Error('scope missing');
+      await store.change(
+        new Map([['scope', small.raw]]),
+        new Map([
+          ['scope', { ...small.value, entries: DEFAULT_CACHE_VARS.QUOTA_ENTRIES_PER_SCOPE }],
+        ]),
+      );
+      await expect(
+        host.first.startAttempt({
+          entry: { kind: 'app-page', route: '/new', pathname: '/new' },
+          reason: 'miss',
+        }),
+      ).rejects.toMatchObject({ code: 'quota_exceeded' });
+      await write('eQ==');
+      expect(
+        (await host.second.getData({ key: 'quota-value', kind: 'data:fetch' }))?.value,
+      ).toEqual({ kind: 'inline', base64: 'eQ==' });
+    } finally {
+      await host.close();
+    }
+  });
+
+  test(`${kind} expires repeated renderer bookkeeping while current values and artifact access remain`, async () => {
+    const store = new MemoryAuthorityStore(kind);
+    const host = await pair(store);
+    try {
+      for (let index = 0; index < 12; index += 1) {
+        const lease = await host.first.startAttempt({
+          entry: { kind: 'app-page', route: '/', pathname: '/' },
+          reason: 'miss',
+        });
+        if (lease.kind !== 'leased') throw new Error('lease missing');
+        await host.first.uploadArtifact({
+          attemptId: lease.attemptId,
+          fencingToken: lease.fencingToken,
+          role: 'html',
+          contentType: 'text/html',
+          bytes: new TextEncoder().encode(`body-${index}`),
+        });
+        await host.first.fail(lease.attemptId, {
+          fencingToken: lease.fencingToken,
+          outcome: 'skipped',
+        });
+        await host.first.setData({
+          key: 'key',
+          entry: {
+            kind: 'data:fetch',
+            tags: [],
+            stale: 0,
+            timestamp: Date.now(),
+            revalidate: 60,
+            expire: 3600,
+          },
+          valueBase64: Buffer.alloc(70_000, index).toString('base64'),
+          order: { writer: `writer-${index}`, seq: 1 },
+        });
+      }
+      const current = await host.second.getData({ key: 'key', kind: 'data:fetch' });
+      expect(current?.value.kind).toBe('ref');
+      store.clockOffset = TRANSIENT_RETENTION_MS + 1000;
+      await store.sweepExpired();
+      expect(
+        [...store.values.keys()].some((key) => /^(attempt:|upload:|writer:|artifact:)/u.test(key)),
+      ).toBe(false);
+      expect((await host.second.getData({ key: 'key', kind: 'data:fetch' }))?.generationId).toBe(
+        current?.generationId,
+      );
+      if (current?.value.kind === 'ref')
+        expect((await host.second.readArtifact(current.value.artifactId))?.byteLength).toBe(70_000);
+    } finally {
+      await host.close();
+    }
+  });
+}

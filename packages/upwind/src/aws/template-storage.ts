@@ -113,7 +113,7 @@ export function storageResources(
       Properties: {
         CacheParameterGroupFamily: valkeyParameterGroupFamily,
         Description: 'Cache authority state must never be evicted',
-        Properties: { 'maxmemory-policy': 'noeviction' },
+        Properties: { 'maxmemory-policy': 'noeviction', 'cluster-enabled': 'yes' },
       },
     },
     ValkeyUser: {
@@ -122,7 +122,8 @@ export function storageResources(
         Engine: 'valkey',
         UserId: `${name}-user`,
         UserName: 'upwind',
-        AccessString: 'on ~upwind:* +@all -@dangerous +eval +evalsha +script|load',
+        AccessString:
+          'on ~upwind:* +@all -@dangerous +eval +evalsha +script|load +cluster|slots +cluster|shards +cluster|info',
         AuthenticationMode: {
           Type: 'password',
           Passwords: [

@@ -5,6 +5,7 @@ import {
   GetCommand,
   QueryCommand,
   TransactWriteCommand,
+  type TransactWriteCommandInput,
 } from '@aws-sdk/lib-dynamodb';
 import { CacheHostError } from '@stayingupwind/runtime/cache-host';
 
@@ -30,6 +31,12 @@ export class DynamoAuthorityStore implements AuthorityStore {
     this.#client = DynamoDBDocumentClient.from(
       new DynamoDBClient({
         region,
+        maxAttempts: 3,
+        requestHandler: {
+          connectionTimeout: 1000,
+          requestTimeout: 1000,
+          throwOnRequestTimeout: true,
+        },
         ...(endpoint === undefined
           ? {}
           : { endpoint, credentials: { accessKeyId: 'local', secretAccessKey: 'local' } }),
@@ -142,25 +149,35 @@ export class DynamoAuthorityStore implements AuthorityStore {
     if (notAfter !== undefined && notAfter <= Date.now()) return false;
     const keys = [...new Set([...expected.keys(), ...writes.keys()])];
     if (keys.length > BATCH_SIZE) throw new Error('AWS cache transaction exceeds 100 items');
-    const items = keys.map((key) => {
+    const items: TransactWriteCommandInput['TransactItems'] = keys.map((key) => {
       const prior = expected.get(key);
-      const condition =
-        prior === undefined
-          ? {}
-          : prior === null
-            ? {
-                ConditionExpression: 'attribute_not_exists(#value) OR #expires <= :now',
-                ExpressionAttributeNames: { '#value': 'value', '#expires': 'expiresAt' },
-                ExpressionAttributeValues: { ':now': Math.floor(Date.now() / 1000) },
-              }
-            : {
-                ConditionExpression: '#value = :prior',
-                ExpressionAttributeNames: { '#value': 'value' },
-                ExpressionAttributeValues: { ':prior': prior },
-              };
-      const common = { TableName: this.#table, ...condition };
-      if (!writes.has(key))
-        return { ConditionCheck: { ...common, Key: { pk: this.#scope, sk: key } } };
+      const condition: {
+        ConditionExpression: string;
+        ExpressionAttributeNames: Record<string, string>;
+        ExpressionAttributeValues: Record<string, string | number>;
+      } =
+        prior === null
+          ? {
+              ConditionExpression: 'attribute_not_exists(#value) OR #expires <= :now',
+              ExpressionAttributeNames: { '#value': 'value', '#expires': 'expiresAt' },
+              ExpressionAttributeValues: { ':now': Math.floor(Date.now() / 1000) },
+            }
+          : {
+              ConditionExpression: '#value = :prior',
+              ExpressionAttributeNames: { '#value': 'value' },
+              ExpressionAttributeValues: { ':prior': prior ?? '' },
+            };
+      const common = { TableName: this.#table, ...(prior === undefined ? {} : condition) };
+      if (!writes.has(key)) {
+        if (prior === undefined) throw new Error('AWS cache condition has no expected value');
+        return {
+          ConditionCheck: {
+            TableName: this.#table,
+            ...condition,
+            Key: { pk: this.#scope, sk: key },
+          },
+        };
+      }
       const value = writes.get(key);
       if (value === null) return { Delete: { ...common, Key: { pk: this.#scope, sk: key } } };
       const encoded = JSON.stringify(value);

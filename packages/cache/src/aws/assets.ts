@@ -13,7 +13,7 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 
-import { GetObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, ListObjectsV2Command, NoSuchKey, S3Client } from '@aws-sdk/client-s3';
 import type { StaticFile } from '@stayingupwind/core/bundle';
 
 const MANIFEST_PREFIX = 'static-manifests/';
@@ -66,8 +66,20 @@ async function fileDigest(file: string): Promise<string> {
   return hash.digest('hex');
 }
 
-async function manifest(client: S3Client, bucket: string, key: string): Promise<StaticFile[]> {
-  const result = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+export async function readRetainedManifest(
+  client: S3Client,
+  bucket: string,
+  key: string,
+): Promise<StaticFile[]> {
+  const result = await client
+    .send(new GetObjectCommand({ Bucket: bucket, Key: key }))
+    .catch((error: unknown) => {
+      // Retention can remove an expired manifest after this task listed it. Its immutable
+      // objects stay in S3; unavailable or malformed retained manifests still fail readiness.
+      if (error instanceof NoSuchKey) return undefined;
+      throw error;
+    });
+  if (result === undefined) return [];
   if (
     result.Body === undefined ||
     result.ContentLength === undefined ||
@@ -161,7 +173,7 @@ export async function prepareAwsAssets(options: AwsAssetsOptions): Promise<void>
       );
       for (const object of page.Contents ?? []) {
         if (object.Key === undefined || !object.Key.endsWith('.json')) continue;
-        for (const file of await manifest(client, options.bucket, object.Key)) {
+        for (const file of await readRetainedManifest(client, options.bucket, object.Key)) {
           const old = retained.get(file.pathname);
           if (old !== undefined && old.blob.sha256 !== file.blob.sha256)
             throw new Error('retained immutable assets reuse a pathname for different bytes');

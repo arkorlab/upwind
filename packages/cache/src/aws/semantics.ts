@@ -15,7 +15,12 @@ import {
 
 import type { PackHeaderFields } from '../scope/pack-header-fields.ts';
 import { staticPageHeadersOf, staticPagePrivacyOf } from '../scope/static-page-privacy.ts';
-import type { DataInvalidationMark, GenerationState, InvalidationEvent, TagState } from './model.ts';
+import type {
+  DataInvalidationMark,
+  GenerationState,
+  InvalidationEvent,
+  TagState,
+} from './model.ts';
 import type { ObjectStore } from './objects.ts';
 
 export function checkTags(values: readonly string[]): void {
@@ -39,16 +44,23 @@ export function mergedTag(
   const latest = previous !== undefined && previous.revision > event.revision ? previous : event;
   const dataHistory: DataInvalidationMark[] = [...(previous?.dataHistory ?? [])];
   if (!dataHistory.some((mark) => mark.revision === event.revision)) {
-    dataHistory.push({ revision: event.revision, staleAt: event.staleAt,
-      hardExpireAt: event.hardExpireAt, sparedAfter: event.sparedAfter });
+    dataHistory.push({
+      revision: event.revision,
+      staleAt: event.staleAt,
+      hardExpireAt: event.hardExpireAt,
+      sparedAfter: event.sparedAfter,
+    });
     dataHistory.sort((a, b) => a.revision - b.revision);
     if (dataHistory.length > 16) {
       const [first, second] = dataHistory;
       if (first !== undefined && second !== undefined) {
         const hard = Math.min(first.hardExpireAt ?? Infinity, second.hardExpireAt ?? Infinity);
-        dataHistory.splice(0, 2, { revision: second.revision,
-          staleAt: Math.max(first.staleAt, second.staleAt), hardExpireAt: hard === Infinity ? null : hard,
-          sparedAfter: null });
+        dataHistory.splice(0, 2, {
+          revision: second.revision,
+          staleAt: Math.max(first.staleAt, second.staleAt),
+          hardExpireAt: hard === Infinity ? null : hard,
+          sparedAfter: null,
+        });
       }
     }
   }
@@ -80,9 +92,10 @@ export function condemnation(
     for (const mark of history ?? []) {
       if (generation.data === undefined && mark.revision <= dependencyRevision) continue;
       if (generation.data !== undefined && generation.cacheTimestamp !== null) {
-        const threshold = publicationRevision < mark.revision
-          ? (mark as DataInvalidationMark).sparedAfter
-          : mark.staleAt;
+        const threshold =
+          publicationRevision < mark.revision
+            ? (mark as DataInvalidationMark).sparedAfter
+            : mark.staleAt;
         if (threshold !== null && generation.cacheTimestamp > threshold) continue;
       }
       result = {

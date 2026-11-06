@@ -29,6 +29,51 @@ export function digest(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+async function boundedBody(
+  body: { transformToWebStream(): ReadableStream<Uint8Array> },
+  length: number,
+  external?: AbortSignal,
+): Promise<Uint8Array> {
+  const signal = AbortSignal.any([
+    AbortSignal.timeout(10_000),
+    ...(external === undefined ? [] : [external]),
+  ]);
+  const reader = body.transformToWebStream().getReader();
+  const abort = (): void => {
+    void reader.cancel(signal.reason).catch(() => undefined);
+  };
+  signal.addEventListener('abort', abort, { once: true });
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  try {
+    for (;;) {
+      signal.throwIfAborted();
+      const result = await reader.read();
+      signal.throwIfAborted();
+      if (result.done) break;
+      if (offset + result.value.byteLength > bytes.byteLength)
+        throw new Error('AWS cache object exceeded its reference');
+      bytes.set(result.value, offset);
+      offset += result.value.byteLength;
+    }
+    if (offset !== length) throw new Error('AWS cache object ended before its declared length');
+    return bytes;
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    signal.removeEventListener('abort', abort);
+    reader.releaseLock();
+  }
+}
+
+function statusOf(error: Error): unknown {
+  const metadata: unknown = Reflect.get(error, '$metadata');
+  return typeof metadata === 'object' && metadata !== null
+    ? Reflect.get(metadata, 'httpStatusCode')
+    : undefined;
+}
+
 /** Only immutable, scope-confined keys are ever written; publication is the metadata CAS. */
 export class S3Objects implements ObjectStore {
   readonly #client: S3Client;
@@ -36,7 +81,15 @@ export class S3Objects implements ObjectStore {
   readonly #prefix: string;
 
   constructor(region: string, bucket: string, scopeId: string) {
-    this.#client = new S3Client({ region });
+    this.#client = new S3Client({
+      region,
+      maxAttempts: 3,
+      requestHandler: {
+        connectionTimeout: 1000,
+        requestTimeout: 10_000,
+        throwOnRequestTimeout: true,
+      },
+    });
     this.#bucket = bucket;
     this.#prefix = `aws-cache/${scopeId}/`;
   }
@@ -70,8 +123,7 @@ export class S3Objects implements ObjectStore {
     } catch (error) {
       if (
         !(error instanceof Error) ||
-        (error.name !== 'PreconditionFailed' &&
-          Reflect.get(error, '$metadata')?.httpStatusCode !== 412)
+        (error.name !== 'PreconditionFailed' && statusOf(error) !== 412)
       )
         throw error;
     }
@@ -103,9 +155,7 @@ export class S3Objects implements ObjectStore {
         answer.ContentLength > 2048
       )
         throw new Error('invalid AWS cache artifact directory record');
-      const bytes = await answer.Body.transformToByteArray();
-      if (bytes.byteLength > 2048)
-        throw new Error('AWS cache artifact directory record exceeds its byte limit');
+      const bytes = await boundedBody(answer.Body, answer.ContentLength);
       return JSON.parse(new TextDecoder().decode(bytes)) as ObjectReference;
     } catch (error) {
       if (error instanceof Error && error.name === 'NoSuchKey') return undefined;
@@ -130,29 +180,13 @@ export class S3Objects implements ObjectStore {
       signal === undefined ? {} : { abortSignal: signal },
     );
     if (response.ContentLength !== ref.byteLength || response.Body === undefined) {
-      response.Body?.transformToWebStream().cancel();
+      await response.Body?.transformToWebStream()
+        .cancel()
+        .catch(() => undefined);
       throw new Error('AWS cache object length differs from its reference');
     }
-    const reader = response.Body.transformToWebStream().getReader();
-    const bytes = new Uint8Array(ref.byteLength);
-    let offset = 0;
-    try {
-      for (;;) {
-        signal?.throwIfAborted();
-        const result = await reader.read();
-        if (result.done) break;
-        if (offset + result.value.byteLength > bytes.byteLength)
-          throw new Error('AWS cache object exceeded its reference');
-        bytes.set(result.value, offset);
-        offset += result.value.byteLength;
-      }
-    } catch (error) {
-      await reader.cancel().catch(() => undefined);
-      throw error;
-    } finally {
-      reader.releaseLock();
-    }
-    if (offset !== bytes.byteLength || digest(bytes) !== ref.sha256)
+    const bytes = await boundedBody(response.Body, ref.byteLength, signal);
+    if (digest(bytes) !== ref.sha256)
       throw new Error('AWS cache object digest differs from its reference');
     return bytes;
   }

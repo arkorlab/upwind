@@ -79,6 +79,7 @@ describe('Fargate target-platform build', () => {
     const recipe = dockerfile({ baseImageDigest, project: 'apps/site', deploymentId: 'dpl_test' });
     expect(recipe.match(new RegExp(`FROM ${baseImageDigest}`, 'gu'))).toHaveLength(2);
     expect(recipe).toContain('--mount=type=secret,id=upwind-build-env,required=true');
+    expect(recipe).toContain('--mount=type=secret,id=upwind-npmrc');
     expect(recipe).not.toContain('ARG ');
     expect(recipe).not.toContain('COPY .');
     expect(recipe).toContain('USER node');
@@ -93,6 +94,7 @@ describe('Fargate target-platform build', () => {
       prepare: ['pnpm', '--filter', '@example/shared', 'build'],
     });
     expect(script).toContain('/run/secrets/upwind-build-env');
+    expect(script).toContain("env.NPM_CONFIG_USERCONFIG = '/run/secrets/upwind-npmrc'");
     expect(script).toContain('UPWIND_AWS_BUILD');
     expect(script).toContain('shell: false');
     expect(script).toContain("'/workspace'");

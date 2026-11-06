@@ -2,7 +2,10 @@ import {
   DescribeAvailabilityZonesCommand,
   DescribeManagedPrefixListsCommand,
 } from '@aws-sdk/client-ec2';
-import { DescribeCacheEngineVersionsCommand } from '@aws-sdk/client-elasticache';
+import {
+  DescribeCacheEngineVersionsCommand,
+  DescribeReplicationGroupsCommand,
+} from '@aws-sdk/client-elasticache';
 
 import { bootstrapConfiguration, bootstrapTemplate } from '../templates.ts';
 import type { AwsBootstrapOutputs, AwsDeploySettings } from '../types.ts';
@@ -27,6 +30,27 @@ const REQUIRED = [
 export function bootstrapOutputs(raw: Readonly<Record<string, string>>): AwsBootstrapOutputs {
   for (const key of REQUIRED) if (!raw[key]) throw new Error(`AWS bootstrap has no ${key} output`);
   return raw as unknown as AwsBootstrapOutputs;
+}
+
+/** A configured durability setting alone is not proof of the service's effective guarantee. */
+export async function verifyCacheDurability(
+  context: AwsContext,
+  bootstrap: AwsBootstrapOutputs,
+): Promise<void> {
+  if (bootstrap.CacheTableName !== undefined && bootstrap.CacheTableName !== '') return;
+  const id = bootstrap.ValkeyReplicationGroupId;
+  if (id === undefined || id === '')
+    throw new Error('the AWS bootstrap has no Valkey replication group identity');
+  const response = await context.services.cache.send(
+    new DescribeReplicationGroupsCommand({ ReplicationGroupId: id }),
+  );
+  const group = response.ReplicationGroups?.find(
+    (candidate) => candidate.ReplicationGroupId === id,
+  );
+  if (group?.EffectiveDurability !== 'sync')
+    throw new Error(
+      'the AWS Valkey cache does not report EffectiveDurability=sync; refusing activation without synchronous durability',
+    );
 }
 
 export async function existingBootstrap(
@@ -66,6 +90,7 @@ export async function ensureBootstrap(
       throw new Error(
         'the AWS project public origin differs from its bootstrap; restore its existing publicOrigin',
       );
+    await verifyCacheDurability(context, present);
     return present;
   }
   const zones = await context.services.ec2.send(
@@ -77,7 +102,11 @@ export async function ensureBootstrap(
     }),
   );
   const availabilityZones = (zones.AvailabilityZones ?? [])
-    .filter((zone) => zone.ZoneId !== 'apne1-az3' && zone.ZoneId !== 'use1-az3')
+    .filter(
+      (zone) =>
+        !settings.cloudFront ||
+        !new Set(['apne1-az3', 'use1-az3', 'usw1-az2', 'cac1-az3']).has(zone.ZoneId ?? ''),
+    )
     .flatMap((zone) => (zone.ZoneName === undefined ? [] : [zone.ZoneName]))
     .sort()
     .slice(0, 2);
@@ -118,5 +147,7 @@ export async function ensureBootstrap(
     bootstrapName(project),
     JSON.stringify(template),
   );
-  return bootstrapOutputs(outputs(created));
+  const result = bootstrapOutputs(outputs(created));
+  await verifyCacheDurability(context, result);
+  return result;
 }

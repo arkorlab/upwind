@@ -1,3 +1,4 @@
+import { ListStacksCommand } from '@aws-sdk/client-cloudformation';
 import { BatchDeleteImageCommand, ListImagesCommand } from '@aws-sdk/client-ecr';
 import {
   DeleteBucketCommand,
@@ -10,12 +11,19 @@ import {
 import type { DestroyOptions } from '../../deploy/args.ts';
 import type { DeploySettings } from '../../deploy/config.ts';
 import type { AwsCredentials } from '../credentials.ts';
-import { existingBootstrap } from './bootstrap.ts';
-import { say, settingsOf, stateOf } from './operations.ts';
+import { say, settingsOf } from './operations.ts';
 import { removeProduction } from './routes.ts';
 import { awsContext, errorCode, mutation, type AwsContext, type AwsLifecycleIo } from './sdk.ts';
 import { deleteProjectSecrets, deleteSecret } from './secrets.ts';
-import { bootstrapName, deleteStack, deploymentStackName, stack } from './stacks.ts';
+import {
+  bootstrapName,
+  deleteStack,
+  deploymentStackName,
+  outputs,
+  owned,
+  stack,
+  stackResources,
+} from './stacks.ts';
 import {
   LOCK_KEY,
   readJson,
@@ -24,6 +32,7 @@ import {
   withProjectLock,
   writeJson,
   type ProjectState,
+  type ProjectLock,
 } from './state.ts';
 
 async function verifyBucket(context: AwsContext, bucket: string, project: string): Promise<void> {
@@ -138,6 +147,32 @@ async function deleteRetainedBuckets(
   } while (cursor !== undefined);
 }
 
+/** Records can be absent after a failed bootstrap or a lost artifacts bucket. */
+async function deleteOwnedDeploymentStacks(
+  context: AwsContext,
+  project: string,
+  lock: ProjectLock,
+): Promise<void> {
+  const prefix = `${bootstrapName(project)}-dpl-`;
+  let cursor: string | undefined;
+  do {
+    const page = await context.services.stacks.send(
+      new ListStacksCommand(cursor === undefined ? {} : { NextToken: cursor }),
+    );
+    for (const summary of page.StackSummaries ?? []) {
+      if (
+        summary.StackName === undefined ||
+        !summary.StackName.startsWith(prefix) ||
+        summary.StackStatus === 'DELETE_COMPLETE'
+      )
+        continue;
+      await lock.assertHeld();
+      await deleteStack(context, project, summary.StackName);
+    }
+    cursor = page.NextToken;
+  } while (cursor !== undefined);
+}
+
 export async function runAwsDestroy(
   options: DestroyOptions,
   settings: DeploySettings,
@@ -148,52 +183,91 @@ export async function runAwsDestroy(
     throw new Error('upwind destroy deletes all managed AWS resources and data; pass --yes');
   const aws = settingsOf(settings);
   const context = awsContext(aws.region, credentials, io);
-  const bootstrap = await existingBootstrap(context, settings.project);
+  const name = bootstrapName(settings.project);
+  const bootstrap = await stack(context, name);
   if (bootstrap === undefined) {
     await deleteRetainedBuckets(context, settings.project, aws.region);
     say(`${settings.project} has no remaining managed AWS deployment`);
     return 0;
   }
-  const bucket = bootstrap.ArtifactsBucket;
-  await verifyBucket(context, bucket, settings.project);
-  try {
-    await withProjectLock(
-      context,
-      bucket,
-      async (lock) => {
-        const old = await readJson<ProjectState>(context, bucket, STATE_KEY);
-        await writeJson(
-          context,
-          bucket,
-          STATE_KEY,
-          { ...(old?.value ?? { v: 1 }), destroying: true },
-          old?.etag,
-        );
-        await removeProduction(context, bootstrap.ListenerArn, settings.project, lock);
-        for (const record of await records(context, bucket)) {
-          if (record.stackName !== deploymentStackName(settings.project, record.deploymentId))
-            throw new Error('refusing to delete a stack with a mismatched deployment identity');
-          await lock.assertHeld();
-          await deleteStack(context, settings.project, record.stackName);
-          if (record.secretArn !== undefined)
-            await deleteSecret(context, settings.project, record.secretArn);
-        }
-        await deleteProjectSecrets(context, settings.project);
-        await emptyImages(context, bootstrap.RepositoryName);
-        await lock.assertHeld();
-        // The bucket is intentionally retained by CloudFormation only for this locked interval.
-        // The explicit deletion below is part of destroy, never an optional retained resource.
-        await deleteStack(context, settings.project, bootstrapName(settings.project));
-        await verifyBucket(context, bucket, settings.project);
-        await emptyBucket(context, bucket, true);
-      },
-      true,
-    );
-    await context.services.objects.send(new DeleteBucketCommand({ Bucket: bucket }));
-  } catch (error) {
-    const state = await stateOf(context, bucket).catch(() => undefined);
+  owned(bootstrap, settings.project);
+  if (bootstrap.StackStatus?.endsWith('_IN_PROGRESS'))
     throw new Error(
-      `AWS destroy is incomplete; inspect stack ${bootstrapName(settings.project)} and bucket ${bucket}${state === undefined ? '' : ' (project marked for destruction)'}: ${error instanceof Error ? error.message : String(error)}`,
+      `AWS stack ${name} is still ${bootstrap.StackStatus}; wait for the provider operation to settle before destroying it`,
+    );
+  const values = outputs(bootstrap);
+  const resources = await stackResources(context, bootstrap.StackId ?? name);
+  const physical = (logical: string): string | undefined =>
+    resources.find(
+      (resource) =>
+        resource.LogicalResourceId === logical && resource.ResourceStatus !== 'DELETE_COMPLETE',
+    )?.PhysicalResourceId;
+  let bucket = values['ArtifactsBucket'] ?? physical('Artifacts');
+  const repository = values['RepositoryName'] ?? physical('Repository');
+  const listener = values['ListenerArn'] ?? physical('Listener');
+  if (bucket !== undefined) {
+    try {
+      await verifyBucket(context, bucket, settings.project);
+    } catch (error) {
+      if (errorCode(error) === 'NoSuchBucket' || errorCode(error) === 'NotFound')
+        bucket = undefined;
+      else throw error;
+    }
+  }
+  const remove = async (lock: ProjectLock): Promise<void> => {
+    if (bucket !== undefined) {
+      const old = await readJson<ProjectState>(context, bucket, STATE_KEY);
+      await writeJson(
+        context,
+        bucket,
+        STATE_KEY,
+        { ...(old?.value ?? { v: 1 }), destroying: true },
+        old?.etag,
+      );
+    }
+    if (listener !== undefined) await removeProduction(context, listener, settings.project, lock);
+    if (bucket !== undefined) {
+      for (const record of await records(context, bucket)) {
+        if (record.stackName !== deploymentStackName(settings.project, record.deploymentId))
+          throw new Error('refusing to delete a stack with a mismatched deployment identity');
+        await lock.assertHeld();
+        await deleteStack(context, settings.project, record.stackName);
+        if (record.secretArn !== undefined)
+          await deleteSecret(context, settings.project, record.secretArn);
+      }
+    }
+    await deleteOwnedDeploymentStacks(context, settings.project, lock);
+    await deleteProjectSecrets(context, settings.project);
+    if (repository !== undefined) await emptyImages(context, repository);
+    await lock.assertHeld();
+    // The artifacts bucket stays until the lock is released, including failed bootstrap cleanup.
+    await deleteStack(context, settings.project, name);
+    if (bucket !== undefined) {
+      await verifyBucket(context, bucket, settings.project);
+      await emptyBucket(context, bucket, true);
+    }
+  };
+  try {
+    if (bucket === undefined) {
+      // An incomplete bootstrap with no artifacts bucket cannot admit an ordinary deploy:
+      // that path requires all bootstrap outputs. CloudFormation still proves ownership.
+      await remove({
+        assertHeld: async () => {
+          const current = await stack(context, name);
+          if (current === undefined)
+            throw new Error(`AWS stack ${name} disappeared during cleanup`);
+          owned(current, settings.project);
+          if (current.StackStatus?.endsWith('_IN_PROGRESS'))
+            throw new Error(`AWS stack ${name} changed while cleanup was running`);
+        },
+      });
+    } else {
+      await withProjectLock(context, bucket, remove, true);
+      await context.services.objects.send(new DeleteBucketCommand({ Bucket: bucket }));
+    }
+  } catch (error) {
+    throw new Error(
+      `AWS destroy is incomplete; inspect stack ${name}${bucket === undefined ? '' : ` and bucket ${bucket}`}: ${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     );
   }

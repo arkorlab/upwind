@@ -29,6 +29,8 @@ export interface DeploymentRecord {
   readonly publicOrigin: string;
   readonly targetGroupArn?: string;
   readonly taskDefinitionArn?: string;
+  /** Persisted before deleting compute; retries must not invoke a deregistered task definition. */
+  readonly cacheRetired?: boolean;
   readonly lastServed?: string;
   readonly status: 'staging' | 'live' | 'kept' | 'deleted';
 }

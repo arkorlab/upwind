@@ -71,6 +71,7 @@ export interface AwsBootstrapOutputs {
   readonly CacheTableName?: string;
   readonly ValkeyEndpoint?: string;
   readonly ValkeySecretArn?: string;
+  readonly ValkeyReplicationGroupId?: string;
 }
 
 export interface CloudFormationTemplate {

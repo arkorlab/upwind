@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -104,6 +104,25 @@ export async function buildFargate(input: {
     );
     const secret = path.join(temporary, 'build-environment.json');
     await writeFile(secret, JSON.stringify(env), { mode: 0o600 });
+    const npmrcArguments: string[] = [];
+    const npmrc = path.join(directories.context, '.npmrc');
+    try {
+      const resolved = await realpath(npmrc);
+      const relative = path.relative(directories.context, resolved);
+      if (
+        relative === '..' ||
+        relative.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relative) ||
+        !(await lstat(resolved)).isFile()
+      ) {
+        throw new Error('build.context .npmrc must be a regular file inside the selected context');
+      }
+      const npmrcSecret = path.join(temporary, 'npmrc');
+      await writeFile(npmrcSecret, await readFile(resolved), { mode: 0o600 });
+      npmrcArguments.push('--secret', `id=upwind-npmrc,src=${npmrcSecret}`);
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+    }
     await runCommand('docker', [
       'buildx',
       'build',
@@ -114,6 +133,7 @@ export async function buildFargate(input: {
       imageTag,
       '--secret',
       `id=upwind-build-env,src=${secret}`,
+      ...npmrcArguments,
       '--iidfile',
       path.join(temporary, 'image-id'),
       context,

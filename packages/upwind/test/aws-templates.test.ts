@@ -1,6 +1,9 @@
+import { DEPLOYMENT_ID_PREFIX } from '@stayingupwind/core/bundle';
+import { createId } from '@stayingupwind/core/util';
 import { describe, expect, it } from 'vitest';
 
 import { awsDeploySettings } from '../src/aws/settings.ts';
+import { resourceName } from '../src/aws/template-values.ts';
 import { bootstrapTemplate, deploymentTemplate } from '../src/aws/templates.ts';
 import type { AwsBootstrapOutputs } from '../src/aws/types.ts';
 
@@ -24,6 +27,22 @@ const bootstrap: AwsBootstrapOutputs = {
 };
 
 describe('AWS Fargate infrastructure', () => {
+  it('uses valid bounded target-group names for deployment IDs containing underscores', () => {
+    for (const value of [
+      'shop-dpl_01abc',
+      'internal-project-dpl_abc',
+      '123-project-dpl_abc',
+      'my--app-dpl_abc',
+      'A'.repeat(200),
+    ]) {
+      const name = resourceName(value);
+      expect(name).toMatch(/^[a-z][a-z0-9-]{0,30}[a-z0-9]$/u);
+      expect(name.length).toBeLessThanOrEqual(32);
+      expect(name).not.toMatch(/^internal-/u);
+      expect(name).not.toContain('--');
+    }
+    expect(resourceName('shop-dpl_a')).not.toBe(resourceName('shop-dpl-a'));
+  });
   it('keeps durable Valkey metadata on a primary with no eviction and synchronous logging', () => {
     const template = bootstrapTemplate({
       project: 'shop',
@@ -42,7 +61,7 @@ describe('AWS Fargate infrastructure', () => {
     });
     expect(template.Resources['ValkeyParameters']?.['Properties']).toMatchObject({
       CacheParameterGroupFamily: 'valkey9',
-      Properties: { 'maxmemory-policy': 'noeviction' },
+      Properties: { 'maxmemory-policy': 'noeviction', 'cluster-enabled': 'yes' },
     });
     expect(template.Resources).not.toHaveProperty('CacheTable');
     expect(template.Resources['Artifacts']?.['DeletionPolicy']).toBe('Retain');
@@ -106,7 +125,7 @@ describe('AWS Fargate infrastructure', () => {
   it('attaches the staging target group before ECS starts and never owns production routing', () => {
     const template = deploymentTemplate({
       project: 'shop',
-      deploymentId: 'dpl_test',
+      deploymentId: createId(DEPLOYMENT_ID_PREFIX),
       settings: awsDeploySettings({ region: 'us-east-1' }),
       image: `${bootstrap.RepositoryUri}@sha256:${'a'.repeat(64)}`,
       bootstrap,
@@ -145,6 +164,7 @@ describe('AWS Fargate infrastructure', () => {
     });
     expect(template.Resources).not.toHaveProperty('ProductionRule');
     expect(template.Resources['TargetGroup']?.['Properties']).toMatchObject({
+      Name: expect.stringMatching(/^[a-z][a-z0-9-]{0,30}[a-z0-9]$/u),
       HealthCheckPath: '/__upwind/health',
       TargetType: 'ip',
       TargetGroupAttributes: [{ Key: 'deregistration_delay.timeout_seconds', Value: '300' }],

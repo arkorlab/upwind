@@ -1,10 +1,29 @@
-import { describe, expect, it } from 'vitest';
+import { NoSuchKey, S3Client } from '@aws-sdk/client-s3';
+import { describe, expect, it, vi } from 'vitest';
 
-import { retainedStaticFiles } from '../../src/aws/assets.ts';
+import { readRetainedManifest, retainedStaticFiles } from '../../src/aws/assets.ts';
 
 const blob = { sha256: 'a'.repeat(64), byteLength: 12, contentType: 'text/javascript' };
 
 describe('retained immutable assets', () => {
+  it('tolerates retirement after listing but fails readiness for other storage errors', async () => {
+    const send = vi.spyOn(S3Client.prototype, 'send');
+    const client = new S3Client({ region: 'us-east-1' });
+    try {
+      send.mockRejectedValueOnce(new NoSuchKey({ $metadata: {}, message: 'retired' }));
+      await expect(
+        readRetainedManifest(client, 'assets', 'static-manifests/old.json'),
+      ).resolves.toStrictEqual([]);
+      send.mockRejectedValueOnce(new Error('S3 unavailable'));
+      await expect(
+        readRetainedManifest(client, 'assets', 'static-manifests/kept.json'),
+      ).rejects.toThrow('S3 unavailable');
+    } finally {
+      send.mockRestore();
+      client.destroy();
+    }
+  });
+
   it('preserves a basePath while requiring Next.js immutable files', () => {
     const files = [{ pathname: '/shop/_next/static/chunks/a.js', immutable: true, blob }];
     expect(retainedStaticFiles({ v: 1, files })).toStrictEqual(files);

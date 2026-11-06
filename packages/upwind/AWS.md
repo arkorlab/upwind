@@ -62,6 +62,8 @@ private VPC origin in front of an internal ALB. Dynamic requests preserve viewer
 and query strings, bypass CDN caching and stream from the native runtime. Immutable static files
 are retained in S3 and prepared before a task becomes ready, so an ALB switch does not remove an
 older deployment's assets. Native routing, middleware and configured headers still apply.
+Task preparation follows the deployment retention window: expired deployment manifests are
+removed, while immutable S3 objects stay available until project destruction.
 
 To use the ALB directly:
 
@@ -140,7 +142,7 @@ argument vector run at the context root after the frozen installation. The appli
 `upwind build --target=node` with the AWS host selected. The package manager comes from the
 context's `packageManager` and lockfile. Yarn must use the node-modules linker. Host
 `node_modules`, Git metadata, generated output, environment files and cloud credentials are
-excluded. Only explicitly named build variables are mounted as BuildKit secrets. Runtime
+excluded. Only explicitly named build variables are mounted as BuildKit secrets. A context-root `.npmrc` is mounted separately as a build secret; registry token variables must also be explicitly listed in `build.env`. Runtime
 `deploy.secrets` and `--env-file` values are stored separately in Secrets Manager.
 
 ## Failures, rollback and deletion

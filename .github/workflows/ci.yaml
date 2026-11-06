@@ -311,6 +311,8 @@ jobs:
           UPWIND_TEST_VALKEY_URL: redis://127.0.0.1:6379
           UPWIND_TEST_DYNAMODB_ENDPOINT: http://127.0.0.1:8000
         run: pnpm exec vitest run --project aws-cache
+      - name: Published AWS container build and prebuilt validation
+        run: pnpm check:deploy-aws --out "$RUNNER_TEMP/aws-build"
 
   test:
     if: ${{ always() }}

@@ -103,6 +103,7 @@ export class ValkeyAuthorityStore implements AuthorityStore {
     this.#expiryIndex = `${this.#prefix}expires`;
     this.#client = newValkeyClient(url, username, password);
     this.#client.on('error', (error: unknown) => {
+      // eslint-disable-next-line no-console -- Connection errors belong to the native server's operator.
       console.error(
         'upwind: AWS cache connection failed',
         error instanceof Error ? error.message : String(error),
@@ -128,9 +129,12 @@ export class ValkeyAuthorityStore implements AuthorityStore {
 
   async read<T>(key: string, signal?: AbortSignal): Promise<Stored<T> | undefined> {
     signal?.throwIfAborted();
-    const raw = await this.#client.withCommandOptions({ timeout: 1000,
-      ...(signal === undefined ? {} : { abortSignal: signal }),
-    }).get(`${this.#prefix}${key}`);
+    const raw = await this.#client
+      .withCommandOptions({
+        timeout: 1000,
+        ...(signal === undefined ? {} : { abortSignal: signal }),
+      })
+      .get(`${this.#prefix}${key}`);
     signal?.throwIfAborted();
     return raw === null ? undefined : stored<T>(raw);
   }
@@ -142,9 +146,12 @@ export class ValkeyAuthorityStore implements AuthorityStore {
     signal?.throwIfAborted();
     const unique = [...new Set(keys)];
     if (unique.length === 0) return new Map();
-    const values = await this.#client.withCommandOptions({ timeout: 1000,
-      ...(signal === undefined ? {} : { abortSignal: signal }),
-    }).mGet(unique.map((key) => `${this.#prefix}${key}`));
+    const values = await this.#client
+      .withCommandOptions({
+        timeout: 1000,
+        ...(signal === undefined ? {} : { abortSignal: signal }),
+      })
+      .mGet(unique.map((key) => `${this.#prefix}${key}`));
     signal?.throwIfAborted();
     const result = new Map<string, Stored>();
     unique.forEach((key, index) => {
@@ -200,8 +207,9 @@ export class ValkeyAuthorityStore implements AuthorityStore {
     return answer === 1;
   }
 
-  async close(): Promise<void> {
-    this.#client.destroy();
+  close(): Promise<void> {
+    if (this.#client.isOpen) this.#client.destroy();
+    return Promise.resolve();
   }
 
   async sweepExpired(): Promise<void> {

@@ -7,11 +7,15 @@ export function buildScript(input: {
   readonly deploymentId: string;
   readonly prepare?: readonly string[];
 }): string {
-  return `import { readFileSync, writeFileSync } from 'node:fs';
+  return `import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 const env = { ...process.env, ...JSON.parse(readFileSync('/run/secrets/upwind-build-env', 'utf8')) };
+if (existsSync('/run/secrets/upwind-npmrc')) {
+  env.NPM_CONFIG_USERCONFIG = '/run/secrets/upwind-npmrc';
+  env.npm_config_userconfig = '/run/secrets/upwind-npmrc';
+}
 const run = (argv, cwd) => {
   const result = spawnSync(argv[0], argv.slice(1), { cwd, env, stdio: 'inherit', shell: false });
   if (result.error) throw result.error;
@@ -58,7 +62,7 @@ RUN npm install --global corepack@0.36.0
 WORKDIR /workspace
 COPY source/ /workspace/
 COPY build.mjs /upwind/build.mjs
-RUN --mount=type=secret,id=upwind-build-env,required=true node /upwind/build.mjs
+RUN --mount=type=secret,id=upwind-build-env,required=true --mount=type=secret,id=upwind-npmrc node /upwind/build.mjs
 
 FROM ${input.baseImageDigest} AS runtime
 ENV NODE_ENV=production

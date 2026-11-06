@@ -19,6 +19,9 @@ export interface ScopeState {
   readonly invalidatedAt: number | null;
   readonly checkpoint: number;
   readonly pending: number;
+  readonly entries: number;
+  readonly tags: number;
+  readonly bodyBytes: number;
   readonly status: 'seeding' | 'active' | 'retired';
 }
 
@@ -29,6 +32,7 @@ export interface GenerationReference {
   readonly dependencyRevision: number;
   readonly metadata: ObjectReference;
   readonly record?: ObjectReference | undefined;
+  readonly bytes: number;
 }
 
 export interface Lease {
@@ -68,7 +72,9 @@ export interface GenerationState {
   readonly tags: readonly GenerationTag[];
   readonly outputs: readonly OutputSnapshot[];
   readonly condemned?: InvalidationState | undefined;
-  readonly data?: { readonly entry: DataEntryMetadata; readonly value: DataValue } | undefined;
+  readonly data?:
+    | { readonly entry: DataEntryMetadata; readonly value: DataValue; readonly byteLength: number }
+    | undefined;
 }
 
 export interface TagState {
