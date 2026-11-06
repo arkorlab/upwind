@@ -9,7 +9,7 @@ import {
 
 import { bootstrapConfiguration, bootstrapTemplate } from '../templates.ts';
 import type { AwsBootstrapOutputs, AwsDeploySettings } from '../types.ts';
-import type { AwsContext } from './sdk.ts';
+import { type AwsContext, UncertainAwsMutation } from './sdk.ts';
 import { bootstrapName, createStack, outputs, owned, stack, waitStack } from './stacks.ts';
 
 const REQUIRED = [
@@ -60,10 +60,26 @@ export async function existingBootstrap(
   const current = await stack(context, bootstrapName(project));
   if (current === undefined) return undefined;
   owned(current, project);
-  const ready = current.StackStatus?.endsWith('_IN_PROGRESS')
-    ? await waitStack(context, bootstrapName(project))
-    : current;
-  if (ready === undefined) return undefined;
+  const healthy = new Set(['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'UPDATE_ROLLBACK_COMPLETE']);
+  const failed = (status: string | undefined): Error =>
+    new Error(
+      `AWS bootstrap stack ${bootstrapName(project)} is ${status ?? 'in an unknown state'}; inspect it and recover with upwind destroy --yes before deploying again`,
+    );
+  let ready = current;
+  if (current.StackStatus?.endsWith('_IN_PROGRESS')) {
+    try {
+      const settled = await waitStack(context, bootstrapName(project));
+      if (settled === undefined) return undefined;
+      ready = settled;
+    } catch (error) {
+      if (error instanceof UncertainAwsMutation) throw error;
+      const settled = await stack(context, bootstrapName(project));
+      if (settled === undefined) return undefined;
+      if (!healthy.has(settled.StackStatus ?? '')) throw failed(settled.StackStatus);
+      ready = settled;
+    }
+  }
+  if (!healthy.has(ready.StackStatus ?? '')) throw failed(ready.StackStatus);
   return bootstrapOutputs(outputs(ready));
 }
 

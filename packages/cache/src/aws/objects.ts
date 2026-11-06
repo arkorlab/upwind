@@ -180,9 +180,11 @@ export class S3Objects implements ObjectStore {
       signal === undefined ? {} : { abortSignal: signal },
     );
     if (response.ContentLength !== ref.byteLength || response.Body === undefined) {
-      await response.Body?.transformToWebStream()
-        .cancel()
-        .catch(() => undefined);
+      try {
+        await response.Body?.transformToWebStream().cancel();
+      } catch {
+        // Best-effort disposal must preserve the authoritative length mismatch below.
+      }
       throw new Error('AWS cache object length differs from its reference');
     }
     const bytes = await boundedBody(response.Body, ref.byteLength, signal);

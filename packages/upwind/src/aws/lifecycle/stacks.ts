@@ -10,6 +10,7 @@ import {
 } from '@aws-sdk/client-cloudformation';
 
 import { errorCode, mutation, type AwsContext, UncertainAwsMutation } from './sdk.ts';
+import type { DeploymentRecord } from './state.ts';
 
 export function bootstrapName(project: string): string {
   return `upwind-${project}`;
@@ -126,6 +127,15 @@ export async function createStack(
   const existing = await stack(context, name);
   if (existing !== undefined) {
     owned(existing, project);
+    const status = existing.StackStatus ?? '(unknown)';
+    if (
+      !status.endsWith('_IN_PROGRESS') &&
+      status !== 'CREATE_COMPLETE' &&
+      status !== 'UPDATE_COMPLETE'
+    )
+      throw new Error(
+        `CloudFormation stack ${name} is ${status}; inspect the failed owned stack and recover with upwind destroy --yes before retrying`,
+      );
     const current = await waitStack(context, name);
     if (current === undefined) throw new Error(`CloudFormation ${name} disappeared`);
     return current;
@@ -208,4 +218,22 @@ export function withDesiredCount(template: string, count: number): string {
     throw new Error('deployment template must contain exactly one ECS service');
   services[0].Properties['DesiredCount'] = count;
   return JSON.stringify(parsed);
+}
+
+export async function scaleDeployment(
+  context: AwsContext,
+  project: string,
+  record: DeploymentRecord,
+  tasks: number,
+): Promise<void> {
+  if (record.stackName !== deploymentStackName(project, record.deploymentId))
+    throw new Error('deployment stack does not match its identity');
+  const existing = await stack(context, record.stackName);
+  if (existing === undefined) {
+    if (tasks === 0) return;
+    throw new Error(
+      `retained deployment ${record.deploymentId} no longer has its CloudFormation stack`,
+    );
+  }
+  await updateStack(context, project, record.stackName, withDesiredCount(record.template, tasks));
 }

@@ -186,6 +186,7 @@ export function networkOutputs(): Record<string, Record<string, unknown>> {
   return {
     VpcId: output(ref('Vpc')),
     ListenerArn: output(ref('Listener')),
+    LoadBalancerDnsName: output(attribute('LoadBalancer', 'DNSName')),
     TaskSubnetIds: output({ 'Fn::Join': [',', [ref('PrivateSubnet1'), ref('PrivateSubnet2')]] }),
     TaskSecurityGroupId: output(ref('TaskSecurityGroup')),
   };

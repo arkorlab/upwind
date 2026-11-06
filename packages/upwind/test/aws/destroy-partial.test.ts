@@ -12,6 +12,7 @@ import {
   GetBucketTaggingCommand,
   GetObjectCommand,
   ListObjectsV2Command,
+  ListBucketsCommand,
   PutObjectCommand,
 } from '@aws-sdk/client-s3';
 import { ListSecretsCommand } from '@aws-sdk/client-secrets-manager';
@@ -125,6 +126,40 @@ const settings = {
 } as DeploySettings;
 
 describe('destroying an incomplete AWS bootstrap', () => {
+  it('skips an untagged bucket with a matching name prefix when looking for retained owned buckets', async () => {
+    const calls: string[] = [];
+    const send = async (command: unknown): Promise<unknown> => {
+      if (command instanceof DescribeStacksCommand)
+        throw Object.assign(new Error('stack does not exist'), { name: 'ValidationError' });
+      if (command instanceof ListBucketsCommand) {
+        calls.push('list');
+        return { Buckets: [{ Name: 'upwind-shop-artifacts-unowned' }] };
+      }
+      if (command instanceof GetBucketTaggingCommand) {
+        calls.push('tags');
+        throw Object.assign(new Error('no tags'), {
+          name: 'NoSuchTagSet',
+          $metadata: { httpStatusCode: 404 },
+        });
+      }
+      throw new Error('unexpected bucket mutation');
+    };
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await expect(
+        runAwsDestroy(
+          { projectDir: '/app', yes: true, includeStorage: false },
+          settings,
+          undefined,
+          { services: { stacks: { send }, objects: { send } } as unknown as AwsServices },
+        ),
+      ).resolves.toBe(0);
+      expect(calls).toStrictEqual(['list', 'tags']);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it.each([true, false])(
     'cleans the owned failed stack even without bootstrap outputs (bucket exists: %s)',
     async (bucketPresent) => {

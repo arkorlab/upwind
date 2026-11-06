@@ -69,6 +69,9 @@ describe('AWS Fargate settings', () => {
     expect(() =>
       awsDeploySettings({ region: 'ap-northeast-1', build: { env: ['AWS_ACCESS_KEY_ID'] } }),
     ).toThrow('credentials');
+    expect(() =>
+      awsDeploySettings({ region: 'ap-northeast-1', build: { env: ['aws_secret_access_key'] } }),
+    ).toThrow('credentials');
   });
 
   it('captures AWS authentication without leaving it in the project environment', () => {
@@ -76,10 +79,15 @@ describe('AWS Fargate settings', () => {
       AWS_PROFILE: 'deployment',
       AWS_WEB_IDENTITY_TOKEN_FILE: '/run/token',
       AWS_ROLE_ARN: 'arn:aws:iam::123456789012:role/deploy',
+      AWS_SECRET_ACCESS_KEY: 'secret',
       APP_VALUE: 'keep',
     };
     const captured = takeAwsCredentials(env);
-    expect(env).toStrictEqual({ APP_VALUE: 'keep' });
+    expect(env).toStrictEqual({
+      AWS_PROFILE: 'deployment',
+      AWS_ROLE_ARN: 'arn:aws:iam::123456789012:role/deploy',
+      APP_VALUE: 'keep',
+    });
     expect(captured.env['AWS_PROFILE']).toBe('deployment');
     expect(captured.env['AWS_WEB_IDENTITY_TOKEN_FILE']).toBe('/run/token');
     restoreAwsApplicationEnvironment(captured, env);

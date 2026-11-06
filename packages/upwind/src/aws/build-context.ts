@@ -14,7 +14,6 @@ const EXCLUDED = new Set([
   '.upwind',
   '.turbo',
   '.wrangler',
-  'coverage',
 ]);
 
 export function excludedBuildPath(relative: string): boolean {

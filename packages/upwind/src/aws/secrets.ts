@@ -9,9 +9,9 @@ const MAX_SECRET_BYTES = 65_536;
 
 export function reservedAwsVariable(name: string): boolean {
   return (
-    isCredentialVariable(name) ||
-    /^(?:AWS_|AMAZON_|UPWIND_|ARKOR_)/u.test(name) ||
-    RUNTIME_NAMES.has(name)
+    isCredentialVariable(name.toUpperCase()) ||
+    /^(?:AWS_|AMAZON_|UPWIND_|ARKOR_)/iu.test(name) ||
+    RUNTIME_NAMES.has(name.toUpperCase())
   );
 }
 

@@ -64,7 +64,7 @@ export async function buildFargate(input: {
   for (const name of settings.build.env) {
     if (
       !/^[A-Z_a-z][A-Z_a-z0-9]*$/u.test(name) ||
-      /^(?:AWS_|AMAZON_|CF_|CLOUDFLARE_|UPWIND_|ARKOR_)/u.test(name)
+      /^(?:AWS_|AMAZON_|CF_|CLOUDFLARE_|UPWIND_|ARKOR_)/iu.test(name)
     ) {
       throw new Error(
         `build.env cannot expose deployment credentials or reserved variables: ${name}`,
@@ -126,6 +126,8 @@ export async function buildFargate(input: {
     await runCommand('docker', [
       'buildx',
       'build',
+      '--provenance=false',
+      '--sbom=false',
       '--platform',
       platform,
       '--load',

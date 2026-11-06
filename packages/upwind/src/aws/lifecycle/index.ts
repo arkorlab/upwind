@@ -3,6 +3,7 @@ import type { DeploySettings } from '../../deploy/config.ts';
 import { buildFargate, readFargateBuild } from '../build.ts';
 import type { AwsCredentials } from '../credentials.ts';
 import { readAwsSecrets } from '../secrets.ts';
+import type { AwsBootstrapOutputs } from '../types.ts';
 import { pruneOrphanStaticManifests } from './asset-retention.ts';
 import { ensureBootstrap, existingBootstrap } from './bootstrap.ts';
 import { configureStaticBypass } from './cdn.ts';
@@ -19,11 +20,38 @@ import {
   stateOf,
 } from './operations.ts';
 import { checkDeployment, productionRule, targetOf } from './routes.ts';
-import { awsContext, type AwsLifecycleIo, UncertainAwsMutation } from './sdk.ts';
-import { records, withProjectLock } from './state.ts';
+import { awsContext, type AwsContext, type AwsLifecycleIo, UncertainAwsMutation } from './sdk.ts';
+import { records, withProjectLock, type ProjectLock } from './state.ts';
 
 export { runAwsDestroy } from './destroy.ts';
 export type { AwsLifecycleIo } from './sdk.ts';
+
+async function restorePreviousBypass(
+  context: AwsContext,
+  bootstrap: AwsBootstrapOutputs,
+  project: string,
+  previousId: string | undefined,
+  lock: ProjectLock,
+): Promise<void> {
+  if (previousId === undefined) return;
+  try {
+    const previous = await recordOf(context, bootstrap.ArtifactsBucket, previousId);
+    const route = await productionRule(context, bootstrap.ListenerArn, project);
+    if (previous.targetGroupArn !== undefined && targetOf(route) === previous.targetGroupArn)
+      await configureStaticBypass(
+        context,
+        project,
+        bootstrap,
+        previous.safeStaticBypass === true,
+        lock,
+      );
+  } catch (error) {
+    if (error instanceof UncertainAwsMutation) throw error;
+    console.warn(
+      `upwind: previous deployment is serving, but its static delivery policy could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
 
 export async function runAwsDeploy(
   options: DeployOptions,
@@ -61,6 +89,10 @@ export async function runAwsDeploy(
   });
   const context = awsContext(aws.region, credentials, io);
   const bootstrap = await ensureBootstrap(context, settings.project, aws);
+  if (!aws.cloudFront && bootstrap.LoadBalancerDnsName !== undefined)
+    say(
+      `direct ALB: ${bootstrap.LoadBalancerDnsName}; point ${new URL(bootstrap.PublicOrigin).hostname} DNS to this load balancer`,
+    );
   return withProjectLock(context, bootstrap.ArtifactsBucket, async (lock) => {
     const state = await reconcile(context, bootstrap, settings.project, lock);
     await pruneOrphanStaticManifests(context, bootstrap.ArtifactsBucket, lock);
@@ -72,6 +104,9 @@ export async function runAwsDeploy(
         target: live.targetGroupArn,
         tasks: live.settings.tasks,
         origin: live.publicOrigin,
+        ...(!bootstrap.DistributionId && bootstrap.LoadBalancerDnsName !== undefined
+          ? { loadBalancerDnsName: bootstrap.LoadBalancerDnsName }
+          : {}),
         deploymentId: live.deploymentId,
         checks: settings.checks,
       });
@@ -95,23 +130,23 @@ export async function runAwsDeploy(
       options.message,
       io,
     );
-    if (candidate.safeStaticBypass !== true)
-      await configureStaticBypass(context, settings.project, bootstrap, false, lock);
     try {
+      if (candidate.safeStaticBypass !== true)
+        await configureStaticBypass(context, settings.project, bootstrap, false, lock);
       await activateRecord(context, bootstrap, settings, candidate, state, lock);
     } catch (error) {
       if (error instanceof UncertainAwsMutation) throw error;
-      const route = await productionRule(context, bootstrap.ListenerArn, settings.project);
-      if (candidate.targetGroupArn !== targetOf(route)) {
-        try {
+      try {
+        const route = await productionRule(context, bootstrap.ListenerArn, settings.project);
+        if (candidate.targetGroupArn !== targetOf(route))
           await scale(context, settings.project, candidate, 0);
-        } catch (cleanup) {
-          if (cleanup instanceof UncertainAwsMutation) throw cleanup;
-          console.warn(
-            `upwind: candidate ${candidate.deploymentId} could not be stopped; inspect stack ${candidate.stackName}`,
-          );
-        }
+      } catch (cleanup) {
+        if (cleanup instanceof UncertainAwsMutation) throw cleanup;
+        console.warn(
+          `upwind: candidate ${candidate.deploymentId} could not be stopped; inspect stack ${candidate.stackName}: ${cleanup instanceof Error ? cleanup.message : String(cleanup)}`,
+        );
       }
+      await restorePreviousBypass(context, bootstrap, settings.project, state.current, lock);
       throw error;
     }
     if (candidate.safeStaticBypass === true)
@@ -143,13 +178,15 @@ export async function runAwsDeployments(
     const live = record.targetGroupArn !== undefined && record.targetGroupArn === targetOf(route);
     const status = live
       ? 'live'
-      : record.cacheRetired === true
-        ? 'retiring'
-        : record.status === 'kept'
-          ? 'kept (stopped)'
-          : record.status === 'live'
-            ? 'retained'
-            : record.status;
+      : record.status === 'deleted'
+        ? 'deleted'
+        : record.cacheRetired === true || record.retiring === true
+          ? 'retiring'
+          : record.status === 'kept'
+            ? 'kept (stopped)'
+            : record.status === 'live'
+              ? 'retained'
+              : record.status;
     console.log(
       `  ${record.deploymentId}  ${status}  ${record.createdAt}${record.message === undefined ? '' : `  ${record.message}`}`,
     );
@@ -181,6 +218,7 @@ export async function runAwsRollback(
           record.status !== 'deleted' &&
           record.status !== 'staging' &&
           record.cacheRetired !== true &&
+          record.retiring !== true &&
           record.deploymentId !== state.current,
       )
       .sort((a, b) => (b.lastServed ?? b.createdAt).localeCompare(a.lastServed ?? a.createdAt));
@@ -190,15 +228,23 @@ export async function runAwsRollback(
         : candidates.find((record) => record.deploymentId === options.to);
     if (chosen === undefined) throw new Error('no retained AWS deployment matches this rollback');
     await scale(context, settings.project, chosen, chosen.settings.tasks);
-    if (chosen.safeStaticBypass !== true)
-      await configureStaticBypass(context, settings.project, bootstrap, false, lock);
     try {
+      if (chosen.safeStaticBypass !== true)
+        await configureStaticBypass(context, settings.project, bootstrap, false, lock);
       await activateRecord(context, bootstrap, settings, chosen, state, lock);
     } catch (error) {
       if (error instanceof UncertainAwsMutation) throw error;
-      const route = await productionRule(context, bootstrap.ListenerArn, settings.project);
-      if (chosen.targetGroupArn !== targetOf(route))
-        await scale(context, settings.project, chosen, 0);
+      try {
+        const route = await productionRule(context, bootstrap.ListenerArn, settings.project);
+        if (chosen.targetGroupArn !== targetOf(route))
+          await scale(context, settings.project, chosen, 0);
+      } catch (cleanup) {
+        if (cleanup instanceof UncertainAwsMutation) throw cleanup;
+        console.warn(
+          `upwind: rollback candidate ${chosen.deploymentId} could not be stopped; inspect stack ${chosen.stackName}: ${cleanup instanceof Error ? cleanup.message : String(cleanup)}`,
+        );
+      }
+      await restorePreviousBypass(context, bootstrap, settings.project, state.current, lock);
       throw error;
     }
     if (chosen.safeStaticBypass === true)

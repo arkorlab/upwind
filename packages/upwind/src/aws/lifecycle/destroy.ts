@@ -118,9 +118,18 @@ async function deleteRetainedBuckets(
     for (const candidate of page.Buckets ?? []) {
       const bucket = candidate.Name;
       if (bucket === undefined) continue;
-      const tagged = await context.services.objects.send(
-        new GetBucketTaggingCommand({ Bucket: bucket }),
-      );
+      const tagged = await context.services.objects
+        .send(new GetBucketTaggingCommand({ Bucket: bucket }))
+        .catch((error: unknown) => {
+          if (
+            errorCode(error) === 'NoSuchTagSet' ||
+            errorCode(error) === 'NoSuchBucket' ||
+            errorCode(error) === 'NotFound'
+          )
+            return undefined;
+          throw error;
+        });
+      if (tagged === undefined) continue;
       if (!tagged.TagSet?.some((tag) => tag.Key === 'upwind:project' && tag.Value === project))
         continue;
       const owner = tagged.TagSet.find((tag) => tag.Key === 'aws:cloudformation:stack-id')?.Value;

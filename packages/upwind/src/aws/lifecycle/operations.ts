@@ -1,10 +1,8 @@
 import type { DeploySettings } from '../../deploy/config.ts';
 import { deploymentTemplate } from '../templates.ts';
 import type { AwsBootstrapOutputs, AwsDeploySettings, FargateBuildReceipt } from '../types.ts';
-import { deleteStaticManifest } from './asset-retention.ts';
 import { verifyCacheDurability } from './bootstrap.ts';
-import { deleteImage, pushImage, uploadStatic } from './images.ts';
-import { retireCache } from './retire.ts';
+import { pushImage, uploadStatic } from './images.ts';
 import {
   checkDeployment,
   listenerRules,
@@ -16,7 +14,7 @@ import {
 } from './routes.ts';
 import type { AwsContext, AwsLifecycleIo } from './sdk.ts';
 import { UncertainAwsMutation } from './sdk.ts';
-import { deploymentSecret, deleteSecret } from './secrets.ts';
+import { deploymentSecret } from './secrets.ts';
 import {
   createStack,
   deleteStack,
@@ -24,7 +22,7 @@ import {
   outputs,
   owned,
   stack,
-  stackResources,
+  scaleDeployment as scale,
   updateStack,
   waitStack,
   withDesiredCount,
@@ -118,24 +116,6 @@ export async function reconcile(
   return next;
 }
 
-export async function scale(
-  context: AwsContext,
-  project: string,
-  record: DeploymentRecord,
-  tasks: number,
-): Promise<void> {
-  if (record.stackName !== deploymentStackName(project, record.deploymentId))
-    throw new Error('deployment stack does not match its identity');
-  const existing = await stack(context, record.stackName);
-  if (existing === undefined) {
-    if (tasks === 0) return;
-    throw new Error(
-      `retained deployment ${record.deploymentId} no longer has its CloudFormation stack`,
-    );
-  }
-  await updateStack(context, project, record.stackName, withDesiredCount(record.template, tasks));
-}
-
 async function markLive(
   context: AwsContext,
   bootstrap: AwsBootstrapOutputs,
@@ -169,6 +149,9 @@ export async function activateRecord(
     target,
     tasks: record.settings.tasks,
     origin: record.publicOrigin,
+    ...(!bootstrap.DistributionId && bootstrap.LoadBalancerDnsName !== undefined
+      ? { loadBalancerDnsName: bootstrap.LoadBalancerDnsName }
+      : {}),
     token: record.probeToken,
     deploymentId: record.deploymentId,
     checks: settings.checks,
@@ -189,6 +172,9 @@ export async function activateRecord(
       target,
       tasks: record.settings.tasks,
       origin: record.publicOrigin,
+      ...(!bootstrap.DistributionId && bootstrap.LoadBalancerDnsName !== undefined
+        ? { loadBalancerDnsName: bootstrap.LoadBalancerDnsName }
+        : {}),
       deploymentId: record.deploymentId,
       checks: settings.checks,
     });
@@ -230,7 +216,11 @@ export async function stageRecord(
       throw new Error('the retained deployment belongs to another AWS compute driver');
     if (held.value.archiveSha256 !== receipt.archiveSha256)
       throw new Error('a different image archive already owns this immutable deployment ID');
-    if (held.value.status === 'deleted' || held.value.cacheRetired === true)
+    if (
+      held.value.status === 'deleted' ||
+      held.value.cacheRetired === true ||
+      held.value.retiring === true
+    )
       throw new Error(
         'this prebuilt deployment has been retired; build a new immutable deployment',
       );
@@ -385,93 +375,5 @@ async function resumeStaging(
   return resumed;
 }
 
-export async function retain(
-  context: AwsContext,
-  bootstrap: AwsBootstrapOutputs,
-  settings: DeploySettings,
-  current: string,
-  lock: ProjectLock,
-): Promise<void> {
-  const all = (await records(context, bootstrap.ArtifactsBucket)).filter(
-    (record) => record.status !== 'deleted' && record.deploymentId !== current,
-  );
-  const candidates = all
-    .filter((record) => record.status !== 'staging' && record.cacheRetired !== true)
-    .sort((a, b) => (b.lastServed ?? b.createdAt).localeCompare(a.lastServed ?? a.createdAt));
-  const kept = new Set(candidates.slice(0, settings.keep).map((record) => record.deploymentId));
-  for (const record of all) {
-    await lock.assertHeld();
-    const route = await productionRule(context, bootstrap.ListenerArn, settings.project);
-    if (record.targetGroupArn !== undefined && targetOf(route) === record.targetGroupArn)
-      throw new Error('retention encountered a deployment still receiving production traffic');
-    if (kept.has(record.deploymentId)) {
-      await scale(context, settings.project, record, 0);
-      await saveRecord(context, bootstrap.ArtifactsBucket, { ...record, status: 'kept' });
-      continue;
-    }
-    if (record.status === 'staging' && context.now() - Date.parse(record.createdAt) < 3_600_000)
-      continue;
-    if (record.stackName !== deploymentStackName(settings.project, record.deploymentId))
-      throw new Error('refusing to retire a stack with a mismatched deployment identity');
-    // A candidate can initialize the no-eviction shared cache before failing its checks.
-    // Staging is therefore not evidence that there is no cache scope to retire.
-    let retired = record;
-    if (record.cacheRetired !== true) {
-      const retirement = await retirementRecord(context, bootstrap, settings.project, record);
-      await scale(context, settings.project, retirement, 0);
-      await retireCache(context, bootstrap, retirement);
-      retired = { ...retirement, cacheRetired: true };
-      await saveRecord(context, bootstrap.ArtifactsBucket, retired);
-    }
-    await deleteStack(context, settings.project, record.stackName);
-    if (record.secretArn !== undefined)
-      await deleteSecret(context, settings.project, record.secretArn);
-    await deleteImage(context, bootstrap.RepositoryName, record.imageTag);
-    await saveRecord(context, bootstrap.ArtifactsBucket, { ...retired, status: 'deleted' });
-    await deleteStaticManifest(context, bootstrap.ArtifactsBucket, record.deploymentId, lock);
-  }
-}
-
-async function retirementRecord(
-  context: AwsContext,
-  bootstrap: AwsBootstrapOutputs,
-  project: string,
-  record: DeploymentRecord,
-): Promise<DeploymentRecord> {
-  if (record.taskDefinitionArn !== undefined) return record;
-  const current = await stack(context, record.stackName);
-  if (current !== undefined) owned(current, project);
-  let taskDefinitionArn = current === undefined ? undefined : outputs(current)['TaskDefinitionArn'];
-  if (taskDefinitionArn === undefined && current !== undefined) {
-    const resources = await stackResources(context, record.stackName);
-    taskDefinitionArn = resources.find(
-      (resource) =>
-        resource.ResourceType === 'AWS::ECS::TaskDefinition' &&
-        resource.ResourceStatus !== 'DELETE_COMPLETE',
-    )?.PhysicalResourceId;
-  }
-  if (taskDefinitionArn === undefined)
-    throw new Error(
-      `cannot safely retire cache for ${record.deploymentId}: no retained task definition was found in ${record.stackName}; its stack and image were retained, and project destroy can remove the shared cache`,
-    );
-  const recovered = { ...record, taskDefinitionArn };
-  await saveRecord(context, bootstrap.ArtifactsBucket, recovered);
-  return recovered;
-}
-
-export async function finishRetention(
-  context: AwsContext,
-  bootstrap: AwsBootstrapOutputs,
-  settings: DeploySettings,
-  current: string,
-  lock: ProjectLock,
-): Promise<void> {
-  try {
-    await retain(context, bootstrap, settings, current, lock);
-  } catch (error) {
-    if (error instanceof UncertainAwsMutation) throw error;
-    console.warn(
-      `upwind: deployment is live; retention will be retried on the next deploy: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
+export { scaleDeployment as scale } from './stacks.ts';
+export { retain, finishRetention } from './retention.ts';

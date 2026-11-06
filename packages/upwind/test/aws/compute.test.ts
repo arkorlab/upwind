@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { awsComputeDriver } from '../../src/aws/compute.ts';
+import { runAwsDeploy } from '../../src/aws/provider.ts';
 import { awsDeploySettings } from '../../src/aws/settings.ts';
+import { parseDeployRequest } from '../../src/deploy/args.ts';
 import type { DeploySettings } from '../../src/deploy/config.ts';
 
 const commands = vi.hoisted(() => ({
@@ -45,7 +47,11 @@ describe('AWS compute driver selection', () => {
   it('refuses an unknown execution target before invoking a command', async () => {
     const value = settings();
     Reflect.set(value.aws ?? {}, 'compute', 'lambda');
-    await expect(awsComputeDriver(value)).rejects.toThrow('unsupported AWS compute driver');
+    const request = parseDeployRequest(['/app']);
+    if (request.answer !== undefined) throw new Error('missing deploy options');
+    await expect(runAwsDeploy(request.options, value)).rejects.toThrow(
+      'unsupported AWS compute driver',
+    );
     expect(commands.deploy).not.toHaveBeenCalled();
   });
 });

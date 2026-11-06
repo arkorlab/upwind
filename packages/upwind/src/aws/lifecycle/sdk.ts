@@ -9,6 +9,7 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
 import { awsCredentialProvider, type AwsCredentials } from '../credentials.ts';
+import { readRetries } from './read-retries.ts';
 
 export interface AwsServices {
   readonly stacks: Pick<CloudFormationClient, 'send'>;
@@ -46,25 +47,40 @@ export function awsContext(
   // Do not replay a mutation whose first response was lost. Its outcome must be inspected
   // while exclusion is retained, rather than hidden behind an automatic SDK retry.
   const options = { region, credentials: awsCredentialProvider(credentials), maxAttempts: 1 };
+  const sleep =
+    io.sleep ??
+    ((milliseconds: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, milliseconds);
+      }));
+  // Injected services already own their transport behavior; decorate production SDK clients only.
+  const services =
+    io.services ??
+    (() => {
+      const clients = {
+        stacks: new CloudFormationClient(options),
+        cdn: new CloudFrontClient({ ...options, region: 'us-east-1' }),
+        ec2: new EC2Client(options),
+        ecr: new ECRClient(options),
+        ecs: new ECSClient(options),
+        cache: new ElastiCacheClient(options),
+        loadBalancer: new ElasticLoadBalancingV2Client(options),
+        objects: new S3Client(options),
+        secrets: new SecretsManagerClient(options),
+      };
+      for (const client of Object.values(clients)) {
+        client.middlewareStack.add(readRetries(sleep), {
+          step: 'initialize',
+          priority: 'high',
+          name: 'upwindReadRetries',
+        });
+      }
+      return clients;
+    })();
   return {
-    services: io.services ?? {
-      stacks: new CloudFormationClient(options),
-      cdn: new CloudFrontClient({ ...options, region: 'us-east-1' }),
-      ec2: new EC2Client(options),
-      ecr: new ECRClient(options),
-      ecs: new ECSClient(options),
-      cache: new ElastiCacheClient(options),
-      loadBalancer: new ElasticLoadBalancingV2Client(options),
-      objects: new S3Client(options),
-      secrets: new SecretsManagerClient(options),
-    },
+    services,
     fetch: io.fetch ?? fetch,
-    sleep:
-      io.sleep ??
-      ((milliseconds) =>
-        new Promise((resolve) => {
-          setTimeout(resolve, milliseconds);
-        })),
+    sleep,
     now: io.now ?? Date.now,
   };
 }

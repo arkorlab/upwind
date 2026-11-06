@@ -31,15 +31,28 @@ describe('Fargate target-platform build', () => {
     const source = await temporary();
     const destination = path.join(await temporary(), 'context');
     await mkdir(path.join(source, 'packages/shared'), { recursive: true });
+    await mkdir(path.join(source, 'app/coverage'), { recursive: true });
+    await mkdir(path.join(source, 'packages/coverage'), { recursive: true });
     await mkdir(path.join(source, '.aws'));
     await mkdir(path.join(source, 'packages/shared/node_modules'));
     await writeFile(path.join(source, 'packages/shared/index.ts'), 'export const value = 1;');
+    await writeFile(
+      path.join(source, 'app/coverage/page.tsx'),
+      'export default function Page() {}',
+    );
+    await writeFile(path.join(source, 'packages/coverage/index.ts'), 'export const coverage = 1;');
     await writeFile(path.join(source, '.aws/credentials'), 'aws-secret');
     await writeFile(path.join(source, 'packages/shared/.env.production'), 'TOKEN=secret');
     await writeFile(path.join(source, '.npmrc'), '//registry/:_authToken=secret');
     await copyBuildContext(source, destination);
     expect(await readFile(path.join(destination, 'packages/shared/index.ts'), 'utf8')).toContain(
       'value',
+    );
+    expect(await readFile(path.join(destination, 'app/coverage/page.tsx'), 'utf8')).toContain(
+      'Page',
+    );
+    expect(await readFile(path.join(destination, 'packages/coverage/index.ts'), 'utf8')).toContain(
+      'coverage',
     );
     await expect(readFile(path.join(destination, '.aws/credentials'))).rejects.toThrow();
     await expect(readFile(path.join(destination, '.npmrc'))).rejects.toThrow();
@@ -125,5 +138,30 @@ describe('Fargate target-platform build', () => {
     expect(() =>
       assertFargateImage(receipt, JSON.stringify({ ...image, Config: { Labels: {} } })),
     ).toThrow('does not match');
+  });
+
+  it('copies the native output from a constant path without expanding the workspace path', () => {
+    const project = 'apps/$site\nfolder';
+    const recipe = dockerfile({
+      baseImageDigest: `node@sha256:${'b'.repeat(64)}`,
+      project,
+      deploymentId: 'dpl_test',
+    });
+    expect(recipe).toContain('COPY --from=build --chown=node:node /upwind/native/ /app/');
+    expect(recipe).not.toContain('$site');
+    const script = buildScript({
+      project,
+      deploymentId: 'dpl_test',
+      install: { manager: 'npm', specification: 'npm', command: ['npm', 'ci'] },
+    });
+    expect(script).toContain(`const project = ${JSON.stringify(`/workspace/${project}`)};`);
+    expect(script).toContain("cpSync(path.join(project, '.arkor/node'), '/upwind/native'");
+    expect(script).toContain('verbatimSymlinks: true');
+  });
+
+  it('exports a single image manifest without provenance or SBOM index attachments', async () => {
+    const source = await readFile(new URL('../src/aws/build.ts', import.meta.url), 'utf8');
+    expect(source).toContain("'--provenance=false'");
+    expect(source).toContain("'--sbom=false'");
   });
 });

@@ -7,7 +7,7 @@ export function buildScript(input: {
   readonly deploymentId: string;
   readonly prepare?: readonly string[];
 }): string {
-  return `import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+  return `import { cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -44,6 +44,7 @@ writeFileSync(path.join(project, '.arkor/node/build-runtime.json'), JSON.stringi
   platform: process.platform,
   architecture: process.arch,
 }));
+cpSync(path.join(project, '.arkor/node'), '/upwind/native', { recursive: true, verbatimSymlinks: true });
 `;
 }
 
@@ -69,7 +70,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV UPWIND_NODE_CACHE_DIR=/tmp/upwind
 WORKDIR /app
-COPY --from=build --chown=node:node ${JSON.stringify(`/workspace/${input.project === '' ? '' : `${input.project}/`}.arkor/node/`)} /app/
+COPY --from=build --chown=node:node /upwind/native/ /app/
 USER node
 EXPOSE 3000
 STOPSIGNAL SIGTERM

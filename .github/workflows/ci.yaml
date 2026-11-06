@@ -306,6 +306,14 @@ jobs:
             sleep 1
           done
           docker exec upwind-valkey valkey-cli cluster addslotsrange 0 16383
+          for attempt in {1..30}; do
+            if docker exec upwind-valkey valkey-cli cluster info | grep -q '^cluster_state:ok'; then break; fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "Valkey cluster did not become ready" >&2
+              exit 1
+            fi
+            sleep 1
+          done
       - name: Shared cache conformance against real local transports
         env:
           UPWIND_TEST_VALKEY_URL: redis://127.0.0.1:6379

@@ -9,6 +9,8 @@ import {
   MAX_TAGS_PER_CALL,
   tagKindOf,
 } from '@stayingupwind/core/cache';
+import { isDeadlineError, withDeadline } from '@stayingupwind/core/util';
+import { CacheHostError } from '@stayingupwind/runtime/cache-host';
 import type {
   DataRead,
   DataReadRequest,
@@ -31,6 +33,7 @@ import { busy, tagKey, tagRevisionKey } from './tags.ts';
 import {
   MAX_CHANGE_TRIES,
   MAX_PENDING_EVENTS,
+  INVALIDATION_BACKPRESSURE_MS,
   revisionKey,
   SCOPE_KEY,
   TRANSIENT_RETENTION_MS,
@@ -211,13 +214,15 @@ export class AwsData {
 
   async invalidate(request: InvalidateRequest): Promise<InvalidateOutcome> {
     const values = [...new Set(request.tags)];
+    const pressureDeadline = performance.now() + INVALIDATION_BACKPRESSURE_MS;
+    let pressureWaits = 0;
     let revision = 0;
     const invalidations: InvalidateOutcome['invalidations'][number][] = [];
     for (let offset = 0; offset < values.length; offset += MAX_TAGS_PER_CALL) {
       const chunk = values.slice(offset, offset + MAX_TAGS_PER_CALL);
       checkTags(chunk);
       const receiptKey = `invalidation:${randomUUID()}`;
-      for (let tries = 0; ; tries += 1) {
+      for (let tries = 0; ;) {
         if (tries >= MAX_CHANGE_TRIES) return busy();
         const snapshot = await this.context.tags.snapshot(chunk);
         const scope = snapshot.scope;
@@ -226,10 +231,26 @@ export class AwsData {
           chunk.filter((value) => !snapshot.tags.has(value)).length,
         );
         if (this.context.store.kind === 'dynamodb' && scope.value.pending >= MAX_PENDING_EVENTS) {
-          if (!(await this.context.tags.project()))
-            await new Promise((resolve) => {
-              setTimeout(resolve, 10);
+          const remaining = pressureDeadline - performance.now();
+          try {
+            const projected = await withDeadline(
+              this.context.tags.project(),
+              remaining,
+              'AWS invalidation projection',
+            );
+            if (!projected)
+              await new Promise((resolve) => {
+                const delay = Math.min(1000, 50 * 2 ** Math.min(pressureWaits++, 5));
+                setTimeout(resolve, Math.max(0, Math.min(delay, remaining)));
+              });
+          } catch (error) {
+            if (!isDeadlineError(error)) throw error;
+            throw new CacheHostError('AWS invalidation projection did not catch up in time', {
+              code: 'unavailable',
+              status: 503,
+              cause: error,
             });
+          }
           continue;
         }
         if (
@@ -295,7 +316,10 @@ export class AwsData {
         const recorded = changed
           ? event
           : (await this.context.store.read<InvalidationEvent>(receiptKey))?.value;
-        if (recorded === undefined) continue;
+        if (recorded === undefined) {
+          tries += 1;
+          continue;
+        }
         revision = recorded.revision;
         invalidations.push(
           ...recorded.values.map((value) => ({

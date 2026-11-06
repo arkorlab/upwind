@@ -1,13 +1,12 @@
-import { execFile } from 'node:child_process';
+import { fork } from 'node:child_process';
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
-
-const execute = promisify(execFile);
 const REFRESH_EARLY_MS = 300_000;
+const AUTHENTICATION_ENV =
+  /^(?:AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|SECURITY_TOKEN|WEB_IDENTITY_TOKEN_FILE|SHARED_CREDENTIALS_FILE|CONFIG_FILE|CONTAINER_CREDENTIALS_.*|CONTAINER_AUTHORIZATION_.*|LOGIN_CACHE_DIRECTORY)|AMAZON_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN))$/iu;
 
-/** A private snapshot, never restored to the process evaluating the project's configuration. */
+/** Credential values and private file locations are removed before evaluating project code. */
 export interface AwsCredentials {
   readonly env: Readonly<Record<string, string | undefined>>;
 }
@@ -24,9 +23,90 @@ export function takeAwsCredentials(
 ): AwsCredentials {
   const snapshot = { ...env };
   for (const name of Object.keys(env)) {
-    if (name.startsWith('AWS_') || name.startsWith('AMAZON_')) Reflect.deleteProperty(env, name);
+    if (AUTHENTICATION_ENV.test(name)) Reflect.deleteProperty(env, name);
   }
   return { env: snapshot };
+}
+
+/** Validate the private helper protocol before using any credentials or refresh timestamp. */
+export function credentialIdentity(value: unknown): Identity {
+  if (typeof value !== 'object' || value === null)
+    throw new Error('invalid AWS credential helper response');
+  const fields = value as Record<string, unknown>;
+  if (
+    typeof fields['accessKeyId'] !== 'string' ||
+    fields['accessKeyId'] === '' ||
+    typeof fields['secretAccessKey'] !== 'string' ||
+    fields['secretAccessKey'] === '' ||
+    (fields['sessionToken'] !== undefined && typeof fields['sessionToken'] !== 'string') ||
+    (fields['expiration'] !== undefined &&
+      (typeof fields['expiration'] !== 'string' ||
+        !Number.isFinite(Date.parse(fields['expiration']))))
+  )
+    throw new Error('invalid AWS credential helper identity');
+  return {
+    accessKeyId: fields['accessKeyId'],
+    secretAccessKey: fields['secretAccessKey'],
+    ...(fields['sessionToken'] === undefined ? {} : { sessionToken: fields['sessionToken'] }),
+    ...(fields['expiration'] === undefined
+      ? {}
+      : { expiration: new Date(fields['expiration'] as string) }),
+  };
+}
+
+async function resolveIdentity(environment: NodeJS.ProcessEnv): Promise<Identity> {
+  const worker = await workerFile();
+  return new Promise((resolve, reject) => {
+    // IPC remains separate from stdout emitted by a user's NODE_OPTIONS preload module.
+    const child = fork(worker, [], {
+      env: environment,
+      execArgv: [],
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      windowsHide: true,
+    });
+    let reply: unknown;
+    let timedOut = false;
+    let forced: ReturnType<typeof setTimeout> | undefined;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      forced = setTimeout(() => {
+        child.kill('SIGKILL');
+      }, 1000);
+      forced.unref();
+    }, 120_000);
+    child.on('message', (value: unknown) => {
+      reply = value;
+    });
+    child.once('error', () => {
+      clearTimeout(timer);
+      if (forced !== undefined) clearTimeout(forced);
+      reject(new Error('AWS credential helper could not start'));
+    });
+    child.once('close', (code, signal) => {
+      clearTimeout(timer);
+      if (forced !== undefined) clearTimeout(forced);
+      const fields =
+        typeof reply === 'object' && reply !== null ? (reply as Record<string, unknown>) : {};
+      if (timedOut || code !== 0) {
+        const kind =
+          typeof fields['error'] === 'string' && /^[\w.-]{1,80}$/u.test(fields['error'])
+            ? fields['error']
+            : 'credential chain failed';
+        reject(
+          new Error(
+            `AWS credentials could not be resolved (${timedOut ? 'helper timed out after 120s' : `${kind}; ${signal ?? `exit ${String(code)}`}`}); configure an AWS profile, SSO, OIDC, or a task role`,
+          ),
+        );
+        return;
+      }
+      try {
+        resolve(credentialIdentity(fields['identity']));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
 }
 
 /** AWS variables may be application credentials on another provider; preserve that existing use. */
@@ -71,31 +151,7 @@ export function awsCredentialProvider(snapshot?: AwsCredentials): () => Promise<
   let cached: Identity | undefined;
   let pending: Promise<Identity> | undefined;
   const resolve = async (): Promise<Identity> => {
-    const { stdout } = await execute(process.execPath, [await workerFile()], {
-      env: environment,
-      maxBuffer: 65_536,
-      timeout: 120_000,
-      windowsHide: true,
-    }).catch(() => {
-      throw new Error(
-        'AWS credentials could not be resolved; configure an AWS profile, SSO, OIDC, or a task role',
-      );
-    });
-    const value = JSON.parse(stdout) as {
-      readonly accessKeyId?: unknown;
-      readonly secretAccessKey?: unknown;
-      readonly sessionToken?: string;
-      readonly expiration?: string;
-    };
-    if (typeof value.accessKeyId !== 'string' || typeof value.secretAccessKey !== 'string') {
-      throw new Error('the AWS credential helper returned no credentials');
-    }
-    const identity: Identity = {
-      accessKeyId: value.accessKeyId,
-      secretAccessKey: value.secretAccessKey,
-      ...(value.sessionToken === undefined ? {} : { sessionToken: value.sessionToken }),
-      ...(value.expiration === undefined ? {} : { expiration: new Date(value.expiration) }),
-    };
+    const identity = await resolveIdentity(environment);
     cached = identity;
     return identity;
   };

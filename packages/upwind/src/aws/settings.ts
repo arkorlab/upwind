@@ -89,7 +89,7 @@ export function awsDeploySettings(input: AwsDeployInput): AwsDeploySettings {
     throw new Error('Valkey synchronous durability requires a supported Graviton node family');
   const buildEnv = input.build?.env ?? [];
   for (const name of buildEnv) {
-    if (/^(?:AWS_|AMAZON_|CF_|CLOUDFLARE_|UPWIND_|ARKOR_)/u.test(name))
+    if (/^(?:AWS_|AMAZON_|CF_|CLOUDFLARE_|UPWIND_|ARKOR_)/iu.test(name))
       throw new Error(
         `deploy.aws.build.env cannot expose deployment credentials or platform configuration: ${name}`,
       );

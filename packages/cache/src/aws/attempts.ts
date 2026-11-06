@@ -309,7 +309,6 @@ export class AwsAttempts {
             [ENTRY + entry.value.id, entry.raw],
           ]),
           new Map<string, unknown>([
-            [SCOPE_KEY, { ...scope.value, revision: scope.value.revision + 1 }],
             [ATTEMPT + attemptId, { ...attempt.value, status: 'failed' }],
             [ENTRY + entry.value.id, { ...entry.value, lease: undefined, failures, retryAt }],
           ]),

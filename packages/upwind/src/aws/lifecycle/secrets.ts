@@ -4,6 +4,7 @@ import {
   CreateSecretCommand,
   DeleteSecretCommand,
   DescribeSecretCommand,
+  GetSecretValueCommand,
   ListSecretsCommand,
 } from '@aws-sdk/client-secrets-manager';
 
@@ -17,13 +18,14 @@ export async function deploymentSecret(
 ): Promise<string | undefined> {
   if (values.size === 0) return undefined;
   const name = `upwind/${project}/${deploymentId}`;
+  const serialized = JSON.stringify(Object.fromEntries(values));
   try {
     const result = await mutation('create application secret', () =>
       context.services.secrets.send(
         new CreateSecretCommand({
           Name: name,
           ClientRequestToken: createHash('sha256').update(deploymentId).digest('hex'),
-          SecretString: JSON.stringify(Object.fromEntries(values)),
+          SecretString: serialized,
           Tags: [
             { Key: 'upwind:project', Value: project },
             { Key: 'upwind:deployment', Value: deploymentId },
@@ -42,6 +44,13 @@ export async function deploymentSecret(
       !held.Tags.some((tag) => tag.Key === 'upwind:deployment' && tag.Value === deploymentId)
     )
       throw new Error('application secret is owned by another deployment');
+    const current = await context.services.secrets.send(
+      new GetSecretValueCommand({ SecretId: held.ARN }),
+    );
+    if (current.SecretString !== serialized)
+      throw new Error(
+        'this immutable deployment already has different application secrets; build a new deployment to change them',
+      );
     return held.ARN;
   }
 }

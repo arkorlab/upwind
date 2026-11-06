@@ -63,6 +63,8 @@ export const MAX_CHANGE_TRIES = 32;
 export const PAGE_TAGS = 500;
 export const LEASE_MS = 30_000;
 export const PROJECTOR_LEASE_MS = 30_000;
+/** Leave room to take over an abandoned projector lease and publish its next checkpoint. */
+export const INVALIDATION_BACKPRESSURE_MS = PROJECTOR_LEASE_MS * 2;
 export const MAX_ARTIFACT_BYTES = 32 * 1024 * 1024;
 /** Match the native authority's completed-attempt and per-writer grace window. */
 export const TRANSIENT_RETENTION_MS = 3_600_000;

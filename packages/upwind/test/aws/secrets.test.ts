@@ -13,6 +13,7 @@ describe('AWS application secrets', () => {
       const file = path.join(directory, 'secrets');
       for (const name of [
         'AWS_SECRET_ACCESS_KEY',
+        'aws_secret_access_key',
         'AWS_PROFILE',
         'UPWIND_AWS_CACHE',
         'PORT',
@@ -37,5 +38,26 @@ describe('AWS application secrets', () => {
       reserved: new Set(),
     });
     expect(result.get('APP_SECRET')).toBe(value);
+  });
+
+  it('rejects prototype keys in files and values exceeding the Secrets Manager byte limit', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'upwind-aws-secret-boundary-'));
+    try {
+      const file = path.join(directory, 'secrets');
+      await writeFile(file, '__proto__=value\n');
+      await expect(
+        readAwsSecrets({ files: [file], names: [], env: {}, reserved: new Set() }),
+      ).rejects.toThrow('__proto__');
+      await expect(
+        readAwsSecrets({
+          files: [],
+          names: ['LARGE'],
+          env: { LARGE: 'x'.repeat(65_536) },
+          reserved: new Set(),
+        }),
+      ).rejects.toThrow('64 KiB');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

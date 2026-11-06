@@ -68,6 +68,28 @@ describe('DynamoDB projection recovery', () => {
 });
 
 for (const kind of ['valkey', 'dynamodb'] as const) {
+  test(`${kind} releases a failed lease without advancing the scope publication revision`, async () => {
+    const store = new MemoryAuthorityStore(kind);
+    const host = await pair(store);
+    try {
+      const entry = { kind: 'app-page' as const, route: '/', pathname: '/' };
+      const lease = await host.first.startAttempt({ entry, reason: 'miss' });
+      if (lease.kind !== 'leased') throw new Error('lease missing');
+      const before = await store.read<ScopeState>('scope');
+      await host.first.fail(lease.attemptId, {
+        fencingToken: lease.fencingToken,
+        outcome: 'failed',
+      });
+      expect((await store.read('scope'))?.raw).toBe(before?.raw);
+      const retried = await host.second.startAttempt({ entry, reason: 'manual' });
+      expect(retried.kind).toBe('leased');
+      if (retried.kind === 'leased')
+        expect(retried.fencingToken).toBeGreaterThan(lease.fencingToken);
+    } finally {
+      await host.close();
+    }
+  });
+
   test(`${kind} retires an unopened scope idempotently without seeding it`, async () => {
     const store = new MemoryAuthorityStore(kind);
     const objects = new MemoryObjects();

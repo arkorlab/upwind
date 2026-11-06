@@ -10,6 +10,7 @@ import {
   type Rule,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 
+import { deploymentProbeFetch } from './probe.ts';
 import type { AwsContext } from './sdk.ts';
 import { errorCode, mutation, UncertainAwsMutation } from './sdk.ts';
 import type { ProjectLock } from './state.ts';
@@ -140,6 +141,7 @@ export async function checkDeployment(
     target: string;
     tasks: number;
     origin: string;
+    loadBalancerDnsName?: string;
     token?: string;
     deploymentId: string;
     checks: readonly string[];
@@ -163,12 +165,13 @@ export async function checkDeployment(
   }
   if (!ready)
     throw new Error('the deployment did not reach its required number of healthy Fargate tasks');
+  const probeFetch = deploymentProbeFetch(input.origin, input.loadBalancerDnsName, context.fetch);
   const headers = new Headers({ 'cache-control': 'no-store' });
   if (input.token !== undefined) headers.set(PROBE_HEADER, input.token);
   let last: unknown;
   while (context.now() < deadline) {
     try {
-      const health = await context.fetch(new URL('/__upwind/health', input.origin), {
+      const health = await probeFetch(new URL('/__upwind/health', input.origin), {
         headers,
         redirect: 'manual',
         signal: AbortSignal.timeout(15_000),
@@ -183,7 +186,7 @@ export async function checkDeployment(
       )
         throw new Error('readiness did not identify the requested deployment');
       for (const path of input.checks) {
-        const response = await context.fetch(new URL(path, input.origin), {
+        const response = await probeFetch(new URL(path, input.origin), {
           headers,
           redirect: 'manual',
           signal: AbortSignal.timeout(30_000),

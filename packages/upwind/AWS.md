@@ -33,6 +33,10 @@ Every command uses the same project configuration and AWS authentication. The st
 credential chain supports environment credentials, profiles, SSO, web identity/OIDC and workload
 roles. Authentication is resolved in an isolated helper process; deployment credential variables
 are removed before the project's configuration executes and are never forwarded to its build.
+AWS application variables and non-secret identifiers such as region, profile and role ARN remain
+available while configuration is evaluated. Credential values and private credential-file
+locations are reserved for the isolated helper; configuration must not derive project identity
+from secret credential values.
 The deployment identity needs permission to create and manage the resources described below,
 including CloudFormation IAM resources and passing the generated execution and task roles.
 
@@ -108,6 +112,10 @@ Neither backend falls back to an independent local cache during an outage.
 The existing 128-tag invalidation and 1024-tag generation limits apply to both backends.
 Metadata is published only after its immutable S3 objects have been stored successfully.
 Tasks synchronize authoritative tag revisions before reusing runtime memoized values.
+Each dynamic request includes an authoritative scope read, so shared-store capacity must cover
+the application's dynamic request rate as well as cache operations. An unavailable or retired
+scope fails the request with a private error response; serving an unconfirmed local memo would
+hide acknowledged invalidations from another task.
 
 ## Build and deploy separately
 
@@ -126,6 +134,9 @@ The receipt records the execution target, deployment identity, platform, Node ve
 base-image digest, image identity and content hashes. `--prebuilt` validates the archive against
 its receipt and extracted artifact before changing AWS resources, without reinstalling or
 rebuilding the application. Keep the entire output directory when moving between CI jobs.
+The receipt also verifies file modes. Transfer the directory in a mode-preserving archive
+(for example, `tar -czf prebuilt.tgz .arkor/fargate` and `tar -xzf prebuilt.tgz`) instead of
+uploading loose files through a service that normalizes their permissions.
 
 For a monorepo, set a context containing the application, controlling lockfile and dependencies:
 

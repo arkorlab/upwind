@@ -79,6 +79,24 @@ describe('AWS Fargate infrastructure', () => {
     expect(normal.Resources['Distribution']?.['Properties']).toMatchObject({
       DistributionConfig: {
         CacheBehaviors: [],
+        Origins: [
+          {
+            Id: 'application',
+            DomainName: { 'Fn::GetAtt': ['LoadBalancer', 'DNSName'] },
+            VpcOriginConfig: {
+              VpcOriginId: { 'Fn::GetAtt': ['VpcOrigin', 'Id'] },
+              OriginReadTimeout: 60,
+              OriginKeepaliveTimeout: 60,
+            },
+          },
+          {
+            Id: 'static',
+            DomainName: { 'Fn::GetAtt': ['Artifacts', 'RegionalDomainName'] },
+            OriginPath: '/static',
+            OriginAccessControlId: { Ref: 'StaticOriginAccess' },
+            S3OriginConfig: { OriginAccessIdentity: '' },
+          },
+        ],
         DefaultCacheBehavior: {
           Compress: false,
           OriginRequestPolicyId: { Ref: 'ViewerRequestPolicy' },
@@ -87,6 +105,32 @@ describe('AWS Fargate infrastructure', () => {
     });
     expect(normal.Resources['DynamicCachePolicy']?.['Properties']).toMatchObject({
       CachePolicyConfig: { MinTTL: 0, MaxTTL: 0, DefaultTTL: 0 },
+    });
+    expect(normal.Resources['StaticOriginAccess']?.['Properties']).toMatchObject({
+      OriginAccessControlConfig: {
+        OriginAccessControlOriginType: 's3',
+        SigningBehavior: 'always',
+        SigningProtocol: 'sigv4',
+      },
+    });
+    expect(normal.Resources['ArtifactsPolicy']?.['Properties']).toMatchObject({
+      PolicyDocument: {
+        Statement: [
+          {
+            Principal: { Service: 'cloudfront.amazonaws.com' },
+            Action: 's3:GetObject',
+            Resource: { 'Fn::Sub': '${Artifacts.Arn}/static/*' },
+            Condition: {
+              StringEquals: {
+                'AWS:SourceArn': {
+                  'Fn::Sub':
+                    'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}',
+                },
+              },
+            },
+          },
+        ],
+      },
     });
     expect(
       bootstrapTemplate({ ...input, staticBypass: true }).Resources['Distribution']?.['Properties'],
@@ -120,6 +164,9 @@ describe('AWS Fargate infrastructure', () => {
       Scheme: 'internet-facing',
     });
     expect(template.Outputs['PublicOrigin']).toEqual({ Value: 'https://shop.example' });
+    expect(template.Outputs['LoadBalancerDnsName']).toEqual({
+      Value: { 'Fn::GetAtt': ['LoadBalancer', 'DNSName'] },
+    });
   });
 
   it('attaches the staging target group before ECS starts and never owns production routing', () => {
@@ -192,4 +239,22 @@ describe('AWS Fargate infrastructure', () => {
       }),
     ).toThrow('immutable image digest');
   });
+
+  it.each([-1, 0, 10.5, 50000, 50001, NaN])(
+    'rejects invalid staging probe priority %s',
+    (probePriority) => {
+      expect(() =>
+        deploymentTemplate({
+          project: 'shop',
+          deploymentId: 'dpl_test',
+          settings: awsDeploySettings({ region: 'us-east-1' }),
+          image: `${bootstrap.RepositoryUri}@sha256:${'a'.repeat(64)}`,
+          bootstrap,
+          publicOrigin: bootstrap.PublicOrigin,
+          probeToken: 'probe',
+          probePriority,
+        }),
+      ).toThrow('probe rule priority');
+    },
+  );
 });

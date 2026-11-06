@@ -1,3 +1,4 @@
+import { CreateRuleCommand, ModifyRuleCommand } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -105,12 +106,16 @@ describe('AWS deployment exclusion and failed activation', () => {
 
   it('fails candidate identity checks before production routing or previous tasks change', async () => {
     const fixture = memoryContext();
-    const loadBalancer = vi.fn(async () => ({
-      TargetHealthDescriptions: [
-        { TargetHealth: { State: 'healthy' } },
-        { TargetHealth: { State: 'healthy' } },
-      ],
-    }));
+    const loadBalancerCommands: unknown[] = [];
+    const loadBalancer = vi.fn(async (command: unknown) => {
+      loadBalancerCommands.push(command);
+      return {
+        TargetHealthDescriptions: [
+          { TargetHealth: { State: 'healthy' } },
+          { TargetHealth: { State: 'healthy' } },
+        ],
+      };
+    });
     const context: AwsContext = {
       ...fixture.context,
       services: {
@@ -152,6 +157,11 @@ describe('AWS deployment exclusion and failed activation', () => {
       ),
     ).rejects.toThrow('failed readiness');
     expect(loadBalancer).toHaveBeenCalledTimes(1);
+    expect(
+      loadBalancerCommands.some(
+        (command) => command instanceof CreateRuleCommand || command instanceof ModifyRuleCommand,
+      ),
+    ).toBe(false);
     expect(fixture.calls).toStrictEqual([]);
   });
 });

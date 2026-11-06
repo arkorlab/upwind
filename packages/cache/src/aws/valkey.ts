@@ -1,6 +1,10 @@
+import { withDeadline } from '@stayingupwind/core/util';
 import { createCluster } from 'redis';
 
 import { type AuthorityStore, type Stored, stored, type StorePage } from './types.ts';
+
+export const VALKEY_STARTUP_MS = 15_000;
+const COMMAND_MS = 1000;
 
 // Constant parameterized script. Every comparison happens before the first mutation.
 const CHANGE = `
@@ -54,20 +58,19 @@ return #expired`;
 function newValkeyClient(url: string, username?: string, password?: string) {
   return createCluster({
     rootNodes: [{ url }],
-    commandOptions: { timeout: 1000 },
+    commandOptions: { timeout: COMMAND_MS },
     defaults: {
       disableOfflineQueue: true,
       commandsQueueMaxLength: 1024,
-      commandOptions: { timeout: 1000 },
+      commandOptions: { timeout: COMMAND_MS },
       ...(username === undefined ? {} : { username }),
       ...(password === undefined ? {} : { password }),
       socket: {
         ...(new URL(url).protocol === 'rediss:' ? { tls: true as const } : { tls: false as const }),
         connectTimeout: 5000,
-        reconnectStrategy: (attempt: number) =>
-          attempt >= 8
-            ? new Error('AWS Valkey connection retry budget exhausted')
-            : Math.min(1000, 50 * 2 ** Math.min(attempt, 5)),
+        // A returned Error permanently closes node-redis sockets. Keep recovering after failover;
+        // startup and individual commands have independent deadlines below.
+        reconnectStrategy: (attempt: number) => Math.min(1000, 50 * 2 ** Math.min(attempt, 5)),
       },
     },
     useReplicas: false,
@@ -112,16 +115,44 @@ export class ValkeyAuthorityStore implements AuthorityStore {
   }
 
   async connect(): Promise<void> {
-    await this.#client.connect();
+    try {
+      await withDeadline(this.#client.connect(), VALKEY_STARTUP_MS, 'AWS Valkey startup');
+    } catch (error) {
+      this.#client.destroy();
+      throw error;
+    }
+  }
+
+  async #command<T>(
+    run: (client: ReturnType<typeof newValkeyClient>) => Promise<T>,
+    external?: AbortSignal,
+  ): Promise<T> {
+    external?.throwIfAborted();
+    const controller = new AbortController();
+    const signal =
+      external === undefined ? controller.signal : AbortSignal.any([controller.signal, external]);
+    try {
+      // Cluster routing can wait for a newly discovered node before node-redis starts its own
+      // command timer. Bound that entire wait and prevent an expired operation from later queuing.
+      return await withDeadline(
+        run(this.#client.withCommandOptions({ timeout: COMMAND_MS, abortSignal: signal })),
+        COMMAND_MS,
+        'AWS Valkey command',
+      );
+    } finally {
+      controller.abort();
+    }
   }
 
   async now(): Promise<number> {
-    const answer = await this.#client.eval(
-      "local t=redis.call('TIME');return tonumber(t[1])*1000+math.floor(tonumber(t[2])/1000)",
-      {
-        keys: [this.#index],
-        arguments: [],
-      },
+    const answer = await this.#command((client) =>
+      client.eval(
+        "local t=redis.call('TIME');return tonumber(t[1])*1000+math.floor(tonumber(t[2])/1000)",
+        {
+          keys: [this.#index],
+          arguments: [],
+        },
+      ),
     );
     if (typeof answer !== 'number') throw new Error('Valkey returned an invalid authority clock');
     return answer;
@@ -129,12 +160,7 @@ export class ValkeyAuthorityStore implements AuthorityStore {
 
   async read<T>(key: string, signal?: AbortSignal): Promise<Stored<T> | undefined> {
     signal?.throwIfAborted();
-    const raw = await this.#client
-      .withCommandOptions({
-        timeout: 1000,
-        ...(signal === undefined ? {} : { abortSignal: signal }),
-      })
-      .get(`${this.#prefix}${key}`);
+    const raw = await this.#command((client) => client.get(`${this.#prefix}${key}`), signal);
     signal?.throwIfAborted();
     return raw === null ? undefined : stored<T>(raw);
   }
@@ -146,12 +172,10 @@ export class ValkeyAuthorityStore implements AuthorityStore {
     signal?.throwIfAborted();
     const unique = [...new Set(keys)];
     if (unique.length === 0) return new Map();
-    const values = await this.#client
-      .withCommandOptions({
-        timeout: 1000,
-        ...(signal === undefined ? {} : { abortSignal: signal }),
-      })
-      .mGet(unique.map((key) => `${this.#prefix}${key}`));
+    const values = await this.#command(
+      (client) => client.mGet(unique.map((key) => `${this.#prefix}${key}`)),
+      signal,
+    );
     signal?.throwIfAborted();
     const result = new Map<string, Stored>();
     unique.forEach((key, index) => {
@@ -163,13 +187,10 @@ export class ValkeyAuthorityStore implements AuthorityStore {
 
   async list(prefix: string, after?: string, limit = 100): Promise<StorePage> {
     const first = after === undefined ? `[${this.#prefix}${prefix}` : `(${this.#prefix}${after}`;
-    const keys = await this.#client.zRangeByLex(
-      this.#index,
-      first,
-      `[${this.#prefix}${prefix}\uffff`,
-      {
+    const keys = await this.#command((client) =>
+      client.zRangeByLex(this.#index, first, `[${this.#prefix}${prefix}\uffff`, {
         LIMIT: { offset: 0, count: limit + 1 },
-      },
+      }),
     );
     const selected = keys.slice(0, limit).map((key) => key.slice(this.#prefix.length));
     const values = await this.readMany(selected);
@@ -187,23 +208,25 @@ export class ValkeyAuthorityStore implements AuthorityStore {
     expires: ReadonlyMap<string, number> = new Map(),
   ): Promise<boolean> {
     const keys = [...new Set([...expected.keys(), ...writes.keys()])];
-    const answer = await this.#client.eval(CHANGE, {
-      keys: [this.#index, this.#expiryIndex, ...keys.map((key) => `${this.#prefix}${key}`)],
-      arguments: [
-        JSON.stringify(keys.map((key) => (expected.has(key) ? expected.get(key) : false))),
-        JSON.stringify(
-          keys.map((key) =>
-            writes.has(key)
-              ? writes.get(key) === null
-                ? null
-                : JSON.stringify(writes.get(key))
-              : false,
+    const answer = await this.#command((client) =>
+      client.eval(CHANGE, {
+        keys: [this.#index, this.#expiryIndex, ...keys.map((key) => `${this.#prefix}${key}`)],
+        arguments: [
+          JSON.stringify(keys.map((key) => (expected.has(key) ? expected.get(key) : false))),
+          JSON.stringify(
+            keys.map((key) =>
+              writes.has(key)
+                ? writes.get(key) === null
+                  ? null
+                  : JSON.stringify(writes.get(key))
+                : false,
+            ),
           ),
-        ),
-        String(notAfter ?? 0),
-        JSON.stringify(keys.map((key) => expires.get(key) ?? false)),
-      ],
-    });
+          String(notAfter ?? 0),
+          JSON.stringify(keys.map((key) => expires.get(key) ?? false)),
+        ],
+      }),
+    );
     return answer === 1;
   }
 
@@ -213,6 +236,8 @@ export class ValkeyAuthorityStore implements AuthorityStore {
   }
 
   async sweepExpired(): Promise<void> {
-    await this.#client.eval(SWEEP, { keys: [this.#index, this.#expiryIndex], arguments: [] });
+    await this.#command((client) =>
+      client.eval(SWEEP, { keys: [this.#index, this.#expiryIndex], arguments: [] }),
+    );
   }
 }

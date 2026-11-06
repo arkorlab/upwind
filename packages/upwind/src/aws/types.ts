@@ -60,6 +60,7 @@ export interface AwsBootstrapOutputs {
   readonly RepositoryName: string;
   readonly ClusterArn: string;
   readonly ListenerArn: string;
+  readonly LoadBalancerDnsName?: string;
   readonly VpcId: string;
   readonly TaskSubnetIds: string;
   readonly TaskSecurityGroupId: string;

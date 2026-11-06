@@ -31,6 +31,9 @@ export interface DeploymentRecord {
   readonly taskDefinitionArn?: string;
   /** Persisted before deleting compute; retries must not invoke a deregistered task definition. */
   readonly cacheRetired?: boolean;
+  readonly retiring?: boolean;
+  readonly retirementStackName?: string;
+  readonly retirementTaskDefinitionArn?: string;
   readonly lastServed?: string;
   readonly status: 'staging' | 'live' | 'kept' | 'deleted';
 }
@@ -106,15 +109,24 @@ export async function records(context: AwsContext, bucket: string): Promise<Depl
         ...(cursor === undefined ? {} : { ContinuationToken: cursor }),
       }),
     );
-    for (const object of page.Contents ?? []) {
-      if (object.Key === undefined) continue;
-      const stored = await readJson<DeploymentRecord>(context, bucket, object.Key);
-      if (stored !== undefined) {
-        if (stored.value.compute !== 'fargate')
-          throw new Error(
-            `deployment ${stored.value.deploymentId} belongs to another AWS compute driver`,
-          );
-        found.push(stored.value);
+    const keys = (page.Contents ?? []).flatMap((object) =>
+      object.Key === undefined ? [] : [object.Key],
+    );
+    // Keep history for immutable deployment identities, with a bounded number of S3 reads.
+    for (let offset = 0; offset < keys.length; offset += 8) {
+      const batch = await Promise.all(
+        keys
+          .slice(offset, offset + 8)
+          .map((key) => readJson<DeploymentRecord>(context, bucket, key)),
+      );
+      for (const stored of batch) {
+        if (stored !== undefined) {
+          if (stored.value.compute !== 'fargate')
+            throw new Error(
+              `deployment ${stored.value.deploymentId} belongs to another AWS compute driver`,
+            );
+          found.push(stored.value);
+        }
       }
     }
     cursor = page.NextContinuationToken;
