@@ -1,3 +1,5 @@
+import { LOG_CORRELATION_HEADER } from './log-context.ts';
+
 /**
  * The wire protocol between the edge and an application's runtime Function. Both sides import these
  * names; nothing else on the request carries platform intent.
@@ -150,6 +152,7 @@ export const ROUTED_HEADER = 'x-arkor-routed';
 export const SCOPE_REVISION_HEADER = 'x-arkor-scope-revision';
 /** The headers that tell the runtime what to do; stripped before the application sees a request. */
 export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
+  LOG_CORRELATION_HEADER,
   MIDDLEWARE_ONLY_HEADER,
   MIDDLEWARE_DONE_HEADER,
   MIDDLEWARE_REWRITE_STATUS_HEADER,

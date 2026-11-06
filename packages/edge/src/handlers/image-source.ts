@@ -122,11 +122,10 @@ function localPathname(href: string): string {
 }
 
 /** The source has no visitor address or country to put back on its otherwise anonymous request. */
+const ANONYMOUS = { clientIp: undefined, clientCountry: undefined, logCorrelationId: undefined };
+
 function anonymousSource(edge: EdgeContext): EdgeContext {
-  return {
-    ...edge,
-    forwarding: { ...edge.forwarding, clientIp: undefined, clientCountry: undefined },
-  };
+  return { ...edge, forwarding: { ...edge.forwarding, ...ANONYMOUS } };
 }
 
 /**

@@ -16,9 +16,8 @@ import { rolldown } from 'rolldown';
  *
  * - **the modules**, one per entry point, with `@stayingupwind/core` bundled in. Core is published as
  *   the TypeScript it is, so an installed copy of this package could not import it at runtime — the
- *   same reason the CLI bundles it. What is taken from it is two constants: the symbol key and the
- *   version. They are taken rather than written out again because they are the contract, and a copy
- *   of a contract is a copy that goes stale without saying so.
+ *   same reason the CLI bundles it. Shared resource constants and the log context protocol are
+ *   bundled rather than copied, so the SDK and its host use the same contract.
  * - **the declarations**, from `tsc`, which is also what holds this package's public types to being
  *   its own and Cloudflare's — a declaration that reached into core would make every application
  *   compile core's sources, with the `tsconfig` that needs.
@@ -36,6 +35,7 @@ const ENTRIES = [
   'durable-object',
   'ai',
   'service',
+  'logs',
   'workflow',
   'websocket',
 ] as const;

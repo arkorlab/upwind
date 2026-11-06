@@ -3,6 +3,7 @@ import {
   CACHE_ENTRY_HEADER,
   INVALIDATED_REVISION_HEADER,
   INVALIDATED_TAGS_HEADER,
+  LOG_CORRELATION_HEADER,
   parseScopeRevision,
   SCOPE_REVISION_HEADER,
   scopeRevisionValue,
@@ -67,6 +68,7 @@ describe('a regeneration asked for', () => {
       const scopeId = 'scope-of-the-record';
       const deploymentId = 'deployment-of-the-function';
       const sent: Request[] = [];
+      const logCorrelationId = vi.fn(() => 'fc5f5480-f816-4ac2-bffc-f7f7dd8c7609');
       const read = vi.fn(() => {
         throw new Error('no new host read belongs on this dispatch');
       });
@@ -87,7 +89,12 @@ describe('a regeneration asked for', () => {
         },
         ctx: createExecutionContext(),
         app: { deploymentId, scriptName: 'regenerating-app' },
-        forwarding: { previewDomain: 'example', previewHost: 'site.example', clientIp: undefined },
+        forwarding: {
+          previewDomain: 'example',
+          previewHost: 'site.example',
+          clientIp: undefined,
+          logCorrelationId,
+        },
         host: {
           names: STANDALONE_NAMES,
           sharedDomain: 'example',
@@ -126,6 +133,11 @@ describe('a regeneration asked for', () => {
       const response = await run(edge, input);
       const body = await response?.text();
       await waitOnExecutionContext(edge.ctx);
+
+      expect(sent[0]?.headers.get(LOG_CORRELATION_HEADER)).toBe(
+        expectedBody === undefined ? null : logCorrelationId.mock.results[0]?.value,
+      );
+      expect(logCorrelationId).toHaveBeenCalledTimes(expectedBody === undefined ? 0 : 1);
 
       expect({
         body,

@@ -294,7 +294,8 @@ async function askDetached(
   try {
     const response = await handlePassthrough({
       request: keptPastTheVisitor(input.request),
-      forwarding: edge.forwarding,
+      // Its render publishes a shared generation; it is not the visitor's application request.
+      forwarding: { ...edge.forwarding, logCorrelationId: undefined },
       runtime: edge.runtime,
       host: edge.host,
       app: edge.app,
