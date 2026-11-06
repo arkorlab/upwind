@@ -11,6 +11,7 @@ import {
 
 const REQUEST_CONTEXT = Symbol.for('@vercel/request-context');
 
+/** The context a library finds while the runtime serves the current request. */
 function currentContext(): VercelRequestContext | undefined {
   const holder = Reflect.get(globalThis, REQUEST_CONTEXT) as {
     get: () => VercelRequestContext | undefined;
@@ -18,6 +19,7 @@ function currentContext(): VercelRequestContext | undefined {
   return holder.get();
 }
 
+/** One request and the background promises its execution context retains. */
 function request(url = 'https://fixture.test/'): {
   context: VercelRequestContext;
   kept: Promise<unknown>[];
