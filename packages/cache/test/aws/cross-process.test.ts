@@ -104,9 +104,7 @@ function crossProcessContract(settings: (scope: string) => WorkerSettings): void
         writer.call('initialize', config),
         reader.call('initialize', config),
       ]);
-      expect(first.pid).not.toBe(second.pid);
-      expect(first.pid).not.toBe(process.pid);
-      expect(second.pid).not.toBe(process.pid);
+      expect(new Set([first.pid, second.pid, process.pid]).size).toBe(3);
 
       // Warm a missing tag, then an existing tag, before separate acknowledged invalidations.
       expect(await reader.call('snapshot', { tags: ['product'] })).toEqual({
@@ -118,8 +116,10 @@ function crossProcessContract(settings: (scope: string) => WorkerSettings): void
         const invalidated = await writer.call('invalidate', { tags: ['product'] });
         expect(invalidated.revision).toBeGreaterThan(previous);
         const snapshot = await reader.call('snapshot', { tags: ['product'] });
-        expect(snapshot.revision.revision).toBe(invalidated.revision);
-        expect(snapshot.revision.invalidatedAt).toEqual(expect.any(Number));
+        expect(snapshot.revision).toEqual({
+          revision: invalidated.revision,
+          invalidatedAt: expect.any(Number),
+        });
         expect(snapshot.tags.tags).toHaveLength(1);
         expect(snapshot.tags.tags[0]).toMatchObject({
           value: 'product',
@@ -138,7 +138,6 @@ function crossProcessContract(settings: (scope: string) => WorkerSettings): void
       expect(outcomes.map((outcome) => outcome.kind).sort()).toEqual(['busy', 'leased']);
       const owner = outcomes.find((outcome) => outcome.kind === 'leased');
       const contender = outcomes.find((outcome) => outcome.kind === 'busy');
-      expect(owner).toBeDefined();
       expect(contender?.attemptId).toBe(owner?.attemptId);
     } finally {
       // Stop the reader's background projector before retiring the shared test scope.

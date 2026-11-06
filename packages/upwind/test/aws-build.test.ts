@@ -1,4 +1,13 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readlink,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -70,8 +79,60 @@ describe('Fargate target-platform build', () => {
     await expect(copyBuildContext(source, path.join(await temporary(), 'copy'))).rejects.toThrow(
       'external symlink',
     );
+    await rm(path.join(source, 'outside'));
+    await symlink(path.relative(source, outside), path.join(source, 'outside'));
+    await expect(copyBuildContext(source, path.join(await temporary(), 'copy'))).rejects.toThrow(
+      'external symlink',
+    );
     await expect(buildDirectories(source, outside)).rejects.toThrow('must contain');
   });
+
+  it('keeps internal absolute and relative symlinks usable after relocating the copied context', async () => {
+    const source = await temporary();
+    const destination = path.join(await temporary(), 'context');
+    await mkdir(path.join(source, 'packages/shared'), { recursive: true });
+    await mkdir(path.join(source, 'apps/site'), { recursive: true });
+    await writeFile(path.join(source, 'packages/shared/index.ts'), 'export const value = 42;');
+    await symlink(path.join(source, 'packages/shared'), path.join(source, 'absolute-shared'));
+    await symlink('./packages/shared', path.join(source, 'relative-shared'));
+    await symlink(path.join(source, 'packages/shared'), path.join(source, 'apps/site/shared'));
+    await symlink('absolute-shared', path.join(source, 'chained-shared'));
+
+    await copyBuildContext(source, destination);
+    const relocated = path.join(await temporary(), 'workspace');
+    await rename(destination, relocated);
+    await rm(source, { recursive: true, force: true });
+    expect(await readlink(path.join(relocated, 'absolute-shared'))).toBe('packages/shared');
+    expect(await readlink(path.join(relocated, 'relative-shared'))).toBe('./packages/shared');
+    expect(await readlink(path.join(relocated, 'apps/site/shared'))).toBe('../../packages/shared');
+    expect(await readlink(path.join(relocated, 'chained-shared'))).toBe('absolute-shared');
+    for (const link of [
+      'absolute-shared',
+      'relative-shared',
+      'apps/site/shared',
+      'chained-shared',
+    ]) {
+      expect(await readFile(path.join(relocated, link, 'index.ts'), 'utf8')).toContain('42');
+    }
+  });
+
+  it.each(['.aws/credentials', '.env.production', '.npmrc', 'node_modules/private/index.js'])(
+    'refuses a symlink to excluded build input %s',
+    async (target) => {
+      const source = await temporary();
+      const destination = path.join(await temporary(), 'context');
+      await mkdir(path.dirname(path.join(source, target)), { recursive: true });
+      await writeFile(path.join(source, target), 'credential-that-must-not-be-copied');
+      await symlink(path.join(source, target), path.join(source, 'exposed-input'));
+      await expect(copyBuildContext(source, destination)).rejects.toThrow('excluded path');
+      await expect(readFile(path.join(destination, 'exposed-input'))).rejects.toThrow();
+      await rm(path.join(source, 'exposed-input'));
+      await symlink(target, path.join(source, 'exposed-input'));
+      await expect(
+        copyBuildContext(source, path.join(await temporary(), 'relative-context')),
+      ).rejects.toThrow('excluded path');
+    },
+  );
 
   it('requires frozen lockfile installs with the declared package-manager version', async () => {
     const source = await temporary();

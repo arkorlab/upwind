@@ -77,12 +77,13 @@ export function cacheContract(
             : { kind: 'published' },
         );
         const bytes = await host.second.readRecord(lease.entryId);
-        expect(bytes).toBeDefined();
         const record = decodeGenerationPack(bytes ?? new Uint8Array());
         expect(record.kind).toBe('ok');
         if (record.kind !== 'ok') throw new Error('record missing');
-        expect(new TextDecoder().decode(record.pack.html)).toBe('<p>shell</p>');
-        expect(new TextDecoder().decode(record.pack.postponed)).toBe('resume-state');
+        expect({
+          html: new TextDecoder().decode(record.pack.html),
+          postponed: new TextDecoder().decode(record.pack.postponed),
+        }).toStrictEqual({ html: '<p>shell</p>', postponed: 'resume-state' });
         await host.first.invalidate({ tags: ['product'], api: 'updateTag' });
         const after = decodeGenerationPack(
           (await host.second.readRecord(lease.entryId)) ?? new Uint8Array(),

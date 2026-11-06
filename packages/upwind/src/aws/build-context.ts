@@ -1,4 +1,4 @@
-import { cp, lstat, readFile, realpath } from 'node:fs/promises';
+import { cp, lstat, readFile, readlink, realpath, symlink, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 const EXCLUDED = new Set([
@@ -36,14 +36,36 @@ function contained(root: string, file: string): boolean {
 /** A caller's Dockerfile/dockerignore cannot add credentials back to this private context. */
 export async function copyBuildContext(source: string, destination: string): Promise<void> {
   const root = await realpath(source);
+  const absoluteLinks: { file: string; target: string }[] = [];
   await cp(root, destination, {
     recursive: true,
     verbatimSymlinks: true,
-    filter: async (file) => {
+    filter: async (file, copied) => {
       if (excludedBuildPath(path.relative(root, file))) return false;
       const info = await lstat(file);
-      if (info.isSymbolicLink() && !contained(root, await realpath(file))) {
-        throw new Error(`build context contains an external symlink: ${path.relative(root, file)}`);
+      if (info.isSymbolicLink()) {
+        const target = await readlink(file);
+        const resolved = await realpath(file);
+        const literal = path.resolve(path.dirname(file), target);
+        if (!contained(root, resolved) || (!path.isAbsolute(target) && !contained(root, literal))) {
+          throw new Error(
+            `build context contains an external symlink: ${path.relative(root, file)}`,
+          );
+        }
+        if (
+          excludedBuildPath(path.relative(root, resolved)) ||
+          excludedBuildPath(path.isAbsolute(target) ? path.relative(root, target) : target)
+        ) {
+          throw new Error(
+            `build context symlink targets an excluded path: ${path.relative(root, file)}`,
+          );
+        }
+        if (path.isAbsolute(target)) {
+          absoluteLinks.push({
+            file: copied,
+            target: path.relative(path.dirname(file), resolved) || '.',
+          });
+        }
       }
       if (path.basename(file) === '.yarnrc.yml') {
         const text = await readFile(file, 'utf8');
@@ -60,6 +82,11 @@ export async function copyBuildContext(source: string, destination: string): Pro
       return true;
     },
   });
+  // Docker relocates this tree to /workspace; host-absolute links must move with its contents.
+  for (const link of absoluteLinks) {
+    await unlink(link.file);
+    await symlink(link.target, link.file);
+  }
 }
 
 export interface PackageInstall {

@@ -46,7 +46,6 @@ describe('AWS Valkey connection recovery', () => {
       let waited = 0;
       for (let attempt = 0; attempt < 100; attempt += 1) {
         const delay = reconnect(attempt, new Error('failover in progress'));
-        expect(typeof delay).toBe('number');
         if (typeof delay !== 'number') throw new Error('reconnection stopped permanently');
         expect(delay).toBeGreaterThan(0);
         expect(delay).toBeLessThanOrEqual(1000);
