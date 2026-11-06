@@ -2,7 +2,7 @@ import { resolveAccount } from './account.ts';
 import type { DeploymentsOptions } from './args.ts';
 import { createCloudflareClient } from './cloudflare/client.ts';
 import type { AccountScope } from './cloudflare/workers.ts';
-import { readDeploySettings } from './config.ts';
+import { type DeploySettings, readDeploySettings } from './config.ts';
 import type { CloudflareCredentials } from './credentials.ts';
 import {
   cacheKeyMadeAt,
@@ -79,6 +79,7 @@ export async function runDeployments(
   options: DeploymentsOptions,
   credentials: CloudflareCredentials | undefined,
   io: DeploymentsIo = {},
+  resolvedSettings?: DeploySettings,
 ): Promise<number> {
   if (credentials === undefined) {
     console.error(
@@ -86,7 +87,7 @@ export async function runDeployments(
     );
     return 1;
   }
-  const settings = await readDeploySettings(options.projectDir);
+  const settings = resolvedSettings ?? (await readDeploySettings(options.projectDir));
   const names = projectNames(settings.project);
   const client = createCloudflareClient({ apiToken: credentials.apiToken, fetch: io.fetch });
   const scope = { client, accountId: await resolveAccount(client, credentials.accountId) };

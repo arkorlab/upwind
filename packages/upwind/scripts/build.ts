@@ -39,6 +39,7 @@ async function main(): Promise<void> {
   const build = await rolldown({
     input: {
       cli: path.join(ROOT, 'src/cli.ts'),
+      'aws-credentials': path.join(ROOT, 'src/aws/credential-worker.ts'),
       'resources-entry': path.join(ROOT, 'src/resources/entry.ts'),
       'websocket-dev': path.join(ROOT, 'src/websocket-dev.ts'),
     },
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
     // (`src/deploy/shipped.ts`); the published command reads `dist/shipped/` instead.
     external: [
       /^next(\/|$)/u,
+      /^@aws-sdk\//u,
       /^node:/u,
       /^miniflare$/u,
       /^wrangler$/u,

@@ -90,7 +90,7 @@ flowchart TB
 ```
 
 > [!NOTE]
-> **upwind deploys the directory, too — to a Cloudflare account of your own.** `upwind deploy` builds the app, uploads `.arkor/`, puts the edge in front of its Functions and the runtime cache behind them, and switches the site to the new deployment once it answers. `upwind preview` serves a build the same way on your machine, and deploys nothing. `upwind deployments` lists what is deployed, `upwind rollback` goes back to an earlier deployment, and `upwind destroy` deletes everything `deploy` made. [upwind's readme](packages/upwind/README.md#upwind-deploy) has the details. A host of another kind can take the directory instead: what it implements — the bundle's schema, the manifest an edge reads, and the `x-arkor-*` headers an edge and a Function exchange — is specified in [`@stayingupwind/core`](packages/core).
+> **upwind deploys the directory, too — to Cloudflare by default, or independently to AWS.** `upwind deploy` builds the app, uploads `.arkor/`, puts the edge in front of its Functions and the runtime cache behind them, and switches the site to the new deployment once it answers. `upwind preview` serves a build the same way on your machine, and deploys nothing. `upwind deployments` lists what is deployed, `upwind rollback` goes back to an earlier deployment, and `upwind destroy` deletes everything `deploy` made. [upwind's readme](packages/upwind/README.md#upwind-deploy) has the details. A host of another kind can take the directory instead: what it implements — the bundle's schema, the manifest an edge reads, and the `x-arkor-*` headers an edge and a Function exchange — is specified in [`@stayingupwind/core`](packages/core).
 
 ## 🎯 Who it's for
 
@@ -102,7 +102,7 @@ flowchart TB
 <summary><b>Not a fit yet if…</b></summary>
 
 - **you build with webpack.** It is not supported; see [what it serves](#-what-it-serves).
-- **you deploy somewhere other than a Cloudflare account of your own.** That is the one place `upwind deploy` deploys to — with custom domains attached by hand, and no cron jobs yet; anywhere else needs a host that takes the bundle. See the note above.
+- **you need a deployment target beyond Cloudflare or AWS.** `upwind deploy` supports Cloudflare and an independent AWS provider whose first compute driver is Fargate. Other targets need a host that takes the bundle.
 - **you need 1.0 guarantees.** See [the status note](#status).
 
 </details>
@@ -215,6 +215,10 @@ Your app needs Next.js in [the supported range](#-which-nextjs), built with Turb
 Then add `.arkor/`, which a build writes, and `.upwind/`, where local storage is kept, to `.gitignore`.
 
 ### Run on native Node.js
+
+To provision and deploy a native application on AWS, select `deploy.target: 'aws'` and
+`deploy.aws.compute: 'fargate'`. CloudFront is optional, and the shared cache can use Valkey or
+DynamoDB/S3. [Deploy to AWS](packages/upwind/AWS.md) describes the configuration and lifecycle.
 
 ```bash
 pnpm upwind build --target=node

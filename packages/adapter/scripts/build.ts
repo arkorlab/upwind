@@ -75,12 +75,14 @@ async function main(): Promise<void> {
   await mkdir(nativeDir, { recursive: true });
   for (const [name, source] of [
     ['server', path.join(ROOT, 'src/native/server.ts')],
+    ['aws-server', path.join(ROOT, 'src/native/server.ts')],
     ['cache-worker', fileURLToPath(new URL('../../cache/src/native/worker.ts', import.meta.url))],
   ] as const) {
     await using native = await rolldown({
       input: source,
       platform: 'node',
       external: [/^node:/u],
+      transform: { define: { __UPWIND_AWS_NATIVE__: String(name === 'aws-server') } },
       plugins: [
         {
           name: 'native-host-function',

@@ -1,3 +1,5 @@
+declare const __UPWIND_AWS_NATIVE__: boolean;
+
 declare module 'arkor:native-function' {
   const entry: {
     fetch(

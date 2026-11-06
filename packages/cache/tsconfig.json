@@ -6,5 +6,11 @@
     "allowImportingTsExtensions": true
   },
   "include": ["src/**/*", "test/**/*", "vitest.config.mts", "vitest.native.config.mts"],
-  "exclude": ["src/function/**/*", "src/native/**/*", "test/native/**/*"]
+  "exclude": [
+    "src/function/**/*",
+    "src/native/**/*",
+    "test/native/**/*",
+    "src/aws/**/*",
+    "test/aws/**/*"
+  ]
 }

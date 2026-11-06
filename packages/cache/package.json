@@ -47,15 +47,19 @@
     "./standalone/worker": "./src/standalone/worker.ts"
   },
   "scripts": {
-    "build": "tsc --noEmit && tsc --noEmit -p src/function && tsc --noEmit -p src/native",
+    "build": "tsc --noEmit && tsc --noEmit -p src/function && tsc --noEmit -p src/native && tsc --noEmit -p src/aws",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/function && tsc --noEmit -p src/native"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/function && tsc --noEmit -p src/native && tsc --noEmit -p src/aws"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1162.0",
+    "@aws-sdk/client-s3": "3.1162.0",
+    "@aws-sdk/lib-dynamodb": "3.1162.0",
     "@stayingupwind/core": "workspace:*",
     "@stayingupwind/host": "workspace:*",
     "@stayingupwind/runtime": "workspace:*",
     "hono": "catalog:",
+    "redis": "6.3.1",
     "zod": "catalog:"
   },
   "devDependencies": {

@@ -5,10 +5,16 @@ import path from 'node:path';
 
 import {
   type DeploymentBundle,
+  headerRulesOf,
   type PackedPrerenders,
   type Prerender,
   unpackPrerenders,
 } from '@stayingupwind/core/bundle';
+import {
+  SCOPE_REVISION_HEADER,
+  scopeRevisionValue,
+  type ScopeRevision,
+} from '@stayingupwind/core/paas';
 import { TaskGroup } from '@stayingupwind/runtime/native';
 import entry, { closeNodeBridge, configureImageCache } from 'arkor:native-function';
 
@@ -40,6 +46,7 @@ interface NativeManifest {
   readonly nextVersion: string;
   readonly generatedAt: string;
   readonly imageCacheBytes?: number;
+  readonly aws?: 1;
 }
 
 function manifestOf(value: unknown): NativeManifest {
@@ -89,6 +96,18 @@ function report(error: unknown): void {
   console.error('upwind: native request failed', error);
 }
 
+function required(name: string): string {
+  const value = process.env[name];
+  if (value === undefined || value === '') throw new Error(`missing AWS runtime setting ${name}`);
+  return value;
+}
+
+function awsBackend(): 'valkey' | 'dynamodb' {
+  const value = required('UPWIND_AWS_CACHE_BACKEND');
+  if (value !== 'valkey' && value !== 'dynamodb') throw new Error('invalid AWS cache backend');
+  return value;
+}
+
 async function main(): Promise<void> {
   const manifestText = await readFile(path.join(ROOT, 'manifest.json'), 'utf8');
   const manifest = manifestOf(JSON.parse(manifestText));
@@ -124,7 +143,8 @@ async function main(): Promise<void> {
     scopeId,
     generatedAt: seededGenerationAt(bundle, Date.now()),
   });
-  const cache = await createNativeCache({
+  const tasks = new TaskGroup(report);
+  const cacheOptions = {
     directory: path.join(cacheRoot, scopeId),
     scopeId,
     buildId: manifest.buildId,
@@ -132,15 +152,81 @@ async function main(): Promise<void> {
     // eslint-disable-next-line unicorn/no-missing-local-resource -- emitted beside this executable
     workerUrl: new URL('cache-worker.mjs', import.meta.url),
     seed: { entries: seeds, blobsDirectory: path.join(ROOT, 'blobs') },
-  });
+  };
+  let cache: Awaited<ReturnType<typeof createNativeCache>>;
+  let readScopeRevision: (() => Promise<ScopeRevision>) | undefined;
+  if (__UPWIND_AWS_NATIVE__) {
+    const aws = await import('../../../cache/src/aws/index.ts');
+    const options = {
+      scopeId,
+      buildId: manifest.buildId,
+      deploymentId: manifest.deploymentId,
+      seed: cacheOptions.seed,
+      backend: awsBackend(),
+      region: required('AWS_REGION'),
+      bucket: required('UPWIND_AWS_CACHE_BUCKET'),
+      ...(process.env['UPWIND_AWS_CACHE_TABLE'] === undefined
+        ? {}
+        : { table: process.env['UPWIND_AWS_CACHE_TABLE'] }),
+      ...(process.env['UPWIND_AWS_VALKEY_URL'] === undefined
+        ? {}
+        : { valkeyUrl: process.env['UPWIND_AWS_VALKEY_URL'] }),
+      ...(process.env['UPWIND_AWS_VALKEY_USERNAME'] === undefined
+        ? {}
+        : { valkeyUsername: process.env['UPWIND_AWS_VALKEY_USERNAME'] }),
+      ...(process.env['UPWIND_AWS_VALKEY_PASSWORD'] === undefined
+        ? {}
+        : { valkeyPassword: process.env['UPWIND_AWS_VALKEY_PASSWORD'] }),
+      waitUntil: tasks.waitUntil,
+    };
+    if (process.env['UPWIND_AWS_CACHE_RETIRE'] === '1') {
+      await aws.retireAwsCache(options);
+      return;
+    }
+    const { prepareAwsAssets } = await import('../../../cache/src/aws/assets.ts');
+    await prepareAwsAssets({
+      nativeRoot: ROOT,
+      bundleRoot: required('UPWIND_AWS_BUNDLE_ROOT'),
+      region: options.region,
+      bucket: options.bucket,
+    });
+    const shared = await aws.createAwsCache(options);
+    cache = shared;
+    readScopeRevision = shared.readScopeRevision;
+  } else {
+    cache = await createNativeCache(cacheOptions);
+  }
   Reflect.set(process.env, 'NODE_ENV', 'production');
   process.env['NEXT_RUNTIME'] = 'nodejs';
   process.env['NEXT_DEPLOYMENT_ID'] = manifest.deploymentId;
   process.chdir(path.resolve(ROOT, manifest.projectDir));
-  const tasks = new TaskGroup(report);
   const requests = new TaskGroup(report);
   const env = { UPWIND_NODE_CACHE: cache.binding };
+  const staticPaths =
+    __UPWIND_AWS_NATIVE__ &&
+    bundle.middleware === undefined &&
+    bundle.routing.beforeMiddleware.length === 0 &&
+    bundle.routing.beforeFiles.length === 0 &&
+    headerRulesOf(bundle).length === 0
+      ? new Set(bundle.staticFiles.map((file) => file.pathname))
+      : undefined;
   const server = createServer((req, res) => {
+    // Readiness never invokes the application or starts a render. The socket is opened only
+    // after the shared cache has been initialized and its immutable build seed accepted.
+    if (
+      __UPWIND_AWS_NATIVE__ &&
+      (req.method === 'GET' || req.method === 'HEAD') &&
+      req.url?.split('?', 1)[0] === '/__upwind/health'
+    ) {
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'cache-control': 'private, no-store',
+      });
+      res.end(
+        req.method === 'HEAD' ? undefined : JSON.stringify({ ready: true, deploymentId: scopeId }),
+      );
+      return;
+    }
     let request: Request;
     try {
       request = nativeRequest(req, res, origin);
@@ -154,6 +240,17 @@ async function main(): Promise<void> {
     }
     const answered = async (): Promise<void> => {
       try {
+        if (
+          readScopeRevision !== undefined &&
+          !(
+            (request.method === 'GET' || request.method === 'HEAD') &&
+            staticPaths?.has(new URL(request.url).pathname) === true
+          )
+        ) {
+          // The public boundary already discarded visitor-supplied control headers. This strong
+          // barrier prevents another task's acknowledged invalidation being hidden by a memo.
+          request.headers.set(SCOPE_REVISION_HEADER, scopeRevisionValue(await readScopeRevision()));
+        }
         await writeNativeResponse(
           req,
           res,

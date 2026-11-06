@@ -16,7 +16,7 @@ import {
   deleteObject,
 } from './cloudflare/storage.ts';
 import { type AccountScope, deleteScript } from './cloudflare/workers.ts';
-import { readDeploySettings } from './config.ts';
+import { type DeploySettings, readDeploySettings } from './config.ts';
 import type { CloudflareCredentials } from './credentials.ts';
 import { deploymentOfScript, type ProjectNames, projectNames } from './names.ts';
 import { withProjectLock } from './project-lock.ts';
@@ -245,6 +245,7 @@ export async function runDestroy(
   options: DestroyOptions,
   credentials: CloudflareCredentials | undefined,
   io: DestroyIo = {},
+  resolvedSettings?: DeploySettings,
 ): Promise<number> {
   if (!options.yes) {
     console.error(
@@ -258,7 +259,7 @@ export async function runDestroy(
     );
     return 1;
   }
-  const settings = await readDeploySettings(options.projectDir);
+  const settings = resolvedSettings ?? (await readDeploySettings(options.projectDir));
   const names = projectNames(settings.project);
   const client = createCloudflareClient({ apiToken: credentials.apiToken, fetch: io.fetch });
   const accountScope = { client, accountId: await resolveAccount(client, credentials.accountId) };

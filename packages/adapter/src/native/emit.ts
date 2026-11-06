@@ -60,6 +60,8 @@ export interface NativeDeploymentManifest extends ImageCacheField {
   readonly generatedAt: string;
   readonly projectDir: string;
   readonly distDir: string;
+  /** An AWS host is selected at build time; ordinary native artifacts carry no AWS clients. */
+  readonly aws?: 1;
 }
 
 async function filesUnder(directory: string): Promise<string[]> {
@@ -239,6 +241,7 @@ async function bundleNativeModule(
   entry: string,
   file: string,
   plugins: readonly Plugin[] = [],
+  aws = false,
 ): Promise<void> {
   const unresolved: string[] = [];
   await using bundle = await rolldown({
@@ -252,11 +255,14 @@ async function bundleNativeModule(
       inject: GLOBAL_OBJECT,
       define: {
         ...THROWING_GLOBALS,
+        __UPWIND_AWS_NATIVE__: String(aws),
         'process.env.NODE_ENV': '"production"',
         __ARKOR_FUNCTION_KIND__: '"app"',
         __ARKOR_FUNCTION_NAME__: '"app"',
         __ARKOR_WORKFLOW_SDK__: 'false',
-        __ARKOR_BUNDLE_ROOT__: 'import.meta.dirname',
+        __ARKOR_BUNDLE_ROOT__: aws
+          ? "(process.env['UPWIND_AWS_BUNDLE_ROOT'] ?? import.meta.dirname)"
+          : 'import.meta.dirname',
         __dirname: 'import.meta.dirname',
         __filename: 'import.meta.filename',
       },
@@ -343,13 +349,18 @@ async function emitNativeEdge(
 async function emitNativeHost(outDir: string, plugin: Plugin): Promise<void> {
   const root = await adapterRoot();
   const templates = path.join(root, 'dist/native');
+  const aws = process.env['UPWIND_AWS_BUILD'] === '1';
+  const template = aws ? 'aws-server.mjs' : SERVER_FILE;
   if (
-    (await exists(path.join(templates, SERVER_FILE))) &&
+    (await exists(path.join(templates, template))) &&
     (await exists(path.join(templates, CACHE_WORKER_FILE)))
   ) {
     await Promise.all(
       [SERVER_FILE, CACHE_WORKER_FILE].map((name) =>
-        copyFile(path.join(templates, name), path.join(outDir, name)),
+        copyFile(
+          path.join(templates, name === SERVER_FILE ? template : name),
+          path.join(outDir, name),
+        ),
       ),
     );
     return;
@@ -358,6 +369,7 @@ async function emitNativeHost(outDir: string, plugin: Plugin): Promise<void> {
     path.join(root, 'src/native/server.ts'),
     path.join(outDir, SERVER_FILE),
     [plugin],
+    aws,
   );
   const worker = path.join(root, '../cache/src/native/worker.ts');
   await bundleNativeModule(worker, path.join(outDir, CACHE_WORKER_FILE));
@@ -489,6 +501,7 @@ export async function emitNativeDeployment(
     projectDir: layout.pathOf(ctx.projectDir),
     distDir: layout.pathOf(ctx.distDir),
     ...imageCacheField(ctx, images),
+    ...(process.env['UPWIND_AWS_BUILD'] === '1' ? { aws: 1 as const } : {}),
   };
   // A static export still needs a real cwd, even though none of its route modules are loaded.
   await mkdir(path.join(outDir, manifest.projectDir), { recursive: true });
@@ -506,6 +519,7 @@ export async function emitNativeDeployment(
     path.join(runtimeRoot, 'native/function.ts'),
     path.join(outDir, 'function.mjs'),
     [plugin],
+    process.env['UPWIND_AWS_BUILD'] === '1',
   );
   await emitNativeHost(outDir, plugin);
   await writeFile(path.join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);

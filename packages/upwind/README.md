@@ -409,6 +409,11 @@ preview's to say; `upwind deploy --dry-run` says it.
 
 ## `upwind deploy`
 
+`deploy.target: 'aws'` selects an independent AWS deployment. Its first compute driver is
+`deploy.aws.compute: 'fargate'`, with optional CloudFront and either Valkey or DynamoDB/S3 shared
+caching. [Deploy to AWS](AWS.md) covers configuration, builds and the managed resource lifecycle.
+Omitting the target keeps the Cloudflare behavior described below.
+
 ```bash
 CLOUDFLARE_API_TOKEN=… pnpm upwind deploy
 ```

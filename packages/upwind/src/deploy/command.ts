@@ -223,8 +223,10 @@ export async function runDeploy(
   options: DeployOptions,
   credentials: CloudflareCredentials | undefined,
   io: DeployIo = {},
+  resolvedSettings?: DeploySettings,
 ): Promise<number> {
-  const settings = await readDeploySettings(options.projectDir, { keep: options.keep });
+  const settings =
+    resolvedSettings ?? (await readDeploySettings(options.projectDir, { keep: options.keep }));
   const stopped = await buildToDeploy(options);
   if (stopped !== undefined) {
     return stopped;
