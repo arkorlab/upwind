@@ -62,6 +62,8 @@ export interface HandleInput extends EntryTables {
 export interface RenderParameters {
   readonly params: Readonly<Record<string, string | string[]>>;
   readonly query: Readonly<Record<string, string | string[]>>;
+  /** Only a resume takes them: any other render reads the URL (`spelledParameters`). */
+  readonly resumeOnly?: true | undefined;
 }
 
 /**
@@ -136,10 +138,11 @@ export function baseRequestMeta(input: RoutedInput): Record<string, unknown> {
     minimalMode: true,
     relativeProjectDir: '.',
     initURL: input.initURL,
-    ...(parameters !== undefined && {
-      params: copyValues(parameters.params),
-      query: copyValues(parameters.query),
-    }),
+    ...(parameters !== undefined &&
+      parameters.resumeOnly !== true && {
+        params: copyValues(parameters.params),
+        query: copyValues(parameters.query),
+      }),
     // What the Pages Router asks the platform for when a render ends in `notFound: true`, or
     // when a `fallback: false` route is asked for a member the build did not make.
     render404,
@@ -376,6 +379,39 @@ export interface ResumeInput {
   readonly url?: string | undefined;
   /** The request Next.js sees; the routed request, stripped of the platform's headers, by default. */
   readonly request?: Request | undefined;
+  /** Route parameters for a resume no routing named them for (`resumeParametersOf`). */
+  readonly params?: RenderParameters['params'] | undefined;
+}
+
+/** Whether `value` is spelled as the placeholder of the parameter `name`. */
+function spelledAsPlaceholder(name: string, value: string | readonly string[]): boolean {
+  if (typeof value === 'string') {
+    return value === `[${name}]`;
+  }
+  const [only] = value;
+  return value.length === 1 && (only === `[...${name}]` || only === `[[...${name}]]`);
+}
+
+/**
+ * The route parameters a resume hands Next.js. In minimal mode a value spelled as its own
+ * placeholder reads as one the platform left unresolved (`getPlaceholderFallbackRouteParams`), and
+ * Next.js refuses to resume with one ("postponed state should not be provided when fallback params
+ * are provided"): a visitor's `/shop/[id]` would end at its shell. Nothing is unresolved in a
+ * resume, which finishes a request, so the value is escaped past that comparison. No spelling
+ * gives the page what `next start` does, since Next.js compares the value it encodes for the page:
+ * `[id]` reaches the page as `%255Bid%255D` here, and `%5Bid%5D` there.
+ */
+function resumedParams(params: RenderParameters['params']): Record<string, string | string[]> {
+  const resumed = copyValues(params);
+  for (const [name, value] of Object.entries(resumed)) {
+    if (spelledAsPlaceholder(name, value)) {
+      resumed[name] =
+        typeof value === 'string'
+          ? encodeURIComponent(value)
+          : value.map((member) => encodeURIComponent(member));
+    }
+  }
+  return resumed;
 }
 
 /** Render what the prerender left out; the response body is the suffix only. */
@@ -383,13 +419,19 @@ export function resume(r: ResumeInput): Promise<Response> {
   const request =
     r.request ??
     new Request(r.input.request, { headers: stripPlatformHeaders(r.input.request.headers) });
+  const { parameters } = r.input;
+  const params = r.params ?? parameters?.params;
   return invokeNodeHandler({
     handler: r.handler,
     request,
     url: r.url,
     requestMeta: {
       ...baseRequestMeta(r.input),
-      ...(r.postponed !== undefined && { postponed: r.postponed }),
+      ...(r.postponed !== undefined && {
+        postponed: r.postponed,
+        ...(params !== undefined && { params: resumedParams(params) }),
+        ...(parameters !== undefined && { query: copyValues(parameters.query) }),
+      }),
     },
     waitUntil: r.input.waitUntil,
     run: r.input.run,
