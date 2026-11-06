@@ -1,7 +1,7 @@
 {
   "name": "@stayingupwind/sdk",
   "version": "0.4.0",
-  "description": "What an application reads its own resources through: the KV namespaces, R2 buckets, D1 databases, Durable Object namespaces and Workers AI inference its deployment published, by name or — where there is exactly one of a kind — by no name at all.",
+  "description": "An application's published KV, R2, D1, Durable Object, AI and service capabilities, plus developer-defined context for its runtime logs.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
@@ -49,6 +49,10 @@
     "./service": {
       "types": "./dist/service.d.ts",
       "default": "./dist/service.js"
+    },
+    "./logs": {
+      "types": "./dist/logs.d.ts",
+      "default": "./dist/logs.js"
     },
     "./websocket": {
       "types": "./dist/websocket.d.ts",

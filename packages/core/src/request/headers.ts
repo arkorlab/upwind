@@ -23,6 +23,8 @@ export interface ForwardingContext extends CookieHostContext {
   readonly clientIp: string | undefined;
   /** The client's country as the platform observed it; forwarded to a hosted app's runtime. */
   readonly clientCountry?: string | undefined;
+  /** Read only at a hosted Worker dispatch, after routing has judged the visitor's headers. */
+  readonly logCorrelationId?: (() => string) | undefined;
 }
 
 function isInternalRequestHeader(name: string): boolean {

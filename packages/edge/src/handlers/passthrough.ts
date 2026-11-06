@@ -662,6 +662,7 @@ async function forwardPassthrough(input: PassthroughInput, signal: AbortSignal):
   const pending = fetchUpstream(input.runtime, input.app, originRequest, {
     function: fn,
     scopeId: input.scopeId ?? input.manifest?.cache?.scopeId,
+    logCorrelationId: input.forwarding.logCorrelationId,
   });
   input.onAsked?.(() => dispatchesMade(pending));
   observeDispatch(input.onDispatched, pending);

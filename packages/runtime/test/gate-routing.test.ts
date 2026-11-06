@@ -1,4 +1,5 @@
 import { namesSpelledBy } from '@stayingupwind/core/bundle';
+import { LOG_CORRELATION_HEADER } from '@stayingupwind/core/paas';
 import { describe, expect, it, vi } from 'vitest';
 
 import { escapedNameOf } from '../src/name-spellings.ts';
@@ -102,9 +103,17 @@ function deployment(options: Deployment = {}): Store {
 }
 
 /** The route the router lands a request for `path` on, or `undefined` where it finds none. */
-async function landing(store: Store, path: string): Promise<string | undefined> {
+async function landing(
+  store: Store,
+  path: string,
+  requestHeaders: HeadersInit = {},
+): Promise<string | undefined> {
   const url = new URL(path, 'https://app.test');
-  const headers = routedHeaders(new Request(url), url, store.manifest.config.basePath);
+  const headers = routedHeaders(
+    new Request(url, { headers: requestHeaders }),
+    url,
+    store.manifest.config.basePath,
+  );
   const { resolvedPathname, invocationTarget } = await routingOf({} as never, store, {
     url,
     headers,
@@ -132,6 +141,30 @@ async function servedPage(store: Store, path: string): Promise<string | undefine
 }
 
 describe('where the router lands a request a gate is asked of', () => {
+  it.each([
+    [LOG_CORRELATION_HEADER, POST],
+    ['x-visitor-id', '/private'],
+  ])('keeps platform log correlation out of header conditions: %s', async (header, route) => {
+    const store = deployment({
+      leading: [
+        {
+          sourceRegex: '^/posts/[^/]+$',
+          destination: '/private',
+          has: [{ type: 'header', key: header }],
+        },
+      ],
+    });
+    const request = new Request('https://app.test/posts/demo', {
+      headers: { [header]: 'de305d54-75b4-431b-adb2-eb6b9e546014' },
+    });
+
+    const handed = routedHeaders(request, new URL(request.url), store.manifest.config.basePath);
+
+    expect(handed.has(header)).toBe(header !== LOG_CORRELATION_HEADER);
+    expect(request.headers.has(header)).toBe(true);
+    await expect(landing(store, '/posts/demo', request.headers)).resolves.toBe(route);
+  });
+
   /**
    * A member the build prerendered is no name the router resolves, but for the few it does
    * (`resolvedByName`): it is reached through the dynamic routes, the first that holds of it

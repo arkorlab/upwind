@@ -6,7 +6,7 @@ import {
   type ProjectManifest,
   type StaticFileEntry,
 } from '@stayingupwind/core/manifest';
-import { IP_COUNTRY_HEADER } from '@stayingupwind/core/paas';
+import { IP_COUNTRY_HEADER, LOG_CORRELATION_HEADER } from '@stayingupwind/core/paas';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { blobObjectKey } from '@stayingupwind/host/storage';
@@ -355,6 +355,7 @@ describe('an optimized image source identity', () => {
     ]);
 
     for (const name of [
+      LOG_CORRELATION_HEADER,
       'cf-connecting-ip',
       IP_COUNTRY_HEADER,
       'x-forwarded-for',

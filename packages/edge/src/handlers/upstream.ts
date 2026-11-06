@@ -3,6 +3,7 @@ import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
 import { withScopeRevision } from '../cache/scope-signal.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
+import { stampLogCorrelation } from '../request-context.ts';
 import { dispatchSplitApp, NoApplicationError, NoDispatchError, unsent } from './app-dispatch.ts';
 export {
   dispatchedOf,
@@ -45,6 +46,7 @@ export function functionOfRequest(
 interface UpstreamTarget {
   readonly function?: string | undefined;
   readonly scopeId?: string | undefined;
+  readonly logCorrelationId?: (() => string) | undefined;
 }
 
 /**
@@ -68,6 +70,7 @@ export function fetchUpstream(
   // catches up before it judges anything (`SCOPE_REVISION_HEADER`). Its manifest can name a scope
   // different from the deployment id used while the manifest is still being read.
   const told = withScopeRevision(runtime, target?.scopeId ?? app.deploymentId, request);
+  stampLogCorrelation(told, target?.logCorrelationId);
   if (app.functions === undefined) {
     // Catch only the synchronous call; awaiting or observing it would wrap its normal promise.
     // eslint-disable-next-line sonarjs/no-try-promise

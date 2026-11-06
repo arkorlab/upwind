@@ -113,6 +113,18 @@ export {
 } from './next-cache-registry.ts';
 export { type SqlEffect, sqlEffect } from './sql-effect.ts';
 export {
+  isLogCorrelationId,
+  LOG_CONTEXT_MESSAGE,
+  LOG_CORRELATION_HEADER,
+  logContextEnvelope,
+  type LogContextEnvelope,
+  MAX_LOG_CONTEXT_BYTES,
+  MAX_LOG_CONTEXT_ENTRIES,
+  MAX_LOG_CONTEXT_KEY_LENGTH,
+  MAX_LOG_CONTEXT_VALUE_LENGTH,
+  readLogContext,
+} from './log-context.ts';
+export {
   RESOURCE_CHANGES_ENTRYPOINT,
   RESOURCE_CHANGES_SERVICE_BINDING,
   type ResourceChangeAcknowledgement,

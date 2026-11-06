@@ -113,6 +113,7 @@ export const resumeContinuation = {
       response: fetchUpstream(input.ctx.runtime, input.ctx.app, upstream, {
         function: input.entry.function,
         scopeId: input.manifest.cache?.scopeId,
+        logCorrelationId: input.ctx.forwarding.logCorrelationId,
       }),
       abort: (reason) => {
         controller.abort(reason);
