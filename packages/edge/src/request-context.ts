@@ -1,3 +1,4 @@
+import { LOG_CORRELATION_HEADER } from '@stayingupwind/core/paas';
 import { type ForwardingContext, VALIDATION_HEADER } from '@stayingupwind/core/request';
 
 import type { AssetOutcome } from './handlers/asset.ts';
@@ -5,6 +6,25 @@ import type { AssetOutcome } from './handlers/asset.ts';
 /** What the edge knows about a request before any handler looks at it. */
 
 export type IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
+
+/** The original request owns this value, including when routing rebuilds its forwarding context. */
+const LOG_CORRELATION = Symbol.for('@stayingupwind/edge/log-correlation');
+
+function logCorrelationFor(request: IncomingRequest): string {
+  const original: IncomingRequest & { [LOG_CORRELATION]?: string } = request;
+  return (original[LOG_CORRELATION] ??= crypto.randomUUID());
+}
+
+/**
+ * Only an actual dispatch reads the lazy id. Matcher evaluation, cache keys and static answers do
+ * not mint one or see it in their headers. A new forwarding context still reads the original
+ * request's value, rather than the request a middleware rewrote or a retry cloned.
+ */
+export function stampLogCorrelation(request: Request, read?: () => string): void {
+  const id = read?.();
+  if (id === undefined) request.headers.delete(LOG_CORRELATION_HEADER);
+  else request.headers.set(LOG_CORRELATION_HEADER, id);
+}
 
 export function coloOf(request: Pick<IncomingRequest, 'cf'>): string | undefined {
   return request.cf?.colo;
@@ -30,6 +50,7 @@ export function forwardingFor(
     previewHost,
     clientIp: request.headers.get('cf-connecting-ip') ?? undefined,
     clientCountry: request.cf?.country,
+    logCorrelationId: () => logCorrelationFor(request),
   };
 }
 

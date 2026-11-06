@@ -30,6 +30,7 @@ import type { DispatchApp } from '../edge-runtime.ts';
 import { passthroughHeaders } from '../forwarding.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
+import { stampLogCorrelation } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { layConfiguredUnder } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
@@ -452,6 +453,7 @@ async function runMiddlewareIn(
   const controller = new AbortController();
   const signal = AbortSignal.any([controller.signal, request.signal]);
   const forwarded = middlewareRequest(edge, request, signal);
+  stampLogCorrelation(forwarded, edge.forwarding.logCorrelationId);
   const { budget } = target;
   let response: Response;
   let dispatched: Promise<Response> | undefined;

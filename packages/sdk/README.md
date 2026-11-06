@@ -1,5 +1,67 @@
 # @stayingupwind/sdk
 
+## Custom Context for runtime logs
+
+Use `@stayingupwind/sdk/logs` in server code to associate your own identifiers with an
+invocation's runtime logs. Pass the IDs your application already resolved from its authenticated
+session:
+
+```ts
+import { setLogContext } from '@stayingupwind/sdk/logs';
+
+const accepted = setLogContext({
+  userId: session.userId,
+  tenantId: session.tenantId,
+});
+```
+
+Call once per invocation with the complete map. Keys and values are strings; there are no reserved
+user or tenant keys. The map can contain at most 16 entries, each key 1–64 characters and each value
+at most 200 characters, counted as JavaScript string lengths. The complete structured record must
+also fit within 4096 UTF-8 bytes, including its envelope. Invalid or oversized context is rejected
+whole, without shortening an identifier or retaining a partial map.
+
+The function snapshots the values and synchronously emits one structured console record. It returns
+`false` for invalid input, accessors or property traps that cannot be read safely, or a console
+failure. `true` means the record was emitted; persistence, sampling, display and delivery follow the
+host's logging settings. Pass identifiers such as user and tenant IDs, rather than session cookies
+or credentials.
+
+The API requires no framework integration or global request state. It makes no network request,
+installs no console wrapper and returns no promise. Importing it changes no request handler. A host
+that supports the marker can attach the map to the invocation's request and console logs, including
+lines written before the call. Calls in separate Middleware/Proxy and application Workers are
+separate invocations; any correlation across them is provided by the host.
+
+In Next.js, schedule the emission after the response using
+[`after`](https://nextjs.org/docs/app/api-reference/functions/after), capturing IDs from the
+authentication your handler already performs:
+
+```ts
+import { setLogContext } from '@stayingupwind/sdk/logs';
+import { after } from 'next/server';
+
+import { authenticate, handleRequest } from '@/lib/application';
+
+export async function POST(request: Request) {
+  const session = await authenticate(request);
+  const context = { userId: session.userId, tenantId: session.tenantId };
+  after(() => {
+    setLogContext(context);
+  });
+  return handleRequest(request, session);
+}
+```
+
+Use the same captured-value pattern in an already dynamic Server Component. Do not add a cookie
+read to a shared layout just for logging: request APIs inside a Server Component's `after` callback
+are unsupported, and a new cookie read during rendering changes caching and prerendering behavior.
+Other frameworks can use their own response-lifetime hook, or call the synchronous API where the
+session is already available.
+
+The transport follows Cloudflare's
+[structured logging](https://developers.cloudflare.com/workers/observability/logs/workers-logs/#logging-structured-json-objects).
+
 ## WebSockets in Route Handlers
 
 Workers-native Route Handlers can return `new Response(null, { status: 101, webSocket: client })`
@@ -134,14 +196,15 @@ it the same way in both places.
 
 ## What there is
 
-| Import                                       | What it is                                                |
-| -------------------------------------------- | --------------------------------------------------------- |
-| `import db from '@stayingupwind/sdk/db'`     | the project's D1 database, if exactly one is published    |
-| `import kv from '@stayingupwind/sdk/kv'`     | the project's KV namespace, likewise                      |
-| `import blob from '@stayingupwind/sdk/blob'` | the project's R2 bucket, likewise                         |
-| `d1(name)`, `kv(name)`, `blob(name)`         | storage by the name it was bound under                    |
-| `service(name)`                              | a private service by its published binding name           |
-| `published()`                                | everything published, and the names it is published under |
+| Import                                           | What it is                                                |
+| ------------------------------------------------ | --------------------------------------------------------- |
+| `import db from '@stayingupwind/sdk/db'`         | the project's D1 database, if exactly one is published    |
+| `import kv from '@stayingupwind/sdk/kv'`         | the project's KV namespace, likewise                      |
+| `import blob from '@stayingupwind/sdk/blob'`     | the project's R2 bucket, likewise                         |
+| `d1(name)`, `kv(name)`, `blob(name)`             | storage by the name it was bound under                    |
+| `service(name)`                                  | a private service by its published binding name           |
+| `published()`                                    | everything published, and the names it is published under |
+| `setLogContext()` from `@stayingupwind/sdk/logs` | developer-defined identifiers for runtime logs            |
 
 The default exports are lazy: nothing is resolved until the first time one is used, because a
 module is evaluated before there is any storage to be. Everything else is a plain function.
