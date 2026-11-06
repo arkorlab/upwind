@@ -23,6 +23,8 @@ export interface VercelRequestContext {
   /** The URL the visitor asked for, on the host they used. */
   readonly url: string;
   readonly waitUntil: (promise: Promise<unknown>) => void;
+  /** Start background work after the handler settles, without holding its response. */
+  readonly afterResponse?: (task: () => void | Promise<void>) => void;
 }
 
 /** What `AsyncLocalStorage.snapshot()` hands back: runs a function in the context it was taken in. */
@@ -30,6 +32,12 @@ type ContextSnapshot = ReturnType<typeof AsyncLocalStorage.snapshot>;
 
 interface RequestScope {
   readonly context: VercelRequestContext;
+  /** The handler's own promise, retained without wrapping or observing it until needed. */
+  answer: Promise<unknown> | undefined;
+  /** Created only when something asks to run after this response. */
+  after: PromiseWithResolvers<undefined> | undefined;
+  /** A handler can throw before it returns its promise. */
+  threw?: true;
   /**
    * The async context the request entered the Function in, before anything of the application
    * ran (`requestEntry`). Kept for every request and asked for by few, so in the cheaper of the
@@ -74,11 +82,72 @@ export function withRequestContext<T>(
   context: VercelRequestContext,
   work: () => Promise<T>,
 ): Promise<T> {
-  const scope: RequestScope = { context, entry: undefined, snapshot: undefined };
+  const scope: RequestScope = {
+    context,
+    answer: undefined,
+    after: undefined,
+    entry: undefined,
+    snapshot: undefined,
+  };
   return storage.run(scope, () => {
     scope.entry = new AsyncResource(ENTRY_RESOURCE);
-    return work();
+    try {
+      const answer = work();
+      scope.answer = answer;
+      observeAnswer(scope);
+      return answer;
+    } catch (error) {
+      scope.threw = true;
+      scope.after?.resolve(undefined);
+      throw error;
+    }
   });
+}
+
+/** Observe settlement only for a request that has registered background work. */
+function observeAnswer(scope: RequestScope): void {
+  const after = scope.after;
+  if (after === undefined || scope.answer === undefined) return;
+  void scope.answer.then(
+    () => after.resolve(undefined),
+    () => after.resolve(undefined),
+  );
+}
+
+/**
+ * Register work in the current request, including work registered after an `await` or from its
+ * existing background tasks. No promise reaction, timer or background lifetime is added until the
+ * first registration. The original handler promise is always returned unchanged.
+ *
+ * A timer gives the response's own continuations their turn before the task starts. This is a
+ * handler-settlement signal, not a wait for its streaming body to finish or a delivery guarantee.
+ * The task runs in the request's entry context, outside any render stores entered since then.
+ */
+export function afterResponse(task: () => void | Promise<void>): void {
+  const scope = storage.getStore();
+  if (scope === undefined) return;
+  if (scope.after === undefined) {
+    scope.after = Promise.withResolvers<undefined>();
+    if (scope.threw === true) scope.after.resolve(undefined);
+    else observeAnswer(scope);
+  }
+  const entry = requestEntry();
+  const pending = scope.after.promise
+    .then(
+      () =>
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, 0);
+        }),
+    )
+    .then(() => (entry === undefined ? task() : entry(task)));
+  try {
+    scope.context.waitUntil(pending);
+  } catch {
+    // An expired background lifetime must not turn instrumentation into a request failure.
+    void pending.catch(() => {
+      // The platform could not retain this task, so its failure has no response to report to.
+    });
+  }
 }
 
 /**
