@@ -24,6 +24,7 @@ import { type CacheRuntime, createCacheRuntime } from './cache/runtime.ts';
 import { handleRequest } from './handle.ts';
 import { changesSomething } from './node-bridge.ts';
 import {
+  afterResponse,
   installRequestContext,
   plainHeaders,
   publicUrl,
@@ -122,7 +123,7 @@ async function answered(
     publishFunctionEnv(env);
     const { blobs, runtime } = hostFor(env);
     return await withRequestContext(
-      { headers: plainHeaders(request.headers), url: publicUrl(request), waitUntil },
+      { headers: plainHeaders(request.headers), url: publicUrl(request), waitUntil, afterResponse },
       async () => {
         const warm = resourceWarmOf(props);
         if (warm !== undefined) {
