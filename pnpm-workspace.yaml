@@ -78,7 +78,7 @@ catalog:
   # lint rules they are held to beside the rest.
   # Vitest 5.1 calls AsyncLocalStorage.disable() while resolving mocked imports; Workers
   # deliberately does not implement it. Keep the last compatible runner for the workerd suites.
-  vitest: 5.0.5
+  vitest: 5.1.0
   '@vitest/eslint-plugin': 1.6.28
   # What `@stayingupwind/host` writes the cache's control contract in, and turns core's schemas into
   # where something takes zod's alone (`./zod`). What the runtime and the edge read — the gateway's
