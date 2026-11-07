@@ -572,7 +572,12 @@ export default defineConfig([
 
   // The native cache is explicitly Node-only. Worker thread messages are not window messages.
   {
-    files: ['packages/cache/src/native/**/*.ts', 'packages/cache/test/native/**/*.ts'],
+    files: [
+      'packages/cache/src/native/**/*.ts',
+      'packages/cache/test/native/**/*.ts',
+      'packages/cache/src/aws/**/*.ts',
+      'packages/cache/test/aws/**/*.ts',
+    ],
     rules: {
       'no-restricted-imports': 'off',
       'import-x/no-nodejs-modules': 'off',

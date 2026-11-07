@@ -276,9 +276,55 @@ jobs:
           npm exec -- next typegen
           npm exec -- tsc --noEmit
 
+  aws-runtime:
+    name: AWS cache transports
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local:3.3.1
+        ports:
+          - 8000:8000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: package.json
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Start a local Valkey cluster
+        run: |
+          docker run --detach --name upwind-valkey --network host valkey/valkey:9.0.7-alpine valkey-server --cluster-enabled yes --cluster-config-file /tmp/nodes.conf --cluster-require-full-coverage no --protected-mode no --save '' --appendonly no
+          for attempt in {1..30}; do
+            if docker exec upwind-valkey valkey-cli ping; then break; fi
+            sleep 1
+          done
+          docker exec upwind-valkey valkey-cli cluster addslotsrange 0 16383
+          for attempt in {1..30}; do
+            if docker exec upwind-valkey valkey-cli cluster info | grep -q '^cluster_state:ok'; then break; fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "Valkey cluster did not become ready" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+      - name: Shared cache conformance against real local transports
+        env:
+          UPWIND_TEST_VALKEY_URL: redis://127.0.0.1:6379
+          UPWIND_TEST_DYNAMODB_ENDPOINT: http://127.0.0.1:8000
+        run: pnpm exec vitest run --project aws-cache
+      - name: Published AWS container build and prebuilt validation
+        run: pnpm check:deploy-aws --out "$RUNNER_TEMP/aws-build"
+
   test:
     if: ${{ always() }}
-    needs: [unit-tests, integration]
+    needs: [unit-tests, integration, aws-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

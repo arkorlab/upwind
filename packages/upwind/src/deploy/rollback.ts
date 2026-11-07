@@ -488,6 +488,7 @@ export async function runRollback(
   options: RollbackOptions,
   credentials: CloudflareCredentials | undefined,
   io: RollbackIo = {},
+  resolvedSettings?: DeploySettings,
 ): Promise<number> {
   if (credentials === undefined) {
     console.error(
@@ -495,7 +496,7 @@ export async function runRollback(
     );
     return 1;
   }
-  const settings = await readDeploySettings(options.projectDir);
+  const settings = resolvedSettings ?? (await readDeploySettings(options.projectDir));
   const names = projectNames(settings.project);
   const client = createCloudflareClient({ apiToken: credentials.apiToken, fetch: io.fetch });
   const accountScope = { client, accountId: await resolveAccount(client, credentials.accountId) };

@@ -78,13 +78,14 @@ builds nothing and deploys nothing, and listens on the loopback alone. \`--check
 route and file of the build once, and the paths deploy.checks names, and ends. \`--crons\` fires
 the build's cron jobs on their schedules while it serves, which it does not otherwise.
 
-\`upwind deploy\` builds the project and deploys it to a Cloudflare account of your own: the
+\`upwind deploy\` builds the project and deploys it to Cloudflare by default: the
 edge in front, the runtime cache behind it, each deployment's Functions as Workers of their own,
 and the edge switched to the new deployment once it answers. It reads CLOUDFLARE_API_TOKEN and
 CLOUDFLARE_ACCOUNT_ID from the environment, and the project's \`deploy\` settings from
 upwind.config.ts. \`upwind deployments\` lists the deployments it made, \`upwind rollback\` gives
 the edge back to one of them, and \`upwind destroy\` deletes everything it made. One deploy or
-rollback of a project runs at a time.
+rollback of a project runs at a time. Set deploy.target to aws and deploy.aws.region
+to deploy a native application entirely on AWS. CloudFront and the shared cache are selectable.
 `;
 
 function fail(message: string): never {
@@ -161,56 +162,64 @@ async function preview(rest: readonly string[]): Promise<void> {
 async function deploy(rest: readonly string[]): Promise<void> {
   const { takeCredentials } = await import('./deploy/credentials.ts');
   const credentials = takeCredentials();
+  const { takeAwsCredentials } = await import('./aws/credentials.ts');
+  const aws = takeAwsCredentials();
   const { parseDeployRequest } = await import('./deploy/args.ts');
   const request = orFail(() => parseDeployRequest(rest));
   if (request.answer !== undefined) {
     await answer(request.answer);
     return;
   }
-  const { runDeploy } = await import('./deploy/command.ts');
-  process.exitCode = await runDeploy(request.options, credentials);
+  const { deployToProvider } = await import('./deploy/provider.ts');
+  process.exitCode = await deployToProvider(request.options, credentials, aws);
 }
 
 /** `upwind deployments`, with the credentials taken out of the environment as `deploy` takes them. */
 async function deployments(rest: readonly string[]): Promise<void> {
   const { takeCredentials } = await import('./deploy/credentials.ts');
   const credentials = takeCredentials();
+  const { takeAwsCredentials } = await import('./aws/credentials.ts');
+  const aws = takeAwsCredentials();
   const { parseDeploymentsRequest } = await import('./deploy/args.ts');
   const request = orFail(() => parseDeploymentsRequest(rest));
   if (request.answer !== undefined) {
     await answer(request.answer);
     return;
   }
-  const { runDeployments } = await import('./deploy/deployments.ts');
-  process.exitCode = await runDeployments(request.options, credentials);
+  const { deploymentsOfProvider } = await import('./deploy/provider.ts');
+  process.exitCode = await deploymentsOfProvider(request.options, credentials, aws);
 }
 
 /** `upwind rollback`, with the credentials taken out of the environment as `deploy` takes them. */
 async function rollback(rest: readonly string[]): Promise<void> {
   const { takeCredentials } = await import('./deploy/credentials.ts');
   const credentials = takeCredentials();
+  const { takeAwsCredentials } = await import('./aws/credentials.ts');
+  const aws = takeAwsCredentials();
   const { parseRollbackRequest } = await import('./deploy/args.ts');
   const request = orFail(() => parseRollbackRequest(rest));
   if (request.answer !== undefined) {
     await answer(request.answer);
     return;
   }
-  const { runRollback } = await import('./deploy/rollback.ts');
-  process.exitCode = await runRollback(request.options, credentials);
+  const { rollbackProvider } = await import('./deploy/provider.ts');
+  process.exitCode = await rollbackProvider(request.options, credentials, aws);
 }
 
 /** `upwind destroy`, with the credentials taken out of the environment as `deploy` takes them. */
 async function destroy(rest: readonly string[]): Promise<void> {
   const { takeCredentials } = await import('./deploy/credentials.ts');
   const credentials = takeCredentials();
+  const { takeAwsCredentials } = await import('./aws/credentials.ts');
+  const aws = takeAwsCredentials();
   const { parseDestroyRequest } = await import('./deploy/args.ts');
   const request = orFail(() => parseDestroyRequest(rest));
   if (request.answer !== undefined) {
     await answer(request.answer);
     return;
   }
-  const { runDestroy } = await import('./deploy/destroy.ts');
-  process.exitCode = await runDestroy(request.options, credentials);
+  const { destroyProvider } = await import('./deploy/provider.ts');
+  process.exitCode = await destroyProvider(request.options, credentials, aws);
 }
 
 async function dev(rest: readonly string[], argv: readonly string[]): Promise<void> {
