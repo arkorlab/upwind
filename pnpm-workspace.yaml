@@ -67,7 +67,7 @@ catalog:
   # (`chunk-ast.ts` in `@stayingupwind/adapter`). Build-time only. The version rolldown parses
   # with, so that the tree is the one `parseAst` answers.
   oxc-parser: 0.156.0
-  oxfmt: 0.75.0
+  oxfmt: 0.76.0
   rolldown: 1.2.16
   # The Public Suffix List, by which `local:check` refuses a cookie for a domain no site holds.
   tldts: 7.4.19
